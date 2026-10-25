@@ -120,13 +120,13 @@ def write_server_dir(directory, port, world=None):
 class Server:
     """A server process with its console on stdin and its log collected."""
 
-    def __init__(self, command, directory, log_name):
+    def __init__(self, command, directory, log_name, environment=None):
         self.log_path = directory.parent / f'{log_name}.log'
         self.log = self.log_path.open('w', encoding='utf-8')
         self.lines = []
         self.process = subprocess.Popen(list(map(str, command)), cwd=directory, stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                        encoding='utf-8', errors='replace', env=lab.game_env())
+                                        encoding='utf-8', errors='replace', env=environment or lab.game_env())
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
 
@@ -455,6 +455,15 @@ def main():
         directory = build / label
         write_server_dir(directory, PROPERTIES_PORTS[label], world)
         results[label] = run_side(label, command, directory, client)
+        try:
+            from .test_persistence_snapshot import online_player_save, owner_player_save
+        except ImportError:
+            from test_persistence_snapshot import online_player_save, owner_player_save
+        saved = online_player_save(label, command, world, build, classes, dependencies)
+        results[label].append('online-save ' + json.dumps(saved, sort_keys=True))
+        owners = owner_player_save(label, command, build / f'{label}-online-save/world',
+                                  build, classes, dependencies)
+        results[label].append('owner-save ' + json.dumps(owners, sort_keys=True))
         (build / f'{label}.txt').write_text('\n'.join(results[label]) + '\n', encoding='utf-8')
     client_checks = horizon_client_joins(vanilla_server, binary, world, build, results['vanilla'])
     vanilla, horizon = results['vanilla'], results['horizon']

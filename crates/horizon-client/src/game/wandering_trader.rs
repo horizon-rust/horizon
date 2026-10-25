@@ -41,7 +41,7 @@ impl Creatures {
     }
 }
 impl Game<'_> {
-    fn trader_path(&self) -> std::path::PathBuf {
+    fn trader_path(&self) -> horizon_client::save::WorldPath {
         self.world_root
             .join("data")
             .join("minecraft")

@@ -166,13 +166,12 @@ mod axolotl_parity_tests {
             ] {
                 let mut expected = LegacyRandom::new(seed);
                 let mut actual = LegacyRandom::new(seed);
-                let result = !no_ai
-                    && expected.next_int_bound(3).unwrap() == 0
-                    && ((expected.next_int_bound(3).unwrap() as f32) < 2.0 || 4.0f32 / 14.0 < 0.5)
-                    && 2.0 < 4.0
-                    && water
-                    && entity
-                    && !already;
+                let passed_roll = !no_ai && expected.next_int_bound(3).unwrap() == 0;
+                if passed_roll {
+                    // Low health still consumes the damage roll.
+                    let _ = expected.next_int_bound(3).unwrap();
+                }
+                let result = passed_roll && water && entity && !already;
                 assert_eq!(
                     roll_play_dead(&mut actual, no_ai, 4.0, 14.0, 2.0, water, entity, already),
                     result

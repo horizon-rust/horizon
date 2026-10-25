@@ -21,6 +21,65 @@ pub fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Strin
     serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+#[cfg(test)]
+mod loader_path_tests {
+    use super::*;
+    use std::{
+        io::Write,
+        path::PathBuf,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "horizon-port-pack-pipeline-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_loader_before_creating_the_work_folder() {
+        let root = TestDir::new();
+        let source = root.0.join("hostile.mrpack");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&source).unwrap());
+        zip.start_file(
+            "modrinth.index.json",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        let index = serde_json::json!({
+            "name": "Path probe",
+            "dependencies": {
+                "minecraft": "1.21.1",
+                "neoforge": "review/../../../outside/probe"
+            },
+            "files": []
+        });
+        zip.write_all(index.to_string().as_bytes()).unwrap();
+        zip.finish().unwrap();
+
+        let work = root.0.join("work");
+        let result = import(&source, &work, &|_| {});
+        assert!(result.unwrap_err().contains("NeoForge loader version"));
+        assert!(!work.exists());
+        assert!(!work.join("pack.json").exists());
+    }
+}
+
 /// Step 1: the pack at `pack` to `<work>/pack.json`.
 pub fn import(pack: &Path, work: &Path, log: Log) -> Result<import::Pack, String> {
     let pack = import::import(pack)?;

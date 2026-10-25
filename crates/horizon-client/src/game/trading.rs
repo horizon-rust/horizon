@@ -122,7 +122,7 @@ impl merchant::MapMaker for GameMaps<'_> {
 }
 
 impl Game<'_> {
-    pub(super) fn random_sequences_path(&self) -> std::path::PathBuf {
+    pub(super) fn random_sequences_path(&self) -> horizon_client::save::WorldPath {
         self.world_root.join("data/minecraft/random_sequences.dat")
     }
     /// `RandomSequences` as `random_sequences.dat` (not on a server's guest).

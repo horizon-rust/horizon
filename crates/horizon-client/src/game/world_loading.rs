@@ -11,7 +11,7 @@ pub(super) struct WorldRequest {
 }
 
 pub(super) struct PreparedWorld {
-    pub save_root: PathBuf,
+    pub save_root: horizon_client::save::WorldPath,
     pub level: Level,
     pub world: World,
     pub streaming: Streaming,
@@ -54,6 +54,7 @@ impl WorldRequest {
             creative,
             create,
         } = self;
+        let save_root = horizon_client::save::WorldPath::new(save_root);
         let name = name.as_deref();
         let create = create.as_ref();
         horizon_client::save::upgrade_older_world(&save_root)?;
@@ -65,7 +66,12 @@ impl WorldRequest {
                 .and_then(|t| t.get("data").cloned())
                 .map(|d| horizon_client::random_sequences::RandomSequences::from_nbt(&d))
                 .unwrap_or_default();
-        let existing = Level::read(&save_root);
+        let local_player = options.execution_role != execution_role::ExecutionRole::DedicatedServer;
+        let existing = if local_player {
+            Level::read(&save_root)
+        } else {
+            Level::read_world(&save_root)
+        };
         let created = existing.is_none();
         let level = existing.unwrap_or_else(|| Level {
             name: name.unwrap_or(&folder).to_owned(),
@@ -127,7 +133,11 @@ impl WorldRequest {
 
         // Persist new metadata on the worker too, before publishing the world.
         if !save_root.join("level.dat").exists() {
-            level.write(&save_root)?;
+            if local_player {
+                level.write(&save_root)?;
+            } else {
+                level.write_world(&save_root)?;
+            }
         }
         Ok(PreparedWorld {
             save_root,
@@ -197,14 +207,13 @@ pub(super) fn make_streaming(
     pack: &PackResources,
     options: &Options,
     settings: &Settings,
-    world_root: &std::path::Path,
+    world_root: &horizon_client::save::WorldPath,
     dim: Dim,
     seed: i64,
 ) -> Result<(Streaming, Arc<SaveDir>, Option<Arc<VanillaTerrain>>)> {
-    let save = Arc::new(SaveDir::new(horizon_client::save::dimension_dir(
-        world_root,
-        dim.id(),
-    )));
+    let save = Arc::new(SaveDir::owned(
+        world_root.with_path(horizon_client::save::dimension_dir(world_root, dim.id())),
+    ));
     let mut locator = None;
     let flat = (dim == Dim::Overworld)
         .then(|| horizon_client::save::world_gen_settings(world_root))

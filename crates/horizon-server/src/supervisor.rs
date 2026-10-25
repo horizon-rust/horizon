@@ -4,7 +4,7 @@
 //! back by itself when the new game doesn't come up.
 
 use crate::{
-    api::{self, Phase, Shared},
+    api::{self, Phase, RestoreRequest, RestoreResult, Shared},
     backup, config,
     config::Config,
     engine, signals, update,
@@ -13,7 +13,7 @@ use serde_json::json;
 use std::{
     fs::File,
     io::{BufRead, BufReader, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, ExitStatus},
     sync::{Arc, atomic::Ordering, mpsc},
     thread,
@@ -84,6 +84,32 @@ struct Watch {
     keep: u32,
 }
 
+struct Restoring {
+    request: RestoreRequest,
+    message: String,
+    engine_pid: Option<u32>,
+}
+
+fn finish_restore(shared: &Shared, request: RestoreRequest, result: Result<(u32, String), String>) {
+    let (engine_pid, ok, message) = match result {
+        Ok((pid, message)) => (Some(pid), true, message),
+        Err(error) => (
+            None,
+            false,
+            format!("Could not restore {}: {error}", request.name),
+        ),
+    };
+    shared.finish_restore(RestoreResult {
+        id: request.id,
+        name: request.name,
+        world: request.world,
+        engine_pid,
+        ok,
+        message: message.clone(),
+    });
+    note(shared, if ok { "INFO" } else { "ERROR" }, &message);
+}
+
 pub fn run(dir: &Path) -> Result<(), String> {
     signals::install();
     let config = Config::load(dir)?;
@@ -116,13 +142,49 @@ pub fn run(dir: &Path) -> Result<(), String> {
     schedule_backups(shared.clone());
     check_updates(shared.clone());
     let console = console_lines();
+    let mut restoring = None;
+    let result = run_games(dir, &shared, program, resources, console, &mut restoring);
+    let error = result.as_ref().err().map_or_else(
+        || "the server stopped before the restored game was running".to_owned(),
+        |error| format!("the restored game could not start: {error}"),
+    );
+    if let Some(restore) = restoring {
+        finish_restore(&shared, restore.request, Err(error.clone()));
+    }
+    if let Some(request) = shared.take_restore() {
+        finish_restore(&shared, request, Err(error));
+    }
+    result
+}
+
+fn run_games(
+    dir: &Path,
+    shared: &Arc<Shared>,
+    mut program: PathBuf,
+    mut resources: PathBuf,
+    console: mpsc::Receiver<String>,
+    restoring: &mut Option<Restoring>,
+) -> Result<(), String> {
     let mut crashes: Vec<Instant> = Vec::new();
     let mut watch: Option<Watch> = None;
-    let (mut program, mut resources) = (program, resources);
     loop {
+        let operation = shared.lifecycle.lock().unwrap();
         // Read again before every start: edits to server.toml apply on the next restart, and so does a
         // switch to another release.
         let config = Config::load(dir)?;
+        if let Some(restore) = restoring.as_ref()
+            && config.world.name != restore.request.world
+        {
+            let restore = restoring.take().unwrap();
+            finish_restore(
+                shared,
+                restore.request,
+                Err(format!(
+                    "world.name changed to {:?} before the replacement started",
+                    config.world.name
+                )),
+            );
+        }
         if let Ok(found) = engine::program_in(&config, dir, shared.install.as_ref())
             && let Ok(found_resources) = engine::resources(&config, dir, Some(&found))
         {
@@ -132,7 +194,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
             .write_properties(dir)
             .map_err(|e| format!("server.properties: {e}"))?;
         note(
-            &shared,
+            shared,
             "INFO",
             &format!(
                 "Starting {} with the game files in {}",
@@ -145,22 +207,47 @@ pub fn run(dir: &Path) -> Result<(), String> {
             .map_err(|e| format!("{}: {e}", program.display()))?;
         {
             let mut state = shared.state.lock().unwrap();
+            state.world_name = Some(config.world.name.clone());
             state.engine_pid = Some(child.id());
             state.engine_started = Some(Instant::now());
+        }
+        if let Some(restore) = restoring {
+            restore.engine_pid = Some(child.id());
         }
         // The new release's time to come up starts with its game.
         if let Some(w) = &mut watch {
             w.deadline = Instant::now() + w.timeout;
         }
-        let exit = supervise(&shared, &mut child, &console, &mut watch);
+        drop(operation);
+        let exit = supervise(shared, &mut child, &console, &mut watch, restoring);
+        let operation = shared.lifecycle.lock().unwrap();
+        if let Some(restore) = restoring.take() {
+            finish_restore(
+                shared,
+                restore.request,
+                Err("the replacement game stopped before the restore completed".into()),
+            );
+        }
+        if (!matches!(exit, Exit::Restart) || watch.is_some())
+            && let Some(request) = shared.take_restore()
+        {
+            finish_restore(
+                shared,
+                request,
+                Err("the game stopped before the restore was applied".into()),
+            );
+        }
         {
             let mut state = shared.state.lock().unwrap();
+            if state.phase != Phase::Stopping {
+                state.phase = Phase::Restarting;
+            }
             state.engine_pid = None;
             state.engine_started = None;
         }
         match config::sync_back(dir, &written) {
             Ok(keys) if !keys.is_empty() => note(
-                &shared,
+                shared,
                 "INFO",
                 &format!(
                     "Copied into server.toml what the game changed: {}",
@@ -169,7 +256,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
             ),
             Ok(_) => {}
             Err(e) => note(
-                &shared,
+                shared,
                 "WARN",
                 &format!("Could not update server.toml: {e}"),
             ),
@@ -182,7 +269,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
                 Exit::Stopped => "the game stopped before it was up".into(),
                 Exit::Restart => "the game was restarted before it was up".into(),
             };
-            roll_back(&shared, dir, &config, &w, &reason);
+            roll_back(shared, dir, &config, &w, &reason);
             if matches!(exit, Exit::Stopped)
                 && shared.state.lock().unwrap().phase == Phase::Stopping
             {
@@ -194,24 +281,12 @@ pub fn run(dir: &Path) -> Result<(), String> {
             Exit::Stopped => return Ok(()),
             Exit::NotUp => continue,
             Exit::Restart => {
-                let restore = shared.restore.lock().unwrap().take();
-                if let Some(name) = restore {
-                    match backup::restore(dir, &config, &name) {
-                        Ok(Some(old)) => note(
-                            &shared,
-                            "INFO",
-                            &format!(
-                                "Restored {name}; the world it replaced is in {}",
-                                old.display()
-                            ),
-                        ),
-                        Ok(None) => note(&shared, "INFO", &format!("Restored {name}")),
-                        Err(e) => note(&shared, "ERROR", &format!("Could not restore {name}: {e}")),
-                    }
+                if let Some(restore) = shared.take_restore() {
+                    *restoring = restore_pending(shared, dir, restore);
                 }
                 let pending = shared.update.lock().unwrap().pending.take();
                 if let Some((to, timeout)) = pending {
-                    watch = switch(&shared, dir, &config, &to, timeout);
+                    watch = switch(shared, dir, &config, &to, timeout);
                 }
                 continue;
             }
@@ -239,7 +314,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
         }
         let wait = backoff(crashes.len());
         note(
-            &shared,
+            shared,
             "WARN",
             &format!(
                 "The game stopped unexpectedly ({status}); restarting in {} s",
@@ -247,6 +322,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
             ),
         );
         shared.set_phase(Phase::Restarting);
+        drop(operation);
         let until = Instant::now() + wait;
         while Instant::now() < until {
             if signals::requests() > 0 || shared.stop.load(Ordering::SeqCst) {
@@ -553,7 +629,7 @@ fn schedule_backups(shared: Arc<Shared>) {
                 match shared.back_up(&backup::auto_name(std::time::SystemTime::now())) {
                     Ok(path) => {
                         note(&shared, "INFO", &format!("Backed up to {}", path.display()));
-                        let pruned = backup::prune(&shared.dir, config.backups.keep as usize);
+                        let pruned = shared.prune_backups(config.backups.keep as usize);
                         if !pruned.is_empty() {
                             note(
                                 &shared,
@@ -572,12 +648,113 @@ fn schedule_backups(shared: Arc<Shared>) {
         });
 }
 
+fn restore_config(dir: &Path, world: &str) -> Result<Config, String> {
+    let config = Config::load(dir)?;
+    if config.world.name != world {
+        return Err(format!(
+            "world.name changed from {world:?} to {:?} after the restore was accepted",
+            config.world.name
+        ));
+    }
+    Ok(config)
+}
+
+/// Extracts the restore, then waits for its replacement game before reporting success.
+fn restore_pending(shared: &Shared, dir: &Path, request: RestoreRequest) -> Option<Restoring> {
+    let result = (|| {
+        let config = restore_config(dir, &request.world)?;
+        backup::restore_checked(dir, &config, &request.name, || {
+            restore_config(dir, &request.world).map(|_| ())
+        })
+    })();
+    let message = match result {
+        Ok(Some(old)) => format!(
+            "Restored {}; the world it replaced is in {}",
+            request.name,
+            old.display()
+        ),
+        Ok(None) => format!("Restored {}", request.name),
+        Err(error) => {
+            finish_restore(shared, request, Err(error));
+            return None;
+        }
+    };
+    Some(Restoring {
+        request,
+        message,
+        engine_pid: None,
+    })
+}
+
+/// Uses the engine's held-world acknowledgement to verify the world it actually opened.
+fn verify_restored_world(shared: &Shared, expected: &str) -> Result<(), String> {
+    let mut game = engine::Control::connect(&shared.dir).map_err(|e| e.to_string())?;
+    let snapshot = api::random_token();
+    let ask = |game: &mut engine::Control, command: &str| -> Result<serde_json::Value, String> {
+        let reply = game.ask(command).map_err(|e| e.to_string())?;
+        if let Some(error) = reply["error"].as_str() {
+            return Err(error.into());
+        }
+        if reply["ok"] != true || reply["snapshot"].as_str() != Some(snapshot.as_str()) {
+            return Err("the game did not acknowledge the restore verification snapshot".into());
+        }
+        Ok(reply)
+    };
+    let result = ask(&mut game, &format!("backup-begin {snapshot}")).and_then(|held| {
+        if let Some(world) = held["world"].as_str() {
+            shared.state.lock().unwrap().world_name = Some(world.to_owned());
+        }
+        if held["world"].as_str() == Some(expected) {
+            Ok(())
+        } else {
+            let opened = held["world"].as_str().unwrap_or("<unknown>");
+            Err(format!(
+                "the replacement game opened {opened:?} instead of {expected:?}"
+            ))
+        }
+    });
+    let release = format!("backup-end {snapshot}");
+    let resumed = ask(&mut game, &release).or_else(|_| {
+        let mut game = engine::Control::connect(&shared.dir).map_err(|e| e.to_string())?;
+        ask(&mut game, &release)
+    });
+    if let Err(error) = resumed {
+        let outcome = result
+            .err()
+            .unwrap_or_else(|| "the replacement world was verified".into());
+        return Err(format!("{outcome}; the game didn't resume saving: {error}"));
+    }
+    result
+}
+
+fn complete_running_restore(shared: &Shared, restoring: &mut Option<Restoring>) {
+    if restoring.is_none() || !up(shared) {
+        return;
+    }
+    let restore = restoring.take().unwrap();
+    let pid = restore.engine_pid;
+    let matches = {
+        let state = shared.state.lock().unwrap();
+        pid.is_some()
+            && state.engine_pid == pid
+            && state.world_name.as_deref() == Some(&restore.request.world)
+    };
+    let result = if matches {
+        verify_restored_world(shared, &restore.request.world)
+            .map(|()| (pid.unwrap(), restore.message))
+    } else {
+        Err("the restored world's replacement process changed before it was running".into())
+    };
+    finish_restore(shared, restore.request, result);
+}
+
 /// Runs one engine process to its end: console lines in, the log out, and a clean `stop` when asked.
 fn supervise(
     shared: &Arc<Shared>,
     child: &mut Child,
     console: &mpsc::Receiver<String>,
     watch: &mut Option<Watch>,
+    restoring: &mut Option<Restoring>,
 ) -> Exit {
     if let Some(out) = child.stdout.take() {
         pump(shared, out, false);
@@ -591,6 +768,8 @@ fn supervise(
     let mut not_up = false;
     let mut handled = signals::requests();
     loop {
+        let operation = shared.lifecycle.lock().unwrap();
+        complete_running_restore(shared, restoring);
         if let Some(w) = watch.as_ref() {
             if up(shared) {
                 came_up(shared, w);
@@ -608,7 +787,7 @@ fn supervise(
         }
         while let Ok(line) = console.try_recv() {
             let command = line.trim().trim_start_matches('/');
-            if command == "stop" && stopping.is_none() {
+            if command.split_whitespace().next() == Some("stop") && stopping.is_none() {
                 stopping = Some(Instant::now());
                 shared.set_phase(Phase::Stopping);
             }
@@ -659,12 +838,14 @@ fn supervise(
             Ok(Some(_)) if restart => return Exit::Restart,
             Ok(Some(status)) if stopping.is_some() || status.success() => return Exit::Stopped,
             Ok(Some(status)) => return Exit::Crashed(status),
-            Ok(None) => thread::sleep(Duration::from_millis(50)),
+            Ok(None) => {}
             Err(e) => {
                 note(shared, "ERROR", &format!("Lost track of the game: {e}"));
                 return Exit::Stopped;
             }
         }
+        drop(operation);
+        thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -677,6 +858,359 @@ fn send_stop(stdin: &mut Option<std::process::ChildStdin>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_world_name_change_after_acceptance_fails_before_replacing_world() {
+        use serde_json::{Value, json};
+        let dir = crate::test_support::TempDir::new("restore-config-race");
+        std::fs::create_dir_all(dir.join("world")).unwrap();
+        std::fs::write(dir.join("world/level.dat"), b"current-world").unwrap();
+        std::fs::write(dir.join("server.toml"), config::TEMPLATE).unwrap();
+        let config = Config::default();
+        backup::create(&dir, &config, "active.zip").unwrap();
+        let shared = Shared::with_install(&dir, None);
+        {
+            let mut state = shared.state.lock().unwrap();
+            state.phase = Phase::Running;
+            state.world_name = Some("world".into());
+        }
+        let accepted = api::route(
+            &shared,
+            &crate::http::Request {
+                method: "POST".into(),
+                path: "/api/v1/restore".into(),
+                query: String::new(),
+                headers: Vec::new(),
+                body: json!({"name": "active.zip"}).to_string().into_bytes(),
+            },
+        );
+        assert_eq!(accepted.status, 200, "{}", accepted.body);
+        let accepted: Value = serde_json::from_str(&accepted.body).unwrap();
+
+        let mut pending = config;
+        pending.world.name = "next-world".into();
+        std::fs::write(dir.join("server.toml"), config::render(&pending)).unwrap();
+        let request = shared.take_restore().unwrap();
+        restore_pending(&shared, &dir, request);
+
+        assert_eq!(
+            std::fs::read(dir.join("world/level.dat")).unwrap(),
+            b"current-world"
+        );
+        assert!(!dir.join("next-world").exists());
+        let status: Value = serde_json::from_str(
+            &api::route(
+                &shared,
+                &crate::http::Request {
+                    method: "GET".into(),
+                    path: "/api/v1/status".into(),
+                    query: String::new(),
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                },
+            )
+            .body,
+        )
+        .unwrap();
+        assert_eq!(status["restore"]["finished"], accepted["id"]);
+        assert_eq!(status["restore"]["last"]["ok"], false);
+        assert!(
+            status["restore"]["last"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("changed")
+        );
+    }
+
+    #[test]
+    fn accepted_restore_waits_for_the_verified_replacement_game() {
+        use serde_json::{Value, json};
+        let dir = crate::test_support::TempDir::new("restore-complete");
+        std::fs::create_dir_all(dir.join("world")).unwrap();
+        std::fs::write(dir.join("world/level.dat"), b"backed-up-world").unwrap();
+        std::fs::write(dir.join("server.toml"), config::TEMPLATE).unwrap();
+        let config = Config::default();
+        backup::create(&dir, &config, "active.zip").unwrap();
+        std::fs::write(dir.join("world/level.dat"), b"current-world").unwrap();
+        let shared = Shared::with_install(&dir, None);
+        {
+            let mut state = shared.state.lock().unwrap();
+            state.phase = Phase::Running;
+            state.world_name = Some("world".into());
+        }
+        let accepted = api::route(
+            &shared,
+            &crate::http::Request {
+                method: "POST".into(),
+                path: "/api/v1/restore".into(),
+                query: String::new(),
+                headers: Vec::new(),
+                body: json!({"name": "active.zip"}).to_string().into_bytes(),
+            },
+        );
+        assert_eq!(accepted.status, 200, "{}", accepted.body);
+        let accepted: Value = serde_json::from_str(&accepted.body).unwrap();
+        let request = shared.take_restore().unwrap();
+        let mut restoring = restore_pending(&shared, &dir, request);
+
+        assert_eq!(
+            std::fs::read(dir.join("world/level.dat")).unwrap(),
+            b"backed-up-world"
+        );
+        let status: Value = serde_json::from_str(
+            &api::route(
+                &shared,
+                &crate::http::Request {
+                    method: "GET".into(),
+                    path: "/api/v1/status".into(),
+                    query: String::new(),
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                },
+            )
+            .body,
+        )
+        .unwrap();
+        assert_eq!(status["restore"]["finished"], 0);
+        assert_eq!(status["restore"]["busy"], true);
+        assert!(status["restore"]["last"].is_null());
+        complete_running_restore(&shared, &mut restoring);
+        assert!(restoring.is_some());
+        let peer = crate::test_support::Engine::start(&dir, |line| {
+            let (_, id) = line.split_once(' ').unwrap();
+            json!({"ok": true, "snapshot": id, "world": "world"})
+        });
+        {
+            let mut state = shared.state.lock().unwrap();
+            state.engine_pid = Some(42);
+            state.sample = json!({"pid": 42, "game": {}});
+        }
+        restoring.as_mut().unwrap().engine_pid = Some(42);
+        complete_running_restore(&shared, &mut restoring);
+        assert!(restoring.is_none());
+        let restore = shared.restore.lock().unwrap();
+        assert_eq!(restore.finished, accepted["id"].as_u64().unwrap());
+        let last = restore.last.as_ref().unwrap();
+        assert!(last.ok);
+        assert_eq!(last.engine_pid, Some(42));
+        assert_eq!(last.world, "world");
+        let commands = peer.commands.lock().unwrap();
+        assert_eq!(commands.len(), 2);
+        assert_eq!(
+            commands[1],
+            commands[0].replacen("backup-begin", "backup-end", 1)
+        );
+    }
+
+    #[test]
+    fn name_change_during_extraction_preserves_the_current_world() {
+        let dir = crate::test_support::TempDir::new("restore-extraction");
+        std::fs::create_dir_all(dir.join("world")).unwrap();
+        std::fs::write(dir.join("server.toml"), config::TEMPLATE).unwrap();
+        std::fs::write(dir.join("world/level.dat"), b"backed-up-world").unwrap();
+        let config = restore_config(&dir, "world").unwrap();
+        backup::create(&dir, &config, "active.zip").unwrap();
+        std::fs::write(dir.join("world/level.dat"), b"current-world").unwrap();
+        let error = backup::restore_checked(&dir, &config, "active.zip", || {
+            assert_eq!(
+                std::fs::read(dir.join(".horizon/restore/world/level.dat")).unwrap(),
+                b"backed-up-world"
+            );
+            let mut pending = config.clone();
+            pending.world.name = "next-world".into();
+            std::fs::write(dir.join("server.toml"), config::render(&pending)).unwrap();
+            restore_config(&dir, "world").map(|_| ())
+        })
+        .unwrap_err();
+        assert!(error.contains("world.name changed"), "{error}");
+        assert_eq!(
+            std::fs::read(dir.join("world/level.dat")).unwrap(),
+            b"current-world"
+        );
+        assert_eq!(Config::load(&dir).unwrap().world.name, "next-world");
+        assert!(!dir.join(".horizon/restore").exists());
+        assert_eq!(std::fs::read_dir(dir.join("backups")).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn replacement_identity_and_release_failures_are_restore_failures() {
+        for scenario in [
+            "wrong-pid",
+            "wrong-world",
+            "wrong-ack",
+            "wrong-snapshot",
+            "save-failed",
+            "release-failed",
+        ] {
+            let dir = crate::test_support::TempDir::new(scenario);
+            let shared = Shared::with_install(&dir, None);
+            shared.restore.lock().unwrap().requested = 1;
+            {
+                let mut state = shared.state.lock().unwrap();
+                state.phase = Phase::Running;
+                state.world_name = Some(
+                    if scenario == "wrong-world" {
+                        "elsewhere"
+                    } else {
+                        "world"
+                    }
+                    .into(),
+                );
+                state.engine_pid = Some(42);
+                state.sample = json!({"pid": 42, "game": {}});
+            }
+            let mut restoring = Some(Restoring {
+                request: RestoreRequest {
+                    id: 1,
+                    name: "active.zip".into(),
+                    world: "world".into(),
+                },
+                message: "Restored active.zip".into(),
+                engine_pid: Some(if scenario == "wrong-pid" { 43 } else { 42 }),
+            });
+            let peer = crate::test_support::Engine::start(&dir, move |line| {
+                let (command, id) = line.split_once(' ').unwrap();
+                if (scenario == "release-failed" && command == "backup-end")
+                    || (scenario == "save-failed" && command == "backup-begin")
+                {
+                    return json!({"error": scenario});
+                }
+                json!({"ok": true,
+                    "snapshot": if scenario == "wrong-snapshot" && command == "backup-begin" {"stale"} else {id},
+                    "world": if scenario == "wrong-ack" { "elsewhere" } else { "world" }})
+            });
+            complete_running_restore(&shared, &mut restoring);
+            assert!(restoring.is_none());
+            let restore = shared.restore.lock().unwrap();
+            assert_eq!(restore.finished, 1);
+            let last = restore.last.as_ref().unwrap();
+            assert!(!last.ok, "{scenario}");
+            assert_eq!(last.engine_pid, None);
+            if scenario == "wrong-ack" {
+                assert_eq!(
+                    shared.state.lock().unwrap().world_name.as_deref(),
+                    Some("elsewhere")
+                );
+            }
+            let commands = peer.commands.lock().unwrap();
+            let expected = match scenario {
+                "wrong-pid" | "wrong-world" => 0,
+                "release-failed" => 3,
+                _ => 2,
+            };
+            assert_eq!(commands.len(), expected, "{scenario}: {commands:?}");
+            if expected > 0 {
+                assert_eq!(
+                    commands[1],
+                    commands[0].replacen("backup-begin", "backup-end", 1)
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn name_change_after_replacement_fails_before_the_next_start() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::test_support::TempDir::new("restore-start-name");
+        let program = dir.join("engine");
+        std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::create_dir(dir.join("resources")).unwrap();
+        std::fs::write(dir.join("resources/horizon-resources.json"), "{}").unwrap();
+        let mut config = Config::default();
+        config.world.name = "next-world".into();
+        config.engine.path = program.to_string_lossy().into_owned();
+        std::fs::write(dir.join("server.toml"), config::render(&config)).unwrap();
+        let shared = Shared::with_install(&dir, None);
+        shared.restore.lock().unwrap().requested = 1;
+        let mut restoring = Some(Restoring {
+            request: RestoreRequest {
+                id: 1,
+                name: "active.zip".into(),
+                world: "world".into(),
+            },
+            message: "Restored active.zip".into(),
+            engine_pid: None,
+        });
+        let (_, console) = mpsc::channel();
+        run_games(
+            &dir,
+            &shared,
+            program,
+            dir.join("resources"),
+            console,
+            &mut restoring,
+        )
+        .unwrap();
+        assert!(restoring.is_none());
+        let restore = shared.restore.lock().unwrap();
+        assert_eq!(restore.finished, 1);
+        let last = restore.last.as_ref().unwrap();
+        assert!(!last.ok);
+        assert!(
+            last.message.contains("before the replacement started"),
+            "{}",
+            last.message
+        );
+        assert_eq!(Config::load(&dir).unwrap().world.name, "next-world");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn restart_waits_for_the_backup_lifecycle_guard() {
+        use std::process::{Command, Stdio};
+        let dir = crate::test_support::TempDir::new("lifecycle");
+        let marker = dir.join("stopped");
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                "read -r line; printf '%s' \"$line\" > \"$1\"",
+                "horizon-stop-probe",
+            ])
+            .arg(&marker)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let shared = Shared::with_install(&dir, None);
+        shared.set_phase(Phase::Running);
+        let guard = shared.lifecycle.lock().unwrap();
+        shared.restart.store(true, Ordering::SeqCst);
+        let (ready, started) = mpsc::channel();
+        let (done, finished) = mpsc::channel();
+        let worker_shared = shared.clone();
+        let worker = thread::spawn(move || {
+            let (_tx, console) = mpsc::channel();
+            ready.send(()).unwrap();
+            let exit = supervise(&worker_shared, &mut child, &console, &mut None, &mut None);
+            let _ = done.send(exit);
+        });
+        let started = started.recv_timeout(Duration::from_secs(3));
+        let early = finished.recv_timeout(Duration::from_millis(150));
+        let was_blocked = matches!(early, Err(mpsc::RecvTimeoutError::Timeout));
+        let stopped_early = marker.exists();
+        drop(guard);
+        let result = if was_blocked {
+            finished.recv_timeout(Duration::from_secs(3))
+        } else {
+            early
+        };
+        if result.is_err() {
+            // Bound cleanup even when the behavior under test fails.
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+        }
+        worker.join().unwrap();
+        assert!(started.is_ok());
+        assert!(
+            was_blocked && !stopped_early,
+            "restart ran during the backup"
+        );
+        assert!(matches!(result, Ok(Exit::Restart)));
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "stop");
+    }
 
     #[test]
     fn backoff_doubles_up_to_five_minutes() {
@@ -845,11 +1379,23 @@ mod tests {
 
     #[test]
     fn one_supervisor_per_folder() {
-        let dir = std::env::temp_dir().join(format!("horizon-server-lock-{}", std::process::id()));
+        let dir = crate::test_support::TempDir::new("lock");
         let first = lock(&dir).unwrap();
         assert!(lock(&dir).unwrap_err().contains("already running"));
         drop(first);
-        lock(&dir).unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match lock(&dir) {
+                Ok(_) => break,
+                Err(error) => {
+                    // Concurrent child launches can retain the lock until exec.
+                    assert!(
+                        error.contains("already running") && Instant::now() < deadline,
+                        "{error}"
+                    );
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
     }
 }

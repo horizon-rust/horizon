@@ -211,7 +211,7 @@ pub(super) fn item_view(s: &ItemStack) -> ItemView {
     }
 }
 impl Game<'_> {
-    fn adv_path(&self) -> Option<std::path::PathBuf> {
+    fn adv_path(&self) -> Option<horizon_client::save::WorldPath> {
         Some(super::stats::player_json(
             &self.world_root,
             "advancements",
@@ -277,7 +277,7 @@ impl Game<'_> {
         self.advancement_tree();
         let progress = self
             .adv_path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|p| horizon_client::save::read_string(&p).ok())
             .and_then(|t| serde_json::from_str::<Value>(&t).ok())
             .map(|v| Progress::from_json(&v))
             .unwrap_or_default();
@@ -298,12 +298,7 @@ impl Game<'_> {
             .adv
             .progress
             .to_json(&self.adv.tree, horizon_world::DATA_VERSION);
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(text) = serde_json::to_string_pretty(&json) {
-            let _ = std::fs::write(path, text);
-        }
+        let _ = horizon_client::save::write_json(&path, &json);
     }
     /// The player as predicates see it.
     /// The predicate view of a command target.

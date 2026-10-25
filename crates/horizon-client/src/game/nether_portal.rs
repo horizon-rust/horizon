@@ -721,7 +721,7 @@ impl Game<'_> {
 
     // ---- persistence ----
 
-    fn arrivals_path(&self) -> std::path::PathBuf {
+    fn arrivals_path(&self) -> horizon_client::save::WorldPath {
         self.world_root
             .join("data")
             .join("horizon_portal_arrivals.dat")

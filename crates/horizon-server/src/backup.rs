@@ -1,6 +1,6 @@
 //! Backups and restore (docs/server.md, section 7). A backup is one zip in `backups/`: the world folder and
 //! the server's settings and lists. On a running server the game first saves everything and stops writing
-//! (`save-off`, `save-all`), and writes again once the zip is done (`save-on`), so players stay online.
+//! under an internal snapshot lease, released once the zip is done, so players stay online.
 //! A restore puts the backup's world in place of the current one, which is moved aside, never deleted.
 
 use crate::config::Config;
@@ -63,8 +63,8 @@ fn add_dir(zip: &mut ZipWriter<BufWriter<File>>, dir: &Path, prefix: &str) -> Re
         .large_file(true);
     let mut entries: Vec<_> = std::fs::read_dir(dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?
-        .flatten()
-        .collect();
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("{}: {e}", dir.display()))?;
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -85,6 +85,10 @@ fn add_dir(zip: &mut ZipWriter<BufWriter<File>>, dir: &Path, prefix: &str) -> Re
 /// Zips the world and the settings into `backups/<file_name>`. The zip is written under a temporary name
 /// and renamed when complete, so a backup that looks finished is one.
 pub fn create(dir: &Path, config: &Config, file_name: &str) -> Result<PathBuf, String> {
+    let world = dir.join(&config.world.name);
+    if !world.join("level.dat").is_file() {
+        return Err(format!("{}: no level.dat to back up", world.display()));
+    }
     let backups = dir.join(DIR);
     std::fs::create_dir_all(&backups).map_err(|e| format!("{}: {e}", backups.display()))?;
     let path = backups.join(file_name);
@@ -92,16 +96,16 @@ pub fn create(dir: &Path, config: &Config, file_name: &str) -> Result<PathBuf, S
     let result = (|| {
         let file = File::create(&part).map_err(|e| format!("{}: {e}", part.display()))?;
         let mut zip = ZipWriter::new(BufWriter::new(file));
-        let world = dir.join(&config.world.name);
-        if world.is_dir() {
-            add_dir(&mut zip, &world, &config.world.name)?;
-        }
+        add_dir(&mut zip, &world, &config.world.name)?;
         let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
         for name in FILES {
-            if let Ok(bytes) = std::fs::read(dir.join(name)) {
-                zip.start_file(name, options).map_err(|e| e.to_string())?;
-                zip.write_all(&bytes).map_err(|e| e.to_string())?;
-            }
+            let bytes = match std::fs::read(dir.join(name)) {
+                Ok(bytes) => bytes,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(format!("{name}: {e}")),
+            };
+            zip.start_file(name, options).map_err(|e| e.to_string())?;
+            zip.write_all(&bytes).map_err(|e| e.to_string())?;
         }
         zip.finish()
             .map_err(|e| e.to_string())?
@@ -146,12 +150,14 @@ pub fn list(dir: &Path) -> Vec<Backup> {
 }
 
 /// Deletes the oldest automatic backups beyond `keep`. Backups made by hand are never deleted.
-pub fn prune(dir: &Path, keep: usize) -> Vec<String> {
+/// Deletes old automatic backups except for one that a restore has accepted and not used yet.
+pub fn prune_protecting(dir: &Path, keep: usize, protected: Option<&str>) -> Vec<String> {
     let auto_suffix = format!("-{AUTO}.zip");
     list(dir)
         .into_iter()
         .filter(|b| b.name.ends_with(&auto_suffix))
         .skip(keep)
+        .filter(|b| Some(b.name.as_str()) != protected)
         .filter(|b| std::fs::remove_file(dir.join(DIR).join(&b.name)).is_ok())
         .map(|b| b.name)
         .collect()
@@ -191,9 +197,34 @@ pub fn find(dir: &Path, name: &str) -> Result<String, String> {
         })
 }
 
+/// Checks that a backup contains the configured world's level file before accepting a restore.
+pub fn check_world(dir: &Path, name: &str, world: &str) -> Result<(), String> {
+    let path = dir.join(DIR).join(name);
+    let file = File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut zip = ZipArchive::new(file).map_err(|e| format!("{name}: {e}"))?;
+    let level = format!("{world}/level.dat");
+    if zip.by_name(&level).is_err() {
+        return Err(format!(
+            "{name} holds no world named {world:?} (no {world}/level.dat)"
+        ));
+    }
+    Ok(())
+}
+
 /// Puts the backup's world in place of the current one, which goes to `backups/replaced-<time>/`. The
 /// server must be stopped. Returns where the old world went.
 pub fn restore(dir: &Path, config: &Config, name: &str) -> Result<Option<PathBuf>, String> {
+    restore_checked(dir, config, name, || Ok(()))
+}
+
+/// Rechecks restore admission after extraction, before moving the current world aside.
+pub fn restore_checked(
+    dir: &Path,
+    config: &Config,
+    name: &str,
+    before_replace: impl FnOnce() -> Result<(), String>,
+) -> Result<Option<PathBuf>, String> {
+    check_world(dir, name, &config.world.name)?;
     let zip_path = dir.join(DIR).join(name);
     let scratch = dir.join(".horizon/restore");
     let _ = std::fs::remove_dir_all(&scratch);
@@ -209,6 +240,10 @@ pub fn restore(dir: &Path, config: &Config, name: &str) -> Result<Option<PathBuf
         return Err(format!(
             "{name} holds no world named {world:?} (no {world}/level.dat)"
         ));
+    }
+    if let Err(error) = before_replace() {
+        let _ = std::fs::remove_dir_all(&scratch);
+        return Err(error);
     }
     let current = dir.join(world);
     let moved = if current.exists() {
@@ -235,21 +270,21 @@ pub fn interval(every: &str) -> Result<Option<std::time::Duration>, String> {
     if every == "0" || every.is_empty() {
         return Ok(None);
     }
-    let (number, unit) = every.split_at(every.len() - 1);
-    let n: u64 = number.trim().parse().map_err(|_| {
-        format!("backups.every is {every:?}: use a number and m, h or d, like \"6h\"")
-    })?;
+    let invalid = || format!("backups.every is {every:?}: use a number and m, h or d, like \"6h\"");
+    let (number, unit) = every
+        .split_at_checked(every.len() - 1)
+        .ok_or_else(invalid)?;
+    let n: u64 = number.trim().parse().map_err(|_| invalid())?;
     let secs = match unit {
         "m" => 60,
         "h" => 3600,
         "d" => 86_400,
-        _ => {
-            return Err(format!(
-                "backups.every is {every:?}: use a number and m, h or d, like \"6h\""
-            ));
-        }
+        _ => return Err(invalid()),
     };
-    Ok((n > 0).then(|| std::time::Duration::from_secs(n * secs)))
+    let seconds = n
+        .checked_mul(secs)
+        .ok_or_else(|| format!("backups.every is {every:?}: the interval is too large"))?;
+    Ok((n > 0).then(|| std::time::Duration::from_secs(seconds)))
 }
 
 #[cfg(test)]
@@ -279,6 +314,33 @@ mod tests {
         );
         assert_eq!(interval("0").unwrap(), None);
         assert!(interval("6 hours").is_err());
+        for bad in ["é", "1é", "18446744073709551615d"] {
+            assert!(interval(bad).unwrap_err().contains("backups.every"));
+        }
+    }
+
+    #[test]
+    fn incomplete_worlds_and_unreadable_settings_are_not_published() {
+        let dir = crate::test_support::TempDir::new("incomplete-backup");
+        let config = Config::default();
+        std::fs::create_dir_all(dir.join("world")).unwrap();
+        let missing = create(&dir, &config, "missing.zip").unwrap_err();
+        assert!(missing.contains("no level.dat"), "{missing}");
+        assert!(list(&dir).is_empty());
+        std::fs::write(dir.join("world/level.dat"), b"complete-world").unwrap();
+        std::fs::create_dir(dir.join("server.properties")).unwrap();
+        let unreadable = create(&dir, &config, "unreadable.zip").unwrap_err();
+        assert!(unreadable.starts_with("server.properties:"), "{unreadable}");
+        assert!(list(&dir).is_empty());
+        assert!(!dir.join("backups/unreadable.zip.part").exists());
+        std::fs::remove_dir(dir.join("server.properties")).unwrap();
+        std::fs::write(dir.join("server.properties"), b"level-name=world").unwrap();
+        let path = create(&dir, &config, "complete.zip").unwrap();
+        let mut zip = ZipArchive::new(File::open(path).unwrap()).unwrap();
+        let mut marker = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("world/level.dat").unwrap(), &mut marker)
+            .unwrap();
+        assert_eq!(marker, "complete-world");
     }
 
     #[test]
@@ -314,7 +376,7 @@ mod tests {
             let later = t + std::time::Duration::from_secs(10 + i);
             create(&dir, &config, &auto_name(later)).unwrap();
         }
-        assert_eq!(prune(&dir, 1).len(), 2);
+        assert_eq!(prune_protecting(&dir, 1, None).len(), 2);
         let left: Vec<String> = list(&dir).into_iter().map(|b| b.name).collect();
         assert_eq!(left.len(), 2);
         assert!(left.iter().any(|n| n.ends_with("-manual.zip")));
@@ -328,5 +390,25 @@ mod tests {
         assert_eq!(find(&dir, "auto").unwrap(), left[0]);
         assert!(find(&dir, "nothing").is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn restore_rejects_an_archive_without_the_configured_world() {
+        let dir = crate::test_support::TempDir::new("restore-world-name");
+        let config = Config::default();
+        std::fs::create_dir_all(dir.join("world")).unwrap();
+        std::fs::write(dir.join("world/level.dat"), b"before").unwrap();
+        create(&dir, &config, "world.zip").unwrap();
+        std::fs::write(dir.join("world/level.dat"), b"current").unwrap();
+        let mut next = config;
+        next.world.name = "next-world".into();
+
+        let error = restore(&dir, &next, "world.zip").unwrap_err();
+        assert!(error.contains("holds no world named"), "{error}");
+        assert_eq!(
+            std::fs::read(dir.join("world/level.dat")).unwrap(),
+            b"current"
+        );
+        assert!(!dir.join("next-world").exists());
     }
 }

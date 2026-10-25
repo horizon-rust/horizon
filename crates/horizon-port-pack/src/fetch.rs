@@ -92,6 +92,7 @@ pub fn fetch(
     log: Log,
 ) -> Result<Fetched, String> {
     let pack: Pack = read_json(&work.join("pack.json"))?;
+    pack.validate_loader_version()?;
     let cache = Cache::load(&work.join("modrinth.json"));
     let files: HashMap<&str, &PackFile> = pack.files.iter().map(|f| (f.path.as_str(), f)).collect();
     let jars = work.join("jars");
@@ -110,29 +111,35 @@ pub fn fetch(
             how,
             detail,
         };
-        let dest = jars.join(name);
         let sha1 = file.sha1.as_deref();
-        let o = if r.jar.is_some() || matches(&dest, sha1) {
+        let dest = file.cache_name().map(|name| jars.join(name));
+        let o = if r.jar.is_some() {
             outcome(How::Present, String::new())
-        } else if let Some(path) = local.as_ref().and_then(|l| l.find(file)) {
-            match fs::copy(&path, &dest) {
-                Ok(_) => outcome(How::Local, path.display().to_string()),
-                Err(e) => outcome(How::Failed, format!("{}: {e}", path.display())),
+        } else if let Some(dest) = dest.as_ref() {
+            if matches(dest, sha1) {
+                outcome(How::Present, String::new())
+            } else if let Some(path) = local.as_ref().and_then(|l| l.find(file)) {
+                match fs::copy(&path, dest) {
+                    Ok(_) => outcome(How::Local, path.display().to_string()),
+                    Err(e) => outcome(How::Failed, format!("{}: {e}", path.display())),
+                }
+            } else if let Some(url) = url_of(file, &cache) {
+                log(format!("{}/{} {name}", i + 1, wanted.len()));
+                match download(&url, sha1, dest) {
+                    Ok(()) => outcome(How::Downloaded, url),
+                    Err(e) => outcome(How::Failed, e),
+                }
+            } else if pack.format == "curseforge" || file.curseforge.is_some() {
+                outcome(
+                    How::NeedsKey,
+                    "on CurseForge only: choose your installed instance, or put the jar in jars/"
+                        .into(),
+                )
+            } else {
+                outcome(How::NotFound, "no download link in the pack".into())
             }
-        } else if let Some(url) = url_of(file, &cache) {
-            log(format!("{}/{} {name}", i + 1, wanted.len()));
-            match download(&url, sha1, &dest) {
-                Ok(()) => outcome(How::Downloaded, url),
-                Err(e) => outcome(How::Failed, e),
-            }
-        } else if pack.format == "curseforge" || file.curseforge.is_some() {
-            outcome(
-                How::NeedsKey,
-                "on CurseForge only: choose your installed instance, or put the jar in jars/"
-                    .into(),
-            )
         } else {
-            outcome(How::NotFound, "no download link in the pack".into())
+            outcome(How::Failed, format!("{name:?} isn't a plain file name."))
         };
         if matches!(o.how, How::Failed | How::NeedsKey | How::NotFound) {
             log(format!("{}: {} ({})", o.key, o.how.label(), o.detail));
@@ -140,8 +147,9 @@ pub fn fetch(
         fetched.files.push(o);
     }
     // The loader's own data (its convention tags), from its own repository.
-    if let Some((dest, url)) = crate::worldgen::loader_jar(work, &pack.loader, &pack.loader_version)
-        .filter(|(dest, _)| !dest.exists())
+    if let Some((dest, url)) =
+        crate::worldgen::loader_jar(work, &pack.loader, &pack.loader_version)?
+            .filter(|(dest, _)| !dest.exists())
     {
         let sha1 = ureq::get(&format!("{url}.sha1"))
             .set("User-Agent", modrinth::AGENT)
@@ -295,6 +303,32 @@ pub fn curseforge_names(instance: &Value) -> HashMap<(u64, u64), String> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "horizon-port-pack-fetch-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn join(&self, path: impl AsRef<Path>) -> PathBuf {
+            self.0.join(path)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn file(sha1: Option<&str>, downloads: &[&str]) -> PackFile {
         PackFile {
@@ -342,9 +376,81 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unsafe_saved_loader_before_creating_fetch_paths() {
+        let root = TestDir::new();
+        let work = root.join("work");
+        fs::create_dir(&work).unwrap();
+        write_json(
+            &work.join("pack.json"),
+            &Pack {
+                loader: "neoforge".into(),
+                loader_version: "review/../../../outside/probe".into(),
+                ..Pack::default()
+            },
+        )
+        .unwrap();
+
+        let result = fetch(&work, &[], None, &|_| true, &|_| {});
+        assert!(result.unwrap_err().contains("NeoForge loader version"));
+        assert!(!work.join("jars").exists());
+        assert!(!work.join("loader").exists());
+        assert!(!work.join("fetch.json").exists());
+    }
+
+    #[test]
+    fn reuses_precreated_loader_and_instance_jars_without_copying_them() {
+        let root = TestDir::new();
+        let work = root.join("work");
+        let instance_jar = root.join("instance/mods/positive-instance-control.jar");
+        fs::create_dir_all(instance_jar.parent().unwrap()).unwrap();
+        fs::create_dir_all(&work).unwrap();
+        fs::write(&instance_jar, b"instance jar positive control").unwrap();
+
+        let pack = Pack {
+            name: "positive-fetch-control".into(),
+            format: "instance".into(),
+            loader: "neoforge".into(),
+            loader_version: "26.1.0.0-alpha.7".into(),
+            files: vec![PackFile {
+                path: "mods/positive-instance-control.jar".into(),
+                jar: Some(instance_jar.clone()),
+                ..PackFile::default()
+            }],
+            ..Pack::default()
+        };
+        write_json(&work.join("pack.json"), &pack).unwrap();
+
+        let (loader_jar, _) =
+            crate::worldgen::loader_jar(&work, &pack.loader, &pack.loader_version)
+                .unwrap()
+                .unwrap();
+        fs::create_dir_all(loader_jar.parent().unwrap()).unwrap();
+        fs::write(&loader_jar, b"loader jar positive control").unwrap();
+
+        let records = [Record {
+            key: "positive-instance-control".into(),
+            path: "mods/positive-instance-control.jar".into(),
+            jar: Some(instance_jar.clone()),
+            ..Record::default()
+        }];
+        let fetched = fetch(&work, &records, None, &|_| true, &|_| {}).unwrap();
+
+        assert_eq!(fetched.count(How::Present), 1);
+        assert_eq!(
+            fs::read(&instance_jar).unwrap(),
+            b"instance jar positive control"
+        );
+        assert_eq!(
+            fs::read(&loader_jar).unwrap(),
+            b"loader jar positive control"
+        );
+        assert!(!work.join("jars/positive-instance-control.jar").exists());
+        assert!(work.join("fetch.json").is_file());
+    }
+
+    #[test]
     fn copies_the_players_jars_and_lists_what_needs_a_key() {
-        let root = std::env::temp_dir().join(format!("horizon-fetch-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        let root = TestDir::new();
         let (work, mine) = (root.join("work"), root.join("instance/mods"));
         fs::create_dir_all(&mine).unwrap();
         fs::create_dir_all(&work).unwrap();
@@ -406,6 +512,5 @@ mod tests {
         let again = fetch(&work, &records, None, &|_| true, &|_| {}).unwrap();
         assert_eq!(again.count(How::Present), 2);
         assert_eq!(Fetched::load(&work).count(How::Present), 2);
-        fs::remove_dir_all(&root).unwrap();
     }
 }

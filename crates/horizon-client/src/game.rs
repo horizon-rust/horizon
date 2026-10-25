@@ -118,6 +118,7 @@ mod perspective;
 mod pickups;
 mod piglins;
 mod player_equip;
+mod player_saving;
 mod postprocess;
 mod potions;
 mod powder_snow;
@@ -1356,7 +1357,7 @@ struct Game<'a> {
     sleeping: Option<[i32; 3]>,
     sleep_timer: u32,
     dim: Dim,
-    world_root: PathBuf,
+    world_root: horizon_client::save::WorldPath,
     /// A player carried through a portal, re-placed once the destination loads.
     travelling: Option<(PlayerMotion, Vec3)>,
     /// A server's players on their way to another level, each waiting for
@@ -7717,7 +7718,7 @@ impl Game<'_> {
     /// Streaming and region storage for one dimension of a world.
     fn make_streaming(
         &self,
-        world_root: &std::path::Path,
+        world_root: &horizon_client::save::WorldPath,
         dim: Dim,
         seed: i64,
     ) -> Result<(Streaming, Arc<SaveDir>)> {
@@ -7751,11 +7752,11 @@ impl Game<'_> {
     /// (scaled coordinates, or the End portal's fixed destination).
     pub(super) fn switch_level(&mut self, target: Dim, from: Vec3) -> Result<Vec3> {
         // Save the departing dimension's changed chunks.
-        self.streaming.save(&mut self.world, true);
+        self.streaming.save(&mut self.world, true)?;
         let keys: Vec<_> = self.world.modified.drain().collect();
         let chunks = self.with_entities(keys.iter().filter_map(|k| self.world.chunks.get(k)));
         self.save
-            .save(&chunks, self.pack.assets.registry, self.res.biomes())?;
+            .save_later(&chunks, self.pack.assets.registry, self.res.biomes())?;
         self.save_dimension_entities()?;
         // Coordinates scale by 8 between the Overworld and the Nether.
         let scale = match (self.dim, target) {
@@ -9692,6 +9693,7 @@ impl Game<'_> {
         level.xp_total = self.experience.total;
         if let Some(p) = &self.player {
             level.position = Some([p.position.x, p.position.y, p.position.z]);
+            level.motion = [p.velocity.x, p.velocity.y, p.velocity.z];
             level.health = p.health.health();
             level.absorption = p.health.absorption();
             let extra = level
@@ -9766,9 +9768,28 @@ impl Game<'_> {
         if self.remote.is_some() {
             return Ok(());
         }
+        if wait
+            && let Some(id) = self
+                .world_root
+                .persistence()
+                .map(|p| p.held())
+                .transpose()?
+                .flatten()
+        {
+            return Err(format!("snapshot {id} holds world persistence").into());
+        }
+        self.save_online_players()?;
         self.save_level(wait)?;
         self.save_parked_levels(wait)?;
-        self.save_game_metadata()
+        self.save_game_metadata()?;
+        if let Some(owner) = self.world_root.persistence() {
+            if wait {
+                owner.flush()?;
+            } else {
+                owner.check()?;
+            }
+        }
+        Ok(())
     }
     fn save_game_metadata(&mut self) -> Result<()> {
         self.save_maps();
@@ -9784,14 +9805,18 @@ impl Game<'_> {
         self.save_warden_tracker();
         self.sync_level();
         self.store_owner();
-        self.level.write(&self.world_root)?;
+        if self.options.execution_role == execution_role::ExecutionRole::DedicatedServer {
+            self.level.write_world(&self.world_root)?;
+        } else {
+            self.level.write(&self.world_root)?;
+        }
         self.save_world_state();
         self.message = Some(("Saved the game".into(), Instant::now()));
         Ok(())
     }
     /// Save the level in place: its changed chunks, its entities and its raids.
     fn save_level(&mut self, wait: bool) -> Result<()> {
-        self.streaming.save(&mut self.world, wait);
+        self.streaming.save(&mut self.world, wait)?;
         let keys: Vec<_> = self.world.modified.drain().collect();
         let chunks = self.with_entities(keys.iter().filter_map(|k| self.world.chunks.get(k)));
         self.save
@@ -9799,7 +9824,12 @@ impl Game<'_> {
         // Prepare entities while the chunk writer runs, then use one barrier.
         self.save_entities(false)?;
         self.save_raids();
-        if wait {
+        if wait
+            && self
+                .world_root
+                .persistence()
+                .is_none_or(|p| p.autosave_enabled() && p.held().is_ok_and(|id| id.is_none()))
+        {
             self.save.flush()?;
         }
         Ok(())
@@ -11870,7 +11900,7 @@ impl<'a> Game<'a> {
             sleeping: None,
             sleep_timer: 0,
             dim: Dim::Overworld,
-            world_root: PathBuf::new(),
+            world_root: horizon_client::save::WorldPath::unmanaged(PathBuf::new()),
             travelling: None,
             server_trips: Vec::new(),
             level_teleports: Vec::new(),

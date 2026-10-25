@@ -422,7 +422,7 @@ impl Game<'_> {
             _ => "minecraft:overworld",
         }
     }
-    fn map_path(&self, name: &str) -> std::path::PathBuf {
+    fn map_path(&self, name: &str) -> horizon_client::save::WorldPath {
         self.world_root.join("data/minecraft/maps").join(name)
     }
     /// The map's data, loaded from `data/minecraft/maps/<id>.dat` on first use.

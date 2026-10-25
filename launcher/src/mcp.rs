@@ -134,12 +134,11 @@ impl Session {
             }
             "server_command" => {
                 let server = self.running_server()?;
-                let before = server.log.lock().unwrap().len();
+                let before = server.line_count();
                 let command = arg_str(args, "command").ok_or("command is required")?;
                 server.running.send(command.trim_start_matches('/'));
                 std::thread::sleep(Duration::from_millis(700));
-                let log = server.log.lock().unwrap();
-                let reply: Vec<_> = log.iter().skip(before.min(log.len())).cloned().collect();
+                let reply = server.lines_since(before);
                 Ok(if reply.is_empty() {
                     "(no output yet)".into()
                 } else {
@@ -335,4 +334,57 @@ pub fn serve() -> Result<(), String> {
         server.stop(Duration::from_secs(30));
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    #[test]
+    fn server_command_returns_output_after_the_log_tail_is_full() {
+        let script = r#"
+i=0
+while [ "$i" -lt 2105 ]; do
+  printf 'seed-%04d\n' "$i"
+  i=$((i + 1))
+done
+while IFS= read -r line; do
+  case "$line" in
+    emit) printf 'reply-a\nreply-b\nreply-c\n' ;;
+    stop) exit 0 ;;
+  esac
+done
+"#;
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(script);
+        let server = Logged::start(Job::Server, cmd).unwrap();
+        let mut session = Session {
+            server: Some(server),
+            client: None,
+            sign_in: None,
+            game: None,
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while session
+            .server
+            .as_ref()
+            .is_some_and(|server| server.line_count() < 2105)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let before = session.server.as_ref().unwrap().line_count();
+        let ready = before == 2105;
+        let reply = if ready {
+            session.call("server_command", &json!({"command": "emit"}))
+        } else {
+            Err(format!("captured {before} initial lines"))
+        };
+        let stopped = session.call("server_stop", &json!({}));
+
+        assert!(ready, "captured {before} initial lines");
+        stopped.unwrap();
+        assert_eq!(reply.unwrap(), "reply-a\nreply-b\nreply-c");
+    }
 }

@@ -736,11 +736,17 @@ impl Game<'_> {
 
     fn gateway_exits(&mut self) -> &mut HashMap<[i32; 3], ([i32; 3], bool)> {
         if self.end.exits.is_none() {
-            let path = horizon_client::save::dimension_dir(&self.world_root, "minecraft:the_end")
+            let path = self
+                .world_root
+                .with_path(horizon_client::save::dimension_dir(
+                    &self.world_root,
+                    "minecraft:the_end",
+                ))
                 .join(GATEWAY_FILE);
-            let parsed: Option<Vec<([i32; 3], [i32; 3], bool)>> = std::fs::read(&path)
-                .ok()
-                .and_then(|b| serde_json::from_slice(&b).ok());
+            let parsed: Option<Vec<([i32; 3], [i32; 3], bool)>> =
+                horizon_client::save::read_bytes(&path)
+                    .ok()
+                    .and_then(|b| serde_json::from_slice(&b).ok());
             self.end.exits = Some(
                 parsed
                     .unwrap_or_default()
@@ -759,9 +765,13 @@ impl Game<'_> {
             .iter()
             .map(|(g, (e, x))| (*g, *e, *x))
             .collect();
-        let dir = horizon_client::save::dimension_dir(&self.world_root, "minecraft:the_end");
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join(GATEWAY_FILE), serde_json::to_vec(&list)?)?;
+        let dir = self
+            .world_root
+            .with_path(horizon_client::save::dimension_dir(
+                &self.world_root,
+                "minecraft:the_end",
+            ));
+        horizon_client::save::write_bytes(&dir.join(GATEWAY_FILE), serde_json::to_vec(&list)?)?;
         Ok(())
     }
 

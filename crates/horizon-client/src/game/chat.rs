@@ -751,8 +751,9 @@ impl Game<'_> {
         self.ui.rules = GameRules::load(&self.world_root);
         self.ui.clock = WorldClock::default();
         self.ui.difficulty = read_difficulty(&self.world_root).unwrap_or(2);
-        if let Ok(bytes) = std::fs::read(self.world_root.join("data/minecraft/world_clocks.dat"))
-            && let Ok(raw) = horizon_world::compression::Compression::Gzip.decode(&bytes, 1 << 20)
+        if let Ok(bytes) = horizon_client::save::read_bytes(
+            &self.world_root.join("data/minecraft/world_clocks.dat"),
+        ) && let Ok(raw) = horizon_world::compression::Compression::Gzip.decode(&bytes, 1 << 20)
             && let Ok((root, _)) =
                 horizon_world::nbt::read_named(&raw, horizon_world::nbt::Limits::default())
             && let Some(c) = root
@@ -932,8 +933,8 @@ pub fn screenshot_name(dir: &std::path::Path) -> String {
         n += 1;
     }
 }
-fn read_difficulty(world: &std::path::Path) -> Option<u8> {
-    let bytes = std::fs::read(world.join("level.dat")).ok()?;
+fn read_difficulty(world: &(impl horizon_client::save::SavePath + ?Sized)) -> Option<u8> {
+    let bytes = horizon_client::save::read_bytes(&world.owned().join("level.dat")).ok()?;
     let raw = horizon_world::compression::Compression::Gzip
         .decode(&bytes, 64 << 20)
         .ok()?;
@@ -945,10 +946,13 @@ fn read_difficulty(world: &std::path::Path) -> Option<u8> {
     }
 }
 /// Patch `Data.Difficulty` in level.dat (Level::write stores the default).
-fn write_difficulty(world: &std::path::Path, difficulty: u8) -> horizon_client::Result<()> {
+fn write_difficulty(
+    world: &(impl horizon_client::save::SavePath + ?Sized),
+    difficulty: u8,
+) -> horizon_client::Result<()> {
     use horizon_world::{compression::Compression, nbt};
-    let path = world.join("level.dat");
-    let bytes = std::fs::read(&path)?;
+    let path = world.owned().join("level.dat");
+    let bytes = horizon_client::save::read_bytes(&path)?;
     let raw = Compression::Gzip.decode(&bytes, 64 << 20)?;
     let (mut root, _) = nbt::read_named(&raw, nbt::Limits::default()).map_err(|e| e.to_string())?;
     if let Some(data) = root.tag.get_mut("Data")
@@ -957,7 +961,7 @@ fn write_difficulty(world: &std::path::Path, difficulty: u8) -> horizon_client::
         *d = nbt::Tag::Byte(difficulty as i8);
     }
     let out = nbt::write_named(&root, nbt::Limits::default()).map_err(|e| e.to_string())?;
-    std::fs::write(&path, Compression::Gzip.encode(&out)?)?;
+    horizon_client::save::write_bytes(&path, Compression::Gzip.encode(&out)?)?;
     Ok(())
 }
 

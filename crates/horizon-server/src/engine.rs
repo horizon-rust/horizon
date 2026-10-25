@@ -192,6 +192,7 @@ pub fn control_path(dir: &Path) -> PathBuf {
 pub struct Control {
     writer: TcpStream,
     reader: BufReader<TcpStream>,
+    usable: bool,
 }
 
 impl Control {
@@ -209,6 +210,7 @@ impl Control {
         let mut control = Self {
             reader: BufReader::new(writer.try_clone()?),
             writer,
+            usable: true,
         };
         let reply = control.ask(&format!("auth {token}"))?;
         if reply["ok"] != true {
@@ -221,6 +223,21 @@ impl Control {
     }
 
     pub fn ask(&mut self, line: &str) -> std::io::Result<serde_json::Value> {
+        if !self.usable {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "the previous control reply failed: reconnect before sending another command",
+            ));
+        }
+        let result = self.exchange(line);
+        if result.is_err() {
+            self.usable = false;
+            let _ = self.writer.shutdown(std::net::Shutdown::Both);
+        }
+        result
+    }
+
+    fn exchange(&mut self, line: &str) -> std::io::Result<serde_json::Value> {
         writeln!(self.writer, "{line}")?;
         self.writer.flush()?;
         let mut reply = String::new();
@@ -235,6 +252,53 @@ impl Control {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_reply_requires_reconnection() {
+        use std::{net::TcpListener, sync::mpsc, thread};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let (release, released) = mpsc::channel();
+        let (sent, sent_reply) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let mut reader = BufReader::new(peer.try_clone().unwrap());
+            let mut writer = peer;
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(line.trim(), "console save-all flush");
+            released.recv_timeout(Duration::from_secs(3)).unwrap();
+            let _ = writeln!(writer, "{{\"ok\":true,\"marker\":\"late-flush\"}}");
+            sent.send(()).unwrap();
+            line.clear();
+            let _ = reader.read_line(&mut line);
+            line
+        });
+        let mut control = Control {
+            reader: BufReader::new(stream.try_clone().unwrap()),
+            writer: stream,
+            usable: true,
+        };
+        let first = control.ask("console save-all flush");
+        release.send(()).unwrap();
+        sent_reply.recv_timeout(Duration::from_secs(3)).unwrap();
+        let second = control.ask("console save-on");
+        drop(control);
+        let later_command = worker.join().unwrap();
+        assert!(matches!(
+            first.unwrap_err().kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ));
+        assert_eq!(second.unwrap_err().kind(), std::io::ErrorKind::NotConnected);
+        assert!(
+            later_command.is_empty(),
+            "sent on a failed connection: {later_command}"
+        );
+    }
 
     #[test]
     fn resources_are_searched_in_order() {
@@ -298,22 +362,18 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_relative_folder_reaches_the_game_whole() {
-        use std::os::unix::fs::PermissionsExt;
         // Relative to this process's folder (the crate's, under cargo test), as `--dir srv` gives it.
-        let root = PathBuf::from(format!("reldir-test-{}", std::process::id()));
+        let root = crate::test_support::TempDir::relative("horizon-relative");
         let server = root.join("srv");
         std::fs::create_dir_all(server.join(".horizon")).unwrap();
         std::fs::create_dir_all(root.join("res")).unwrap();
         // A game that checks, from its own folder, the folders it was given.
         let game = root.join("game");
-        std::fs::write(
+        std::os::unix::fs::symlink(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/check-engine-paths.sh"),
             &game,
-            "#!/bin/sh\nwhile [ $# -gt 0 ]; do case \"$1\" in --resources) r=$2; shift;; \
-             --control-socket) c=$2; shift;; esac; shift; done\n\
-             [ -d \"$r\" ] && [ -d \"$(dirname \"$c\")\" ] && [ -f server.toml ]\n",
         )
         .unwrap();
-        std::fs::set_permissions(&game, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::write(server.join("server.toml"), "").unwrap();
         let status = spawn(
             &std::path::absolute(&game).unwrap(),
@@ -322,7 +382,6 @@ mod tests {
         )
         .unwrap()
         .wait();
-        std::fs::remove_dir_all(&root).unwrap();
         let status = status.unwrap();
         assert!(status.success(), "{status}");
     }

@@ -6,7 +6,7 @@ use horizon_world::{
     compression::Compression,
     nbt::{self, Limits, NamedTag, Tag},
 };
-use std::{collections::BTreeMap, fs, path::Path};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Value {
@@ -231,8 +231,10 @@ impl GameRules {
         }
         rules
     }
-    pub fn load(world: &Path) -> Self {
-        let Ok(bytes) = fs::read(world.join("data/minecraft/game_rules.dat")) else {
+    pub fn load(world: &(impl crate::save::SavePath + ?Sized)) -> Self {
+        let Ok(bytes) =
+            crate::save::read_bytes(&world.owned().join("data/minecraft/game_rules.dat"))
+        else {
             return Self::default();
         };
         let Ok(raw) = Compression::Gzip.decode(&bytes, 16 << 20) else {
@@ -243,22 +245,18 @@ impl GameRules {
             Err(_) => Self::default(),
         }
     }
-    pub fn save(&self, world: &Path) -> crate::Result<()> {
-        let dir = world.join("data/minecraft");
-        fs::create_dir_all(&dir)?;
-        let bytes =
-            nbt::write_named(&self.to_nbt(), Limits::default()).map_err(|e| e.to_string())?;
-        fs::write(
-            dir.join("game_rules.dat"),
-            Compression::Gzip.encode(&bytes)?,
-        )?;
-        Ok(())
+    pub fn save(&self, world: &(impl crate::save::SavePath + ?Sized)) -> crate::Result<()> {
+        crate::save::write_dat(
+            &world.owned().join("data/minecraft/game_rules.dat"),
+            self.to_nbt().tag,
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn network_values_validate_rule_names_types_and_bounds() {

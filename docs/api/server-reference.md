@@ -124,7 +124,7 @@ HTTP and JSON on 127.0.0.1. A running server writes its address and a random tok
 
 | Method | Path | Takes | Answers | What it does |
 | --- | --- | --- | --- | --- |
-| `GET` | `/api/v1/status` | nothing | `phase`, `version`, `pid`, `uptime_seconds`, `engine_pid`, `engine_uptime_seconds`, `crashes`, `last_crash`, `sample` (TPS, MSPT, players, RAM, CPU), `update` | How the server does |
+| `GET` | `/api/v1/status` | nothing | `phase`, `version`, `pid`, `uptime_seconds`, `engine_pid`, `engine_uptime_seconds`, `world`, `crashes`, `last_crash`, `sample` (TPS, MSPT, players, RAM, CPU), `update`, `restore` | How the server does |
 | `GET` | `/api/v1/metrics` | `?since=T` (seconds since 1970) | `{"samples": [...]}`: one a second, the last 10 minutes | The samples taken after T, for graphs |
 | `GET` | `/api/v1/logs` | `?since=N` | `{"next": N, "lines": [...]}` | The log lines after the Nth (the last 2000 are kept) |
 | `POST` | `/api/v1/command` | `{"line": "<one command>"}` | the lines the command logged | Run a console command on the running game |
@@ -132,6 +132,6 @@ HTTP and JSON on 127.0.0.1. A running server writes its address and a random tok
 | `POST` | `/api/v1/restart` | nothing | `{"ok": true}` | Restart the game |
 | `GET` | `/api/v1/backups` | nothing | `{"backups": [{"name", "bytes"}]}` | List the backups |
 | `POST` | `/api/v1/backups` | `{"name": "..."}` (optional) | `{"name": "<file>"}` | Back up now (a running game saves first and stays up) |
-| `POST` | `/api/v1/restore` | `{"name": "<backup>"}` | `{"name": "<backup>"}` | Restart the game with that backup's world (the current one is kept in backups/) |
+| `POST` | `/api/v1/restore` | `{"name": "<backup>"}` | `{"name": "<backup>", "id": N}`; `status.restore.last` reports `id`, `name`, `world`, `engine_pid`, `ok`, `message` once the replacement runs or the restore fails | Restart the game with that backup's world (the current one is kept in backups/) |
 | `POST` | `/api/v1/update` | `{"tag": "...", "timeout": seconds}` (both optional) | `{"ok": true}`; `status` says how it went (`update`) | Restart on that installed release, or download the newest first; goes back if the game isn't up within the timeout |
 | `POST` | `/api/v1/panel/login` | nothing | `{"url": "..."}` | A one-time login link for the web panel (with the token only, not from the panel) |

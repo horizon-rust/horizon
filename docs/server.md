@@ -270,7 +270,7 @@ view_distance = 10
 simulation_distance = 10
 
 [world]
-name = "world"               # the world folder
+name = "world"               # one folder name, without paths, drive prefixes, or server-owned names
 seed = ""                    # empty: a random seed on the first start
 game_mode = "survival"       # survival, creative, adventure or spectator
 difficulty = "easy"          # peaceful, easy, normal or hard
@@ -390,16 +390,21 @@ runtime or new dependency. Server-sent events can replace the polling later if a
 
 ## 7. Backups, updates and crash restart
 
-- **Backups.** The supervisor runs `save-off`, then `save-all flush`, then zips the world plus the vanilla
-  files and `server.toml` into `backups/<UTC time>-<name>.zip`, then runs `save-on`. Players stay online. Zip
+- **Backups.** The engine saves the active world and online players, then holds disk writes while the
+  supervisor zips the world, vanilla files and `server.toml` into `backups/<UTC time>-<name>.zip`.
+  Players stay online and new writes are queued until the snapshot is released. The existing `save-off`
+  setting is preserved. Backups wait for lifecycle operations and reject a starting or stopping game. Zip
   works for everyone, Windows included. It runs on the `every` schedule and on demand (later also before an
   update). It keeps the last `keep` automatic backups and never deletes one made by hand. A backup is written
   to a temporary name and renamed when complete, so a crash never leaves a half-written backup that looks
   finished. A stopped server is backed up straight from its files.
 - **Restore.** `restore NAME` takes a file name, a unique prefix, or the name given to `backup` (the newest
-  with it). The server stops. The current world is moved to `backups/replaced-<time>/` (never deleted), the
-  backup is unpacked into a temporary folder and checked (`level.dat` is there), then moved in, and the server
-  starts again if it was running. One command, or one click with confirmation in the panel.
+  with it). A running restore is accepted only when `world.name` still matches the active world. The server
+  stops, the current world is moved to `backups/replaced-<time>/` (never deleted), and the backup is checked
+  for the configured world's `level.dat` before it is moved in. The server starts again if it was running.
+  A running restore checks `world.name` again after extraction and before replacement. The API reports
+  success only after the replacement engine is running and has acknowledged the restored world's identity.
+  The CLI checks that the same engine and world are still running, and reports restore or startup failures.
 - **Crash restart.** If the engine exits without being asked to stop, the supervisor keeps the last 200 log
   lines and the engine's crash report (`crash-reports/`), restarts it after 5 s, and doubles the wait up to
   5 minutes. It gives up after 5 crashes in 10 minutes, so it doesn't loop on a broken world, and shows the
@@ -441,8 +446,8 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   - built (PR 2b, 2c): `GET status` (phase, uptime, crashes, RSS, CPU, and the engine's TPS, MSPT
     average/P50/P95/P99, players, chunks), `GET logs?since=`, `POST command {line}` (returns the output),
     `POST stop`, `POST restart`, `GET backups`, `POST backups {name}`, `POST restore {name}`, `POST update
-    {tag, timeout}` (without a tag: the newest release, downloaded first; `status` has an `update` object
-    that says how it went);
+    {tag, timeout}` (without a tag: the newest release, downloaded first; `status` reports update and
+    restore outcomes);
   - planned: `GET metrics?since=` (the panel's graphs), `GET events` (SSE: log lines and metrics),
     `GET`/`PATCH config` (server.toml fields, validated).
 - **Auth.** Every call needs `Authorization: Bearer <token from .horizon/api.json>` (file mode 0600), and the

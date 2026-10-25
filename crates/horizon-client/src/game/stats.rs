@@ -5,10 +5,7 @@
 use super::{Dim, Game};
 use horizon_core::geometry::Vec3;
 use horizon_core::random::RandomSource;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// `stats[type][key]`, with `type` and `key` namespaced ids.
 #[derive(Default)]
@@ -104,12 +101,12 @@ impl Stats {
             .collect()
     }
     /// `ServerStatsCounter.parseLocal`: the counters of a stats file.
-    pub(super) fn read(path: &Path) -> Self {
+    pub(super) fn read(path: &(impl horizon_client::save::SavePath + ?Sized)) -> Self {
         let mut stats = Self {
             loaded: true,
             ..Self::default()
         };
-        let Some(json) = std::fs::read_to_string(path)
+        let Some(json) = horizon_client::save::read_string(path)
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
         else {
@@ -131,7 +128,10 @@ impl Stats {
         stats
     }
     /// `ServerStatsCounter.save`.
-    pub(super) fn write(&self, path: &Path) {
+    pub(super) fn write(
+        &self,
+        path: &(impl horizon_client::save::SavePath + ?Sized),
+    ) -> horizon_client::Result<()> {
         let stats: serde_json::Map<String, serde_json::Value> = self
             .values
             .iter()
@@ -146,16 +146,15 @@ impl Stats {
             "stats": stats,
             "DataVersion": horizon_world::DATA_VERSION,
         });
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(text) = serde_json::to_string_pretty(&json) {
-            let _ = std::fs::write(path, text);
-        }
+        horizon_client::save::write_json(path, &json)
     }
 }
 /// `players/<dir>/<uuid>.json` of a world (advancements, stats).
-pub(super) fn player_json(world: &Path, dir: &str, uuid: [i32; 4]) -> PathBuf {
+pub(super) fn player_json(
+    world: &(impl horizon_client::save::SavePath + ?Sized),
+    dir: &str,
+    uuid: [i32; 4],
+) -> horizon_client::save::WorldPath {
     let hex: String = uuid.iter().map(|v| format!("{:08x}", *v as u32)).collect();
     let text = format!(
         "{}-{}-{}-{}-{}",
@@ -165,10 +164,14 @@ pub(super) fn player_json(world: &Path, dir: &str, uuid: [i32; 4]) -> PathBuf {
         &hex[16..20],
         &hex[20..32]
     );
-    world.join("players").join(dir).join(format!("{text}.json"))
+    world
+        .owned()
+        .join("players")
+        .join(dir)
+        .join(format!("{text}.json"))
 }
 impl Game<'_> {
-    fn stats_path(&self) -> Option<PathBuf> {
+    fn stats_path(&self) -> Option<horizon_client::save::WorldPath> {
         Some(player_json(
             &self.world_root,
             "stats",
@@ -191,7 +194,7 @@ impl Game<'_> {
             return;
         }
         if let Some(path) = self.stats_path() {
-            self.stats.write(&path);
+            let _ = self.stats.write(&path);
         }
     }
     /// The per-tick counters (`Player.tick`/`ServerPlayer.tick` awardStat).

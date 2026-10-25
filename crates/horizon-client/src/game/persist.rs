@@ -960,6 +960,6 @@ impl Game<'_> {
         let keys: HashSet<(i32, i32)> = self.world.chunks.keys().copied().collect();
         let chunks = self.entity_chunks(&keys, true);
         self.persist = EntityMemory::default();
-        self.save.save_entities(chunks)
+        self.save.save_entities_later(chunks)
     }
 }

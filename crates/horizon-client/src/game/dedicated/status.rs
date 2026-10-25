@@ -12,6 +12,23 @@ use std::{
 /// The window the tick rate is measured over.
 const TPS_WINDOW: Duration = Duration::from_secs(5);
 
+fn console_response(command: impl FnOnce()) -> Value {
+    let capture = capture_log(command);
+    let output: Vec<String> = capture
+        .lines
+        .into_iter()
+        .map(|line| {
+            line.strip_prefix("System chat: ")
+                .map_or(line.clone(), str::to_owned)
+        })
+        .collect();
+    let mut response = json!({ "output": output });
+    if let Some(error) = capture.error {
+        response["error"] = json!(error);
+    }
+    response
+}
+
 impl ServerState {
     /// One pass of the server loop ended.
     pub(super) fn ticked(&mut self, at: Instant) {
@@ -41,20 +58,59 @@ impl Game<'_> {
         while let Some(request) = self.control.as_ref().and_then(|c| c.try_recv()) {
             let reply = match request.line.trim().split_once(' ') {
                 _ if request.line.trim() == "server-status" => self.server_status(state),
+                Some(("backup-begin", id)) => self.begin_backup(id),
+                Some(("backup-end", id)) => {
+                    let result = (|| -> horizon_client::Result<()> {
+                        self.world_root
+                            .persistence()
+                            .ok_or("no active world")?
+                            .end(id)
+                    })();
+                    match result {
+                        Ok(()) => {
+                            if state.stop_pending
+                                && self
+                                    .world_root
+                                    .persistence()
+                                    .unwrap()
+                                    .held()
+                                    .is_ok_and(|id| id.is_none())
+                            {
+                                state.stop = true;
+                            }
+                            json!({"ok": true, "snapshot": id})
+                        }
+                        Err(e) => json!({"error": e.to_string()}),
+                    }
+                }
                 Some(("console", line)) => {
                     // Command feedback is logged as system chat; the reply carries the text alone.
-                    let output: Vec<String> = capture_log(|| self.console_command(state, line))
-                        .into_iter()
-                        .map(|l| {
-                            l.strip_prefix("System chat: ")
-                                .map_or(l.clone(), str::to_owned)
-                        })
-                        .collect();
-                    json!({ "output": output })
+                    console_response(|| self.console_command(state, line))
                 }
                 _ => json!({ "error": format!("unknown request {:?}", request.line) }),
             };
             let _ = request.reply.send(reply.to_string());
+        }
+    }
+
+    fn begin_backup(&mut self, id: &str) -> Value {
+        let result = (|| -> horizon_client::Result<()> {
+            let owner = self
+                .world_root
+                .persistence()
+                .ok_or("no active world")?
+                .clone();
+            if owner.can_begin(id)? {
+                return owner.begin(id);
+            }
+            self.save_game()?;
+            owner.begin(id)
+        })();
+        match result {
+            Ok(()) => {
+                json!({"ok": true, "snapshot": id, "world": self.world_root.file_name().unwrap_or_default().to_string_lossy()})
+            }
+            Err(e) => json!({"error": e.to_string()}),
         }
     }
 
@@ -95,6 +151,10 @@ impl Game<'_> {
             "max_players": max_players,
             "chunks": self.world.chunks.len(),
             "paused": state.paused,
+            "snapshot": self.world_root.persistence().and_then(|p| p.held().ok().flatten()),
+            "autosave": self.world_root.persistence().is_none_or(|p| p.autosave_enabled()),
+            "stop_pending": state.stop_pending,
+            "persistence_error": self.world_root.persistence().and_then(|p| p.check().err()).map(|e| e.to_string()),
         })
     }
 }

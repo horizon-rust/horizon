@@ -1686,17 +1686,23 @@ pub fn release_notes(tag: Option<&str>) -> Result<Release, String> {
 /// A process whose output is kept: the last `LOG_KEEP` lines, and its result once it ends.
 pub struct Logged {
     pub running: Running,
-    pub log: Arc<Mutex<std::collections::VecDeque<String>>>,
+    log: Arc<Mutex<ProcessLog>>,
     pub exit: Arc<Mutex<Option<Result<(), String>>>>,
 }
 
 pub const LOG_KEEP: usize = 2000;
 
+#[derive(Default)]
+struct ProcessLog {
+    lines: std::collections::VecDeque<String>,
+    received: usize,
+}
+
 impl Logged {
     pub fn start(job: Job, cmd: Command) -> Result<Self, String> {
         let (tx, rx) = std::sync::mpsc::channel();
         let running = spawn(job, cmd, tx)?;
-        let log = Arc::new(Mutex::new(std::collections::VecDeque::new()));
+        let log = Arc::new(Mutex::new(ProcessLog::default()));
         let exit = Arc::new(Mutex::new(None));
         let (l, e) = (log.clone(), exit.clone());
         std::thread::spawn(move || {
@@ -1704,9 +1710,10 @@ impl Logged {
                 match msg {
                     Msg::Line(_, line) => {
                         let mut log = l.lock().unwrap();
-                        log.push_back(line);
-                        if log.len() > LOG_KEEP {
-                            log.pop_front();
+                        log.received += 1;
+                        log.lines.push_back(line);
+                        if log.lines.len() > LOG_KEEP {
+                            log.lines.pop_front();
                         }
                     }
                     Msg::Exit(_, result) => *e.lock().unwrap() = Some(result),
@@ -1723,8 +1730,24 @@ impl Logged {
 
     pub fn tail(&self, lines: usize) -> Vec<String> {
         let log = self.log.lock().unwrap();
-        log.iter()
-            .skip(log.len().saturating_sub(lines))
+        log.lines
+            .iter()
+            .skip(log.lines.len().saturating_sub(lines))
+            .cloned()
+            .collect()
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.log.lock().unwrap().received
+    }
+
+    /// The retained output since a previous line count, even when older lines were dropped.
+    pub fn lines_since(&self, before: usize) -> Vec<String> {
+        let log = self.log.lock().unwrap();
+        let added = log.received.saturating_sub(before);
+        log.lines
+            .iter()
+            .skip(log.lines.len().saturating_sub(added))
             .cloned()
             .collect()
     }
@@ -2352,6 +2375,54 @@ mod java_tests;
 mod tests {
     use super::*;
     use std::cmp::Ordering::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn logged_cursor_counts_lines_past_the_retained_tail() {
+        let script = r#"
+i=0
+while [ "$i" -lt 2105 ]; do
+  printf 'seed-%04d\n' "$i"
+  i=$((i + 1))
+done
+while IFS= read -r line; do
+  case "$line" in
+    emit) printf 'reply-a\nreply-b\nreply-c\n' ;;
+    stop) exit 0 ;;
+  esac
+done
+"#;
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(script);
+        let mut logged = Logged::start(Job::Server, cmd).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while logged.line_count() < 2105 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let before = logged.line_count();
+        let ready = before == 2105;
+        let reply = if ready {
+            logged.running.send("emit");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while logged.line_count() < before + 3 && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            logged.lines_since(before)
+        } else {
+            Vec::new()
+        };
+        logged.stop(std::time::Duration::from_secs(3));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while logged.finished().is_none() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let exit = logged.finished();
+
+        assert!(ready, "captured {} initial lines", before);
+        assert_eq!(reply, ["reply-a", "reply-b", "reply-c"]);
+        assert_eq!(logged.tail(LOG_KEEP).len(), LOG_KEEP);
+        assert!(matches!(exit, Some(Ok(()))), "{exit:?}");
+    }
 
     #[test]
     fn resources_without_sounds_are_reported() {

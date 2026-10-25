@@ -249,8 +249,12 @@ impl Game<'_> {
     }
     /// `dimensions/<dimension>/data/minecraft/raids.dat`: each dimension
     /// keeps its own raids.
-    fn raids_path(&self, dim: Dim) -> std::path::PathBuf {
-        horizon_client::save::dimension_dir(&self.world_root, dim.id())
+    fn raids_path(&self, dim: Dim) -> horizon_client::save::WorldPath {
+        self.world_root
+            .with_path(horizon_client::save::dimension_dir(
+                &self.world_root,
+                dim.id(),
+            ))
             .join("data/minecraft/raids.dat")
     }
     /// The raids of the player's dimension (the previous one saved first).

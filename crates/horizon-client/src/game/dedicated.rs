@@ -83,9 +83,12 @@ fn log_from(thread: &str, level: &str, message: &str) {
         _ => ::log::Level::Info,
     };
     horizon_client::logging::write_as(thread, file_level, message);
-    CAPTURE.with_borrow_mut(|lines| {
-        if let Some(lines) = lines {
-            lines.push(message.to_owned());
+    CAPTURE.with_borrow_mut(|capture| {
+        if let Some(capture) = capture {
+            capture.lines.push(message.to_owned());
+            if file_level == ::log::Level::Error && capture.error.is_none() {
+                capture.error = Some(message.to_owned());
+            }
         }
     });
     // Log4j's %d{HH:mm:ss}: the local time, as in logs/latest.log.
@@ -97,12 +100,18 @@ fn log_from(thread: &str, level: &str, message: &str) {
 
 thread_local! {
     /// The lines logged while a control request runs a console command.
-    static CAPTURE: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+    static CAPTURE: std::cell::RefCell<Option<CapturedLog>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Runs `f` and returns the lines it logged.
-fn capture_log(f: impl FnOnce()) -> Vec<String> {
-    CAPTURE.set(Some(Vec::new()));
+#[derive(Default)]
+struct CapturedLog {
+    lines: Vec<String>,
+    error: Option<String>,
+}
+
+/// Runs `f`, retaining its output and first error.
+fn capture_log(f: impl FnOnce()) -> CapturedLog {
+    CAPTURE.set(Some(CapturedLog::default()));
     f();
     CAPTURE.take().unwrap_or_default()
 }
@@ -394,7 +403,7 @@ struct ServerState {
     lists: Arc<Mutex<Lists>>,
     console: mpsc::Receiver<String>,
     stop: bool,
-    autosave: bool,
+    stop_pending: bool,
     empty_ticks: i32,
     /// When the last passes of the loop ended, for the tick rate horizon-server shows.
     ticks: std::collections::VecDeque<Instant>,
@@ -650,7 +659,7 @@ impl Game<'_> {
             lists,
             console,
             stop: false,
-            autosave: true,
+            stop_pending: false,
             empty_ticks: 0,
             ticks: Default::default(),
             paused: false,
@@ -683,11 +692,7 @@ impl Game<'_> {
                         props.pause_when_empty_seconds
                     ),
                 );
-                self.save_game()?;
-            }
-            if !paused && !state.autosave {
-                // `save-off`: the periodic save inside the tick is skipped.
-                self.ticks = self.ticks.max(1);
+                self.save_game_with(false)?;
             }
             // MinecraftServer.tickServer: while paused only the connections run.
             self.tick_server_timed(paused)?;
@@ -850,7 +855,19 @@ impl Game<'_> {
         match command {
             "stop" => {
                 self.console_reply(Text::translate("commands.stop.stopping", &[]));
-                state.stop = true;
+                if self
+                    .world_root
+                    .persistence()
+                    .is_some_and(|p| p.held().is_ok_and(|id| id.is_some()))
+                {
+                    state.stop_pending = true;
+                    log(
+                        "WARN",
+                        "Stop deferred until backup-end releases the snapshot; see server-status",
+                    );
+                } else {
+                    state.stop = true;
+                }
             }
             "save-all" => {
                 self.console_reply(Text::translate("commands.save.saving", &[]));
@@ -860,18 +877,24 @@ impl Game<'_> {
                 }
             }
             "save-off" => {
-                if state.autosave {
-                    state.autosave = false;
+                if self.world_root.persistence().unwrap().autosave_enabled() {
+                    if let Err(e) = self.world_root.persistence().unwrap().set_autosave(false) {
+                        log("ERROR", &e.to_string());
+                        return;
+                    }
                     self.console_reply(Text::translate("commands.save.disabled", &[]));
                 } else {
                     self.console_reply(Text::translate("commands.save.alreadyOff", &[]));
                 }
             }
             "save-on" => {
-                if state.autosave {
+                if self.world_root.persistence().unwrap().autosave_enabled() {
                     self.console_reply(Text::translate("commands.save.alreadyOn", &[]));
                 } else {
-                    state.autosave = true;
+                    if let Err(e) = self.world_root.persistence().unwrap().set_autosave(true) {
+                        log("ERROR", &e.to_string());
+                        return;
+                    }
                     self.console_reply(Text::translate("commands.save.enabled", &[]));
                 }
             }
@@ -1261,16 +1284,7 @@ impl Game<'_> {
     fn stop_dedicated(&mut self) -> Result<()> {
         log("INFO", "Stopping server");
         log("INFO", "Saving players");
-        if let Some(h) = self.lan.as_mut() {
-            for g in &h.hub.guests {
-                horizon_client::lan::playerdata::save(g, &self.world_root);
-            }
-        }
-        if let Some(h) = self.lan.as_ref() {
-            for g in &h.hub.guests {
-                self.save_guest_records(h, g);
-            }
-        }
+        self.save_online_players()?;
         if let Some(h) = self.lan.as_mut() {
             let conns: Vec<u32> = h.hub.guests.iter().map(|g| g.conn).collect();
             for conn in conns {

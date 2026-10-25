@@ -46,7 +46,7 @@ fn in_range(v: i32, (lo, hi): IntRange) -> bool {
 }
 
 impl Game<'_> {
-    fn scoreboard_path(&self) -> std::path::PathBuf {
+    fn scoreboard_path(&self) -> horizon_client::save::WorldPath {
         self.world_root.join("data/minecraft/scoreboard.dat")
     }
     /// `ScoreboardSaveData` read from `data/minecraft/scoreboard.dat`.

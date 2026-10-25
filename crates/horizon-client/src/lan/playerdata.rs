@@ -3,16 +3,14 @@
 use super::guest::{Guest, SavedBody};
 use crate::{
     items::ItemStack,
-    save::{Level, read_dat, write_dat},
+    save::{Level, SavePath, WorldPath, read_dat, write_dat},
 };
 use horizon_protocol::crypto::uuid_string;
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::sync::Arc;
 
-pub fn path(world: &Path, uuid: u128) -> PathBuf {
+pub fn path(world: &(impl SavePath + ?Sized), uuid: u128) -> WorldPath {
     world
+        .owned()
         .join("players")
         .join("data")
         .join(format!("{}.dat", uuid_string(uuid)))
@@ -34,12 +32,12 @@ pub fn ints_uuid(ints: [i32; 4]) -> u128 {
 }
 
 /// Whether a saved file exists for this player.
-pub fn exists(world: &Path, uuid: u128) -> bool {
+pub fn exists(world: &(impl SavePath + ?Sized), uuid: u128) -> bool {
     path(world, uuid).is_file()
 }
 
 /// Load a guest's saved state, if they have been here before.
-pub fn load(guest: &mut Guest, world: &Path) -> bool {
+pub fn load(guest: &mut Guest, world: &(impl SavePath + ?Sized)) -> bool {
     let Some(tag) = read_dat(&path(world, guest.uuid)) else {
         return false;
     };
@@ -95,6 +93,7 @@ pub fn apply(guest: &mut Guest, level: &Level) {
         fire_ticks: short("Fire", -20),
         air: short("Air", 300),
         fall_distance: level.fall_distance,
+        velocity: level.motion,
     });
     guest.recipe_book = level.recipe_book.clone();
     guest.dimension = match level.dimension.as_str() {
@@ -127,17 +126,27 @@ pub fn apply(guest: &mut Guest, level: &Level) {
 }
 
 /// Save a guest (PlayerDataStorage.save).
-pub fn save(guest: &Guest, world: &Path) {
+pub fn save(guest: &Guest, world: &(impl SavePath + ?Sized)) -> crate::Result<()> {
+    save_as(guest, world, uuid_ints(guest.uuid))
+}
+pub fn save_as(
+    guest: &Guest,
+    world: &(impl SavePath + ?Sized),
+    uuid: [i32; 4],
+) -> crate::Result<()> {
+    if !guest.placed {
+        return Ok(());
+    }
     let mut level = Level {
-        player_uuid: Some(uuid_ints(guest.uuid)),
+        player_uuid: Some(uuid),
         ..Level::default()
     };
     store(guest, &mut level);
-    let file = path(world, guest.uuid);
-    if let Some(dir) = file.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let _ = write_dat(&file, level.player_tag());
+    let file = world
+        .owned()
+        .join("players/data")
+        .join(format!("{}.dat", crate::save::uuid_text(uuid)));
+    write_dat(&file, level.player_tag())
 }
 
 /// Put a guest's state in `level`'s player fields.
@@ -176,6 +185,7 @@ pub fn store(guest: &Guest, level: &mut Level) {
         .or(guest.loaded_body);
     if let Some(body) = body {
         level.fall_distance = body.fall_distance;
+        level.motion = body.velocity;
         let extra = level
             .player_extra
             .get_or_insert_with(|| horizon_world::nbt::Tag::Compound(Default::default()));
@@ -245,6 +255,7 @@ mod tests {
             fire_ticks: 96,
             air: 250,
             fall_distance: 9.5,
+            velocity: [0.25, -0.5, 0.75],
         });
         let mut level = Level::default();
         store(&g, &mut level);

@@ -625,9 +625,9 @@ impl Game<'_> {
                 playerdata::store(guest, &mut self.level);
             }
         } else {
-            playerdata::save(guest, &self.world_root);
+            let _ = playerdata::save(guest, &self.world_root);
         }
-        self.save_guest_records(host, guest);
+        let _ = self.save_guest_records(host, guest);
     }
     /// The file name of a player's advancements and statistics: an
     /// integrated server's owner keeps single player's.
@@ -643,27 +643,32 @@ impl Game<'_> {
         &self,
         host: &LanHost,
         guest: &horizon_client::lan::guest::Guest,
-    ) {
-        if !guest.placed || self.adv.tree.list.is_empty() {
-            return;
-        }
+    ) -> Result<()> {
         let Some(uuid) = self.records_uuid(host, guest.uuid) else {
-            return;
+            return Ok(());
         };
-        let path = super::stats::player_json(&self.world_root, "advancements", uuid);
-        let json = guest
-            .advancements
-            .to_json(&self.adv.tree, horizon_world::DATA_VERSION);
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(text) = serde_json::to_string_pretty(&json) {
-            let _ = std::fs::write(path, text);
-        }
-        if let Some(play) = host.play.get(&guest.conn) {
-            play.stats
-                .write(&super::stats::player_json(&self.world_root, "stats", uuid));
-        }
+        super::player_saving::save_records(
+            &self.world_root,
+            &self.adv.tree,
+            guest,
+            host.play.get(&guest.conn).map(|p| &p.stats),
+            uuid,
+        )
+    }
+    pub(super) fn save_online_players(&mut self) -> Result<()> {
+        let Some(host) = &self.lan else {
+            return Ok(());
+        };
+        super::player_saving::save_online(
+            &self.world_root,
+            &mut self.level,
+            host.owner.as_ref().map(|o| o.uuid),
+            &self.adv.tree,
+            host.hub
+                .guests
+                .iter()
+                .map(|g| (g, host.play.get(&g.conn).map(|p| &p.stats))),
+        )
     }
     /// `PlayerAdvancements.load` and `ServerStatsCounter.parseLocal` of a
     /// network player who joined; every statistic goes out on the first
@@ -678,7 +683,7 @@ impl Game<'_> {
         };
         let tree = self.advancement_tree();
         let path = super::stats::player_json(&self.world_root, "advancements", uuid);
-        let saved = std::fs::read_to_string(path)
+        let saved = horizon_client::save::read_string(&path)
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
         if let Some(g) = host.hub.guest_mut(conn)
@@ -707,7 +712,7 @@ impl Game<'_> {
         };
         if let Some(g) = host.hub.guests.iter().find(|g| g.uuid == uuid && g.placed) {
             playerdata::store(g, &mut self.level);
-            self.save_guest_records(host, g);
+            let _ = self.save_guest_records(host, g);
         }
     }
 

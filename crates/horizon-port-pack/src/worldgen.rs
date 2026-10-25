@@ -821,15 +821,22 @@ pub fn with_included(
 
 /// Where `fetch` keeps the pack's loader jar, and where it comes from:
 /// NeoForge's own Maven repository. Only NeoForge packs need it today.
-pub fn loader_jar(work: &Path, loader: &str, version: &str) -> Option<(PathBuf, String)> {
-    (loader == "neoforge" && !version.is_empty()).then(|| {
-        (
-            work.join("loader").join(format!("neoforge-{version}-universal.jar")),
-            format!(
-                "https://maven.neoforged.net/releases/net/neoforged/neoforge/{version}/neoforge-{version}-universal.jar"
-            ),
-        )
-    })
+pub fn loader_jar(
+    work: &Path,
+    loader: &str,
+    version: &str,
+) -> Result<Option<(PathBuf, String)>, String> {
+    if loader != "neoforge" || version.is_empty() {
+        return Ok(None);
+    }
+    crate::import::validate_loader_version(loader, version)?;
+    Ok(Some((
+        work.join("loader")
+            .join(format!("neoforge-{version}-universal.jar")),
+        format!(
+            "https://maven.neoforged.net/releases/net/neoforged/neoforge/{version}/neoforge-{version}-universal.jar"
+        ),
+    )))
 }
 
 #[cfg(test)]
@@ -838,6 +845,39 @@ mod tests {
     use serde_json::json;
 
     const NO_TAGS: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+    #[test]
+    fn loader_jar_uses_validated_version_for_path_and_url() {
+        let work = Path::new("work");
+        let (path, url) = loader_jar(work, "neoforge", "26.1.0.0-alpha.7")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            path,
+            work.join("loader/neoforge-26.1.0.0-alpha.7-universal.jar")
+        );
+        assert_eq!(
+            url,
+            "https://maven.neoforged.net/releases/net/neoforged/neoforge/26.1.0.0-alpha.7/neoforge-26.1.0.0-alpha.7-universal.jar"
+        );
+        assert_eq!(loader_jar(work, "forge", "ignored").unwrap(), None);
+        assert_eq!(loader_jar(work, "neoforge", "").unwrap(), None);
+
+        for version in [
+            "review/../../../outside/probe",
+            ".",
+            "..",
+            r"review\..\outside",
+            "%2e%2e%2foutside",
+            "21.1?next=2",
+            "21.1#fragment",
+        ] {
+            assert!(
+                loader_jar(work, "neoforge", version).is_err(),
+                "{version:?}"
+            );
+        }
+    }
 
     #[test]
     fn formations_pieced_structure_keeps_its_jigsaw() {

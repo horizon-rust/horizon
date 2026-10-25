@@ -154,7 +154,7 @@ impl Session {
     }
     /// The autosave: proto chunks are saved on a worker, nothing waits.
     fn autosave(&mut self) {
-        self.streaming.save(&mut self.world, false);
+        self.streaming.save(&mut self.world, false).unwrap();
     }
     fn save(&mut self) {
         let deadline = Instant::now() + Duration::from_secs(120);

@@ -1297,13 +1297,18 @@ impl Streaming {
     /// otherwise a worker saves them (vanilla's autosave hands its chunks to
     /// the IOWorker too), and those out in jobs are saved later, as they
     /// unload or at the next save.
-    pub fn save(&mut self, world: &mut World, wait: bool) {
+    pub fn save(&mut self, world: &mut World, wait: bool) -> crate::Result<()> {
         if !wait {
             let written: Vec<(i32, i32)> = self.written.drain().collect();
             self.save_checked_out(written);
-            return;
+            return Ok(());
         }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        self.save_until(
+            world,
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+        )
+    }
+    fn save_until(&mut self, world: &mut World, deadline: std::time::Instant) -> crate::Result<()> {
         while self.decorating > 0 || !self.finishing.is_empty() || self.saving > 0 {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             match self.results.recv_timeout(left) {
@@ -1312,8 +1317,7 @@ impl Streaming {
                 Ok(Done::Saved(protos)) => self.receive_saved(protos),
                 Ok(other) => self.deferred.push(other),
                 Err(_) => {
-                    log::warn!("Horizon: chunk generation did not finish before saving");
-                    break;
+                    return Err("chunk generation did not finish before saving".into());
                 }
             }
         }
@@ -1326,6 +1330,7 @@ impl Streaming {
             self.saves.save_protos(&protos);
         }
         self.written.clear();
+        Ok(())
     }
     /// Finish generation for a closing world without waiting on the event
     /// loop. No new generation is scheduled while the save screen is shown.
@@ -1598,6 +1603,89 @@ fn section_indexes(mut bits: u32) -> impl Iterator<Item = i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_generation_save_timeout_is_an_error_and_keeps_the_job_owned() {
+        use crate::{
+            assets::Assets, biome::Biomes, blocks::BlockFacts, light::LightTables,
+            mesher::MeshTables, models,
+        };
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let assets = Arc::new(Assets::load(&root).unwrap());
+        let render = Arc::new(assets.reload(&root).unwrap());
+        let facts = BlockFacts::load(&root, assets.registry).unwrap();
+        let visibility = models::load_visibility(&root, assets.registry).unwrap();
+        let context = Arc::new(WorkerContext {
+            tables: Arc::new(MeshTables::new(&assets, &render, &facts, visibility).unwrap()),
+            light: Arc::new(LightTables::load(&root, assets.registry, &facts).unwrap()),
+            biomes: Arc::new(Biomes::load(&root).unwrap()),
+            assets,
+            render,
+        });
+        type Gate = Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>;
+        struct Generator {
+            gate: Gate,
+            entered: std::sync::mpsc::Sender<()>,
+        }
+        impl ChunkGenerator for Generator {
+            type Worker = ();
+            fn worker(&self) {}
+            fn proto(&self, _: &mut (), _: i32, _: i32) -> Proto {
+                Box::new(())
+            }
+            fn finish(&self, _: Proto) -> Chunk {
+                Chunk::empty(0, 0)
+            }
+            fn save_protos(&self, _: &[&Proto]) {
+                let _ = self.entered.send(());
+                let (lock, wake) = &*self.gate;
+                let mut released = lock.lock().unwrap();
+                while !*released {
+                    released = wake.wait(released).unwrap();
+                }
+            }
+        }
+        struct Release(Gate);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                *self.0.0.lock().unwrap() = true;
+                self.0.1.notify_all();
+            }
+        }
+        let gate: Gate = Arc::default();
+        let (entered, receive) = std::sync::mpsc::channel();
+        let mut streaming = Streaming::new(
+            Arc::new(Generator {
+                gate: gate.clone(),
+                entered,
+            }),
+            context,
+            1,
+        );
+        let release = Release(gate);
+        let mut world = World::new(horizon_world::registry::BlockStateId(0), 0);
+        streaming.protos.insert((0, 0), Some(Box::new(())));
+        streaming.written.insert((0, 0));
+        streaming.save(&mut world, false).unwrap();
+        receive
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(
+            streaming
+                .save_until(&mut world, std::time::Instant::now())
+                .is_err()
+        );
+        assert_eq!(streaming.saving, 1);
+        drop(release);
+        streaming.save(&mut world, true).unwrap();
+        assert_eq!(streaming.saving, 0);
+        assert!(streaming.protos[&(0, 0)].is_some());
+    }
 
     #[test]
     fn view_distance_is_vanillas_shape() {

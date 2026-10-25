@@ -179,6 +179,7 @@ impl Game<'_> {
                     if keys.is_empty() {
                         self.prune_entity_memory();
                         self.save_raids();
+                        self.save_online_players()?;
                         self.save_game_metadata()?;
                         save.stage = Stage::Writes;
                     }

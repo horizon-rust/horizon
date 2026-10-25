@@ -45,10 +45,10 @@ pub struct Record {
 
 /// The jar of a pack file: the instance's own, or one the user put in
 /// `<work>/jars/`.
-fn jar_of(pack_jar: Option<&PathBuf>, file_name: &str, work: &Path) -> Option<PathBuf> {
+fn jar_of(pack_jar: Option<&PathBuf>, file_name: Option<&str>, work: &Path) -> Option<PathBuf> {
     pack_jar
         .cloned()
-        .or_else(|| Some(work.join("jars").join(file_name)))
+        .or_else(|| Some(work.join("jars").join(file_name?)))
         .filter(|p| p.is_file())
 }
 
@@ -59,7 +59,7 @@ pub fn build(pack: &Pack, cache: &Cache, work: &Path) -> Vec<Record> {
     let mut by_project: HashMap<String, String> = HashMap::new();
     let mut project_deps: Vec<Vec<String>> = Vec::new();
     for f in &pack.files {
-        let jar = jar_of(f.jar.as_ref(), f.file_name(), work);
+        let jar = jar_of(f.jar.as_ref(), f.cache_name(), work);
         let info = jar.as_deref().and_then(|j| jar::read(j).ok());
         let sha1 = f.sha1.as_deref().unwrap_or("");
         let project = cache.project_of(sha1);
@@ -226,4 +226,97 @@ pub fn csv(records: &[Record]) -> String {
         out.push_str(&format!("{},{}\n", cells.join(","), r.layer));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::import::{Pack, PackFile};
+    use std::{
+        fs,
+        io::Write,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "horizon-inventory-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn write_jar(path: &Path, mod_id: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
+        zip.start_file("fabric.mod.json", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        write!(
+            zip,
+            r#"{{"id":"{mod_id}","name":"{mod_id}","version":"1"}}"#
+        )
+        .unwrap();
+        zip.finish().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inferred_cache_paths_are_safe_and_explicit_instance_jars_work() {
+        let work = TestDir::new();
+        let safe = work.0.join("jars/safe.jar");
+        let unsafe_cache_candidate = work.0.join(r"jars/..\..\outside.jar");
+        let instance = work.0.join("instance/mods/explicit.jar");
+        write_jar(&safe, "safe_mod");
+        write_jar(&unsafe_cache_candidate, "must_not_be_read");
+        write_jar(&instance, "instance_mod");
+
+        let pack = Pack {
+            files: vec![
+                PackFile {
+                    path: "mods/safe.jar".into(),
+                    ..PackFile::default()
+                },
+                PackFile {
+                    path: r"mods/..\..\outside.jar".into(),
+                    ..PackFile::default()
+                },
+                PackFile {
+                    path: r"mods/..\..\explicit.jar".into(),
+                    jar: Some(instance.clone()),
+                    ..PackFile::default()
+                },
+            ],
+            ..Pack::default()
+        };
+        let records = build(&pack, &Cache::default(), &work.0);
+        let record = |path: &str| records.iter().find(|r| r.path == path).unwrap();
+
+        let safe_record = record("mods/safe.jar");
+        assert_eq!(safe_record.jar.as_deref(), Some(safe.as_path()));
+        assert_eq!(safe_record.info.as_ref().unwrap().mod_id, "safe_mod");
+
+        let unsafe_record = record(r"mods/..\..\outside.jar");
+        assert!(unsafe_record.jar.is_none());
+        assert!(unsafe_record.info.is_none());
+
+        let instance_record = record(r"mods/..\..\explicit.jar");
+        assert_eq!(instance_record.jar.as_deref(), Some(instance.as_path()));
+        assert_eq!(
+            instance_record.info.as_ref().unwrap().mod_id,
+            "instance_mod"
+        );
+    }
 }

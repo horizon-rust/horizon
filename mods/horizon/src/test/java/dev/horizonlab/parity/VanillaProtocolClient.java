@@ -116,6 +116,7 @@ public final class VanillaProtocolClient {
     private String state;
     /** With a fifth argument {@code entities}: the entity transcript mode (EntityTranscript). */
     private EntityTranscript entities;
+    private Path saveRelease;
 
     public static void main(String[] args) throws Exception {
         ParityData.init();
@@ -125,6 +126,7 @@ public final class VanillaProtocolClient {
         Path output = Path.of(args[3]);
         VanillaProtocolClient client = new VanillaProtocolClient();
         if (args.length > 4 && args[4].equals("entities")) client.entities = new EntityTranscript();
+        if (args.length > 5 && args[4].equals("save")) client.saveRelease = Path.of(args[5]);
         try {
             client.status(host, port);
             client.join(host, port, name);
@@ -487,6 +489,7 @@ public final class VanillaProtocolClient {
         long deadCommandAt = 0;
         // When the client last sent where it is.
         long positionAt = 0;
+        int saveBatch = 0;
         while (System.currentTimeMillis() < deadline) {
             Received r;
             try {
@@ -498,6 +501,9 @@ public final class VanillaProtocolClient {
             if (r != null) {
                 Packet<?> packet = r.packet;
                 counts.merge(r.type, 1, Integer::sum);
+                if (saveRelease != null && packet instanceof net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket p) {
+                    record("save-inventory", p.items().toString());
+                }
                 if (entities != null && !entities.acceptSelf(packet) && step >= ENTITIES) entities.accept(packet);
                 if (r.type.equals("minecraft:chunk_batch_start")) ordered = false;
                 if (respawning && !respawned) {
@@ -537,7 +543,7 @@ public final class VanillaProtocolClient {
                     // same tick is an invalid move to vanilla's server once the player is loaded.
                     // The entity mode's scene may teleport the player (to another level): the
                     // acceptance alone, as the 26.3 client sends.
-                    if (!respawning && step < ENTITIES) {
+                    if (saveRelease == null && !respawning && step < ENTITIES) {
                         send(new ServerboundMovePlayerPacket.PosRot(position.position(), position.yRot(), position.xRot(), false, false));
                         positionAt = now;
                     }
@@ -639,7 +645,7 @@ public final class VanillaProtocolClient {
                     commandTree(p);
                 }
             }
-            if (entities == null && loaded && deadCommandAt == 0 && now - positionAt >= 1000) {
+            if (saveRelease == null && entities == null && loaded && deadCommandAt == 0 && now - positionAt >= 1000) {
                 // LocalPlayer.sendPosition: once its level is loaded the 26.3 client sends where it is
                 // every 20 ticks even standing still, and the server then checks again which entities the
                 // player sees (ChunkMap.move). An entity whose chunk was sent after the player's last move,
@@ -649,6 +655,23 @@ public final class VanillaProtocolClient {
                 send(ServerboundClientTickEndPacket.INSTANCE);
                 send(new ServerboundMovePlayerPacket.Pos(position.position(), false, false));
                 positionAt = now;
+            }
+            if (saveRelease != null) {
+                Path commands = saveRelease.resolveSibling(saveRelease.getFileName() + ".commands");
+                if (Files.exists(commands)) {
+                    for (String command : Files.readAllLines(commands)) send(new ServerboundChatCommandPacket(command));
+                    Files.delete(commands);
+                    send(new ServerboundChatPacket("save fixture " + (++saveBatch), Instant.now(), 0L, Optional.empty(),
+                        new LastSeenMessages.Update(0, new BitSet(), (byte) 0)));
+                }
+                if (loaded && lastChunk > 0 && now - lastChunk > 3000 && step == 0) {
+                    send(new ServerboundChatPacket("ready for save", Instant.now(), 0L, Optional.empty(),
+                        new LastSeenMessages.Update(0, new BitSet(), (byte) 0)));
+                    Files.writeString(saveRelease.resolveSibling(saveRelease.getFileName() + ".ready"), "ready");
+                    step = 1;
+                }
+                if (Files.exists(saveRelease)) return;
+                continue;
             }
             if (entities != null && loaded && lastChunk > 0 && now - lastChunk > 3000 && step == 0) {
                 // Entity mode: the harness's console summons the scene once it reads this

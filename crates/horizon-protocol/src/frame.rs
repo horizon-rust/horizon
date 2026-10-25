@@ -2,7 +2,7 @@
 //! zlib compression above a threshold (CompressionEncoder / CompressionDecoder).
 use crate::{
     Error, Result,
-    buf::{Reader, varint_size, write_varint},
+    buf::{Reader, write_varint},
 };
 use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
 use std::io::{Read, Write};
@@ -85,7 +85,7 @@ pub fn decompress(frame: Vec<u8>, threshold: Option<usize>) -> Result<Vec<u8>> {
     let mut r = Reader::new(&frame);
     let size = r.varint()?;
     if size == 0 {
-        return Ok(frame[1..].to_vec());
+        return Ok(r.rest().to_vec());
     }
     let size = usize::try_from(size).map_err(|_| Error::new("negative uncompressed length"))?;
     if size < threshold {
@@ -98,9 +98,8 @@ pub fn decompress(frame: Vec<u8>, threshold: Option<usize>) -> Result<Vec<u8>> {
             "Badly compressed packet - size of {size} is larger than protocol maximum"
         )));
     }
-    let start = varint_size(size as i32);
     let mut out = Vec::with_capacity(size);
-    ZlibDecoder::new(&frame[start..])
+    ZlibDecoder::new(r.rest())
         .take(size as u64 + 1)
         .read_to_end(&mut out)?;
     if out.len() != size {
@@ -145,6 +144,21 @@ mod tests {
         let frame = split(&mut buffer).unwrap().unwrap();
         assert_eq!(Reader::new(&frame).varint().unwrap(), 5000);
         assert_eq!(decompress(frame, Some(256)).unwrap(), big);
+    }
+
+    #[test]
+    fn decompression_uses_the_consumed_varint_header_length() {
+        let body = [0x2a, 0x07, 0x13, 0x53];
+
+        let mut raw = vec![0x80, 0x00];
+        raw.extend_from_slice(&body);
+        assert_eq!(decompress(raw, Some(256)).unwrap(), body);
+
+        let compressed = contents(&body, Some(1)).unwrap();
+        assert_eq!(compressed[0], body.len() as u8);
+        let mut padded = vec![0x84, 0x00];
+        padded.extend_from_slice(&compressed[1..]);
+        assert_eq!(decompress(padded, Some(1)).unwrap(), body);
     }
 
     #[test]

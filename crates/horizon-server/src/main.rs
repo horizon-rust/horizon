@@ -17,6 +17,8 @@ mod service;
 mod settings;
 mod signals;
 mod supervisor;
+#[cfg(test)]
+mod test_support;
 mod update;
 
 use std::{path::PathBuf, process::ExitCode};
