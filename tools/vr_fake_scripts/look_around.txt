@@ -1,0 +1,11 @@
+# Look around and walk a little (tools/vr_fake_run.py --script). Times are seconds since the
+# OpenXR session started; the world loads within the first ones.
+0   head 0 0
+40  head 0 0
+46  head 60 -10      # turn left, look a bit down
+52  head -60 10      # sweep right, look up
+58  head 0 0
+40  input /user/hand/left/input/thumbstick 0 1     # walk forward
+44  input /user/hand/left/input/thumbstick 0 0
+48  input /user/hand/right/input/a/click 1         # jump
+48.3 input /user/hand/right/input/a/click 0

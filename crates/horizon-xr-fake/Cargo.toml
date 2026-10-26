@@ -1,0 +1,16 @@
+[package]
+name = "horizon-xr-fake"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "A fake OpenXR runtime for testing Horizon's VR without a headset: scripted head and controllers, eye captures, a frame report"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ash = "0.38"
+openxr-sys = "0.14"
+png = "0.18"
