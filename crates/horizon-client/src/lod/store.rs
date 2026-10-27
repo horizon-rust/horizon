@@ -6,7 +6,10 @@
 //!
 //! Entries are grouped in files of 32 by 32 keys and compressed one by one; a file is read
 //! whole the first time one of its keys is asked for, and written whole (to a temporary file,
-//! then renamed) by `flush`. A file from another build or block registry is ignored.
+//! then renamed) by `flush`, outside the lock. A file from another build or block registry is
+//! ignored. `forget` comes from the game thread with each chunk save: it never reads a file,
+//! a removal from one not read yet waits for it (`Files::unapplied`, done by `flush` at the
+//! latest).
 //! `forget` drops a chunk's summary when its save changes: the next read summarizes the save.
 //! Tiles fine enough to be made of chunk summaries (strides up to 16) are kept too, and go
 //! whenever one of their chunks changes.
@@ -80,6 +83,26 @@ struct Files {
     /// Chunks summarized from the loaded chunk (`put_live`): the save queued with it next
     /// holds the same blocks, so that `forget` leaves the summary.
     live: crate::fast_hash::FxHashSet<(i32, i32)>,
+    /// Entries to remove from files not read yet: removed once they are.
+    unapplied: FxHashMap<File, Vec<Key>>,
+    /// Files' latest contents not on disk yet (`None`: the file goes), for `flush`; a file
+    /// read again before that is read from here.
+    pending: FxHashMap<File, (PathBuf, Option<Vec<u8>>)>,
+}
+
+impl Files {
+    /// Removes `key` from its file, at once if it is read, else when it is.
+    fn remove(&mut self, key: Key) {
+        let (file, _) = key.file();
+        match self.loaded.get_mut(&file) {
+            Some(loaded) => {
+                if loaded.entries.remove(&key).is_some() {
+                    loaded.dirty = true;
+                }
+            }
+            None => self.unapplied.entry(file).or_default().push(key),
+        }
+    }
 }
 
 pub struct LodStore {
@@ -87,6 +110,8 @@ pub struct LodStore {
     /// The build and block registry the entries were made with.
     fingerprint: u64,
     files: Mutex<Files>,
+    /// Held by `flush` while it writes: one at a time, so files reach the disk in order.
+    writing: Mutex<()>,
 }
 
 impl LodStore {
@@ -99,6 +124,7 @@ impl LodStore {
             dir,
             fingerprint: h.finish(),
             files: Mutex::default(),
+            writing: Mutex::new(()),
         }
     }
 
@@ -180,10 +206,7 @@ impl LodStore {
                 z: (z * 16).div_euclid(size) * size,
                 stride,
             };
-            let file = self.load(files, tile);
-            if file.entries.remove(&tile).is_some() {
-                file.dirty = true;
-            }
+            files.remove(tile);
         }
     }
 
@@ -197,27 +220,34 @@ impl LodStore {
             return;
         }
         self.touch(&mut files, x, z);
-        let file = self.load(&mut files, key);
-        if file.entries.remove(&key).is_some() {
-            file.dirty = true;
-        }
+        files.remove(key);
     }
 
-    /// Writes the files changed since they were read.
+    /// Writes the files changed since they were read, and those with removals waiting (read
+    /// for them first). The writing happens outside the lock.
     pub fn flush(&self) {
-        let Ok(mut files) = self.files.lock() else {
+        let Ok(_writing) = self.writing.lock() else {
             return;
         };
-        let changed: Vec<File> = files
-            .loaded
-            .iter()
-            .filter(|(_, f)| f.dirty)
-            .map(|(&k, _)| k)
-            .collect();
-        for file in changed {
-            if let Some(loaded) = files.loaded.get_mut(&file) {
-                self.write(file, loaded);
+        let writes = {
+            let Ok(mut files) = self.files.lock() else {
+                return;
+            };
+            let waiting: Vec<File> = files.unapplied.keys().copied().collect();
+            for file in waiting {
+                let key = files.unapplied[&file][0];
+                self.load(&mut files, key);
             }
+            let mut writes = std::mem::take(&mut files.pending);
+            for (&file, loaded) in files.loaded.iter_mut().filter(|(_, f)| f.dirty) {
+                writes.insert(file, self.serialize(file, loaded));
+                loaded.dirty = false;
+            }
+            writes
+        };
+        let writes = writes.into_values();
+        for write in writes {
+            self.write(write);
         }
     }
 
@@ -234,23 +264,25 @@ impl LodStore {
                 let Some(old) = files.order.pop_front() else {
                     break;
                 };
-                if let Some(mut loaded) = files.loaded.remove(&old)
+                if let Some(loaded) = files.loaded.remove(&old)
                     && loaded.dirty
                 {
-                    self.write(old, &mut loaded);
+                    let contents = self.serialize(old, &loaded);
+                    files.pending.insert(old, contents);
                 }
             }
-            let entries = std::fs::read(self.path(key))
-                .ok()
-                .and_then(|bytes| self.read_file(&bytes))
-                .unwrap_or_default();
-            files.loaded.insert(
-                file,
-                Loaded {
-                    entries,
-                    dirty: false,
-                },
-            );
+            let mut entries: FxHashMap<Key, Vec<u8>> = match files.pending.get(&file) {
+                Some((_, contents)) => contents.as_deref().and_then(|b| self.read_file(b)),
+                None => std::fs::read(self.path(key))
+                    .ok()
+                    .and_then(|bytes| self.read_file(&bytes)),
+            }
+            .unwrap_or_default();
+            let mut dirty = false;
+            for gone in files.unapplied.remove(&file).unwrap_or_default() {
+                dirty |= entries.remove(&gone).is_some();
+            }
+            files.loaded.insert(file, Loaded { entries, dirty });
             files.order.push_back(file);
         }
         files.loaded.get_mut(&file).expect("loaded above")
@@ -277,17 +309,16 @@ impl LodStore {
         Some(entries)
     }
 
-    fn write(&self, file: File, loaded: &mut Loaded) {
-        let Some(&key) = loaded.entries.keys().next() else {
-            // Every entry forgotten: the file goes.
-            let name = match file {
-                File::Chunks(x, z) => format!("c.{x}.{z}.hlod"),
-                File::Tiles(s, x, z) => format!("t{s}.{x}.{z}.hlod"),
-            };
-            let _ = std::fs::remove_file(self.dir.join(name));
-            loaded.dirty = false;
-            return;
+    /// A file's path and contents, `None` with no entries left (the file goes).
+    fn serialize(&self, file: File, loaded: &Loaded) -> (PathBuf, Option<Vec<u8>>) {
+        let name = match file {
+            File::Chunks(x, z) => format!("c.{x}.{z}.hlod"),
+            File::Tiles(s, x, z) => format!("t{s}.{x}.{z}.hlod"),
         };
+        let path = self.dir.join(name);
+        if loaded.entries.is_empty() {
+            return (path, None);
+        }
         let mut out = Vec::new();
         out.extend_from_slice(MAGIC);
         out.extend_from_slice(&self.fingerprint.to_le_bytes());
@@ -309,14 +340,20 @@ impl LodStore {
             out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
             out.extend_from_slice(bytes);
         }
-        let path = self.path(key);
+        (path, Some(out))
+    }
+
+    fn write(&self, (path, contents): (PathBuf, Option<Vec<u8>>)) {
+        let Some(out) = contents else {
+            let _ = std::fs::remove_file(&path);
+            return;
+        };
         let temporary = path.with_extension("tmp");
         let written = std::fs::create_dir_all(&self.dir)
             .and_then(|()| std::fs::write(&temporary, &out))
             .and_then(|()| std::fs::rename(&temporary, &path));
-        match written {
-            Ok(()) => loaded.dirty = false,
-            Err(e) => log::warn!("Horizon: failed to save distant terrain: {e}"),
+        if let Err(e) = written {
+            log::warn!("Horizon: failed to save distant terrain: {e}");
         }
     }
 }
