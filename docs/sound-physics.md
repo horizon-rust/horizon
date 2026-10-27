@@ -13,7 +13,7 @@ Henkel, vlad2305m and Saint) does on Fabric and NeoForge:
 - **Sound direction.** A sound behind a wall is heard from where its reflections reach you, such
   as an open door, at its real distance.
 
-Beside it, three extras of Horizon's own, each with its switch under the same header and
+Beside it, four extras of Horizon's own, each with its switch under the same header and
 independent of sound physics (`crates/horizon-client/src/spatial.rs`):
 
 - **Binaural sound** (`soundPhysics.hrtf`, off): 3D sound for headphones. Vanilla turns OpenAL's
@@ -32,6 +32,11 @@ independent of sound physics (`crates/horizon-client/src/spatial.rs`):
   noise through a band-pass at 900 Hz with a slight flutter, synthesised once and looped, on the
   players' volume. Each arrow's whoosh goes through sound physics, binaural sound and Doppler
   like any sound.
+
+- **Bow creak** (`soundPhysics.bow_creak`, off): drawing a bow creaks, harder and faster as the
+  tension rises over the 20-tick draw (stick-slip jolts ringing two wood resonances, 420 Hz and
+  1.15 kHz, over a faint string hum), synthesised once (1.2 s). It plays at the bow hand, right
+  of the eyes, and fades out over a buffer on an early release. Vanilla's draw is silent.
 
 With any of them on, a voice's gains, filters and ears ramp over each 10 ms buffer, so a new
 environment or a turn of the head does not click. All off, the mix is vanilla's to the bit.

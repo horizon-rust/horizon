@@ -234,6 +234,10 @@ pub struct MixerBackend {
     /// The whooshing arrows' channels, by the arrow's key.
     whooshes: HashMap<u32, ChannelId>,
     whoosh_samples: Option<Arc<Vec<f32>>>,
+    /// The bow creak playing, and the one fading out after a release.
+    creak: Option<ChannelId>,
+    creak_fading: Option<ChannelId>,
+    creak_samples: Option<Arc<Vec<f32>>>,
 }
 /// Decoded samples and their rate (`None`: the file did not load).
 type Samples = Option<(Arc<Vec<f32>>, u32)>;
@@ -1068,6 +1072,9 @@ impl Audio {
                 listener_cell: None,
                 whooshes: HashMap::new(),
                 whoosh_samples: None,
+                creak: None,
+                creak_fading: None,
+                creak_samples: None,
             },
             record_heard: false,
             listener: [0.0; 3],
@@ -1331,6 +1338,56 @@ impl Audio {
             self.backend.set_position(channel, at);
             self.backend.set_volume(channel, gain * volume);
             self.backend.set_pitch(channel, pitch);
+        }
+    }
+    /// Once a tick: whether the player is drawing a bow, and where the bow
+    /// is. A draw starts the creak there; a release fades it out over a
+    /// buffer (the mixer ramps gains while a Horizon sound extra is on).
+    pub fn set_bow_draw(&mut self, drawing: Option<[f64; 3]>) {
+        const EVENT: &str = "horizon:item.bow.creak";
+        if let Some(c) = self.backend.creak_fading.take() {
+            self.backend.destroy(c);
+        }
+        let on = self.backend.acoustics.settings().bow_creak && self.backend.live;
+        let drawing = drawing.filter(|_| on);
+        match (drawing, self.backend.creak) {
+            (Some(at), Some(c)) => self.backend.set_position(c, at),
+            (Some(at), None) => {
+                let samples = self
+                    .backend
+                    .creak_samples
+                    .get_or_insert_with(|| Arc::new(crate::spatial::creak_samples()))
+                    .clone();
+                let Some(c) = self.backend.create(false) else {
+                    return;
+                };
+                let volume = self.engine.source_volumes[crate::sound_engine::MASTER]
+                    * self.engine.source_volumes[crate::sound_engine::PLAYERS];
+                self.backend.with(c, |ch| {
+                    ch.samples = Some((samples, crate::spatial::WHOOSH_RATE));
+                    ch.linear = Some(16.0);
+                    ch.gain = 0.6 * volume;
+                    ch.state = State::Playing;
+                    ch.tag = Some((EVENT.into(), crate::sound_engine::PLAYERS));
+                    ch.reverb_share = 0.6;
+                });
+                self.backend.set_position(c, at);
+                let request = Request {
+                    at,
+                    listener: self.listener,
+                    listener_underwater: self.backend.listener_underwater,
+                    source: crate::sound_engine::PLAYERS,
+                    event: EVENT.into(),
+                };
+                self.backend.acoustics.evaluate(c, request, 16.0);
+                self.backend.creak = Some(c);
+            }
+            (None, Some(c)) => {
+                self.backend.creak = None;
+                self.backend.set_volume(c, 0.0);
+                self.backend.creak_fading = Some(c);
+            }
+            (None, None) => {}
         }
     }
     pub fn sound_physics_enabled(&self) -> bool {
@@ -1781,6 +1838,9 @@ mod tests {
             listener_cell: None,
             whooshes: HashMap::new(),
             whoosh_samples: None,
+            creak: None,
+            creak_fading: None,
+            creak_samples: None,
         };
         let (send, receive) = std::sync::mpsc::channel();
         struct Count(Mutex<std::sync::mpsc::Sender<ChannelId>>);

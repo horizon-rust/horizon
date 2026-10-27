@@ -203,6 +203,72 @@ pub fn whoosh_samples() -> Vec<f32> {
     let rms = (out.iter().map(|x| x * x).sum::<f32>() / out.len() as f32).sqrt();
     out.iter().map(|x| x * 0.3 / rms.max(1e-6)).collect()
 }
+/// How long the bow creak lasts: a full draw (20 ticks) and its settling.
+pub const CREAK_SECONDS: f32 = 1.2;
+/// A bow being drawn: the limbs' stick-slip creaks, jolts that come faster
+/// and harder as the tension rises over the first second, each ringing two
+/// wood resonances (420 Hz and 1.15 kHz), over a faint rising string hum;
+/// then a few last creaks as it holds.
+pub fn creak_samples() -> Vec<f32> {
+    let rate = WHOOSH_RATE as f32;
+    let len = (CREAK_SECONDS * rate) as usize;
+    // Two resonators (RBJ band-pass, constant peak gain).
+    let resonator = |freq: f32, q: f32| {
+        let w = std::f32::consts::TAU * freq / rate;
+        let alpha = w.sin() / (2.0 * q);
+        let a0 = 1.0 + alpha;
+        [
+            alpha / a0,
+            -alpha / a0,
+            -2.0 * w.cos() / a0,
+            (1.0 - alpha) / a0,
+        ]
+    };
+    let bands = [
+        (resonator(420.0, 9.0), 1.0f32),
+        (resonator(1150.0, 7.0), 0.6),
+    ];
+    let mut state = [[0.0f32; 4]; 2];
+    let mut seed = 0x2545_f491u32;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed as f32 / u32::MAX as f32
+    };
+    let mut until_jolt = 0.0f32;
+    let mut phase = 0.0f32;
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        let time = i as f32 / rate;
+        let tension = (time / 1.0).min(1.0);
+        let fade = if time > 1.0 {
+            1.0 - (time - 1.0) / (CREAK_SECONDS - 1.0)
+        } else {
+            1.0
+        };
+        // Stick-slip: the next jolt comes sooner as the tension rises.
+        until_jolt -= 1.0 / rate;
+        let mut x = (next() - 0.5) * 0.02;
+        if until_jolt <= 0.0 && fade > 0.0 {
+            let jolts_per_second = 9.0 + 45.0 * tension;
+            until_jolt = (0.5 + next()) / jolts_per_second;
+            x += (0.25 + 0.75 * tension) * (0.6 + 0.4 * next());
+        }
+        let mut y = 0.0;
+        for ((c, gain), s) in bands.iter().zip(&mut state) {
+            let v = c[0] * x + c[1] * s[1] - c[2] * s[2] - c[3] * s[3];
+            *s = [x, s[0], v, s[2]];
+            y += v * gain;
+        }
+        // The string's hum, rising with the tension.
+        phase += std::f32::consts::TAU * (95.0 + 60.0 * tension) / rate;
+        y += 0.03 * tension * phase.sin();
+        out.push(y * fade.max(0.0));
+    }
+    let peak = out.iter().fold(0.0f32, |p, x| p.max(x.abs()));
+    out.iter().map(|x| x * 0.5 / peak.max(1e-6)).collect()
+}
 /// The whoosh's gain and pitch for an arrow flying at `speed` blocks a
 /// second: silent below 8, full at 48 (a bow drawn fully shoots at about 60).
 pub fn whoosh(speed: f32) -> (f32, f32) {
@@ -381,6 +447,23 @@ mod tests {
         assert_eq!(whoosh(5.0).0, 0.0);
         assert!(whoosh(60.0).0 > whoosh(20.0).0);
         assert!(whoosh(60.0).1 > whoosh(20.0).1);
+    }
+
+    #[test]
+    fn the_creak_tightens_and_settles() {
+        let s = creak_samples();
+        assert_eq!(s.len(), (CREAK_SECONDS * WHOOSH_RATE as f32) as usize);
+        let energy = |from: f32, to: f32| {
+            let r = WHOOSH_RATE as f32;
+            s[(from * r) as usize..(to * r) as usize]
+                .iter()
+                .map(|x| x * x)
+                .sum::<f32>()
+        };
+        // Harder creaks late in the draw than at its start; quiet at the end.
+        assert!(energy(0.7, 0.9) > 2.0 * energy(0.0, 0.2));
+        assert!(energy(1.15, 1.2) < 0.1 * energy(0.7, 0.75).max(1e-9) + 1e-6);
+        assert!(s.iter().all(|x| x.abs() <= 0.5 + 1e-6));
     }
 
     #[test]

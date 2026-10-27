@@ -405,6 +405,7 @@ pub enum Item {
     SoundHrtf,
     SoundDoppler,
     SoundWhoosh,
+    SoundBowCreak,
 }
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -433,6 +434,7 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(SoundHrtf),
         Ok(SoundDoppler),
         Ok(SoundWhoosh),
+        Ok(SoundBowCreak),
     ]
 }
 impl Item {
@@ -460,6 +462,7 @@ impl Item {
             Item::SoundHrtf => "Binaural sound",
             Item::SoundDoppler => "Doppler effect",
             Item::SoundWhoosh => "Arrow whoosh",
+            Item::SoundBowCreak => "Bow creak",
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
@@ -470,8 +473,9 @@ impl Item {
             SortKey => Sort,
             SoundReverb | SoundOcclusion | SoundUnderwater | SoundReflections | SoundReverbGain
             | SoundBlockAbsorption | SoundRays | SoundBounces => SoundPhysics,
-            SoundPhysics | SoundHrtf | SoundDoppler | SoundWhoosh | Fullbright | DynamicLights
-            | MouseTweaks | Sort | AutoReconnect | NoAi | AgentControl | DiscordPresence => {
+            SoundPhysics | SoundHrtf | SoundDoppler | SoundWhoosh | SoundBowCreak | Fullbright
+            | DynamicLights | MouseTweaks | Sort | AutoReconnect | NoAi | AgentControl
+            | DiscordPresence => {
                 return None;
             }
         })
@@ -530,6 +534,7 @@ impl Item {
             Item::SoundDoppler => {
                 "The pitch of a sound rises as it comes at you and falls as it goes away."
             }
+            Item::SoundBowCreak => "A bow creaks as you draw it, tighter as the string comes back.",
             Item::SoundWhoosh => {
                 "Arrows whistle through the air, louder and higher the faster they fly."
             }
@@ -544,7 +549,9 @@ impl Item {
             Item::AutoReconnect | Item::MouseTweaks | Item::Sort => Some(Cost::None),
             // Traced off the game thread; the mixer's reverb runs on the audio thread.
             Item::SoundPhysics => Some(Cost::Low),
-            Item::SoundHrtf | Item::SoundDoppler | Item::SoundWhoosh => Some(Cost::None),
+            Item::SoundHrtf | Item::SoundDoppler | Item::SoundWhoosh | Item::SoundBowCreak => {
+                Some(Cost::None)
+            }
             _ => None,
         }
     }
@@ -568,6 +575,7 @@ impl Item {
             Item::SoundHrtf => e.sound_physics.hrtf,
             Item::SoundDoppler => e.sound_physics.doppler,
             Item::SoundWhoosh => e.sound_physics.arrow_whoosh,
+            Item::SoundBowCreak => e.sound_physics.bow_creak,
             _ => return None,
         })
     }
@@ -610,6 +618,7 @@ impl Item {
             Item::SoundHrtf => e.sound_physics.hrtf = !e.sound_physics.hrtf,
             Item::SoundDoppler => e.sound_physics.doppler = !e.sound_physics.doppler,
             Item::SoundWhoosh => e.sound_physics.arrow_whoosh = !e.sound_physics.arrow_whoosh,
+            Item::SoundBowCreak => e.sound_physics.bow_creak = !e.sound_physics.bow_creak,
             Item::SoundReverbGain => {
                 let s = &mut e.sound_physics;
                 s.reverb_gain = sp::cycle(&sp::REVERB_GAINS, s.reverb_gain, back)

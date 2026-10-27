@@ -40,6 +40,14 @@ impl Game<'_> {
             Vec::new()
         };
         self.audio.set_whooshes(&flying);
+        let drawing = self
+            .settings
+            .extras
+            .sound_physics
+            .bow_creak
+            .then(|| self.bow_hand())
+            .flatten();
+        self.audio.set_bow_draw(drawing);
         if !self.audio.sound_physics_enabled() {
             return;
         }
@@ -53,6 +61,23 @@ impl Game<'_> {
         self.audio.sync_sound_physics(underwater, |x, z| {
             chunks.get(&(x, z)).map(|c| &c.sections[..])
         });
+    }
+    /// Where the bow being drawn is: right of the eyes, a little below and
+    /// ahead (the view's; a VR hand would place it better). None when the
+    /// item in use is not a bow.
+    fn bow_hand(&self) -> Option<[f64; 3]> {
+        let (slot, _) = self.using?;
+        if &*self.stack_in(slot)?.item != "minecraft:bow" {
+            return None;
+        }
+        let p = self.player.as_ref()?.position;
+        let yaw = f64::from(self.yaw).to_radians();
+        let (forward, right) = ([-yaw.sin(), yaw.cos()], [-yaw.cos(), -yaw.sin()]);
+        Some([
+            p.x + 0.35 * right[0] + 0.3 * forward[0],
+            p.y + 1.62 - 0.3,
+            p.z + 0.35 * right[1] + 0.3 * forward[1],
+        ])
     }
     /// What the sound physics thread needs of every block state.
     fn sound_states(&self) -> Vec<BlockState> {
