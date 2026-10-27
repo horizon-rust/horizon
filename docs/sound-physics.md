@@ -13,7 +13,7 @@ Henkel, vlad2305m and Saint) does on Fabric and NeoForge:
 - **Sound direction.** A sound behind a wall is heard from where its reflections reach you, such
   as an open door, at its real distance.
 
-Beside it, two spatial extras of Horizon's own, each with its switch under the same header and
+Beside it, three extras of Horizon's own, each with its switch under the same header and
 independent of sound physics (`crates/horizon-client/src/spatial.rs`):
 
 - **Binaural sound** (`soundPhysics.hrtf`, off): 3D sound for headphones. Vanilla turns OpenAL's
@@ -26,6 +26,12 @@ independent of sound physics (`crates/horizon-client/src/spatial.rs`):
   of sound 343.3 blocks a second, from the velocities of the sound and the listener measured
   off the positions the game sets (vanilla sets none). A jump faster than 100 blocks a second
   (a teleport) is no velocity, and one older than 150 ms lapses.
+
+- **Arrow whoosh** (`soundPhysics.arrow_whoosh`, off): arrows in flight whistle, louder and
+  higher the faster they go (silent under 8 blocks a second). Vanilla has no such sound; it is
+  noise through a band-pass at 900 Hz with a slight flutter, synthesised once and looped, on the
+  players' volume. Each arrow's whoosh goes through sound physics, binaural sound and Doppler
+  like any sound.
 
 With any of them on, a voice's gains, filters and ears ramp over each 10 ms buffer, so a new
 environment or a turn of the head does not click. All off, the mix is vanilla's to the bit.

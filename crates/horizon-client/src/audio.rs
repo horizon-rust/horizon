@@ -105,6 +105,7 @@ impl Channel {
 struct Spatial {
     hrtf: bool,
     doppler: Option<f32>,
+    whoosh: bool,
 }
 /// How a voice is mixed for one buffer: its pan gains, its gain on a mono
 /// output, its filters and sends, and its ears when binaural.
@@ -226,6 +227,9 @@ pub struct MixerBackend {
     ticks: u64,
     /// The block the listener was in at the last tick.
     listener_cell: Option<[i32; 3]>,
+    /// The whooshing arrows' channels, by the arrow's key.
+    whooshes: HashMap<u32, ChannelId>,
+    whoosh_samples: Option<Arc<Vec<f32>>>,
 }
 /// Decoded samples and their rate (`None`: the file did not load).
 type Samples = Option<(Arc<Vec<f32>>, u32)>;
@@ -1028,6 +1032,8 @@ impl Audio {
                 listener_underwater: false,
                 ticks: 0,
                 listener_cell: None,
+                whooshes: HashMap::new(),
+                whoosh_samples: None,
             },
             record_heard: false,
             listener: [0.0; 3],
@@ -1133,6 +1139,7 @@ impl Audio {
             m.spatial = Spatial {
                 hrtf: settings.hrtf,
                 doppler: settings.doppler.then_some(settings.doppler_factor),
+                whoosh: settings.arrow_whoosh,
             };
         }
         self.backend.acoustics.set_settings(settings);
@@ -1149,6 +1156,72 @@ impl Audio {
                     c.hold = None;
                 }
             }
+        }
+    }
+    /// Once a tick: the arrows in flight (a key of their own, position,
+    /// speed in blocks a second), each whooshing on a channel of its own
+    /// while `arrow_whoosh` is on, on the players' volume.
+    pub fn set_whooshes(&mut self, flying: &[(u32, [f64; 3], f32)]) {
+        const EVENT: &str = "horizon:entity.arrow.whoosh";
+        let on = self.backend.acoustics.settings().arrow_whoosh && self.backend.live;
+        let volume = self.engine.source_volumes[crate::sound_engine::MASTER]
+            * self.engine.source_volumes[crate::sound_engine::PLAYERS];
+        let gone: Vec<u32> = self
+            .backend
+            .whooshes
+            .keys()
+            .filter(|k| !on || !flying.iter().any(|f| f.0 == **k))
+            .copied()
+            .collect();
+        for key in gone {
+            if let Some(channel) = self.backend.whooshes.remove(&key) {
+                self.backend.destroy(channel);
+            }
+        }
+        if !on {
+            return;
+        }
+        let samples = self
+            .backend
+            .whoosh_samples
+            .get_or_insert_with(|| Arc::new(crate::spatial::whoosh_samples()))
+            .clone();
+        for &(key, at, speed) in flying {
+            let (gain, pitch) = crate::spatial::whoosh(speed);
+            let channel = match self.backend.whooshes.get(&key) {
+                Some(&c) => c,
+                None => {
+                    if gain <= 0.0 {
+                        continue;
+                    }
+                    let Some(c) = self.backend.create(false) else {
+                        continue;
+                    };
+                    let start = f64::from(key % 97) / 97.0 * samples.len() as f64;
+                    self.backend.with(c, |ch| {
+                        ch.samples = Some((samples.clone(), crate::spatial::WHOOSH_RATE));
+                        ch.position = start;
+                        ch.looping = true;
+                        ch.linear = Some(16.0);
+                        ch.state = State::Playing;
+                        ch.tag = Some((EVENT.into(), crate::sound_engine::PLAYERS));
+                    });
+                    self.backend.whooshes.insert(key, c);
+                    self.backend.set_position(c, at);
+                    let request = Request {
+                        at,
+                        listener: self.listener,
+                        listener_underwater: self.backend.listener_underwater,
+                        source: crate::sound_engine::PLAYERS,
+                        event: EVENT.into(),
+                    };
+                    self.backend.acoustics.evaluate(c, request, 16.0);
+                    c
+                }
+            };
+            self.backend.set_position(channel, at);
+            self.backend.set_volume(channel, gain * volume);
+            self.backend.set_pitch(channel, pitch);
         }
     }
     pub fn sound_physics_enabled(&self) -> bool {
@@ -1317,6 +1390,31 @@ impl Audio {
         }
         if self.backend.acoustics.enabled() {
             census["soundPhysics"] = self.backend.acoustics.stats().json();
+        }
+        // The playing voices as the mixer last mixed them, while a Horizon
+        // sound extra is on (`last` is kept only then).
+        if let Ok(m) = self.backend.mixer.lock() {
+            let voices: Vec<serde_json::Value> = m
+                .channels
+                .values()
+                .filter(|c| c.state == State::Playing && c.last.is_some())
+                .map(|c| {
+                    let v = c.last.expect("filtered");
+                    serde_json::json!({
+                        "event": c.tag.as_ref().map(|(e, _)| e.to_string()),
+                        "at": c.at,
+                        "volume": c.gain,
+                        "gain": v.mono,
+                        "direct": v.wet.map(|w| [w.direct_gain, w.direct_hf]),
+                        "sends": v.wet.map(|w| w.sends.map(|s| s.0)),
+                        "held": c.hold.is_some(),
+                        "speed": c.motion.velocity(Instant::now()).iter().map(|x| x * x).sum::<f32>().sqrt(),
+                    })
+                })
+                .collect();
+            if !voices.is_empty() {
+                census["voices"] = voices.into();
+            }
         }
         census
     }
@@ -1572,6 +1670,8 @@ mod tests {
             listener_underwater: false,
             ticks: 10,
             listener_cell: None,
+            whooshes: HashMap::new(),
+            whoosh_samples: None,
         };
         let (send, receive) = std::sync::mpsc::channel();
         struct Count(Mutex<std::sync::mpsc::Sender<ChannelId>>);

@@ -65,6 +65,8 @@ pub struct Settings {
     pub hrtf: bool,
     pub doppler: bool,
     pub doppler_factor: f32,
+    /// Flying arrows whoosh (`spatial::whoosh`): vanilla's are silent.
+    pub arrow_whoosh: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -100,6 +102,7 @@ impl Default for Settings {
             hrtf: false,
             doppler: false,
             doppler_factor: 1.0,
+            arrow_whoosh: false,
         }
     }
 }
@@ -189,6 +192,7 @@ impl Settings {
             "hrtf" => flag(&mut self.hrtf),
             "doppler" => flag(&mut self.doppler),
             "doppler_factor" => real(&mut self.doppler_factor, 0.0, 4.0),
+            "arrow_whoosh" => flag(&mut self.arrow_whoosh),
             "sound_update_interval" => int(&mut self.sound_update_interval, 1, u32::MAX),
             "max_sound_processing_distance" => {
                 if let Ok(x) = value.parse::<f64>()
@@ -204,7 +208,7 @@ impl Settings {
     /// Every setting as `soundPhysics.<name>:<value>` lines.
     pub fn serialize(&self) -> String {
         let b = |v: bool| if v { "true" } else { "false" };
-        let lines: [(&str, String); 31] = [
+        let lines: [(&str, String); 32] = [
             ("enabled", b(self.enabled).into()),
             ("reverb", b(self.reverb).into()),
             ("occlusion", b(self.occlusion).into()),
@@ -261,6 +265,7 @@ impl Settings {
             ("hrtf", b(self.hrtf).into()),
             ("doppler", b(self.doppler).into()),
             ("doppler_factor", self.doppler_factor.to_string()),
+            ("arrow_whoosh", b(self.arrow_whoosh).into()),
             (
                 "sound_update_interval",
                 self.sound_update_interval.to_string(),

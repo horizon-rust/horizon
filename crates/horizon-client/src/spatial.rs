@@ -10,6 +10,9 @@
 //! whose delays carry elevation and front from back. It needs no data
 //! files and costs a few dozen operations a sample per voice.
 //!
+//! The arrow whoosh is noise through a band-pass, synthesised once and
+//! looped: vanilla has no sound for an arrow in flight.
+//!
 //! The Doppler effect is OpenAL's (`AL_DOPPLER_FACTOR` 1, speed of sound
 //! 343.3 blocks a second), from velocities measured off the positions the
 //! game sets, since the game sets none.
@@ -120,7 +123,14 @@ impl Binaural {
     /// One sample in, the two ears out (unscaled), the ears' filters moved
     /// `t` (0 to 1) of the way from `from` to `to` (a buffer's ramp).
     #[inline]
-    pub fn process(&mut self, x: f32, from: &[Ear; 2], to: &[Ear; 2], t: f32, rate: u32) -> [f32; 2] {
+    pub fn process(
+        &mut self,
+        x: f32,
+        from: &[Ear; 2],
+        to: &[Ear; 2],
+        t: f32,
+        rate: u32,
+    ) -> [f32; 2] {
         let at = self.at;
         self.input[at] = x;
         let mut p = x;
@@ -147,6 +157,55 @@ impl Binaural {
         self.at = (at + 1) & (HISTORY - 1);
         out
     }
+}
+
+/// The rate the whoosh is synthesised at.
+pub const WHOOSH_RATE: u32 = 48_000;
+/// Two seconds of the whoosh, looping without a seam: white noise through
+/// a band-pass at 900 Hz with a slow flutter, its last quarter second
+/// crossfaded into its start.
+pub fn whoosh_samples() -> Vec<f32> {
+    let rate = WHOOSH_RATE as f32;
+    let (len, fade) = (2 * WHOOSH_RATE as usize, WHOOSH_RATE as usize / 4);
+    // RBJ band-pass (constant peak gain), Q 0.8.
+    let w = std::f32::consts::TAU * 900.0 / rate;
+    let alpha = w.sin() / (2.0 * 0.8);
+    let a0 = 1.0 + alpha;
+    let (b0, b2, a1, a2) = (
+        alpha / a0,
+        -alpha / a0,
+        -2.0 * w.cos() / a0,
+        (1.0 - alpha) / a0,
+    );
+    let (mut x1, mut x2, mut y1, mut y2) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    let mut seed = 0x9e37_79b9u32;
+    let raw: Vec<f32> = (0..len + fade)
+        .map(|i| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let x = seed as f32 / u32::MAX as f32 * 2.0 - 1.0;
+            let y = b0 * x + b2 * x2 - a1 * y1 - a2 * y2;
+            (x2, x1, y2, y1) = (x1, x, y1, y);
+            // The fletching's flutter.
+            let flutter = 1.0 + 0.25 * (std::f32::consts::TAU * 11.0 * i as f32 / rate).sin();
+            y * flutter
+        })
+        .collect();
+    let mut out: Vec<f32> = raw[..len].to_vec();
+    for i in 0..fade {
+        let t = i as f32 / fade as f32;
+        out[i] = out[i] * t + raw[len + i] * (1.0 - t);
+    }
+    let rms = (out.iter().map(|x| x * x).sum::<f32>() / out.len() as f32).sqrt();
+    out.iter().map(|x| x * 0.3 / rms.max(1e-6)).collect()
+}
+/// The whoosh's gain and pitch for an arrow flying at `speed` blocks a
+/// second: silent below 8, full at 48 (a bow drawn fully shoots at about 60).
+pub fn whoosh(speed: f32) -> (f32, f32) {
+    let gain = ((speed - 8.0) / 40.0).clamp(0.0, 1.0) * 0.6;
+    let pitch = 0.7 + (speed / 60.0).min(1.5) * 0.6;
+    (gain, pitch)
 }
 
 /// A velocity measured from the positions given, for the Doppler effect.
@@ -299,6 +358,26 @@ mod tests {
             doppler([0.0, 0.0, 10.0], [0.0, 0.0, -34.0], [0.0; 3], 0.0),
             1.0
         );
+    }
+
+    #[test]
+    fn the_whoosh_loops_without_a_seam_and_follows_speed() {
+        let s = whoosh_samples();
+        assert_eq!(s.len(), 2 * WHOOSH_RATE as usize);
+        // The jump across the loop point is no larger than the sound's own steps.
+        let steps = s
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            (s[0] - s[s.len() - 1]).abs() <= steps,
+            "{} {}",
+            s[0],
+            s[s.len() - 1]
+        );
+        assert_eq!(whoosh(5.0).0, 0.0);
+        assert!(whoosh(60.0).0 > whoosh(20.0).0);
+        assert!(whoosh(60.0).1 > whoosh(20.0).1);
     }
 
     #[test]

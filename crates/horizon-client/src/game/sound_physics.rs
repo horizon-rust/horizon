@@ -12,6 +12,34 @@ impl Game<'_> {
     pub(super) fn tick_sound_physics(&mut self) {
         self.audio
             .set_sound_physics(&self.settings.extras.sound_physics);
+        let flying: Vec<(u32, [f64; 3], f32)> = if self.settings.extras.sound_physics.arrow_whoosh {
+            self.creatures
+                .projectiles
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| {
+                    !p.stuck
+                        && matches!(
+                            p.kind,
+                            horizon_client::projectiles::ProjectileKind::Arrow { .. }
+                        )
+                })
+                .map(|(i, p)| {
+                    // An untracked projectile has id 0: keyed by its slot then.
+                    let key = if p.id != 0 { p.id } else { u32::MAX - i as u32 };
+                    let v = p.velocity;
+                    let speed = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt() * 20.0;
+                    (
+                        key,
+                        [p.position.x, p.position.y, p.position.z],
+                        speed as f32,
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.audio.set_whooshes(&flying);
         if !self.audio.sound_physics_enabled() {
             return;
         }

@@ -404,6 +404,7 @@ pub enum Item {
     SoundBounces,
     SoundHrtf,
     SoundDoppler,
+    SoundWhoosh,
 }
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -431,6 +432,7 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(SoundBounces),
         Ok(SoundHrtf),
         Ok(SoundDoppler),
+        Ok(SoundWhoosh),
     ]
 }
 impl Item {
@@ -457,6 +459,7 @@ impl Item {
             Item::SoundBounces => "Ray bounces",
             Item::SoundHrtf => "Binaural sound",
             Item::SoundDoppler => "Doppler effect",
+            Item::SoundWhoosh => "Arrow whoosh",
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
@@ -467,8 +470,8 @@ impl Item {
             SortKey => Sort,
             SoundReverb | SoundOcclusion | SoundUnderwater | SoundReflections | SoundReverbGain
             | SoundBlockAbsorption | SoundRays | SoundBounces => SoundPhysics,
-            SoundPhysics | SoundHrtf | SoundDoppler | Fullbright | DynamicLights | MouseTweaks
-            | Sort | AutoReconnect | NoAi | AgentControl | DiscordPresence => {
+            SoundPhysics | SoundHrtf | SoundDoppler | SoundWhoosh | Fullbright | DynamicLights
+            | MouseTweaks | Sort | AutoReconnect | NoAi | AgentControl | DiscordPresence => {
                 return None;
             }
         })
@@ -527,6 +530,9 @@ impl Item {
             Item::SoundDoppler => {
                 "The pitch of a sound rises as it comes at you and falls as it goes away."
             }
+            Item::SoundWhoosh => {
+                "Arrows whistle through the air, louder and higher the faster they fly."
+            }
         }
     }
     /// The frame-time cost the main switch of an extra shows.
@@ -538,7 +544,7 @@ impl Item {
             Item::AutoReconnect | Item::MouseTweaks | Item::Sort => Some(Cost::None),
             // Traced off the game thread; the mixer's reverb runs on the audio thread.
             Item::SoundPhysics => Some(Cost::Low),
-            Item::SoundHrtf | Item::SoundDoppler => Some(Cost::None),
+            Item::SoundHrtf | Item::SoundDoppler | Item::SoundWhoosh => Some(Cost::None),
             _ => None,
         }
     }
@@ -561,6 +567,7 @@ impl Item {
             Item::SoundReflections => e.sound_physics.reflections,
             Item::SoundHrtf => e.sound_physics.hrtf,
             Item::SoundDoppler => e.sound_physics.doppler,
+            Item::SoundWhoosh => e.sound_physics.arrow_whoosh,
             _ => return None,
         })
     }
@@ -602,6 +609,7 @@ impl Item {
             Item::SoundReflections => e.sound_physics.reflections = !e.sound_physics.reflections,
             Item::SoundHrtf => e.sound_physics.hrtf = !e.sound_physics.hrtf,
             Item::SoundDoppler => e.sound_physics.doppler = !e.sound_physics.doppler,
+            Item::SoundWhoosh => e.sound_physics.arrow_whoosh = !e.sound_physics.arrow_whoosh,
             Item::SoundReverbGain => {
                 let s = &mut e.sound_physics;
                 s.reverb_gain = sp::cycle(&sp::REVERB_GAINS, s.reverb_gain, back)
