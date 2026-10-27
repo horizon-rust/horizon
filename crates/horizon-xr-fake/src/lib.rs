@@ -19,11 +19,19 @@
 //! - `HORIZON_FAKE_XR_CAPTURE`: frame numbers to capture, `120,240`.
 //! - `HORIZON_FAKE_XR_CAPTURE_EVERY`: also capture every N frames into `latest-*.png`, so a
 //!   run that ends on its own leaves its last view.
+//! - `HORIZON_FAKE_XR_CAPTURE_SECONDS`: script times to capture, `8,12.5`: the first frame at
+//!   or after each, into `t8-*.png`, `t12.5-*.png` (the script runs on time, not frames).
 //! - `HORIZON_FAKE_XR_SCRIPT`: a script file, one step per line (`#` comments):
 //!   `SECONDS head YAW PITCH [X Y Z]` moves the head there by that time (degrees, yaw
 //!   positive turning left, pitch positive looking up, metres in the stage), linearly from
 //!   the step before; `SECONDS input PATH VALUE [Y]` sets a binding path's value from that
-//!   time (`/user/hand/right/input/a/click 1`, a stick takes `X Y`).
+//!   time (`/user/hand/right/input/a/click 1`, a stick takes `X Y`); `SECONDS pose PATH YAW
+//!   PITCH [X Y Z]` moves a pose binding (`/user/hand/right/input/aim/pose`) like the head,
+//!   and a pose the script never moves isn't tracked.
+//!
+//! A capture also writes `*-eye0-composite.png` and `*-eye1-composite.png` when quad layers
+//! are shown: each eye with the quads drawn over it where they are, as a headset shows them
+//! (premultiplied alpha, later layers on top, no depth).
 
 #![allow(clippy::missing_safety_doc)]
 
@@ -80,6 +88,8 @@ enum SpaceKind {
     View,
     Local,
     Stage,
+    /// A pose action's space (`xrCreateActionSpace`): the action's handle.
+    Action(u64),
 }
 
 struct Action {
@@ -121,6 +131,7 @@ struct Settings {
     frames: Option<u64>,
     capture: Vec<u64>,
     capture_every: Option<u64>,
+    capture_seconds: Vec<(f32, String)>,
 }
 
 impl Default for Settings {
@@ -144,6 +155,13 @@ impl Default for Settings {
             frames: var("HORIZON_FAKE_XR_FRAMES").and_then(|s| s.parse().ok()),
             capture: var("HORIZON_FAKE_XR_CAPTURE")
                 .map(|s| s.split(',').filter_map(|n| n.trim().parse().ok()).collect())
+                .unwrap_or_default(),
+            capture_seconds: var("HORIZON_FAKE_XR_CAPTURE_SECONDS")
+                .map(|s| {
+                    s.split(',')
+                        .filter_map(|n| Some((n.trim().parse().ok()?, n.trim().to_owned())))
+                        .collect()
+                })
                 .unwrap_or_default(),
             capture_every: var("HORIZON_FAKE_XR_CAPTURE_EVERY")
                 .and_then(|s| s.parse().ok())
@@ -332,6 +350,7 @@ unsafe extern "system" fn get_instance_proc_addr(
         "xrCreateReferenceSpace" => create_reference_space,
         "xrDestroySpace" => destroy_space,
         "xrLocateSpace" => locate_space,
+        "xrCreateActionSpace" => create_action_space,
         "xrLocateViews" => locate_views,
         "xrEnumerateSwapchainFormats" => enumerate_swapchain_formats,
         "xrCreateSwapchain" => create_swapchain,
@@ -358,6 +377,7 @@ unsafe extern "system" fn get_instance_proc_addr(
         "xrGetActionStateBoolean" => get_action_state_boolean,
         "xrGetActionStateFloat" => get_action_state_float,
         "xrGetActionStateVector2f" => get_action_state_vector2f,
+        "xrGetActionStatePose" => get_action_state_pose,
     );
     unsafe {
         // SAFETY: the loader calls each pointer with its OpenXR signature, which every entry
@@ -801,17 +821,47 @@ unsafe extern "system" fn locate_space(
     ) else {
         return XrResult::ERROR_HANDLE_INVALID;
     };
-    let head = s.script.head(s.seconds());
-    let pose = match (a, b) {
-        (SpaceKind::View, SpaceKind::View) => script::IDENTITY,
-        (SpaceKind::View, _) => head,
-        (_, SpaceKind::View) => script::inverse(head),
-        _ => script::IDENTITY,
+    let (Some(space), Some(base)) = (stage_pose(&s, a), stage_pose(&s, b)) else {
+        // A controller the script doesn't move: not tracked.
+        unsafe {
+            (*location).location_flags = sys::SpaceLocationFlags::EMPTY;
+            (*location).pose = script::IDENTITY;
+        }
+        return XrResult::SUCCESS;
     };
     unsafe {
         (*location).location_flags = tracked();
-        (*location).pose = pose;
+        (*location).pose = script::compose(script::inverse(base), space);
     }
+    XrResult::SUCCESS
+}
+
+/// Where a space is now in the stage (the local space is the stage here).
+fn stage_pose(s: &State, kind: SpaceKind) -> Option<sys::Posef> {
+    let t = s.seconds();
+    match kind {
+        SpaceKind::View => Some(s.script.head(t)),
+        SpaceKind::Local | SpaceKind::Stage => Some(script::IDENTITY),
+        SpaceKind::Action(action) => {
+            let a = s.actions.get(&action)?;
+            a.bindings.iter().find_map(|p| s.script.pose(p, t))
+        }
+    }
+}
+
+unsafe extern "system" fn create_action_space(
+    _session: sys::Session,
+    info: *const sys::ActionSpaceCreateInfo,
+    space: *mut sys::Space,
+) -> XrResult {
+    let action = unsafe { (*info).action }.into_raw();
+    let mut s = state();
+    if s.actions.get(&action).map(|a| a.ty) != Some(sys::ActionType::POSE_INPUT) {
+        return XrResult::ERROR_ACTION_TYPE_MISMATCH;
+    }
+    let h = s.handle();
+    s.spaces.insert(h, SpaceKind::Action(action));
+    unsafe { *space = sys::Space::from_raw(h) };
     XrResult::SUCCESS
 }
 
@@ -1093,12 +1143,24 @@ unsafe extern "system" fn end_frame(
     let info = unsafe { &*info };
     let layers = unsafe { std::slice::from_raw_parts(info.layers, info.layer_count as usize) };
     let latest = s.settings.capture_every.is_some_and(|n| frame % n == 0);
-    let capture = latest || s.settings.capture.contains(&frame);
-    let tag = if latest && !s.settings.capture.contains(&frame) {
+    let now_s = s.seconds();
+    let timed = s
+        .settings
+        .capture_seconds
+        .iter()
+        .position(|(t, _)| *t <= now_s)
+        .map(|i| s.settings.capture_seconds.remove(i).1);
+    let capture = latest || s.settings.capture.contains(&frame) || timed.is_some();
+    let tag = if let Some(t) = timed {
+        format!("t{t}")
+    } else if latest && !s.settings.capture.contains(&frame) {
         "latest".to_owned()
     } else {
         format!("frame{frame}")
     };
+    // What the composite captures need: each eye and each quad.
+    let mut eyes = Vec::new();
+    let mut quads = Vec::new();
     for (i, &layer) in layers.iter().enumerate() {
         let ty = unsafe { (*layer).ty };
         let name = match ty {
@@ -1117,14 +1179,31 @@ unsafe extern "system" fn end_frame(
                 for (eye, v) in views.iter().enumerate() {
                     let name = format!("{tag}-layer{i}-eye{eye}.png");
                     capture_image(&mut s, &v.sub_image, &name);
+                    eyes.push((v.pose, v.fov, v.sub_image));
                 }
             }
             sys::StructureType::COMPOSITION_LAYER_QUAD => {
                 let q = unsafe { &*(layer as *const sys::CompositionLayerQuad) };
                 let name = format!("{tag}-layer{i}-quad.png");
                 capture_image(&mut s, &q.sub_image, &name);
+                quads.push((q.pose, q.size, q.sub_image));
             }
             _ => {}
+        }
+    }
+    if !quads.is_empty() {
+        for (eye, view) in eyes.iter().enumerate() {
+            let name = format!("{tag}-eye{eye}-composite.png");
+            let result = composite(&s, view, &quads)
+                .and_then(|(w, h, rgba)| write_png(&s.settings.out.join(&name), w, h, &rgba));
+            match result {
+                Ok(()) => {
+                    if !s.report.captures.contains(&name) {
+                        s.report.captures.push(name);
+                    }
+                }
+                Err(e) => s.report.errors.push(format!("capture {name}: {e}")),
+            }
         }
     }
     if s.settings.frames.is_some_and(|n| frame == n) {
@@ -1137,10 +1216,85 @@ unsafe extern "system" fn end_frame(
     XrResult::SUCCESS
 }
 
-/// Copies the image a layer shows into a PNG in the output folder. The application leaves
-/// it in COLOR_ATTACHMENT_OPTIMAL, as OpenXR asks for a released image.
+/// Copies the image a layer shows into a PNG in the output folder.
 fn capture_image(s: &mut State, sub: &sys::SwapchainSubImage, name: &str) {
-    let result = (|| -> Result<(), String> {
+    let result = read_image(s, sub)
+        .and_then(|(w, h, pixels)| write_png(&s.settings.out.join(name), w, h, &pixels));
+    match result {
+        Ok(()) => {
+            if !s.report.captures.iter().any(|c| c == name) {
+                s.report.captures.push(name.to_owned());
+            }
+        }
+        Err(e) => s.report.errors.push(format!("capture {name}: {e}")),
+    }
+}
+
+/// One eye's image with each quad drawn over it as a compositor would: each pixel's ray
+/// meets each quad's plane (either side), later quads on top, premultiplied alpha. RGBA
+/// rows, top first.
+fn composite(
+    s: &State,
+    (pose, fov, sub): &(sys::Posef, sys::Fovf, sys::SwapchainSubImage),
+    quads: &[(sys::Posef, sys::Extent2Df, sys::SwapchainSubImage)],
+) -> Result<(u32, u32, Vec<u8>), String> {
+    let (w, h, mut out) = read_image(s, sub)?;
+    let images = quads
+        .iter()
+        .map(|(_, _, sub)| read_image(s, sub))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (l, r) = (fov.angle_left.tan(), fov.angle_right.tan());
+    let (d, u) = (fov.angle_down.tan(), fov.angle_up.tan());
+    // Each quad's frame, with the eye's position and turn in it.
+    let frames: Vec<_> = quads
+        .iter()
+        .map(|(q, size, _)| {
+            let p = script::compose(script::inverse(*q), *pose);
+            (
+                p.orientation,
+                [p.position.x, p.position.y, p.position.z],
+                *size,
+            )
+        })
+        .collect();
+    for py in 0..h {
+        for px in 0..w {
+            let fx = (px as f32 + 0.5) / w as f32;
+            let fy = (py as f32 + 0.5) / h as f32;
+            let ray = [l + fx * (r - l), u - fy * (u - d), -1.0];
+            let at = ((py * w + px) * 4) as usize;
+            for ((turn, from, size), (qw, qh, image)) in frames.iter().zip(&images) {
+                let dir = script::rotate(*turn, ray);
+                if dir[2].abs() < 1e-6 {
+                    continue;
+                }
+                let t = -from[2] / dir[2];
+                if t <= 0.0 {
+                    continue;
+                }
+                let x = (from[0] + t * dir[0]) / size.width + 0.5;
+                let y = 0.5 - (from[1] + t * dir[1]) / size.height;
+                if !(0.0..1.0).contains(&x) || !(0.0..1.0).contains(&y) {
+                    continue;
+                }
+                let (sx, sy) = ((x * *qw as f32) as u32, (y * *qh as f32) as u32);
+                let src = ((sy.min(qh - 1) * qw + sx.min(qw - 1)) * 4) as usize;
+                let a = f32::from(image[src + 3]) / 255.0;
+                for c in 0..3 {
+                    let v = f32::from(image[src + c]) + f32::from(out[at + c]) * (1.0 - a);
+                    out[at + c] = v.min(255.0) as u8;
+                }
+                out[at + 3] = 255;
+            }
+        }
+    }
+    Ok((w, h, out))
+}
+
+/// The image a layer shows, read back as RGBA rows (top first). The application leaves it
+/// in COLOR_ATTACHMENT_OPTIMAL, as OpenXR asks for a released image.
+fn read_image(s: &State, sub: &sys::SwapchainSubImage) -> Result<(u32, u32, Vec<u8>), String> {
+    (|| -> Result<(u32, u32, Vec<u8>), String> {
         let chain = s
             .swapchains
             .get(&sub.swapchain.into_raw())
@@ -1309,18 +1463,9 @@ fn capture_image(s: &mut State, sub: &sys::SwapchainSubImage, name: &str) {
                     p.swap(0, 2);
                 }
             }
-            write_png(&s.settings.out.join(name), w, h, &pixels)?;
+            Ok((w, h, pixels))
         }
-        Ok(())
-    })();
-    match result {
-        Ok(()) => {
-            if !s.report.captures.iter().any(|c| c == name) {
-                s.report.captures.push(name.to_owned());
-            }
-        }
-        Err(e) => s.report.errors.push(format!("capture {name}: {e}")),
-    }
+    })()
 }
 
 fn write_png(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
@@ -1475,6 +1620,18 @@ unsafe extern "system" fn get_action_state_float(
         (*out).last_change_time = s.now();
         (*out).is_active = sys::TRUE;
     }
+    XrResult::SUCCESS
+}
+
+unsafe extern "system" fn get_action_state_pose(
+    _session: sys::Session,
+    info: *const sys::ActionStateGetInfo,
+    out: *mut sys::ActionStatePose,
+) -> XrResult {
+    let s = state();
+    let action = unsafe { (*info).action }.into_raw();
+    let active = stage_pose(&s, SpaceKind::Action(action)).is_some();
+    unsafe { (*out).is_active = active.into() };
     XrResult::SUCCESS
 }
 

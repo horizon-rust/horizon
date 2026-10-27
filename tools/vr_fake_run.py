@@ -7,6 +7,10 @@ captures of each eye and the HUD panel land in --out.
 
   python3 tools/vr_fake_run.py --resources PATH/WITH/.local --out vr-run
   python3 tools/vr_fake_run.py --resources ... --script tools/vr_fake_scripts/look_around.txt --hz 1000
+  python3 tools/vr_fake_run.py --resources ... --title --world-frames 1500 \
+      --script tools/vr_fake_scripts/title_laser.txt --capture-seconds 5,8,11,14
+
+--title stays on the title screen (no world) for --world-frames frames in all.
 
 --hz 1000 lets the game run as fast as it can (the fake headset never waits), to measure it.
 Build first: cargo build --release -p horizon-client -p horizon-xr -p horizon-xr-fake
@@ -52,6 +56,8 @@ def main() -> int:
     ap.add_argument("--hz", type=float, default=90.0, help="the fake headset's rate (1000: unpaced)")
     ap.add_argument("--script", help="head and controller script (crates/horizon-xr-fake docs)")
     ap.add_argument("--capture-every", type=int, default=180, help="capture the eyes and panel every N frames")
+    ap.add_argument("--capture-seconds", help="also capture at these script times, e.g. 6,9.5 (t6-*.png)")
+    ap.add_argument("--title", action="store_true", help="stay on the title screen: no world")
     ap.add_argument("--seed", default="1")
     ap.add_argument("--settings-from", help="a game folder whose options.txt and horizon-*.txt to play with")
     ap.add_argument("--timeout", type=float, default=600.0)
@@ -113,8 +119,13 @@ def main() -> int:
         })
         if args.script:
             env["HORIZON_FAKE_XR_SCRIPT"] = str(Path(args.script).resolve())
-        cmd = [str(game / f"horizon-client{EXE}"), "--world", "VR fake test", "--seed", args.seed,
-               "--world-frames", str(args.world_frames)]
+        if args.capture_seconds:
+            env["HORIZON_FAKE_XR_CAPTURE_SECONDS"] = args.capture_seconds
+        if args.title:
+            cmd = [str(game / f"horizon-client{EXE}"), "--frames", str(args.world_frames)]
+        else:
+            cmd = [str(game / f"horizon-client{EXE}"), "--world", "VR fake test", "--seed", args.seed,
+                   "--world-frames", str(args.world_frames)]
         started = time.time()
         with open(out / "game.log", "w", encoding="utf-8", errors="replace") as log:
             proc = subprocess.run(cmd, cwd=game, env=env, stdout=log, stderr=subprocess.STDOUT,

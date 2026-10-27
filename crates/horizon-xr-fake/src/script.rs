@@ -1,5 +1,5 @@
-//! The fake headset's script (`HORIZON_FAKE_XR_SCRIPT`): where the head is over time and
-//! what each controller input reads.
+//! The fake headset's script (`HORIZON_FAKE_XR_SCRIPT`): where the head and the controllers
+//! are over time and what each controller input reads.
 
 use openxr_sys as sys;
 
@@ -15,6 +15,14 @@ pub const IDENTITY: sys::Posef = sys::Posef {
         y: 0.0,
         z: 0.0,
     },
+};
+
+/// A hand held low in front on the right, pointing ahead: a pose step's defaults.
+const HAND: HeadKey = HeadKey {
+    t: 0.0,
+    yaw: 0.0,
+    pitch: 0.0,
+    position: [0.2, 1.3, -0.3],
 };
 
 /// The head standing at 1.6 m, looking down -z.
@@ -36,6 +44,8 @@ struct HeadKey {
 #[derive(Default, Debug)]
 pub struct Script {
     head: Vec<HeadKey>,
+    /// Pose binding paths (`/user/hand/right/input/aim/pose`) and their steps, in time order.
+    poses: Vec<(String, Vec<HeadKey>)>,
     /// (time, path, value), in time order: the last one at or before a time holds.
     inputs: Vec<(f32, String, [f32; 2])>,
 }
@@ -72,6 +82,32 @@ impl Script {
                         ],
                     });
                 }
+                Some("pose") => {
+                    let Some(path) = words.get(2) else {
+                        continue;
+                    };
+                    let i = match script.poses.iter().position(|(p, _)| p == path) {
+                        Some(i) => i,
+                        None => {
+                            script.poses.push(((*path).to_owned(), Vec::new()));
+                            script.poses.len() - 1
+                        }
+                    };
+                    let keys = &mut script.poses[i].1;
+                    let before = keys.last().copied().unwrap_or(HAND);
+                    // Words shift by one: the path comes before the angles.
+                    let num = |i: usize| num(i + 1);
+                    keys.push(HeadKey {
+                        t,
+                        yaw: num(2).unwrap_or(before.yaw),
+                        pitch: num(3).unwrap_or(before.pitch),
+                        position: [
+                            num(4).unwrap_or(before.position[0]),
+                            num(5).unwrap_or(before.position[1]),
+                            num(6).unwrap_or(before.position[2]),
+                        ],
+                    });
+                }
                 Some("input") => {
                     if let Some(path) = words.get(2) {
                         script.inputs.push((
@@ -85,31 +121,24 @@ impl Script {
             }
         }
         script.head.sort_by(|a, b| a.t.total_cmp(&b.t));
+        for (_, keys) in &mut script.poses {
+            keys.sort_by(|a, b| a.t.total_cmp(&b.t));
+        }
         script.inputs.sort_by(|a, b| a.0.total_cmp(&b.0));
         script
     }
 
     /// The head's pose (stage space) at `t` seconds.
     pub fn head(&self, t: f32) -> sys::Posef {
-        let mut before = HEAD;
-        let mut key = HEAD;
-        for k in &self.head {
-            if k.t <= t {
-                before = *k;
-                key = *k;
-            } else {
-                let f = ((t - before.t) / (k.t - before.t).max(1e-6)).clamp(0.0, 1.0);
-                let lerp = |a: f32, b: f32| a + (b - a) * f;
-                key = HeadKey {
-                    t,
-                    yaw: lerp(before.yaw, k.yaw),
-                    pitch: lerp(before.pitch, k.pitch),
-                    position: std::array::from_fn(|i| lerp(before.position[i], k.position[i])),
-                };
-                break;
-            }
-        }
-        pose(key.yaw, key.pitch, key.position)
+        track(&self.head, HEAD, t)
+    }
+
+    /// A pose binding's pose (stage space) at `t`: `None` when the script never moves it (the
+    /// controller isn't tracked) or before its first step.
+    pub fn pose(&self, path: &str, t: f32) -> Option<sys::Posef> {
+        let (_, keys) = self.poses.iter().find(|(p, _)| p == path)?;
+        let first = keys.first()?;
+        (first.t <= t).then(|| track(keys, *first, t))
     }
 
     /// A binding path's value at `t`, when the script sets it.
@@ -120,6 +149,29 @@ impl Script {
             .find(|(at, p, _)| *at <= t && p == path)
             .map(|(_, _, v)| *v)
     }
+}
+
+/// The pose `keys` put at `t`, linearly between steps; `start` before the first.
+fn track(keys: &[HeadKey], start: HeadKey, t: f32) -> sys::Posef {
+    let mut before = start;
+    let mut key = start;
+    for k in keys {
+        if k.t <= t {
+            before = *k;
+            key = *k;
+        } else {
+            let f = ((t - before.t) / (k.t - before.t).max(1e-6)).clamp(0.0, 1.0);
+            let lerp = |a: f32, b: f32| a + (b - a) * f;
+            key = HeadKey {
+                t,
+                yaw: lerp(before.yaw, k.yaw),
+                pitch: lerp(before.pitch, k.pitch),
+                position: std::array::from_fn(|i| lerp(before.position[i], k.position[i])),
+            };
+            break;
+        }
+    }
+    pose(key.yaw, key.pitch, key.position)
 }
 
 /// Yaw about +y then pitch about +x (degrees), at `position`.
@@ -142,7 +194,8 @@ fn pose(yaw: f32, pitch: f32, position: [f32; 3]) -> sys::Posef {
     }
 }
 
-fn rotate(q: sys::Quaternionf, v: [f32; 3]) -> [f32; 3] {
+/// `v` turned by `q`.
+pub fn rotate(q: sys::Quaternionf, v: [f32; 3]) -> [f32; 3] {
     // v' = v + 2w(q x v) + 2 q x (q x v)
     let u = [q.x, q.y, q.z];
     let cross = |a: [f32; 3], b: [f32; 3]| {
@@ -166,6 +219,25 @@ pub fn offset(pose: sys::Posef, local: [f32; 3]) -> sys::Posef {
             x: pose.position.x + d[0],
             y: pose.position.y + d[1],
             z: pose.position.z + d[2],
+        },
+    }
+}
+
+/// `a` then `b` in `a`'s frame: `b`'s pose seen from where `a` is the identity.
+pub fn compose(a: sys::Posef, b: sys::Posef) -> sys::Posef {
+    let p = rotate(a.orientation, [b.position.x, b.position.y, b.position.z]);
+    let (q, r) = (a.orientation, b.orientation);
+    sys::Posef {
+        orientation: sys::Quaternionf {
+            w: q.w * r.w - q.x * r.x - q.y * r.y - q.z * r.z,
+            x: q.w * r.x + q.x * r.w + q.y * r.z - q.z * r.y,
+            y: q.w * r.y - q.x * r.z + q.y * r.w + q.z * r.x,
+            z: q.w * r.z + q.x * r.y - q.y * r.x + q.z * r.w,
+        },
+        position: sys::Vector3f {
+            x: a.position.x + p[0],
+            y: a.position.y + p[1],
+            z: a.position.z + p[2],
         },
     }
 }
@@ -206,6 +278,32 @@ mod tests {
         assert_eq!(s.input("/a", 2.0), Some([1.0, 0.0]));
         assert_eq!(s.input("/a", 3.5), Some([0.0, 0.0]));
         assert_eq!(s.input("/s", 9.0), Some([0.5, -1.0]));
+    }
+
+    #[test]
+    fn a_pose_is_untracked_until_its_first_step_then_moves_like_the_head() {
+        let s = Script::parse(
+            "2 pose /r/aim 0 0 0.1 1.2 -0.2
+4 pose /r/aim 90
+",
+        );
+        assert!(s.pose("/r/aim", 1.0).is_none());
+        assert!(s.pose("/l/aim", 3.0).is_none());
+        let at = s.pose("/r/aim", 2.0).expect("tracked");
+        assert!((at.position.x - 0.1).abs() < 1e-6 && (at.position.z + 0.2).abs() < 1e-6);
+        let mid = s.pose("/r/aim", 3.0).expect("tracked");
+        assert!((mid.orientation.y - (22.5f32).to_radians().sin()).abs() < 1e-4);
+        assert!((mid.position.y - 1.2).abs() < 1e-6, "keeps the position");
+    }
+
+    #[test]
+    fn compose_undoes_inverse() {
+        let a = pose(30.0, -20.0, [1.0, 2.0, 3.0]);
+        let b = pose(-50.0, 10.0, [0.5, -1.0, 0.25]);
+        let back = compose(inverse(a), compose(a, b));
+        assert!((back.position.x - 0.5).abs() < 1e-5, "{back:?}");
+        assert!((back.position.z - 0.25).abs() < 1e-5, "{back:?}");
+        assert!((back.orientation.w - b.orientation.w).abs() < 1e-5);
     }
 
     #[test]
