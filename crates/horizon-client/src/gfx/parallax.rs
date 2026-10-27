@@ -105,6 +105,11 @@ fn parallax_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f
 
 // The sprite at `uv` with the surface's own derivatives (the march moves `uv` per fragment).
 fn parallax_sprite(uv: vec2<f32>, layer: u32, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
+    // Texture Filtering Anisotropic, as the flat terrain (terrain.wgsl's sprite_anisotropic).
+    let taps = horizon_terrain_globals.earth.w;
+    if taps > 1.0 {
+        return horizon_terrain_sprite_anisotropic(uv, layer, dx, dy, taps);
+    }
     let l = i32(layer % horizon_terrain_SPRITE_SPLIT);
     let s = horizon_terrain_sprite_sampler;
     switch layer / horizon_terrain_SPRITE_SPLIT {
