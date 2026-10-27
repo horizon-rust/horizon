@@ -2900,15 +2900,23 @@ impl Renderer {
     ) {
         let (draws, pages) = (&self.draws[..], &self.draw_pages[..]);
         let (mut i, end) = (first as usize, (first + count) as usize);
+        // Back-to-front translucent draws often change one buffer of the two, not both.
+        let mut bound = None;
         while i < end {
             let (page, index_page) = pages[i];
             let run = pages[i..end]
                 .iter()
                 .take_while(|&&p| p == (page, index_page))
                 .count();
-            pass.set_vertex_buffer(0, self.arena.buffer(page).slice(..));
-            let indices = index_page.map_or(&self.indices, |p| self.sorted_indices.buffer(p));
-            pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+            let (vertices, indices) = bound.unzip();
+            if vertices != Some(page) {
+                pass.set_vertex_buffer(0, self.arena.buffer(page).slice(..));
+            }
+            if indices != Some(index_page) {
+                let buffer = index_page.map_or(&self.indices, |p| self.sorted_indices.buffer(p));
+                pass.set_index_buffer(buffer.slice(..), wgpu::IndexFormat::Uint32);
+            }
+            bound = Some((page, index_page));
             if self.multi_draw {
                 let offset = (i - base as usize) as u64 * 20;
                 pass.multi_draw_indexed_indirect(indirect, offset, run as u32);
@@ -3904,9 +3912,6 @@ impl Renderer {
                         ));
                     }
                 }
-                // Sections went back to front (`visible` is sorted by distance, then
-                // key): tiles' water only needs sorting in when there is some.
-                let section_translucent = self.translucent_draws.len();
                 for (i, v) in visible_lods.iter().enumerate() {
                     let instance = visible.len() + i;
                     let tile = self.lods.get_mut(&v.key).expect("visible resident tile");
@@ -3943,11 +3948,11 @@ impl Renderer {
                         ));
                     }
                 }
-                // Near water and distant water share one back-to-front draw order.
-                if self.translucent_draws.len() > section_translucent {
-                    self.translucent_draws
-                        .sort_unstable_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
-                }
+                // Near water and distant water share one back-to-front draw order, by page
+                // far away (`page_runs::back_to_front`).
+                self.translucent_draws.sort_by_cached_key(|&(distance, i, _, pages)| {
+                    page_runs::back_to_front(distance, i, pages)
+                });
                 for &(_, _, draw, pages) in &self.translucent_draws {
                     self.draws.push(draw);
                     self.draw_pages.push(pages);

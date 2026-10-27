@@ -56,10 +56,11 @@ Frames a second once the world had loaded, unpaced:
 | No indirect draw validation on OpenXR's instance (`third_party/wgpu-core`) | 102 | 9.8 |
 | Distant terrain finds tiles to remesh without testing every pair | 106 | 9.4 |
 | Distant terrain selects again at most every 50 ms as samples arrive, not every frame | 111 | 9.0 |
+| Draws grouped by arena page in bands that widen with distance, translucent ones too past 256 blocks (3,700 calls an eye down to 425) | 174 | 5.8 |
 
-What is left per frame (both eyes): recording the passes (1.9 ms), `encode` (1.7 ms), draw lists (1.35 ms),
-visibility (0.7 ms); on the main thread, `update_world` (1.4 ms, distant terrain 0.9 ms of it). Single-pass stereo
-(multiview) would halve the passes and `encode`.
+What is left per frame (both eyes): building the draw lists (2.0 ms: 7,600 sections and 2,650 distant tiles,
+sorted), the rest of each eye's preparation (sky, entities, clouds, uploads), visibility (0.6 ms), recording and
+encoding the passes (0.3 ms); on the main thread, `update_world` (1.0 ms, most of it distant terrain).
 
 ## Not there yet
 
