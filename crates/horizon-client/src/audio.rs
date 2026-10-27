@@ -110,6 +110,8 @@ struct Spatial {
     hrtf: bool,
     doppler: Option<f32>,
     whoosh: bool,
+    /// `sound_range` when not 1.
+    range: Option<f32>,
 }
 /// How a voice is mixed for one buffer: its pan gains, its gain on a mono
 /// output, its filters and sends, and its ears when binaural.
@@ -743,11 +745,14 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
             ]
         };
         let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() as f32;
-        // The mod's attenuation factor stretches the linear range.
-        let linear = match (&physics, c.linear) {
-            (Some(p), Some(max)) => Some(max / p.settings.attenuation_factor),
-            (_, linear) => linear,
-        };
+        // The mod's attenuation factor and Horizon's sound range stretch
+        // the linear range.
+        let linear = c.linear.map(|max| {
+            let factor = physics
+                .as_ref()
+                .map_or(1.0, |p| p.settings.attenuation_factor);
+            max * spatial.range.unwrap_or(1.0) / factor
+        });
         let gain = c.gain.clamp(0.0, 1.0) * distance_gain(linear, distance);
         let wet = match (environment, &physics) {
             (Some(e), Some(p)) if !c.relative => {
@@ -1255,7 +1260,9 @@ impl Audio {
                 hrtf: settings.hrtf,
                 doppler: settings.doppler.then_some(settings.doppler_factor),
                 whoosh: settings.arrow_whoosh,
+                range: (settings.sound_range != 1.0).then_some(settings.sound_range),
             };
+            crate::sound_physics::set_shared_range(settings.sound_range);
         }
         self.backend.acoustics.set_settings(settings);
         if settings.enabled && self.backend.live {

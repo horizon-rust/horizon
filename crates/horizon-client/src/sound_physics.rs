@@ -69,6 +69,10 @@ pub struct Settings {
     pub arrow_whoosh: bool,
     /// Drawing a bow creaks (`spatial::creak_samples`): vanilla's is silent.
     pub bow_creak: bool,
+    /// How far sounds carry against vanilla's (1: 16 blocks a unit of
+    /// volume): the mixer's linear range, the air paths' reach, and in
+    /// single player the integrated server's sending range (`shared_range`).
+    pub sound_range: f32,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -106,6 +110,7 @@ impl Default for Settings {
             doppler_factor: 1.0,
             arrow_whoosh: false,
             bow_creak: false,
+            sound_range: 1.0,
         }
     }
 }
@@ -116,6 +121,20 @@ pub const REVERB_GAINS: [f32; 6] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 pub const BLOCK_ABSORPTIONS: [f32; 5] = [0.5, 1.0, 1.5, 2.0, 4.0];
 pub const RAY_COUNTS: [u32; 4] = [8, 16, 32, 64];
 pub const RAY_BOUNCES: [u32; 4] = [2, 4, 8, 16];
+pub const SOUND_RANGES: [f32; 3] = [1.0, 1.5, 2.0];
+/// The player's `sound_range` for the integrated server in this process,
+/// which sends its single player's sounds that much further (`Hub::sound`):
+/// the server has no settings of its own. A dedicated server's stays 1.
+static SHARED_RANGE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+pub fn set_shared_range(range: f32) {
+    SHARED_RANGE.store(
+        range.clamp(1.0, 3.0).to_bits(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+pub fn shared_range() -> f32 {
+    f32::from_bits(SHARED_RANGE.load(std::sync::atomic::Ordering::Relaxed))
+}
 /// The next value of `values` after `current` (before it with `back`), wrapping.
 pub fn cycle<T: Copy + PartialOrd>(values: &[T], current: T, back: bool) -> T {
     let i = values.iter().position(|v| *v >= current).unwrap_or(0);
@@ -197,6 +216,7 @@ impl Settings {
             "doppler_factor" => real(&mut self.doppler_factor, 0.0, 4.0),
             "arrow_whoosh" => flag(&mut self.arrow_whoosh),
             "bow_creak" => flag(&mut self.bow_creak),
+            "sound_range" => real(&mut self.sound_range, 1.0, 3.0),
             "sound_update_interval" => int(&mut self.sound_update_interval, 1, u32::MAX),
             "max_sound_processing_distance" => {
                 if let Ok(x) = value.parse::<f64>()
@@ -212,7 +232,7 @@ impl Settings {
     /// Every setting as `soundPhysics.<name>:<value>` lines.
     pub fn serialize(&self) -> String {
         let b = |v: bool| if v { "true" } else { "false" };
-        let lines: [(&str, String); 33] = [
+        let lines: [(&str, String); 34] = [
             ("enabled", b(self.enabled).into()),
             ("reverb", b(self.reverb).into()),
             ("occlusion", b(self.occlusion).into()),
@@ -271,6 +291,7 @@ impl Settings {
             ("doppler_factor", self.doppler_factor.to_string()),
             ("arrow_whoosh", b(self.arrow_whoosh).into()),
             ("bow_creak", b(self.bow_creak).into()),
+            ("sound_range", self.sound_range.to_string()),
             (
                 "sound_update_interval",
                 self.sound_update_interval.to_string(),
@@ -682,20 +703,16 @@ fn normal(hit: &Hit) -> DVec3 {
         f64::from(hit.normal[2]),
     )
 }
-/// How far from the listener's cell the air paths are followed, each way:
-/// a sound's usual 16-block range.
+/// How far from the listener's cell the air paths are followed, each way,
+/// at `sound_range` 1: a sound's usual 16-block range.
 const FIELD_HALF: [i32; 3] = [16, 12, 16];
-const FIELD_SIZE: [i32; 3] = [
-    FIELD_HALF[0] * 2 + 1,
-    FIELD_HALF[1] * 2 + 1,
-    FIELD_HALF[2] * 2 + 1,
-];
 const UNREACHED: u16 = u16::MAX;
 /// Steps through the air from the listener's cell to every cell around it
 /// that sound can reach without going through a block (a breadth-first
 /// flood): what tells a door from a wall.
 struct Field {
     origin: [i32; 3],
+    size: [i32; 3],
     steps: Vec<u16>,
 }
 impl Field {
@@ -703,21 +720,24 @@ impl Field {
         let mut i = 0usize;
         for a in (0..3).rev() {
             let d = cell[a] - self.origin[a];
-            if !(0..FIELD_SIZE[a]).contains(&d) {
+            if !(0..self.size[a]).contains(&d) {
                 return None;
             }
-            i = i * FIELD_SIZE[a] as usize + d as usize;
+            i = i * self.size[a] as usize + d as usize;
         }
         Some(i)
     }
     fn steps(&self, cell: [i32; 3]) -> u16 {
         self.index(cell).map_or(UNREACHED, |i| self.steps[i])
     }
-    fn build<V: Voxels + ?Sized>(voxels: &V, listener: [i32; 3]) -> Self {
-        let origin = std::array::from_fn(|a| listener[a] - FIELD_HALF[a]);
-        let len = FIELD_SIZE.iter().map(|&s| s as usize).product();
+    fn build<V: Voxels + ?Sized>(voxels: &V, listener: [i32; 3], range: f32) -> Self {
+        let half: [i32; 3] = FIELD_HALF.map(|h| (h as f32 * range.clamp(1.0, 3.0)).round() as i32);
+        let origin = std::array::from_fn(|a| listener[a] - half[a]);
+        let size = half.map(|h| h * 2 + 1);
+        let len = size.iter().map(|&s| s as usize).product();
         let mut field = Field {
             origin,
+            size,
             steps: vec![UNREACHED; len],
         };
         let mut queue = std::collections::VecDeque::new();
@@ -801,10 +821,11 @@ impl Cache {
         voxels: &V,
         sound: DVec3,
         listener: DVec3,
+        range: f32,
     ) -> Option<DVec3> {
         let listener_cell = cell_of(listener);
         if self.field.is_none() {
-            self.field = Some(Field::build(voxels, listener_cell));
+            self.field = Some(Field::build(voxels, listener_cell, range));
         }
         let field = self.field.as_ref()?;
         let start = cell_of(sound);
@@ -997,7 +1018,7 @@ pub fn evaluate<V: Voxels + ?Sized>(
         reflected_position(&seen, Some(sound - listener), sound, listener)
     } else {
         cache
-            .opening(voxels, sound, listener)
+            .opening(voxels, sound, listener, settings.sound_range)
             .map(|opening| {
                 listener + (opening - listener).normalize_or_zero() * sound.distance(listener)
             })
@@ -1030,7 +1051,8 @@ pub fn evaluate<V: Voxels + ?Sized>(
         // Reverb fades with the sound's distance over `reverb_distance` times
         // its range (the mod's stopgap for OpenAL's room rolloff).
         let distance = listener.distance(heard_at) as f32;
-        let fade = 1.0 - (distance / (max_distance * settings.reverb_distance)).min(1.0);
+        let range = max_distance * settings.sound_range / settings.attenuation_factor;
+        let fade = 1.0 - (distance / (range * settings.reverb_distance)).min(1.0);
         for gain in &mut send_gain {
             *gain *= fade.max(0.0);
         }
@@ -1529,6 +1551,32 @@ pub mod tests {
             closes: 0b100,
         };
         assert_eq!(material(&info, &Settings::default()).closes, 0);
+    }
+
+    #[test]
+    fn the_air_paths_reach_as_far_as_the_sound_range() {
+        // A doorway 20 blocks out along x: beyond the vanilla field (16),
+        // inside the doubled one.
+        let mut b = Blocks::room([18, 60, -4], [26, 68, 4], STONE);
+        b.fill([-4, 60, -12], [30, 60, 8], STONE);
+        b.0.remove(&[22, 61, -4]);
+        b.0.remove(&[22, 62, -4]);
+        let r = request([22.5, 61.5, 0.5], [0.5, 61.5, -8.5]);
+        let far = Settings {
+            sound_range: 2.0,
+            ..on()
+        };
+        let e = run(&b, &r, &far);
+        let to = DVec3::from_array(e.redirect.expect("redirected through the door"));
+        let listener = DVec3::from_array(r.listener);
+        let door = (DVec3::new(22.5, 61.5, -4.0) - listener).normalize();
+        assert!((to - listener).normalize().dot(door) > 0.99);
+        assert_eq!(Field::build(&b, [0, 61, -9], 2.0).size, [65, 49, 65]);
+        set_shared_range(1.5);
+        assert_eq!(shared_range(), 1.5);
+        set_shared_range(9.0);
+        assert_eq!(shared_range(), 3.0);
+        set_shared_range(1.0);
     }
 
     #[test]

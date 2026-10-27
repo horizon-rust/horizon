@@ -13,7 +13,7 @@ Henkel, vlad2305m and Saint) does on Fabric and NeoForge:
 - **Sound direction.** A sound behind a wall is heard from where its reflections reach you, such
   as an open door, at its real distance.
 
-Beside it, four extras of Horizon's own, each with its switch under the same header and
+Beside it, five extras of Horizon's own, each with its switch under the same header and
 independent of sound physics (`crates/horizon-client/src/spatial.rs`):
 
 - **Binaural sound** (`soundPhysics.hrtf`, off): 3D sound for headphones. Vanilla turns OpenAL's
@@ -34,9 +34,21 @@ independent of sound physics (`crates/horizon-client/src/spatial.rs`):
   like any sound.
 
 - **Bow creak** (`soundPhysics.bow_creak`, off): drawing a bow creaks, harder and faster as the
-  tension rises over the 20-tick draw (stick-slip jolts ringing two wood resonances, 420 Hz and
-  1.15 kHz), synthesised once (1.2 s). It plays at the bow hand, right
+  tension rises over the 20-tick draw (stick-slip jolts ringing two wood resonances, 220 Hz and
+  600 Hz), synthesised once (1.2 s). It plays at the bow hand, right
   of the eyes, and fades out over a buffer on an early release. Vanilla's draw is silent.
+
+- **Sound range** (`soundPhysics.sound_range`: Vanilla 1, 1.5 or 2 on the page, up to 3 in the
+  file): how far sounds carry against vanilla's 16 blocks a unit of volume. It stretches the
+  mixer's linear range (with the mod's `attenuation_factor`), the air paths' reach (± 16 × 12 ×
+  16 blocks times the range, so directions through openings hold to the end of it) and the
+  reverb's fade. In single player, alone on the integrated server, the server sends sounds that
+  much further too (`Hub::sound`, through `sound_physics::shared_range`: the server has no
+  settings of its own); with anyone else connected, or on any other server, only the player's
+  own mix changes, so no one hears what the server does not send them. Cost: doubling the range
+  covers four times the area, so in a busy place (a village, a farm) about four times the
+  voices on the audio thread (see Cost), and a cold air flood of about 2 ms instead of 0.6 on
+  the sound physics thread. Nothing on the game thread.
 
 With any of them on, a voice's gains, filters and ears ramp over each 10 ms buffer, so a new
 environment or a turn of the head does not click. All off, the mix is vanilla's to the bit.
@@ -150,6 +162,8 @@ takes all of the mod's general settings under their own names and ranges:
 | `update_on_listener_move` | true | (Horizon) |
 | `hrtf`, `doppler` | false | (Horizon) |
 | `doppler_factor` | 1.0 | (Horizon; OpenAL's `AL_DOPPLER_FACTOR`) |
+| `arrow_whoosh`, `bow_creak` | false | (Horizon) |
+| `sound_range` | 1.0 | (Horizon; 1 to 3) |
 
 Not carried over: the per-block reflectivity and occlusion files (the mod's defaults are built
 in, keyed by sound type), the per-sound rate file (its defaults are), `sound_distance_allowance`

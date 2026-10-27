@@ -331,6 +331,10 @@ fn run(
                     )
                 };
                 let rebuild = defaults(&s) != defaults(&settings);
+                if s.sound_range != settings.sound_range {
+                    // The air paths reach as far as the range.
+                    cache.invalidate();
+                }
                 settings = *s;
                 if rebuild {
                     cache.invalidate();

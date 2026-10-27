@@ -137,7 +137,7 @@ and the container screen tests are unchanged).
 - The Sound header on the Extras page: the switch, one switch per effect (Reverb,
   Occlusion, Underwater filter, Sound direction), Reverb gain, Block absorption, Rays
   and Ray bounces; then Binaural sound (3D sound for headphones), Doppler effect, Arrow
-  whoosh and Bow creak, switches of their own that work with sound physics off. Every other setting of the mod is in
+  whoosh, Bow creak and Sound range, switches of their own that work with sound physics off. Every other setting of the mod is in
   `horizon-extras.txt` as `soundPhysics.<the mod's name>`, with the mod's defaults.
 - How it works, what it costs and how it differs from the mod:
   [sound-physics.md](sound-physics.md).

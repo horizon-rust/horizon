@@ -406,6 +406,7 @@ pub enum Item {
     SoundDoppler,
     SoundWhoosh,
     SoundBowCreak,
+    SoundRange,
 }
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -435,6 +436,7 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(SoundDoppler),
         Ok(SoundWhoosh),
         Ok(SoundBowCreak),
+        Ok(SoundRange),
     ]
 }
 impl Item {
@@ -463,6 +465,7 @@ impl Item {
             Item::SoundDoppler => "Doppler effect",
             Item::SoundWhoosh => "Arrow whoosh",
             Item::SoundBowCreak => "Bow creak",
+            Item::SoundRange => "Sound range",
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
@@ -473,9 +476,9 @@ impl Item {
             SortKey => Sort,
             SoundReverb | SoundOcclusion | SoundUnderwater | SoundReflections | SoundReverbGain
             | SoundBlockAbsorption | SoundRays | SoundBounces => SoundPhysics,
-            SoundPhysics | SoundHrtf | SoundDoppler | SoundWhoosh | SoundBowCreak | Fullbright
-            | DynamicLights | MouseTweaks | Sort | AutoReconnect | NoAi | AgentControl
-            | DiscordPresence => {
+            SoundPhysics | SoundHrtf | SoundDoppler | SoundWhoosh | SoundBowCreak | SoundRange
+            | Fullbright | DynamicLights | MouseTweaks | Sort | AutoReconnect | NoAi
+            | AgentControl | DiscordPresence => {
                 return None;
             }
         })
@@ -535,6 +538,9 @@ impl Item {
                 "The pitch of a sound rises as it comes at you and falls as it goes away."
             }
             Item::SoundBowCreak => "A bow creaks as you draw it, tighter as the string comes back.",
+            Item::SoundRange => {
+                "How far you hear sounds: vanilla's 16 blocks, or further. In single player the world sends them that far too; on a server only your own mix changes."
+            }
             Item::SoundWhoosh => {
                 "Arrows whistle through the air, louder and higher the faster they fly."
             }
@@ -584,6 +590,10 @@ impl Item {
         match self {
             Item::SortKey => crate::keybinds::display_name(&e.sort_key).plain(),
             Item::SoundReverbGain => format!("{}x", e.sound_physics.reverb_gain),
+            Item::SoundRange => match e.sound_physics.sound_range {
+                r if r <= 1.0 => "Vanilla (16)".into(),
+                r => format!("{r}x ({} blocks)", (16.0 * r).round()),
+            },
             Item::SoundBlockAbsorption => format!("{}x", e.sound_physics.block_absorption),
             Item::SoundRays => e.sound_physics.environment_evaluation_ray_count.to_string(),
             Item::SoundBounces => e
@@ -619,6 +629,10 @@ impl Item {
             Item::SoundDoppler => e.sound_physics.doppler = !e.sound_physics.doppler,
             Item::SoundWhoosh => e.sound_physics.arrow_whoosh = !e.sound_physics.arrow_whoosh,
             Item::SoundBowCreak => e.sound_physics.bow_creak = !e.sound_physics.bow_creak,
+            Item::SoundRange => {
+                let s = &mut e.sound_physics;
+                s.sound_range = sp::cycle(&sp::SOUND_RANGES, s.sound_range, back)
+            }
             Item::SoundReverbGain => {
                 let s = &mut e.sound_physics;
                 s.reverb_gain = sp::cycle(&sp::REVERB_GAINS, s.reverb_gain, back)
@@ -795,6 +809,14 @@ mod tests {
         Item::SoundReverbGain.cycle(&mut e, true);
         assert_eq!(Item::SoundRays.value(&e), "64");
         assert_eq!(Item::SoundReverbGain.value(&e), "0.75x");
+        assert_eq!(Item::SoundRange.value(&e), "Vanilla (16)");
+        Item::SoundRange.cycle(&mut e, false);
+        assert_eq!(Item::SoundRange.value(&e), "1.5x (24 blocks)");
+        Item::SoundRange.cycle(&mut e, false);
+        Item::SoundRange.cycle(&mut e, false);
+        assert_eq!(e.sound_physics.sound_range, 1.0);
+        Item::SoundRange.cycle(&mut e, true);
+        assert_eq!(Item::SoundRange.value(&e), "2x (32 blocks)");
         let back = Extras::parse(&e.serialize());
         assert!(back.sound_physics.enabled);
         assert_eq!(back.sound_physics.environment_evaluation_ray_count, 64);
