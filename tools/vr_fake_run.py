@@ -7,8 +7,8 @@ captures of each eye and the HUD panel land in --out.
 
   python3 tools/vr_fake_run.py --resources PATH/WITH/.local --out vr-run
   python3 tools/vr_fake_run.py --resources ... --script tools/vr_fake_scripts/look_around.txt --hz 1000
-  python3 tools/vr_fake_run.py --resources ... --title --world-frames 1500 \
-      --script tools/vr_fake_scripts/title_laser.txt --capture-seconds 5,8,11,14
+  python3 tools/vr_fake_run.py --resources ... --title --world-frames 2200 \
+      --script tools/vr_fake_scripts/title_laser.txt --capture-seconds 6,11,15,18
 
 --title stays on the title screen (no world) for --world-frames frames in all.
 

@@ -65,8 +65,8 @@ cargo build --release -p horizon-client -p horizon-xr -p horizon-xr-fake
 python3 tools/vr_fake_run.py --resources GAME_FOLDER_WITH_.local --out vr-run
 python3 tools/vr_fake_run.py --resources ... --settings-from GAME_FOLDER --size 3132x3016 --hz 1000 \
     --world-frames 9000 --script tools/vr_fake_scripts/look_around.txt
-python3 tools/vr_fake_run.py --resources ... --title --world-frames 1500 \
-    --script tools/vr_fake_scripts/title_laser.txt --capture-seconds 5,8,11,14
+python3 tools/vr_fake_run.py --resources ... --title --world-frames 2200 \
+    --script tools/vr_fake_scripts/title_laser.txt --capture-seconds 6,11,15,18
 ```
 
 The game runs from a temporary folder (the prepared resources linked read-only, a fresh world), on the fake
@@ -74,7 +74,7 @@ runtime through `XR_RUNTIME_JSON` for that process only. `vr-run/report.json` ha
 (all and the last 300 frames), the layers submitted and the actions created; `latest-*.png` are each eye and the
 panel. `--title` stays on the title screen (`--frames` instead of a world). A script moves the controllers with
 `T pose /user/hand/right/input/aim/pose YAW PITCH X Y Z` (untracked until then); `--capture-seconds` captures at
-script times (`t5-*.png`), and every capture with a quad shown also writes `*-eyeN-composite.png`: each eye with
+script times (`t6-*.png`), and every capture with a quad shown also writes `*-eyeN-composite.png`: each eye with
 the panel and the laser drawn over it, as a headset shows them. `--hz 1000` never waits, to measure the game; `HORIZON_SPIKES=0` in the environment logs every frame's
 spans (`vr_eyes`, `vr_eye_draw`, `draw_lists`, `passes`, `encode`, `vr_panel`...). The fake runtime's settings
 and script format are in `crates/horizon-xr-fake/src/lib.rs`.
