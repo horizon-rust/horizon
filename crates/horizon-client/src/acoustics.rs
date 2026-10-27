@@ -41,6 +41,8 @@ pub struct BlockState {
     pub fluid: FluidKind,
     pub collides: bool,
     pub sturdy: u8,
+    /// `sound_physics::closes_axes` of its shape.
+    pub closes: u8,
 }
 /// Every state's material under `settings`.
 pub fn materials(states: &[BlockState], settings: &Settings) -> Arc<[Material]> {
@@ -55,6 +57,7 @@ pub fn materials(states: &[BlockState], settings: &Settings) -> Arc<[Material]> 
                     fluid: s.fluid,
                     collides: s.collides,
                     sturdy: s.sturdy,
+                    closes: s.closes,
                 },
                 settings,
             )
@@ -289,18 +292,31 @@ fn run(
 ) {
     let mut snapshot = Snapshot::default();
     let mut states: Arc<[BlockState]> = Arc::new([]);
+    let mut cache = sound_physics::Cache::default();
     let mut rays = sound_physics::ray_directions(settings.environment_evaluation_ray_count);
     for job in jobs {
         match job {
             Job::Sections(changes) => {
+                // Light updates copy sections too: only changed blocks
+                // empty the cache.
+                let mut changed = false;
                 for (key, section) in changes {
-                    match section {
-                        Some(s) => snapshot.sections.insert(key, s),
+                    let old = match section {
+                        Some(s) => {
+                            let old = snapshot.sections.insert(key, s.clone());
+                            changed |= old.is_none_or(|o| o.blocks != s.blocks);
+                            continue;
+                        }
                         None => snapshot.sections.remove(&key),
                     };
+                    changed |= old.is_some();
+                }
+                if changed {
+                    cache.invalidate();
                 }
             }
             Job::States(s) => {
+                cache.invalidate();
                 states = s;
                 snapshot.materials = materials(&states, &settings);
             }
@@ -317,18 +333,28 @@ fn run(
                 let rebuild = defaults(&s) != defaults(&settings);
                 settings = *s;
                 if rebuild {
+                    cache.invalidate();
                     snapshot.materials = materials(&states, &settings);
                 }
             }
-            Job::Clear => snapshot.sections.clear(),
+            Job::Clear => {
+                cache.invalidate();
+                snapshot.sections.clear();
+            }
             Job::Evaluate {
                 channel,
                 request,
                 max_distance,
             } => {
                 let started = Instant::now();
-                let environment =
-                    sound_physics::evaluate(&snapshot, &request, max_distance, &settings, &rays);
+                let environment = sound_physics::evaluate(
+                    &snapshot,
+                    &request,
+                    max_distance,
+                    &settings,
+                    &rays,
+                    &mut cache,
+                );
                 let took = started.elapsed();
                 sink.environment(channel, environment);
                 pending.fetch_sub(1, Ordering::Relaxed);
@@ -394,6 +420,7 @@ mod tests {
             fluid: FluidKind::None,
             collides,
             sturdy: 0b11_1111,
+            closes: if collides { 0b111 } else { 0 },
         };
         let states = vec![
             state("minecraft:air", "stone", false),

@@ -5,7 +5,7 @@
 use super::Game;
 use horizon_client::acoustics::BlockState;
 use horizon_client::blocks::Fluid;
-use horizon_client::sound_physics::FluidKind;
+use horizon_client::sound_physics::{FluidKind, closes_axes};
 use horizon_world::registry::BlockStateId;
 
 impl Game<'_> {
@@ -47,6 +47,7 @@ impl Game<'_> {
                     .collision_block(BlockStateId(id as u32))
                     .is_ok_and(|b| !b.empty_shape),
                 sturdy: f.sturdy_full,
+                closes: closes_axes(&f.outline),
             })
             .collect()
     }

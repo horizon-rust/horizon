@@ -12,7 +12,7 @@ use horizon_client::chunk::{MIN_Y, SECTIONS, Section, index};
 use horizon_client::fast_hash::FxHashMap;
 use horizon_client::sound_engine::ChannelId;
 use horizon_client::sound_physics::{
-    self, Environment, FluidKind, Material, Request, Settings, StateInfo,
+    self, Cache, Environment, FluidKind, Material, Request, Settings, StateInfo,
 };
 use std::hint::black_box;
 use std::sync::Arc;
@@ -33,6 +33,7 @@ fn scene_materials() -> Arc<[Material]> {
                 fluid: FluidKind::None,
                 collides,
                 sturdy: 0b11_1111,
+                closes: 0b111,
             },
             &s,
         )
@@ -147,7 +148,9 @@ fn main() {
         .and_then(|a| a.parse().ok())
         .unwrap_or(200);
     let scenes = scenes();
-    println!("## Sound physics thread: one sound (ms, median / 95th percentile of {sounds})\n");
+    println!(
+        "## Sound physics thread: one sound (ms, median of {sounds}: with the thread's cache / with a cold one)\n"
+    );
     let variants: [(&str, u32, u32); 5] = [
         ("8 rays x 4", 8, 4),
         ("16 rays x 4", 16, 4),
@@ -170,8 +173,9 @@ fn main() {
                 ..Settings::default()
             };
             let directions = sound_physics::ray_directions(rays);
-            let mut times = Vec::with_capacity(sounds);
-            for i in 0..sounds {
+            let (mut warm, mut cold) = (Vec::with_capacity(sounds), Vec::with_capacity(sounds));
+            let mut cache = Cache::default();
+            for i in 0..sounds * 2 {
                 let jitter = (i % 7) as f64 * 0.13;
                 let request = Request {
                     at: [
@@ -184,6 +188,14 @@ fn main() {
                     source: 5,
                     event: "minecraft:entity.zombie.ambient".into(),
                 };
+                // Alternately with the thread's cache and with a cold one (a
+                // sound right after the listener moved or a block changed).
+                let mut fresh = Cache::default();
+                let (cache, times) = if i % 2 == 0 {
+                    (&mut cache, &mut warm)
+                } else {
+                    (&mut fresh, &mut cold)
+                };
                 let started = Instant::now();
                 black_box(sound_physics::evaluate(
                     &scene.snapshot,
@@ -191,12 +203,15 @@ fn main() {
                     16.0,
                     &settings,
                     &directions,
+                    cache,
                 ));
                 times.push(started.elapsed());
             }
-            times.sort();
-            let at = |q: f64| ms(times[((times.len() - 1) as f64 * q) as usize]);
-            print!(" {:.3} / {:.3} |", at(0.5), at(0.95));
+            let median = |times: &mut Vec<Duration>| {
+                times.sort();
+                ms(times[times.len() / 2])
+            };
+            print!(" {:.3} / {:.3} |", median(&mut warm), median(&mut cold));
         }
         println!();
     }
@@ -263,6 +278,7 @@ fn main() {
             fluid: FluidKind::None,
             collides: true,
             sturdy: 0b11_1111,
+            closes: 0b111,
         })
         .collect();
     let handed = started.elapsed();

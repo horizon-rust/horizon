@@ -54,13 +54,22 @@ Rust and the EFX parts it drives are rebuilt in the mixer.
      `strict_occlusion`, at least 0.49 for block sounds). Direct high-frequency gain
      `exp(-occlusion × block_absorption × 3)`, gain its 0.1th power.
    - reverb: `environment_evaluation_ray_count` rays on a golden spiral, each bounced
-     `environment_evaluation_ray_bounces` times (mirror reflection, 256 blocks a leg). Each
-     bounce adds to the bus its path length × the surface's reflectivity points to; the long
-     buses are weighted by the mean reflectivity of their bounce raised to 3 and 4.
-   - direction: every hit that sees the listener counts as shared airspace (which also opens
-     the filters); with occlusion, the sound moves to the inverse-square-weighted mean of
-     those directions.
-   - underwater: direct high-frequency gain × (1 − `underwater_filter`), sends × 0.4.
+     `environment_evaluation_ray_bounces` times (mirror reflection, 256 blocks a leg). The legs
+     measure the room: their mean free path (4 V / S) and the mean energy each bounce keeps
+     (`reflection`: the mod's reflectivity × 0.57, stone 0.86, wood 0.23, wool 0.06; a leg that
+     escapes keeps nothing). Eyring's formula gives the decay time, `0.161 V / (-S ln(1 - a))`;
+     it picks the two buses whose decays frame it (equal power on a log scale), at a level of
+     the energy that comes back.
+   - direction: every hit whose air cell the listener sees counts as shared airspace (which
+     opens the filters, as in the mod). A sound the listener does not see is heard from the
+     first point the listener sees on its air path: a flood through the air from the
+     listener's cell (± 16 × 12 × 16 blocks, a sound's usual range) that goes round blocks,
+     through open doors and not closed ones (`closes_axes` of the block's shape). Where no air
+     path joins them (a closed room), the mod's average of the reflections' directions.
+   - underwater: direct high-frequency gain × (1 − `underwater_filter`), sends × 0.4, applied
+     last.
+   - a cache (`sound_physics::Cache`) keeps which cells the listener sees and the air paths
+     while the listener stays in one cell and no block changes (light updates do not count).
 3. **The mixer applies** the result: the direct path and four sends through an EFX-style
    low-pass (gain, gain above 5 kHz) with OpenAL's air absorption (0.99426 per block ×
    `air_absorption`), the sends into the four buses with OpenAL's room rolloff, the
@@ -121,31 +130,34 @@ Measured with `cargo run --profile fast -p horizon-client --example sound_physic
 | Work | When | Cost |
 |---|---|---|
 | Starting a sound | each sound | one message to the thread; no ray on the game thread |
-| Section sync, 9 x 9 chunks x 24 sections | each tick (20 a second) | 0.008 ms unchanged, 0.016 ms with an edit in every chunk |
+| Section sync, 9 x 9 chunks x 24 sections | each tick (20 a second) | 0.008 ms unchanged, 0.017 ms with an edit in every chunk |
 | First sync after turning it on or a teleport | once | 0.12 ms |
-| Handing over the block states (30 000) | once, when turned on | 0.4 ms |
+| Handing over the block states (30 000) | once, when turned on | 0.4 to 0.7 ms |
 | Off | | one settings comparison a tick |
 
-**Sound physics thread**, one sound, ms (median / 95th percentile of 200):
+**Sound physics thread**, one sound, ms (median of 200: with the thread's cache, as repeated
+sounds find it / with a cold cache, right after the listener moved a block or a block changed):
 
 | Scene | 8 rays x 4 | 16 x 4 | 32 x 4 (default) | 32 x 8 | 64 x 4 |
 |---|---|---|---|---|---|
-| Open ground | 0.035 / 0.040 | 0.072 / 0.098 | 0.144 / 0.190 | 0.147 / 0.179 | 0.330 / 0.352 |
-| Stone room with a door | 0.023 / 0.025 | 0.041 / 0.044 | 0.074 / 0.077 | 0.107 / 0.136 | 0.125 / 0.157 |
-| Behind 3 blocks of wool | 0.037 / 0.040 | 0.074 / 0.080 | 0.149 / 0.159 | 0.147 / 0.163 | 0.298 / 0.356 |
-| Large cave | 0.047 / 0.064 | 0.091 / 0.117 | 0.242 / 0.251 | 0.330 / 0.445 | 0.361 / 0.449 |
+| Open ground | 0.035 / 0.035 | 0.071 / 0.072 | 0.142 / 0.143 | 0.142 / 0.144 | 0.282 / 0.285 |
+| Stone room with a door | 0.014 / 0.685 | 0.024 / 0.708 | 0.043 / 0.765 | 0.074 / 0.784 | 0.085 / 0.784 |
+| Behind 3 blocks of wool | 0.037 / 0.467 | 0.075 / 0.507 | 0.148 / 0.591 | 0.148 / 0.585 | 0.297 / 0.748 |
+| Large cave | 0.035 / 0.055 | 0.056 / 0.091 | 0.108 / 0.173 | 0.193 / 0.306 | 0.214 / 0.340 |
 
-At the default, a busy scene of 100 sounds a second keeps that thread about 2 % busy; a sound
-waits well under a millisecond before it starts (the hold is 40 ms at most). The materials are
-built there too (2.7 ms, once).
+The cold cost of a hidden sound is the air flood (about 0.6 ms); the mod's version of the
+calculation (no cache, no flood) took 0.07 to 0.25 ms at the default. At 100 sounds a second
+the thread stays under 10 % busy even with every sound cold, and a sound waits under a
+millisecond before it starts (the hold is 40 ms at most). The materials are built there too
+(3 to 5 ms, once).
 
 **Audio thread**, mixing one second of 48 kHz stereo, ms:
 
 | Voices | Vanilla mixer | With sound physics |
 |---|---|---|
-| 8 | 1.2 | 8.2 |
-| 32 | 5.8 | 17.4 |
-| 64 | 9.0 | 31.1 |
+| 8 | 1.8 | 8.4 |
+| 32 | 4.8 | 20.8 |
+| 64 | 9.4 | 32.9 |
 
 Most of the extra is the four reverb buses (about 7 ms a second while any rings); they stop
 when silent. That is under 1 % of a core for a usual scene, on the audio thread, not the game
@@ -158,14 +170,35 @@ max on the game thread.
 
 ## Differences from the mod
 
+What the port fixes in the mod's calculation (the faithful port is commit `a69589b2d` on this
+branch, to compare by ear):
+
+- **Small stone rooms rang like cathedrals.** The mod picks the bus from each path's length ×
+  the surface's reflectivity, and weights the long buses by the bounces' mean reflectivity,
+  so every closed stone room saturated all four buses. The decay time now comes from the
+  room the rays measure (Eyring): a 5-block stone room rings under two seconds, a 40-block
+  cave over three, a wool room briefly (`rooms_and_caves_ring_for_their_size_and_walls`).
+- **Direction through doors depended on luck.** With 32 rays a 1 × 2 doorway was often missed
+  and the direction changed from one sound to the next. The air path finds the doorway every
+  time, at 8 rays as at 64, and tells an open door from a closed one
+  (`sound_comes_through_the_door`).
+- **Up to 160 visibility rays a sound.** The mod traces one to the listener from every hit;
+  they are cached per cell between sounds (`the_cache_answers_repeated_sounds_the_same`).
+- **The underwater filter was partly undone** by the shared-airspace floor applied after it
+  (`max(0.2 √shared, cutoff)`); it applies last now.
+- **Inconsistent weights:** the short bus was the only one not weighted by reflectivity (gone
+  with the new reverb), and the direct path counted with weight 1 against 1 / length² for the
+  reflections; it is weighted as they are.
+- **A ray that escaped kept bouncing** from its last hit while the path was shorter than
+  `reverb_attenuation_distance`, adding the distance to the listener each time; it stops.
+
+Other differences:
+
 - Blocks are whole cubes for the rays: the mod clips each block's collision and fluid shapes,
   so a ray passes over a slab or between fence posts there. Faces still count as non-full for
-  occlusion from the exported `isFaceSturdy` bits.
+  occlusion from the exported `isFaceSturdy` bits, and the air path uses the block's shape.
 - The sound type of a block is read from its break sound, then its step sound
   (`block.<type>.break`); a sound type that borrows another's sounds gets that one's values.
-- A ray that escapes always stops bouncing. The mod keeps bouncing it from its last hit, adding
-  the distance to the listener again each time, while the path is shorter than
-  `reverb_attenuation_distance` (off by default, so only with that setting).
 - The reverb buses are a feedback delay network with the presets' decay, high-frequency decay,
   reflections and delays, not OpenAL Soft's EAX reverb: the decay times are measured in tests
   (`presets_decay_as_the_mod_sets_them`), the tone is not the same.
@@ -179,5 +212,7 @@ max on the game thread.
 ## Not verified
 
 Not listened to: everything above is checked by unit tests and the benchmark, not by ear.
-The reverb's loudness against the mod's, the hold before a sound starts, and how it sounds in
-VR (KRVR) are untested in a real game.
+The faithful port (`a69589b2d`) ran in a real game (a deepslate cave, 0.24 ms a sound on the
+thread, 0.02 ms a tick on the game thread); the fixed one has not been listened to yet. The
+reverb's loudness against the mod's, the hold before a sound starts, and how it sounds in VR
+(KRVR) are untested by ear.

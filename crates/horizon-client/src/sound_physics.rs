@@ -267,9 +267,14 @@ pub struct Material {
     pub reflectivity: f32,
     /// How much a sound through it is muffled (Block Occlusion Factors).
     pub occlusion: f32,
+    /// The axes (x, y, z as bits 0, 1, 2) its shape closes to sound going
+    /// through the air from cell to cell: a full block all three, a closed
+    /// door one, an open door the one it swung along, a fence none.
+    pub closes: u8,
 }
 impl Material {
     pub const AIR: Material = Material {
+        closes: 0,
         hit: false,
         sturdy: 0,
         water: false,
@@ -294,6 +299,23 @@ pub struct StateInfo<'a> {
     /// A non-empty collision shape.
     pub collides: bool,
     pub sturdy: u8,
+    /// `closes_axes` of its shape.
+    pub closes: u8,
+}
+/// The axes a shape (boxes in block space) closes: one of its boxes spans
+/// at least 90 % of the cell across both other axes.
+pub fn closes_axes(boxes: &[[f64; 6]]) -> u8 {
+    let mut closes = 0;
+    for b in boxes {
+        let span = |a: usize| b[a + 3] - b[a];
+        for axis in 0..3 {
+            let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
+            if span(u) >= 0.9 && span(v) >= 0.9 {
+                closes |= 1 << axis;
+            }
+        }
+    }
+    closes
 }
 /// The mod's reflectivity defaults by `SoundType`, keyed by the sound type's
 /// name in its sound events (`block.<name>.break`).
@@ -389,6 +411,7 @@ pub fn material(info: &StateInfo<'_>, settings: &Settings) -> Material {
         water: info.fluid == FluidKind::Water,
         reflectivity: lookup(&REFLECTIVITY, info).unwrap_or(settings.default_block_reflectivity),
         occlusion,
+        closes: if info.collides { info.closes } else { 0 },
     }
 }
 
@@ -528,71 +551,6 @@ pub fn processed(event: &str, source: usize, settings: &Settings) -> bool {
         "weather.rain" | "weather.rain.above" | "entity.lightning_bolt.thunder"
     ) && !path.starts_with("item.goat_horn.sound.")
 }
-/// The direction rays reach the listener from (`ReflectedAudio`).
-struct Directions {
-    direct: Option<DVec3>,
-    /// (vector from the listener to the point that sees it, path length).
-    reflected: Vec<(DVec3, f64)>,
-    shared: u32,
-    evaluate: bool,
-    max_length: f64,
-}
-impl Directions {
-    fn add(&mut self, v: DVec3, travelled: f64) {
-        let length = travelled + v.length();
-        if length <= 0.0 || length > self.max_length {
-            return;
-        }
-        self.shared += 1;
-        if self.evaluate {
-            self.reflected.push((v, length));
-        }
-    }
-    /// The listener-relative direction the sound is heard from, at the
-    /// sound's distance: the paths' directions weighted by the inverse square
-    /// of their length, plus the direct one.
-    fn position(&self, sound: DVec3, listener: DVec3) -> Option<DVec3> {
-        if !self.evaluate || self.reflected.is_empty() {
-            return None;
-        }
-        let mut sum = self.direct.map_or(DVec3::ZERO, DVec3::normalize_or_zero);
-        for &(v, length) in &self.reflected {
-            sum += v.normalize_or_zero() / (length * length);
-        }
-        let n = sum.normalize_or_zero();
-        (n.length() >= 0.5).then(|| listener + n * sound.distance(listener))
-    }
-}
-/// The ray directions around a sound, spread on a golden spiral.
-pub fn ray_directions(count: u32) -> Vec<DVec3> {
-    let g = PHI * std::f32::consts::TAU;
-    (0..count)
-        .map(|i| {
-            let fi = i as f32 / count as f32;
-            let longitude = g * i as f32;
-            let latitude = (fi * 2.0 - 1.0).asin();
-            DVec3::new(
-                f64::from(latitude.cos() * longitude.cos()),
-                f64::from(latitude.cos() * longitude.sin()),
-                f64::from(latitude.sin()),
-            )
-        })
-        .collect()
-}
-/// The listener sees `from` directly: the vector from the listener to it.
-fn shared_airspace<V: Voxels + ?Sized>(voxels: &V, from: DVec3, listener: DVec3) -> Option<DVec3> {
-    cast(voxels, from, listener, None)
-        .is_none()
-        .then(|| from - listener)
-}
-fn hit_airspace<V: Voxels + ?Sized>(voxels: &V, hit: &Hit, listener: DVec3) -> Option<DVec3> {
-    let n = DVec3::new(
-        f64::from(hit.normal[0]),
-        f64::from(hit.normal[1]),
-        f64::from(hit.normal[2]),
-    );
-    shared_airspace(voxels, hit.at + n * 0.001, listener)
-}
 /// The blocks one path from the sound to the listener crosses, added up.
 fn occlusion_along<V: Voxels + ?Sized>(
     voxels: &V,
@@ -661,21 +619,273 @@ fn occlusion<V: Voxels + ?Sized>(
     }
     least.min(max)
 }
-/// Sound Physics' `evaluateEnvironment`: the environment of a sound at
-/// `request.at` heard at `request.listener`, whose channel attenuates
-/// linearly to `max_distance` (vanilla's `attenuationDistance`).
+/// The ray directions around a sound, spread on a golden spiral.
+pub fn ray_directions(count: u32) -> Vec<DVec3> {
+    let g = PHI * std::f32::consts::TAU;
+    (0..count)
+        .map(|i| {
+            let fi = i as f32 / count as f32;
+            let longitude = g * i as f32;
+            let latitude = (fi * 2.0 - 1.0).asin();
+            DVec3::new(
+                f64::from(latitude.cos() * longitude.cos()),
+                f64::from(latitude.cos() * longitude.sin()),
+                f64::from(latitude.sin()),
+            )
+        })
+        .collect()
+}
+fn centre(cell: [i32; 3]) -> DVec3 {
+    DVec3::new(
+        f64::from(cell[0]) + 0.5,
+        f64::from(cell[1]) + 0.5,
+        f64::from(cell[2]) + 0.5,
+    )
+}
+fn normal(hit: &Hit) -> DVec3 {
+    DVec3::new(
+        f64::from(hit.normal[0]),
+        f64::from(hit.normal[1]),
+        f64::from(hit.normal[2]),
+    )
+}
+/// How far from the listener's cell the air paths are followed, each way:
+/// a sound's usual 16-block range.
+const FIELD_HALF: [i32; 3] = [16, 12, 16];
+const FIELD_SIZE: [i32; 3] = [
+    FIELD_HALF[0] * 2 + 1,
+    FIELD_HALF[1] * 2 + 1,
+    FIELD_HALF[2] * 2 + 1,
+];
+const UNREACHED: u16 = u16::MAX;
+/// Steps through the air from the listener's cell to every cell around it
+/// that sound can reach without going through a block (a breadth-first
+/// flood): what tells a door from a wall.
+struct Field {
+    origin: [i32; 3],
+    steps: Vec<u16>,
+}
+impl Field {
+    fn index(&self, cell: [i32; 3]) -> Option<usize> {
+        let mut i = 0usize;
+        for a in (0..3).rev() {
+            let d = cell[a] - self.origin[a];
+            if !(0..FIELD_SIZE[a]).contains(&d) {
+                return None;
+            }
+            i = i * FIELD_SIZE[a] as usize + d as usize;
+        }
+        Some(i)
+    }
+    fn steps(&self, cell: [i32; 3]) -> u16 {
+        self.index(cell).map_or(UNREACHED, |i| self.steps[i])
+    }
+    fn build<V: Voxels + ?Sized>(voxels: &V, listener: [i32; 3]) -> Self {
+        let origin = std::array::from_fn(|a| listener[a] - FIELD_HALF[a]);
+        let len = FIELD_SIZE.iter().map(|&s| s as usize).product();
+        let mut field = Field {
+            origin,
+            steps: vec![UNREACHED; len],
+        };
+        let mut queue = std::collections::VecDeque::new();
+        if let Some(i) = field.index(listener) {
+            field.steps[i] = 0;
+            queue.push_back((listener, 0u16));
+        }
+        while let Some((cell, steps)) = queue.pop_front() {
+            for (axis, dir) in [(0, 1), (0, -1), (1, 1), (1, -1), (2, 1), (2, -1)] {
+                let mut next = cell;
+                next[axis] += dir;
+                let Some(i) = field.index(next) else {
+                    continue;
+                };
+                if field.steps[i] != UNREACHED
+                    || voxels.material(next[0], next[1], next[2]).closes & (1 << axis) != 0
+                {
+                    continue;
+                }
+                field.steps[i] = steps + 1;
+                queue.push_back((next, steps + 1));
+            }
+        }
+        field
+    }
+}
+/// What stays true between sounds while the listener stays in one cell and
+/// no section changes: which cells the listener sees, and the air paths.
+/// The sound physics thread keeps one; `invalidate` it when blocks change.
+#[derive(Default)]
+pub struct Cache {
+    listener: Option<[i32; 3]>,
+    visible: crate::fast_hash::FxHashMap<[i32; 3], bool>,
+    field: Option<Field>,
+    /// Visibility answers found in the cache, and traced.
+    pub hits: u64,
+    pub misses: u64,
+}
+impl Cache {
+    pub fn invalidate(&mut self) {
+        self.listener = None;
+        self.visible.clear();
+        self.field = None;
+    }
+    fn prepare(&mut self, listener: DVec3) {
+        let cell = cell_of(listener);
+        if self.listener != Some(cell) || self.visible.len() > 1 << 16 {
+            self.invalidate();
+            self.listener = Some(cell);
+        }
+    }
+    /// The listener sees the centre of `cell`.
+    fn sees<V: Voxels + ?Sized>(&mut self, voxels: &V, cell: [i32; 3], listener: DVec3) -> bool {
+        if let Some(&seen) = self.visible.get(&cell) {
+            self.hits += 1;
+            return seen;
+        }
+        self.misses += 1;
+        let seen = cast(voxels, centre(cell), listener, None).is_none();
+        self.visible.insert(cell, seen);
+        seen
+    }
+    /// The air cell in front of a hit, when the listener sees it: the
+    /// vector from the listener to it (the mod's shared airspace).
+    fn hit_airspace<V: Voxels + ?Sized>(
+        &mut self,
+        voxels: &V,
+        hit: &Hit,
+        listener: DVec3,
+    ) -> Option<DVec3> {
+        let air = std::array::from_fn(|a| hit.cell[a] + hit.normal[a]);
+        self.sees(voxels, air, listener)
+            .then(|| centre(air) - listener)
+    }
+    /// Where a sound the listener cannot see reaches them through the air:
+    /// down the air path from the sound towards the listener, the first cell
+    /// the listener sees (a doorway, the mouth of a tunnel). None when no air
+    /// path within the field joins them.
+    fn opening<V: Voxels + ?Sized>(
+        &mut self,
+        voxels: &V,
+        sound: DVec3,
+        listener: DVec3,
+    ) -> Option<DVec3> {
+        let listener_cell = cell_of(listener);
+        if self.field.is_none() {
+            self.field = Some(Field::build(voxels, listener_cell));
+        }
+        let field = self.field.as_ref()?;
+        let start = cell_of(sound);
+        // A sound inside a block starts from its nearest reached neighbour.
+        let mut cell = std::iter::once(start)
+            .chain([0, 1, 2].into_iter().flat_map(|a| {
+                [1, -1].map(|d| {
+                    let mut c = start;
+                    c[a] += d;
+                    c
+                })
+            }))
+            .min_by_key(|&c| field.steps(c))?;
+        if field.steps(cell) == UNREACHED {
+            return None;
+        }
+        let mut path = Vec::new();
+        while field.steps(cell) > 0 {
+            path.push(cell);
+            let here = field.steps(cell);
+            cell = (0..6)
+                .map(|k| {
+                    let mut c = cell;
+                    c[k / 2] += if k % 2 == 0 { 1 } else { -1 };
+                    c
+                })
+                .find(|&c| field.steps(c) == here - 1)?;
+        }
+        path.push(cell);
+        let path = path.into_iter().find(|&c| self.sees(voxels, c, listener))?;
+        Some(centre(path))
+    }
+}
+/// The share of a bounce's energy a surface of the mod's reflectivity sends
+/// on (stone 0.86, wood 0.23, wool 0.06): its absorption is the rest.
+pub fn reflection(reflectivity: f32) -> f32 {
+    (reflectivity * 0.57).clamp(0.03, 0.9)
+}
+/// The four buses' decay times (`reverb::presets`).
+const BUS_DECAYS: [f32; 4] = [0.15, 0.55, 1.68, 4.142];
+/// What the rays found about the space around a sound.
+#[derive(Default, Debug)]
+struct Room {
+    /// Legs traced (a ray's first leg and each bounce), and how many hit.
+    legs: u32,
+    hits: u32,
+    /// The hitting legs' total length.
+    length: f64,
+    /// The hits' total `reflection`.
+    reflected: f64,
+}
+impl Room {
+    /// Eyring's reverberation time: 0.161 V / (-S ln(1 - a)) with the mean
+    /// free path 4 V / S the rays measured and the mean absorption a, an
+    /// escaped leg absorbing everything.
+    fn decay(&self) -> f32 {
+        if self.hits == 0 {
+            return 0.0;
+        }
+        let kept = (self.reflected / f64::from(self.legs)).clamp(1e-6, 0.999);
+        let free_path = self.length / f64::from(self.hits);
+        (0.161 / 4.0 * free_path / -kept.ln()).min(8.0) as f32
+    }
+    /// How much of the sound comes back: the energy kept per bounce.
+    fn level(&self) -> f32 {
+        if self.legs == 0 {
+            return 0.0;
+        }
+        (1.2 * self.reflected / f64::from(self.legs)) as f32
+    }
+}
+/// A reverberation time and level as the four buses' send gains: between
+/// the two buses whose decays frame it (equal power on a log scale), the
+/// shortest bus alone below it, the longest above.
+fn bus_sends(decay: f32, level: f32) -> [f32; 4] {
+    let mut sends = [0.0; 4];
+    let level = level.clamp(0.0, 1.0);
+    if decay <= 0.0 || level <= 0.0 {
+        return sends;
+    }
+    if decay <= BUS_DECAYS[0] {
+        sends[0] = level * (decay / BUS_DECAYS[0]).sqrt();
+        return sends;
+    }
+    if decay >= BUS_DECAYS[3] {
+        sends[3] = level;
+        return sends;
+    }
+    let i = (0..3).find(|&i| decay < BUS_DECAYS[i + 1]).unwrap_or(2);
+    let t = (decay / BUS_DECAYS[i]).ln() / (BUS_DECAYS[i + 1] / BUS_DECAYS[i]).ln();
+    sends[i] = level * (1.0 - t).sqrt();
+    sends[i + 1] = level * t.sqrt();
+    sends
+}
+/// The environment of a sound at `request.at` heard at `request.listener`,
+/// whose channel attenuates linearly to `max_distance` (vanilla's
+/// `attenuationDistance`), after Sound Physics' `evaluateEnvironment`.
 ///
-/// Differences from the mod: blocks are whole cubes for the rays (the mod
-/// clips their collision and fluid shapes), and a ray that escapes always
-/// stops bouncing (the mod keeps bouncing it from its last hit while the
-/// path is shorter than `reverb_attenuation_distance`, adding the distance
-/// to the listener again each time).
+/// Occlusion, shared airspace and the filters are the mod's. Where it
+/// differs (`docs/sound-physics.md`): the reverb comes from the room the
+/// rays measure (Eyring's decay time from their mean free path and the
+/// surfaces' absorption) rather than from path lengths scaled by
+/// reflectivity, which made every closed stone room ring like a cathedral;
+/// a hidden sound is heard from the first point of its air path the
+/// listener sees (a doorway), with the mod's average of the reflections
+/// only where no air path joins them; visibility is cached per cell; the
+/// underwater filter applies last, so shared airspace does not undo it.
 pub fn evaluate<V: Voxels + ?Sized>(
     voxels: &V,
     request: &Request,
     max_distance: f32,
     settings: &Settings,
     rays: &[DVec3],
+    cache: &mut Cache,
 ) -> Environment {
     let sound = DVec3::from_array(request.at);
     let listener = DVec3::from_array(request.listener);
@@ -685,6 +895,7 @@ pub fn evaluate<V: Voxels + ?Sized>(
     {
         return Environment::DRY;
     }
+    cache.prepare(listener);
     let absorption = f64::from(settings.block_absorption) * 3.0;
     let sound_cell = cell_of(sound);
     let underwater = settings.underwater
@@ -698,136 +909,97 @@ pub fn evaluate<V: Voxels + ?Sized>(
     } else {
         0.0
     };
-    let mut direct_cutoff = (-occluded * absorption).exp() as f32;
-    if underwater {
-        direct_cutoff *= 1.0 - settings.underwater_filter;
-    }
+    let through = (-occluded * absorption).exp() as f32;
+    let visible = cast(voxels, sound, listener, None).is_none();
+    let direction =
+        settings.reflections && (occluded > 0.0 || !settings.redirect_non_occluded_sounds);
 
     let bounces = settings.environment_evaluation_ray_bounces.max(1) as usize;
-    let mut directions = Directions {
-        direct: None,
-        reflected: Vec::new(),
-        shared: 0,
-        evaluate: settings.reflections
-            && (occluded > 0.0 || !settings.redirect_non_occluded_sounds),
-        max_length: settings.max_sound_processing_distance / f64::from(settings.attenuation_factor),
-    };
-    directions.direct = shared_airspace(voxels, sound, listener);
-    let mut send_gain = [0.0f32; 4];
-    let mut bounce_reflectivity = vec![0.0f32; bounces];
-    let rcp_total = 1.0 / (rays.len().max(1) * bounces) as f32;
-    let trace = settings.reverb || directions.evaluate;
-    for &dir in rays.iter().filter(|_| trace) {
-        let Some(first) = cast(voxels, sound, sound + dir * RAY_LENGTH, Some(sound_cell)) else {
-            continue;
-        };
-        let mut travelled = sound.distance(first.at);
-        if let Some(v) = hit_airspace(voxels, &first, listener) {
-            directions.add(v, travelled);
-        }
-        let mut last = first;
-        let mut last_dir = dir;
-        for bounce in bounce_reflectivity.iter_mut() {
-            let n = DVec3::new(
-                f64::from(last.normal[0]),
-                f64::from(last.normal[1]),
-                f64::from(last.normal[2]),
-            );
-            let new_dir = last_dir - n * (2.0 * last_dir.dot(n));
-            let next = cast(
-                voxels,
-                last.at,
-                last.at + new_dir * RAY_LENGTH,
-                Some(last.cell),
-            );
-            let reflectivity = voxels
-                .material(last.cell[0], last.cell[1], last.cell[2])
-                .reflectivity;
-            let towards_listener = 0.25 * (reflectivity * 0.75 + 0.25);
-            match next {
-                None => travelled += last.at.distance(listener),
-                Some(hit) => {
-                    *bounce += reflectivity;
-                    travelled += last.at.distance(hit.at);
-                    if let Some(v) = hit_airspace(voxels, &hit, listener) {
-                        directions.add(v, travelled);
+    let max_length =
+        settings.max_sound_processing_distance / f64::from(settings.attenuation_factor);
+    let mut room = Room::default();
+    let mut shared = 0u32;
+    // (vector from the listener, path length) of the hits the listener sees.
+    let mut seen: Vec<(DVec3, f64)> = Vec::new();
+    if settings.reverb || direction {
+        for &first in rays {
+            let (mut from, mut dir, mut ignore) = (sound, first, sound_cell);
+            let mut travelled = 0.0;
+            for _ in 0..=bounces {
+                let hit = cast(voxels, from, from + dir * RAY_LENGTH, Some(ignore));
+                let counts = travelled >= f64::from(settings.reverb_attenuation_distance);
+                if counts {
+                    room.legs += 1;
+                }
+                let Some(hit) = hit else {
+                    break;
+                };
+                let leg = from.distance(hit.at);
+                travelled += leg;
+                if counts {
+                    let m = voxels.material(hit.cell[0], hit.cell[1], hit.cell[2]);
+                    room.hits += 1;
+                    room.length += leg;
+                    room.reflected += f64::from(reflection(m.reflectivity));
+                }
+                if let Some(v) = cache.hit_airspace(voxels, &hit, listener) {
+                    let length = travelled + v.length();
+                    if length > 0.0 && length <= max_length {
+                        shared += 1;
+                        seen.push((v, length));
                     }
-                    last = hit;
-                    last_dir = new_dir;
                 }
-            }
-            if travelled >= f64::from(settings.reverb_attenuation_distance) {
-                // Which reverb the path feeds: its length scaled by how
-                // reflective the surface is, 0 to 3 and beyond.
-                let delay = travelled.max(0.0) as f32 * 0.12 * reflectivity;
-                let cross = [
-                    1.0 - delay.abs().clamp(0.0, 1.0),
-                    1.0 - (delay - 1.0).abs().clamp(0.0, 1.0),
-                    1.0 - (delay - 2.0).abs().clamp(0.0, 1.0),
-                    (delay - 2.0).clamp(0.0, 1.0),
-                ];
-                for (slot, (gain, scale)) in send_gain
-                    .iter_mut()
-                    .zip([6.4f32, 12.8, 12.8, 12.8])
-                    .enumerate()
-                {
-                    *gain += cross[slot] * towards_listener * scale * rcp_total;
-                }
-            }
-            if next.is_none() {
-                break;
+                let n = normal(&hit);
+                dir -= n * (2.0 * dir.dot(n));
+                (from, ignore) = (hit.at, hit.cell);
             }
         }
     }
-    for r in &mut bounce_reflectivity {
-        *r /= rays.len().max(1) as f32;
-    }
-    let redirect = directions.position(sound, listener);
+
+    let redirect = if !direction {
+        None
+    } else if visible {
+        // Seen directly: only `redirect_non_occluded_sounds` off moves it, to
+        // the mod's average with the direct path weighted as the others.
+        reflected_position(&seen, Some(sound - listener), sound, listener)
+    } else {
+        cache
+            .opening(voxels, sound, listener)
+            .map(|opening| {
+                listener + (opening - listener).normalize_or_zero() * sound.distance(listener)
+            })
+            .or_else(|| reflected_position(&seen, None, sound, listener))
+    };
     let heard_at = redirect.unwrap_or(sound);
 
-    let shared = directions.shared as f32 * 64.0 * rcp_total;
-    let weights = [
-        (shared / 20.0).clamp(0.0, 1.0),
-        (shared / 15.0).clamp(0.0, 1.0),
-        (shared / 10.0).clamp(0.0, 1.0),
-        (shared / 10.0).clamp(0.0, 1.0),
-    ];
-    let through = (-occluded * absorption).exp() as f32;
+    let rcp_total = 1.0 / (rays.len().max(1) * bounces) as f32;
+    let shared = shared as f32 * 64.0 * rcp_total;
+    let weights = [20.0f32, 15.0, 10.0, 10.0].map(|w| (shared / w).clamp(0.0, 1.0));
     let mut send_cutoff = weights.map(|w| through * (1.0 - w) + w);
     // Shared airspace lets some filtered dry signal through, which keeps the
     // direction of a sound behind a corner.
     let average = weights.iter().sum::<f32>() * 0.25;
-    direct_cutoff = (average.sqrt() * 0.2).max(direct_cutoff);
+    let mut direct_cutoff = (average.sqrt() * 0.2).max(through);
+    if underwater {
+        direct_cutoff *= 1.0 - settings.underwater_filter;
+        for cutoff in &mut send_cutoff {
+            *cutoff *= 0.4;
+        }
+    }
     let direct_gain = direct_cutoff.powf(0.1);
 
+    let mut send_gain = [0.0f32; 4];
     if settings.reverb {
-        send_gain[1] *= bounce_reflectivity.get(1).copied().unwrap_or(0.0);
-        if let Some(r) = bounce_reflectivity.get(2) {
-            send_gain[2] *= r.powi(3);
-        }
-        if let Some(r) = bounce_reflectivity.get(3) {
-            send_gain[3] *= r.powi(4);
-        }
-        send_gain[0] = send_gain[0].clamp(0.0, 1.0);
-        send_gain[1] = send_gain[1].clamp(0.0, 1.0);
-        send_gain[2] = (send_gain[2] * 1.05 - 0.05).clamp(0.0, 1.0);
-        send_gain[3] = (send_gain[3] * 1.05 - 0.05).clamp(0.0, 1.0);
+        send_gain = bus_sends(room.decay(), room.level());
         for (gain, cutoff) in send_gain.iter_mut().zip(send_cutoff) {
             *gain *= cutoff.powf(0.1);
         }
         // Reverb fades with the sound's distance over `reverb_distance` times
-        // its range (the mod's own stopgap for OpenAL's room rolloff).
+        // its range (the mod's stopgap for OpenAL's room rolloff).
         let distance = listener.distance(heard_at) as f32;
         let fade = 1.0 - (distance / (max_distance * settings.reverb_distance)).min(1.0);
         for gain in &mut send_gain {
             *gain *= fade.max(0.0);
-        }
-    } else {
-        send_gain = [0.0; 4];
-    }
-    if underwater {
-        for cutoff in &mut send_cutoff {
-            *cutoff *= 0.4;
         }
     }
     Environment {
@@ -837,6 +1009,26 @@ pub fn evaluate<V: Voxels + ?Sized>(
         send_cutoff,
         redirect: redirect.map(|p| p.to_array()),
     }
+}
+/// The mod's `ReflectedAudio.evaluateSoundPosition`: the directions of the
+/// paths that reach the listener, weighted by the inverse square of their
+/// length (the direct path too), at the sound's distance.
+fn reflected_position(
+    seen: &[(DVec3, f64)],
+    direct: Option<DVec3>,
+    sound: DVec3,
+    listener: DVec3,
+) -> Option<DVec3> {
+    if seen.is_empty() {
+        return None;
+    }
+    let weigh = |v: DVec3, length: f64| v.normalize_or_zero() / (length * length).max(1e-6);
+    let mut sum = direct.map_or(DVec3::ZERO, |v| weigh(v, v.length()));
+    for &(v, length) in seen {
+        sum += weigh(v, length);
+    }
+    let n = sum.normalize_or_zero();
+    (n.length() >= 0.5).then(|| listener + n * sound.distance(listener))
 }
 
 #[cfg(test)]
@@ -850,6 +1042,7 @@ pub mod tests {
         water: false,
         reflectivity: 1.5,
         occlusion: 1.0,
+        closes: 0b111,
     };
     const WOOL: Material = Material {
         reflectivity: 0.1,
@@ -867,6 +1060,7 @@ pub mod tests {
         water: true,
         reflectivity: 0.5,
         occlusion: 0.25,
+        closes: 0,
     };
     /// Blocks in a map; everything else is air.
     #[derive(Default)]
@@ -921,6 +1115,7 @@ pub mod tests {
             16.0,
             s,
             &ray_directions(s.environment_evaluation_ray_count),
+            &mut Cache::default(),
         )
     }
     fn total(e: &Environment) -> f32 {
@@ -960,6 +1155,7 @@ pub mod tests {
             fluid,
             collides,
             sturdy: 0b11_1111,
+            closes: 0b111,
         };
         let stone = material(
             &state(
@@ -1141,8 +1337,22 @@ pub mod tests {
         assert!(strict.direct_cutoff < 0.1);
     }
 
+    /// The decay time the sends point to: their gains' weighted bus decay.
+    fn decay_of(e: &Environment) -> f32 {
+        let total = total(e);
+        let log: f32 = e
+            .send_gain
+            .iter()
+            .zip(BUS_DECAYS)
+            .map(|(g, d)| g * g * d.ln())
+            .sum::<f32>()
+            / e.send_gain.iter().map(|g| g * g).sum::<f32>();
+        assert!(total > 0.0, "{e:?}");
+        log.exp()
+    }
+
     #[test]
-    fn caves_reverberate_longer_than_small_rooms() {
+    fn rooms_and_caves_ring_for_their_size_and_walls() {
         let s = on();
         let small = Blocks::room([-3, 60, -3], [3, 66, 3], STONE);
         let large = Blocks::room([-20, 50, -20], [20, 80, 20], STONE);
@@ -1150,28 +1360,35 @@ pub mod tests {
         let small = run(&small, &r, &s);
         let r = request([0.5, 60.5, 0.5], [1.5, 60.5, 0.5]);
         let large = run(&large, &r, &s);
-        assert!(total(&small) > 0.0 && total(&large) > 0.0);
-        // Close walls feed the short decay bus, which a large cave's far
-        // walls do not; a closed stone room saturates the long ones as well
-        // (as in the mod).
-        assert!(
-            small.send_gain[0] > large.send_gain[0] + 0.02,
-            "{small:?} {large:?}"
-        );
+        // A 5-block stone room rings under two seconds, never on the
+        // longest bus; a 40-block cave on it.
+        let (small_decay, large_decay) = (decay_of(&small), decay_of(&large));
+        assert!((0.4..2.0).contains(&small_decay), "{small:?} {small_decay}");
+        assert_eq!(small.send_gain[3], 0.0, "{small:?}");
+        assert!(large_decay > 3.0, "{large:?} {large_decay}");
         assert!(large.send_gain[3] > 0.5, "{large:?}");
-        // A bare floor outdoors reverberates far less than a room.
+        // A bare floor outdoors barely reverberates, and briefly.
         let mut ground = Blocks::default();
         ground.fill([-30, 59, -30], [30, 59, 30], STONE);
         let outdoors = run(&ground, &request([0.5, 60.5, 0.5], [1.5, 60.5, 0.5]), &s);
-        assert!(total(&outdoors) < 0.5 * total(&large), "{outdoors:?}");
-        // Wool walls deaden it.
-        let wool = Blocks::room([-3, 60, -3], [3, 66, 3], WOOL);
-        let r = request([0.5, 63.5, 0.5], [1.5, 63.5, 0.5]);
-        assert!(total(&run(&wool, &r, &s)) < total(&small));
+        assert!(total(&outdoors) < 0.3 * total(&small), "{outdoors:?}");
+        assert_eq!(
+            outdoors.send_gain[2] + outdoors.send_gain[3],
+            0.0,
+            "{outdoors:?}"
+        );
+        // Wool walls deaden the same room: quieter and shorter.
+        let wool = run(
+            &Blocks::room([-3, 60, -3], [3, 66, 3], WOOL),
+            &request([0.5, 63.5, 0.5], [1.5, 63.5, 0.5]),
+            &s,
+        );
+        assert!(total(&wool) < 0.3 * total(&small), "{wool:?}");
+        assert!(decay_of(&wool) < small_decay);
         // Reverb off.
         let off = run(
             &Blocks::room([-3, 60, -3], [3, 66, 3], STONE),
-            &r,
+            &request([0.5, 63.5, 0.5], [1.5, 63.5, 0.5]),
             &Settings {
                 reverb: false,
                 ..on()
@@ -1181,42 +1398,127 @@ pub mod tests {
     }
 
     #[test]
-    fn sound_comes_through_the_door() {
-        // Sound in a closed stone room east of the listener, its only door
-        // on the room's north side (-z).
+    fn bus_sends_frame_the_decay_time() {
+        assert_eq!(bus_sends(0.0, 1.0), [0.0; 4]);
+        assert_eq!(bus_sends(9.0, 0.5), [0.0, 0.0, 0.0, 0.5]);
+        let exact = bus_sends(0.55, 1.0);
+        assert!((exact[1] - 1.0).abs() < 1e-6 && exact[0] == 0.0 && exact[2].abs() < 1e-6);
+        let between = bus_sends(1.0, 1.0);
+        assert!(between[1] > 0.0 && between[2] > 0.0 && between[0] == 0.0);
+        // Equal power.
+        assert!((between[1].powi(2) + between[2].powi(2) - 1.0).abs() < 1e-5);
+    }
+
+    /// A stone room east of the listener holding the sound, with a door
+    /// (`door` cells removed, or a door block) in its north wall (-z), on
+    /// the ground.
+    fn room_with_door(door: Option<Material>) -> Blocks {
         let mut b = Blocks::room([4, 60, -4], [12, 68, 4], STONE);
-        for x in 7..=9 {
-            for y in 61..=63 {
-                b.0.remove(&[x, y, -4]);
+        b.fill([-12, 60, -20], [20, 60, 8], STONE);
+        for y in [61, 62] {
+            match door {
+                None => {
+                    b.0.remove(&[8, y, -4]);
+                }
+                Some(m) => {
+                    b.0.insert([8, y, -4], m);
+                }
             }
         }
-        // The ground outside.
-        b.fill([-12, 60, -20], [20, 60, 8], STONE);
+        b
+    }
+
+    #[test]
+    fn sound_comes_through_the_door() {
         let r = request([8.5, 61.5, 0.5], [0.5, 61.5, -8.5]);
-        let e = run(&b, &r, &on());
-        let to = e.redirect.expect("redirected through the door");
-        assert!(e.direct_cutoff < 0.5, "the wall is still in the way: {e:?}");
         let listener = DVec3::from_array(r.listener);
-        let heard = (DVec3::from_array(to) - listener).normalize();
         let door = (DVec3::new(8.5, 61.5, -4.0) - listener).normalize();
         let source = (DVec3::from_array(r.at) - listener).normalize();
-        assert!(heard.dot(door) > heard.dot(source), "{heard:?}");
-        // Same distance as the real sound.
-        let d0 = DVec3::from_array(r.at).distance(listener);
-        assert!((DVec3::from_array(to).distance(listener) - d0).abs() < 1e-6);
-        // Reflections off: it stays put.
-        assert_eq!(
-            run(
-                &b,
+        // A one-by-two doorway, whatever the rays did: the air path finds it.
+        let open = room_with_door(None);
+        for rays in [8, 32, 64] {
+            let e = run(
+                &open,
                 &r,
                 &Settings {
-                    reflections: false,
+                    environment_evaluation_ray_count: rays,
                     ..on()
-                }
-            )
-            .redirect,
+                },
+            );
+            let to = e.redirect.expect("redirected through the door");
+            assert!(e.direct_cutoff < 0.5, "the wall is still in the way: {e:?}");
+            let heard = (DVec3::from_array(to) - listener).normalize();
+            assert!(heard.dot(door) > 0.99, "{rays} rays: {heard:?}");
+            assert!(heard.dot(door) > heard.dot(source));
+            // Same distance as the real sound.
+            let d0 = DVec3::from_array(r.at).distance(listener);
+            assert!((DVec3::from_array(to).distance(listener) - d0).abs() < 1e-6);
+        }
+        // An open door (a slab along the wall, x) lets it through; a closed
+        // one (across the doorway, z) does not, nor a wall.
+        let slab = |closes| Material {
+            closes,
+            sturdy: 0,
+            ..STONE
+        };
+        let swung = run(&room_with_door(Some(slab(0b001))), &r, &on());
+        assert!(swung.redirect.is_some());
+        assert_eq!(
+            run(&room_with_door(Some(slab(0b100))), &r, &on()).redirect,
             None
         );
+        assert_eq!(run(&room_with_door(Some(STONE)), &r, &on()).redirect, None);
+        // Reflections off: it stays put.
+        let off = Settings {
+            reflections: false,
+            ..on()
+        };
+        assert_eq!(run(&open, &r, &off).redirect, None);
+    }
+
+    #[test]
+    fn closed_axes_follow_the_shape() {
+        assert_eq!(closes_axes(&[[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]), 0b111);
+        // A door against the north side: closes z.
+        assert_eq!(closes_axes(&[[0.0, 0.0, 0.0, 1.0, 1.0, 0.1875]]), 0b100);
+        // A bottom slab: closes y only.
+        assert_eq!(closes_axes(&[[0.0, 0.0, 0.0, 1.0, 0.5, 1.0]]), 0b010);
+        // A fence post.
+        assert_eq!(closes_axes(&[[0.375, 0.0, 0.375, 0.625, 1.0, 0.625]]), 0);
+        // No collision: closes nothing.
+        let info = StateInfo {
+            block: "minecraft:oak_door",
+            break_sound: "",
+            step_sound: "",
+            fluid: FluidKind::None,
+            collides: false,
+            sturdy: 0,
+            closes: 0b100,
+        };
+        assert_eq!(material(&info, &Settings::default()).closes, 0);
+    }
+
+    #[test]
+    fn the_cache_answers_repeated_sounds_the_same() {
+        let b = room_with_door(None);
+        let r = request([8.5, 61.5, 0.5], [0.5, 61.5, -8.5]);
+        let s = on();
+        let rays = ray_directions(32);
+        let mut cache = Cache::default();
+        let first = evaluate(&b, &r, 16.0, &s, &rays, &mut cache);
+        let traced = cache.misses;
+        let again = evaluate(&b, &r, 16.0, &s, &rays, &mut cache);
+        assert_eq!(first, again);
+        assert_eq!(cache.misses, traced, "nothing traced twice");
+        assert!(cache.hits > 0);
+        assert_eq!(first, run(&b, &r, &s), "same answer as a cold cache");
+        // Another listener cell starts over.
+        let moved = Request {
+            listener: [0.5, 61.5, -9.5],
+            ..r
+        };
+        evaluate(&b, &moved, 16.0, &s, &rays, &mut cache);
+        assert!(cache.misses > traced);
     }
 
     #[test]
@@ -1234,6 +1536,8 @@ pub mod tests {
                 ..on()
             },
         );
+        // The filter applies last: shared airspace does not lift it back.
+        assert!(wet.direct_cutoff <= 1.0 - 0.9 + 1e-6, "{wet:?}");
         assert!(
             wet.direct_cutoff < dry.direct_cutoff * 0.5,
             "{wet:?} {dry:?}"
