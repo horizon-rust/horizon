@@ -214,13 +214,27 @@ impl Renderer {
         while let Some(pending) = &mut self.lod_pending {
             let Some(&key) = pending.meshes.keys().next() else {
                 let pending = self.lod_pending.take().expect("pending tiles");
+                // Tiles replaced because full-detail chunks now cover columns go at once: fading
+                // out, they would show through those chunks (meshed without them), half their
+                // pixels each frame.
+                let covering = pending
+                    .cutout
+                    .as_ref()
+                    .is_some_and(|cutout| *cutout != self.lod_cutout);
+                let shown = if covering {
+                    start.checked_sub(FADE).unwrap_or(start)
+                } else {
+                    start
+                };
                 for key in pending.uploaded {
                     if let Some(tile) = self.lods.get_mut(&key) {
-                        tile.shown.get_or_insert(start);
+                        tile.shown.get_or_insert(shown);
                     }
                 }
                 for key in pending.removed {
-                    if let Some(tile) = self.lods.get_mut(&key) {
+                    if covering {
+                        self.remove_lod(key);
+                    } else if let Some(tile) = self.lods.get_mut(&key) {
                         tile.leaving.get_or_insert(start);
                     }
                 }
