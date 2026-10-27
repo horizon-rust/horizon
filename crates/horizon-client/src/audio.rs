@@ -303,8 +303,22 @@ fn attach(mixer: &Mutex<Mixer>, channel: ChannelId, samples: Samples, looping: b
 type Stream = cpal::Stream;
 #[cfg(not(feature = "audio"))]
 type Stream = std::convert::Infallible;
+/// The output device in use, and what tells the game to move to another:
+/// a thread reading the system's default output once a second, and the
+/// stream's error callback (the device went away).
+#[derive(Default)]
+struct OutputWatch {
+    default: Mutex<Option<String>>,
+    failed: std::sync::atomic::AtomicBool,
+}
 pub struct Audio {
-    _stream: Option<Stream>,
+    stream: Option<Stream>,
+    /// The device `stream` plays on.
+    device: Option<String>,
+    /// None on the dedicated server and where output is turned off.
+    watch: Option<Arc<OutputWatch>>,
+    /// When opening another device was last tried (once a second at most).
+    reopened: Option<Instant>,
     pub engine: SoundEngine,
     backend: MixerBackend,
     /// Record `Heard` sounds (the subtitle overlay is listening).
@@ -938,18 +952,20 @@ fn output_disabled(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<S
 fn open_device(
     device: &cpal::Device,
     mixer: Arc<Mutex<Mixer>>,
+    watch: &Arc<OutputWatch>,
 ) -> Result<(cpal::Stream, cpal::SupportedStreamConfig)> {
     use cpal::SampleFormat as F;
     let config = device.default_output_config()?;
+    let w = watch.clone();
     let stream = match config.sample_format() {
-        F::F32 => build_stream::<f32>(device, &config, mixer),
-        F::F64 => build_stream::<f64>(device, &config, mixer),
-        F::I16 => build_stream::<i16>(device, &config, mixer),
-        F::I32 => build_stream::<i32>(device, &config, mixer),
-        F::I8 => build_stream::<i8>(device, &config, mixer),
-        F::U16 => build_stream::<u16>(device, &config, mixer),
-        F::U32 => build_stream::<u32>(device, &config, mixer),
-        F::U8 => build_stream::<u8>(device, &config, mixer),
+        F::F32 => build_stream::<f32>(device, &config, mixer, w),
+        F::F64 => build_stream::<f64>(device, &config, mixer, w),
+        F::I16 => build_stream::<i16>(device, &config, mixer, w),
+        F::I32 => build_stream::<i32>(device, &config, mixer, w),
+        F::I8 => build_stream::<i8>(device, &config, mixer, w),
+        F::U16 => build_stream::<u16>(device, &config, mixer, w),
+        F::U32 => build_stream::<u32>(device, &config, mixer, w),
+        F::U8 => build_stream::<u8>(device, &config, mixer, w),
         other => Err(format!("unsupported sample format {other}").into()),
     }?;
     stream.play()?;
@@ -960,6 +976,7 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
     mixer: Arc<Mutex<Mixer>>,
+    watch: Arc<OutputWatch>,
 ) -> Result<cpal::Stream> {
     let rate = config.sample_rate().0;
     let channels = config.channels() as usize;
@@ -977,7 +994,12 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
                 *out = T::from_sample(*s);
             }
         },
-        |e| log::warn!("Horizon: audio stream error: {e}"),
+        move |e| {
+            log::warn!("Horizon: audio stream error: {e}");
+            watch
+                .failed
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        },
         None,
     )?;
     Ok(stream)
@@ -1002,24 +1024,32 @@ impl Audio {
             );
         }
         let mixer = Arc::new(Mutex::new(Mixer::default()));
-        let opened = if output {
-            Self::open(mixer.clone())
-        } else {
-            Err("no output on a dedicated server".into())
+        let watch = (output && Self::watched()).then(|| Arc::new(OutputWatch::default()));
+        let opened = match &watch {
+            Some(w) => Self::open(mixer.clone(), w),
+            None if output => Self::open(mixer.clone(), &Arc::default()),
+            None => Err("no output on a dedicated server".into()),
         };
-        let (stream, live) = match opened {
-            Ok(v) => (Some(v), true),
+        let (stream, device, live) = match opened {
+            Ok((stream, device)) => (Some(stream), Some(device), true),
             Err(e) => {
                 if output {
                     log::warn!("Horizon: no sound: {e}");
                 }
-                (None, false)
+                (None, None, false)
             }
         };
+        if let Some(w) = &watch {
+            *w.default.lock().unwrap_or_else(|p| p.into_inner()) = device.clone();
+            Self::watch_default(w.clone());
+        }
         let mut engine = SoundEngine::new(registry);
         engine.loaded = live;
         Self {
-            _stream: stream,
+            stream,
+            device,
+            watch,
+            reopened: None,
             engine,
             backend: MixerBackend {
                 mixer,
@@ -1046,12 +1076,85 @@ impl Audio {
             stopped: Default::default(),
         }
     }
+    /// Whether this output follows the system's default device: a real
+    /// output (the `audio` feature, not turned off).
+    #[cfg(feature = "audio")]
+    fn watched() -> bool {
+        output_disabled(|name| std::env::var_os(name)).is_none()
+    }
     #[cfg(not(feature = "audio"))]
-    fn open(_: Arc<Mutex<Mixer>>) -> Result<Stream> {
+    fn watched() -> bool {
+        false
+    }
+    /// The thread that reads the system's default output device once a
+    /// second (asking costs the device enumeration, too much for a tick).
+    #[cfg(feature = "audio")]
+    fn watch_default(watch: Arc<OutputWatch>) {
+        let _ = std::thread::Builder::new()
+            .name("audio device watch".into())
+            .spawn(move || {
+                // Ends with the game: only this thread holds the last `Arc`.
+                while Arc::strong_count(&watch) > 1 {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    let name = cpal::default_host()
+                        .default_output_device()
+                        .and_then(|d| d.name().ok());
+                    if let Ok(mut d) = watch.default.lock() {
+                        *d = name;
+                    }
+                }
+            });
+    }
+    #[cfg(not(feature = "audio"))]
+    fn watch_default(_: Arc<OutputWatch>) {}
+    /// Once a tick: when the system's default output changed (headphones
+    /// plugged in or out) or the stream failed, move to the new default,
+    /// keeping every sound playing (the mixer stays).
+    fn follow_output(&mut self) {
+        let Some(watch) = self.watch.clone() else {
+            return;
+        };
+        let failed = watch.failed.load(std::sync::atomic::Ordering::Relaxed);
+        let default = watch.default.lock().ok().and_then(|d| d.clone());
+        let moved = default.is_some() && default != self.device;
+        if !failed && !moved {
+            return;
+        }
+        if self
+            .reopened
+            .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1))
+        {
+            return;
+        }
+        self.reopened = Some(Instant::now());
+        watch
+            .failed
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        // Close the old stream first: some devices take one client only.
+        self.stream = None;
+        match Self::open(self.backend.mixer.clone(), &watch) {
+            Ok((stream, device)) => {
+                log::info!("Horizon: audio moved to {device}");
+                self.stream = Some(stream);
+                self.device = Some(device);
+                if !self.backend.live {
+                    // Started without a device: sounds can play from now on.
+                    self.backend.live = true;
+                    self.engine.loaded = true;
+                }
+            }
+            Err(e) => {
+                log::warn!("Horizon: no sound: {e}");
+                self.device = None;
+            }
+        }
+    }
+    #[cfg(not(feature = "audio"))]
+    fn open(_: Arc<Mutex<Mixer>>, _: &Arc<OutputWatch>) -> Result<(Stream, String)> {
         Err("this build has no sound output (built without the `audio` feature)".into())
     }
     #[cfg(feature = "audio")]
-    fn open(mixer: Arc<Mutex<Mixer>>) -> Result<Stream> {
+    fn open(mixer: Arc<Mutex<Mixer>>, watch: &Arc<OutputWatch>) -> Result<(Stream, String)> {
         if let Some(reason) = output_disabled(|name| std::env::var_os(name)) {
             return Err(reason.into());
         }
@@ -1069,7 +1172,7 @@ impl Audio {
                 continue;
             }
             tried.push(name.clone());
-            match open_device(&device, mixer.clone()) {
+            match open_device(&device, mixer.clone(), watch) {
                 Ok((stream, config)) => {
                     log::info!(
                         "Horizon: audio output {name} ({} Hz, {} channels, {})",
@@ -1077,7 +1180,7 @@ impl Audio {
                         config.channels(),
                         config.sample_format()
                     );
-                    return Ok(stream);
+                    return Ok((stream, name));
                 }
                 Err(e) => errors.push(format!("{name}: {e}")),
             }
@@ -1123,6 +1226,7 @@ impl Audio {
     }
     /// `SoundManager.tick(paused)`, once per client tick.
     pub fn tick(&mut self, paused: bool, ctx: &TickContext) {
+        self.follow_output();
         self.sync_volumes();
         self.engine.tick(paused, ctx, &mut self.backend);
         self.backend.ticks += 1;
