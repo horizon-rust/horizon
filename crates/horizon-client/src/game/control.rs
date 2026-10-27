@@ -813,10 +813,15 @@ impl Game<'_> {
                 if self.title.is_none() {
                     return Err("a world is already open".into());
                 }
-                let folder = arg(1)?;
-                let seed = words.get(2).map(|s| s.parse::<i64>()).transpose()?;
-                let creative = words.get(3) == Some(&"creative");
-                self.open_world(folder, Some(folder), seed, creative, None)?;
+                arg(1)?;
+                let rest = line.trim_start().strip_prefix("open").unwrap_or("");
+                let saves = super::saves_control::saves()?;
+                let (folder, after) =
+                    super::saves_control::split_folder(rest, |f| saves.join(f).is_dir())
+                        .ok_or("open WORLD: a closing \" is missing")?;
+                let seed = after.first().map(|s| s.parse::<i64>()).transpose()?;
+                let creative = after.get(1) == Some(&"creative");
+                self.open_world(&folder, Some(&folder), seed, creative, None)?;
                 ok()
             }
             "connect" => {
