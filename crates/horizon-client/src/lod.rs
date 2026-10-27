@@ -34,6 +34,18 @@ const HELD_SAMPLE_STEP: std::time::Duration = std::time::Duration::from_millis(5
 /// selection walks the whole quadtree, about a millisecond at a large distance, and samples
 /// arrive nearly every frame while the far terrain fills in. A replan selects at once.
 const SELECT_STEP: std::time::Duration = std::time::Duration::from_millis(50);
+/// EXPERIMENTAL `HORIZON_LOD_DETAIL=N`: distant cells N times smaller on each side (N squared
+/// as many tiles and cells), for measuring how far distant detail can go; 1 without it.
+fn detail_scale() -> i32 {
+    static SCALE: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    *SCALE.get_or_init(|| {
+        std::env::var("HORIZON_LOD_DETAIL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&n: &i32| (1..=8).contains(&n))
+            .unwrap_or(1)
+    })
+}
 /// The coarsest tile level: `Plan` roots cover at most 1024 chunks around.
 const MAX_LEVEL: u8 = 10;
 /// Top solid face and optional fluid face, in absolute block coordinates.
@@ -422,7 +434,7 @@ impl Plan {
         self.nodes.insert(key);
         // Keep distant cells small on screen; finest tiles retain individual
         // blocks. Reduced keeps them twice as large (a quarter of the cells).
-        let split = if previous.split.contains(&key) { 10 } else { 8 };
+        let split = (if previous.split.contains(&key) { 10 } else { 8 }) * detail_scale();
         let threshold = key.size() * if reduced { split / 2 } else { split };
         if key.level > 0
             && (key.distance(camera) < detail * 16 + 16

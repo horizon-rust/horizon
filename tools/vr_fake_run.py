@@ -23,7 +23,9 @@ import platform
 import shutil
 import subprocess
 import sys
+import shlex
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -45,6 +47,25 @@ def link_dir(src: Path, dst: Path) -> None:
         dst.symlink_to(src, target_is_directory=True)
 
 
+def drive(build: Path, socket: Path, script: Path, out: Path, proc: subprocess.Popen) -> None:
+    """Sends `script`'s horizon-ctl commands to the game in turn, once its control socket is up."""
+    ctl = build / f"horizon-ctl{EXE}"
+    with open(out / "ctl.log", "w", encoding="utf-8") as log:
+        while not socket.exists() and proc.poll() is None:
+            time.sleep(0.5)
+        for line in script.read_text().splitlines():
+            line = line.split("#", 1)[0].strip()
+            if not line or proc.poll() is not None:
+                continue
+            if line.startswith("sleep "):
+                time.sleep(float(line.split()[1]))
+                continue
+            reply = subprocess.run([str(ctl), "--socket", str(socket), *shlex.split(line)],
+                                   capture_output=True, text=True)
+            log.write(f"[{time.strftime('%H:%M:%S')}] {line}\n{reply.stdout}{reply.stderr}\n")
+            log.flush()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--build", default=str(ROOT / "target" / "release"), help="folder with the built binaries")
@@ -62,6 +83,9 @@ def main() -> int:
     ap.add_argument("--settings-from", help="a game folder whose options.txt and horizon-*.txt to play with")
     ap.add_argument("--timeout", type=float, default=600.0)
     ap.add_argument("--keep", action="store_true", help="keep the temporary game folder")
+    ap.add_argument("--ctl", help="a file of horizon-ctl commands sent to the game in turn (one a line, "
+                    "'sleep SECONDS' waits; replies go to ctl.log), e.g. to teleport the player")
+    ap.add_argument("--no-clouds", action="store_true", help="play without clouds (frames compare cleanly)")
     ap.add_argument("--home", help="a folder to keep HORIZON_HOME and the saves in: the next run with it plays the same world")
     args = ap.parse_args()
 
@@ -96,6 +120,11 @@ def main() -> int:
                 src = Path(args.settings_from) / name
                 if src.is_file():
                     shutil.copy2(src, game / name)
+        if args.no_clouds:
+            options = game / "options.txt"
+            lines = options.read_text().splitlines() if options.is_file() else []
+            lines = [l for l in lines if not l.startswith("renderClouds:")] + ['renderClouds:"false"']
+            options.write_text("\n".join(lines) + "\n")
         home = Path(args.home).resolve() if args.home else game / "home"
         home.mkdir(parents=True, exist_ok=True)
         if args.home:
@@ -126,10 +155,22 @@ def main() -> int:
         else:
             cmd = [str(game / f"horizon-client{EXE}"), "--world", "VR fake test", "--seed", args.seed,
                    "--world-frames", str(args.world_frames)]
+        # The game gives up a frame-limited run after its own timeout (120 s by default).
+        cmd += ["--timeout-seconds", str(int(args.timeout))]
+        socket = game / "control.json"
+        if args.ctl:
+            cmd += ["--control-socket", str(socket)]
         started = time.time()
         with open(out / "game.log", "w", encoding="utf-8", errors="replace") as log:
-            proc = subprocess.run(cmd, cwd=game, env=env, stdout=log, stderr=subprocess.STDOUT,
-                                  timeout=args.timeout)
+            proc = subprocess.Popen(cmd, cwd=game, env=env, stdout=log, stderr=subprocess.STDOUT)
+            if args.ctl:
+                threading.Thread(target=drive, args=(build, socket, Path(args.ctl), out, proc),
+                                 daemon=True).start()
+            try:
+                proc.wait(timeout=args.timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                raise
         elapsed = time.time() - started
         report_path = out / "report.json"
         report = json.loads(report_path.read_text()) if report_path.is_file() else None
