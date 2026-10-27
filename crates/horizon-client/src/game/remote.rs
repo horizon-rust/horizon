@@ -2999,7 +2999,7 @@ impl Game<'_> {
     }
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the
     /// entities whose own tick moves them on a client: dropped items, falling
-    /// blocks and primed TNT.
+    /// blocks and primed TNT; and minecarts, whose rolling sound reads it.
     fn remote_motion(&mut self, id: i32, velocity: [f64; 3]) {
         self.remote_dragon_motion(id, velocity);
         let v = Vec3::new(velocity[0], velocity[1], velocity[2]);
@@ -3021,6 +3021,11 @@ impl Game<'_> {
             p.velocity = v;
         } else if let Some(b) = self.dragon_fireballs.iter_mut().find(|b| b.id == id as u32) {
             b.velocity = v;
+        } else if let Some(c) = self.carts.iter_mut().find(|c| c.id == id as u32) {
+            // The server moves minecarts; their motion is what
+            // MinecartSoundInstance reads (getDeltaMovement), so without it
+            // a rolling cart stayed silent on a server's client.
+            c.velocity = v;
         } else if let Some(p) = self
             .remote
             .as_mut()
