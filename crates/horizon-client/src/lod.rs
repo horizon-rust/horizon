@@ -29,6 +29,10 @@ const SAMPLE_JOBS: usize = 4;
 /// terrain starts one sample job at most this often and no detail: it would
 /// otherwise take the cores the near chunks and the frame need.
 const HELD_SAMPLE_STEP: std::time::Duration = std::time::Duration::from_millis(500);
+/// Arrivals (samples, detail, finished meshes) select again at most this often: each
+/// selection walks the whole quadtree, about a millisecond at a large distance, and samples
+/// arrive nearly every frame while the far terrain fills in. A replan selects at once.
+const SELECT_STEP: std::time::Duration = std::time::Duration::from_millis(50);
 /// The coarsest tile level: `Plan` roots cover at most 1024 chunks around.
 const MAX_LEVEL: u8 = 10;
 /// Top solid face and optional fluid face, in absolute block coordinates.
@@ -590,6 +594,8 @@ pub struct Lod {
     near_loading: bool,
     /// When `request_samples` last started a job while held.
     held_sample_at: std::time::Instant,
+    /// When `select` last walked the quadtree (`SELECT_STEP`).
+    selected_at: std::time::Instant,
     /// Each tile's samples, shared with mesh jobs in flight.
     ready: FxHashMap<TileKey, Arc<Vec<Column>>>,
     active: FxHashSet<TileKey>,
@@ -785,6 +791,7 @@ impl Lod {
             small: thread::available_parallelism().map_or(1, |n| n.get()) <= 4,
             near_loading: false,
             held_sample_at: std::time::Instant::now(),
+            selected_at: std::time::Instant::now(),
             ready: FxHashMap::default(),
             active: FxHashSet::default(),
             dirty: FxHashSet::default(),
@@ -1109,7 +1116,8 @@ impl Lod {
             elevation,
             self.reduced_detail,
         );
-        if self.area != Some(area) {
+        let replan = self.area != Some(area);
+        if replan {
             crate::spans::time("lod_plan", || {
                 self.area = Some(area);
                 self.plan = Plan::with_previous(
@@ -1130,7 +1138,7 @@ impl Lod {
         let mut meshes = Vec::new();
         crate::spans::time("lod_results", || self.receive(&mut meshes));
         crate::spans::time("lod_covered", || self.cover(covered));
-        if !self.meshing {
+        if !self.meshing && (replan || self.selected_at.elapsed() >= SELECT_STEP) {
             crate::spans::time("lod_select", || self.select());
         }
         crate::spans::time("lod_request", || self.request_detail(focus));
@@ -1216,6 +1224,7 @@ impl Lod {
         if !std::mem::take(&mut self.reselect) && self.dirty.is_empty() {
             return;
         }
+        self.selected_at = std::time::Instant::now();
         {
             let mut selected = Vec::new();
             for &key in &self.plan.roots {
