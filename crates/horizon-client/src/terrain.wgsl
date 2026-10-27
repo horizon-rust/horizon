@@ -71,6 +71,8 @@ struct TerrainOut {
     @location(4) cylindrical: f32,
     // The light the face emits, 0 to 15 (mesher.rs's `EMISSION_BITS`).
     @location(5) @interpolate(flat) emission: u32,
+    // A distant tile's fade (`terrain_fade`): 1 drawn whole.
+    @location(6) @interpolate(flat) fade: f32,
 }
 // Horizon Extras' dynamic lights (dynamic_light.rs): the block light, in the vertex's units
 // (16 per level), a vertex at camera-relative `pos` gets from the frame's light sources, one
@@ -92,15 +94,35 @@ fn sample_lightmap(sky: f32, block: f32) -> vec4<f32> {
 // mesher.rs's TerrainVertex holds the UV in fixed point; the instance's
 // origin.w is the step: 1/32768 per unit for sections (a power of two on an
 // integer below 2^24, so it decodes exactly), 1/32 per block for distant
-// terrain tiles (TerrainVertex::tiled).
-fn terrain_uv(packed: vec2<u32>, step: f32) -> vec2<f32> {
-    return vec2<f32>(packed) * step;
+// terrain tiles (TerrainVertex::tiled). A distant tile fading in or out
+// (gfx/lod.rs `instance`) has 2 + progress or 4 + progress there instead,
+// with the step of 1/32.
+fn terrain_uv(packed: vec2<u32>, w: f32) -> vec2<f32> {
+    return vec2<f32>(packed) * select(w, 1.0 / 32.0, w >= 1.0);
+}
+// The fade an instance's origin.w gives: below 4 the part of the pattern drawn, from its
+// start (1: all of it); 4 and over, 4 + the part left out, from its start.
+fn terrain_fade(w: f32) -> f32 {
+    if w < 2.0 { return 1.0; }
+    if w < 4.0 { return w - 2.0; }
+    return w;
+}
+// Whether a fragment at `pixel` of a fading tile is drawn: a 4x4 ordered dither, so a tile
+// fading in and the one fading out with the same progress draw opposite pixels.
+fn faded_out(fade: f32, pixel: vec2<f32>) -> bool {
+    let p = vec2<u32>(pixel) & vec2(3u);
+    let bayer = array<u32, 16>(0u, 8u, 2u, 10u, 12u, 4u, 14u, 6u, 3u, 11u, 1u, 9u, 15u, 7u, 13u, 5u);
+    let t = (f32(bayer[p.y * 4u + p.x]) + 0.5) / 16.0;
+    if fade < 4.0 { return t >= fade; }
+    return t < fade - 4.0;
 }
 @vertex fn vs_terrain(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
     @location(5) origin: vec4<f32>) -> TerrainOut {
-    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz);
+    var out = terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz);
+    out.fade = terrain_fade(origin.w);
+    return out;
 }
 // Flat section draws (gfx/flat.rs): one draw per arena page over the frame's
 // index list. A section's vertices fill whole 256-vertex blocks of its page:
@@ -113,7 +135,9 @@ fn terrain_uv(packed: vec2<u32>, step: f32) -> vec2<f32> {
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
 ) -> TerrainOut {
     let origin = slot_origins[block_slots[vertex >> 8u]];
-    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz);
+    var out = terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz);
+    out.fade = terrain_fade(origin.w);
+    return out;
 }
 fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
     light: vec2<u32>, origin: vec3<f32>) -> TerrainOut {
@@ -127,6 +151,7 @@ fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f3
     out.emission = 15u - (u32(round(color.a * 255.0)) & 15u);
     out.spherical = length(pos);
     out.cylindrical = max(length(pos.xz), abs(pos.y));
+    out.fade = 1.0;
     return out;
 }
 fn linear_fog(d: f32, start: f32, end: f32) -> f32 {
@@ -142,7 +167,7 @@ fn apply_fog(color: vec4<f32>, spherical: f32, cylindrical: f32) -> vec4<f32> {
 @fragment fn fs_solid(in: TerrainOut) -> @location(0) vec4<f32> {
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
     let color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
-    if color.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
+    if (color.a < 0.5 && (in.layer & 0x8000u) == 0u) || faded_out(in.fade, in.clip.xy) { discard; }
     // Alpha 0 tells HDR output (hdr.wgsl) a light-emitting block's bright pixels
     // may shine. Nothing else reads the frame's alpha.
     let emissive = select(1.0, 0.0, in.emission > 0u);
@@ -150,7 +175,7 @@ fn apply_fog(color: vec4<f32>, spherical: f32, cylindrical: f32) -> vec4<f32> {
 }
 @fragment fn fs_translucent(in: TerrainOut) -> @location(0) vec4<f32> {
     let color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
-    if color.a < 0.01 { discard; }
+    if color.a < 0.01 || faded_out(in.fade, in.clip.xy) { discard; }
     return apply_fog(color, in.spherical, in.cylindrical);
 }
 

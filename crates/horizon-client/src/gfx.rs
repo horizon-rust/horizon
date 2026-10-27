@@ -3683,10 +3683,11 @@ impl Renderer {
         if frame.title {
             visible.clear();
         } else if !reuse_visibility {
+            let now = Instant::now();
             visible_lods.extend(
-                self.lods
-                    .iter()
-                    .filter_map(|(&key, tile)| tile.visible(key, camera, frame.distance, &view)),
+                self.lods.iter().filter_map(|(&key, tile)| {
+                    tile.visible(key, camera, frame.distance, &view, now)
+                }),
             );
             visible_lods.sort_unstable_by_key(|v| (v.distance, v.key));
         }
@@ -3743,7 +3744,7 @@ impl Renderer {
             visible
                 .iter()
                 .map(|v| section_instance(v.origin))
-                .chain(visible_lods.iter().map(|v| lod::instance(v.origin)))
+                .chain(visible_lods.iter().map(lod::instance))
                 .chain(shadow_visible.iter().map(|v| section_instance(v.origin))),
         );
         if !self.origins.is_empty() {
@@ -3950,9 +3951,10 @@ impl Renderer {
                 }
                 // Near water and distant water share one back-to-front draw order, by page
                 // far away (`page_runs::back_to_front`).
-                self.translucent_draws.sort_by_cached_key(|&(distance, i, _, pages)| {
-                    page_runs::back_to_front(distance, i, pages)
-                });
+                self.translucent_draws
+                    .sort_by_cached_key(|&(distance, i, _, pages)| {
+                        page_runs::back_to_front(distance, i, pages)
+                    });
                 for &(_, _, draw, pages) in &self.translucent_draws {
                     self.draws.push(draw);
                     self.draw_pages.push(pages);
@@ -4327,7 +4329,7 @@ impl Renderer {
                             })
                             .chain(visible_lods.iter().filter_map(|v| {
                                 let id = lods[&v.key].mesh.flat_id?;
-                                Some((id, lod::instance(v.origin)))
+                                Some((id, lod::instance(v)))
                             })),
                         |page| sorted.buffer(page).clone(),
                     )

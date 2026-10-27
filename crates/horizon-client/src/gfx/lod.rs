@@ -9,6 +9,12 @@ use crate::{
 use glam::{DVec3, Vec3};
 use std::time::{Duration, Instant};
 
+/// How long a tile takes to fade in, and the tiles it replaces to fade out: the two draw
+/// opposite pixels of a dither pattern (`terrain.wgsl`'s `faded_out`), so detail changing
+/// with distance blends instead of popping, and each pixel still shows one opaque surface
+/// (no sorting, depth and shadow passes unchanged).
+const FADE: Duration = Duration::from_millis(600);
+
 /// Finished tile meshes not uploaded yet, the tiles they replace (removed
 /// once every mesh is in) and the columns they leave out.
 #[derive(Default)]
@@ -16,6 +22,8 @@ pub(super) struct Pending {
     meshes: FxHashMap<TileKey, SectionMesh>,
     removed: FxHashSet<TileKey>,
     cutout: Option<FxHashSet<(i32, i32)>>,
+    /// Tiles uploaded for these meshes, new ones hidden until all are in.
+    uploaded: Vec<TileKey>,
 }
 
 impl Pending {
@@ -45,6 +53,23 @@ impl Pending {
 pub(super) struct Tile {
     pub mesh: SectionGpu,
     bounds: Bounds,
+    /// When it began to fade in: `None` while the job it came with uploads.
+    shown: Option<Instant>,
+    /// When it began to fade out, replaced.
+    leaving: Option<Instant>,
+}
+
+impl Tile {
+    /// Its instance's `w` (`instance`) at `now`; `None` hidden.
+    fn fade(&self, now: Instant) -> Option<f32> {
+        let progress = |since: Instant| (now - since).as_secs_f32() / FADE.as_secs_f32();
+        match (self.leaving, self.shown) {
+            (Some(since), _) => Some(4.0 + progress(since).min(0.999)),
+            (None, Some(since)) if progress(since) < 1.0 => Some(2.0 + progress(since)),
+            (None, Some(_)) => Some(1.0 / crate::mesher::TILED_UV_STEPS),
+            (None, None) => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -85,20 +110,17 @@ impl Bounds {
     }
 }
 
-/// A tile's instance: like a section's, with the UV step of merged faces.
-pub(super) fn instance(origin: [f32; 3]) -> [f32; 4] {
-    [
-        origin[0],
-        origin[1],
-        origin[2],
-        1.0 / crate::mesher::TILED_UV_STEPS,
-    ]
+/// A tile's instance: like a section's, with the UV step of merged faces, or its fade
+/// (`Tile::fade`, `terrain.wgsl`'s `terrain_uv`).
+pub(super) fn instance(v: &Visible) -> [f32; 4] {
+    [v.origin[0], v.origin[1], v.origin[2], v.fade]
 }
 
 pub(super) struct Visible {
     pub key: TileKey,
     pub distance: u64,
     pub origin: [f32; 3],
+    fade: f32,
 }
 
 impl Tile {
@@ -108,23 +130,40 @@ impl Tile {
         camera: DVec3,
         distance: f32,
         frustum: &Frustum,
+        now: Instant,
     ) -> Option<Visible> {
+        let fade = self.fade(now)?;
         let origin = DVec3::from(key.origin().map(f64::from)) - camera;
         Some(Visible {
             key,
             distance: self.bounds.visible(origin, distance, frustum)?,
             origin: origin.as_vec3().to_array(),
+            fade,
         })
     }
 }
 
 impl Renderer {
+    /// A tile meshed again keeps showing; a new one waits for `show`.
     pub fn upload_lod(&mut self, key: TileKey, mesh: &SectionMesh) {
+        let shown = self
+            .lods
+            .get(&key)
+            .filter(|t| t.leaving.is_none())
+            .and_then(|t| t.shown);
         self.remove_lod(key);
         if let Some(bounds) = Bounds::mesh(mesh)
             && let Some(mesh) = self.upload_mesh(mesh)
         {
-            self.lods.insert(key, Tile { mesh, bounds });
+            self.lods.insert(
+                key,
+                Tile {
+                    mesh,
+                    bounds,
+                    shown,
+                    leaving: None,
+                },
+            );
         }
     }
 
@@ -160,14 +199,30 @@ impl Renderer {
     }
 
     /// Uploads queued tile meshes for about `budget` (at least one), then,
-    /// once all are in, retires the tiles they replace.
+    /// once all are in, fades them in and the tiles they replace out (`FADE`).
     pub fn upload_lods(&mut self, budget: Duration) {
         let start = Instant::now();
+        let faded: Vec<_> = self
+            .lods
+            .iter()
+            .filter(|(_, t)| t.leaving.is_some_and(|since| start - since >= FADE))
+            .map(|(&k, _)| k)
+            .collect();
+        for key in faded {
+            self.remove_lod(key);
+        }
         while let Some(pending) = &mut self.lod_pending {
             let Some(&key) = pending.meshes.keys().next() else {
                 let pending = self.lod_pending.take().expect("pending tiles");
+                for key in pending.uploaded {
+                    if let Some(tile) = self.lods.get_mut(&key) {
+                        tile.shown.get_or_insert(start);
+                    }
+                }
                 for key in pending.removed {
-                    self.remove_lod(key);
+                    if let Some(tile) = self.lods.get_mut(&key) {
+                        tile.leaving.get_or_insert(start);
+                    }
                 }
                 if let Some(cutout) = pending.cutout {
                     self.set_lod_cutout(cutout);
@@ -176,6 +231,9 @@ impl Renderer {
             };
             let mesh = pending.meshes.remove(&key).expect("pending tile");
             self.upload_lod(key, &mesh);
+            if let Some(pending) = &mut self.lod_pending {
+                pending.uploaded.push(key);
+            }
             if start.elapsed() >= budget {
                 return;
             }
