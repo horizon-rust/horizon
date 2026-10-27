@@ -186,6 +186,7 @@ mod win;
 mod wind;
 mod wither;
 mod world_loading;
+mod xr_pointer;
 mod zombie_reinforcements;
 mod zombie_villagers;
 use horizon_client::{

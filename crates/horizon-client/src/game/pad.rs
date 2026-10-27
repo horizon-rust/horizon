@@ -47,6 +47,8 @@ pub(super) struct Pads {
     pub(super) style: GlyphStyle,
     /// The cursor the pad drives in menus.
     pub(super) menu: super::pad_menu::MenuCursor,
+    /// A VR controller's laser in menus.
+    pub(super) xr: super::xr_pointer::XrMenu,
     /// The last vibration asked for, for `pad status`.
     last_rumble: Option<(&'static str, gamepad::Pulse)>,
     /// The player's health between polls (a drop is damage taken).
@@ -107,7 +109,7 @@ impl Game<'_> {
         self.ui.options.pad_style = self.settings.controller.glyphs.resolve(self.pad.style);
         // VR's controllers come in as one more pad, played without the window's focus (the
         // player is in the headset).
-        let xr = self.renderer.as_ref().and_then(|r| r.xr_pad());
+        let xr = self.renderer.as_mut().and_then(|r| r.xr_pad());
         let state = hardware
             .merge(&self.pad.injected)
             .merge(&xr.unwrap_or_default());
@@ -145,6 +147,7 @@ impl Game<'_> {
             self.pad_edge(event_loop, button, down);
         }
         self.pad_menu_frame(event_loop);
+        self.xr_pointer_frame(event_loop);
     }
 
     fn pad_edge(&mut self, event_loop: &ActiveEventLoop, button: Button, down: bool) {

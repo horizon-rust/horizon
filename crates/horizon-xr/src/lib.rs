@@ -41,8 +41,12 @@ pub struct Eye {
     pub fov: xr::Fovf,
 }
 
+/// How many quad layers there can be (`Xr::create_quad`'s `index`), drawn in that order.
+pub const QUADS: usize = 2;
+
 /// A flat panel the runtime composites in the world (`Xr::create_quad`): where its centre
-/// is (stage space) and its width and height in metres.
+/// is (stage space) and its width and height in metres. Its image's top edge is along +y and
+/// its front faces +z.
 #[derive(Clone, Copy, Debug)]
 pub struct Quad {
     pub pose: xr::Posef,
@@ -56,10 +60,13 @@ pub struct Frame {
     pub head: xr::Posef,
     /// The time the runtime will show this frame, for poses and animations.
     pub display_time: xr::Time,
-    /// Where to show the panel drawn into `quad_texture` this frame; `None` hides it.
-    pub quad: Option<Quad>,
+    /// Where to show each panel drawn into `quad_texture` this frame; `None` hides it.
+    pub quads: [Option<Quad>; QUADS],
+    /// Where each hand (left, right) points: the aim pose (stage space), whose -z is the
+    /// ray; `None` for a hand that isn't tracked.
+    pub hands: [Option<xr::Posef>; 2],
     images: [usize; 2],
-    quad_image: Option<usize>,
+    quad_images: [Option<usize>; QUADS],
 }
 
 /// One eye's swapchain and its images as wgpu textures.
@@ -73,7 +80,7 @@ struct EyeChain {
 pub struct Xr {
     // Field order is drop order: the session goes before the device it renders with.
     eyes: Vec<EyeChain>,
-    quad: Option<EyeChain>,
+    quads: [Option<EyeChain>; QUADS],
     actions: Option<controls::Actions>,
     view: xr::Space,
     stage: xr::Space,
@@ -88,8 +95,8 @@ pub struct Xr {
     blend: xr::EnvironmentBlendMode,
     /// Each eye's recommended image size, in pixels.
     pub size: [u32; 2],
-    /// The panel's image size, in pixels (`create_quad`).
-    pub quad_size: [u32; 2],
+    /// Each panel's image size, in pixels (`create_quad`).
+    pub quad_sizes: [[u32; 2]; QUADS],
     pub runtime: String,
     pub system_name: String,
     running: bool,
@@ -193,7 +200,7 @@ impl Xr {
             .ok();
         Ok(Self {
             eyes: Vec::new(),
-            quad: None,
+            quads: Default::default(),
             actions,
             view,
             stage,
@@ -207,7 +214,7 @@ impl Xr {
             xr,
             blend,
             size,
-            quad_size: [0, 0],
+            quad_sizes: [[0, 0]; QUADS],
             runtime,
             system_name,
             running: false,
@@ -235,15 +242,17 @@ impl Xr {
         Ok(())
     }
 
-    /// A panel of `size` pixels for `Frame::quad`, in the eyes' format (`create_swapchains`).
+    /// Panel `index` (below `QUADS`), of `size` pixels, for `Frame::quads`, in the eyes'
+    /// format (`create_swapchains`). Made again, it starts with no image.
     pub fn create_quad(
         &mut self,
+        index: usize,
         size: [u32; 2],
         format: wgpu::TextureFormat,
     ) -> Result<(), Error> {
         let (vk_format, srgb) = srgb_twin(format)?;
-        self.quad = Some(self.chain(size, vk_format, srgb)?);
-        self.quad_size = size;
+        self.quads[index] = Some(self.chain(size, vk_format, srgb)?);
+        self.quad_sizes[index] = size;
         Ok(())
     }
 
@@ -403,6 +412,10 @@ impl Xr {
                 .wait_image(xr::Duration::INFINITE)
                 .map_err(err("xrWaitSwapchainImage"))?;
         }
+        let hands = match &self.actions {
+            Some(actions) => actions.aims(&self.session, &self.stage, state.predicted_display_time),
+            None => [None; 2],
+        };
         Ok(Some(Frame {
             eyes: [0, 1].map(|i| Eye {
                 pose: views[i].pose,
@@ -410,23 +423,28 @@ impl Xr {
             }),
             head,
             display_time: state.predicted_display_time,
-            quad: None,
+            quads: [None; QUADS],
+            hands,
             images,
-            quad_image: None,
+            quad_images: [None; QUADS],
         }))
     }
 
-    /// Whether the panel has an image to show again without drawing a new one.
-    pub fn quad_ready(&self) -> bool {
-        self.quad.as_ref().is_some_and(|c| c.released)
+    /// Whether panel `index` has an image to show again without drawing a new one.
+    pub fn quad_ready(&self, index: usize) -> bool {
+        self.quads[index].as_ref().is_some_and(|c| c.released)
     }
 
-    /// The panel's image for `frame` (acquired on the first call), when there is a panel.
-    pub fn quad_texture(&mut self, frame: &mut Frame) -> Result<Option<wgpu::Texture>, Error> {
-        let Some(chain) = &mut self.quad else {
+    /// Panel `index`'s image for `frame` (acquired on the first call), when it was made.
+    pub fn quad_texture(
+        &mut self,
+        index: usize,
+        frame: &mut Frame,
+    ) -> Result<Option<wgpu::Texture>, Error> {
+        let Some(chain) = &mut self.quads[index] else {
             return Ok(None);
         };
-        let image = match frame.quad_image {
+        let image = match frame.quad_images[index] {
             Some(image) => image,
             None => {
                 let image = chain
@@ -437,7 +455,7 @@ impl Xr {
                     .swapchain
                     .wait_image(xr::Duration::INFINITE)
                     .map_err(err("xrWaitSwapchainImage"))?;
-                frame.quad_image = Some(image);
+                frame.quad_images[index] = Some(image);
                 image
             }
         };
@@ -465,18 +483,15 @@ impl Xr {
                 .map_err(err("xrReleaseSwapchainImage"))?;
         }
         // A panel not drawn this frame shows the image released last (OpenXR keeps it).
-        let quad = match (&mut self.quad, frame.quad_image) {
-            (Some(chain), Some(_)) => {
+        for (chain, image) in self.quads.iter_mut().zip(frame.quad_images) {
+            if let (Some(chain), Some(_)) = (chain, image) {
                 chain
                     .swapchain
                     .release_image()
                     .map_err(err("xrReleaseSwapchainImage"))?;
                 chain.released = true;
-                frame.quad.map(|q| (q, &chain.swapchain))
             }
-            (Some(chain), None) if chain.released => frame.quad.map(|q| (q, &chain.swapchain)),
-            _ => None,
-        };
+        }
         let rect = xr::Rect2Di {
             offset: xr::Offset2Di { x: 0, y: 0 },
             extent: xr::Extent2Di {
@@ -497,32 +512,36 @@ impl Xr {
         let layer = xr::CompositionLayerProjection::new()
             .space(&self.stage)
             .views(&views);
-        let panel = quad.map(|(q, swapchain)| {
-            xr::CompositionLayerQuad::new()
-                .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
-                .space(&self.stage)
-                .eye_visibility(xr::EyeVisibility::BOTH)
-                .pose(q.pose)
-                .size(xr::Extent2Df {
-                    width: q.size[0],
-                    height: q.size[1],
-                })
-                .sub_image(
-                    xr::SwapchainSubImage::new()
-                        .swapchain(swapchain)
-                        .image_rect(xr::Rect2Di {
-                            offset: xr::Offset2Di { x: 0, y: 0 },
-                            extent: xr::Extent2Di {
-                                width: self.quad_size[0] as i32,
-                                height: self.quad_size[1] as i32,
-                            },
-                        }),
-                )
-        });
-        let layers: Vec<&xr::CompositionLayerBase<xr::Vulkan>> = match &panel {
-            Some(panel) => vec![&layer, panel],
-            None => vec![&layer],
-        };
+        let panels: Vec<_> = (0..QUADS)
+            .filter_map(|i| {
+                let chain = self.quads[i].as_ref().filter(|c| c.released)?;
+                Some((frame.quads[i]?, &chain.swapchain, self.quad_sizes[i]))
+            })
+            .map(|(q, swapchain, size)| {
+                xr::CompositionLayerQuad::new()
+                    .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
+                    .space(&self.stage)
+                    .eye_visibility(xr::EyeVisibility::BOTH)
+                    .pose(q.pose)
+                    .size(xr::Extent2Df {
+                        width: q.size[0],
+                        height: q.size[1],
+                    })
+                    .sub_image(
+                        xr::SwapchainSubImage::new()
+                            .swapchain(swapchain)
+                            .image_rect(xr::Rect2Di {
+                                offset: xr::Offset2Di { x: 0, y: 0 },
+                                extent: xr::Extent2Di {
+                                    width: size[0] as i32,
+                                    height: size[1] as i32,
+                                },
+                            }),
+                    )
+            })
+            .collect();
+        let mut layers: Vec<&xr::CompositionLayerBase<xr::Vulkan>> = vec![&layer];
+        layers.extend(panels.iter().map(|p| &**p));
         self.frame_stream
             .end(frame.display_time, self.blend, &layers)
             .map_err(err("xrEndFrame"))

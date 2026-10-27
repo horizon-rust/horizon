@@ -1,6 +1,7 @@
-//! The controllers through OpenXR actions: one action set with sticks, triggers, grips and
-//! face buttons, bound for the common interaction profiles. The runtime maps whatever the
-//! player holds (Touch, Index, hand tracking turned into pinches) onto them.
+//! The controllers through OpenXR actions: one action set with sticks, triggers, grips,
+//! face buttons and each hand's aim pose, bound for the common interaction profiles. The
+//! runtime maps whatever the player holds (Touch, Index, hand tracking turned into pinches)
+//! onto them.
 
 use openxr as xr;
 
@@ -34,6 +35,9 @@ pub(crate) struct Actions {
     left_trigger: xr::Action<f32>,
     right_trigger: xr::Action<f32>,
     buttons: [xr::Action<bool>; 9],
+    /// Each hand's aim pose (left, right): where it points, for the laser pointer.
+    aim: [xr::Action<xr::Posef>; 2],
+    aim_spaces: [xr::Space; 2],
 }
 
 /// `Actions::buttons`, in this order.
@@ -72,6 +76,16 @@ impl Actions {
         }
         let buttons: [xr::Action<bool>; 9] =
             buttons.try_into().map_err(|_| Error("actions".into()))?;
+        let pose = |name: &str, label: &str| set.create_action::<xr::Posef>(name, label, &[]);
+        let aim = [
+            pose("left_aim", "Left hand pointer").map_err(err("action"))?,
+            pose("right_aim", "Right hand pointer").map_err(err("action"))?,
+        ];
+        let space = |a: &xr::Action<xr::Posef>| {
+            a.create_space(session, xr::Path::NULL, xr::Posef::IDENTITY)
+                .map_err(err("action space"))
+        };
+        let aim_spaces = [space(&aim[0])?, space(&aim[1])?];
         let actions = Self {
             set,
             left_stick,
@@ -79,6 +93,8 @@ impl Actions {
             left_trigger,
             right_trigger,
             buttons,
+            aim,
+            aim_spaces,
         };
         actions.suggest(instance);
         session
@@ -90,7 +106,19 @@ impl Actions {
     /// Bindings for each profile; a profile the runtime doesn't know is skipped.
     fn suggest(&self, instance: &xr::Instance) {
         let [l_grip, r_grip, l_click, r_click, a, b, x, y, menu] = &self.buttons;
-        let touch: Vec<(&str, Binding)> = vec![
+        let aims = || {
+            [
+                (
+                    "/user/hand/left/input/aim/pose",
+                    Binding::Pose(&self.aim[0]),
+                ),
+                (
+                    "/user/hand/right/input/aim/pose",
+                    Binding::Pose(&self.aim[1]),
+                ),
+            ]
+        };
+        let mut touch: Vec<(&str, Binding)> = vec![
             (
                 "/user/hand/left/input/thumbstick",
                 Binding::Vector(&self.left_stick),
@@ -126,7 +154,7 @@ impl Actions {
             ("/user/hand/left/input/y/click", Binding::Bool(y)),
             ("/user/hand/left/input/menu/click", Binding::Bool(menu)),
         ];
-        let index: Vec<(&str, Binding)> = vec![
+        let mut index: Vec<(&str, Binding)> = vec![
             (
                 "/user/hand/left/input/thumbstick",
                 Binding::Vector(&self.left_stick),
@@ -161,7 +189,7 @@ impl Actions {
             ("/user/hand/left/input/a/click", Binding::Bool(x)),
             ("/user/hand/left/input/b/click", Binding::Bool(y)),
         ];
-        let simple: Vec<(&str, Binding)> = vec![
+        let mut simple: Vec<(&str, Binding)> = vec![
             (
                 "/user/hand/right/input/select/click",
                 Binding::Float(&self.right_trigger),
@@ -172,6 +200,9 @@ impl Actions {
             ),
             ("/user/hand/left/input/menu/click", Binding::Bool(menu)),
         ];
+        for list in [&mut touch, &mut index, &mut simple] {
+            list.extend(aims());
+        }
         for (profile, bindings) in [
             ("/interaction_profiles/oculus/touch_controller", touch),
             ("/interaction_profiles/valve/index_controller", index),
@@ -189,6 +220,7 @@ impl Actions {
                     Binding::Vector(a) => xr::Binding::new(*a, p),
                     Binding::Float(a) => xr::Binding::new(*a, p),
                     Binding::Bool(a) => xr::Binding::new(*a, p),
+                    Binding::Pose(a) => xr::Binding::new(*a, p),
                 });
             }
             if let Err(e) = instance.suggest_interaction_profile_bindings(profile_path, &list) {
@@ -236,9 +268,36 @@ impl Actions {
             menu: button(8),
         }
     }
+
+    /// Where each hand (left, right) points at `time`, in `base`: the aim pose's position
+    /// and orientation (its -z is the ray), `None` for a hand that isn't tracked. Reads the
+    /// state of the last `read`.
+    pub(crate) fn aims(
+        &self,
+        session: &xr::Session<xr::Vulkan>,
+        base: &xr::Space,
+        time: xr::Time,
+    ) -> [Option<xr::Posef>; 2] {
+        let valid =
+            xr::SpaceLocationFlags::ORIENTATION_VALID | xr::SpaceLocationFlags::POSITION_VALID;
+        [0, 1].map(|i| {
+            if !self.aim[i]
+                .is_active(session, xr::Path::NULL)
+                .unwrap_or(false)
+            {
+                return None;
+            }
+            self.aim_spaces[i]
+                .locate(base, time)
+                .ok()
+                .filter(|l| l.location_flags.contains(valid))
+                .map(|l| l.pose)
+        })
+    }
 }
 
 enum Binding<'a> {
+    Pose(&'a xr::Action<xr::Posef>),
     Vector(&'a xr::Action<xr::Vector2f>),
     Float(&'a xr::Action<f32>),
     Bool(&'a xr::Action<bool>),

@@ -95,6 +95,7 @@ pub(crate) mod upload;
 mod wgsl_prefix;
 mod world_post;
 mod xr;
+pub use xr::XrPointer;
 
 /// A column whose every section has its mesh (`Renderer::lod_detail_columns`).
 const COMPLETE_COLUMN: u32 = (1 << (crate::chunk::HEIGHT / 16)) - 1;

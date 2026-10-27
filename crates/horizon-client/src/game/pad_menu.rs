@@ -87,6 +87,8 @@ pub(super) struct MenuCursor {
     repeats: u32,
     /// The on-screen keyboard, open over a text field.
     pub(super) osk: Option<Keyboard>,
+    /// A VR controller's laser drives the pointer (`xr_pointer`): pointer mode.
+    pub(super) laser: bool,
     /// The keyboard was closed on this screen (it doesn't open by itself again).
     osk_dismissed: bool,
 }
@@ -110,6 +112,7 @@ impl Game<'_> {
     /// Focus mode is on for the open screen.
     fn pad_focus_mode(&self) -> bool {
         (self.settings.controller.menu_nav == MenuNav::Focus) != self.pad.menu.swapped
+            && !self.pad.menu.laser
     }
 
     /// Where focus can land: buttons drawn last frame, every registered
@@ -242,7 +245,7 @@ impl Game<'_> {
     }
 
     /// Send the window a pointer move to `at` (GUI pixels), as the mouse would.
-    fn pad_pointer_to(&mut self, event_loop: &ActiveEventLoop, at: (f32, f32)) {
+    pub(super) fn pad_pointer_to(&mut self, event_loop: &ActiveEventLoop, at: (f32, f32)) {
         let (Some(window), Some(batch)) = (self.window.as_ref(), self.gui_scale()) else {
             return;
         };
@@ -265,7 +268,12 @@ impl Game<'_> {
         self.pad.menu.pos = Some(self.cursor);
     }
 
-    fn pad_pointer_button(&mut self, event_loop: &ActiveEventLoop, right: bool, pressed: bool) {
+    pub(super) fn pad_pointer_button(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        right: bool,
+        pressed: bool,
+    ) {
         let Some(id) = self.window.as_ref().map(|w| w.id()) else {
             return;
         };
@@ -643,6 +651,7 @@ impl Game<'_> {
             menu.nudge = None;
             menu.osk = None;
             menu.osk_dismissed = false;
+            menu.laser = false;
             self.pad_show_os_pointer(true);
             return;
         }
@@ -698,7 +707,8 @@ impl Game<'_> {
         } else {
             self.pad.menu.stick = None;
             let (dx, dy) = gamepad::cursor_delta(state.left, move_deadzone, seconds);
-            if dx != 0.0 || dy != 0.0 {
+            // A VR laser has the pointer.
+            if (dx != 0.0 || dy != 0.0) && !self.pad.menu.laser {
                 self.pad_take_pointer(event_loop);
                 let at = self.cursor;
                 self.pad_pointer_to(event_loop, (at.0 + dx, at.1 + dy));
