@@ -97,6 +97,25 @@ What is left per frame (both eyes): building the draw lists (2.0 ms: 7,600 secti
 sorted), the rest of each eye's preparation (sky, entities, clouds, uploads), visibility (0.6 ms), recording and
 encoding the passes (0.3 ms); on the main thread, `update_world` (1.0 ms, most of it distant terrain).
 
+## HDR test pattern
+
+`horizon-xr-probe` prints the runtime's extensions and swapchain formats, then clears the eyes. With `--hdr` it
+shows a panel 1.5 m ahead (placed during its first two seconds, then fixed) of 12 grey patches labelled in nits,
+10 to 4000, drawn into `R16G16B16A16_SFLOAT` swapchains as scRGB (linear, 1.0 = 80 nits); `--sdr` draws the
+same values into the 8-bit sRGB swapchains, to compare. The brightest patch still brighter than the one before
+it is as far as the runtime and headset go.
+
+```sh
+cargo build --release -p horizon-xr --bin horizon-xr-probe
+cp .local/openxr-loader/openxr_loader.dll target/release/
+target/release/horizon-xr-probe --hdr 300
+```
+
+KRVR 2.0.0 (Apple Vision Pro), 2026-10-27: it accepts `R16G16B16A16_SFLOAT` but has no colour space or HDR
+extension (`XR_FB_color_space` and the like), and its stream is HEVC Main10 tagged full-range BT.709 / sRGB,
+each value clamped to 0..1 before the 10-bit quantization (strings in `krvr_xr2.dll`, `wire: NVENC HEVC session
+up` in `%LOCALAPPDATA%\KRVR\logs\runtime_*.log`): through it, everything past scRGB 1.0 is SDR white.
+
 ## Not there yet
 
 Room-scale movement, aiming with a controller in the world, the hand and held item, the hotbar on the off hand,

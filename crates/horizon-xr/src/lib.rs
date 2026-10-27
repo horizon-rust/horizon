@@ -34,6 +34,20 @@ pub(crate) fn err<E: std::fmt::Display>(what: &str) -> impl FnOnce(E) -> Error +
     move |e| Error(format!("{what}: {e}"))
 }
 
+/// The extensions the active runtime offers, by name (needs the loader, not a headset).
+pub fn runtime_extensions() -> Result<Vec<String>, Error> {
+    // SAFETY: loads the system's OpenXR loader, as `Xr::new` does.
+    let entry = unsafe { xr::Entry::load(&()) }.map_err(err("no OpenXR loader"))?;
+    let available = entry
+        .enumerate_extensions()
+        .map_err(err("OpenXR extensions"))?;
+    Ok(available
+        .names()
+        .into_iter()
+        .map(|n| String::from_utf8_lossy(n.strip_suffix(&[0]).unwrap_or(n)).into_owned())
+        .collect())
+}
+
 /// One eye this frame: where it is (stage space, metres, y up) and what it sees.
 #[derive(Clone, Copy, Debug)]
 pub struct Eye {
@@ -222,9 +236,17 @@ impl Xr {
         })
     }
 
+    /// The swapchain formats the runtime offers (Vulkan `VkFormat` values), its preferred first.
+    pub fn swapchain_formats(&self) -> Result<Vec<u32>, Error> {
+        self.session
+            .enumerate_swapchain_formats()
+            .map_err(err("swapchain formats"))
+    }
+
     /// Creates one swapchain per eye whose images the renderer draws into through views in
     /// `format`: an 8-bit format without sRGB (Horizon writes gamma-encoded colour, like
     /// vanilla). The images themselves are the sRGB twin, so the runtime reads them right.
+    /// `Rgba16Float` and `Rgb10a2Unorm`, which have no sRGB twin, are taken as they are.
     pub fn create_swapchains(&mut self, format: wgpu::TextureFormat) -> Result<(), Error> {
         let (vk_format, srgb) = srgb_twin(format)?;
         let offered = self
@@ -475,6 +497,11 @@ impl Xr {
         &self.eyes[eye].images[frame.images[eye]]
     }
 
+    /// The eyes' image format (`create_swapchains`): an 8-bit sRGB one, or the format given.
+    pub fn eye_format(&self) -> wgpu::TextureFormat {
+        self.eyes[0].images[0].format()
+    }
+
     /// Hands `frame` to the runtime. Call after the eyes' commands are submitted.
     pub fn end_frame(&mut self, frame: Frame) -> Result<(), Error> {
         for eye in &mut self.eyes {
@@ -563,6 +590,14 @@ fn srgb_twin(format: wgpu::TextureFormat) -> Result<(vk::Format, wgpu::TextureFo
         wgpu::TextureFormat::Rgba8Unorm => Ok((
             vk::Format::R8G8B8A8_SRGB,
             wgpu::TextureFormat::Rgba8UnormSrgb,
+        )),
+        wgpu::TextureFormat::Rgba16Float => Ok((
+            vk::Format::R16G16B16A16_SFLOAT,
+            wgpu::TextureFormat::Rgba16Float,
+        )),
+        wgpu::TextureFormat::Rgb10a2Unorm => Ok((
+            vk::Format::A2B10G10R10_UNORM_PACK32,
+            wgpu::TextureFormat::Rgb10a2Unorm,
         )),
         other => Err(Error(format!("no headset swapchain for {other:?}"))),
     }
