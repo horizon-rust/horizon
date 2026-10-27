@@ -1,6 +1,7 @@
 //! Horizon native client: resources, world streaming, rendering and the
 //! bindings between the validated simulation pieces and the game loop.
 #![forbid(unsafe_code)]
+pub mod acoustics;
 pub mod advancements;
 pub mod ambience;
 pub mod animate_tick;
@@ -159,6 +160,7 @@ pub mod random_tick_sections;
 pub mod recipe_book;
 pub mod recipe_book_screen;
 pub mod reconnect;
+pub mod reverb;
 pub mod save;
 pub mod scoreboard;
 pub mod scoreboard_cmd;
@@ -176,6 +178,7 @@ pub mod skins;
 pub mod snbt;
 pub mod sound_engine;
 pub mod sound_events;
+pub mod sound_physics;
 pub mod spans;
 pub mod sprint;
 pub mod sprites;

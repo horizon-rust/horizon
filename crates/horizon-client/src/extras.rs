@@ -112,6 +112,8 @@ pub struct Extras {
     pub agent_control: bool,
     /// "Playing Horizon" on the player's Discord profile (`discord_presence`; on by default).
     pub discord_presence: bool,
+    /// Sound physics (`sound_physics`): reverb, occlusion and reflections.
+    pub sound_physics: crate::sound_physics::Settings,
 }
 impl Default for Extras {
     fn default() -> Self {
@@ -144,6 +146,7 @@ impl Default for Extras {
             no_ai: false,
             agent_control: false,
             discord_presence: true,
+            sound_physics: Default::default(),
         }
     }
 }
@@ -218,7 +221,9 @@ impl Extras {
                 horizon_core::no_ai::KEY => e.no_ai = flag(e.no_ai),
                 "agentControl" => e.agent_control = flag(e.agent_control),
                 "discordPresence" => e.discord_presence = flag(e.discord_presence),
-                _ => {}
+                key => {
+                    e.sound_physics.parse_line(key, value);
+                }
             }
         }
         e
@@ -259,7 +264,7 @@ impl Extras {
             bool_text(self.no_ai),
             bool_text(self.agent_control),
             bool_text(self.discord_presence),
-        )
+        ) + &self.sound_physics.serialize()
     }
     /// Binds the extra key `name` (`SORT_KEY`); false for
     /// another name (a vanilla mapping).
@@ -388,6 +393,15 @@ pub enum Item {
     AgentControl,
     /// On the Horizon Settings page.
     DiscordPresence,
+    SoundPhysics,
+    SoundReverb,
+    SoundOcclusion,
+    SoundUnderwater,
+    SoundReflections,
+    SoundReverbGain,
+    SoundBlockAbsorption,
+    SoundRays,
+    SoundBounces,
 }
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -403,6 +417,16 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(SortKey),
         Err("Multiplayer"),
         Ok(AutoReconnect),
+        Err("Sound"),
+        Ok(SoundPhysics),
+        Ok(SoundReverb),
+        Ok(SoundOcclusion),
+        Ok(SoundUnderwater),
+        Ok(SoundReflections),
+        Ok(SoundReverbGain),
+        Ok(SoundBlockAbsorption),
+        Ok(SoundRays),
+        Ok(SoundBounces),
     ]
 }
 impl Item {
@@ -418,6 +442,15 @@ impl Item {
             Item::NoAi => "No AI",
             Item::AgentControl => "Agent Control",
             Item::DiscordPresence => "Discord Rich Presence",
+            Item::SoundPhysics => "Sound physics",
+            Item::SoundReverb => "Reverb",
+            Item::SoundOcclusion => "Occlusion",
+            Item::SoundUnderwater => "Underwater filter",
+            Item::SoundReflections => "Sound direction",
+            Item::SoundReverbGain => "Reverb gain",
+            Item::SoundBlockAbsorption => "Block absorption",
+            Item::SoundRays => "Rays",
+            Item::SoundBounces => "Ray bounces",
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
@@ -426,8 +459,10 @@ impl Item {
         Some(match self {
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
-            Fullbright | DynamicLights | MouseTweaks | Sort | AutoReconnect | NoAi
-            | AgentControl | DiscordPresence => {
+            SoundReverb | SoundOcclusion | SoundUnderwater | SoundReflections | SoundReverbGain
+            | SoundBlockAbsorption | SoundRays | SoundBounces => SoundPhysics,
+            SoundPhysics | Fullbright | DynamicLights | MouseTweaks | Sort | AutoReconnect
+            | NoAi | AgentControl | DiscordPresence => {
                 return None;
             }
         })
@@ -463,6 +498,23 @@ impl Item {
             Item::AgentControl => {
                 "Your own AI agent can play this game through horizon-ctl or an MCP client, on this computer only."
             }
+            Item::SoundPhysics => {
+                "Sounds echo in caves and rooms, are muffled by the blocks in the way and come through doorways, as Sound Physics Remastered does."
+            }
+            Item::SoundReverb => {
+                "Reverberation from the blocks around a sound: short in rooms, long in caves."
+            }
+            Item::SoundOcclusion => {
+                "Blocks between you and a sound muffle it by their material: wool most, glass little."
+            }
+            Item::SoundUnderwater => "Sounds are muffled while you or they are underwater.",
+            Item::SoundReflections => {
+                "A sound behind a wall is heard from where its reflections reach you, such as an open door."
+            }
+            Item::SoundReverbGain => "How loud the reverberation is.",
+            Item::SoundBlockAbsorption => "How much sound the blocks in the way absorb.",
+            Item::SoundRays => "Rays traced around each sound. More is steadier and costs more.",
+            Item::SoundBounces => "Bounces of each ray: more gives longer echoes and costs more.",
         }
     }
     /// The frame-time cost the main switch of an extra shows.
@@ -472,6 +524,8 @@ impl Item {
             Item::Fullbright => Some(Cost::None),
             Item::DynamicLights => Some(Cost::Low),
             Item::AutoReconnect | Item::MouseTweaks | Item::Sort => Some(Cost::None),
+            // Traced off the game thread; the mixer's reverb runs on the audio thread.
+            Item::SoundPhysics => Some(Cost::Low),
             _ => None,
         }
     }
@@ -487,6 +541,11 @@ impl Item {
             Item::NoAi => e.no_ai,
             Item::AgentControl => e.agent_control,
             Item::DiscordPresence => e.discord_presence,
+            Item::SoundPhysics => e.sound_physics.enabled,
+            Item::SoundReverb => e.sound_physics.reverb,
+            Item::SoundOcclusion => e.sound_physics.occlusion,
+            Item::SoundUnderwater => e.sound_physics.underwater,
+            Item::SoundReflections => e.sound_physics.reflections,
             _ => return None,
         })
     }
@@ -494,15 +553,23 @@ impl Item {
     pub fn value(self, e: &Extras) -> String {
         match self {
             Item::SortKey => crate::keybinds::display_name(&e.sort_key).plain(),
+            Item::SoundReverbGain => format!("{}x", e.sound_physics.reverb_gain),
+            Item::SoundBlockAbsorption => format!("{}x", e.sound_physics.block_absorption),
+            Item::SoundRays => e.sound_physics.environment_evaluation_ray_count.to_string(),
+            Item::SoundBounces => e
+                .sound_physics
+                .environment_evaluation_ray_bounces
+                .to_string(),
             other => match other.switch(e) {
                 Some(true) => "On".into(),
                 _ => "Off".into(),
             },
         }
     }
-    /// A click (`_back` for the right button: every item left is a switch,
-    /// so both flip it). The sort key binds instead.
-    pub fn cycle(self, e: &mut Extras, _back: bool) {
+    /// A click (`back` for the right button: switches flip either way,
+    /// values step back). The sort key binds instead.
+    pub fn cycle(self, e: &mut Extras, back: bool) {
+        use crate::sound_physics as sp;
         match self {
             Item::Fullbright => e.fullbright = !e.fullbright,
             Item::DynamicLights => e.dynamic_lights = !e.dynamic_lights,
@@ -513,6 +580,29 @@ impl Item {
             Item::NoAi => e.no_ai = !e.no_ai,
             Item::AgentControl => e.agent_control = !e.agent_control,
             Item::DiscordPresence => e.discord_presence = !e.discord_presence,
+            Item::SoundPhysics => e.sound_physics.enabled = !e.sound_physics.enabled,
+            Item::SoundReverb => e.sound_physics.reverb = !e.sound_physics.reverb,
+            Item::SoundOcclusion => e.sound_physics.occlusion = !e.sound_physics.occlusion,
+            Item::SoundUnderwater => e.sound_physics.underwater = !e.sound_physics.underwater,
+            Item::SoundReflections => e.sound_physics.reflections = !e.sound_physics.reflections,
+            Item::SoundReverbGain => {
+                let s = &mut e.sound_physics;
+                s.reverb_gain = sp::cycle(&sp::REVERB_GAINS, s.reverb_gain, back)
+            }
+            Item::SoundBlockAbsorption => {
+                let s = &mut e.sound_physics;
+                s.block_absorption = sp::cycle(&sp::BLOCK_ABSORPTIONS, s.block_absorption, back)
+            }
+            Item::SoundRays => {
+                let s = &mut e.sound_physics;
+                s.environment_evaluation_ray_count =
+                    sp::cycle(&sp::RAY_COUNTS, s.environment_evaluation_ray_count, back)
+            }
+            Item::SoundBounces => {
+                let s = &mut e.sound_physics;
+                s.environment_evaluation_ray_bounces =
+                    sp::cycle(&sp::RAY_BOUNCES, s.environment_evaluation_ray_bounces, back)
+            }
             Item::SortKey => {}
         }
     }
@@ -663,5 +753,17 @@ mod tests {
         for item in rows().into_iter().flatten() {
             assert!(!item.caption().is_empty() && !item.description().is_empty());
         }
+        // Sound physics: off, its settings under its switch, kept in the file.
+        assert_eq!(Item::SoundPhysics.switch(&e), Some(false));
+        assert_eq!(Item::SoundRays.parent(), Some(Item::SoundPhysics));
+        Item::SoundPhysics.cycle(&mut e, false);
+        Item::SoundRays.cycle(&mut e, false);
+        Item::SoundReverbGain.cycle(&mut e, true);
+        assert_eq!(Item::SoundRays.value(&e), "64");
+        assert_eq!(Item::SoundReverbGain.value(&e), "0.75x");
+        let back = Extras::parse(&e.serialize());
+        assert!(back.sound_physics.enabled);
+        assert_eq!(back.sound_physics.environment_evaluation_ray_count, 64);
+        assert_eq!(back, e);
     }
 }

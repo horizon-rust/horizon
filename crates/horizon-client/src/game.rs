@@ -158,6 +158,7 @@ mod shader_packs;
 mod shield;
 mod sign_edit;
 mod sniffers;
+mod sound_physics;
 mod spawner;
 mod spill;
 mod startup_menu;

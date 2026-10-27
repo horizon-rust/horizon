@@ -129,6 +129,18 @@ and the container screen tests are unchanged).
   server accepts it; a unit test replays the planned clicks through the menu
   engine on random chests.
 
+### Sound physics (`soundPhysics.enabled`, default off)
+- Reverb that follows the place (a room, a cave, outdoors), sounds muffled by the
+  blocks between you and them according to their material, a muffled mix underwater,
+  and sounds heard from where their reflections reach you (an open door rather than
+  the wall). A Rust port of Sound Physics Remastered for Horizon's mixer.
+- The Sound header on the Extras page: the switch, one switch per effect (Reverb,
+  Occlusion, Underwater filter, Sound direction), Reverb gain, Block absorption, Rays
+  and Ray bounces. Every other setting of the mod is in `horizon-extras.txt` as
+  `soundPhysics.<the mod's name>`, with the mod's defaults.
+- How it works, what it costs and how it differs from the mod:
+  [sound-physics.md](sound-physics.md).
+
 ## Shared rules
 
 - All extras are hidden with F1 and drawn in the HUD layer: under screens, over
@@ -141,5 +153,8 @@ and the container screen tests are unchanged).
 ## Perf budget
 
 Off: a flag check per frame per extra (no allocations, no world access).
+Sound physics, on: a per-tick check of the 9 x 9 chunks' sections on the game thread;
+the rays run on their own thread and the reverb on the audio thread
+([sound-physics.md](sound-physics.md#cost)).
 A mod's minimap stays under 0.3 ms of CPU
 per frame (tile budget) plus a 64 KiB texture upload when its image changes.

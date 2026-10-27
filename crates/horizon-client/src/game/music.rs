@@ -37,6 +37,7 @@ impl Game<'_> {
             frozen: !self.clock.runs_normally(),
         };
         self.audio.tick(self.pause, &ctx);
+        self.tick_sound_physics();
     }
     /// `getSituationalMusic` and `getMusicVolume`.
     fn situational_music(&self) -> (Option<Music>, f32) {

@@ -2,13 +2,19 @@
 //! small mixer standing in for OpenAL: one channel per source with its gain,
 //! pitch, linear distance attenuation (`AL_LINEAR_DISTANCE`, reference 0,
 //! rolloff 1), looping, relative flag and source state, Ogg/Vorbis decoding
-//! (streams on a worker thread) and OpenAL Soft's stereo panning.
+//! (streams on a worker thread) and OpenAL Soft's stereo panning. With sound
+//! physics on (`sound_physics`, a Horizon extra), each positional channel
+//! also gets EFX-style filters and reverb sends (`reverb`), worked out off
+//! this thread (`acoustics`).
 use crate::Result;
+use crate::acoustics::{Acoustics, Sink};
+use crate::reverb::{self, Bus, Crossover, Split};
 use crate::sound_engine::{
     Attenuation, Backend, Bound, ChannelId, InstanceId, PlayResult, SoundEngine, SoundInstance,
     Sounds, TickContext,
 };
 use crate::sound_events::{Sound, SoundRegistry};
+use crate::sound_physics::{Environment, Request, Settings as PhysicsSettings};
 #[cfg(feature = "audio")]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use horizon_core::random::{LegacyRandom, RandomSource};
@@ -17,6 +23,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 /// An OpenAL source's state.
@@ -39,6 +46,14 @@ struct Channel {
     looping: bool,
     at: [f32; 3],
     relative: bool,
+    /// Sound physics' result for this channel, once worked out.
+    environment: Option<Environment>,
+    /// The filters' state.
+    split: Split,
+    /// Waiting for its environment: plays from this instant at the latest.
+    hold: Option<Instant>,
+    /// The sound event and `SoundSource` it plays, for re-evaluation.
+    tag: Option<(Arc<str>, usize)>,
 }
 #[derive(Default)]
 struct Mixer {
@@ -47,6 +62,46 @@ struct Mixer {
     listener_yaw: f32,
     listener_pitch: f32,
     limiter_peak: f32,
+    /// Sound physics' settings while it is on.
+    physics_settings: Option<PhysicsSettings>,
+    /// The reverb buses and their buffers, built at the output's rate.
+    physics: Option<Box<MixPhysics>>,
+}
+/// The mixer's sound physics state.
+struct MixPhysics {
+    settings: PhysicsSettings,
+    rate: u32,
+    crossover: Crossover,
+    buses: Vec<Bus>,
+    /// Each bus's input for the buffer being mixed, one sample a frame.
+    sends: [Vec<f32>; reverb::SENDS],
+}
+impl MixPhysics {
+    fn new(settings: &PhysicsSettings, rate: u32) -> Self {
+        Self {
+            settings: settings.clone(),
+            rate,
+            crossover: Split::coefficient(rate),
+            buses: reverb::presets(settings)
+                .into_iter()
+                .map(|p| Bus::new(p, rate))
+                .collect(),
+            sends: Default::default(),
+        }
+    }
+}
+/// Where the sound physics thread delivers: the channel's environment, which
+/// also ends its hold.
+struct MixerSink(Arc<Mutex<Mixer>>);
+impl Sink for MixerSink {
+    fn environment(&self, channel: ChannelId, environment: Environment) {
+        if let Ok(mut m) = self.0.lock()
+            && let Some(c) = m.channels.get_mut(&channel)
+        {
+            c.environment = Some(environment);
+            c.hold = None;
+        }
+    }
 }
 /// A sound the player could have heard (`SoundEventListener.onPlaySound`):
 /// what the subtitle overlay needs.
@@ -69,6 +124,12 @@ pub struct MixerBackend {
     decoder: Option<std::sync::mpsc::Sender<Decode>>,
     next: ChannelId,
     live: bool,
+    /// Sound physics: off unless the extra is on.
+    acoustics: Acoustics,
+    /// The camera is underwater (`isUnderWater`), for sound physics.
+    listener_underwater: bool,
+    /// Client ticks, for re-evaluating moving sounds.
+    ticks: u64,
 }
 /// Decoded samples and their rate (`None`: the file did not load).
 type Samples = Option<(Arc<Vec<f32>>, u32)>;
@@ -208,6 +269,44 @@ fn decode(path: &Path) -> Option<(Vec<f32>, u32)> {
     Some((mono, rate))
 }
 impl MixerBackend {
+    /// `update_moving_sounds`: every `sound_update_interval` ticks, playing
+    /// positional sounds are traced again where they are (the mod's
+    /// `tickInGameSound` hook). Music discs only then get sound physics.
+    fn reevaluate(&mut self) {
+        let settings = self.acoustics.settings();
+        if !settings.enabled || !settings.update_moving_sounds || !self.live {
+            return;
+        }
+        let interval = u64::from(settings.sound_update_interval.max(1));
+        let Ok(m) = self.mixer.lock() else {
+            return;
+        };
+        let due: Vec<(ChannelId, Request, f32)> = m
+            .channels
+            .iter()
+            .filter(|(id, c)| {
+                c.state == State::Playing && (self.ticks + **id).is_multiple_of(interval)
+            })
+            .filter_map(|(id, c)| {
+                let (event, source) = c.tag.as_ref()?;
+                Some((
+                    *id,
+                    Request {
+                        at: c.at.map(f64::from),
+                        listener: m.listener,
+                        listener_underwater: self.listener_underwater,
+                        source: *source,
+                        event: event.to_string(),
+                    },
+                    c.linear?,
+                ))
+            })
+            .collect();
+        drop(m);
+        for (channel, request, max_distance) in due {
+            self.acoustics.evaluate(channel, request, max_distance);
+        }
+    }
     fn with(&self, channel: ChannelId, f: impl FnOnce(&mut Channel)) {
         if let Ok(mut m) = self.mixer.lock()
             && let Some(c) = m.channels.get_mut(&channel)
@@ -232,6 +331,10 @@ impl Backend for MixerBackend {
                 looping: false,
                 at: [0.0; 3],
                 relative: false,
+                environment: None,
+                split: Split::default(),
+                hold: None,
+                tag: None,
             },
         );
         Some(id)
@@ -254,10 +357,50 @@ impl Backend for MixerBackend {
         self.with(channel, |c| c.looping = looping);
     }
     fn set_position(&mut self, channel: ChannelId, p: [f64; 3]) {
-        self.with(channel, |c| c.at = [p[0] as f32, p[1] as f32, p[2] as f32]);
+        self.with(channel, |c| {
+            let at = [p[0] as f32, p[1] as f32, p[2] as f32];
+            // A sound that moved is heard from where it is until re-evaluated.
+            if c.at != at
+                && let Some(e) = &mut c.environment
+            {
+                e.redirect = None;
+            }
+            c.at = at;
+        });
     }
     fn set_relative(&mut self, channel: ChannelId, relative: bool) {
         self.with(channel, |c| c.relative = relative);
+    }
+    /// Sound physics for a positional sound starting: hold it until the
+    /// thread has its environment (`HOLD` at most), as the mod works it out
+    /// before `alSourcePlay`.
+    fn starting(&mut self, channel: ChannelId, event: &str, source: usize) {
+        if !self.acoustics.enabled() || !self.live {
+            return;
+        }
+        let underwater = self.listener_underwater;
+        let Ok(mut m) = self.mixer.lock() else {
+            return;
+        };
+        let listener = m.listener;
+        let Some(c) = m.channels.get_mut(&channel) else {
+            return;
+        };
+        let Some(max_distance) = c.linear.filter(|_| !c.relative) else {
+            return;
+        };
+        c.tag = Some((event.into(), source));
+        c.hold = Some(Instant::now() + crate::acoustics::HOLD);
+        let request = Request {
+            at: c.at.map(f64::from),
+            listener,
+            listener_underwater: underwater,
+            source,
+            event: event.to_owned(),
+        };
+        if !self.acoustics.evaluate(channel, request, max_distance) {
+            c.hold = None;
+        }
     }
     /// `getCompleteBuffer` (cached, else decoded on the decoder thread) or
     /// `getStream` (decoded on a thread of its own), then attach and
@@ -364,6 +507,14 @@ fn stereo_gains(right: f32, up: f32, forward: f32) -> [f32; 2] {
     let front = azimuth.cos() * elevation.cos() * 0.095_660_8;
     [0.5 - 0.5 * side + front, 0.5 + 0.5 * side + front]
 }
+/// A channel's filters and sends for one buffer: the direct path's EFX
+/// low-pass, then each send's (gain, high-frequency gain), with distance and
+/// air absorption applied.
+struct Wet {
+    direct_gain: f32,
+    direct_hf: f32,
+    sends: [(f32, f32); reverb::SENDS],
+}
 /// The gain OpenAL applies for distance (`AL_LINEAR_DISTANCE` with reference
 /// distance 0 and rolloff 1: the distance clamps to the max distance).
 fn distance_gain(linear: Option<f32>, distance: f32) -> f32 {
@@ -400,26 +551,78 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         forward[0] * up[1] - forward[1] * up[0],
     ];
     let dot = |a: [f64; 3], b: [f64; 3]| (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) as f32;
+    // Sound physics: built at this rate while on, dropped when off.
+    match (&mixer.physics_settings, &mut mixer.physics) {
+        (None, physics) => *physics = None,
+        (Some(s), Some(p)) if p.rate == rate => {
+            if p.settings != *s {
+                for (bus, params) in p.buses.iter_mut().zip(reverb::presets(s)) {
+                    bus.set_params(params);
+                }
+                p.settings = s.clone();
+            }
+        }
+        (Some(s), physics) => *physics = Some(Box::new(MixPhysics::new(s, rate))),
+    }
+    let mut physics = mixer.physics.take();
+    if let Some(p) = &mut physics {
+        let frames = data.len() / channels.max(1);
+        for send in &mut p.sends {
+            send.clear();
+            send.resize(frames, 0.0);
+        }
+    }
+    let now = Instant::now();
     // Gains and pans per source for this buffer.
-    let mut voices: Vec<(ChannelId, [f32; 3], f64)> = Vec::new();
+    let mut voices: Vec<(ChannelId, [f32; 3], f64, Option<Wet>)> = Vec::new();
     for (id, c) in &mixer.channels {
         let Some((_, source_rate)) = &c.samples else {
             continue;
         };
-        if c.state != State::Playing {
+        if c.state != State::Playing || c.hold.is_some_and(|until| now < until) {
             continue;
         }
+        let environment = physics.as_ref().and(c.environment.as_ref());
+        let at = environment
+            .and_then(|e| e.redirect)
+            .unwrap_or(c.at.map(f64::from));
         let d = if c.relative {
             [f64::from(c.at[0]), f64::from(c.at[1]), f64::from(c.at[2])]
         } else {
             [
-                f64::from(c.at[0]) - listener[0],
-                f64::from(c.at[1]) - listener[1],
-                f64::from(c.at[2]) - listener[2],
+                at[0] - listener[0],
+                at[1] - listener[1],
+                at[2] - listener[2],
             ]
         };
         let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() as f32;
-        let gain = c.gain.clamp(0.0, 1.0) * distance_gain(c.linear, distance);
+        // The mod's attenuation factor stretches the linear range.
+        let linear = match (&physics, c.linear) {
+            (Some(p), Some(max)) => Some(max / p.settings.attenuation_factor),
+            (_, linear) => linear,
+        };
+        let gain = c.gain.clamp(0.0, 1.0) * distance_gain(linear, distance);
+        let wet = match (environment, &physics) {
+            (Some(e), Some(p)) if !c.relative => {
+                let air = reverb::AIR_ABSORPTION_HF.powf(p.settings.air_absorption * distance);
+                Some(Wet {
+                    direct_gain: e.direct_gain,
+                    direct_hf: e.direct_cutoff * air,
+                    sends: std::array::from_fn(|k| {
+                        let room = reverb::room_attenuation(
+                            distance,
+                            linear,
+                            p.buses[k].params().room_rolloff,
+                        );
+                        (
+                            c.gain.clamp(0.0, 1.0) * room * e.send_gain[k],
+                            e.send_cutoff[k] * air,
+                        )
+                    }),
+                })
+            }
+            _ => None,
+        };
         // Relative sources are already in OpenAL's listener space (-Z ahead).
         let [left, right] = if c.relative {
             stereo_gains(d[0] as f32, d[1] as f32, -d[2] as f32)
@@ -428,16 +631,16 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         }
         .map(|pan| gain * pan);
         let step = f64::from(*source_rate) / f64::from(rate) * f64::from(c.pitch.max(0.0));
-        voices.push((*id, [left, right, gain], step));
+        voices.push((*id, [left, right, gain], step, wet));
     }
-    for (id, [left, right, gain], step) in voices {
+    for (id, [left, right, gain], step, wet) in voices {
         let Some(c) = mixer.channels.get_mut(&id) else {
             continue;
         };
         let Some((samples, _)) = c.samples.clone() else {
             continue;
         };
-        for frame in data.chunks_mut(channels) {
+        for (f, frame) in data.chunks_mut(channels).enumerate() {
             let mut i = c.position as usize;
             if i + 1 >= samples.len() {
                 if c.looping && samples.len() > 1 {
@@ -449,7 +652,16 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
                 }
             }
             let t = (c.position - i as f64) as f32;
-            let s = samples[i] * (1.0 - t) + samples[i + 1] * t;
+            let mut s = samples[i] * (1.0 - t) + samples[i + 1] * t;
+            if let (Some(w), Some(p)) = (&wet, &mut physics) {
+                let parts = c.split.split(s, p.crossover);
+                for (send, &(g, hf)) in p.sends.iter_mut().zip(&w.sends) {
+                    if g > 0.0 {
+                        send[f] += reverb::lowpass(parts, g, hf);
+                    }
+                }
+                s = reverb::lowpass(parts, w.direct_gain, w.direct_hf);
+            }
             if channels >= 2 {
                 frame[0] += s * left;
                 frame[1] += s * right;
@@ -460,6 +672,13 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
             c.position += step;
         }
     }
+    if let Some(p) = &mut physics {
+        let MixPhysics { buses, sends, .. } = &mut **p;
+        for (bus, send) in buses.iter_mut().zip(sends.iter()) {
+            bus.process(send, data, channels);
+        }
+    }
+    mixer.physics = physics;
     // Limit the whole buffer together, preserving waveform and stereo balance
     // instead of flattening each overloaded sample; release over 200 ms
     // (OpenAL Soft's output limiter, `ALC_OUTPUT_LIMITER_SOFT`, releases
@@ -474,6 +693,52 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         }
         mixer.limiter_peak = (mixer.limiter_peak * release).max(peak);
     }
+}
+/// The mixer's cost, for `examples/sound_physics_bench.rs`: `voices` looping
+/// positional channels mixed to 48 kHz stereo in 10 ms buffers for
+/// `seconds`, each with a reverb environment when `physics` is on.
+#[doc(hidden)]
+pub fn mix_benchmark(voices: usize, physics: bool, seconds: f32) -> std::time::Duration {
+    let mut mixer = Mixer::default();
+    let mut random = LegacyRandom::new(1);
+    let noise: Arc<Vec<f32>> = Arc::new((0..48_000).map(|_| random.next_float() - 0.5).collect());
+    for id in 0..voices as ChannelId {
+        let angle = id as f32;
+        mixer.channels.insert(
+            id,
+            Channel {
+                samples: Some((noise.clone(), 44_100)),
+                position: 0.0,
+                state: State::Playing,
+                gain: 1.0,
+                pitch: 1.0,
+                linear: Some(16.0),
+                looping: true,
+                at: [angle.cos() * 6.0, 0.0, angle.sin() * 6.0],
+                relative: false,
+                environment: physics.then_some(Environment {
+                    direct_gain: 0.8,
+                    direct_cutoff: 0.3,
+                    send_gain: [0.3, 0.3, 0.2, 0.1],
+                    send_cutoff: [0.8; 4],
+                    redirect: None,
+                }),
+                split: Split::default(),
+                hold: None,
+                tag: None,
+            },
+        );
+    }
+    mixer.physics_settings = physics.then(|| PhysicsSettings {
+        enabled: true,
+        ..PhysicsSettings::default()
+    });
+    let mut out = vec![0.0f32; 480 * 2];
+    let started = Instant::now();
+    for _ in 0..(seconds * 100.0) as usize {
+        mix(&mut mixer, &mut out, 2, 48_000);
+    }
+    started.elapsed()
 }
 /// Why the game should not open an output, if it should not:
 /// `HORIZON_NO_AUDIO`, or a virtual screen (`vscreen`), where agents and
@@ -589,6 +854,9 @@ impl Audio {
                 decoder: None,
                 next: 0,
                 live,
+                acoustics: Acoustics::default(),
+                listener_underwater: false,
+                ticks: 0,
             },
             record_heard: false,
             listener: [0.0; 3],
@@ -679,6 +947,57 @@ impl Audio {
     pub fn tick(&mut self, paused: bool, ctx: &TickContext) {
         self.sync_volumes();
         self.engine.tick(paused, ctx, &mut self.backend);
+        self.backend.ticks += 1;
+        if !paused {
+            self.backend.reevaluate();
+        }
+    }
+    /// Sound physics' settings (the extra's), applied from the next sound.
+    pub fn set_sound_physics(&mut self, settings: &PhysicsSettings) {
+        if self.backend.acoustics.settings() == settings {
+            return;
+        }
+        self.backend.acoustics.set_settings(settings);
+        if settings.enabled && self.backend.live {
+            self.backend
+                .acoustics
+                .start(MixerSink(self.backend.mixer.clone()));
+        }
+        if let Ok(mut m) = self.backend.mixer.lock() {
+            m.physics_settings = settings.enabled.then(|| settings.clone());
+            if !settings.enabled {
+                for c in m.channels.values_mut() {
+                    c.environment = None;
+                    c.hold = None;
+                }
+            }
+        }
+    }
+    pub fn sound_physics_enabled(&self) -> bool {
+        self.backend.acoustics.enabled() && self.backend.live
+    }
+    pub fn sound_physics_settings(&self) -> &PhysicsSettings {
+        self.backend.acoustics.settings()
+    }
+    /// Whether sound physics needs the `count` block states (`set_sound_states`).
+    pub fn needs_sound_states(&self, count: usize) -> bool {
+        self.sound_physics_enabled() && self.backend.acoustics.needs_states(count)
+    }
+    pub fn set_sound_states(&mut self, states: Vec<crate::acoustics::BlockState>) {
+        self.backend.acoustics.set_states(states);
+    }
+    /// Once a tick with sound physics on: whether the camera is underwater,
+    /// and the chunk sections around the listener (`chunk` gives a loaded
+    /// chunk's).
+    pub fn sync_sound_physics<'c>(
+        &mut self,
+        underwater: bool,
+        chunk: impl FnMut(i32, i32) -> Option<&'c [Arc<crate::chunk::Section>]>,
+    ) {
+        self.backend.listener_underwater = underwater;
+        if self.sound_physics_enabled() {
+            self.backend.acoustics.sync(self.listener, chunk);
+        }
     }
     /// `SoundManager.pauseAllExcept(MUSIC, UI)`.
     pub fn pause(&mut self) {
@@ -818,6 +1137,9 @@ impl Audio {
             census["decoded"] = cache.entries.len().into();
             census["decoded_mib"] = (cache.bytes >> 20).into();
         }
+        if self.backend.acoustics.enabled() {
+            census["soundPhysics"] = self.backend.acoustics.stats().json();
+        }
         census
     }
     pub fn event_names(&self) -> Vec<String> {
@@ -922,7 +1244,115 @@ mod tests {
             looping,
             at,
             relative: false,
+            environment: None,
+            split: Split::default(),
+            hold: None,
+            tag: None,
         }
+    }
+
+    /// Mix `mixer` for `frames` stereo frames at 48 kHz.
+    fn render(mixer: &mut Mixer, frames: usize) -> Vec<f32> {
+        let mut out = vec![0.0; frames * 2];
+        mix(mixer, &mut out, 2, 48_000);
+        out
+    }
+    fn noise(n: usize) -> Vec<f32> {
+        let mut r = LegacyRandom::new(5);
+        (0..n).map(|_| r.next_float() * 0.4 - 0.2).collect()
+    }
+    fn physics_mixer(environment: Option<Environment>, on: bool) -> Mixer {
+        let mut m = Mixer::default();
+        let mut c = channel(noise(48_000), Some(16.0), [0.0, 0.0, 4.0], false);
+        c.environment = environment;
+        m.channels.insert(1, c);
+        m.physics_settings = on.then(|| PhysicsSettings {
+            enabled: true,
+            air_absorption: 0.0,
+            ..PhysicsSettings::default()
+        });
+        m
+    }
+
+    #[test]
+    fn sound_physics_off_or_dry_leaves_the_mix_as_vanilla() {
+        let vanilla = render(&mut physics_mixer(None, false), 4096);
+        // An environment left from before it was turned off is ignored.
+        let off = render(
+            &mut physics_mixer(
+                Some(Environment {
+                    direct_gain: 0.1,
+                    ..Environment::DRY
+                }),
+                false,
+            ),
+            4096,
+        );
+        assert_eq!(vanilla, off);
+        let dry = render(&mut physics_mixer(Some(Environment::DRY), true), 4096);
+        for (a, b) in vanilla.iter().zip(&dry) {
+            assert!((a - b).abs() < 1e-5, "{a} {b}");
+        }
+    }
+
+    #[test]
+    fn occlusion_darkens_and_sends_ring_on() {
+        let energy = |s: &[f32]| s.iter().map(|x| x * x).sum::<f32>();
+        // High frequencies: the sample-to-sample differences.
+        let bright = |s: &[f32]| {
+            energy(
+                &s.chunks(2)
+                    .map(|f| f[0])
+                    .collect::<Vec<_>>()
+                    .windows(2)
+                    .map(|w| w[1] - w[0])
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let dry = render(&mut physics_mixer(Some(Environment::DRY), true), 8192);
+        let muffled = Environment {
+            direct_gain: 0.9,
+            direct_cutoff: 0.05,
+            ..Environment::DRY
+        };
+        let behind_wall = render(&mut physics_mixer(Some(muffled), true), 8192);
+        assert!(bright(&behind_wall) < 0.2 * bright(&dry));
+        let cave = Environment {
+            send_gain: [0.0, 0.0, 0.0, 0.8],
+            ..Environment::DRY
+        };
+        let mut m = physics_mixer(Some(cave), true);
+        m.channels.get_mut(&1).unwrap().samples = Some((Arc::new(noise(4800)), 48_000));
+        render(&mut m, 4800);
+        // The source has ended; the 4-second bus still rings.
+        let tail = render(&mut m, 9600);
+        assert!(energy(&tail) > 1e-3, "{}", energy(&tail));
+        let mut m = physics_mixer(Some(Environment::DRY), true);
+        m.channels.get_mut(&1).unwrap().samples = Some((Arc::new(noise(4800)), 48_000));
+        render(&mut m, 4800);
+        assert_eq!(energy(&render(&mut m, 9600)), 0.0);
+    }
+
+    #[test]
+    fn held_sounds_wait_for_their_environment_and_redirects_pan() {
+        let mut m = physics_mixer(None, true);
+        m.channels.get_mut(&1).unwrap().hold =
+            Some(Instant::now() + std::time::Duration::from_secs(60));
+        assert!(render(&mut m, 512).iter().all(|x| *x == 0.0));
+        assert_eq!(m.channels[&1].position, 0.0);
+        MixerSink(Arc::new(Mutex::new(Mixer::default()))).environment(1, Environment::DRY);
+        let shared = Arc::new(Mutex::new(m));
+        MixerSink(shared.clone()).environment(1, Environment::DRY);
+        let mut m = Arc::try_unwrap(shared).ok().unwrap().into_inner().unwrap();
+        assert!(render(&mut m, 512).iter().any(|x| *x != 0.0));
+        // Heard from the right instead of straight ahead (yaw 0 faces +z).
+        let right = Environment {
+            redirect: Some([-4.0, 0.0, 0.0]),
+            ..Environment::DRY
+        };
+        let out = render(&mut physics_mixer(Some(right), true), 4096);
+        let side = |k: usize| out.chunks(2).map(|f| f[k] * f[k]).sum::<f32>();
+        assert!(side(1) > 4.0 * side(0), "{} {}", side(0), side(1));
     }
 
     #[test]
