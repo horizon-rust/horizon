@@ -114,7 +114,8 @@ target/release/horizon-xr-probe --hdr 300
 KRVR 2.0.0 (Apple Vision Pro), 2026-10-27: it accepts `R16G16B16A16_SFLOAT` but has no colour space or HDR
 extension (`XR_FB_color_space` and the like), and its stream is HEVC Main10 tagged full-range BT.709 / sRGB,
 each value clamped to 0..1 before the 10-bit quantization (strings in `krvr_xr2.dll`, `wire: NVENC HEVC session
-up` in `%LOCALAPPDATA%\KRVR\logs\runtime_*.log`): through it, everything past scRGB 1.0 is SDR white.
+up` in `%LOCALAPPDATA%\KRVR\logs\runtime_*.log`): through it, everything past scRGB 1.0 is SDR white. In the
+headset, 10, 20 and 40 nits got brighter and every patch from 80 or 100 up looked the same: no HDR through KRVR.
 
 ## Not there yet
 
