@@ -294,11 +294,18 @@ fn main() {
     println!("- starting a sound: one message to the thread (no tracing on the game thread)");
 
     println!("\n## Audio thread: mixing 1 s of 48 kHz stereo (ms)\n");
-    println!("| voices | vanilla mixer | with sound physics |");
-    println!("|---|---|---|");
+    println!("| voices | vanilla mixer | with sound physics | with binaural sound | both |");
+    println!("|---|---|---|---|---|");
     for voices in [8, 32, 64] {
-        let off = horizon_client::audio::mix_benchmark(voices, false, 5.0) / 5;
-        let on = horizon_client::audio::mix_benchmark(voices, true, 5.0) / 5;
-        println!("| {voices} | {:.2} | {:.2} |", ms(off), ms(on));
+        let run = |physics, hrtf| {
+            ms(horizon_client::audio::mix_benchmark(voices, physics, hrtf, 5.0) / 5)
+        };
+        println!(
+            "| {voices} | {:.2} | {:.2} | {:.2} | {:.2} |",
+            run(false, false),
+            run(true, false),
+            run(false, true),
+            run(true, true)
+        );
     }
 }

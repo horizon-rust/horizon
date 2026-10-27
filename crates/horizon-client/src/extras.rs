@@ -402,6 +402,8 @@ pub enum Item {
     SoundBlockAbsorption,
     SoundRays,
     SoundBounces,
+    SoundHrtf,
+    SoundDoppler,
 }
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -427,6 +429,8 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(SoundBlockAbsorption),
         Ok(SoundRays),
         Ok(SoundBounces),
+        Ok(SoundHrtf),
+        Ok(SoundDoppler),
     ]
 }
 impl Item {
@@ -451,6 +455,8 @@ impl Item {
             Item::SoundBlockAbsorption => "Block absorption",
             Item::SoundRays => "Rays",
             Item::SoundBounces => "Ray bounces",
+            Item::SoundHrtf => "Binaural sound",
+            Item::SoundDoppler => "Doppler effect",
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
@@ -461,8 +467,8 @@ impl Item {
             SortKey => Sort,
             SoundReverb | SoundOcclusion | SoundUnderwater | SoundReflections | SoundReverbGain
             | SoundBlockAbsorption | SoundRays | SoundBounces => SoundPhysics,
-            SoundPhysics | Fullbright | DynamicLights | MouseTweaks | Sort | AutoReconnect
-            | NoAi | AgentControl | DiscordPresence => {
+            SoundPhysics | SoundHrtf | SoundDoppler | Fullbright | DynamicLights | MouseTweaks
+            | Sort | AutoReconnect | NoAi | AgentControl | DiscordPresence => {
                 return None;
             }
         })
@@ -515,6 +521,12 @@ impl Item {
             Item::SoundBlockAbsorption => "How much sound the blocks in the way absorb.",
             Item::SoundRays => "Rays traced around each sound. More is steadier and costs more.",
             Item::SoundBounces => "Bounces of each ray: more gives longer echoes and costs more.",
+            Item::SoundHrtf => {
+                "3D sound for headphones: sounds above, below and behind you are heard there. Use with headphones."
+            }
+            Item::SoundDoppler => {
+                "The pitch of a sound rises as it comes at you and falls as it goes away."
+            }
         }
     }
     /// The frame-time cost the main switch of an extra shows.
@@ -526,6 +538,7 @@ impl Item {
             Item::AutoReconnect | Item::MouseTweaks | Item::Sort => Some(Cost::None),
             // Traced off the game thread; the mixer's reverb runs on the audio thread.
             Item::SoundPhysics => Some(Cost::Low),
+            Item::SoundHrtf | Item::SoundDoppler => Some(Cost::None),
             _ => None,
         }
     }
@@ -546,6 +559,8 @@ impl Item {
             Item::SoundOcclusion => e.sound_physics.occlusion,
             Item::SoundUnderwater => e.sound_physics.underwater,
             Item::SoundReflections => e.sound_physics.reflections,
+            Item::SoundHrtf => e.sound_physics.hrtf,
+            Item::SoundDoppler => e.sound_physics.doppler,
             _ => return None,
         })
     }
@@ -585,6 +600,8 @@ impl Item {
             Item::SoundOcclusion => e.sound_physics.occlusion = !e.sound_physics.occlusion,
             Item::SoundUnderwater => e.sound_physics.underwater = !e.sound_physics.underwater,
             Item::SoundReflections => e.sound_physics.reflections = !e.sound_physics.reflections,
+            Item::SoundHrtf => e.sound_physics.hrtf = !e.sound_physics.hrtf,
+            Item::SoundDoppler => e.sound_physics.doppler = !e.sound_physics.doppler,
             Item::SoundReverbGain => {
                 let s = &mut e.sound_physics;
                 s.reverb_gain = sp::cycle(&sp::REVERB_GAINS, s.reverb_gain, back)

@@ -57,6 +57,14 @@ pub struct Settings {
     pub update_moving_sounds: bool,
     pub sound_update_interval: u32,
     pub max_sound_processing_distance: f64,
+    /// Horizon's: playing sounds are traced again when the listener moves
+    /// to another block (the mod traces a sound once, when it starts).
+    pub update_on_listener_move: bool,
+    /// Horizon's spatial extras (`spatial`), independent of `enabled`:
+    /// binaural panning and the Doppler effect.
+    pub hrtf: bool,
+    pub doppler: bool,
+    pub doppler_factor: f32,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -88,6 +96,10 @@ impl Default for Settings {
             update_moving_sounds: false,
             sound_update_interval: 5,
             max_sound_processing_distance: 512.0,
+            update_on_listener_move: true,
+            hrtf: false,
+            doppler: false,
+            doppler_factor: 1.0,
         }
     }
 }
@@ -173,6 +185,10 @@ impl Settings {
             "strict_occlusion" => flag(&mut self.strict_occlusion),
             "redirect_non_occluded_sounds" => flag(&mut self.redirect_non_occluded_sounds),
             "update_moving_sounds" => flag(&mut self.update_moving_sounds),
+            "update_on_listener_move" => flag(&mut self.update_on_listener_move),
+            "hrtf" => flag(&mut self.hrtf),
+            "doppler" => flag(&mut self.doppler),
+            "doppler_factor" => real(&mut self.doppler_factor, 0.0, 4.0),
             "sound_update_interval" => int(&mut self.sound_update_interval, 1, u32::MAX),
             "max_sound_processing_distance" => {
                 if let Ok(x) = value.parse::<f64>()
@@ -188,7 +204,7 @@ impl Settings {
     /// Every setting as `soundPhysics.<name>:<value>` lines.
     pub fn serialize(&self) -> String {
         let b = |v: bool| if v { "true" } else { "false" };
-        let lines: [(&str, String); 27] = [
+        let lines: [(&str, String); 31] = [
             ("enabled", b(self.enabled).into()),
             ("reverb", b(self.reverb).into()),
             ("occlusion", b(self.occlusion).into()),
@@ -238,6 +254,13 @@ impl Settings {
                 b(self.redirect_non_occluded_sounds).into(),
             ),
             ("update_moving_sounds", b(self.update_moving_sounds).into()),
+            (
+                "update_on_listener_move",
+                b(self.update_on_listener_move).into(),
+            ),
+            ("hrtf", b(self.hrtf).into()),
+            ("doppler", b(self.doppler).into()),
+            ("doppler_factor", self.doppler_factor.to_string()),
             (
                 "sound_update_interval",
                 self.sound_update_interval.to_string(),

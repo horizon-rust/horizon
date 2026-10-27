@@ -5,7 +5,8 @@
 //! (streams on a worker thread) and OpenAL Soft's stereo panning. With sound
 //! physics on (`sound_physics`, a Horizon extra), each positional channel
 //! also gets EFX-style filters and reverb sends (`reverb`), worked out off
-//! this thread (`acoustics`).
+//! this thread (`acoustics`). Binaural panning and the Doppler effect
+//! (`spatial`) are extras of their own.
 use crate::Result;
 use crate::acoustics::{Acoustics, Sink};
 use crate::reverb::{self, Bus, Crossover, Split};
@@ -15,6 +16,7 @@ use crate::sound_engine::{
 };
 use crate::sound_events::{Sound, SoundRegistry};
 use crate::sound_physics::{Environment, Request, Settings as PhysicsSettings};
+use crate::spatial::{self, Binaural, Ear, Motion};
 #[cfg(feature = "audio")]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use horizon_core::random::{LegacyRandom, RandomSource};
@@ -54,6 +56,95 @@ struct Channel {
     hold: Option<Instant>,
     /// The sound event and `SoundSource` it plays, for re-evaluation.
     tag: Option<(Arc<str>, usize)>,
+    /// The tick it was last traced at.
+    traced: u64,
+    /// Its velocity, for the Doppler effect.
+    motion: Motion,
+    /// Its ears' state, for binaural panning.
+    binaural: Option<Box<Binaural>>,
+    /// How it was mixed in the last buffer: the next one ramps from there.
+    last: Option<Voice>,
+}
+impl Channel {
+    fn new() -> Self {
+        Channel {
+            samples: None,
+            position: 0.0,
+            state: State::Initial,
+            gain: 1.0,
+            pitch: 1.0,
+            linear: None,
+            looping: false,
+            at: [0.0; 3],
+            relative: false,
+            environment: None,
+            split: Split::default(),
+            hold: None,
+            tag: None,
+            traced: 0,
+            motion: Motion::default(),
+            binaural: None,
+            last: None,
+        }
+    }
+    /// Seconds of sound left (looping sounds never end).
+    fn remaining(&self) -> f32 {
+        match &self.samples {
+            _ if self.looping => f32::INFINITY,
+            Some((s, rate)) => {
+                ((s.len() as f64 - self.position)
+                    / f64::from(*rate)
+                    / f64::from(self.pitch.max(0.01))) as f32
+            }
+            None => f32::INFINITY,
+        }
+    }
+}
+/// Horizon's spatial extras the mixer applies (`spatial`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Spatial {
+    hrtf: bool,
+    doppler: Option<f32>,
+}
+/// How a voice is mixed for one buffer: its pan gains, its gain on a mono
+/// output, its filters and sends, and its ears when binaural.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Voice {
+    pan: [f32; 2],
+    mono: f32,
+    wet: Option<Wet>,
+    ears: Option<[Ear; 2]>,
+}
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+impl Voice {
+    /// The gains `t` of the way from `self` to `to` (the ears ramp in
+    /// `Binaural::process`).
+    fn toward(&self, to: &Voice, t: f32) -> Voice {
+        let wet = match (self.wet, to.wet) {
+            (Some(a), Some(b)) => Some(Wet {
+                direct_gain: lerp(a.direct_gain, b.direct_gain, t),
+                direct_hf: lerp(a.direct_hf, b.direct_hf, t),
+                sends: std::array::from_fn(|k| {
+                    (
+                        lerp(a.sends[k].0, b.sends[k].0, t),
+                        lerp(a.sends[k].1, b.sends[k].1, t),
+                    )
+                }),
+            }),
+            (_, wet) => wet,
+        };
+        Voice {
+            pan: [
+                lerp(self.pan[0], to.pan[0], t),
+                lerp(self.pan[1], to.pan[1], t),
+            ],
+            mono: lerp(self.mono, to.mono, t),
+            wet,
+            ears: to.ears,
+        }
+    }
 }
 #[derive(Default)]
 struct Mixer {
@@ -66,6 +157,9 @@ struct Mixer {
     physics_settings: Option<PhysicsSettings>,
     /// The reverb buses and their buffers, built at the output's rate.
     physics: Option<Box<MixPhysics>>,
+    spatial: Spatial,
+    /// The listener's velocity, for the Doppler effect.
+    listener_motion: Motion,
 }
 /// The mixer's sound physics state.
 struct MixPhysics {
@@ -130,6 +224,8 @@ pub struct MixerBackend {
     listener_underwater: bool,
     /// Client ticks, for re-evaluating moving sounds.
     ticks: u64,
+    /// The block the listener was in at the last tick.
+    listener_cell: Option<[i32; 3]>,
 }
 /// Decoded samples and their rate (`None`: the file did not load).
 type Samples = Option<(Arc<Vec<f32>>, u32)>;
@@ -269,28 +365,61 @@ fn decode(path: &Path) -> Option<(Vec<f32>, u32)> {
     Some((mono, rate))
 }
 impl MixerBackend {
-    /// `update_moving_sounds`: every `sound_update_interval` ticks, playing
-    /// positional sounds are traced again where they are (the mod's
-    /// `tickInGameSound` hook). Music discs only then get sound physics.
+    /// Traces playing sounds again: every `sound_update_interval` ticks with
+    /// `update_moving_sounds` (the mod's `tickInGameSound` hook; music discs
+    /// only then get sound physics), and with `update_on_listener_move` the
+    /// ones still playing for a while when the listener enters another
+    /// block, at most `MOVE_BATCH` a tick.
     fn reevaluate(&mut self) {
+        const MOVE_BATCH: usize = 24;
         let settings = self.acoustics.settings();
-        if !settings.enabled || !settings.update_moving_sounds || !self.live {
+        if !settings.enabled || !self.live {
             return;
         }
+        let (moving, on_move) = (
+            settings.update_moving_sounds,
+            settings.update_on_listener_move,
+        );
         let interval = u64::from(settings.sound_update_interval.max(1));
-        let Ok(m) = self.mixer.lock() else {
+        let Ok(mut m) = self.mixer.lock() else {
             return;
         };
-        let due: Vec<(ChannelId, Request, f32)> = m
+        let cell = m.listener.map(|v| v.floor() as i32);
+        let moved = on_move && self.listener_cell.is_some_and(|c| c != cell);
+        self.listener_cell = Some(cell);
+        if !moving && !moved {
+            return;
+        }
+        let ticks = self.ticks;
+        let mut moved_left = MOVE_BATCH;
+        let due: Vec<ChannelId> = m
             .channels
             .iter()
+            .filter(|(_, c)| c.state == State::Playing && c.hold.is_none() && c.tag.is_some())
             .filter(|(id, c)| {
-                c.state == State::Playing && (self.ticks + **id).is_multiple_of(interval)
+                if moving && (ticks + **id).is_multiple_of(interval) {
+                    return true;
+                }
+                if moved && moved_left > 0 && ticks >= c.traced + 2 && c.remaining() > 0.4 {
+                    moved_left -= 1;
+                    return true;
+                }
+                false
             })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &due {
+            if let Some(c) = m.channels.get_mut(id) {
+                c.traced = ticks;
+            }
+        }
+        let due: Vec<(ChannelId, Request, f32)> = due
+            .into_iter()
+            .filter_map(|id| Some((id, m.channels.get(&id)?)))
             .filter_map(|(id, c)| {
                 let (event, source) = c.tag.as_ref()?;
                 Some((
-                    *id,
+                    id,
                     Request {
                         at: c.at.map(f64::from),
                         listener: m.listener,
@@ -319,24 +448,7 @@ impl Backend for MixerBackend {
     fn create(&mut self, _streaming: bool) -> Option<ChannelId> {
         self.next += 1;
         let id = self.next;
-        self.mixer.lock().ok()?.channels.insert(
-            id,
-            Channel {
-                samples: None,
-                position: 0.0,
-                state: State::Initial,
-                gain: 1.0,
-                pitch: 1.0,
-                linear: None,
-                looping: false,
-                at: [0.0; 3],
-                relative: false,
-                environment: None,
-                split: Split::default(),
-                hold: None,
-                tag: None,
-            },
-        );
+        self.mixer.lock().ok()?.channels.insert(id, Channel::new());
         Some(id)
     }
     fn destroy(&mut self, channel: ChannelId) {
@@ -357,7 +469,9 @@ impl Backend for MixerBackend {
         self.with(channel, |c| c.looping = looping);
     }
     fn set_position(&mut self, channel: ChannelId, p: [f64; 3]) {
+        let now = Instant::now();
         self.with(channel, |c| {
+            c.motion.update(p, now);
             let at = [p[0] as f32, p[1] as f32, p[2] as f32];
             // A sound that moved is heard from where it is until re-evaluated.
             if c.at != at
@@ -390,6 +504,7 @@ impl Backend for MixerBackend {
             return;
         };
         c.tag = Some((event.into(), source));
+        c.traced = self.ticks;
         c.hold = Some(Instant::now() + crate::acoustics::HOLD);
         let request = Request {
             at: c.at.map(f64::from),
@@ -510,6 +625,7 @@ fn stereo_gains(right: f32, up: f32, forward: f32) -> [f32; 2] {
 /// A channel's filters and sends for one buffer: the direct path's EFX
 /// low-pass, then each send's (gain, high-frequency gain), with distance and
 /// air absorption applied.
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Wet {
     direct_gain: f32,
     direct_hf: f32,
@@ -573,8 +689,13 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         }
     }
     let now = Instant::now();
-    // Gains and pans per source for this buffer.
-    let mut voices: Vec<(ChannelId, [f32; 3], f64, Option<Wet>)> = Vec::new();
+    let spatial = mixer.spatial;
+    // Gains ramp over the buffer while anything of Horizon's can change them
+    // between buffers; vanilla's mix jumps, as OpenAL's gains do.
+    let ramp = physics.is_some() || spatial != Spatial::default();
+    let listener_velocity = mixer.listener_motion.velocity(now);
+    // How each source is mixed in this buffer, and its step.
+    let mut voices: Vec<(ChannelId, Voice, f64)> = Vec::new();
     for (id, c) in &mixer.channels {
         let Some((_, source_rate)) = &c.samples else {
             continue;
@@ -624,23 +745,63 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
             _ => None,
         };
         // Relative sources are already in OpenAL's listener space (-Z ahead).
-        let [left, right] = if c.relative {
-            stereo_gains(d[0] as f32, d[1] as f32, -d[2] as f32)
+        let local = if c.relative {
+            [d[0] as f32, d[1] as f32, -d[2] as f32]
         } else {
-            stereo_gains(dot(d, right), dot(d, up), dot(d, forward))
+            [dot(d, right), dot(d, up), dot(d, forward)]
+        };
+        // Binaural for positional sources: their ears replace the panning.
+        let ears = (spatial.hrtf && !c.relative && channels >= 2)
+            .then(|| spatial::ears(local[0], local[1], local[2], rate));
+        let pan = if ears.is_some() {
+            [gain * spatial::BINAURAL_GAIN; 2]
+        } else {
+            stereo_gains(local[0], local[1], local[2]).map(|pan| gain * pan)
+        };
+        let mut pitch = c.pitch.max(0.0);
+        if let Some(factor) = spatial.doppler.filter(|_| !c.relative) {
+            let real = c.at.map(f64::from);
+            let to_source = [
+                (real[0] - listener[0]) as f32,
+                (real[1] - listener[1]) as f32,
+                (real[2] - listener[2]) as f32,
+            ];
+            pitch *= spatial::doppler(to_source, c.motion.velocity(now), listener_velocity, factor);
         }
-        .map(|pan| gain * pan);
-        let step = f64::from(*source_rate) / f64::from(rate) * f64::from(c.pitch.max(0.0));
-        voices.push((*id, [left, right, gain], step, wet));
+        let step = f64::from(*source_rate) / f64::from(rate) * f64::from(pitch);
+        let voice = Voice {
+            pan,
+            mono: gain,
+            wet,
+            ears,
+        };
+        voices.push((*id, voice, step));
     }
-    for (id, [left, right, gain], step, wet) in voices {
+    let frames = (data.len() / channels.max(1)).max(1) as f32;
+    for (id, voice, step) in voices {
         let Some(c) = mixer.channels.get_mut(&id) else {
             continue;
         };
         let Some((samples, _)) = c.samples.clone() else {
             continue;
         };
+        let from = if ramp {
+            c.last
+                .filter(|l| l.ears.is_some() == voice.ears.is_some())
+                .unwrap_or(voice)
+        } else {
+            voice
+        };
+        c.last = ramp.then_some(voice);
+        let still = from == voice;
+        let (from_ears, to_ears) = (from.ears, voice.ears);
+        if to_ears.is_some() && c.binaural.is_none() {
+            c.binaural = Some(Box::default());
+        }
         for (f, frame) in data.chunks_mut(channels).enumerate() {
+            let t = (f + 1) as f32 / frames;
+            let v = if still { voice } else { from.toward(&voice, t) };
+            let (left, right, gain, wet) = (v.pan[0], v.pan[1], v.mono, v.wet);
             let mut i = c.position as usize;
             if i + 1 >= samples.len() {
                 if c.looping && samples.len() > 1 {
@@ -662,7 +823,11 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
                 }
                 s = reverb::lowpass(parts, w.direct_gain, w.direct_hf);
             }
-            if channels >= 2 {
+            if let (Some(to), Some(b)) = (&to_ears, &mut c.binaural) {
+                let [l, r] = b.process(s, from_ears.as_ref().unwrap_or(to), to, t, rate);
+                frame[0] += l * left;
+                frame[1] += r * right;
+            } else if channels >= 2 {
                 frame[0] += s * left;
                 frame[1] += s * right;
             } else {
@@ -696,9 +861,15 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
 }
 /// The mixer's cost, for `examples/sound_physics_bench.rs`: `voices` looping
 /// positional channels mixed to 48 kHz stereo in 10 ms buffers for
-/// `seconds`, each with a reverb environment when `physics` is on.
+/// `seconds`, each with a reverb environment when `physics` is on, binaural
+/// with `hrtf`.
 #[doc(hidden)]
-pub fn mix_benchmark(voices: usize, physics: bool, seconds: f32) -> std::time::Duration {
+pub fn mix_benchmark(
+    voices: usize,
+    physics: bool,
+    hrtf: bool,
+    seconds: f32,
+) -> std::time::Duration {
     let mut mixer = Mixer::default();
     let mut random = LegacyRandom::new(1);
     let noise: Arc<Vec<f32>> = Arc::new((0..48_000).map(|_| random.next_float() - 0.5).collect());
@@ -723,9 +894,7 @@ pub fn mix_benchmark(voices: usize, physics: bool, seconds: f32) -> std::time::D
                     send_cutoff: [0.8; 4],
                     redirect: None,
                 }),
-                split: Split::default(),
-                hold: None,
-                tag: None,
+                ..Channel::new()
             },
         );
     }
@@ -733,6 +902,7 @@ pub fn mix_benchmark(voices: usize, physics: bool, seconds: f32) -> std::time::D
         enabled: true,
         ..PhysicsSettings::default()
     });
+    mixer.spatial.hrtf = hrtf;
     let mut out = vec![0.0f32; 480 * 2];
     let started = Instant::now();
     for _ in 0..(seconds * 100.0) as usize {
@@ -857,6 +1027,7 @@ impl Audio {
                 acoustics: Acoustics::default(),
                 listener_underwater: false,
                 ticks: 0,
+                listener_cell: None,
             },
             record_heard: false,
             listener: [0.0; 3],
@@ -925,6 +1096,7 @@ impl Audio {
             m.listener = position;
             m.listener_yaw = yaw;
             m.listener_pitch = pitch;
+            m.listener_motion.update(position, Instant::now());
         }
     }
     /// Sync the volume options, refreshing the categories that changed
@@ -956,6 +1128,12 @@ impl Audio {
     pub fn set_sound_physics(&mut self, settings: &PhysicsSettings) {
         if self.backend.acoustics.settings() == settings {
             return;
+        }
+        if let Ok(mut m) = self.backend.mixer.lock() {
+            m.spatial = Spatial {
+                hrtf: settings.hrtf,
+                doppler: settings.doppler.then_some(settings.doppler_factor),
+            };
         }
         self.backend.acoustics.set_settings(settings);
         if settings.enabled && self.backend.live {
@@ -1244,10 +1422,7 @@ mod tests {
             looping,
             at,
             relative: false,
-            environment: None,
-            split: Split::default(),
-            hold: None,
-            tag: None,
+            ..Channel::new()
         }
     }
 
@@ -1331,6 +1506,118 @@ mod tests {
         m.channels.get_mut(&1).unwrap().samples = Some((Arc::new(noise(4800)), 48_000));
         render(&mut m, 4800);
         assert_eq!(energy(&render(&mut m, 9600)), 0.0);
+    }
+
+    #[test]
+    fn binaural_and_doppler_are_extras_of_their_own() {
+        let side = |m: &mut Mixer| {
+            let out = render(m, 4096);
+            let energy = |k: usize| out.chunks(2).map(|f| f[k] * f[k]).sum::<f32>();
+            (energy(0), energy(1))
+        };
+        // A source on the right (yaw 0 faces +z; right is -x).
+        let mut m = Mixer::default();
+        m.channels.insert(
+            1,
+            channel(noise(48_000), Some(16.0), [-4.0, 0.0, 0.0], false),
+        );
+        let vanilla = side(&mut m);
+        let mut m = Mixer::default();
+        m.channels.insert(
+            1,
+            channel(noise(48_000), Some(16.0), [-4.0, 0.0, 0.0], false),
+        );
+        m.spatial.hrtf = true;
+        let (l, r) = side(&mut m);
+        assert!(r > 4.0 * l, "{l} {r}");
+        assert_ne!((l, r), vanilla);
+        // Off again: vanilla's mix.
+        let mut m = Mixer::default();
+        m.channels.insert(
+            1,
+            channel(noise(48_000), Some(16.0), [-4.0, 0.0, 0.0], false),
+        );
+        m.spatial = Spatial::default();
+        assert_eq!(side(&mut m), vanilla);
+
+        // Doppler: a source coming at the listener plays faster.
+        let advance = |doppler: Option<f32>| {
+            let mut m = Mixer::default();
+            let mut c = channel(noise(48_000), Some(64.0), [0.0, 0.0, 30.0], true);
+            let t0 = Instant::now();
+            c.motion
+                .update([0.0, 0.0, 32.0], t0 - std::time::Duration::from_millis(100));
+            c.motion
+                .update([0.0, 0.0, 30.0], t0 - std::time::Duration::from_millis(50));
+            m.channels.insert(1, c);
+            m.spatial.doppler = doppler;
+            render(&mut m, 4800);
+            m.channels[&1].position
+        };
+        let still = advance(None);
+        let coming = advance(Some(1.0));
+        assert!(coming > still * 1.05, "{still} {coming}");
+    }
+
+    #[test]
+    fn moving_on_traces_long_sounds_again() {
+        let mut b = MixerBackend {
+            mixer: Arc::new(Mutex::new(Mixer::default())),
+            root: PathBuf::new(),
+            cache: Arc::default(),
+            decoder: None,
+            next: 0,
+            live: true,
+            acoustics: Acoustics::default(),
+            listener_underwater: false,
+            ticks: 10,
+            listener_cell: None,
+        };
+        let (send, receive) = std::sync::mpsc::channel();
+        struct Count(Mutex<std::sync::mpsc::Sender<ChannelId>>);
+        impl Sink for Count {
+            fn environment(&self, channel: ChannelId, _: Environment) {
+                let _ = self.0.lock().unwrap().send(channel);
+            }
+        }
+        b.acoustics.set_settings(&PhysicsSettings {
+            enabled: true,
+            ..PhysicsSettings::default()
+        });
+        b.acoustics.start(Count(Mutex::new(send)));
+        b.acoustics.set_states(vec![crate::acoustics::BlockState {
+            block: "minecraft:air".into(),
+            break_sound: "".into(),
+            step_sound: "".into(),
+            fluid: crate::sound_physics::FluidKind::None,
+            collides: false,
+            sturdy: 0,
+            closes: 0,
+        }]);
+        {
+            let mut m = b.mixer.lock().unwrap();
+            for (id, looping) in [(1, true), (2, false)] {
+                let mut c = channel(noise(4_800), Some(16.0), [0.0, 64.0, 4.0], looping);
+                c.tag = Some(("minecraft:block.note_block.harp".into(), 4));
+                m.channels.insert(id, c);
+            }
+            m.listener = [0.5, 64.5, 0.5];
+        }
+        b.reevaluate();
+        assert!(receive.try_recv().is_err(), "nothing on the first tick");
+        b.ticks += 3;
+        b.mixer.lock().unwrap().listener = [1.5, 64.5, 0.5];
+        b.reevaluate();
+        // The loop is traced again; the 0.1 s sound is about to end.
+        let traced = receive
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(traced, 1);
+        assert!(
+            receive
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err()
+        );
     }
 
     #[test]

@@ -13,6 +13,23 @@ Henkel, vlad2305m and Saint) does on Fabric and NeoForge:
 - **Sound direction.** A sound behind a wall is heard from where its reflections reach you, such
   as an open door, at its real distance.
 
+Beside it, two spatial extras of Horizon's own, each with its switch under the same header and
+independent of sound physics (`crates/horizon-client/src/spatial.rs`):
+
+- **Binaural sound** (`soundPhysics.hrtf`, off): 3D sound for headphones. Vanilla turns OpenAL's
+  HRTF off; Horizon has a structural head model instead of measured responses (Brown and Duda,
+  1998): each ear gets a sphere's interaural delay (up to 0.66 ms), its head shadow (a high
+  shelf from +6 dB facing the sound to -20 dB in the deepest shadow) and the pinna's five
+  echoes, whose delays carry elevation and front from back. No data files. It replaces the
+  stereo panning of positional sounds; UI and music keep vanilla's.
+- **Doppler effect** (`soundPhysics.doppler`, off; `doppler_factor` 1): OpenAL's formula, speed
+  of sound 343.3 blocks a second, from the velocities of the sound and the listener measured
+  off the positions the game sets (vanilla sets none). A jump faster than 100 blocks a second
+  (a teleport) is no velocity, and one older than 150 ms lapses.
+
+With any of them on, a voice's gains, filters and ears ramp over each 10 ms buffer, so a new
+environment or a turn of the head does not click. All off, the mix is vanilla's to the bit.
+
 The mod cannot run in Horizon: it is a Fabric jar of Java mixins into Minecraft's `SoundEngine`
 and OpenAL's EFX extension, and Horizon runs neither Java nor OpenAL (its mods are WebAssembly,
 [mods.md](mods.md); its mixer is its own, `audio.rs`). So the mod's calculation is ported to
@@ -33,6 +50,7 @@ Rust and the EFX parts it drives are rebuilt in the mixer.
 | Settings, materials, rays, the calculation | `crates/horizon-client/src/sound_physics.rs` (unit tested) |
 | The thread that traces, the section snapshot | `crates/horizon-client/src/acoustics.rs` (unit tested) |
 | EFX low-pass, the four reverb buses | `crates/horizon-client/src/reverb.rs` (unit tested) |
+| Binaural ears, Doppler, measured velocities | `crates/horizon-client/src/spatial.rs` (unit tested) |
 | Mixer: per-channel filters and sends, hold, redirect | `crates/horizon-client/src/audio.rs` (`mix`, `MixerBackend::starting`) |
 | The hook where a channel starts | `sound_engine.rs`: `Backend::starting`, a no-op for every other backend |
 | Game glue, once a tick | `crates/horizon-client/src/game/sound_physics.rs` |
@@ -70,6 +88,10 @@ Rust and the EFX parts it drives are rebuilt in the mixer.
      last.
    - a cache (`sound_physics::Cache`) keeps which cells the listener sees and the air paths
      while the listener stays in one cell and no block changes (light updates do not count).
+   - moving on: when the listener enters another block, the sounds still playing for more
+     than 0.4 s (loops, music discs with `update_moving_sounds`, long sounds) are traced
+     again, 24 a tick at most (`update_on_listener_move`, Horizon's, on). The mod traces a
+     sound once, when it starts.
 3. **The mixer applies** the result: the direct path and four sends through an EFX-style
    low-pass (gain, gain above 5 kHz) with OpenAL's air absorption (0.99426 per block ×
    `air_absorption`), the sends into the four buses with OpenAL's room rolloff, the
@@ -85,7 +107,8 @@ Turned off, nothing runs: no thread work, no sync, and the mixer is bit-for-bit 
 ## Settings
 
 The Extras page has the switch, one switch per effect (Horizon's: the mod has only `enabled`),
-Reverb gain, Block absorption, Rays (8, 16, 32, 64) and Ray bounces (2, 4, 8, 16). The file
+Reverb gain, Block absorption, Rays (8, 16, 32, 64), Ray bounces (2, 4, 8, 16), then Binaural
+sound and Doppler effect. The file
 takes all of the mod's general settings under their own names and ranges:
 
 | Key (`soundPhysics.` …) | Default | Mod's |
@@ -113,6 +136,9 @@ takes all of the mod's general settings under their own names and ranges:
 | `update_moving_sounds` | false | same |
 | `sound_update_interval` | 5 | same |
 | `max_sound_processing_distance` | 512 | same |
+| `update_on_listener_move` | true | (Horizon) |
+| `hrtf`, `doppler` | false | (Horizon) |
+| `doppler_factor` | 1.0 | (Horizon; OpenAL's `AL_DOPPLER_FACTOR`) |
 
 Not carried over: the per-block reflectivity and occlusion files (the mod's defaults are built
 in, keyed by sound type), the per-sound rate file (its defaults are), `sound_distance_allowance`
@@ -153,15 +179,16 @@ millisecond before it starts (the hold is 40 ms at most). The materials are buil
 
 **Audio thread**, mixing one second of 48 kHz stereo, ms:
 
-| Voices | Vanilla mixer | With sound physics |
-|---|---|---|
-| 8 | 1.8 | 8.4 |
-| 32 | 4.8 | 20.8 |
-| 64 | 9.4 | 32.9 |
+| Voices | Vanilla mixer | With sound physics | With binaural sound | Both |
+|---|---|---|---|---|
+| 8 | 1.6 | 8.6 | 8.8 | 14.4 |
+| 32 | 6.4 | 20.3 | 35.8 | 47.8 |
+| 64 | 18.5 | 44.2 | 89.6 | 115.7 |
 
-Most of the extra is the four reverb buses (about 7 ms a second while any rings); they stop
-when silent. That is under 1 % of a core for a usual scene, on the audio thread, not the game
-thread.
+Most of sound physics' share is the four reverb buses (about 7 ms a second while any rings);
+they stop when silent. Binaural sound costs about 1.3 ms a second per voice. A usual scene
+(10 to 20 voices) with both stays around 2 to 4 % of a core, on the audio thread, not the game
+thread. The Doppler effect costs nothing measurable.
 
 Run it again with `cargo run --profile fast -p horizon-client --example sound_physics_bench`.
 In game, `horizon-ctl status` (the audio census) gives `soundPhysics`: sounds evaluated, mean
@@ -212,7 +239,9 @@ Other differences:
 ## Not verified
 
 Not listened to: everything above is checked by unit tests and the benchmark, not by ear.
-The faithful port (`a69589b2d`) ran in a real game (a deepslate cave, 0.24 ms a sound on the
-thread, 0.02 ms a tick on the game thread); the fixed one has not been listened to yet. The
+The faithful port (`a69589b2d`) and the fixed one (`e95b1364f`) were played in a real game (a
+deepslate cave; 0.24 and 0.32 ms a sound on the thread, 0.02 and 0.03 ms a tick on the game
+thread), and the fixed one listened to by the user. Binaural sound, the Doppler effect and
+tracing again on the move have not been listened to yet. The
 reverb's loudness against the mod's, the hold before a sound starts, and how it sounds in VR
 (KRVR) are untested by ear.

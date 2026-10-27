@@ -136,8 +136,9 @@ and the container screen tests are unchanged).
   the wall). A Rust port of Sound Physics Remastered for Horizon's mixer.
 - The Sound header on the Extras page: the switch, one switch per effect (Reverb,
   Occlusion, Underwater filter, Sound direction), Reverb gain, Block absorption, Rays
-  and Ray bounces. Every other setting of the mod is in `horizon-extras.txt` as
-  `soundPhysics.<the mod's name>`, with the mod's defaults.
+  and Ray bounces; then Binaural sound (3D sound for headphones) and Doppler effect, two
+  switches of their own that work with sound physics off. Every other setting of the mod is in
+  `horizon-extras.txt` as `soundPhysics.<the mod's name>`, with the mod's defaults.
 - How it works, what it costs and how it differs from the mod:
   [sound-physics.md](sound-physics.md).
 

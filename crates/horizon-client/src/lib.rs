@@ -180,6 +180,7 @@ pub mod sound_engine;
 pub mod sound_events;
 pub mod sound_physics;
 pub mod spans;
+pub mod spatial;
 pub mod sprint;
 pub mod sprites;
 pub mod stations;
