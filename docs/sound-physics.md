@@ -35,7 +35,7 @@ independent of sound physics (`crates/horizon-client/src/spatial.rs`):
 
 - **Bow creak** (`soundPhysics.bow_creak`, off): drawing a bow creaks, harder and faster as the
   tension rises over the 20-tick draw (stick-slip jolts ringing two wood resonances, 420 Hz and
-  1.15 kHz, over a faint string hum), synthesised once (1.2 s). It plays at the bow hand, right
+  1.15 kHz), synthesised once (1.2 s). It plays at the bow hand, right
   of the eyes, and fades out over a buffer on an early release. Vanilla's draw is silent.
 
 With any of them on, a voice's gains, filters and ears ramp over each 10 ms buffer, so a new

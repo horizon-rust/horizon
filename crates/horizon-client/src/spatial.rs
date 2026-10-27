@@ -207,8 +207,8 @@ pub fn whoosh_samples() -> Vec<f32> {
 pub const CREAK_SECONDS: f32 = 1.2;
 /// A bow being drawn: the limbs' stick-slip creaks, jolts that come faster
 /// and harder as the tension rises over the first second, each ringing two
-/// wood resonances (420 Hz and 1.15 kHz), over a faint rising string hum;
-/// then a few last creaks as it holds.
+/// wood resonances (420 Hz and 1.15 kHz); then a few last creaks as it
+/// holds.
 pub fn creak_samples() -> Vec<f32> {
     let rate = WHOOSH_RATE as f32;
     let len = (CREAK_SECONDS * rate) as usize;
@@ -237,7 +237,6 @@ pub fn creak_samples() -> Vec<f32> {
         seed as f32 / u32::MAX as f32
     };
     let mut until_jolt = 0.0f32;
-    let mut phase = 0.0f32;
     let mut out = Vec::with_capacity(len);
     for i in 0..len {
         let time = i as f32 / rate;
@@ -261,9 +260,6 @@ pub fn creak_samples() -> Vec<f32> {
             *s = [x, s[0], v, s[2]];
             y += v * gain;
         }
-        // The string's hum, rising with the tension.
-        phase += std::f32::consts::TAU * (95.0 + 60.0 * tension) / rate;
-        y += 0.03 * tension * phase.sin();
         out.push(y * fade.max(0.0));
     }
     let peak = out.iter().fold(0.0f32, |p, x| p.max(x.abs()));
