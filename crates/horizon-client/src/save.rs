@@ -2000,6 +2000,8 @@ pub struct SaveDir {
     pub tables: OnceLock<Arc<SaveTables>>,
     /// The dimension's skylight and height, from its folder name.
     pub shape: LevelShape,
+    /// Distant terrain's summaries on disk (`lod::store`), opened on the first far read.
+    lod: OnceLock<crate::lod::store::LodStore>,
 }
 fn is_forced_ticket(ticket: &Tag) -> bool {
     matches!(ticket.get("type"), Some(Tag::String(t)) if *t == JavaString::from("minecraft:forced"))
@@ -2018,7 +2020,17 @@ impl SaveDir {
             outstanding: Default::default(),
             tables: OnceLock::new(),
             shape,
+            lod: OnceLock::new(),
         }
+    }
+    /// The dimension's distant terrain on disk, in `data/horizon-lod`.
+    pub fn lod_store(&self, assets: &crate::assets::Assets) -> &crate::lod::store::LodStore {
+        self.lod.get_or_init(|| {
+            crate::lod::store::LodStore::new(
+                self.root.join("data").join("horizon-lod"),
+                assets.registry.len(),
+            )
+        })
     }
     /// 26.3's TicketStorage: persistent tickets live in each dimension's
     /// data/minecraft/chunk_tickets.dat, with ChunkPos.CODEC's [x, z] int array.
@@ -2149,6 +2161,14 @@ impl SaveDir {
             let mut batch = Vec::with_capacity(records.len());
             {
                 let mut pending = self.pending.lock().map_err(|_| "pending writes poisoned")?;
+                // A chunk's distant summary is made again from its new save.
+                if folder == Folder::Region
+                    && let Some(store) = self.lod.get()
+                {
+                    for ((x, z), _) in &records {
+                        store.forget(*x, *z);
+                    }
+                }
                 for (key, record) in records {
                     let seq = self.sequence.fetch_add(1, Ordering::Relaxed);
                     pending.insert((folder, key.0, key.1), (seq, record.clone()));
@@ -2242,6 +2262,9 @@ impl SaveDir {
     }
     /// Wait until every queued write is on disk.
     pub fn flush(&self) -> Result<()> {
+        if let Some(store) = self.lod.get() {
+            store.flush();
+        }
         let mut count = self
             .outstanding
             .count
@@ -3460,6 +3483,15 @@ struct SavedLodSampler<G: ChunkGenerator> {
     inner: Box<dyn crate::streaming::LodSampler>,
     cache: std::collections::VecDeque<((i32, i32), Option<LodSurfaces>)>,
     details: Vec<crate::streaming::LodDetail>,
+    /// When the distant terrain on disk was last written (`LOD_FLUSH`).
+    flushed: std::time::Instant,
+}
+/// How often the sampler writes the distant terrain it has added to the disk.
+const LOD_FLUSH: std::time::Duration = std::time::Duration::from_secs(10);
+impl<G: ChunkGenerator> SavedLodSampler<G> {
+    fn store(&self) -> &crate::lod::store::LodStore {
+        self.generator.save.lod_store(&self.generator.registry)
+    }
 }
 impl<G: ChunkGenerator> SavedLodSampler<G> {
     fn saved_columns(&mut self, key: (i32, i32)) -> Option<LodSurfaces> {
@@ -3488,6 +3520,7 @@ impl<G: ChunkGenerator> crate::streaming::LodSampler for SavedLodSampler<G> {
             inner: self.inner.fork()?,
             cache: Default::default(),
             details: Vec::new(),
+            flushed: std::time::Instant::now(),
         }))
     }
     fn request_detail(&mut self, chunks: &[(i32, i32)], center: [i32; 2]) {
@@ -3501,33 +3534,49 @@ impl<G: ChunkGenerator> crate::streaming::LodSampler for SavedLodSampler<G> {
         }
         self.inner.request_detail(&missing, center);
     }
+    fn remember(&mut self, key: (i32, i32), columns: &LodSurfaces) {
+        self.store().put_live(key.0, key.1, &columns[..]);
+        if let Some(cached) = self.cache.iter_mut().find(|(at, _)| *at == key) {
+            cached.1 = Some(columns.clone());
+        }
+    }
     fn drain_details(&mut self) -> Vec<crate::streaming::LodDetail> {
         let mut details = std::mem::take(&mut self.details);
         for (key, generated) in self.inner.drain_details() {
             // A generation batch also returns neighbouring, unrequested chunks.
             // Their saved builds must take precedence too.
-            details.push((key, self.saved_columns(key).unwrap_or(generated)));
+            let columns = match self.saved_columns(key) {
+                Some(saved) => saved,
+                None => {
+                    // Speculative generation, kept for the next start.
+                    self.store()
+                        .put(crate::lod::store::Key::Chunk(key.0, key.1), &generated[..]);
+                    generated
+                }
+            };
+            details.push((key, columns));
+        }
+        if self.flushed.elapsed() >= LOD_FLUSH {
+            self.flushed = std::time::Instant::now();
+            self.store().flush();
         }
         details
     }
     fn grid(&mut self, x: i32, z: i32, stride: i32, side: usize) -> Vec<crate::lod::Column> {
-        let mut columns = self.inner.grid(x, z, stride, side);
-        if stride <= 16 {
-            for (index, column) in columns.iter_mut().enumerate() {
-                let (wx, wz) = (
-                    x + (index % side) as i32 * stride,
-                    z + (index / side) as i32 * stride,
-                );
-                if let Some(saved) = self.saved_columns((wx >> 4, wz >> 4)) {
-                    *column = crate::lod::Column::reduced(
-                        &saved,
-                        (wx & 15) as usize,
-                        (wz & 15) as usize,
-                        stride as usize,
-                    );
-                }
-            }
+        let key = crate::lod::store::Key::Tile { x, z, stride };
+        if let Some(columns) = self.store().get(key).filter(|c| c.len() == side * side) {
+            return columns;
         }
+        if stride > 16 {
+            // Too coarse for chunk summaries: the generator's samples.
+            let columns = self.inner.grid(x, z, stride, side);
+            self.store().put(key, &columns);
+            return columns;
+        }
+        // Made of chunk summaries: kept until one of them changes (`LodStore::put_since`).
+        let generation = self.store().generation();
+        let columns = self.chunk_grid(x, z, stride, side);
+        self.store().put_since(key, &columns, generation);
         columns
     }
     fn sample(&mut self, x: i32, z: i32) -> Option<crate::lod::Surface> {
@@ -3548,6 +3597,47 @@ impl<G: ChunkGenerator> crate::streaming::LodSampler for SavedLodSampler<G> {
             );
         }
         self.inner.reduced_column(x, z, width)
+    }
+}
+impl<G: ChunkGenerator> SavedLodSampler<G> {
+    /// A grid of `stride` up to 16 from the chunks' summaries, the generator's samples where
+    /// a chunk has none.
+    fn chunk_grid(&mut self, x: i32, z: i32, stride: i32, side: usize) -> Vec<crate::lod::Column> {
+        let at = |index: usize| {
+            (
+                x + (index % side) as i32 * stride,
+                z + (index / side) as i32 * stride,
+            )
+        };
+        // Every chunk summarized (saved or generated before): the generator isn't asked.
+        let known: Option<Vec<_>> = (0..side * side)
+            .map(|index| {
+                let (wx, wz) = at(index);
+                let saved = self.saved_columns((wx >> 4, wz >> 4))?;
+                Some(crate::lod::Column::reduced(
+                    &saved,
+                    (wx & 15) as usize,
+                    (wz & 15) as usize,
+                    stride as usize,
+                ))
+            })
+            .collect();
+        if let Some(columns) = known {
+            return columns;
+        }
+        let mut columns = self.inner.grid(x, z, stride, side);
+        for (index, column) in columns.iter_mut().enumerate() {
+            let (wx, wz) = at(index);
+            if let Some(saved) = self.saved_columns((wx >> 4, wz >> 4)) {
+                *column = crate::lod::Column::reduced(
+                    &saved,
+                    (wx & 15) as usize,
+                    (wz & 15) as usize,
+                    stride as usize,
+                );
+            }
+        }
+        columns
     }
 }
 
@@ -3769,6 +3859,29 @@ impl SaveDir {
         assets: &crate::assets::Assets,
         biomes: &Biomes,
     ) -> Option<LodSurfaces> {
+        let store = self.lod_store(assets);
+        if let Some(columns) = store.get(crate::lod::store::Key::Chunk(x, z))
+            && let Ok(columns) =
+                Box::<[crate::lod::Column; 256]>::try_from(columns.into_boxed_slice())
+        {
+            return Some(Arc::from(columns));
+        }
+        let generation = store.generation();
+        let surfaces = self.decode_lod_surfaces(x, z, assets, biomes)?;
+        store.put_since(
+            crate::lod::store::Key::Chunk(x, z),
+            &surfaces[..],
+            generation,
+        );
+        Some(surfaces)
+    }
+    fn decode_lod_surfaces(
+        &self,
+        x: i32,
+        z: i32,
+        assets: &crate::assets::Assets,
+        biomes: &Biomes,
+    ) -> Option<LodSurfaces> {
         let pending = self
             .pending
             .lock()
@@ -3808,6 +3921,7 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
             inner,
             cache: Default::default(),
             details: Vec::new(),
+            flushed: std::time::Instant::now(),
         })
     }
     fn load(&self, x: i32, z: i32) -> Option<Chunk> {
@@ -4307,6 +4421,7 @@ mod tests {
             inner: Box::new(SavedOnly(Vec::new())),
             cache: Default::default(),
             details: Vec::new(),
+            flushed: std::time::Instant::now(),
         };
         use crate::streaming::LodSampler;
         sampler.request_detail(&[(-2, 3)], [-32, 48]);

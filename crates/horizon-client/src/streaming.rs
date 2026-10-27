@@ -94,6 +94,9 @@ pub trait LodSampler: Send {
     fn drain_details(&mut self) -> Vec<LodDetail> {
         Vec::new()
     }
+    /// A loaded chunk's summary (`lod::summarize`), the latest there is: kept where the
+    /// sampler keeps summaries (`save::LodStore`), so its save need not be read for it again.
+    fn remember(&mut self, _chunk: (i32, i32), _columns: &Arc<[crate::lod::Column; 256]>) {}
     fn sample(&mut self, x: i32, z: i32) -> Option<crate::lod::Surface>;
     fn column(&mut self, x: i32, z: i32) -> crate::lod::Column {
         crate::lod::Column::from_surface(self.sample(x, z))

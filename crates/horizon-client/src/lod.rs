@@ -8,6 +8,7 @@ use crate::{
     streaming::{LodSource, WorkerContext},
 };
 mod mesh;
+pub mod store;
 use horizon_world::registry::BlockStateId;
 use std::{
     collections::VecDeque,
@@ -715,7 +716,9 @@ impl Lod {
                             let (Some(chunk), Some(kinds)) = (chunk, worker.kinds.get()) else {
                                 continue;
                             };
-                            Done::Observed(key, ReducedColumns::new(summarize(&chunk, kinds)))
+                            let columns = summarize(&chunk, kinds);
+                            sampler.remember(key, &columns);
+                            Done::Observed(key, ReducedColumns::new(columns))
                         }
                         Job::RequestDetail { chunks, center } => {
                             sampler.request_detail(&chunks, center);

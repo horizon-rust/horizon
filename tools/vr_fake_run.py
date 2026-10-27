@@ -56,6 +56,7 @@ def main() -> int:
     ap.add_argument("--settings-from", help="a game folder whose options.txt and horizon-*.txt to play with")
     ap.add_argument("--timeout", type=float, default=600.0)
     ap.add_argument("--keep", action="store_true", help="keep the temporary game folder")
+    ap.add_argument("--home", help="a folder to keep HORIZON_HOME and the saves in: the next run with it plays the same world")
     args = ap.parse_args()
 
     build = Path(args.build).resolve()
@@ -89,8 +90,12 @@ def main() -> int:
                 src = Path(args.settings_from) / name
                 if src.is_file():
                     shutil.copy2(src, game / name)
-        home = game / "home"
-        home.mkdir()
+        home = Path(args.home).resolve() if args.home else game / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        if args.home:
+            # The game saves beside itself: the saves folder is linked into the kept one.
+            (home / "saves").mkdir(exist_ok=True)
+            link_dir(home / "saves", game / "saves")
 
         env = dict(os.environ)
         env.update({
@@ -132,11 +137,14 @@ def main() -> int:
         if args.keep:
             print(f"game folder kept: {game}")
         else:
-            if WINDOWS and (game / ".local").exists():
-                # Remove the junction itself, never what it points to.
-                subprocess.run(["cmd", "/c", "rmdir", str(game / ".local")], check=False)
-            elif (game / ".local").is_symlink():
-                (game / ".local").unlink()
+            for linked in (".local", "saves"):
+                if not args.home and linked == "saves":
+                    continue
+                if WINDOWS and (game / linked).exists():
+                    # Remove the junction itself, never what it points to.
+                    subprocess.run(["cmd", "/c", "rmdir", str(game / linked)], check=False)
+                elif (game / linked).is_symlink():
+                    (game / linked).unlink()
             shutil.rmtree(game, ignore_errors=True)
 
 
