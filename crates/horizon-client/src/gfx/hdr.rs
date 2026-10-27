@@ -418,4 +418,15 @@ mod tests {
         assert_eq!(pick(&scrgb, Some("pq")), None);
         assert_eq!(pick(&caps(&[(F::Bgra8UnormSrgb, S::SRGB)]), None), None);
     }
+
+    #[test]
+    fn the_pass_validates() {
+        let module = naga::front::wgsl::parse_str(include_str!("../hdr.wgsl")).unwrap();
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::default(),
+        )
+        .validate(&module)
+        .unwrap();
+    }
 }
