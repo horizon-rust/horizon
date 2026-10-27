@@ -161,6 +161,9 @@ impl Binaural {
 
 /// The rate the whoosh is synthesised at.
 pub const WHOOSH_RATE: u32 = 48_000;
+/// How much of the whoosh feeds the reverb buses: a soft hiss reflects
+/// little, and a steady noise in a long reverb washes everything out.
+pub const WHOOSH_REVERB: f32 = 0.2;
 /// Two seconds of the whoosh, looping without a seam: white noise through
 /// a band-pass at 900 Hz with a slow flutter, its last quarter second
 /// crossfaded into its start.
@@ -203,7 +206,7 @@ pub fn whoosh_samples() -> Vec<f32> {
 /// The whoosh's gain and pitch for an arrow flying at `speed` blocks a
 /// second: silent below 8, full at 48 (a bow drawn fully shoots at about 60).
 pub fn whoosh(speed: f32) -> (f32, f32) {
-    let gain = ((speed - 8.0) / 40.0).clamp(0.0, 1.0) * 0.6;
+    let gain = ((speed - 8.0) / 40.0).clamp(0.0, 1.0) * 0.25;
     let pitch = 0.7 + (speed / 60.0).min(1.5) * 0.6;
     (gain, pitch)
 }

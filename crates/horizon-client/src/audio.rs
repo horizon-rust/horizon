@@ -64,6 +64,9 @@ struct Channel {
     binaural: Option<Box<Binaural>>,
     /// How it was mixed in the last buffer: the next one ramps from there.
     last: Option<Voice>,
+    /// The share of its sound sent to the reverb buses (1 but for the arrow
+    /// whoosh).
+    reverb_share: f32,
 }
 impl Channel {
     fn new() -> Self {
@@ -85,6 +88,7 @@ impl Channel {
             motion: Motion::default(),
             binaural: None,
             last: None,
+            reverb_share: 1.0,
         }
     }
     /// Seconds of sound left (looping sounds never end).
@@ -754,7 +758,7 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
                             p.buses[k].params().room_rolloff,
                         );
                         (
-                            c.gain.clamp(0.0, 1.0) * room * e.send_gain[k],
+                            c.gain.clamp(0.0, 1.0) * room * e.send_gain[k] * c.reverb_share,
                             e.send_cutoff[k] * air,
                         )
                     }),
@@ -1309,6 +1313,7 @@ impl Audio {
                         ch.linear = Some(16.0);
                         ch.state = State::Playing;
                         ch.tag = Some((EVENT.into(), crate::sound_engine::PLAYERS));
+                        ch.reverb_share = crate::spatial::WHOOSH_REVERB;
                     });
                     self.backend.whooshes.insert(key, c);
                     self.backend.set_position(c, at);
