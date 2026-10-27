@@ -216,6 +216,7 @@ fn relit_columns_keep_every_mesh_current() {
             smooth_lighting: true,
             cutout_leaves: true,
             rt_lighting: false,
+            smooth_fluids: false,
             assets: &context.assets,
             render: &context.render,
             tables: &context.tables,

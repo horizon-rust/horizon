@@ -296,6 +296,10 @@ pub struct Graphics {
     /// thousand chunks (16 km) it shows as it does on real landscapes; denser air brings it
     /// nearer for short view distances.
     pub aerial_perspective: u32,
+    /// Continuous water and lava surfaces (`mesher/fluid_surface.rs`): shared corner
+    /// heights, smooth light and shading, world-anchored textures. Off by default: it
+    /// changes vanilla's look.
+    pub smooth_fluids: bool,
     /// HDR output (HDR10, or scRGB), where the display path offers it.
     pub hdr: bool,
     /// HDR paper white (where SDR white sits), in nits.
@@ -341,6 +345,7 @@ impl Default for Graphics {
             rt_lighting: false,
             sun_size: 1,
             aerial_perspective: DEFAULT_AERIAL_PERSPECTIVE,
+            smooth_fluids: false,
             hdr: false,
             hdr_paper_white: 200,
             hdr_peak: 1000,
@@ -405,6 +410,7 @@ impl Graphics {
                 "rtLighting" => g.rt_lighting = flag(g.rt_lighting),
                 "sunSize" => g.sun_size = number(g.sun_size).clamp(1, 20),
                 "aerialPerspective" => g.aerial_perspective = number(g.aerial_perspective).min(64),
+                "smoothFluids" => g.smooth_fluids = flag(g.smooth_fluids),
                 "hdr" => g.hdr = flag(g.hdr),
                 "hdrPaperWhite" => g.hdr_paper_white = number(g.hdr_paper_white).clamp(80, 480),
                 "hdrPeak" => g.hdr_peak = number(g.hdr_peak).clamp(200, 2000),
@@ -425,7 +431,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nsunSize:{}\naerialPerspective:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nsunSize:{}\naerialPerspective:{}\nsmoothFluids:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -458,6 +464,7 @@ impl Graphics {
             bool_text(self.rt_lighting),
             self.sun_size,
             self.aerial_perspective,
+            bool_text(self.smooth_fluids),
             bool_text(self.hdr),
             self.hdr_paper_white,
             self.hdr_peak,
@@ -580,6 +587,7 @@ mod tests {
             rt_lighting: true,
             sun_size: 7,
             aerial_perspective: 32,
+            smooth_fluids: true,
             hdr: true,
             hdr_paper_white: 240,
             hdr_peak: 1400,

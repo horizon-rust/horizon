@@ -16,8 +16,8 @@ use horizon_world::{
 use std::{convert::Infallible, sync::OnceLock};
 
 /// `FluidRenderer.MAX_FLUID_HEIGHT`.
-const MAX_HEIGHT: f32 = 0.888_888_9;
-const EPSILON: f32 = 0.001;
+pub(super) const MAX_HEIGHT: f32 = 0.888_888_9;
+pub(super) const EPSILON: f32 = 0.001;
 
 /// For the occlusion face toward `direction`: the height from the bottom over
 /// which its slice flush with the `direction` side covers the whole width
@@ -81,7 +81,7 @@ pub(super) fn coverage(shape: &VoxelShape, direction: Direction) -> f32 {
 }
 /// `isFaceOccludedByState` for a fluid box `height` tall against `state`'s
 /// face opposite `direction`.
-fn occluded_by(direction: Direction, height: f32, state: &Info) -> bool {
+pub(super) fn occluded_by(direction: Direction, height: f32, state: &Info) -> bool {
     let opposite = direction.opposite() as usize;
     match state.face[opposite] {
         0 => false,
@@ -96,7 +96,7 @@ fn occluded_by(direction: Direction, height: f32, state: &Info) -> bool {
     }
 }
 /// `isFaceOccludedBySelf`: the cell's own occlusion face toward `direction`.
-fn occluded_by_self(state: &Info, direction: Direction) -> bool {
+pub(super) fn occluded_by_self(state: &Info, direction: Direction) -> bool {
     match state.face[direction as usize] {
         0 => false,
         1 => true,
@@ -154,9 +154,9 @@ fn atan2(mut y: f64, mut x: f64) -> f64 {
     theta
 }
 /// The padded section as `FlowingFluid.getFlow` sees it (section-relative positions).
-struct FlowView<'a> {
-    pad: &'a Padded,
-    info: &'a [Info],
+pub(super) struct FlowView<'a> {
+    pub(super) pad: &'a Padded,
+    pub(super) info: &'a [Info],
 }
 impl FlowView<'_> {
     fn id(&self, p: BlockPos) -> u32 {

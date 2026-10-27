@@ -72,6 +72,9 @@ have alpha 0 there, so the client's tinted vertices come out fully
 transparent, which the terrain shader would discard. Horizon keeps them
 opaque and the gate compares RGB for radius-0 scenes.
 
+Horizon's Smooth fluids option (`mesher/fluid_surface.rs`, off by default) is not vanilla and is not
+compared here; the fixture runs with it off ([smooth-fluids.md](../smooth-fluids.md)).
+
 ## Running
 
 ```sh

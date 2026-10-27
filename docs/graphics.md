@@ -19,7 +19,7 @@ Every row has a one-line description and its cost in frame time (none, low, medi
 | Rendering | render distance, simulation distance, entity distance | `options.txt` (vanilla keys) |
 | | LOD distance, cave culling, chunk updates per frame | `horizon-graphics.txt` |
 | Quality | smooth lighting, mipmap levels, biome blend, clouds, cloud distance, weather radius, particles, entity shadows, cutout leaves | `options.txt` |
-| | sky, sun path tilt, fog, weather, animated textures, parallax, linear light, ray-traced shadows and AO (LabPBR resource packs, [resource-packs.md](resource-packs.md#labpbr-maps)) | `horizon-graphics.txt` |
+| | sky, sun path tilt, fog, weather, animated textures, parallax, smooth fluids (continuous water and lava, [smooth-fluids.md](smooth-fluids.md)), linear light, ray-traced shadows and AO (LabPBR resource packs, [resource-packs.md](resource-packs.md#labpbr-maps)) | `horizon-graphics.txt` |
 | Display | FOV, max framerate, VSync, fullscreen, GUI scale | `options.txt` |
 | | resolution scale, anti-aliasing (FXAA), HDR, paper white, peak brightness, present mode, frame pacing | `horizon-graphics.txt` |
 | Performance | battery mode, worker threads, upload budget per frame | `horizon-graphics.txt` |

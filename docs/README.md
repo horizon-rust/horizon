@@ -12,6 +12,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 - [Agent control](agent-control.md): what AI agents can drive in the launcher and the game, and the design of the control socket, `horizon-ctl` and MCP.
 - [Graphics](graphics.md): the Simple and Advanced graphics settings, the graphics benchmark and what it measured.
 - [Ray tracing](raytracing.md): the tilted sun path, the ray-traced shadows spike and the plan for them.
+- [Smooth fluids](smooth-fluids.md): continuous water and lava surfaces (off by default): what vanilla's fluid mesh breaks, the algorithm, its cost and limits, prior mods.
 - [Benchmark](benchmark.md): Horizon against vanilla 26.3 and vanilla with performance mods, on the same machine, world, path and settings: what is measured, how it is kept fair, how to reproduce it.
 - [Extras](extras.md): optional zoom, minimap, FPS and keystroke overlays and auto-reconnect, all off by default.
 - [Sound physics](sound-physics.md): the Sound Physics Remastered extra (reverb, occlusion, underwater, sound direction), its cost and its differences from the mod.

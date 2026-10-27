@@ -10309,16 +10309,19 @@ impl Game<'_> {
             s.smooth_lighting,
             s.cutout_leaves,
             rt_lighting,
+            s.horizon.smooth_fluids,
         ) != (
             st.biome_blend,
             st.smooth_lighting,
             st.cutout_leaves,
             st.rt_lighting,
+            st.smooth_fluids,
         );
         self.streaming.biome_blend = self.settings.biome_blend;
         self.streaming.smooth_lighting = self.settings.smooth_lighting;
         self.streaming.cutout_leaves = self.settings.cutout_leaves;
         self.streaming.rt_lighting = rt_lighting;
+        self.streaming.smooth_fluids = self.settings.horizon.smooth_fluids;
         if remesh {
             self.all_sections_changed();
         }

@@ -4,6 +4,7 @@
 //! cardinal shading, tint sources, block offsets; see `lighting`). Fluids
 //! follow `FluidRenderer` (see `fluid`).
 mod fluid;
+mod fluid_surface;
 mod lighting;
 mod sides;
 use crate::{
@@ -522,6 +523,15 @@ fn redstone_color(power: u8) -> u32 {
     ((r * 255.0) as u32) << 16 | ((g * 255.0) as u32) << 8 | (b * 255.0) as u32
 }
 impl MeshTables {
+    fn fluid_sprites(&self) -> fluid_surface::Sprites {
+        fluid_surface::Sprites {
+            water_still: self.water_still,
+            water_flow: self.water_flow,
+            water_overlay: self.water_overlay,
+            lava_still: self.lava_still,
+            lava_flow: self.lava_flow,
+        }
+    }
     pub fn new(
         assets: &Assets,
         render: &RenderAssets,
@@ -929,6 +939,8 @@ pub struct Mesher<'a> {
     /// directional shade times ambient occlusion goes, to four bits, into the alpha's high nibble
     /// (`SHADE_BITS`), for the vanilla lighting the shaders fall back to.
     pub rt_lighting: bool,
+    /// Horizon's Smooth fluids (`fluid_surface.rs`); off meshes vanilla's cells.
+    pub smooth_fluids: bool,
 }
 impl Mesher<'_> {
     /// `region[dz][dx]` are the chunks around the meshed column (centre 1,1).
@@ -955,6 +967,7 @@ impl Mesher<'_> {
         let info = &self.tables.info;
         let catalog = &self.render.model_catalog;
         let mut models = Vec::new();
+        let mut lattice = None;
         for y in 0..16 {
             for z in 0..16 {
                 for x in 0..16 {
@@ -978,7 +991,16 @@ impl Mesher<'_> {
                     if state.fluid.kind() != FluidKind::Empty {
                         let water = tints.get(Resolver::Water, x, y, z);
                         let nether = self.nether_shading;
-                        fluid::tesselate(self.tables, nether, &pad, water, &mut out, [x, y, z]);
+                        if self.smooth_fluids {
+                            let lattice = lattice.get_or_insert_with(fluid_surface::Lattice::new);
+                            let cell = [x, y, z];
+                            let sprites = self.tables.fluid_sprites();
+                            fluid_surface::tesselate(
+                                info, sprites, nether, &pad, water, &mut out, lattice, cell,
+                            );
+                        } else {
+                            fluid::tesselate(self.tables, nether, &pad, water, &mut out, [x, y, z]);
+                        }
                     }
                     if !state.model {
                         continue;

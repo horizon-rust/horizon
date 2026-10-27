@@ -137,6 +137,7 @@ fn scene(
         smooth_lighting,
         cutout_leaves,
         rt_lighting: false,
+        smooth_fluids: row["smooth_fluids"].as_bool().unwrap_or(false),
     };
     let section_y = int(&row["section_y"])?;
     let started = Instant::now();

@@ -139,6 +139,7 @@ fn main() -> Result<(), Error> {
             smooth_lighting: true,
             cutout_leaves: true,
             rt_lighting: false,
+            smooth_fluids: std::env::var_os("HORIZON_SMOOTH_FLUIDS").is_some(),
             assets: &context.assets,
             render: &context.render,
             tables: &context.tables,

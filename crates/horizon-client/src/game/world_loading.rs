@@ -354,6 +354,7 @@ pub(super) fn make_streaming(
     streaming.smooth_lighting = settings.smooth_lighting;
     streaming.cutout_leaves = settings.cutout_leaves;
     streaming.rt_lighting = settings.horizon.rt_lighting && settings.horizon.linear_light;
+    streaming.smooth_fluids = settings.horizon.smooth_fluids;
     streaming.biome_zoom = BiomeZoom::new(obfuscate_seed(seed));
     streaming.sky_light = dim != Dim::Nether;
     streaming.nether_shading = dim == Dim::Nether;

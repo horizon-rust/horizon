@@ -162,6 +162,7 @@ struct MeshSettings {
     smooth_lighting: bool,
     cutout_leaves: bool,
     rt_lighting: bool,
+    smooth_fluids: bool,
 }
 enum Job {
     Generate(i32, i32),
@@ -277,6 +278,8 @@ pub struct Streaming {
     pub cutout_leaves: bool,
     /// RT lighting (gfx/shadow_rays.rs): faces keep their tint alone, the rays light them.
     pub rt_lighting: bool,
+    /// Horizon's Smooth fluids (`mesher/fluid_surface.rs`).
+    pub smooth_fluids: bool,
     /// Incremental relighting of block edits on lit chunks (see `light::relight`).
     light_tables: Arc<LightTables>,
     /// Applied edits by sequence, replayed onto light jobs snapshotted before them.
@@ -532,6 +535,7 @@ impl Streaming {
                                         smooth_lighting: settings.smooth_lighting,
                                         cutout_leaves: settings.cutout_leaves,
                                         rt_lighting: settings.rt_lighting,
+                                        smooth_fluids: settings.smooth_fluids,
                                         assets: &context.assets,
                                         render: &context.render,
                                         tables: &context.tables,
@@ -595,6 +599,7 @@ impl Streaming {
             smooth_lighting: true,
             cutout_leaves: true,
             rt_lighting: false,
+            smooth_fluids: false,
             light_tables,
             light_log: Vec::new(),
             light_edit_sequence: 0,
@@ -1277,6 +1282,7 @@ impl Streaming {
                             smooth_lighting: self.smooth_lighting,
                             cutout_leaves: self.cutout_leaves,
                             rt_lighting: self.rt_lighting,
+                            smooth_fluids: self.smooth_fluids,
                         },
                     ),
                 );
