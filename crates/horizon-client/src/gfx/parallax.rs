@@ -325,8 +325,15 @@ fn parallax_surface(in: ParallaxOut, march: bool) -> ParallaxSurface {
             strength);
         relief = hit.depth;
     } else {
-        let level = clamp(i32(round(lod)), 0, i32(log2(slot.size)));
-        let texel = parallax_texel(slot, floor(in.uv * slot.size / exp2(f32(level))), level);
+        // Between the two mip levels around that size, as the sprite's colour is (the block
+        // sampler's linear mip filter): one level alone switched the shading at a distance.
+        let top = log2(slot.size);
+        let at = clamp(lod, 0.0, top);
+        let low = floor(at);
+        let high = min(low + 1.0, top);
+        let near_texel = parallax_texel(slot, floor(in.uv * slot.size / exp2(low)), i32(low));
+        let far_texel = parallax_texel(slot, floor(in.uv * slot.size / exp2(high)), i32(high));
+        let texel = mix(near_texel, far_texel, at - low);
         hit = ParallaxHit(in.uv, parallax_unpack(texel), texel.b, 0.0);
         relief = 1.0 - texel.a;
     }

@@ -2281,7 +2281,10 @@ impl Renderer {
             address_mode_v: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            // Blended between the two mip levels around a texel's size, as vanilla's
+            // GL_NEAREST_MIPMAP_LINEAR: one level alone drew a line, sharp before it and
+            // blurred after, across rails and other fine textures at a few blocks.
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
         let lightmap = device.create_texture(&wgpu::TextureDescriptor {
