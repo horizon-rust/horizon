@@ -1206,7 +1206,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let enchantments = crate::enchant::Enchantments::load(&root);
+        let enchantments = crate::enchant::Enchantments::load(&root, &PackOverlay::NONE);
         std::fs::remove_dir_all(&root).unwrap();
         let translate = |key: &str| enchantments.translate(key).map(str::to_owned);
         let mut rocket = ItemStack::new("minecraft:firework_rocket", 1);
@@ -1288,7 +1288,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let enchantments = crate::enchant::Enchantments::load(&root);
+        let enchantments = crate::enchant::Enchantments::load(&root, &PackOverlay::NONE);
         std::fs::remove_dir_all(&root).unwrap();
         let lang = |key: &str| enchantments.translate(key).map(str::to_owned);
         let green = rgba(0, 170, 0, 255);
@@ -1326,7 +1326,7 @@ mod tests {
             std::env::var_os("HORIZON_TEST_RESOURCES").expect("HORIZON_TEST_RESOURCES"),
         );
         let items = crate::items::Items::catalog(&root, &PackOverlay::NONE).unwrap();
-        let enchantments = crate::enchant::Enchantments::load(&root);
+        let enchantments = crate::enchant::Enchantments::load(&root, &PackOverlay::NONE);
         let translate = |key: &str| enchantments.translate(key).map(str::to_owned);
         for (item, expected) in [
             (

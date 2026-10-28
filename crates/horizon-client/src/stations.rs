@@ -30,8 +30,8 @@ impl StationData {
             enchantments: std::sync::Arc::clone(&items.enchantments),
             recipes: StationRecipes::load(root, items, overlay),
             brewing: crate::brewing::Brewing::load(root, items, overlay),
-            trades: crate::merchant::Trades::load(root),
-            banners: crate::banner::Banners::load(root),
+            trades: crate::merchant::Trades::load(root, overlay),
+            banners: crate::banner::Banners::load(root, overlay),
             recipe_index: crate::recipe_book::RecipeIndex::load(root, overlay),
         }
     }
@@ -560,31 +560,35 @@ impl StationRecipes {
                 _ => {}
             }
         }
-        let mut trim_materials = Vec::new();
-        let mut tm: Vec<_> = fs::read_dir(root.join("data/minecraft/trim_material"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .collect();
-        tm.sort();
-        for p in tm {
-            if let Ok(bytes) = fs::read(&p)
-                && let Ok(v) = serde_json::from_slice::<Value>(&bytes)
-            {
-                let id = format!(
-                    "minecraft:{}",
-                    p.file_stem().and_then(|s| s.to_str()).unwrap_or("")
-                );
-                trim_materials.push((
+        // The registry in id order: the game's files, then the packs' (the
+        // top pack's file for each id replaces the rest).
+        let mut materials: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        let mut read = |id: String, bytes: &[u8]| {
+            if let Ok(v) = serde_json::from_slice::<Value>(bytes) {
+                materials.insert(
                     id,
                     v["description"]["translate"]
                         .as_str()
                         .unwrap_or("")
                         .to_owned(),
-                ));
+                );
+            }
+        };
+        if let Ok(entries) = fs::read_dir(root.join("data/minecraft/trim_material")) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if let Some(stem) = p.file_stem().and_then(|s| s.to_str())
+                    && let Ok(bytes) = fs::read(&p)
+                {
+                    read(format!("minecraft:{stem}"), &bytes);
+                }
             }
         }
+        for (id, files) in overlay.kind("trim_material") {
+            read(id.to_owned(), PackOverlay::top(files));
+        }
+        let trim_materials: Vec<(String, String)> = materials.into_iter().collect();
         Self {
             smithing,
             stonecutting,

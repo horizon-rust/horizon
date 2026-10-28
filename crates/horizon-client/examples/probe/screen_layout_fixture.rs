@@ -7,6 +7,7 @@ use horizon_client::{
     banner::{BannerLayer, Banners, banner_color},
     screen_layout::{self, CrafterView, LoomView, ScreenDraw},
 };
+use horizon_world::loot::PackOverlay;
 use serde_json::{Value, json};
 use std::{fs, path::Path, sync::Arc};
 
@@ -63,7 +64,7 @@ fn draw_json(d: &ScreenDraw) -> Value {
 pub fn main() -> horizon_client::Result<()> {
     let args: Vec<String> = crate::args().collect();
     let usage = "usage: screen_layout_fixture RESOURCES INPUT OUTPUT";
-    let banners = Banners::load(Path::new(args.get(1).ok_or(usage)?));
+    let banners = Banners::load(Path::new(args.get(1).ok_or(usage)?), &PackOverlay::NONE);
     let input = fs::read_to_string(args.get(2).ok_or(usage)?)?;
     let mut out = String::new();
     for line in input.lines().filter(|l| !l.trim().is_empty()) {

@@ -19,7 +19,7 @@ pub fn main() -> horizon_client::Result<()> {
     );
     let input = fs::read_to_string(args.get(2).ok_or("missing INPUT")?)?;
     let items = Items::tags_only(root, &PackOverlay::NONE)?;
-    let e = Enchantments::load(root);
+    let e = Enchantments::load(root, &PackOverlay::NONE);
     let mut out = String::new();
     for line in input.lines() {
         let f: Vec<&str> = line.split(' ').collect();

@@ -285,26 +285,18 @@ impl Song {
         ticks >= self.length_ticks + 20
     }
 }
-fn load_songs(root: &Path) -> HashMap<String, Song> {
+fn load_songs(root: &Path, overlay: &PackOverlay) -> HashMap<String, Song> {
     let mut songs = HashMap::new();
-    let Ok(dir) = fs::read_dir(root.join("data/minecraft/jukebox_song")) else {
-        return songs;
-    };
-    for entry in dir.flatten() {
-        let path = entry.path();
-        let (Some(stem), Ok(bytes)) = (path.file_stem().and_then(|s| s.to_str()), fs::read(&path))
-        else {
-            continue;
-        };
-        let Ok(v) = serde_json::from_slice::<Value>(&bytes) else {
-            continue;
+    let mut read = |id: String, bytes: &[u8]| {
+        let Ok(v) = serde_json::from_slice::<Value>(bytes) else {
+            return;
         };
         let sound = match &v["sound_event"] {
             Value::String(s) => s.clone(),
             other => other["sound_id"].as_str().unwrap_or("").to_owned(),
         };
         songs.insert(
-            format!("minecraft:{stem}"),
+            id,
             Song {
                 sound,
                 length_ticks: (v["length_in_seconds"].as_f64().unwrap_or(0.0) as f32 * 20.0).ceil()
@@ -313,6 +305,20 @@ fn load_songs(root: &Path) -> HashMap<String, Song> {
                 description: v["description"].clone(),
             },
         );
+    };
+    if let Ok(dir) = fs::read_dir(root.join("data/minecraft/jukebox_song")) {
+        for entry in dir.flatten() {
+            let path = entry.path();
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                && let Ok(bytes) = fs::read(&path)
+            {
+                read(format!("minecraft:{stem}"), &bytes);
+            }
+        }
+    }
+    // The packs' songs over the game's own: the top pack's file per id.
+    for (id, files) in overlay.kind("jukebox_song") {
+        read(id.to_owned(), PackOverlay::top(files));
     }
     songs
 }
@@ -815,8 +821,8 @@ impl Items {
             item_tags: load_tags(root, "item", overlay)?,
             item_tag_order: load_tag_lists(root, "item", overlay)?,
             loot,
-            songs: load_songs(root),
-            enchantments: Arc::new(crate::enchant::Enchantments::load(root)),
+            songs: load_songs(root, overlay),
+            enchantments: Arc::new(crate::enchant::Enchantments::load(root, overlay)),
         })
     }
     pub fn get(&self, id: &str) -> Option<&ItemInfo> {
@@ -835,7 +841,7 @@ impl Items {
             item_tag_order: load_tag_lists(root, "item", overlay)?,
             loot: HashMap::new(),
             songs: HashMap::new(),
-            enchantments: Arc::new(crate::enchant::Enchantments::load(root)),
+            enchantments: Arc::new(crate::enchant::Enchantments::load(root, overlay)),
         })
     }
     /// An item table with only tags, for unit tests of item rules.
