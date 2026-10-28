@@ -3041,7 +3041,7 @@ pub(crate) mod tests {
         let items = Items::catalog(&root, &PackOverlay::NONE).unwrap();
         let recipes = Recipes::load(&root, &items, &PackOverlay::NONE).unwrap();
         let brewing = Brewing::load(&root, &items, &PackOverlay::NONE);
-        let banners = Banners::load(&root);
+        let banners = Banners::load(&root, &PackOverlay::NONE);
         let station_recipes =
             crate::stations::StationRecipes::load(&root, &items, &PackOverlay::NONE);
         let enchantments = crate::enchant::Enchantments::default();

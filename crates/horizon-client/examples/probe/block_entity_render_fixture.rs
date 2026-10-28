@@ -17,6 +17,7 @@ use horizon_client::{
     signs::{DYE_TEXT, SignData, SignText},
     world::World,
 };
+use horizon_world::loot::PackOverlay;
 use horizon_world::registry::{BlockRegistry, BlockStateId};
 use serde_json::{Value, json};
 use std::{
@@ -119,7 +120,7 @@ pub fn main() -> Result<()> {
     let registry = assets.registry;
     let renderer = BlockEntityRenderer::load(root, registry)?;
     let atlas = HudAtlas::build(root)?;
-    let banners = Banners::load(root);
+    let banners = Banners::load(root, &PackOverlay::NONE);
     let items = ItemRenderer::load(root)?;
     let (sprites, names, grid) = fake_sprites(textures)?;
     let air = registry.default_state("minecraft:air").ok_or("no air")?;

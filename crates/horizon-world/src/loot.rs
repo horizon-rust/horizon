@@ -43,6 +43,29 @@ impl PackOverlay<'_> {
     pub fn top(files: &[Vec<u8>]) -> &[u8] {
         files.last().map(Vec::as_slice).unwrap_or_default()
     }
+    /// A tag kind's overlay files merged into raw tag entries (`id -> entry
+    /// strings`), in pack order: a `replace` file drops what the lower
+    /// sources put in (`TagLoader.load` walks the stack the same way).
+    pub fn tag_entries(&self, kind: &str, raw: &mut HashMap<String, Vec<String>>) {
+        for (id, files) in self.kind(&format!("tags/{kind}")) {
+            let slot = raw.entry(id.to_owned()).or_default();
+            for bytes in files {
+                let Ok(v) = serde_json::from_slice::<Value>(bytes) else {
+                    continue;
+                };
+                if v["replace"].as_bool() == Some(true) {
+                    slot.clear();
+                }
+                slot.extend(
+                    v["values"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|e| e.as_str().or_else(|| e["id"].as_str()).map(str::to_owned)),
+                );
+            }
+        }
+    }
 }
 
 /// One generated item stack.

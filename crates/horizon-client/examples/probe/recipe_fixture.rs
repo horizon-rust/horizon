@@ -23,7 +23,7 @@ pub fn main() -> horizon_client::Result<()> {
     let items = Items::catalog(root, &PackOverlay::NONE)?;
     let recipes = Recipes::load(root, &items, &PackOverlay::NONE)?;
     let stations = StationRecipes::load(root, &items, &PackOverlay::NONE);
-    let enchantments = Enchantments::load(root);
+    let enchantments = Enchantments::load(root, &PackOverlay::NONE);
     let mut out = String::new();
     for line in input.lines() {
         let f: Vec<&str> = line.split('\t').collect();

@@ -321,14 +321,18 @@ pub struct DataStore {
     pub errors: Vec<(String, String)>,
 }
 /// `<kind-dir>/<ns>:<path>` for a pack file the content tables read:
-/// `recipe/`, `loot_table/`, `advancement/` or `tags/<sub>/`, where the id
+/// `recipe/`, `loot_table/`, `advancement/`, the registry directories the
+/// station, merchant and banner tables read, or `tags/<sub>/`, where the id
 /// keeps the sub path so a nested tag kind stays addressable.
 fn content_id(file: &str) -> Option<String> {
     let rest = file.strip_prefix("data/")?;
     let (ns, rest) = rest.split_once('/')?;
     let (kind, rest) = rest.split_once('/')?;
     let kind = match kind {
-        "recipe" | "loot_table" | "advancement" => kind,
+        "recipe" | "loot_table" | "advancement" | "trade_set" | "villager_trade"
+        | "enchantment" | "banner_pattern" | "trim_pattern" | "trim_material" | "jukebox_song" => {
+            kind
+        }
         "tags" => {
             let (sub, name) = rest.rsplit_once('/')?;
             return Some(format!("tags/{sub}/{ns}:{}", name.strip_suffix(".json")?));
@@ -357,12 +361,19 @@ impl DataStore {
             let builtin = pack.id == "vanilla";
             for f in pack.list_kinds(&[
                 "advancement",
+                "banner_pattern",
+                "enchantment",
                 "function",
                 "item_modifier",
+                "jukebox_song",
                 "loot_table",
                 "predicate",
                 "recipe",
                 "tags",
+                "trade_set",
+                "trim_material",
+                "trim_pattern",
+                "villager_trade",
             ]) {
                 if !seen.insert(f.clone()) {
                     continue;

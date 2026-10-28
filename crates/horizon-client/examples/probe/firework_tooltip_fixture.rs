@@ -2,6 +2,7 @@
 //! lines `item_tooltip::firework_lines` gives each stack (SNBT, one per line;
 //! the `#resources` line names the prepared resources for en_us).
 use horizon_client::{enchant::Enchantments, item_data::parse_stack, item_tooltip::firework_lines};
+use horizon_world::loot::PackOverlay;
 use std::{error::Error, fmt::Write, path::PathBuf};
 
 pub fn main() -> Result<(), Box<dyn Error>> {
@@ -13,7 +14,7 @@ pub fn main() -> Result<(), Box<dyn Error>> {
         .map(PathBuf::from)
         .ok_or("no #resources line")?;
     // Use the inventory's filtered translations so missing tooltip keys are caught.
-    let enchantments = Enchantments::load(&root);
+    let enchantments = Enchantments::load(&root, &PackOverlay::NONE);
     let translate = |key: &str| enchantments.translate(key).map(str::to_owned);
     let mut output = String::new();
     for line in input.lines().filter(|l| !l.starts_with('#')) {

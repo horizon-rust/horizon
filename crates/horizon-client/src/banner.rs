@@ -3,6 +3,7 @@
 //! banners, and the loom rules of `LoomMenu` (selectable patterns, the
 //! six-layer limit and the result stack).
 use crate::{block_entity_render::DYES, items::ItemStack, items::Items};
+use horizon_world::loot::PackOverlay;
 use serde_json::Value;
 use std::{collections::HashMap, fs, path::Path, sync::Arc};
 
@@ -32,77 +33,138 @@ pub struct Banners {
     provided: HashMap<Arc<str>, Vec<Arc<str>>>,
 }
 
-fn read_tag(root: &Path, name: &str, depth: u32) -> Vec<Arc<str>> {
+/// Tag entries in first-seen order (`TagLoader.tryBuildTag` builds a linked
+/// set), nested `#` references resolved from `raw`.
+fn expand(name: &str, raw: &HashMap<String, Vec<String>>, out: &mut Vec<Arc<str>>, depth: u32) {
     if depth > 8 {
-        return Vec::new();
+        return;
     }
-    let path = root.join(format!(
-        "data/minecraft/tags/banner_pattern/{}.json",
-        name.trim_start_matches("minecraft:")
-    ));
-    let Some(v) = fs::read(path)
-        .ok()
-        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-    else {
-        return Vec::new();
+    // The tags read the game's namespace, so look the id up with one.
+    let key = if name.contains(':') {
+        name.to_owned()
+    } else {
+        format!("minecraft:{name}")
     };
-    let mut out = Vec::new();
-    for value in v["values"].as_array().into_iter().flatten() {
-        let Some(s) = value.as_str().or_else(|| value["id"].as_str()) else {
-            continue;
-        };
+    let Some(values) = raw.get(key.as_str()) else {
+        return;
+    };
+    for s in values {
         match s.strip_prefix('#') {
-            Some(tag) => out.extend(read_tag(root, tag, depth + 1)),
-            None => out.push(Arc::from(s)),
+            Some(tag) => expand(tag, raw, out, depth + 1),
+            None => {
+                let arc: Arc<str> = Arc::from(s.as_str());
+                if !out.contains(&arc) {
+                    out.push(arc);
+                }
+            }
         }
     }
-    out
 }
 
 impl Banners {
-    pub fn load(root: &Path) -> Self {
+    pub fn load(root: &Path, overlay: &PackOverlay) -> Self {
         let mut banners = Self::default();
-        let mut files: Vec<_> = fs::read_dir(root.join("data/minecraft/banner_pattern"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e == "json"))
-            .collect();
-        files.sort();
-        for path in files {
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            let Some(v) = fs::read(&path)
-                .ok()
-                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-            else {
-                continue;
-            };
+        // The registry: the game's files, then the packs' (the top pack's
+        // file for each id replaces the rest), in id order.
+        let mut files: std::collections::BTreeMap<String, Value> =
+            std::collections::BTreeMap::new();
+        let read_dir_map = |dir: &Path, out: &mut std::collections::BTreeMap<String, Value>| {
+            let mut paths: Vec<_> = fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|e| e == "json"))
+                .collect();
+            paths.sort();
+            for path in paths {
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if let Some(v) = fs::read(&path)
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                {
+                    out.insert(format!("minecraft:{stem}"), v);
+                }
+            }
+        };
+        read_dir_map(&root.join("data/minecraft/banner_pattern"), &mut files);
+        for (id, entries) in overlay.kind("banner_pattern") {
+            if let Ok(v) =
+                serde_json::from_slice::<Value>(horizon_world::loot::PackOverlay::top(entries))
+            {
+                files.insert(id.to_owned(), v);
+            }
+        }
+        for (id, v) in &files {
+            let stem = id.trim_start_matches("minecraft:");
             let asset = v["asset_id"]
                 .as_str()
                 .unwrap_or(stem)
                 .trim_start_matches("minecraft:")
                 .to_owned();
             banners.patterns.push(Pattern {
-                id: Arc::from(format!("minecraft:{stem}").as_str()),
+                id: Arc::from(id.as_str()),
                 asset,
                 translation_key: v["translation_key"].as_str().unwrap_or_default().to_owned(),
             });
         }
-        banners.no_item_required = read_tag(root, "no_item_required", 0);
-        if let Some(raw) = fs::read(root.join("items.json")).ok().and_then(|b| {
+        // The tags: the game's files, then the packs' entries (`replace`
+        // drops the lower sources), resolved through one map.
+        let mut raw: HashMap<String, Vec<String>> = HashMap::new();
+        {
+            let mut read = |dir: &Path| {
+                let mut paths: Vec<_> = fs::read_dir(dir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().is_some_and(|e| e == "json"))
+                    .collect();
+                paths.sort();
+                for path in paths {
+                    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                        continue;
+                    };
+                    if let Some(v) = fs::read(&path)
+                        .ok()
+                        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                    {
+                        raw.insert(
+                            format!("minecraft:{stem}"),
+                            v["values"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|e| {
+                                    e.as_str().or_else(|| e["id"].as_str()).map(str::to_owned)
+                                })
+                                .collect(),
+                        );
+                    }
+                }
+            };
+            read(&root.join("data/minecraft/tags/banner_pattern"));
+            overlay.tag_entries("banner_pattern", &mut raw);
+        }
+        let expand = |name: &str| {
+            let mut out = Vec::new();
+            expand(name, &raw, &mut out, 0);
+            out
+        };
+        banners.no_item_required = expand("no_item_required");
+        if let Some(items) = fs::read(root.join("items.json")).ok().and_then(|b| {
             serde_json::from_slice::<std::collections::BTreeMap<String, Value>>(&b).ok()
         }) {
-            for (item, c) in raw {
+            for (item, c) in items {
                 let id: Arc<str> = Arc::from(item.as_str());
                 if let Some(dye) = c["minecraft:dye"].as_str() {
                     banners.dyes.insert(id.clone(), Arc::from(dye));
                 }
                 match &c["minecraft:provides_banner_patterns"] {
                     Value::String(tag) if tag.starts_with('#') => {
-                        banners.provided.insert(id, read_tag(root, &tag[1..], 0));
+                        banners.provided.insert(id, expand(&tag[1..]));
                     }
                     Value::String(single) => {
                         banners

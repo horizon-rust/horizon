@@ -87,10 +87,10 @@ pub fn main() -> horizon_client::Result<()> {
     let items = Items::catalog(root, &PackOverlay::NONE)?;
     let recipes = Recipes::load(root, &items, &PackOverlay::NONE)?;
     let brewing = horizon_client::brewing::Brewing::load(root, &items, &PackOverlay::NONE);
-    let banners = horizon_client::banner::Banners::load(root);
+    let banners = horizon_client::banner::Banners::load(root, &PackOverlay::NONE);
     let station_recipes =
         horizon_client::stations::StationRecipes::load(root, &items, &PackOverlay::NONE);
-    let enchantments = horizon_client::enchant::Enchantments::load(root);
+    let enchantments = horizon_client::enchant::Enchantments::load(root, &PackOverlay::NONE);
     let names = horizon_client::creative::Names::load(root);
     let case_maps = CaseMaps::default();
     let env = Env {
