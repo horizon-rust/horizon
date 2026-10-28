@@ -7,7 +7,7 @@ use horizon_client::{
     entities::ArmorStand,
     items::ItemStack,
     mesher::Vertex,
-    mobs::{Mob, Part, anim::Poses},
+    mobs::{Mob, Part, anim::Poses, render::ArmorLayer},
     trims::{TrimOverride, TrimRegistry, TrimTexture},
 };
 use horizon_core::{
@@ -132,16 +132,13 @@ impl ArmorStandAssets {
     }
 }
 impl Game<'_> {
-    /// `HumanoidArmorLayer` for the player: (model, texture rect, colour) of
-    /// each worn piece, head to feet.
-    pub(super) fn player_armor_layers(&self) -> Vec<(&Part, [f32; 4], u32)> {
+    /// `HumanoidArmorLayer` for the player: (model, texture rect, colour,
+    /// glint) of each worn piece, head to feet.
+    pub(super) fn player_armor_layers(&self) -> Vec<ArmorLayer<'_>> {
         self.stack_armor_layers(&self.armor)
     }
     /// `HumanoidArmorLayer` for worn stacks (head to feet), trims included.
-    pub(super) fn stack_armor_layers(
-        &self,
-        armor: &[Option<ItemStack>; 4],
-    ) -> Vec<(&Part, [f32; 4], u32)> {
+    pub(super) fn stack_armor_layers(&self, armor: &[Option<ItemStack>; 4]) -> Vec<ArmorLayer<'_>> {
         self.armor_layers(
             armor
                 .each_ref()
@@ -150,7 +147,7 @@ impl Game<'_> {
     }
     /// `HumanoidArmorLayer` for another player's model: the armour it wears
     /// (`extra.head` .. `extra.feet`).
-    pub(super) fn worn_armor_layers(&self, m: &Mob) -> Vec<(&Part, [f32; 4], u32)> {
+    pub(super) fn worn_armor_layers(&self, m: &Mob) -> Vec<ArmorLayer<'_>> {
         let e = &m.extra;
         self.armor_layers(
             [
@@ -163,11 +160,8 @@ impl Game<'_> {
         )
     }
     /// The layers of the armour items `worn` (with their stacks when known,
-    /// for trims), head to feet.
-    fn armor_layers(
-        &self,
-        worn: [Option<(&str, Option<&ItemStack>)>; 4],
-    ) -> Vec<(&Part, [f32; 4], u32)> {
+    /// for trims and the glint), head to feet.
+    fn armor_layers(&self, worn: [Option<(&str, Option<&ItemStack>)>; 4]) -> Vec<ArmorLayer<'_>> {
         let assets = &self.armor_stand_assets;
         let mut out = Vec::new();
         for (item, layer) in worn
@@ -201,13 +195,23 @@ impl Game<'_> {
                 continue;
             };
             let color = layer_color(*undyed, stack);
-            out.push((part, [r.u0, r.v0, r.u1, r.v1], color));
+            // EquipmentLayerRenderer: the armour glint over the layer when
+            // `stack.hasFoil()`.
+            let item_glint = self
+                .res
+                .items()
+                .enchantments
+                .props
+                .get(item)
+                .is_some_and(|p| p.glint);
+            let glint = stack.is_some_and(|s| s.has_foil(item_glint));
+            out.push((part, [r.u0, r.v0, r.u1, r.v1], color, glint));
             // EquipmentLayerRenderer: the trim layer over the armour.
             if let Some(r) = stack
                 .and_then(|s| assets.trim_texture(&asset, kind, s))
                 .and_then(|t| self.gui.atlas.sprites.get(&t.sprite()))
             {
-                out.push((part, [r.u0, r.v0, r.u1, r.v1], 0xFFFF_FFFF));
+                out.push((part, [r.u0, r.v0, r.u1, r.v1], 0xFFFF_FFFF, false));
             }
         }
         out

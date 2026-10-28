@@ -19,6 +19,9 @@ pub type Atlas<'a> = &'a dyn Fn(&str) -> Option<[f32; 4]>;
 /// marks the `ARMOR_ENTITY_GLINT_TEXTURING` sample: entity.wgsl transforms
 /// the model UV and reads `enchanted_glint_armor`.
 pub const ARMOR_GLINT: u32 = 13;
+/// A worn equipment layer drawn over a model posed like the body: its model,
+/// texture rect, colour and whether it shows the armour glint.
+pub type ArmorLayer<'a> = (&'a Part, [f32; 4], u32, bool);
 
 /// `RenderTypes.breezeWind`: the texture of the breeze's wind layer scrolls
 /// by 0.02 of the texture per tick.
@@ -1200,7 +1203,7 @@ pub fn render_with(
     atlas: Atlas,
     light: u32,
     data: &MobData,
-    extra: &[(&Part, [f32; 4], u32)],
+    extra: &[ArmorLayer],
     out: &mut Vec<Vertex>,
 ) {
     // The invisibility effect hides the model (a drinking wandering trader);
@@ -1251,7 +1254,7 @@ fn render_visible(
     atlas: Atlas,
     light: u32,
     data: &MobData,
-    extra: &[(&Part, [f32; 4], u32)],
+    extra: &[ArmorLayer],
     out: &mut Vec<Vertex>,
 ) {
     let overlay = u32::from(red_overlay(m));
@@ -1283,8 +1286,9 @@ fn render_visible(
     if !shell_last {
         draw_body(out);
     }
-    for (part, uv, color) in extra {
-        draw(part, base, &poses, *uv, *color, light, overlay, out);
+    for &(part, uv, color, glint) in extra {
+        let overlay = if glint { ARMOR_GLINT } else { overlay };
+        draw(part, base, &poses, uv, color, light, overlay, out);
     }
     let mut all_layers = layers(m);
     // WardenRenderer: the translucent emissive layers fade with the animations.
