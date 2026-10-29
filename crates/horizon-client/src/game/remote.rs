@@ -325,7 +325,9 @@ impl Game<'_> {
                     &self.options.resources,
                 ));
             }
+            let skip = self.settings.file.bool("skipMultiplayerWarning");
             if let Some(title) = &mut self.title {
+                title.skip_multiplayer_warning = skip;
                 title.failed(error);
             }
             self.capture(false);
@@ -556,6 +558,8 @@ impl Game<'_> {
         self.titles.overlay_time = 0;
         // GameRenderer.resetData (Minecraft.disconnect).
         self.item_activation.reset();
+        // A world is leaving either way: its icon attempt goes with it.
+        self.world_icon = None;
         if let Some(mut r) = self.remote.take() {
             r.session.disconnect();
         }
@@ -611,6 +615,7 @@ impl Game<'_> {
         let saves = std::env::current_dir()?.join("saves");
         let mut title = horizon_client::title::Title::new(saves.clone(), &self.options.resources);
         title.last_server = self.settings.file.string("lastServer");
+        title.skip_multiplayer_warning = self.settings.file.bool("skipMultiplayerWarning");
         if single_player && reason.is_none() {
             self.title = Some(title);
             self.capture(false);
@@ -1015,7 +1020,12 @@ impl Game<'_> {
         if self.remote.is_none() {
             return;
         }
-        let Some((id, command)) = self.ui.chat_screen.as_mut().and_then(|s| s.take_request())
+        let Some((id, command)) = self
+            .ui
+            .chat_screen
+            .as_mut()
+            .and_then(|s| s.take_request())
+            .or_else(|| self.command_block_suggestion_request())
         else {
             return;
         };
@@ -1055,7 +1065,8 @@ impl Game<'_> {
         })();
         if let Ok((id, start, length, list)) = decoded {
             let range = (start.max(0) as usize, length.max(0) as usize);
-            self.chat_server_suggestions(id, range, list);
+            self.chat_server_suggestions(id, range, list.clone());
+            self.command_block_server_suggestions(id, range, list);
         }
     }
     fn set_registries(&mut self, registries: Arc<Dynamic>) {
@@ -1251,10 +1262,15 @@ impl Game<'_> {
                 }
                 _ => {}
             }
+            let command_block = matches!(loaded, BlockEntity::CommandBlock(_));
             self.world.block_entities.insert(key, loaded);
+            self.update_spawner_display(key);
             // The section is drawn again with what the block entity shows.
             let state = self.world.block(pos[0], pos[1], pos[2]);
             let _ = self.world.set(pos[0], pos[1], pos[2], state);
+            if command_block {
+                self.command_block_data_arrived(key);
+            }
         }
     }
     /// `handleAnimate`: a player wakes up, or an entity gets the critical
@@ -3806,6 +3822,7 @@ impl Game<'_> {
         // and the moving pistons a block event's client-side moveBlocks made
         // (their progress advances between the server's block updates).
         self.tick_block_entity_anims();
+        self.tick_remote_spawners();
         self.client_tick_beacons();
         self.with_level(|b, level, ticks| {
             b.client_tick_block_entities(level, ticks);
@@ -3824,6 +3841,7 @@ impl Game<'_> {
         self.tick_subtitles();
         let entity_collisions = self.player_entity_collisions();
         let pushed = self.remote_pushes();
+        let sprint_window = self.settings.sprint_window;
         let Some(player) = self.player.as_mut() else {
             return Ok(());
         };
@@ -3922,7 +3940,7 @@ impl Game<'_> {
                 collision_binding: self.collision,
                 resources: self.motion,
             }
-            .controlled_simulation_tick(keys)?;
+            .controlled_simulation_tick_with_sprint_window(keys, sprint_window)?;
         } else {
             // LivingEntity.baseTick counts hurtTime down for a dead or riding
             // player too (controlled_simulation_tick does it otherwise): left
@@ -3965,6 +3983,38 @@ impl Game<'_> {
                 horizon_client::motion::MotionEvent::Swim { volume, pitch } => {
                     self.audio
                         .play("minecraft:entity.player.swim", Some(feet), volume, pitch);
+                }
+                // Entity.doWaterSplashEffect on the client's own level: the
+                // server's splash skips this player (Player.playSound), and
+                // its particles are the client's own.
+                horizon_client::motion::MotionEvent::Splash {
+                    high_speed,
+                    volume,
+                    pitch,
+                } => {
+                    let name = if high_speed {
+                        "minecraft:entity.player.splash.high_speed"
+                    } else {
+                        "minecraft:entity.player.splash"
+                    };
+                    self.audio.play(name, Some(feet), volume, pitch);
+                }
+                horizon_client::motion::MotionEvent::SplashParticle {
+                    bubble,
+                    position,
+                    velocity,
+                } => {
+                    use horizon_client::particles::{ParticleOptions, ParticleType};
+                    let kind = if bubble {
+                        ParticleType::Bubble
+                    } else {
+                        ParticleType::Splash
+                    };
+                    self.particles.add(
+                        &ParticleOptions::simple(kind),
+                        [position.x, position.y, position.z],
+                        [velocity.x, velocity.y, velocity.z],
+                    );
                 }
                 horizon_client::motion::MotionEvent::Chime { volume, pitch } => {
                     self.audio.play(
@@ -5766,7 +5816,7 @@ impl Game<'_> {
     }
     /// MultiPlayerGameMode.dropItem (key.drop): predict the removal, then send
     /// the action; swing only if a nonempty stack was removed.
-    fn remote_drop(&mut self, all: bool) {
+    pub(super) fn remote_drop(&mut self, all: bool) {
         let dropped =
             horizon_client::items::take_held_drop(&mut self.inventory[self.selected], all, false);
         self.send(S::PlayerAction(play::PlayerAction {
@@ -6419,8 +6469,9 @@ impl Game<'_> {
                 .collect::<Vec<_>>(),
             // The player's own model exists (third person and the inventory draw it).
             "player_model": self.player_model.is_some(),
-            // The world view draws it now (third person, or lying in a bed).
-            "own_body": self.player_model_shown(),
+            // The world view draws its body now (third person, or lying in a bed;
+            // not while invisible).
+            "own_body": self.player_model_shown() && self.own_body_visible(),
             "text_display_vertices": self.text_display_vertices,
             "text_displays": self.text_displays.len(),
             "health": r.health.0,

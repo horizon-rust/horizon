@@ -20,7 +20,7 @@ use std::{
 
 /// The tree the chat parses and completes with: a server's, once it has
 /// sent one (ClientPacketListener.commands), else the game's own.
-fn chat_tree<'a>(
+pub(super) fn chat_tree<'a>(
     remote: &'a Option<super::remote::Remote>,
     mods: &'a super::mods::ModsState,
 ) -> &'a horizon_client::command::Dispatcher {
@@ -148,7 +148,7 @@ fn resource_ids(root: &Path) -> Arc<ResourceIds> {
         recipes: ids_under(&data.join("recipe"), "json"),
         damage_types: ids_under(&data.join("damage_type"), "json"),
         loot_tables: ids_under(&data.join("loot_table"), "json"),
-        templates: ids_under(&root.join("worldgen/structure/minecraft"), "nbt"),
+        templates: templates_under(&root.join("worldgen/structure")),
     });
     cache.push((root.to_owned(), ids.clone()));
     ids
@@ -156,6 +156,26 @@ fn resource_ids(root: &Path) -> Arc<ResourceIds> {
 
 /// The `minecraft:` ids of the `extension` files under `root`, sorted.
 fn ids_under(root: &Path, extension: &str) -> Vec<String> {
+    ids_in(root, extension, "minecraft")
+}
+
+/// The templates of every namespace folder under `root` (vanilla's and the
+/// content mods'), as `namespace:path`, sorted.
+fn templates_under(root: &Path) -> Vec<String> {
+    let Ok(namespaces) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = namespaces
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .flat_map(|e| ids_in(&e.path(), "nbt", &e.file_name().to_string_lossy()))
+        .collect();
+    out.sort();
+    out
+}
+
+/// The `namespace:` ids of the `extension` files under `root`, sorted.
+fn ids_in(root: &Path, extension: &str, namespace: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_owned()];
     while let Some(dir) = stack.pop() {
@@ -175,7 +195,7 @@ fn ids_under(root: &Path, extension: &str) -> Vec<String> {
                 && let Ok(rel) = path.strip_prefix(root)
             {
                 out.push(format!(
-                    "minecraft:{}",
+                    "{namespace}:{}",
                     rel.with_extension("").to_string_lossy().replace('\\', "/")
                 ));
             }
@@ -651,7 +671,7 @@ impl Game<'_> {
             ChatAction::None => {
                 // charTyped: the text the key typed.
                 if let Some(text) = typed_text
-                    && !ctrl
+                    && self.types_text()
                 {
                     screen.type_text(&m, &c, text);
                 }
@@ -1183,7 +1203,10 @@ impl Game<'_> {
             return;
         };
         let path = dir.join(name);
-        renderer.screenshot = Some(path.clone());
+        renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
+            path: path.clone(),
+            size: None,
+        });
         self.ui.screenshot_message = Some(path);
     }
     /// After a frame: report a finished F2 screenshot in chat.
