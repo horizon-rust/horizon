@@ -1,9 +1,9 @@
 //! Foxes (`net.minecraft.world.entity.animal.fox.Fox`): the goal list, the
 //! flags byte (sleeping, sitting, crouching, interested, pouncing,
 //! faceplanted), stalking and pouncing, napping in the shade by day, seeking
-//! shelter, perching, eating berries and the food held in the mouth.
-//! Picking up items, strolling through villages and trusting players (with
-//! defending them) are not ported yet.
+//! shelter, perching, eating berries, searching for items on the ground and
+//! the food held in the mouth. Strolling through villages and trusting
+//! players (with defending them) are not ported yet.
 use super::{
     Mob, MobEvent, MobWorld, Seen, Species,
     goals::{
@@ -101,6 +101,7 @@ pub fn register(m: &mut Mob) {
     g.add(10, EatBerries::new());
     g.add(10, LeapAtTarget::new(0.4));
     g.add(11, Stroll::avoiding_water(1.0));
+    g.add(11, SearchForItems);
     // FoxLookAtPlayerGoal: not with the nose in the snow or while stalking.
     g.add(
         12,
@@ -230,6 +231,63 @@ pub fn can_hold_item(m: &Mob, items: &Items, item: &str) -> bool {
             m.extra.ints[TICKS_SINCE_EATEN] > 0
                 && consumable_food(items, item)
                 && !consumable_food(items, held)
+        }
+    }
+}
+
+/// `Fox.pickUpItem`'s `ticksSinceEaten = 0`: the fox has just got something
+/// in its mouth.
+pub fn reset_eaten(m: &mut Mob) {
+    m.extra.ints[TICKS_SINCE_EATEN] = 0;
+}
+
+/// `Fox.FoxSearchForItemsGoal`: a fox with an empty mouth, nothing to flee
+/// from and a mind to move walks to an item lying within 8 blocks.
+#[derive(Clone, Debug)]
+struct SearchForItems;
+impl SearchForItems {
+    /// The first of the items within 8 blocks that `ALLOWED_ITEMS` lets
+    /// through (no pickup delay).
+    fn first_item(m: &Mob, w: &MobWorld) -> Option<[f64; 3]> {
+        let area = m.bounds().inflate(Vec3::new(8.0, 8.0, 8.0));
+        w.items_in(area)
+            .find(|e| e.pickup_delay == 0)
+            .map(|e| [e.position.x, e.position.y, e.position.z])
+    }
+}
+impl Goal for SearchForItems {
+    goal_clone!();
+    fn flags(&self) -> u8 {
+        MOVE
+    }
+    /// `Fox.FoxSearchForItemsGoal.canUse`.
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        if m.extra.main_hand.is_some() {
+            return false;
+        }
+        if m.ai.target.is_some() || m.ai.last_hurt_by.is_some() {
+            return false;
+        }
+        if !can_move(m) {
+            return false;
+        }
+        if m.random.next_int_bound(reduced(10)).unwrap_or(0) != 0 {
+            return false;
+        }
+        Self::first_item(m, cx.w).is_some() && m.extra.main_hand.is_none()
+    }
+    /// `Fox.FoxSearchForItemsGoal.tick`.
+    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
+        if m.extra.main_hand.is_none()
+            && let Some(at) = Self::first_item(m, cx.w)
+        {
+            m.nav_move_to_entity(cx.w, at, 1, f64::from(1.2_f32));
+        }
+    }
+    /// `Fox.FoxSearchForItemsGoal.start`.
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
+        if let Some(at) = Self::first_item(m, cx.w) {
+            m.nav_move_to_entity(cx.w, at, 1, f64::from(1.2_f32));
         }
     }
 }
