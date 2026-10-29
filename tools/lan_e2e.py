@@ -262,6 +262,8 @@ address. The script then checks, from both sides, what a guest's game used to ge
 - stopsound: the host's and the guest's own /stopsound, by source and by event, reach their own
              client's sounds, and the host's /stopsound of the guest only the guest's (StopSoundCommand
              sends each target its packet).
+- head_pitch: in third person the player model's head pitch follows the mouse turn each frame, not
+             interpolated from the last tick's pitch (#3844).
 - hero-trading: the host and the guest each trade 20 wheat for an emerald, paying 14 with Hero I
               and 12 with Hero III; clearing the effect restores the ordinary price (#1365).
 - cure-discount: the host and the guest each cure a zombie villager with a golden apple and pay 14
@@ -6654,6 +6656,32 @@ def check_hero_trading(host, guest, out):
         host('command', command=f'kill @e[tag={tag}]')
     return seen
 
+
+def check_head_pitch(host, guest, out):
+    """Entity.turn moves xRotO with xRot: in third person the player model's head follows the mouse
+    each frame, not interpolated from the pitch of the last tick (#3844)."""
+    result = {}
+    for label, player in (('host', host), ('guest', guest)):
+        player('command', command='gamemode creative')
+        player.raw('look', 0, 0)
+        player.raw('key', 'f5', 'tap')
+        player.wait(5)
+        try:
+            for dpitch in (35, -50, 20):
+                replies = player.script([f'turn 0 {dpitch} --over 0.4', 'state'], every=True)
+                state = replies[-1]['player']
+                previous, current = state['model_head_pitch']
+                result.setdefault(label, []).append({'pitch': state['pitch'], 'head': [previous, current]})
+                assert previous == current == state['pitch'], f'{label}: the head pitch is interpolated: {result}'
+        finally:
+            player.raw('key', 'f5', 'tap')
+            player.raw('key', 'f5', 'tap')
+            player.wait(2)
+    return result
+
+
+CHECKS += ['head_pitch']
+CHECK_FNS['head_pitch'] = check_head_pitch
 
 CHECKS += ['hero-trading']
 CHECK_FNS.update({'hero-trading': check_hero_trading})

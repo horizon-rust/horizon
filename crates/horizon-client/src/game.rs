@@ -5870,6 +5870,12 @@ impl Game<'_> {
             rotation.turn(xo * zoom, yo * zoom);
             self.yaw = rotation.y_rot;
             self.pitch = rotation.x_rot;
+            // Entity.turn moves xRotO with xRot: the player model's head pitch
+            // follows the mouse each frame and is not interpolated.
+            if let Some(m) = self.player_model.as_mut() {
+                m.head_pitch = self.pitch;
+                m.previous_head_pitch = self.pitch;
+            }
             // Entity.turn ends in AbstractBoat.onPassengerTurned: clampRotation
             // keeps the view within 105 degrees of the boat at every turn, not
             // only at the tick, so it never swings past and back.

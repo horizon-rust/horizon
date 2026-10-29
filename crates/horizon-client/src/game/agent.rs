@@ -472,6 +472,8 @@ impl Game<'_> {
                 "eye": self.eye_position(),
                 "yaw": self.yaw,
                 "pitch": self.pitch,
+                // The player model's head pitch before and after the last tick/mouse turn.
+                "model_head_pitch": self.player_model.as_ref().map(|m| [m.previous_head_pitch, m.head_pitch]),
                 "velocity": [p.velocity.x, p.velocity.y, p.velocity.z],
                 "on_ground": p.ground.on_ground,
                 "flying": p.flying,
