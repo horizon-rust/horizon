@@ -14,10 +14,12 @@ use super::{
     brain::{Timed, living_near},
     path::{Path, PathNode},
 };
+use crate::items::ItemStack;
 use horizon_core::{
     geometry::Vec3,
     random::{LegacyRandom, RandomSource},
 };
+use std::sync::Arc;
 
 /// `MemorySlot.NEVER_EXPIRE`.
 pub(super) const NEVER: i64 = i64::MAX;
@@ -1213,6 +1215,7 @@ enum B {
     ShowTrades {
         t: Timed,
         look_time: i32,
+        display: TradeDisplay,
     },
     TradeWithVillager(Timed),
     MakeLove {
@@ -1592,7 +1595,7 @@ impl B {
                 mm.look_target.set(Tracker::Entity(Who::Player, true));
                 true
             }
-            B::ShowTrades { t, look_time } => {
+            B::ShowTrades { t, look_time, .. } => {
                 if !mem(m).interaction_target.present() || !show_trades_condition(m, cx.w) {
                     return false;
                 }
@@ -2920,7 +2923,11 @@ impl B {
                     });
                 }
             }
-            B::ShowTrades { t, look_time } => {
+            B::ShowTrades {
+                t,
+                look_time,
+                display,
+            } => {
                 let still = show_trades_condition(m, cx.w)
                     && *look_time > 0
                     && mem(m).interaction_target.present();
@@ -2931,10 +2938,13 @@ impl B {
                 if let Some(target) = mem(m).interaction_target.value() {
                     mem(m).look_target.set(Tracker::Entity(target, true));
                 }
-                // No offer matches the player's item: hold nothing and look
-                // for a while only.
-                clear_held_item(m);
-                *look_time = (*look_time).min(40);
+                display.find_items_to_display(m, cx, look_time);
+                if display.items.is_empty() {
+                    // No offer matches the player's item: hold nothing and
+                    // look for a while only.
+                    clear_held_item(m);
+                    *look_time = (*look_time).min(40);
+                }
                 *look_time -= 1;
             }
             B::TradeWithVillager(t) => {
@@ -3186,10 +3196,11 @@ impl B {
                 mm.walk_target.clear();
                 mm.look_target.clear();
             }
-            B::ShowTrades { t, .. } => {
+            B::ShowTrades { t, display, .. } => {
                 t.running = false;
                 mem(m).interaction_target.clear();
                 clear_held_item(m);
+                display.player_item = None;
             }
             B::TradeWithVillager(t) => {
                 t.running = false;
@@ -3342,6 +3353,84 @@ fn show_trades_condition(m: &Mob, w: &MobWorld) -> bool {
         && !m.is_baby()
         && w.target_info(target)
             .is_some_and(|t| t.alive && m.distance_sqr(t.position) <= 17.0)
+}
+/// `ItemStack.EMPTY`'s item.
+const AIR: &str = "minecraft:air";
+/// What `ShowTradesToPlayer` remembers between ticks.
+#[derive(Clone, Debug, Default)]
+struct TradeDisplay {
+    /// `playerItemStack`: the item the player held at the last look, `None`
+    /// before the first look and after a stop. An empty hand is air, as
+    /// `ItemStack.EMPTY` is.
+    player_item: Option<Arc<str>>,
+    /// `displayItems`: what the offers matching that item sell.
+    items: Vec<ItemStack>,
+}
+impl TradeDisplay {
+    /// `ShowTradesToPlayer.findItemsToDisplay`: when the player's item
+    /// changed, collect the offers that take it and hold up the first
+    /// (their look time becomes 900 ticks).
+    fn find_items_to_display(&mut self, m: &mut Mob, cx: &mut Bx, look_time: &mut i32) {
+        let hand =
+            cx.w.player
+                .as_ref()
+                .and_then(|p| p.main_hand.clone())
+                .unwrap_or_else(|| Arc::from(AIR));
+        if self.player_item.as_deref() == Some(&*hand) {
+            return;
+        }
+        self.items.clear();
+        if *hand == *AIR {
+            self.player_item = Some(hand);
+            return;
+        }
+        if m.extra.trade.as_ref().is_none_or(|t| t.unset) {
+            // `getOffers` makes the offers on first use, which the level
+            // does: look again once it has.
+            cx.events.push(MobEvent::VillagerOffers { mob: m.id });
+            self.player_item = None;
+            return;
+        }
+        self.player_item = Some(hand);
+        self.update_display_items(m);
+        if let Some(first) = self.items.first() {
+            *look_time = 900;
+            display_as_held_item(m, first);
+        }
+    }
+    /// `ShowTradesToPlayer.updateDisplayItems`: the offers still in stock
+    /// that take the player's item as cost A or B
+    /// (`playerItemStackMatchesCostOfOffer`, `ItemStack.isSameItem`).
+    fn update_display_items(&mut self, m: &Mob) {
+        let (Some(hand), Some(trade)) = (self.player_item.as_deref(), m.extra.trade.as_ref())
+        else {
+            return;
+        };
+        for offer in &trade.offers {
+            if !offer.out_of_stock()
+                && (*offer.base_cost_a.stack.item == *hand
+                    || offer
+                        .cost_b
+                        .as_ref()
+                        .is_some_and(|c| *c.stack.item == *hand))
+            {
+                // `MerchantOffer.assemble`.
+                self.items.push(offer.result.clone());
+            }
+        }
+    }
+}
+/// `ShowTradesToPlayer.displayAsHeldItem`: the stack in the main hand, which
+/// never drops.
+fn display_as_held_item(m: &mut Mob, stack: &ItemStack) {
+    super::finalize::set_item(m, super::finalize::MAINHAND, &stack.item);
+    m.extra.main_hand_count = stack.count;
+    super::finalize::set_slot_enchantments(
+        m,
+        super::finalize::MAINHAND,
+        stack.enchantments().to_vec(),
+    );
+    super::finalize::set_drop_chance(m, super::finalize::MAINHAND, 0.0);
 }
 /// `ShowTradesToPlayer.clearHeldItem`: the main hand is empty again and
 /// drops with the default chance (the shown item never dropped).
@@ -3888,6 +3977,7 @@ fn show_trades() -> B {
     B::ShowTrades {
         t: timed(400, 1600),
         look_time: 0,
+        display: TradeDisplay::default(),
     }
 }
 fn interact(kind: Interact) -> B {
