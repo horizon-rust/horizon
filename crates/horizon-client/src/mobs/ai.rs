@@ -541,6 +541,9 @@ pub fn tick(
     if m.species() == Species::Bee {
         super::bee::tick(m, level_random);
     }
+    if m.species() == Species::Allay {
+        super::allay::tick(m, w, events);
+    }
     if m.species() == Species::Panda {
         super::panda::tick(m, w, events);
     }
