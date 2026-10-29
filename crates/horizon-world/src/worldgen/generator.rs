@@ -225,6 +225,79 @@ fn overlay_bundle(overlay: &crate::loot::PackOverlay, kind: &str) -> Bundle {
     }
     out
 }
+/// A bundle with the packs' files of `kind` over the prepared one: a pack's
+/// file replaces the game's for the same id
+/// (`SimpleJsonResourceReloadListener`).
+fn merged_bundle(
+    dir: &Path,
+    name: &str,
+    overlay: &crate::loot::PackOverlay,
+    kind: &str,
+) -> Result<Bundle, GeneratorError> {
+    let mut out = read_bundle(dir, name)?;
+    out.extend(overlay_bundle(overlay, kind));
+    Ok(out)
+}
+/// [`merged_bundle`] for a bundle the prepared data may not hold.
+fn merged_optional_bundle(
+    dir: &Path,
+    name: &str,
+    overlay: &crate::loot::PackOverlay,
+    kind: &str,
+) -> Result<Option<Bundle>, GeneratorError> {
+    let mut out = read_optional_bundle(dir, name)?.unwrap_or_default();
+    out.extend(overlay_bundle(overlay, kind));
+    Ok((!out.is_empty()).then_some(out))
+}
+/// A tag bundle with the packs' tag files merged in, `TagLoader.load`'s way:
+/// the pack's entries join the game's, `replace` drops what the lower sources
+/// put in. Entries naming an element `known` refuses are left out, as vanilla
+/// drops a tag entry the registry does not have.
+fn merged_tags(
+    dir: &Path,
+    name: &str,
+    overlay: &crate::loot::PackOverlay,
+    kind: &str,
+    known: &dyn Fn(&str) -> bool,
+) -> Result<Bundle, GeneratorError> {
+    let mut out = read_bundle(dir, name)?;
+    for (id, files) in overlay.kind(kind) {
+        let mut entries: Vec<serde_json::Value> = out
+            .get(id)
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+            .and_then(|v| v["values"].as_array().cloned())
+            .unwrap_or_default();
+        for bytes in files {
+            let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+                continue;
+            };
+            if v["replace"].as_bool() == Some(true) {
+                entries.clear();
+            }
+            for entry in v["values"].as_array().into_iter().flatten() {
+                let name = entry
+                    .as_str()
+                    .or_else(|| entry["id"].as_str())
+                    .unwrap_or_default();
+                let nested = name.starts_with('#');
+                let id = name.trim_start_matches('#');
+                let id = if id.contains(':') {
+                    id.to_owned()
+                } else {
+                    format!("minecraft:{id}")
+                };
+                if nested || known(&id) {
+                    entries.push(entry.clone());
+                }
+            }
+        }
+        out.insert(
+            id.to_owned(),
+            serde_json::json!({ "values": entries }).to_string(),
+        );
+    }
+    Ok(out)
+}
 /// The pack's structure template NBT by template id (`ns:path`).
 fn overlay_templates(overlay: &crate::loot::PackOverlay) -> BTreeMap<String, Vec<u8>> {
     overlay
@@ -336,18 +409,27 @@ impl GeneratorData {
         if flags.len() != registry.len() {
             return Err(resource("block_flags.json does not match the registry"));
         }
-        let block_tags = build_tags(&read_bundle(dir, "block_tags")?, |id| {
-            registry.default_state(id).is_some()
-        })?;
-        let fluid_tags = match read_optional_bundle(dir, "fluid_tags")? {
-            Some(raw) => build_tags(&raw, |id| {
-                matches!(
-                    id,
-                    "minecraft:water"
-                        | "minecraft:flowing_water"
-                        | "minecraft:lava"
-                        | "minecraft:flowing_lava"
-                        | "minecraft:empty"
+        let known_block = |id: &str| registry.default_state(id).is_some();
+        let block_tags = build_tags(
+            &merged_tags(dir, "block_tags", overlay, "tags/block", &known_block)?,
+            known_block,
+        )?;
+        let known_fluid = |id: &str| {
+            matches!(
+                id,
+                "minecraft:water"
+                    | "minecraft:flowing_water"
+                    | "minecraft:lava"
+                    | "minecraft:flowing_lava"
+                    | "minecraft:empty"
+            )
+        };
+        let fluid_tags = match merged_optional_bundle(dir, "fluid_tags", overlay, "tags/fluid")? {
+            Some(raw) => build_tags(&raw, known_fluid).or_else(|e| {
+                log::warn!("Horizon: the packs' fluid tags were not used ({e})");
+                build_tags(
+                    &read_optional_bundle(dir, "fluid_tags")?.unwrap_or_default(),
+                    known_fluid,
                 )
             })?,
             None => BTreeMap::new(),
@@ -427,13 +509,28 @@ impl GeneratorData {
             .into_iter()
             .filter_map(|(key, integer)| integer.then_some(key))
             .collect();
-        let biomes = read_bundle(dir, "biomes")?;
-        let biome_tags = build_tags(&read_bundle(dir, "biome_tags")?, |id| {
-            biomes.contains_key(id)
-        })?;
+        let biomes = merged_bundle(dir, "biomes", overlay, "worldgen/biome")?;
+        let known_biome = |id: &str| biomes.contains_key(id);
+        let biome_tags = match merged_tags(
+            dir,
+            "biome_tags",
+            overlay,
+            "tags/worldgen/biome",
+            &known_biome,
+        )
+        .and_then(|tags| build_tags(&tags, known_biome))
+        {
+            Ok(tags) => tags,
+            Err(e) => {
+                log::warn!("Horizon: the packs' biome tags were not used ({e})");
+                build_tags(&read_bundle(dir, "biome_tags")?, |id| {
+                    biomes.contains_key(id)
+                })?
+            }
+        };
         let biome_set = biomes.keys().cloned().collect::<BTreeSet<_>>();
         let conditions = MaterialConditionRegistry::from_json_with_biome_tags(
-            &read_bundle(dir, "conditions")?,
+            &merged_bundle(dir, "conditions", overlay, "worldgen/material_condition")?,
             &biome_set,
             &biome_tags,
         )?;
@@ -456,7 +553,8 @@ impl GeneratorData {
         }
         let source_catalog =
             BiomeSourceCatalog::new(&biome_set, &biome_tags, &presets.keys().cloned().collect())?;
-        let carvers = CarverCatalog::from_json(&read_bundle(dir, "carvers")?)?;
+        let carvers =
+            CarverCatalog::from_json(&merged_bundle(dir, "carvers", overlay, "worldgen/carver")?)?;
         let mut biome_names = Vec::new();
         let mut biome_ids = BTreeMap::new();
         let mut biome_json = Vec::new();
@@ -479,16 +577,28 @@ impl GeneratorData {
         )
         .map_err(|e| resource(format!("carving blocks: {e}")))?;
         let feature_resources = match (
-            read_optional_bundle(dir, "features")?,
-            read_optional_bundle(dir, "placed_features")?,
+            merged_optional_bundle(dir, "features", overlay, "worldgen/feature")?,
+            merged_optional_bundle(dir, "placed_features", overlay, "worldgen/placed_feature")?,
         ) {
             (Some(features), Some(placed)) => Some(FeatureResources {
                 features,
                 placed,
-                feature_tags: read_optional_bundle(dir, "feature_tags")?.unwrap_or_default(),
+                feature_tags: merged_optional_bundle(
+                    dir,
+                    "feature_tags",
+                    overlay,
+                    "tags/worldgen/configured_feature",
+                )?
+                .unwrap_or_default(),
                 blocks: joined(blocks)?,
                 fluid_tags,
-                state_providers: read_optional_bundle(dir, "state_providers")?.unwrap_or_default(),
+                state_providers: merged_optional_bundle(
+                    dir,
+                    "state_providers",
+                    overlay,
+                    "worldgen/block_state_provider",
+                )?
+                .unwrap_or_default(),
             }),
             _ => None,
         };
@@ -518,11 +628,11 @@ impl GeneratorData {
             registry,
             states: GenBlockStates(states.into()),
             integers,
-            noises: read_bundle(dir, "noises")?,
-            densities: read_bundle(dir, "densities")?,
-            rules: read_bundle(dir, "rules")?,
-            settings: read_bundle(dir, "settings")?,
-            world_presets: read_bundle(dir, "world_presets")?,
+            noises: merged_bundle(dir, "noises", overlay, "worldgen/noise")?,
+            densities: merged_bundle(dir, "densities", overlay, "worldgen/density_function")?,
+            rules: merged_bundle(dir, "rules", overlay, "worldgen/material_rule")?,
+            settings: merged_bundle(dir, "settings", overlay, "worldgen/noise_settings")?,
+            world_presets: merged_bundle(dir, "world_presets", overlay, "worldgen/world_preset")?,
             presets,
             conditions,
             source_catalog,
