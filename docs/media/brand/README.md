@@ -41,7 +41,7 @@ NODE_PATH="$d/node_modules" node -e 'const {chromium}=require("playwright");(asy
 
 | Where | What |
 |-------|------|
-| `crates/horizon-client-render/src/title_edition.rs` | the R, U and S of "RUST EDITION" under the classic title screen's logo: Horizon's own glyphs (MIT), rectangles in that file. The banner is rebuilt at load time from the player's own `textures/gui/title/edition.png` (its "EDITION" and "T" carried over, its shades sampled), so no Mojang pixels are in the repository; a resource pack's banner is left as drawn |
+| `crates/horizon-client-render/src/title_edition.rs` | the "RUST EDITION" banner under the classic title screen's logo: the player's own `textures/gui/title/edition.png` (which reads "JAVA EDITION") is rearranged at load time, never redrawn — "JAVA" goes, and R, U and S are assembled out of the strokes of the letters already in it (the E's stem and arms, the D's bowl and right side), with the texture's own T kept. Every pixel of the new word is one of the texture's, so the new letters share its shading, bevels and outline, and no Mojang pixels are in the repository; a resource pack's banner is left as drawn |
 
 ## Uploading (the accounts are Ludovic's)
 
