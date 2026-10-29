@@ -2366,6 +2366,9 @@ impl Mob {
         {
             aquatic::spawn_ink(self);
         }
+        if self.species() == Species::GlowSquid {
+            aquatic::hurt_server(self);
+        }
         true
     }
     /// A splash or cloud's harming effect on this mob: the potion's
