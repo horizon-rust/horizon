@@ -7,6 +7,7 @@ use super::{Game, item_draw::owner_at};
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
     block_entity_render::vertex_light, containers::Shelf, item_render::ItemRenderState,
+    mesher::Vertex,
 };
 use horizon_core::position::BlockPos;
 
@@ -73,6 +74,34 @@ impl Game<'_> {
             facing,
             light: vertex_light(self.world.light(key.0, key.1, key.2)),
         }
+    }
+    /// `ShelfRenderer.submitItem`: the item in slot `slot` a quarter of its
+    /// size, `(slot - 1) * 0.3125` along the shelf and a quarter block in
+    /// front of its centre, centred on that point or, when aligned to the
+    /// bottom, standing on the shelf board (`origin` is the block's corner
+    /// relative to the camera).
+    fn shelf_submit_item(
+        &self,
+        state: &ShelfRenderState,
+        item: &ItemRenderState,
+        origin: glam::Vec3,
+        slot: usize,
+        y_rot: f32,
+        out: &mut Vec<Vertex>,
+    ) {
+        let slot_x = (slot as f32 - 1.0) * 0.3125;
+        let slot_y = if state.align_to_bottom { -0.25 } else { 0.0 };
+        let (lo, hi) = item.bounding_box();
+        let mut offset_y = -lo.y;
+        if !state.align_to_bottom {
+            offset_y += -(hi.y - lo.y) / 2.0;
+        }
+        let pose = glam::Mat4::from_translation(origin + glam::Vec3::splat(0.5))
+            * glam::Mat4::from_rotation_y(y_rot.to_radians())
+            * glam::Mat4::from_translation(glam::Vec3::new(slot_x, slot_y, -0.25))
+            * glam::Mat4::from_scale(glam::Vec3::splat(0.25))
+            * glam::Mat4::from_translation(glam::Vec3::new(0.0, offset_y, 0.0));
+        self.submit_item_world(item, pose, state.light, out);
     }
 }
 
