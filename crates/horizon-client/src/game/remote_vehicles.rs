@@ -233,6 +233,19 @@ impl Game<'_> {
         b.velocity = Vec3::ZERO;
     }
 
+    /// `AbstractBoat.handleEntityEvent`: 71 and 72, a bubble column dragging
+    /// the boat down or throwing it up (`handleBubbleColumnEffect`, which the
+    /// client applies to the boat it drives).
+    pub(super) fn remote_boat_event(&mut self, id: i32, event: i8) {
+        let drag_down = event == super::boats::BUBBLE_DOWN_EVENT;
+        if !drag_down && event != super::boats::BUBBLE_UP_EVENT {
+            return;
+        }
+        if let Some(i) = self.boats.iter().position(|b| b.id == id as u32) {
+            self.handle_bubble_column_effect(i, drag_down);
+        }
+    }
+
     /// `AbstractBoat.tick`: the part that reaches bubble columns, for every
     /// boat on a client: `status`, the two `applyEffectsFromBlocks` (a boat
     /// above a column may splash; the boat the player drives is lifted or
