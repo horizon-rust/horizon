@@ -549,25 +549,29 @@ impl Mob {
         v: i32,
         away: [f64; 3],
     ) -> Option<[f64; 3]> {
+        self.land_random_pos_away_between(w, 0.0, f64::from(h), v, away)
+    }
+    /// `LandRandomPos.getPosAway(mob, minHorizontalDist, maxHorizontalDist, verticalDist, avoidPos)`.
+    pub fn land_random_pos_away_between(
+        &mut self,
+        w: &MobWorld,
+        min_h: f64,
+        max_h: f64,
+        v: i32,
+        away: [f64; 3],
+    ) -> Option<[f64; 3]> {
         let (mut xd, mut zd) = (self.position.x - away[0], self.position.z - away[2]);
         if xd == 0.0 && zd == 0.0 {
             xd = self.random.next_double() - 0.5;
             zd = self.random.next_double() - 0.5;
         }
         self.pick_best(w, |m| {
-            let d = m.random_direction_within(
-                0.0,
-                f64::from(h),
-                v,
-                0,
-                xd,
-                zd,
-                std::f64::consts::FRAC_PI_2,
-            )?;
-            let p = m.toward(f64::from(h), d);
+            let d =
+                m.random_direction_within(min_h, max_h, v, 0, xd, zd, std::f64::consts::FRAC_PI_2)?;
+            let p = m.toward(max_h, d);
             if p[1] < crate::chunk::MIN_Y
                 || p[1] >= 320
-                || m.restricted(f64::from(h), p)
+                || m.restricted(max_h, p)
                 || !m.stable_destination(w, p)
             {
                 return None;
