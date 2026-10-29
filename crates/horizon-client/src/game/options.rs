@@ -279,6 +279,9 @@ impl Game<'_> {
                 s.horizon.taa,
                 s.horizon.upscaling.ratio(),
             );
+            r.set_frame_generation(
+                s.horizon.frame_generation != horizon_client::graphics::FrameGeneration::Off,
+            );
             r.set_hdr(
                 s.horizon.hdr,
                 s.horizon.hdr_paper_white as f32,

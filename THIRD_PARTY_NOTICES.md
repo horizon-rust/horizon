@@ -26,5 +26,5 @@ the same grid.
 ports to WGSL of the optical flow and frame interpolation shaders of the
 [AMD FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) 1.1.4
 (`sdk/include/FidelityFX/gpu/{opticalflow,frameinterpolation}`), Copyright (C) 2024 Advanced
-Micro Devices, Inc., under the MIT license, whose text heads each file. AMD and FidelityFX are AMD's
-trademarks; Horizon is not affiliated with AMD.
+Micro Devices, Inc., under the MIT license, whose text heads each file. AMD and FidelityFX are
+AMD's trademarks; Horizon is not affiliated with AMD.

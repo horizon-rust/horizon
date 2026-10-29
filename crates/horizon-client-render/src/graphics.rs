@@ -220,6 +220,36 @@ impl FarDetail {
     }
 }
 
+/// Frame generation: a frame made between each two real ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FrameGeneration {
+    #[default]
+    Off,
+    /// AMD FidelityFX Super Resolution 3.1's frame interpolation, ported to WGSL.
+    Fsr31,
+}
+impl FrameGeneration {
+    pub const ALL: [FrameGeneration; 2] = [FrameGeneration::Off, FrameGeneration::Fsr31];
+    pub fn name(self) -> &'static str {
+        match self {
+            FrameGeneration::Off => "off",
+            FrameGeneration::Fsr31 => "fsr3.1",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            FrameGeneration::Off => "Off",
+            FrameGeneration::Fsr31 => "FSR 3.1",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|f| f.name() == s)
+            .unwrap_or_default()
+    }
+}
+
 /// TAA upscaling: the world renders this much smaller than the resolution scale's size,
 /// and TAA builds the full-size picture from the jittered frames (FSR's and DLSS's ratios).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -341,6 +371,7 @@ pub struct Graphics {
     pub taa: bool,
     /// TAA upscaling; anything but `Native` comes with `taa` on.
     pub upscaling: Upscaling,
+    pub frame_generation: FrameGeneration,
     /// HDR output (HDR10, or scRGB), where the display path offers it.
     pub hdr: bool,
     /// HDR paper white (where SDR white sits), in nits.
@@ -380,6 +411,7 @@ impl Default for Graphics {
             fxaa: false,
             taa: false,
             upscaling: Upscaling::Native,
+            frame_generation: FrameGeneration::Off,
             hdr: false,
             hdr_paper_white: 200,
             hdr_peak: 1000,
@@ -444,6 +476,7 @@ impl Graphics {
                 "fxaa" => g.fxaa = flag(g.fxaa),
                 "taa" => g.taa = flag(g.taa),
                 "upscaling" => g.upscaling = Upscaling::parse(value),
+                "frameGeneration" => g.frame_generation = FrameGeneration::parse(value),
                 "hdr" => g.hdr = flag(g.hdr),
                 "hdrPaperWhite" => g.hdr_paper_white = number(g.hdr_paper_white).clamp(80, 480),
                 "hdrPeak" => g.hdr_peak = number(g.hdr_peak).clamp(200, 2000),
@@ -464,7 +497,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -491,6 +524,7 @@ impl Graphics {
             bool_text(self.fxaa),
             bool_text(self.taa),
             self.upscaling.name(),
+            self.frame_generation.name(),
             bool_text(self.hdr),
             self.hdr_paper_white,
             self.hdr_peak,
@@ -608,6 +642,7 @@ mod tests {
             fxaa: true,
             taa: true,
             upscaling: Upscaling::Balanced,
+            frame_generation: FrameGeneration::Fsr31,
             hdr: true,
             hdr_paper_white: 240,
             hdr_peak: 1400,
