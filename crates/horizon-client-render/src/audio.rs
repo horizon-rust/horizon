@@ -889,6 +889,7 @@ impl Audio {
         engine.loaded = self.backend.live;
         Self {
             _stream: None,
+            device_name: self.device_name.clone(),
             engine,
             backend: MixerBackend {
                 mixer: self.backend.mixer.clone(),
@@ -1357,7 +1358,9 @@ mod tests {
     fn a_shared_listener_registers_even_in_the_hosts_world() {
         let mut host = Audio::silent(Path::new("/nonexistent/horizon-test-audio"));
         host.set_world("minecraft:overworld");
+        host.device_name = "Shared output".into();
         let mut guest = host.share(1);
+        assert_eq!(guest.device(), host.device());
         guest.set_world("minecraft:overworld");
         guest.set_listener([1.0, 2.0, 3.0], 0.0, 0.0);
         let id = guest.backend.create(false).unwrap();

@@ -2333,7 +2333,12 @@ impl OptionsUi {
                             y += 16.0;
                         }
                         Row::Big(opt) => {
-                            out.push(option_widget(s, opt, cx - 155.0, y + 2.0, 310.0));
+                            let widget = option_widget(s, opt, cx - 155.0, y + 2.0, 310.0);
+                            out.push(if self.split_guest && opt == Opt::SoundDevice {
+                                inactive(widget)
+                            } else {
+                                widget
+                            });
                             y += 25.0;
                         }
                         Row::Pair(a, b) => {
@@ -4678,6 +4683,16 @@ mod tests {
             rows.iter().any(|r| matches!(r, Row::Big(Opt::SoundDevice))),
             "Sound page should contain Row::Big(Opt::SoundDevice)"
         );
+        ui.split_guest = true;
+        let (widgets, _, _, _) = ui.layout(&s, 480.0, 480.0);
+        assert!(widgets.iter().any(|w| matches!(
+            w.kind,
+            WKind::Button {
+                act: Act::Cycle(Opt::SoundDevice),
+                active: false,
+                ..
+            }
+        )));
         assert_eq!(s.sound_device, "");
         let devices = crate::audio::output_devices();
         let count = 1 + devices.len();

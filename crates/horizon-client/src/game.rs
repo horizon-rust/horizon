@@ -11079,7 +11079,7 @@ impl Game<'_> {
             self.all_sections_changed();
         }
         self.audio.master = self.settings.master_volume;
-        if self.settings.sound_device != self.audio.device() {
+        if !self.options.split_guest && self.settings.sound_device != self.audio.device() {
             let _ = self.audio.set_device(&self.settings.sound_device);
         }
         horizon_client::hud::GUI_SCALE.store(
