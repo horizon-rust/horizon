@@ -7,6 +7,7 @@ use super::{
     dragon::{Breath, FightPlayer, FightWho},
     item_draw::owner_at,
     remote_projectiles::cloud_client_tick,
+    splash_water::thrown_block_hit,
 };
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
@@ -782,6 +783,9 @@ impl Game<'_> {
             p.status = status;
         }
     }
+    /// `ThrowableProjectile.tick` for the potions in flight: the motion, then
+    /// the first block or mob the step meets (`ProjectileUtil.getHitResultOnMoveVector`),
+    /// where the potion splashes (`Projectile.onHit`).
     fn tick_thrown_potions(&mut self) {
         let mut thrown = std::mem::take(&mut self.potions.thrown);
         let mut landed = Vec::new();
@@ -815,20 +819,25 @@ impl Game<'_> {
                         && p.y <= m.position.y + m.kind.height
                 });
                 if self.res.facts().get(state).full_collision || mob.is_some() {
-                    hit = Some((p, mob.map(|m| m.position)));
+                    // A block hit has the face it came in by
+                    // (`onHitBlock`); a mob hit has none.
+                    let block = mob
+                        .is_none()
+                        .then(|| thrown_block_hit(t.position, p, t.velocity));
+                    hit = Some((p, mob.map(|m| m.position), block));
                     break;
                 }
             }
-            if let Some((p, mob)) = hit {
-                landed.push((t.stack.clone(), p, mob, t.age, t.owner.clone()));
+            if let Some((p, mob, block)) = hit {
+                landed.push((t.stack.clone(), p, mob, block, t.age, t.owner.clone()));
                 return false;
             }
             t.position = next;
             t.age < 1200 && t.position.y > -128.0
         });
         self.potions.thrown = thrown;
-        for (stack, at, mob, age, owner) in landed {
-            self.splash(&stack, at, mob, age, owner);
+        for (stack, at, mob, block, age, owner) in landed {
+            self.splash(&stack, at, mob, block, age, owner);
         }
     }
     /// `AreaEffectCloud.tick` for the lingering potions' clouds: the client
@@ -1129,13 +1138,16 @@ impl Game<'_> {
             }
         }
     }
-    /// `ThrownSplashPotion.onHitAsPotion`, or `ThrownLingeringPotion.onHitAsPotion`
-    /// for a lingering potion; `mob` is where it hit a mob, `age` its age.
+    /// `AbstractThrownPotion.onHit` with `ThrownSplashPotion.onHitAsPotion`, or
+    /// `ThrownLingeringPotion.onHitAsPotion` for a lingering potion, read from
+    /// the stack's `potion_contents`; `mob` is where it hit a mob, `hit` the
+    /// block and face it hit, `age` its age.
     fn splash(
         &mut self,
         stack: &ItemStack,
         at: Vec3,
         mob: Option<Vec3>,
+        hit: Option<([i32; 3], Direction)>,
         age: u32,
         owner: Option<Text>,
     ) {
@@ -1150,35 +1162,12 @@ impl Game<'_> {
             self.spawn_orbs([at.x, at.y, at.z], value as u32);
             return;
         }
-        // AbstractThrownPotion.affectEntitiesAround: a water potion hurts an
-        // Enderman whose box meets the potion's box grown by (4, 2, 4) and
-        // that is less than 4 blocks away; Enderman.hurtWithCleanWater then
-        // makes it try to teleport (repeatedlyTryToTeleport).
-        if stack.potion() == Some("minecraft:water") {
-            let reach = Aabb::new(
-                Vec3::new(at.x - 0.125, at.y, at.z - 0.125),
-                Vec3::new(at.x + 0.125, at.y + 0.25, at.z + 0.125),
-            )
-            .inflate(Vec3::new(4.0, 2.0, 4.0));
-            for m in self.mobs.iter_mut() {
-                let (dx, dy, dz) = (
-                    m.position.x - at.x,
-                    m.position.y - at.y,
-                    m.position.z - at.z,
-                );
-                if &*m.kind.id == "minecraft:enderman"
-                    && m.alive()
-                    && reach.intersects(m.bounds())
-                    && dx * dx + dy * dy + dz * dz < 16.0
-                {
-                    m.hurt(1.0, Some([at.x, at.y, at.z]), &mut self.world.random);
-                    // repeatedlyTryToTeleport does nothing while it rides.
-                    if !m.extra.passenger {
-                        m.extra.counter2 = 64;
-                    }
-                }
-            }
+        // Projectile.onHit calls onHitBlock first, then the potion's
+        // affectEntitiesAround; both read the stack's `potion_contents`.
+        if let Some((cell, face)) = hit {
+            self.potion_hit_block(stack, cell, face);
         }
+        self.affect_entities_around(stack, at, owner.is_some());
         let lingering = &*stack.item == "minecraft:lingering_potion";
         // AbstractThrownPotion.onHit: level event 2007 and sound 1054 for a
         // potion with instant effects, 2002 and 1053 otherwise.
@@ -1191,33 +1180,6 @@ impl Game<'_> {
         let color = brewing::potion_color(stack.potion());
         self.level_event_at(if instant { 2007 } else { 2002 }, block, color as i32);
         self.level_event_at(if instant { 1054 } else { 1053 }, block, 0);
-        // AbstractThrownPotion.affectEntitiesAround: a water potion (the only
-        // #rehydrates_axolotls) refills the air of the axolotls in the
-        // projectile's box inflated by 4, 2 and 4 (Axolotl.rehydrate, 1800).
-        if stack.potion() == Some("minecraft:water") {
-            let (lo, hi) = (
-                [at.x - 0.125 - 4.0, at.y - 2.0, at.z - 0.125 - 4.0],
-                [at.x + 0.125 + 4.0, at.y + 0.25 + 2.0, at.z + 0.125 + 4.0],
-            );
-            for m in self
-                .mobs
-                .iter_mut()
-                .filter(|m| m.species() == horizon_client::mobs::Species::Axolotl && !m.removed)
-            {
-                let (w, h, _) = m.dims();
-                let half = w / 2.0;
-                let (x, y, z) = (m.position.x, m.position.y, m.position.z);
-                if x - half < hi[0]
-                    && x + half > lo[0]
-                    && y < hi[1]
-                    && y + h > lo[1]
-                    && z - half < hi[2]
-                    && z + half > lo[2]
-                {
-                    m.air = (m.air + 1800).min(horizon_client::mobs::axolotl::MAX_AIR);
-                }
-            }
-        }
         let Some(def) = potion else {
             return;
         };
