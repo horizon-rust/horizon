@@ -528,6 +528,9 @@ pub enum DamageKind {
     /// `dry_out`: an axolotl out of water for too long.
     DryOut,
     Magic,
+    /// `indirect_magic`: a thrown potion's hit (`DamageSources.indirectMagic`),
+    /// which, unlike `magic`, knocks back.
+    IndirectMagic,
     Sting,
     Cactus,
     /// `sweet_berry_bush`.
@@ -616,6 +619,16 @@ impl Damage {
             from: Some(from),
         }
     }
+    /// `DamageSources.indirectMagic(potion, owner)`: `attacker` is the owner
+    /// (none for a dispenser's potion), `from` the potion's position, which
+    /// the knockback pushes away from.
+    pub fn indirect_magic(attacker: Option<Who>, from: [f64; 3]) -> Self {
+        Self {
+            kind: DamageKind::IndirectMagic,
+            attacker,
+            from: Some(from),
+        }
+    }
     pub fn mob(id: u32, from: [f64; 3]) -> Self {
         Self {
             kind: DamageKind::MobAttack,
@@ -652,6 +665,7 @@ impl Damage {
                 | DamageKind::OnFire
                 | DamageKind::Drown
                 | DamageKind::Magic
+                | DamageKind::IndirectMagic
                 | DamageKind::InWall
                 | DamageKind::Generic
                 | DamageKind::SonicBoom
@@ -2283,7 +2297,10 @@ impl Mob {
                 amount = 0.0;
             } else if matches!(
                 source.kind,
-                DamageKind::Magic | DamageKind::SonicBoom | DamageKind::Thorns
+                DamageKind::Magic
+                    | DamageKind::IndirectMagic
+                    | DamageKind::SonicBoom
+                    | DamageKind::Thorns
             ) {
                 amount *= 0.15;
             }
@@ -2401,6 +2418,7 @@ impl Mob {
                 source.kind,
                 DamageKind::Drown
                     | DamageKind::Magic
+                    | DamageKind::IndirectMagic
                     | DamageKind::InWall
                     | DamageKind::Thorns
                     | DamageKind::OutOfWorld
