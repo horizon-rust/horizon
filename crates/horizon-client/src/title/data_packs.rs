@@ -33,10 +33,9 @@ fn read_icon(png: Option<Vec<u8>>) -> Option<Arc<[u8]>> {
 
 /// The packs `ServerPacksSource.createPackRepository` offers a world: the
 /// built-in feature packs the jar ships under `data/minecraft/datapacks`, the
-/// packs the world's `datapacks/` folder holds (a world being re-created, or
-/// one whose folder exists already), and the built-in `vanilla`, required and
-/// at the bottom.
-pub fn discover(vanilla: &Path, world_dir: Option<&Path>) -> Vec<PackInfo> {
+/// packs `dir` holds (a new world's temporary folder, or an existing world's
+/// `datapacks/`), and the built-in `vanilla`, required and at the bottom.
+pub fn discover(vanilla: &Path, dir: Option<&Path>) -> Vec<PackInfo> {
     let mut out = Vec::new();
     let features = vanilla.join("data/minecraft/datapacks");
     let mut names: Vec<String> = fs::read_dir(&features)
@@ -68,8 +67,8 @@ pub fn discover(vanilla: &Path, world_dir: Option<&Path>) -> Vec<PackInfo> {
             fixed: false,
         });
     }
-    if let Some(world) = world_dir {
-        for (name, user) in user_packs(&world.join("datapacks")) {
+    if let Some(dir) = dir {
+        for (name, user) in user_packs(dir) {
             let (raw, style) = description(&user.meta());
             out.push(PackInfo {
                 id: format!("file/{name}"),
@@ -180,7 +179,10 @@ impl DataPacksScreen {
             .screen
             .draw(&m, (cursor.0 as i32, cursor.1 as i32), blink);
         let mut draws = draws;
-        self.screen.bind_icons(&mut draws, atlas, &mut Vec::new());
+        // The icons go into the atlas's pack-icon slots, as the resource
+        // pack screen's do (`PackSelectionScreen.loadPackIcon`).
+        self.screen
+            .bind_icons(&mut draws, atlas, &mut batch.patches);
         screen_draw::paint(batch, atlas, &draws);
     }
     pub fn click(&mut self, atlas: &HudAtlas, x: f64, y: f64) -> pack_screen::Action {

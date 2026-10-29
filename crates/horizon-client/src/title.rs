@@ -36,6 +36,71 @@ pub(crate) fn confirm_top(h: f32, lines: usize) -> f32 {
     ((h.ceil() - 61.0 - lines as f32 * 9.0) / 2.0).floor()
 }
 
+/// A pack folder's tree, copied to `at`.
+fn copy_dir(from: &std::path::Path, at: &std::path::Path) {
+    let _ = std::fs::create_dir_all(at);
+    let Ok(entries) = std::fs::read_dir(from) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let to = at.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir(&path, &to);
+        } else {
+            let _ = std::fs::copy(&path, &to);
+        }
+    }
+}
+/// `PackDetector.detectPackResources`: a zip is a pack; a folder is one when it
+/// holds a `pack.mcmeta`, or when it holds exactly one folder that does (a
+/// folder zipped by the system, which adds a wrapper). Copied into `dir`;
+/// false when `path` is no pack.
+pub(super) fn copy_pack(path: &std::path::Path, dir: &std::path::Path) -> bool {
+    let name = || {
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let copy_file = || {
+        let _ = std::fs::create_dir_all(dir);
+        std::fs::copy(path, dir.join(name())).is_ok()
+    };
+    let copy_tree = |from: &std::path::Path| {
+        let at = dir.join(name());
+        copy_dir(from, &at);
+        true
+    };
+    if path.is_file() {
+        return path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+            && copy_file();
+    }
+    if !path.is_dir() {
+        return false;
+    }
+    if path.join("pack.mcmeta").is_file() {
+        return copy_tree(path);
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return false;
+    };
+    let dirs: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && p.join("pack.mcmeta").is_file())
+        .collect();
+    match dirs.as_slice() {
+        [one] => {
+            let at = dir.join(one.file_name().unwrap_or_default());
+            copy_dir(one, &at);
+            true
+        }
+        _ => false,
+    }
+}
+
 /// `Util.getPlatform().openPath`: the system file manager on the folder.
 fn open_folder(dir: &Path) {
     let program = if cfg!(target_os = "windows") {
@@ -192,6 +257,14 @@ pub struct Title {
     /// A screen the More tab asked for: opened by `press_rules`, which has
     /// the atlas the screens measure text with.
     pending_screen: Cell<Option<PendingScreen>>,
+    /// The folder a new world's data packs are collected in while the Create
+    /// New World screen is open (`CreateWorldScreen`'s temporary
+    /// `mcworld-` folder): files dropped on the window land here, and the
+    /// world gets a copy when it is created.
+    pack_dir: RefCell<Option<PathBuf>>,
+    /// A pack was added or removed in `pack_dir`: the Data Packs screen
+    /// re-reads it at its next frame.
+    packs_dirty: Cell<bool>,
 }
 /// The More tab's two screens, opened on the press that asked for them.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -313,6 +386,8 @@ impl Title {
             data_packs: RefCell::new(None),
             experiments: RefCell::new(None),
             pending_screen: Cell::new(None),
+            pack_dir: RefCell::new(None),
+            packs_dirty: Cell::new(false),
         }
     }
     /// Vanilla bypasses the selector when there are no saves.
@@ -379,6 +454,9 @@ impl Title {
         row
     }
     fn cancel_create(&mut self) {
+        self.forget_packs();
+        *self.data_packs.get_mut() = None;
+        *self.experiments.get_mut() = None;
         if self.create_return_to_main {
             self.mode = Mode::Main;
         } else {
@@ -527,10 +605,6 @@ impl Title {
     pub fn scroll_worlds(&mut self, delta: f32, cursor: (f32, f32), size: (f32, f32)) {
         if let Some(screen) = self.data_packs.get_mut() {
             screen.scroll(cursor.0 as f64, cursor.1 as f64, f64::from(delta));
-            return;
-        }
-        if let Some(screen) = self.experiments.get_mut() {
-            screen.wheel(delta, (size.0.ceil(), size.1.ceil()));
             return;
         }
         if let Some(rules) = self.rules.get_mut() {
@@ -711,8 +785,11 @@ impl Title {
         else {
             return Action::None;
         };
+        let folder = self.target_folder(name);
+        self.keep_packs(&folder);
+        self.forget_packs();
         Action::Create {
-            folder: self.target_folder(name),
+            folder,
             name: name.clone(),
             seed: parse_seed(seed),
             creative: *creative,
@@ -1035,11 +1112,23 @@ impl Title {
         if let Some(rules) = self.rules.borrow_mut().as_mut() {
             return rules.draw(batch, atlas, cursor);
         }
-        if let Some(screen) = self.data_packs.borrow_mut().as_mut() {
-            if screen.screen.width != w as i32 || screen.screen.height != h as i32 {
+        // The take's borrow ends before the body re-borrows to put it back.
+        let taken = self.data_packs.borrow_mut().take();
+        if let Some(mut screen) = taken {
+            if self.packs_dirty.replace(false) {
+                // A pack was dropped on the window: the repository re-reads
+                // (`PackSelectionScreen.reload`), keeping the selection.
+                let selected = screen.commit();
+                let packs =
+                    data_packs::discover(&self.resources, self.pack_dir.borrow().as_deref());
+                screen =
+                    data_packs::DataPacksScreen::new(atlas, w as i32, h as i32, packs, &selected);
+            } else if screen.screen.width != w as i32 || screen.screen.height != h as i32 {
                 screen.resize(atlas, w as i32, h as i32);
             }
-            return screen.draw(batch, atlas, cursor);
+            screen.draw(batch, atlas, cursor);
+            *self.data_packs.borrow_mut() = Some(screen);
+            return;
         }
         if let Some(screen) = self.experiments.borrow().as_ref() {
             return screen.draw(batch, atlas, cursor);
@@ -1946,17 +2035,64 @@ impl Title {
         }
         outcome
     }
+    /// `getOrCreateTempDataPackDir`: the folder the new world's packs are
+    /// collected in, made on first use.
+    fn pack_dir(&self) -> PathBuf {
+        if let Some(dir) = self.pack_dir.borrow().as_ref() {
+            return dir.clone();
+        }
+        let dir = std::env::temp_dir().join(format!("horizon-mcworld-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        *self.pack_dir.borrow_mut() = Some(dir.clone());
+        dir
+    }
+    /// `createNewWorldDirectory`: the packs the Data Packs screen added go
+    /// into the world's own `datapacks/`.
+    fn keep_packs(&self, folder: &str) {
+        let Some(dir) = self.pack_dir.borrow().clone() else {
+            return;
+        };
+        let target = self.saves.join(folder).join("datapacks");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        let _ = std::fs::create_dir_all(&target);
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let at = target.join(entry.file_name());
+            if path.is_dir() {
+                copy_dir(&path, &at);
+            } else {
+                let _ = std::fs::copy(&path, &at);
+            }
+        }
+    }
+    /// The temporary folder of a creation that did not happen.
+    fn forget_packs(&self) {
+        if let Some(dir) = self.pack_dir.borrow_mut().take() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        self.packs_dirty.set(false);
+    }
+    /// `PackSelectionScreen.onFilesDrop`: a pack file or folder dropped on the
+    /// window joins the Data Packs screen's repository.
+    pub fn drop_file(&mut self, path: PathBuf) {
+        if self.data_packs.borrow().is_none() {
+            return;
+        }
+        let dir = self.pack_dir();
+        if copy_pack(&path, &dir) {
+            self.packs_dirty.set(true);
+        } else {
+            log::warn!("Horizon: {} is not a data pack", path.display());
+        }
+    }
     /// CreateWorldScreen's More tab asked for a screen: make it.
     fn open_pending_screen(&mut self, atlas: &HudAtlas, size: (f32, f32)) -> bool {
         let Some(pending) = self.pending_screen.take() else {
             return false;
         };
-        // `findResultFolder` reads only the saves folder: before the mode is
-        // borrowed mutably.
-        let folder = match &self.mode {
-            Mode::Create { name, .. } => Some(self.saves.join(self.target_folder(name))),
-            _ => None,
-        };
+        let pack_dir = self.pack_dir();
         let Mode::Create { name, options, .. } = &mut self.mode else {
             return false;
         };
@@ -1979,10 +2115,10 @@ impl Title {
                     .collect();
                 *self.experiments.get_mut() = Some(experiments::ExperimentsScreen::new(flags));
             }
-            // `openDataPackSelectionScreen`: the world's repository.
+            // `openDataPackSelectionScreen`: the temporary folder a new
+            // world's packs are collected in (`getOrCreateTempDataPackDir`).
             PendingScreen::DataPacks => {
-                let world = folder.clone().unwrap_or_else(|| self.saves.clone());
-                let packs = data_packs::discover(&self.resources, Some(&world));
+                let packs = data_packs::discover(&self.resources, Some(&pack_dir));
                 let mut selected = options.data_packs.clone();
                 selected.retain(|id| packs.iter().any(|p| &p.id == id));
                 let screen = data_packs::DataPacksScreen::new(
@@ -2027,11 +2163,7 @@ impl Title {
                     return true;
                 }
                 pack_screen::Action::OpenFolder => {
-                    let world = match &self.mode {
-                        Mode::Create { name, .. } => self.saves.join(self.target_folder(name)),
-                        _ => self.saves.clone(),
-                    };
-                    let dir = world.join("datapacks");
+                    let dir = self.pack_dir();
                     let _ = std::fs::create_dir_all(&dir);
                     open_folder(&dir);
                     return true;
