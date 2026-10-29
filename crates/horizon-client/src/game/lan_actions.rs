@@ -3099,8 +3099,8 @@ impl Game<'_> {
         let mut taken = Vec::new();
         for i in near.into_iter().rev() {
             let (stack, item_id) = (self.dropped[i].stack.clone(), self.dropped[i].id);
-            let before = stack.count;
             let thrower = self.dropped[i].thrower;
+            let before = stack.count;
             let rest = self.as_guest(host, conn, |g| g.give(stack)).flatten();
             match rest {
                 None => {

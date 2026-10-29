@@ -179,7 +179,7 @@ impl Game<'_> {
         let m = &mut self.mobs[i];
         m.extra.ints[1] -= 1;
         m.extra.ints[3] = 60;
-        // ItemEntity.setDefaultPickUpDelay.
+        // ItemEntity.setDefaultPickUpDelay; BehaviorUtils.throwItem sets the allay as the thrower.
         self.spawn_item(ItemStack::new(&item, 1), from, v, 10);
         // BehaviorUtils.throwItem: ItemEntity.setThrower(the allay).
         let allay = self.mob_uuid(self.mobs[i].id);

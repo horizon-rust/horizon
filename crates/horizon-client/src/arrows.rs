@@ -94,6 +94,13 @@ pub enum ArrowEvent {
         position: Vec3,
         velocity: Vec3,
     },
+    /// `Level.broadcastEntityEvent(arrow, 0)`: a tipped arrow stuck for 600
+    /// ticks. The clients burst its particles (`Arrow.handleEntityEvent`);
+    /// the arrow itself is a plain one from now on.
+    PotionPuff {
+        id: u32,
+        color: u32,
+    },
     Sound {
         sound: ArrowSound,
         volume: f32,
@@ -156,6 +163,9 @@ pub struct ArrowState {
     /// Ticks stuck (`life`): gone at 1200.
     pub life: i32,
     pub shake: i32,
+    /// `Arrow.ID_EFFECT_COLOR` as a client was sent it (a server's arrow
+    /// reads its potion instead), None for a plain arrow.
+    pub synced_color: Option<u32>,
     /// The block it stuck in (`lastState`).
     pub last_state: Option<BlockStateId>,
     pub pickup: Pickup,
@@ -205,12 +215,14 @@ impl PartialEq for ArrowState {
     }
 }
 impl ArrowState {
+    /// `AbstractArrow`'s fields at spawn, with its own `Entity.random`.
     pub fn new(random: LegacyRandom) -> Self {
         Self {
             in_ground: false,
             in_ground_time: 0,
             life: 0,
             shake: 0,
+            synced_color: None,
             last_state: None,
             pickup: Pickup::Disallowed,
             pickup_item: crate::items::ItemStack::new("minecraft:arrow", 1),
@@ -231,6 +243,14 @@ impl ArrowState {
             events: Vec::new(),
             hit_speed: 0.0,
         }
+    }
+    /// `Arrow.getColor`: the potion's colour, None for a plain arrow
+    /// (`PotionContents.EMPTY`).
+    pub fn effect_color(&self) -> Option<u32> {
+        self.synced_color.or_else(|| {
+            let potion = self.pickup_item.potion()?;
+            Some(crate::brewing::potion_color(Some(potion)))
+        })
     }
     /// The `AbstractArrow` constructor's `pickupItemStack`: the drawn ammo
     /// (one item). Ammo drawn without being used up (`INTANGIBLE_PROJECTILE`)
@@ -570,6 +590,19 @@ impl Ticker<'_, '_, '_, '_> {
             if !self.st.removed {
                 let at = self.position();
                 self.apply_effects_from_blocks(at, at);
+            }
+            // Arrow.tick on the server: a tipped arrow stuck for 600 ticks sends
+            // entity event 0 (the clients' burst of particles in its colour,
+            // `handleEntityEvent`) and turns into a plain arrow. The flight
+            // and ground particles are the clients' own (`Level.isClientSide`).
+            if self.st.in_ground_time >= 600
+                && let Some(color) = self.st.effect_color()
+            {
+                self.st.events.push(ArrowEvent::PotionPuff {
+                    id: self.p.id,
+                    color,
+                });
+                self.st.pickup_item = crate::items::ItemStack::new("minecraft:arrow", 1);
             }
             return Hit::None;
         }
