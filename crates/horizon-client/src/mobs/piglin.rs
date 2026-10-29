@@ -2,7 +2,7 @@
 //! left alone, gold is admired and bartered, piglins and hoglins zombify
 //! outside the Nether, hoglins headbutt their targets into the air.
 use super::{
-    Mob, MobEvent, MobWorld, Species, Who,
+    Mob, MobEvent, MobWorld, Seen, Species, Who,
     anim::{Poses, State},
     brain::{Ttl, living_near},
     goals::{
@@ -25,8 +25,8 @@ const CONVERSION: i32 = 300;
 /// `DANCING` memories last.
 const CELEBRATION: i32 = 300;
 
-/// `Activity`: what a piglin's or hoglin's brain is busy with. `Admire` and
-/// `Celebrate` are a piglin's only; the others are both.
+/// `Activity`: what a piglin's or hoglin's brain is busy with. `Admire`,
+/// `Celebrate` and `Ride` are a piglin's only; the others are both.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Activity {
     #[default]
@@ -35,6 +35,7 @@ pub enum Activity {
     Avoid,
     Admire,
     Celebrate,
+    Ride,
 }
 /// `MemoryModuleType.AVOID_TARGET`: who to keep away from, where it was last
 /// seen (a target that is gone leaves its spot behind) and when the memory
@@ -45,12 +46,30 @@ pub struct AvoidTarget {
     pub at: Vec3,
     pub ttl: Ttl,
 }
+/// `MemoryModuleType.RIDE_TARGET`: the mob a baby piglin means to ride, when
+/// the memory expires and the block the walk to it was last aimed at.
+#[derive(Clone, Copy, Debug)]
+pub struct RideTarget {
+    pub vehicle: u32,
+    pub ttl: Ttl,
+    pub aimed: Option<[i32; 3]>,
+}
 /// What a piglin's or hoglin's brain remembers of its surroundings and of
 /// what it retreats from. None of it is saved: these memories have no codec.
 #[derive(Clone, Debug, Default)]
 pub struct Memories {
     /// `AVOID_TARGET`.
     pub avoid: Option<AvoidTarget>,
+    /// `RIDE_TARGET`.
+    pub ride: Option<RideTarget>,
+    /// A piglin's `HURT_BY` is set: the `HurtBySensor` saw damage taken
+    /// within the last 40 ticks.
+    pub hurt: bool,
+    /// A piglin's `NEAREST_VISIBLE_BABY_HOGLIN`.
+    pub baby_hoglin: Option<u32>,
+    /// `SetEntityLookTargetSometimes.Ticker.ticksUntilNextStart` of
+    /// `babySometimesRideBabyHoglin`.
+    pub ride_wait: i32,
     /// `Brain.getActiveNonCoreActivity` as `updateActivity` last left it.
     pub activity: Activity,
     /// The `last_hurt_by_time` of the hit `wasHurtBy` last reacted to.
@@ -134,11 +153,13 @@ fn hoglin_sense(m: &mut Mob, w: &MobWorld) {
     b.adults = hoglins;
 }
 /// `PiglinSpecificSensor.doTick`: what a piglin sees: adult piglins (brutes
-/// too) and hoglins counted, the nearest zombified piglin or zoglin, the
-/// nearest wither skeleton or wither, and a player holding gold.
+/// too) and hoglins counted, the nearest baby hoglin, the nearest zombified
+/// piglin or zoglin, the nearest wither skeleton or wither, and a player
+/// holding gold.
 fn piglin_sense(m: &mut Mob, w: &MobWorld) {
     let mut adults = Vec::new();
     let mut hoglins = 0;
+    let mut baby_hoglin = None;
     let mut zombified = None;
     let mut nemesis = None;
     let mut loved = false;
@@ -158,6 +179,11 @@ fn piglin_sense(m: &mut Mob, w: &MobWorld) {
                 let Some(s) = w.seen(id) else { continue };
                 let (species, baby) = (s.species, s.baby);
                 match species {
+                    Species::Hoglin if baby && baby_hoglin.is_none() => {
+                        if visible(m, w, who) {
+                            baby_hoglin = Some(id);
+                        }
+                    }
                     Species::Hoglin if !baby => {
                         if visible(m, w, who) {
                             hoglins += 1;
@@ -183,17 +209,23 @@ fn piglin_sense(m: &mut Mob, w: &MobWorld) {
             }
         }
     }
+    // `HurtBySensor.doTick`, on the piglin sensor's schedule: damage is
+    // forgotten 40 ticks after it was taken.
+    let age = i64::from(m.age);
+    let hurt = m.last_damage.as_ref().is_some_and(|(_, at)| age - at <= 40);
     let b = &mut m.extra.piglin;
+    b.hurt = hurt;
     b.piglins = adults.len() as i32;
     b.adults = adults;
     b.hoglins = hoglins;
+    b.baby_hoglin = baby_hoglin;
     b.zombified = zombified;
     b.nemesis = nemesis;
     b.sees_loved = loved;
 }
 /// `Brain.setActiveActivityToFirstValid`: the first valid activity of a
-/// piglin's list (admiring, fighting, avoiding, celebrating, idle) or of a
-/// hoglin's (fighting, avoiding, idle). An activity is valid while the
+/// piglin's list (admiring, fighting, avoiding, celebrating, riding, idle) or
+/// of a hoglin's (fighting, avoiding, idle). An activity is valid while the
 /// memory it requires is there.
 pub fn activity(m: &Mob) -> Activity {
     let b = &m.extra.piglin;
@@ -208,14 +240,17 @@ pub fn activity(m: &Mob) -> Activity {
         Activity::Avoid
     } else if piglin && m.extra.scratch[1] > 0 && m.extra.home.is_some() {
         Activity::Celebrate
+    } else if piglin && b.ride.is_some() {
+        Activity::Ride
     } else {
         Activity::Idle
     }
 }
-/// `Brain.forgetOutdatedMemories`: the avoid target expires (and keeps
-/// track of where it stands), then come the core activity's copies into it,
-/// the retreat activity's `EraseMemoryIf` and `updateActivity`, at the end of
-/// `customServerAiStep`'s brain.
+/// `Brain.forgetOutdatedMemories`: the avoid and ride targets expire (the
+/// avoid target keeps track of where it stands), then come the core
+/// activity's copies into the avoid target, the retreat activity's
+/// `EraseMemoryIf` and `updateActivity`, at the end of `customServerAiStep`'s
+/// brain.
 pub fn brain_step(m: &mut Mob, cx: &mut Cx) {
     let expired = match m.extra.piglin.avoid.as_mut() {
         Some(a) => {
@@ -227,6 +262,17 @@ pub fn brain_step(m: &mut Mob, cx: &mut Cx) {
     if expired {
         m.extra.piglin.avoid = None;
     }
+    // `RIDE_TARGET` expires the same way.
+    let ride_expired = match m.extra.piglin.ride.as_mut() {
+        Some(r) => {
+            r.ttl.tick();
+            !r.ttl.present()
+        }
+        None => false,
+    };
+    if ride_expired {
+        m.extra.piglin.ride = None;
+    }
     if let Some(a) = m.extra.piglin.avoid.as_mut()
         && let Some(p) = cx.w.target_info(a.who)
     {
@@ -234,15 +280,25 @@ pub fn brain_step(m: &mut Mob, cx: &mut Cx) {
     }
     if m.species() == Species::Piglin {
         copy_to_avoid(m, cx);
+        // The idle activity's behaviours: `babySometimesRideBabyHoglin`.
+        if m.extra.piglin.activity == Activity::Idle {
+            baby_sometimes_ride_baby_hoglin(m, cx);
+        }
     }
     if m.extra.piglin.activity == Activity::Avoid && wants_to_stop_fleeing(m, cx.w) {
         m.extra.piglin.avoid = None;
+    }
+    // The ride activity's behaviours.
+    if m.species() == Species::Piglin && m.extra.piglin.activity == Activity::Ride {
+        mount(m, cx);
+        dismount_or_skip_mounting(m, cx.w);
     }
     update_activity(m, cx.w, cx.events);
 }
 /// `HoglinAi.updateActivity` and `PiglinAi.updateActivity`: take the first
 /// valid activity and, when it is not the one it was in, make the sound that
-/// goes with the new one.
+/// goes with the new one; a piglin then gets off a baby it rides once it has
+/// no ride target (`isBabyRidingBaby`).
 fn update_activity(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     let now = activity(m);
     let before = std::mem::replace(&mut m.extra.piglin.activity, now);
@@ -254,6 +310,22 @@ fn update_activity(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         };
         m.voice(sound, events);
     }
+    // A baby that rides a baby but has no ride target (any more) gets off.
+    if m.species() == Species::Piglin && m.extra.piglin.ride.is_none() && is_baby_riding_baby(m, w)
+    {
+        dismount(m, w);
+    }
+}
+/// `PiglinAi.isBabyRidingBaby`: a baby piglin on a baby piglin or a baby
+/// hoglin.
+fn is_baby_riding_baby(m: &Mob, w: &MobWorld) -> bool {
+    if !m.is_baby() {
+        return false;
+    }
+    m.extra
+        .mount
+        .and_then(|id| w.seen(id))
+        .is_some_and(|v| v.baby && matches!(v.species, Species::Piglin | Species::Hoglin))
 }
 /// `Hoglin.isConverting` and `AbstractPiglin.isConverting`: in a dimension
 /// that is not piglin safe, a mob that is not immune and has AI.
@@ -345,6 +417,148 @@ fn copy_to_avoid(m: &mut Mob, cx: &mut Cx) {
         let ticks = avoid_duration(cx.lr);
         remember_avoid(m, who, at, ticks);
     }
+}
+/// `SetEntityLookTargetSometimes.Ticker.tickDownAndCheck`: with nothing left
+/// to wait for, draw the next wait from `interval` and say no; otherwise
+/// count down and say yes when it reaches nothing.
+fn tick_down_and_check(wait: &mut i32, lr: &mut LegacyRandom, interval: (i32, i32)) -> bool {
+    if *wait == 0 {
+        *wait = lr
+            .next_int_between_inclusive(interval.0, interval.1)
+            .unwrap_or(interval.0)
+            - 1;
+        false
+    } else {
+        *wait -= 1;
+        *wait == 0
+    }
+}
+/// `PiglinAi.babySometimesRideBabyHoglin`: the idle activity's
+/// `CopyMemoryWithExpiry` of the nearest baby hoglin it sees into
+/// `RIDE_TARGET` for 10 to 30 seconds. It asks only while the target is
+/// empty, and a baby's ticker lets it through once every 10 to 40 seconds
+/// of asking (`RIDE_START_INTERVAL`, `RIDE_DURATION`, both drawn from the
+/// level random).
+fn baby_sometimes_ride_baby_hoglin(m: &mut Mob, cx: &mut Cx) {
+    let b = &m.extra.piglin;
+    let Some(hoglin) = b.baby_hoglin else { return };
+    if b.ride.is_some() || !m.is_baby() {
+        return;
+    }
+    if !tick_down_and_check(&mut m.extra.piglin.ride_wait, cx.lr, (200, 800)) {
+        return;
+    }
+    let ticks = cx.lr.next_int_between_inclusive(200, 600).unwrap_or(200);
+    let mut ttl = Ttl::default();
+    ttl.set(ticks);
+    m.extra.piglin.ride = Some(RideTarget {
+        vehicle: hoglin,
+        ttl,
+        aimed: None,
+    });
+}
+/// `PiglinAi.SPEED_MULTIPLIER_WHEN_MOUNTING`.
+const MOUNTING_SPEED: f64 = 0.8;
+/// The block under `at` (`BlockPos.containing`).
+fn block_of(at: Vec3) -> [i32; 3] {
+    [
+        at.x.floor() as i32,
+        at.y.floor() as i32,
+        at.z.floor() as i32,
+    ]
+}
+/// `Mount.create`: with no walk under way and a `RIDE_TARGET`, a piglin that
+/// is not a passenger already boards the ride target once it is closer than a
+/// block (`startRiding`), and otherwise looks at it and walks to it at 0.8
+/// (`WalkTarget` on an `EntityTracker`). `MoveToTargetSink` carries the walk:
+/// it ends once the target's block is a block away (`reachedTarget`) and aims
+/// again when that block has moved more than 2 blocks.
+fn mount(m: &mut Mob, cx: &mut Cx) {
+    if m.extra.mount.is_some() {
+        return;
+    }
+    let Some(ride) = m.extra.piglin.ride else {
+        return;
+    };
+    let Some((at, eye_y)) = cx.w.seen(ride.vehicle).map(|s| (s.position, s.eye_y)) else {
+        return;
+    };
+    let target = block_of(at);
+    let here = block_of(m.position);
+    let reached = (0..3).map(|i| (target[i] - here[i]).abs()).sum::<i32>() <= 1;
+    if !m.ai.nav.is_done() {
+        let moved = ride.aimed.is_none_or(|a| {
+            (0..3)
+                .map(|i| i64::from(target[i] - a[i]).pow(2))
+                .sum::<i64>()
+                > 4
+        });
+        if reached {
+            m.nav_stop();
+        } else if moved {
+            aim_at_ride_target(m, cx, at);
+        }
+        return;
+    }
+    if m.distance_sqr(at) < 1.0 {
+        cx.events.push(MobEvent::StartRiding {
+            rider: m.id,
+            vehicle: ride.vehicle,
+        });
+        return;
+    }
+    m.look_at([at.x, eye_y, at.z]);
+    if !reached {
+        aim_at_ride_target(m, cx, at);
+    }
+}
+/// `MoveToTargetSink.tryComputePath` to the block the ride target stands in:
+/// a path there at `SPEED_MULTIPLIER_WHEN_MOUNTING`, remembering where it was
+/// aimed.
+fn aim_at_ride_target(m: &mut Mob, cx: &mut Cx, at: Vec3) {
+    if m.nav_move_to_entity(cx.w, [at.x, at.y, at.z], 0, MOUNTING_SPEED)
+        && let Some(r) = m.extra.piglin.ride.as_mut()
+    {
+        r.aimed = Some(block_of(at));
+    }
+}
+/// `PiglinAi.wantsToStopRiding`: a piglin wants off a mob that is not a baby
+/// or not alive any more, when it was hurt recently, or when it is a piglin
+/// that is not riding anything itself. (`wasHurtRecently` of the mob it rides
+/// is `HURT_BY` in that mob's brain, which a hoglin's does not have.)
+fn wants_to_stop_riding(m: &Mob, vehicle: &Seen) -> bool {
+    !vehicle.baby
+        || !vehicle.alive
+        || m.extra.piglin.hurt
+        || vehicle.hurt_recently
+        || (vehicle.species == Species::Piglin && !vehicle.passenger)
+}
+/// `DismountOrSkipMounting.create(8, wantsToStopRiding)`: the vehicle it sits
+/// on, or else the ride target, stays only while it is alive, closer than 8
+/// blocks and the piglin does not want off it; if not, the piglin gets off
+/// and forgets the ride target. A vehicle gone from the level counts as dead.
+fn dismount_or_skip_mounting(m: &mut Mob, w: &MobWorld) {
+    let Some(vehicle) = m.extra.mount.or(m.extra.piglin.ride.map(|r| r.vehicle)) else {
+        return;
+    };
+    let keep = match w.seen(vehicle) {
+        Some(s) => s.alive && m.distance_sqr(s.position) < 64.0 && !wants_to_stop_riding(m, s),
+        None => false,
+    };
+    if keep {
+        return;
+    }
+    dismount(m, w);
+    m.extra.piglin.ride = None;
+}
+/// `LivingEntity.stopRiding`: get off the vehicle, onto the spot
+/// `Animal.getDismountLocationForPassenger` finds beside it.
+fn dismount(m: &mut Mob, w: &MobWorld) {
+    let Some(vehicle) = m.extra.mount else { return };
+    let at = w
+        .seen(vehicle)
+        .map(|s| super::riders::dismount_location(w, s, m.width(), m.height()));
+    super::riders::stop_riding(m, at);
 }
 /// `HoglinAi.piglinsOutnumberHoglins`: an adult hoglin counts itself and
 /// sees more adult piglins than hoglins.
@@ -785,6 +999,42 @@ impl<G: Goal + Clone + 'static> Goal for NotRetreating<G> {
     }
 }
 
+/// A goal of the idle and avoid activities' movement: the ride activity has
+/// none of it (`PiglinAi.initRideHoglinActivity`), so it waits while the
+/// brain is in the ride activity.
+#[derive(Clone, Debug)]
+struct NotRiding<G>(G);
+impl<G: Goal + Clone + 'static> Goal for NotRiding<G> {
+    goal_clone!();
+    fn flags(&self) -> u8 {
+        self.0.flags()
+    }
+    fn name(&self) -> &'static str {
+        self.0.name()
+    }
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        m.extra.piglin.activity != Activity::Ride && self.0.can_use(m, cx)
+    }
+    fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        m.extra.piglin.activity != Activity::Ride && self.0.can_continue(m, cx)
+    }
+    fn interruptable(&self) -> bool {
+        self.0.interruptable()
+    }
+    fn every_tick(&self) -> bool {
+        self.0.every_tick()
+    }
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
+        self.0.start(m, cx)
+    }
+    fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
+        self.0.stop(m, cx)
+    }
+    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
+        self.0.tick(m, cx)
+    }
+}
+
 fn hostile_to_player(m: &Mob, w: &MobWorld) -> bool {
     // `StartAttacking` is in the idle and celebrate activities, not in the retreat.
     if m.is_baby() || m.extra.piglin.activity == Activity::Avoid {
@@ -806,10 +1056,10 @@ pub fn register_piglin(m: &mut Mob) {
         g.add(3, super::illager::crossbow_goal(1.0, 8.0));
     }
     g.add(3, MeleeAttack::new(1.0, true));
-    g.add(4, PiglinAvoidRepellent);
+    g.add(4, NotRiding(PiglinAvoidRepellent));
     g.add(4, GoToWantedItem);
     g.add(4, Celebrate);
-    g.add(5, Stroll::avoiding_water(0.6));
+    g.add(5, NotRiding(Stroll::avoiding_water(0.6)));
     g.add(5, LookAtLoved);
     g.add(6, LookAtPlayer::new(8.0));
     g.add(7, RandomLookAround::default());
@@ -1070,21 +1320,20 @@ impl Goal for PiglinAvoidRepellent {
     }
 }
 /// `PiglinAi.isPlayerHoldingLovedItem`: the idle and celebrate activities'
-/// `SetEntityLookTarget.create(.., 14.0)` turns to look at the player in
-/// sight within 14 blocks who holds gold.
+/// `SetEntityLookTarget.create(.., 14.0)` and the ride activity's, with 8.0,
+/// turn to look at the player in sight within that many blocks who holds gold.
 #[derive(Clone, Debug)]
 struct LookAtLoved;
 impl LookAtLoved {
     /// The eye of the player to watch, if there is one.
     fn watched(m: &mut Mob, cx: &mut Cx) -> Option<[f64; 3]> {
-        if !matches!(
-            m.extra.piglin.activity,
-            Activity::Idle | Activity::Celebrate
-        ) {
-            return None;
-        }
+        let range_sqr = match m.extra.piglin.activity {
+            Activity::Idle | Activity::Celebrate => 196.0,
+            Activity::Ride => 64.0,
+            _ => return None,
+        };
         let p = cx.w.player.as_ref()?;
-        if !holds_loved(cx.w, p) || m.distance_sqr(p.position) > 196.0 {
+        if !holds_loved(cx.w, p) || m.distance_sqr(p.position) > range_sqr {
             return None;
         }
         let eye = p.eye;
@@ -1463,6 +1712,7 @@ pub fn piglin_anim(m: &Mob, s: &State, p: &mut Poses) {
         25.0,
         m.extra.using_item as f32,
         m.main_arm_left(),
+        m.extra.passenger,
     );
 }
 /// `PiglinArmPose`.
@@ -1475,7 +1725,8 @@ pub enum PiglinPose {
     CrossbowCharge,
     AdmiringItem,
 }
-/// `PiglinModel.setupAnim`; `left` when the piglin's main arm is the left one.
+/// `PiglinModel.setupAnim`; `left` when the piglin's main arm is the left one
+/// and `passenger` when it rides something (`HumanoidModel`'s riding pose).
 pub fn piglin_pose(
     p: &mut Poses,
     s: &State,
@@ -1483,11 +1734,13 @@ pub fn piglin_pose(
     max_charge: f32,
     ticks: f32,
     left: bool,
+    passenger: bool,
 ) {
     use super::anim::{ArmPose, Hum, crossbow_charge, crossbow_hold, humanoid};
     let mut h = Hum::new(ArmPose::Empty, ArmPose::Empty);
     h.weapon_swing = pose == PiglinPose::MeleeWeapon;
     h.left_main = left;
+    h.passenger = passenger;
     h.charge = (max_charge, ticks);
     humanoid(p, s, &h);
     ears(p, s);

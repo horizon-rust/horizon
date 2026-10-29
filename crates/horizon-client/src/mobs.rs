@@ -1279,6 +1279,12 @@ pub enum MobEvent {
         from: Who,
         at: [f64; 3],
     },
+    /// `Entity.startRiding` from a mob's brain (`Mount.create`): `rider` boards
+    /// `vehicle` if `Piglin.startRiding` and `canRide` allow it.
+    StartRiding {
+        rider: u32,
+        vehicle: u32,
+    },
     Projectile(crate::projectiles::Projectile),
     /// Spawn a new mob (breeding, slime splitting, chicken eggs...).
     Spawn(Box<Mob>),
@@ -1653,6 +1659,8 @@ pub struct Seen {
     pub effects: Vec<&'static str>,
     /// A piglin's `HUNTED_RECENTLY` memory.
     pub hunted_recently: bool,
+    /// A piglin's `HURT_BY` memory.
+    pub hurt_recently: bool,
 }
 impl Seen {
     /// `LivingEntity.hasEffect`, by id without namespace.
@@ -1755,6 +1763,7 @@ impl Mob {
                 .map(|e| e.0.trim_start_matches("minecraft:"))
                 .collect(),
             hunted_recently: m.species() == Species::Piglin && m.extra.ints[0] > 0,
+            hurt_recently: m.species() == Species::Piglin && m.extra.piglin.hurt,
         }
     }
     /// `EntityType.getCategory`'s name.
@@ -1862,6 +1871,10 @@ pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: us
                 if let Some(m) = mobs.iter_mut().find(|m| m.id == mob) {
                     piglin::receive_retreat(m, from, at);
                 }
+                events.remove(i);
+            }
+            MobEvent::StartRiding { rider, vehicle } => {
+                riders::start_riding(mobs, rider, vehicle);
                 events.remove(i);
             }
             // Animal.finalizeSpawnChildFromBreeding: the partner rests and
