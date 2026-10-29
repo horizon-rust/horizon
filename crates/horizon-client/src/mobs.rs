@@ -48,6 +48,7 @@ pub mod keyframes;
 pub mod leash;
 pub mod living;
 pub mod llama;
+pub mod loot;
 pub mod monster_brain;
 pub mod nautilus;
 pub mod nav;
@@ -808,6 +809,10 @@ pub struct Extra {
     pub charged: bool,
     /// Held item ids (main hand, off hand) and head item.
     pub main_hand: Option<Arc<str>>,
+    /// `ItemStack.getCount` of the main hand, which `Mob.pickUpItem` can fill
+    /// with a whole stack (a dolphin, a panda, a zombie with a free hand);
+    /// 0 or 1 is a single item. Read it with the `main_hand_count` method.
+    pub main_hand_count: u32,
     pub off_hand: Option<Arc<str>>,
     pub head: Option<Arc<str>>,
     /// Worn armour below the head (humanoid mobs).
@@ -1272,6 +1277,15 @@ pub enum MobEvent {
         item: Arc<str>,
         count: u32,
         at: [f64; 3],
+    },
+    /// A mob throws a stack (`Dolphin.ItemGoal.drop`): an item entity at `at`
+    /// with its own motion and pickup delay, thrown by the mob.
+    ThrowItem {
+        stack: crate::items::ItemStack,
+        at: [f64; 3],
+        velocity: [f64; 3],
+        pickup_delay: u32,
+        thrower: u32,
     },
     /// `Mob.dropFromGiftLootTable`: a gift loot table's items dropped at `at`.
     DropGift {
@@ -1932,6 +1946,9 @@ pub struct MobWorld<'a> {
     /// player in the level stands, alive or not (the despawn distance).
     pub nearest_player: Option<Vec3>,
     pub others: &'a [Seen],
+    /// The dropped item entities of the level, for the goals that look for
+    /// items (`Level.getEntitiesOfClass(ItemEntity.class, ..)`).
+    pub dropped: &'a [crate::entities::ItemEntity],
     /// `others` by position, when the caller keeps one (the mob ticks).
     pub others_grid: Option<&'a seen_grid::SeenGrid>,
     /// Where each id stands in `others`, when the caller keeps one.
@@ -2094,6 +2111,16 @@ impl Mob {
             Species::Allay => self.extra.main_hand.is_some() && self.extra.ints[3] <= 0,
             Species::SulfurCube => !sulfur_cube::has_body(self),
             _ => self.extra.pick_up_loot,
+        }
+    }
+    /// The size of the stack in the main hand (`getItemBySlot(MAINHAND)
+    /// .getCount()`): 0 when it is empty, else the stack the mob picked up (1
+    /// for what it spawned with).
+    pub fn main_hand_count(&self) -> u32 {
+        if self.extra.main_hand.is_some() {
+            self.extra.main_hand_count.max(1)
+        } else {
+            0
         }
     }
     pub fn bounds(&self) -> Aabb {

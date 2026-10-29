@@ -936,7 +936,8 @@ fn mob_equipment(
             // its colour.
             let stack = worn.cloned().unwrap_or_else(|| ItemStack {
                 item: item.clone(),
-                count: 1,
+                // The main hand shows the whole stack a mob picked up.
+                count: if slot == 0 { m.main_hand_count() } else { 1 },
                 // A wolf's armor shows its cracks.
                 damage: if slot == 6 && m.species() == horizon_client::mobs::Species::Wolf {
                     e.body_damage.max(0) as u32

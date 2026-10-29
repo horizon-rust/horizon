@@ -457,6 +457,7 @@ impl Game<'_> {
             nearest_player: player.as_ref().filter(|p| !p.spectator).map(|p| p.position),
             player,
             others,
+            dropped: &self.dropped,
             others_grid: None,
             others_index: None,
             daylight: self.dim != Dim::Nether && self.sky_darken() < 4,
@@ -770,6 +771,7 @@ impl Game<'_> {
         self.tick_fangs();
         self.tick_allays();
         self.tick_pandas();
+        self.tick_mob_pickups();
         self.tick_breeze_effects();
         self.tick_sniffer_effects();
         self.piglin_pickups();
@@ -1484,6 +1486,19 @@ impl Game<'_> {
                     dispenser::new_item_motion(),
                     10,
                 ),
+                MobEvent::ThrowItem {
+                    stack,
+                    at,
+                    velocity,
+                    pickup_delay,
+                    thrower,
+                } => {
+                    self.spawn_item(stack, at, velocity, pickup_delay);
+                    let uuid = self.mob_uuid(thrower);
+                    if let Some(thrown) = self.dropped.last_mut() {
+                        thrown.thrower = Some(uuid);
+                    }
+                }
                 MobEvent::DropGift { table, at } => {
                     let stacks =
                         self.res

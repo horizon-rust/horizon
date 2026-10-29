@@ -219,6 +219,7 @@ fn carry_over(from: &Mob, to: &mut Mob) {
     to.invisible = from.invisible;
     to.extra.pick_up_loot = from.extra.pick_up_loot;
     to.extra.main_hand = from.extra.main_hand.clone();
+    to.extra.main_hand_count = from.extra.main_hand_count;
     to.extra.off_hand = from.extra.off_hand.clone();
     to.extra.head = from.extra.head.clone();
     to.extra.chest = from.extra.chest.clone();

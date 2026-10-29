@@ -98,7 +98,7 @@ impl Game<'_> {
             if let Some(held) = m.extra.main_hand.clone()
                 && !creative
             {
-                dropped = Some(ItemStack::new(&held, panda::held_count(m)));
+                dropped = Some(ItemStack::new(&held, m.main_hand_count()));
             }
             panda::hold(m, item, 1, false);
         }

@@ -896,7 +896,10 @@ pub fn item(m: &Mob, slot: usize) -> Option<Arc<str>> {
 pub fn set_item(m: &mut Mob, slot: usize, id: &str) {
     let v = Some(Arc::from(id));
     match slot {
-        MAINHAND => m.extra.main_hand = v,
+        MAINHAND => {
+            m.extra.main_hand = v;
+            m.extra.main_hand_count = 1;
+        }
         OFFHAND => m.extra.off_hand = v,
         FEET => m.extra.feet = v,
         LEGS => m.extra.legs = v,
@@ -954,11 +957,18 @@ pub fn equip_stack(
 }
 /// `Mob.setDropChance`.
 pub fn set_drop_chance(m: &mut Mob, slot: usize, chance: f32) {
-    let c = m
-        .extra
-        .drop_chances
-        .get_or_insert_with(|| Box::new([super::drops::DEFAULT_DROP_CHANCE; 8]));
-    c[slot] = chance;
+    if m.extra.drop_chances.is_none() {
+        // The table starts from what the mob drops with already (a captain's
+        // banner, a vex's sword), so setting one slot keeps the others.
+        let mut all = [super::drops::DEFAULT_DROP_CHANCE; 8];
+        for (i, name) in SLOT_NAMES.iter().enumerate() {
+            all[i] = super::drops::drop_chance(m, name);
+        }
+        m.extra.drop_chances = Some(Box::new(all));
+    }
+    if let Some(c) = m.extra.drop_chances.as_mut() {
+        c[slot] = chance;
+    }
 }
 /// The drop chance stored for a slot (`DropChances.byEquipment`).
 pub fn stored_drop_chance(m: &Mob, slot: usize) -> f32 {
