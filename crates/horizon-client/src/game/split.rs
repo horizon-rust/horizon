@@ -444,14 +444,13 @@ impl<'a> Split<'a> {
         if !watching {
             self.host.pad.release_hardware();
         }
-        // Everything splitscreen kept, as when the game started: on again starts clean. P1's
-        // controller stays P1's.
+        // Returning to solo keeps pending handoffs; switching off starts clean next time.
         self.host.split_hud = Default::default();
         if !watching {
             self.offers.clear();
             self.fresh.clear();
             self.lost.clear();
-            self.p1_pad.reset_transfer();
+            self.p1_pad = P1Pad::default();
         } else if !self.offers.is_empty() {
             self.ask_to_join();
         }
@@ -734,7 +733,7 @@ impl ApplicationHandler for Split<'_> {
                     self.offers.clear();
                     self.fresh.clear();
                     self.lost.clear();
-                    self.p1_pad.reset_transfer();
+                    self.p1_pad = P1Pad::default();
                     self.pads = PadRouter::default();
                 }
                 return self.host.about_to_wait(event_loop);

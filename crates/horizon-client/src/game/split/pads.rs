@@ -44,9 +44,6 @@ impl<Id: Copy + Eq> P1Pad<Id> {
             self.released = None;
         }
     }
-    pub(super) fn reset_transfer(&mut self) {
-        self.released = None;
-    }
     fn gone(&mut self, id: Id) {
         if self.owner == Some(id) {
             self.owner = None;
