@@ -235,9 +235,13 @@ impl Game<'_> {
                 let Some(m) = self.mobs.iter_mut().find(|m| m.id == *id) else {
                     return false;
                 };
+                let count = stack.as_ref().map_or(0, |s| s.count);
                 let item = stack.map(|s| s.item);
                 match *key {
-                    "mainhand" => m.extra.main_hand = item,
+                    "mainhand" => {
+                        m.extra.main_hand = item;
+                        m.extra.main_hand_count = count;
+                    }
                     "offhand" => m.extra.off_hand = item,
                     "head" | "body" => m.extra.head = item,
                     "chest" => m.extra.chest = item,
