@@ -4489,6 +4489,7 @@ impl Game<'_> {
         let scale = self.view_scale();
         for mob in &self.mobs {
             let entity_start = out.len();
+            self.mark_motion(entity_start, (1 << 32) | u64::from(mob.id));
             let outline = self.mob_outline(mob);
             // Entity.DATA_SHARED_FLAGS_ID invisible: only the name tag draws (and
             // the outline of a glowing mob, LivingEntityRenderer.getRenderType).

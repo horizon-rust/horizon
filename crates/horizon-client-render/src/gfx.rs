@@ -280,6 +280,9 @@ pub struct Frame<'a> {
     pub nether_lighting: bool,
     /// Camera-relative entity geometry textured from the shared atlas.
     pub entities: &'a [Vertex],
+    /// Which entity `entities`' vertices belong to: (first vertex, entity id), each run up
+    /// to the next; id 0 for none. Frame generation follows these entities' own motion.
+    pub entity_motion: &'a [(u32, u64)],
     /// The glowing entities' silhouettes in their team colours (`OutlineBufferSource`),
     /// outlined through walls after the hand.
     pub glowing: &'a [Vertex],
@@ -544,6 +547,8 @@ pub struct Renderer {
     world_post: world_post::Post,
     /// Frame generation (Horizon setting).
     frame_gen: frame_gen::FrameGen,
+    /// The entities' texture atlas (`entity_group`'s), for frame generation's motion.
+    entity_atlas: wgpu::TextureView,
     /// HDR output (Horizon setting): `Some` while the swapchain is HDR.
     hdr: Option<hdr::Hdr>,
     /// The HDR output the window's surface can present.
@@ -2720,6 +2725,7 @@ impl Renderer {
             occlusion: occlusion::Occlusion::new(crate::chunk::MIN_Y, crate::chunk::HEIGHT / 16),
             world_post,
             frame_gen: frame_gen::FrameGen::new(),
+            entity_atlas: atlas_view.clone(),
             hdr: None,
             hdr_output,
             hdr_marker: None,
@@ -3335,6 +3341,11 @@ impl Renderer {
         }
     }
     /// `upscale`: output pixels per rendered pixel, for TAA to rebuild (1: native).
+    /// The share of real frames frame generation shows a made frame before (1 while it
+    /// keeps up), `None` while it isn't running.
+    pub fn frame_generation_share(&self) -> Option<f32> {
+        self.frame_gen.made_share
+    }
     /// Frame generation on or off (FSR 3.1's frame interpolation).
     pub fn set_frame_generation(&mut self, on: bool) {
         if !on {
@@ -4428,6 +4439,13 @@ impl Renderer {
         if fg {
             self.frame_gen
                 .halfway_hand(frame.hand, hand_view, &mut self.entity_batch.combined);
+            self.frame_gen.track_entities(
+                &self.device,
+                &self.entity_atlas,
+                frame.entities,
+                frame.entity_motion,
+                frame.camera,
+            );
         }
         let all_entities = &self.entity_batch.combined;
         let hand_quads = (frame.hand.len() / 4) as u32;
@@ -5224,6 +5242,8 @@ impl Renderer {
                 .world(&self.device, &self.world_post, &self.config);
             self.world_post.finish(&self.queue, &mut encoder, &world);
             let camera = frame_gen::Camera {
+                jittered,
+                view_proj,
                 depth: depth.clone(),
                 render_size: self.world_post.size().unwrap_or(size),
                 jitter: self.world_post.jitter_pixels(),

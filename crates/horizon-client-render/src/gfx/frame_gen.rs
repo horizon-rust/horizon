@@ -8,6 +8,7 @@
 //! copies each to the swapchain, which it alone acquires and presents.
 
 mod interpolation;
+mod motion;
 mod optical_flow;
 
 use glam::{DMat4, DVec3, Mat4};
@@ -21,10 +22,21 @@ use std::{
 const FRAMES: usize = 6;
 
 /// `HORIZON_FRAMEGEN_DEBUG=generated`: show only made frames (AMD's debug view), so a
-/// screenshot or an offscreen frame is the made one.
+/// screenshot or an offscreen frame is the made one; `motion`: the same, each made frame
+/// showing what moved on its own in blue (its motion vectors in red and green).
 pub(super) fn generated_only() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("HORIZON_FRAMEGEN_DEBUG").is_ok_and(|v| v == "generated"))
+    debug().is_some()
+}
+
+fn debug() -> Option<&'static str> {
+    static DEBUG: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    DEBUG
+        .get_or_init(|| {
+            std::env::var("HORIZON_FRAMEGEN_DEBUG")
+                .ok()
+                .filter(|v| v == "generated" || v == "motion")
+        })
+        .as_deref()
 }
 
 pub struct FrameGen {
@@ -41,6 +53,15 @@ pub struct FrameGen {
     hand_view: Mat4,
     /// Offscreen, the frame the made frame is drawn into.
     offscreen_generated: Option<wgpu::Texture>,
+    /// Motion vectors for what moves on its own, made on the first frame.
+    motion: Option<motion::ObjectMotion>,
+    /// Real frames and made ones handed to the screen since `shown_since`, and the share
+    /// of real frames that had a made frame over the last half second (the F3 screen's),
+    /// `None` while off.
+    real: u32,
+    made: u32,
+    shown_since: Instant,
+    pub made_share: Option<f32>,
 }
 
 /// What runs on the GPU for one screen size.
@@ -59,6 +80,9 @@ struct Gpu {
 
 /// This frame's camera, for the interpolation.
 pub struct Camera {
+    /// The world's projection this frame (with TAA's jitter) and without the jitter.
+    pub jittered: Mat4,
+    pub view_proj: Mat4,
     pub depth: wgpu::TextureView,
     pub render_size: [u32; 2],
     pub jitter: [f32; 2],
@@ -81,6 +105,11 @@ impl FrameGen {
             hand: Vec::new(),
             hand_view: Mat4::IDENTITY,
             offscreen_generated: None,
+            motion: None,
+            real: 0,
+            made: 0,
+            shown_since: Instant::now(),
+            made_share: None,
         }
     }
 
@@ -88,9 +117,14 @@ impl FrameGen {
     /// reconfigured or the renderer acquires from it itself.
     pub fn stop(&mut self) {
         self.presenter = None;
+        self.made_share = None;
+        (self.real, self.made) = (0, 0);
         self.last = None;
         self.previous = None;
         self.hand.clear();
+        if let Some(motion) = &mut self.motion {
+            motion.reset();
+        }
         if let Some(gpu) = &mut self.gpu {
             gpu.reset = true;
         }
@@ -131,6 +165,22 @@ impl FrameGen {
         self.hand.clear();
         self.hand.extend_from_slice(hand);
         self.hand_view = view;
+    }
+
+    /// This frame's entity vertices (relative to `camera`) and the entity ids of their
+    /// spans (`Frame::entity_motion`), for their own motion vectors; `atlas`: the
+    /// entities' textures. Before `generate`, every frame.
+    pub fn track_entities(
+        &mut self,
+        device: &wgpu::Device,
+        atlas: &wgpu::TextureView,
+        entities: &[crate::mesher::Vertex],
+        spans: &[(u32, u64)],
+        camera: DVec3,
+    ) {
+        self.motion
+            .get_or_insert_with(|| motion::ObjectMotion::new(device, atlas.clone()))
+            .track(entities, spans, camera);
     }
 
     pub fn camera_motion(&mut self, view_proj: Mat4, camera: DVec3) -> Option<Mat4> {
@@ -242,6 +292,21 @@ impl FrameGen {
         let gpu = self.gpu.as_mut().expect("world() ran this frame");
         post.finish_with(encoder, screen, &gpu.world_group);
         let reset = gpu.reset || camera.reproject.is_none();
+        let reproject = camera.reproject.unwrap_or(Mat4::IDENTITY);
+        let object_motion = self
+            .motion
+            .as_mut()
+            .expect("track_entities() ran this frame")
+            .draw(
+                device,
+                queue,
+                encoder,
+                &camera.depth,
+                camera.render_size,
+                camera.jittered,
+                camera.view_proj,
+                reproject * camera.view_proj,
+            );
         gpu.flow.dispatch(device, queue, encoder, &gpu.world, reset);
         gpu.interpolation.dispatch(
             device,
@@ -252,7 +317,8 @@ impl FrameGen {
                 depth: &camera.depth,
                 render_size: camera.render_size,
                 jitter: camera.jitter,
-                reproject: camera.reproject.unwrap_or(Mat4::IDENTITY),
+                reproject,
+                object_motion: &object_motion,
                 near: camera.near,
                 far: camera.far,
                 fov_y: camera.fov_y,
@@ -262,6 +328,10 @@ impl FrameGen {
             },
         );
         gpu.reset = false;
+        if debug() == Some("motion") {
+            post.finish_with(encoder, generated, &post.bind(device, &object_motion));
+            return true;
+        }
         if reset {
             post.finish_with(encoder, generated, &gpu.world_group);
         } else {
@@ -280,6 +350,12 @@ impl FrameGen {
             self.interval = self.interval.mul_f32(0.9) + dt.mul_f32(0.1);
         }
         self.last = Some(now);
+        self.real += 1;
+        self.made += u32::from(made && !generated_only());
+        if now - self.shown_since >= Duration::from_millis(500) {
+            self.made_share = Some(self.made as f32 / self.real as f32);
+            (self.real, self.made, self.shown_since) = (0, 0, now);
+        }
         let Some(send) = self.presenter.as_ref().and_then(|p| p.send.as_ref()) else {
             return;
         };
