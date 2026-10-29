@@ -4682,9 +4682,15 @@ mod tests {
                 Page::Controller,
                 Page::Extras,
                 Page::Mods,
+                Page::SplitSetup,
                 Page::Agent,
             ]
         );
+        ui.split_guest = true;
+        let guest_pages = pushes(&mut ui);
+        assert!(guest_pages.contains(&Page::SplitProfiles));
+        assert!(!guest_pages.contains(&Page::SplitSetup));
+        ui.split_guest = false;
         // No AI hides the AI Agent page.
         let mut no_ai = Settings::default();
         no_ai.extras.no_ai = true;
