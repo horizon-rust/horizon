@@ -2,10 +2,11 @@
 //! and `DolphinJumpGoal`. `extra.flag` is `gotFish` and `extra.home` the
 //! `treasurePos` the game found for it (`MobEvent::DolphinTreasure`).
 use super::{
-    Mob, MobEvent, Who,
+    Mob, MobEvent, Who, drops,
     goals::{Cx, Goal, JUMP, LOOK, MOVE, goal_clone, reduced},
+    loot,
 };
-use crate::blocks::Fluid;
+use crate::{blocks::Fluid, items::ItemStack};
 use horizon_core::random::RandomSource;
 
 /// `Entity.getMotionDirection`: the horizontal step of the yaw
@@ -261,5 +262,61 @@ impl Goal for Jump {
             m.head_pitch = ((-v.y).atan2(horizontal) * f64::from(180.0f32)
                 / f64::from(std::f32::consts::PI)) as f32;
         }
+    }
+}
+
+/// `Dolphin.ItemGoal.drop`: a stack thrown from the dolphin's mouth in the
+/// way it faces (a little to the side), with a 40 tick pickup delay.
+fn throw_item(m: &mut Mob, stack: ItemStack, cx: &mut Cx) {
+    use horizon_core::geometry::trig::Mth;
+    let to_rad = (std::f64::consts::PI / 180.0) as f32;
+    let y_hand = m.eye_y() - f64::from(0.3_f32);
+    let dir = m.random.next_float() * (std::f64::consts::PI * 2.0) as f32;
+    let power = 0.02_f32 * m.random.next_float();
+    let (yaw, pitch) = (m.yaw * to_rad, m.head_pitch * to_rad);
+    let velocity = [
+        f64::from(0.3_f32 * -yaw.msin() * pitch.mcos() + dir.mcos() * power),
+        f64::from(0.3_f32 * pitch.msin() * 1.5_f32),
+        f64::from(0.3_f32 * yaw.mcos() * pitch.mcos() + dir.msin() * power),
+    ];
+    cx.events.push(MobEvent::ThrowItem {
+        stack,
+        at: [m.position.x, y_hand, m.position.z],
+        velocity,
+        pickup_delay: 40,
+        thrower: m.id,
+    });
+}
+/// `Dolphin.ItemGoal.dropItem`: throws what the dolphin holds and empties its
+/// mouth; whether it held anything.
+fn drop_item(m: &mut Mob, cx: &mut Cx) -> bool {
+    let Some(stack) = loot::slot_stack(m, "mainhand") else {
+        return false;
+    };
+    throw_item(m, stack, cx);
+    drops::clear_slot(m, "mainhand");
+    true
+}
+
+/// `Dolphin.PlayWithItemsGoal`: a dolphin that holds an item throws it away
+/// again at once.
+#[derive(Clone, Debug)]
+pub struct PlayWithItems;
+impl Goal for PlayWithItems {
+    goal_clone!();
+    fn flags(&self) -> u8 {
+        0
+    }
+    /// `Dolphin.PlayWithItemsGoal.canUse`.
+    fn can_use(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
+        m.extra.main_hand.is_some()
+    }
+    /// `Dolphin.PlayWithItemsGoal.stop`.
+    fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
+        drop_item(m, cx);
+    }
+    /// `Dolphin.PlayWithItemsGoal.tick`.
+    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
+        drop_item(m, cx);
     }
 }

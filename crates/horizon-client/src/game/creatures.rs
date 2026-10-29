@@ -1486,6 +1486,19 @@ impl Game<'_> {
                     dispenser::new_item_motion(),
                     10,
                 ),
+                MobEvent::ThrowItem {
+                    stack,
+                    at,
+                    velocity,
+                    pickup_delay,
+                    thrower,
+                } => {
+                    self.spawn_item(stack, at, velocity, pickup_delay);
+                    let uuid = self.mob_uuid(thrower);
+                    if let Some(thrown) = self.dropped.last_mut() {
+                        thrown.thrower = Some(uuid);
+                    }
+                }
                 MobEvent::DropGift { table, at } => {
                     let stacks =
                         self.res

@@ -1267,6 +1267,15 @@ pub enum MobEvent {
         count: u32,
         at: [f64; 3],
     },
+    /// A mob throws a stack (`Dolphin.ItemGoal.drop`): an item entity at `at`
+    /// with its own motion and pickup delay, thrown by the mob.
+    ThrowItem {
+        stack: crate::items::ItemStack,
+        at: [f64; 3],
+        velocity: [f64; 3],
+        pickup_delay: u32,
+        thrower: u32,
+    },
     /// `Mob.dropFromGiftLootTable`: a gift loot table's items dropped at `at`.
     DropGift {
         table: &'static str,
