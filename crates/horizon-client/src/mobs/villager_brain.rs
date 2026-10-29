@@ -1595,7 +1595,11 @@ impl B {
                 mm.look_target.set(Tracker::Entity(Who::Player, true));
                 true
             }
-            B::ShowTrades { t, look_time, .. } => {
+            B::ShowTrades {
+                t,
+                look_time,
+                display,
+            } => {
                 if !mem(m).interaction_target.present() || !show_trades_condition(m, cx.w) {
                     return false;
                 }
@@ -1605,6 +1609,8 @@ impl B {
                     mem(m).look_target.set(Tracker::Entity(target, true));
                 }
                 *look_time = 40;
+                display.cycle_counter = 0;
+                display.index = 0;
                 true
             }
             B::TradeWithVillager(t) => {
@@ -2944,6 +2950,8 @@ impl B {
                     // look for a while only.
                     clear_held_item(m);
                     *look_time = (*look_time).min(40);
+                } else {
+                    display.display_cycling_items(m);
                 }
                 *look_time -= 1;
             }
@@ -3365,6 +3373,10 @@ struct TradeDisplay {
     player_item: Option<Arc<str>>,
     /// `displayItems`: what the offers matching that item sell.
     items: Vec<ItemStack>,
+    /// `cycleCounter`: ticks since the held item last changed.
+    cycle_counter: i32,
+    /// `displayIndex`: the item being held up.
+    index: usize,
 }
 impl TradeDisplay {
     /// `ShowTradesToPlayer.findItemsToDisplay`: when the player's item
@@ -3396,6 +3408,22 @@ impl TradeDisplay {
         if let Some(first) = self.items.first() {
             *look_time = 900;
             display_as_held_item(m, first);
+        }
+    }
+    /// `ShowTradesToPlayer.displayCyclingItems`: with two or more items, a
+    /// new one is held up every 40 ticks, round and round.
+    fn display_cycling_items(&mut self, m: &mut Mob) {
+        if self.items.len() < 2 {
+            return;
+        }
+        self.cycle_counter += 1;
+        if self.cycle_counter >= 40 {
+            self.index += 1;
+            self.cycle_counter = 0;
+            if self.index > self.items.len() - 1 {
+                self.index = 0;
+            }
+            display_as_held_item(m, &self.items[self.index]);
         }
     }
     /// `ShowTradesToPlayer.updateDisplayItems`: the offers still in stock
