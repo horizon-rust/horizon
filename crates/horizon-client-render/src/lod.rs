@@ -479,6 +479,41 @@ fn forget_detail(
         }
     }
 }
+/// The tiles over `chunk` to sample again once their source keeps it
+/// (`Lod::resample_over`): those whose sample is still being taken, maybe
+/// from before, and those of cells wider than a chunk sampled empty there,
+/// which a chunk's own detail can't fill (`apply_detail`). The others hold
+/// it once `finish_detail` applies it.
+fn resampled_over(
+    ready: &FxHashMap<TileKey, Arc<Vec<Column>>>,
+    pending: &FxHashSet<TileKey>,
+    (cx, cz): (i32, i32),
+) -> Vec<TileKey> {
+    (1..=MAX_LEVEL)
+        .filter_map(|level| {
+            let size = 16 << level;
+            let key = TileKey {
+                x: (cx * 16).div_euclid(size),
+                z: (cz * 16).div_euclid(size),
+                level,
+            };
+            let resample = match ready.get(&key) {
+                None => pending.contains(&key),
+                Some(samples) => {
+                    let stride = size / CELLS as i32;
+                    let [ox, _, oz] = key.origin();
+                    let cell = (cz * 16 - oz) / stride * CELLS as i32 + (cx * 16 - ox) / stride;
+                    stride > 16
+                        && (pending.contains(&key)
+                            || samples
+                                .get(cell as usize)
+                                .is_some_and(|c| *c == Column::default()))
+                }
+            };
+            resample.then_some(key)
+        })
+        .collect()
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TileKey {
     pub x: i32,
@@ -1052,6 +1087,9 @@ pub struct Lod {
     saved: Saved,
     reduced: Reduced,
     saved_order: VecDeque<(i32, i32)>,
+    /// `LodSource::keeps_observed`: tiles sampled without an observed chunk
+    /// are sampled again (`resample_over`).
+    keeps_observed: bool,
 }
 impl Lod {
     pub fn new(source: Arc<dyn LodSource>, context: Arc<WorkerContext>) -> Self {
@@ -1068,6 +1106,9 @@ impl Lod {
         context: Option<Arc<WorkerContext>>,
         workers: bool,
     ) -> Self {
+        let keeps_observed = source
+            .as_ref()
+            .is_some_and(|source| source.keeps_observed());
         let cores = thread::available_parallelism().map_or(1, |n| n.get());
         let shared = Arc::new(Shared {
             jobs: Mutex::new(VecDeque::new()),
@@ -1375,6 +1416,7 @@ impl Lod {
             saved: FxHashMap::default(),
             reduced: FxHashMap::default(),
             saved_order: VecDeque::new(),
+            keeps_observed,
         }
     }
     /// The solid ground at block column (x, z): its top face's height and
@@ -1793,7 +1835,21 @@ impl Lod {
             self.saved_order.push_back(key);
         }
         self.saved.insert(key, columns.columns.clone());
+        if self.keeps_observed {
+            self.resample_over(key);
+        }
         self.finish_detail(key, columns);
+    }
+    /// The source keeps the chunk now: the tiles over it whose samples lack
+    /// it are sampled again (`stale`), their old samples drawn meanwhile.
+    fn resample_over(&mut self, chunk: (i32, i32)) {
+        for key in resampled_over(&self.ready, &self.pending, chunk) {
+            self.stale.insert(key);
+            self.wanted_stale = true;
+            if self.pending.contains(&key) {
+                self.restale.insert(key);
+            }
+        }
     }
     /// A chunk's own columns as its level-0 tile; the same columns again
     /// (asked again after a `refresh`) mesh nothing.
@@ -3207,6 +3263,47 @@ mod tests {
         assert_eq!(mask.iter().map(|m| m.count_ones()).sum::<u32>(), 64);
     }
     #[test]
+    fn tiles_sampled_without_a_kept_chunk_are_sampled_again() {
+        let tile = |level: u8| {
+            let size = 16 << level;
+            TileKey {
+                x: (3 * 16i32).div_euclid(size),
+                z: (-5 * 16i32).div_euclid(size),
+                level,
+            }
+        };
+        let empty = || Arc::new(vec![Column::default(); CELLS * CELLS]);
+        let filled = || {
+            let column = Column {
+                surface: None,
+                spans: vec![Span {
+                    min: -64,
+                    max: 70,
+                    state: BlockStateId(1),
+                    biome: 0,
+                    light: 0,
+                }]
+                .into(),
+            };
+            Arc::new(vec![column; CELLS * CELLS])
+        };
+        let mut ready = FxHashMap::default();
+        let mut pending = FxHashSet::default();
+        // Cells of a chunk or less take its detail; wider ones sampled empty
+        // there are sampled again, and filled ones aren't.
+        ready.insert(tile(2), empty());
+        ready.insert(tile(5), empty());
+        ready.insert(tile(6), filled());
+        assert_eq!(resampled_over(&ready, &pending, (3, -5)), [tile(5)]);
+        // Samples in flight may predate it: those that detail can't patch.
+        pending.extend([tile(1), tile(2), tile(6), tile(7)]);
+        assert_eq!(
+            resampled_over(&ready, &pending, (3, -5)),
+            [tile(1), tile(5), tile(6), tile(7)]
+        );
+        assert!(resampled_over(&ready, &FxHashSet::default(), (40, 40)).is_empty());
+    }
+    #[test]
     #[ignore = "requires prepared models/textures in HORIZON_TEST_RESOURCES"]
     fn real_mesh_clips_near_chunks_and_preserves_water_and_edited_surfaces() -> crate::Result<()> {
         use crate::{
@@ -4413,5 +4510,195 @@ mod tests {
         lod.update(camera, 0, 32, Some(FxHashSet::default()));
         check(&lod);
         let _ = lod.removed();
+    }
+    /// The prepared resources' far-terrain worker context and block facts.
+    fn test_context() -> crate::Result<(Arc<WorkerContext>, BlockFacts)> {
+        use crate::{assets::Assets, biome::Biomes, light::LightTables, mesher::MeshTables};
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("HORIZON_TEST_RESOURCES"),
+        );
+        let assets = Arc::new(Assets::load(&root)?);
+        let render = Arc::new(assets.reload(&root)?);
+        let facts = BlockFacts::load(&root, assets.registry)?;
+        let biomes = Arc::new(Biomes::load(&root)?);
+        let tables = Arc::new(MeshTables::new(
+            &assets,
+            &render,
+            &facts,
+            crate::models::load_visibility(&root, assets.registry)?,
+        )?);
+        let context = Arc::new(WorkerContext {
+            light: Arc::new(LightTables::load(&root, assets.registry, &facts)?),
+            tables,
+            assets,
+            render,
+            biomes,
+        });
+        Ok((context, facts))
+    }
+    /// A server's far terrain (`server_terrain`) in a scratch folder, and a
+    /// chunk of stone at y 70 to observe.
+    struct ServerLod {
+        lod: Lod,
+        facts: BlockFacts,
+        stone: BlockStateId,
+        dir: std::path::PathBuf,
+    }
+    impl ServerLod {
+        fn new(name: &str) -> crate::Result<Self> {
+            let (context, facts) = test_context()?;
+            let stone = context
+                .assets
+                .registry
+                .default_state("minecraft:stone")
+                .unwrap();
+            let dir = std::env::temp_dir().join(format!("horizon-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let source = crate::server_terrain::ServerTerrain::new(dir.clone(), None);
+            Ok(Self {
+                lod: Lod::new(source, context),
+                facts,
+                stone,
+                dir,
+            })
+        }
+        fn observe(&mut self, x: i32, z: i32) {
+            let mut chunk = Chunk::empty(x, z);
+            for i in 0..256 {
+                chunk.set(i % 16, 70, i / 16, self.stone.0);
+            }
+            self.lod.observe(Arc::new(chunk), &self.facts);
+        }
+        /// Updates until nothing is left to sample, summarize or mesh (`settle`:
+        /// for a while), or only a few times.
+        fn run(
+            &mut self,
+            camera: [f64; 3],
+            detail: i32,
+            distance: u32,
+            covered: &FxHashSet<(i32, i32)>,
+            settle: bool,
+        ) {
+            let lod = &mut self.lod;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+            let mut covered = Some(covered.clone());
+            let mut quiet = 0;
+            while quiet < if settle { 50 } else { 3 } {
+                lod.update(camera, detail, distance, covered.take());
+                lod.removed();
+                let (desired, sampled) = lod.progress();
+                let idle = lod.pending.is_empty()
+                    && lod.outstanding_meshes == 0
+                    && lod.dirty.is_empty()
+                    && lod.observing() == 0
+                    && lod.shared.jobs.lock().unwrap().is_empty()
+                    && desired == sampled;
+                quiet = if idle { quiet + 1 } else { 0 };
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "far terrain never settled"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+        /// The chunks of `chunks` the active tiles don't draw as observed:
+        /// the visited column or the tile's sample there, at the chunk's middle.
+        fn missing(&self, chunks: impl Iterator<Item = (i32, i32)>) -> Vec<(i32, i32)> {
+            let lod = &self.lod;
+            let snapshot = lod.snapshot();
+            let drawn = |x: i32, z: i32| {
+                let key = lod.active.iter().copied().find(|key| {
+                    let [ox, _, oz] = key.origin();
+                    (ox..ox + key.size()).contains(&x) && (oz..oz + key.size()).contains(&z)
+                })?;
+                let stride = key.size() / CELLS as i32;
+                let [ox, _, oz] = key.origin();
+                let (cx, cz) = ((x - ox) / stride, (z - oz) / stride);
+                let (wx, wz) = (ox + cx * stride, oz + cz * stride);
+                Some(match snapshot.visited_source(wx, wz, stride) {
+                    Some(source) => source.get().clone(),
+                    None => lod.ready[&key][(cz * CELLS as i32 + cx) as usize].clone(),
+                })
+            };
+            chunks
+                .filter(|&(x, z)| {
+                    drawn(x * 16 + 8, z * 16 + 8)
+                        .is_none_or(|c| c.spans.last().is_none_or(|s| s.max != 71))
+                })
+                .collect()
+        }
+    }
+    impl Drop for ServerLod {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+    #[test]
+    #[ignore = "requires prepared models/textures in HORIZON_TEST_RESOURCES"]
+    fn chunks_a_server_dropped_stay_drawn_as_far_terrain() -> crate::Result<()> {
+        let mut far = ServerLod::new("lod-dropped")?;
+        // A server's view distance of 10 (it sends a ring more), drawn to a
+        // render distance of 32 (`streaming.radius`, the covered area).
+        let (view, detail, distance) = (10, 32, 64);
+        let mut resident = FxHashSet::default();
+        let mut dropped = FxHashSet::default();
+        // The player flies east past some 1800 chunks: more than `MAX_SAVED`.
+        let end = 60;
+        for step in 0..=end {
+            let center = (step, 0);
+            let now: FxHashSet<_> = (-view..=view)
+                .flat_map(|dz| (-view..=view).map(move |dx| (center.0 + dx, center.1 + dz)))
+                .collect();
+            for &(x, z) in now.difference(&resident) {
+                far.observe(x, z);
+            }
+            for &(x, z) in resident.difference(&now) {
+                // `forget_remote_chunk`: the last of it, for far terrain.
+                far.observe(x, z);
+                dropped.insert((x, z));
+            }
+            resident = now;
+            let covered = resident
+                .iter()
+                .copied()
+                .filter(|&(x, z)| crate::streaming::in_view_distance(center, detail, x, z))
+                .collect();
+            let camera = [f64::from(center.0 * 16 + 8), 100.0, 8.0];
+            far.run(camera, detail, distance, &covered, step == end);
+        }
+        // Those within the LOD distance of where the player is now.
+        let near = |&(x, z): &(i32, i32)| (x - end).pow(2) + z * z < (distance as i32 - 4).pow(2);
+        let missing = far.missing(dropped.iter().copied().filter(near));
+        assert!(
+            missing.is_empty(),
+            "{} dropped chunks aren't drawn, as {:?}",
+            missing.len(),
+            &missing[..missing.len().min(8)]
+        );
+        Ok(())
+    }
+    #[test]
+    #[ignore = "requires prepared models/textures in HORIZON_TEST_RESOURCES"]
+    fn far_cells_sampled_before_their_chunks_were_kept_fill_in() -> crate::Result<()> {
+        let mut far = ServerLod::new("lod-late")?;
+        // Seen from 5000 blocks: cells of 32 blocks and wider over them.
+        let camera = [-5000.0, 100.0, 8.0];
+        let (detail, distance) = (10, 512);
+        let none = FxHashSet::default();
+        // Every tile sampled while nothing is kept, then 32 × 32 chunks are.
+        far.run(camera, detail, distance, &none, true);
+        let chunks: Vec<_> = (0..32).flat_map(|z| (0..32).map(move |x| (x, z))).collect();
+        assert_eq!(far.missing(chunks.iter().copied()).len(), chunks.len());
+        for &(x, z) in &chunks {
+            far.observe(x, z);
+        }
+        far.run(camera, detail, distance, &none, true);
+        let missing = far.missing(chunks.iter().copied());
+        assert!(
+            missing.is_empty(),
+            "{} kept chunks aren't drawn",
+            missing.len()
+        );
+        Ok(())
     }
 }

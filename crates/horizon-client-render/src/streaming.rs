@@ -170,6 +170,11 @@ pub trait LodSampler: Send {
 }
 pub trait LodSource: Send + Sync {
     fn sampler(self: Arc<Self>) -> Box<dyn LodSampler>;
+    /// Whether its samplers' `observed` chunks become its own (a server's
+    /// kept terrain): tiles sampled without one are sampled again.
+    fn keeps_observed(&self) -> bool {
+        false
+    }
 }
 struct GeneratorSampler<G: ChunkGenerator> {
     generator: Arc<G>,
