@@ -888,11 +888,13 @@ pub fn set_trusting(m: &mut Mob, trusting: bool) {
 pub fn remove_when_far_away(m: &Mob) -> bool {
     !m.extra.trusting && m.age > 2400
 }
-/// `Ocelot.mobInteract`: once the fish is taken, one time in three
-/// (`random.nextInt(3) == 0`) the ocelot starts to trust players. Either way
-/// the server runs `Ocelot.spawnTrustingParticles`, whose `addParticle` goes
+/// The ocelot's roll for trust once a player's fish is taken: one time in
+/// three (`random.nextInt(3) == 0`) it starts to trust players. Either way the
+/// server runs `Ocelot.spawnTrustingParticles`, whose `addParticle` goes
 /// nowhere but whose arguments draw from the ocelot's random. Returns whether
-/// it trusts now (entity event 41 for the hearts, 40 for the smoke).
+/// it trusts now (entity event 41 for the hearts, 40 for the smoke, shown by
+/// `entity_event_burst` to every client). The click itself is the `Ocelot`
+/// arm of `interact_mob` in game/creatures.rs (`Ocelot.mobInteract`).
 pub fn try_trusting(m: &mut Mob) -> bool {
     let trusting = m.random.next_int_bound(3).unwrap_or(1) == 0;
     if trusting {
