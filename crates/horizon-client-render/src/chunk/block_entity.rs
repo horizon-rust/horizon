@@ -236,6 +236,8 @@ pub struct SignText {
     /// `DyeColor` id.
     pub color: u8,
     pub glowing: bool,
+    /// The `click_event` in each line's component style, as saved.
+    pub click: [Option<Tag>; 4],
 }
 /// `SignBlockEntity` / `HangingSignBlockEntity` data.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -244,6 +246,8 @@ pub struct SignData {
     pub front: SignText,
     pub back: SignText,
     pub waxed: bool,
+    /// `allow_op_features`: the sign's click events may run commands.
+    pub allow_op_features: bool,
 }
 /// `VibrationInfo`.
 #[derive(Clone, Copy, Debug, PartialEq)]

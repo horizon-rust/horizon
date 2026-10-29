@@ -457,6 +457,7 @@ impl Game<'_> {
                 may_build: true,
                 can_eat: self.creative,
                 game_master: false,
+                sign_click_commands: false,
             };
             let hit = horizon_core::geometry::Vec3::new(
                 f64::from(pos.x) + 0.5,
