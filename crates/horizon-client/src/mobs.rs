@@ -796,6 +796,9 @@ pub struct Extra {
     /// `Fox.DATA_TRUSTED_ID_0` and `DATA_TRUSTED_ID_1`: the UUIDs of the
     /// players a fox trusts (`Fox.getTrustedEntities`).
     pub trusted: [Option<[i32; 4]>; 2],
+    /// `Ocelot.DATA_TRUSTING`: it trusts players, so it no longer runs from
+    /// them (`Trusting` in the save).
+    pub trusting: bool,
     /// Slime/magma cube size (0 = not sized).
     pub size: i32,
     /// Sheep eat-grass / iron golem attack / ravager animation ticks.

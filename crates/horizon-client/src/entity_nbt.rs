@@ -350,6 +350,10 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
                 map.entry(key.into()).or_insert(value);
             }
         }
+        // Ocelot.addAdditionalSaveData.
+        "minecraft:ocelot" => {
+            map.insert("Trusting".into(), Tag::Byte(i8::from(m.extra.trusting)));
+        }
         // Rabbit.addAdditionalSaveData (the legacy id; 99 is the killer bunny).
         "minecraft:rabbit" => {
             map.insert("RabbitType".into(), Tag::Int(i32::from(m.extra.variant)));
@@ -1232,6 +1236,10 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
         m.extra.sitting = flag(tag, "Sitting");
         m.extra.color =
             number(tag.get("CollarColor")).map_or(crate::mobs::tame::RED, |c| (c as u8) & 15);
+    }
+    if m.species() == crate::mobs::Species::Ocelot {
+        // Ocelot.readAdditionalSaveData.
+        crate::mobs::tame::set_trusting(&mut m, flag(tag, "Trusting"));
     }
     if m.species() == crate::mobs::Species::Panda {
         let gene = |key| text(tag.get(key)).map_or(0, |n| crate::mobs::panda::gene_from_name(&n));

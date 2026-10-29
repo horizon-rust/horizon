@@ -877,6 +877,11 @@ pub fn register_ocelot(m: &mut Mob) {
         NearestTarget::new(Prey::Filter(baby_turtle_on_land), false),
     );
 }
+/// `Ocelot.setTrusting`: sets `DATA_TRUSTING`, which the avoid and tempt goals
+/// and `removeWhenFarAway` read.
+pub fn set_trusting(m: &mut Mob, trusting: bool) {
+    m.extra.trusting = trusting;
+}
 /// `Ocelot.OcelotTemptGoal(ocelot, 0.6, ocelot food, true)`.
 #[derive(Clone, Debug)]
 struct OcelotTempt(super::goals::Tempt);
