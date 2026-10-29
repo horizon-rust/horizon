@@ -49,6 +49,16 @@ pub(super) struct Boat {
     above_bubble_column: bool,
     /// `AbstractBoat.bubbleColumnDirectionIsDown`.
     bubble_down: bool,
+    /// A bubble column's drag asked a rider the server can't move itself (a
+    /// player) to get out: `guest_vehicle_tick` takes it (`ejectPassengers`).
+    pub eject_riders: bool,
+    /// `Entity.tickCount`, counted where the wobble is (a client's tick).
+    tick_count: i32,
+    /// `AbstractBoat.bubbleMultiplier`, `bubbleAngle` and `bubbleAngleO`
+    /// (a client's).
+    bubble_multiplier: f32,
+    bubble_angle: f32,
+    bubble_angle_old: f32,
     pub hurt_time: i32,
     pub hurt_dir: i32,
     pub damage: f32,
@@ -66,6 +76,10 @@ pub(super) const CHEST_SLOTS: usize = 27;
 /// `AbstractBoat.BUBBLE_TIME`: the ticks over a bubble column before it
 /// lifts or drags the boat.
 const BUBBLE_TIME: i32 = 60;
+/// `EntityEvent` 71 and 72, which `AbstractBoat.tickBubbleColumn` broadcasts
+/// for a down and an up column.
+pub(super) const BUBBLE_DOWN_EVENT: i8 = 71;
+pub(super) const BUBBLE_UP_EVENT: i8 = 72;
 pub(super) const WIDTH: f64 = 1.375;
 pub(super) const HEIGHT: f64 = 0.5625;
 impl Boat {
@@ -87,6 +101,11 @@ impl Boat {
             bubble_time: 0,
             above_bubble_column: false,
             bubble_down: false,
+            eject_riders: false,
+            tick_count: 0,
+            bubble_multiplier: 0.0,
+            bubble_angle: 0.0,
+            bubble_angle_old: 0.0,
             hurt_time: 0,
             hurt_dir: 1,
             damage: 0.0,
@@ -158,6 +177,20 @@ impl Boat {
             at,
             yaw,
         )
+    }
+    /// `AbstractBoat.tickBubbleColumn`: on a client, the wobble grows by 0.05 a
+    /// tick while the synched bubble time runs and fades by 0.1 otherwise.
+    pub(super) fn tick_bubble_wobble(&mut self) {
+        self.tick_count += 1;
+        if self.bubble_time > 0 {
+            self.bubble_multiplier += 0.05;
+        } else {
+            self.bubble_multiplier -= 0.1;
+        }
+        self.bubble_multiplier = self.bubble_multiplier.clamp(0.0, 1.0);
+        self.bubble_angle_old = self.bubble_angle;
+        self.bubble_angle =
+            10.0 * (0.5 * f64::from(self.tick_count)).sin() as f32 * self.bubble_multiplier;
     }
     /// `getRowingTime`.
     pub fn rowing_time(&self, side: usize, a: f32) -> f32 {
@@ -672,14 +705,59 @@ impl Game<'_> {
             v.y = 0.6;
         }
     }
+    /// `Entity.ejectPassengers`: for a down column the mobs get out here, this
+    /// window's player gets out, and a server's player is asked to
+    /// (`guest_vehicle_tick` lets it out through its client).
+    fn eject_boat_riders(&mut self, i: usize) {
+        self.eject_boat_mobs(i, false);
+        let id = self.boats[i].id;
+        if self.riding == Some(id) && self.player.is_some() {
+            self.dismount(i);
+        } else if self.guest_rides(id) {
+            self.boats[i].eject_riders = true;
+        }
+    }
+    /// `AbstractBoat.tickBubbleColumn`: on the server, a boat that stays over
+    /// a column for `BUBBLE_TIME` ticks is thrown up or pulled down (a down
+    /// column lets the riders out first), and every client is told.
+    fn tick_boat_bubble_column(&mut self, i: usize) {
+        let b = &mut self.boats[i];
+        if !b.above_bubble_column {
+            b.bubble_time = 0;
+        }
+        if b.bubble_time > 0 {
+            b.bubble_time -= 1;
+            let (time, down) = (b.bubble_time, b.bubble_down);
+            let diff = BUBBLE_TIME - time - 1;
+            if diff > 0 && time == 0 {
+                let (id, p) = (b.id, b.position);
+                let event = if down {
+                    BUBBLE_DOWN_EVENT
+                } else {
+                    BUBBLE_UP_EVENT
+                };
+                if down {
+                    self.eject_boat_riders(i);
+                }
+                self.lan_entity_event(id as i32, event, [p.x, p.y, p.z]);
+                self.handle_bubble_column_effect(i, down);
+            }
+            self.boats[i].above_bubble_column = false;
+        }
+    }
     /// `AbstractBoat.tick`: the end of it on the server for boat `i`, the two
     /// `applyEffectsFromBlocks` that reach bubble columns (the lava is
-    /// `boat_lava_tick`'s).
+    /// `boat_lava_tick`'s), then `tickBubbleColumn`; and the wobble when this
+    /// window is its own client.
     fn boat_bubble_tick(&mut self, i: usize) {
         let id = self.boats[i].id;
         // The boat a server's player drives is not ticked here: its status is.
         if self.guest_vehicles().contains(&id) {
             self.refresh_boat_status(i);
+        }
+        // An ejection nobody took (its player left the boat first) is void.
+        if !self.guest_rides(id) {
+            self.boats[i].eject_riders = false;
         }
         let touches = self.boat_bubble_columns(i);
         // AbstractBoat.tick calls applyEffectsFromBlocks twice.
@@ -691,6 +769,10 @@ impl Game<'_> {
                     self.boat_inside_bubble_column(i, touch.drag_down);
                 }
             }
+        }
+        self.tick_boat_bubble_column(i);
+        if self.options.execution_role.is_client() {
+            self.boats[i].tick_bubble_wobble();
         }
     }
     /// `LavaFluid.entityInside` (`lavaHurt`) from the two

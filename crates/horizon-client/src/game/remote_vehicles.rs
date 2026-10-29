@@ -234,9 +234,10 @@ impl Game<'_> {
     }
 
     /// `AbstractBoat.tick`: the part that reaches bubble columns, for every
-    /// boat on a client: `status` and the two `applyEffectsFromBlocks` (a boat
+    /// boat on a client: `status`, the two `applyEffectsFromBlocks` (a boat
     /// above a column may splash; the boat the player drives is lifted or
-    /// dragged by a column it is inside).
+    /// dragged by a column it is inside) and `tickBubbleColumn`'s wobble from
+    /// the synched bubble time.
     pub(super) fn tick_remote_boat_bubbles(&mut self) {
         for i in 0..self.boats.len() {
             let driven = self.riding == Some(self.boats[i].id);
@@ -255,6 +256,7 @@ impl Game<'_> {
                     }
                 }
             }
+            self.boats[i].tick_bubble_wobble();
         }
     }
 }
