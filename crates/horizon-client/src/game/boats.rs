@@ -40,6 +40,10 @@ pub(super) struct Boat {
     water_level: f64,
     land_friction: f32,
     out_of_control: f32,
+    /// `AbstractBoat.DATA_ID_BUBBLE_TIME` (synched): the ticks of `BUBBLE_TIME`
+    /// left before a bubble column lifts or drags the boat; 0 when it is not
+    /// over one.
+    pub bubble_time: i32,
     pub hurt_time: i32,
     pub hurt_dir: i32,
     pub damage: f32,
@@ -72,6 +76,7 @@ impl Boat {
             water_level: 0.0,
             land_friction: 0.0,
             out_of_control: 0.0,
+            bubble_time: 0,
             hurt_time: 0,
             hurt_dir: 1,
             damage: 0.0,

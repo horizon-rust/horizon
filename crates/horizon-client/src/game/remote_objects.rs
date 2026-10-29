@@ -184,13 +184,16 @@ impl Game<'_> {
                     c.color = (*color).clamp(0, 15) as u8;
                 }
             } else if let Some(b) = self.boats.iter_mut().find(|b| b.id == id) {
-                // VehicleEntity's hurt, direction and damage; the paddles.
+                // VehicleEntity's hurt, direction and damage; the paddles and
+                // the bubble time.
                 match (index, value) {
                     (8, Value::Int(v)) => b.hurt_time = *v,
                     (9, Value::Int(v)) => b.hurt_dir = *v,
                     (10, Value::Float(v)) => b.damage = *v,
                     (11, Value::Bool(v)) => b.paddling[0] = *v,
                     (12, Value::Bool(v)) => b.paddling[1] = *v,
+                    // AbstractBoat.DATA_ID_BUBBLE_TIME.
+                    (13, Value::Int(v)) => b.bubble_time = *v,
                     _ => {}
                 }
             } else if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
