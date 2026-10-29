@@ -223,6 +223,7 @@ impl Game<'_> {
                 "minecraft:worldgen/processor_list",
                 "worldgen/processor_list/",
             ),
+            ("minecraft:worldgen/biome", "worldgen/biome/"),
         ];
         for (registry, kind) in worldgen {
             let entry = reg.by_registry.entry(registry.to_owned()).or_default();
@@ -234,6 +235,23 @@ impl Game<'_> {
                 }
             }
             entry.ids.sort();
+        }
+        // The packs' worldgen tag ids, for the `#tag` completions.
+        let worldgen_tags = ["worldgen/structure", "worldgen/biome"];
+        for kind in worldgen_tags {
+            let prefix = format!("tags/{kind}/");
+            let entry = reg
+                .by_registry
+                .entry(format!("minecraft:{kind}"))
+                .or_default();
+            for id in self.fns.store.files.keys() {
+                if let Some(rest) = id.strip_prefix(prefix.as_str())
+                    && !entry.tags.contains(&rest.to_owned())
+                {
+                    entry.tags.push(rest.to_owned());
+                }
+            }
+            entry.tags.sort();
         }
     }
 

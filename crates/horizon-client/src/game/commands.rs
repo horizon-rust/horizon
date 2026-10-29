@@ -3070,18 +3070,6 @@ impl Game<'_> {
         let mut out = Vec::new();
         let mut pending = vec![tag.to_owned()];
         let mut seen = std::collections::HashSet::new();
-        let pack_file = |t: &str| {
-            // The world's packs' tag file over the game's own, entries
-            // joined (`TagLoader`).
-            let name = t.trim_start_matches("minecraft:");
-            let id = format!("tags/{registry}/minecraft:{name}");
-            self.fns.store.files.get(&id).map(|files| {
-                serde_json::from_slice::<serde_json::Value>(horizon_world::loot::PackOverlay::top(
-                    files,
-                ))
-                .ok()
-            })
-        };
         while let Some(t) = pending.pop() {
             if !seen.insert(t.clone()) {
                 continue;
@@ -3091,21 +3079,35 @@ impl Game<'_> {
                 .options
                 .resources
                 .join(format!("data/{ns}/tags/{registry}/{path}.json"));
-            // The game's file and the packs' both count, entries joined
-            // (`TagLoader` unions the resource stack).
+            // The game's file and the packs' both count, entries joined in
+            // resource-stack order; a pack file with `replace` drops what the
+            // lower sources put in (`TagLoader.load`).
+            let packed = self
+                .fns
+                .store
+                .files
+                .get(&format!("tags/{registry}/{ns}:{path}"))
+                .into_iter()
+                .flatten()
+                .filter_map(|b| serde_json::from_slice::<serde_json::Value>(b).ok());
             let parsed = std::fs::read(file)
                 .ok()
                 .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
                 .into_iter()
-                .chain(pack_file(&t).into_iter().flatten());
+                .chain(packed);
+            let mut entries = Vec::new();
             for v in parsed {
-                for e in v["values"].as_array().into_iter().flatten() {
-                    let id = e.as_str().or_else(|| e["id"].as_str()).unwrap_or_default();
-                    match id.strip_prefix('#') {
-                        Some(nested) => pending.push(nested.to_owned()),
-                        None if !id.is_empty() => out.push(id.to_owned()),
-                        None => {}
-                    }
+                if v["replace"].as_bool() == Some(true) {
+                    entries.clear();
+                }
+                entries.extend(v["values"].as_array().into_iter().flatten().cloned());
+            }
+            for e in &entries {
+                let id = e.as_str().or_else(|| e["id"].as_str()).unwrap_or_default();
+                match id.strip_prefix('#') {
+                    Some(nested) => pending.push(nested.to_owned()),
+                    None if !id.is_empty() => out.push(id.to_owned()),
+                    None => {}
                 }
             }
         }
