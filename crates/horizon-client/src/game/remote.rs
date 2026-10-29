@@ -2447,7 +2447,18 @@ impl Game<'_> {
                     for (slot, item, stack) in items {
                         let e = &mut m.extra;
                         match slot {
-                            0 => e.main_hand = item,
+                            0 => {
+                                e.main_hand = item;
+                                // Its enchantments are the glint.
+                                let levels = stack
+                                    .as_ref()
+                                    .map_or_else(Vec::new, |s| s.enchantments().to_vec());
+                                horizon_client::mobs::gear::set(
+                                    m,
+                                    horizon_client::mobs::gear::MAIN,
+                                    levels,
+                                );
+                            }
                             1 => e.off_hand = item,
                             2 => {
                                 e.feet = item;
