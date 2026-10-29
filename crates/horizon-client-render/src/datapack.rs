@@ -349,8 +349,20 @@ fn content_id(file: &str) -> Option<String> {
             ));
         }
         "tags" => {
-            let (sub, name) = rest.rsplit_once('/')?;
-            return Some(format!("tags/{sub}/{ns}:{}", name.strip_suffix(".json")?));
+            // `tags/<sub>/<path>`: `<sub>` is one folder (`block`), or two
+            // under `worldgen` (`worldgen/biome`); the path keeps its own
+            // folders, which are part of the tag's id.
+            let path = rest.strip_suffix(".json")?;
+            return match path.strip_prefix("worldgen/") {
+                Some(inner) => {
+                    let (sub, name) = inner.split_once('/')?;
+                    Some(format!("tags/worldgen/{sub}/{ns}:{name}"))
+                }
+                None => {
+                    let (sub, name) = path.split_once('/')?;
+                    Some(format!("tags/{sub}/{ns}:{name}"))
+                }
+            };
         }
         _ => return None,
     };
