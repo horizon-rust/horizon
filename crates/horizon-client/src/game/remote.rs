@@ -3359,14 +3359,10 @@ impl Game<'_> {
     /// Puts a downloaded skin in an atlas skin slot: a free one, else the
     /// least recently shown.
     pub(super) fn store_skin(&mut self, location: String, rgba: Vec<u8>) {
-        use horizon_client::hud::SKIN_SLOTS;
-        let slot = if self.skin_slots.len() < SKIN_SLOTS {
-            self.skin_slots.len()
-        } else {
-            let (old, slot) = self.skin_slots.remove(0);
+        let (slot, evicted) = self.skin_slots.claim(location.clone());
+        if let Some(old) = evicted {
             self.gui.atlas.sprites.remove(&old);
-            slot
-        };
+        }
         let Some(rect) = self
             .gui
             .atlas
@@ -3384,17 +3380,11 @@ impl Game<'_> {
             height: 64,
             rgba,
         });
-        self.gui.atlas.sprites.insert(location.clone(), rect);
-        self.skin_slots.push((location, slot));
+        self.gui.atlas.sprites.insert(location, rect);
     }
     /// Whether a downloaded skin is in the atlas, marking it recently shown.
     fn show_skin(&mut self, location: &str) -> bool {
-        let Some(i) = self.skin_slots.iter().position(|e| e.0 == location) else {
-            return false;
-        };
-        let e = self.skin_slots.remove(i);
-        self.skin_slots.push(e);
-        true
+        self.skin_slots.show(location).is_some()
     }
     /// `show_skin`, or — its slot evicted — the image queued for upload again.
     fn again_skin(&mut self, location: &str) -> bool {
