@@ -106,12 +106,15 @@ pub fn tabs<T: Copy + PartialEq + 'static>(
     current: T,
     t: &Theme,
     on_pick: impl Fn(T, &mut Window, &mut App) + Clone + 'static,
-) -> Div {
+) -> Stateful<Div> {
     let t = *t;
     div()
+        .id(id)
         .flex()
         .items_end()
         .gap(px(4.))
+        .w_full()
+        .overflow_x_scroll()
         .children(options.iter().map(|&(value, label, icon_name)| {
             let open = current == value;
             let pick = on_pick.clone();
@@ -119,6 +122,7 @@ pub fn tabs<T: Copy + PartialEq + 'static>(
                 .id(SharedString::from(format!("{id}-{label}")))
                 .relative()
                 .flex()
+                .flex_none()
                 .items_center()
                 .gap(px(8.))
                 .h(px(if open { 42. } else { 38. }))
