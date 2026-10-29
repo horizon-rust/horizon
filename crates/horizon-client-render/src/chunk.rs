@@ -12,9 +12,10 @@ pub const MIN_Y: i32 = -64;
 pub const HEIGHT: i32 = 384;
 pub const SECTIONS: usize = (HEIGHT / 16) as usize;
 
-/// Biomes are 4x4x4 containers over the biome table (67 entries: a 7-bit
-/// global palette).
-pub const BIOME_STRATEGY: Strategy = Strategy::biomes(7);
+/// Biomes are 4x4x4 containers over the biome table. The global palette's
+/// 8 bits hold vanilla's 67 entries and the worlds whose data packs add
+/// more — a pack of ~100 biomes passes the 7-bit ceiling of 128.
+pub const BIOME_STRATEGY: Strategy = Strategy::biomes(8);
 
 /// Bits of the block states' global palette: 16 for vanilla's 35,723 states
 /// (what vanilla servers and clients send), more when content mods add states
