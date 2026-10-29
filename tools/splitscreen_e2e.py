@@ -62,10 +62,12 @@ def check(name, got, want):
 class Game:
     """One splitscreen session: P1 launched with `players` (HORIZON_SPLIT), each on its socket."""
 
-    def __init__(self, players, **env):
+    def __init__(self, players, split=True, **env):
         self.home = Path(tempfile.mkdtemp(prefix='horizon-split-e2e-'))
         self.sockets = Path(tempfile.mkdtemp(prefix='hzse-'))  # short: Unix socket paths
         self.env = lab.game_env(HORIZON_HOME=self.home, HORIZON_SPLIT=str(players), **env)
+        if not split:
+            self.env.pop("HORIZON_SPLIT", None)
         try:
             self.ctl(1, 'launch', '--wait', '--world', 'Split', '--creative',
                      '--resources', str(RESOURCES), '--width', str(WIDTH), '--height', str(HEIGHT),
@@ -299,6 +301,54 @@ def scenario_bumpers():
         g.quit()
 
 
+def scenario_toggle():
+    print('toggle: default off, saved switch, joined guard, solo rendering after leaving')
+    def labels(g):
+        return [w['label'] for w in g.ctl(1, 'ui')['widgets']]
+    def page(g):
+        g.ctl(1, 'options', 'horizon')
+        g.wait(lambda: 'Splitscreen...' in labels(g), 'Horizon Settings')
+        g.ctl(1, 'click-button', 'Splitscreen...')
+        g.wait(lambda: any(s.startswith('Splitscreen: ') for s in labels(g)), 'switch')
+    g = Game(1, split=False)
+    try:
+        whole = g.size(1)
+        page(g)
+        check('default off without the testing variable', 'Splitscreen: Off' in labels(g), True)
+        g.ctl(1, 'click-button', 'Splitscreen: Off')
+        g.wait(lambda: 'Splitscreen: On' in labels(g), 'enabled')
+        # Close all options pages to persist, then return.
+        for _ in range(3):
+            g.ctl(1, 'key', 'esc', 'tap')
+        check('saved enabled', 'splitscreen:true' in (g.home / 'horizon-extras.txt').read_text(), True)
+        page(g)
+        g.ctl(1, 'click-button', 'Splitscreen: On')
+        for _ in range(3):
+            g.ctl(1, 'key', 'esc', 'tap')
+        check('saved disabled', 'splitscreen:false' in (g.home / 'horizon-extras.txt').read_text(), True)
+        check('solo keeps its full view', g.size(1), whole)
+    finally:
+        g.quit()
+    g = Game(2)
+    try:
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'P2 playing')
+        half = g.size(1)
+        page(g)
+        switches = [w for w in g.ctl(1, 'ui')['widgets'] if w['label'] == 'Splitscreen: On']
+        check('joined: switch disabled', [w['enabled'] for w in switches], [False])
+        g.ctl(2, 'disconnect')
+        g.wait(lambda: not g.alive(2), 'P2 gone')
+        g.wait(lambda: any(w['label'] == 'Splitscreen: On' and w['enabled']
+                          for w in g.ctl(1, 'ui')['widgets']), 'switch available alone')
+        g.ctl(1, 'click-button', 'Splitscreen: On')
+        check('off: full window restored', g.settle([1], [(2 * half[0], half[1])]),
+              [(2 * half[0], half[1])])
+        g.ctl(1, 'click-button', 'Splitscreen: Off')
+        check('on alone: full window stays', g.size(1), (2 * half[0], half[1]))
+    finally:
+        g.quit()
+
+
 SCENARIOS = {
     'alone': scenario_alone,
     'join': scenario_join,
@@ -308,6 +358,7 @@ SCENARIOS = {
     'cancel': scenario_cancel,
     'switch': scenario_switch,
     'bumpers': scenario_bumpers,
+    'toggle': scenario_toggle,
 }
 
 

@@ -1010,6 +1010,8 @@ pub enum Page {
     Online,
     /// Splitscreen: the profile another player joins as (`split_profiles`).
     SplitProfiles,
+    /// Splitscreen: enable joining on this computer.
+    SplitSetup,
 }
 #[derive(Clone, Debug, PartialEq)]
 enum Act {
@@ -1177,6 +1179,8 @@ pub struct OptionsUi {
     /// Splitscreen: another player's options. Language and resource packs are the whole
     /// process's (every player's text and textures), so they're P1's to change.
     pub split_guest: bool,
+    /// Other local players are joined: leave before turning splitscreen off.
+    pub split_joined: bool,
 }
 impl Default for OptionsUi {
     fn default() -> Self {
@@ -1212,6 +1216,7 @@ impl Default for OptionsUi {
             split_profiles: Default::default(),
             agent_status: Vec::new(),
             split_guest: false,
+            split_joined: false,
         }
     }
 }
@@ -1268,6 +1273,7 @@ fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
             "Optional additions, all off by default: the game stays vanilla until you turn one on."
         }
         Page::Agent => "Let your own AI agent play: horizon-ctl and MCP clients on this computer.",
+        Page::SplitSetup => "Players on this computer: controllers can join your world.",
         Page::SplitProfiles => "Who plays: a profile kept in this game folder.",
         Page::ShaderPacks => {
             "Shader packs from the shaderpacks folder: Horizon's own and those in the shaders/ format. One runs at a time."
@@ -1417,6 +1423,7 @@ impl OptionsUi {
             Page::Horizon => "Horizon Settings",
             Page::Agent => "AI Agent",
             Page::SplitProfiles => "Who's playing?",
+            Page::SplitSetup => "Splitscreen",
         }
     }
     fn scrollbar_x(&self, width: f32) -> f32 {
@@ -1506,6 +1513,14 @@ impl OptionsUi {
 
     fn list_rows(&self, s: &Settings) -> Vec<Row> {
         match self.page() {
+            Page::SplitSetup => vec![Row::Buttons(
+                if self.split_guest || self.split_joined {
+                    inactive(self.extra_button(s, crate::extras::Item::Splitscreen))
+                } else {
+                    self.extra_button(s, crate::extras::Item::Splitscreen)
+                },
+                None,
+            )],
             Page::Extras => {
                 // Each section's switches two to a row, as vanilla's
                 // OptionsList.addSmall lays out an options screen.
@@ -1569,6 +1584,17 @@ impl OptionsUi {
                     Row::Buttons(
                         open("Extras...", Page::Extras),
                         Some(open("Mods...", Page::Mods)),
+                    ),
+                    Row::Buttons(
+                        open(
+                            "Splitscreen...",
+                            if self.split_guest {
+                                Page::SplitProfiles
+                            } else {
+                                Page::SplitSetup
+                            },
+                        ),
+                        None,
                     ),
                     // No AI hides the AI Agent page and everything AI.
                     Row::Buttons(

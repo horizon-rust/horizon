@@ -21,7 +21,8 @@
 //! disconnects leaves its player waiting, its view dimmed, until it comes back or another takes
 //! over (`pads`).
 //!
-//! `HORIZON_SPLIT=N` (testing, the only way in so far): splitscreen watches the controllers, and
+//! Horizon Settings > Splitscreen... enables joining (off by default).
+//! `HORIZON_SPLIT=N` (testing) enables it too, and
 //! N-1 players without one join once P1 is in its world, as P2, P3... (`HORIZON_SPLIT=1`: only
 //! the controllers). The player in seat N takes `horizon-ctl` on P1's socket path + "N".
 
@@ -111,8 +112,6 @@ struct Guest<'a> {
 pub(super) struct Split<'a> {
     pub(super) host: Game<'a>,
     guests: Vec<Guest<'a>>,
-    /// `HORIZON_SPLIT`: splitscreen watches the controllers for players joining.
-    watching: bool,
     /// `HORIZON_SPLIT=N`: players still to add once P1 is in a world.
     test_players: usize,
     /// While another player is in, the windows players play in, each with its compositor: the
@@ -156,8 +155,11 @@ pub(super) struct Split<'a> {
 }
 
 impl<'a> Split<'a> {
-    pub(super) fn new(host: Game<'a>) -> Self {
+    pub(super) fn new(mut host: Game<'a>) -> Self {
         let split = std::env::var("HORIZON_SPLIT").ok();
+        if split.is_some() {
+            host.settings.extras.splitscreen = true;
+        }
         let test_players = split
             .as_ref()
             .and_then(|n| n.parse::<usize>().ok())
@@ -165,7 +167,6 @@ impl<'a> Split<'a> {
         Self {
             host,
             guests: Vec::new(),
-            watching: split.is_some(),
             test_players,
             surfaces: Vec::new(),
             windows: vec![layout::Window {
@@ -419,13 +420,17 @@ impl<'a> Split<'a> {
         Ok(())
     }
 
-    /// P1 alone again: it draws on its window again.
+    /// Splitscreen off or P1 alone again: it draws on its window again.
     #[inline(never)]
-    fn disable(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+    fn disable(&mut self, event_loop: &ActiveEventLoop, watching: bool) -> Result<()> {
         for k in (0..self.guests.len()).rev() {
             self.remove_guest(k);
         }
         self.applied.clear();
+        self.order.clear();
+        if !watching {
+            self.stop_routing();
+        }
         self.p1_window = 1;
         self.windows.truncate(1);
         self.surfaces.truncate(1);
@@ -654,16 +659,19 @@ impl ApplicationHandler for Split<'_> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // The last other player gone: P1 draws on its window again.
         self.refresh_monitors();
+        let on = self.host.settings.extras.splitscreen;
+        self.host.ui.options.split_joined = self.guests.iter().any(|g| g.name.is_some());
+        // Off, or the last other player gone: P1 draws on its window again.
         if !self.surfaces.is_empty()
-            && self.guests.is_empty()
-            && let Err(e) = self.disable(event_loop)
+            && (!on || self.guests.is_empty())
+            && let Err(e) = self.disable(event_loop, on)
         {
             log::warn!("Horizon: splitscreen could not switch back: {e}");
         }
         if self.surfaces.is_empty() {
-            if !self.watching {
+            if !on {
+                self.stop_routing();
                 return self.host.about_to_wait(event_loop);
             }
             // Alone, the controllers watched for someone joining; P1's own drives P1, its

@@ -49,6 +49,19 @@ pub(super) fn claim<Id>(lost: &[Lost<Id>], uuid: [u8; 16], button: Button) -> Cl
 }
 
 impl Split<'_> {
+    /// Give P1 its normal controller reader again and discard pending joins and handoffs.
+    pub(super) fn stop_routing(&mut self) {
+        if self.host.pad.feed.take().is_some() {
+            self.host.pad.release_hardware();
+            self.host.split_hud = Default::default();
+            self.offers.clear();
+            self.fresh.clear();
+            self.lost.clear();
+            self.p1_pad = None;
+            self.pads = PadRouter::default();
+        }
+    }
+
     /// The pad's state for its player: nothing while the press that gave it is still held.
     fn pad_state(&mut self, pad: Option<PadId>) -> PadState {
         let Some(id) = pad else {
