@@ -2891,9 +2891,13 @@ impl Game<'_> {
             if touching && item.pickup_delay == 0 && item.target.is_none_or(|t| t == own) {
                 let before = item.stack.count;
                 let kind = item.stack.item.clone();
+                let thrower = item.thrower;
                 match self.give(item.stack.clone()) {
                     None => {
                         self.stats.add("picked_up", &kind, before as i32);
+                        if let Some(thrower) = thrower {
+                            self.trigger_thrown_picked_up_by_player(&item.stack, thrower);
+                        }
                         self.add_pickup(
                             pickups::Taken::Item(Box::new(item)),
                             pickups::Collector::Player,
@@ -2911,6 +2915,9 @@ impl Game<'_> {
                         if rest.count < before {
                             self.stats
                                 .add("picked_up", &kind, (before - rest.count) as i32);
+                            if let Some(thrower) = thrower {
+                                self.trigger_thrown_picked_up_by_player(&rest, thrower);
+                            }
                             self.add_pickup(
                                 pickups::Taken::Item(Box::new(item.clone())),
                                 pickups::Collector::Player,
@@ -14096,6 +14103,7 @@ impl ApplicationHandler for Game<'_> {
                         server.set_distances(
                             self.settings.render_distance,
                             self.settings.simulation_distance,
+                            self.settings.entity_distance,
                         );
                     }
                     self.clock.end_frame(self.pause);

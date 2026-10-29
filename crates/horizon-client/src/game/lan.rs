@@ -1441,7 +1441,8 @@ impl Game<'_> {
                 crouching: p.pose == horizon_client::pose::Pose::Crouching,
                 spin_attack: p.auto_spin_attack_ticks > 0,
                 on_fire: p.fire_ticks > 0,
-                invisible: self.potions.effects.get("invisibility").is_some(),
+                // ServerPlayer.updateInvisibilityStatus: a spectator is always invisible.
+                invisible: self.potions.effects.get("invisibility").is_some() || self.spectator(),
                 glowing: self.potions.effects.get("glowing").is_some(),
             },
         })
@@ -1612,6 +1613,13 @@ impl Game<'_> {
                     self.ui.rules.bool("player_movement_check"),
                     self.ui.rules.bool("elytra_movement_check"),
                 );
+                // IntegratedServer.getScaledTrackingDistance: the Entity Distance
+                // option scales what an integrated server or a LAN host tracks (a
+                // dedicated one keeps its entity-broadcast-range-percentage).
+                if host.hub.config.integrated || !host.hub.config.dedicated {
+                    host.hub.entity_range_percent =
+                        (self.settings.entity_distance * 100.0).round() as i32;
+                }
                 host.hub
                     .set_immediate_respawn(self.ui.rules.bool("immediate_respawn"));
                 // A server with several levels runs a pass for each
