@@ -2749,6 +2749,12 @@ impl Game<'_> {
                 continue;
             }
             let item = &mut items[i];
+            // `addFreshEntity`: an entity added this tick first ticks the
+            // next one, so a fresh drop's `Age` stays 0 for the tick
+            // function that polls for it (`ItemEntity.tick` counts it up).
+            if item.ticks == 0 {
+                continue;
+            }
             if !ticking(
                 item.position.x.floor() as i32,
                 item.position.z.floor() as i32,
@@ -5269,6 +5275,10 @@ impl Game<'_> {
         }
         if running {
             self.advance_clock();
+            // `MinecraftServer.tickChildren`: the function tags and scheduled
+            // events run before the levels' entity ticks, so a fresh drop
+            // still has `Age: 0` when a tick function's poll looks for it.
+            self.tick_functions();
         }
         if self.use_delay > 0 {
             self.use_delay -= 1;
@@ -9060,7 +9070,6 @@ impl Game<'_> {
         self.tick_stats();
         self.tick_scoreboard();
         self.load_bossbars();
-        self.tick_functions();
         self.tick_worldborder();
         self.tick_subtitles();
         self.spawn_phantoms();
