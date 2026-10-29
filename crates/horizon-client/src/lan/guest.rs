@@ -28,6 +28,7 @@ pub struct SavedBody {
     pub fire_ticks: i32,
     pub air: i32,
     pub fall_distance: f64,
+    pub velocity: [f64; 3],
 }
 
 impl SavedBody {
@@ -37,6 +38,7 @@ impl SavedBody {
             fire_ticks: motion.fire_ticks,
             air: motion.air,
             fall_distance: motion.fall_distance,
+            velocity: [motion.velocity.x, motion.velocity.y, motion.velocity.z],
         }
     }
     /// Put it on a new body.
@@ -44,6 +46,8 @@ impl SavedBody {
         motion.fire_ticks = self.fire_ticks;
         motion.air = self.air;
         motion.fall_distance = self.fall_distance;
+        motion.velocity =
+            horizon_core::geometry::Vec3::new(self.velocity[0], self.velocity[1], self.velocity[2]);
     }
 }
 
@@ -88,6 +92,10 @@ pub struct Guest {
     pub latency: Arc<AtomicI32>,
     pub info: ClientInformation,
     pub brand: String,
+    pub program_subscriptions: Vec<horizon_protocol::program_messages::Subscription>,
+    pub mod_renderers: std::collections::HashMap<String, u32>,
+    pub mod_backlog_ticks: u32,
+    pub mod_views: std::collections::HashMap<u32, (u64, u64)>,
     /// The chunk radius this client is sent.
     pub view_distance: i32,
     pub position: [f64; 3],
@@ -283,6 +291,10 @@ impl Guest {
             view_distance: (i32::from(j.info.view_distance)).clamp(2, view_distance),
             info: j.info,
             brand: j.brand,
+            mod_views: Default::default(),
+            mod_renderers: Default::default(),
+            program_subscriptions: Vec::new(),
+            mod_backlog_ticks: 0,
             position,
             previous_position: position,
             yaw: 0.0,
@@ -531,15 +543,40 @@ pub fn stack_to_network(
     synced_id: impl Fn(&str, &str) -> Option<i32>,
     s: &Option<ItemStack>,
 ) -> Option<Stack> {
+    match try_stack_to_network(item_id, synced_id, s) {
+        Ok(stack) => stack,
+        Err(error) => {
+            eprintln!("Rejected stack serialization: {error}");
+            None
+        }
+    }
+}
+pub fn validate_stack(stack: &Option<ItemStack>) -> Result<(), String> {
+    if let Some(data) = stack.as_ref().and_then(|stack| stack.data()) {
+        crate::component_wire::encode(&data.other)?;
+        for child in data.charged.iter().chain(&data.bundle_contents) {
+            validate_stack(&Some(child.clone()))?;
+        }
+    }
+    Ok(())
+}
+pub fn try_stack_to_network(
+    item_id: impl Fn(&str) -> i32,
+    synced_id: impl Fn(&str, &str) -> Option<i32>,
+    s: &Option<ItemStack>,
+) -> Result<Option<Stack>, String> {
+    validate_stack(s)?;
     network_stack(&item_id, &synced_id, s)
 }
 fn network_stack(
     item_id: &dyn Fn(&str) -> i32,
     synced_id: &dyn Fn(&str, &str) -> Option<i32>,
     s: &Option<ItemStack>,
-) -> Option<Stack> {
+) -> Result<Option<Stack>, String> {
     let enchantment_id = |name: &str| synced_id("minecraft:enchantment", name);
-    let s = s.as_ref()?;
+    let Some(s) = s.as_ref() else {
+        return Ok(None);
+    };
     let mut stack = Stack::new(item_id(&s.item), s.count as i32);
     if s.damage > 0 {
         stack.added.push((
@@ -570,6 +607,12 @@ fn network_stack(
         ));
     }
     if let Some(d) = s.data() {
+        if let Some(custom) = crate::component_wire::encode(&d.other)? {
+            stack.added.push((
+                horizon_protocol::item::component::CUSTOM_DATA,
+                horizon_protocol::item::Component::Nbt(custom),
+            ));
+        }
         if let Some(rgb) = d.dyed_color {
             stack.added.push((
                 horizon_protocol::item::component::DYED_COLOR,
@@ -650,8 +693,11 @@ fn network_stack(
             let charged = d
                 .charged
                 .iter()
-                .filter_map(|c| network_stack(item_id, synced_id, &Some(c.clone())))
-                .collect();
+                .map(|c| {
+                    network_stack(item_id, synced_id, &Some(c.clone()))
+                        .and_then(|s| s.ok_or_else(|| "Missing nested stack".into()))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
             stack.added.push((
                 horizon_protocol::item::component::CHARGED_PROJECTILES,
                 horizon_protocol::item::Component::Stacks(charged),
@@ -662,8 +708,11 @@ fn network_stack(
             let contents = d
                 .bundle_contents
                 .iter()
-                .filter_map(|c| network_stack(item_id, synced_id, &Some(c.clone())))
-                .collect();
+                .map(|c| {
+                    network_stack(item_id, synced_id, &Some(c.clone()))
+                        .and_then(|s| s.ok_or_else(|| "Missing nested stack".into()))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
             stack.added.push((
                 horizon_protocol::item::component::BUNDLE_CONTENTS,
                 horizon_protocol::item::Component::Stacks(contents),
@@ -711,7 +760,7 @@ fn network_stack(
             horizon_protocol::item::Component::Text(name.clone()),
         ));
     }
-    Some(stack)
+    Ok(Some(stack))
 }
 
 /// `Player.isWithinBlockInteractionRange`: `eye` closer than `range` to the

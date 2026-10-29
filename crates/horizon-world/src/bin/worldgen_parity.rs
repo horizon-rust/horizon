@@ -571,15 +571,16 @@ fn noise_aquifer_probe(line: &str, out: &mut impl Write) -> Result<(), Box<dyn s
         }
         Ok(())
     }
-    let fields: Vec<_> = line.splitn(6, ' ').collect();
+    let fields: Vec<_> = line.splitn(4, ' ').collect();
     let seed: i64 = fields[1].parse()?;
     let legacy = fields[2] == "1";
+    let (path, setting, fixture): (String, String, serde_json::Value) =
+        serde_json::from_str(fields[3])?;
     let bundle: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>> =
-        serde_json::from_str(&std::fs::read_to_string(fields[3])?)?;
-    let fixture: serde_json::Value = serde_json::from_str(fields[5])?;
+        serde_json::from_str(&std::fs::read_to_string(path)?)?;
     let mut registry = DensityRegistry::from_json(&bundle["noises"], &bundle["densities"])?;
     let settings: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>> =
-        serde_json::from_str(&bundle["settings"][fields[4]])?;
+        serde_json::from_str(&bundle["settings"][&setting])?;
     let config_text = fixture
         .get("config")
         .map(|c| c.as_str().ok_or("config string"))
@@ -869,8 +870,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let nether = args.next().ok_or("nether")? == "1";
         let json = args.next().ok_or("json")?;
         if command == "router" {
-            let (path, setting) = json.split_once(' ').ok_or("router setting")?;
-            router_probe(path, setting, seed, legacy, nether, &mut out)?;
+            let (path, setting): (String, String) = serde_json::from_str(json)?;
+            router_probe(&path, &setting, seed, legacy, nether, &mut out)?;
             continue;
         }
         if command == "registry" {

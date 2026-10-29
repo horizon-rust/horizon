@@ -101,7 +101,7 @@ impl Game<'_> {
         host_entity: Option<i32>,
         hub: &mut Hub,
         out: &mut States,
-    ) {
+    ) -> Result<(), String> {
         for b in &self.boats {
             let p = b.position;
             let mut e = state(b.id, &b.entity_type(), [p.x, p.y, p.z], b.yaw, b.on_ground);
@@ -182,7 +182,7 @@ impl Game<'_> {
             // Stored main hand, off hand, feet, legs, chest, head: the wire's slots 0 to 5.
             for (slot, item) in a.equipment.iter().enumerate() {
                 if item.is_some() {
-                    e.equipment.push((slot as u8, hub.stack(item)));
+                    e.equipment.push((slot as u8, hub.stack(item)?));
                 }
             }
             e.attributes = self.stand_attributes(a.id, &a.equipment);
@@ -210,7 +210,7 @@ impl Game<'_> {
             }
             if f.item.is_some() {
                 e.meta
-                    .push((9, serializer::ITEM_STACK, Value::Item(hub.stack(&f.item))));
+                    .push((9, serializer::ITEM_STACK, Value::Item(hub.stack(&f.item)?)));
             }
             if f.rotation != 0 {
                 e.meta
@@ -258,7 +258,7 @@ impl Game<'_> {
             }
             out.push(e);
         }
-        self.lan_projectile_states(host_entity, hub, out);
+        self.lan_projectile_states(host_entity, hub, out)?;
         for o in &self.others {
             let p = o.position;
             let mut e = state(o.id, &o.kind, [p.x, p.y, p.z], o.yaw, false);
@@ -266,6 +266,7 @@ impl Game<'_> {
             e.head_yaw = o.yaw;
             out.push(e);
         }
+        Ok(())
     }
 }
 
@@ -316,9 +317,44 @@ impl Game<'_> {
             .for_each(|b| give(&mut b.id));
     }
 
+    pub(super) fn lan_pair_new_projectiles(
+        &mut self,
+        host: &mut super::lan::LanHost,
+        first: usize,
+    ) {
+        if first >= self.creatures.projectiles.len() {
+            return;
+        }
+        self.lan_assign_ids();
+        let ids: Vec<_> = self
+            .creatures
+            .projectiles
+            .iter()
+            .skip(first)
+            .map(|p| p.id as i32)
+            .collect();
+        let mut states = States::default();
+        let host_entity = (!host.hub.config.dedicated).then_some(host.host_entity);
+        if let Err(error) = self.lan_projectile_states(host_entity, &mut host.hub, &mut states) {
+            eprintln!("Rejected projectile snapshot: {error}");
+            return;
+        }
+        let entities: Vec<_> = states
+            .as_slice()
+            .iter()
+            .filter(|e| ids.contains(&e.id))
+            .collect();
+        host.hub.add_entities(&entities);
+    }
+
     /// Primed TNT, falling blocks, projectiles, tridents, firework rockets and
     /// end crystals, as guests track them.
-    fn lan_projectile_states(&self, host_entity: Option<i32>, hub: &mut Hub, out: &mut States) {
+    fn lan_projectile_states(
+        &self,
+        host_entity: Option<i32>,
+        hub: &mut Hub,
+        out: &mut States,
+    ) -> Result<(), String> {
         let owner = |who: Option<horizon_client::mobs::Who>| match who {
             Some(horizon_client::mobs::Who::Mob(id)) => id as i32,
             Some(horizon_client::mobs::Who::Player) => host_entity.unwrap_or(0),
@@ -410,7 +446,7 @@ impl Game<'_> {
                 e.meta.push((
                     8,
                     serializer::ITEM_STACK,
-                    Value::Item(hub.stack(&Some(stack.clone()))),
+                    Value::Item(hub.stack(&Some(stack.clone()))?),
                 ));
             }
             out.push(e);
@@ -457,7 +493,7 @@ impl Game<'_> {
                 e.meta.push((
                     8,
                     serializer::ITEM_STACK,
-                    Value::Item(hub.stack(&Some(r.item.clone()))),
+                    Value::Item(hub.stack(&Some(r.item.clone()))?),
                 ));
             }
             let boosted = match r.guest {
@@ -527,6 +563,7 @@ impl Game<'_> {
             out.push(e);
         }
         out.extend(self.lan_dragon_state());
+        Ok(())
     }
 }
 

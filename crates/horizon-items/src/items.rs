@@ -3,6 +3,7 @@
 //! for the condition, entry and modifier types used by block drops).
 use crate::{Result, blocks::BlockFacts};
 use horizon_core::random::RandomSource;
+use horizon_world::component_patch::{ComponentMap, Patch, Prototype};
 use horizon_world::registry::{BlockRegistry, BlockStateId};
 use serde_json::Value;
 use std::{
@@ -247,6 +248,8 @@ fn registry_order(root: &Path, order: &[Arc<str>]) -> Vec<Arc<str>> {
 const DYNAMIC: &str = "#dynamic:";
 pub struct Items {
     pub items: HashMap<Arc<str>, ItemInfo>,
+    component_prototypes: HashMap<Arc<str>, Prototype<String, Value>>,
+    custom_data_prototypes: HashMap<Arc<str>, Prototype<String, horizon_world::nbt::Tag>>,
     pub order: Vec<Arc<str>>,
     /// The same items in item registry (network id) order, as vanilla lists
     /// them; sorted by name when the registry export is missing.
@@ -455,6 +458,28 @@ impl Items {
     fn load_with(root: &Path, block_for_item: &HashMap<&str, BlockStateId>) -> Result<Self> {
         let raw: BTreeMap<String, Value> =
             serde_json::from_slice(&fs::read(root.join("items.json"))?)?;
+        let component_prototypes = raw
+            .iter()
+            .filter_map(|(name, components)| {
+                Some((
+                    Arc::from(name.as_str()),
+                    Prototype::new(components.as_object()?.iter()
+                        .filter(|(key, _)| !key.starts_with("minecraft:"))
+                        .map(|(key, value)| (key.clone(), value.clone()))),
+                ))
+            })
+            .collect();
+        let custom_data_prototypes = raw.iter()
+            .filter(|(name, _)| matches!(name.as_str(), "pixelmon:tm_gen9" | "pixelmon:tr_gen8"))
+            .filter_map(|(name, components)| {
+                let components = components.as_object()?;
+                Some((Arc::from(name.as_str()), Prototype::new(
+                    components.get("minecraft:custom_data").map(|value| (
+                        "minecraft:custom_data".to_owned(),
+                        horizon_client_core::scoreboard::json_to_tag(value),
+                    )),
+                )))
+            }).collect();
         let entity_tags = load_tags(root, "entity_type")?;
         let mut items = HashMap::new();
         let mut order = Vec::new();
@@ -749,6 +774,8 @@ impl Items {
         let registry_order = registry_order(root, &order);
         Ok(Self {
             items,
+            component_prototypes,
+            custom_data_prototypes,
             order,
             registry_order,
             block_tags: load_tags(root, "block")?,
@@ -762,12 +789,100 @@ impl Items {
     pub fn get(&self, id: &str) -> Option<&ItemInfo> {
         self.items.get(id)
     }
+    /// An effective custom string from the loaded prototype and explicit stack patch.
+    pub fn component_string(&self, stack: &ItemStack, key: &str) -> std::result::Result<Option<String>, String> {
+        use horizon_world::nbt::Tag;
+        if key.len() > 128 || key.starts_with("minecraft:") || !key.contains(':') {
+            return Err("unsupported custom component key".into());
+        }
+        let prototype = self.component_prototypes.get(&stack.item)
+            .ok_or("item component prototype is unavailable")?;
+        let marker = format!("!{key}");
+        let other = stack.data().map(|data| data.other.as_slice()).unwrap_or(&[]);
+        let mut values = other.iter().filter(|(name, _)| name == key);
+        let value = values.next().map(|(_, value)| value);
+        let mut removals = other.iter().filter(|(name, _)| name == &marker);
+        let removal = removals.next().map(|(_, value)| value);
+        if values.next().is_some() || removals.next().is_some() || value.is_some() && removal.is_some() {
+            return Err("conflicting custom component patch entries".into());
+        }
+        let patch = match (value, removal) {
+            (_, Some(Tag::Compound(entries))) if entries.is_empty() => Some(None),
+            (_, Some(_)) => return Err("custom component removal marker is malformed".into()),
+            (Some(Tag::String(value)), None) => {
+                if value.0.len() > 256 {
+                    return Err("component string exceeds 256 bytes".into());
+                }
+                let value = value.to_string().map_err(|_| "component string is not valid Unicode")?;
+                if value.len() > 256 {
+                    return Err("component string exceeds 256 bytes".into());
+                }
+                Some(Some(Value::String(value)))
+            }
+            (Some(_), None) => return Err("custom component is not a string".into()),
+            (None, None) => None,
+        };
+        let patch = Patch::new(patch.into_iter().map(|value| (key.to_owned(), value)));
+        let effective = ComponentMap::from_patch(prototype.clone(), &patch);
+        match effective.get(&key.to_owned()) {
+            None => Ok(None),
+            Some(Value::String(value)) if value.len() <= 256 => Ok(Some(value.clone())),
+            Some(Value::String(_)) => Err("component string exceeds 256 bytes".into()),
+            Some(_) => Err("custom component is not a string".into()),
+        }
+    }
+    /// A machine integer from the effective root compound, without coercion.
+    pub fn custom_data_integer(&self, stack: &ItemStack, field: &str) -> std::result::Result<Option<i64>, String> {
+        use horizon_world::nbt::Tag;
+        if !matches!(&*stack.item, "pixelmon:tm_gen9" | "pixelmon:tr_gen8")
+            || !matches!(field, "tm" | "Gen9Offset")
+        {
+            return Err("held item or integer field is outside the machine allowlist".into());
+        }
+        let prototype = self.custom_data_prototypes.get(&stack.item)
+            .ok_or("item custom data prototype is unavailable")?;
+        let key = "minecraft:custom_data";
+        let other = stack.data().map(|data| data.other.as_slice()).unwrap_or(&[]);
+        let mut values = other.iter().filter(|(name, _)| name == key);
+        let value = values.next().map(|(_, value)| value);
+        let mut removals = other.iter().filter(|(name, _)| name == "!minecraft:custom_data");
+        let removal = removals.next().map(|(_, value)| value);
+        if values.next().is_some() || removals.next().is_some() || value.is_some() && removal.is_some() {
+            return Err("conflicting custom data patch entries".into());
+        }
+        let patch = match (value, removal) {
+            (_, Some(Tag::Compound(entries))) if entries.is_empty() => Some(None),
+            (_, Some(_)) => return Err("custom data removal marker is malformed".into()),
+            (Some(value), None) => Some(Some(value)),
+            (None, None) => None,
+        };
+        // Borrow the full root. Do not copy or serialize unrelated NBT for a field read.
+        let mut effective = ComponentMap::new(Prototype::new(
+            prototype.get(&key.to_owned()).map(|value| (key, value)),
+        ));
+        effective.restore_patch(&Patch::new(patch.into_iter().map(|value| (key, value))));
+        let Some(root) = effective.get(&key).copied() else { return Ok(None); };
+        if !matches!(root, Tag::Compound(_)) {
+            return Err("effective minecraft:custom_data is not a compound".into());
+        }
+        let Some(value) = root.get(field) else { return Ok(None); };
+        let value = match value {
+            Tag::Byte(value) => i64::from(*value),
+            Tag::Short(value) => i64::from(*value),
+            Tag::Int(value) => i64::from(*value),
+            Tag::Long(value) => *value,
+            _ => return Err("custom data field is not a native integer".into()),
+        };
+        Ok(Some(value))
+    }
     /// Only the block and item tags (and the enchantment registry, which the
     /// station rules and loot functions are built from), for tools that need
     /// tag membership.
     pub fn tags_only(root: &Path) -> Result<Self> {
         Ok(Self {
             items: HashMap::new(),
+            component_prototypes: HashMap::new(),
+            custom_data_prototypes: HashMap::new(),
             order: Vec::new(),
             registry_order: Vec::new(),
             block_tags: load_tags(root, "block")?,
@@ -783,6 +898,8 @@ impl Items {
     pub fn for_tests(item_tags: HashMap<String, HashSet<String>>) -> Self {
         Self {
             items: HashMap::new(),
+            component_prototypes: HashMap::new(),
+            custom_data_prototypes: HashMap::new(),
             order: Vec::new(),
             registry_order: Vec::new(),
             block_tags: HashMap::new(),

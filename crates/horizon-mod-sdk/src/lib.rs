@@ -40,7 +40,8 @@ wit_bindgen::generate!({
 pub use exports::horizon::mods::events::{Guest as __Guest, Registration};
 pub use exports::horizon::mods::ui_events::Guest as __UiEventsGuest;
 pub use horizon::mods::{
-    browser, chat, command, game, hud, input, log, recipes, render, storage, ui,
+    audio, browser, chat, command, game, hud, input, log, messages, models, recipes, render,
+    resources, storage, ui,
 };
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for
@@ -184,22 +185,69 @@ macro_rules! export_mod {
 pub mod server {
     wit_bindgen::generate!({
         path: "wit",
-        world: "horizon-server-mod",
+        world: "horizon-interaction-server-mod",
         pub_export_macro: true,
         export_macro_name: "__export_horizon_server_mod",
         default_bindings_module: "horizon_mod_sdk::server",
         with: {
             "horizon:mods/log@0.1.0": crate::log,
             "horizon:mods/storage@0.1.0": crate::storage,
+            "horizon:mods/resources@0.1.0": crate::resources,
+            "horizon:mods/messages@0.1.0": crate::messages,
         },
     });
 
+    pub use crate::{messages, resources};
     pub use exports::horizon::mods::server_events::{
-        Argument, ArgumentKind, ArgumentValue, BlockPos, Guest as __Guest, Registration,
-        ServerCommand,
+        Argument, ArgumentKind, ArgumentValue, BlockPos, Guest as __Guest,
+        Registration as __Registration, ServerCommand,
     };
+    pub use exports::horizon::mods::server_interactions::{
+        BlockUse, Guest as __InteractionsGuest, Hand, InteractionPos, InteractionResult, ItemUse,
+    };
+    pub struct Registration {
+        pub commands: Vec<ServerCommand>,
+        pub tick: bool,
+        pub joins: bool,
+        pub chat: bool,
+        pub blocks: bool,
+        pub(crate) interactions: bool,
+    }
+    impl Registration {
+        pub fn on_interactions(mut self) -> Self {
+            self.interactions = true;
+            self
+        }
+        #[doc(hidden)]
+        pub fn into_host(self) -> (__Registration, bool) {
+            (
+                __Registration {
+                    commands: self.commands,
+                    tick: self.tick,
+                    joins: self.joins,
+                    chat: self.chat,
+                    blocks: self.blocks,
+                },
+                self.interactions,
+            )
+        }
+    }
+    impl InteractionResult {
+        pub fn pass() -> Self {
+            Self {
+                handled: false,
+                consume: 0,
+                feedback: None,
+            }
+        }
+    }
     pub use horizon::mods::players::{self, GameMode, Player};
     pub use horizon::mods::world::{self, BlockChange};
+    /// Owned records and read-only collision probes. Experimental entities.
+    pub use horizon::mods::entities;
+    pub use horizon::mods::world_storage;
+    /// Physical slots, custom strings and restricted machine integers. Experimental inventory.
+    pub use horizon::mods::inventory;
 
     /// The server's calls into a mod. Only the hooks [`Registration`] asks
     /// for are called; the others may stay as their defaults.
@@ -228,6 +276,20 @@ pub mod server {
         /// When [`Registration::blocks`] is set: `state` is what was there.
         fn block_broken(&mut self, _player: &Player, _pos: BlockPos, _state: &str) {}
         fn block_placed(&mut self, _player: &Player, _pos: BlockPos, _state: &str) {}
+        fn item_used(
+            &mut self,
+            _player: &Player,
+            _event: &ItemUse,
+        ) -> Result<InteractionResult, String> {
+            Ok(InteractionResult::pass())
+        }
+        fn block_used(
+            &mut self,
+            _player: &Player,
+            _event: &BlockUse,
+        ) -> Result<InteractionResult, String> {
+            Ok(InteractionResult::pass())
+        }
     }
 
     impl Registration {
@@ -239,6 +301,7 @@ pub mod server {
                 joins: false,
                 chat: false,
                 blocks: false,
+                interactions: false,
             }
         }
         /// Adds `/name`, taking free text ([`Args::text`]): one optional
@@ -390,9 +453,10 @@ macro_rules! export_server_mod {
     ($t:ty) => {
         const _: () = {
             use ::std::cell::RefCell;
-            use $crate::server::{Args, ArgumentValue, BlockPos, Player, Registration, ServerMod};
+            use $crate::server::{Args, ArgumentValue, BlockPos, Player, ServerMod, ItemUse, BlockUse, InteractionResult};
             ::std::thread_local! {
                 static STATE: RefCell<Option<$t>> = const { RefCell::new(None) };
+                static INTERACTIONS: ::std::cell::Cell<bool> = const { ::std::cell::Cell::new(false) };
             }
             fn with(f: impl FnOnce(&mut $t)) {
                 STATE.with(|s| {
@@ -403,9 +467,11 @@ macro_rules! export_server_mod {
             }
             struct Export;
             impl $crate::server::__Guest for Export {
-                fn init() -> Result<Registration, String> {
+                fn init() -> Result<$crate::server::__Registration, String> {
                     let (m, registration) = <$t as ServerMod>::init()?;
                     STATE.with(|s| *s.borrow_mut() = Some(m));
+                    let (registration, interactions) = registration.into_host();
+                    INTERACTIONS.with(|enabled| enabled.set(interactions));
                     Ok(registration)
                 }
                 fn tick(tick: u64) {
@@ -436,6 +502,17 @@ macro_rules! export_server_mod {
                 }
                 fn block_placed(player: Player, pos: BlockPos, state: String) {
                     with(|m| m.block_placed(&player, pos, &state))
+                }
+            }
+            impl $crate::server::__InteractionsGuest for Export {
+                fn enabled() -> bool {INTERACTIONS.with(|enabled| enabled.get())}
+                fn item_used(player: Player, event: ItemUse) -> Result<InteractionResult,String> {
+                    let mut result=Err("The program is not running".into());
+                    with(|m| result=m.item_used(&player,&event)); result
+                }
+                fn block_used(player: Player, event: BlockUse) -> Result<InteractionResult,String> {
+                    let mut result=Err("The program is not running".into());
+                    with(|m| result=m.block_used(&player,&event)); result
                 }
             }
             #[cfg(target_arch = "wasm32")]

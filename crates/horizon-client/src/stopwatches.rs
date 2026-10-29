@@ -1,13 +1,8 @@
 //! `Stopwatches`: the named wall-clock timers of `/stopwatch`, saved in
 //! `data/minecraft/stopwatches.dat` as the elapsed milliseconds of each.
-use crate::save;
+use crate::save::{self, SavePath, WorldPath};
 use horizon_world::nbt::{Compound, JavaString, Tag};
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-    sync::OnceLock,
-    time::Instant,
-};
+use std::{collections::BTreeMap, sync::OnceLock, time::Instant};
 
 /// `Util.getMillis`, measured from the first call.
 pub fn current_time() -> i64 {
@@ -31,11 +26,11 @@ pub struct Stopwatches {
     watches: BTreeMap<String, Stopwatch>,
     dirty: bool,
 }
-fn file(root: &Path) -> PathBuf {
-    root.join("data/minecraft/stopwatches.dat")
+fn file(root: &(impl SavePath + ?Sized)) -> WorldPath {
+    root.owned().join("data/minecraft/stopwatches.dat")
 }
 impl Stopwatches {
-    pub fn load(root: &Path) -> Self {
+    pub fn load(root: &(impl SavePath + ?Sized)) -> Self {
         let mut s = Self::default();
         let now = current_time();
         if let Some(Tag::Compound(data)) =
@@ -56,24 +51,27 @@ impl Stopwatches {
         }
         s
     }
-    pub fn save(&mut self, root: &Path) {
+    pub fn save(&mut self, root: &(impl SavePath + ?Sized)) {
         if !self.dirty && self.watches.is_empty() {
             return;
         }
-        self.dirty = false;
         let now = current_time();
         let map: Compound = self
             .watches
             .iter()
             .map(|(k, w)| (k.as_str().into(), Tag::Long(w.elapsed_ms(now))))
             .collect();
-        let _ = save::write_dat(
+        if save::write_dat(
             &file(root),
             Tag::compound([
                 ("data", Tag::compound([("stopwatches", Tag::Compound(map))])),
                 ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
             ]),
-        );
+        )
+        .is_ok()
+        {
+            self.dirty = false;
+        }
     }
     pub fn ids(&self) -> Vec<String> {
         self.watches.keys().cloned().collect()

@@ -7,10 +7,12 @@ import com.mojang.blaze3d.font.UnbakedGlyph;
 import com.mojang.serialization.JsonOps;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.HashSet;
+import java.util.Objects;
 import java.util.Set;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GlyphSource;
@@ -33,10 +35,12 @@ import net.minecraft.util.RandomSource;
  */
 public final class ParityFont {
     public static ResourceManager resources() throws Exception {
-        return resources(Path.of("/nonexistent-horizon-assets"));
+        return resources(Path.of(Objects.requireNonNull(System.getProperty("horizon.parity.assets"),
+            "Set -Dhorizon.parity.assets to the prepared assets directory")));
     }
 
     public static ResourceManager resources(Path assets) throws Exception {
+        if (!Files.isDirectory(assets)) throw new IllegalArgumentException("Missing prepared assets: " + assets);
         var method = net.minecraft.client.resources.ClientPackSource.class.getDeclaredMethod("createVanillaPackSource", Path.class);
         method.setAccessible(true);
         var pack = (net.minecraft.server.packs.VanillaPackResources) method.invoke(null, assets);
@@ -44,19 +48,7 @@ public final class ParityFont {
     }
 
     public static Font create(ResourceManager resources) throws Exception {
-        List<GlyphProvider> providers = new ArrayList<>();
-        for (String include : new String[] {"space", "default"}) {
-            var id = Identifier.withDefaultNamespace("font/include/" + include + ".json");
-            try (var reader = new InputStreamReader(resources.open(id), StandardCharsets.UTF_8)) {
-                var json = JsonParser.parseReader(reader).getAsJsonObject();
-                for (var element : json.getAsJsonArray("providers")) {
-                    var conditional = GlyphProviderDefinition.Conditional.CODEC.parse(JsonOps.INSTANCE, element).getOrThrow();
-                    var loader = conditional.definition().unpack().left().orElseThrow();
-                    providers.add(loader.load(resources));
-                }
-            }
-        }
-        return create(providers);
+        return createDefault(resources);
     }
 
     /** The full default font, including references and the external Unihex fallback. */

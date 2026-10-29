@@ -359,10 +359,12 @@ pub fn restore(dir: &Path, name: &str, yes: bool) -> Result<(), String> {
         }
     }
     if let Some(client) = Client::open(dir)? {
-        let before = client.call("GET", "/api/v1/status", None)?["engine_pid"].as_u64();
-        client.call("POST", "/api/v1/restore", Some(&json!({ "name": name })))?;
+        let accepted = client.call("POST", "/api/v1/restore", Some(&json!({ "name": name })))?;
+        let restore_id = accepted["id"]
+            .as_u64()
+            .ok_or("the server did not identify the restore request")?;
         print!("Restoring {name}: restarting the game with it");
-        wait_running(&client, before)?;
+        wait_restore(&client, restore_id)?;
         println!(
             "\nThe game is running on the restored world; `horizon-server logs` has the details."
         );
@@ -378,6 +380,53 @@ pub fn restore(dir: &Path, name: &str, yes: bool) -> Result<(), String> {
         None => println!("Restored {name}"),
     }
     Ok(())
+}
+
+fn completed_restore(status: &Value, id: u64) -> Option<Result<(), String>> {
+    let last = &status["restore"]["last"];
+    if last["id"].as_u64() != Some(id) {
+        return status["restore"]["finished"]
+            .as_u64()
+            .filter(|finished| *finished >= id)
+            .map(|_| {
+                Err("another restore completed before this restore could be confirmed".into())
+            });
+    }
+    Some(if last["ok"] != true {
+        Err(last["message"]
+            .as_str()
+            .unwrap_or("the restore failed; `horizon-server logs` has the details")
+            .to_owned())
+    } else if last["engine_pid"].as_u64().is_some()
+        && last["world"].as_str().is_some()
+        && status["phase"] == "running"
+        && status["engine_pid"] == last["engine_pid"]
+        && status["world"] == last["world"]
+    {
+        Ok(())
+    } else {
+        Err("the game changed or stopped after the restore completed; `horizon-server logs` has the details".into())
+    })
+}
+
+/// Waits for the restore result and the replacement game to come up.
+fn wait_restore(client: &Client, id: u64) -> Result<(), String> {
+    let deadline = Instant::now() + START_TIMEOUT;
+    loop {
+        let status = client.call("GET", "/api/v1/status", None)?;
+        if let Some(result) = completed_restore(&status, id) {
+            return result;
+        }
+        if Instant::now() > deadline {
+            return Err(format!(
+                "the game isn't up after {} s; `horizon-server logs` shows why",
+                START_TIMEOUT.as_secs()
+            ));
+        }
+        print!(".");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        std::thread::sleep(Duration::from_millis(500));
+    }
 }
 
 /// `logs [-f] [-n N]`: the last lines, from the running server or else from logs/latest.log.
@@ -466,5 +515,52 @@ mod tests {
             ),
             "Restarting\nUpdating: Starting the game on v2\n"
         );
+    }
+
+    #[test]
+    fn a_failed_restore_is_not_reported_as_success() {
+        let status = json!({
+            "restore": {
+                "last": {
+                    "id": 4,
+                    "name": "backup.zip",
+                    "ok": false,
+                    "message": "Could not restore backup.zip: world.name changed"
+                }
+            }
+        });
+        assert_eq!(
+            completed_restore(&status, 4),
+            Some(Err(
+                "Could not restore backup.zip: world.name changed".into()
+            ))
+        );
+        assert_eq!(completed_restore(&status, 5), None);
+        let success = json!({
+            "phase": "running", "engine_pid": 42, "world": "world",
+            "restore": {
+                "finished": 4,
+                "last": { "id": 4, "ok": true, "message": "Restored backup.zip", "engine_pid": 42, "world": "world" }
+            }
+        });
+        assert_eq!(completed_restore(&success, 4), Some(Ok(())));
+        for (key, value) in [
+            ("engine_pid", json!(43)),
+            ("engine_pid", Value::Null),
+            ("world", json!("next-world")),
+            ("phase", json!("restarting")),
+        ] {
+            let mut changed = success.clone();
+            changed[key] = value;
+            assert!(
+                completed_restore(&changed, 4).unwrap().is_err(),
+                "{changed}"
+            );
+        }
+        assert!(completed_restore(&success, 3).unwrap().is_err());
+        let mut pending = success;
+        pending["restore"]["last"] = Value::Null;
+        pending["restore"]["finished"] = json!(3);
+        assert_eq!(completed_restore(&pending, 4), None);
     }
 }

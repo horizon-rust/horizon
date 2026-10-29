@@ -1024,10 +1024,11 @@ fn give_morning_gift(m: &mut Mob, cx: &mut Cx) {
             })
         };
         let fluids = w.fluids(b, feet);
-        if !dangerous([x, ground, z])
-            && w.no_collision(b)
-            && !(fluids.in_water || fluids.in_lava)
-            && !in_box(&dangerous)
+        if !(dangerous([x, ground, z])
+            || !w.no_collision(b)
+            || fluids.in_water
+            || fluids.in_lava
+            || in_box(&dangerous))
         {
             m.position = Vec3::new(f64::from(x), feet, f64::from(z));
             m.previous = m.position;

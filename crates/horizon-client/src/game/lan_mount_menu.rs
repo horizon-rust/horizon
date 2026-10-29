@@ -92,15 +92,22 @@ impl Game<'_> {
         if gm.sent == now {
             return;
         }
+        let (slots, carried) = now.clone().unwrap_or_default();
+        let (items, carried) = match host.hub.stacks(&slots, &carried) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                eprintln!("Rejected mount snapshot: {error}");
+                return;
+            }
+        };
         gm.state = (gm.state + 1) & 0x7FFF;
         let (window, state) = (gm.window, gm.state);
-        let (slots, carried) = now.clone().unwrap_or_default();
         gm.sent = now;
         let content = C::ContainerSetContent(play::ContainerSetContent {
             container: window,
             state,
-            items: slots.iter().map(|s| host.hub.stack(s)).collect(),
-            carried: host.hub.stack(&carried),
+            items,
+            carried,
         });
         host.hub.send_to(conn, &content);
     }

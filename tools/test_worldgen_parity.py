@@ -170,7 +170,7 @@ def noise_aquifer_corpus(bundle, resources):
     rng = random.Random(0x484f52495a4f4e41515549)
     density_bits = ["0000000000000000","8000000000000000","bff0000000000000","bfb999999999999a","0000000000000001","8000000000000001","7ff0000000000000","fff0000000000000","7ff0000000000001","fff8000000000000"]
     def emit(seed, legacy, setting, fixture):
-        return f"noise_aquifer {seed} {legacy} {bundle} {setting} "+json.dumps(fixture,separators=(",",":"))
+        return f"noise_aquifer {seed} {legacy} "+json.dumps([str(bundle),setting,fixture],separators=(",",":"))
     def fixture(minimum, sizes=(16,128,16), steps=(1,1,1), count=128):
         queries=[]
         for i in range(count):
@@ -302,7 +302,7 @@ def main():
     def named(resources, kind):
         prefix = f"data/minecraft/worldgen/{kind}/"
         return {"minecraft:"+name[len(prefix):-5]:text for name,text in resources.items()}
-    bundle = build/"registries.json"
+    bundle = build/"registry bundle.json"
     named_settings = named(settings,"noise_settings")
     source = lab.ROOT/"mods/horizon/src/test/java/dev/horizonlab/parity/VanillaWorldgenOracle.java"
     exporter = source.with_name("VanillaBiomeExport.java")
@@ -350,7 +350,7 @@ def main():
             for optimized in [0,1]:
                 commands.append(f"registry {seed} {legacy} {optimized} {bundle}")
                 for name in named_settings:
-                    commands.append(f"router {seed} {legacy} {optimized} {bundle} {name}")
+                    commands.append(f"router {seed} {legacy} {optimized} "+json.dumps([str(bundle),name],separators=(",",":")))
     inputs = build/"inputs.txt"
     inputs.write_text("\n".join(commands)+"\n",encoding="utf-8")
     fixture_paths = [bundle,inputs,*preset_files.values(),*tag_export_files.values()]

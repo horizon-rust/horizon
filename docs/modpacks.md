@@ -1084,3 +1084,7 @@ the mods that need porting (not counting performance mods and libraries), 2 of 8
   login, as Zenith does) or only download published ports.
 - CurseForge: dropped for now (its API needs a paid key; Ludovic, 2026-10-22), shown as coming
   soon. CurseForge packs import from their zip or an installed instance.
+
+Explicit block state aliases may be supplied in `<work>/oracle/state-aliases.json`, keyed by observed block ID. Each entry has `template` and `states`, using the content block state schema in `docs/mods.md`. Every observed variant and its default must match. Aliases name complete states of the same declared vanilla template. Their physics and behavior remain the template's. These declarations enter carry before item and recipe filtering. Without the file, template selection is unchanged.
+
+An override may set `fallback_only: true` to keep an ordinary template when one already matches. Its explicit state aliases are used only when ordinary selection has no match.

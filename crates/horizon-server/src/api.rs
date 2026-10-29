@@ -52,7 +52,7 @@ pub const ROUTES: [Route; 11] = [
         method: "GET",
         path: "/api/v1/status",
         takes: "",
-        answers: "`phase`, `version`, `pid`, `uptime_seconds`, `engine_pid`, `engine_uptime_seconds`, `crashes`, `last_crash`, `sample` (TPS, MSPT, players, RAM, CPU), `update`",
+        answers: "`phase`, `version`, `pid`, `uptime_seconds`, `engine_pid`, `engine_uptime_seconds`, `world`, `crashes`, `last_crash`, `sample` (TPS, MSPT, players, RAM, CPU), `update`, `restore`",
         what: "How the server does",
     },
     Route {
@@ -108,7 +108,7 @@ pub const ROUTES: [Route; 11] = [
         method: "POST",
         path: "/api/v1/restore",
         takes: "`{\"name\": \"<backup>\"}`",
-        answers: "`{\"name\": \"<backup>\"}`",
+        answers: "`{\"name\": \"<backup>\", \"id\": N}`; `status.restore.last` reports `id`, `name`, `world`, `engine_pid`, `ok`, `message` once the replacement runs or the restore fails",
         what: "Restart the game with that backup's world (the current one is kept in backups/)",
     },
     Route {
@@ -150,6 +150,7 @@ impl Phase {
 
 pub struct State {
     pub phase: Phase,
+    pub world_name: Option<String>,
     pub engine_pid: Option<u32>,
     pub engine_started: Option<Instant>,
     pub crashes: u32,
@@ -200,6 +201,36 @@ pub struct Updates {
     pub pending: Option<(String, Duration)>,
 }
 
+#[derive(Clone, Debug)]
+pub struct RestoreRequest {
+    pub id: u64,
+    pub name: String,
+    pub world: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct RestoreResult {
+    pub id: u64,
+    pub name: String,
+    pub world: String,
+    pub engine_pid: Option<u32>,
+    pub ok: bool,
+    pub message: String,
+}
+
+#[derive(Default)]
+pub struct RestoreState {
+    pub pending: Option<RestoreRequest>,
+    pub requested: u64,
+    pub finished: u64,
+    pub last: Option<RestoreResult>,
+}
+
+pub enum RestoreError {
+    NotFound(String),
+    Conflict(String),
+}
+
 /// What the supervisor and the API threads share.
 pub struct Shared {
     pub dir: PathBuf,
@@ -207,10 +238,10 @@ pub struct Shared {
     pub log: Mutex<Log>,
     pub stop: AtomicBool,
     pub restart: AtomicBool,
-    /// The backup to put in place before the game starts again (`restore`).
-    pub restore: Mutex<Option<String>>,
-    /// Held while a backup is written: one at a time.
-    pub backing_up: Mutex<()>,
+    /// The pending restore and the last completed restore.
+    pub restore: Mutex<RestoreState>,
+    /// Serializes backups, console commands and engine lifecycle changes.
+    pub lifecycle: Mutex<()>,
     pub started: Instant,
     /// The last samples, oldest first, for the panel's graphs.
     pub metrics: Mutex<VecDeque<Value>>,
@@ -231,6 +262,7 @@ impl Shared {
             dir: dir.to_owned(),
             state: Mutex::new(State {
                 phase: Phase::Starting,
+                world_name: None,
                 engine_pid: None,
                 engine_started: None,
                 crashes: 0,
@@ -240,8 +272,8 @@ impl Shared {
             log: Mutex::new(Log::default()),
             stop: AtomicBool::new(false),
             restart: AtomicBool::new(false),
-            restore: Mutex::new(None),
-            backing_up: Mutex::new(()),
+            restore: Mutex::new(RestoreState::default()),
+            lifecycle: Mutex::new(()),
             started: Instant::now(),
             metrics: Mutex::new(VecDeque::new()),
             panel: Mutex::new(panel::Auth::default()),
@@ -335,34 +367,124 @@ impl Shared {
     pub fn set_phase(&self, phase: Phase) {
         self.state.lock().unwrap().phase = phase;
     }
-    fn phase(&self) -> Phase {
-        self.state.lock().unwrap().phase
+
+    /// Accepts a restore while protecting selection from automatic retention.
+    pub fn request_restore(&self, requested: &str) -> Result<RestoreRequest, RestoreError> {
+        let _operation = self.lifecycle.lock().unwrap();
+        let (phase, active_world) = {
+            let state = self.state.lock().unwrap();
+            (state.phase, state.world_name.clone())
+        };
+        if phase != Phase::Running {
+            return Err(RestoreError::Conflict(
+                "the game isn't running right now".into(),
+            ));
+        }
+        let active_world = active_world
+            .ok_or_else(|| RestoreError::Conflict("the running world is unknown".into()))?;
+        let config = Config::load(&self.dir).map_err(RestoreError::Conflict)?;
+        if config.world.name != active_world {
+            return Err(RestoreError::Conflict(format!(
+                "world.name changed from {active_world:?} to {:?}; restore must wait until the server restarts",
+                config.world.name
+            )));
+        }
+        let name = backup::find(&self.dir, requested).map_err(RestoreError::NotFound)?;
+        backup::check_world(&self.dir, &name, &active_world).map_err(RestoreError::Conflict)?;
+
+        let mut restore = self.restore.lock().unwrap();
+        if restore.requested > restore.finished {
+            return Err(RestoreError::Conflict(
+                "a restore is already under way".into(),
+            ));
+        }
+        let id = restore
+            .requested
+            .checked_add(1)
+            .ok_or_else(|| RestoreError::Conflict("too many restore requests".into()))?;
+        let request = RestoreRequest {
+            id,
+            name,
+            world: active_world,
+        };
+        restore.requested = id;
+        restore.pending = Some(request.clone());
+        self.restart.store(true, Ordering::SeqCst);
+        Ok(request)
     }
 
-    /// A backup while the server runs: the game saves everything and stops writing while the zip is made.
-    pub fn back_up(&self, file_name: &str) -> Result<PathBuf, String> {
-        let _one = self.backing_up.lock().unwrap();
-        let config = Config::load(&self.dir)?;
-        let mut game = match self.phase() {
-            Phase::Running => Some(
-                engine::Control::connect(&self.dir)
-                    .map_err(|e| format!("the game didn't answer: {e}"))?,
-            ),
-            // Between a crash and the restart nothing writes the world.
-            Phase::Restarting => None,
-            Phase::Starting | Phase::Stopping => {
-                return Err("the game is starting or stopping: try again in a moment".into());
-            }
-        };
-        if let Some(game) = game.as_mut() {
-            for command in ["console save-off", "console save-all flush"] {
-                game.ask(command)
-                    .map_err(|e| format!("the game didn't save: {e}"))?;
-            }
+    /// Takes the accepted restore. The supervisor calls this while holding `lifecycle` through use.
+    pub fn take_restore(&self) -> Option<RestoreRequest> {
+        self.restore.lock().unwrap().pending.take()
+    }
+
+    /// Records the completed restore for API callers waiting through the restart.
+    pub fn finish_restore(&self, result: RestoreResult) {
+        let mut restore = self.restore.lock().unwrap();
+        if result.id == restore.requested && result.id > restore.finished {
+            restore.finished = result.id;
+            restore.last = Some(result);
         }
-        let result = backup::create(&self.dir, &config, file_name);
-        if let Some(game) = game.as_mut() {
-            let _ = game.ask("console save-on");
+    }
+
+    /// Applies automatic retention without deleting a restore accepted by the API.
+    pub fn prune_backups(&self, keep: usize) -> Vec<String> {
+        let _operation = self.lifecycle.lock().unwrap();
+        let protected = self
+            .restore
+            .lock()
+            .unwrap()
+            .pending
+            .as_ref()
+            .map(|request| request.name.clone());
+        backup::prune_protecting(&self.dir, keep, protected.as_deref())
+    }
+    /// Archive the running world's held snapshot, then release it.
+    pub fn back_up(&self, file_name: &str) -> Result<PathBuf, String> {
+        let _operation = self.lifecycle.lock().unwrap();
+        let mut config = Config::load(&self.dir)?;
+        config.world.name = {
+            let state = self.state.lock().unwrap();
+            if state.phase != Phase::Running {
+                return Err("the game isn't running: try again after it starts".into());
+            }
+            state
+                .world_name
+                .clone()
+                .ok_or("the running world is unknown")?
+        };
+        let mut game = engine::Control::connect(&self.dir)
+            .map_err(|e| format!("the game didn't answer: {e}"))?;
+        let snapshot = random_token();
+        let ask = |game: &mut engine::Control, command: &str| -> Result<Value, String> {
+            let reply = game.ask(command).map_err(|e| e.to_string())?;
+            if let Some(error) = reply["error"].as_str() {
+                return Err(error.to_owned());
+            }
+            if reply["ok"] != true || reply["snapshot"].as_str() != Some(snapshot.as_str()) {
+                return Err("the game did not acknowledge this backup snapshot".into());
+            }
+            Ok(reply)
+        };
+        let result = (|| {
+            let held = ask(&mut game, &format!("backup-begin {snapshot}"))
+                .map_err(|e| format!("the game didn't save: {e}"))?;
+            if held["world"].as_str() != Some(config.world.name.as_str()) {
+                return Err("the game acknowledged a different world".into());
+            }
+            backup::create(&self.dir, &config, file_name)
+        })();
+        let release = format!("backup-end {snapshot}");
+        let resume = ask(&mut game, &release).or_else(|_| {
+            let mut game = engine::Control::connect(&self.dir).map_err(|e| e.to_string())?;
+            ask(&mut game, &release)
+        });
+        if let Err(error) = resume {
+            let made = match result {
+                Ok(path) => format!("backed up to {}", path.display()),
+                Err(error) => error,
+            };
+            return Err(format!("{made}; the game didn't resume saving: {error}"));
         }
         result
     }
@@ -370,17 +492,32 @@ impl Shared {
 
 fn status(shared: &Shared) -> Value {
     let state = shared.state.lock().unwrap();
+    let restore = shared.restore.lock().unwrap();
     json!({
         "phase": state.phase.name(),
         "version": crate::VERSION,
         "pid": std::process::id(),
         "uptime_seconds": shared.started.elapsed().as_secs(),
         "engine_pid": state.engine_pid,
+        "world": state.world_name,
         "engine_uptime_seconds": state.engine_started.map(|t| t.elapsed().as_secs()),
         "crashes": state.crashes,
         "last_crash": state.last_crash,
         "sample": state.sample,
         "update": updates(shared),
+        "restore": {
+            "requested": restore.requested,
+            "finished": restore.finished,
+            "busy": restore.requested > restore.finished,
+            "last": restore.last.as_ref().map(|last| json!({
+                "id": last.id,
+                "name": last.name,
+                "world": last.world,
+                "engine_pid": last.engine_pid,
+                "ok": last.ok,
+                "message": last.message,
+            })),
+        },
     })
 }
 
@@ -516,8 +653,19 @@ pub fn route(shared: &Arc<Shared>, request: &Request) -> Response {
             let Some(line) = line.filter(|l| !l.trim().is_empty() && !l.contains('\n')) else {
                 return Response::error(400, "the body must be {\"line\": \"<one command>\"}");
             };
+            let _operation = shared.lifecycle.lock().unwrap();
             if shared.state.lock().unwrap().phase != Phase::Running {
                 return Response::error(409, "the game isn't running right now");
+            }
+            if line
+                .trim()
+                .trim_start_matches('/')
+                .split_whitespace()
+                .next()
+                == Some("stop")
+            {
+                shared.set_phase(Phase::Stopping);
+                shared.stop.store(true, Ordering::SeqCst);
             }
             match engine::Control::connect(&shared.dir)
                 .and_then(|mut c| c.ask(&format!("console {}", line.trim_start_matches('/'))))
@@ -555,13 +703,12 @@ pub fn route(shared: &Arc<Shared>, request: &Request) -> Response {
         }
         ("POST", "/api/v1/restore") => {
             let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
-            match backup::find(&shared.dir, body["name"].as_str().unwrap_or_default()) {
-                Ok(name) => {
-                    *shared.restore.lock().unwrap() = Some(name.clone());
-                    shared.restart.store(true, Ordering::SeqCst);
-                    Response::json(200, &json!({ "name": name }))
+            match shared.request_restore(body["name"].as_str().unwrap_or_default()) {
+                Ok(restore) => {
+                    Response::json(200, &json!({ "name": restore.name, "id": restore.id }))
                 }
-                Err(e) => Response::error(404, &e),
+                Err(RestoreError::NotFound(e)) => Response::error(404, &e),
+                Err(RestoreError::Conflict(e)) => Response::error(409, &e),
             }
         }
         ("POST", "/api/v1/update") => {
@@ -639,6 +786,175 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn backup_server(dir: &Path) -> Arc<Shared> {
+        std::fs::create_dir_all(dir.join("world")).unwrap();
+        std::fs::write(dir.join("world/level.dat"), b"active-world-42").unwrap();
+        std::fs::write(dir.join("server.toml"), crate::config::TEMPLATE).unwrap();
+        let shared = Shared::with_install(dir, None);
+        {
+            let mut state = shared.state.lock().unwrap();
+            state.phase = Phase::Running;
+            state.world_name = Some("world".into());
+        }
+        shared
+    }
+
+    #[test]
+    fn backups_follow_the_active_world_and_reject_transitions() {
+        use crate::test_support::{Engine, TempDir};
+        let dir = TempDir::new("active-world");
+        let shared = backup_server(&dir);
+        let peer = Engine::start(&dir, |line| {
+            let (command, id) = line.split_once(' ').unwrap();
+            assert!(matches!(command, "backup-begin" | "backup-end"));
+            json!({"ok": true, "snapshot": id, "world": "world"})
+        });
+        for name in ["world", "absent-world", "different-world"] {
+            if name == "different-world" {
+                std::fs::create_dir(dir.join(name)).unwrap();
+                std::fs::write(dir.join(name).join("level.dat"), b"wrong-world-93").unwrap();
+            }
+            let mut config = Config::default();
+            config.world.name = name.into();
+            std::fs::write(dir.join("server.toml"), crate::config::render(&config)).unwrap();
+            let path = shared.back_up(&format!("{name}.zip")).unwrap();
+            let mut zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+            let mut marker = String::new();
+            std::io::Read::read_to_string(
+                &mut zip.by_name("world/level.dat").unwrap(),
+                &mut marker,
+            )
+            .unwrap();
+            assert_eq!(marker, "active-world-42");
+            assert!(!zip.file_names().any(|p| p.starts_with("different-world/")));
+        }
+        assert_eq!(peer.commands.lock().unwrap().len(), 6);
+        for phase in [Phase::Starting, Phase::Stopping, Phase::Restarting] {
+            shared.set_phase(phase);
+            let error = shared.back_up("transition.zip").unwrap_err();
+            assert!(error.contains("isn't running"), "{error}");
+        }
+        assert!(!dir.join("backups/transition.zip").exists());
+        assert_eq!(peer.commands.lock().unwrap().len(), 6);
+    }
+
+    #[test]
+    fn restore_rejects_a_pending_world_name_change() {
+        use crate::test_support::TempDir;
+        let dir = TempDir::new("pending-world-restore");
+        let shared = backup_server(&dir);
+        let config = Config::default();
+        backup::create(&dir, &config, "active.zip").unwrap();
+        let mut pending = config;
+        pending.world.name = "next-world".into();
+        std::fs::write(dir.join("server.toml"), crate::config::render(&pending)).unwrap();
+
+        let response = route(
+            &shared,
+            &http::Request {
+                method: "POST".into(),
+                path: "/api/v1/restore".into(),
+                query: String::new(),
+                headers: Vec::new(),
+                body: json!({"name": "active.zip"}).to_string().into_bytes(),
+            },
+        );
+        assert_eq!(response.status, 409, "{}", response.body);
+        assert!(!shared.restart.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn accepted_restore_survives_pruning_with_a_positive_control() {
+        use crate::test_support::TempDir;
+        use std::time::{Duration, SystemTime};
+        let dir = TempDir::new("restore-pruning");
+        let shared = backup_server(&dir);
+        let config = Config::default();
+        let t = SystemTime::UNIX_EPOCH + Duration::from_secs(1_792_000_000);
+        let pinned = backup::auto_name(t);
+        backup::create(&dir, &config, &pinned).unwrap();
+        let eligible = backup::auto_name(t + Duration::from_secs(60));
+        let newest = backup::auto_name(t + Duration::from_secs(120));
+        std::fs::write(dir.join("backups").join(&eligible), b"eligible").unwrap();
+        std::fs::write(dir.join("backups").join(&newest), b"newest").unwrap();
+
+        let response = route(
+            &shared,
+            &http::Request {
+                method: "POST".into(),
+                path: "/api/v1/restore".into(),
+                query: String::new(),
+                headers: Vec::new(),
+                body: json!({"name": pinned}).to_string().into_bytes(),
+            },
+        );
+        assert_eq!(response.status, 200, "{}", response.body);
+
+        shared.prune_backups(1);
+        assert!(
+            dir.join("backups").join(&pinned).exists(),
+            "accepted restore was pruned"
+        );
+        assert!(dir.join("backups").join(&newest).exists());
+        assert!(
+            !dir.join("backups").join(&eligible).exists(),
+            "positive control was retained"
+        );
+    }
+
+    #[test]
+    fn an_unacknowledged_snapshot_is_released_without_publishing() {
+        use crate::test_support::{Engine, TempDir};
+        for response in ["wrong-id", "wrong-world", "save-failed"] {
+            let dir = TempDir::new(response);
+            let shared = backup_server(&dir);
+            let peer = Engine::start(&dir, move |line| {
+                let (command, id) = line.split_once(' ').unwrap();
+                if command == "backup-end" {
+                    return json!({"ok": true, "snapshot": id});
+                }
+                match response {
+                    "wrong-id" => json!({"ok": true, "snapshot": "stale", "world": "world"}),
+                    "wrong-world" => json!({"ok": true, "snapshot": id, "world": "elsewhere"}),
+                    _ => json!({"error": "disk write failed"}),
+                }
+            });
+            let error = shared.back_up("rejected.zip").unwrap_err();
+            let expected = match response {
+                "wrong-id" => "did not acknowledge this backup snapshot",
+                "wrong-world" => "acknowledged a different world",
+                _ => "disk write failed",
+            };
+            assert!(error.contains(expected), "{error}");
+            assert!(backup::list(&dir).is_empty());
+            let commands = peer.commands.lock().unwrap();
+            assert_eq!(commands.len(), 2);
+            assert_eq!(
+                commands[1],
+                commands[0].replacen("backup-begin", "backup-end", 1)
+            );
+        }
+    }
+
+    #[test]
+    fn failed_snapshot_and_failed_release_both_reach_the_caller() {
+        let dir = crate::test_support::TempDir::new("snapshot-errors");
+        let shared = backup_server(&dir);
+        let peer = crate::test_support::Engine::start(
+            &dir,
+            |line| json!({"error": if line.starts_with("backup-begin ") { "save failure" } else { "release failure" }}),
+        );
+        let error = shared.back_up("failed.zip").unwrap_err();
+        assert!(
+            error.contains("save failure") && error.contains("release failure"),
+            "{error}"
+        );
+        assert!(backup::list(&dir).is_empty());
+        let commands = peer.commands.lock().unwrap();
+        assert_eq!(commands.len(), 3);
+        assert_eq!(commands[1], commands[2]);
+    }
 
     #[test]
     fn log_keeps_the_last_lines_numbered() {

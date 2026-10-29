@@ -12,20 +12,33 @@ use std::sync::Arc;
 /// A stack from the wire: its item by the built-in registry's id, its
 /// components by the synced registries' (enchantments, trims).
 pub fn from_network(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> ItemStack {
+    match try_from_network(s, builtin, synced) {
+        Ok(stack) => stack,
+        Err(error) => {
+            eprintln!("Rejected incoming stack: {error}");
+            ItemStack::new("minecraft:air", 0)
+        }
+    }
+}
+pub fn try_from_network(
+    s: &Stack,
+    builtin: &Builtin,
+    synced: &Dynamic,
+) -> Result<ItemStack, String> {
     let mut out = ItemStack {
         item: item_name(builtin, s.item),
         count: s.count.max(0) as u32,
         damage: 0,
         extra: None,
     };
-    let components = components_tag(s, builtin, synced);
+    let components = components_tag(s, builtin, synced)?;
     let (damage, data) = crate::item_data::decode_components(components.as_ref());
     out.damage = damage;
     if let Some(data) = data {
         *out.data_mut() = *data;
     }
     out.tidy();
-    out
+    Ok(out)
 }
 
 fn item_name(builtin: &Builtin, id: i32) -> Arc<str> {
@@ -38,7 +51,7 @@ fn item_name(builtin: &Builtin, id: i32) -> Arc<str> {
 }
 
 /// The item's patched components as vanilla's `components` compound.
-fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag> {
+fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Result<Option<Tag>, String> {
     let name = |id: i32| builtin.get("minecraft:data_component_type")?.name(id);
     let mut entries: Vec<(&str, Tag)> = Vec::new();
     for (kind, c) in &s.added {
@@ -152,12 +165,12 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
                             ),
                             ("count", Tag::Int(t.count)),
                         ];
-                        if let Some(c) = components_tag(t, builtin, synced) {
+                        if let Some(c) = components_tag(t, builtin, synced)? {
                             entries.push(("components", c));
                         }
-                        Tag::compound(entries)
+                        Ok(Tag::compound(entries))
                     })
-                    .collect(),
+                    .collect::<Result<Vec<_>, String>>()?,
             ),
             Component::CustomModelData {
                 floats,
@@ -199,7 +212,9 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
         };
         entries.push((key, value));
     }
-    Some(Tag::compound(entries))
+    let mut components = Tag::compound(entries);
+    crate::component_wire::restore(&mut components)?;
+    Ok(Some(components))
 }
 
 /// A wire `FireworkExplosion` as vanilla's NBT codec writes it

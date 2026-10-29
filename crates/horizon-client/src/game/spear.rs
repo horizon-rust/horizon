@@ -284,7 +284,7 @@ impl Game<'_> {
             );
         }
         if hurt {
-            self.last_hurt_by_player.insert(id, self.lan_acting);
+            self.last_hurt_by_player.insert(id, self.lan_acting_uuid);
         }
         if let Some(p) = self.player.as_mut()
             && !self.creative

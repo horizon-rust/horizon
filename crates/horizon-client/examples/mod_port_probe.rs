@@ -19,7 +19,11 @@ use horizon_client::{
 use horizon_core::{geometry::Axis, random::LegacyRandom};
 use horizon_world::chunk::BlockState;
 use serde_json::{Map, Value, json};
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
 
 fn boxes(list: impl IntoIterator<Item = [f64; 6]>) -> Value {
     let mut v: Vec<[f64; 6]> = list.into_iter().collect();
@@ -44,6 +48,92 @@ fn tool(name: &str) -> Option<ItemStack> {
     }
 }
 
+fn selected_mods(work: &Path, wanted: &[String]) -> Result<Vec<(String, horizon_mods::Package)>> {
+    let mut paths = BTreeMap::new();
+    for entry in fs::read_dir(work.join("mods"))? {
+        let entry = entry?;
+        let dir = entry.path().join("carry");
+        if dir.join("horizon-mod.toml").is_file() {
+            paths.insert(entry.file_name().to_string_lossy().into_owned(), dir);
+        }
+    }
+    if work.join("inventory.json").exists() {
+        let records: Vec<Value> = serde_json::from_slice(&fs::read(work.join("inventory.json"))?)?;
+        let mut owned = BTreeSet::new();
+        for record in &records {
+            let key = record["key"].as_str().ok_or("inventory: missing key")?;
+            let kind = record["path"]
+                .as_str()
+                .ok_or("inventory: missing path")?
+                .split('/')
+                .next()
+                .unwrap_or_default();
+            let folder = if matches!(kind, "datapacks" | "resourcepacks" | "shaderpacks") {
+                format!("{kind}@{key}")
+            } else {
+                key.to_owned()
+            };
+            let unique = records
+                .iter()
+                .filter(|r| r["key"].as_str() == Some(key))
+                .count()
+                == 1;
+            let folder = if paths.contains_key(&folder) {
+                folder
+            } else if unique && paths.contains_key(key) {
+                key.to_owned()
+            } else {
+                continue;
+            };
+            let source = paths[&folder].parent().unwrap().join("source.json");
+            if source.exists() {
+                let source: String = serde_json::from_slice(&fs::read(source)?)?;
+                if source != record["path"].as_str().ok_or("inventory: missing path")? {
+                    continue;
+                }
+            } else if !unique && folder == key {
+                continue;
+            }
+            owned.insert(folder);
+        }
+        paths.retain(|name, _| owned.contains(name));
+    }
+    let mods: Vec<_> = paths
+        .into_iter()
+        .map(|(name, path)| horizon_mods::Package::read(&path).map(|package| (name, package)))
+        .collect::<std::result::Result<_, _>>()?;
+    if wanted.is_empty() {
+        return Ok(mods);
+    }
+    let mut selected = BTreeSet::new();
+    for selector in wanted {
+        let exact = mods.iter().position(|(folder, _)| folder == selector);
+        let matches: Vec<_> = match exact {
+            Some(i) => vec![i],
+            None => mods
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, p))| p.manifest.id == *selector)
+                .map(|(i, _)| i)
+                .collect(),
+        };
+        if matches.len() != 1 {
+            return Err(format!(
+                "{selector}: expected one carried folder or manifest ID, found {}",
+                matches.len()
+            )
+            .into());
+        }
+        selected.insert(matches[0]);
+    }
+    Ok(mods
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| selected.contains(i))
+        .map(|(_, m)| m)
+        .collect())
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [base, work, out, wanted @ ..] = args.as_slice() else {
@@ -52,13 +142,10 @@ fn main() -> Result<()> {
     let (base, work) = (Path::new(base), Path::new(work));
     let oracle: Value = serde_json::from_slice(&fs::read(work.join("oracle/facts.json"))?)?;
     let mut mods = Vec::new();
-    for entry in fs::read_dir(work.join("mods"))?.flatten() {
-        let id = entry.file_name().to_string_lossy().into_owned();
-        let dir = entry.path().join("carry");
-        if !(wanted.is_empty() || wanted.contains(&id)) || !dir.is_dir() {
-            continue;
-        }
-        let package = horizon_mods::Package::read(&dir)?;
+    let mut owners = Vec::new();
+    for (folder, package) in selected_mods(work, wanted)? {
+        let dir = work.join("mods").join(&folder).join("carry");
+        owners.push(json!({"folder": folder, "id": &package.manifest.id}));
         let content = horizon_mods::Content::read(&dir, &package.manifest)?;
         mods.push(ContentMod {
             id: package.manifest.id.clone(),
@@ -253,6 +340,7 @@ fn main() -> Result<()> {
     }
 
     let report = json!({
+        "mods": owners,
         "states": registry.len(),
         "build_seconds": built,
         "load_seconds": loaded,
@@ -270,4 +358,67 @@ fn main() -> Result<()> {
         recipe_rows.len()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    #[test]
+    fn folder_and_public_ids_resolve_current_owners() {
+        struct TestDir(std::path::PathBuf);
+        impl Drop for TestDir {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = TestDir(
+            std::env::temp_dir().join(format!("horizon-mod-port-selection-{}", std::process::id())),
+        );
+        fs::create_dir(&root.0).unwrap();
+        let id = "a_review_pack";
+        let data_source = "datapacks/a_review_pack.zip";
+        let mod_source = "mods/opaque.jar";
+        for folder in [id, "datapacks@a_review_pack"] {
+            let output = root.0.join("mods").join(folder);
+            fs::create_dir_all(output.join("carry")).unwrap();
+            fs::write(output.join("carry/horizon-mod.toml"), format!("id = \"{id}\"\nname = \"Original fixture\"\nversion = \"1\"\napi = \"0.2\"\ncapabilities = [\"registries\"]\n")).unwrap();
+            fs::write(
+                output.join("source.json"),
+                serde_json::to_vec(data_source).unwrap(),
+            )
+            .unwrap();
+        }
+        let record = |path: &str| json!({"key": id, "path": path, "name": "Original fixture", "version": "1", "class": "content", "tier": "data", "confidence": "kind", "source": "file", "license": "MIT", "client": "", "server": "", "depends": [], "layer": 0});
+        let inventory = root.0.join("inventory.json");
+        fs::write(
+            &inventory,
+            serde_json::to_vec(&[record(data_source)]).unwrap(),
+        )
+        .unwrap();
+        for wanted in [
+            vec![],
+            vec![id.to_owned()],
+            vec!["datapacks@a_review_pack".to_owned()],
+        ] {
+            let selected = selected_mods(&root.0, &wanted).unwrap();
+            assert_eq!(selected.len(), 1);
+            assert_eq!(selected[0].0, "datapacks@a_review_pack");
+            assert_eq!(selected[0].1.manifest.id, id);
+        }
+        assert!(selected_mods(&root.0, &["missing".into()]).is_err());
+        fs::write(
+            &inventory,
+            serde_json::to_vec(&[record(data_source), record(mod_source)]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(selected_mods(&root.0, &[]).unwrap().len(), 1);
+        let source = root.0.join("mods/a_review_pack/source.json");
+        fs::write(&source, serde_json::to_vec(mod_source).unwrap()).unwrap();
+        assert_eq!(selected_mods(&root.0, &[]).unwrap().len(), 2);
+        let selected = selected_mods(&root.0, &[id.into()]).unwrap();
+        assert_eq!(selected[0].0, id);
+        fs::write(source, "{}").unwrap();
+        assert!(selected_mods(&root.0, &[id.into()]).is_err());
+    }
 }

@@ -72,6 +72,8 @@ pub(super) struct Parked {
     dropped: Vec<ItemEntity>,
     orbs: Vec<ExperienceOrb>,
     persist: persist::EntityMemory,
+    #[cfg(feature = "mods")]
+    mod_entities: super::mod_entities::ModEntities,
     lectern_pulses: Vec<((i32, i32, i32), i32)>,
     lid_openers: HashMap<(i32, i32, i32), i32>,
     lan_events: Vec<(i32, [i32; 3], i32, Option<u32>)>,
@@ -122,6 +124,20 @@ impl Levels {
             .iter_mut()
             .map(|(d, p)| (*d, &mut p.world.chunks))
     }
+    #[cfg(feature = "mods")]
+    pub(super) fn entity_levels(
+        &mut self,
+    ) -> impl Iterator<
+        Item = (
+            Dim,
+            &mut super::mod_entities::ModEntities,
+            &horizon_client::chunk_map::ChunkMap,
+        ),
+    > {
+        self.parked
+            .iter_mut()
+            .map(|(d, p)| (*d, &mut p.mod_entities, &p.world.chunks))
+    }
     /// The levels that are not in place, by dimension.
     pub(super) fn parked_dims(&self) -> Vec<Dim> {
         self.parked.keys().copied().collect()
@@ -129,6 +145,27 @@ impl Levels {
 }
 
 impl Game<'_> {
+    #[cfg(feature = "mods")]
+    pub(super) fn clear_mod_entity_world(&mut self) {
+        self.mod_entities
+            .clear(horizon_mods::EntityReason::WorldUnloaded);
+        for (_, level, _) in self.levels.entity_levels() {
+            level.clear(horizon_mods::EntityReason::WorldUnloaded);
+        }
+        self.mod_entity_world = None;
+        self.trace_mod_entities();
+    }
+    #[cfg(feature = "mods")]
+    pub(super) fn trace_mod_entities(&mut self) {
+        if std::env::var_os("HORIZON_MOD_ENTITIES_TRACE").is_none() {
+            return;
+        }
+        let mut levels = vec![(self.dim.id(), &self.mod_entities)];
+        for (dim, level, _) in self.levels.entity_levels() {
+            levels.push((dim.id(), &*level));
+        }
+        super::mod_entities::trace(self.mod_entity_world, self.next_entity, &levels);
+    }
     /// A new level for `dim`, opened from the save (`MinecraftServer.createLevels`).
     fn open_level(&self, dim: Dim) -> Result<Parked> {
         let (streaming, save, locator) = super::world_loading::make_streaming(
@@ -177,6 +214,8 @@ impl Game<'_> {
             dropped: Vec::new(),
             orbs: Vec::new(),
             persist: Default::default(),
+            #[cfg(feature = "mods")]
+            mod_entities: Default::default(),
             lectern_pulses: Vec::new(),
             lid_openers: HashMap::new(),
             lan_events: Vec::new(),
@@ -231,6 +270,8 @@ impl Game<'_> {
         swap(&mut self.dropped, &mut p.dropped);
         swap(&mut self.orbs, &mut p.orbs);
         swap(&mut self.persist, &mut p.persist);
+        #[cfg(feature = "mods")]
+        swap(&mut self.mod_entities, &mut p.mod_entities);
         swap(&mut self.lectern_pulses, &mut p.lectern_pulses);
         swap(&mut self.lid_openers, &mut p.lid_openers);
         swap(&mut self.lan_events, &mut p.lan_events);
@@ -344,7 +385,7 @@ impl Game<'_> {
             } else if k == 0 {
                 self.tick()
             } else {
-                let running = self.clock.world_runs();
+                let running = self.clock.runs_normally();
                 if running {
                     self.tick_weather_effects();
                 }

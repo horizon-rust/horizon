@@ -532,6 +532,10 @@ impl Game<'_> {
 
     /// Disconnect and return to the multiplayer screen (DisconnectedScreen).
     pub(super) fn leave_server(&mut self, reason: Option<String>) -> Result<()> {
+        #[cfg(feature = "mods")]
+        self.clear_mod_messages();
+        #[cfg(feature = "mods")]
+        self.clear_mod_models();
         if reason.is_none() && self.integrated.as_ref().is_some_and(|s| !s.stopped()) {
             return self.begin_closing_save(false);
         }
@@ -664,18 +668,20 @@ impl Game<'_> {
     /// are, so tooltips and models see every field.
     pub(super) fn to_stack(&self, s: &Option<Stack>) -> Option<ItemStack> {
         let r = self.remote.as_ref()?;
-        Some(horizon_client::item_sync::from_network(
-            s.as_ref()?,
-            &r.builtin,
-            &r.registries,
-        ))
+        match horizon_client::item_sync::try_from_network(s.as_ref()?, &r.builtin, &r.registries) {
+            Ok(stack) => Some(stack),
+            Err(error) => {
+                eprintln!("Rejected server stack: {error}");
+                None
+            }
+        }
     }
     /// A stack to the server (`SetCreativeModeSlot`): the same component
     /// patch a Horizon server sends its clients, with the registries' ids, so
     /// the server's echo doesn't hand back a bare item.
-    fn to_network(&self, s: &Option<ItemStack>) -> Option<Stack> {
-        let r = self.remote.as_ref()?;
-        horizon_client::lan::guest::stack_to_network(
+    fn to_network(&self, s: &Option<ItemStack>) -> std::result::Result<Option<Stack>, String> {
+        let r = self.remote.as_ref().ok_or("No remote stack context")?;
+        horizon_client::lan::guest::try_stack_to_network(
             |name| self.item_id(name),
             // Built-in first, as a hub's `SyncData::id` does: potions are one.
             |registry, name| {
@@ -1715,7 +1721,79 @@ impl Game<'_> {
     }
 
     fn handle_packet(&mut self, packet: C) -> Result<()> {
+        // Validate whole updates before changing any mirror or synchronization state.
+        if let Some(remote) = &self.remote {
+            let check = |stack: &Option<Stack>| -> std::result::Result<(), String> {
+                if let Some(stack) = stack {
+                    horizon_client::item_sync::try_from_network(
+                        stack,
+                        &remote.builtin,
+                        &remote.registries,
+                    )?;
+                }
+                Ok(())
+            };
+            let valid = (|| -> std::result::Result<(), String> {
+                match &packet {
+                    C::ContainerSetContent(p) => {
+                        for stack in &p.items {
+                            check(stack)?;
+                        }
+                        check(&p.carried)?;
+                    }
+                    C::ContainerSetSlot(p) => check(&p.item)?,
+                    C::SetCursorItem(p) => check(&p.item)?,
+                    C::SetPlayerInventory(p) => check(&p.item)?,
+                    C::SetEquipment(p) => {
+                        for (_, stack) in &p.slots {
+                            check(stack)?;
+                        }
+                    }
+                    C::SetEntityData(p) => {
+                        for (_, _, value) in &p.values {
+                            if let Value::Item(stack) = value {
+                                check(stack)?;
+                            }
+                        }
+                    }
+                    C::MerchantOffers(p) => {
+                        for offer in &p.offers {
+                            check(&Some(offer.cost_a.clone().into()))?;
+                            if let Some(cost) = &offer.cost_b {
+                                check(&Some(cost.clone().into()))?;
+                            }
+                            check(&Some(offer.result.clone()))?;
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(())
+            })();
+            if let Err(error) = valid {
+                eprintln!("Rejected incoming stack update: {error}");
+                return Ok(());
+            }
+        }
         match packet {
+            #[cfg(feature = "mods")]
+            C::CustomPayload(p)
+                if p.channel == horizon_protocol::program_messages::DELIVERY_CHANNEL =>
+            {
+                if let Err(error) = self.receive_program_delivery(&p.data) {
+                    log::warn!("Horizon: program delivery refused: {error}");
+                }
+            }
+            #[cfg(feature = "mods")]
+            C::CustomPayload(p)
+                if p.channel == horizon_protocol::program_messages::RESET_CHANNEL
+                    && p.data.is_empty() =>
+            {
+                self.reset_program_delivery();
+            }
+            #[cfg(feature = "mods")]
+            C::CustomPayload(p) if p.channel == horizon_protocol::mod_entities::CHANNEL => {
+                self.receive_mod_view(&p.data)?;
+            }
             // ClientCommonPacketListenerImpl.handlePing runs on the game
             // thread, after all preceding packets (especially teleports).
             C::Ping(p) => self.send(S::Pong(p)),
@@ -1749,6 +1827,10 @@ impl Game<'_> {
                 self.send(S::ClientInformation(info));
             }
             C::Respawn(p) => {
+                #[cfg(feature = "mods")]
+                self.clear_mod_messages();
+                #[cfg(feature = "mods")]
+                self.clear_mod_models();
                 // A new player, without effects (the server sends them
                 // again) and with no item in use.
                 self.potions.effects.clear();
@@ -4312,7 +4394,6 @@ impl Game<'_> {
         if self.creative {
             for i in 0..36 {
                 if self.inventory[i] != r.synced[i] {
-                    r.synced[i] = self.inventory[i].clone();
                     creative_slots.push(i);
                 }
             }
@@ -4320,13 +4401,31 @@ impl Game<'_> {
         for packet in out {
             self.send(packet);
         }
-        for i in creative_slots {
+        let encoded = creative_slots
+            .iter()
+            .map(|&i| self.to_network(&self.inventory[i]).map(|item| (i, item)))
+            .collect::<std::result::Result<Vec<_>, String>>();
+        let encoded = match encoded {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                eprintln!("Rejected creative stack action: {error}");
+                if let Some(remote) = &self.remote {
+                    for i in creative_slots {
+                        self.inventory[i] = remote.synced[i].clone();
+                    }
+                }
+                return;
+            }
+        };
+        for (i, item) in encoded {
             let slot = if i < 9 { 36 + i } else { i } as i16;
-            let item = self.to_network(&self.inventory[i]);
             self.send(S::SetCreativeModeSlot(play::SetCreativeModeSlot {
                 slot,
                 item,
             }));
+            if let Some(remote) = self.remote.as_mut() {
+                remote.synced[i] = self.inventory[i].clone();
+            }
         }
     }
     /// Inventory as the server last described it.
@@ -4525,6 +4624,20 @@ impl Game<'_> {
             return;
         }
         self.use_delay = 4;
+        #[cfg(feature = "mods")]
+        if !self.spectator()
+            && self.inventory[self.selected].is_none()
+            && self.mod_remote_entity_targeted()
+        {
+            let sequence = self.next_sequence();
+            self.send(S::UseItem(play::UseItem {
+                hand: hand_id(Hand::Main),
+                sequence,
+                yaw: self.yaw,
+                pitch: self.pitch,
+            }));
+            return;
+        }
         // Resolve the crosshair once. A passing entity interaction keeps
         // that target and may only fall back to using the item itself.
         let entity = self.entity_targeted();
@@ -4890,7 +5003,7 @@ impl Game<'_> {
         // of an item with no use time, and the server's
         // ClientboundCooldownPacket confirms it; one held in use starts it at
         // finishUsingItem (remote_complete_using).
-        if !info.consumable.as_ref().is_some_and(|c| c.ticks() > 0) {
+        if info.consumable.as_ref().is_none_or(|c| c.ticks() <= 0) {
             self.apply_use_cooldown(&held);
         }
         if self.with_hand(hand, |g| g.remote_use_book(&held)) {
@@ -5457,11 +5570,27 @@ impl Game<'_> {
             clicks.push((slot, button, input));
         }
         // Unpredicted: nothing changed, the carried stack as it is.
-        let mut sent: Vec<Predicted> = clicks
+        let sent: Vec<Predicted> = clicks
             .iter()
             .map(|&(slot, button, input)| (slot, button, input, Vec::new(), self.carried.clone()))
             .collect();
+        let Some(remote) = &self.remote else {
+            return false;
+        };
+        let (builtin, synced, state) = (
+            remote.builtin.clone(),
+            remote.registries.clone(),
+            remote.state_id,
+        );
+        let mut packets = match encode_clicks(container, state, &builtin, &synced, &sent) {
+            Ok(packets) => packets,
+            Err(error) => {
+                eprintln!("Rejected unpredicted click batch: {error}");
+                return false;
+            }
+        };
         // The engine's slot indices are the menu's own, as on the network.
+        let mut serialization_failed = false;
         self.menu_session(|m, env, _| {
             let mut predicted = Vec::with_capacity(clicks.len());
             for &(slot, button, input) in &clicks {
@@ -5473,17 +5602,42 @@ impl Game<'_> {
                 let changed = changed_slots(&before, m);
                 predicted.push((slot, button, input, changed, m.carried.clone()));
             }
-            sent = predicted;
+            if let Err(error) = validate_menu_candidate(m) {
+                eprintln!("Rejected predicted click batch before commit: {error}");
+                serialization_failed = true;
+                return Some(false);
+            }
+            match encode_clicks(container, state, &builtin, &synced, &predicted) {
+                Ok(encoded) => packets = encoded,
+                Err(error) => {
+                    eprintln!("Rejected click encoding before commit: {error}");
+                    serialization_failed = true;
+                    return Some(false);
+                }
+            }
             Some(true)
         });
-        self.send_clicks(container, sent);
+        if serialization_failed {
+            return false;
+        }
+        self.send_clicks(packets);
         true
     }
     /// A Shift double click on a server (`AbstractContainerScreen.mouseReleased`):
     /// a predicted QUICK_MOVE for every slot the engine moves, each sent.
     pub(super) fn remote_quick_move_all(&mut self, slot: usize, moved: &ItemStack) {
         let (container, _) = self.remote_menu();
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        let (builtin, synced, state) = (
+            remote.builtin.clone(),
+            remote.registries.clone(),
+            remote.state_id,
+        );
         let mut sent: Vec<Predicted> = Vec::new();
+        let mut packets = Vec::new();
+        let mut serialization_failed = false;
         self.menu_session(|m, env, to_menu| {
             let clicked = to_menu(slot)?;
             let mut before = menu_items(m);
@@ -5492,28 +5646,32 @@ impl Game<'_> {
                 sent.push((t as i16, 0, Input::QuickMove, changed, m.carried.clone()));
                 before = menu_items(m);
             };
-            Some(
-                m.quick_move_all_each(env, clicked, moved, &mut each)
-                    .is_ok(),
-            )
+            let moved = m
+                .quick_move_all_each(env, clicked, moved, &mut each)
+                .is_ok();
+            if let Err(error) = validate_menu_candidate(m) {
+                eprintln!("Rejected quick-move batch before commit: {error}");
+                serialization_failed = true;
+                return Some(false);
+            }
+            match encode_clicks(container, state, &builtin, &synced, &sent) {
+                Ok(encoded) => packets = encoded,
+                Err(error) => {
+                    eprintln!("Rejected quick-move encoding before commit: {error}");
+                    serialization_failed = true;
+                    return Some(false);
+                }
+            }
+            Some(moved)
         });
-        self.send_clicks(container, sent);
+        if serialization_failed {
+            return;
+        }
+        self.send_clicks(packets);
     }
-    fn send_clicks(&mut self, container: i32, clicks: Vec<Predicted>) {
-        let state = self.remote.as_ref().map_or(0, |r| r.state_id);
-        let hashed = |g: &Self, s: &Option<ItemStack>| g.to_network(s).map(|s| Hashed::of(&s));
-        for (slot, button, input, changed, carried) in clicks {
-            let changed = changed.iter().map(|(i, s)| (*i, hashed(self, s))).collect();
-            let carried = hashed(self, &carried);
-            self.send(S::ContainerClick(play::ContainerClick {
-                container,
-                state,
-                slot,
-                button: button as i8,
-                input: input_ordinal(input),
-                changed,
-                carried,
-            }));
+    fn send_clicks(&mut self, packets: Vec<play::ContainerClick>) {
+        for packet in packets {
+            self.send(S::ContainerClick(packet));
         }
     }
     /// The server's open menu is the inventory or a chest-like container
@@ -5532,6 +5690,11 @@ impl Game<'_> {
     /// `MultiPlayerGameMode.handleContainerInput` (the carried stack after
     /// `doClick`; the server drops the stack and swings the hand).
     pub(super) fn remote_throw(&mut self, right: bool, input: horizon_client::menu::Input) {
+        let carried_before = self.carried.clone();
+        if let Err(error) = self.to_network(&self.carried) {
+            eprintln!("Rejected carried-stack action: {error}");
+            return;
+        }
         use horizon_client::menu::Input;
         let container = self
             .remote
@@ -5546,9 +5709,18 @@ impl Game<'_> {
             } else {
                 self.carried = None;
             }
+        }
+        let carried = match self.to_network(&self.carried) {
+            Ok(stack) => stack.map(|stack| Hashed::of(&stack)),
+            Err(error) => {
+                self.carried = carried_before;
+                eprintln!("Rejected carried-stack serialization: {error}");
+                return;
+            }
+        };
+        if input == Input::Pickup && carried_before.is_some() {
             self.swing_arm();
         }
-        let carried = self.to_network(&self.carried).map(|s| Hashed::of(&s));
         let state = self.remote.as_ref().map_or(0, |r| r.state_id);
         self.send(S::ContainerClick(play::ContainerClick {
             container,
@@ -5565,6 +5737,11 @@ impl Game<'_> {
     /// one of it) is dropped through `handleCreativeModeItemDrop`, a SetCreativeModeSlot to slot
     /// -1, and the hand swings as `Player.drop` predicts.
     pub(super) fn remote_creative_drop(&mut self, right: bool) {
+        let carried_before = self.carried.clone();
+        if let Err(error) = self.to_network(&self.carried) {
+            eprintln!("Rejected carried-stack action: {error}");
+            return;
+        }
         let one = right && !self.creative_inventory_open();
         let Some(carried) = self.carried.as_mut() else {
             return;
@@ -5581,8 +5758,15 @@ impl Game<'_> {
         if !self.creative {
             return;
         }
+        let item = match self.to_network(&Some(thrown)) {
+            Ok(item) => item,
+            Err(error) => {
+                self.carried = carried_before;
+                eprintln!("Rejected creative drop serialization: {error}");
+                return;
+            }
+        };
         self.swing_arm();
-        let item = self.to_network(&Some(thrown));
         self.send(S::SetCreativeModeSlot(play::SetCreativeModeSlot {
             slot: -1,
             item,
@@ -6050,6 +6234,59 @@ type Predicted = (
     Vec<(i16, Option<ItemStack>)>,
     Option<ItemStack>,
 );
+
+fn validate_menu_candidate(menu: &horizon_client::menu::Menu) -> std::result::Result<(), String> {
+    (0..menu.slot_count())
+        .map(|i| menu.slot(i).cloned())
+        .chain(std::iter::once(menu.carried.clone()))
+        .chain(std::iter::once(menu.player_item(40).cloned()))
+        .chain(menu.dropped.iter().cloned().map(Some))
+        .try_for_each(|stack| horizon_client::lan::guest::validate_stack(&stack))
+}
+fn encode_clicks(
+    container: i32,
+    state: i32,
+    builtin: &Builtin,
+    synced: &Dynamic,
+    clicks: &[Predicted],
+) -> std::result::Result<Vec<play::ContainerClick>, String> {
+    let hashed = |stack: &Option<ItemStack>| {
+        horizon_client::lan::guest::try_stack_to_network(
+            |name| {
+                builtin
+                    .get("minecraft:item")
+                    .and_then(|items| items.id(name))
+                    .unwrap_or(0)
+            },
+            |registry, name| {
+                builtin
+                    .get(registry)
+                    .and_then(|ids| ids.id(name))
+                    .or_else(|| synced.id(registry, name))
+            },
+            stack,
+        )
+        .map(|stack| stack.map(|stack| Hashed::of(&stack)))
+    };
+    clicks
+        .iter()
+        .map(|(slot, button, input, changed, carried)| {
+            let changed = changed
+                .iter()
+                .map(|(i, stack)| hashed(stack).map(|stack| (*i, stack)))
+                .collect::<std::result::Result<Vec<_>, String>>()?;
+            Ok(play::ContainerClick {
+                container,
+                state,
+                slot: *slot,
+                button: *button as i8,
+                input: input_ordinal(*input),
+                changed,
+                carried: hashed(carried)?,
+            })
+        })
+        .collect()
+}
 
 fn menu_items(m: &horizon_client::menu::Menu) -> Vec<Option<ItemStack>> {
     (0..m.slot_count()).map(|i| m.slot(i).cloned()).collect()

@@ -9,9 +9,10 @@
 //! and totals are capped, vanilla ids cannot be redefined, and no two mods
 //! share a namespace ([`clash`]).
 use crate::manifest::{Capability, MANIFEST, Manifest};
+use cap_std::fs::Dir;
 use serde::Deserialize;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     io::Read,
     path::{Path, PathBuf},
 };
@@ -19,7 +20,7 @@ use std::{
 /// Content files per mod, bytes per file and bytes per mod.
 pub const MAX_FILES: usize = 65_536;
 pub const MAX_FILE: u64 = 16 << 20;
-pub const MAX_TOTAL: u64 = 512 << 20;
+pub const MAX_TOTAL: u64 = 1024 << 20;
 
 /// Checks a content path: `assets/` or `data/`, then `/`-separated parts of
 /// `[a-z0-9_.-]`, none of them `.` or `..` (vanilla's resource-location
@@ -75,10 +76,131 @@ pub struct BlockProperties {
     pub sounds: Option<String>,
 }
 
+/// Explicit registry states. Aliases choose template physics, not custom behavior.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BlockStates {
+    #[serde(deserialize_with = "unique_state_map")]
+    pub properties: BTreeMap<String, Vec<String>>,
+    pub default: String,
+    #[serde(deserialize_with = "unique_state_map")]
+    pub aliases: BTreeMap<String, String>,
+}
+fn unique_state_map<'de, D, T>(deserializer: D) -> Result<BTreeMap<String, T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct Map<T>(std::marker::PhantomData<T>);
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for Map<T> {
+        type Value = BTreeMap<String, T>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a bounded state map with unique keys")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut input: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut output = BTreeMap::new();
+            while let Some((key, value)) = input.next_entry::<String, T>()? {
+                if output.len() >= MAX_BLOCK_STATES || output.contains_key(&key) {
+                    return Err(serde::de::Error::custom(
+                        "duplicate or excessive custom state keys",
+                    ));
+                }
+                output.insert(key, value);
+            }
+            Ok(output)
+        }
+    }
+    deserializer.deserialize_map(Map(std::marker::PhantomData))
+}
+pub const MAX_BLOCK_PROPERTIES: usize = 8;
+pub const MAX_PROPERTY_VALUES: usize = 26;
+pub const MAX_BLOCK_STATES: usize = 4374;
+impl BlockStates {
+    pub fn key(properties: &BTreeMap<String, String>) -> String {
+        properties
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+    pub fn variants(&self, template: &str) -> Result<Vec<BTreeMap<String, String>>, String> {
+        let token = |s: &str| {
+            !s.is_empty()
+                && s.len() <= 64
+                && s.bytes()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_-".contains(&c))
+        };
+        if self.properties.len() > MAX_BLOCK_PROPERTIES {
+            return Err("at most 8 custom block properties".into());
+        }
+        let mut count = 1usize;
+        for (name, values) in &self.properties {
+            if !token(name)
+                || values.is_empty()
+                || values.len() > MAX_PROPERTY_VALUES
+                || values.iter().any(|v| !token(v))
+                || values.iter().collect::<BTreeSet<_>>().len() != values.len()
+            {
+                return Err(format!("invalid custom property domain {name}"));
+            }
+            count = count
+                .checked_mul(values.len())
+                .ok_or("custom state count overflow")?;
+            if count > MAX_BLOCK_STATES {
+                return Err("at most 4374 custom states per block".into());
+            }
+        }
+        if self.default.len() > 2048 || self.aliases.len() != count {
+            return Err("custom states require one default and an alias for every variant".into());
+        }
+        let mut variants = vec![BTreeMap::new()];
+        for (name, values) in &self.properties {
+            variants = variants
+                .into_iter()
+                .flat_map(|state| {
+                    values.iter().map(move |value| {
+                        let mut state = state.clone();
+                        state.insert(name.clone(), value.clone());
+                        state
+                    })
+                })
+                .collect();
+        }
+        let mut found_default = false;
+        for state in &variants {
+            let key = Self::key(state);
+            found_default |= key == self.default;
+            let alias = self
+                .aliases
+                .get(&key)
+                .ok_or_else(|| format!("missing custom state alias {key}"))?;
+            if alias.len() > 2048
+                || !(alias == template
+                    || alias
+                        .strip_prefix(template)
+                        .is_some_and(|s| s.starts_with('[') && s.ends_with(']')))
+            {
+                return Err(format!(
+                    "{key}: alias must name a complete state of template {template}"
+                ));
+            }
+        }
+        if !found_default {
+            return Err("custom default is not a declared variant".into());
+        }
+        Ok(variants)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BlockFile {
     template: String,
+    #[serde(default)]
+    states: Option<BlockStates>,
     #[serde(default)]
     properties: BlockProperties,
     #[serde(default = "yes")]
@@ -96,6 +218,7 @@ pub struct Block {
     pub id: String,
     /// The vanilla block it copies, `minecraft:<path>`.
     pub template: String,
+    pub states: Option<BlockStates>,
     pub properties: BlockProperties,
     /// Also add a block item with the same id.
     pub item: bool,
@@ -131,7 +254,7 @@ pub struct Item {
 
 #[derive(Debug)]
 enum Source {
-    Dir(PathBuf),
+    Dir(PathBuf, Dir),
     Zip(PathBuf),
 }
 
@@ -147,28 +270,43 @@ pub struct Content {
     pub namespaces: Vec<String>,
 }
 
-/// Reads a mod's content files ([`Content::reader`]).
-pub enum FileReader<'a> {
-    Dir(&'a Path),
+/// Reads a mod's content files with an owned handle ([`Content::reader`]).
+pub enum FileReader {
+    Dir(Dir),
     Zip(Box<zip::ZipArchive<std::fs::File>>),
 }
-impl FileReader<'_> {
+impl FileReader {
     /// One content file's bytes.
     pub fn read(&mut self, name: &str) -> Result<Vec<u8>, String> {
         check_path(name)?;
+        self.read_bounded(name, MAX_FILE)
+            .map_err(|e| format!("{name}: {e}"))
+    }
+
+    /// At most `limit` bytes, with one extra byte to detect growth.
+    pub(crate) fn read_bounded(&mut self, name: &str, limit: u64) -> Result<Vec<u8>, String> {
+        check_path(name).map_err(|_| "invalid resource path")?;
+        let unavailable = |_| "resource unavailable".to_string();
         let reader: Box<dyn Read + '_> = match self {
             Self::Dir(root) => {
-                Box::new(std::fs::File::open(root.join(name)).map_err(|e| format!("{name}: {e}"))?)
+                if !root.symlink_metadata(name).map_err(unavailable)?.is_file() {
+                    return Err("resource unavailable".into());
+                }
+                let file = root.open(name).map_err(unavailable)?;
+                if !file.metadata().map_err(unavailable)?.is_file() {
+                    return Err("resource unavailable".into());
+                }
+                Box::new(file)
             }
-            Self::Zip(zip) => Box::new(zip.by_name(name).map_err(|e| format!("{name}: {e}"))?),
+            Self::Zip(zip) => Box::new(zip.by_name(name).map_err(|_| "resource unavailable")?),
         };
         let mut out = Vec::new();
         reader
-            .take(MAX_FILE + 1)
+            .take(limit.min(MAX_FILE) + 1)
             .read_to_end(&mut out)
-            .map_err(|e| format!("{name}: {e}"))?;
-        if out.len() as u64 > MAX_FILE {
-            return Err(format!("{name} is over {} MiB", MAX_FILE >> 20));
+            .map_err(unavailable)?;
+        if out.len() as u64 > limit.min(MAX_FILE) {
+            return Err("resource file too large".into());
         }
         Ok(out)
     }
@@ -189,11 +327,13 @@ impl Content {
     /// The content of the mod at `path` (a `.hmod` or a mod folder).
     pub fn read(path: &Path, manifest: &Manifest) -> Result<Content, String> {
         let (source, sized) = if path.is_dir() {
+            let root = Dir::open_ambient_dir(path, cap_std::ambient_authority())
+                .map_err(|e| e.to_string())?;
             let mut out = Vec::new();
             for top in ["assets", "data"] {
-                walk(path, &path.join(top), &mut out)?;
+                walk(&root, top, &mut out)?;
             }
-            (Source::Dir(path.to_owned()), out)
+            (Source::Dir(path.to_owned(), root), out)
         } else {
             let mut zip = open_zip(path)?;
             let mut out = Vec::new();
@@ -238,7 +378,7 @@ impl Content {
     /// Where the files are read from: the mod's folder or its `.hmod`.
     pub fn source(&self) -> &Path {
         match &self.source {
-            Source::Dir(path) | Source::Zip(path) => path,
+            Source::Dir(path, _) | Source::Zip(path) => path,
         }
     }
 
@@ -254,19 +394,41 @@ impl Content {
 
     /// A reader of its content files. A packaged mod's archive is opened
     /// once for all of them (opening it reads its whole index).
-    pub fn reader(&self) -> Result<FileReader<'_>, String> {
+    pub fn reader(&self) -> Result<FileReader, String> {
         Ok(match &self.source {
-            Source::Dir(root) => FileReader::Dir(root),
+            Source::Dir(_, root) => FileReader::Dir(root.try_clone().map_err(|e| e.to_string())?),
             Source::Zip(path) => FileReader::Zip(Box::new(open_zip(path)?)),
         })
+    }
+
+    /// The guest's fence is checked before any file is opened.
+    #[cfg(feature = "runtime")]
+    pub(crate) fn resource_path(&self, name: &str) -> Result<bool, String> {
+        if name.len() > 1024 || check_path(name).is_err() {
+            return Err("invalid resource path".into());
+        }
+        let namespace = name.split('/').nth(1).unwrap_or_default();
+        if matches!(namespace, "minecraft" | "c" | "horizon")
+            || !self.namespaces.iter().any(|ns| ns == namespace)
+        {
+            return Err("resource outside owner".into());
+        }
+        Ok(self
+            .files
+            .binary_search_by(|file| file.as_str().cmp(name))
+            .is_ok())
     }
 
     /// Where content may go, and the declarations.
     fn check(&mut self, manifest: &Manifest) -> Result<(), String> {
         let id = manifest.id.as_str();
-        if !self.files.is_empty() && !manifest.capabilities.contains(&Capability::Registries) {
+        let registries = manifest.capabilities.contains(&Capability::Registries);
+        if !self.files.is_empty()
+            && !registries
+            && !manifest.capabilities.contains(&Capability::Resources)
+        {
             return Err(format!(
-                "has assets/ or data/ but not capability registries in {MANIFEST}"
+                "has assets/ or data/ but not capability registries or resources in {MANIFEST}"
             ));
         }
         let mut blocks = Vec::new();
@@ -283,18 +445,17 @@ impl Content {
             // Vanilla's own files stay vanilla's; a mod may only add to its
             // tags, and to the convention tags mods share.
             let shared = matches!(namespace, "minecraft" | "c");
-            let allowed = owned || (top == "data" && shared && rest.starts_with("tags/"));
+            let allowed =
+                owned || (registries && top == "data" && shared && rest.starts_with("tags/"));
             if !allowed {
                 return Err(format!(
                     "{name}: a mod adds files in its own namespaces ({top}/{id}/ and those listed in namespaces) or to vanilla and convention (c) tags"
                 ));
             }
-            if !own && top == "data" && rest.starts_with("horizon/") {
-                return Err(format!(
-                    "{name}: blocks and items are declared in data/{id}/horizon/"
-                ));
+            if !registries && top == "data" && rest.starts_with("horizon/") {
+                return Err(format!("{name}: declarations need capability registries"));
             }
-            let Some(decl) = (own && top == "data")
+            let Some(decl) = (owned && top == "data")
                 .then(|| rest.strip_prefix("horizon/"))
                 .flatten()
             else {
@@ -305,7 +466,7 @@ impl Content {
                     .strip_prefix(kind)?
                     .strip_prefix('/')?
                     .strip_suffix(".json")?;
-                Some(format!("{id}:{path}"))
+                Some(format!("{namespace}:{path}"))
             };
             if let Some(block) = parse("block") {
                 blocks.push((block, name.clone()));
@@ -328,6 +489,7 @@ impl Content {
             self.blocks.push(Block {
                 id: block,
                 template: file.template,
+                states: file.states,
                 properties: file.properties,
                 item: file.item,
             });
@@ -365,6 +527,9 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
             file.template
         ));
     }
+    if let Some(states) = &file.states {
+        states.variants(&file.template)?;
+    }
     let p = &file.properties;
     let finite = |v: Option<f32>| v.is_none_or(f32::is_finite);
     if !finite(p.hardness) || !finite(p.explosion_resistance) || !finite(p.friction) {
@@ -398,20 +563,25 @@ fn open_zip(path: &Path) -> Result<zip::ZipArchive<std::fs::File>, String> {
 
 /// Files under `dir`, relative to `root` with `/` separators. Symbolic links
 /// are not followed: a mod folder holds its own files.
-fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, u64)>) -> Result<(), String> {
-    let Ok(read) = std::fs::read_dir(dir) else {
-        return Ok(());
+fn walk(root: &Dir, dir: &str, out: &mut Vec<(String, u64)>) -> Result<(), String> {
+    let meta = match root.symlink_metadata(dir) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.to_string()),
     };
-    for entry in read.flatten() {
-        let path = entry.path();
-        let meta = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+    if !meta.is_dir() {
+        return Ok(());
+    }
+    for entry in root.read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_str().ok_or("content path is not UTF-8")?;
+        let name = format!("{dir}/{file_name}");
+        let meta = root.symlink_metadata(&name).map_err(|e| e.to_string())?;
         if meta.is_dir() {
-            walk(root, &path, out)?;
+            walk(root, &name, out)?;
         } else if meta.is_file() {
-            let rel = path.strip_prefix(root).map_err(|e| e.to_string())?;
-            let parts: Option<Vec<&str>> = rel.iter().map(|p| p.to_str()).collect();
-            let name = parts.ok_or_else(|| format!("{} is not UTF-8", rel.display()))?;
-            out.push((name.join("/"), meta.len()));
+            out.push((name, meta.len()));
         }
         if out.len() > MAX_FILES {
             return Err(format!("more than {MAX_FILES} content files"));
@@ -471,6 +641,7 @@ capabilities = ["registries"]
             [Block {
                 id: "ruby:ruby_block".into(),
                 template: "minecraft:iron_block".into(),
+                states: None,
                 properties: BlockProperties {
                     hardness: Some(4.0),
                     light: Some(3),
@@ -632,5 +803,82 @@ capabilities = ["registries"]
         ] {
             assert!(check_path(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn resources_do_not_grant_registrations_or_shared_tags() {
+        let manifest = MANIFEST_TEXT.replace("[\"registries\"]", "[\"resources\"]")
+            + "experimental = [\"resources\"]\n";
+        let m = Manifest::parse(&manifest).unwrap();
+        let dir = scratch("resources-policy");
+        for name in [
+            "data/ruby/horizon/block/a.json",
+            "data/minecraft/tags/block/a.json",
+            "data/c/tags/item/a.json",
+        ] {
+            let path = dir.join("policy.hmod");
+            std::fs::write(
+                &path,
+                Package::write_files(&manifest, Some(b"synthetic"), &[(name, b"{}")]).unwrap(),
+            )
+            .unwrap();
+            assert!(Content::read(&path, &m).is_err(), "{name}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_owned_reader_outlives_content_and_the_directory_name() {
+        let dir = scratch("owned-reader");
+        std::fs::create_dir_all(dir.join("assets/ruby")).unwrap();
+        std::fs::write(dir.join("assets/ruby/a.bin"), b"original scratch bytes").unwrap();
+        let mut reader = {
+            let content = Content::read(&dir, &Manifest::parse(MANIFEST_TEXT).unwrap()).unwrap();
+            content.reader().unwrap()
+        };
+        let moved = dir.with_extension("moved");
+        std::fs::rename(&dir, &moved).unwrap();
+        std::fs::create_dir_all(dir.join("assets/ruby")).unwrap();
+        std::fs::write(dir.join("assets/ruby/a.bin"), b"replacement scratch bytes").unwrap();
+        assert_eq!(
+            reader.read("assets/ruby/a.bin").unwrap(),
+            b"original scratch bytes"
+        );
+        drop(reader);
+        std::fs::remove_dir_all(dir).unwrap();
+        std::fs::remove_dir_all(moved).unwrap();
+    }
+
+    #[test]
+    fn resource_inventory_retains_package_count_and_total_limits() {
+        let dir = scratch("inventory-limits");
+        let m = Manifest::parse(MANIFEST_TEXT).unwrap();
+        let folder = dir.join("data/ruby");
+        std::fs::create_dir_all(&folder).unwrap();
+        for i in 0..=(MAX_TOTAL / MAX_FILE) {
+            std::fs::File::create(folder.join(format!("{i}.bin")))
+                .unwrap()
+                .set_len(MAX_FILE)
+                .unwrap();
+        }
+        assert_eq!(
+            Content::read(&dir, &m).unwrap_err(),
+            "content is over 1024 MiB"
+        );
+        let path = dir.join("count.hmod");
+        let names: Vec<_> = (0..=MAX_FILES)
+            .map(|i| format!("data/ruby/{i}.bin"))
+            .collect();
+        let files: Vec<_> = names.iter().map(|name| (name.as_str(), &b""[..])).collect();
+        std::fs::write(
+            &path,
+            Package::write_files(MANIFEST_TEXT, None, &files).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            Content::read(&path, &m).unwrap_err(),
+            format!("more than {MAX_FILES} content files")
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

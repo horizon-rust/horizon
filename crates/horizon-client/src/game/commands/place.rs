@@ -39,15 +39,17 @@ impl Game<'_> {
                 .join(ns)
                 .join("structures")
                 .join(format!("{path}.nbt")),
-            self.options
-                .resources
-                .join("worldgen/structure")
-                .join(ns)
-                .join(format!("{path}.nbt")),
+            horizon_client::save::WorldPath::unmanaged(
+                self.options
+                    .resources
+                    .join("worldgen/structure")
+                    .join(ns)
+                    .join(format!("{path}.nbt")),
+            ),
         ];
         let transforms = self.state_transforms()?;
         for file in candidates {
-            let Ok(bytes) = std::fs::read(&file) else {
+            let Ok(bytes) = horizon_client::save::read_bytes(&file) else {
                 continue;
             };
             let Ok(raw) = Compression::Gzip.decode(&bytes, 1 << 28) else {

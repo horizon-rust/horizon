@@ -173,9 +173,12 @@ impl Game<'_> {
         if let Some(id) = owner {
             self.note_attacker("minecraft:explosion", id);
         }
-        self.combat.explosion_owner = owner;
+        let previous = std::mem::replace(
+            &mut self.combat.explosion_owner,
+            owner.map(|id| (Who::Mob(id), None)),
+        );
         let result = self.with_hive_emptying_blast(|g| g.explode(at, 1.0));
-        self.combat.explosion_owner = None;
+        self.combat.explosion_owner = previous;
         result
     }
 }

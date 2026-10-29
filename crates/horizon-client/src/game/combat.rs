@@ -55,7 +55,8 @@ pub(super) struct CombatTracker {
     pub(super) hive_emptying_blast: bool,
     /// The mob that owns the projectile exploding now (`getIndirectSourceEntity`):
     /// the mobs the blast hurts record it as their attacker.
-    pub(super) explosion_owner: Option<u32>,
+    /// The blast's shooter and guest UUID, absent for the local host.
+    pub(super) explosion_owner: Option<(horizon_client::mobs::Who, Option<u128>)>,
     /// Charged creepers whose blast just went off and that have not dropped
     /// a head yet (`Creeper.droppedSkulls`): they are gone from the mob list,
     /// but the mobs they killed still ask for their loot.

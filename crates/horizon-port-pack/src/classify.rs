@@ -40,7 +40,11 @@ fn csv_fields(line: &str) -> Vec<String> {
 
 impl Known {
     pub fn atm10() -> Self {
-        let mut by_key = HashMap::new();
+        // Pixelmon needs entities, battles and custom animated models.
+        let mut by_key = HashMap::from([(
+            "pixelmon".to_owned(),
+            ("content".to_owned(), "deep".to_owned()),
+        )]);
         for line in KNOWN_CSV.lines().skip(1) {
             let f = csv_fields(line);
             if f.len() < 6 || f[5] == "guess" {

@@ -46,6 +46,11 @@ use std::{
     },
 };
 
+mod persistence;
+pub use persistence::{
+    Persistence, SavePath, WorldPath, read_bytes, read_string, write_bytes, write_json,
+};
+
 pub const VERSION_NAME: &str = horizon_core::VANILLA_VERSION;
 
 /// Snapshot live block entities and custom names for a save batch without
@@ -190,20 +195,20 @@ pub fn upgrade_older_world(world: &Path) -> Result<()> {
         .map_err(|e| format!("upgrading {}: {e}", world.display()))?;
     Ok(())
 }
-/// Move a world saved by an older Horizon build (pre-26.3 layout with a
-/// DataVersion that keeps vanilla from upgrading it) into the 26.3 layout.
-pub fn migrate_legacy(world: &Path) -> Result<()> {
+/// Move a world saved by an older Horizon build into the 26.3 layout.
+pub fn migrate_legacy(world: &(impl SavePath + ?Sized)) -> Result<()> {
+    let world = world.owned();
     for (old, dimension) in [
         ("", "minecraft:overworld"),
         ("DIM-1", "minecraft:the_nether"),
         ("DIM1", "minecraft:the_end"),
     ] {
         let from = if old.is_empty() {
-            world.to_owned()
+            world.clone()
         } else {
             world.join(old)
         };
-        let to = dimension_dir(world, dimension);
+        let to = dimension_dir(&world, dimension);
         for folder in ["region", "entities", "poi"] {
             let (src, dst) = (from.join(folder), to.join(folder));
             if src.is_dir() && !dst.exists() {
@@ -215,7 +220,70 @@ pub fn migrate_legacy(world: &Path) -> Result<()> {
             let _ = fs::remove_dir(&from);
         }
     }
-    Ok(())
+    migrate_legacy_player(&world)
+}
+
+/// Extract the embedded player written by Horizon before it used player files.
+fn migrate_legacy_player(world: &WorldPath) -> Result<()> {
+    let level_path = world.join("level.dat");
+    let Some(mut root) = read_dat(&level_path) else {
+        return Ok(());
+    };
+    let Some(mut data) = root.get("Data").cloned() else {
+        return Ok(());
+    };
+    let Some(player) = data.get("Player").cloned() else {
+        return Ok(());
+    };
+    if number(data.get("DataVersion")) != Some(i64::from(DATA_VERSION)) {
+        return Err(format!(
+            "{} has embedded player data in an unsupported world version",
+            level_path.display()
+        )
+        .into());
+    }
+    let Tag::Compound(mut player_data) = player else {
+        return Err(format!("{} has invalid embedded player data", level_path.display()).into());
+    };
+
+    // Old Horizon stored the current world version but no player UUID. Match
+    // vanilla's old level.dat migration fallback for that format.
+    let uuid = data
+        .get("singleplayer_uuid")
+        .and_then(|tag| uuid_from_tag(Some(tag)))
+        .or_else(|| uuid_from_tag(player_data.get(&JavaString::from("UUID"))))
+        .unwrap_or([0; 4]);
+    let player_path = world
+        .join("players")
+        .join("data")
+        .join(format!("{}.dat", uuid_text(uuid)));
+
+    if player_path.exists() {
+        if !matches!(read_dat(&player_path), Some(Tag::Compound(_))) {
+            return Err(format!(
+                "{} has an unreadable existing owner player file",
+                player_path.display()
+            )
+            .into());
+        }
+    } else {
+        player_data
+            .entry("DataVersion".into())
+            .or_insert(Tag::Int(DATA_VERSION));
+        player_data.insert("UUID".into(), uuid_tag(uuid));
+        write_dat(&player_path, Tag::Compound(player_data))?;
+    }
+
+    let Tag::Compound(data) = &mut data else {
+        return Err(format!("{} has invalid level data", level_path.display()).into());
+    };
+    data.remove(&JavaString::from("Player"));
+    data.insert("singleplayer_uuid".into(), uuid_tag(uuid));
+    let Tag::Compound(root) = &mut root else {
+        return Err(format!("{} has invalid root data", level_path.display()).into());
+    };
+    root.insert("Data".into(), Tag::Compound(data.clone()));
+    write_dat(&level_path, Tag::Compound(root.clone()))
 }
 
 /// Registry lookups shared by chunk encoding and decoding.
@@ -1648,7 +1716,7 @@ fn cached_region(
     };
     let region = match region {
         Ok(r) => Some(Arc::new(Mutex::new(r))),
-        Err(_) if !create => None,
+        Err(e) if !create && e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e.into()),
     };
     regions.insert(key, region.clone());
@@ -1800,14 +1868,11 @@ fn resolve_poi(
     cache: &RegionCache,
     (x, z): (i32, i32),
     record: &Record,
-) -> Option<Record> {
+) -> Result<Option<Record>> {
     let Record::Poi(chunk, tables) = record else {
-        return Some(record.clone());
+        return Ok(Some(record.clone()));
     };
-    let old = read_region_record(root, cache, "poi", x, z).unwrap_or_else(|e| {
-        log::warn!("Horizon: could not read the poi record of chunk {x} {z}: {e}");
-        None
-    });
+    let old = read_region_record(root, cache, "poi", x, z)?;
     let tag = match (encode_poi(chunk, tables), old) {
         (Some(mut tag), Some(old)) => {
             keep_claims(&mut tag, &old);
@@ -1815,9 +1880,9 @@ fn resolve_poi(
         }
         (Some(tag), None) => tag,
         (None, Some(_)) => poi_root(Compound::new()),
-        (None, None) => return None,
+        (None, None) => return Ok(None),
     };
-    Some(Record::Tag(Arc::new(tag)))
+    Ok(Some(Record::Tag(Arc::new(tag))))
 }
 fn read_region_record(
     root: &Path,
@@ -1840,8 +1905,7 @@ fn read_region_record(
         None => None,
     })
 }
-/// Chunk and entity records waiting for the writer thread, by (entities?,
-/// x, z): reads see them before the region files do.
+/// Pending region records by folder and chunk. Reads see them before disk.
 type PendingWrites = Mutex<HashMap<(Folder, i32, i32), (u64, Record)>>;
 type WriteBatch = (Folder, Vec<((i32, i32), Record, u64)>);
 /// The region folders of a dimension.
@@ -1885,12 +1949,24 @@ struct Outstanding {
 /// One dimension folder (`dimensions/minecraft/<name>`). Region files are
 /// read lazily by worker threads.
 pub struct SaveDir {
+    inner: Arc<SaveData>,
+    persistence: Option<Arc<Persistence>>,
+    path: WorldPath,
+}
+impl std::ops::Deref for SaveDir {
+    type Target = SaveData;
+    fn deref(&self) -> &SaveData {
+        &self.inner
+    }
+}
+pub struct SaveData {
     pub root: PathBuf,
     regions: Arc<RegionCache>,
     entity_regions: Arc<RegionCache>,
     poi_regions: Arc<RegionCache>,
     pending: Arc<PendingWrites>,
     sequence: AtomicU64,
+    admitted: Arc<Mutex<HashMap<(Folder, i32, i32), u64>>>,
     writer: Mutex<Option<Writer>>,
     outstanding: Arc<Outstanding>,
     /// Set by `Persistent` before the first load.
@@ -1903,24 +1979,28 @@ fn is_forced_ticket(ticket: &Tag) -> bool {
 }
 impl SaveDir {
     pub fn new(root: PathBuf) -> Self {
-        let shape = LevelShape::for_dir(&root);
+        Self::owned(WorldPath::unmanaged(root))
+    }
+    pub fn owned(root: WorldPath) -> Self {
+        let persistence = root.persistence().cloned();
+        let inner = Arc::new(SaveData::new(root.to_path_buf()));
+        if let Some(owner) = &persistence {
+            return Self {
+                inner: owner.register(inner),
+                persistence,
+                path: root,
+            };
+        }
         Self {
-            root,
-            regions: Default::default(),
-            entity_regions: Default::default(),
-            poi_regions: Default::default(),
-            pending: Default::default(),
-            sequence: AtomicU64::new(0),
-            writer: Mutex::new(None),
-            outstanding: Default::default(),
-            tables: OnceLock::new(),
-            shape,
+            inner,
+            persistence,
+            path: root,
         }
     }
     /// 26.3's TicketStorage: persistent tickets live in each dimension's
     /// data/minecraft/chunk_tickets.dat, with ChunkPos.CODEC's [x, z] int array.
     pub fn load_forced_chunks(&self) -> HashSet<(i32, i32)> {
-        let Some(data) = read_saved_data(&self.root, "chunk_tickets") else {
+        let Some(data) = read_saved_data(&self.path, "chunk_tickets") else {
             return HashSet::new();
         };
         let Some(Tag::List(tickets)) = data.get("tickets") else {
@@ -1936,10 +2016,10 @@ impl SaveDir {
             .collect()
     }
     pub fn save_forced_chunks(&self, forced: &HashSet<(i32, i32)>) -> Result<()> {
-        if forced.is_empty() && !saved_data_path(&self.root, "chunk_tickets").exists() {
+        if forced.is_empty() && !saved_data_path(&self.path, "chunk_tickets").exists() {
             return Ok(());
         }
-        let mut data = compound_or_empty(read_saved_data(&self.root, "chunk_tickets"));
+        let mut data = compound_or_empty(read_saved_data(&self.path, "chunk_tickets"));
         // Preserve persistent tickets Horizon does not simulate.
         let mut tickets = match data.get("tickets") {
             Some(Tag::List(tickets)) => tickets
@@ -1959,7 +2039,7 @@ impl SaveDir {
             ])
         }));
         put(&mut data, "tickets", Tag::List(tickets));
-        write_saved_data(&self.root, "chunk_tickets", data)
+        write_saved_data(&self.path, "chunk_tickets", data)
     }
     fn region_path(&self, folder: &str, rx: i32, rz: i32) -> PathBuf {
         region_path(&self.root, folder, rx, rz)
@@ -1972,6 +2052,11 @@ impl SaveDir {
             .get(&(Folder::of(folder), x, z))
             .map(|(_, r)| r.clone());
         if let Some(record) = pending {
+            let record = if Folder::of(folder) == Folder::Poi {
+                resolve_poi(&self.root, &self.poi_regions, (x, z), &record).ok()??
+            } else {
+                record
+            };
             return record.tag().map(|t| (*t).clone());
         }
         let cache = match Folder::of(folder) {
@@ -2042,137 +2127,29 @@ impl SaveDir {
         self.queue(Folder::of(folder), records, wait)
     }
     fn queue(&self, folder: Folder, records: Vec<((i32, i32), Record)>, wait: bool) -> Result<()> {
-        if !records.is_empty() {
-            let mut batch = Vec::with_capacity(records.len());
-            {
-                let mut pending = self.pending.lock().map_err(|_| "pending writes poisoned")?;
-                for (key, record) in records {
-                    let seq = self.sequence.fetch_add(1, Ordering::Relaxed);
-                    pending.insert((folder, key.0, key.1), (seq, record.clone()));
-                    batch.push((key, record, seq));
-                }
-            }
-            *self
-                .outstanding
-                .count
-                .lock()
-                .map_err(|_| "writer poisoned")? += 1;
-            let mut writer = self.writer.lock().map_err(|_| "writer poisoned")?;
-            let writer = writer.get_or_insert_with(|| self.start_writer());
-            if writer.send.send((folder, batch)).is_err() {
-                *self
-                    .outstanding
-                    .error
-                    .lock()
-                    .map_err(|_| "writer poisoned")? = Some("the region writer stopped".into());
-                *self
-                    .outstanding
-                    .count
-                    .lock()
-                    .map_err(|_| "writer poisoned")? -= 1;
-                self.outstanding.done.notify_all();
-                return Err("the region writer stopped".into());
-            }
+        if let Some(owner) = &self.persistence {
+            owner.queue(&self.inner, folder, records)?;
+        } else {
+            self.inner.queue(records, folder, true)?;
         }
         if wait {
             self.flush()?;
         }
         Ok(())
     }
-    fn start_writer(&self) -> Writer {
-        let (send, receive) = mpsc::channel::<WriteBatch>();
-        let root = self.root.clone();
-        let (regions, entity_regions, poi_regions) = (
-            self.regions.clone(),
-            self.entity_regions.clone(),
-            self.poi_regions.clone(),
-        );
-        let pending = self.pending.clone();
-        let outstanding = self.outstanding.clone();
-        let thread = std::thread::Builder::new()
-            .name("horizon-region-writer".into())
-            .spawn(move || {
-                for (kind, batch) in receive {
-                    let cache = match kind {
-                        Folder::Region => &regions,
-                        Folder::Entities => &entity_regions,
-                        Folder::Poi => &poi_regions,
-                    };
-                    let folder = kind.name();
-                    // IOWorker.pendingWrites: a chunk queued again since is
-                    // written once, by its newest batch.
-                    let newest = |k: &(i32, i32), seq: u64| {
-                        pending.lock().map_or(true, |p| {
-                            p.get(&(kind, k.0, k.1)).is_none_or(|p| p.0 <= seq)
-                        })
-                    };
-                    let resolved: Vec<_> = batch
-                        .iter()
-                        .filter(|(k, _, seq)| newest(k, *seq))
-                        .filter_map(|(k, r, _)| Some((*k, resolve_poi(&root, cache, *k, r)?)))
-                        .collect();
-                    let records: Vec<_> = resolved.iter().map(|(k, r)| (*k, r)).collect();
-                    let result = write_region_records(&root, cache, folder, &records);
-                    if let Err(e) = &result {
-                        let message = format!("failed to write {folder} files: {e}");
-                        log::warn!("Horizon: {message}");
-                        *outstanding.error.lock().unwrap() = Some(message);
-                    }
-                    // Keep failed snapshots readable; never report them as durable.
-                    if result.is_ok()
-                        && let Ok(mut pending) = pending.lock()
-                    {
-                        for (k, _, seq) in &batch {
-                            if pending.get(&(kind, k.0, k.1)).is_some_and(|p| p.0 == *seq) {
-                                pending.remove(&(kind, k.0, k.1));
-                            }
-                        }
-                    }
-                    if let Ok(mut count) = outstanding.count.lock() {
-                        *count -= 1;
-                        outstanding.done.notify_all();
-                    }
-                }
-            })
-            .expect("spawn region writer");
-        Writer { send, thread }
-    }
-    /// Wait until every queued write is on disk.
+    /// Wait for durability, including writes deferred by vanilla save-off.
     pub fn flush(&self) -> Result<()> {
-        let mut count = self
-            .outstanding
-            .count
-            .lock()
-            .map_err(|_| "writer poisoned")?;
-        while *count > 0 {
-            count = self
-                .outstanding
-                .done
-                .wait(count)
-                .map_err(|_| "writer poisoned")?;
+        if let Some(owner) = &self.persistence {
+            owner.flush()?;
+        } else {
+            self.inner.drain()?;
         }
-        self.write_result()
+        Ok(())
     }
-    /// Poll durability without holding up the event loop. Errors remain visible
-    /// to every waiter, including a later synchronous shutdown.
     pub fn writes_finished(&self) -> Result<bool> {
-        let count = self
-            .outstanding
-            .count
-            .lock()
-            .map_err(|_| "writer poisoned")?;
-        self.write_result()?;
-        Ok(*count == 0)
-    }
-    fn write_result(&self) -> Result<()> {
-        match &*self
-            .outstanding
-            .error
-            .lock()
-            .map_err(|_| "writer poisoned")?
-        {
-            Some(error) => Err(error.clone().into()),
-            None => Ok(()),
+        match &self.persistence {
+            Some(owner) => owner.writes_finished(),
+            None => self.inner.writes_finished(),
         }
     }
     /// Write `chunks` into their region files and wait until they are on disk.
@@ -2255,7 +2232,224 @@ impl SaveDir {
     }
 }
 
-impl Drop for SaveDir {
+impl SaveData {
+    fn new(root: PathBuf) -> Self {
+        let shape = LevelShape::for_dir(&root);
+        Self {
+            root,
+            regions: Default::default(),
+            entity_regions: Default::default(),
+            poi_regions: Default::default(),
+            pending: Default::default(),
+            sequence: AtomicU64::new(0),
+            admitted: Default::default(),
+            writer: Mutex::new(None),
+            outstanding: Default::default(),
+            tables: OnceLock::new(),
+            shape,
+        }
+    }
+    fn queue(&self, records: Vec<((i32, i32), Record)>, folder: Folder, admit: bool) -> Result<()> {
+        if records.is_empty() {
+            return self.write_result();
+        }
+        let mut batch = Vec::with_capacity(records.len());
+        {
+            let mut pending = self.pending.lock().map_err(|_| "pending writes poisoned")?;
+            for (key, record) in records {
+                let seq = self.sequence.fetch_add(1, Ordering::Relaxed);
+                pending.insert((folder, key.0, key.1), (seq, record.clone()));
+                batch.push((key, record, seq));
+            }
+        }
+        if admit {
+            self.submit(folder, batch)?;
+        }
+        self.write_result()
+    }
+    fn submit(&self, folder: Folder, batch: Vec<((i32, i32), Record, u64)>) -> Result<()> {
+        let mut admitted = self.admitted.lock().map_err(|_| "writer poisoned")?;
+        let batch: Vec<_> = batch
+            .into_iter()
+            .filter(|(k, _, seq)| {
+                let key = (folder, k.0, k.1);
+                if admitted.get(&key).is_some_and(|old| old >= seq) {
+                    return false;
+                }
+                admitted.insert(key, *seq);
+                true
+            })
+            .collect();
+        drop(admitted);
+        if batch.is_empty() {
+            return Ok(());
+        }
+        *self
+            .outstanding
+            .count
+            .lock()
+            .map_err(|_| "writer poisoned")? += 1;
+        let mut writer = self.writer.lock().map_err(|_| "writer poisoned")?;
+        let writer = writer.get_or_insert_with(|| self.start_writer());
+        if writer.send.send((folder, batch)).is_err() {
+            *self
+                .outstanding
+                .error
+                .lock()
+                .map_err(|_| "writer poisoned")? = Some("the region writer stopped".into());
+            *self
+                .outstanding
+                .count
+                .lock()
+                .map_err(|_| "writer poisoned")? -= 1;
+            self.outstanding.done.notify_all();
+            return Err("the region writer stopped".into());
+        }
+        Ok(())
+    }
+    fn submit_pending(&self) -> Result<()> {
+        let (mut chunks, mut entities, mut poi) = (Vec::new(), Vec::new(), Vec::new());
+        for ((folder, x, z), (seq, record)) in self
+            .pending
+            .lock()
+            .map_err(|_| "pending writes poisoned")?
+            .iter()
+        {
+            let batch = match folder {
+                Folder::Region => &mut chunks,
+                Folder::Entities => &mut entities,
+                Folder::Poi => &mut poi,
+            };
+            batch.push(((*x, *z), record.clone(), *seq));
+        }
+        self.submit(Folder::Region, chunks)?;
+        self.submit(Folder::Entities, entities)?;
+        self.submit(Folder::Poi, poi)
+    }
+    fn start_writer(&self) -> Writer {
+        let (send, receive) = mpsc::channel::<WriteBatch>();
+        let root = self.root.clone();
+        let (regions, entity_regions, poi_regions) = (
+            self.regions.clone(),
+            self.entity_regions.clone(),
+            self.poi_regions.clone(),
+        );
+        let pending = self.pending.clone();
+        let admitted = self.admitted.clone();
+        let outstanding = self.outstanding.clone();
+        let thread = std::thread::Builder::new()
+            .name("horizon-region-writer".into())
+            .spawn(move || {
+                for (folder, batch) in receive {
+                    let cache = match folder {
+                        Folder::Region => &regions,
+                        Folder::Entities => &entity_regions,
+                        Folder::Poi => &poi_regions,
+                    };
+                    let name = folder.name();
+                    let result: Result<()> = (|| {
+                        let mut resolved = Vec::new();
+                        for (key, record, seq) in &batch {
+                            if admitted
+                                .lock()
+                                .map_err(|_| "writer poisoned")?
+                                .get(&(folder, key.0, key.1))
+                                .is_some_and(|latest| latest > seq)
+                            {
+                                continue;
+                            }
+                            if let Some(record) = resolve_poi(&root, cache, *key, record)? {
+                                resolved.push((*key, record));
+                            }
+                        }
+                        let records: Vec<_> = resolved
+                            .iter()
+                            .map(|(key, record)| (*key, record))
+                            .collect();
+                        write_region_records(&root, cache, name, &records)
+                    })();
+                    if let Err(e) = &result {
+                        let message = format!("failed to write {name} files: {e}");
+                        log::warn!("Horizon: {message}");
+                        *outstanding.error.lock().unwrap() = Some(message);
+                    }
+                    // Keep failed snapshots readable; never report them as durable.
+                    if result.is_ok()
+                        && let Ok(mut pending) = pending.lock()
+                    {
+                        for (k, _, seq) in &batch {
+                            if pending
+                                .get(&(folder, k.0, k.1))
+                                .is_some_and(|p| p.0 == *seq)
+                            {
+                                pending.remove(&(folder, k.0, k.1));
+                            }
+                        }
+                    }
+                    if result.is_ok() {
+                        let mut admitted = admitted.lock().unwrap();
+                        for (k, _, seq) in &batch {
+                            let key = (folder, k.0, k.1);
+                            if admitted.get(&key) == Some(seq) {
+                                admitted.remove(&key);
+                            }
+                        }
+                    }
+                    if let Ok(mut count) = outstanding.count.lock() {
+                        *count -= 1;
+                        outstanding.done.notify_all();
+                    }
+                }
+            })
+            .expect("spawn region writer");
+        Writer { send, thread }
+    }
+    /// Wait until every queued write is on disk.
+    fn drain(&self) -> Result<()> {
+        let mut count = self
+            .outstanding
+            .count
+            .lock()
+            .map_err(|_| "writer poisoned")?;
+        while *count > 0 {
+            count = self
+                .outstanding
+                .done
+                .wait(count)
+                .map_err(|_| "writer poisoned")?;
+        }
+        self.write_result()
+    }
+    /// Poll durability without holding up the event loop. Errors remain visible
+    /// to every waiter, including a later synchronous shutdown.
+    pub fn writes_finished(&self) -> Result<bool> {
+        let count = self
+            .outstanding
+            .count
+            .lock()
+            .map_err(|_| "writer poisoned")?;
+        self.write_result()?;
+        Ok(*count == 0
+            && self
+                .pending
+                .lock()
+                .map_err(|_| "pending writes poisoned")?
+                .is_empty())
+    }
+    fn write_result(&self) -> Result<()> {
+        match &*self
+            .outstanding
+            .error
+            .lock()
+            .map_err(|_| "writer poisoned")?
+        {
+            Some(error) => Err(error.clone().into()),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for SaveData {
     /// Finish queued writes before the world is let go.
     fn drop(&mut self) {
         if let Some(writer) = self.writer.get_mut().ok().and_then(Option::take) {
@@ -2265,68 +2459,72 @@ impl Drop for SaveDir {
     }
 }
 
-pub fn read_dat(path: &Path) -> Option<Tag> {
-    let bytes = fs::read(path).ok()?;
+pub fn read_dat(path: &(impl SavePath + ?Sized)) -> Option<Tag> {
+    let bytes = read_bytes(path).ok()?;
     let raw = match Compression::Gzip.decode(&bytes, 64 << 20) {
         Ok(raw) => raw,
         Err(_) => bytes,
     };
     Some(nbt::read_named(&raw, Limits::default()).ok()?.0.tag)
 }
-/// Write a gzip NBT file the way vanilla does (`<name>_new`, keep `_old`).
-pub fn write_dat(path: &Path, tag: Tag) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let bytes = nbt::write_named(
-        &NamedTag {
-            name: "".into(),
-            tag,
-        },
-        Limits::default(),
+pub fn load_game_rules(world: &(impl SavePath + ?Sized)) -> crate::gamerules::GameRules {
+    read_dat(&world.owned().join("data/minecraft/game_rules.dat"))
+        .map(|tag| crate::gamerules::GameRules::from_nbt(&tag))
+        .unwrap_or_default()
+}
+
+pub fn save_game_rules(
+    world: &(impl SavePath + ?Sized),
+    rules: &crate::gamerules::GameRules,
+) -> Result<()> {
+    write_dat(
+        &world.owned().join("data/minecraft/game_rules.dat"),
+        rules.to_nbt().tag,
     )
-    .map_err(|e| e.to_string())?;
-    let compressed = Compression::Gzip.encode(&bytes)?;
-    let file = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("data.dat");
-    let temporary = path.with_file_name(format!("{file}_new"));
-    fs::write(&temporary, compressed)?;
-    if path.exists() {
-        let old = match file.strip_suffix(".dat") {
-            Some(stem) => path.with_file_name(format!("{stem}.dat_old")),
-            None => path.with_file_name(format!("{file}_old")),
-        };
-        // Util.safeReplaceFile: no backup, no replacement.
-        fs::rename(path, old).map_err(|e| format!("{}: {e}", path.display()))?;
-    }
-    fs::rename(temporary, path)?;
-    Ok(())
+}
+
+/// Write gzip NBT through the owner and keep the previous file as `_old`.
+pub fn write_dat(path: &(impl SavePath + ?Sized), tag: Tag) -> Result<()> {
+    let path = path.owned();
+    let result = (|| {
+        let bytes = nbt::write_named(
+            &NamedTag {
+                name: "".into(),
+                tag,
+            },
+            Limits::default(),
+        )
+        .map_err(|e| e.to_string())?;
+        let compressed = Compression::Gzip.encode(&bytes)?;
+        persistence::write_file(&path, compressed, true)
+    })();
+    path.record(&result);
+    result
 }
 /// `SavedDataStorage`: `{data: ..., DataVersion}` under `data/minecraft/`.
-fn saved_data_path(world: &Path, name: &str) -> PathBuf {
+fn saved_data_path(world: &(impl SavePath + ?Sized), name: &str) -> WorldPath {
     world
+        .owned()
         .join("data")
         .join("minecraft")
         .join(format!("{name}.dat"))
 }
-fn read_saved_data(world: &Path, name: &str) -> Option<Tag> {
+fn read_saved_data(world: &(impl SavePath + ?Sized), name: &str) -> Option<Tag> {
     read_dat(&saved_data_path(world, name))?
         .get("data")
         .cloned()
 }
 /// The world's generator settings: world_gen_settings.dat (26.3) or
 /// level.dat's Data.WorldGenSettings.
-pub fn world_gen_settings(world: &Path) -> Option<Tag> {
+pub fn world_gen_settings(world: &(impl SavePath + ?Sized)) -> Option<Tag> {
     read_saved_data(world, "world_gen_settings").or_else(|| {
-        read_dat(&world.join("level.dat"))?
+        read_dat(&world.owned().join("level.dat"))?
             .get("Data")?
             .get("WorldGenSettings")
             .cloned()
     })
 }
-fn write_saved_data(world: &Path, name: &str, data: Tag) -> Result<()> {
+fn write_saved_data(world: &(impl SavePath + ?Sized), name: &str, data: Tag) -> Result<()> {
     write_dat(
         &saved_data_path(world, name),
         Tag::compound([("data", data), ("DataVersion", Tag::Int(DATA_VERSION))]),
@@ -2468,7 +2666,7 @@ pub struct WorldGen {
 }
 impl WorldGen {
     /// A saved world's choices, from its `world_gen_settings`.
-    pub fn read(world: &Path) -> Option<Self> {
+    pub fn read(world: &(impl SavePath + ?Sized)) -> Option<Self> {
         let settings = world_gen_settings(world)?;
         let flag = |key: &str, default: bool| number(settings.get(key)).map_or(default, |v| v != 0);
         let generator = settings
@@ -2493,19 +2691,24 @@ impl Default for WorldGen {
     }
 }
 /// Writes a new world's `world_gen_settings` (seed, options and dimensions).
-pub fn write_world_gen_settings(dir: &Path, seed: i64, options: WorldGen) -> Result<()> {
+pub fn write_world_gen_settings(
+    dir: &(impl SavePath + ?Sized),
+    seed: i64,
+    options: WorldGen,
+) -> Result<()> {
     write_world_gen_settings_with(dir, seed, options, None)
 }
 /// [`write_world_gen_settings`] with a flat overworld's own generator
 /// settings (FlatLevelGeneratorSettings, as `flatgen::settings_from_json`
 /// reads them) instead of the Superflat preset's classic layers.
 pub fn write_world_gen_settings_with(
-    dir: &Path,
+    dir: &(impl SavePath + ?Sized),
     seed: i64,
     options: WorldGen,
     flat_settings: Option<Tag>,
 ) -> Result<()> {
-    fs::create_dir_all(dir)?;
+    let owned = dir.owned();
+    let dir = &owned;
     // worldgen/world_preset/flat.json's overworld: the classic flat layers.
     let layer = |block: &str, height: i32| {
         Tag::compound([("block", string(block)), ("height", Tag::Int(height))])
@@ -2707,7 +2910,16 @@ impl Level {
             (false, m) => m.clamp(0, 3),
         }
     }
-    pub fn read(dir: &Path) -> Option<Self> {
+    pub fn read(dir: &(impl SavePath + ?Sized)) -> Option<Self> {
+        Self::read_with_player(dir, true)
+    }
+    /// Read world metadata without adopting an offline player's state.
+    pub fn read_world(dir: &(impl SavePath + ?Sized)) -> Option<Self> {
+        Self::read_with_player(dir, false)
+    }
+    fn read_with_player(dir: &(impl SavePath + ?Sized), local_player: bool) -> Option<Self> {
+        let owned = dir.owned();
+        let dir = &owned;
         let root = read_dat(&dir.join("level.dat"))?;
         let data = root.get("Data")?;
         let n = |t: Option<&Tag>| number(t).unwrap_or(0);
@@ -2792,6 +3004,12 @@ impl Level {
             rain_level: if raining { (1.0, 1.0) } else { (0.0, 0.0) },
             thunder_level: if thundering { (1.0, 1.0) } else { (0.0, 0.0) },
         };
+        level.spawn = level
+            .world_spawn
+            .map(|s| [f64::from(s[0]), f64::from(s[1]), f64::from(s[2])]);
+        if !local_player {
+            return Some(level);
+        }
         // The player: players/data/<singleplayer_uuid>.dat, the newest player
         // file of a server world, or the legacy Data.Player.
         let uuid = uuid_from_tag(data.get("singleplayer_uuid"));
@@ -2799,21 +3017,24 @@ impl Level {
         let owner = uuid.and_then(|u| read_dat(&player_dir.join(format!("{}.dat", uuid_text(u)))));
         let player = owner
             .or_else(|| {
-                fs::read_dir(&player_dir)
+                player_dir
+                    .children()
                     .ok()
-                    .and_then(|d| {
-                        d.flatten()
-                            .filter(|e| e.path().extension().is_some_and(|x| x == "dat"))
-                            .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
+                    .and_then(|paths| {
+                        paths
+                            .into_iter()
+                            .filter(|path| path.extension().is_some_and(|ext| ext == "dat"))
+                            .max_by_key(|path| {
+                                (
+                                    path.deferred(),
+                                    fs::metadata(path).and_then(|m| m.modified()).ok(),
+                                )
+                            })
                     })
-                    .and_then(|e| read_dat(&e.path()))
+                    .and_then(|path| read_dat(&path))
             })
             .or_else(|| data.get("Player").cloned());
         level.player_uuid = uuid_from_tag(player.as_ref().and_then(|p| p.get("UUID"))).or(uuid);
-        let spawn = level
-            .world_spawn
-            .map(|s| [f64::from(s[0]), f64::from(s[1]), f64::from(s[2])]);
-        level.spawn = spawn;
         if let Some(p) = &player {
             level.read_player(p);
         }
@@ -3141,9 +3362,21 @@ impl Level {
         }
         p
     }
-    /// Write every file; a world without a player UUID gets a random one.
-    pub fn write(&mut self, dir: &Path) -> Result<()> {
-        fs::create_dir_all(dir)?;
+    /// Write the world and its local player.
+    pub fn write(&mut self, dir: &(impl SavePath + ?Sized)) -> Result<()> {
+        self.write_with_player(dir, true)
+    }
+    /// Write world metadata without selecting or saving a local player.
+    pub fn write_world(&mut self, dir: &(impl SavePath + ?Sized)) -> Result<()> {
+        self.write_with_player(dir, false)
+    }
+    fn write_with_player(
+        &mut self,
+        dir: &(impl SavePath + ?Sized),
+        local_player: bool,
+    ) -> Result<()> {
+        let owned = dir.owned();
+        let dir = &owned;
         let existing = read_dat(&dir.join("level.dat")).and_then(|r| r.get("Data").cloned());
         let legacy = existing
             .as_ref()
@@ -3188,7 +3421,7 @@ impl Level {
                 map.remove(&JavaString::from(key));
             }
         }
-        let uuid = self.ensure_player_uuid();
+        let uuid = local_player.then(|| self.ensure_player_uuid());
         // A new world's first spawn point is its world spawn.
         if self.world_spawn.is_none() {
             self.world_spawn = self.spawn.map(|s| {
@@ -3265,10 +3498,12 @@ impl Level {
             ),
             ("difficulty_settings", difficulty),
             ("initialized", Tag::Byte(1)),
-            ("singleplayer_uuid", uuid_tag(uuid)),
             ("ServerBrands", Tag::List(brands)),
         ] {
             put(&mut data, key, value);
+        }
+        if let Some(uuid) = uuid {
+            put(&mut data, "singleplayer_uuid", uuid_tag(uuid));
         }
         if let Tag::Compound(map) = &mut data {
             map.entry("allowCommands".into()).or_insert(Tag::Byte(0));
@@ -3334,12 +3569,14 @@ impl Level {
             }
             write_saved_data(dir, "game_rules", rules)?;
         }
-        write_dat(
-            &dir.join("players")
-                .join("data")
-                .join(format!("{}.dat", uuid_text(uuid))),
-            self.player_tag(),
-        )?;
+        if let Some(uuid) = uuid {
+            write_dat(
+                &dir.join("players")
+                    .join("data")
+                    .join(format!("{}.dat", uuid_text(uuid))),
+                self.player_tag(),
+            )?;
+        }
         write_dat(&dir.join("level.dat"), Tag::compound([("Data", data)]))?;
         Ok(())
     }
@@ -3753,6 +3990,9 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
             .save
             .save_protos(&saved, self.registry.registry, &self.biomes)
         {
+            if let Some(owner) = &self.save.persistence {
+                owner.record_error(e.to_string());
+            }
             log::warn!("Horizon: failed to save proto chunks: {e}");
         }
     }
@@ -3767,6 +4007,9 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
             .save_later(&[Arc::new(chunk)], self.registry.registry, &self.biomes)
             .and_then(|_| self.save.save_entities_later(vec![(key, entities)]));
         if let Err(e) = saved {
+            if let Some(owner) = &self.save.persistence {
+                owner.record_error(e.to_string());
+            }
             log::warn!("Horizon: failed to save chunk {} {}: {e}", key.0, key.1);
         }
     }
@@ -3783,6 +4026,124 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn empty_poi_updates_retain_failed_reads() {
+        let Some(resources) = std::env::var_os("HORIZON_TEST_RESOURCES") else {
+            return;
+        };
+        let assets = crate::assets::Assets::load(&PathBuf::from(resources)).expect("assets");
+        let path = std::env::temp_dir().join(format!("horizon-empty-poi-{}", std::process::id()));
+        let world = WorldPath::new(path.clone());
+        let owner = world.persistence().unwrap().clone();
+        let save = SaveDir::owned(world.join("dimensions/minecraft/overworld"));
+        save.tables
+            .set(Arc::new(SaveTables::new(&assets)))
+            .ok()
+            .unwrap();
+        fs::create_dir_all(save.root.join("poi/r.0.0.mca")).unwrap();
+        save.save_poi(&[Arc::new(Chunk::empty(0, 0))], false)
+            .unwrap();
+        assert!(save.flush().is_err());
+        assert!(save.writes_finished().is_err());
+        assert!(owner.begin("failed-poi-read").is_err());
+        assert!(
+            save.pending
+                .lock()
+                .unwrap()
+                .contains_key(&(Folder::Poi, 0, 0))
+        );
+        drop(save);
+        drop(owner);
+        drop(world);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn held_poi_updates_keep_claims_and_failed_reads_block_durability() {
+        let Some(resources) = std::env::var_os("HORIZON_TEST_RESOURCES") else {
+            return;
+        };
+        let assets = crate::assets::Assets::load(&PathBuf::from(resources)).expect("assets");
+        let bell = assets.registry.default_state("minecraft:bell").unwrap().0;
+        let path = std::env::temp_dir().join(format!("horizon-held-poi-{}", std::process::id()));
+        let world = WorldPath::new(path.clone());
+        let owner = world.persistence().unwrap().clone();
+        let save = SaveDir::owned(world.join("dimensions/minecraft/overworld"));
+        save.tables
+            .set(Arc::new(SaveTables::new(&assets)))
+            .ok()
+            .unwrap();
+        let mut chunk = Chunk::empty(0, 0);
+        chunk.set(5, 71, 5, bell);
+        save.save_poi(&[Arc::new(chunk.clone())], true).unwrap();
+        let mut claimed = save.read_record("poi", 0, 0).unwrap();
+        let Some(Tag::List(records)) = claimed
+            .tag
+            .get_mut("Sections")
+            .unwrap()
+            .get_mut("4")
+            .unwrap()
+            .get_mut("Records")
+        else {
+            panic!("the bell has a POI record");
+        };
+        *records[0].get_mut("free_tickets").unwrap() = Tag::Int(7);
+        save.write_records("poi", vec![((0, 0), Some(claimed.clone()))], true)
+            .unwrap();
+
+        owner.begin("poi").unwrap();
+        save.save_poi(&[Arc::new(chunk.clone())], false).unwrap();
+        assert_eq!(save.read_record("poi", 0, 0).unwrap().tag, claimed.tag);
+        chunk.set(5, 71, 5, 0);
+        save.save_poi(&[Arc::new(chunk.clone())], false).unwrap();
+        assert_eq!(
+            save.read_record("poi", 0, 0).unwrap().tag,
+            poi_root(Compound::new()).tag
+        );
+        assert_eq!(
+            SaveDir::new(save.root.clone())
+                .read_record("poi", 0, 0)
+                .unwrap()
+                .tag,
+            claimed.tag
+        );
+        chunk.set(5, 71, 5, bell);
+        save.save_poi(&[Arc::new(chunk.clone())], false).unwrap();
+        owner.end("poi").unwrap();
+        owner.flush().unwrap();
+        assert_eq!(
+            SaveDir::new(save.root.clone())
+                .read_record("poi", 0, 0)
+                .unwrap()
+                .tag,
+            claimed.tag
+        );
+
+        let failed = SaveDir::owned(world.join("failing-dimension"));
+        failed
+            .tables
+            .set(Arc::new(SaveTables::new(&assets)))
+            .ok()
+            .unwrap();
+        fs::create_dir_all(failed.root.join("poi/r.0.0.mca")).unwrap();
+        let _ = failed.save_poi(&[Arc::new(chunk)], false);
+        assert!(failed.flush().is_err());
+        assert!(failed.writes_finished().is_err());
+        assert!(
+            failed
+                .pending
+                .lock()
+                .unwrap()
+                .contains_key(&(Folder::Poi, 0, 0))
+        );
+        assert!(failed.root.join("poi/r.0.0.mca").is_dir());
+        drop(failed);
+        drop(save);
+        drop(owner);
+        drop(world);
+        fs::remove_dir_all(path).unwrap();
+    }
+
     #[test]
     fn points_of_interest_save_as_poi_sections() {
         let Some(root) = std::env::var_os("HORIZON_TEST_RESOURCES") else {
@@ -4172,7 +4533,7 @@ mod tests {
             "unfinished proto saves must not suppress complete decoration"
         );
         let mut nether = SaveDir::new(dir.clone());
-        nether.shape = LevelShape::NETHER;
+        Arc::get_mut(&mut nether.inner).unwrap().shape = LevelShape::NETHER;
         let dark = nether.lod_surfaces(-2, 3, &assets, &biomes).unwrap();
         assert!(
             dark.iter()
@@ -4923,6 +5284,212 @@ mod tests {
             section(Tag::Byte(0), None, Some(Tag::ByteArray(varied))),
         ]));
     }
+    #[test]
+    fn world_metadata_preserves_player_files_and_declared_owner() {
+        let dir = std::env::temp_dir().join(format!("horizon-world-only-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut original = Level {
+            player_uuid: Some([1, 2, 3, 4]),
+            inventory: vec![(8, "minecraft:diamond".into(), 8, 0)],
+            dimension: "minecraft:the_nether".into(),
+            ..Default::default()
+        };
+        original.write(&dir).unwrap();
+        let metadata = Level::read_world(&dir).unwrap();
+        assert_eq!(metadata.player_uuid, None);
+        assert_eq!(metadata.dimension, "minecraft:overworld");
+        assert!(metadata.inventory.is_empty());
+        let player = dir
+            .join("players/data")
+            .join(format!("{}.dat", uuid_text(original.player_uuid.unwrap())));
+        let before = fs::read(&player).unwrap();
+        let mut synthetic = Level {
+            player_uuid: Some([5, 6, 7, 8]),
+            time: 9300,
+            inventory: vec![(8, "minecraft:dirt".into(), 1, 0)],
+            ..original
+        };
+        synthetic.write_world(&dir).unwrap();
+        assert_eq!(fs::read(&player).unwrap(), before);
+        assert_eq!(fs::read_dir(dir.join("players/data")).unwrap().count(), 1);
+        let reopened = Level::read(&dir).unwrap();
+        assert_eq!(reopened.time, 9300);
+        assert_eq!(reopened.player_uuid, Some([1, 2, 3, 4]));
+        fs::remove_dir_all(&dir).unwrap();
+        let mut empty = Level::default();
+        empty.write_world(&dir).unwrap();
+        assert_eq!(empty.player_uuid, None);
+        assert!(!dir.join("players").exists());
+        assert!(
+            read_dat(&dir.join("level.dat"))
+                .unwrap()
+                .get("Data")
+                .unwrap()
+                .get("singleplayer_uuid")
+                .is_none()
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn legacy_player_tag(item: &str, count: i32) -> Tag {
+        Tag::compound([
+            ("Health", Tag::Float(17.25f32.to_bits())),
+            ("foodLevel", Tag::Int(16)),
+            ("foodSaturationLevel", Tag::Float(2.5f32.to_bits())),
+            ("XpLevel", Tag::Int(7)),
+            ("XpP", Tag::Float(0.25f32.to_bits())),
+            ("XpTotal", Tag::Int(53)),
+            ("playerGameType", Tag::Int(0)),
+            ("Rotation", floats(&[15.0, -30.0])),
+            (
+                "Inventory",
+                Tag::List(vec![Tag::compound([
+                    ("Slot", Tag::Byte(8)),
+                    ("id", string(item)),
+                    ("count", Tag::Int(count)),
+                ])]),
+            ),
+            ("Dimension", string("minecraft:overworld")),
+            ("Pos", doubles(&[12.5, 80.0, -4.25])),
+        ])
+    }
+
+    fn write_legacy_level(dir: &Path, player: Tag, owner: Option<[i32; 4]>) {
+        let mut data = vec![
+            ("DataVersion", Tag::Int(DATA_VERSION)),
+            ("version", Tag::Int(19133)),
+            ("LevelName", string("Old Horizon")),
+            ("GameType", Tag::Int(0)),
+            ("Time", Tag::Long(1200)),
+            ("DayTime", Tag::Long(1200)),
+            ("SpawnX", Tag::Int(0)),
+            ("SpawnY", Tag::Int(64)),
+            ("SpawnZ", Tag::Int(0)),
+            ("initialized", Tag::Byte(1)),
+            ("clearWeatherTime", Tag::Int(0)),
+            ("rainTime", Tag::Int(0)),
+            ("thunderTime", Tag::Int(0)),
+            ("raining", Tag::Byte(0)),
+            ("thundering", Tag::Byte(0)),
+            ("allowCommands", Tag::Byte(0)),
+            ("hardcore", Tag::Byte(0)),
+            ("Difficulty", Tag::Byte(2)),
+            (
+                "WorldGenSettings",
+                Tag::compound([
+                    ("seed", Tag::Long(123)),
+                    ("generate_features", Tag::Byte(1)),
+                    ("bonus_chest", Tag::Byte(0)),
+                ]),
+            ),
+            ("Player", player),
+        ];
+        if let Some(owner) = owner {
+            data.push(("singleplayer_uuid", uuid_tag(owner)));
+        }
+        write_dat(
+            &dir.join("level.dat"),
+            Tag::compound([("Data", Tag::compound(data))]),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn same_version_embedded_player_migrates_to_player_file() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-legacy-player-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        write_legacy_level(&dir, legacy_player_tag("minecraft:diamond", 5), None);
+
+        migrate_legacy(&dir).unwrap();
+
+        let owner = [0; 4];
+        let file = dir
+            .join("players/data")
+            .join(format!("{}.dat", uuid_text(owner)));
+        let stored = read_dat(&file).unwrap();
+        assert_eq!(stored.get("UUID"), Some(&uuid_tag(owner)));
+        assert_eq!(stored.get("DataVersion"), Some(&Tag::Int(DATA_VERSION)));
+        let loaded = Level::read(&dir).unwrap();
+        assert_eq!(loaded.name, "Old Horizon");
+        assert_eq!(loaded.player_uuid, Some(owner));
+        assert_eq!(loaded.position, Some([12.5, 80.0, -4.25]));
+        assert_eq!(loaded.rotation, [15.0, -30.0]);
+        assert_eq!(loaded.dimension, "minecraft:overworld");
+        assert_eq!(
+            (loaded.health, loaded.food, loaded.saturation),
+            (17.25, 16, 2.5)
+        );
+        assert_eq!((loaded.xp_level, loaded.xp_total), (7, 53));
+        assert_eq!(loaded.inventory, [(8, "minecraft:diamond".into(), 5, 0)]);
+        let data = read_dat(&dir.join("level.dat")).unwrap();
+        let data = data.get("Data").unwrap();
+        assert!(data.get("Player").is_none());
+        assert_eq!(data.get("singleplayer_uuid"), Some(&uuid_tag(owner)));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn embedded_player_migration_preserves_the_declared_external_owner() {
+        let dir = std::env::temp_dir().join(format!("horizon-legacy-owner-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let owner = [5, 6, 7, 8];
+        write_legacy_level(&dir, legacy_player_tag("minecraft:dirt", 3), Some(owner));
+        let file = dir
+            .join("players/data")
+            .join(format!("{}.dat", uuid_text(owner)));
+        let external = Tag::compound([
+            ("DataVersion", Tag::Int(DATA_VERSION)),
+            ("UUID", uuid_tag(owner)),
+            ("Health", Tag::Float(9.0f32.to_bits())),
+            (
+                "Inventory",
+                Tag::List(vec![Tag::compound([
+                    ("Slot", Tag::Byte(8)),
+                    ("id", string("minecraft:emerald")),
+                    ("count", Tag::Int(11)),
+                ])]),
+            ),
+        ]);
+        write_dat(&file, external).unwrap();
+        let before = fs::read(&file).unwrap();
+
+        migrate_legacy(&dir).unwrap();
+
+        assert_eq!(fs::read(&file).unwrap(), before);
+        let loaded = Level::read(&dir).unwrap();
+        assert_eq!(loaded.player_uuid, Some(owner));
+        assert_eq!(
+            (
+                loaded.health,
+                loaded.inventory[0].1.as_str(),
+                loaded.inventory[0].2
+            ),
+            (9.0, "minecraft:emerald", 11)
+        );
+        let data = read_dat(&dir.join("level.dat")).unwrap();
+        let data = data.get("Data").unwrap();
+        assert!(data.get("Player").is_none());
+        assert_eq!(data.get("singleplayer_uuid"), Some(&uuid_tag(owner)));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unreadable_owner_file_keeps_embedded_player_for_recovery() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-legacy-bad-owner-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        write_legacy_level(&dir, legacy_player_tag("minecraft:diamond", 5), None);
+        let file = dir.join("players/data/00000000-0000-0000-0000-000000000000.dat");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, b"not an NBT player file").unwrap();
+
+        assert!(migrate_legacy(&dir).is_err());
+        let data = read_dat(&dir.join("level.dat")).unwrap();
+        assert!(data.get("Data").unwrap().get("Player").is_some());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn level_round_trips_through_the_vanilla_files() {
         let dir = std::env::temp_dir().join(format!("horizon-level-{}", std::process::id()));

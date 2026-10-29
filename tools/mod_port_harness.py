@@ -163,6 +163,36 @@ def compare_mod(mod, oracle, horizon, carry, upgrades, old_items):
             'blocks_with_differences': len(carry.get('differences', {}))}
 
 
+def carried_mods(work):
+    folders = {p.name: p / 'carry' for p in (work / 'mods').iterdir()
+               if (p / 'carry' / 'horizon-mod.toml').is_file()}
+    inventory = work / 'inventory.json'
+    if inventory.exists():
+        records = json.loads(inventory.read_text())
+        owned = set()
+        for record in records:
+            key = record['key']
+            kind = record['path'].split('/')[0]
+            folder = f'{kind}@{key}' if kind in ('datapacks', 'resourcepacks', 'shaderpacks') else key
+            unique = sum(r['key'] == key for r in records) == 1
+            if folder not in folders:
+                if not unique or key not in folders:
+                    continue
+                folder = key
+            source = folders[folder].parent / 'source.json'
+            if source.exists():
+                owner = json.loads(source.read_text())
+                if not isinstance(owner, str):
+                    raise ValueError(f'{source}: expected a source pack path')
+                if owner != record['path']:
+                    continue
+            elif not unique and folder == key:
+                continue
+            owned.add(folder)
+        folders = {name: path for name, path in folders.items() if name in owned}
+    return sorted(folders)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--work', required=True)
@@ -172,6 +202,10 @@ def main():
     parser.add_argument('mods', nargs='*')
     args = parser.parse_args()
     work = Path(args.work).resolve()
+    folders = carried_mods(work)
+    # A failed check must not leave an older success usable by the coverage report.
+    for folder in folders:
+        (work / 'mods' / folder / 'harness' / 'result.json').unlink(missing_ok=True)
     facts = work / 'oracle' / 'facts.json'
     if args.jars:
         facts.parent.mkdir(parents=True, exist_ok=True)
@@ -188,23 +222,33 @@ def main():
     probe = Path(metadata['target_directory']) / 'release/examples/mod_port_probe'
     oracle = json.loads(facts.read_text())
     old_items = set(oracle.get('vanilla_items', []))
-    mods = args.mods or sorted(p.name for p in (work / 'mods').iterdir() if (p / 'carry').is_dir())
+    mods = args.mods or folders
+    if not mods:
+        raise ValueError('no carried outputs selected from inventory')
     rows = []
-    for mod in mods:
+    for selector in mods:
         # One mod at a time: each against vanilla, as a player adding it would load it (and a pack's
         # sum may pass the block states a world holds, which the probe would refuse).
-        out = work / 'mods' / mod / 'harness' / 'horizon.json'
+        out = work / 'harness' / 'horizon.json'
         out.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run([str(probe), args.resources, str(work), str(out), mod], check=True)
+        out.unlink(missing_ok=True)
+        subprocess.run([str(probe), args.resources, str(work), str(out), selector], check=True)
         horizon = json.loads(out.read_text())
-        carry_report = work / 'mods' / mod / 'carry-report.json'
+        selected = horizon['mods']
+        if len(selected) != 1:
+            raise ValueError(f'{selector}: expected one selected mod, found {len(selected)}')
+        folder, mod = selected[0]['folder'], selected[0]['id']
+        saved = work / 'mods' / folder / 'harness' / 'horizon.json'
+        saved.parent.mkdir(parents=True, exist_ok=True)
+        saved.write_text(json.dumps(horizon))
+        carry_report = work / 'mods' / folder / 'carry-report.json'
         carry = json.loads(carry_report.read_text()) if carry_report.exists() else {}
-        rows.append(compare_mod(mod, oracle, horizon, carry, sound_upgrades(oracle, horizon), old_items))
+        rows.append((folder, compare_mod(mod, oracle, horizon, carry, sound_upgrades(oracle, horizon), old_items)))
     print(f'{"mod":<16} {"result":<7} ' + ' '.join(f'{c:>12}' for c in CHECKS))
-    for result in rows:
+    for folder, result in rows:
         mod = result['mod']
-        (work / 'mods' / mod / 'harness').mkdir(parents=True, exist_ok=True)
-        (work / 'mods' / mod / 'harness' / 'result.json').write_text(json.dumps(result, indent=1))
+        (work / 'mods' / folder / 'harness').mkdir(parents=True, exist_ok=True)
+        (work / 'mods' / folder / 'harness' / 'result.json').write_text(json.dumps(result, indent=1))
         cols = []
         for c in CHECKS:
             r = result['checks'][c]

@@ -686,6 +686,49 @@ impl Entities {
         self.states.is_empty()
     }
 
+    /// ChunkMap.addEntity pairs a new entity before it can tick.
+    pub fn add(
+        &mut self,
+        entities: &[&EntityState],
+        riding: &Riding,
+        viewers: &mut [Viewer],
+        mut kind: impl FnMut(&str) -> Option<i32>,
+    ) {
+        for e in entities {
+            let std::collections::hash_map::Entry::Vacant(entry) = self.states.entry(e.id) else {
+                continue;
+            };
+            let mut s = ServerEntity::new(e, kind(&e.kind), riding);
+            s.added = false;
+            s.seen = self.tick;
+            if let Some(kind) = s.kind {
+                let probe = Probe {
+                    x: e.position[0],
+                    z: e.position[2],
+                    id: e.id,
+                    range: self
+                        .range_percent
+                        .map_or(s.range * 16, |p| p * (s.range * 16) / 100),
+                    chunk: 0,
+                };
+                let chunks = [(
+                    (e.position[0].floor() as i32) >> 4,
+                    (e.position[2].floor() as i32) >> 4,
+                )];
+                let mut packets = Vec::new();
+                s.pairing(e, kind, riding, &mut packets);
+                let bodies: Vec<_> = packets.iter().map(play::Clientbound::encode).collect();
+                for v in viewers.iter_mut() {
+                    if v.entity_id != e.id && sees(v, &probe, &chunks, &mut [0]) {
+                        v.out.extend(bodies.iter().cloned());
+                        v.tracker.seen.insert(e.id);
+                    }
+                }
+            }
+            entry.insert(s);
+        }
+    }
+
     /// One tick of ChunkMap.tick for the entities in the level now and the
     /// clients in it: each client first loses the entities that left its
     /// range or the level (one ClientboundRemoveEntitiesPacket), then each
@@ -1253,6 +1296,16 @@ mod tests {
             }
         }
         fn tick(&mut self, level: &mut Entities, entities: &[&EntityState]) {
+            self.observe(|viewers| {
+                level.tick(entities, &Riding::default(), viewers, |_| Some(100));
+            });
+        }
+        fn add(&mut self, level: &mut Entities, entities: &[&EntityState]) {
+            self.observe(|viewers| {
+                level.add(entities, &Riding::default(), viewers, |_| Some(100));
+            });
+        }
+        fn observe(&mut self, operation: impl FnOnce(&mut [Viewer])) {
             for out in &mut self.out {
                 out.clear();
             }
@@ -1278,12 +1331,244 @@ mod tests {
                     out: o1,
                 },
             ];
-            level.tick(entities, &Riding::default(), &mut viewers, |_| Some(100));
+            operation(&mut viewers);
         }
     }
 
     fn body(p: play::Clientbound) -> Vec<u8> {
         p.encode()
+    }
+
+    #[test]
+    fn a_transient_entity_is_paired_then_removed_without_a_tracking_tick() {
+        let mut level = Entities::default();
+        let mut c = Clients::new();
+        let mut shot = state(1.25);
+        shot.kind = "minecraft:snowball".into();
+        shot.data = 1;
+        shot.velocity = [0.0, 0.0, 2.0];
+        c.add(&mut level, &[&shot]);
+        assert_eq!(level.tick, 0);
+        assert_eq!(level.states[&shot.id].tick, 0);
+        for out in &c.out {
+            let packet = play::Clientbound::decode(i32::from(out[0][0]), &out[0][1..]).unwrap();
+            assert!(
+                matches!(&packet, play::Clientbound::AddEntity(a)
+                if a.id == 7 && a.position == [1.25, 64.0, 0.0]
+                    && a.velocity == [0.0, 0.0, 2.0] && a.data == 1),
+                "{packet:?}"
+            );
+        }
+        assert!(c.trackers.iter().all(|t| t.is_tracking(7)));
+        c.tick(&mut level, &[]);
+        let remove = body(play::Clientbound::RemoveEntities(play::RemoveEntities {
+            ids: vec![7],
+        }));
+        assert_eq!(c.out, [vec![remove.clone()], vec![remove]]);
+        assert!(c.trackers.iter().all(Tracker::is_empty));
+        assert!(level.is_empty());
+    }
+
+    #[test]
+    fn pairing_keeps_the_first_delta_and_update_interval() {
+        let mut level = Entities::default();
+        let mut c = Clients::new();
+        let mut shot = state(1.0);
+        shot.kind = "minecraft:snowball".into();
+        c.add(&mut level, &[&shot]);
+        shot.position[0] = 2.0;
+        c.add(&mut level, &[&shot]);
+        assert!(
+            c.out.iter().all(Vec::is_empty),
+            "an existing identity is not paired twice"
+        );
+        c.tick(&mut level, &[&shot]);
+        let movement = |delta| {
+            body(play::Clientbound::MoveEntityPos(MoveEntityPos(
+                MoveEntity {
+                    id: 7,
+                    delta: Some(VecDelta::Linear([delta, 0, 0])),
+                    rotation: None,
+                    on_ground: true,
+                },
+            )))
+        };
+        assert_eq!(c.out, [vec![movement(4096)], vec![movement(4096)]]);
+        for _ in 0..9 {
+            shot.position[0] += 0.25;
+            c.tick(&mut level, &[&shot]);
+            assert!(
+                c.out.iter().all(Vec::is_empty),
+                "movement waits ten tracking ticks"
+            );
+        }
+        shot.position[0] += 0.25;
+        c.tick(&mut level, &[&shot]);
+        assert_eq!(c.out, [vec![movement(10240)], vec![movement(10240)]]);
+    }
+
+    #[test]
+    fn immediate_pairing_respects_visibility() {
+        let mut level = Entities::default();
+        let mut c = Clients::new();
+        let mut me = state(0.0);
+        me.id = 1;
+        me.kind = "minecraft:player".into();
+        c.tick(&mut level, &[&me]);
+        let mut own = state(0.0);
+        own.id = 2;
+        c.add(&mut level, &[&own]);
+        assert!(c.trackers[0].is_tracking(2));
+        assert!(!c.trackers[1].is_tracking(2));
+        assert!(!c.out[0].is_empty() && c.out[1].is_empty());
+        c.chunks.remove(&(0, 0));
+        c.chunks.insert((15, 0));
+        let shot = state(1.0);
+        let mut distant = state(250.0);
+        distant.id = 8;
+        c.add(&mut level, &[&shot, &distant]);
+        assert!(c.out.iter().all(Vec::is_empty));
+        assert!(c.trackers.iter().all(|t| !t.is_tracking(7)));
+        assert!(c.trackers.iter().all(|t| !t.is_tracking(8)));
+        assert!(!c.trackers[0].is_tracking(1));
+        assert!(!c.trackers[1].is_tracking(2));
+    }
+
+    #[test]
+    fn immediate_pairing_scales_chunk_ranges_before_the_visibility_check() {
+        for (percentage, distance, visible) in [
+            (None, 63.5, true),
+            (None, 64.5, false),
+            (Some(50), 31.5, true),
+            (Some(50), 32.5, false),
+            (Some(200), 127.5, true),
+            (Some(200), 128.5, false),
+            (Some(0), 0.0, true),
+            (Some(0), 1.0, false),
+        ] {
+            let mut level = Entities {
+                range_percent: percentage,
+                ..Default::default()
+            };
+            let mut clients = Clients::new();
+            clients.chunks.extend((-8..=8).map(|x| (x, 0)));
+            let mut shot = state(distance);
+            shot.kind = "minecraft:snowball".into();
+            clients.add(&mut level, &[&shot]);
+            assert!(
+                clients.trackers.iter().all(|t| t.is_tracking(7) == visible),
+                "{percentage:?} at {distance}"
+            );
+            let mut ordinary = Entities {
+                range_percent: percentage,
+                ..Default::default()
+            };
+            let mut tick_clients = Clients::new();
+            tick_clients.chunks.extend((-8..=8).map(|x| (x, 0)));
+            tick_clients.tick(&mut ordinary, &[&shot]);
+            assert!(
+                tick_clients
+                    .trackers
+                    .iter()
+                    .all(|t| t.is_tracking(7) == visible),
+                "tick {percentage:?} at {distance}"
+            );
+        }
+    }
+
+    #[test]
+    fn immediate_pairs_stay_until_a_section_change() {
+        let mut level = Entities::default();
+        let mut c = Clients::new();
+        c.positions = [[0.5, 64.0, 0.0]; 2];
+        c.chunks.extend([(4, 0), (5, 0)]);
+        let mut me = state(0.5);
+        (me.id, me.kind) = (1, "minecraft:player".into());
+        let mut other = me.clone();
+        other.id = 2;
+        c.tick(&mut level, &[&me, &other]);
+        c.tick(&mut level, &[&me, &other]);
+        let mut shot = state(64.0);
+        shot.kind = "minecraft:snowball".into();
+        c.add(&mut level, &[&shot]);
+        assert!(c.trackers.iter().all(|t| t.is_tracking(7)));
+        assert!(c.out.iter().all(|out| out.len() == 1));
+        shot.position[0] = 65.5;
+        c.tick(&mut level, &[&me, &other, &shot]);
+        assert!(
+            c.trackers.iter().all(|t| t.is_tracking(7)),
+            "a new pair stays tracked across a same-section range crossing"
+        );
+        let movement = body(play::Clientbound::MoveEntityPos(MoveEntityPos(
+            MoveEntity {
+                id: 7,
+                delta: Some(VecDelta::Linear([6144, 0, 0])),
+                rotation: None,
+                on_ground: true,
+            },
+        )));
+        assert_eq!(c.out, [vec![movement.clone()], vec![movement]]);
+        shot.position[0] = 80.5;
+        c.tick(&mut level, &[&me, &other, &shot]);
+        let remove = body(play::Clientbound::RemoveEntities(play::RemoveEntities {
+            ids: vec![7],
+        }));
+        assert_eq!(c.out, [vec![remove.clone()], vec![remove]]);
+        assert!(c.trackers.iter().all(|t| !t.is_tracking(7)));
+    }
+
+    #[test]
+    fn immediate_unpaired_entities_wait_for_a_visibility_trigger() {
+        let mut level = Entities::default();
+        let mut c = Clients::new();
+        c.positions = [[0.5, 64.0, 0.0]; 2];
+        c.chunks.insert((4, 0));
+        let mut me = state(0.5);
+        (me.id, me.kind) = (1, "minecraft:player".into());
+        let mut other = me.clone();
+        other.id = 2;
+        c.tick(&mut level, &[&me, &other]);
+        c.tick(&mut level, &[&me, &other]);
+        let mut shot = state(65.5);
+        shot.kind = "minecraft:snowball".into();
+        c.add(&mut level, &[&shot]);
+        assert!(c.trackers.iter().all(|t| !t.is_tracking(7)));
+        assert!(c.out.iter().all(Vec::is_empty));
+        shot.position[0] = 64.0;
+        c.tick(&mut level, &[&me, &other, &shot]);
+        assert!(
+            c.trackers.iter().all(|t| !t.is_tracking(7)),
+            "a same-section range crossing does not create a new pair"
+        );
+        assert!(c.out.iter().all(Vec::is_empty));
+        // A standing position report also calls ChunkMap.move.
+        c.moved[0] = true;
+        c.tick(&mut level, &[&me, &other, &shot]);
+        assert!(c.trackers[0].is_tracking(7));
+        assert!(!c.trackers[1].is_tracking(7));
+        assert_eq!(c.out[0].len(), 1);
+        assert!(c.out[1].is_empty());
+        let packet =
+            play::Clientbound::decode(i32::from(c.out[0][0][0]), &c.out[0][0][1..]).unwrap();
+        assert!(
+            matches!(packet, play::Clientbound::AddEntity(a) if a.id == 7 && a.position == shot.position)
+        );
+        c.moved[0] = false;
+        shot.position[0] = 63.5;
+        c.tick(&mut level, &[&me, &other, &shot]);
+        assert!(c.trackers.iter().all(|t| t.is_tracking(7)));
+        assert_eq!(c.out[1].len(), 1);
+    }
+
+    #[test]
+    fn an_unknown_entity_type_is_not_paired() {
+        let mut level = Entities::default();
+        let mut c = Clients::new();
+        let e = state(1.0);
+        c.observe(|viewers| level.add(&[&e], &Riding::default(), viewers, |_| None));
+        assert!(c.out.iter().all(Vec::is_empty));
+        assert!(c.trackers.iter().all(Tracker::is_empty));
+        assert_eq!(level.len(), 1);
     }
 
     /// ChunkMap checks a pair again only when one side moves: a zombie

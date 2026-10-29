@@ -658,21 +658,16 @@ fn crafting_station(kind: &str) -> &'static str {
     }
 }
 impl RecipeIndex {
-    /// Reads `data/minecraft/recipe/*.json` under `root`.
+    /// Reads vanilla recipe IDs, including nested paths.
     pub fn load(root: &std::path::Path) -> Self {
         let mut recipes = std::collections::BTreeMap::new();
-        let dir = root.join("data/minecraft/recipe");
-        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            let path = entry.path();
-            if path.extension().is_none_or(|e| e != "json") {
-                continue;
-            }
-            let (Some(stem), Some(v)) = (
-                path.file_stem().and_then(|s| s.to_str()),
-                std::fs::read(&path)
-                    .ok()
-                    .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()),
-            ) else {
+        for (name, path) in
+            crate::recipe_files::for_namespace(root, "minecraft").unwrap_or_default()
+        {
+            let Some(v) = std::fs::read(&path)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            else {
                 continue;
             };
             let kind = v["type"].as_str().unwrap_or_default();
@@ -694,7 +689,7 @@ impl RecipeIndex {
                 1
             };
             recipes.insert(
-                format!("minecraft:{stem}"),
+                format!("minecraft:{name}"),
                 Known {
                     special,
                     displays,

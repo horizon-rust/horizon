@@ -903,7 +903,7 @@ fn mob_equipment(
     m: &Mob,
     hub: &mut Hub,
     out: &mut Vec<(u8, Option<horizon_protocol::item::Stack>)>,
-) {
+) -> std::result::Result<(), String> {
     let e = &m.extra;
     // A horse's armour, a llama's carpet, a harness: Horizon keeps the body
     // slot's item (6) in `head`.
@@ -933,7 +933,7 @@ fn mob_equipment(
                     None
                 },
             };
-            out.push((slot, hub.stack(&Some(stack))));
+            out.push((slot, hub.stack(&Some(stack))?));
         }
     }
     if e.saddled {
@@ -943,8 +943,9 @@ fn mob_equipment(
             damage: 0,
             extra: None,
         });
-        out.push((7, hub.stack(&Some(stack))));
+        out.push((7, hub.stack(&Some(stack))?));
     }
+    Ok(())
 }
 
 pub const HELP: &[&str] = &[
@@ -1234,9 +1235,9 @@ impl Game<'_> {
                 playerdata::store(guest, &mut self.level);
             }
         } else {
-            playerdata::save(guest, &self.world_root);
+            let _ = playerdata::save(guest, &self.world_root);
         }
-        self.save_guest_records(host, guest);
+        let _ = self.save_guest_records(host, guest);
     }
     /// The file name of a player's advancements and statistics: an
     /// integrated server's owner keeps single player's.
@@ -1252,27 +1253,32 @@ impl Game<'_> {
         &self,
         host: &LanHost,
         guest: &horizon_client::lan::guest::Guest,
-    ) {
-        if !guest.placed || self.adv.tree.list.is_empty() {
-            return;
-        }
+    ) -> Result<()> {
         let Some(uuid) = self.records_uuid(host, guest.uuid) else {
-            return;
+            return Ok(());
         };
-        let path = super::stats::player_json(&self.world_root, "advancements", uuid);
-        let json = guest
-            .advancements
-            .to_json(&self.adv.tree, horizon_world::DATA_VERSION);
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(text) = serde_json::to_string_pretty(&json) {
-            let _ = std::fs::write(path, text);
-        }
-        if let Some(play) = host.play.get(&guest.conn) {
-            play.stats
-                .write(&super::stats::player_json(&self.world_root, "stats", uuid));
-        }
+        super::player_saving::save_records(
+            &self.world_root,
+            &self.adv.tree,
+            guest,
+            host.play.get(&guest.conn).map(|p| &p.stats),
+            uuid,
+        )
+    }
+    pub(super) fn save_online_players(&mut self) -> Result<()> {
+        let Some(host) = &self.lan else {
+            return Ok(());
+        };
+        super::player_saving::save_online(
+            &self.world_root,
+            &mut self.level,
+            host.owner.as_ref().map(|o| o.uuid),
+            &self.adv.tree,
+            host.hub
+                .guests
+                .iter()
+                .map(|g| (g, host.play.get(&g.conn).map(|p| &p.stats))),
+        )
     }
     /// `PlayerAdvancements.load` and `ServerStatsCounter.parseLocal` of a
     /// network player who joined; every statistic goes out on the first
@@ -1287,7 +1293,7 @@ impl Game<'_> {
         };
         let tree = self.advancement_tree();
         let path = super::stats::player_json(&self.world_root, "advancements", uuid);
-        let saved = std::fs::read_to_string(path)
+        let saved = horizon_client::save::read_string(&path)
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
         if let Some(g) = host.hub.guest_mut(conn)
@@ -1316,7 +1322,7 @@ impl Game<'_> {
         };
         if let Some(g) = host.hub.guests.iter().find(|g| g.uuid == uuid && g.placed) {
             playerdata::store(g, &mut self.level);
-            self.save_guest_records(host, g);
+            let _ = self.save_guest_records(host, g);
         }
     }
 
@@ -1407,9 +1413,17 @@ impl Game<'_> {
         host_entity: Option<i32>,
         mob_players: &HashMap<u32, u32>,
         hub: &mut Hub,
-        out: &mut States,
-    ) {
-        out.clear();
+        output: &mut States,
+    ) -> std::result::Result<(), String> {
+        let mut candidate = States::default();
+        let out = &mut candidate;
+        #[cfg(feature = "mods")]
+        {
+            hub.mod_views = (
+                self.mod_entity_world.map_or(0, |w| w.get()),
+                self.mod_entity_wire_views(),
+            );
+        }
         for m in self.mobs.iter().filter(|m| !m.removed) {
             // The lead's holder: the player the mob sees (a guest, else the
             // host), another mob or a fence knot (game/lan_entities.rs).
@@ -1441,12 +1455,12 @@ impl Game<'_> {
             e.precise = m.species() == horizon_client::mobs::Species::HappyGhast
                 && horizon_client::mobs::happy_ghast::on_still_timeout(m);
             mob_freeze_meta(m, &mut e.meta, &mut e.defaults);
-            mob_equipment(m, hub, &mut e.equipment);
+            mob_equipment(m, hub, &mut e.equipment)?;
             self.mob_attributes(m, &mut e.attributes);
             e.leash = leash;
         }
         for d in &self.dropped {
-            let stack = hub.stack(&Some(d.stack.clone()));
+            let stack = hub.stack(&Some(d.stack.clone()))?;
             let e = out.add(d.id as i32, entity_uuid(d.id), "minecraft:item");
             e.position = [d.position.x, d.position.y, d.position.z];
             e.on_ground = d.on_ground;
@@ -1466,7 +1480,9 @@ impl Game<'_> {
             e.meta
                 .push((8, serializer::INT, Value::Int(o.value as i32)));
         }
-        self.lan_object_states(host_entity, hub, out);
+        self.lan_object_states(host_entity, hub, out)?;
+        *output = candidate;
+        Ok(())
     }
 
     /// Run the hub for this tick and apply what the guests did. While the
@@ -1502,6 +1518,7 @@ impl Game<'_> {
         if state.is_some() || host.hub.config.dedicated {
             let has_guests = !host.hub.guests.is_empty();
             let mut states = std::mem::take(&mut host.states);
+            let mut snapshot_valid = true;
             if has_guests {
                 let host_entity = state.as_ref().map(|s| s.entity_id);
                 self.lan_assign_ids();
@@ -1512,17 +1529,26 @@ impl Game<'_> {
                     .filter_map(|g| Some((g.vehicle?, g.entity_id)))
                     .collect();
                 self.lan_riding(host_entity, &guests, &mut host.hub.riding);
-                self.lan_entities(host_entity, &host.mob_players, &mut host.hub, &mut states);
-                self.lan_hook_states(host_entity, &host.play, &host.hub, &mut states);
+                if let Err(error) =
+                    self.lan_entities(host_entity, &host.mob_players, &mut host.hub, &mut states)
+                {
+                    host.hub.reject_stack_snapshot(&error);
+                    snapshot_valid = false;
+                }
+                if snapshot_valid {
+                    self.lan_hook_states(host_entity, &host.play, &host.hub, &mut states);
+                }
             } else {
                 states.clear();
             }
             // ServerEntity.sendChanges clears needsSync once it has looked.
-            for m in &mut self.mobs {
-                m.needs_sync = false;
-            }
-            for p in &mut self.creatures.projectiles {
-                p.needs_sync = false;
+            if snapshot_valid {
+                for m in &mut self.mobs {
+                    m.needs_sync = false;
+                }
+                for p in &mut self.creatures.projectiles {
+                    p.needs_sync = false;
+                }
             }
             // `runBlockEvents`' broadcast precedes the tick's block changes
             // (`ChunkHolder.broadcastChanges` in `tick_level` below): the
@@ -1778,7 +1804,15 @@ impl Game<'_> {
                 return;
             }
             // A dedicated server has no host player.
-            self.lan_entities(None, &host.mob_players, &mut host.hub, &mut theirs);
+            if let Err(error) =
+                self.lan_entities(None, &host.mob_players, &mut host.hub, &mut theirs)
+            {
+                host.hub.reject_stack_snapshot(&error);
+                if elsewhere {
+                    let _ = self.enter_level(Some(host), back);
+                }
+                return;
+            }
             self.lan_hook_states(None, &host.play, &host.hub, &mut theirs);
             theirs.as_slice()
         } else {

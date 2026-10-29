@@ -1515,7 +1515,7 @@ pub fn arrow_to_nbt(
     if let Some(state) = in_block {
         put(&mut tag, "inBlockState", state);
     }
-    if let Some(owner) = owner {
+    if let Some(owner) = owner.or(p.owner_uuid) {
         put(&mut tag, "Owner", Tag::IntArray(owner.to_vec()));
     }
     Some(tag)
@@ -1541,6 +1541,7 @@ pub fn arrow_from_nbt(
         effect: effect(&item),
     };
     let mut p = Projectile::new(kind, position, from_player.then_some(Who::Player));
+    p.owner_uuid = owner;
     p.velocity = motion(tag);
     [p.yaw, p.pitch] = rotation(tag);
     p.left_owner = flag(tag, "LeftOwner");
@@ -1600,7 +1601,7 @@ pub fn fireball_to_nbt(
     if let Some(power) = power {
         put(&mut tag, "ExplosionPower", Tag::Byte(power as i8));
     }
-    if let Some(owner) = owner {
+    if let Some(owner) = owner.or(p.owner_uuid) {
         put(&mut tag, "Owner", Tag::IntArray(owner.to_vec()));
     }
     Some(tag)
@@ -1617,6 +1618,7 @@ pub fn fireball_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projecti
     let owner = uuid_from_tag(tag.get("Owner"));
     let from_player = player.is_some() && owner == player;
     let mut p = Projectile::new(kind, position(tag)?, from_player.then_some(Who::Player));
+    p.owner_uuid = owner;
     p.velocity = motion(tag);
     [p.yaw, p.pitch] = rotation(tag);
     p.left_owner = flag(tag, "LeftOwner");
@@ -2945,6 +2947,43 @@ mod sheep_nbt_tests {
 #[cfg(test)]
 mod fireball_nbt_tests {
     use super::*;
+
+    #[test]
+    fn unloaded_owners_survive_projectile_motion_and_resaving() {
+        let owner = [12, -34, 56, -78];
+        let replacement = [90, 87, -65, 43];
+        for kind in [
+            "minecraft:arrow",
+            "minecraft:fireball",
+            "minecraft:small_fireball",
+        ] {
+            let raw = Tag::compound([
+                ("id", string(kind)),
+                ("Pos", doubles(&[1.5, 72.0, -2.5])),
+                ("Owner", Tag::IntArray(owner.to_vec())),
+            ]);
+            let mut projectile = if kind == "minecraft:arrow" {
+                arrow_from_nbt(&raw, None, |_| None).unwrap().0
+            } else {
+                fireball_from_nbt(&raw, None).unwrap()
+            };
+            assert_eq!(projectile.owner, None);
+            projectile.position.x += 16.0;
+            let save = |owner| {
+                arrow_to_nbt(&projectile, [1, 2, 3, 4], owner, None, None)
+                    .or_else(|| fireball_to_nbt(&projectile, [1, 2, 3, 4], owner, None))
+                    .unwrap()
+            };
+            let saved = save(None);
+            assert_eq!(uuid_from_tag(saved.get("Owner")), Some(owner), "{kind}");
+            assert_eq!(position(&saved).unwrap().x, 17.5);
+            assert_eq!(
+                uuid_from_tag(save(Some(replacement)).get("Owner")),
+                Some(replacement)
+            );
+        }
+    }
+
     #[test]
     fn a_fireball_round_trips_its_flight() {
         let raw = Tag::compound([

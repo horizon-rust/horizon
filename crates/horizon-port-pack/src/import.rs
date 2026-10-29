@@ -28,6 +28,27 @@ pub struct Pack {
     pub curseforge_files: usize,
 }
 
+impl Pack {
+    pub(crate) fn validate_loader_version(&self) -> Result<(), String> {
+        validate_loader_version(&self.loader, &self.loader_version)
+    }
+}
+
+pub(crate) fn validate_loader_version(loader: &str, version: &str) -> Result<(), String> {
+    if loader != "neoforge" || version.is_empty() {
+        return Ok(());
+    }
+    if version == "."
+        || version == ".."
+        || !version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'+'))
+    {
+        return Err("NeoForge loader version must be an ASCII version segment".into());
+    }
+    Ok(())
+}
+
 fn is_zero(n: &usize) -> bool {
     *n == 0
 }
@@ -70,6 +91,12 @@ impl PackFile {
     pub fn file_name(&self) -> &str {
         self.path.rsplit('/').next().unwrap_or(&self.path)
     }
+    /// A cache basename that cannot select a folder, Windows drive or data stream.
+    pub(crate) fn cache_name(&self) -> Option<&str> {
+        let name = self.file_name();
+        (!name.is_empty() && name != "." && name != ".." && !name.contains(['\\', ':', '\0']))
+            .then_some(name)
+    }
 }
 
 const LOADERS: [(&str, &str); 4] = [
@@ -80,36 +107,38 @@ const LOADERS: [(&str, &str); 4] = [
 ];
 
 pub fn import(path: &Path) -> Result<Pack, String> {
-    if path.is_dir() {
-        return instance(path);
-    }
-    if path.extension().is_some_and(|e| e == "json") {
+    let pack = if path.is_dir() {
+        instance(path)?
+    } else if path.extension().is_some_and(|e| e == "json") {
         let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let list: Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
             .map_err(|e| format!("{}: {e}", path.display()))?;
-        return modlist(&list);
-    }
-    let file = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("{}: {e}", path.display()))?;
-    if let Some(index) = read_json(&mut zip, "modrinth.index.json")? {
-        return Ok(mrpack(&index, &names(&zip)));
-    }
-    if let Some(manifest) = read_json(&mut zip, "manifest.json")? {
-        let mut pack = curseforge(&manifest, &names(&zip));
-        // The manifest names files only by CurseForge ids, which need a key
-        // to resolve; the pack's own mod list names them and gives their
-        // SHA-1s, so Modrinth can answer for most.
-        let root = manifest["overrides"].as_str().unwrap_or("overrides");
-        if let Some(list) = read_json(&mut zip, &format!("{root}/{MODLIST}"))? {
-            pack.curseforge_files = pack.files.len();
-            pack.files = modlist(&list)?.files;
+        modlist(&list)?
+    } else {
+        let file = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("{}: {e}", path.display()))?;
+        if let Some(index) = read_json(&mut zip, "modrinth.index.json")? {
+            mrpack(&index, &names(&zip))
+        } else if let Some(manifest) = read_json(&mut zip, "manifest.json")? {
+            let mut pack = curseforge(&manifest, &names(&zip));
+            // The manifest names files only by CurseForge ids, which need a key
+            // to resolve; the pack's own mod list names them and gives their
+            // SHA-1s, so Modrinth can answer for most.
+            let root = manifest["overrides"].as_str().unwrap_or("overrides");
+            if let Some(list) = read_json(&mut zip, &format!("{root}/{MODLIST}"))? {
+                pack.curseforge_files = pack.files.len();
+                pack.files = modlist(&list)?.files;
+            }
+            pack
+        } else {
+            return Err(format!(
+                "{}: neither modrinth.index.json nor manifest.json",
+                path.display()
+            ));
         }
-        return Ok(pack);
-    }
-    Err(format!(
-        "{}: neither modrinth.index.json nor manifest.json",
-        path.display()
-    ))
+    };
+    pack.validate_loader_version()?;
+    Ok(pack)
 }
 
 fn names(zip: &zip::ZipArchive<fs::File>) -> Vec<String> {
@@ -368,6 +397,32 @@ pub fn sha1_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "horizon-port-pack-{name}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn reads_an_mrpack_index() {
@@ -443,11 +498,80 @@ mod tests {
     }
 
     #[test]
+    fn validates_neoforge_versions_as_plain_segments() {
+        for version in ["21.1.259", "26.1.0.0-alpha.7", "26_1+build-7"] {
+            assert!(validate_loader_version("neoforge", version).is_ok());
+        }
+        assert!(validate_loader_version("neoforge", "").is_ok());
+        for version in [
+            "review/../../../outside/probe",
+            ".",
+            "..",
+            r"review\..\outside",
+            "%2e%2e%2foutside",
+            "21.1?next=2",
+            "21.1#fragment",
+            "C:outside",
+            "21.1 alpha",
+            "版本",
+        ] {
+            assert!(
+                validate_loader_version("neoforge", version).is_err(),
+                "accepted {version:?}"
+            );
+        }
+        assert!(validate_loader_version("forge", "review/../../../outside").is_ok());
+    }
+
+    #[test]
+    fn reads_a_prism_neoforge_instance() {
+        let root = TestDir::new("prism-instance");
+        fs::create_dir_all(root.path().join("minecraft/mods")).unwrap();
+        fs::write(
+            root.path().join("mmc-pack.json"),
+            json!({"components": [
+                {"uid": "net.minecraft", "version": "1.21.1"},
+                {"uid": "net.neoforged", "version": "26.1.0.0-alpha.7"}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+
+        let pack = import(root.path()).unwrap();
+        assert_eq!(pack.loader, "neoforge");
+        assert_eq!(pack.loader_version, "26.1.0.0-alpha.7");
+        assert_eq!(pack.minecraft, "1.21.1");
+    }
+
+    #[test]
+    fn cache_names_are_plain_basenames() {
+        for path in ["mods/create.jar", "resourcepacks/look.zip"] {
+            let file = PackFile {
+                path: path.into(),
+                ..PackFile::default()
+            };
+            assert_eq!(file.cache_name(), Some(file.file_name()));
+        }
+        for path in [
+            "",
+            "mods/.",
+            "mods/..",
+            r"mods/..\outside.jar",
+            "mods/C:file.jar",
+        ] {
+            let file = PackFile {
+                path: path.into(),
+                ..PackFile::default()
+            };
+            assert_eq!(file.cache_name(), None, "accepted {path:?}");
+        }
+    }
+
+    #[test]
     fn a_curseforge_zip_takes_names_from_its_mod_list() {
         use std::io::Write;
-        let dir = std::env::temp_dir().join(format!("horizon-cf-zip-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("pack.zip");
+        let dir = TestDir::new("cf-zip");
+        let path = dir.path().join("pack.zip");
         let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
         let opts = zip::write::SimpleFileOptions::default();
         let manifest = json!({"name": "Pack", "overrides": "overrides",
@@ -471,6 +595,5 @@ mod tests {
         assert_eq!(pack.files.len(), 1);
         assert_eq!(pack.files[0].path, "mods/mcw-doors-1.1.2.jar");
         assert_eq!(pack.overrides["config"], 1);
-        fs::remove_dir_all(&dir).unwrap();
     }
 }

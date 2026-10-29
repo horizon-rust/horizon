@@ -11,6 +11,10 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `chat` | [`chat`](#chat) | show you chat messages |
 | `hud` | [`hud`](#hud) | draw text on your screen |
 | `storage` | [`storage`](#storage) | save its own settings to disk |
+| `resources` | [`resources`](#resources) | read its own packaged assets and data |
+| `entities` | [`entities`](#entities) | create and move its own temporary server entities |
+| `models` | [`models`](#models) | draw textured meshes for public server entities |
+| `world-storage` | [`world-storage`](#world-storage) | save its own snapshot files in the current world |
 | `command` | [`command`](#command) | run commands as you, with your permissions |
 | `registries` | data files (`assets/`, `data/`), no interface | add blocks and items to your worlds |
 | `ui` | [`ui`](#ui) | show its own screens and a settings page |
@@ -24,21 +28,21 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 
 A client mod: runs in the player's game.
 
-- Imports (what the game offers): `log`, `game`, `chat`, `hud`, `storage`, `command`
+- Imports (what the game offers): `log`, `game`, `chat`, `hud`, `storage`, `resources`, `command`
 - Exports (what the mod provides): `events`
 
 ## World `horizon-server-mod`
 
 A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs where the world is simulated, on the dedicated server, a LAN host and single player's own server.
 
-- Imports (what the game offers): `log`, `storage`, `players`, `world`
+- Imports (what the game offers): `log`, `storage`, `resources`, `players`, `world`, `entities`, `world-storage`
 - Exports (what the mod provides): `server-events`
 
 ## World `horizon-ui-mod`
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `log`, `game`, `chat`, `hud`, `storage`, `command`
+- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `models`, `log`, `game`, `chat`, `hud`, `storage`, `resources`, `command`
 - Exports (what the mod provides): `ui-events`, `events`
 
 ## World `ui-host`
@@ -53,14 +57,19 @@ The game's side of `horizon-ui-mod` beyond `horizon-mod`.
 The game's side of capability `render` (imports only).
 
 - Imports (what the game offers): `render`, `input`
-- Exports (what the mod provides): 
+- Exports (what the mod provides):
 
 ## World `recipes-host`
 
 The game's side of capability `recipes` (imports only).
 
 - Imports (what the game offers): `recipes`, `browser`
-- Exports (what the mod provides): 
+- Exports (what the mod provides):
+
+## World `models-host`
+
+- Imports (what the game offers): `models`
+- Exports (what the mod provides):
 
 ## `log`
 
@@ -175,6 +184,16 @@ Capability `storage`: a per-mod folder of small key/value files, quota'd (docs/m
 | `get` | `func(key: string) -> option<list<u8>>` | None if `key` has never been `set`, or the key is not well-formed. |
 | `set` | `func(key: string, value: list<u8>) -> result<_, string>` | Errs on a malformed key or over quota (bytes for the whole mod). |
 | `delete` | `func(key: string)` | No error if `key` was already absent. |
+
+## `resources`
+
+Access: capability `resources`.
+
+Experimental capability `resources`: this program's packaged assets and data.
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `read` | `func(path: string) -> result<option<list<u8>>, string>` | Read a literal assets/ or data/ path in an owned namespace, at most 1024 bytes. None means absent from the validated inventory, and Some([]) is an empty file. Invalid paths, ownership failures, unavailable files and limits return an error. Each callback allows 64 requests and 32 MiB of charged I/O, at most 16 MiB per file. |
 
 ## `command`
 
@@ -687,6 +706,134 @@ Capability `world`, server mods only (manifest `api = "0.3"`, experimental): the
 | `get-biome` | `func(dimension: string, x: s32, y: s32, z: s32) -> option<string>` | The biome at a position (`minecraft:plains`, ...), as the server stores it (one per 4 x 4 x 4 cell): none where no chunk is loaded. |
 | `set-blocks` | `func(dimension: string, blocks: list<block-change>) -> result<_, string>` | Sets blocks as `/setblock` does: the old block entity removed, neighbours and shapes updated, light, and every player told. Every state is checked now (an error queues nothing); the changes are made in order after this call returns, before that dimension's next tick; one in a chunk not loaded then is skipped. At most 4096 per call. |
 
+## `entities`
+
+Access: capability `entities`.
+
+Experimental server-owned kinematic entities. Requires capability and experimental opt-in `entities`. Handles are opaque and session scoped.
+
+### type `handle`
+
+An owned type or entity lease. Never edit, persist or transfer it.
+
+`type handle = string`
+
+### record `type-definition`
+
+| Field | Type | |
+| --- | --- | --- |
+| `key` | `string` |  |
+| `width` | `f32` |  |
+| `height` | `f32` |  |
+| `tracking-range` | `f32` |  |
+| `renderer` | `string` |  |
+| `public-version` | `u32` |  |
+
+### record `transform`
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+| `yaw` | `f32` |  |
+| `pitch` | `f32` |  |
+
+### record `entity-state`
+
+| Field | Type | |
+| --- | --- | --- |
+| `dimension` | `string` |  |
+| `transform` | `transform` |  |
+| `public-state` | `list<u8>` |  |
+
+### record `context-info`
+
+| Field | Type | |
+| --- | --- | --- |
+| `world` | `u64` |  |
+| `dimensions` | `list<string>` |  |
+
+### enum `reason`
+
+| Case | |
+| --- | --- |
+| `spawned` |  |
+| `updated` |  |
+| `despawned` |  |
+| `chunk-unloaded` |  |
+| `dimension-unloaded` |  |
+| `world-unloaded` |  |
+
+### record `lifecycle-event`
+
+| Field | Type | |
+| --- | --- | --- |
+| `entity` | `handle` |  |
+| `reason` | `reason` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `register-types` | `func(types: list<type-definition>) -> result<list<handle>, string>` | Registers up to eight owned types atomically. Returns type handles. |
+| `context` | `func() -> result<option<context-info>, string>` | The current world session and loaded dimensions, or none outside a world. |
+| `spawn` | `func(kind: handle, state: entity-state) -> result<handle, string>` | Stages one entity in a loaded chunk. At most 64 per owner and 256 per world. |
+| `set-state` | `func(entity: handle, state: entity-state) -> result<_, string>` | Stages an atomic transform and public state replacement, at most 1024 bytes. |
+| `despawn` | `func(entity: handle) -> result<_, string>` | Stages removal of one owned entity. Old handles never become valid again. |
+| `poll` | `func() -> result<list<lifecycle-event>, string>` | Drains up to 256 lifecycle events after a successful callback. |
+
+## `models`
+
+Access: capability `models`.
+
+Provisional client entity meshes. All leases belong to one program and world.
+
+### record `mesh-vertex`
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `f32` |  |
+| `y` | `f32` |  |
+| `z` | `f32` |  |
+| `nx` | `f32` |  |
+| `ny` | `f32` |  |
+| `nz` | `f32` |  |
+| `u` | `f32` |  |
+| `v` | `f32` |  |
+
+### record `triangle`
+
+| Field | Type | |
+| --- | --- | --- |
+| `a` | `u32` |  |
+| `b` | `u32` |  |
+| `c` | `u32` |  |
+
+### record `view`
+
+| Field | Type | |
+| --- | --- | --- |
+| `handle` | `string` |  |
+| `kind` | `string` |  |
+| `renderer` | `string` |  |
+| `public-version` | `u32` |  |
+| `dimension` | `string` |  |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+| `yaw` | `f32` |  |
+| `pitch` | `f32` |  |
+| `public-state` | `list<u8>` |  |
+| `revision` | `u64` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `register-renderer` | `func(key: string, public-version: u32) -> result<_, string>` |  |
+| `views` | `func() -> result<list<view>, string>` |  |
+| `upload-mesh` | `func(vertices: list<mesh-vertex>, triangles: list<triangle>, png: list<u8>) -> result<string, string>` |  |
+| `update-mesh` | `func(mesh: string, vertices: list<mesh-vertex>) -> result<_, string>` |  |
+| `bind` | `func(view: string, mesh: string) -> result<_, string>` |  |
+| `release-mesh` | `func(mesh: string) -> result<_, string>` |  |
+
 ## `server-events`
 
 Access: exported by the mod: the game calls it.
@@ -768,3 +915,15 @@ An argument's value, parsed as its kind says.
 | `command` | `func(player: player, name: string, args: string, values: list<tuple<string, argument-value>>) -> result<option<string>, string>` | `/name args` typed by `player`: ok(some(text)) is their feedback, err(text) their error in red. `values` holds each argument given, by name, in order (an optional one left out isn't there); a line that doesn't parse never reaches the mod: the player gets vanilla's error. |
 | `block-broken` | `func(player: player, pos: block-pos, state: string)` | A player broke the block at `pos` in their dimension: `state` is what was there, as `minecraft:oak_log[axis=y]`. |
 | `block-placed` | `func(player: player, pos: block-pos, state: string)` | A player placed `state` at `pos` in their dimension. |
+
+## `world-storage`
+
+Access: capability `world-storage`.
+
+One owned snapshot file in the authoritative world. No world is available at init.
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `context` | `func() -> result<option<u64>, string>` |  |
+| `get` | `func(key: string) -> result<option<list<u8>>, string>` |  |
+| `set` | `func(key: string, value: list<u8>) -> result<_, string>` |  |

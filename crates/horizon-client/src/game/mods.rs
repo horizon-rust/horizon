@@ -6,6 +6,10 @@
 //! Code mods run only in builds with the `mods` feature (release builds):
 //! without it the game links no wasmtime, and every hook does nothing.
 //! Content mods (`content_root`) load in every build.
+#[cfg(feature = "mods")]
+#[path = "mod_enable.rs"]
+mod enable;
+
 use super::Game;
 use horizon_client::{
     command::{Dispatcher, vanilla},
@@ -40,6 +44,12 @@ use {
 pub(super) struct ModsState {
     #[cfg(feature = "mods")]
     pub(super) mods: Mods,
+    #[cfg(feature = "mods")]
+    pub(super) models: super::mod_models::ModelsState,
+    #[cfg(feature = "mods")]
+    pub(super) messages: super::mod_messages::MessageState,
+    #[cfg(feature = "mods")]
+    pub(super) audio_session: Option<u64>,
     /// Capability `input`: a claimed item's use while the button is down.
     #[cfg(feature = "mods")]
     pub(super) using: Option<super::mod_input::ModUse>,
@@ -67,6 +77,8 @@ pub(super) struct ModsState {
     /// levels' chunks to read.
     #[cfg(feature = "mods")]
     pub(super) world: bool,
+    #[cfg(feature = "mods")]
+    pub(super) storage_readonly: bool,
     /// Blocks server mods set, by dimension, made before that level's next
     /// tick.
     #[cfg(feature = "mods")]
@@ -327,6 +339,7 @@ impl Game<'_> {
     }
     /// The Mods page's rows, from what loaded.
     fn list_mods(&mut self) {
+        self.return_mod_entities();
         self.mods.server = self.mods.mods.runs_server();
         self.mods.world = self.mods.mods.wants_world();
         let dev = &self.mods.dev;
@@ -396,25 +409,34 @@ impl Game<'_> {
     /// After the options changed: restart the mods if the list of the ones
     /// turned on did.
     pub(super) fn sync_mods(&mut self) {
-        let running: Vec<&str> = self
+        let running: Vec<String> = self
             .mods
             .mods
             .entries()
             .iter()
             .filter(|e| e.status != Status::Off)
-            .filter_map(|e| Some(e.manifest.as_ref()?.id.as_str()))
+            .filter_map(|e| Some(e.manifest.as_ref()?.id.clone()))
             .collect();
-        let wanted: Vec<&str> = self
+        let wanted: Vec<String> = self
             .settings
             .mods
             .installed
             .iter()
             .enumerate()
             .filter(|&(i, _)| self.settings.mods.is_on(i))
-            .map(|(_, m)| m.id.as_str())
+            .map(|(_, m)| m.id.clone())
             .collect();
         if running != wanted {
-            self.start_mods();
+            let chosen = &self.settings.mods;
+            enable::sync_enabled(
+                &mut self.mods.mods,
+                |id| wanted.iter().any(|w| w == id),
+                vanilla_command,
+                |id| chosen.keys_of(id),
+            );
+            self.list_mods();
+            self.sync_mod_commands();
+            self.show_mod_output();
         }
     }
     /// What mods read this tick (or frame, for mods with a `frame` hook): the
@@ -427,8 +449,26 @@ impl Game<'_> {
         };
         self.mod_snapshot_with(players)
     }
+    fn sync_mod_audio(&mut self) {
+        let active = self.mods.mods.wants_audio()
+            && self.options.execution_role.is_client()
+            && self.player.is_some()
+            && self.lan_acting.is_none()
+            && (self.remote.is_some() || !self.world_root.as_os_str().is_empty());
+        if !active {
+            self.mods.audio_session = None;
+        } else if self.mods.audio_session.is_none() {
+            self.mods.audio_session = horizon_mods::messages::new_epoch().ok();
+        }
+        self.mods.mods.set_audio_context(
+            self.mods.audio_session,
+            active && self.audio.engine.loaded,
+            self.audio.program_events(),
+        );
+    }
     /// What mods read, with these players on the server.
     pub(super) fn mod_snapshot_with(&mut self, players: Vec<ServerPlayer>) -> Snapshot {
+        self.sync_mod_audio();
         let player = self.player.as_ref().map(|p| Player {
             x: p.position.x,
             y: p.position.y,
@@ -598,6 +638,8 @@ impl Game<'_> {
         self.tick_mod_use();
         let snapshot = self.mod_snapshot();
         self.mods.mods.set_snapshot(snapshot);
+        self.sync_mod_messages();
+        self.sync_mod_views();
         self.mods.mods.tick(self.ticks);
         self.show_mod_output();
     }
@@ -630,6 +672,8 @@ impl Game<'_> {
         if !self.mods.mods.is_running() {
             return;
         }
+        self.sync_mod_messages();
+        self.sync_mod_views();
         self.mod_input_frame();
         if self.mods.mods.wants_frames() {
             let snapshot = self.mod_snapshot();
@@ -664,6 +708,30 @@ impl Game<'_> {
     }
     /// [`Game::show_mod_output`], with the hub when it is out of `self.lan`.
     pub(super) fn route_mod_output(&mut self, mut host: Option<&mut LanHost>) {
+        self.sync_mod_audio();
+        for request in self.mods.mods.take_audio() {
+            use horizon_mods::AudioCategory as Category;
+            let source = match request.category {
+                Category::Master => 0,
+                Category::Music => 1,
+                Category::Record => 2,
+                Category::Weather => 3,
+                Category::Block => 4,
+                Category::Hostile => 5,
+                Category::Neutral => 6,
+                Category::Player => 7,
+                Category::Ambient => 8,
+                Category::Voice => 9,
+                Category::Ui => 10,
+            };
+            let _ = self.audio.play_program(
+                source,
+                &request.event,
+                request.position,
+                request.volume,
+                request.pitch,
+            );
+        }
         for output in self.mods.mods.drain() {
             let line = match output {
                 Output::Chat { name, text } => {
@@ -737,6 +805,7 @@ impl Game<'_> {
             };
             self.add_mod_chat_line(line);
         }
+        self.route_program_messages(host.as_deref_mut());
         // A mod may set or clear its settings page in any call, not only
         // while loading: its row's Settings button follows.
         let rows = self.settings.mods.installed.iter_mut();

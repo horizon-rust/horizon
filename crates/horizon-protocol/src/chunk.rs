@@ -83,6 +83,11 @@ impl Paletted {
     pub fn read(r: &mut Reader, strategy: Strategy, global_bits: u8) -> Result<Self> {
         let wire = r.u8()?;
         let (has_palette, bits) = strategy.configuration(wire, global_bits);
+        if bits > 32 {
+            return Err(crate::Error::new(format!(
+                "invalid palette bit width {bits}"
+            )));
+        }
         let palette = if !has_palette {
             Vec::new()
         } else if bits == 0 {
@@ -423,6 +428,36 @@ mod tests {
         let g = Paletted::from_values(&wide, Strategy::Blocks, 16);
         assert!(g.palette.is_empty() && g.bits == 16);
         assert_eq!(g.get(4095), 4095 * 7);
+    }
+
+    #[test]
+    fn rejects_palette_widths_above_the_storage_limit() {
+        for strategy in [Strategy::Blocks, Strategy::Biomes] {
+            for width in [33, 64, 65, 255] {
+                let error = Paletted::read(&mut Reader::new(&[width]), strategy, 15)
+                    .unwrap_err()
+                    .to_string();
+                assert_eq!(error, format!("invalid palette bit width {width}"));
+            }
+        }
+    }
+
+    #[test]
+    fn thirty_two_bit_global_palette_keeps_distinct_values() {
+        let low = 0x2345_6789u32;
+        let high = 0x1234_5678u32;
+        let word = (u64::from(high) << 32) | u64::from(low);
+
+        for strategy in [Strategy::Blocks, Strategy::Biomes] {
+            let mut bytes = vec![32];
+            for _ in 0..strategy.entries() / 2 {
+                bytes.extend_from_slice(&word.to_be_bytes());
+            }
+            let palette = Paletted::read(&mut Reader::new(&bytes), strategy, 32).unwrap();
+            assert_eq!(palette.bits, 32);
+            assert_eq!(palette.get(0), low as i32);
+            assert_eq!(palette.get(1), high as i32);
+        }
     }
 
     #[test]

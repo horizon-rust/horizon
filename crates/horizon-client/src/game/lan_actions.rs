@@ -32,6 +32,8 @@ use winit::keyboard::KeyCode;
 /// Per-guest state of the gameplay code that lives outside `Guest`.
 #[derive(Default)]
 pub(super) struct GuestPlay {
+    #[cfg(feature = "mods")]
+    mod_fallback: Option<(i32, Hand, u64)>,
     /// The sign this guest may write on (`SignBlockEntity.playerWhoMayEdit`).
     pub(super) sign_editing: Option<[i32; 3]>,
     mining: Option<Mining>,
@@ -122,6 +124,8 @@ pub(super) struct GuestSwap {
     i: usize,
     play: GuestPlay,
     player: Option<PlayerMotion>,
+    #[cfg(feature = "mods")]
+    mod_use_player_limit: Option<f64>,
     /// The guest's eye height and the game's.
     eye: (f32, f32),
     yaw: f32,
@@ -231,6 +235,8 @@ impl Game<'_> {
         let swap = self.enter_guest(host, conn)?;
         let result = f(self);
         self.leave_guest(host, swap);
+        #[cfg(feature = "mods")]
+        self.route_program_messages(Some(host));
         Some(result)
     }
 
@@ -424,11 +430,46 @@ impl Game<'_> {
             self.apply_effect_status();
         }
         self.update_totem_ready();
+        #[cfg(feature = "mods")]
+        let mod_use_player_limit = {
+            let limit = self.eye_position().map_or(0., |eye| {
+                let direction = super::view_vector(self.yaw, self.pitch);
+                let reach = if self.creative { 5.0 } else { 3.0 };
+                let mut nearest = host
+                    .hub
+                    .guests
+                    .iter()
+                    .filter(|g| {
+                        g.conn != conn
+                            && Some(g.conn) != acting.0
+                            && g.placed
+                            && g.loaded
+                            && !g.dead
+                            && !g.spectator()
+                            && g.dimension == self.dim.id()
+                    })
+                    .filter_map(|g| {
+                        super::ray_box(eye, direction, reach, super::lan_mobs::guest_bounds(g))
+                    })
+                    .fold(f64::INFINITY, f64::min);
+                if (acting.0.is_some() || self.options.execution_role.is_client())
+                    && mode != horizon_client::command::args::GameMode::Spectator
+                    && let Some(body) = &player
+                    && let Some(distance) = super::ray_box(eye, direction, reach, body.bounds())
+                {
+                    nearest = nearest.min(distance);
+                }
+                nearest
+            });
+            std::mem::replace(&mut self.mod_use_player_limit, Some(limit))
+        };
         Some(GuestSwap {
             conn,
             i,
             play,
             player,
+            #[cfg(feature = "mods")]
+            mod_use_player_limit,
             eye,
             yaw,
             pitch,
@@ -489,6 +530,8 @@ impl Game<'_> {
             i,
             mut play,
             mut player,
+            #[cfg(feature = "mods")]
+            mod_use_player_limit,
             eye,
             yaw,
             pitch,
@@ -546,6 +589,9 @@ impl Game<'_> {
         for p in self.creatures.projectiles.iter_mut().skip(projectiles) {
             if p.owner == Some(horizon_client::mobs::Who::Player) && p.guest.is_none() {
                 p.guest = Some(conn);
+                p.owner_uuid = Some(horizon_client::lan::playerdata::uuid_ints(
+                    host.hub.guests[i].uuid,
+                ));
             }
         }
         // The guest's swings are theirs: the host's own count stays the host's.
@@ -574,6 +620,10 @@ impl Game<'_> {
                     duration,
                 }),
             );
+        }
+        #[cfg(feature = "mods")]
+        {
+            self.mod_use_player_limit = mod_use_player_limit;
         }
         (self.lan_acting, self.lan_acting_name, self.lan_acting_uuid) = acting;
         play.death_cause = std::mem::replace(&mut self.ui.death_cause, death_cause);
@@ -778,6 +828,7 @@ impl Game<'_> {
         if let Some(mob) = guest_mount {
             self.lan_open_mount(host, conn, mob);
         }
+        self.lan_pair_new_projectiles(host, projectiles);
     }
 
     /// `ServerLevel.players()` in turn: the host's own player, then each
@@ -1031,6 +1082,9 @@ impl Game<'_> {
             return;
         }
         let spectator = host.hub.guests[gi].spectator();
+        // Only the immediately next packet can be a handled block's item fallback.
+        #[cfg(feature = "mods")]
+        let mod_fallback = host.play.entry(conn).or_default().mod_fallback.take();
         match packet {
             S::PlayerAction(a) => match a.action {
                 0 => {
@@ -1180,15 +1234,31 @@ impl Game<'_> {
                 } else {
                     let logged = self.world.block_log.as_ref().map_or(0, Vec::len);
                     let heard = self.audio.capture.as_ref().map_or(0, Vec::len);
-                    let swung = self.as_guest(host, conn, |g| {
-                        g.forced_hit = Some(hit);
-                        g.guest_use = Some(GuestUse::OnBlock(hand));
-                        let swings = g.swings_started;
-                        let _ = g.use_item();
-                        g.forced_hit = None;
-                        g.guest_use = None;
-                        g.swings_started != swings
-                    });
+                    let (swung, _mod_handled) = self
+                        .as_guest(host, conn, |g| {
+                            #[cfg(feature = "mods")]
+                            {
+                                g.mod_interaction_handled = false;
+                            }
+                            g.forced_hit = Some(hit);
+                            g.guest_use = Some(GuestUse::OnBlock(hand));
+                            let swings = g.swings_started;
+                            let _ = g.use_item();
+                            g.forced_hit = None;
+                            g.guest_use = None;
+                            #[cfg(not(feature = "mods"))]
+                            let handled = false;
+                            #[cfg(feature = "mods")]
+                            let handled = g.mod_interaction_handled;
+                            (g.swings_started != swings, handled)
+                        })
+                        .map_or((None, false), |(swung, handled)| (Some(swung), handled));
+                    #[cfg(feature = "mods")]
+                    if _mod_handled {
+                        host.play.entry(conn).or_default().mod_fallback =
+                            p.sequence.checked_add(1).map(|seq| (seq, hand, self.ticks));
+                        host.hub.send_inventory(gi);
+                    }
                     self.lan_swing_back(host, conn, swung);
                     self.guest_use_sounds(host, conn, logged, heard);
                 }
@@ -1211,15 +1281,34 @@ impl Game<'_> {
                 // sends nothing back), then the item alone. What it looked at a
                 // moment ago (a block, a mob) is UseItemOn's or Interact's.
                 let hand = if p.hand == 1 { Hand::Off } else { Hand::Main };
+                #[cfg(feature = "mods")]
+                if mod_fallback == Some((p.sequence, hand, self.ticks)) {
+                    host.hub.send_inventory(gi);
+                    return;
+                }
                 let g = &mut host.hub.guests[gi];
                 (g.yaw, g.pitch) = (p.yaw, p.pitch);
-                let swung = self.as_guest(host, conn, |g| {
-                    g.guest_use = Some(GuestUse::Item(hand));
-                    let swings = g.swings_started;
-                    let _ = g.use_item();
-                    g.guest_use = None;
-                    g.swings_started != swings
-                });
+                let (swung, _mod_handled) = self
+                    .as_guest(host, conn, |g| {
+                        #[cfg(feature = "mods")]
+                        {
+                            g.mod_interaction_handled = false;
+                        }
+                        g.guest_use = Some(GuestUse::Item(hand));
+                        let swings = g.swings_started;
+                        let _ = g.use_item();
+                        g.guest_use = None;
+                        #[cfg(not(feature = "mods"))]
+                        let handled = false;
+                        #[cfg(feature = "mods")]
+                        let handled = g.mod_interaction_handled;
+                        (g.swings_started != swings, handled)
+                    })
+                    .map_or((None, false), |(swung, handled)| (Some(swung), handled));
+                #[cfg(feature = "mods")]
+                if _mod_handled {
+                    host.hub.send_inventory(gi);
+                }
                 self.lan_swing_back(host, conn, swung);
             }
             S::Attack(p) => self.guest_attack(host, conn, p.id),
@@ -1251,8 +1340,13 @@ impl Game<'_> {
                 if !host.hub.guests[gi].creative() {
                     return;
                 }
-                let Some(stack) = self.item_from_network(host, &p.item) else {
-                    return;
+                let stack = match self.item_from_network(host, &p.item) {
+                    Ok(Some(stack)) => stack,
+                    Ok(None) => return,
+                    Err(error) => {
+                        eprintln!("Rejected creative item: {error}");
+                        return;
+                    }
                 };
                 if stack.count
                     > self
@@ -1279,7 +1373,13 @@ impl Game<'_> {
                 if !g.creative() || !(0..46).contains(&p.slot) {
                     return;
                 }
-                let item = self.item_from_network(host, &p.item);
+                let item = match self.item_from_network(host, &p.item) {
+                    Ok(item) => item,
+                    Err(error) => {
+                        eprintln!("Rejected creative slot update: {error}");
+                        return;
+                    }
+                };
                 let slot = p.slot as usize;
                 let g = &mut host.hub.guests[gi];
                 let old = g.menu_slot(slot);
@@ -1373,6 +1473,32 @@ impl Game<'_> {
                 self.guest_carried_back(host, gi);
             }
             S::ChatCommand(c) => self.guest_chat_command(host, conn, &c.command),
+            #[cfg(feature = "mods")]
+            S::CustomPayload(p)
+                if p.channel == horizon_protocol::program_messages::SUBSCRIBE_CHANNEL =>
+            {
+                if let Err(error) = self.receive_program_subscriptions(host, conn, &p.data) {
+                    log::warn!("Horizon: program subscription refused: {error}");
+                }
+            }
+            S::CustomPayload(p)
+                if p.channel == horizon_protocol::mod_entities::RENDERERS_CHANNEL =>
+            {
+                if host.hub.guests[gi].brand == "horizon" {
+                    match horizon_protocol::mod_entities::decode_renderers(&p.data) {
+                        Ok(keys) => host.hub.guests[gi].mod_renderers = keys.into_iter().collect(),
+                        Err(e) => {
+                            host.hub.guests[gi]
+                                .sender
+                                .disconnect(horizon_world::nbt::Tag::String(
+                                    format!("Invalid Horizon renderer capabilities: {e}")
+                                        .as_str()
+                                        .into(),
+                                ))
+                        }
+                    }
+                }
+            }
             S::CustomPayload(p) if p.channel == horizon_protocol::quiet::CHANNEL => {
                 self.guest_quiet_commands(host, conn, &p.data)
             }
@@ -1560,11 +1686,13 @@ impl Game<'_> {
         &self,
         host: &LanHost,
         stack: &Option<horizon_protocol::item::Stack>,
-    ) -> Option<ItemStack> {
-        let s = stack.as_ref()?;
-        let mut out = host.hub.stack_from_network(s);
+    ) -> Result<Option<ItemStack>, String> {
+        let Some(s) = stack.as_ref() else {
+            return Ok(None);
+        };
+        let mut out = host.hub.try_stack_from_network(s)?;
         out.count = out.count.max(1);
-        Some(out)
+        Ok(Some(out))
     }
 
     /// `LivingEntity.tickDeath`: 20 ticks after dying the player is removed,

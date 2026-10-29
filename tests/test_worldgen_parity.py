@@ -99,7 +99,7 @@ class WorldgenRunnerTests(unittest.TestCase):
         resources={"minecraft:overworld":"{}"}
         commands=list(parity.noise_aquifer_corpus("bundle.json",resources))
         self.assertEqual(commands,list(parity.noise_aquifer_corpus("bundle.json",resources)))
-        fixtures=[json.loads(command.split(" ",5)[5]) for command in commands]
+        fixtures=[json.loads(command.split(" ",3)[3])[2] for command in commands]
         self.assertEqual({tuple(f["fail"]) for f in fixtures if "fail" in f},
                          {(field,occurrence) for field in range(6) for occurrence in [1,2,8]})
         for field in range(6):
@@ -110,6 +110,20 @@ class WorldgenRunnerTests(unittest.TestCase):
         self.assertIn("minecraft:missing",text)
         self.assertTrue(any(f["fluid"]==7 for f in fixtures))
         self.assertTrue(any(f["steps"]==[4,2,4] for f in fixtures))
+
+    def test_noise_aquifer_requests_keep_distinct_bundle_paths_and_seed_extremes(self):
+        paths = [Path('first folder/registry "one".json'), Path("second folder/registry 雪.json")]
+        for path in paths:
+            with self.subTest(path=path):
+                commands = list(itertools.islice(parity.noise_aquifer_corpus(path, {"minecraft:overworld":"{}"}), 12))
+                fields = [command.split(" ", 3) for command in commands]
+                self.assertEqual({int(field[1]) for field in fields}, {0, 1, -1, -2**63, 2**63-1, 0x123456789abcdef})
+                self.assertEqual({field[2] for field in fields}, {"0", "1"})
+                for field in fields:
+                    bundle, setting, fixture = json.loads(field[3])
+                    self.assertEqual(bundle, str(path))
+                    self.assertEqual(setting, "minecraft:overworld")
+                    self.assertEqual(len(fixture["queries"]), 160)
 
     def test_tag_corpus_covers_cycles_replacement_and_codec_numeric_types(self):
         commands=list(parity.tag_corpus({"minecraft:example":'{"values":["stone"]}'}))

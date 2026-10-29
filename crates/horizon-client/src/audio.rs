@@ -12,6 +12,8 @@ use crate::sound_events::{Sound, SoundRegistry};
 #[cfg(feature = "audio")]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use horizon_core::random::{LegacyRandom, RandomSource};
+#[cfg(feature = "mods")]
+use std::collections::HashSet;
 use std::{
     collections::HashMap,
     fs,
@@ -145,6 +147,8 @@ type Stream = std::convert::Infallible;
 pub struct Audio {
     _stream: Option<Stream>,
     pub engine: SoundEngine,
+    #[cfg(feature = "mods")]
+    program_events: Arc<HashSet<String>>,
     backend: MixerBackend,
     /// Record `Heard` sounds (the subtitle overlay is listening).
     pub record_heard: bool,
@@ -577,11 +581,15 @@ impl Audio {
                 (None, false)
             }
         };
+        #[cfg(feature = "mods")]
+        let program_events = Arc::new(registry.names().cloned().collect());
         let mut engine = SoundEngine::new(registry);
         engine.loaded = live;
         Self {
             _stream: stream,
             engine,
+            #[cfg(feature = "mods")]
+            program_events,
             backend: MixerBackend {
                 mixer,
                 root: root.to_owned(),
@@ -700,6 +708,10 @@ impl Audio {
     pub fn reload(&mut self, root: &Path) {
         self.stop_all();
         self.engine.registry = SoundRegistry::load(root);
+        #[cfg(feature = "mods")]
+        {
+            self.program_events = Arc::new(self.engine.registry.names().cloned().collect());
+        }
         self.backend.root = root.to_owned();
         let mut cache = self.backend.cache.lock().unwrap();
         cache.entries.clear();
@@ -814,6 +826,36 @@ impl Audio {
             census["decoded_mib"] = (cache.bytes >> 20).into();
         }
         census
+    }
+    #[cfg(feature = "mods")]
+    pub fn program_events(&self) -> Arc<HashSet<String>> {
+        self.program_events.clone()
+    }
+    /// Registered local playback, preserving category settings and excluding network capture.
+    #[cfg(feature = "mods")]
+    pub fn play_program(
+        &mut self,
+        source: usize,
+        event: &str,
+        at: Option<[f64; 3]>,
+        volume: f32,
+        pitch: f32,
+    ) -> std::result::Result<(), String> {
+        if !self.engine.loaded {
+            return Err("native audio output is disabled or unavailable".into());
+        }
+        if !self.engine.registry.contains(event) {
+            return Err("sound event is no longer registered".into());
+        }
+        if source >= crate::settings::SOUND_SOURCES.len() {
+            return Err("unknown native sound category".into());
+        }
+        let capture = self.capture.take();
+        let previous = self.source_override.take();
+        self.play_on(source, event, at, volume, pitch);
+        self.source_override = previous;
+        self.capture = capture;
+        Ok(())
     }
     pub fn event_names(&self) -> Vec<String> {
         let mut v: Vec<String> = self.engine.registry.names().cloned().collect();

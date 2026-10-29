@@ -57,7 +57,7 @@ fn read(work: &Path) -> Option<Installed> {
 
 /// Whether `work` is a registry pack's folder.
 pub fn is_pack(work: &Path) -> bool {
-    work.join(RECORD).is_file()
+    read(work).is_some()
 }
 
 /// The profile's game folder.
@@ -186,6 +186,32 @@ pub fn remove(work: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::io::Write;
+    #[test]
+    fn only_registry_records_identify_installed_registry_packs() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-registry-record-{}", std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        assert!(!is_pack(&dir));
+        fs::write(
+            dir.join(RECORD),
+            serde_json::to_vec(&horizon_port_pack::import::Pack::default()).unwrap(),
+        )
+        .unwrap();
+        assert!(!is_pack(&dir));
+        let record = Installed {
+            id: "original".into(),
+            name: "Original fixture".into(),
+            version: "1".into(),
+            sha256: "0".repeat(64),
+            mods: Vec::new(),
+            work: dir.clone(),
+        };
+        fs::write(dir.join(RECORD), serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(is_pack(&dir));
+        fs::write(dir.join(RECORD), b"{}").unwrap();
+        assert!(!is_pack(&dir));
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     /// A local registry: the mod and a pack of it, as `file://` files.
     fn registry(dir: &Path, on: bool, extra: &str) -> Index {

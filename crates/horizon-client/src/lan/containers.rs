@@ -293,9 +293,14 @@ impl Hub {
         for j in 0..36 {
             items.push(self.guests[i].inventory[player_slot(j)].clone());
         }
-        let net: Vec<_> = items.iter().map(|s| self.stack(s)).collect();
         let carried = self.guests[i].carried.clone();
-        let carried = self.stack(&carried);
+        let (net, carried) = match self.stacks(&items, &carried) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                eprintln!("Rejected container snapshot: {error}");
+                return;
+            }
+        };
         let g = &mut self.guests[i];
         let Some(menu) = g.menu.as_mut() else {
             return;
@@ -514,9 +519,19 @@ impl Hub {
                 resend.push(slot);
             }
         }
-        for slot in resend {
-            let mine = self.view_slot(i, world, slot);
-            let net = self.stack(&mine);
+        let carried = self.guests[i].carried.clone();
+        let resend_items: Vec<_> = resend
+            .iter()
+            .map(|&slot| self.view_slot(i, world, slot))
+            .collect();
+        let (encoded, encoded_carried) = match self.stacks(&resend_items, &carried) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                eprintln!("Rejected container correction: {error}");
+                return;
+            }
+        };
+        for (slot, net) in resend.into_iter().zip(encoded) {
             let g = &mut self.guests[i];
             let state = if in_menu {
                 g.menu.as_mut().map_or(0, |m| {
@@ -534,10 +549,10 @@ impl Hub {
                 item: net,
             }));
         }
-        let carried = self.guests[i].carried.clone();
         if !self.hashed_matches(&p.carried, &carried) {
-            let net = self.stack(&carried);
-            self.guests[i].send(&C::SetCursorItem(play::SetCursorItem { item: net }));
+            self.guests[i].send(&C::SetCursorItem(play::SetCursorItem {
+                item: encoded_carried,
+            }));
         }
         // What the client now believes equals the server's state.
         let items: Vec<_> = (0..total).map(|s| self.view_slot(i, world, s)).collect();
@@ -629,7 +644,13 @@ impl Hub {
                 if sent.as_ref() == Some(&now) {
                     continue;
                 }
-                let net = self.stack(&now);
+                let net = match self.stack(&now) {
+                    Ok(net) => net,
+                    Err(error) => {
+                        eprintln!("Rejected container slot update: {error}");
+                        continue;
+                    }
+                };
                 let g = &mut self.guests[i];
                 if let Some(m) = g.menu.as_mut() {
                     m.state = (m.state + 1) & 0x7FFF;

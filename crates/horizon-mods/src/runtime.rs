@@ -3,7 +3,9 @@ use crate::manifest::{Manifest, Package, Side};
 use server_bindings::{
     HorizonServerMod,
     exports::horizon::mods::server_events::Registration as ServerRegistration,
-    horizon::mods::{players, world as mod_world},
+    horizon::mods::{
+        entities as mod_entities, inventory, players, world as mod_world, world_storage,
+    },
 };
 use std::{
     path::{Path, PathBuf},
@@ -30,6 +32,8 @@ mod server_bindings {
         with: {
             "horizon:mods/log": super::bindings::horizon::mods::log,
             "horizon:mods/storage": super::bindings::horizon::mods::storage,
+            "horizon:mods/resources": super::bindings::horizon::mods::resources,
+            "horizon:mods/messages": super::bindings::horizon::mods::messages,
         },
     });
 }
@@ -42,6 +46,8 @@ mod ui_bindings {
         world: "ui-host",
     });
 }
+pub use bindings::horizon::mods::audio::{Category as AudioCategory, Position as AudioPosition};
+pub use bindings::horizon::mods::messages::Message as ProgramMessage;
 pub use bindings::horizon::mods::{
     game::{Clock, Hit, Player},
     hud::{Corner, Line},
@@ -49,15 +55,43 @@ pub use bindings::horizon::mods::{
 use bindings::{
     HorizonMod,
     exports::horizon::mods::events::Registration,
-    horizon::mods::{chat, command, game, hud, log as mod_log, storage},
+    horizon::mods::{
+        audio, chat, command, game, hud, log as mod_log, messages, resources, storage,
+    },
+};
+pub use server_bindings::horizon::mods::entities::{
+    ContextInfo as EntityContext, EntityState, LifecycleEvent as EntityEvent,
+    MovementDelta as EntityMovementDelta, MovementResult as EntityMovementResult,
+    Reason as EntityReason, Transform as EntityTransform, TypeDefinition as EntityType,
+};
+pub use server_bindings::horizon::mods::inventory::{
+    Hand as InventoryHand, ItemStack as InventoryStack,
 };
 pub use server_bindings::{
     exports::horizon::mods::server_events::{
         Argument, ArgumentKind, ArgumentValue, BlockPos, ServerCommand,
     },
     horizon::mods::players::{GameMode, Player as ServerPlayer},
-    horizon::mods::world::BlockChange,
+    horizon::mods::world::{
+        BlockChange, EnvironmentInfo as WorldEnvironment, FluidContext, LoadedEnvironment,
+        StaticCollision,
+    },
 };
+
+trait CallbackSuccess {
+    fn succeeded(&self) -> bool;
+}
+impl CallbackSuccess for () {
+    fn succeeded(&self) -> bool {
+        true
+    }
+}
+impl CallbackSuccess for Result<Option<String>, String> {
+    fn succeeded(&self) -> bool {
+        self.is_ok()
+    }
+}
+
 type ClientEvents = bindings::exports::horizon::mods::events::Guest;
 type ServerEvents = server_bindings::exports::horizon::mods::server_events::Guest;
 /// The widget model a `ui` screen or settings page shows (WIT `interface
@@ -75,7 +109,9 @@ mod render_bindings {
 }
 use render_bindings::horizon::mods::input;
 /// Capability `input`'s records (WIT `interface input`).
-pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, ItemUse};
+pub use render_bindings::horizon::mods::input::{
+    Event as InputEvent, HeldItem, ItemUse as InputItemUse,
+};
 /// What capability `render` asks the game to draw (WIT `interface render`).
 pub use render_bindings::horizon::mods::render::{
     Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape,
@@ -101,6 +137,42 @@ pub use recipes_bindings::horizon::mods::recipes::{
     Item as RecipeItem, Kind as RecipeKind, Recipe, Stack as RecipeStack,
 };
 use recipes_bindings::{RecipesHost, horizon::mods::browser, horizon::mods::recipes};
+
+mod models_bindings {
+    wasmtime::component::bindgen!({ path: "../horizon-mod-sdk/wit", world: "models-host" });
+}
+pub use models::{MeshVertex, Triangle as ModelTriangle, View as ModelView};
+use models_bindings::{ModelsHost, horizon::mods::models};
+
+mod interactions_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit", world: "server-interactions-host",
+        with: { "horizon:mods/players": super::server_bindings::horizon::mods::players },
+    });
+}
+use interactions_bindings::ServerInteractionsHost;
+pub use interactions_bindings::exports::horizon::mods::server_interactions::{
+    BlockUse, Hand as InteractionHand, InteractionPos, InteractionResult, ItemUse,
+};
+impl CallbackSuccess for Result<InteractionResult, String> {
+    fn succeeded(&self) -> bool {
+        self.as_ref().is_ok_and(|r| r.handled)
+    }
+}
+fn checked_interaction(
+    result: InteractionResult,
+    available: u32,
+) -> Result<InteractionResult, String> {
+    if result.consume > available
+        || (!result.handled && (result.consume != 0 || result.feedback.is_some()))
+    {
+        return Err("invalid interaction handled/consume result".into());
+    }
+    if result.feedback.as_ref().is_some_and(|s| s.len() > 1024) {
+        return Err("interaction feedback exceeds 1024 bytes".into());
+    }
+    Ok(result)
+}
 
 /// A mod's linear memory cap.
 const MEMORY: usize = 64 << 20;
@@ -132,6 +204,61 @@ const STORAGE_MAX_KEYS: usize = 64;
 /// a cheap-in-fuel loop replacing one key with large payloads needs its own
 /// cap, separate from the on-disk quota it would otherwise stay under.
 const STORAGE_WRITE_BUDGET: u64 = 1 << 20;
+
+const RESOURCE_REQUESTS: u32 = 64;
+const RESOURCE_BYTES: u64 = 32 << 20;
+
+/// One validated package and one reader, owned by its store.
+struct ResourceState {
+    content: crate::Content,
+    reader: crate::content::FileReader,
+    requests: u32,
+    bytes: u64,
+}
+impl ResourceState {
+    fn new(content: crate::Content) -> Result<Self, String> {
+        let reader = content.reader().map_err(|_| "resource unavailable")?;
+        Ok(Self {
+            content,
+            reader,
+            requests: RESOURCE_REQUESTS,
+            bytes: RESOURCE_BYTES,
+        })
+    }
+
+    fn reset(&mut self) {
+        self.requests = RESOURCE_REQUESTS;
+        self.bytes = RESOURCE_BYTES;
+    }
+
+    fn read(&mut self, path: &str) -> Result<Option<Vec<u8>>, String> {
+        if self.requests == 0 || self.bytes == 0 {
+            return Err("resource callback budget exhausted".into());
+        }
+        self.requests -= 1;
+        if !self.content.resource_path(path)? {
+            return Ok(None);
+        }
+        let reservation = self.bytes.min(crate::content::MAX_FILE);
+        self.bytes -= reservation;
+        let bytes = self.reader.read_bounded(path, reservation).map_err(|e| {
+            if e == "resource file too large" && reservation < crate::content::MAX_FILE {
+                "resource callback budget exhausted".into()
+            } else {
+                e
+            }
+        })?;
+        self.bytes += reservation - bytes.len() as u64;
+        Ok(Some(bytes))
+    }
+}
+
+/// The authoritative world's gate around a physical snapshot write and its acknowledgment.
+pub trait WorldStorageAdmission: Send + Sync {
+    fn write(&self, operation: &mut dyn FnMut() -> Result<(), String>) -> Result<(), String>;
+}
+
+type WorldStorageContext = (u64, PathBuf, bool, Arc<dyn WorldStorageAdmission>);
 
 /// What mods may read of the game, copied once per tick by the game.
 #[derive(Clone, Debug, Default)]
@@ -179,10 +306,11 @@ pub struct Recipes {
 
 /// Which mods a game starts: the window's game the client mods, the game
 /// simulating the world the server mods, single player in the frame both.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Runs {
     Client,
     Server,
+    #[default]
     Both,
 }
 impl Runs {
@@ -261,7 +389,59 @@ pub trait WorldView: std::any::Any + Send {
     fn has_dimension(&self, dimension: &str) -> bool;
     /// `Err` (why) for a state string that names no block state.
     fn check_state(&self, state: &str) -> Result<(), String>;
+    /// Unknown outside a native context. Old world providers need no implementation.
+    fn environment(
+        &self,
+        _dimension: &str,
+        _x: i32,
+        _y: i32,
+        _z: i32,
+    ) -> Result<Option<WorldEnvironment>, String> {
+        Ok(None)
+    }
+    /// Unknown for world providers that do not offer native sky visibility.
+    fn sky_visible(
+        &self,
+        _dimension: &str,
+        _x: i32,
+        _y: i32,
+        _z: i32,
+    ) -> Result<Option<bool>, String> {
+        Ok(None)
+    }
+    /// Optional block-only movement against the lent resident world.
+    fn move_colliding(
+        &self,
+        _state: &EntityState,
+        _kind: &EntityType,
+        _delta: &EntityMovementDelta,
+    ) -> Result<EntityMovementResult, String> {
+        Err("block collision is unsupported by this world context".into())
+    }
 }
+
+/// Native physical slots lent only while synchronous server callbacks run.
+pub trait InventoryView: std::any::Any + Send {
+    fn held(&self, player: &str, hand: InventoryHand) -> Result<Option<InventoryStack>, String>;
+    fn component_string(
+        &self,
+        _player: &str,
+        _hand: InventoryHand,
+        _key: &str,
+    ) -> Result<Option<String>, String> {
+        Err("inventory string components are unavailable in this context".into())
+    }
+    fn custom_data_integer(
+        &self,
+        _player: &str,
+        _hand: InventoryHand,
+        _field: &str,
+    ) -> Result<Option<i64>, String> {
+        Err("inventory machine integers are unavailable in this context".into())
+    }
+    fn give(&mut self, player: &str, item: &str, count: u32) -> Result<u32, String>;
+}
+type InventorySlot = Arc<Mutex<Option<Box<dyn InventoryView>>>>;
 
 /// The view lent for the current calls, shared by every mod's store.
 type WorldSlot = Arc<Mutex<Option<Box<dyn WorldView>>>>;
@@ -313,6 +493,7 @@ struct Running {
     /// The mod's `ui-events` export; none for a mod built before `ui`, or a
     /// server mod.
     ui: Option<UiHost>,
+    interactions: Option<ServerInteractionsHost>,
     hooks: Hooks,
     /// It imports `game.raycast`.
     raycasts: bool,
@@ -425,19 +606,41 @@ struct State {
     /// not disk I/O time, so a loop of small-fuel, large-payload `set`s
     /// needs its own budget.
     storage_budget: u64,
+    resources: Option<ResourceState>,
+    messages: Option<crate::messages::Session>,
+    entities: Option<crate::entities::Session>,
+    models: Option<crate::models::Session>,
+    world_storage: Option<WorldStorageContext>,
+    world_storage_budget: u64,
     limits: StoreLimits,
     world: WorldSlot,
+    inventory: Option<InventorySlot>,
+    inventory_calls: u32,
+    inventory_namespaces: Vec<String>,
+    inventory_gives: u32,
+    environment_calls: u32,
+    audio: Option<crate::audio::Shared>,
+    audio_calls: u32,
+    audio_owner: u64,
 }
 
 /// The installed mods and the engine running them. `Mods::default()` is
 /// the state with none: no engine, and every hook a no-op.
 #[derive(Default)]
 pub struct Mods {
+    runs: Runs,
     engine: Option<(Engine, Linker<State>)>,
     entries: Vec<Entry>,
     snapshot: Arc<Snapshot>,
     out: Vec<Output>,
     world: WorldSlot,
+    inventory: InventorySlot,
+    entity_host: Option<crate::entities::Slot>,
+    model_pool: crate::models::Pool,
+    message_broker: crate::messages::Shared,
+    audio_broker: crate::audio::Shared,
+    message_world: Option<u64>,
+    message_instance: u64,
     /// Moves on whenever a mod starts or stops: the game resends the server
     /// mods' commands to players when it changes.
     generation: u64,
@@ -471,6 +674,62 @@ impl Mods {
         self.world.lock().ok()?.take()
     }
 
+    pub fn wants_audio(&self) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.status == Status::Running
+                && entry.manifest.as_ref().is_some_and(|m| {
+                    m.side != Side::Server && m.capabilities.contains(&crate::Capability::Audio)
+                })
+        })
+    }
+    pub fn set_audio_context(
+        &mut self,
+        session: Option<u64>,
+        available: bool,
+        events: Arc<std::collections::HashSet<String>>,
+    ) {
+        self.audio_broker
+            .lock()
+            .unwrap()
+            .context(session, available, events);
+    }
+    pub fn take_audio(&mut self) -> Vec<crate::audio::Request> {
+        let requests = self.audio_broker.lock().unwrap().drain();
+        requests
+            .into_iter()
+            .filter(|request| {
+                self.entries.iter().any(|e| {
+                    e.status == Status::Running
+                        && e.run.as_ref().is_some_and(|run| {
+                            run.store.data().audio_owner == request.owner_generation
+                        })
+                        && e.manifest.as_ref().is_some_and(|m| {
+                            m.id == request.owner
+                                && m.side != Side::Server
+                                && m.capabilities.contains(&crate::Capability::Audio)
+                        })
+                })
+            })
+            .collect()
+    }
+    pub fn wants_inventory(&self) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.status == Status::Running
+                && entry.manifest.as_ref().is_some_and(|m| {
+                    m.side == Side::Server && m.capabilities.contains(&crate::Capability::Inventory)
+                })
+        })
+    }
+    pub fn inventory_lent(&self) -> bool {
+        self.inventory.lock().unwrap().is_some()
+    }
+    pub fn lend_inventory(&mut self, view: Box<dyn InventoryView>) {
+        *self.inventory.lock().unwrap() = Some(view);
+    }
+    pub fn take_inventory(&mut self) -> Option<Box<dyn InventoryView>> {
+        self.inventory.lock().unwrap().take()
+    }
+
     /// Reads every mod at `paths` and starts those `enabled` says are on,
     /// client and server mods alike. A command that `reserved` (vanilla's
     /// commands) or an earlier mod already uses is refused.
@@ -481,6 +740,232 @@ impl Mods {
     ) -> Mods {
         Mods::load_for(Runs::Both, paths, enabled, reserved)
     }
+    pub fn message_instance(&mut self) -> Result<u64, String> {
+        if self.message_instance == 0 {
+            self.message_instance = crate::messages::new_epoch()?;
+        }
+        Ok(self.message_instance)
+    }
+    pub fn set_message_context(&mut self, world: Option<u64>) -> Result<(), String> {
+        if self.message_world != world {
+            let mut b = self.message_broker.lock().unwrap();
+            b.routes.clear();
+            b.local_player = None;
+            self.message_world = world;
+        }
+        for e in &mut self.entries {
+            if let Some(m) = e
+                .run
+                .as_mut()
+                .and_then(|r| r.store.data_mut().messages.as_mut())
+            {
+                m.context(world)?;
+            }
+        }
+        Ok(())
+    }
+    pub fn set_message_local_player(&mut self, player: Option<String>) {
+        self.message_broker.lock().unwrap().local_player = player;
+    }
+    pub fn set_message_routes(
+        &mut self,
+        player: &str,
+        subscriptions: Vec<crate::messages::Subscription>,
+    ) -> Result<(), String> {
+        if subscriptions.len() > 64 {
+            return Err("too many connection message subscriptions".into());
+        }
+        let mut broker = self.message_broker.lock().unwrap();
+        let others = broker.routes.iter().filter(|r| r.player != player).count();
+        if others + subscriptions.len() > 4096 {
+            return Err("message route limit exceeded".into());
+        }
+        broker.routes.retain(|r| r.player != player);
+        broker
+            .routes
+            .extend(
+                subscriptions
+                    .into_iter()
+                    .map(|subscription| crate::messages::Route {
+                        player: player.into(),
+                        subscription,
+                    }),
+            );
+        Ok(())
+    }
+    pub fn message_subscriptions(&self) -> Vec<crate::messages::Subscription> {
+        self.message_broker
+            .lock()
+            .unwrap()
+            .subscriptions
+            .values()
+            .flatten()
+            .cloned()
+            .collect()
+    }
+    pub fn receive_program_message(
+        &mut self,
+        receiver: &str,
+        epoch: u64,
+        sender: &str,
+        channel: &str,
+        payload: &[u8],
+    ) -> Result<bool, String> {
+        for e in &mut self.entries {
+            if let Some(m) = e
+                .run
+                .as_mut()
+                .and_then(|r| r.store.data_mut().messages.as_mut())
+                .filter(|m| m.is_receiver(receiver))
+            {
+                return m.receive(epoch, sender, channel, payload);
+            }
+        }
+        Ok(false)
+    }
+    pub fn drain_program_messages(&mut self) -> Vec<crate::messages::Delivery> {
+        self.entries
+            .iter_mut()
+            .filter_map(|e| e.run.as_mut()?.store.data_mut().messages.as_mut())
+            .flat_map(|m| m.drain())
+            .collect()
+    }
+    pub fn wants_world_storage(&self) -> bool {
+        self.entries.iter().any(|e| {
+            e.run.is_some()
+                && e.manifest
+                    .as_ref()
+                    .is_some_and(|m| m.capabilities.contains(&crate::Capability::WorldStorage))
+        })
+    }
+    /// Only the authoritative game supplies this root, never a guest.
+    pub fn set_world_storage(
+        &mut self,
+        context: Option<(u64, &Path, bool, Arc<dyn WorldStorageAdmission>)>,
+    ) {
+        for e in &mut self.entries {
+            if let Some(run) = &mut e.run {
+                let data = run.store.data_mut();
+                data.world_storage = context.as_ref().map(|(id, root, writable, admission)| {
+                    (
+                        *id,
+                        root.join("horizon-programs").join(&data.id),
+                        *writable,
+                        admission.clone(),
+                    )
+                });
+            }
+        }
+    }
+    /// Updates read-only client views before guest callbacks.
+    pub fn set_model_views(&mut self, world: &str, views: &[ModelView]) {
+        for e in &mut self.entries {
+            if let Some(m) = e
+                .run
+                .as_mut()
+                .and_then(|r| r.store.data_mut().models.as_mut())
+            {
+                m.set_views(world, views);
+            }
+        }
+    }
+    pub fn model_renderers(&self) -> Vec<(String, u32)> {
+        let mut renderers: Vec<_> = self
+            .entries
+            .iter()
+            .filter_map(|e| e.run.as_ref()?.store.data().models.as_ref())
+            .flat_map(|m| m.renderers().map(|(k, v)| (k.clone(), *v)))
+            .collect();
+        renderers.sort();
+        renderers.dedup();
+        renderers.truncate(64);
+        renderers
+    }
+    pub fn model_draws(&self) -> Vec<crate::models::Draw> {
+        self.entries
+            .iter()
+            .filter_map(|e| e.run.as_ref()?.store.data().models.as_ref())
+            .flat_map(|m| m.draws())
+            .collect()
+    }
+    /// Whether a live server owner uses the entity contract.
+    pub fn wants_entities(&self) -> bool {
+        self.entries.iter().any(|e| {
+            e.run
+                .as_ref()
+                .is_some_and(|r| r.store.data().entities.is_some())
+        })
+    }
+    /// Lends host-owned levels and the shared ID allocator for callbacks.
+    pub fn lend_entities(&mut self, world: crate::entities::World) {
+        if let Some(slot) = &self.entity_host {
+            *slot.lock().unwrap() = Some(world);
+        }
+    }
+    pub fn take_entities(&mut self) -> Option<crate::entities::World> {
+        self.entity_host.as_ref()?.lock().unwrap().take()
+    }
+    /// Stops just this owner. Lease destruction revokes its records synchronously.
+    pub fn disable(&mut self, id: &str) -> bool {
+        let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|e| e.manifest.as_ref().is_some_and(|m| m.id == id))
+        else {
+            return false;
+        };
+        entry.run = None;
+        entry.status = Status::Off;
+        self.generation += 1;
+        true
+    }
+
+    /// Applies toggles without restarting healthy owners.
+    pub fn sync_enabled(
+        &mut self,
+        enabled: impl Fn(&str) -> bool,
+        reserved: impl Fn(&str) -> bool,
+    ) {
+        for entry in &mut self.entries {
+            if entry.manifest.as_ref().is_some_and(|m| !enabled(&m.id)) {
+                if entry.status != Status::Off {
+                    self.generation += 1;
+                }
+                entry.run = None;
+                entry.status = Status::Off;
+            }
+        }
+        for i in 0..self.entries.len() {
+            let entry = &self.entries[i];
+            if entry.status != Status::Off
+                || !entry.manifest.as_ref().is_some_and(|m| enabled(&m.id))
+            {
+                continue;
+            }
+            let path = entry.path.clone();
+            let result = Package::read(&path).and_then(|p| {
+                self.entries[i].manifest = Some(p.manifest.clone());
+                if !enabled(&p.manifest.id) {
+                    return Ok((Status::Off, None));
+                }
+                if !self.runs.starts(p.manifest.side) {
+                    return Ok((Status::Elsewhere, None));
+                }
+                let content = crate::Content::read(&path, &p.manifest)?;
+                self.start(&path, &p, content, &reserved)
+                    .map(|r| (Status::Running, r))
+            });
+            let entry = &mut self.entries[i];
+            match result {
+                Ok((status, run)) => {
+                    entry.status = status;
+                    entry.run = run;
+                }
+                Err(e) => entry.status = Status::Failed(e),
+            }
+        }
+    }
+
     /// [`Mods::load`], starting only the mods `runs` says this game runs; the
     /// others that are on are [`Status::Elsewhere`].
     pub fn load_for(
@@ -489,7 +974,10 @@ impl Mods {
         enabled: impl Fn(&str) -> bool,
         reserved: impl Fn(&str) -> bool,
     ) -> Mods {
-        let mut mods = Mods::default();
+        let mut mods = Mods {
+            runs,
+            ..Mods::default()
+        };
         for path in paths {
             let modified = modified(path);
             let mut entry = Entry {
@@ -511,14 +999,15 @@ impl Mods {
                         // Content is read before the world loads; a mod whose
                         // content is refused stays off, with the reason.
                         let content = crate::Content::read(path, &package.manifest);
-                        entry.status =
-                            match content.and_then(|_| mods.start(path, &package, &reserved)) {
-                                Ok(run) => {
-                                    entry.run = run;
-                                    Status::Running
-                                }
-                                Err(e) => Status::Failed(e),
-                            };
+                        entry.status = match content
+                            .and_then(|content| mods.start(path, &package, content, &reserved))
+                        {
+                            Ok(run) => {
+                                entry.run = run;
+                                Status::Running
+                            }
+                            Err(e) => Status::Failed(e),
+                        };
                     }
                 }
             }
@@ -538,15 +1027,23 @@ impl Mods {
             let mut linker = Linker::new(&engine);
             HorizonMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
+            inventory::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
             players::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             mod_world::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
+            mod_entities::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             UiHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             RenderHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             RecipesHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
+            world_storage::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
+            ModelsHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             self.engine = Some((engine, linker));
         }
@@ -561,6 +1058,7 @@ impl Mods {
         &mut self,
         path: &Path,
         package: &Package,
+        content: crate::Content,
         reserved: &dyn Fn(&str) -> bool,
     ) -> Result<Option<Running>, String> {
         let m = &package.manifest;
@@ -587,6 +1085,20 @@ impl Mods {
             .collect();
         let snapshot = self.snapshot.clone();
         let world = self.world.clone();
+        let inventory = (server && m.capabilities.contains(&crate::Capability::Inventory))
+            .then(|| self.inventory.clone());
+        let entity_slot = m
+            .capabilities
+            .contains(&crate::Capability::Entities)
+            .then(|| {
+                self.entity_host
+                    .get_or_insert_with(|| Arc::new(Mutex::new(None)))
+                    .clone()
+            });
+        let message_broker = self.message_broker.clone();
+        let audio = (!server && m.capabilities.contains(&crate::Capability::Audio))
+            .then(|| self.audio_broker.clone());
+        let model_pool = self.model_pool.clone();
         let (engine, linker) = self.engine()?;
         let component =
             Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
@@ -623,6 +1135,50 @@ impl Mods {
             browser: BrowserState::default(),
             data_dir,
             storage_budget: STORAGE_WRITE_BUDGET,
+            inventory,
+            inventory_calls: 0,
+            inventory_namespaces: m.owned_namespaces().map(str::to_owned).collect(),
+            inventory_gives: 0,
+            environment_calls: 0,
+            audio_owner: if audio.is_some() {
+                crate::messages::new_epoch()?
+            } else {
+                0
+            },
+            audio,
+            audio_calls: 0,
+            entities: entity_slot
+                .map(|slot| {
+                    crate::entities::Session::new(
+                        m.owned_namespaces().map(str::to_owned).collect(),
+                        slot,
+                    )
+                })
+                .transpose()?,
+            world_storage: None,
+            world_storage_budget: 8 << 20,
+            models: if m.capabilities.contains(&crate::Capability::Models) {
+                Some(crate::models::Session::new(
+                    m.owned_namespaces().map(str::to_owned).collect(),
+                    model_pool,
+                )?)
+            } else {
+                None
+            },
+            messages: if m.capabilities.contains(&crate::Capability::Messages) {
+                Some(crate::messages::Session::new(
+                    m.id.clone(),
+                    server,
+                    message_broker,
+                )?)
+            } else {
+                None
+            },
+            resources: if m.capabilities.contains(&crate::Capability::Resources) {
+                Some(ResourceState::new(content)?)
+            } else {
+                None
+            },
             limits: StoreLimitsBuilder::new()
                 .memory_size(MEMORY)
                 .instances(16)
@@ -653,6 +1209,30 @@ impl Mods {
                 .map_err(|e| reason(&e))??;
             (Hooks::Client(exports, r), ui)
         };
+        let interactions = if server && m.capabilities.contains(&crate::Capability::Interactions) {
+            if self
+                .entries
+                .iter()
+                .filter(|e| e.run.as_ref().is_some_and(|r| r.interactions.is_some()))
+                .count()
+                >= 32
+            {
+                return Err("at most 32 interaction programs".into());
+            }
+            let exports = ServerInteractionsHost::new(&mut store, &instance)
+                .map_err(|e| format!("missing server-interactions export: {e}"))?;
+            if exports
+                .horizon_mods_server_interactions()
+                .call_enabled(&mut store)
+                .map_err(|e| reason(&e))?
+            {
+                Some(exports)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let free = |c: &str| {
             let free = !reserved(c) && !taken.iter().any(|t| t == c);
             if !free {
@@ -676,11 +1256,18 @@ impl Mods {
                 }
             }
         }
+        if let Some(messages) = &mut store.data_mut().messages {
+            messages.finish(true);
+        }
+        if let Some(entities) = &mut store.data_mut().entities {
+            entities.finish(true)?;
+        }
         self.generation += 1;
         self.out.append(&mut store.data_mut().out);
         Ok(Some(Running {
             store,
             ui,
+            interactions,
             hooks,
             raycasts: functions.iter().any(|f| f == "game.raycast"),
             reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
@@ -702,6 +1289,12 @@ impl Mods {
     }
     /// What mods read until the next snapshot.
     pub fn set_snapshot(&mut self, snapshot: Snapshot) {
+        self.message_broker.lock().unwrap().routes.retain(|route| {
+            snapshot
+                .players
+                .iter()
+                .any(|player| player.id == route.player)
+        });
         self.snapshot = Arc::new(snapshot);
     }
 
@@ -756,7 +1349,7 @@ impl Mods {
     }
 
     /// One call into mod `i`; a trap or an overrun turns the mod off.
-    fn call<R>(
+    fn call<R: CallbackSuccess>(
         &mut self,
         i: usize,
         fuel: u64,
@@ -766,8 +1359,39 @@ impl Mods {
         let run = entry.run.as_mut()?;
         run.store.data_mut().snapshot = self.snapshot.clone();
         run.store.data_mut().storage_budget = STORAGE_WRITE_BUDGET;
+        run.store.data_mut().inventory_calls = 0;
+        run.store.data_mut().inventory_gives = 0;
+        run.store.data_mut().environment_calls = 0;
+        run.store.data_mut().audio_calls = 0;
+        run.store.data_mut().world_storage_budget = 8 << 20;
+        if let Some(resources) = &mut run.store.data_mut().resources {
+            resources.reset();
+        }
+        if let Some(entities) = &mut run.store.data_mut().entities {
+            entities.begin();
+        }
+        if let Some(m) = &mut run.store.data_mut().models {
+            m.begin();
+        }
+        if let Some(messages) = &mut run.store.data_mut().messages {
+            messages.begin();
+        }
         let started = Instant::now();
         let result = run.store.set_fuel(fuel).and_then(|()| f(run));
+        let success = result.as_ref().is_ok_and(CallbackSuccess::succeeded);
+        if let Some(m) = &mut run.store.data_mut().models {
+            m.finish(success);
+        }
+        let entity_result = run
+            .store
+            .data_mut()
+            .entities
+            .as_mut()
+            .map_or(Ok(()), |e| e.finish(success));
+        let result = result.and_then(|r| entity_result.map(|()| r).map_err(wasmtime::Error::msg));
+        if let Some(messages) = &mut run.store.data_mut().messages {
+            messages.finish(result.as_ref().is_ok_and(CallbackSuccess::succeeded));
+        }
         // An average over about the last 64 calls.
         entry.cost = (entry.cost * 63 + started.elapsed()) / 64;
         let data = run.store.data_mut();
@@ -855,6 +1479,64 @@ impl Mods {
             .flat_map(|r| r.hooks.commands())
     }
 
+    pub fn wants_interactions(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.interactions.is_some()))
+    }
+    /// Manifest ID order, first handled result wins. Errors stop this action without consumption.
+    pub fn interact(
+        &mut self,
+        player: &ServerPlayer,
+        item: &ItemUse,
+        block: Option<&BlockUse>,
+    ) -> Result<Option<InteractionResult>, String> {
+        let mut order: Vec<_> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| {
+                e.run.as_ref()?.interactions.as_ref()?;
+                Some((e.manifest.as_ref()?.id.clone(), i))
+            })
+            .collect();
+        order.sort_by(|a, b| a.0.cmp(&b.0));
+        for (_, i) in order.into_iter().take(32) {
+            let mut event = item.clone();
+            if event.target.as_ref().is_some_and(|h| {
+                !self.entries[i]
+                    .run
+                    .as_ref()
+                    .unwrap()
+                    .store
+                    .data()
+                    .entities
+                    .as_ref()
+                    .is_some_and(|e| e.owns_handle(h))
+            }) {
+                event.target = None;
+            }
+            let result = self
+                .call(i, FUEL_EVENT, |run| {
+                    let guest = run
+                        .interactions
+                        .as_ref()
+                        .unwrap()
+                        .horizon_mods_server_interactions();
+                    let result = if let Some(block) = block {
+                        guest.call_block_used(&mut run.store, player, block)?
+                    } else {
+                        guest.call_item_used(&mut run.store, player, &event)?
+                    };
+                    Ok(result.and_then(|r| checked_interaction(r, item.count)))
+                })
+                .ok_or("interaction program stopped")??;
+            if result.handled {
+                return Ok(Some(result));
+            }
+        }
+        Ok(None)
+    }
     /// A server tick.
     pub fn server_tick(&mut self, tick: u64) {
         self.each_server(FUEL_TICK, |h| h.tick, |m, s| m.call_tick(s, tick));
@@ -1094,7 +1776,7 @@ impl Mods {
     /// The use button went down with `item`: `use-start` to each mod that
     /// claimed it.
     pub fn use_start(&mut self, item: &HeldItem) {
-        let event = InputEvent::UseStart(ItemUse {
+        let event = InputEvent::UseStart(InputItemUse {
             item: item.clone(),
             ticks: 0,
         });
@@ -1102,7 +1784,7 @@ impl Mods {
     }
     /// The claimed use ended after `ticks`.
     pub fn use_stop(&mut self, item: &HeldItem, ticks: u32) {
-        let event = InputEvent::UseStop(ItemUse {
+        let event = InputEvent::UseStop(InputItemUse {
             item: item.clone(),
             ticks,
         });
@@ -1266,7 +1948,7 @@ impl Mods {
         for i in 0..self.entries.len() {
             let entry = &self.entries[i];
             let now = modified(&entry.path);
-            let was_on = !matches!(entry.status, Status::Off | Status::Elsewhere);
+            let was_on = !matches!(entry.status, Status::Off);
             if now == entry.modified || !was_on {
                 continue;
             }
@@ -1277,15 +1959,20 @@ impl Mods {
             let path = self.entries[i].path.clone();
             let started = Package::read(&path).and_then(|p| {
                 self.entries[i].manifest = Some(p.manifest.clone());
-                self.start(&path, &p, &reserved)
+                if !self.runs.starts(p.manifest.side) {
+                    return Ok((Status::Elsewhere, None));
+                }
+                let content = crate::Content::read(&path, &p.manifest)?;
+                self.start(&path, &p, content, &reserved)
+                    .map(|run| (Status::Running, run))
             });
             let entry = &mut self.entries[i];
             let id = entry.manifest.as_ref().map_or("?", |m| m.id.as_str());
             match started {
-                Ok(run) => {
+                Ok((status, run)) => {
                     log::info!("Horizon: mod {id} reloaded");
                     entry.run = run;
-                    entry.status = Status::Running;
+                    entry.status = status;
                 }
                 Err(e) => {
                     log::warn!("Horizon: mod {id} did not reload: {e}");
@@ -1559,7 +2246,75 @@ impl chat::Host for State {
         });
     }
 }
+impl State {
+    fn world_context_query(&mut self, dimension: &str, x: i32, z: i32) -> Result<(), String> {
+        if self.environment_calls >= 64 {
+            return Err("world environment callback query budget exhausted".into());
+        }
+        self.environment_calls += 1;
+        if dimension.len() > 128 || x.unsigned_abs() > 29_999_984 || z.unsigned_abs() > 29_999_984 {
+            return Err("world environment query is outside supported bounds".into());
+        }
+        Ok(())
+    }
+}
+impl audio::Host for State {
+    fn play(
+        &mut self,
+        event: String,
+        position: Option<AudioPosition>,
+        category: AudioCategory,
+        volume: f32,
+        pitch: f32,
+    ) -> Result<(), String> {
+        let broker = self
+            .audio
+            .as_ref()
+            .ok_or("client audio capability unavailable")?;
+        if self.audio_calls >= 8 {
+            return Err("audio callback attempt budget exhausted".into());
+        }
+        self.audio_calls += 1;
+        broker.lock().unwrap().play(crate::audio::Request {
+            owner: self.id.clone(),
+            owner_generation: self.audio_owner,
+            event,
+            position: position.map(|p| [p.x, p.y, p.z]),
+            category,
+            volume,
+            pitch,
+        })
+    }
+}
 impl mod_world::Host for State {
+    fn sky_visible(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> Result<Option<bool>, String> {
+        self.world_context_query(&dimension, x, z)?;
+        let view = self.world.lock().map_err(|_| "world context unavailable")?;
+        match view.as_ref() {
+            Some(view) => view.sky_visible(&dimension, x, y, z),
+            None => Ok(None),
+        }
+    }
+    fn environment(
+        &mut self,
+        dimension: String,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> Result<Option<WorldEnvironment>, String> {
+        self.world_context_query(&dimension, x, z)?;
+        let view = self.world.lock().map_err(|_| "world context unavailable")?;
+        match view.as_ref() {
+            Some(view) => view.environment(&dimension, x, y, z),
+            None => Ok(None),
+        }
+    }
     fn get_block(&mut self, dimension: String, x: i32, y: i32, z: i32) -> Option<String> {
         let view = self.world.lock().ok()?;
         view.as_ref()?.block(&dimension, x, y, z)
@@ -1913,6 +2668,173 @@ impl ui::Host for State {
         self.ui.settings = clip_widgets(widgets);
     }
 }
+impl State {
+    fn inventory_access(&mut self, player: &str) -> Result<InventorySlot, String> {
+        let slot = self
+            .inventory
+            .as_ref()
+            .ok_or("server inventory capability unavailable")?
+            .clone();
+        if self.inventory_calls >= 16 {
+            return Err("inventory callback operation budget exhausted".into());
+        }
+        self.inventory_calls += 1;
+        if !self.snapshot.players.iter().any(|p| p.id == player) {
+            return Err("inventory player is not online in this server context".into());
+        }
+        Ok(slot)
+    }
+}
+impl inventory::Host for State {
+    fn custom_data_integer(
+        &mut self,
+        player: String,
+        hand: InventoryHand,
+        field: String,
+    ) -> Result<Option<i64>, String> {
+        let slot = self.inventory_access(&player)?;
+        if !matches!(field.as_str(), "tm" | "Gen9Offset") {
+            return Err("custom data integer field is outside the machine allowlist".into());
+        }
+        let view = slot.lock().unwrap();
+        view.as_ref().ok_or("server inventory context unavailable")?
+            .custom_data_integer(&player, hand, &field)
+    }
+    fn component_string(
+        &mut self,
+        player: String,
+        hand: InventoryHand,
+        key: String,
+    ) -> Result<Option<String>, String> {
+        let slot = self.inventory_access(&player)?;
+        let (namespace, path) = key.split_once(':')
+            .ok_or("component key must be a namespaced identifier")?;
+        if key.len() > 128
+            || namespace.is_empty()
+            || path.is_empty()
+            || !namespace.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_.-".contains(&c))
+            || !path.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"_./-".contains(&c))
+            || path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+            || !self.inventory_namespaces.iter().any(|owned| owned == namespace)
+        {
+            return Err("component key is invalid or outside this program's owned namespaces".into());
+        }
+        let view = slot.lock().unwrap();
+        let value = view.as_ref()
+            .ok_or("server inventory context unavailable")?
+            .component_string(&player, hand, &key)?;
+        if value.as_ref().is_some_and(|value| value.len() > 256) {
+            return Err("component string exceeds 256 bytes".into());
+        }
+        Ok(value)
+    }
+    fn held(
+        &mut self,
+        player: String,
+        hand: InventoryHand,
+    ) -> Result<Option<InventoryStack>, String> {
+        let slot = self.inventory_access(&player)?;
+        let view = slot.lock().unwrap();
+        view.as_ref()
+            .ok_or("server inventory context unavailable")?
+            .held(&player, hand)
+    }
+    fn give(&mut self, player: String, item: String, count: u32) -> Result<u32, String> {
+        let access = self.inventory_access(&player);
+        if self.inventory_gives >= 8 {
+            return Err("inventory callback insertion budget exhausted".into());
+        }
+        self.inventory_gives += 1;
+        let slot = access?;
+        if !(1..=1024).contains(&count) || item.len() > 256 {
+            return Err(
+                "inventory give requires a registered item and count from 1 to 1024".into(),
+            );
+        }
+        let mut view = slot.lock().unwrap();
+        view.as_mut()
+            .ok_or("server inventory context unavailable")?
+            .give(&player, &item, count)
+    }
+}
+impl mod_entities::Host for State {
+    fn register_types(&mut self, types: Vec<EntityType>) -> Result<Vec<String>, String> {
+        self.entities
+            .as_mut()
+            .ok_or("entity capability unavailable")?
+            .register(types)
+    }
+    fn context(&mut self) -> Result<Option<EntityContext>, String> {
+        self.entities
+            .as_mut()
+            .ok_or("entity capability unavailable")?
+            .context()
+    }
+    fn spawn(&mut self, kind: String, state: EntityState) -> Result<String, String> {
+        self.entities
+            .as_mut()
+            .ok_or("entity capability unavailable")?
+            .spawn(kind, state)
+    }
+    fn set_state(&mut self, entity: String, state: EntityState) -> Result<(), String> {
+        self.entities
+            .as_mut()
+            .ok_or("entity capability unavailable")?
+            .set_state(entity, state)
+    }
+    fn move_colliding(
+        &mut self,
+        entity: String,
+        delta: EntityMovementDelta,
+    ) -> Result<EntityMovementResult, String> {
+        let world = self.world.lock().unwrap();
+        self.entities
+            .as_mut()
+            .ok_or("entity capability unavailable")?
+            .move_colliding(entity, delta, |state, kind, delta| {
+                world
+                    .as_ref()
+                    .ok_or("entity collision world unavailable")?
+                    .move_colliding(state, kind, delta)
+            })
+    }
+    fn probe_colliding(
+        &mut self,
+        entity: String,
+        dimension: String,
+        start: EntityTransform,
+        delta: EntityMovementDelta,
+    ) -> Result<EntityMovementResult, String> {
+        let world = self.world.lock().unwrap();
+        self.entities.as_mut().ok_or("entity capability unavailable")?
+            .probe_colliding(entity, dimension, start, delta, |state, kind, delta| {
+                world.as_ref().ok_or("entity collision world unavailable")?
+                    .move_colliding(state, kind, delta)
+            })
+    }
+    fn despawn(&mut self, entity: String) -> Result<(), String> {
+        self.entities
+            .as_mut()
+            .ok_or("entity capability unavailable")?
+            .despawn(entity)
+    }
+    fn poll(&mut self) -> Result<Vec<EntityEvent>, String> {
+        self.entities
+            .as_mut()
+            .ok_or("entity capability unavailable")?
+            .poll()
+    }
+}
+
+impl resources::Host for State {
+    fn read(&mut self, path: String) -> Result<Option<Vec<u8>>, String> {
+        self.resources
+            .as_mut()
+            .ok_or("resource unavailable")?
+            .read(&path)
+    }
+}
+
 impl storage::Host for State {
     fn get(&mut self, key: String) -> Option<Vec<u8>> {
         storage_key_ok(&key)
@@ -1968,4 +2890,205 @@ fn storage_key_ok(key: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b));
     chars_ok && key != "." && key != ".."
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_and_elsewhere_resources_do_not_make_an_engine() {
+        let dir = std::env::temp_dir().join(format!("off-resource-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("data/unowned")).unwrap();
+        std::fs::write(dir.join("data/unowned/sentinel.bin"), b"synthetic").unwrap();
+        std::fs::write(dir.join("mod.wasm"), b"not a component").unwrap();
+        std::fs::write(dir.join("horizon-mod.toml"), "id = \"off_lab\"\nname = \"Off Lab\"\nversion = \"1\"\napi = \"0.2\"\ncapabilities = [\"resources\"]\nexperimental = [\"resources\"]\n").unwrap();
+        for (runs, enabled, expected) in [
+            (Runs::Both, false, Status::Off),
+            (Runs::Server, true, Status::Elsewhere),
+        ] {
+            let mut mods = Mods::load_for(runs, std::slice::from_ref(&dir), |_| enabled, |_| false);
+            assert_eq!(mods.entries[0].status, expected);
+            assert!(mods.engine.is_none());
+            assert!(mods.entries[0].run.is_none());
+            mods.tick(1);
+            mods.frame(0.1);
+            mods.server_tick(1);
+            assert!(mods.drain().is_empty());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+impl models::Host for State {
+    fn register_renderer(&mut self, key: String, version: u32) -> Result<(), String> {
+        self.models
+            .as_mut()
+            .ok_or("models capability unavailable")?
+            .register(key, version)
+    }
+    fn views(&mut self) -> Result<Vec<ModelView>, String> {
+        self.models
+            .as_mut()
+            .ok_or("models capability unavailable")?
+            .views()
+    }
+    fn upload_mesh(
+        &mut self,
+        vertices: Vec<MeshVertex>,
+        triangles: Vec<ModelTriangle>,
+        png: Vec<u8>,
+    ) -> Result<String, String> {
+        self.models
+            .as_mut()
+            .ok_or("models capability unavailable")?
+            .upload(vertices, triangles, png)
+    }
+    fn update_mesh(&mut self, mesh: String, vertices: Vec<MeshVertex>) -> Result<(), String> {
+        self.models
+            .as_mut()
+            .ok_or("models capability unavailable")?
+            .update(mesh, vertices)
+    }
+    fn bind(&mut self, view: String, mesh: String) -> Result<(), String> {
+        self.models
+            .as_mut()
+            .ok_or("models capability unavailable")?
+            .bind(view, mesh)
+    }
+    fn bind_parts(&mut self, view: String, meshes: Vec<String>) -> Result<(), String> {
+        self.models
+            .as_mut()
+            .ok_or("models capability unavailable")?
+            .bind_parts(view, meshes)
+    }
+    fn release_mesh(&mut self, mesh: String) -> Result<(), String> {
+        self.models
+            .as_mut()
+            .ok_or("models capability unavailable")?
+            .release(mesh)
+    }
+}
+
+impl world_storage::Host for State {
+    fn context(&mut self) -> Result<Option<u64>, String> {
+        Ok(self.world_storage.as_ref().map(|c| c.0))
+    }
+    fn get(&mut self, key: String) -> Result<Option<Vec<u8>>, String> {
+        use std::io::Read;
+        if !storage_key_ok(&key) {
+            return Err("invalid world snapshot key".into());
+        }
+        let (_, root, _, _) = self
+            .world_storage
+            .as_ref()
+            .ok_or("authoritative world unavailable")?;
+        if !root.exists() {
+            return Ok(None);
+        }
+        let dir = cap_std::fs::Dir::open_ambient_dir(root, cap_std::ambient_authority())
+            .map_err(|e| e.to_string())?;
+        let file = match dir.open(&key) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.to_string()),
+        };
+        let mut bytes = Vec::new();
+        file.take(((8 << 20) + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() > (8 << 20) {
+            return Err("world snapshot exceeds quota".into());
+        }
+        Ok(Some(bytes))
+    }
+    fn set(&mut self, key: String, value: Vec<u8>) -> Result<(), String> {
+        use std::io::Write;
+        if !storage_key_ok(&key) {
+            return Err("invalid world snapshot key".into());
+        }
+        let (_, root, writable, admission) = self
+            .world_storage
+            .as_ref()
+            .ok_or("authoritative world unavailable")?;
+        if !*writable {
+            return Err("world saving is disabled".into());
+        }
+        let len = value.len() as u64;
+        if len > self.world_storage_budget {
+            return Err("world snapshot callback budget exceeded".into());
+        }
+        self.world_storage_budget -= len;
+        let mut quota_error = None;
+        admission.write(&mut || {
+            std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+            let dir = cap_std::fs::Dir::open_ambient_dir(root, cap_std::ambient_authority())
+                .map_err(|e| e.to_string())?;
+            let files: Vec<_> = dir
+                .entries()
+                .map_err(|e| e.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            let mut used = 0;
+            let mut count = 0;
+            for f in files {
+                if f.file_name() != std::ffi::OsStr::new(&key) {
+                    used += f.metadata().map_err(|e| e.to_string())?.len();
+                    count += 1;
+                }
+            }
+            if count >= STORAGE_MAX_KEYS || used + len > (8 << 20) {
+                quota_error = Some("world snapshot quota exceeded".to_owned());
+                return Ok(());
+            }
+            let temp = format!(".snapshot-{}", std::process::id());
+            let result = (|| {
+                let mut options = cap_std::fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                let mut file = dir.open_with(&temp, &options).map_err(|e| e.to_string())?;
+                file.write_all(&value).map_err(|e| e.to_string())?;
+                file.sync_all().map_err(|e| e.to_string())?;
+                dir.rename(&temp, &dir, &key).map_err(|e| e.to_string())?;
+                std::fs::File::open(root)
+                    .and_then(|f| f.sync_all())
+                    .map_err(|e| e.to_string())
+            })();
+            if result.is_err() {
+                let _ = dir.remove_file(&temp);
+            }
+            result
+        })?;
+        match quota_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+impl messages::Host for State {
+    fn subscribe(&mut self, sender: String, channel: String) -> Result<(), String> {
+        self.messages
+            .as_mut()
+            .ok_or("messages capability unavailable")?
+            .subscribe(sender, channel)
+    }
+    fn poll(&mut self) -> Result<Vec<ProgramMessage>, String> {
+        self.messages
+            .as_mut()
+            .ok_or("messages capability unavailable")?
+            .poll()
+    }
+    fn send(
+        &mut self,
+        player: String,
+        receiver: String,
+        channel: String,
+        payload: Vec<u8>,
+    ) -> Result<(), String> {
+        let online = self.snapshot.players.iter().any(|p| p.id == player);
+        self.messages
+            .as_mut()
+            .ok_or("messages capability unavailable")?
+            .send(player, receiver, channel, payload, online)
+    }
 }

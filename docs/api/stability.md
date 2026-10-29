@@ -50,6 +50,16 @@ never declared:
 A pull request that adds a function lists it in `api_level.rs` at the next level and raises `LEVEL`; the
 `api_reference` test fails until it does.
 
+This candidate on tested base `1feb28c` adds experimental `resources.read` at provisional level 8.
+That collides with draft PR 2888's levels 8 through 18. No SDK, registry or binary release may use this
+provisional allocation. Stage E adds only the six new `entities` functions at the local next level 9,
+also inside that draft reservation. It preserves resource level 8 and every older function level.
+The private implementation adds real new `models` functions at local level 10 and
+`world-storage` functions at local level 11. These are provisional and are not released allocations.
+See [mod-entities.md](mod-entities.md). Before upstream integration, allocate the real next level on the merged API substrate,
+then rebuild and retest the guests and generated reference. Level 19 is valid only if real levels 8 through 18
+have landed. Earlier programs keep their existing WIT exports and behavior.
+
 ## Stability levels
 
 Every part of an API has one level, shown in its reference and its surface page.
@@ -108,6 +118,7 @@ Deprecations and breaking changes are in bold. The release notes of the game rel
 | Mod API: `render` (HUD shapes, camera shake and zoom; drawn by the game, no mod shaders) | experimental | manifest `experimental = ["render"]` |
 | Mod API: `input` (claimed items' use, the mod's keys, the mouse wheel) | experimental | manifest `experimental = ["input"]` |
 | Content mods (`registries`: data-driven blocks and items) | preview | manifest `api = "0.2"` |
+| Mod API: `resources`, own packaged assets and data bytes | experimental | `experimental = ["resources"]`, client `api = "0.2"` or server `api = "0.3"` |
 | Server mods: world `horizon-server-mod`, `players`, `server-events`, `world`, typed `server-command`s | experimental | manifest `api = "0.3"` |
 | Script mods (Lua run by an interpreter mod, [mods.md](mods.md#ways-in)) | not started | |
 | `cargo horizon-mod` (`new`, `build`, `run`), `horizon-mod-sdk` | preview | 0.1.0 |

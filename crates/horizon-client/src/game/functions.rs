@@ -48,7 +48,7 @@ pub(super) enum Outcome {
 impl Game<'_> {
     // ---- loading -----------------------------------------------------------
 
-    fn datapack_settings_path(&self) -> std::path::PathBuf {
+    fn datapack_settings_path(&self) -> horizon_client::save::WorldPath {
         self.world_root.join("datapacks.json")
     }
     /// Discover and load the data packs of the world (once, or on `/reload`).
@@ -60,9 +60,10 @@ impl Game<'_> {
     }
     pub(super) fn reload_datapacks(&mut self, run_load: bool) {
         self.fns.packs = datapack::discover(&self.world_root);
-        let saved: Option<serde_json::Value> = std::fs::read(self.datapack_settings_path())
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok());
+        let saved: Option<serde_json::Value> =
+            horizon_client::save::read_bytes(&self.datapack_settings_path())
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok());
         let list = |key: &str| -> Vec<String> {
             saved
                 .as_ref()
@@ -122,7 +123,7 @@ impl Game<'_> {
             .filter(|id| !self.fns.enabled.contains(id))
             .collect();
         let json = serde_json::json!({"enabled": self.fns.enabled, "disabled": disabled});
-        let _ = std::fs::write(self.datapack_settings_path(), json.to_string());
+        let _ = horizon_client::save::write_bytes(&self.datapack_settings_path(), json.to_string());
     }
     pub(super) fn sync_function_registries(&mut self) {
         let reg = &mut self.ui.registries;
@@ -145,7 +146,7 @@ impl Game<'_> {
 
     // ---- scheduled events ------------------------------------------------------
 
-    fn schedule_path(&self) -> std::path::PathBuf {
+    fn schedule_path(&self) -> horizon_client::save::WorldPath {
         self.world_root.join("data/minecraft/scheduled_events.dat")
     }
     fn load_schedule(&mut self) {

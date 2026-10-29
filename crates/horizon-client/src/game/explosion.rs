@@ -314,7 +314,7 @@ impl Game<'_> {
                         .indicate_damage(center[0] - feet[0], center[2] - feet[2], p.yaw);
                 }
             }
-            if !spectator && !(creative && flying) {
+            if !(spectator || creative && flying) {
                 p.velocity = Vec3::new(
                     p.velocity.x + dir[0] * power,
                     p.velocity.y + dir[1] * power,
@@ -357,6 +357,14 @@ impl Game<'_> {
         // `source.doTeamsAllowDamage(entity)`: the exploding mob spares its
         // team mates when its team has no friendly fire (they are still pushed).
         let exploding = self.combat.explosion_source;
+        let owner = self
+            .combat
+            .explosion_owner
+            .map(|(owner, _)| owner)
+            .or_else(|| exploding.map(horizon_client::mobs::Who::Mob));
+        let player = self.combat.explosion_owner.and_then(|(owner, player)| {
+            (owner == horizon_client::mobs::Who::Player).then_some(player)
+        });
         let teams_allow = |g: &Self, victim: Option<&horizon_client::scoreboard::Team>| {
             exploding.is_none_or(|id| {
                 horizon_client::scoreboard::teams_allow_damage(g.mob_team(id), victim)
@@ -400,18 +408,15 @@ impl Game<'_> {
             // it kills drop its charged-creeper loot (`Creeper.killedEntity`).
             let source = horizon_client::mobs::Damage {
                 kind: horizon_client::mobs::DamageKind::Explosion,
-                // A projectile's owner (`getIndirectSourceEntity`), else
-                // the exploding mob itself.
-                attacker: self
-                    .combat
-                    .explosion_owner
-                    .or(exploding)
-                    .filter(|&o| o != m.id)
-                    .map(horizon_client::mobs::Who::Mob),
+                attacker: owner
+                    .filter(|by| !matches!(by, horizon_client::mobs::Who::Mob(id) if *id == m.id)),
                 from: Some(center),
             };
             if hurtable && !m.damage(damage(dist, exposure), source) {
                 continue;
+            }
+            if hurtable && let Some(player) = player {
+                self.last_hurt_by_player.insert(m.id, player);
             }
             // `EXPLOSION_KNOCKBACK_RESISTANCE`, not `KNOCKBACK_RESISTANCE`: its
             // base is 0 for every mob type, so iron golems and ravagers are pushed.

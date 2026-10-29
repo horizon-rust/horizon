@@ -290,6 +290,9 @@ impl HudAtlas {
     /// Empty slots written at run time: map textures (game/maps.rs), the
     /// minimap, downloaded skins, world and pack icons and the on-screen keyboard's text.
     fn slots(images: &mut Vec<PackedImage>, trim: (u32, u32)) {
+        for i in 0..64 {
+            images.push((format!("horizon/model{i}"), 512, 512, vec![0; 512 * 512 * 4]));
+        }
         for i in 0..MAP_SLOTS {
             images.push((format!("horizon/map{i}"), 128, 128, vec![0; 128 * 128 * 4]));
         }

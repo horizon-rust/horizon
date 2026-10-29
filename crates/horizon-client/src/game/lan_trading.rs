@@ -140,16 +140,33 @@ impl Game<'_> {
         if !force && s.offers == gm.sent && s.level == gm.sent_level {
             return;
         }
-        let offers: Vec<play::NetOffer> = s
+        for offer in &s.offers {
+            for stack in std::iter::once(&offer.base_cost_a.stack)
+                .chain(offer.cost_b.as_ref().map(|b| &b.stack))
+                .chain(std::iter::once(&offer.result))
+            {
+                if let Err(error) = horizon_client::lan::guest::validate_stack(&Some(stack.clone()))
+                {
+                    eprintln!("Rejected merchant offers: {error}");
+                    return;
+                }
+            }
+        }
+        let offers = s
             .offers
             .iter()
-            .filter_map(|o| {
+            .map(|o| {
                 let cost = |st: &ItemStack, hub: &mut horizon_client::lan::hub::Hub| {
-                    hub.stack(&Some(st.clone())).map(play::NetCost::from)
+                    hub.stack(&Some(st.clone()))?
+                        .map(play::NetCost::from)
+                        .ok_or_else(|| "Missing merchant cost stack".to_owned())
                 };
-                Some(play::NetOffer {
+                Ok::<_, String>(play::NetOffer {
                     cost_a: cost(&o.base_cost_a.stack, &mut host.hub)?,
-                    result: host.hub.stack(&Some(o.result.clone()))?,
+                    result: host
+                        .hub
+                        .stack(&Some(o.result.clone()))?
+                        .ok_or("Missing merchant result stack")?,
                     cost_b: match &o.cost_b {
                         Some(b) => Some(cost(&b.stack, &mut host.hub)?),
                         None => None,
@@ -163,7 +180,14 @@ impl Game<'_> {
                     demand: o.demand,
                 })
             })
-            .collect();
+            .collect::<Result<Vec<_>, String>>();
+        let offers = match offers {
+            Ok(offers) => offers,
+            Err(error) => {
+                eprintln!("Rejected merchant offers: {error}");
+                return;
+            }
+        };
         host.hub.send_to(
             conn,
             &C::MerchantOffers(play::MerchantOffers {
@@ -186,8 +210,13 @@ impl Game<'_> {
         let g = &host.hub.guests[gi];
         items.extend((9..36).chain(0..9).map(|i| g.inventory[i].clone()));
         let carried = g.carried.clone();
-        let net: Vec<_> = items.iter().map(|s| host.hub.stack(s)).collect();
-        let carried = host.hub.stack(&carried);
+        let (net, carried) = match host.hub.stacks(&items, &carried) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                eprintln!("Rejected merchant snapshot: {error}");
+                return;
+            }
+        };
         gm.state = (gm.state + 1) & 0x7FFF;
         host.hub.send_to(
             conn,

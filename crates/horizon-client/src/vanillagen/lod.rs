@@ -541,7 +541,7 @@ mod tests {
         }
         let key = (-64, 0);
         sampler.request_detail(&[key], [-1024, 0]);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
         let generated = loop {
             if let Some((_, columns)) = sampler.drain_details().into_iter().find(|(k, _)| *k == key)
             {

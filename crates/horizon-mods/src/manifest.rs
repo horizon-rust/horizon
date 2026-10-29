@@ -81,6 +81,22 @@ pub enum Capability {
     Chat,
     Hud,
     Storage,
+    /// Read assets and data from this program's validated package.
+    Resources,
+    /// Own ephemeral kinematic entities on the server.
+    Entities,
+    /// Owned textured meshes for public entity views.
+    Models,
+    /// One snapshot file in the authoritative world.
+    WorldStorage,
+    /// Handle authoritative item and block use before vanilla consumption.
+    Interactions,
+    /// Read-only targeted server-to-client program delivery.
+    Messages,
+    /// Read held stacks and insert registered items on the server.
+    Inventory,
+    /// Play registered local sound events on the client.
+    Audio,
     /// Runs vanilla commands as the player, with the player's permissions.
     Command,
     /// New blocks and items from the mod's `data/` (API 0.2): no WIT
@@ -105,11 +121,19 @@ pub enum Capability {
     Recipes,
 }
 impl Capability {
-    pub const ALL: [Capability; 12] = [
+    pub const ALL: [Capability; 20] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
         Capability::Storage,
+        Capability::Resources,
+        Capability::Entities,
+        Capability::Models,
+        Capability::WorldStorage,
+        Capability::Interactions,
+        Capability::Messages,
+        Capability::Inventory,
+        Capability::Audio,
         Capability::Command,
         Capability::Registries,
         Capability::Ui,
@@ -123,7 +147,15 @@ impl Capability {
     pub fn on_server(self) -> bool {
         matches!(
             self,
-            Capability::Storage | Capability::Players | Capability::World
+            Capability::Storage
+                | Capability::Resources
+                | Capability::Entities
+                | Capability::Players
+                | Capability::World
+                | Capability::WorldStorage
+                | Capability::Interactions
+                | Capability::Messages
+                | Capability::Inventory
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -133,6 +165,14 @@ impl Capability {
             Capability::Chat => "chat",
             Capability::Hud => "hud",
             Capability::Storage => "storage",
+            Capability::Resources => "resources",
+            Capability::Entities => "entities",
+            Capability::Models => "models",
+            Capability::WorldStorage => "world-storage",
+            Capability::Interactions => "server-interactions",
+            Capability::Messages => "messages",
+            Capability::Inventory => "inventory",
+            Capability::Audio => "audio",
             Capability::Command => "command",
             Capability::Registries => "registries",
             Capability::Ui => "ui",
@@ -148,7 +188,18 @@ impl Capability {
     pub fn is_experimental(self) -> bool {
         matches!(
             self,
-            Capability::Ui | Capability::Render | Capability::Input | Capability::Recipes
+            Capability::Ui
+                | Capability::Render
+                | Capability::Input
+                | Capability::Recipes
+                | Capability::Resources
+                | Capability::Entities
+                | Capability::Models
+                | Capability::WorldStorage
+                | Capability::Interactions
+                | Capability::Messages
+                | Capability::Inventory
+                | Capability::Audio
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -158,6 +209,14 @@ impl Capability {
             Capability::Chat => "show you chat messages",
             Capability::Hud => "draw text on your screen",
             Capability::Storage => "save its own settings to disk",
+            Capability::Resources => "read its own packaged assets and data",
+            Capability::Entities => "create and move its own temporary server entities",
+            Capability::Models => "draw textured meshes for public server entities",
+            Capability::WorldStorage => "save its own snapshot files in the current world",
+            Capability::Interactions => "handle your item and block interactions",
+            Capability::Messages => "exchange private program displays with your server",
+            Capability::Inventory => "read held items and give items to online players",
+            Capability::Audio => "play local sound events using your audio settings",
             Capability::Command => "run commands as you, with your permissions",
             Capability::Registries => "add blocks and items to your worlds",
             Capability::Ui => "show its own screens and a settings page",
@@ -203,6 +262,14 @@ impl fmt::Display for Capability {
             Capability::Chat => "chat",
             Capability::Hud => "hud",
             Capability::Storage => "storage",
+            Capability::Resources => "resources",
+            Capability::Entities => "entities",
+            Capability::Models => "models",
+            Capability::WorldStorage => "world-storage",
+            Capability::Interactions => "interactions",
+            Capability::Messages => "messages",
+            Capability::Inventory => "inventory",
+            Capability::Audio => "audio",
             Capability::Command => "command",
             Capability::Registries => "registries",
             Capability::Ui => "ui",
@@ -241,17 +308,37 @@ impl Manifest {
                 "{MANIFEST}: capability registries needs api = \"0.2\""
             ));
         }
+        if m.capabilities.contains(&Capability::Resources) {
+            if m.api == API {
+                return Err(format!(
+                    "{MANIFEST}: capability resources needs api = \"0.2\" or server api = \"0.3\""
+                ));
+            }
+            if RESERVED_NAMESPACES.contains(&m.id.as_str()) {
+                return Err(format!(
+                    "{MANIFEST}: resource owner {} is not a mod's to claim",
+                    m.id
+                ));
+            }
+        }
+        if m.capabilities.contains(&Capability::Entities)
+            && RESERVED_NAMESPACES.contains(&m.id.as_str())
+        {
+            return Err(format!("{MANIFEST}: entity owner {} is reserved", m.id));
+        }
         let server = m.side == Side::Server;
         if server != (m.api == SERVER_API) {
             return Err(format!(
                 "{MANIFEST}: a server mod is side = \"server\" with api = \"{SERVER_API}\", and only it"
             ));
         }
-        if let Some(c) = m
-            .capabilities
-            .iter()
-            .find(|c| c.on_server() != server && **c != Capability::Storage)
-        {
+        if let Some(c) = m.capabilities.iter().find(|c| {
+            c.on_server() != server
+                && !matches!(
+                    c,
+                    Capability::Storage | Capability::Resources | Capability::Messages
+                )
+        }) {
             let side = if server { "client" } else { "server" };
             return Err(format!("{MANIFEST}: capability {c} is for {side} mods"));
         }
@@ -265,9 +352,12 @@ impl Manifest {
                  add experimental = [\"{c}\"] to use it"
             ));
         }
-        if !m.namespaces.is_empty() && !m.capabilities.contains(&Capability::Registries) {
+        if !m.namespaces.is_empty()
+            && !m.capabilities.contains(&Capability::Registries)
+            && !m.capabilities.contains(&Capability::Resources)
+        {
             return Err(format!(
-                "{MANIFEST}: namespaces are for content, which needs capability registries"
+                "{MANIFEST}: namespaces need capability registries or resources"
             ));
         }
         for (i, ns) in m.namespaces.iter().enumerate() {
@@ -557,5 +647,37 @@ capabilities = ["game-read", "hud"]
             "{base}capabilities = [\"hud\"]\nexperimental = [\"hud\"]\n"
         ))
         .unwrap();
+    }
+
+    #[test]
+    fn resources_are_shared_experimental_and_own_nonreserved_namespaces() {
+        let text = "id = \"resource_lab\"\nname = \"Lab\"\nversion = \"1\"\napi = \"0.2\"\ncapabilities = [\"resources\"]\nexperimental = [\"resources\"]\nnamespaces = [\"extra\"]\n";
+        for text in [
+            text.to_string(),
+            text.replace("0.2", "0.3") + "side = \"server\"\n",
+        ] {
+            let m = Manifest::parse(&text).unwrap();
+            assert_eq!(
+                m.owned_namespaces().collect::<Vec<_>>(),
+                ["resource_lab", "extra"]
+            );
+            assert_eq!(m.check_imports(["horizon:mods/resources@0.1.0"]), Ok(()));
+        }
+        assert!(
+            Manifest::parse(&text.replace("0.2", "0.1"))
+                .unwrap_err()
+                .contains("needs api")
+        );
+        for reserved in RESERVED_NAMESPACES {
+            assert!(
+                Manifest::parse(&text.replace("resource_lab", reserved))
+                    .unwrap_err()
+                    .contains("not a mod's to claim")
+            );
+        }
+        assert_eq!(
+            Capability::Resources.describe(),
+            "read its own packaged assets and data"
+        );
     }
 }

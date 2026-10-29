@@ -203,7 +203,7 @@ impl HandWorld for Probe<'_> {
         let item = self.stack(Hand::Main).effective().0;
         // Item.canDestroyBlock: swords' tools cannot destroy in creative.
         let sword = item.ends_with("_sword");
-        let ok = !(sword && self.creative) && !self.is_air(pos);
+        let ok = !(self.is_air(pos) || sword && self.creative);
         if ok {
             self.blocks.insert(pos, "minecraft:air".into());
         }

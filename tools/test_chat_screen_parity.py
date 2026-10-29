@@ -103,7 +103,7 @@ def main():
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-nowarn', '-cp', dependencies, '-d', classes,
          *(PARITY / f'{n}.java' for n in ('ParityData', 'ParityFont', 'VanillaPackScreenOracle', 'VanillaCommandParseOracle',
                                           'VanillaChatScreenOracle'))], 'compile-java')
-    java = ['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + dependencies]
+    java = ['java', '-Xmx2G', f'-Dhorizon.parity.assets={lib.RESOURCES / "assets"}', '-cp', str(classes) + os.pathsep + dependencies]
     run([*java, 'dev.horizonlab.parity.VanillaCommandParseOracle', 'registries', build], 'registries')
     run([*java, 'dev.horizonlab.parity.VanillaChatScreenOracle', inputs, build / 'vanilla.jsonl'], 'vanilla')
     lib.cargo_example('horizon-client', 'chat_screen_fixture', lib.RESOURCES, build / 'registries.json', inputs, build / 'rust.jsonl')

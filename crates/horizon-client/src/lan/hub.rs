@@ -9,7 +9,7 @@ use super::{
     chunks::ChunkEncoder,
     data::SyncData,
     entity::{Entities, EntityState, Viewer},
-    guest::{Guest, SentEffect, stack_to_network},
+    guest::{Guest, SentEffect, try_stack_to_network},
 };
 use crate::{
     chunk::Chunk,
@@ -170,6 +170,7 @@ pub struct Hub {
     pub guests: Vec<Guest>,
     pub(super) sync: Arc<SyncData>,
     pub ticks: u64,
+    stack_snapshot_rejected: bool,
     /// The `player_movement_check` and `elytra_movement_check` game rules,
     /// set by the game before each tick.
     pub movement_checks: (bool, bool),
@@ -211,6 +212,7 @@ pub struct Hub {
     entities: std::collections::HashMap<String, Entities>,
     /// What one tick of entity tracking sends each guest, kept between ticks.
     entity_out: Vec<Vec<Vec<u8>>>,
+    pub mod_views: (u64, Vec<horizon_protocol::mod_entities::View>),
     /// Server mods' commands, a root in the commands report's format, sent
     /// after vanilla's; the key the game last set them for.
     mod_commands: (serde_json::Value, Option<u64>),
@@ -361,6 +363,7 @@ impl Hub {
             guests: Vec::new(),
             sync,
             ticks: 0,
+            stack_snapshot_rejected: false,
             immediate_respawn: false,
             movement_checks: (true, true),
             singleplayer_owner: None,
@@ -382,6 +385,7 @@ impl Hub {
             entity_types: Default::default(),
             entities: Default::default(),
             entity_out: Vec::new(),
+            mod_views: Default::default(),
             mod_commands: (serde_json::Value::Null, None),
             teams: Vec::new(),
         }
@@ -417,9 +421,25 @@ impl Hub {
         self.item_ids.insert(item.clone(), id);
         id
     }
-    pub fn stack(&mut self, s: &Option<ItemStack>) -> Option<horizon_protocol::item::Stack> {
-        let item = s.as_ref()?.item.clone();
-        let id = self.item_id(&item);
+    pub fn stack(
+        &mut self,
+        s: &Option<ItemStack>,
+    ) -> Result<Option<horizon_protocol::item::Stack>, String> {
+        crate::lan::guest::validate_stack(s)?;
+        let Some(item) = s.as_ref().map(|s| s.item.clone()) else {
+            return Ok(None);
+        };
+        let id = self
+            .item_ids
+            .get(&item)
+            .copied()
+            .or_else(|| {
+                self.sync
+                    .builtin
+                    .get("minecraft:item")
+                    .and_then(|items| items.id(&item))
+            })
+            .unwrap_or(0);
         let sync = self.sync.clone();
         // The stacks inside it (a bundle's contents, a crossbow's projectiles)
         // have ids of their own.
@@ -432,7 +452,35 @@ impl Hub {
                 .and_then(|i| i.id(name))
                 .unwrap_or(0)
         };
-        stack_to_network(item_id, |registry, name| sync.id(registry, name), s)
+        try_stack_to_network(item_id, |registry, name| sync.id(registry, name), s)
+    }
+
+    pub fn stacks(
+        &mut self,
+        items: &[Option<ItemStack>],
+        carried: &Option<ItemStack>,
+    ) -> Result<
+        (
+            Vec<Option<horizon_protocol::item::Stack>>,
+            Option<horizon_protocol::item::Stack>,
+        ),
+        String,
+    > {
+        for stack in items.iter().chain(std::iter::once(carried)) {
+            crate::lan::guest::validate_stack(stack)?;
+        }
+        Ok((
+            items
+                .iter()
+                .map(|stack| self.stack(stack))
+                .collect::<Result<Vec<_>, _>>()?,
+            self.stack(carried)?,
+        ))
+    }
+
+    pub fn reject_stack_snapshot(&mut self, error: &str) {
+        eprintln!("Rejected entity stack snapshot: {error}");
+        self.stack_snapshot_rejected = true;
     }
 
     pub fn broadcast(&self, packet: &C) {
@@ -1103,9 +1151,15 @@ impl Hub {
     }
     pub fn send_inventory(&mut self, i: usize) {
         let items: Vec<Option<ItemStack>> = (0..46).map(|s| self.guests[i].menu_slot(s)).collect();
-        let net: Vec<_> = items.iter().map(|s| self.stack(s)).collect();
         let carried = self.guests[i].carried.clone();
-        let carried = self.stack(&carried);
+        let encoded = self.stacks(&items, &carried);
+        let (net, carried) = match encoded {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                eprintln!("Rejected inventory snapshot: {error}");
+                return;
+            }
+        };
         let g = &mut self.guests[i];
         g.menu_state = (g.menu_state + 1) & 0x7FFF;
         g.send(&C::ContainerSetContent(play::ContainerSetContent {
@@ -1220,6 +1274,7 @@ impl Hub {
         }
         self.sync_containers(ctx.world);
         self.track_entities(ctx);
+        self.track_mod_views();
         for i in 0..self.guests.len() {
             if self.here(&self.guests[i]) {
                 self.sync_player_state(i);
@@ -1727,7 +1782,7 @@ impl Hub {
         main: &Option<ItemStack>,
         off: &Option<ItemStack>,
         armor: [&Option<ItemStack>; 4],
-    ) -> Vec<(u8, Option<horizon_protocol::item::Stack>)> {
+    ) -> Result<Vec<(u8, Option<horizon_protocol::item::Stack>)>, String> {
         // Armor is stored head..feet; the wire slots are feet(2) legs(3) chest(4) head(5).
         let mut out = Vec::new();
         let slots = [
@@ -1740,20 +1795,143 @@ impl Hub {
         ];
         for (slot, item) in slots {
             if item.is_some() {
-                out.push((slot, self.stack(item)));
+                out.push((slot, self.stack(item)?));
             }
         }
-        out
+        Ok(out)
+    }
+
+    fn track_mod_views(&mut self) {
+        use horizon_protocol::{
+            mod_entities::{self as wire, Message},
+            packets::{configuration::CustomPayload, play::Clientbound},
+        };
+        let (world, records) = &self.mod_views;
+        for g in &mut self.guests {
+            if !g.placed || g.brand != "horizon" {
+                continue;
+            }
+            if records.is_empty() && g.mod_views.is_empty() {
+                continue;
+            }
+            if g.sender.pending_bytes() > 4 << 20 {
+                g.mod_backlog_ticks = g.mod_backlog_ticks.saturating_add(1);
+                if g.mod_backlog_ticks < 100 {
+                    continue;
+                }
+                g.sender.disconnect(horizon_world::nbt::Tag::String(
+                    "Horizon entity connection is not consuming updates".into(),
+                ));
+                continue;
+            }
+            g.mod_backlog_ticks = 0;
+            let visible: Vec<_> = records
+                .iter()
+                .filter(|v| {
+                    v.dimension == g.dimension
+                        && g.mod_renderers.get(&v.renderer) == Some(&v.public_version)
+                        && g.sent_chunks.contains(&(
+                            (v.position[0].floor() as i32).div_euclid(16),
+                            (v.position[2].floor() as i32).div_euclid(16),
+                        ))
+                        && (v.position[0] - g.position[0])
+                            .abs()
+                            .max((v.position[2] - g.position[2]).abs())
+                            <= f64::from(v.range).min(f64::from(g.view_distance * 16))
+                })
+                .collect();
+            let removed: Vec<_> = g
+                .mod_views
+                .iter()
+                .filter(|(id, (w, _))| w != world || !visible.iter().any(|v| v.id == **id))
+                .map(|(id, (w, _))| (*id, *w))
+                .collect();
+            let mut bytes = 0;
+            for (id, w) in removed {
+                let data = wire::encode(&Message::Remove { world: w, id });
+                bytes += data.len();
+                g.send(&Clientbound::CustomPayload(CustomPayload {
+                    channel: wire::CHANNEL.into(),
+                    data,
+                }));
+                g.mod_views.remove(&id);
+            }
+            for v in visible {
+                if g.mod_views.get(&v.id) == Some(&(*world, v.revision)) {
+                    continue;
+                }
+                let data = wire::encode(&Message::Upsert {
+                    world: *world,
+                    view: v.clone(),
+                });
+                if bytes + data.len() > 65536 {
+                    break;
+                }
+                bytes += data.len();
+                g.send(&Clientbound::CustomPayload(CustomPayload {
+                    channel: wire::CHANNEL.into(),
+                    data,
+                }));
+                g.mod_views.insert(v.id, (*world, v.revision));
+            }
+        }
+    }
+
+    /// Pair new projectiles before their first tick.
+    pub fn add_entities(&mut self, entities: &[&EntityState]) {
+        let mut level = self
+            .entities
+            .remove(&self.config.dimension)
+            .unwrap_or_default();
+        let mut outs = std::mem::take(&mut self.entity_out);
+        let dimension = &self.config.dimension;
+        let here = |g: &Guest| g.placed && g.dimension == *dimension;
+        outs.resize_with(self.guests.iter().filter(|g| here(g)).count(), Vec::new);
+        let mut viewers: Vec<Viewer> = self
+            .guests
+            .iter_mut()
+            .filter(|g| here(g))
+            .zip(outs.iter_mut())
+            .map(|(g, out)| Viewer {
+                entity_id: g.entity_id,
+                moved: false,
+                position: g.position,
+                view_distance: g.view_distance,
+                chunks: &g.sent_chunks,
+                tracker: &mut g.tracker,
+                out,
+            })
+            .collect();
+        level.range_percent = Some(self.entity_range_percent);
+        let (types, sync) = (&mut self.entity_types, &self.sync);
+        level.add(entities, &self.riding, &mut viewers, |kind| {
+            entity_type(types, sync, kind)
+        });
+        drop(viewers);
+        for (g, out) in self.guests.iter().filter(|g| here(g)).zip(outs.iter_mut()) {
+            g.sender.send_many(out.drain(..));
+        }
+        self.entity_out = outs;
+        self.entities.insert(self.config.dimension.clone(), level);
     }
 
     /// All entities as one client sees them: the world's, the host, the other guests.
     fn track_entities(&mut self, ctx: &mut TickCtx) {
+        if std::mem::take(&mut self.stack_snapshot_rejected) {
+            return;
+        }
         let mut all: Vec<EntityState> =
             Vec::with_capacity(ctx.entities.len() + self.guests.len() + 1);
         if let Some(h) = ctx.host {
             let equipment = {
                 let e = &h.equipment;
-                self.equipment_of(&e[0], &e[1], [&e[5], &e[4], &e[3], &e[2]])
+                match self.equipment_of(&e[0], &e[1], [&e[5], &e[4], &e[3], &e[2]]) {
+                    Ok(equipment) => equipment,
+                    Err(error) => {
+                        eprintln!("Rejected host equipment snapshot: {error}");
+                        return;
+                    }
+                }
             };
             all.push(self.player_state(
                 h.entity_id,
@@ -1775,7 +1953,7 @@ impl Hub {
         let placed: Vec<usize> = (0..self.guests.len())
             .filter(|&i| self.here(&self.guests[i]))
             .collect();
-        let guest_states: Vec<_> = placed
+        let guest_states = placed
             .into_iter()
             .map(|i| {
                 let (main, off, armor) = {
@@ -1787,29 +1965,38 @@ impl Hub {
                     )
                 };
                 let equipment =
-                    self.equipment_of(&main, &off, [&armor[0], &armor[1], &armor[2], &armor[3]]);
+                    self.equipment_of(&main, &off, [&armor[0], &armor[1], &armor[2], &armor[3]])?;
                 let g = &self.guests[i];
-                self.player_state(
-                    g.entity_id,
-                    g.uuid,
-                    g.position,
-                    (g.yaw, g.pitch, g.head_yaw),
-                    g.on_ground,
-                    (g.sneaking, g.sprinting, g.sleeping),
-                    guest_body(g),
-                    g.living_flags,
-                    g.bed,
-                    g.info.model_customisation,
-                    g.health,
-                    equipment,
-                    g.motion
-                        .as_ref()
-                        .map(|m| super::attributes::syncable(&m.attributes))
-                        .unwrap_or_default(),
-                    &g.effects.list,
+                Ok::<_, String>(
+                    self.player_state(
+                        g.entity_id,
+                        g.uuid,
+                        g.position,
+                        (g.yaw, g.pitch, g.head_yaw),
+                        g.on_ground,
+                        (g.sneaking, g.sprinting, g.sleeping),
+                        guest_body(g),
+                        g.living_flags,
+                        g.bed,
+                        g.info.model_customisation,
+                        g.health,
+                        equipment,
+                        g.motion
+                            .as_ref()
+                            .map(|m| super::attributes::syncable(&m.attributes))
+                            .unwrap_or_default(),
+                        &g.effects.list,
+                    ),
                 )
             })
-            .collect();
+            .collect::<Result<Vec<_>, String>>();
+        let guest_states = match guest_states {
+            Ok(states) => states,
+            Err(error) => {
+                eprintln!("Rejected guest equipment snapshot: {error}");
+                return;
+            }
+        };
         all.extend(guest_states);
         let entities: Vec<&EntityState> = all.iter().chain(ctx.entities).collect();
         // ChunkMap.tick: the level's entities, once for all its players.
@@ -1999,7 +2186,13 @@ impl Hub {
             }
         }
         for (slot, now) in changes {
-            let net = self.stack(&now);
+            let net = match self.stack(&now) {
+                Ok(stack) => stack,
+                Err(error) => {
+                    eprintln!("Rejected inventory slot update: {error}");
+                    continue;
+                }
+            };
             let g = &mut self.guests[i];
             g.menu_state = (g.menu_state + 1) & 0x7FFF;
             g.send(&C::ContainerSetSlot(play::ContainerSetSlot {
@@ -2172,7 +2365,13 @@ impl Hub {
                     }
                     g.max_unacknowledged = 10;
                 }
-                S::ClientTickEnd(_) => self.guests[i].position_this_tick = false,
+                S::ClientTickEnd(packet) => {
+                    self.guests[i].position_this_tick = false;
+                    #[cfg(feature = "mods")]
+                    events.push(HostEvent::Packet(conn, Box::new(S::ClientTickEnd(packet))));
+                    #[cfg(not(feature = "mods"))]
+                    let _ = packet;
+                }
                 // ServerGamePacketListenerImpl.handleRecipeBookChangeSettingsPacket.
                 S::RecipeBookChangeSettings(p) => {
                     if let Some(book) = crate::recipe_book::BookType::ALL.get(p.book_type as usize)
@@ -2523,6 +2722,13 @@ impl Hub {
         crate::item_sync::from_network(s, &self.sync.builtin, &self.sync.dynamic)
     }
 
+    pub fn try_stack_from_network(
+        &self,
+        s: &horizon_protocol::item::Stack,
+    ) -> Result<crate::items::ItemStack, String> {
+        crate::item_sync::try_from_network(s, &self.sync.builtin, &self.sync.dynamic)
+    }
+
     /// ServerLevel.removePlayerImmediately, then addRespawnedPlayer: the other players
     /// lose the dead player's entity (ServerEntity.removePairing) and are sent the
     /// respawned one as a new entity at the next tick. Their clients would otherwise keep
@@ -2552,6 +2758,7 @@ impl Hub {
             g.send(&C::RemoveEntities(play::RemoveEntities { ids: vec![id] }));
         }
         g.tracker.clear();
+        g.mod_views.clear();
         g.sent_chunks.clear();
         g.chunk_queue.clear();
         let id = g.entity_id;
@@ -2580,6 +2787,7 @@ impl Hub {
         g.sent_chunks.clear();
         g.chunk_queue.clear();
         g.tracker.clear();
+        g.mod_views.clear();
         self.teleport(i, None);
         let spawn = self.default_spawn(ctx.spawn);
         let g = &mut self.guests[i];
@@ -2657,6 +2865,7 @@ impl Hub {
         let g = &mut self.guests[i];
         g.dimension = self.config.dimension.clone();
         g.tracker.clear();
+        g.mod_views.clear();
         g.sent_chunks.clear();
         g.chunk_queue.clear();
         g.center = None;
@@ -2795,6 +3004,71 @@ fn shared_flags(sneaking: bool, sprinting: bool, body: &BodyFlags) -> i8 {
 mod tests {
     use super::*;
     use crate::fast_hash::FxHashSet;
+
+    #[test]
+    fn first_add_uses_configured_tracking_range() {
+        let Some(resources) = std::env::var_os("HORIZON_TEST_RESOURCES") else {
+            return;
+        };
+        let sync = Arc::new(SyncData::load(&std::path::PathBuf::from(resources)).unwrap());
+        for (percentage, distance, visible) in [(50, 40.0, false), (200, 100.0, true)] {
+            let mut net = crate::lan::NetConfig::lan(0, "range test".into(), 2);
+            net.listen = false;
+            net.announce = false;
+            let lan = Lan::start_with(sync.clone(), net).unwrap();
+            let encoder = ChunkEncoder::new(
+                [(Arc::<str>::from("minecraft:air"), false)],
+                &sync.builtin,
+                &[],
+                &[],
+            );
+            let mut hub = Hub::new(
+                lan,
+                sync.clone(),
+                encoder,
+                HubConfig {
+                    default_game_mode: 0,
+                    guest_commands: false,
+                    force_game_mode: false,
+                    hardcore: false,
+                    view_distance: 10,
+                    simulation_distance: 10,
+                    dimension: "minecraft:overworld".into(),
+                    seed: 0,
+                    max_players: 2,
+                    dedicated: true,
+                    integrated: false,
+                },
+            );
+            hub.entity_range_percent = percentage;
+            let (sender, _receiver) = std::sync::mpsc::channel();
+            let joined = crate::lan::Joined {
+                conn: 1,
+                uuid: 1,
+                name: "RangeTest".into(),
+                properties: Vec::new(),
+                info: horizon_protocol::packets::configuration::ClientInformation::new(10),
+                brand: "test".into(),
+                sender: crate::lan::PlayerSender::new(sender, Arc::default()),
+                latency: Arc::new(std::sync::atomic::AtomicI32::new(0)),
+                address: "127.0.0.1:0".parse().unwrap(),
+            };
+            let mut guest = Guest::new(joined, 1, [0.0, 72.0, 0.0], 10);
+            guest.placed = true;
+            guest.dimension = "minecraft:overworld".into();
+            guest.sent_chunks.insert(((distance as i32) >> 4, 0));
+            hub.guests.push(guest);
+            let entity = EntityState {
+                id: 7,
+                uuid: 7,
+                kind: "minecraft:snowball".into(),
+                position: [distance, 72.0, 0.0],
+                ..Default::default()
+            };
+            hub.add_entities(&[&entity]);
+            assert_eq!(hub.guests[0].tracker.is_tracking(7), visible);
+        }
+    }
 
     /// `requeue` as it was, scanning the queue for each chunk of the view.
     fn requeue_scan(

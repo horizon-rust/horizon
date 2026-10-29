@@ -109,7 +109,7 @@ pub fn load(work: &Path) -> Result<Imported, String> {
     let rows: Vec<Row> = pipeline::read_json(&work.join("coverage.json")).unwrap_or_default();
     let records: Vec<horizon_port_pack::inventory::Record> =
         pipeline::read_json(&work.join("inventory.json")).unwrap_or_default();
-    let (mods, mut left_off) = pipeline::loadable(&carried(work));
+    let (mods, mut left_off) = pipeline::loadable(&carried(work)?);
     let fetched = Fetched::load(work);
     left_off.extend(
         fetched
@@ -150,16 +150,8 @@ pub(crate) fn list_in(ports: &Path) -> Vec<Imported> {
 }
 
 /// The carried-over mods in a work folder (`mods/<id>/carry/` with its manifest).
-pub fn carried(work: &Path) -> Vec<PathBuf> {
-    let mut mods: Vec<PathBuf> = fs::read_dir(work.join("mods"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path().join("carry"))
-        .filter(|c| c.join("horizon-mod.toml").is_file())
-        .collect();
-    mods.sort();
-    mods
+pub fn carried(work: &Path) -> Result<Vec<PathBuf>, String> {
+    pipeline::carried(work)
 }
 
 /// Imports the pack at `path` into `ports/<slug>/` and writes its coverage report from
@@ -203,9 +195,6 @@ pub fn import_and_port(
     log: Log,
 ) -> Result<Imported, String> {
     let pack = import(path, log)?;
-    if pack.portable == 0 {
-        return Ok(pack);
-    }
     port(&pack.work, resources, None, log)
         .map_err(|e| format!("{} is imported, but porting it failed: {e}", pack.title()))
 }
@@ -259,7 +248,7 @@ pub fn apply_profile(cmd: &mut Command, work: &Path) -> Result<(), String> {
         return horizon_pack::apply(cmd, work);
     }
     // Only mods that load together: the game would refuse the later of two sharing a namespace.
-    let (mods, _) = pipeline::loadable(&carried(work));
+    let (mods, _) = pipeline::loadable(&carried(work)?);
     if mods.is_empty() {
         return Err("Nothing is ported yet: port the pack first.".into());
     }
@@ -317,6 +306,52 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_uses_current_output_and_preserves_a_genuine_mod_owner() {
+        use horizon_port_pack::inventory::Record;
+        for id in ["a_review_pack", "create", "pixelmon", "z_review_pack"] {
+            let work = std::env::temp_dir().join(format!(
+                "horizon-launcher-output-owner-{id}-{}",
+                std::process::id()
+            ));
+            let data = format!("datapacks/{id}.zip");
+            let native = "mods/opaque.jar";
+            let legacy = work.join("mods").join(id);
+            let current = work.join(format!("mods/datapacks@{id}"));
+            for output in [&legacy, &current] {
+                fs::create_dir_all(output.join("carry")).unwrap();
+                fs::write(output.join("carry/horizon-mod.toml"), format!("id = \"{id}\"\nname = \"Original fixture\"\nversion = \"1\"\napi = \"0.2\"\ncapabilities = [\"registries\"]\n")).unwrap();
+                pipeline::write_json(&output.join("source.json"), &data).unwrap();
+            }
+            let record = |path: &str| Record {
+                key: id.into(),
+                path: path.into(),
+                ..Record::default()
+            };
+            pipeline::write_json(
+                &work.join("inventory.json"),
+                &[record(&data), record(native)],
+            )
+            .unwrap();
+            let mut cmd = Command::new("true");
+            apply_profile(&mut cmd, &work).unwrap();
+            assert_eq!(
+                cmd.get_args().map(PathBuf::from).collect::<Vec<_>>(),
+                [PathBuf::from("--dev-mod"), current.join("carry")]
+            );
+            assert!(legacy.join("carry/horizon-mod.toml").is_file());
+            pipeline::write_json(&legacy.join("source.json"), &native).unwrap();
+            let mut cmd = Command::new("true");
+            apply_profile(&mut cmd, &work).unwrap();
+            assert_eq!(
+                cmd.get_args().map(PathBuf::from).collect::<Vec<_>>(),
+                [PathBuf::from("--dev-mod"), legacy.join("carry")]
+            );
+            assert!(current.join("carry/horizon-mod.toml").is_file());
+            fs::remove_dir_all(work).unwrap();
+        }
+    }
+
+    #[test]
     fn a_profile_has_its_own_home_and_mods() {
         let root =
             std::env::temp_dir().join(format!("horizon-launcher-pack-{}", std::process::id()));
@@ -357,3 +392,6 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 }
+
+#[cfg(test)]
+mod import_tests;

@@ -430,4 +430,235 @@ mod tests {
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    #[test]
+    fn resource_guest_build_check_json_and_test_use_packaged_bytes() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::temp_dir().join(format!("resource-cli-{}", std::process::id()))
+            });
+        let proof = target.join("resource-cli-proof").join(format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&proof).unwrap();
+        let native_target = target.join("resource-cli-native");
+        let build = Command::new(env!("CARGO"))
+            .current_dir(&root)
+            .args([
+                "build",
+                "--locked",
+                "-p",
+                "cargo-horizon-mod",
+                "--bin",
+                "cargo-horizon-mod",
+                "--message-format=json",
+                "--target-dir",
+            ])
+            .arg(&native_target)
+            .output()
+            .unwrap();
+        std::fs::write(proof.join("native-build.stdout"), &build.stdout).unwrap();
+        std::fs::write(proof.join("native-build.stderr"), &build.stderr).unwrap();
+        assert!(
+            build.status.success(),
+            "{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let binary = String::from_utf8_lossy(&build.stdout)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|v| {
+                v["reason"] == "compiler-artifact" && v["target"]["name"] == "cargo-horizon-mod"
+            })
+            .filter_map(|v| v["executable"].as_str().map(PathBuf::from))
+            .next_back()
+            .unwrap();
+        let mut search = vec![binary.parent().unwrap().to_path_buf()];
+        search.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+        let search = std::env::join_paths(search).unwrap();
+        for server in [false, true] {
+            let program = proof.join(if server { "server" } else { "client" });
+            std::fs::create_dir_all(program.join("src")).unwrap();
+            std::fs::create_dir_all(program.join("tests")).unwrap();
+            let sdk = root.join("crates/horizon-mod-sdk").canonicalize().unwrap();
+            let cargo = format!(
+                "[package]\nname = \"resource-cli-lab\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[workspace]\n[lib]\ncrate-type = [\"cdylib\"]\n[features]\ndefault = [{}]\nserver = []\n[dependencies]\nhorizon-mod-sdk = {{ path = {} }}\n",
+                if server { "\"server\"" } else { "" },
+                serde_json::to_string(&sdk).unwrap()
+            );
+            std::fs::write(program.join("Cargo.toml"), cargo).unwrap();
+            let source = root.join("crates/horizon-mods/tests/resource_guest/src/lib.rs");
+            std::fs::copy(source, program.join("src/lib.rs")).unwrap();
+            let manifest = format!(
+                "id = \"resource_lab\"\nname = \"Resource Lab\"\nversion = \"0.1.0\"\napi = \"{}\"\nside = \"{}\"\ncapabilities = [{}]\nexperimental = [\"resources\"]\nnamespaces = [\"extras_lab\"]\n",
+                if server { "0.3" } else { "0.2" },
+                if server { "server" } else { "client" },
+                if server {
+                    "\"resources\", \"players\""
+                } else {
+                    "\"resources\""
+                }
+            );
+            std::fs::write(program.join(MANIFEST), &manifest).unwrap();
+            let program_target = program.join("build");
+            let invoke = |label: &str, args: &[&str]| {
+                static RUN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                let home = std::env::temp_dir().join(format!(
+                    "rc{}-{}",
+                    std::process::id(),
+                    RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                ));
+                let mut cmd = Command::new(env!("CARGO"));
+                cmd.current_dir(&program)
+                    .args(["horizon-mod"])
+                    .args(args)
+                    .env("PATH", &search)
+                    .env("CARGO_TARGET_DIR", &program_target)
+                    .env("HORIZON_NO_AUDIO", "1")
+                    .env("HORIZON_LAUNCHER_NO_SELF_UPDATE", "1");
+                for (key, part) in [
+                    ("HOME", "h"),
+                    ("USERPROFILE", "h"),
+                    ("HORIZON_HOME", "g"),
+                    ("HORIZON_LAUNCHER_HOME", "l"),
+                    ("XDG_DATA_HOME", "d"),
+                    ("XDG_CONFIG_HOME", "c"),
+                    ("XDG_CACHE_HOME", "k"),
+                    ("XDG_RUNTIME_DIR", "r"),
+                    ("TMPDIR", "t"),
+                    ("TMP", "t"),
+                    ("TEMP", "t"),
+                    ("HORIZON_LAUNCHER_TRASH", "trash"),
+                    ("HORIZON_LAUNCHER_CLIPBOARD", "clip"),
+                    ("HORIZON_LAUNCHER_DESKTOP", "desk"),
+                ] {
+                    let path = home.join(part);
+                    std::fs::create_dir_all(&path).unwrap();
+                    cmd.env(key, path);
+                }
+                let java = format!(
+                    "-Duser.home={} -Djava.io.tmpdir={}",
+                    home.join("h").display(),
+                    home.join("t").display()
+                );
+                cmd.env("JAVA_TOOL_OPTIONS", &java)
+                    .env("JDK_JAVA_OPTIONS", java)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                let child = cmd.spawn().unwrap();
+                let pid = child.id();
+                let output = child.wait_with_output().unwrap();
+                std::fs::write(program.join(format!("{label}.stdout")), &output.stdout).unwrap();
+                std::fs::write(program.join(format!("{label}.stderr")), &output.stderr).unwrap();
+                std::fs::write(program.join(format!("{label}.identity.json")), serde_json::to_vec_pretty(&serde_json::json!({"pid":pid,"args":args,"home":home,"binary":binary,"program":program,"exit":output.status.code()})).unwrap()).unwrap();
+                eprintln!(
+                    "resource CLI proof: program={} label={label} pid={pid} status={} stdout={} stderr={}",
+                    program.display(),
+                    output.status,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                output
+            };
+            let first = invoke("compile-before-nonce", &["build"]);
+            assert!(
+                first.status.success(),
+                "{}",
+                String::from_utf8_lossy(&first.stderr)
+            );
+            let hmod = program_target.join("horizon-mod/resource_lab.hmod");
+            let compiled = Package::read(&hmod).unwrap().wasm.unwrap();
+            let nonce = format!(
+                "{:x}-{:x}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            );
+            let json = format!(r#"{{"nonce":"{nonce}"}}"#);
+            let files: [(&str, &[u8]); 4] = [
+                ("data/resource_lab/species/sample.json", json.as_bytes()),
+                ("assets/resource_lab/models/sample.bin", &[0, 255, 19, 0]),
+                ("data/resource_lab/empty.bin", &[]),
+                ("assets/extras_lab/note.txt", b"resource"),
+            ];
+            for (name, bytes) in files {
+                let path = program.join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, bytes).unwrap();
+            }
+            let expected = format!(
+                "json:{}:{json}|bin:4:00ff1300|empty:0|extra:8:resource",
+                json.len()
+            );
+            std::fs::write(
+                program.join("tests/bytes.toml"),
+                format!(
+                    "[[step]]\n{}command = \"resource\"\nexpect.feedback = '{}'\n",
+                    if server { "join = \"Alex\"\n" } else { "" },
+                    expected
+                ),
+            )
+            .unwrap();
+            let built = invoke("build-with-nonce", &["build"]);
+            assert!(built.status.success());
+            assert_eq!(
+                Package::read(&hmod).unwrap().wasm.unwrap(),
+                compiled,
+                "the nonce did not rebuild guest source"
+            );
+            let checked = invoke("check-json", &["check", hmod.to_str().unwrap(), "--json"]);
+            assert!(checked.status.success());
+            let value: serde_json::Value = serde_json::from_slice(&checked.stdout).unwrap();
+            assert_eq!(value["ok"], true);
+            let report = &value["report"];
+            assert_eq!(report["api_level"], 8);
+            assert_eq!(report["api"], if server { "0.3" } else { "0.2" });
+            assert!(
+                report["capabilities"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!("resources"))
+            );
+            assert!(
+                report["imports"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!("horizon:mods/resources@0.1.0"))
+            );
+            assert!(
+                report["output"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .any(|text| text.contains(&expected)),
+                "{report}"
+            );
+            let tested = invoke("test", &["test", "--hmod", hmod.to_str().unwrap()]);
+            assert!(tested.status.success());
+            assert!(String::from_utf8_lossy(&tested.stdout).contains("1 passed"));
+            if !server {
+                let undeclared = manifest.replace(
+                    "capabilities = [\"resources\"]",
+                    "capabilities = [\"registries\"]",
+                );
+                std::fs::write(program.join(MANIFEST), undeclared).unwrap();
+                let denied = invoke("undeclared", &["build"]);
+                assert!(!denied.status.success());
+                assert!(
+                    String::from_utf8_lossy(&denied.stderr)
+                        .contains("uses capability resources, missing from horizon-mod.toml")
+                );
+            }
+        }
+    }
 }

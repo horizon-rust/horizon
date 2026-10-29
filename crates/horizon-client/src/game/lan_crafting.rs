@@ -520,14 +520,20 @@ impl Game<'_> {
         else {
             return;
         };
-        *state = (*state + 1) & 0x7FFF;
-        let (window, state) = (*window, *state);
+        let next_state = (*state + 1) & 0x7FFF;
         let mut items: Vec<Option<ItemStack>> = (0..10).map(|s| menu.slot(s).cloned()).collect();
         let g = &host.hub.guests[gi];
         items.extend((9..36).chain(0..9).map(|i| g.inventory[i].clone()));
         let carried = g.carried.clone();
-        let items = items.iter().map(|s| host.hub.stack(s)).collect();
-        let carried = host.hub.stack(&carried);
+        let (items, carried) = match host.hub.stacks(&items, &carried) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                eprintln!("Rejected crafting snapshot: {error}");
+                return;
+            }
+        };
+        *state = next_state;
+        let (window, state) = (*window, next_state);
         host.hub.send_to(
             conn,
             &C::ContainerSetContent(play::ContainerSetContent {

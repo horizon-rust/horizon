@@ -123,6 +123,14 @@ def cases(count):
     return out
 
 
+def font_cases():
+    return [{'width': 480, 'height': 270, 'inWorld': False,
+             'packs': [{'id': 'file/font', 'title': title, 'description': 'Font metrics', 'source': 'default',
+                        'compat': 'compatible', 'required': False, 'position': 'top', 'fixed': False, 'icon': False}],
+             'selected': [], 'actions': [], 'mouse': [0, 0], 'blink': 0}
+            for title in ['A\n' + 'o' * 40, {'text': 'Ⅻ' * 60, 'bold': True}, '中' * 40, 'WWW' * 40]]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--count', type=int, default=3000)
@@ -132,7 +140,7 @@ def main():
     libraries = baking.client_libraries()
     build = lab.LOCAL / 'pack-screen-parity'; build.mkdir(parents=True, exist_ok=True)
     (build / 'resourcepacks').mkdir(exist_ok=True)
-    chosen = cases(args.count)
+    chosen = cases(args.count) + font_cases()
     for c in chosen:
         c['dir'] = str(build / 'resourcepacks')
     inputs = build / 'inputs.jsonl'; inputs.write_text(''.join(json.dumps(c) + '\n' for c in chosen))

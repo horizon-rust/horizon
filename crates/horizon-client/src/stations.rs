@@ -509,27 +509,19 @@ impl StationRecipes {
         let namespaces =
             std::iter::once("minecraft".to_owned()).chain(crate::mod_content::namespaces(root));
         for namespace in namespaces {
-            let mut more: Vec<_> = fs::read_dir(root.join(format!("data/{namespace}/recipe")))
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|e| e == "json"))
-                .collect();
-            more.sort();
-            files.extend(more.into_iter().map(|p| (namespace.clone(), p)));
+            let more = crate::recipe_files::for_namespace(root, &namespace).unwrap_or_default();
+            files.extend(
+                more.into_iter()
+                    .map(|(name, path)| (format!("{namespace}:{name}"), path)),
+            );
         }
         let mut smithing = Vec::new();
         let mut stonecutting = Vec::new();
-        for (namespace, p) in files {
+        for (id, p) in files {
             let Ok(bytes) = fs::read(&p) else { continue };
             let Ok(v) = serde_json::from_slice::<Value>(&bytes) else {
                 continue;
             };
-            let id = format!(
-                "{namespace}:{}",
-                p.file_stem().and_then(|s| s.to_str()).unwrap_or("")
-            );
             match v["type"].as_str().unwrap_or("") {
                 "minecraft:smithing_transform" => smithing.push(Smithing::Transform {
                     id,

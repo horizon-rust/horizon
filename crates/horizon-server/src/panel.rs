@@ -202,6 +202,7 @@ fn handle(shared: &Arc<Shared>, address: SocketAddr, request: &Request) -> Respo
 /// Starts the panel on `address`.
 pub fn start(shared: Arc<Shared>, address: SocketAddr) -> Result<(), String> {
     let listener = TcpListener::bind(address).map_err(|e| e.to_string())?;
+    let address = listener.local_addr().map_err(|e| e.to_string())?;
     shared.panel.lock().unwrap().address = Some(address);
     http::serve(listener, move |request| {
         secure(handle(&shared, address, request))
@@ -236,6 +237,12 @@ mod tests {
     /// One raw request to the panel; the status line, the headers and the body.
     fn send(address: SocketAddr, text: &str) -> (String, String) {
         let mut stream = std::net::TcpStream::connect(address).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
         stream.write_all(text.as_bytes()).unwrap();
         let mut out = String::new();
         stream.read_to_string(&mut out).unwrap();
@@ -248,10 +255,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("horizon-server-panel-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let shared = Shared::new(&dir);
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        drop(listener);
-        start(shared.clone(), address).unwrap();
+        start(shared.clone(), "127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = shared.panel.lock().unwrap().address.unwrap();
         let host = format!("Host: {address}\r\n");
         let get = |path: &str, extra: &str| {
             send(

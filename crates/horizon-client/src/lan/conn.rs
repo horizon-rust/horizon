@@ -256,6 +256,9 @@ impl PlayerSender {
             self.deliver(Out::Packet(body));
         }
     }
+    pub fn pending_bytes(&self) -> usize {
+        self.pending.load(Ordering::Relaxed)
+    }
     /// Several packets in order, as [`Self::send`] each: under one lock
     /// while the tick holds them.
     pub fn send_many(&self, bodies: impl IntoIterator<Item = Vec<u8>>) {

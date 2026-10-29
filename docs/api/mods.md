@@ -13,10 +13,10 @@ the player before the mod is turned on, and checked against the component's real
 
 | | Count |
 | --- | --- |
-| Interfaces the game offers | 6: `log`, `game`, `chat`, `hud`, `storage`; `players` for server mods |
-| Functions in them | 12 |
+| Interfaces the game offers | 14, including experimental `resources`; see the generated reference |
+| Functions in them | 47 |
 | Hooks a mod exports | 5: `init`, `tick`, `frame`, `command`, `chat`; a server mod 8: `init`, `tick`, `player-joined`, `player-left`, `chat`, `command`, `block-broken`, `block-placed` |
-| Capabilities | 6: `game-read`, `chat`, `hud`, `storage`, `registries`, `players` |
+| Capabilities | 13, including experimental `resources` |
 | Manifest `api` lines served | 3: `0.1` (code), `0.2` (content), `0.3` (server mods, experimental) |
 | SDK | the `Mod` trait (5 methods), `Registration` (4 builders), `export_mod!`, log helpers; `server::ServerMod` (8 methods), `server::Registration` (6 builders), `server::Argument`, `server::Args`, `export_server_mod!` |
 | `cargo horizon-mod` | `new` (templates `code` and `content`), `build`, `run`, `test`, `check` |
@@ -106,6 +106,11 @@ What real mods need next, in the order modpacks and servers need it:
 
 ## Changelog
 
+- Provisional level 8 on base `1feb28c`: experimental `resources.read`, owned package bytes for client API 0.2
+  and server API 0.3, with per callback request and byte limits. SDK exports `resources` on both sides.
+  `TestGame::load` preserves nested directory content. The Rust host `FileReader` owns its handle and no longer
+  takes a lifetime parameter. This level collides with draft PR 2888's 8 through 18: no SDK, registry or binary
+  release from this candidate. Allocate the actual next level on the merged substrate before integration.
 - API 0.3: typed server commands: `registration.commands` lists each command's arguments (`argument-kind`: word,
   text, integer, number, boolean, player, block-pos), sent in players' command trees and parsed by the server;
   `command` gets their values. SDK `Registration::command_with`, `Argument`, `Args`.
@@ -123,3 +128,13 @@ What real mods need next, in the order modpacks and servers need it:
   `shake`, drawn by the game's own renderer.
 - API 0.2 (content): data-driven blocks and items, tags, `horizon:add_to`, terrain adaptation.
 - API 0.1.0: `log`, `game`, `chat`, `hud`, `storage`; `init`, `tick`, `frame`, `command`, `chat`.
+
+## Experimental server entities
+
+Server programs may opt into `entities` to register owned kinematic types and create, update or remove
+ephemeral host records. The six new functions use provisional local level 9 after resource level 8.
+Both collide with draft PR 2888 and require allocation and retesting on the merged substrate before release.
+See [the entity contract](mod-entities.md) for limits, transactional callbacks and host cleanup.
+The pinned private implementation also offers client `models` at provisional local level 10
+and server `world-storage` at provisional local level 11. Neither level is a release allocation.
+Stage E adds no rendering, networking, collision, AI or persistence.

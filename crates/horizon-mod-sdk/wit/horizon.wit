@@ -105,6 +105,15 @@ interface storage {
     delete: func(key: string);
 }
 
+/// Experimental capability `resources`: this program's packaged assets and data.
+interface resources {
+    /// Read a literal assets/ or data/ path in an owned namespace, at most 1024 bytes.
+    /// None means absent from the validated inventory, and Some([]) is an empty file.
+    /// Invalid paths, ownership failures, unavailable files and limits return an error.
+    /// Each callback allows 64 requests and 32 MiB of charged I/O, at most 16 MiB per file.
+    read: func(path: string) -> result<option<list<u8>>, string>;
+}
+
 /// Capability `command`: vanilla commands run as the player, with the
 /// player's permissions, after the hook call returns (8 per call). A mod's
 /// own commands are not run this way.
@@ -631,6 +640,19 @@ interface browser {
     poll: func() -> list<event>;
 }
 
+/// Experimental server-only physical inventory access. No arbitrary components.
+interface inventory {
+    enum hand { main, off }
+    record item-stack { item-id: string, count: u32 }
+    held: func(player: string, hand: hand) -> result<option<item-stack>, string>;
+    /// Effective owned-namespace string. None is known absent, not unknown.
+    component-string: func(player: string, hand: hand, key: string) -> result<option<string>, string>;
+    /// Machine-only integer tm or Gen9Offset under effective minecraft:custom_data.
+    custom-data-integer: func(player: string, hand: hand, field: string) -> result<option<s64>, string>;
+    /// Returns the number inserted. Leftovers are neither inserted nor dropped.
+    give: func(player: string, item: string, count: u32) -> result<u32, string>;
+}
+
 /// Capability `players`, server mods only (manifest `api = "0.3"`,
 /// experimental): the players on the server, and messages to them.
 interface players {
@@ -668,6 +690,31 @@ interface players {
 /// experimental): the blocks of the server's loaded chunks, and changes to
 /// them through the server's own block updates.
 interface %world {
+    enum static-collision { empty, full-block, partial }
+    record fluid-context { kind: string, amount: u8, falling: bool }
+    record loaded-environment {
+        block: string,
+        biome: string,
+        sky-light: option<u8>,
+        block-light: option<u8>,
+        static-collision: option<static-collision>,
+        fluid: option<fluid-context>,
+        surface-y: option<s32>,
+        rain-at-position: option<bool>,
+    }
+    record environment-info {
+        game-time: s64,
+        day-time: s64,
+        raining: bool,
+        thundering: bool,
+        rain-level: f32,
+        thunder-level: f32,
+        loaded: option<loaded-environment>,
+    }
+    /// Actual shared clock/weather and optional resident point facts. No chunk loads.
+    environment: func(dimension: string, x: s32, y: s32, z: s32) -> result<option<environment-info>, string>;
+    /// Native mob sky visibility at an initialized loaded cell, or unknown.
+    sky-visible: func(dimension: string, x: s32, y: s32, z: s32) -> result<option<bool>, string>;
     record block-change {
         x: s32,
         y: s32,
@@ -689,6 +736,96 @@ interface %world {
     /// in order after this call returns, before that dimension's next tick;
     /// one in a chunk not loaded then is skipped. At most 4096 per call.
     set-blocks: func(dimension: string, blocks: list<block-change>) -> result<_, string>;
+}
+
+/// Experimental server-owned kinematic entities. Requires capability and
+/// experimental opt-in `entities`. Handles are opaque and session scoped.
+interface entities {
+    /// An owned type or entity lease. Never edit, persist or transfer it.
+    type handle = string;
+    record type-definition {
+        key: string,
+        width: f32,
+        height: f32,
+        tracking-range: f32,
+        renderer: string,
+        public-version: u32,
+    }
+    record transform {
+        x: f64,
+        y: f64,
+        z: f64,
+        yaw: f32,
+        pitch: f32,
+    }
+    record entity-state {
+        dimension: string,
+        transform: transform,
+        public-state: list<u8>,
+    }
+    record movement-delta { x: f64, y: f64, z: f64 }
+    record movement-result { x: f64, y: f64, z: f64, on-ground: bool }
+    record context-info {
+        %world: u64,
+        dimensions: list<string>,
+    }
+    enum reason {
+        spawned,
+        updated,
+        despawned,
+        chunk-unloaded,
+        dimension-unloaded,
+        world-unloaded,
+    }
+    record lifecycle-event {
+        entity: handle,
+        reason: reason,
+    }
+    /// Registers up to eight owned types atomically. Returns type handles.
+    register-types: func(types: list<type-definition>) -> result<list<handle>, string>;
+    /// The current world session and loaded dimensions, or none outside a world.
+    context: func() -> result<option<context-info>, string>;
+    /// Stages one entity in a loaded chunk. At most 64 per owner and 256 per world.
+    spawn: func(kind: handle, state: entity-state) -> result<handle, string>;
+    /// Stages an atomic transform and public state replacement, at most 1024 bytes.
+    set-state: func(entity: handle, state: entity-state) -> result<_, string>;
+    /// Optional bounded block collision. Errors stage no movement.
+    move-colliding: func(entity: handle, delta: movement-delta) -> result<movement-result, string>;
+    /// Read-only collision result from an exact owned baseline. No movement is staged.
+    probe-colliding: func(entity: handle, dimension: string, start: transform, delta: movement-delta) -> result<movement-result, string>;
+    /// Stages removal of one owned entity. Old handles never become valid again.
+    despawn: func(entity: handle) -> result<_, string>;
+    /// Drains up to 256 lifecycle events after a successful callback.
+    poll: func() -> result<list<lifecycle-event>, string>;
+}
+
+/// Provisional client entity meshes. All leases belong to one program and world.
+interface models {
+    record mesh-vertex {
+        x: f32, y: f32, z: f32,
+        nx: f32, ny: f32, nz: f32,
+        u: f32, v: f32,
+    }
+    record triangle { a: u32, b: u32, c: u32 }
+    record view {
+        handle: string,
+        kind: string,
+        renderer: string,
+        public-version: u32,
+        dimension: string,
+        x: f64, y: f64, z: f64,
+        yaw: f32, pitch: f32,
+        public-state: list<u8>,
+        revision: u64,
+    }
+    register-renderer: func(key: string, public-version: u32) -> result<_, string>;
+    views: func() -> result<list<view>, string>;
+    upload-mesh: func(vertices: list<mesh-vertex>, triangles: list<triangle>, png: list<u8>) -> result<string, string>;
+    update-mesh: func(mesh: string, vertices: list<mesh-vertex>) -> result<_, string>;
+    bind: func(view: string, mesh: string) -> result<_, string>;
+    /// Atomically replaces a view's parts with up to 64 owned meshes. Empty clears it.
+    bind-parts: func(view: string, meshes: list<string>) -> result<_, string>;
+    release-mesh: func(mesh: string) -> result<_, string>;
 }
 
 /// What the server calls in a server mod (manifest `api = "0.3"`,
@@ -790,6 +927,9 @@ world horizon-mod {
     import chat;
     import hud;
     import storage;
+    import resources;
+    import audio;
+    import messages;
     import command;
     export events;
 }
@@ -800,8 +940,13 @@ world horizon-mod {
 world horizon-server-mod {
     import log;
     import storage;
+    import resources;
+    import messages;
     import players;
+    import inventory;
     import %world;
+    import entities;
+    import world-storage;
     export server-events;
 }
 
@@ -815,6 +960,7 @@ world horizon-ui-mod {
     import input;
     import recipes;
     import browser;
+    import models;
     export ui-events;
 }
 
@@ -834,4 +980,55 @@ world render-host {
 world recipes-host {
     import recipes;
     import browser;
+}
+
+world models-host {
+    import models;
+}
+
+/// One owned snapshot file in the authoritative world. No world is available at init.
+interface world-storage {
+    context: func() -> result<option<u64>, string>;
+    get: func(key: string) -> result<option<list<u8>>, string>;
+    set: func(key: string, value: list<u8>) -> result<_, string>;
+}
+
+/// Optional synchronous server interactions. Existing server exports stay unchanged.
+interface server-interactions {
+    use players.{player};
+    enum hand { main, off }
+    record interaction-pos { x: s32, y: s32, z: s32 }
+    record item-use {
+        item-id: string,
+        count: u32,
+        hand: hand,
+        target: option<string>,
+        block: option<interaction-pos>,
+    }
+    record block-use { state: string, pos: interaction-pos, hand: hand }
+    record interaction-result { handled: bool, consume: u32, feedback: option<string> }
+    enabled: func() -> bool;
+    item-used: func(player: player, event: item-use) -> result<interaction-result, string>;
+    block-used: func(player: player, event: block-use) -> result<interaction-result, string>;
+}
+world horizon-interaction-server-mod {
+    include horizon-server-mod;
+    export server-interactions;
+}
+world server-interactions-host { export server-interactions; }
+
+/// Experimental read-only program delivery. No client action or peer selection is exposed.
+interface messages {
+    record message { sender: string, channel: string, payload: list<u8> }
+    subscribe: func(sender: string, channel: string) -> result<_, string>;
+    poll: func() -> result<list<message>, string>;
+    send: func(player: string, receiver: string, channel: string, payload: list<u8>) -> result<_, string>;
+}
+
+/// Experimental local playback of registered events through native audio.
+interface audio {
+    record position { x: f64, y: f64, z: f64 }
+    enum category { master, music, %record, weather, block, hostile, neutral, player, ambient, voice, ui }
+    /// Success queues playback. It is not an audibility or decoder acknowledgement.
+    play: func(event: string, position: option<position>, category: category, volume: f32, pitch: f32) -> result<_, string>;
 }

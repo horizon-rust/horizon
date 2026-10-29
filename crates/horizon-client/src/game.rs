@@ -111,7 +111,15 @@ mod mob_sounds;
 mod mod_browser;
 #[cfg(feature = "mods")]
 mod mod_browser_recipes;
+#[cfg(feature = "mods")]
+mod mod_entities;
 mod mod_input;
+#[cfg(feature = "mods")]
+mod mod_inventory;
+#[cfg(feature = "mods")]
+mod mod_messages;
+#[cfg(feature = "mods")]
+mod mod_models;
 #[cfg(feature = "mods")]
 mod mod_recipes;
 mod mod_render;
@@ -142,6 +150,7 @@ mod pickups;
 mod piglins;
 mod piston_push;
 mod player_equip;
+mod player_saving;
 mod postprocess;
 mod potions;
 mod powder_snow;
@@ -1535,6 +1544,10 @@ struct Game<'a> {
     guardian_sounds: HashSet<u32>,
     dropped: Vec<ItemEntity>,
     next_entity: u32,
+    #[cfg(feature = "mods")]
+    mod_entities: mod_entities::ModEntities,
+    #[cfg(feature = "mods")]
+    mod_entity_world: Option<horizon_mods::entities::WorldId>,
     particles: horizon_client::particles::ParticleEngine,
     /// `ItemPickupParticle`s: taken items, orbs and arrows flying to their collector.
     pickups: pickups::Pickups,
@@ -1564,9 +1577,8 @@ struct Game<'a> {
     /// swap just before an attack keeps them, with the new item's enchantments
     /// (attribute swapping).
     attack_item: Option<Arc<str>>,
-    /// Mobs a player hurt (`LivingEntity.lastHurtByPlayer`), with the guest
-    /// it was by connection (None: the host).
-    last_hurt_by_player: HashMap<u32, Option<u32>>,
+    /// Last guest UUID to hurt each mob, or None for the host.
+    last_hurt_by_player: HashMap<u32, Option<u128>>,
     /// Mobs whose death (`LivingEntity.die`) has been handled.
     died: HashSet<u32>,
     /// Client-ticked block-entity animation state (`game/block_entity_anims.rs`).
@@ -1646,7 +1658,7 @@ struct Game<'a> {
     /// `SleepStatus`'s active and sleeping players at the last announcement.
     sleep_seen: (i64, i64),
     dim: Dim,
-    world_root: PathBuf,
+    world_root: horizon_client::save::WorldPath,
     /// The world is superflat (`ServerLevel.isFlat`, for every dimension).
     world_flat: bool,
     /// A player carried through a portal, re-placed once the destination loads.
@@ -1848,6 +1860,10 @@ struct Game<'a> {
     forced_hit: Option<Hit>,
     /// The part of a right click a guest's packet asks for (game/lan_actions.rs).
     guest_use: Option<GuestUse>,
+    #[cfg(feature = "mods")]
+    mod_interaction_handled: bool,
+    #[cfg(feature = "mods")]
+    mod_use_player_limit: Option<f64>,
     /// Level events of this tick for the guests, and the guest acting now.
     lan_events: Vec<(i32, [i32; 3], i32, Option<u32>)>,
     /// Jukebox level events 1010 (song name) and 1011 (`None`) for the guests;
@@ -1935,6 +1951,46 @@ struct Game<'a> {
     /// The local player as a model (third person, the inventory).
     player_model: Option<Mob>,
 }
+/// Shared native Inventory.add path for gameplay and program insertion.
+fn give_inventory(
+    inventory: &mut [Option<ItemStack>],
+    selected: usize,
+    max: u32,
+    mut stack: ItemStack,
+) -> Option<ItemStack> {
+    // Prefer the selected slot, then the hotbar, then the main inventory.
+    let order: Vec<usize> = std::iter::once(selected)
+        .chain((0..36).filter(|&i| i != selected))
+        .collect();
+    for &i in &order {
+        if let Some(slot) = &mut inventory[i]
+            && slot.same_item_same_components(&stack)
+            && slot.count < max
+        {
+            let moved = (max - slot.count).min(stack.count);
+            slot.count += moved;
+            stack.count -= moved;
+            if stack.count == 0 {
+                return None;
+            }
+        }
+    }
+    for i in 0..36 {
+        if inventory[i].is_none() {
+            let moved = stack.count.min(max);
+            inventory[i] = Some(ItemStack {
+                count: moved,
+                ..stack.clone()
+            });
+            stack.count -= moved;
+            if stack.count == 0 {
+                return None;
+            }
+        }
+    }
+    Some(stack)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Dim {
     Overworld,
@@ -2298,43 +2354,13 @@ impl Game<'_> {
         out
     }
     /// Inventory.add: returns the stack that did not fit.
-    fn give(&mut self, mut stack: ItemStack) -> Option<ItemStack> {
+    fn give(&mut self, stack: ItemStack) -> Option<ItemStack> {
         let max = self
             .res
             .items()
             .get(&stack.item)
             .map_or(64, |i| i.max_stack);
-        // Prefer the selected slot, then the hotbar, then the main inventory.
-        let order: Vec<usize> = std::iter::once(self.selected)
-            .chain((0..36).filter(|&i| i != self.selected))
-            .collect();
-        for &i in &order {
-            if let Some(slot) = &mut self.inventory[i]
-                && slot.same_item_same_components(&stack)
-                && slot.count < max
-            {
-                let moved = (max - slot.count).min(stack.count);
-                slot.count += moved;
-                stack.count -= moved;
-                if stack.count == 0 {
-                    return None;
-                }
-            }
-        }
-        for i in 0..36 {
-            if self.inventory[i].is_none() {
-                let moved = stack.count.min(max);
-                self.inventory[i] = Some(ItemStack {
-                    count: moved,
-                    ..stack.clone()
-                });
-                stack.count -= moved;
-                if stack.count == 0 {
-                    return None;
-                }
-            }
-        }
-        Some(stack)
+        give_inventory(&mut self.inventory, self.selected, max, stack)
     }
     /// The block's first up face (or any face) and its fixed tint, for block
     /// models drawn as entities (falling blocks, carried blocks).
@@ -4098,11 +4124,24 @@ impl Game<'_> {
         {
             return Ok(Some(Hand::Main));
         }
-        if guest.is_none() && self.interact_entity()? {
+        #[cfg(feature = "mods")]
+        let custom_target = self.mod_entity_targeted();
+        #[cfg(not(feature = "mods"))]
+        let custom_target = false;
+        if guest.is_none() && !custom_target && self.interact_entity()? {
             return Ok(Some(Hand::Main));
         }
+        #[cfg(feature = "mods")]
+        if guest.is_none() && custom_target && self.inventory[self.selected].is_none() {
+            return Ok(self
+                .with_hand(Hand::Main, |g| g.mod_use_interaction(None, false))
+                .then_some(Hand::Main));
+        }
         // An EntityHitResult may fall through to Item.use, never to useItemOn.
-        let block_hit = if matches!(guest, Some(GuestUse::Item(_))) || self.entity_targeted() {
+        let block_hit = if matches!(guest, Some(GuestUse::Item(_)))
+            || self.entity_targeted()
+            || custom_target
+        {
             None
         } else {
             self.pick()
@@ -4113,7 +4152,7 @@ impl Game<'_> {
             }
             None => Hand::BOTH.to_vec(),
         };
-        let entity = guest.is_none() && self.entity_targeted();
+        let entity = guest.is_none() && !custom_target && self.entity_targeted();
         for hand in hands {
             // The off hand's turn starts on the entity too (Minecraft.startUseItem).
             if entity && hand == Hand::Off && self.with_hand(hand, Game::interact_entity)? {
@@ -4162,6 +4201,10 @@ impl Game<'_> {
         // from reacting.
         let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
         let hands_full = self.stack_in(self.selected).is_some() || self.offhand.is_some();
+        #[cfg(feature = "mods")]
+        if !(sneaking && hands_full) && self.mod_use_interaction(block_hit, true) {
+            return Ok(true);
+        }
         let mut anchor_passed = false;
         // MultiPlayerGameMode.useItemOn: blocks react first.
         if !(sneaking && hands_full)
@@ -4270,6 +4313,10 @@ impl Game<'_> {
             }
         }
         let Some(stack) = self.held().cloned() else {
+            #[cfg(feature = "mods")]
+            if self.mod_entity_targeted() && self.mod_use_interaction(None, false) {
+                return Ok(true);
+            }
             return Ok(false);
         };
         let Some(info) = self.res.items().get(&stack.item).cloned() else {
@@ -4285,6 +4332,10 @@ impl Game<'_> {
             ))
         {
             return Ok(false);
+        }
+        #[cfg(feature = "mods")]
+        if self.mod_use_interaction(block_hit, false) {
+            return Ok(true);
         }
         if block_hit.is_some() && (self.use_bone_meal(&stack)? || self.ignite_tnt(&stack)?) {
             return Ok(true);
@@ -7055,6 +7106,18 @@ impl Game<'_> {
             Some(false) => return true,
             Some(true) => {}
         }
+        if self.remote.is_some() {
+            let valid = (0..menu.slot_count())
+                .map(|i| menu.slot(i).cloned())
+                .chain(std::iter::once(menu.carried.clone()))
+                .chain(std::iter::once(menu.player_item(40).cloned()))
+                .chain(menu.dropped.iter().cloned().map(Some))
+                .try_for_each(|stack| horizon_client::lan::guest::validate_stack(&stack));
+            if let Err(error) = valid {
+                eprintln!("Rejected menu prediction before commit: {error}");
+                return false;
+            }
+        }
         // On a server the clicks only predict: the server drops, crafts and
         // makes maps itself.
         let predicting = self.remote.is_some();
@@ -8497,7 +8560,7 @@ impl Game<'_> {
             if self.hurt_by_player(i, damage, source) {
                 self.mobs[i].knockback(0.4, xd, zd);
                 self.last_hurt_by_player
-                    .insert(self.mobs[i].id, self.lan_acting);
+                    .insert(self.mobs[i].id, self.lan_acting_uuid);
             }
         }
         // `getEntitiesOfClass(LivingEntity.class)` takes the other players too.
@@ -8691,7 +8754,7 @@ impl Game<'_> {
                 );
             }
             self.last_hurt_by_player
-                .insert(self.mobs[index].id, self.lan_acting);
+                .insert(self.mobs[index].id, self.lan_acting_uuid);
             let sound = if crit {
                 "minecraft:entity.player.attack.crit"
             } else if scale > 0.9 {
@@ -9054,7 +9117,7 @@ impl Game<'_> {
     /// Streaming and region storage for one dimension of a world.
     fn make_streaming(
         &self,
-        world_root: &std::path::Path,
+        world_root: &horizon_client::save::WorldPath,
         dim: Dim,
         seed: i64,
     ) -> Result<(Streaming, Arc<SaveDir>)> {
@@ -9090,11 +9153,11 @@ impl Game<'_> {
     pub(super) fn switch_level(&mut self, target: Dim, from: Vec3) -> Result<Vec3> {
         // Save the departing dimension's changed chunks.
         self.save.save_forced_chunks(&self.streaming.forced)?;
-        self.streaming.save(&mut self.world, true);
+        self.streaming.save(&mut self.world, true)?;
         let keys: Vec<_> = self.world.modified.drain().collect();
         let chunks = self.with_entities(keys.iter().filter_map(|k| self.world.chunks.get(k)));
         self.save
-            .save(&chunks, self.pack.assets.registry, self.res.biomes())?;
+            .save_later(&chunks, self.pack.assets.registry, self.res.biomes())?;
         self.save_dimension_entities()?;
         // Coordinates scale by 8 between the Overworld and the Nether.
         let scale = match (self.dim, target) {
@@ -9319,6 +9382,10 @@ impl Game<'_> {
         self.begin_closing_save(false)
     }
     fn finish_close_world(&mut self) -> Result<()> {
+        #[cfg(feature = "mods")]
+        self.clear_mod_messages();
+        #[cfg(feature = "mods")]
+        self.clear_mod_models();
         self.ambience.clear(&mut self.audio);
         // updateLevelInEngines(null): every sound stops; the music manager
         // lets go of its track.
@@ -9334,6 +9401,8 @@ impl Game<'_> {
         self.boss_overlay.reset();
         self.bosses = Default::default();
         self.streaming.paused = true;
+        #[cfg(feature = "mods")]
+        self.clear_mod_entity_world();
         self.world = World::new(self.res.facts().air, 0);
         self.player = None;
         self.sleeping = None;
@@ -9358,6 +9427,8 @@ impl Game<'_> {
     /// Let go of every entity of the level (saved first): the next world
     /// opened must not inherit them, nor save them as its own.
     fn clear_entities(&mut self) {
+        #[cfg(feature = "mods")]
+        self.clear_mod_entity_world();
         self.mobs.clear();
         self.dropped.clear();
         self.orbs.clear();
@@ -11300,6 +11371,7 @@ impl Game<'_> {
         level.xp_total = self.experience.total;
         if let Some(p) = &self.player {
             level.position = Some([p.position.x, p.position.y, p.position.z]);
+            level.motion = [p.velocity.x, p.velocity.y, p.velocity.z];
             level.health = p.health.health();
             level.absorption = p.health.absorption();
             let extra = level
@@ -11374,9 +11446,28 @@ impl Game<'_> {
         if self.remote.is_some() {
             return Ok(());
         }
+        if wait
+            && let Some(id) = self
+                .world_root
+                .persistence()
+                .map(|p| p.held())
+                .transpose()?
+                .flatten()
+        {
+            return Err(format!("snapshot {id} holds world persistence").into());
+        }
+        self.save_online_players()?;
         self.save_level(wait)?;
         self.save_parked_levels(wait)?;
-        self.save_game_metadata()
+        self.save_game_metadata()?;
+        if let Some(owner) = self.world_root.persistence() {
+            if wait {
+                owner.flush()?;
+            } else {
+                owner.check()?;
+            }
+        }
+        Ok(())
     }
     fn save_game_metadata(&mut self) -> Result<()> {
         self.save_maps();
@@ -11392,7 +11483,11 @@ impl Game<'_> {
         self.save_warden_tracker();
         self.sync_level();
         self.store_owner();
-        self.level.write(&self.world_root)?;
+        if self.options.execution_role == execution_role::ExecutionRole::DedicatedServer {
+            self.level.write_world(&self.world_root)?;
+        } else {
+            self.level.write(&self.world_root)?;
+        }
         self.save_world_state();
         self.message = Some(("Saved the game".into(), Instant::now()));
         Ok(())
@@ -11400,7 +11495,7 @@ impl Game<'_> {
     /// Save the level in place: its changed chunks, its entities and its raids.
     fn save_level(&mut self, wait: bool) -> Result<()> {
         self.save.save_forced_chunks(&self.streaming.forced)?;
-        self.streaming.save(&mut self.world, wait);
+        self.streaming.save(&mut self.world, wait)?;
         let keys: Vec<_> = self.world.modified.drain().collect();
         let chunks = self.with_entities(keys.iter().filter_map(|k| self.world.chunks.get(k)));
         self.save
@@ -11408,7 +11503,12 @@ impl Game<'_> {
         // Prepare entities while the chunk writer runs, then use one barrier.
         self.save_entities(false)?;
         self.save_raids();
-        if wait {
+        if wait
+            && self
+                .world_root
+                .persistence()
+                .is_none_or(|p| p.autosave_enabled() && p.held().is_ok_and(|id| id.is_none()))
+        {
             self.save.flush()?;
         }
         Ok(())
@@ -11674,7 +11774,10 @@ impl Game<'_> {
         self.glowing_vertices.get_mut().clear();
         if !title {
             entities = horizon_client::spans::time("entity_geometry", || {
-                self.entity_geometry(camera, alpha, entities)
+                let mut vertices = self.entity_geometry(camera, alpha, entities);
+                #[cfg(feature = "mods")]
+                self.mod_model_geometry(camera, &mut vertices);
+                vertices
             });
         }
         let bolts = if title {
@@ -13685,6 +13788,10 @@ impl<'a> Game<'a> {
             guardian_sounds: HashSet::new(),
             dropped: Vec::new(),
             next_entity: 0,
+            #[cfg(feature = "mods")]
+            mod_entities: Default::default(),
+            #[cfg(feature = "mods")]
+            mod_entity_world: None,
             particles,
             pickups: Default::default(),
             sign_edit: None,
@@ -13750,7 +13857,7 @@ impl<'a> Game<'a> {
             sleep_timer: 0,
             sleep_seen: (0, 0),
             dim: Dim::Overworld,
-            world_root: PathBuf::new(),
+            world_root: horizon_client::save::WorldPath::unmanaged(PathBuf::new()),
             world_flat: false,
             travelling: None,
             server_trips: Vec::new(),
@@ -13875,6 +13982,10 @@ impl<'a> Game<'a> {
             pending_save: None,
             forced_hit: None,
             guest_use: None,
+            #[cfg(feature = "mods")]
+            mod_interaction_handled: false,
+            #[cfg(feature = "mods")]
+            mod_use_player_limit: None,
             lan_events: Vec::new(),
             lan_songs: Vec::new(),
             lan_cushion_breaks: Vec::new(),

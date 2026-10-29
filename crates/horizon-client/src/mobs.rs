@@ -2120,6 +2120,7 @@ impl Mob {
             self.ai.last_hurt_by_time = self.age as i32;
             if who == Who::Player {
                 self.ai.last_hurt_by_player = 100;
+                self.ai.player_credit = true;
             }
         }
         // dealDefaultKnockback, unless the damage type is tagged no_knockback;

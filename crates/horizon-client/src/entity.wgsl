@@ -384,6 +384,39 @@ fn weather_double_plus_float(base: vec2<u32>, delta: f32) -> f32 {
     if mantissa >= 0x1000000u { mantissa >>= 1u; exponent += 1; }
     return bitcast<f32>(sign | (u32(exponent + 127) << 23u) | (mantissa & 0x7fffffu));
 }
+// Round finite weather products to float before the next animation stage.
+fn weather_mul(a: f32, b: f32) -> f32 {
+    let ab = bitcast<u32>(a);
+    let bb = bitcast<u32>(b);
+    let sign = (ab ^ bb) & 0x80000000u;
+    let ae = (ab >> 23u) & 255u;
+    let be = (bb >> 23u) & 255u;
+    let am = (ab & 0x7fffffu) | select(0x800000u, 0u, ae == 0u);
+    let bm = (bb & 0x7fffffu) | select(0x800000u, 0u, be == 0u);
+    if am == 0u || bm == 0u { return bitcast<f32>(sign); }
+    let cross = (am >> 16u) * (bm & 65535u) + (am & 65535u) * (bm >> 16u);
+    var value = weather_add64(
+        vec2((am & 65535u) * (bm & 65535u), (am >> 16u) * (bm >> 16u)),
+        vec2(cross << 16u, cross >> 16u));
+    let leading = select(31u - countLeadingZeros(value.x), 63u - countLeadingZeros(value.y), value.y != 0u);
+    var exponent = i32(max(ae, 1u)) + i32(max(be, 1u)) - 254 + i32(leading) - 46;
+    let shift = 62u - leading;
+    if shift >= 32u { value = vec2(0u, value.x << (shift - 32u)); }
+    else { value = vec2(value.x << shift, (value.y << shift) | (value.x >> (32u - shift))); }
+    if exponent < -126 {
+        value = weather_shr_jam(value, u32(-126 - exponent));
+        exponent = -126;
+    }
+    var mantissa = value.y >> 7u;
+    let guard = (value.y & 64u) != 0u;
+    let sticky = (value.y & 63u) != 0u || value.x != 0u;
+    if guard && (sticky || (mantissa & 1u) != 0u) { mantissa += 1u; }
+    if mantissa >= 0x1000000u { mantissa >>= 1u; exponent += 1; }
+    if exponent > 127 { return bitcast<f32>(sign | 0x7f800000u); }
+    let encoded = select(u32(exponent + 127), 0u, mantissa < 0x800000u);
+    return bitcast<f32>(sign | (encoded << 23u) | (mantissa & 0x7fffffu));
+}
+
 fn weather_phase(animation: vec4<f32>, bases: vec4<u32>, snow: u32, time: vec4<f32>) -> vec2<f32> {
     if snow == 0u {
         let ticks = time.x + animation.y;
@@ -393,10 +426,10 @@ fn weather_phase(animation: vec4<f32>, bases: vec4<u32>, snow: u32, time: vec4<f
         return vec2(0.0, offset % 32.0);
     }
     let t = time.x + time.z;
-    let u_time = t * 0.01;
-    let du = u_time * animation.z;
-    let v_time = t * animation.w;
-    let dv = v_time * 0.001;
+    let u_time = weather_mul(t, 0.01);
+    let du = weather_mul(u_time, animation.z);
+    let v_time = weather_mul(t, animation.w);
+    let dv = weather_mul(v_time, 0.001);
     let u = weather_double_plus_float(bases.xy, du);
     let v = weather_double_plus_float(bases.zw, dv);
     let fall_time = time.y + time.z;

@@ -7,13 +7,15 @@
 //! version's level so the launcher can tell before it installs.
 
 /// The newest level this Horizon serves.
-pub const LEVEL: u32 = 7;
+// Local experimental allocations on 1feb28c. Levels 8 through 21 collide with draft 2888.
+// Reallocate on the merged substrate before any release.
+pub const LEVEL: u32 = 21;
 
 /// Every function the game offers mods, as `interface.function`, with its
 /// level. Level 0 is the contract of Horizon 0.2.67 to 0.2.69. A new
 /// function takes the next level and raises [`LEVEL`] (the `api_reference`
 /// test fails until it is listed here).
-pub const FUNCTIONS: [(&str, u32); 46] = [
+pub const FUNCTIONS: [(&str, u32); 75] = [
     ("log.write", 0),
     ("game.get-player", 0),
     ("game.get-clock", 0),
@@ -50,6 +52,9 @@ pub const FUNCTIONS: [(&str, u32); 46] = [
     ("command.run-quiet", 3),
     ("world.get-block", 4),
     ("world.get-biome", 4),
+    ("world.environment", 16),
+    ("world.sky-visible", 17),
+    ("audio.play", 18),
     ("world.set-blocks", 4),
     ("recipes.items", 5),
     ("recipes.all", 5),
@@ -60,6 +65,32 @@ pub const FUNCTIONS: [(&str, u32); 46] = [
     ("recipes.place", 6),
     ("recipes.give", 6),
     ("render.set-far-terrain", 7),
+    ("resources.read", 8),
+    ("entities.register-types", 9),
+    ("entities.context", 9),
+    ("entities.spawn", 9),
+    ("entities.set-state", 9),
+    ("entities.move-colliding", 14),
+    ("entities.probe-colliding", 20),
+    ("inventory.held", 15),
+    ("inventory.component-string", 19),
+    ("inventory.custom-data-integer", 21),
+    ("inventory.give", 15),
+    ("entities.despawn", 9),
+    ("entities.poll", 9),
+    ("models.register-renderer", 10),
+    ("models.views", 10),
+    ("models.upload-mesh", 10),
+    ("models.bind", 10),
+    ("models.bind-parts", 12),
+    ("messages.subscribe", 13),
+    ("messages.poll", 13),
+    ("messages.send", 13),
+    ("models.update-mesh", 10),
+    ("models.release-mesh", 10),
+    ("world-storage.context", 11),
+    ("world-storage.get", 11),
+    ("world-storage.set", 11),
 ];
 
 /// What the game's program carries so the launcher can read its level

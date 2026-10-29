@@ -161,7 +161,10 @@ def status(port):
     def read_varint(s):
         value = 0
         for i in range(5):
-            b = s.recv(1)[0]
+            chunk = s.recv(1)
+            if not chunk:
+                raise ConnectionError("server closed while reading status length")
+            b = chunk[0]
             value |= (b & 0x7F) << (7 * i)
             if not b & 0x80:
                 return value
@@ -172,7 +175,10 @@ def status(port):
         length = read_varint(s)
         data = b''
         while len(data) < length:
-            data += s.recv(length - len(data))
+            chunk = s.recv(length - len(data))
+            if not chunk:
+                raise ConnectionError("server closed while reading status body")
+            data += chunk
     text = data[1:]
     n, shift, i = 0, 0, 0
     while True:

@@ -21,6 +21,65 @@ pub fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Strin
     serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+#[cfg(test)]
+mod loader_path_tests {
+    use super::*;
+    use std::{
+        io::Write,
+        path::PathBuf,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "horizon-port-pack-pipeline-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_loader_before_creating_the_work_folder() {
+        let root = TestDir::new();
+        let source = root.0.join("hostile.mrpack");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&source).unwrap());
+        zip.start_file(
+            "modrinth.index.json",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        let index = serde_json::json!({
+            "name": "Path probe",
+            "dependencies": {
+                "minecraft": "1.21.1",
+                "neoforge": "review/../../../outside/probe"
+            },
+            "files": []
+        });
+        zip.write_all(index.to_string().as_bytes()).unwrap();
+        zip.finish().unwrap();
+
+        let work = root.0.join("work");
+        let result = import(&source, &work, &|_| {});
+        assert!(result.unwrap_err().contains("NeoForge loader version"));
+        assert!(!work.exists());
+        assert!(!work.join("pack.json").exists());
+    }
+}
+
 /// Step 1: the pack at `pack` to `<work>/pack.json`.
 pub fn import(pack: &Path, work: &Path, log: Log) -> Result<import::Pack, String> {
     let pack = import::import(pack)?;
@@ -42,6 +101,33 @@ pub fn import(pack: &Path, work: &Path, log: Log) -> Result<import::Pack, String
 /// reached, the cached answers and the reviewed table classify alone.
 pub fn inventory(work: &Path, offline: bool, log: Log) -> Result<Vec<inventory::Record>, String> {
     let pack: import::Pack = read_json(&work.join("pack.json"))?;
+    let previous: Vec<inventory::Record> = if work.join("inventory.json").exists() {
+        read_json(&work.join("inventory.json"))?
+    } else {
+        Vec::new()
+    };
+    let root = work.join("mods");
+    if root.exists() {
+        for entry in fs::read_dir(&root).map_err(|e| e.to_string())? {
+            let dir = entry.map_err(|e| e.to_string())?.path();
+            if dir.join("source.json").exists()
+                || !(dir.join("carry/horizon-mod.toml").is_file()
+                    || dir.join("carry-report.json").is_file())
+            {
+                continue;
+            }
+            let owners: Vec<_> = previous
+                .iter()
+                .filter(|r| r.work_dir(work) == dir || root.join(&r.key) == dir)
+                .collect();
+            // An empty source keeps unresolved generations excluded on later imports too.
+            let source = match owners.as_slice() {
+                [owner] => owner.path.as_str(),
+                _ => "",
+            };
+            write_json(&dir.join("source.json"), &source)?;
+        }
+    }
     let cache_path = work.join("modrinth.json");
     let mut cache = modrinth::Cache::load(&cache_path);
     if !offline {
@@ -99,8 +185,30 @@ pub fn carry(
     only: &[String],
     log: Log,
 ) -> Result<usize, String> {
+    let chosen = |r: &inventory::Record| {
+        if only.is_empty() {
+            r.class == "content" && r.jar.is_some() && r.info.is_some()
+        } else {
+            only.contains(&r.key)
+        }
+    };
+    carry_matching(work, resources, &chosen, log)
+}
+
+fn carry_matching(
+    work: &Path,
+    resources: Option<&Path>,
+    chosen: &dyn Fn(&inventory::Record) -> bool,
+    log: Log,
+) -> Result<usize, String> {
     let records: Vec<inventory::Record> = read_json(&work.join("inventory.json"))?;
     let facts_path = work.join("oracle/facts.json");
+    let aliases_path = work.join("oracle/state-aliases.json");
+    let state_overrides: BTreeMap<String, carry::StateOverride> = if aliases_path.exists() {
+        read_json(&aliases_path)?
+    } else {
+        BTreeMap::new()
+    };
     let facts = if facts_path.exists() {
         let f = oracle::Facts::read(&facts_path)?;
         log(format!(
@@ -120,24 +228,6 @@ pub fn carry(
     });
     let allowed = |b: &str| vanilla.as_ref().is_none_or(|v| v.contains(b));
     let conventions = crate::worldgen::loader_biome_tags(work);
-    let chosen = |r: &inventory::Record| {
-        if only.is_empty() {
-            r.class == "content"
-        } else {
-            only.contains(&r.key)
-        }
-    };
-    // The mods ported along (carried now or before), for the conditions of
-    // the mods' worldgen modifiers.
-    let ported: BTreeSet<&str> = records
-        .iter()
-        .filter(|r| {
-            r.jar.is_some() && (chosen(r) || work.join("mods").join(&r.key).join("carry").is_dir())
-        })
-        .filter_map(|r| Some(r.info.as_ref()?.mod_id.as_str()))
-        .chain(["minecraft"])
-        .collect();
-    let loaded = |m: &str| ported.contains(m);
     // Every mod of the pack, ported or not: a namespace one of them has as
     // its id is never another mod's.
     let in_pack: BTreeSet<&str> = records
@@ -160,15 +250,11 @@ pub fn carry(
     });
     let shared = shared_namespaces(claims, log);
     let in_pack = |m: &str| in_pack.contains(m) || shared.contains(m);
-    let pack = carry::Pack {
-        loaded: &loaded,
-        mods: &in_pack,
-    };
     let mut done = 0;
     for r in &records {
         let chosen = chosen(r);
         let (Some(jar), Some(info)) = (&r.jar, &r.info) else {
-            if chosen && !only.is_empty() {
+            if chosen {
                 log(format!(
                     "{}: no jar (put it in {}/jars/)",
                     r.key,
@@ -189,16 +275,23 @@ pub fn carry(
                 .chain(f.items.keys())
                 .any(|k| k.starts_with(&prefix))
         };
-        match carry::carry(
+        let loaded = |m: &str| m == "minecraft";
+        let pack = carry::Pack {
+            loaded: &loaded,
+            mods: &in_pack,
+        };
+        match carry::carry_with_states(
             jar,
             info,
-            &work.join("mods").join(&r.key),
+            &r.work_dir(work),
             facts.as_ref().filter(seen),
             &allowed,
             &pack,
             &conventions,
+            &state_overrides,
         ) {
             Ok(report) => {
+                write_json(&r.work_dir(work).join("source.json"), &r.path)?;
                 done += 1;
                 log(format!(
                     "{}: {} files, {} recipes upgraded ({} kept), {} loot tables upgraded ({} added), {} item definitions added, {} blocks ({} left out, {} with differences), {} items ({} left out), {} convention tags, {} outside",
@@ -221,11 +314,80 @@ pub fn carry(
             Err(e) => log(format!("{}: {e}", r.key)),
         }
     }
+    let owned = carried(work)?;
+    let (selected, _) = loadable(&owned);
+    let mut loaded = BTreeSet::from(["minecraft".to_owned()]);
+    for record in records.iter().filter(|r| r.path.starts_with("mods/")) {
+        let path = record.work_dir(work).join("carry");
+        if selected.contains(&path) {
+            let manifest = horizon_mods::Manifest::parse(
+                &fs::read_to_string(path.join("horizon-mod.toml")).map_err(|e| e.to_string())?,
+            )?;
+            loaded.insert(manifest.id);
+        }
+    }
+    for path in &owned {
+        let out = path.parent().ok_or("carry output has no owner folder")?;
+        carry::finalize_worldgen(out, &|id| loaded.contains(id))?;
+    }
     log(format!(
         "{done} mods carried over into {}",
         work.join("mods").display()
     ));
     Ok(done)
+}
+
+/// Current records own their outputs; an unambiguous legacy folder stays usable until ported.
+pub fn carried(work: &Path) -> Result<Vec<std::path::PathBuf>, String> {
+    let root = work.join("mods");
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(&root).map_err(|e| e.to_string())? {
+        let dir = entry.map_err(|e| e.to_string())?.path().join("carry");
+        if dir.join(horizon_mods::manifest::MANIFEST).is_file() {
+            paths.push(dir);
+        }
+    }
+    let mut mod_outputs = BTreeSet::new();
+    if work.join("inventory.json").exists() {
+        let records: Vec<inventory::Record> = read_json(&work.join("inventory.json"))?;
+        let mut owned = BTreeSet::new();
+        for r in &records {
+            let unique = records.iter().filter(|other| other.key == r.key).count() == 1;
+            let current = r.work_dir(work).join("carry");
+            let legacy = root.join(&r.key).join("carry");
+            let path = if paths.contains(&current) {
+                current
+            } else if unique && paths.contains(&legacy) {
+                legacy.clone()
+            } else {
+                continue;
+            };
+            let source = path.parent().unwrap().join("source.json");
+            if source.exists() {
+                if read_json::<String>(&source)? != r.path {
+                    continue;
+                }
+            } else if !unique && path == legacy {
+                continue;
+            }
+            if r.path.starts_with("mods/") {
+                mod_outputs.insert(path.clone());
+            }
+            owned.insert(path);
+        }
+        paths.retain(|p| owned.contains(p));
+    }
+    // Actual Mod owners precede standalone packs, independently of their folder names.
+    paths.sort_by(|a, b| {
+        mod_outputs
+            .contains(b)
+            .cmp(&mod_outputs.contains(a))
+            .then_with(|| a.cmp(b))
+    });
+    Ok(paths)
 }
 
 /// Which carried-over mods (`mods/<key>/carry` folders) the game loads together, in the order
@@ -331,16 +493,11 @@ pub fn port(
     let fetched = fetch::fetch(work, &records, from, &portable, log)?;
     // The jars tell classes and tiers better than metadata alone.
     let records = inventory(work, true, log)?;
-    let only: Vec<String> = records
-        .iter()
-        .filter(|r| portable(r) && r.jar.is_some())
-        .map(|r| r.key.clone())
-        .collect();
-    if only.is_empty() {
+    let chosen = |r: &inventory::Record| portable(r) && r.jar.is_some();
+    if !records.iter().any(chosen) {
         log("no portable mod has its jar: nothing to carry over".into());
-    } else {
-        carry(work, resources, &only, log)?;
     }
+    carry_matching(work, resources, &chosen, log)?;
     Ok((fetched, report(work, log)?))
 }
 

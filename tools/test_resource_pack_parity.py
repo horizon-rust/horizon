@@ -35,7 +35,7 @@ def write(root, files):
 def packs(folder):
     shutil.rmtree(folder, ignore_errors=True)
     folder.mkdir(parents=True)
-    write(folder / "Alpha", {
+    write(folder / "Alpha Pack", {
         "pack.mcmeta": {"pack": {"description": "alpha", **FORMAT}, "overlays": {"entries": [
             {"directory": "alpha_now", **FORMAT},
             {"directory": "alpha_old", "min_format": [80, 0], "max_format": [80, 0]}]}},
@@ -105,9 +105,9 @@ QUERIES = [
     "atlas minecraft:gui",
 ]
 SELECTIONS = [
-    ["file/Alpha", "file/Beta.zip", "file/Gamma"],
-    ["file/Beta.zip", "file/Alpha"],
-    ["file/Alpha"],
+    ["file/Alpha Pack", "file/Beta.zip", "file/Gamma"],
+    ["file/Beta.zip", "file/Alpha Pack"],
+    ["file/Alpha Pack"],
     [],
 ]
 
@@ -117,19 +117,20 @@ def main():
     for index, selection in enumerate(SELECTIONS):
         # One run per selection: the input's first line names the packs, bottom first.
         def make(build, selection=selection):
-            folder = build / "resourcepacks"
+            folder = build / "resource packs"
             packs(folder)
             vanilla = lab.RESOURCES
             path = build / "inputs.txt"
-            path.write_text(f"root {vanilla} {folder} {' '.join(selection)}".rstrip() + "\n"
+            path.write_text("root " + json.dumps([str(vanilla), str(folder), *selection]) + "\n"
                             + "".join(q + "\n" for q in QUERIES))
             return path, len(QUERIES)
         harness.differential(f"resource-pack-parity-{index}", "VanillaPackResourcesOracle",
                                     "pack_resources_fixture", make,
                                     "Pack discovery, overlays, filters and the resource stacks vanilla merges.",
-                                    sources=[lab.ROOT / "crates/horizon-client/src/packs.rs",
+                                    sources=[__file__, lab.ROOT / "crates/horizon-client/src/packs.rs",
                                              lab.ROOT / "crates/horizon-client/src/sound_events.rs",
-                                             lab.ROOT / "crates/horizon-client-core/src/lang.rs"])
+                                             lab.ROOT / "crates/horizon-client-core/src/lang.rs"],
+                                    expected_lines=len(QUERIES))
         total += len(QUERIES)
     print(f"{total} resource pack queries match the pinned client over {len(SELECTIONS)} selections")
 

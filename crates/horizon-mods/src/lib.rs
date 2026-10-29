@@ -7,11 +7,19 @@
 //! [`Mods`] makes no engine and every hook returns at once.
 pub mod api_level;
 #[cfg(feature = "runtime")]
+pub mod audio;
+#[cfg(feature = "runtime")]
 pub mod commands;
 pub mod content;
+#[cfg(feature = "runtime")]
+pub mod entities;
 #[cfg(feature = "index")]
 pub mod index;
 pub mod manifest;
+#[cfg(feature = "runtime")]
+pub mod messages;
+#[cfg(feature = "runtime")]
+pub mod models;
 pub mod modpack;
 #[cfg(feature = "runtime")]
 mod runtime;

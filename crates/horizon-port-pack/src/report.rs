@@ -108,8 +108,21 @@ fn not_needed(class: &str) -> &'static str {
 
 /// A carried-over mod: ported when its harness passes with nothing left
 /// out and nothing the templates miss; else partial, with what is missing.
-fn carried(work: &Path, key: &str) -> Option<(Status, String)> {
-    let dir = work.join("mods").join(key);
+fn carried(work: &Path, record: &Record, unique: bool) -> Option<(Status, String)> {
+    let legacy = work.join("mods").join(&record.key);
+    let mut dir = record.work_dir(work);
+    if unique && !dir.join("carry").is_dir() && !dir.join("carry-report.json").exists() {
+        dir = legacy.clone();
+    }
+    if dir.join("source.json").exists() {
+        let source: String =
+            serde_json::from_slice(&std::fs::read(dir.join("source.json")).ok()?).ok()?;
+        if source != record.path {
+            return None;
+        }
+    } else if !unique && dir == legacy {
+        return None;
+    }
     let carry: Value =
         serde_json::from_slice(&std::fs::read(dir.join("carry-report.json")).ok()?).ok()?;
     let count = |k: &str| carry[k].as_object().map_or(0, |o| o.len());
@@ -139,6 +152,14 @@ fn carried(work: &Path, key: &str) -> Option<(Status, String)> {
         }
     }
     let mut gaps = Vec::new();
+    if record.tier != "data" {
+        gaps.push("native behavior still needs implementation and verification beyond this content harness".into());
+    }
+    if own_code > 0 {
+        gaps.push(format!(
+            "{own_code} blocks or items still need native behavior"
+        ));
+    }
     if left_blocks > 0 {
         gaps.push(format!(
             "{left_blocks} blocks left out (no vanilla template)"
@@ -168,17 +189,20 @@ fn carried(work: &Path, key: &str) -> Option<(Status, String)> {
                     gaps.push(format!("{name} {p}/{}", p + f));
                 }
             }
+            if checked == 0 {
+                gaps.push("harness ran no checks".into());
+            }
         }
         None => gaps.push("harness not run".into()),
     }
     let worldgen = carry["worldgen"].as_u64().unwrap_or(0);
     if blocks == 0 && items == 0 && checked == 0 {
-        let what = if worldgen > 0 {
+        let what: String = if worldgen > 0 {
             format!("{worldgen} worldgen files carried, not compared yet")
         } else {
             "nothing registered to compare".into()
         };
-        return Some((Status::Partial, what));
+        return Some((Status::Partial, format!("{what}; {}", gaps.join("; "))));
     }
     let mut summary = format!("{blocks} blocks, {items} items");
     if own_code > 0 {
@@ -204,7 +228,11 @@ pub fn build(records: &[Record], work: &Path) -> Vec<Row> {
                 (Status::NotYet, why.to_owned())
             } else if r.tier == "none" || matches!(r.class.as_str(), "library" | "performance") {
                 (Status::NotNeeded, not_needed(&r.class).to_owned())
-            } else if let Some(c) = carried(work, &r.key) {
+            } else if let Some(c) = carried(
+                work,
+                r,
+                records.iter().filter(|other| other.key == r.key).count() == 1,
+            ) {
                 c
             } else {
                 let mut why = not_yet(&r.tier).to_owned();
@@ -361,7 +389,8 @@ mod tests {
         ];
         let rows = build(&records, &work);
         let by: BTreeMap<&str, &Row> = rows.iter().map(|r| (r.key.as_str(), r)).collect();
-        assert_eq!(by["doors"].status, Status::Ported);
+        assert_eq!(by["doors"].status, Status::Partial);
+        assert!(by["doors"].reason.contains("still need native behavior"));
         assert!(
             by["doors"].reason.contains("1 with code of their own"),
             "{}",
@@ -391,18 +420,65 @@ mod tests {
         assert_eq!(
             counts(&rows),
             [
-                ("ported", 1),
-                ("partial", 1),
+                ("ported", 0),
+                ("partial", 2),
                 ("not yet", 3),
                 ("not needed", 1)
             ]
         );
         let md = markdown("test", &rows);
         assert!(
-            md.contains("| **all** | **1** | **1** | **3** | **1** | **6** |"),
+            md.contains("| **all** | **0** | **2** | **3** | **1** | **6** |"),
             "{md}"
         );
         std::fs::remove_dir_all(&work).unwrap();
+    }
+
+    #[test]
+    fn content_checks_cannot_certify_native_behavior_or_an_empty_harness() {
+        let work =
+            std::env::temp_dir().join(format!("horizon-report-native-{}", std::process::id()));
+        let records = [
+            record("pixelmon", "content", "deep", &[]),
+            record("logic", "content", "logic", &[]),
+            record("own_code", "content", "data", &[]),
+            record("empty", "content", "data", &[]),
+            record("zero", "content", "data", &[]),
+            record("data", "content", "data", &[]),
+        ];
+        for r in &records {
+            let dir = r.work_dir(&work);
+            std::fs::create_dir_all(dir.join("harness")).unwrap();
+            let mut carry = serde_json::json!({"blocks": {}, "items": 1});
+            if r.key == "own_code" {
+                carry["differences"] = serde_json::json!({"item": ["class original.CustomItem"]});
+            }
+            std::fs::write(dir.join("carry-report.json"), carry.to_string()).unwrap();
+            let checks = match r.key.as_str() {
+                "empty" => serde_json::json!({}),
+                "zero" => serde_json::json!({"items": {"passed": 0, "failed": 0}}),
+                _ => serde_json::json!({"items": {"passed": 1, "failed": 0}}),
+            };
+            std::fs::write(
+                dir.join("harness/result.json"),
+                serde_json::json!({"passed": true, "checks": checks}).to_string(),
+            )
+            .unwrap();
+        }
+        for row in build(&records, &work) {
+            if row.key == "data" {
+                assert_eq!(row.status, Status::Ported);
+            } else {
+                assert_eq!(row.status, Status::Partial, "{}: {}", row.key, row.reason);
+                let reason = if matches!(row.key.as_str(), "empty" | "zero") {
+                    "harness ran no checks"
+                } else {
+                    "native behavior"
+                };
+                assert!(row.reason.contains(reason), "{}: {}", row.key, row.reason);
+            }
+        }
+        std::fs::remove_dir_all(work).unwrap();
     }
 
     #[test]

@@ -1013,15 +1013,16 @@ impl Game<'_> {
     }
     /// Load per-world command state when a world opens.
     pub(super) fn load_world_state(&mut self) {
-        self.ui.rules = GameRules::load(&self.world_root);
+        self.ui.rules = horizon_client::save::load_game_rules(&self.world_root);
         self.ui.clock = WorldClock::default();
         // PrimaryLevelData: the difficulty comes back from level.dat's difficulty_settings.
         self.ui.difficulty = horizon_client::title::DIFFICULTIES
             .iter()
             .position(|d| *d == self.level.difficulty)
             .map_or(2, |i| i as u8);
-        if let Ok(bytes) = std::fs::read(self.world_root.join("data/minecraft/world_clocks.dat"))
-            && let Ok(raw) = horizon_world::compression::Compression::Gzip.decode(&bytes, 1 << 20)
+        if let Ok(bytes) = horizon_client::save::read_bytes(
+            &self.world_root.join("data/minecraft/world_clocks.dat"),
+        ) && let Ok(raw) = horizon_world::compression::Compression::Gzip.decode(&bytes, 1 << 20)
             && let Ok((root, _)) =
                 horizon_world::nbt::read_named(&raw, horizon_world::nbt::Limits::default())
             && let Some(c) = root

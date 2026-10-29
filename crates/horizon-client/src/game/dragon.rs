@@ -566,8 +566,13 @@ fn wrap64(d: f64) -> f64 {
     if r >= 180.0 { r - 360.0 } else { r }
 }
 impl Game<'_> {
-    fn fight_path(&self) -> std::path::PathBuf {
-        horizon_client::save::dimension_dir(&self.world_root, "minecraft:the_end").join(FIGHT_FILE)
+    fn fight_path(&self) -> horizon_client::save::WorldPath {
+        self.world_root
+            .with_path(horizon_client::save::dimension_dir(
+                &self.world_root,
+                "minecraft:the_end",
+            ))
+            .join(FIGHT_FILE)
     }
     /// The saved fight, or `createDefault` with the gateways shuffled by the seed.
     fn load_fight(&mut self) {
@@ -987,18 +992,26 @@ impl Game<'_> {
         by_player: bool,
         arrow: bool,
     ) -> Hurt {
+        let by = by_player.then(|| self.acting_player());
+        self.hit_special_by(id, amount, by, arrow)
+    }
+    pub(super) fn hit_special_by(
+        &mut self,
+        id: u32,
+        amount: f32,
+        by: Option<FightWho>,
+        arrow: bool,
+    ) -> Hurt {
         if id >= CRYSTAL_IDS {
             // EndCrystal.hurtServer: false while invulnerable, else it blows up.
             let index = (id - CRYSTAL_IDS) as usize;
             if self.crystals.get(index).is_none_or(|c| c.invulnerable) {
                 return Hurt::Refused;
             }
-            let by = by_player.then(|| self.acting_player());
             self.destroy_crystal(index, by, CrystalDamage::Direct);
             Hurt::Landed { full: true }
         } else if id >= SPECIAL {
-            let by = by_player.then(|| self.acting_player());
-            self.hurt_dragon((id - SPECIAL) as usize, amount, by_player, by, arrow)
+            self.hurt_dragon((id - SPECIAL) as usize, amount, by.is_some(), by, arrow)
         } else {
             Hurt::Refused
         }
@@ -1383,7 +1396,7 @@ impl Game<'_> {
                 clockwise,
             } => {
                 let dt = far(*target);
-                if dt < 100.0 || dt > 22500.0 || collided {
+                if !dt.is_nan() && !(100.0..=22500.0).contains(&dt) || collided {
                     let done = path.as_ref().is_some_and(|p| p.0.done());
                     let mut chosen = false;
                     if done {
@@ -1453,7 +1466,7 @@ impl Game<'_> {
                     *target = Some(Vec3::new(pp.x, pp.y + ho, pp.z));
                 }
                 let dt = far(*target);
-                if dt < 100.0 || dt > 22500.0 {
+                if !dt.is_nan() && !(100.0..=22500.0).contains(&dt) {
                     if path.as_ref().is_none_or(|p| p.0.done()) {
                         *path = self.ring_path(clockwise).map(PathBox);
                     }
@@ -1499,7 +1512,7 @@ impl Game<'_> {
             }
             Phase::LandingApproach { path, target } => {
                 let dt = far(*target);
-                if dt < 100.0 || dt > 22500.0 || collided {
+                if !dt.is_nan() && !(100.0..=22500.0).contains(&dt) || collided {
                     if path.as_ref().is_none_or(|p| p.0.done()) {
                         let current = self.closest_node(pos.x, pos.y, pos.z);
                         // NEAR_EGG_TARGETING: the enemy nearest the egg.
@@ -1685,7 +1698,7 @@ impl Game<'_> {
                     }
                 } else {
                     let dt = far(*target);
-                    if dt < 100.0 || dt > 22500.0 {
+                    if !dt.is_nan() && !(100.0..=22500.0).contains(&dt) {
                         *since += 1;
                     }
                 }

@@ -126,7 +126,7 @@ def main():
     chosen = cases(args.cases, args.seed)
     inputs = work / 'cases.jsonl'
     inputs.write_text(''.join(json.dumps(c) + '\n' for c in chosen))
-    run = subprocess.run(['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + deps, 'dev.horizonlab.parity.VanillaRecipeBookScreenOracle',
+    run = subprocess.run(['java', '-Xmx2G', f'-Dhorizon.parity.assets={lib.RESOURCES / "assets"}', '-cp', str(classes) + os.pathsep + deps, 'dev.horizonlab.parity.VanillaRecipeBookScreenOracle',
                           str(inputs), str(work / 'vanilla.jsonl')], capture_output=True, text=True)
     if run.returncode:
         print(run.stderr[-4000:])

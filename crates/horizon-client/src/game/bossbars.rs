@@ -31,7 +31,7 @@ fn num(n: impl std::fmt::Display) -> Text {
 }
 
 impl Game<'_> {
-    fn bossbar_path(&self) -> std::path::PathBuf {
+    fn bossbar_path(&self) -> horizon_client::save::WorldPath {
         self.world_root
             .join("data/minecraft/custom_boss_events.dat")
     }

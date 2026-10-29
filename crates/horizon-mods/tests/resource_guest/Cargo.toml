@@ -1,0 +1,19 @@
+[package]
+name = "horizon-mods-test-resource-guest"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "An original packaged byte reader for the sandbox tests"
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+server = []
+
+[dependencies]
+horizon-mod-sdk = { path = "../../../horizon-mod-sdk" }
+
+[lints]
+workspace = true

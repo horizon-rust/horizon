@@ -599,6 +599,60 @@ impl Game<'_> {
     pub(super) fn uuid_for(&mut self, id: u32) -> [i32; 4] {
         *self.persist.uuids.entry(id).or_insert_with(random_uuid)
     }
+    pub(super) fn projectile_owner_uuid(&mut self, index: usize) -> Option<[i32; 4]> {
+        let p = &self.creatures.projectiles[index];
+        if p.owner_uuid.is_some() {
+            return p.owner_uuid;
+        }
+        let uuid = match (p.owner, p.guest) {
+            (Some(Who::Player), Some(conn)) => self.lan.as_ref().and_then(|host| {
+                host.hub
+                    .guests
+                    .iter()
+                    .find(|g| g.conn == conn)
+                    .map(|g| horizon_client::lan::playerdata::uuid_ints(g.uuid))
+            }),
+            (Some(Who::Player), None) => self.level.player_uuid,
+            (Some(Who::Mob(id)), _) => Some(self.uuid_for(id)),
+            _ => None,
+        };
+        self.creatures.projectiles[index].owner_uuid = uuid;
+        uuid
+    }
+    /// Resolve owner UUIDs for persisted projectiles.
+    pub(super) fn resolve_projectile_owners(&mut self) {
+        for i in 0..self.creatures.projectiles.len() {
+            if !matches!(
+                self.creatures.projectiles[i].kind,
+                horizon_client::projectiles::ProjectileKind::Arrow { .. }
+                    | horizon_client::projectiles::ProjectileKind::SmallFireball
+                    | horizon_client::projectiles::ProjectileKind::LargeFireball { .. }
+            ) {
+                continue;
+            }
+            let Some(uuid) = self.projectile_owner_uuid(i) else {
+                continue;
+            };
+            let guest = self.lan.as_ref().and_then(|host| {
+                host.hub.guests.iter().find(|g| {
+                    g.placed && horizon_client::lan::playerdata::uuid_ints(g.uuid) == uuid
+                })
+            });
+            let (owner, conn) = if let Some(g) = guest {
+                (Some(Who::Player), Some(g.conn))
+            } else if self.options.execution_role.is_client()
+                && self.player.is_some()
+                && self.level.player_uuid == Some(uuid)
+            {
+                (Some(Who::Player), None)
+            } else {
+                (self.mob_by_uuid(uuid).map(Who::Mob), None)
+            };
+            let p = &mut self.creatures.projectiles[i];
+            p.owner = owner;
+            p.guest = conn;
+        }
+    }
     /// `BlockState.CODEC`: a block name or `{id, properties}` (or legacy `{Name, Properties}`).
     fn state_from_nbt(&self, tag: &Tag) -> Option<BlockStateId> {
         let registry = self.pack.assets.registry;
@@ -642,7 +696,6 @@ impl Game<'_> {
     ) -> Vec<((i32, i32), Vec<Tag>)> {
         let mut out: HashMap<(i32, i32), Vec<Tag>> =
             keys.iter().map(|k| (*k, Vec::new())).collect();
-        let player_uuid = self.level.player_uuid;
         // A rider is saved inside its root vehicle, in the root's chunk; a
         // boat's passengers inside the boat.
         let mobs: Vec<usize> = (0..self.mobs.len())
@@ -689,15 +742,12 @@ impl Game<'_> {
                     .push(with_raw(entity_nbt::orb_to_nbt(o, uuid), raw.as_ref()));
             }
         }
-        for p in &self.creatures.projectiles {
+        for i in 0..self.creatures.projectiles.len() {
+            let owner = self.projectile_owner_uuid(i);
+            let p = &self.creatures.projectiles[i];
             if !keys.contains(&chunk_of(p.position)) {
                 continue;
             }
-            let owner = if p.owner == Some(Who::Player) {
-                player_uuid
-            } else {
-                None
-            };
             let (uuid, raw) = anon(&self.persist, p.kind.id(), p.position);
             let in_block = p
                 .arrow
@@ -964,9 +1014,14 @@ impl Game<'_> {
                 keep
             });
             self.orbs.retain(|o| !gone(o.position));
-            self.creatures
-                .projectiles
-                .retain(|p| p.arrow.is_none() || !gone(p.position));
+            self.creatures.projectiles.retain(|p| {
+                !matches!(
+                    p.kind,
+                    horizon_client::projectiles::ProjectileKind::Arrow { .. }
+                        | horizon_client::projectiles::ProjectileKind::SmallFireball
+                        | horizon_client::projectiles::ProjectileKind::LargeFireball { .. }
+                ) || !gone(p.position)
+            });
             self.falling.retain(|f| !gone(f.position));
             self.persist
                 .anon
@@ -1018,6 +1073,8 @@ impl Game<'_> {
         }
         self.spawn_loaded_entities();
         let keys: HashSet<(i32, i32)> = unloaded.iter().map(|c| (c.x, c.z)).collect();
+        #[cfg(feature = "mods")]
+        self.mod_entities.unload(&keys);
         let chunks = self.entity_chunks(&keys, true);
         if let Err(e) = self.save.save_entities_later(chunks) {
             log::warn!("Horizon: failed to save entities: {e}");
@@ -1025,11 +1082,14 @@ impl Game<'_> {
     }
     /// Leaving a dimension: its entities are saved with it.
     pub(super) fn save_dimension_entities(&mut self) -> Result<()> {
+        #[cfg(feature = "mods")]
+        self.mod_entities
+            .clear(horizon_mods::EntityReason::DimensionUnloaded);
         self.spawn_loaded_entities();
         let keys: HashSet<(i32, i32)> = self.world.chunks.keys().copied().collect();
         let chunks = self.entity_chunks(&keys, true);
         self.persist = EntityMemory::default();
-        self.save.save_entities(chunks)
+        self.save.save_entities_later(chunks)
     }
 }
 /// Only a mob is finalized; another entity drops the request.

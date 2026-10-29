@@ -40,8 +40,10 @@ pub struct Ai {
     pub target: Option<Who>,
     pub last_hurt_by: Option<Who>,
     pub last_hurt_by_time: i32,
-    /// Ticks left during which kills count as player kills.
+    /// Ticks left for player loot and experience.
     pub last_hurt_by_player: i32,
+    /// Kill credit lasts through the tick that reaches zero.
+    pub player_credit: bool,
     pub no_action_time: i32,
     pub aggressive: bool,
     pub panicking: bool,
@@ -89,7 +91,7 @@ impl Mob {
     /// ticks (`getModifiedSwingDuration`): the arm is `hand.asArm(mainArm)`.
     pub fn swing_hand(&mut self, off_hand: bool, duration: i32) {
         if self.start_swing(duration) {
-            self.extra.swing_right_arm = Some(!off_hand != self.main_arm_left());
+            self.extra.swing_right_arm = Some(off_hand == self.main_arm_left());
         }
     }
     /// `swing_hand` for a swing of `base` ticks, lengthened or shortened by
@@ -464,9 +466,6 @@ pub fn tick(
     m.anim.begin_tick();
     m.age += 1;
     m.ai.seen_cache.clear();
-    if m.ai.last_hurt_by_player > 0 {
-        m.ai.last_hurt_by_player -= 1;
-    }
     // Mob.tick pre-update hooks (Creeper.tick swells before super.tick).
     pre_tick(m, events);
     if m.removed {
@@ -729,6 +728,14 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             m.damage(1.0, Damage::of(DamageKind::Drown));
         }
         freeze_tick(m, w);
+    }
+    // Keep the credit at the killing blow until Game handles the death.
+    if m.alive() {
+        if m.ai.last_hurt_by_player > 0 {
+            m.ai.last_hurt_by_player -= 1;
+        } else {
+            m.ai.player_credit = false;
+        }
     }
     tick_effects(m);
     if m.species() == Species::Illusioner {

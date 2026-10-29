@@ -330,7 +330,10 @@ public final class VanillaWorldgenOracle {
                 if(line.startsWith("tag_file ")){tagFileProbe(line.substring(9),out);continue;}
                 if(line.startsWith("tag_registry ")){tagRegistryProbe(line.substring(13),out);continue;}
                 if(line.startsWith("tags ")){tagsProbe(JsonParser.parseString(line.substring(5)).getAsJsonObject(),out);continue;}
-                if(line.startsWith("noise_aquifer ")){var fields=line.split(" ",6);registryProbe(fields[3],Long.parseLong(fields[1]),fields[2].equals("1"),true,fields[4],fields[5],out);continue;}
+                if(line.startsWith("noise_aquifer ")){
+                    var fields=line.split(" ",4);var payload=JsonParser.parseString(fields[3]).getAsJsonArray();
+                    registryProbe(payload.get(0).getAsString(),Long.parseLong(fields[1]),fields[2].equals("1"),true,payload.get(1).getAsString(),payload.get(2).toString(),out);continue;
+                }
                 if(line.startsWith("aquifer ")){aquiferProbe(line,out);continue;}
                 if(line.startsWith("noise_settings ")) {
                     var decoded=net.minecraft.world.level.levelgen.NoiseSettings.CODEC.parse(JsonOps.INSTANCE,JsonParser.parseString(line.substring("noise_settings ".length()))).result();
@@ -360,7 +363,7 @@ public final class VanillaWorldgenOracle {
                     out.println();out.println("unquantized "+bits(net.minecraft.world.level.biome.Climate.unquantizeCoord(Long.parseLong(values[7]))));continue;
                 }
                 String[] args=line.split(" ",5);
-                if(args[0].equals("router")){var fields=args[4].split(" ",2);registryProbe(fields[0],Long.parseLong(args[1]),args[2].equals("1"),args[3].equals("1"),fields[1],out);continue;}
+                if(args[0].equals("router")){var fields=JsonParser.parseString(args[4]).getAsJsonArray();registryProbe(fields.get(0).getAsString(),Long.parseLong(args[1]),args[2].equals("1"),args[3].equals("1"),fields.get(1).getAsString(),out);continue;}
                 if(args[0].equals("registry")){registryProbe(args[4],Long.parseLong(args[1]),args[2].equals("1"),args[3].equals("1"),null,out);continue;}
                 if(!args[0].equals("noise"))throw new AssertionError("unknown command");
                 long seed=Long.parseLong(args[1]);boolean legacy=args[2].equals("1"),nether=args[3].equals("1");

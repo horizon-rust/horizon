@@ -13,6 +13,13 @@ use std::{collections::BTreeMap, path::Path};
 
 pub const FILE: &str = "server.toml";
 pub const PROPERTIES: &str = "server.properties";
+const MANAGED_DIRS: [&str; 5] = [
+    crate::backup::DIR,
+    ".horizon",
+    "logs",
+    "crash-reports",
+    "debug",
+];
 
 /// What `init` writes: every typed setting, with vanilla 26.3's defaults and what it means.
 pub const TEMPLATE: &str = r##"# Horizon server settings (docs/server.md). The server writes them into server.properties before
@@ -288,9 +295,24 @@ impl Config {
                 DIFFICULTIES.join(", ")
             ));
         }
-        if w.name.is_empty() || w.name.contains(['/', '\\']) || w.name == ".." {
+        let windows_name = w.name.trim_start_matches(' ').trim_end_matches([' ', '.']);
+        if windows_name.is_empty()
+            || windows_name == "."
+            || windows_name == ".."
+            || w.name.contains(['/', '\\'])
+            || w.name.contains(':')
+        {
             return Err(format!(
-                "world.name \"{}\" must be a folder name, without slashes",
+                "world.name {:?} must be one folder name without path or drive prefixes",
+                w.name
+            ));
+        }
+        if MANAGED_DIRS
+            .iter()
+            .any(|name| windows_name.eq_ignore_ascii_case(name))
+        {
+            return Err(format!(
+                "world.name {:?} is reserved for the server's own files",
                 w.name
             ));
         }
@@ -622,6 +644,67 @@ mod tests {
         assert!(Config::parse("[server]\nprot = 1\n").is_err());
         assert!(Config::parse("[properties]\nmotd = \"x\"\n").is_err());
         assert!(Config::parse("[world]\nname = \"../x\"\n").is_err());
+    }
+
+    #[test]
+    fn rejects_windows_aliases_of_managed_folders_and_path_roots() {
+        for name in [
+            "backups.",
+            "BACKUPS ",
+            "backups. ",
+            "Backups.. ",
+            " backups",
+            "  .HORIZON. ",
+            ".HORIZON.",
+            ".horizon ",
+            ".horizon.. ",
+            "logs",
+            "LOGS ",
+            "Logs.",
+            "logs. ",
+            " logs",
+            "crash-reports",
+            "CRASH-REPORTS ",
+            "Crash-Reports.",
+            "crash-reports. ",
+            " crash-reports",
+            "debug",
+            "DEBUG ",
+            "Debug.",
+            " debug",
+            ". ",
+            ".. ",
+            "...",
+            " ",
+        ] {
+            let text = format!("[world]\nname = {name:?}\n");
+            assert!(Config::parse(&text).is_err(), "accepted {name:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_windows_drive_relative_world_names() {
+        for name in ["C:outside", "C:.."] {
+            let text = format!("[world]\nname = {name:?}\n");
+            assert!(Config::parse(&text).is_err(), "accepted {name:?}");
+        }
+    }
+
+    #[test]
+    fn preserves_other_world_names() {
+        for name in [
+            "world",
+            "a world",
+            ".world",
+            "backups-old",
+            "logs-old",
+            "crash-reports-old",
+            "debug-old",
+            " another-world",
+        ] {
+            let text = format!("[world]\nname = {name:?}\n");
+            assert_eq!(Config::parse(&text).unwrap().world.name, name);
+        }
     }
 
     #[test]

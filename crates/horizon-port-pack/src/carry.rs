@@ -4,7 +4,7 @@
 //! definitions, and each blockstate gets a vanilla template guessed from its
 //! properties until the oracle's facts replace the guess.
 use crate::{jar::JarInfo, oracle::Facts};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -12,6 +12,73 @@ use std::{
     io::Read,
     path::Path,
 };
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateOverride {
+    pub template: String,
+    pub states: horizon_mods::content::BlockStates,
+    #[serde(default)]
+    pub fallback_only: bool,
+}
+
+fn check_state_overrides(
+    facts: Option<&Facts>,
+    overrides: &BTreeMap<String, StateOverride>,
+    prefix: &str,
+) -> Result<(), String> {
+    for (id, definition) in overrides.iter().filter(|(id, _)| id.starts_with(prefix)) {
+        let facts = facts.ok_or("state aliases need observed block facts")?;
+        let block = facts
+            .blocks
+            .get(id)
+            .ok_or_else(|| format!("{id}: no observed block"))?;
+        let vanilla = facts
+            .blocks
+            .get(&definition.template)
+            .filter(|_| definition.template.starts_with("minecraft:"))
+            .ok_or_else(|| format!("{id}: no observed vanilla template {}", definition.template))?;
+        definition.states.variants(&definition.template)?;
+        if definition.states.properties != block.properties
+            || definition.states.default != crate::oracle::state_key(&block.default)
+        {
+            return Err(format!(
+                "{id}: state domains or default differ from the observed block"
+            ));
+        }
+        let observed: BTreeSet<_> = block
+            .states
+            .keys()
+            .map(|key| crate::oracle::state_key(key))
+            .collect();
+        let supplied: BTreeSet<_> = definition.states.aliases.keys().cloned().collect();
+        if supplied != observed {
+            return Err(format!("{id}: aliases must cover every observed state"));
+        }
+        let complete: BTreeSet<_> = vanilla
+            .states
+            .keys()
+            .map(|key| crate::oracle::state_key(key))
+            .collect();
+        for alias in definition.states.aliases.values() {
+            let key = if alias == &definition.template {
+                ""
+            } else {
+                alias
+                    .strip_prefix(&definition.template)
+                    .and_then(|tail| tail.strip_prefix('['))
+                    .and_then(|tail| tail.strip_suffix(']'))
+                    .ok_or_else(|| format!("{id}: alias is outside its template"))?
+            };
+            if !complete.contains(&crate::oracle::state_key(key)) {
+                return Err(format!(
+                    "{id}: {alias} is not a complete observed template state"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Default, Serialize)]
 pub struct Report {
@@ -69,6 +136,240 @@ pub struct Pack<'a> {
     pub loaded: &'a dyn Fn(&str) -> bool,
     /// Every mod of the pack by id, ported or not: their namespaces are theirs.
     pub mods: &'a dyn Fn(&str) -> bool,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+// Successful data inputs survive later archive changes and partial carry failures.
+struct WorldgenSource {
+    files: Vec<(String, Value)>,
+    set_tags: BTreeMap<String, Vec<String>>,
+    piece_counts: BTreeMap<String, Value>,
+    spawners: BTreeMap<String, Vec<(String, f64)>>,
+    replace_vanilla: BTreeSet<(String, String)>,
+    lists: BTreeMap<String, Value>,
+}
+
+impl WorldgenSource {
+    fn read(zip: &mut zip::ZipArchive<fs::File>) -> Self {
+        let data = crate::processors::ProcessorData::read(zip);
+        Self {
+            set_tags: crate::worldgen::structure_set_tags(zip),
+            piece_counts: crate::worldgen::piece_counts(zip),
+            spawners: data.spawners,
+            replace_vanilla: data.replace_vanilla,
+            lists: data.lists,
+            ..Self::default()
+        }
+    }
+
+    fn processors(&self, loaded: &dyn Fn(&str) -> bool) -> crate::processors::ProcessorData {
+        let mut data = crate::processors::ProcessorData {
+            spawners: self.spawners.clone(),
+            replace_vanilla: self.replace_vanilla.clone(),
+            lists: self.lists.clone(),
+            ..Default::default()
+        };
+        data.mark_loaded(loaded);
+        data
+    }
+}
+
+fn worldgen_source(name: &str) -> bool {
+    name.split('/').all(|part| !part.is_empty() && part != "..")
+        && split(name).is_some_and(|(root, _, rel)| {
+            root == "data"
+                && name.ends_with(".json")
+                && (rel.starts_with("worldgen/")
+                    || rel.starts_with("lithostitched/worldgen_modifier/"))
+        })
+}
+
+fn invalidate_harness(out: &Path) -> Result<(), String> {
+    let result = out.join("harness/result.json");
+    if let Err(e) = fs::remove_file(&result)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(format!("{}: {e}", result.display()));
+    }
+    Ok(())
+}
+
+struct Worldgen<'a> {
+    source: &'a WorldgenSource,
+    processors: crate::processors::ProcessorData,
+    loaded: &'a dyn Fn(&str) -> bool,
+}
+
+impl Worldgen<'_> {
+    fn apply(
+        &self,
+        name: &str,
+        v: &mut Value,
+        inside: &Path,
+        id: &str,
+        types: &mut crate::worldgen::Upgrade,
+    ) -> Result<bool, String> {
+        let (_, ns, rel) = split(name).ok_or("worldgen source: invalid path")?;
+        if let Some((kind, _)) = rel
+            .strip_prefix("worldgen/")
+            .and_then(|r| r.split_once('/'))
+        {
+            let carried =
+                crate::processors::carry(kind, v, &self.processors, &mut types.processors_carried)
+                    | crate::processors::rule_tests(kind, v, &mut types.rule_tests_carried);
+            let mut changed =
+                crate::worldgen::upgrade(kind, v, types, &self.source.set_tags) || carried;
+            if kind == "structure" {
+                let path = rel.trim_start_matches("worldgen/structure/");
+                let structure = format!("{ns}:{}", path.trim_end_matches(".json"));
+                changed |=
+                    crate::worldgen::add_piece_counts(&structure, v, &self.source.piece_counts);
+            }
+            return Ok(changed);
+        }
+        if let Some(path) = rel.strip_prefix("lithostitched/worldgen_modifier/")
+            && let Some((kind, mut added)) = crate::lithostitched::modifier(v, self.loaded, types)
+        {
+            crate::processors::carry(
+                kind,
+                &mut added,
+                &self.processors,
+                &mut types.processors_carried,
+            );
+            crate::processors::rule_tests(kind, &mut added, &mut types.rule_tests_carried);
+            crate::worldgen::upgrade(kind, &mut added, types, &self.source.set_tags);
+            let to = format!(
+                "data/{id}/worldgen/{kind}/{}/{path}",
+                crate::worldgen::ADDED
+            );
+            write(
+                &inside.join(to),
+                &serde_json::to_vec_pretty(&added).map_err(|e| e.to_string())?,
+            )?;
+        }
+        Ok(false)
+    }
+}
+
+fn code_set_entries(
+    id: &str,
+    inside: &Path,
+    types: &mut crate::worldgen::Upgrade,
+) -> Result<(), String> {
+    for (file, set, entries) in crate::legacy_structure_mods::ctov::code_set_entries(id) {
+        let entries: Vec<Value> = entries
+            .into_iter()
+            .filter(|(s, _)| {
+                s.split_once(':').is_some_and(|(ns, path)| {
+                    inside
+                        .join(format!("data/{ns}/worldgen/structure/{path}.json"))
+                        .exists()
+                })
+            })
+            .map(|(structure, weight)| json!({"structure": structure, "weight": weight}))
+            .collect();
+        if entries.is_empty() {
+            continue;
+        }
+        let added = &mut types.added_to;
+        *added.entry(set.to_owned()).or_default() += entries.len();
+        let to = format!(
+            "data/{id}/worldgen/structure_set/{}/{file}.json",
+            crate::worldgen::ADDED
+        );
+        let v = json!({"horizon:add_to": set, "structures": entries});
+        write(
+            &inside.join(to),
+            &serde_json::to_vec_pretty(&v).unwrap_or_default(),
+        )?;
+    }
+    Ok(())
+}
+
+/// Re-evaluate copied data against the final selected Mod identities, without replacing a package.
+pub(crate) fn finalize_worldgen(out: &Path, loaded: &dyn Fn(&str) -> bool) -> Result<(), String> {
+    let inside = out.join("carry");
+    let manifest = horizon_mods::Manifest::parse(
+        &fs::read_to_string(inside.join("horizon-mod.toml")).map_err(|e| e.to_string())?,
+    )?;
+    let cache = out.join("worldgen-source.json");
+    let source: WorldgenSource = if cache.exists() {
+        serde_json::from_slice(&fs::read(&cache).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?
+    } else {
+        // A current archive cannot prove which bytes produced an older output.
+        let has_worldgen = std::iter::once(manifest.id.as_str())
+            .chain(manifest.namespaces.iter().map(String::as_str))
+            .any(|ns| {
+                inside.join(format!("data/{ns}/worldgen")).is_dir()
+                    || inside
+                        .join(format!("data/{ns}/lithostitched/worldgen_modifier"))
+                        .is_dir()
+            });
+        if !has_worldgen {
+            return Ok(());
+        }
+        invalidate_harness(out)?;
+        return Err(format!(
+            "{}: successful worldgen inputs unavailable; explicitly carry {} again from its intended archive",
+            out.display(),
+            manifest.id
+        ));
+    };
+    if source.files.is_empty() {
+        return Ok(());
+    }
+    let owned: Vec<&str> = std::iter::once(manifest.id.as_str())
+        .chain(manifest.namespaces.iter().map(String::as_str))
+        .collect();
+    if source
+        .files
+        .iter()
+        .any(|(name, _)| !worldgen_source(name) || place(name, &owned) != Some(true))
+    {
+        return Err("worldgen source: path is outside the owned data".into());
+    }
+    invalidate_harness(out)?;
+    let mut report: Value = serde_json::from_slice(
+        &fs::read(out.join("carry-report.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let evaluation = Worldgen {
+        source: &source,
+        processors: source.processors(loaded),
+        loaded,
+    };
+    let mut types = crate::worldgen::Upgrade::default();
+    for (name, _) in &source.files {
+        if let Some((_, _, rel)) = split(name)
+            && let Some(path) = rel.strip_prefix("lithostitched/worldgen_modifier/")
+        {
+            let path = inside.join(format!(
+                "data/{}/worldgen/template_pool/{}/{path}",
+                manifest.id,
+                crate::worldgen::ADDED
+            ));
+            if let Err(e) = fs::remove_file(path)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(e.to_string());
+            }
+        }
+    }
+    for (name, original) in &source.files {
+        let mut v = original.clone();
+        evaluation.apply(name, &mut v, &inside, &manifest.id, &mut types)?;
+        write(
+            &inside.join(name),
+            &serde_json::to_vec_pretty(&v).map_err(|e| e.to_string())?,
+        )?;
+    }
+    code_set_entries(&manifest.id, &inside, &mut types)?;
+    report["worldgen_types"] = serde_json::to_value(types).map_err(|e| e.to_string())?;
+    write(
+        &out.join("carry-report.json"),
+        &serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
+    )
 }
 
 /// Vanilla blocks by their sorted property names.
@@ -698,6 +999,31 @@ pub fn carry(
     pack: &Pack,
     conventions: &BTreeMap<String, Value>,
 ) -> Result<Report, String> {
+    carry_with_states(
+        jar,
+        info,
+        out,
+        facts,
+        allowed,
+        pack,
+        conventions,
+        &BTreeMap::new(),
+    )
+}
+
+/// Explicit state aliases participate before recipe and item filtering.
+#[allow(clippy::too_many_arguments)]
+pub fn carry_with_states(
+    jar: &Path,
+    info: &JarInfo,
+    out: &Path,
+    facts: Option<&Facts>,
+    allowed: &dyn Fn(&str) -> bool,
+    pack: &Pack,
+    conventions: &BTreeMap<String, Value>,
+    state_overrides: &BTreeMap<String, StateOverride>,
+) -> Result<Report, String> {
+    check_state_overrides(facts, state_overrides, &format!("{}:", info.mod_id))?;
     let loaded = pack.loaded;
     let id = &info.mod_id;
     if id.is_empty()
@@ -713,6 +1039,7 @@ pub fn carry(
     let file = fs::File::open(jar).map_err(|e| format!("{}: {e}", jar.display()))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("{}: {e}", jar.display()))?;
     let (inside, outside) = (out.join("carry"), out.join("outside"));
+    invalidate_harness(out)?;
     let _ = fs::remove_dir_all(&inside);
     let _ = fs::remove_dir_all(&outside);
     let mut report = Report::default();
@@ -721,10 +1048,13 @@ pub fn carry(
     let mut convention = BTreeSet::new();
     let mut block_loot = BTreeSet::new();
     let mut biome_conventions = BTreeSet::new();
-    let set_tags = crate::worldgen::structure_set_tags(&mut zip);
-    let piece_counts = crate::worldgen::piece_counts(&mut zip);
-    let mut processor_data = crate::processors::ProcessorData::read(&mut zip);
-    processor_data.mark_loaded(loaded);
+    let mut source = WorldgenSource::read(&mut zip);
+    let evaluation = Worldgen {
+        source: &source,
+        processors: source.processors(loaded),
+        loaded,
+    };
+    let mut worldgen_files = Vec::new();
     report.namespaces = extra_namespaces(&mut zip, id, pack.mods);
     let owned: Vec<&str> = std::iter::once(id.as_str())
         .chain(report.namespaces.iter().map(String::as_str))
@@ -788,65 +1118,15 @@ pub fn carry(
                         bytes = serde_json::to_vec_pretty(&recipe).unwrap_or(bytes);
                     }
                 }
-            } else if let Some(kind) = rel
-                .strip_prefix("worldgen/")
-                .and_then(|r| r.split_once('/'))
-                .map(|(kind, _)| kind)
-                .filter(|_| name.starts_with("data/") && name.ends_with(".json"))
-            {
+            } else if worldgen_source(&name) {
                 if let Ok(mut v) = serde_json::from_slice::<Value>(&bytes) {
-                    if kind == "structure" {
+                    if rel.starts_with("worldgen/structure/") {
                         crate::worldgen::convention_tags(&v["biomes"], &mut biome_conventions);
                     }
-                    let types = &mut report.worldgen_types;
-                    let carried = crate::processors::carry(
-                        kind,
-                        &mut v,
-                        &processor_data,
-                        &mut types.processors_carried,
-                    ) | crate::processors::rule_tests(
-                        kind,
-                        &mut v,
-                        &mut types.rule_tests_carried,
-                    );
-                    let mut changed =
-                        crate::worldgen::upgrade(kind, &mut v, types, &set_tags) || carried;
-                    if kind == "structure" {
-                        let path = rel.trim_start_matches("worldgen/structure/");
-                        let structure = format!("{ns}:{}", path.trim_end_matches(".json"));
-                        changed |=
-                            crate::worldgen::add_piece_counts(&structure, &mut v, &piece_counts);
-                    }
-                    if changed {
+                    worldgen_files.push((name.clone(), v.clone()));
+                    if evaluation.apply(&name, &mut v, &inside, id, &mut report.worldgen_types)? {
                         bytes = serde_json::to_vec_pretty(&v).unwrap_or(bytes);
                     }
-                }
-            } else if let Some(path) = rel
-                .strip_prefix("lithostitched/worldgen_modifier/")
-                .filter(|_| name.starts_with("data/") && name.ends_with(".json"))
-            {
-                // Additions to other sets and pools, as files the game merges.
-                let modifier = serde_json::from_slice::<Value>(&bytes).ok();
-                let types = &mut report.worldgen_types;
-                if let Some((kind, mut added)) =
-                    modifier.and_then(|v| crate::lithostitched::modifier(&v, loaded, types))
-                {
-                    crate::processors::carry(
-                        kind,
-                        &mut added,
-                        &processor_data,
-                        &mut types.processors_carried,
-                    );
-                    crate::processors::rule_tests(kind, &mut added, &mut types.rule_tests_carried);
-                    crate::worldgen::upgrade(kind, &mut added, types, &set_tags);
-                    let to = format!(
-                        "data/{id}/worldgen/{kind}/{}/{path}",
-                        crate::worldgen::ADDED
-                    );
-                    write(
-                        &inside.join(to),
-                        &serde_json::to_vec_pretty(&added).unwrap_or_default(),
-                    )?;
                 }
             } else if rel.starts_with("trial_spawner/")
                 && name.starts_with("data/")
@@ -907,35 +1187,7 @@ pub fn carry(
         }
         write(&dest, &bytes)?;
     }
-    // Entries the mod adds to other structure sets in Java code, for the
-    // structures it has.
-    for (file, set, entries) in crate::legacy_structure_mods::ctov::code_set_entries(id) {
-        let entries: Vec<Value> = entries
-            .into_iter()
-            .filter(|(s, _)| {
-                s.split_once(':').is_some_and(|(ns, path)| {
-                    inside
-                        .join(format!("data/{ns}/worldgen/structure/{path}.json"))
-                        .exists()
-                })
-            })
-            .map(|(structure, weight)| json!({"structure": structure, "weight": weight}))
-            .collect();
-        if entries.is_empty() {
-            continue;
-        }
-        let added = &mut report.worldgen_types.added_to;
-        *added.entry(set.to_owned()).or_default() += entries.len();
-        let to = format!(
-            "data/{id}/worldgen/structure_set/{}/{file}.json",
-            crate::worldgen::ADDED
-        );
-        let v = json!({"horizon:add_to": set, "structures": entries});
-        write(
-            &inside.join(to),
-            &serde_json::to_vec_pretty(&v).unwrap_or_default(),
-        )?;
-    }
+    code_set_entries(id, &inside, &mut report.worldgen_types)?;
     // 1.21.4 moved item models behind `items/<name>.json` definitions.
     for m in &item_models {
         let def = inside.join(format!("assets/{id}/items/{m}.json"));
@@ -971,7 +1223,20 @@ pub fn carry(
             let Some(b) = full.strip_prefix(&prefix) else {
                 break;
             };
-            let Some(choice) = facts.template(full, allowed) else {
+            let legacy = facts.template(full, allowed);
+            let explicit = state_overrides
+                .get(full)
+                .filter(|definition| !definition.fallback_only || legacy.is_none());
+            let choice = if let Some(definition) = explicit {
+                Some(
+                    facts
+                        .template_as(full, &definition.template, allowed)
+                        .ok_or_else(|| format!("{full}: explicit template is unavailable"))?,
+                )
+            } else {
+                legacy
+            };
+            let Some(mut choice) = choice else {
                 let props: Vec<&str> = block.properties.keys().map(String::as_str).collect();
                 let why = format!(
                     "no vanilla {} with properties [{}]",
@@ -982,6 +1247,16 @@ pub fn carry(
                 continue;
             };
             let mut v = json!({"template": choice.template, "properties": choice.properties});
+            if let Some(definition) = explicit {
+                v["states"] = json!({
+                    "properties": definition.states.properties,
+                    "default": definition.states.default,
+                    "aliases": definition.states.aliases
+                });
+                choice
+                    .differences
+                    .push("explicit custom states retain template physics and behavior".into());
+            }
             if block.item == "minecraft:air" {
                 v["item"] = json!(false);
             } else if block.item != *full {
@@ -1119,6 +1394,11 @@ pub fn carry(
         let list: Vec<String> = report.namespaces.iter().map(|n| q(n)).collect();
         manifest.push_str(&format!("namespaces = [{}]\n", list.join(", ")));
     }
+    source.files = worldgen_files;
+    write(
+        &out.join("worldgen-source.json"),
+        &serde_json::to_vec(&source).map_err(|e| e.to_string())?,
+    )?;
     write(&inside.join("horizon-mod.toml"), manifest.as_bytes())?;
     write(
         &out.join("carry-report.json"),

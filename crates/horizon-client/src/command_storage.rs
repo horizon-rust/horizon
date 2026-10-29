@@ -1,11 +1,8 @@
 //! `CommandStorage`: named compounds for `/data ... storage <id>`, kept per
 //! namespace in `data/<namespace>/command_storage.dat`.
-use crate::save;
+use crate::save::{self, SavePath, WorldPath};
 use horizon_world::nbt::{Compound, Tag};
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CommandStorage {
@@ -16,20 +13,25 @@ pub struct CommandStorage {
 fn split_id(id: &str) -> (&str, &str) {
     id.split_once(':').unwrap_or(("minecraft", id))
 }
-fn file(root: &Path, namespace: &str) -> PathBuf {
-    root.join("data")
+fn file(root: &(impl SavePath + ?Sized), namespace: &str) -> WorldPath {
+    root.owned()
+        .join("data")
         .join(namespace)
         .join("command_storage.dat")
 }
 impl CommandStorage {
     /// Read every `data/<namespace>/command_storage.dat` under a world.
-    pub fn load(root: &Path) -> Self {
+    pub fn load(root: &(impl SavePath + ?Sized)) -> Self {
         let mut s = Self::default();
-        let Ok(dirs) = std::fs::read_dir(root.join("data")) else {
+        let Ok(dirs) = root.owned().join("data").children() else {
             return s;
         };
-        for dir in dirs.flatten() {
-            let namespace = dir.file_name().to_string_lossy().into_owned();
+        for dir in dirs {
+            let namespace = dir
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
             let Some(data) =
                 save::read_dat(&file(root, &namespace)).and_then(|t| t.get("data").cloned())
             else {
@@ -45,11 +47,10 @@ impl CommandStorage {
         }
         s
     }
-    pub fn save(&mut self, root: &Path) {
+    pub fn save(&mut self, root: &(impl SavePath + ?Sized)) {
         if !self.dirty {
             return;
         }
-        self.dirty = false;
         for (namespace, map) in &self.namespaces {
             let contents: Compound = map
                 .iter()
@@ -66,8 +67,10 @@ impl CommandStorage {
                 ]),
             ) {
                 log::warn!("command storage {namespace} was not written: {e}");
+                return;
             }
         }
+        self.dirty = false;
     }
     /// `get`: an empty compound when unset.
     pub fn get(&self, id: &str) -> Tag {

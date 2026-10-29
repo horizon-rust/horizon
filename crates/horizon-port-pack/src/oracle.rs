@@ -190,6 +190,21 @@ impl Facts {
         serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))
     }
 
+    /// An explicit template still uses the observed property overrides.
+    pub fn template_as(
+        &self,
+        id: &str,
+        template: &str,
+        allowed: &dyn Fn(&str) -> bool,
+    ) -> Option<Choice> {
+        let block = self.blocks.get(id)?;
+        let vanilla = self.blocks.get(template)?;
+        if !template.starts_with("minecraft:") || vanilla.custom_class() || !allowed(template) {
+            return None;
+        }
+        Some(self.choice(block, template, vanilla, allowed))
+    }
+
     /// The vanilla block that best stands in for `id`: the same vanilla
     /// class and states, then the most states with the same outline and
     /// collision, then the same sounds, set type, wood type and hardness.

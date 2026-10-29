@@ -86,7 +86,7 @@ pub fn client_particles(m: &Mob, random: &mut impl RandomSource, out: &mut Vec<M
         }
         Species::Bee => {
             if !bee::has_nectar(m)
-                || !bee::get(m).is_some_and(|b| b.crops_grown < 10)
+                || bee::get(m).is_none_or(|b| b.crops_grown >= 10)
                 || random.next_float() >= 0.05
             {
                 return;

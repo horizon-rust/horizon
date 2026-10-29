@@ -190,6 +190,21 @@ def png(width, height, color_type, depth, rows):
             + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
 
 
+def font_cases():
+    out = []
+    for name, display, score in [('Ⅻ', None, None), ('Player', {'text': 'ⅫⅫ', 'bold': True}, None),
+                                 ('Player', 'A', {'type': 'fixed', 'value': '中'})]:
+        out.append({'width': 320, 'onlineMode': True, 'backgroundForChatOnly': True, 'opacity': 0.5,
+                    'header': '中 ' * 20 if score else None, 'footer': None, 'teams': [],
+                    'objective': {'name': 'obj', 'renderType': 'integer', 'numberFormat': score} if score else None,
+                    'players': [{'uuid': str(uuid.UUID(int=1)), 'name': name, 'gameMode': 0, 'latency': 0,
+                                 'displayName': display, 'listOrder': 0, 'showHat': True, 'inLevel': False,
+                                 'textures': None}],
+                    'frames': [{'tick': 1, 'visible': True, 'scores': {name: {'value': 7, 'format': None}}, 'reset': []}],
+                    'downloads': {}, 'local': None, 'validUris': TEXTURE_URIS})
+    return out
+
+
 def skin_images(count):
     """Downloaded skins: 64x32 legacy and 64x64 ones in every 8-bit colour
     type (and 16-bit RGBA), with opaque, clear and mixed hat layers, and a
@@ -227,7 +242,7 @@ def main():
     libraries = baking.client_libraries()
     build = lab.LOCAL / 'rust-tab-list-parity'; build.mkdir(parents=True, exist_ok=True)
     resources = lab.RESOURCES
-    chosen = cases(args.count)
+    chosen = cases(args.count) + font_cases()
     inputs = build / 'inputs.jsonl'; inputs.write_text(''.join(json.dumps(c) + '\n' for c in chosen))
     classes = build / 'classes'; classes.mkdir(exist_ok=True)
     dependencies = os.pathsep.join(map(str, [jars['client'], *libraries]))
@@ -264,11 +279,12 @@ def main():
           f'({sum(v == "refused" for v in vanilla_skins)} refused)')
     vanilla = [json.loads(l) for l in (build / 'vanilla.jsonl').read_text().splitlines()]
     rust = [json.loads(l) for l in (build / 'rust.jsonl').read_text().splitlines()]
-    assert len(vanilla) == len(rust)
+    assert len(vanilla) == len(rust) == len(chosen)
     errors, bad, frames, calls = [], [], 0, 0
     for v, r in zip(vanilla, rust):
         if 'error' in v:
             errors.append(v['error']); continue
+        assert len(v['frames']) == len(r['frames']) == len(v['case']['frames'])
         for i, (a, b) in enumerate(zip(v['frames'], r['frames'])):
             frames += 1
             calls += len(a)

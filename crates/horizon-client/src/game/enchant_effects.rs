@@ -751,7 +751,7 @@ impl Game<'_> {
         let at = [p.position.x, p.position.y, p.position.z];
         let on_ground = p.ground.on_ground;
         let cell = |v: [f64; 3]| v.map(|c| c.floor() as i32);
-        if cell(from) == cell(at) && !(on_ground && !was_on_ground) {
+        if cell(from) == cell(at) && (!on_ground || was_on_ground) {
             return;
         }
         let riding = self.riding.is_some();

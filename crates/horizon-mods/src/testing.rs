@@ -29,6 +29,10 @@ pub struct TestGame {
     /// Every name that joined, for their id.
     names: Vec<String>,
     tick: u64,
+    entities: crate::entities::Level,
+    entity_world: Option<crate::entities::WorldId>,
+    entity_id: u32,
+    entity_chunks: std::collections::HashSet<(i32, i32)>,
     /// Capability `world`'s Overworld: the blocks a script set or the mod
     /// changed; every other block, and the other dimensions, are air. Every
     /// biome is the dimension's plainest: plains, nether wastes, the end.
@@ -119,6 +123,10 @@ impl TestGame {
             players: Vec::new(),
             names: Vec::new(),
             tick: 0,
+            entities: Default::default(),
+            entity_world: None,
+            entity_id: 0,
+            entity_chunks: [(0, 0)].into_iter().collect(),
             world: Default::default(),
         };
         copy_mod(hmod, &copy)?;
@@ -142,7 +150,51 @@ impl TestGame {
         self.start()
     }
 
+    fn return_entities(&mut self) {
+        if let Some(world) = self.mods.take_entities() {
+            self.entity_id = world.last_id();
+        }
+        self.entities.prune();
+    }
+    /// Records applied by successful real guest callbacks.
+    pub fn entity_records(&mut self) -> Vec<crate::entities::Record> {
+        self.return_entities();
+        self.entities.records()
+    }
+    /// Host chunk cleanup, independent of any final callback.
+    pub fn unload_entity_chunk(&mut self, x: i32, z: i32) {
+        self.return_entities();
+        self.entity_chunks.remove(&(x, z));
+        self.entities.unload_chunks(&[(x, z)].into_iter().collect());
+    }
+    pub fn close_entity_world(&mut self) {
+        self.return_entities();
+        self.entities.clear(crate::EntityReason::WorldUnloaded);
+        self.entity_world = None;
+    }
+
     fn snapshot(&mut self) {
+        self.return_entities();
+        if self.mods.wants_entities() && self.clock.is_some() {
+            let id = match self.entity_world {
+                Some(id) => id,
+                None => match crate::entities::WorldId::new() {
+                    Ok(id) => {
+                        self.entity_world = Some(id);
+                        id
+                    }
+                    Err(_) => return,
+                },
+            };
+            let level = self.entities.loaded(
+                "minecraft:overworld",
+                -64,
+                320,
+                self.entity_chunks.iter().copied(),
+            );
+            self.mods
+                .lend_entities(crate::entities::World::new(id, self.entity_id, vec![level]));
+        }
         self.mods.set_snapshot(Snapshot {
             player: self.player.clone(),
             clock: self.clock,
@@ -291,6 +343,14 @@ fn copy_mod(from: &Path, to: &Path) -> Result<(), String> {
             std::fs::copy(entry.path(), to.join(entry.file_name())).map_err(err)?;
         }
     }
+    let package = crate::Package::read(from)?;
+    let content = crate::Content::read(from, &package.manifest)?;
+    let mut reader = content.reader()?;
+    for name in &content.files {
+        let destination = to.join(name);
+        std::fs::create_dir_all(destination.parent().expect("a content path")).map_err(err)?;
+        std::fs::write(destination, reader.read(name)?).map_err(err)?;
+    }
     Ok(())
 }
 
@@ -420,6 +480,10 @@ pub struct Expect {
     /// Blocks of the Overworld after the step, the mod's changes made
     /// (capability `world`).
     blocks: Option<Vec<BlockSet>>,
+    /// Applied entity count, public bytes and feet position after the callback.
+    entities: Option<usize>,
+    entity_state: Option<Vec<u8>>,
+    entity_position: Option<[f64; 3]>,
     /// The mod is turned off during this step, for a reason holding this text.
     /// Without it, a mod that stops fails the test.
     stopped: Option<String>,
@@ -521,6 +585,7 @@ impl Step {
             game.reload()?;
         }
         if self.title_screen {
+            game.close_entity_world();
             game.player = None;
             game.clock = None;
         }
@@ -605,6 +670,22 @@ impl Step {
                     game.world.insert((b.x, b.y, b.z), b.state.clone());
                 }
             }
+        }
+        let records = game.entity_records();
+        if let Some(want) = self.expect.entities {
+            same("entities", &want, &records.len())?;
+        }
+        if let Some(want) = &self.expect.entity_state {
+            let actual = records.first().ok_or("no applied entity state")?;
+            same("entity state", want, &actual.state.public_state)?;
+        }
+        if let Some(want) = &self.expect.entity_position {
+            let p = &records
+                .first()
+                .ok_or("no applied entity position")?
+                .state
+                .transform;
+            same("entity position", want, &[p.x, p.y, p.z])?;
         }
         let stopped = out.iter().find_map(|o| match o {
             Output::Stopped { reason, .. } => Some(reason.as_str()),

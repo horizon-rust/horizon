@@ -175,20 +175,27 @@ impl Game<'_> {
             return;
         }
         let page_changed = gl.sent.as_ref().is_none_or(|(_, p)| *p != page);
-        gl.sent = now;
-        gl.state = (gl.state + 1) & 0x7FFF;
-        let (window, state) = (gl.window, gl.state);
+        let (window, state) = (gl.window, (gl.state + 1) & 0x7FFF);
         let carried = host
             .hub
             .guests
             .iter()
             .find(|g| g.conn == conn)
             .and_then(|g| g.carried.clone());
+        let (items, carried) = match host.hub.stacks(&[book], &carried) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                eprintln!("Rejected lectern snapshot: {error}");
+                return;
+            }
+        };
+        gl.sent = now;
+        gl.state = state;
         let content = C::ContainerSetContent(play::ContainerSetContent {
             container: window,
             state,
-            items: vec![host.hub.stack(&book)],
-            carried: host.hub.stack(&carried),
+            items,
+            carried,
         });
         host.hub.send_to(conn, &content);
         if all || page_changed {
@@ -412,18 +419,25 @@ impl Game<'_> {
         let Some(gs) = host.play.get_mut(&conn).and_then(|p| p.station.as_mut()) else {
             return;
         };
-        gs.state = (gs.state + 1) & 0x7FFF;
         let own = gs.menu.slot_count() - 36;
         let mut items: Vec<Option<ItemStack>> =
             (0..own).map(|s| gs.menu.slot(s).cloned()).collect();
         let g = &host.hub.guests[gi];
         items.extend((9..36).chain(0..9).map(|i| g.inventory[i].clone()));
         let carried = g.carried.clone();
+        let (items, carried) = match host.hub.stacks(&items, &carried) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                eprintln!("Rejected station snapshot: {error}");
+                return;
+            }
+        };
+        gs.state = (gs.state + 1) & 0x7FFF;
         let packet = C::ContainerSetContent(play::ContainerSetContent {
             container: gs.window,
             state: gs.state,
-            items: items.iter().map(|s| host.hub.stack(s)).collect(),
-            carried: host.hub.stack(&carried),
+            items,
+            carried,
         });
         gs.sent_data.resize(gs.menu.data.len(), i32::MIN);
         let mut data = Vec::new();

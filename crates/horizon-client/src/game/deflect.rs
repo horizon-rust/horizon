@@ -111,11 +111,16 @@ impl Game<'_> {
     pub(super) fn deflect(&mut self, i: usize) {
         let dir = view_vector(self.yaw, self.pitch);
         let guest = self.lan_acting;
+        let owner_uuid = self
+            .lan_acting_uuid
+            .map(horizon_client::lan::playerdata::uuid_ints)
+            .or(self.level.player_uuid);
         let p = &mut self.creatures.projectiles[i];
         p.velocity = Vec3::new(dir[0], dir[1], dir[2]);
         p.yaw = dir[0].atan2(dir[2]).to_degrees() as f32;
         p.pitch = dir[1].atan2(dir[0].hypot(dir[2])).to_degrees() as f32;
         p.owner = Some(Who::Player);
+        p.owner_uuid = owner_uuid;
         // On a server, the guest who struck it (their projectile now).
         p.guest = guest;
         // Not into the one who turned it on its way out.

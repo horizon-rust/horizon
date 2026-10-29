@@ -20,9 +20,11 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.HexFormat;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 import java.util.zip.DataFormatException;
@@ -116,6 +118,8 @@ public final class VanillaProtocolClient {
     private String state;
     /** With a fifth argument {@code entities}: the entity transcript mode (EntityTranscript). */
     private EntityTranscript entities;
+    private Path saveRelease;
+    private int requestedViewDistance;
 
     public static void main(String[] args) throws Exception {
         ParityData.init();
@@ -125,6 +129,7 @@ public final class VanillaProtocolClient {
         Path output = Path.of(args[3]);
         VanillaProtocolClient client = new VanillaProtocolClient();
         if (args.length > 4 && args[4].equals("entities")) client.entities = new EntityTranscript();
+        if (args.length > 5 && args[4].equals("save")) client.saveRelease = Path.of(args[5]);
         try {
             client.status(host, port);
             client.join(host, port, name);
@@ -283,6 +288,12 @@ public final class VanillaProtocolClient {
         return e.toString();
     }
 
+    private static <T> void saveStat(Map<String, Map<String, Integer>> stats, net.minecraft.stats.Stat<T> stat, int value) {
+        String type = net.minecraft.core.registries.BuiltInRegistries.STAT_TYPE.getKey(stat.getType()).toString();
+        String key = stat.getType().getRegistry().getKey(stat.getValue()).toString();
+        stats.computeIfAbsent(type, ignored -> new TreeMap<>()).put(key, value);
+    }
+
     /** A record's text without object identities; other objects by their fields. */
     private static String text(Object o) {
         String s = String.valueOf(o);
@@ -367,7 +378,9 @@ public final class VanillaProtocolClient {
         inbound = ConfigurationProtocols.CLIENTBOUND;
         // ClientHandshakePacketListenerImpl.handleLoginFinished: brand, then the options.
         send(new ServerboundCustomPayloadPacket(new BrandPayload("vanilla")));
-        send(new ServerboundClientInformationPacket(ClientInformation.createDefault()));
+        var information = ClientInformation.createDefault();
+        requestedViewDistance = information.viewDistance();
+        send(new ServerboundClientInformationPacket(information));
         while (true) {
             Received r = read();
             if (r.packet instanceof ClientboundSelectKnownPacks p) {
@@ -429,6 +442,124 @@ public final class VanillaProtocolClient {
 
     private static final String[] REPLIES = {"random value 7..7", "random value x", "trigger nope"};
 
+    private static final class InitialChunkView {
+        private final int requested;
+        private int radius = -1;
+        private net.minecraft.world.level.ChunkPos center;
+        private net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension;
+        private final Set<String> loaded = new HashSet<>();
+        private Set<String> expected;
+
+        InitialChunkView(int requested) {
+            this.requested = requested;
+        }
+
+        void accept(Packet<?> packet) {
+            if (packet instanceof net.minecraft.network.protocol.game.ClientboundLoginPacket p) {
+                radius = p.chunkRadius();
+                dimension = p.commonPlayerSpawnInfo().dimension();
+                center = null;
+                loaded.clear();
+                updateExpected();
+            } else if (packet instanceof net.minecraft.network.protocol.game.ClientboundRespawnPacket p) {
+                var nextDimension = p.commonPlayerSpawnInfo().dimension();
+                if (dimension != nextDimension) {
+                    dimension = nextDimension;
+                    center = null;
+                    loaded.clear();
+                    updateExpected();
+                }
+            } else if (packet instanceof net.minecraft.network.protocol.game.ClientboundSetChunkCacheRadiusPacket p) {
+                radius = p.getRadius();
+                updateExpected();
+            } else if (packet instanceof net.minecraft.network.protocol.game.ClientboundSetChunkCacheCenterPacket p) {
+                center = new net.minecraft.world.level.ChunkPos(p.getX(), p.getZ());
+                updateExpected();
+            } else if (packet instanceof ClientboundLevelChunkWithLightPacket p) {
+                loaded.add(p.x() + "," + p.z());
+            } else if (packet instanceof net.minecraft.network.protocol.game.ClientboundForgetLevelChunkPacket p) {
+                loaded.remove(p.pos().x() + "," + p.pos().z());
+            }
+        }
+
+        private void updateExpected() {
+            expected = null;
+            if (center == null || radius < 2) return;
+            expected = new java.util.TreeSet<>();
+            net.minecraft.server.level.ChunkTrackingView.of(center, net.minecraft.util.Mth.clamp(requested, 2, radius))
+                .forEach(pos -> expected.add(pos.x() + "," + pos.z()));
+        }
+
+        boolean complete() {
+            return expected != null && loaded.containsAll(expected);
+        }
+
+        String describeMissing() {
+            Set<String> missing = expected == null ? null : new java.util.TreeSet<>(expected);
+            if (missing != null) missing.removeAll(loaded);
+            return "dimension=" + dimension + ", center=" + center + ", server radius=" + radius + ", requested=" + requested
+                + ", missing=" + (missing == null ? "unknown view" : missing);
+        }
+    }
+
+    private static final class FirstTickThrow {
+        final Set<net.minecraft.core.BlockPos> wall = new HashSet<>();
+        final Set<net.minecraft.core.BlockPos> solid = new HashSet<>();
+        int inventory = -1;
+        int adds;
+        int removals;
+        int entityId = -1;
+        boolean thrown;
+        boolean owner = true;
+        boolean acknowledged;
+
+        FirstTickThrow(net.minecraft.core.BlockPos at) {
+            for (int x = -1; x <= 1; x++) for (int y = 1; y <= 2; y++) wall.add(at.offset(x, y, 1));
+        }
+
+        private void block(net.minecraft.core.BlockPos pos, net.minecraft.world.level.block.state.BlockState state) {
+            if (!wall.contains(pos)) return;
+            if (state.is(net.minecraft.world.level.block.Blocks.STONE)) solid.add(pos.immutable());
+            else solid.remove(pos);
+        }
+
+        void accept(Packet<?> packet, int playerId) {
+            if (packet instanceof net.minecraft.network.protocol.game.ClientboundBlockUpdatePacket p) block(p.getPos(), p.getBlockState());
+            if (packet instanceof net.minecraft.network.protocol.game.ClientboundSectionBlocksUpdatePacket p) p.runUpdates(this::block);
+            net.minecraft.world.item.ItemStack item = null;
+            if (packet instanceof net.minecraft.network.protocol.game.ClientboundSetPlayerInventoryPacket p && p.slot() == 0) {
+                item = p.contents();
+            } else if (packet instanceof net.minecraft.network.protocol.game.ClientboundContainerSetSlotPacket p
+                && p.getContainerId() == 0 && p.getSlot() == 36) {
+                item = p.getItem();
+            } else if (packet instanceof net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket p
+                && p.containerId() == 0 && p.items().size() > 36) {
+                item = p.items().get(36);
+            }
+            if (item != null) inventory = item.is(net.minecraft.world.item.Items.SNOWBALL) ? item.getCount() : -1;
+            if (!thrown) return;
+            if (packet instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket p
+                && p.getType() == net.minecraft.world.entity.EntityTypes.SNOWBALL) {
+                adds++;
+                if (entityId < 0) entityId = p.getId();
+                owner &= p.getData() == playerId;
+            } else if (packet instanceof net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket p) {
+                for (int id : p.entityIds()) if (id == entityId) removals++;
+            } else if (packet instanceof net.minecraft.network.protocol.game.ClientboundBlockChangedAckPacket p && p.sequence() == 8) {
+                acknowledged = true;
+            }
+        }
+
+        boolean ready() {
+            return solid.containsAll(wall) && inventory == 16;
+        }
+
+        String result() {
+            return "adds " + adds + ", owner is the player: " + owner + ", matching removals " + removals
+                + ", inventory 16->" + inventory + ", acknowledged " + acknowledged;
+        }
+    }
+
     private void play() throws Exception {
         state = "play";
         GameProtocols.Context context = new GameProtocols.Context() {
@@ -446,13 +577,14 @@ public final class VanillaProtocolClient {
         inbound = GameProtocols.CLIENTBOUND_TEMPLATE.bind(RegistryFriendlyByteBuf.decorator(ParityData.access));
         socket.setSoTimeout(250);
         Map<String, String> chunks = new TreeMap<>();
+        InitialChunkView initialView = new InitialChunkView(requestedViewDistance);
         Map<String, String> layers = new TreeMap<>();
         Map<String, Integer> counts = new TreeMap<>();
         boolean ordered = true;
         boolean loaded = false;
         PositionMoveRotation position = new PositionMoveRotation(Vec3.ZERO, Vec3.ZERO, 0, 0);
         long lastChunk = 0;
-        long deadline = System.currentTimeMillis() + 150_000;
+        long deadline = System.currentTimeMillis() + (saveRelease == null ? 150_000 : 300_000);
         int step = 0;
         long stepAt = 0;
         // The death the console deals and the respawn after it (PlayerList.respawn): from the
@@ -476,6 +608,8 @@ public final class VanillaProtocolClient {
         long smeltedAt = 0;
         // The player's own id, and what the ender pearl it throws does to it.
         int playerId = -1;
+        net.minecraft.world.level.GameType gameType = null;
+        FirstTickThrow firstTick = null;
         boolean pearl = false;
         int pearlTeleports = 0;
         float pearlHealth = -1;
@@ -487,6 +621,7 @@ public final class VanillaProtocolClient {
         long deadCommandAt = 0;
         // When the client last sent where it is.
         long positionAt = 0;
+        int saveBatch = 0;
         // Chat lines and furnace slot changes received, and how many there were when the current step sent
         // its command or click: a step goes on once the server answered, not after a fixed time (a busy
         // server answers seconds late, and a click sent before the last one's reply carries a stale state id).
@@ -498,6 +633,9 @@ public final class VanillaProtocolClient {
         int furnaceBefore = 0;
         // The furnace's lit and cooking totals received: the server sends them a tick after what changed them.
         int furnaceData = 0;
+        Map<Integer, String> saveEntities = new TreeMap<>();
+        int saveStatsBatch = 0;
+        Map<String, Map<String, Integer>> saveStats = new TreeMap<>();
         while (System.currentTimeMillis() < deadline) {
             Received r;
             try {
@@ -508,7 +646,34 @@ public final class VanillaProtocolClient {
             long now = System.currentTimeMillis();
             if (r != null) {
                 Packet<?> packet = r.packet;
+                initialView.accept(packet);
+                if (firstTick != null) firstTick.accept(packet, playerId);
+                if (saveRelease != null) {
+                    if (packet instanceof net.minecraft.network.protocol.game.ClientboundAwardStatsPacket p) {
+                        for (var entry : p.stats().object2IntEntrySet()) {
+                            saveStat(saveStats, entry.getKey(), entry.getIntValue());
+                        }
+                        Path target = saveRelease.resolveSibling(saveRelease.getFileName() + ".stats");
+                        Path temporary = target.resolveSibling(target.getFileName() + ".new");
+                        Files.writeString(temporary, new com.google.gson.Gson().toJson(
+                            Map.of("batch", saveStatsBatch, "stats", saveStats)));
+                        Files.move(temporary, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    boolean changed = false;
+                    if (packet instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket p) {
+                        saveEntities.put(p.getId(), net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(p.getType()).toString());
+                        changed = true;
+                    } else if (packet instanceof net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket p) {
+                        p.entityIds().forEach(saveEntities::remove);
+                        changed = true;
+                    }
+                    if (changed) Files.writeString(saveRelease.resolveSibling(saveRelease.getFileName() + ".entities"),
+                        String.join("\n", saveEntities.values()));
+                }
                 counts.merge(r.type, 1, Integer::sum);
+                if (saveRelease != null && packet instanceof net.minecraft.network.protocol.game.ClientboundContainerSetContentPacket p) {
+                    record("save-inventory", p.items().toString());
+                }
                 if (entities != null && !entities.acceptSelf(packet) && step >= ENTITIES) entities.accept(packet);
                 if (r.type.equals("minecraft:chunk_batch_start")) ordered = false;
                 if (respawning && !respawned) {
@@ -527,7 +692,15 @@ public final class VanillaProtocolClient {
                         loadStart = true;
                     }
                 }
-                if (packet instanceof net.minecraft.network.protocol.game.ClientboundLoginPacket p) playerId = p.playerId();
+                if (packet instanceof net.minecraft.network.protocol.game.ClientboundLoginPacket p) {
+                    playerId = p.playerId();
+                    gameType = p.commonPlayerSpawnInfo().gameType();
+                } else if (packet instanceof net.minecraft.network.protocol.game.ClientboundRespawnPacket p) {
+                    gameType = p.commonPlayerSpawnInfo().gameType();
+                } else if (packet instanceof net.minecraft.network.protocol.game.ClientboundGameEventPacket p
+                    && p.getEvent() == net.minecraft.network.protocol.game.ClientboundGameEventPacket.CHANGE_GAME_MODE) {
+                    gameType = net.minecraft.world.level.GameType.byId((int) p.getParam());
+                }
                 // The first health after the pearl: the hurt (regeneration follows each server's ticks).
                 if (pearl && pearlHealth < 0 && packet instanceof net.minecraft.network.protocol.game.ClientboundSetHealthPacket p) {
                     pearlHealth = p.getHealth();
@@ -548,7 +721,7 @@ public final class VanillaProtocolClient {
                     // same tick is an invalid move to vanilla's server once the player is loaded.
                     // The entity mode's scene may teleport the player (to another level): the
                     // acceptance alone, as the 26.3 client sends.
-                    if (!respawning && step < ENTITIES) {
+                    if (saveRelease == null && !respawning && step < ENTITIES) {
                         send(new ServerboundMovePlayerPacket.PosRot(position.position(), position.yRot(), position.xRot(), false, false));
                         positionAt = now;
                     }
@@ -609,7 +782,7 @@ public final class VanillaProtocolClient {
                     replies++;
                     record("play-chat", "disguised " + json(p.message()) + " " + p.chatType().chatType().getRegisteredName());
                 } else if (packet instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket p
-                    && p.getType() == net.minecraft.world.entity.EntityTypes.SNOWBALL) {
+                    && p.getType() == net.minecraft.world.entity.EntityTypes.SNOWBALL && firstTick == null) {
                     snowballs++;
                     if (snowballAt == 0) snowballAt = now;
                     // Projectile.getAddEntityPacket: its owner's id.
@@ -656,7 +829,7 @@ public final class VanillaProtocolClient {
                     commandTree(p);
                 }
             }
-            if (entities == null && loaded && deadCommandAt == 0 && now - positionAt >= 1000) {
+            if (saveRelease == null && entities == null && loaded && deadCommandAt == 0 && now - positionAt >= 1000) {
                 // LocalPlayer.sendPosition: once its level is loaded the 26.3 client sends where it is
                 // every 20 ticks even standing still, and the server then checks again which entities the
                 // player sees (ChunkMap.move). An entity whose chunk was sent after the player's last move,
@@ -667,7 +840,35 @@ public final class VanillaProtocolClient {
                 send(new ServerboundMovePlayerPacket.Pos(position.position(), false, false));
                 positionAt = now;
             }
-            if (entities != null && loaded && lastChunk > 0 && now - lastChunk > 3000 && step == 0) {
+            if (saveRelease != null) {
+                Path commands = saveRelease.resolveSibling(saveRelease.getFileName() + ".commands");
+                if (Files.exists(commands)) {
+                    for (String command : Files.readAllLines(commands)) {
+                        if (command.equals("@stats")) {
+                            saveStatsBatch = saveBatch + 1;
+                            send(new net.minecraft.network.protocol.game.ServerboundClientCommandPacket(
+                                net.minecraft.network.protocol.game.ServerboundClientCommandPacket.Action.REQUEST_STATS));
+                        } else if (command.startsWith("@attack ")) {
+                            String kind = command.substring(8);
+                            var matches = saveEntities.entrySet().stream().filter(e -> e.getValue().equals(kind)).toList();
+                            if (matches.size() != 1) throw new IllegalStateException("Expected one " + kind + ": " + matches);
+                            send(new net.minecraft.network.protocol.game.ServerboundAttackPacket(matches.getFirst().getKey()));
+                        } else send(new ServerboundChatCommandPacket(command));
+                    }
+                    Files.delete(commands);
+                    send(new ServerboundChatPacket("save fixture " + (++saveBatch), Instant.now(), 0L, Optional.empty(),
+                        new LastSeenMessages.Update(0, new BitSet(), (byte) 0)));
+                }
+                if (loaded && initialView.complete() && lastChunk > 0 && now - lastChunk > 3000 && step == 0) {
+                    send(new ServerboundChatPacket("ready for save", Instant.now(), 0L, Optional.empty(),
+                        new LastSeenMessages.Update(0, new BitSet(), (byte) 0)));
+                    Files.writeString(saveRelease.resolveSibling(saveRelease.getFileName() + ".ready"), "ready");
+                    step = 1;
+                }
+                if (Files.exists(saveRelease)) return;
+                continue;
+            }
+            if (entities != null && loaded && initialView.complete() && lastChunk > 0 && now - lastChunk > 3000 && step == 0) {
                 // Entity mode: the harness's console summons the scene once it reads this
                 // line; everything tracked from then on is recorded until the client leaves.
                 record("play-chunks", String.valueOf(chunks.size()));
@@ -680,7 +881,7 @@ public final class VanillaProtocolClient {
                 return;
             }
             // Once the chunks stop coming: chat, then /list, then leave.
-            if (entities == null && loaded && lastChunk > 0 && now - lastChunk > 3000 && step == 0) {
+            if (entities == null && loaded && initialView.complete() && lastChunk > 0 && now - lastChunk > 3000 && step == 0) {
                 record("play-chunks", chunks.size() + " " + chunks);
                 BLOCK_ENTITIES.forEach((k, v) -> record("play-block-entities", k + " " + v));
                 // Which light layers exist depends on the neighbouring
@@ -832,6 +1033,40 @@ public final class VanillaProtocolClient {
                 && (pearlTeleports > 0 && pearlHealth >= 0 || now - stepAt > PATIENCE)) {
                 // ThrownEnderpearl.onHit: the thrower is teleported and takes 5 damage.
                 record("play-pearl", "teleported " + pearlTeleports + " time(s), health " + pearlHealth);
+                if (gameType != net.minecraft.world.level.GameType.SURVIVAL || playerId < 0) {
+                    throw new IllegalStateException("first-tick snowball needs a survival guest");
+                }
+                firstTick = new FirstTickThrow(net.minecraft.core.BlockPos.containing(position.position()));
+                for (var block : firstTick.wall) {
+                    if (!chunks.containsKey((block.getX() >> 4) + "," + (block.getZ() >> 4))) {
+                        throw new IllegalStateException("first-tick snowball wall chunk was not received");
+                    }
+                }
+                // The wall is within one block of the horizontal launch, in the loaded area.
+                send(new ServerboundChatCommandPacket("fill ~-1 ~1 ~1 ~1 ~2 ~1 minecraft:air"));
+                send(new ServerboundChatCommandPacket("fill ~-1 ~1 ~1 ~1 ~2 ~1 minecraft:stone"));
+                send(new net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket(0));
+                send(new ServerboundChatCommandPacket("item replace entity @s weapon.mainhand with minecraft:snowball 16"));
+                step++;
+                stepAt = now;
+            } else if (step == 19 + REPLIES.length) {
+                if (!firstTick.ready()) {
+                    if (now - stepAt > PATIENCE) throw new IllegalStateException("first-tick snowball setup: solid wall "
+                        + firstTick.solid.size() + "/" + firstTick.wall.size() + ", inventory " + firstTick.inventory);
+                    continue;
+                }
+                record("play-first-tick", "survival guest, loaded stone wall 6/6, inventory 16");
+                firstTick.thrown = true;
+                send(new net.minecraft.network.protocol.game.ServerboundUseItemPacket(net.minecraft.world.InteractionHand.MAIN_HAND, 8, 0.0F, 0.0F));
+                step++;
+                stepAt = now;
+            } else if (step == 20 + REPLIES.length && now - stepAt > 2000
+                && (firstTick.removals > 0 && firstTick.inventory == 15 && firstTick.acknowledged || now - stepAt > PATIENCE)) {
+                record("play-first-tick", firstTick.result());
+                if (firstTick.adds != 1 || !firstTick.owner || firstTick.removals != 1
+                    || firstTick.inventory != 15 || !firstTick.acknowledged) {
+                    throw new IllegalStateException("first-tick snowball tracking: expected one add owned by the guest, one matching removal, inventory 16->15 and acknowledgement");
+                }
                 return;
             }
         }
@@ -839,7 +1074,7 @@ public final class VanillaProtocolClient {
             if (runType != null) record("play-respawn", runLine(runType, run));
             record("play-respawn", "level never loaded: load start " + loadStart + ", chunk under the player " + respawnChunk);
         }
-        record("error", "timed out in play, step " + step + ", chunks " + chunks.size());
+        record("error", "timed out in play, step " + step + ", chunks " + chunks.size() + ", " + initialView.describeMissing());
     }
 
     /** The server answered the step's command or click (at least 1.5 s after it, as before), or had all the time. */

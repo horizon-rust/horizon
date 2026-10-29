@@ -87,6 +87,7 @@ folder, loads no runtime and plays exactly like vanilla 26.3.
 | `chat` | `chat` | `show(text)`: a line only the local player sees, after the mod's name (8 per call) |
 | `hud` | `hud` | `set-panel(corner, lines)`, `clear()`: up to 16 lines of 256 characters |
 | `storage` | `storage` | `get(key)`, `set(key, value)`, `delete(key)`: a per-mod folder of up to 64 files, 4 MiB total, at most 1 MiB written per call |
+| `resources` | `resources` | `read(path)`: bytes from this program's packaged assets and data. Experimental, with `experimental = ["resources"]`, client API 0.2 or server API 0.3 |
 | `command` | `command` | `run(line)`: a vanilla command run as the player, with the player's permissions, after the hook returns (8 per call); mods' own commands are not run. `run-quiet(lines)`: up to 256 a call, the same rights, nothing in the chat (single player and Horizon's servers run them 64 a tick and log one line a batch; elsewhere they go as chat commands and their feedback shows) |
 | `ui` | `ui` | `open-screen`, `close-screen`, `set-settings`: a screen the mod owns and a page in Options > Mods, of text, button, item and list widgets the game lays out and draws with its own menus' code; `browser.set-items`, `browser.poll`: a recipe viewer's panel of items right of the inventory and container screens (not the creative one), which the game pages and draws with its own slots and search box, and the mod hears its clicks, its searches and the mod's own keys (`input.register-key`) pressed over any item on the screen; `browser.set-recipes`: recipes in the panel's place (crafting grids, cooking, stonecutting, smithing and brewing layouts, their slots cycling through their stacks, a note and an action button each), paged by the game, with clicks on their slots, action buttons, page turns and a back button. **Experimental:** the manifest needs `experimental = ["ui"]` |
 | `render` | `render` | `set-hud(shapes)`: up to 1024 fills, four-cornered shapes, GUI sprites, items and text, kept on the HUD (over the hotbar, under chat and screens, hidden with F1) until replaced; `set-corner(corner, w, h, shapes)`: a box the game places in a corner, stacked with its overlays and other panels, as `hud`'s panels are; `text-width(text)`; `frame-stats()`: the game's FPS, min and 1% low; `gui-size()`; `shake(strength, seconds)`: the view turns, the player doesn't, scaled by Distortion Effects; `set-zoom(zoom)`: the field of view divided by up to 10, eased or at once, with slower turning, while playing and not through a spyglass (the strongest of several mods' zooms counts); `set-minimap(minimap)`: a map of the world around the player in a corner, as a map item colours it (the floor underground and under roofs), square or round, turning with the player or north up, with the player's arrow; the game keeps its tiles within its own frame budget (one map at a time, the first loaded mod's); `set-far-terrain(far-terrain)`: the world past the render distance as distant terrain, out to 64 to 1024 chunks, built by the game's own workers (the player's LOD Distance, when on, wins; the first loaded mod's). The game's own HUD renderer draws them: a mod never supplies shader code. **Experimental:** `experimental = ["render"]` |
@@ -370,9 +371,62 @@ experimental = []            # experimental capabilities it uses, e.g. ["ui"]
 ```
 
 Unknown keys are refused, so a typo is an error, not a silently ignored
-permission. An experimental capability (today `ui`, `render` and `input`) may change in any release
+permission. An experimental capability (`ui`, `render`, `input`, `recipes` or `resources`) may change in any release
 ([stability](api/stability.md)): a mod uses it only by naming it in
 `experimental` as well, so nobody depends on it by accident.
+
+### Reading packaged bytes
+
+Capability `resources` grants permission to “read its own packaged assets and data”.
+Client programs use `api = "0.2"`. Server programs use `api = "0.3"` and `side = "server"`.
+Both declare `capabilities = ["resources"]` and `experimental = ["resources"]`.
+Code is required unless the program also independently declares `registries`.
+
+```rust,ignore
+use horizon_mod_sdk::resources;
+
+let bytes = resources::read("data/resource_lab/species/sample.json")?
+    .ok_or("missing sample")?;
+```
+
+Server Rust programs use the same module at `horizon_mod_sdk::server::resources`.
+Declare `players` too when the component imports the existing server event player types.
+The call works during `init`, without a world. It reads the locally installed package.
+It does not transfer files between clients and servers. Existing `side = "both"` uses client exports.
+
+Paths are literal `assets/<namespace>/<file>` or `data/<namespace>/<file>` names, at most 1024 bytes,
+checked with the ordinary content path rules. The namespace must be the program's id or one of its
+manifest's `namespaces`. Owner ids and extra namespaces cannot be `minecraft`, `c` or `horizon`.
+The host checks ownership and the sorted validated inventory before opening a file.
+Missing owned names return `Ok(None)`, empty files `Ok(Some(Vec::new()))`.
+Invalid paths, another owner's namespace, listed but unavailable files and limits return short errors
+without host paths or partial bytes. Other packages, merged resources and runtime storage are unavailable.
+Equal namespace names in two resource packages remain separate.
+
+Ordinary assets and data, including extra namespaces, need `resources` or `registries`.
+Registration declarations in `data/<id>/horizon/` and shared `minecraft` or `c` tags still need `registries`.
+Files from a program with only `resources` are not merged into the game's resource root.
+`storage` remains saved runtime state with its existing quotas.
+
+Packages allow 65,536 content files, 16 MiB each and 1024 MiB total. Every callback, including `init`,
+allows 64 resource requests and 32 MiB of charged resource I/O. Invalid paths and misses count as requests.
+Before reading, the host reserves the smaller of 16 MiB and the remaining allowance. Success refunds
+unused bytes, while failure spends the reservation. Reads stop after that reservation plus one probe byte.
+Exhaustion performs no resource I/O. These limits bound I/O volume, not callback latency.
+The guest memory limit remains 64 MiB and existing fuel limits apply.
+
+Directory inventory skips symbolic links, including top level assets and data links, and only lists regular files.
+An owned confined directory handle prevents reads from escaping after a path changes. A store keeps one ZIP index
+for an archive. Byte edits to listed directory files can be visible immediately. New names need a supported reload:
+rebuild or touch `mod.wasm`, or atomically replace the `.hmod`. Reload validates content and execution side again.
+Failure drops the old store and commands while other owners keep running.
+
+For Rust host callers, `content::FileReader` now owns its handle and has no lifetime parameter.
+`Content::reader()` can outlive `Content` and a rename of its directory. Its `read` signature is unchanged.
+
+This candidate uses provisional API level 8 on base `1feb28c`. It collides with draft PR 2888's levels 8 through 18.
+Do not publish an SDK, registry entry or binary from this candidate. Before upstream integration, assign the actual
+next level on the merged API substrate and rebuild the guests and generated reference. Do not skip levels.
 
 ### Content mods (API 0.2)
 
@@ -397,6 +451,53 @@ The fence: files go in the mod's own namespaces (`assets/<id>/`,
 share (`data/c/tags/`).
 Templates and `sounds` name vanilla blocks; unknown keys are refused.
 
+A block may optionally declare `states` to register its own property domains instead of
+copying the template's domains. This example is deliberately a full-cube stone physics
+fallback. It is not a measured machine implementation:
+
+```json
+{
+  "template": "minecraft:stone",
+  "states": {
+    "properties": {"multipos": ["top", "bottom", "base"]},
+    "default": "multipos=top",
+    "aliases": {
+      "multipos=top": "minecraft:stone",
+      "multipos=bottom": "minecraft:stone",
+      "multipos=base": "minecraft:stone"
+    }
+  }
+}
+```
+
+Property names are sorted in state keys. Values keep their declared array order, and
+every Cartesian variant needs exactly one alias. `default` must name one complete
+variant. For example, `facing` with four directions and `multipos` with three positions
+requires 12 aliases, including `facing=north,multipos=top`. Aliases name complete existing
+states of the declared template. A template with no properties uses `minecraft:stone`,
+not `minecraft:stone[]`. A directional alias may be
+`minecraft:furnace[facing=north,lit=false]`. Omitted template properties are refused.
+
+The bounds follow the observed Pixelmon block DATA maxima: eight properties, 26 values
+per domain and 4374 states per block. Names and values are nonempty lowercase resource
+tokens of at most 64 bytes. The existing total world state limit still applies. Without
+`states`, old declarations retain their template states and default unchanged.
+
+The resource plan registers the actual names, property maps and default in facts, command
+and model tables, then copies physics, shapes and other per-state rows through each
+explicit alias. Numeric references in copied rows stay within the custom block. Alias
+references preserve custom-only properties, and missing or ambiguous references fail with
+an error. Several custom variants may share a template alias without becoming one state.
+
+Owned blockstate assets take priority. Without one, ordinary template model variants are
+expanded through the same aliases. Multipart template models require an owned blockstate
+file. Unknown aliases, missing model variants and ambiguous model mappings are errors.
+This state schema does not implement multiblock placement or linked breaking, machine
+processing, block entities, custom collision shapes or rotation rules absent from the
+chosen template. Registering `multipos` does not supply those behaviors. An alias to stone
+retains its cube collision and identity transforms even when custom properties say
+`facing` or `multipos`.
+
 Some Java mods ship their files under other names than their mod id (Towns
 and Towers, mod id `t_and_t`, under `kaisyn` and `towns_and_towers`). A
 content mod lists those in its manifest:
@@ -416,7 +517,7 @@ namespace (one's id or listed namespace being the other's): the game keeps
 the first in load order and leaves the other's content out, with
 "mods A and B both use the namespace N; turn one of them off" in the log. Paths
 use vanilla's resource characters, at most 65,536 files, 16 MiB each and
-512 MiB in all. A mod whose content is refused stays off, with the reason on
+1024 MiB in all. A mod whose content is refused stays off, with the reason on
 its row. The game reads this content into its block and item tables
 (`horizon_client::mod_content`, docs/modpacks.md). A tag entry naming an id
 nobody registers (a block a port left out, another mod's item) is dropped,
@@ -479,6 +580,7 @@ its component targets the WIT world `horizon-server-mod` instead of
 |---|---|---|
 | `log` | always | as for client mods |
 | `storage` | `storage` | as for client mods, in the server's `horizon-mods/` |
+| `resources` | `resources` | this program's own package bytes, as above, with `experimental = ["resources"]` |
 | `players` | `players` | `online()`: id, name, position, dimension, game mode, health of each player on; `tell(id, text)`, `broadcast(text)`: system messages after the mod's name, 8 per call |
 | `world` | `world` | `get-block(dimension, x, y, z)`: the state in a loaded chunk, `minecraft:oak_log[axis=y]`; `get-biome(dimension, x, y, z)`: `minecraft:plains`, ...; `set-blocks(dimension, changes)`: up to 4096 per call, checked at once, made as `/setblock` makes them (neighbours, light, block entities, every player told) after the call, before that dimension's next tick |
 
@@ -689,3 +791,353 @@ Modpacks ([modpacks.md](modpacks.md)) move data-driven `registries` first:
 API 0.2 is content-only `.hmod`s (blocks, items, recipes, loot, models and
 textures), then server hooks (0.3) and block entities, menus, capabilities and
 `net` (0.4), in the order the ATM10 inventory needs them.
+
+## Experimental server entities
+
+Server programs may opt into `entities` to register owned kinematic types and create, update or remove
+ephemeral host records. The six new functions use provisional local level 9 after resource level 8.
+Both collide with draft PR 2888 and require allocation and retesting on the merged substrate before release.
+See [the entity contract](api/mod-entities.md) for limits, transactional callbacks and host cleanup.
+Stage E adds no rendering, networking, collision, AI or persistence.
+
+
+## Experimental private program messages
+
+The pinned candidate offers `horizon_mod_sdk::messages` to client programs and
+`horizon_mod_sdk::server::messages` to server programs. Declare capability and experimental
+opt-in `messages`. The three actual new imports use provisional local level 13, not a
+released allocation. Existing guests need no new exports or registration fields.
+
+Client programs call `subscribe(sender, channel)` during init and `poll()` in existing
+hooks. Poll returns `Result<Vec<Message>, String>` with
+`Message { sender: String, channel: String, payload: Vec<u8> }`. The receiver ID and
+subscription epoch come from the host store. A client cannot send an action, target another
+connection or choose the ID of a different local program through this API.
+
+Server programs call `send(player, receiver, channel, payload) -> Result<(), String>`.
+`player` is an authoritative online player UUID from the existing player API or callback.
+The sender is the running program's ID. Delivery requires an exact receiver, sender and
+channel subscription on that player's own connection. There is no broadcast or chat
+fallback. Subscribe and poll fail on server stores; send fails on client stores.
+
+Payloads are at most 32768 bytes. Each callback allows eight send attempts and 64 total
+message calls. Names use ASCII resource tokens, at most 64 bytes per owner ID and 128 per
+channel. A client program may hold 32 subscriptions, with 64 across one client runtime.
+There are at most 64 queued incoming messages across client programs and 64 queued outgoing
+messages for one player, with 256 total unsent deliveries and 4096 server subscription
+routes. Queue and subscription failures are ordinary errors. Callers that already saved a
+successful action should treat a display-send failure separately from that action.
+
+Send success means bounded enqueue, not a UI receipt or a second gameplay transaction.
+Remote inboxes may fill or connections may close before delivery. Hosts stop adding private
+payloads to a connection whose existing output exceeds 2 MiB. UI consumers can request a
+fresh view through their existing authenticated command path. Binary payloads never enter
+player chat or public renderer state.
+
+In-frame delivery uses the same subscriptions and receiver leases as integrated memory and
+TCP delivery. Fixed CustomPayload channels carry read-only subscription advertisements,
+private deliveries and resets. A subscription packet applies only to its authenticated
+connection. World close, respawn, disconnection and program reload clear queues and replace
+receiver epochs. Old in-flight deliveries fail the new epoch check. A server reload also
+sends a reset to subscribed clients before accepting their new advertisements. Sender store
+destruction revokes its unsent deliveries. The program owns payload schemas and UI session
+or revision rules; the transport adds no gameplay action authority.
+
+### Experimental physical server inventory
+
+Server programs can opt into `capabilities = ["inventory"]` and
+`experimental = ["inventory"]`. The additive import is
+`horizon_mod_sdk::server::inventory`. Existing registration and exports are unchanged.
+`held` and `give` use provisional local level 15. The additive string read uses
+provisional local level 19. The restricted machine integer read uses local level 21.
+These are private allocations, not released API numbers.
+
+```rust,ignore
+use horizon_mod_sdk::server::inventory::{self, Hand};
+let held = inventory::held(&player.id, Hand::Main)?;
+let variant = inventory::component_string(&player.id, Hand::Main, "my_program:kind")?;
+let inserted = inventory::give(&player.id, "minecraft:stone", 12)?;
+```
+
+`held(player: &str, hand: inventory::Hand) -> Result<Option<inventory::ItemStack>, String>`
+reads the authoritative selected main hand or offhand at this point in the callback.
+`Hand` is `Main` or `Off`; it is separate from the existing interaction hand enum.
+`ItemStack` contains only `item_id: String` and `count: u32`. Empty hands return `None`.
+The record shape is unchanged. General NBT and inventory removal are not exposed.
+
+`component_string(player: &str, hand: inventory::Hand, key: &str)
+-> Result<Option<String>, String>` reads one effective custom string in the same
+authoritative hand. The component namespace must be owned by the calling program:
+its manifest ID or an explicitly claimed namespace. Keys are valid namespaced
+identifiers of at most 128 bytes, and returned UTF-8 strings are at most 256 bytes.
+Unpaired UTF-16 surrogates are rejected rather than replaced. Each attempted read
+uses the same 16-operation callback allowance as `held` and `give`.
+
+The native item catalog retains custom component prototype values from the loaded
+`items.json`. The existing component-patch kernel resolves those defaults with
+the actual held stack's saved patch. An explicit `!namespace:key` entry whose value
+is an empty compound represents removal. Bare absence of a patch entry inherits
+the prototype. A live value together with a removal, duplicate entries or a
+malformed removal marker returns an error.
+
+An empty hand returns None. With a fully known prototype, an absent or explicitly
+removed component also returns None. An unavailable item prototype, non-string
+effective value, oversized string, invalid key, offline player or unavailable
+callback context returns Err. A patched string can replace a non-string default,
+and a valid removal can remove it. There is no default value guessed for any item.
+The read neither changes slots nor grants an action or consumption authority.
+
+`custom_data_integer(player: &str, hand: inventory::Hand, field: &str)
+-> Result<Option<i64>, String>` is an additional restricted read under the existing
+`inventory` capability and experimental opt-in. It accepts only the fields `tm`
+and `Gen9Offset` under the fixed `minecraft:custom_data` root, and only while holding
+the registered item `pixelmon:tm_gen9` or `pixelmon:tr_gen8`. This is not a general
+NBT path API or an exception allowing arbitrary vanilla component reads.
+
+It reads the same authoritative main or offhand slot as `held`. Empty hands return
+None. An unsupported field or non-machine held item returns Err. The catalog retains
+the actual loaded root prototype for those two items with the existing native
+JSON-to-NBT conversion. The existing component-patch kernel then resolves the
+actual saved stack's whole root replacement or explicit
+`!minecraft:custom_data` empty-compound removal. Bare patch absence inherits the
+prototype. A root replacement does not merge missing nested fields from the
+prototype. Duplicate, conflicting or malformed patch entries return Err.
+
+A fully known absent root or absent field returns None. An unavailable prototype,
+wrong root type or unavailable server context returns Err. Only actual NBT Byte,
+Short, Int and Long values return their exact signed value as i64. Floating-point,
+string, list or compound field values are rejected, with no coercion or default
+index. The query borrows the root and returns one integer; it neither serializes
+nor exposes unrelated custom data. Every attempted call shares the existing
+16-operation inventory callback limit, including errors. Old record and export
+shapes remain unchanged, and older native inventory implementations default to an
+unavailable error.
+
+The existing vanilla CustomData NBT serialization carries the real compound.
+This read adds no wire format, numeric component registration or packet. Programs
+must still validate exact item identity, number mapping, generation, compatibility
+and their explicit reuse policy, then use the existing admitted save and
+consumption acknowledgment. No integer value alone authorizes teaching or spending.
+
+Recipe result parsing and ordinary saved stacks already retain custom strings in
+`StackData.other`. This API alone does not preserve them over the native wire.
+The separately implemented Horizon string envelope uses existing
+`minecraft:custom_data` packets; its transport handoff must be present before a
+program relies on remote string identity. No numeric component type or new packet
+is registered by this read API. Physical actions still require their existing
+authoritative stack checks and successful consumption acknowledgment.
+
+`give(player: &str, item: &str, count: u32) -> Result<u32, String>` inserts plain registered
+items synchronously into that player's 36 native inventory slots. It shares the existing
+native insertion function and registered stack limits, including component-aware merging.
+It returns the number actually inserted, including zero when full. Any remainder stays
+with the program's accounting and is never queued or dropped into the world. Counts must
+be 1 through 1024. Air, unregistered IDs and item strings over 256 bytes fail before insertion.
+Each callback permits 16 attempted inventory operations, including errors, and eight
+attempted `give` calls. Init has no physical inventory context.
+
+Targets are exact UUID strings from the authoritative online player snapshot. Invalid or
+offline IDs and unavailable inventory contexts return `Err`, without insertion. The active
+actor uses their actual swapped-in inventory during guest actions. Hosted callbacks and
+explicit guest commands can access the available hub players as well. If the hub is lent
+to an outer native action, a non-actor's unavailable slots return an explicit context error.
+No stale hub shadow is used. Slots are lent only for synchronous callbacks and restored
+before normal gameplay resumes. Existing native inventory and open-menu synchronization
+carry changes to clients. There is no additional inventory network authority.
+
+Insertion is a physical side effect, not a callback transaction. An inserted item survives
+a later callback error, trap or program snapshot write failure. Returning a consume-zero
+interaction result permits insertion to change the held stack. Positive interaction
+consumption still requires the original held stack to match and consumes only after the
+callback succeeds. A program must use the returned inserted count when retaining leftovers.
+Native player inventory persists through the ordinary world save. An insertion result is
+not a disk-save acknowledgement. There is no atomic transaction or crash recovery guarantee
+between player saves and program `world_storage` files, or between multiple files. Existing
+world-storage owner admission is unchanged.
+
+Loaded machine state reads remain `server::world::get_block(dimension, x, y, z)` with
+`world` capability and experimental opt-in. It returns `Option<String>` with `None` for an
+unloaded position. The inventory API does not load blocks or chunks.
+
+This source addition has not been compiled or exercised in a game.
+
+### Experimental server environment context
+
+The existing server `world` capability and experimental opt-in additionally expose
+`horizon_mod_sdk::server::world::environment(dimension: &str, x: i32, y: i32, z: i32)`.
+It returns `Result<Option<world::EnvironmentInfo>, String>` without loading chunks.
+This new import uses provisional local level 16, not a released allocation. Existing
+functions, guest exports and registration shapes are unchanged. Old host `WorldView`
+providers default to `Ok(None)` and remain source-compatible.
+
+`EnvironmentInfo` has `game_time: i64`, `day_time: i64`, `raining: bool`, `thundering: bool`,
+`rain_level: f32`, `thunder_level: f32` and `loaded: Option<LoadedEnvironment>`.
+Native levels share the Overworld's stored game time, day time and weather. Time values
+are signed stored ticks with no modulo or day/night inference. Flags are stored weather
+cycle flags, including in dimensions where they do not imply precipitation. Levels are
+native `Weather::levels(1.0)` at the current tick; thunder is scaled by rain. Neither the
+flags nor these levels alone mean that rain falls at the queried position.
+
+`None` means the native context or dimension is not lent. A known dimension can return
+clock/weather with `loaded = None` for a missing chunk or a Y outside its height.
+Invalid X/Z outside 29,999,984 blocks or dimension names over 128 bytes return `Err`.
+Each callback allows 64 attempted environment queries, including rejected queries.
+Each loaded query scans at most one 384-cell stored heightmap column. It does not prime
+a whole chunk's heightmap or run lighting, physics, world generation or networking.
+
+`LoadedEnvironment` contains:
+
+- `block: String` and `biome: String`, from the registered loaded cell and biome container.
+- `sky_light: Option<u8>` and `block_light: Option<u8>`, raw stored light nibbles 0 through 15
+  only when the native chunk is initialized as lit. They do not include sky darkening or
+  guarantee pending relighting has completed. Uninitialized light is unknown.
+- `static_collision: Option<StaticCollision>` with `Empty`, `FullBlock` or `Partial`.
+  These classify native cached collision shapes. FullBlock is the canonical unit cube.
+  Contextual liquids, powder snow, scaffolding and unavailable dynamic shapes are unknown.
+  Partial includes other nonempty cached geometry and promises no full supporting top face.
+- `fluid: Option<FluidContext>` with `kind: String`, `amount: u8`, `falling: bool`, using the
+  native stored block-state fluid parser. Known empty fluid is `minecraft:empty`, amount 0.
+  Unmodeled custom fluid behavior or undecodable fluid properties are unknown. There is no
+  inferred air, fluid simulation, flow vector or neighboring fluid height query.
+- `surface_y: Option<i32>`, one above the highest stored MOTION_BLOCKING state in this column,
+  using the native motion-blocking-or-fluid heightmap predicate. An empty column returns the
+  native chunk storage minimum, -64. This is not WORLD_SURFACE, a collision support promise
+  or a can-see-sky result. It uses the same stored column range as the native heightmap.
+- `rain_at_position: Option<bool>`, the native point-rain conjunction: current rain level
+  above 0.2, stored sky light 15, MOTION_BLOCKING surface at or below Y and native biome
+  precipitation as rain. The biome query follows native `BiomeInfo::snows_at`, including
+  its sea level 63 semantics. An independently false term proves false; otherwise unknown
+  light leaves the result unknown. Snow and biomes without precipitation are not rain.
+
+These are native stored and template facts. Content aliases retain their declared physics
+limitations. Missing or unsupported facts remain `None`; programs must choose eligibility
+explicitly and cannot interpret unknown as clear weather, air, daylight or sky visibility.
+World storage admission, renderer JSON and sender authorization are unchanged.
+This source addition has not been compiled or exercised in a game.
+
+### Native sky visibility
+
+`server::world::sky_visible(dimension: &str, x: i32, y: i32, z: i32)` returns
+`Result<Option<bool>, String>` under the existing `world` capability and experimental
+opt-in. It is a separate additive query and does not change `EnvironmentInfo`. The new
+import has provisional local level 17. Old providers default to `Ok(None)`.
+
+This query follows the existing native mob world's named `Level.canSeeSky` semantics:
+Nether returns false, otherwise initialized stored sky light must equal 15. Source evidence
+is [MobWorld::can_see_sky](../crates/horizon-client/src/mobs/world.rs#L204), the native
+[spawn sky check](../crates/horizon-client/src/mobs/spawn_rules.rs#L108) and the explicit
+[BlockAndLightGetter.canSeeSky check](../crates/horizon-client/src/game/trident.rs#L233).
+The separate advancement and stat adapters use bounded column approximations; this API
+follows the mob and spawn light query rather than adopting those approximations.
+
+The SDK host first requires a lent dimension, an in-height position, a resident chunk and
+the native chunk's initialized `lit` flag. Missing or uninitialized data returns `None`,
+including in the Nether. The ordinary world's missing-chunk full-light fallback is never
+used. It scans no columns, loads no chunks and uses no surface-height, collision, weather
+or time inference. It shares the existing 64 attempted environment queries per callback
+and the same coordinate and dimension-name bounds.
+
+This is the native stored-light visibility result, not a new independent roof simulator
+or a light-job completion acknowledgement. Stored light can still await native relighting.
+It does not promise a new vanilla-parity result. Programs should retain `None` as unknown.
+The source was not compiled or exercised in a game.
+
+### Experimental local sound playback
+
+Client programs can use `horizon_mod_sdk::audio` with `capabilities = ["audio"]` and
+`experimental = ["audio"]`. It is client-only and adds no required guest exports.
+The new import has provisional local level 18, not a released SDK allocation.
+
+```rust,ignore
+use horizon_mod_sdk::audio::{self, Category, Position};
+audio::play("pixelmon:pixelmon.mob.bulbasaurf",
+    Some(Position { x: 1.0, y: 65.0, z: 2.0 }), Category::Neutral, 0.5, 1.0)?;
+```
+
+The exact signature is
+`audio::play(event: &str, position: Option<Position>, category: Category, volume: f32, pitch: f32)`
+returning `Result<(), String>`. `Position` has `x`, `y`, `z` as `f64`. Categories are
+`Master`, `Music`, `Record`, `Weather`, `Block`, `Hostile`, `Neutral`, `Player`, `Ambient`,
+`Voice` and `Ui`, mapped to the native SoundSource order. `Some(position)` uses native
+positional attenuation; `None` is listener-relative without attenuation.
+
+The event must be an exact registered namespaced ID in the active merged resource root,
+not a path. Existing content overlays already carry packaged `assets/` into that root.
+The native sound registry reads `assets/<namespace>/sounds.json`; its declared sound names
+resolve to `assets/<namespace>/sounds/<path>.ogg`. For example, JSON key
+`pixelmon.mob.bulbasaurf` in `assets/pixelmon/sounds.json` registers event
+`pixelmon:pixelmon.mob.bulbasaurf`. A declared sound name `pixelmon:pixelmon/bulbasaurf`
+resolves `assets/pixelmon/sounds/pixelmon/bulbasaurf.ogg`. That event exists only if the
+content actually provides the declaration. This SDK stages no assets and accepts no
+filesystem paths, resource bytes or arbitrary decoder requests.
+
+Each callback allows eight attempted calls including errors. At most 64 program requests
+are queued across the client. IDs are at most 128 bytes, volume is finite 0 through 1,
+pitch finite 0.5 through 2 and each position coordinate finite within 30 million blocks.
+A current client world and native output are required. Unknown events, disabled output,
+audio-less builds, absent worlds and exhausted bounds return ordinary `Err` values.
+Init outside a world cannot play sounds. Master/category volume settings and existing
+native no-audio/device behavior remain in effect.
+
+Success means accepted into the bounded queue, not decoded, played or audible. Native
+output routing rechecks registration and uses the existing SoundEngine event resolution,
+random selection, decoder, cache and mixer. It suppresses positional network capture so
+program audio stays local. Missing files, silent event choices, decode/device failures,
+muted settings or native channel limits can still prevent sound. No audibility or decoder
+completion acknowledgement is exposed. Later callback errors do not promise cancellation
+of an accepted request. Requests from stopped or replaced program owners are dropped.
+
+World close, disconnect and world-session changes drop queued requests. Resource registry
+changes drop pending requests as well. There is no program-owned decoded cache or second
+audio pipeline, no binary chat and no new server authority. Existing gameplay, renderer
+JSON, sender authorization and world-storage admission are unchanged.
+This source path has not been compiled, decoded or played.
+
+### Experimental read-only entity collision probes
+
+Server programs with the existing `entities` capability and experimental opt-in can
+call `horizon_mod_sdk::server::entities::probe_colliding`. Only this new function
+uses provisional local level 20. Existing registration records, movement records,
+guest exports and `move_colliding` behavior are unchanged.
+
+```rust,ignore
+let accepted = entities::probe_colliding(&handle, &dimension, &expected, &delta)?;
+```
+
+The signature is `probe_colliding(entity: &str, dimension: &str,
+start: &entities::Transform, delta: &entities::MovementDelta)
+-> Result<entities::MovementResult, String>`. The expected transform includes
+finite x/y/z and yaw/pitch. Its coordinates, angles and dimension must equal the
+actual owned record's current baseline. There is no tolerance, angle normalization
+or implicit relocation. A stale, foreign or unloaded handle, mismatched baseline
+or unavailable collision context returns Err.
+
+The probe reads the callback's existing owned transaction when one is already
+present, otherwise the published owned record. It never creates a transaction,
+stages a record or changes a record's transform, revision or lifecycle events.
+Only the existing callback attempt counters advance. Probes share the eight
+collision attempts with `move_colliding` and the 64 entity operations with all
+entity calls, including errors. Delta must be finite and at most four blocks per
+axis. Dimension input is at most 128 bytes.
+
+The same lent native `WorldView::move_colliding` read-only implementation resolves
+the registered type's AABB against resident block collision shapes. No new movement
+algorithm is added: step height stays zero, and the existing scan bounds, unloaded
+chunk errors and unsupported contextual collision errors apply. Result placement
+is validated but not applied. The on_ground result is the existing tiny downward
+support probe, not a promise about fluids, full footprint support or future ticks.
+
+For persistent movement, prepare eligibility and dry support separately, check the
+native baseline against the program's durable record, probe, validate the accepted
+result and save the candidate through the admitted world-storage path. Only after
+that save succeeds should the program publish the saved transform with existing
+`set_state`. An error or failed save must hold the durable pose. A failed later
+publication can leave the native baseline stale; another probe then rejects until
+ordinary publication restores that same durable baseline. It must not trigger a
+direct-position movement fallback.
+
+Existing `move_colliding` stages an update in the callback's entity transaction.
+Transaction commit follows callback success and is independent of a program's
+world-storage acknowledgment. It therefore cannot serve as a pre-save planning
+query. Probe success also does not make program save and later publication one
+atomic transaction. This source slice has not been built or run.
