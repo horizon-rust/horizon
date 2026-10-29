@@ -1446,11 +1446,13 @@ fn check_despawn(m: &mut Mob, w: &MobWorld) -> bool {
     };
     let d = m.distance_sqr(p);
     let persistent = m.persistent || requires_custom_persistence(m);
-    // removeWhenFarAway: animals, villagers, golems, patrols and raiders,
-    // zombie villagers being cured and ridden mobs stay.
+    // removeWhenFarAway: animals (an ocelot only while it is wild and past
+    // 2400 ticks), villagers, golems, patrols and raiders, zombie villagers
+    // being cured and ridden mobs stay.
     let creature = m.kind.category == "creature";
+    let wild_ocelot = m.species() == Species::Ocelot && super::tame::remove_when_far_away(m);
     let removable = !(never_removed_when_far(m.species())
-        || creature && m.kind.flags.animal && !m.extra.jockey
+        || creature && m.kind.flags.animal && !m.extra.jockey && !wild_ocelot
         || super::raider::keeps_alive(m, d)
         || super::zombie_villager::keeps_alive(m)
         || super::riders::keeps_alive(m));

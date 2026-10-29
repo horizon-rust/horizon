@@ -883,6 +883,11 @@ pub fn register_ocelot(m: &mut Mob) {
 pub fn set_trusting(m: &mut Mob, trusting: bool) {
     m.extra.trusting = trusting;
 }
+/// `Ocelot.removeWhenFarAway`: a wild ocelot older than 2400 ticks despawns
+/// when far from every player; a trusting one stays.
+pub fn remove_when_far_away(m: &Mob) -> bool {
+    !m.extra.trusting && m.age > 2400
+}
 /// `Ocelot.mobInteract`: once the fish is taken, one time in three
 /// (`random.nextInt(3) == 0`) the ocelot starts to trust players. Either way
 /// the server runs `Ocelot.spawnTrustingParticles`, whose `addParticle` goes
