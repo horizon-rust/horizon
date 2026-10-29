@@ -151,7 +151,7 @@ impl Game<'_> {
             return;
         }
         let max = (w - 24.0).min(260.0);
-        let lines = wrap(&notice.body, max, width);
+        let lines = horizon_client::split_profiles::wrap(&notice.body, max, width);
         let inner = lines
             .iter()
             .map(|l| width(l))
@@ -176,8 +176,12 @@ impl Game<'_> {
 impl<'a> Split<'a> {
     /// The join question on every player's view in the world (a strip at the top), or gone.
     pub(super) fn prompt_join(&mut self, prompt: Option<Prompt>) {
-        let views = std::iter::once(&mut self.host.split_hud)
-            .chain(self.guests.iter_mut().map(|g| &mut g.game.split_hud));
+        let views = std::iter::once(&mut self.host.split_hud).chain(
+            self.guests
+                .iter_mut()
+                .filter(|g| g.name.is_some())
+                .map(|g| &mut g.game.split_hud),
+        );
         for hud in views {
             match &prompt {
                 Some(p) => {
@@ -200,26 +204,4 @@ impl<'a> Split<'a> {
             game.split_hud.place = place;
         }
     }
-}
-
-/// `text` in lines at most `max` wide (by `width`), broken between words.
-fn wrap(text: &str, max: f32, width: impl Fn(&str) -> f32) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    for word in text.split_whitespace() {
-        let longer = if line.is_empty() {
-            word.to_owned()
-        } else {
-            format!("{line} {word}")
-        };
-        if width(&longer) > max && !line.is_empty() {
-            lines.push(std::mem::replace(&mut line, word.to_owned()));
-        } else {
-            line = longer;
-        }
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines
 }

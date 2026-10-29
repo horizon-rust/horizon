@@ -79,8 +79,8 @@ impl Game<'_> {
 
 struct Guest<'a> {
     game: Box<Game<'a>>,
-    /// The name it plays as.
-    name: String,
+    /// The profile it plays as; `None` while it picks one.
+    name: Option<String>,
     /// Its seat (2 to `MAX_PLAYERS`): its number (P2...), its control socket, its sounds.
     seat: usize,
     options: PathBuf,
@@ -90,6 +90,9 @@ struct Guest<'a> {
     window: u8,
     /// Its buttons and focus targets while another player's game runs.
     widgets: widgets::Saved,
+    /// Its profile got into the world: turned away after that (a kick), it leaves; before, it
+    /// picks again.
+    entered: bool,
 }
 
 pub(super) struct Split<'a> {
@@ -302,7 +305,10 @@ impl<'a> Split<'a> {
     fn name(&self, i: usize) -> String {
         match i {
             0 => "P1".into(),
-            _ => self.guests[i - 1].name.clone(),
+            _ => self.guests[i - 1]
+                .name
+                .clone()
+                .unwrap_or_else(|| "New player".into()),
         }
     }
 
@@ -463,13 +469,17 @@ impl<'a> Split<'a> {
     fn admit(&mut self, event_loop: &ActiveEventLoop, pad_joins: Vec<PadId>) -> bool {
         let mut changed = false;
         for pad in pad_joins {
-            match self.join(Some(pad)) {
+            match self.join(Some(pad), None) {
                 Ok(()) => changed = true,
                 Err(e) => log::warn!("Horizon: splitscreen: a player could not join: {e}"),
             }
         }
         if self.in_world() && self.test_players > 0 {
-            match self.join(None) {
+            // HORIZON_SPLIT_PICK: they pick a profile like a controller's player, else P2...
+            let name = std::env::var_os("HORIZON_SPLIT_PICK")
+                .is_none()
+                .then(|| format!("P{}", self.free_seat().unwrap_or(0)));
+            match self.join(None, name) {
                 Ok(()) => {
                     self.test_players -= 1;
                     changed = true;
@@ -660,6 +670,8 @@ impl ApplicationHandler for Split<'_> {
         self.turn(0);
         self.host.about_to_wait(event_loop);
         let mut changed = self.drop_out() | self.admit(event_loop, pad_joins);
+        self.sync_profiles();
+        changed |= self.pick_profiles();
         changed |= self.sync_surfaces(event_loop);
         if changed || self.views() != self.applied {
             self.relayout(event_loop);
@@ -667,7 +679,7 @@ impl ApplicationHandler for Split<'_> {
         // Each player's badge: who it is, shown a moment when something changes for it.
         self.host.split_hud.badge = Some("P1".into());
         for g in &mut self.guests {
-            g.game.split_hud.badge = Some(g.name.clone());
+            g.game.split_hud.badge = Some(g.name.clone().unwrap_or_else(|| "New player".into()));
         }
         let master = self.host.audio.master;
         for i in 0..self.guests.len() {

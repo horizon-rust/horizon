@@ -191,11 +191,45 @@ def scenario_windows():
         g.quit()
 
 
+def scenario_picker():
+    print('picker: a joining player makes a profile and plays as it')
+    g = Game(2, HORIZON_SPLIT_PICK='1')
+    try:
+        def picking():
+            return (g.ctl(2, 'state').get('menu') or {}).get('mode') == 'splitscreen-profiles'
+        g.wait(picking, 'the picker')
+        g.ctl(2, 'click-button', 'New Profile...')
+        g.ctl(2, 'type', 'Sam')
+        g.ctl(2, 'click-button', 'Create')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Sam in the world')
+        check('Sam has its profile folder', (g.home / 'splitscreen/profiles/Sam/options.txt').exists(), True)
+        g.ctl(2, 'disconnect')
+        g.wait(lambda: not g.alive(2), 'Sam gone', seconds=15)
+    finally:
+        g.quit()
+
+
+def scenario_cancel():
+    print('cancel: a joining player cancels its pick and leaves; P1 gets its window back')
+    g = Game(2, HORIZON_SPLIT_PICK='1')
+    try:
+        g.wait(lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode') == 'splitscreen-profiles',
+               'the picker')
+        w, h = g.size(1)
+        g.ctl(2, 'click-button', 'Cancel')
+        g.wait(lambda: not g.alive(2), 'P2 gone after Cancel', seconds=15)
+        check('P1 alone: its whole window again', g.settle([1], [(2 * w, h)]), [(2 * w, h)])
+    finally:
+        g.quit()
+
+
 SCENARIOS = {
     'alone': scenario_alone,
     'join': scenario_join,
     'four': scenario_four,
     'windows': scenario_windows,
+    'picker': scenario_picker,
+    'cancel': scenario_cancel,
 }
 
 

@@ -188,12 +188,17 @@ impl Split<'_> {
             return;
         };
         g.pad = None;
+        let Some(name) = g.name.clone() else {
+            // Still picking a profile: as if it pressed Cancel (`pick_profiles`).
+            g.game.screen = crate::game::Screen::Playing;
+            return;
+        };
         self.lost.push(Lost {
             seat: g.seat,
             id,
             uuid,
         });
-        g.game.split_hud.prompt = Some(lost_prompt(&g.name));
+        g.game.split_hud.prompt = Some(lost_prompt(&name));
     }
 
     /// Player in `seat` plays with controller `id` (back, or another): its question goes.
