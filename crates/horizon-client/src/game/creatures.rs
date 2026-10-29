@@ -3679,6 +3679,7 @@ impl Game<'_> {
             .get("minecraft:parrot_poisonous_food")
             .is_some_and(|t| t.contains(&*item));
         let player_at = self.eye_position();
+        let player_feet = self.player.as_ref().map(|p| p.position);
         let acting = self.acting_player_uuid();
         let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft)
             || self.keys.contains(&winit::keyboard::KeyCode::ShiftRight);
@@ -3991,6 +3992,26 @@ impl Game<'_> {
                     m.position.x.floor() as i32 >> 4,
                     m.position.z.floor() as i32 >> 4,
                 ));
+            }
+            // Ocelot.mobInteract: fish from a player within three blocks, while
+            // the ocelot is being tempted, may win a wild ocelot's trust; any
+            // other click is Animal.mobInteract (love, growing up).
+            Species::Ocelot
+                if is_food
+                    && !m.extra.trusting
+                    && m.ai.goals.is_running("OcelotTemptGoal")
+                    && player_feet.is_some_and(|p| m.distance_sqr(p) < 9.0) =>
+            {
+                consume = true;
+                let trusted = horizon_client::mobs::tame::try_trusting(m);
+                self.mob_event_particles(self.mobs[index].id, if trusted { 41 } else { 40 });
+                if trusted {
+                    let m = &self.mobs[index];
+                    self.world.modified.insert((
+                        m.position.x.floor() as i32 >> 4,
+                        m.position.z.floor() as i32 >> 4,
+                    ));
+                }
             }
             // IronGolem.mobInteract: an iron ingot repairs 25 health.
             Species::IronGolem
