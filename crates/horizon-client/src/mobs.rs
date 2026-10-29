@@ -48,6 +48,7 @@ pub mod keyframes;
 pub mod leash;
 pub mod living;
 pub mod llama;
+pub mod loot;
 pub mod monster_brain;
 pub mod nautilus;
 pub mod nav;
@@ -1919,6 +1920,9 @@ pub struct MobWorld<'a> {
     /// player in the level stands, alive or not (the despawn distance).
     pub nearest_player: Option<Vec3>,
     pub others: &'a [Seen],
+    /// The dropped item entities of the level, for the goals that look for
+    /// items (`Level.getEntitiesOfClass(ItemEntity.class, ..)`).
+    pub dropped: &'a [crate::entities::ItemEntity],
     /// `others` by position, when the caller keeps one (the mob ticks).
     pub others_grid: Option<&'a seen_grid::SeenGrid>,
     /// Where each id stands in `others`, when the caller keeps one.

@@ -1128,6 +1128,7 @@ pub fn main() -> horizon_client::Result<()> {
                     player: player.clone(),
                     nearest_player: player.as_ref().filter(|p| !p.spectator).map(|p| p.position),
                     others: $snapshot,
+                    dropped: &[],
                     others_grid: $grid,
                     others_index: None,
                     daylight: (world.day_time.rem_euclid(24000)) < 12000,
