@@ -9,7 +9,7 @@ use super::{
 };
 use horizon_client::{
     entities::ItemEntity,
-    mobs::{Species, fox, loot},
+    mobs::{Species, fox, loot, raider},
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 
@@ -24,7 +24,6 @@ fn picks_up_elsewhere(species: Species) -> bool {
             | Species::Panda
             | Species::Allay
             | Species::SulfurCube
-            | Species::Pillager
     )
 }
 
@@ -64,11 +63,12 @@ impl Game<'_> {
             }
         }
     }
-    /// `Mob.pickUpItem` and the overrides of the fox and the dolphin.
+    /// `Mob.pickUpItem` and the overrides of the fox, the dolphin and the raiders.
     fn pick_up_item(&mut self, i: usize, id: u32) {
         match self.mobs[i].species() {
             Species::Fox => self.fox_pick_up_item(i, id),
             Species::Dolphin => self.dolphin_pick_up_item(i, id),
+            species if raider::is_raider(species) => self.raider_pick_up_item(i, id),
             _ => self.equip_picked_up_item(i, id),
         }
     }
@@ -121,6 +121,34 @@ impl Game<'_> {
         if let Some(j) = self.dropped.iter().position(|e| e.id == id) {
             self.mob_takes_item(i, j, count);
         }
+    }
+    /// `Pillager.pickUpItem` and `Raider.pickUpItem`: a pillager takes banners
+    /// and nothing else (anything else would have to be a white banner that
+    /// is no `BannerItem`); the ominous banner of a raid whose wave has no
+    /// leader makes the raider the captain, which `sync_raiders` does when
+    /// it finds the banner next to one; every other banner is equipped as
+    /// `Mob.pickUpItem` does.
+    fn raider_pick_up_item(&mut self, i: usize, id: u32) {
+        let Some(entity) = self.dropped.iter().find(|e| e.id == id) else {
+            return;
+        };
+        let stack = &entity.stack;
+        let banner = stack.item.ends_with("_banner");
+        let m = &self.mobs[i];
+        if m.species() == Species::Pillager && !banner {
+            return;
+        }
+        let ominous =
+            &*stack.item == raider::BANNER && stack.data().is_some_and(|d| d.ominous_banner);
+        // hasActiveRaid && getCurrentRaid().getLeader(wave) == null.
+        let leaderless = raider::state(m)
+            .filter(|s| s.active_raid)
+            .and_then(|s| s.raid_id.map(|raid| (raid, s.wave)))
+            .is_some_and(|(raid, wave)| !self.raid_has_leader(raid, wave));
+        if ominous && leaderless {
+            return;
+        }
+        self.equip_picked_up_item(i, id);
     }
     /// `Dolphin.pickUpItem`: a dolphin with an empty mouth takes the whole
     /// stack of the item entity, which it will drop again to play.
