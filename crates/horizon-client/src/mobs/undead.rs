@@ -8,6 +8,7 @@ use super::{
         NearestTarget, RandomLookAround, RestrictSun, Stroll, goal_clone,
     },
     path::Path,
+    spear_use::SpearUse,
     villager_brain::{
         closer_to_center, occupied_pois_in_range, others_tickets, sections_to_village,
         village_sections,
@@ -35,6 +36,8 @@ pub fn register(m: &mut Mob) {
             g.add(4, AttackTurtleEgg::default());
             g.add(8, LookAtPlayer::new(8.0));
             g.add(8, RandomLookAround::default());
+            // Zombie.addBehaviourGoals: a spear in hand is used first.
+            g.add(2, SpearUse::new(1.0, 1.0, 10.0, 2.0));
             g.add(3, MeleeAttack::new(1.0, false).zombie());
             g.add(
                 6,
@@ -66,6 +69,7 @@ pub fn register(m: &mut Mob) {
             g.add(1, BreakDoor::zombie());
             g.add(8, LookAtPlayer::new(8.0));
             g.add(8, RandomLookAround::default());
+            g.add(1, SpearUse::new(1.0, 1.0, 10.0, 2.0));
             g.add(2, MeleeAttack::new(1.0, false).zombie());
             g.add(7, Stroll::avoiding_water(1.0));
             let t = &mut m.ai.targets;
