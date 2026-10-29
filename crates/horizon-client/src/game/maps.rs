@@ -14,18 +14,34 @@ use horizon_client::{
 use horizon_world::nbt::Tag;
 use std::collections::HashMap;
 
-/// A decoration: sprite, map position (-128..127, half pixels) and rotation
-/// (0..15), and the player it marks (an item's own decorations mark none).
+/// What a decoration is filed under in `MapItemSavedData.decorations` (a
+/// `LinkedHashMap<String, MapDecoration>`): a player's marker by their
+/// connection.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Key {
+    Player(u32),
+    /// An item's `minecraft:map_decorations` (an explorer map's target), or a
+    /// decoration a server sent (`addClientSideDecorations`).
+    Item,
+}
+/// A decoration (`MapDecoration`): sprite, map position (-128..127, half
+/// pixels), rotation (0..15) and name, filed under its key.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Decoration {
     pub sprite: &'static str,
     pub x: i8,
     pub y: i8,
     pub rot: u8,
-    pub holder: Option<u32>,
+    pub name: Option<String>,
+    pub key: Key,
 }
 /// The host among a map's holders (the guests are their connections).
 const HOST: u32 = u32::MAX;
+/// `MapDecorationTypes` the markers use: the player's arrow, the arrows that
+/// replace it past the map's edge.
+const PLAYER: &str = "map/decorations/player";
+const PLAYER_OFF_MAP: &str = "map/decorations/player_off_map";
+const PLAYER_OFF_LIMITS: &str = "map/decorations/player_off_limits";
 /// A player carrying a map, or seeing it framed
 /// (`MapItemSavedData.HoldingPlayer`): the column sweep's step, and what
 /// changed since the last `ClientboundMapItemDataPacket` it was sent.
@@ -130,8 +146,10 @@ impl MapData {
         self.holders.retain(|h| h.holds(now));
         let holders = &self.holders;
         let before = self.decorations.len();
-        self.decorations
-            .retain(|d| d.holder.is_none_or(|w| holders.iter().any(|h| h.who == w)));
+        self.decorations.retain(|d| match d.key {
+            Key::Player(w) => holders.iter().any(|h| h.who == w),
+            _ => true,
+        });
         if self.decorations.len() != before {
             self.decorations_changed();
         }
@@ -142,31 +160,66 @@ impl MapData {
             h.decorations = true;
         }
     }
-    /// `addDecoration` / `removeDecoration` for `holder`'s marker: in place,
-    /// so that the order (the drawing order) stays.
-    fn set_marker(&mut self, holder: u32, marker: Option<Decoration>) {
-        let i = self
-            .decorations
-            .iter()
-            .position(|d| d.holder == Some(holder));
-        let changed = match (i, marker) {
-            (Some(i), Some(d)) if self.decorations[i] == d => false,
-            (Some(i), Some(d)) => {
-                self.decorations[i] = d;
-                true
-            }
-            (Some(i), None) => {
-                self.decorations.remove(i);
-                true
-            }
-            (None, Some(d)) => {
-                self.decorations.push(d);
-                true
-            }
-            (None, None) => false,
+    /// `MapItemSavedData.removeDecoration`: whatever `key` names goes, and
+    /// every holder is told the decorations changed, found or not.
+    fn remove_decoration(&mut self, key: Key) {
+        self.decorations.retain(|d| d.key != key);
+        self.decorations_changed();
+    }
+    /// `MapItemSavedData.addDecoration` with `calculateDecorationLocationAndType`
+    /// and `calculateRotation`: `sprite` at the world position `x_pos`,
+    /// `z_pos` under `key`, in place when the key has a decoration so that the
+    /// order (the drawing order) stays. A position off the map leaves it out
+    /// (a player's turns into an off-map arrow, then nothing past 320 without
+    /// unlimited tracking) and removes what the key had. `game_time` is the
+    /// level's: without a level the Nether's spinning rotation is not used.
+    #[allow(clippy::too_many_arguments)]
+    fn add_decoration(
+        &mut self,
+        sprite: &'static str,
+        game_time: Option<i64>,
+        key: Key,
+        x_pos: f64,
+        z_pos: f64,
+        y_rot: f64,
+        name: Option<String>,
+    ) {
+        let scaling = (1 << self.scale) as f32;
+        let dx = (x_pos - f64::from(self.center[0])) as f32 / scaling;
+        let dz = (z_pos - f64::from(self.center[1])) as f32 / scaling;
+        let inside = (-63.0..=63.0).contains(&dx) && (-63.0..=63.0).contains(&dz);
+        let shown = if sprite != PLAYER {
+            (inside || self.unlimited).then_some(sprite)
+        } else if inside {
+            Some(sprite)
+        } else if dx.abs() < 320.0 && dz.abs() < 320.0 {
+            Some(PLAYER_OFF_MAP)
+        } else {
+            self.unlimited.then_some(PLAYER_OFF_LIMITS)
         };
-        if changed {
-            self.decorations_changed();
+        let Some(sprite) = shown else {
+            self.remove_decoration(key);
+            return;
+        };
+        let spinning = self.dimension == "minecraft:the_nether" && game_time.is_some();
+        let decoration = Decoration {
+            sprite,
+            x: clamp_map_coordinate(dx),
+            y: clamp_map_coordinate(dz),
+            rot: decoration_rotation(spinning, game_time.unwrap_or(0), y_rot),
+            name,
+            key,
+        };
+        match self.decorations.iter().position(|d| d.key == key) {
+            Some(i) if self.decorations[i] == decoration => {}
+            Some(i) => {
+                self.decorations[i] = decoration;
+                self.decorations_changed();
+            }
+            None => {
+                self.decorations.push(decoration);
+                self.decorations_changed();
+            }
         }
     }
     /// `HoldingPlayer.nextUpdatePacket` for `who`: the changed pixels, and
@@ -210,7 +263,7 @@ impl MapData {
                             x: d.x,
                             y: d.y,
                             rot: d.rot as i8,
-                            name: None,
+                            name: d.name.as_ref().map(|n| Tag::String(n.as_str().into())),
                         })
                     })
                     .collect(),
@@ -478,7 +531,11 @@ impl Game<'_> {
                         x: d.x,
                         y: d.y,
                         rot: (d.rot & 15) as u8,
-                        holder: None,
+                        name: d
+                            .name
+                            .as_ref()
+                            .map(|t| horizon_client::entity_nbt::name_text(t).plain()),
+                        key: Key::Item,
                     })
                 })
                 .collect()
@@ -866,41 +923,19 @@ impl Game<'_> {
             m.holder(me).carried = game_time;
             m.drop_holders(game_time);
             // tickCarriedBy: the player marker while tracking in this dimension.
-            let mut marker = None;
             if m.tracking && m.dimension == dim {
-                let s = f64::from(1 << m.scale);
-                let dx = ((p.x - f64::from(m.center[0])) / s) as f32;
-                let dz = ((p.z - f64::from(m.center[1])) / s) as f32;
-                let inside = (-63.0..=63.0).contains(&dx) && (-63.0..=63.0).contains(&dz);
-                let clamp = |d: f32| {
-                    if d <= -63.0 {
-                        -128
-                    } else if d >= 63.0 {
-                        127
-                    } else {
-                        (d * 2.0 + 0.5) as i8
-                    }
-                };
-                // calculateRotation: the arrow spins in the Nether.
-                let rot = decoration_rotation(nether, game_time, f64::from(yaw));
-                let sprite = if inside {
-                    Some("map/decorations/player")
-                } else if dx.abs() < 320.0 && dz.abs() < 320.0 {
-                    Some("map/decorations/player_off_map")
-                } else if m.unlimited {
-                    Some("map/decorations/player_off_limits")
-                } else {
-                    None
-                };
-                marker = sprite.map(|sprite| Decoration {
-                    sprite,
-                    x: clamp(dx),
-                    y: clamp(dz),
-                    rot,
-                    holder: Some(me),
-                });
+                m.add_decoration(
+                    PLAYER,
+                    Some(game_time),
+                    Key::Player(me),
+                    p.x,
+                    p.z,
+                    f64::from(yaw),
+                    None,
+                );
+            } else if m.decorations.iter().any(|d| d.key == Key::Player(me)) {
+                m.remove_decoration(Key::Player(me));
             }
-            m.set_marker(me, marker);
             // The item's MAP_DECORATIONS (an explorer map's target), added
             // after the players as addDecoration would.
             let s = (1 << m.scale) as f32;
@@ -917,7 +952,8 @@ impl Game<'_> {
                     x: clamp_map_coordinate(dx),
                     y: clamp_map_coordinate(dz),
                     rot: decoration_rotation(nether, game_time, f64::from(rotation)),
-                    holder: None,
+                    name: None,
+                    key: Key::Item,
                 };
                 if !items.contains(&d) {
                     items.push(d);
@@ -926,10 +962,10 @@ impl Game<'_> {
             if !m
                 .decorations
                 .iter()
-                .filter(|d| d.holder.is_none())
+                .filter(|d| d.key == Key::Item)
                 .eq(items.iter())
             {
-                m.decorations.retain(|d| d.holder.is_some());
+                m.decorations.retain(|d| d.key != Key::Item);
                 m.decorations.extend(items);
                 m.decorations_changed();
             }
