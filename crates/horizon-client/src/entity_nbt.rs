@@ -329,7 +329,8 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
         );
     }
     match id {
-        // Fox.addAdditionalSaveData; Horizon models the type and the trusted.
+        // Fox.addAdditionalSaveData; Horizon models the type, the flags and
+        // the trusted.
         "minecraft:fox" => {
             let kind = if m.extra.variant == 1 { "snow" } else { "red" };
             map.insert("Type".into(), string(kind));
@@ -342,12 +343,15 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
                         .collect(),
                 ),
             );
-            for (key, value) in [
-                ("Sleeping", Tag::Byte(0)),
-                ("Sitting", Tag::Byte(0)),
-                ("Crouching", Tag::Byte(0)),
+            for (key, bit) in [
+                ("Sleeping", crate::mobs::fox::SLEEPING),
+                ("Sitting", crate::mobs::fox::SITTING),
+                ("Crouching", crate::mobs::fox::CROUCHING),
             ] {
-                map.entry(key.into()).or_insert(value);
+                map.insert(
+                    key.into(),
+                    Tag::Byte(i8::from(crate::mobs::fox::flag(m, bit))),
+                );
             }
         }
         // Ocelot.addAdditionalSaveData.
@@ -1215,11 +1219,21 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
         crate::mobs::Species::Fox => {
             m.extra.variant = u8::from(text(tag.get("Type")).as_deref() == Some("snow"));
             // Fox.readAdditionalSaveData: clearTrusted, then addTrustedEntity
-            // for each of "Trusted".
+            // for each of "Trusted"; then the sleeping, sitting and crouching
+            // flags.
             crate::mobs::fox::clear_trusted(&mut m);
             if let Some(Tag::List(trusted)) = tag.get("Trusted") {
                 for uuid in trusted.iter().filter_map(|t| uuid_from_tag(Some(t))) {
                     crate::mobs::fox::add_trusted_entity(&mut m, uuid);
+                }
+            }
+            for (key, bit) in [
+                ("Sleeping", crate::mobs::fox::SLEEPING),
+                ("Sitting", crate::mobs::fox::SITTING),
+                ("Crouching", crate::mobs::fox::CROUCHING),
+            ] {
+                if flag(tag, key) {
+                    m.extra.ints[0] |= bit;
                 }
             }
         }
