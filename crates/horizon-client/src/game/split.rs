@@ -424,6 +424,7 @@ impl<'a> Split<'a> {
             self.remove_guest(k);
         }
         self.applied.clear();
+        self.order.clear();
         self.p1_window = 1;
         self.windows.truncate(1);
         self.surfaces.truncate(1);
