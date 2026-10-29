@@ -5278,6 +5278,10 @@ impl Game<'_> {
             // `MinecraftServer.tickChildren`: the function tags and scheduled
             // events run before the levels' entity ticks, so a fresh drop
             // still has `Age: 0` when a tick function's poll looks for it.
+            // Vanilla's SavedData (scoreboard, command storage, stopwatches)
+            // is loaded long before it gets there; this lazy load must be
+            // done by then too, or a load tag writes over what it restores.
+            self.load_scoreboard();
             self.tick_functions();
         }
         if self.use_delay > 0 {
