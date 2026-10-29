@@ -168,6 +168,7 @@ mod server_links;
 mod server_packs;
 mod server_travel;
 mod shader_packs;
+mod shelf;
 mod shield;
 mod shoulders;
 mod sign_edit;
@@ -4406,6 +4407,12 @@ impl Game<'_> {
                 }
                 return Ok(true);
             }
+            if let Some(swings) = self.use_shelf(hit, held.as_ref()) {
+                if swings {
+                    self.swing_arm();
+                }
+                return Ok(true);
+            }
             if self.use_composter(hit.pos, held.as_ref()) {
                 self.swing_arm();
                 return Ok(true);
@@ -6531,7 +6538,8 @@ impl Game<'_> {
                 | BlockEntity::Skull(_)
                 | BlockEntity::DaylightDetector
                 | BlockEntity::Campfire(_)
-                | BlockEntity::ChiseledBookshelf(_),
+                | BlockEntity::ChiseledBookshelf(_)
+                | BlockEntity::Shelf(_),
             ) => {}
             None => {
                 v.extend((0..self.craft_size * self.craft_size).map(|i| 100 + i));
@@ -6815,7 +6823,8 @@ impl Game<'_> {
                     | BlockEntity::Skull(_)
                     | BlockEntity::DaylightDetector
                     | BlockEntity::Campfire(_)
-                    | BlockEntity::ChiseledBookshelf(_),
+                    | BlockEntity::ChiseledBookshelf(_)
+                    | BlockEntity::Shelf(_),
                 ) => {}
                 None if self.mount_active() => self.draw_mount_background(batch, ox, oy),
                 None => {
@@ -8295,6 +8304,9 @@ impl Game<'_> {
         // `CampfireRenderer`.
         self.mark_entity(out.len(), "");
         self.campfire_geometry(camera, &mut out);
+        // `ShelfRenderer`.
+        self.mark_entity(out.len(), "");
+        self.shelf_geometry(camera, &mut out);
         self.mark_entity(out.len(), "minecraft:ominous_item_spawner");
         self.ominous_item_spawner_geometry(camera, alpha, &mut out);
         // Mobs and their projectiles (a span each).

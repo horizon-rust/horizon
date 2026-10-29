@@ -239,7 +239,7 @@ pub(super) fn pop_position(
 }
 
 /// The block entity at `pos` Horizon keeps as it was loaded, if any
-/// (campfires, decorated pots, chiseled bookshelves, shelves).
+/// (decorated pots).
 pub(super) fn saved_entity(
     world: &horizon_client::world::World,
     pos: [i32; 3],
@@ -532,8 +532,8 @@ impl GameLevel<'_> {
             data: 0,
         });
     }
-    /// A block entity Horizon keeps as it was loaded (campfires, decorated
-    /// pots, chiseled bookshelves, shelves): its items spill as vanilla's do.
+    /// A block entity Horizon keeps as it was loaded (decorated pots): its
+    /// items spill as vanilla's do.
     fn remove_saved_entity(
         &mut self,
         pos: BlockPos,

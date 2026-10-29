@@ -76,6 +76,8 @@ pub enum BlockEntity {
     DaylightDetector,
     /// `ChiseledBookShelfBlockEntity`: a `Container` of six one-book slots.
     ChiseledBookshelf(Box<ChiseledBookshelf>),
+    /// `ShelfBlockEntity` of the wooden shelves.
+    Shelf(Box<Shelf>),
 }
 /// `ChiseledBookShelfBlockEntity`: six slots and `lastInteractedSlot`.
 #[derive(Clone, Debug, PartialEq)]
@@ -90,6 +92,13 @@ impl Default for ChiseledBookshelf {
             last_slot: -1,
         }
     }
+}
+/// `ShelfBlockEntity`: three slots (a whole stack each, up to its item's
+/// stack size) and `align_items_to_bottom`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Shelf {
+    pub items: [Option<ItemStack>; 3],
+    pub align_items_to_bottom: bool,
 }
 /// `TheEndGatewayBlockEntity`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

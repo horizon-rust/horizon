@@ -4959,6 +4959,14 @@ impl Game<'_> {
                 // click ends, so a shield in the other hand is not raised.
                 self.with_hand(hand, Game::swing_arm);
                 return true;
+            } else if hand == Hand::Main
+                && !(self.keys.contains(&KeyCode::ShiftLeft)
+                    && (self.stack_in(self.selected).is_some() || self.offhand.is_some()))
+                && self.shelf_consumes_click(&hit)
+            {
+                // ShelfBlock.useItemOn on the client: CONSUME, so the click ends
+                // here without a swing; the server swaps the items.
+                return true;
             } else if held.as_ref().is_some_and(|s| &*s.item == "minecraft:brush") {
                 // BrushItem.useOn: brushing starts here (CONSUME, no swing); the
                 // server brushes and the dust is this client's own.
