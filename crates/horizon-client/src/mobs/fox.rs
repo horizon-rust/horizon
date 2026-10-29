@@ -13,6 +13,7 @@ use super::{
     },
     living::wrap,
 };
+use crate::items::Items;
 use horizon_core::{
     geometry::{Axis, Vec3},
     jmath,
@@ -212,10 +213,25 @@ pub fn pre_ai_step(m: &mut Mob) {
     }
 }
 /// `Fox.isConsumableFood`: the item has food and consumable components.
-fn eats(w: &MobWorld, item: &str) -> bool {
-    w.items
-        .and_then(|i| i.items.get(item))
+fn consumable_food(items: &Items, item: &str) -> bool {
+    items
+        .get(item)
         .is_some_and(|i| i.food.is_some() && i.consumable.is_some())
+}
+fn eats(w: &MobWorld, item: &str) -> bool {
+    w.items.is_some_and(|items| consumable_food(items, item))
+}
+/// `Fox.canHoldItem`: an empty mouth takes anything; a full one only takes
+/// food, once the fox has gone a tick without eating, and not over food.
+pub fn can_hold_item(m: &Mob, items: &Items, item: &str) -> bool {
+    match m.extra.main_hand.as_deref() {
+        None => true,
+        Some(held) => {
+            m.extra.ints[TICKS_SINCE_EATEN] > 0
+                && consumable_food(items, item)
+                && !consumable_food(items, held)
+        }
+    }
 }
 
 /// `Fox.FoxBehaviorGoal.hasShelter`: out of the sky's sight and not a bad spot.

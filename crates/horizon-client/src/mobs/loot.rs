@@ -36,9 +36,11 @@ pub fn in_tag(items: &Items, tag: &str, item: &str) -> bool {
 }
 
 /// `Mob.canHoldItem`: always true, but a zombie that is a baby passenger
-/// does not hold eggs and a wither skeleton not the weapons it dislikes.
+/// does not hold eggs, a wither skeleton not the weapons it dislikes and a
+/// fox only what its mouth has room for.
 pub fn can_hold_item(m: &Mob, items: &Items, item: &str) -> bool {
     match m.species() {
+        Species::Fox => super::fox::can_hold_item(m, items, item),
         Species::WitherSkeleton => {
             !in_tag(items, "minecraft:wither_skeleton_disliked_weapons", item)
         }
