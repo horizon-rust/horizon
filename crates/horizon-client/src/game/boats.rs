@@ -44,6 +44,11 @@ pub(super) struct Boat {
     /// left before a bubble column lifts or drags the boat; 0 when it is not
     /// over one.
     pub bubble_time: i32,
+    /// `AbstractBoat.isAboveBubbleColumn`, set by `onAboveBubbleColumn` and
+    /// cleared by `tickBubbleColumn` (the server's).
+    above_bubble_column: bool,
+    /// `AbstractBoat.bubbleColumnDirectionIsDown`.
+    bubble_down: bool,
     pub hurt_time: i32,
     pub hurt_dir: i32,
     pub damage: f32,
@@ -58,6 +63,9 @@ pub(super) struct Boat {
 }
 /// `ChestBoat.CONTAINER_SIZE`.
 pub(super) const CHEST_SLOTS: usize = 27;
+/// `AbstractBoat.BUBBLE_TIME`: the ticks over a bubble column before it
+/// lifts or drags the boat.
+const BUBBLE_TIME: i32 = 60;
 pub(super) const WIDTH: f64 = 1.375;
 pub(super) const HEIGHT: f64 = 0.5625;
 impl Boat {
@@ -77,6 +85,8 @@ impl Boat {
             land_friction: 0.0,
             out_of_control: 0.0,
             bubble_time: 0,
+            above_bubble_column: false,
+            bubble_down: false,
             hurt_time: 0,
             hurt_dir: 1,
             damage: 0.0,
@@ -595,6 +605,59 @@ impl Game<'_> {
             0.7_f64.min(v.y + 0.06)
         };
     }
+    /// `AbstractBoat.onAboveBubbleColumn`: whether the splash comes up, one
+    /// time in a hundred for a boat that is not under water.
+    pub(super) fn boat_splash_roll(&mut self, i: usize) -> bool {
+        !self.boats[i].under_water() && self.world.random.next_int_bound(100).unwrap_or(1) == 0
+    }
+    /// `AbstractBoat.onAboveBubbleColumn`: the client's half after the roll,
+    /// the splash sound and particle at the boat.
+    pub(super) fn boat_bubble_splash(&mut self, i: usize) {
+        use horizon_client::particles::{ParticleOptions, ParticleType};
+        let p = self.boats[i].position;
+        let pitch = 0.8 + 0.4 * self.world.random.next_float();
+        self.audio.play(
+            "minecraft:entity.generic.splash",
+            Some([p.x, p.y, p.z]),
+            1.0,
+            pitch,
+        );
+        let x = p.x + f64::from(self.world.random.next_float());
+        let z = p.z + f64::from(self.world.random.next_float());
+        self.particles.add(
+            &ParticleOptions::simple(ParticleType::Splash),
+            [x, p.y + 0.7, z],
+            [0.0; 3],
+        );
+    }
+    /// `AbstractBoat.onAboveBubbleColumn`: on the server (this window
+    /// simulates the boat) the column is remembered, the countdown starts and
+    /// the splash's game event goes to the listeners (its sound and particle
+    /// are the client's).
+    fn boat_above_bubble_column(&mut self, i: usize, drag_down: bool) {
+        let b = &mut self.boats[i];
+        b.above_bubble_column = true;
+        b.bubble_down = drag_down;
+        if b.bubble_time == 0 {
+            b.bubble_time = BUBBLE_TIME;
+        }
+        if !self.boat_splash_roll(i) {
+            return;
+        }
+        // A window that is its own client hears and sees the splash too.
+        if self.options.execution_role.is_client() {
+            self.boat_bubble_splash(i);
+        }
+        let (id, p) = (self.boats[i].id, self.boats[i].position);
+        // Entity.gameEvent(SPLASH, getControllingPassenger()): the window's
+        // own player when it drives the boat.
+        let ctx = if self.riding == Some(id) && self.player.is_some() {
+            self.player_context(None)
+        } else {
+            self.who_context(None, None)
+        };
+        self.post_game_event("minecraft:splash", [p.x, p.y, p.z], ctx);
+    }
     /// `AbstractBoat.tick`: the end of it on the server for boat `i`, the two
     /// `applyEffectsFromBlocks` that reach bubble columns (the lava is
     /// `boat_lava_tick`'s).
@@ -608,7 +671,9 @@ impl Game<'_> {
         // AbstractBoat.tick calls applyEffectsFromBlocks twice.
         for _ in 0..2 {
             for touch in &touches {
-                if !touch.above {
+                if touch.above {
+                    self.boat_above_bubble_column(i, touch.drag_down);
+                } else {
                     self.boat_inside_bubble_column(i, touch.drag_down);
                 }
             }
