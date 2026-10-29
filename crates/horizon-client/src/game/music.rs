@@ -106,9 +106,7 @@ impl Game<'_> {
             .chunks
             .get(&(x >> 4, z >> 4))
             .map_or("minecraft:plains", |c| {
-                self.res.biomes().list[c.biome(x, y, z) as usize]
-                    .name
-                    .as_str()
+                self.biomes().list[c.biome(x, y, z) as usize].name.as_str()
             })
     }
     /// `isEyeInFluid(WATER)`: the eye inside the water of its block column.

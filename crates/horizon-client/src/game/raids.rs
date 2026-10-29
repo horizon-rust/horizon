@@ -361,13 +361,7 @@ impl Game<'_> {
             .world
             .chunks
             .get(&(at[0] >> 4, at[2] >> 4))
-            .map(|c| {
-                self.res
-                    .biomes()
-                    .get(c.biome(at[0], at[1], at[2]))
-                    .name
-                    .clone()
-            })
+            .map(|c| self.biomes().get(c.biome(at[0], at[1], at[2])).name.clone())
             .unwrap_or_default();
         attributes.value(key, self.dim.id(), &biome, self.world.day_time)
     }

@@ -340,7 +340,7 @@ mod run {
                 dims.push((dim.id(), std::mem::take(chunks)));
             }
             let registry = self.pack.assets.registry;
-            let biomes = self.res.biomes().clone();
+            let biomes = self.biomes().clone();
             self.mods.mods.lend_world(Box::new(LentWorld {
                 registry,
                 biomes,

@@ -287,11 +287,7 @@ impl Game<'_> {
     pub(super) fn biome_name_at(&self, p: Vec3) -> Option<String> {
         let (x, y, z) = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
         let c = self.world.chunks.get(&(x >> 4, z >> 4))?;
-        Some(
-            self.res.biomes().list[c.biome(x, y, z) as usize]
-                .name
-                .clone(),
-        )
+        Some(self.biomes().list[c.biome(x, y, z) as usize].name.clone())
     }
     fn water_height(&self, x: i32, y: i32, z: i32) -> Option<(f32, bool)> {
         let f = self.res.facts().get(self.world.block(x, y, z));

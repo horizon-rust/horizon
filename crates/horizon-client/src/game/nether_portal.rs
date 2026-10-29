@@ -325,7 +325,7 @@ impl Game<'_> {
                     Some(c) => &**c,
                     None => match self
                         .save
-                        .load(x, z, self.pack.assets.registry, self.res.biomes())
+                        .load(x, z, self.pack.assets.registry, self.biomes())
                     {
                         Some(c) => {
                             saved = c;

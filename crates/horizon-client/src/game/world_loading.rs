@@ -340,15 +340,22 @@ pub(super) fn make_streaming(
         dim.id(),
     )));
     let mut locator = None;
+    // The world's data packs' content, over the prepared bundle: the same
+    // overlay the content tables build from, so the generator's biome ids
+    // translate through the same table `Game::biomes` hands out.
+    let packs = super::functions::content_overlay(world_root, &options.resources, false);
+    let overlay = horizon_world::loot::PackOverlay { files: &packs };
+    let biomes = std::sync::Arc::new(
+        Biomes::load_over(&options.resources, &overlay).unwrap_or_else(|e| {
+            log::warn!("Horizon: the packs' biomes are not applied: {e}");
+            res.biomes().as_ref().clone()
+        }),
+    );
     let flat = (dim == Dim::Overworld)
         .then(|| horizon_client::save::world_gen_settings(world_root))
         .flatten()
         .and_then(|s| {
-            horizon_client::flatgen::FlatTerrain::from_settings(
-                &s,
-                pack.assets.registry,
-                res.biomes(),
-            )
+            horizon_client::flatgen::FlatTerrain::from_settings(&s, pack.assets.registry, &biomes)
         });
     let mut streaming = if let Some(inner) = flat {
         Streaming::new(
@@ -356,19 +363,19 @@ pub(super) fn make_streaming(
                 inner: Arc::new(inner),
                 save: save.clone(),
                 registry: pack.assets.clone(),
-                biomes: res.biomes().clone(),
+                biomes: biomes.clone(),
             }),
             pack.context.clone(),
             res.threads(),
         )
     } else if options.test_terrain && dim == Dim::Overworld {
-        let inner = Arc::new(TestTerrain::new(pack.assets.registry, res.biomes())?);
+        let inner = Arc::new(TestTerrain::new(pack.assets.registry, &biomes)?);
         Streaming::new(
             Arc::new(Persistent {
                 inner,
                 save: save.clone(),
                 registry: pack.assets.clone(),
-                biomes: res.biomes().clone(),
+                biomes: biomes.clone(),
             }),
             pack.context.clone(),
             res.threads(),
@@ -378,10 +385,7 @@ pub(super) fn make_streaming(
         let structures =
             horizon_client::save::WorldGen::read(world_root).is_none_or(|w| w.structures);
         let preset = horizon_client::save::WorldGen::preset(world_root);
-        // The world's data packs' structures, over the prepared bundle.
-        let packs = super::functions::content_overlay(world_root, &options.resources, false);
-        let overlay = horizon_world::loot::PackOverlay { files: &packs };
-        let inner = Arc::new(VanillaTerrain::for_world(&options.resources.join("worldgen"), pack.assets.registry, res.biomes(), seed, preset, dim.id(), structures, &overlay).map_err(|e| {
+        let inner = Arc::new(VanillaTerrain::for_world(&options.resources.join("worldgen"), pack.assets.registry, &biomes, seed, preset, dim.id(), structures, &overlay).map_err(|e| {
                 format!("{e}\nPrepare the worldgen bundle with the launcher, or: horizon-prepare --prepare")
             })?);
         if dim == Dim::Overworld && structures {
@@ -393,7 +397,7 @@ pub(super) fn make_streaming(
                 inner,
                 save: save.clone(),
                 registry: pack.assets.clone(),
-                biomes: res.biomes().clone(),
+                biomes: biomes.clone(),
             }),
             pack.context.clone(),
             res.threads(),

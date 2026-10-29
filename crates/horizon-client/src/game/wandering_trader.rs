@@ -136,8 +136,7 @@ impl Game<'_> {
             return false;
         }
         let biome = self.world.chunks.get(&(pos[0] >> 4, pos[2] >> 4)).map(|c| {
-            self.res
-                .biomes()
+            self.biomes()
                 .get(c.biome(pos[0], pos[1], pos[2]))
                 .name
                 .clone()
