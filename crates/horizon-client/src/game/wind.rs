@@ -546,6 +546,7 @@ impl Game<'_> {
             may_build: true,
             can_eat: false,
             game_master: false,
+            sign_click_commands: false,
         };
         self.with_level(|b, level, ticks| {
             b.use_without_item(

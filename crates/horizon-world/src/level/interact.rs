@@ -72,6 +72,9 @@ pub struct PlayerContext {
     pub can_eat: bool,
     /// `Player.canUseGameMasterBlocks` (creative operator).
     pub game_master: bool,
+    /// `SignBlockEntity.canExecuteClickCommands` for the side of the sign
+    /// aimed at that the player faces; false for any other block.
+    pub sign_click_commands: bool,
 }
 
 /// Player-side effects of an interaction, reported through
@@ -757,9 +760,10 @@ impl Behaviours {
             return InteractionResult::Success;
         }
         // WallHangingSignBlock.useItemOn: a hanging sign aimed at the sign's side
-        // (not its editable faces, `isHittingEditableSide`) chains onto it. Sign
-        // text has no click commands here, so `canExecuteClickCommands` is false.
+        // (not its editable faces, `isHittingEditableSide`) chains onto it,
+        // unless the side has click commands to run (`canExecuteClickCommands`).
         if self.data(state).is(Class::WallHangingSign)
+            && !player.sign_click_commands
             && item
                 .and_then(|i| self.item_binding(i))
                 .is_some_and(|binding| binding.kind == super::data::ItemKind::HangingSign)
