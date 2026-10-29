@@ -2382,7 +2382,8 @@ impl Game<'_> {
                 }
             }
             C::TakeItemEntity(p) => {
-                // ClientPacketListener.handleTakeItemEntity: the pickup sound at
+                // ClientPacketListener.handleTakeItemEntity (what `LivingEntity.take`
+                // sends when a mob picks an item up): the pickup sound at
                 // the item, whoever collects it (the server sends none). An
                 // orb's sound comes from the server, at the orb; an arrow this
                 // client does not track as an item sounds at this player.

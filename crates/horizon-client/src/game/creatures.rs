@@ -771,6 +771,7 @@ impl Game<'_> {
         self.tick_fangs();
         self.tick_allays();
         self.tick_pandas();
+        self.tick_mob_pickups();
         self.tick_breeze_effects();
         self.tick_sniffer_effects();
         self.piglin_pickups();
