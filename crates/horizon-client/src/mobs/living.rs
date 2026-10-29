@@ -867,22 +867,37 @@ impl Mob {
             self.position.z.floor() as i32,
         ]
     }
+    /// The landing of `check_fall_damage`: the whole fall, with no block
+    /// softening it.
     fn cause_fall_damage(&mut self, events: &mut Vec<MobEvent>) {
+        self.cause_fall_damage_from(self.fall_distance, 1.0, events);
+    }
+    /// `LivingEntity.causeFallDamage`: a fall of `distance` blocks at `modifier`
+    /// (its own landing, or a vehicle's passed on by `propagateFallToPassengers`)
+    /// brings the species' sounds and reactions, the damage, and the fall
+    /// handed to whoever rides it. `AbstractHorse.causeFallDamage` hurts the
+    /// horse first and passes the fall on only when it was hurt.
+    pub fn cause_fall_damage_from(
+        &mut self,
+        distance: f64,
+        modifier: f32,
+        events: &mut Vec<MobEvent>,
+    ) {
         // Breeze.causeFallDamage: a landing from higher than three blocks.
-        if self.species() == super::Species::Breeze && self.fall_distance > 3.0 {
+        if self.species() == super::Species::Breeze && distance > 3.0 {
             let at = [self.position.x, self.position.y, self.position.z];
             events.push(MobEvent::Sound("entity.breeze.land", at, 1.0, 1.0));
         }
         // Creeper.causeFallDamage: the fall swells the fuse, up to five ticks
         // short of exploding.
         if self.species() == super::Species::Creeper {
-            self.swell = (self.swell + (self.fall_distance * 1.5) as i32).min(30 - 5);
+            self.swell = (self.swell + (distance * 1.5) as i32).min(30 - 5);
         }
         // AbstractHorse.causeFallDamage (llamas override it): a landing of more
         // than a block thuds, and the horse's fall makes no generic fall sound.
-        let thud =
-            super::equine::is_equine(self.species()) && !super::llama::is_llama(self.species());
-        if thud && self.fall_distance > 1.0 && !self.silent {
+        let horse = super::equine::is_equine(self.species());
+        let thud = horse && !super::llama::is_llama(self.species());
+        if thud && distance > 1.0 && !self.silent {
             let at = [self.position.x, self.position.y, self.position.z];
             let sound = if self.is_baby() {
                 "entity.baby_horse.land"
@@ -891,14 +906,20 @@ impl Mob {
             };
             events.push(MobEvent::Sound(sound, at, 0.4, 1.0));
         }
+        // Entity.causeFallDamage: nothing happens to a fall immune entity, nor
+        // to those on it.
         if self.kind.flags.fall_immune {
             return;
         }
-        let power = self.fall_distance + 1.0e-6 - self.kind.safe_fall_distance;
-        let mut damage = (power * self.kind.fall_damage_multiplier).floor();
+        let power = distance + 1.0e-6 - self.kind.safe_fall_distance;
+        let mut damage = (power * f64::from(modifier) * self.kind.fall_damage_multiplier).floor();
         // Frog.calculateFallDamage: five points less than the base damage.
         if self.species() == super::Species::Frog {
             damage -= 5.0;
+        }
+        // LivingEntity.causeFallDamage lets the riders fall first.
+        if !horse {
+            self.fall_to_passengers(distance, modifier, events);
         }
         if damage > 0.0 {
             let at = [self.position.x, self.position.y, self.position.z];
@@ -914,6 +935,21 @@ impl Mob {
                 events.push(MobEvent::Sound(sound, at, 1.0, 1.0));
             }
             self.damage(damage as f32, super::Damage::fall());
+            if horse {
+                self.fall_to_passengers(distance, modifier, events);
+            }
+        }
+    }
+    /// `Entity.propagateFallToPassengers`: the game gives the fall to each
+    /// passenger (`causeFallDamage`), a mob or a player, for this mob is
+    /// borrowed here.
+    fn fall_to_passengers(&self, distance: f64, modifier: f32, events: &mut Vec<MobEvent>) {
+        if self.rider.is_some() || self.extra.rider.is_some() {
+            events.push(MobEvent::FallToPassengers {
+                mob: self.id,
+                distance,
+                modifier,
+            });
         }
     }
     /// LivingEntity.getFrictionInfluencedSpeed.
