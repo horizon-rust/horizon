@@ -473,6 +473,19 @@ impl Game<'_> {
             return;
         }
         self.chiseled_bookshelf_synced(pos);
+        // ShelfBlockEntity.setItem and removeItem end in its own `setChanged()`.
+        if matches!(
+            self.world.block_entities.get(&pos),
+            Some(BlockEntity::Shelf(_))
+        ) {
+            self.shelf_set_changed([pos.0, pos.1, pos.2], Some("minecraft:block_activate"));
+        } else {
+            self.block_entity_changed(pos);
+        }
+    }
+    /// What `BlockEntity.setChanged` does for any block entity: the chunk is
+    /// saved again and comparators reading the container update.
+    pub(super) fn block_entity_changed(&mut self, pos: Pos) {
         // A double chest's other half changes with it.
         let halves: Vec<Pos> = std::iter::once(pos)
             .chain(self.chest_other_half(pos))
