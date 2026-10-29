@@ -329,12 +329,20 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
         );
     }
     match id {
-        // Fox.addAdditionalSaveData; Horizon models only the type.
+        // Fox.addAdditionalSaveData; Horizon models the type and the trusted.
         "minecraft:fox" => {
             let kind = if m.extra.variant == 1 { "snow" } else { "red" };
             map.insert("Type".into(), string(kind));
+            // The trusted UUIDs (`TRUSTED_LIST_CODEC`: a list of int arrays).
+            map.insert(
+                "Trusted".into(),
+                Tag::List(
+                    crate::mobs::fox::trusted_entities(m)
+                        .map(|uuid| Tag::IntArray(uuid.to_vec()))
+                        .collect(),
+                ),
+            );
             for (key, value) in [
-                ("Trusted", Tag::List(Vec::new())),
                 ("Sleeping", Tag::Byte(0)),
                 ("Sitting", Tag::Byte(0)),
                 ("Crouching", Tag::Byte(0)),
@@ -1177,6 +1185,14 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
     match m.species() {
         crate::mobs::Species::Fox => {
             m.extra.variant = u8::from(text(tag.get("Type")).as_deref() == Some("snow"));
+            // Fox.readAdditionalSaveData: clearTrusted, then addTrustedEntity
+            // for each of "Trusted".
+            crate::mobs::fox::clear_trusted(&mut m);
+            if let Some(Tag::List(trusted)) = tag.get("Trusted") {
+                for uuid in trusted.iter().filter_map(|t| uuid_from_tag(Some(t))) {
+                    crate::mobs::fox::add_trusted_entity(&mut m, uuid);
+                }
+            }
         }
         crate::mobs::Species::Rabbit => {
             // Rabbit.Variant.byId: an unknown id is brown.
