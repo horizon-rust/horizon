@@ -757,7 +757,10 @@ pub struct Extra {
     /// AgeableMob.forcedAgeTimer: ticks of happy villager particles left.
     pub forced_age_timer: i32,
     pub in_love: i32,
-    pub love_player: bool,
+    /// `Animal.loveCause`: the UUID of the last player who fed it into love
+    /// (`setInLove`), which `LoveCause` keeps in the save. Kept after the love
+    /// ends, as vanilla does.
+    pub love_cause: Option<[i32; 4]>,
     /// Texture/model variant index (cat type, horse colour, rabbit type...).
     pub variant: u8,
     /// Secondary variant (horse markings, tropical fish pattern colours, panda hidden gene).

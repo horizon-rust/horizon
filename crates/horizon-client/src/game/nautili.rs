@@ -135,10 +135,11 @@ impl Game<'_> {
             return true;
         }
         // Animal.mobInteract: a tame adult fed falls in love (not a zombie).
+        let cause = self.acting_player_uuid();
         let m = &mut self.mobs[index];
         if food && m.species() == Species::Nautilus && m.extra.age == 0 && m.extra.in_love <= 0 {
             m.extra.in_love = 600;
-            m.extra.love_player = true;
+            m.extra.love_cause = Some(cause);
             let sound = nautilus::eat_sound(m);
             self.use_nautilus_food(item);
             self.nautilus_sound(index, sound);
