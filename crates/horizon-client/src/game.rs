@@ -13325,7 +13325,7 @@ impl ApplicationHandler for Game<'_> {
                         self.command_block_scroll(d);
                     }
                     if self.screen == Screen::Options && d != 0.0 {
-                        self.options_scroll(d);
+                        self.options_scroll(d)?;
                     }
                     if self.screen == Screen::Mod && d != 0.0 {
                         self.mod_screen_scroll(d);
