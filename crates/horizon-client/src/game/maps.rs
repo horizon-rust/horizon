@@ -114,6 +114,26 @@ fn block_pos(tag: Option<&Tag>) -> Option<[i32; 3]> {
         _ => None,
     }
 }
+/// The item frame a map hangs in, as `tickCarriedBy` reads it
+/// (`placedInFrame`): the block it is in, its `Direction.get3DDataValue`
+/// (down 0, up 1, north 2, south 3, west 4, east 5) and its entity id.
+#[derive(Clone, Copy)]
+struct Framed {
+    pos: [i32; 3],
+    facing: u8,
+    id: i32,
+}
+/// `Direction.get2DDataValue` of a 3D data value: south 0, west 1, north 2,
+/// east 3, and -1 for up and down.
+fn direction_2d(facing: u8) -> i32 {
+    match facing {
+        3 => 0,
+        4 => 1,
+        2 => 2,
+        5 => 3,
+        _ => -1,
+    }
+}
 /// The host among a map's holders (the guests are their connections).
 const HOST: u32 = u32::MAX;
 /// `MapDecorationTypes` the markers use: the player's arrow, the arrows that
@@ -307,8 +327,8 @@ impl MapData {
             }
         }
     }
-    /// `tickCarriedBy`'s check on every holder but `who`, the player ticking:
-    /// one wearing map invisibility gear has no marker.
+    /// `MapItemSavedData.tickCarriedBy`'s check on every holder but `who`, the
+    /// player ticking: one wearing map invisibility gear has no marker.
     fn hide_invisible(&mut self, who: u32) {
         let hidden: Vec<u32> = self
             .holders
@@ -318,6 +338,50 @@ impl MapData {
             .collect();
         for w in hidden {
             self.remove_decoration(Key::Player(w));
+        }
+    }
+    /// `MapItemSavedData.tickCarriedBy` with `placedInFrame`, for `who`, a
+    /// player in the level of `frame`, the item frame holding the map.
+    /// `carries` is whether their inventory holds the map (`mapMatcher`),
+    /// `invisible` whether they wear map invisibility gear. Without a carried
+    /// copy the player has no marker; the frame gets its own, which replaces
+    /// the marker of another frame entity remembered at the same block.
+    fn tick_framed(&mut self, who: u32, now: i64, carries: bool, invisible: bool, frame: Framed) {
+        let h = self.holder(who);
+        h.framed = now;
+        h.invisible = invisible;
+        if !carries {
+            self.remove_decoration(Key::Player(who));
+        }
+        self.hide_invisible(who);
+        if !self.tracking {
+            return;
+        }
+        let pos = frame.pos;
+        if let Some(old) = self.frames.iter().find(|f| f.pos == pos).copied()
+            && old.entity_id != frame.id
+        {
+            self.remove_decoration(Key::Frame(old.entity_id));
+        }
+        let rotation = direction_2d(frame.facing) * 90;
+        let (x, z) = (f64::from(pos[0]), f64::from(pos[2]));
+        let key = Key::Frame(frame.id);
+        self.add_decoration(FRAME, Some(now), key, x, z, f64::from(rotation), None);
+        let marker = MapFrame {
+            pos,
+            rotation,
+            entity_id: frame.id,
+        };
+        match self.frames.iter().position(|f| f.pos == pos) {
+            Some(i) if self.frames[i] == marker => {}
+            Some(i) => {
+                self.frames[i] = marker;
+                self.dirty = true;
+            }
+            None => {
+                self.frames.push(marker);
+                self.dirty = true;
+            }
         }
     }
     /// `MapItemSavedData.isTrackedCountOverLimit`: more than `limit`
@@ -1274,14 +1338,30 @@ impl Game<'_> {
             .collect();
         let now = self.world.game_time;
         if now % 10 == 0 && host.hub.here(g) {
-            let framed: Vec<i32> = self
+            let framed: Vec<(i32, std::sync::Arc<str>, Framed)> = self
                 .item_frames
                 .iter()
-                .filter_map(|f| f.item.as_ref().and_then(map_id))
+                .filter_map(|f| {
+                    let item = f.item.as_ref()?;
+                    let frame = Framed {
+                        pos: f.pos,
+                        facing: f.facing,
+                        id: f.id as i32,
+                    };
+                    Some((map_id(item)?, item.item.clone(), frame))
+                })
                 .collect();
-            for id in framed {
+            let invisible = self.map_invisibility_worn(&g.armor);
+            for (id, item, frame) in framed {
+                // tickCarriedBy's mapMatcher: the same item with the same map id.
+                let carries = g
+                    .inventory
+                    .iter()
+                    .chain(std::iter::once(&g.offhand))
+                    .flatten()
+                    .any(|s| s.item == item && map_id(s) == Some(id));
                 if let Some(m) = self.map(id) {
-                    m.holder(conn).framed = now;
+                    m.tick_framed(conn, now, carries, invisible, frame);
                     ids.push(id);
                 }
             }
