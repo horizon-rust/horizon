@@ -270,7 +270,6 @@ impl<'a> Split<'a> {
             self.turn(self.focus);
             if let Some(game) = self.game_mut(self.focus) {
                 for key in std::mem::take(&mut game.physical_keys) {
-                    game.mod_key(key, false, false);
                     game.native_key_event(key, false, false);
                 }
                 for key in std::mem::take(&mut game.keys) {
@@ -279,7 +278,6 @@ impl<'a> Split<'a> {
                     }
                 }
                 for button in std::mem::take(&mut game.physical_buttons) {
-                    game.mod_mouse_key(button, false);
                     game.extras_mouse(button, false);
                 }
                 game.modifiers = Default::default();
