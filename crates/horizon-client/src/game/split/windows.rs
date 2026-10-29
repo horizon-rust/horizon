@@ -120,7 +120,14 @@ impl<'a> Split<'a> {
             .collect();
         self.screens
             .sort_by_key(|(_, m)| (m.position().x, m.position().y));
-        self.main_screen = window.current_monitor().and_then(|m| m.name());
+        // Wayland can list one monitor twice, and not say which one a window is on.
+        self.screens.dedup_by(|a, b| a.0 == b.0);
+        self.main_screen = window.current_monitor().and_then(|m| m.name()).or_else(|| {
+            match self.screens.as_slice() {
+                [(only, _)] => Some(only.clone()),
+                _ => None,
+            }
+        });
     }
 
     /// The monitors, by name, left to right (as of this frame).

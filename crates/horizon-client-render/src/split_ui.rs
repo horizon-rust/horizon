@@ -301,10 +301,36 @@ impl SplitUi {
         h: f32,
     ) -> (Vec<[f32; 4]>, Vec<(u8, [f32; 4])>, Vec<(u8, [f32; 4])>) {
         let desk: Vec<[f64; 4]> = self.monitors.iter().map(Monitor::desktop).collect();
-        let x0 = desk.iter().map(|d| d[0]).fold(f64::MAX, f64::min);
-        let y0 = desk.iter().map(|d| d[1]).fold(f64::MAX, f64::min);
-        let x1 = desk.iter().map(|d| d[0] + d[2]).fold(f64::MIN, f64::max);
-        let y1 = desk.iter().map(|d| d[1] + d[3]).fold(f64::MIN, f64::max);
+        // A window's size on the desktop: its pixels at the scale of the monitor it is on.
+        let rects = draft.rects(&self.monitors, &self.main);
+        let on_desk: Vec<(u8, [f64; 4])> = draft
+            .windows
+            .iter()
+            .zip(&rects)
+            .filter_map(|(win, rect)| {
+                let ([x, y], [pw, ph]) = (*rect)?;
+                let (x, y) = (f64::from(x), f64::from(y));
+                let scale = self
+                    .monitors
+                    .iter()
+                    .find(|m| {
+                        let [mx, my, mw, mh] = m.desktop();
+                        x >= mx && x < mx + mw && y >= my && y < my + mh
+                    })
+                    .or_else(|| self.monitors.iter().find(|m| m.name == self.main))
+                    .map_or(1.0, |m| m.desktop()[2] / f64::from(m.size[0]));
+                Some((
+                    win.number,
+                    [x, y, f64::from(pw) * scale, f64::from(ph) * scale],
+                ))
+            })
+            .collect();
+        // The monitors, and windows past them (Wayland's, whose place is unknown) still shown.
+        let all = || desk.iter().chain(on_desk.iter().map(|(_, d)| d));
+        let x0 = all().map(|d| d[0]).fold(f64::MAX, f64::min);
+        let y0 = all().map(|d| d[1]).fold(f64::MAX, f64::min);
+        let x1 = all().map(|d| d[0] + d[2]).fold(f64::MIN, f64::max);
+        let y1 = all().map(|d| d[1] + d[3]).fold(f64::MIN, f64::max);
         if desk.is_empty() || x1 <= x0 || y1 <= y0 {
             return Default::default();
         }
@@ -328,28 +354,7 @@ impl SplitUi {
             ]
         };
         let monitors = desk.iter().copied().map(to_map).collect();
-        // A window's size on the desktop: its pixels at the scale of the monitor it is on.
-        let rects = draft.rects(&self.monitors, &self.main);
-        let windows: Vec<(u8, [f32; 4])> = draft
-            .windows
-            .iter()
-            .zip(&rects)
-            .filter_map(|(win, rect)| {
-                let ([x, y], [pw, ph]) = (*rect)?;
-                let (x, y) = (f64::from(x), f64::from(y));
-                let scale = self
-                    .monitors
-                    .iter()
-                    .find(|m| {
-                        let [mx, my, mw, mh] = m.desktop();
-                        x >= mx && x < mx + mw && y >= my && y < my + mh
-                    })
-                    .or_else(|| self.monitors.iter().find(|m| m.name == self.main))
-                    .map_or(1.0, |m| m.desktop()[2] / f64::from(m.size[0]));
-                let size = [f64::from(pw) * scale, f64::from(ph) * scale];
-                Some((win.number, to_map([x, y, size[0], size[1]])))
-            })
-            .collect();
+        let windows: Vec<(u8, [f32; 4])> = on_desk.iter().map(|&(n, d)| (n, to_map(d))).collect();
         // In their own order, emptied ones too: a window a player was just dragged out of stays
         // where it was until Apply closes it, so the player can be dragged back into it.
         let tiles = draft

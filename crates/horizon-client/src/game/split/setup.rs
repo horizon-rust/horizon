@@ -4,25 +4,33 @@ use super::*;
 impl<'a> Split<'a> {
     /// The arrangement now, for the Setup screen: free windows where they are.
     pub(super) fn draft(&self) -> layout::Draft {
+        // Wayland never says where a window is: those are shown at their real size, side by side
+        // from the first monitor's corner, so the map never stacks them.
+        let mut shelf = self.monitors().first().map_or(0, |(_, m)| m.position().x);
         let windows = self
             .windows
             .iter()
             .map(|w| {
                 let here = self.surfaces.iter().find(|s| s.key == w.number);
                 let placement = match (&w.placement, here) {
-                    (Placement::Free(_), Some(s)) => match s.window.outer_position() {
-                        Ok(at) => {
-                            // On the desktop as windows are placed: macOS in points.
-                            let k = if cfg!(target_os = "macos") {
-                                s.window.scale_factor()
-                            } else {
-                                1.0
-                            };
-                            let at = [(f64::from(at.x) / k) as i32, (f64::from(at.y) / k) as i32];
-                            Placement::Free(Some((at, [s.size.width, s.size.height])))
-                        }
-                        Err(_) => w.placement.clone(),
-                    },
+                    (Placement::Free(_), Some(s)) => {
+                        // On the desktop as windows are placed: macOS in points.
+                        let k = if cfg!(target_os = "macos") {
+                            s.window.scale_factor()
+                        } else {
+                            1.0
+                        };
+                        let at = match s.window.outer_position() {
+                            Ok(at) => [(f64::from(at.x) / k) as i32, (f64::from(at.y) / k) as i32],
+                            Err(_) => {
+                                let y = self.monitors().first().map_or(0, |(_, m)| m.position().y);
+                                let at = [shelf, y];
+                                shelf += (f64::from(s.size.width) / k) as i32 + 16;
+                                at
+                            }
+                        };
+                        Placement::Free(Some((at, [s.size.width, s.size.height])))
+                    }
                     (p, _) => p.clone(),
                 };
                 layout::Window {
