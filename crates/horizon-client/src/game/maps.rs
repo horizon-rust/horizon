@@ -137,6 +137,9 @@ struct Holder {
     dirty: Option<[i32; 4]>,
     decorations: bool,
     tick: u32,
+    /// Wore map invisibility gear on its last tick
+    /// (`MapItemSavedData.hasMapInvisibilityItemEquipped`).
+    invisible: bool,
 }
 impl Holder {
     fn new(who: u32) -> Self {
@@ -148,6 +151,7 @@ impl Holder {
             dirty: Some([0, 0, 127, 127]),
             decorations: true,
             tick: 0,
+            invisible: false,
         }
     }
     /// Still carrying the map, or seeing it framed (frames tick every 10).
@@ -301,6 +305,19 @@ impl MapData {
                 self.decorations.push(decoration);
                 self.decorations_changed();
             }
+        }
+    }
+    /// `tickCarriedBy`'s check on every holder but `who`, the player ticking:
+    /// one wearing map invisibility gear has no marker.
+    fn hide_invisible(&mut self, who: u32) {
+        let hidden: Vec<u32> = self
+            .holders
+            .iter()
+            .filter(|h| h.who != who && h.invisible)
+            .map(|h| h.who)
+            .collect();
+        for w in hidden {
+            self.remove_decoration(Key::Player(w));
         }
     }
     /// `MapItemSavedData.isTrackedCountOverLimit`: more than `limit`
@@ -1116,6 +1133,19 @@ impl Game<'_> {
             self.spawn_item(rest, [eye[0], eye[1] - 0.3, eye[2]], [0.0, 0.1, 0.0], 40);
         }
     }
+    /// `MapItemSavedData.hasMapInvisibilityItemEquipped`: a piece of
+    /// `#map_invisibility_equipment` (a carved pumpkin) in an armor slot; the
+    /// hands do not count.
+    fn map_invisibility_worn(&self, worn: &[Option<ItemStack>]) -> bool {
+        let tag = self
+            .res
+            .items()
+            .item_tags
+            .get("minecraft:map_invisibility_equipment");
+        worn.iter()
+            .flatten()
+            .any(|s| tag.is_some_and(|t| t.contains(&*s.item)))
+    }
     /// Held maps update; every carried map tracks the player marker.
     pub(super) fn tick_maps(&mut self) {
         let Some(p) = self.player.as_ref().map(|p| p.position) else {
@@ -1147,11 +1177,14 @@ impl Game<'_> {
             .collect();
         let (yaw, dim) = (self.yaw, self.dimension_id());
         let (nether, game_time) = (self.dim == super::Dim::Nether, self.world.game_time);
+        let invisible = self.map_invisibility_worn(&self.armor);
         // The guest whose turn it is, else the host.
         let me = self.lan_acting.unwrap_or(HOST);
         for (id, targets) in carried {
             let Some(m) = self.map(id) else { continue };
-            m.holder(me).carried = game_time;
+            let h = m.holder(me);
+            h.carried = game_time;
+            h.invisible = invisible;
             m.drop_holders(game_time);
             // tickCarriedBy: the player marker while tracking in this dimension.
             if m.tracking && m.dimension == dim {
@@ -1167,6 +1200,7 @@ impl Game<'_> {
             } else if m.decorations.iter().any(|d| d.key == Key::Player(me)) {
                 m.remove_decoration(Key::Player(me));
             }
+            m.hide_invisible(me);
             // The item's MAP_DECORATIONS (an explorer map's target), added
             // after the players as addDecoration would.
             let s = (1 << m.scale) as f32;
