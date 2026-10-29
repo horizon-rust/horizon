@@ -178,6 +178,11 @@ impl Boat {
             yaw,
         )
     }
+    /// `AbstractBoat.getBubbleAngle`: the wobble, in degrees, `a` of the way
+    /// from the last tick's to this one's.
+    pub fn bubble_angle(&self, a: f32) -> f32 {
+        self.bubble_angle_old + a * (self.bubble_angle - self.bubble_angle_old)
+    }
     /// `AbstractBoat.tickBubbleColumn`: on a client, the wobble grows by 0.05 a
     /// tick while the synched bubble time runs and fades by 0.1 otherwise.
     pub(super) fn tick_bubble_wobble(&mut self) {
@@ -1148,6 +1153,8 @@ impl Game<'_> {
                     (hurt.sin() * hurt * damage / 10.0 * b.hurt_dir as f32).to_radians(),
                 );
             }
+            // AbstractBoatRenderer.extractRenderState: bubbleAngle.
+            let wobble = b.bubble_angle(a);
             base *= glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0))
                 * glam::Mat4::from_rotation_y(90f32.to_radians());
             let mut poses = Poses::new(model);
