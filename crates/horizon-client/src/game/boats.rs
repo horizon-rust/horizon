@@ -545,7 +545,73 @@ impl Game<'_> {
             if self.boats[i].out_of_control >= 60.0 {
                 self.eject_boat_mobs(i, false);
             }
+            self.boat_bubble_tick(i);
             self.boat_contacts(i);
+        }
+    }
+    /// `Entity.canSimulateMovement`: for a boat (`AUTHORITATIVE_SIDE`) a
+    /// server leaves the boat its player drives to that player's client, and a
+    /// client moves only the boat its player drives.
+    fn boat_can_simulate_movement(&self, id: u32) -> bool {
+        if self.remote.is_some() {
+            self.riding == Some(id)
+        } else {
+            !self.guest_vehicles().contains(&id)
+        }
+    }
+    /// `AbstractBoat.tick`: `status = getStatus()` for a boat this window
+    /// does not tick (`tick_boat` sets it for the others): a client's boats
+    /// other than the one it drives, and a server's boats its players drive.
+    pub(super) fn refresh_boat_status(&mut self, i: usize) {
+        let b = &self.boats[i];
+        let mut probe = Boat::new(b.id, b.wood.clone(), b.position, b.yaw);
+        let status = self.boat_status(&mut probe);
+        self.boats[i].status = status;
+    }
+    /// `BubbleColumnBlock.entityInside`: the bubble columns boat `i` touches.
+    pub(super) fn boat_bubble_columns(
+        &self,
+        i: usize,
+    ) -> Vec<horizon_client::motion::BubbleColumnTouch> {
+        horizon_client::motion::bubble_columns_touching(
+            &self.world,
+            self.pack.assets.registry,
+            self.res.facts(),
+            self.collision,
+            self.boats[i].bounds(),
+        )
+    }
+    /// `Entity.handleOnInsideBubbleColumn`: a column under more water lifts
+    /// boat `i` up to 0.7 or drags it down to -0.3 (`AbstractBoat` does not
+    /// override `onInsideBubbleColumn`).
+    pub(super) fn boat_inside_bubble_column(&mut self, i: usize, drag_down: bool) {
+        if !self.boat_can_simulate_movement(self.boats[i].id) {
+            return;
+        }
+        let v = &mut self.boats[i].velocity;
+        v.y = if drag_down {
+            (-0.3_f64).max(v.y - 0.03)
+        } else {
+            0.7_f64.min(v.y + 0.06)
+        };
+    }
+    /// `AbstractBoat.tick`: the end of it on the server for boat `i`, the two
+    /// `applyEffectsFromBlocks` that reach bubble columns (the lava is
+    /// `boat_lava_tick`'s).
+    fn boat_bubble_tick(&mut self, i: usize) {
+        let id = self.boats[i].id;
+        // The boat a server's player drives is not ticked here: its status is.
+        if self.guest_vehicles().contains(&id) {
+            self.refresh_boat_status(i);
+        }
+        let touches = self.boat_bubble_columns(i);
+        // AbstractBoat.tick calls applyEffectsFromBlocks twice.
+        for _ in 0..2 {
+            for touch in &touches {
+                if !touch.above {
+                    self.boat_inside_bubble_column(i, touch.drag_down);
+                }
+            }
         }
     }
     /// `LavaFluid.entityInside` (`lavaHurt`) from the two

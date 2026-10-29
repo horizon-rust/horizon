@@ -276,6 +276,7 @@ impl Game<'_> {
         for a in &mut self.armor_stands {
             a.position = step(a.id, a.position);
         }
+        self.tick_remote_boat_bubbles();
     }
 
     /// The boats, minecarts, armor stands, item frames and paintings in the

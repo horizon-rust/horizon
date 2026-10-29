@@ -232,4 +232,24 @@ impl Game<'_> {
         b.previous_yaw = yaw;
         b.velocity = Vec3::ZERO;
     }
+
+    /// `AbstractBoat.tick`: the part that reaches bubble columns, for every
+    /// boat on a client: `status` and the two `applyEffectsFromBlocks` (the
+    /// boat the player drives is lifted or dragged by a column it is inside).
+    pub(super) fn tick_remote_boat_bubbles(&mut self) {
+        for i in 0..self.boats.len() {
+            let driven = self.riding == Some(self.boats[i].id);
+            if !driven {
+                self.refresh_boat_status(i);
+            }
+            let touches = self.boat_bubble_columns(i);
+            for _ in 0..2 {
+                for touch in &touches {
+                    if !touch.above && driven {
+                        self.boat_inside_bubble_column(i, touch.drag_down);
+                    }
+                }
+            }
+        }
+    }
 }
