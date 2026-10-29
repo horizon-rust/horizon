@@ -853,10 +853,11 @@ pub fn register_cat(m: &mut Mob) {
         NearestTarget::new(Prey::Filter(baby_turtle_on_land), false).when(|m, _| !m.extra.tame),
     );
 }
-/// `Ocelot.registerGoals`, then `reassessTrustingGoals` adds the player
-/// avoidance last. Trust (`Ocelot.mobInteract`, the `Trusting` tag) is not
-/// ported yet, so every ocelot is wild: it flees players and can be scared
-/// off while tempted.
+/// `Ocelot.registerGoals`, then `Ocelot.reassessTrustingGoals` adds the player
+/// avoidance last. Vanilla removes that goal from a trusting ocelot and adds
+/// it back otherwise; here it stays registered and `OcelotAvoid` refuses a
+/// trusting ocelot, which has the same effect (a running one stops on the next
+/// goal tick, before it can move again).
 pub fn register_ocelot(m: &mut Mob) {
     let food = m.kind.food.clone();
     let mut stroll = Stroll::avoiding_water(0.8);
@@ -955,11 +956,13 @@ impl Goal for OcelotAvoid {
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    /// `Ocelot.OcelotAvoidEntityGoal.canUse`: never for a trusting ocelot.
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        self.0.can_use(m, cx)
+        !m.extra.trusting && self.0.can_use(m, cx)
     }
+    /// `Ocelot.OcelotAvoidEntityGoal.canContinueToUse`: nor to carry on.
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        self.0.can_continue(m, cx)
+        !m.extra.trusting && self.0.can_continue(m, cx)
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
