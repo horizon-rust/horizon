@@ -4731,6 +4731,9 @@ impl Game<'_> {
                 sequence: seq,
             }));
             self.tutorial_destroy(state, 0.0);
+            // startDestroyBlock: BlockState.attack on the client, so a redstone
+            // ore's dust (RedStoneOreBlock.attack) comes before the break.
+            self.redstone_ore_particles(hit.pos);
             if progress >= 1.0 {
                 // startDestroyBlock: instant survival breaks have no destroy delay.
                 self.predict_break(hit.pos, state, seq);
@@ -4926,6 +4929,24 @@ impl Game<'_> {
                     !(sneaking && hands_full) && self.anchor_takes(hit.pos, held.as_ref());
                 (charges, DryUse::default())
             };
+            // useItemOn on this client, unless a sneak with something in hand
+            // skips it: RedStoneOreBlock's dust, and the wick smoke of a lit
+            // candle an empty hand snuffs (CandleBlock.useItemOn).
+            if hand == Hand::Main && !spectator {
+                let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
+                let hands_full = self.stack_in(self.selected).is_some() || self.offhand.is_some();
+                if !(sneaking && hands_full) {
+                    self.redstone_ore_particles(hit.pos);
+                    let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
+                    let lit_candle = self.block_name(hit.pos).ends_with("candle")
+                        && self.pack.assets.registry.state(state).is_some_and(|s| {
+                            s.properties.get("lit").map(String::as_str) == Some("true")
+                        });
+                    if held.is_none() && self.may_build() && lit_candle {
+                        self.candle_smoke(hit.pos, state);
+                    }
+                }
+            }
             let seq = self.next_sequence();
             let cursor = [
                 (hit.point[0] - f64::from(hit.pos[0])) as f32,
@@ -4955,6 +4976,10 @@ impl Game<'_> {
             }
             if reacts {
                 self.predict_use(&changes, seq);
+                // LeverBlock.useWithoutItem on the client: the predicted pull puffs.
+                if &*self.block_name(hit.pos) == "minecraft:lever" {
+                    self.lever_puff(hit.pos);
+                }
                 self.open_command_block_if_editable((hit.pos[0], hit.pos[1], hit.pos[2]));
             } else if self.predict_campfire_douse(hit.pos, held.as_ref(), seq) {
                 // CampfireBlock.useItemOn succeeded: this hand swings and the
