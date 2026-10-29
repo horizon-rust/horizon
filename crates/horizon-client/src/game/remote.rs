@@ -5117,7 +5117,8 @@ impl Game<'_> {
                 });
                 return true;
             } else if let Some(stack) = held.as_ref()
-                && self.predict_item_on_block(stack, &hit)
+                && (self.predict_item_on_block(stack, &hit)
+                    || self.predict_map_on_banner(stack, &hit))
             {
                 // Item.useOn succeeded here (InteractionResult.SUCCESS):
                 // this hand swings and the click ends, so the other hand
@@ -5187,6 +5188,16 @@ impl Game<'_> {
         } else {
             false
         }
+    }
+
+    /// `MapItem.useOn` on this client: a map used on a banner is SUCCESS
+    /// whatever its data says (the server toggles the marker, or fails
+    /// quietly), so this hand swings and the click ends. `ItemStack.useOn`
+    /// passes in adventure mode.
+    fn predict_map_on_banner(&self, stack: &ItemStack, hit: &super::Hit) -> bool {
+        super::maps::map_id(stack).is_some()
+            && self.may_build()
+            && self.block_in_tag("minecraft:banners", &self.block_name(hit.pos))
     }
 
     /// MultiPlayerGameMode.useItemOn inside startPrediction: the blocks the

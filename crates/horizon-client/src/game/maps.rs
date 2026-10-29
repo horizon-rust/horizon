@@ -975,6 +975,36 @@ impl Game<'_> {
         self.swing_arm();
         true
     }
+    /// `MapItem.useOn`: a map used on a banner toggles that banner's marker
+    /// on the map; when the map's data says no (`toggleBanner` fails) the use
+    /// ends without a swing, and nothing else is done with the map either way.
+    pub(super) fn use_map_on_banner(&mut self, hit: &super::Hit, stack: &ItemStack) -> bool {
+        let Some(id) = map_id(stack) else {
+            return false;
+        };
+        // ItemStack.useOn passes in adventure mode (its `can_place_on`
+        // exception is not ported).
+        if !self.may_build() {
+            return false;
+        }
+        let [x, y, z] = hit.pos;
+        let block = self.res.facts().get(self.world.block(x, y, z)).name.clone();
+        if !self.block_in_tag("minecraft:banners", &block) {
+            return false;
+        }
+        let current = self.map_banner_at(hit.pos);
+        let game_time = self.world.game_time;
+        let failed = self
+            .map(id)
+            .is_some_and(|m| !m.toggle_banner(hit.pos, current, game_time));
+        if failed {
+            return true;
+        }
+        self.trigger_block("minecraft:item_used_on_block", hit.pos, stack);
+        self.stats.add("used", &stack.item, 1);
+        self.swing_arm();
+        true
+    }
     /// `CompassItem.useOn`: a compass used on a lodestone locks onto it (a
     /// single one in survival changes in place, else one is split off).
     pub(super) fn use_lodestone_compass(&mut self, hit: &super::Hit, stack: &ItemStack) -> bool {
