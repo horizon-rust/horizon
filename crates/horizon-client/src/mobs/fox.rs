@@ -68,6 +68,29 @@ pub fn add_trusted_entity(m: &mut Mob, uuid: [i32; 4]) {
 pub fn clear_trusted(m: &mut Mob) {
     m.extra.trusted = [None; 2];
 }
+/// The trust part of a fox's breeding: the baby trusts the player who put the
+/// breeding fox in love and, when it is another player, the one who put its
+/// partner in love (`Fox.FoxBreedGoal.breed`; the rest of it is `breed` in
+/// game/creatures.rs).
+pub fn trust_breeders(
+    baby: &mut Mob,
+    animal_love_cause: Option<[i32; 4]>,
+    partner_love_cause: Option<[i32; 4]>,
+) {
+    if let Some(cause) = animal_love_cause {
+        add_trusted_entity(baby, cause);
+    }
+    if let Some(cause) = partner_love_cause
+        && partner_love_cause != animal_love_cause
+    {
+        add_trusted_entity(baby, cause);
+    }
+}
+/// `Fox.onOffspringSpawnedFromEgg`: the baby from a spawn egg trusts the
+/// player who used it.
+pub fn on_offspring_spawned_from_egg(offspring: &mut Mob, spawner: [i32; 4]) {
+    add_trusted_entity(offspring, spawner);
+}
 /// `Fox.trusts`: the UUID is one of the trusted.
 pub fn trusts(m: &Mob, uuid: [i32; 4]) -> bool {
     trusted_entities(m).any(|trusted| trusted == uuid)
