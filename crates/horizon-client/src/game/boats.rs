@@ -1155,6 +1155,14 @@ impl Game<'_> {
             }
             // AbstractBoatRenderer.extractRenderState: bubbleAngle.
             let wobble = b.bubble_angle(a);
+            // AbstractBoatRenderer.submit: a boat above water wobbles in a
+            // bubble column, about the axis (1, 0, 1).
+            if !b.under_water() && wobble.abs() >= 1.0e-5 {
+                base *= glam::Mat4::from_axis_angle(
+                    glam::Vec3::new(1.0, 0.0, 1.0).normalize(),
+                    wobble * (std::f64::consts::PI / 180.0) as f32,
+                );
+            }
             base *= glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0))
                 * glam::Mat4::from_rotation_y(90f32.to_radians());
             let mut poses = Poses::new(model);
