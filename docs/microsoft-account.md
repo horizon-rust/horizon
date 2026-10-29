@@ -138,8 +138,8 @@ machine can read it in the process list. Horizon keeps it out of argv:
   A file older than two minutes is refused (and deleted), so a stale file can't be replayed.
 - Without a session file the game is offline as today (`--name`, offline UUID).
 - `HORIZON_SESSION_FILE` is the same as `--session-file` (development and harnesses).
-- The other signed-in accounts get a session file each too, for splitscreen players to sign in
-  with, listed in `HORIZON_ACCOUNT_SESSIONS` (`[{"name", "uuid", "file"}]`). Each token is renewed
+- While the game's Splitscreen setting is on (`splitscreen:true` in `horizon-extras.txt`), the
+  other signed-in accounts get a session file each too, for splitscreen players to sign in with, listed in `HORIZON_ACCOUNT_SESSIONS` (`[{"name", "uuid", "file"}]`). Each token is renewed
   first when due; an account that can't be renewed or doesn't own the game is left out, and the
   game starts all the same.
 

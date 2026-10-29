@@ -510,6 +510,8 @@ impl Options {
                 Err(e) => eprintln!("Horizon: not signed in: {e}"),
             }
         }
+        // The other accounts' session files too, while they are fresh.
+        split::launcher::read_now();
         Ok(Some(o))
     }
 }

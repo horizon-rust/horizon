@@ -1202,13 +1202,17 @@ pub fn session_for_game(
         offline_without_owner,
     )?;
     let dir = game_home.join("sessions");
-    let env = account_sessions(
-        &Endpoints::live(),
-        client_id().as_deref(),
-        store(),
-        &dir,
-        &mut accounts,
-    );
+    let env = if splitscreen_on(game_home) {
+        account_sessions(
+            &Endpoints::live(),
+            client_id().as_deref(),
+            store(),
+            &dir,
+            &mut accounts,
+        )
+    } else {
+        Vec::new()
+    };
     let _ = accounts.save();
     let mut out = GameSession {
         env,
@@ -1224,10 +1228,19 @@ pub fn session_for_game(
     Ok(out)
 }
 
+/// Whether the game's Splitscreen setting is on (`horizon-extras.txt`, `splitscreen:true`): only
+/// then do the other accounts' sessions go to it.
+fn splitscreen_on(game_home: &Path) -> bool {
+    std::fs::read_to_string(game_home.join("horizon-extras.txt"))
+        .is_ok_and(|text| text.lines().any(|l| l.trim() == "splitscreen:true"))
+}
+
 /// The signed-in accounts but the one that plays, each its session in a file of its own, for
 /// the game's splitscreen players to sign in with (`HORIZON_ACCOUNT_SESSIONS`: name, uuid and
-/// file each). A token is renewed when due (`check`); an account that can't be renewed, or
-/// doesn't own the game, is left out and the game starts all the same. Nothing with one account.
+/// file each). A token known to own the game and not due goes as it is; otherwise it is renewed
+/// and asked about (`check`), and an account that can't be renewed, doesn't own the game or
+/// whose token names another profile is left out: the game starts all the same. Nothing with one
+/// account.
 fn account_sessions(
     ep: &Endpoints,
     client_id: Option<&str>,
@@ -1248,18 +1261,24 @@ fn account_sessions(
         };
         let before = serde_json::to_string(&secrets).ok();
         let uuid = account.uuid.clone();
-        let (account, secrets) = match check(ep, client_id, &account, secrets) {
-            Check::Owns(renewed, secrets) => {
-                accounts.update(renewed.clone());
-                (Some(renewed), secrets)
-            }
-            Check::DoesNot(secrets) => (None, secrets),
-            Check::NoAnswer(e, secrets) => {
-                eprintln!("{}'s session for splitscreen: {e}", account.name);
-                // Its token may still hold: offered only while it does.
-                let fresh = secrets.owns && secrets.minecraft_expires_at > now() + 60;
-                (fresh.then_some(account), secrets)
-            }
+        let known = secrets.owns && secrets.minecraft_expires_at > now() + RENEW_BEFORE;
+        let (account, secrets) = match known {
+            true => (Some(account), secrets),
+            false => match check(ep, client_id, &account, secrets) {
+                Check::Owns(renewed, secrets) => {
+                    accounts.update(renewed.clone());
+                    (Some(renewed), secrets)
+                }
+                Check::DoesNot(secrets) => (None, secrets),
+                // A token for another profile would sign this one in as someone else.
+                Check::NoAnswer(e, secrets) if e == OTHER_PROFILE => (None, secrets),
+                Check::NoAnswer(e, secrets) => {
+                    eprintln!("{}'s session for splitscreen: {e}", account.name);
+                    // Its token may still hold: offered only while it does.
+                    let fresh = secrets.owns && secrets.minecraft_expires_at > now() + 60;
+                    (fresh.then_some(account), secrets)
+                }
+            },
         };
         // A renewed token, or the services' answer, kept for the next launch.
         let after = serde_json::to_string(&secrets).ok();

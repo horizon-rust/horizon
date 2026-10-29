@@ -129,7 +129,7 @@ and the container screen tests are unchanged).
   server accepts it; a unit test replays the planned clicks through the menu
   engine on random chests.
 
-### Splitscreen (`splitscreen`, default off; `splitscreenTwo`, `splitscreenThree`, default 0)
+### Splitscreen (`splitscreen`, default off; `splitscreenTwo`, `splitscreenThree`, default 0; `splitscreenNames`, default on)
 Up to 16 players on one computer, each with a controller, as on a console
 (`game/split.rs`, `game/split/`, `split_ui.rs`, `split_profiles.rs`,
 `split_layout.rs`). Horizon Settings → Splitscreen... opens the Setup screen,
@@ -144,10 +144,12 @@ which holds the switch. While splitscreen is on, every player's pause menu has
   forgets it from the list (its options and saves are kept; making the name
   again brings it back). The launcher's other signed-in Microsoft accounts are
   listed first and sign in as themselves, so online-mode servers let them in:
-  at Play the launcher renews each one's token when due and hands the game a
-  session file per account (`HORIZON_ACCOUNT_SESSIONS`); an account it can't
-  renew is left out and the game starts all the same. P1 keeps the keyboard and
-  mouse, and the first controller used in a menu.
+  while Splitscreen is on, at Play the launcher renews each one's token when
+  due and hands the game a session file per account
+  (`HORIZON_ACCOUNT_SESSIONS`); an account it can't renew is left out and the
+  game starts all the same. P1 starts with the
+  keyboard and mouse (they move to whichever view is clicked later) and the
+  first controller used in a menu.
 - **Where players play:** in numbered windows, Window 1 being the game's. A
   window is free or fills a monitor (borderless, over its menu bar on macOS).
   Players in one window share it: halves for two (`splitscreenTwo`: auto, side

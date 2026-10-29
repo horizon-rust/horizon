@@ -1089,6 +1089,9 @@ pub struct OptionsUi {
     pub split_profiles: crate::split_profiles::SplitProfiles,
     /// The AI Agent page's status lines (set by the game while it shows).
     pub agent_status: Vec<String>,
+    /// Splitscreen: another player's options. Language and resource packs are the whole
+    /// process's (every player's text and textures), so they're P1's to change.
+    pub split_guest: bool,
 }
 impl Default for OptionsUi {
     fn default() -> Self {
@@ -1121,6 +1124,7 @@ impl Default for OptionsUi {
             split_setup: Default::default(),
             split_profiles: Default::default(),
             agent_status: Vec::new(),
+            split_guest: false,
         }
     }
 }
@@ -1763,9 +1767,15 @@ impl OptionsUi {
                     ("options.sounds", Some(Page::Sound)),
                     ("options.video", Some(Page::Video)),
                     ("options.controls", Some(Page::Controls)),
-                    ("options.language", Some(Page::Language)),
+                    (
+                        "options.language",
+                        (!self.split_guest).then_some(Page::Language),
+                    ),
                     ("options.chat", Some(Page::Chat)),
-                    ("options.resourcepack", Some(Page::Packs)),
+                    (
+                        "options.resourcepack",
+                        (!self.split_guest).then_some(Page::Packs),
+                    ),
                     ("options.accessibility", Some(Page::Accessibility)),
                     // Vanilla's Telemetry Data and Credits slots: Horizon's
                     // settings and its mods, as a mod adds its button here.

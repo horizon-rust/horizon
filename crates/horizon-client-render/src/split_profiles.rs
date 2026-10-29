@@ -18,8 +18,8 @@ const SHOWN: usize = 4;
 pub mod store;
 pub const NAME_MAX: usize = 16;
 
-/// A player name the server takes, and the launcher keeps as an offline name: 3 to 16
-/// letters, digits or underscores.
+/// A player name a server takes, and so a profile's folder name: 3 to 16 letters, digits or
+/// underscores.
 pub fn valid_name(name: &str) -> bool {
     (3..=NAME_MAX).contains(&name.len())
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')

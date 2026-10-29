@@ -356,6 +356,14 @@ fn splitscreen_gets_the_other_accounts_that_still_hold() {
     let mut alone = signed_in(&store, &secrets("mc-token", true));
     let env = account_sessions(&offline(), Some("test-client"), &store, &dir, &mut alone);
     assert!(env.is_empty());
+    // Only for a game whose Splitscreen setting is on.
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(!splitscreen_on(&dir));
+    std::fs::write(dir.join("horizon-extras.txt"), "zoom:false\nsplitscreen:false\n").unwrap();
+    assert!(!splitscreen_on(&dir));
+    std::fs::write(dir.join("horizon-extras.txt"), "zoom:false\nsplitscreen:true\n").unwrap();
+    assert!(splitscreen_on(&dir));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

@@ -149,13 +149,17 @@ impl<'a> Split<'a> {
     /// own world takes anyone, an online-mode server only a Microsoft account whose sign-in
     /// still holds (the launcher renews it, and hands the game a session at start).
     fn can_join(&self, name: &str) -> std::result::Result<(), String> {
-        if self.taken().iter().any(|n| n == name) {
+        if self.taken().iter().any(|n| n.eq_ignore_ascii_case(name)) {
             return Err(format!("{name} is already playing."));
         }
         if self.p1_server().is_none() || !self.host.online_server() {
             return Ok(());
         }
-        match self.accounts.iter().find(|a| a.name == name) {
+        match self
+            .accounts
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case(name))
+        {
             None => Err(ONLINE_ONLY.to_owned()),
             Some(a) if a.expired() => Err(format!(
                 "{name}'s Microsoft sign-in has expired. Sign in again in the launcher, then restart the game."
@@ -180,7 +184,7 @@ impl<'a> Split<'a> {
 
     /// The names playing now: P1's and the joined players'.
     pub(super) fn taken(&self) -> Vec<String> {
-        std::iter::once(self.host.options.player_name())
+        std::iter::once(self.p1_name.0.clone())
             .chain(self.guests.iter().filter_map(|g| g.name.clone()))
             .chain(self.host.remote_online_names().unwrap_or_default())
             .collect()
@@ -189,11 +193,15 @@ impl<'a> Split<'a> {
     /// Guest `i` plays as profile `name` where its view is now (moved with the bumpers): its
     /// options, then into P1's world.
     pub(super) fn enter(&mut self, i: usize, name: String) -> Result<()> {
-        if self.taken().contains(&name) {
+        if self.taken().iter().any(|n| n.eq_ignore_ascii_case(&name)) {
             return Err(format!("{name} is already playing").into());
         }
         // A Microsoft account signs in as itself (its own connections and skin).
-        let account = self.accounts.iter().find(|a| a.name == name).cloned();
+        let account = self
+            .accounts
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case(&name))
+            .cloned();
         self.guests[i].game.split_auth = account.clone();
         if account.is_none() && horizon_client::split_profiles::valid_name(&name) {
             horizon_client::split_profiles::store::restore(
@@ -260,7 +268,11 @@ impl<'a> Split<'a> {
                 .take_forgotten()
             {
                 let result = (|| -> Result<()> {
-                    if self.taken().contains(&name) || self.accounts.iter().any(|a| a.name == name)
+                    if self.taken().iter().any(|n| n.eq_ignore_ascii_case(&name))
+                        || self
+                            .accounts
+                            .iter()
+                            .any(|a| a.name.eq_ignore_ascii_case(&name))
                     {
                         return Err(
                             "This profile cannot be forgotten while it is playing or signed in."
@@ -383,6 +395,7 @@ impl<'a> Split<'a> {
         guest.apply_settings();
         // Its pad comes from the split from its first frame: it never opens the pads itself.
         guest.pad.feed = Some(PadState::default());
+        guest.ui.options.split_guest = true;
         Ok(guest)
     }
 

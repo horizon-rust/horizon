@@ -65,7 +65,7 @@ use winit::{
 
 mod frames;
 mod hud;
-mod launcher;
+pub(super) mod launcher;
 mod pads;
 mod players;
 mod setup;
@@ -463,6 +463,8 @@ impl<'a> Split<'a> {
         self.offers.clear();
         self.fresh.clear();
         self.lost.clear();
+        // Its own reader of the pads goes: nobody would drain its events (P1 reads its own).
+        self.pads = PadRouter::default();
         self.p1_window = 1;
         self.windows = vec![layout::Window {
             number: 1,
