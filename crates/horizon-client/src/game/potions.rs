@@ -1150,11 +1150,12 @@ impl Game<'_> {
             self.spawn_orbs([at.x, at.y, at.z], value as u32);
             return;
         }
-        // AbstractThrownPotion.affectEntitiesAround: a water potion hurts an
-        // Enderman whose box meets the potion's box grown by (4, 2, 4) and
-        // that is less than 4 blocks away; Enderman.hurtWithCleanWater then
-        // makes it try to teleport (repeatedlyTryToTeleport).
-        if stack.potion() == Some("minecraft:water") {
+        // AbstractThrownPotion.affectEntitiesAround: a potion in
+        // #hurts_water_sensitive_entities hurts an Enderman whose box meets
+        // the potion's box grown by (4, 2, 4) and that is less than 4 blocks
+        // away; Enderman.hurtWithCleanWater then makes it try to teleport
+        // (repeatedlyTryToTeleport).
+        if self.potion_in_tag(stack, "minecraft:hurts_water_sensitive_entities") {
             let reach = Aabb::new(
                 Vec3::new(at.x - 0.125, at.y, at.z - 0.125),
                 Vec3::new(at.x + 0.125, at.y + 0.25, at.z + 0.125),
@@ -1191,10 +1192,10 @@ impl Game<'_> {
         let color = brewing::potion_color(stack.potion());
         self.level_event_at(if instant { 2007 } else { 2002 }, block, color as i32);
         self.level_event_at(if instant { 1054 } else { 1053 }, block, 0);
-        // AbstractThrownPotion.affectEntitiesAround: a water potion (the only
-        // #rehydrates_axolotls) refills the air of the axolotls in the
+        // AbstractThrownPotion.affectEntitiesAround: a potion in
+        // #rehydrates_axolotls refills the air of the axolotls in the
         // projectile's box inflated by 4, 2 and 4 (Axolotl.rehydrate, 1800).
-        if stack.potion() == Some("minecraft:water") {
+        if self.potion_in_tag(stack, "minecraft:rehydrates_axolotls") {
             let (lo, hi) = (
                 [at.x - 0.125 - 4.0, at.y - 2.0, at.z - 0.125 - 4.0],
                 [at.x + 0.125 + 4.0, at.y + 0.25 + 2.0, at.z + 0.125 + 4.0],
