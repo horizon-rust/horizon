@@ -53,6 +53,8 @@ pub struct Memories {
     pub avoid: Option<AvoidTarget>,
     /// `Brain.getActiveNonCoreActivity` as `updateActivity` last left it.
     pub activity: Activity,
+    /// The spear behaviours' memories (`SPEAR_STATUS`...).
+    pub spear: super::spear_use::Memories,
     /// The `last_hurt_by_time` of the hit `wasHurtBy` last reacted to.
     pub hurt_seen: i32,
     /// `VISIBLE_ADULT_PIGLIN_COUNT`: a piglin's counts its brutes too, a
@@ -805,7 +807,12 @@ pub fn register_piglin(m: &mut Mob) {
     if crossbow {
         g.add(3, super::illager::crossbow_goal(1.0, 8.0));
     }
-    g.add(3, MeleeAttack::new(1.0, true));
+    // `PiglinAi.initFightActivity`: the spear behaviours come before the melee one.
+    g.add(3, super::spear_use::PiglinSpear::new());
+    g.add(
+        3,
+        super::spear_use::NoMeleeWithSpear(MeleeAttack::new(1.0, true)),
+    );
     g.add(4, PiglinAvoidRepellent);
     g.add(4, GoToWantedItem);
     g.add(4, Celebrate);
