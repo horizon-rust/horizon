@@ -658,6 +658,20 @@ impl Game<'_> {
         };
         self.post_game_event("minecraft:splash", [p.x, p.y, p.z], ctx);
     }
+    /// `AbstractBoat.handleBubbleColumnEffect`: an up column throws the boat
+    /// up at 0.6, a down column pulls it down by 0.7.
+    pub(super) fn handle_bubble_column_effect(&mut self, i: usize, drag_down: bool) {
+        if !self.boat_can_simulate_movement(self.boats[i].id) {
+            return;
+        }
+        let v = &mut self.boats[i].velocity;
+        if drag_down {
+            // movement.add(0.0, -0.7, 0.0)
+            v.y += -0.7;
+        } else {
+            v.y = 0.6;
+        }
+    }
     /// `AbstractBoat.tick`: the end of it on the server for boat `i`, the two
     /// `applyEffectsFromBlocks` that reach bubble columns (the lava is
     /// `boat_lava_tick`'s).
