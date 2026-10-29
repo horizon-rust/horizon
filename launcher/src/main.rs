@@ -1852,7 +1852,7 @@ fn thousands(n: u64) -> String {
 
 /// A mono line in upper case: the status above a title, the footer's links.
 fn caps(s: impl AsRef<str>) -> Div {
-    text(theme::MICRO).child(s.as_ref().to_uppercase())
+    text(theme::MICRO).child(tr(s.as_ref()).to_uppercase())
 }
 
 fn short(path: &std::path::Path) -> String {
@@ -4111,9 +4111,9 @@ impl Launcher {
                                 .text_color(t.ink)
                                 .child(tr("Support the work below")),
                         )
-                        .child(text(theme::UI).text_color(t.muted).child(
+                        .child(text(theme::UI).text_color(t.muted).child(tr(
                             "Horizon is built in the open. Sponsors fund the next release.",
-                        )),
+                        ))),
                 )
                 .child(
                     button("sponsor", "Sponsor on GitHub", Kind::Secondary, &t)

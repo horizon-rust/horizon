@@ -169,11 +169,11 @@ impl Launcher {
             .gap(px(8.))
             .child(pick("import-file", "Import a pack file…", false))
             .child(pick("import-folder", "Import an instance folder…", true))
-            .child(text(theme::CAPTION).w_full().text_color(t.muted).child(
+            .child(text(theme::CAPTION).w_full().text_color(t.muted).child(tr(
                 ".mrpack (Modrinth), .zip (CurseForge), or a Prism, MultiMC or CurseForge instance. \
                  Horizon ports what it can on this computer, from your own downloads, and plays \
                  the pack as its own profile. Nothing is uploaded or shared.",
-            ));
+            )));
         let mut page = div()
             .flex()
             .flex_col()
@@ -193,11 +193,9 @@ impl Launcher {
             return page;
         }
         if self.packs.is_empty() {
-            return page.child(
-                text(theme::CAPTION)
-                    .text_color(t.muted)
-                    .child("No modpack imported yet: import one, or find one below."),
-            );
+            return page.child(text(theme::CAPTION).text_color(t.muted).child(tr(
+                "No modpack imported yet: import one, or find one below.",
+            )));
         }
         if self.packs.len() > 1 {
             let mut list = div().flex().flex_col();
@@ -353,9 +351,12 @@ impl Launcher {
         let can_play = self.can_start_selected();
         let mut buttons = div().flex().flex_wrap().items_center().gap(px(8.));
         let play_label = if p.mods.is_empty() {
-            "Play".to_string()
+            tr("Play").to_string()
         } else {
-            format!("Play with {} mods", p.mods.len())
+            trf(
+                "Play with {count} mods",
+                &[("count", &p.mods.len().to_string())],
+            )
         };
         let mut play = button("pack-play", play_label, Kind::Primary, &t);
         if p.mods.is_empty() || !can_play || self.pack_busy {
@@ -367,7 +368,7 @@ impl Launcher {
                 cx.notify();
             }));
         }
-        let port_label = format!("Port {} mods", p.portable);
+        let port_label = trf("Port {count} mods", &[("count", &p.portable.to_string())]);
         let mut port = button("pack-port", port_label, Kind::Secondary, &t);
         let mut from = button("pack-from", "Use jars from my instance…", Kind::Ghost, &t);
         if self.pack_busy || p.portable == 0 {
@@ -418,12 +419,12 @@ impl Launcher {
             cx.notify();
         }));
         buttons = buttons.child(play).child(port).child(from).child(remove);
-        let mut notes = vec![format!(
-            "Port gets the jars of the {} mods this computer can port today (content with data \
-             and assets only) from the pack's own links, Modrinth, or your folder, and carries \
-             them over. The ports stay here, in {}.",
-            p.portable,
-            short(&p.work)
+        let mut notes = vec![trf(
+            "Port gets the jars of the {count} mods this computer can port today (content with data and assets only) from the pack's own links, Modrinth, or your folder, and carries them over. The ports stay here, in {path}.",
+            &[
+                ("count", &p.portable.to_string()),
+                ("path", &short(&p.work)),
+            ],
         )];
         if let Some(jars) = p.jars() {
             notes.push(jars);
@@ -432,7 +433,7 @@ impl Launcher {
             notes.push(format!("Left off: {line}."));
         }
         if !can_play {
-            notes.push("Playing needs a prepared Horizon version (Play page).".into());
+            notes.push(tr("Playing needs a prepared Horizon version (Play page).").into());
         }
         let mut rows: Vec<&horizon_port_pack::report::Row> = p
             .rows
@@ -469,10 +470,15 @@ impl Launcher {
                 name,
                 Some(detail.into_any_element()),
                 Some(
-                    caps(r.status.label())
-                        .flex_none()
-                        .text_color(color)
-                        .into_any_element(),
+                    caps(match r.status {
+                        Status::Ported => "Ported",
+                        Status::Partial => "Partial",
+                        Status::NotYet => "Not yet",
+                        Status::NotNeeded => "Not needed",
+                    })
+                    .flex_none()
+                    .text_color(color)
+                    .into_any_element(),
                 ),
                 &t,
             )

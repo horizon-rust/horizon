@@ -372,15 +372,15 @@ impl Launcher {
             .child(
                 blocks::pixel(22., FontWeight::MEDIUM)
                     .text_color(t.ink)
-                    .child(if editing {
+                    .child(tr(if editing {
                         "Edit instance"
                     } else {
                         "New instance"
-                    }),
+                    })),
             )
             .child(row(
                 "Name",
-                self.field(Field::InstanceName, "My instance", 400., cx)
+                self.field(Field::InstanceName, tr("My instance"), 400., cx)
                     .into_any_element(),
             ));
         if !editing {
@@ -404,14 +404,17 @@ impl Launcher {
                 .into_any_element(),
             ));
             body = body.child(text(theme::CAPTION).text_color(t.muted).child(if copy {
-                format!("{from}'s worlds, options and packs are copied; {from} stays as it is.")
+                trf(
+                    "{from}'s worlds, options and packs are copied; {from} stays as it is.",
+                    &[("from", &from)],
+                )
             } else {
-                "Its own worlds and packs; your options and player name come along.".to_string()
+                tr("Its own worlds and packs; your options and player name come along.").to_string()
             }));
         }
         body = body.child(row(
             "Group",
-            self.field(Field::InstanceGroup, "No group", 400., cx)
+            self.field(Field::InstanceGroup, tr("No group"), 400., cx)
                 .into_any_element(),
         ));
         let mut tiles = div().flex().flex_wrap().gap(px(6.));
@@ -430,7 +433,7 @@ impl Launcher {
         let none = icon.is_none();
         tiles = tiles.child(
             tile("instance-icon-none".into(), none)
-                .child(text(theme::MICRO).text_color(t.muted).child("NONE"))
+                .child(text(theme::MICRO).text_color(t.muted).child(tr("NONE")))
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     if let Some(d) = &mut this.instances.dialog {
                         d.icon = None;
@@ -474,7 +477,7 @@ impl Launcher {
             body = body.child(
                 text(theme::CAPTION)
                     .text_color(t.muted)
-                    .child("Block and item icons come from your prepared game files: prepare a version to see them."),
+                    .child(tr("Block and item icons come from your prepared game files: prepare a version to see them.")),
             );
         }
         if let Some(e) = error {

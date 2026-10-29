@@ -289,13 +289,13 @@ impl Launcher {
             },
         ));
         match self.internet.state.clone() {
-            None => return panel.child(line("Looking for Tailscale…".into())),
+            None => return panel.child(line(tr("Looking for Tailscale…").into())),
             Some(State::Missing) => {
                 return panel
-                    .child(text(theme::UI).text_color(t.ink).child(
+                    .child(text(theme::UI).text_color(t.ink).child(tr(
                         "Tailscale lets friends anywhere join without opening your router to the \
                          internet. It's free: install it, sign in, then invite them here.",
-                    ))
+                    )))
                     .child(
                         div()
                             .flex()
@@ -318,13 +318,12 @@ impl Launcher {
                         this.internet.read = None;
                         cx.notify();
                     }));
-                panel =
-                    panel
-                        .child(text(theme::UI).text_color(t.ink).child(
-                            "Tailscale is installed but not running. Open it and switch it on.",
-                        ))
-                        .when(!why.is_empty(), |d| d.child(line(why)))
-                        .child(div().flex().gap(px(8.)).child(open).child(check));
+                panel = panel
+                    .child(text(theme::UI).text_color(t.ink).child(tr(
+                        "Tailscale is installed but not running. Open it and switch it on.",
+                    )))
+                    .when(!why.is_empty(), |d| d.child(line(why)))
+                    .child(div().flex().gap(px(8.)).child(open).child(check));
                 return self.internet_message(panel);
             }
             Some(State::SignedOut { auth_url }) => {

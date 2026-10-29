@@ -1156,8 +1156,10 @@ impl Launcher {
         if self.servers.list.is_empty() {
             return page
                 .child(centered(
-                    "No server yet. Create one: it takes a few seconds, and with the defaults \
+                    tr(
+                        "No server yet. Create one: it takes a few seconds, and with the defaults \
                      (tick the EULA, press Create) you get a friends-only survival world.",
+                    ),
                     &t,
                 ))
                 .child(partner);
@@ -1475,7 +1477,10 @@ impl Launcher {
                             .flex_1()
                             .text_size(px(theme::UI.px))
                             .text_color(t.ink)
-                            .child(format!("Saved. Restart to apply: {}.", names.join(", "))),
+                            .child(trf(
+                                "Saved. Restart to apply: {names}.",
+                                &[("names", &names.join(", "))],
+                            )),
                     )
                     .child({
                         let b =
@@ -1620,13 +1625,14 @@ impl Launcher {
                         })),
                     ),
             )
-            .child(text(theme::CAPTION).text_color(t.ink_soft).child(
+            .child(text(theme::CAPTION).text_color(t.ink_soft).child(tr(
                 "Friends on the same Wi-Fi: Multiplayer, Add Server, then paste this address.",
-            ))
-            .child(text(theme::CAPTION).text_color(t.muted).child(format!(
+            )))
+            .child(text(theme::CAPTION).text_color(t.muted).child(trf(
                 "Friends elsewhere can't reach it as it is: use Tailscale (free, nothing to change \
                  on your router, only people you invite), or forward TCP port {port} on your router \
-                 to this computer."
+                 to this computer.",
+                &[("port", &port.to_string())],
             )));
         let mut tab = div().flex().flex_col().gap(px(20.)).child(address_plate);
         if !status.players.is_empty() {
@@ -1679,9 +1685,9 @@ impl Launcher {
             .text_color(t.ink_soft)
             .when(empty, |d| {
                 d.child(div().text_color(t.muted).child(if running {
-                    "Waiting for the server's log…"
+                    tr("Waiting for the server's log…")
                 } else {
-                    "The server's log shows here while it runs."
+                    tr("The server's log shows here while it runs.")
                 }))
             })
             .children(lines);
@@ -1689,7 +1695,7 @@ impl Launcher {
         let input = if running {
             self.field(
                 Field::Command,
-                "Type a command: say Hello, time set day, gamemode creative Alex…",
+                tr("Type a command: say Hello, time set day, gamemode creative Alex…"),
                 520.,
                 cx,
             )
@@ -1707,7 +1713,7 @@ impl Launcher {
                 .items_center()
                 .text_size(px(theme::CAPTION.px))
                 .text_color(t.muted)
-                .child("Start the server to type commands")
+                .child(tr("Start the server to type commands"))
                 .into_any_element()
         };
         plate(&t)
@@ -1818,18 +1824,17 @@ impl Launcher {
                 .flex()
                 .flex_col()
                 .gap(px(10.))
-                .child(
-                    text(theme::HEADING)
-                        .text_color(t.ink)
-                        .child(format!("Online now ({})", status.players.len())),
-                )
+                .child(text(theme::HEADING).text_color(t.ink).child(trf(
+                    "Online now ({count})",
+                    &[("count", &status.players.len().to_string())],
+                )))
                 .child(if status.players.is_empty() {
                     text(theme::UI)
                         .text_color(t.muted)
                         .child(if running {
-                            "Nobody is playing right now."
+                            tr("Nobody is playing right now.")
                         } else {
-                            "The server is stopped."
+                            tr("The server is stopped.")
                         })
                         .into_any_element()
                 } else {
@@ -1942,7 +1947,11 @@ impl Launcher {
                 .flex()
                 .flex_col()
                 .gap(px(14.))
-                .child(text(theme::HEADING).text_color(t.ink).child("Who may join"))
+                .child(
+                    text(theme::HEADING)
+                        .text_color(t.ink)
+                        .child(tr("Who may join")),
+                )
                 .child(
                     div()
                         .flex()
@@ -1953,12 +1962,12 @@ impl Launcher {
                             div()
                                 .flex()
                                 .flex_col()
-                                .child(text(theme::UI).text_color(t.ink).child("Friends only"))
+                                .child(text(theme::UI).text_color(t.ink).child(tr("Friends only")))
                                 .child(text(theme::CAPTION).text_color(t.muted).child(
                                     if friends_only {
-                                        "On: only the players below can join."
+                                        tr("On: only the players below can join.")
                                     } else {
-                                        "Off: anyone who has the address can join."
+                                        tr("Off: anyone who has the address can join.")
                                     },
                                 )),
                         ),
@@ -1998,12 +2007,12 @@ impl Launcher {
                     .flex()
                     .flex_col()
                     .gap(px(10.))
-                    .child(text(theme::HEADING).text_color(t.ink).child("Banned"))
+                    .child(text(theme::HEADING).text_color(t.ink).child(tr("Banned")))
                     .when(!running, |d| {
                         d.child(
                             text(theme::CAPTION)
                                 .text_color(t.muted)
-                                .child("Start the server to unban someone."),
+                                .child(tr("Start the server to unban someone.")),
                         )
                     })
                     .child(list),
@@ -2905,15 +2914,15 @@ impl Launcher {
             .child(
                 text(theme::HEADING)
                     .text_color(t.ink)
-                    .child("Create a server"),
+                    .child(tr("Create a server")),
             )
-            .child(text(theme::CAPTION).text_color(t.muted).child(
+            .child(text(theme::CAPTION).text_color(t.muted).child(tr(
                 "Everything has a default: tick the EULA and Create makes a friends-only survival \
                  world. You can change all of it later.",
-            ))
+            )))
             .child(row(
                 "Name",
-                self.field(Field::Name, "My server", 400., cx)
+                self.field(Field::Name, tr("My server"), 400., cx)
                     .into_any_element(),
             ))
             .child(row(
@@ -2945,13 +2954,13 @@ impl Launcher {
                     .when(friends_only, |d| {
                         d.child(self.field(
                             Field::Players,
-                            "Players allowed in, separated by commas (you first)",
+                            tr("Players allowed in, separated by commas (you first)"),
                             480.,
                             cx,
                         ))
-                        .child(text(theme::CAPTION).text_color(t.muted).child(
+                        .child(text(theme::CAPTION).text_color(t.muted).child(tr(
                             "The first one becomes an operator. Add more later on the Players tab.",
-                        ))
+                        )))
                     })
                     .child(accounts)
                     .into_any_element(),
@@ -2999,7 +3008,7 @@ impl Launcher {
                 text(theme::CAPTION)
                     .flex_1()
                     .text_color(t.danger)
-                    .child("Tick the EULA box to create the server."),
+                    .child(tr("Tick the EULA box to create the server.")),
             );
         }
         let cancel = button("create-cancel", "Cancel", Kind::Secondary, &t);
@@ -3051,16 +3060,16 @@ impl Launcher {
 /// The state, in a few words.
 fn phase_label(status: &Status) -> String {
     if let Some(busy) = &status.update_busy {
-        return format!("Updating: {busy}");
+        return trf("Updating: {busy}", &[("busy", busy)]);
     }
     match status.phase.as_str() {
-        "running" if status.crashes > 0 => "Running · restarted after a crash".into(),
-        "running" if status.paused => "Running · paused while nobody plays".into(),
-        "running" => "Running".into(),
-        "starting" => "Starting".into(),
-        "restarting" => "Restarting".into(),
-        "stopping" => "Stopping".into(),
-        _ => "Stopped".into(),
+        "running" if status.crashes > 0 => tr("Running · restarted after a crash").into(),
+        "running" if status.paused => tr("Running · paused while nobody plays").into(),
+        "running" => tr("Running").into(),
+        "starting" => tr("Starting").into(),
+        "restarting" => tr("Restarting").into(),
+        "stopping" => tr("Stopping").into(),
+        _ => tr("Stopped").into(),
     }
 }
 

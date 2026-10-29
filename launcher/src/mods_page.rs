@@ -899,7 +899,7 @@ impl Launcher {
             .child(
                 text(theme::LABEL)
                     .text_color(t.ink_soft)
-                    .child("Show everything"),
+                    .child(tr("Show everything")),
             )
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.mods.everything = !this.mods.everything;
@@ -969,14 +969,10 @@ impl Launcher {
         if self.instances.list.len() < 2 || self.mods.kind == PackKind::Modpack {
             return None;
         }
-        Some(
-            text(theme::CAPTION)
-                .text_color(self.theme.muted)
-                .child(format!(
-                    "Installs into {}: pick another instance on the left.",
-                    instance.name
-                )),
-        )
+        Some(text(theme::CAPTION).text_color(self.theme.muted).child(trf(
+            "Installs into {instance}: pick another instance on the left.",
+            &[("instance", &instance.name)],
+        )))
     }
 
     /// The world data packs go into: one of the instance's, picked here.
@@ -1474,7 +1470,7 @@ fn source_switch(
         .child(
             blocks::pixel(14., FontWeight::MEDIUM)
                 .text_color(t.muted)
-                .child("CurseForge (coming soon)"),
+                .child(tr("CurseForge (coming soon)")),
         );
     segments("mods-source", &SOURCES, current, t, on_pick).child(soon)
 }

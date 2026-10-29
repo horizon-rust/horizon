@@ -255,9 +255,9 @@ impl Launcher {
         let toggle = button(
             "mods-filters",
             if active > 0 {
-                format!("Filters ({active})")
+                trf("Filters ({count})", &[("count", &active.to_string())])
             } else {
-                "Filters".to_string()
+                tr("Filters").to_string()
             },
             if shown { Kind::Secondary } else { Kind::Ghost },
             &t,
