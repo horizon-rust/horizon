@@ -377,6 +377,11 @@ impl Game<'_> {
             store: None,
             ..source
         };
+        // `MinecraftServer.createCommandSourceStack`: function lines parse
+        // and run at permission level 2, whatever Allow Commands says
+        // (`/function` itself stays gated by the caller's own permission).
+        let raised = self.ui.registries.permission.max(2);
+        let permission = std::mem::replace(&mut self.ui.registries.permission, raised);
         for line in lines {
             let _ = self.execute_line(&line, inner);
             if self.exec.returned.is_some() {
@@ -386,6 +391,7 @@ impl Game<'_> {
                 break;
             }
         }
+        self.ui.registries.permission = permission;
         let returned = std::mem::replace(&mut self.exec.returned, outer);
         self.exec.function_depth -= 1;
         Ok(match returned {
