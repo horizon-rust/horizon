@@ -384,6 +384,13 @@ impl MapData {
             }
         }
     }
+    /// `MapItemSavedData.removedFromFrame`: the frame entity's marker goes,
+    /// and the frame remembered at its block.
+    fn removed_from_frame(&mut self, pos: [i32; 3], entity_id: i32) {
+        self.remove_decoration(Key::Frame(entity_id));
+        self.frames.retain(|f| f.pos != pos);
+        self.dirty = true;
+    }
     /// `MapItemSavedData.isTrackedCountOverLimit`: more than `limit`
     /// decorations count (`MapDecorationType.trackCount`).
     fn tracked_over_limit(&self, limit: usize) -> bool {
@@ -1071,6 +1078,15 @@ impl Game<'_> {
         );
         self.swing_arm();
         true
+    }
+    /// `ItemFrame.removeFramedMap`: the map `frame` holds forgets the frame.
+    pub(super) fn remove_framed_map(&mut self, frame: &horizon_client::entities::ItemFrame) {
+        let Some(id) = frame.item.as_ref().and_then(map_id) else {
+            return;
+        };
+        if let Some(m) = self.map(id) {
+            m.removed_from_frame(frame.pos, frame.id as i32);
+        }
     }
     /// `MapItem.useOn`: a map used on a banner toggles that banner's marker
     /// on the map; when the map's data says no (`toggleBanner` fails) the use

@@ -275,6 +275,12 @@ impl Game<'_> {
     }
     /// `ItemFrame.dropItem`: the frame (when breaking) and the held item.
     fn drop_frame_items(&mut self, f: &ItemFrame, with_frame: bool, by_player: bool) {
+        // The framed map forgets the frame, except when the drops are off and
+        // something caused the break (`removeFramedMap` runs only for a null
+        // `causedBy` then).
+        if self.ui.rules.bool("entity_drops") || !by_player {
+            self.remove_framed_map(f);
+        }
         if !self.ui.rules.bool("entity_drops") || (by_player && self.creative) {
             return;
         }
