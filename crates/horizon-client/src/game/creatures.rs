@@ -1985,6 +1985,24 @@ impl Game<'_> {
             // getBreedOffspring creates the baby without finalizeSpawn: it keeps
             // the default (`classic`) sound variant.
             child.extra.sound_variant = None;
+            // Fox.getBreedOffspring runs no finalizeSpawn: nothing in the
+            // baby fox's mouth.
+            if p.species() == Species::Fox {
+                child.extra.main_hand = None;
+            }
+            // Goat.getBreedOffspring: both horns, and screaming from a parent
+            // picked at random or one time in fifty.
+            if p.species() == Species::Goat {
+                child.extra.lost_horns = [false; 2];
+                let other = q.as_ref().unwrap_or(&p);
+                let from = if self.world.random.next_boolean() {
+                    &p
+                } else {
+                    other
+                };
+                child.extra.screaming =
+                    from.extra.screaming || self.world.random.next_double() < 0.02;
+            }
             // A llama's baby was drawn in the parent's tick, with the
             // experience.
             if let Some(o) = llama {
