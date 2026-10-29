@@ -4969,6 +4969,10 @@ impl Game<'_> {
             }
             if reacts {
                 self.predict_use(&changes, seq);
+                // LeverBlock.useWithoutItem on the client: the predicted pull puffs.
+                if &*self.block_name(hit.pos) == "minecraft:lever" {
+                    self.lever_puff(hit.pos);
+                }
                 self.open_command_block_if_editable((hit.pos[0], hit.pos[1], hit.pos[2]));
             } else if self.predict_campfire_douse(hit.pos, held.as_ref(), seq) {
                 // CampfireBlock.useItemOn succeeded: this hand swings and the
