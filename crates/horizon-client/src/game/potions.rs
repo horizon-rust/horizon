@@ -1150,36 +1150,7 @@ impl Game<'_> {
             self.spawn_orbs([at.x, at.y, at.z], value as u32);
             return;
         }
-        // AbstractThrownPotion.affectEntitiesAround: a potion in
-        // #hurts_water_sensitive_entities hurts an Enderman whose box meets
-        // the potion's box grown by (4, 2, 4) and that is less than 4 blocks
-        // away; Enderman.hurtWithCleanWater then makes it try to teleport
-        // (repeatedlyTryToTeleport).
-        if self.potion_in_tag(stack, "minecraft:hurts_water_sensitive_entities") {
-            let reach = Aabb::new(
-                Vec3::new(at.x - 0.125, at.y, at.z - 0.125),
-                Vec3::new(at.x + 0.125, at.y + 0.25, at.z + 0.125),
-            )
-            .inflate(Vec3::new(4.0, 2.0, 4.0));
-            for m in self.mobs.iter_mut() {
-                let (dx, dy, dz) = (
-                    m.position.x - at.x,
-                    m.position.y - at.y,
-                    m.position.z - at.z,
-                );
-                if &*m.kind.id == "minecraft:enderman"
-                    && m.alive()
-                    && reach.intersects(m.bounds())
-                    && dx * dx + dy * dy + dz * dz < 16.0
-                {
-                    m.hurt(1.0, Some([at.x, at.y, at.z]), &mut self.world.random);
-                    // repeatedlyTryToTeleport does nothing while it rides.
-                    if !m.extra.passenger {
-                        m.extra.counter2 = 64;
-                    }
-                }
-            }
-        }
+        self.affect_entities_around(stack, at, owner.is_some());
         let lingering = &*stack.item == "minecraft:lingering_potion";
         // AbstractThrownPotion.onHit: level event 2007 and sound 1054 for a
         // potion with instant effects, 2002 and 1053 otherwise.
@@ -1192,33 +1163,6 @@ impl Game<'_> {
         let color = brewing::potion_color(stack.potion());
         self.level_event_at(if instant { 2007 } else { 2002 }, block, color as i32);
         self.level_event_at(if instant { 1054 } else { 1053 }, block, 0);
-        // AbstractThrownPotion.affectEntitiesAround: a potion in
-        // #rehydrates_axolotls refills the air of the axolotls in the
-        // projectile's box inflated by 4, 2 and 4 (Axolotl.rehydrate, 1800).
-        if self.potion_in_tag(stack, "minecraft:rehydrates_axolotls") {
-            let (lo, hi) = (
-                [at.x - 0.125 - 4.0, at.y - 2.0, at.z - 0.125 - 4.0],
-                [at.x + 0.125 + 4.0, at.y + 0.25 + 2.0, at.z + 0.125 + 4.0],
-            );
-            for m in self
-                .mobs
-                .iter_mut()
-                .filter(|m| m.species() == horizon_client::mobs::Species::Axolotl && !m.removed)
-            {
-                let (w, h, _) = m.dims();
-                let half = w / 2.0;
-                let (x, y, z) = (m.position.x, m.position.y, m.position.z);
-                if x - half < hi[0]
-                    && x + half > lo[0]
-                    && y < hi[1]
-                    && y + h > lo[1]
-                    && z - half < hi[2]
-                    && z + half > lo[2]
-                {
-                    m.air = (m.air + 1800).min(horizon_client::mobs::axolotl::MAX_AIR);
-                }
-            }
-        }
         let Some(def) = potion else {
             return;
         };
