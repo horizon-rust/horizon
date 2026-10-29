@@ -257,6 +257,7 @@ impl Game<'_> {
             snowy: has("minecraft:spawns_snow_foxes")
                 || b.name.contains("snow")
                 || b.name.contains("frozen"),
+            snow_fox: has("minecraft:spawns_snow_foxes"),
             swamp: b.name.contains("swamp"),
             ocean: has("minecraft:is_ocean"),
             mushroom: b.name == "minecraft:mushroom_fields",
@@ -2079,9 +2080,15 @@ impl Game<'_> {
             // getBreedOffspring creates the baby without finalizeSpawn: it keeps
             // the default (`classic`) sound variant.
             child.extra.sound_variant = None;
-            // Goat.getBreedOffspring: GoatAi.initMemories, then the baby
-            // screams if the parent a coin toss picks does, or on a 2% roll.
+            // Fox.getBreedOffspring runs no finalizeSpawn: nothing in the
+            // baby fox's mouth.
+            if p.species() == Species::Fox {
+                child.extra.main_hand = None;
+            }
+            // Goat.getBreedOffspring: GoatAi.initMemories, both horns, then the
+            // baby screams if the parent a coin toss picks does, or on a 2% roll.
             if p.species() == Species::Goat {
+                child.extra.lost_horns = [false; 2];
                 horizon_client::mobs::finalize::goat_init_memories(child, &mut self.world.random);
                 let pick_parent = self.world.random.next_boolean();
                 let parent_screams = if pick_parent {
