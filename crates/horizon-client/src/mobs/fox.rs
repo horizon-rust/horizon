@@ -53,9 +53,9 @@ fn set_flag(m: &mut Mob, f: i32, on: bool) {
 fn clear_states(m: &mut Mob) {
     m.extra.ints[0] = 0;
 }
-/// `Fox.isDefending`. `Fox.setTarget` ends the defence when the target goes,
-/// and Horizon drops targets in many places, so a fox without a target is not
-/// defending and `ai_step` clears the flag the same tick.
+/// `Fox.isDefending`: the defending flag, which `Fox.setTarget` ends when the
+/// target goes. Horizon drops targets in many places, so a fox without a
+/// target is not defending and `ai_step` clears the flag the same tick.
 fn defending(m: &Mob) -> bool {
     flag(m, DEFENDING) && m.ai.target.is_some()
 }
@@ -70,7 +70,7 @@ pub fn add_trusted_entity(m: &mut Mob, uuid: [i32; 4]) {
     let slot = usize::from(m.extra.trusted[0].is_some());
     m.extra.trusted[slot] = Some(uuid);
 }
-/// `Fox.clearTrusted`.
+/// `Fox.clearTrusted`: forget everyone.
 pub fn clear_trusted(m: &mut Mob) {
     m.extra.trusted = [None; 2];
 }
@@ -574,11 +574,11 @@ impl DefendTrusted {
             state: TargetState::new(60),
         }
     }
-    /// `TargetGoal.canAttack(target, targetConditions)` of this goal: the
-    /// selector (`TRUSTED_TARGET_SELECTOR` and not trusted), then
-    /// `TargetingConditions.forCombat().range(follow range)`. A mob has no
-    /// UUID here and no `getLastHurtMob`, so one that hurt the player (the
-    /// only kind the player remembers) counts as having hurt something.
+    /// `TargetGoal.canAttack`: the selector (`TRUSTED_TARGET_SELECTOR` and not
+    /// trusted), then `TargetingConditions.forCombat().range(follow range)`. A
+    /// mob has no UUID here and no `getLastHurtMob`, so one that hurt the
+    /// player (the only kind the player remembers) counts as having hurt
+    /// something.
     fn can_attack(m: &mut Mob, w: &MobWorld, who: Who) -> bool {
         let range = m.attrs.follow_range;
         match who {
