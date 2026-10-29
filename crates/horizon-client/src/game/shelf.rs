@@ -3,7 +3,12 @@
 //! whole chain), `ShelfBlockEntity.setChanged` and `ShelfRenderer`. The slots
 //! are `containers::Shelf`; a server's clients get them through the block
 //! entity's update tag (`lan::chunks::entity_tag`), which they draw from.
-use super::Game;
+use super::{Game, item_draw::owner_at};
+use horizon_assets::item_model::DisplayContext;
+use horizon_client::{
+    block_entity_render::vertex_light, containers::Shelf, item_render::ItemRenderState,
+};
+use horizon_core::position::BlockPos;
 
 impl Game<'_> {
     /// `ShelfBlockEntity.setChanged`: the chunk is saved and the comparators
@@ -19,4 +24,63 @@ impl Game<'_> {
         }
         self.mark_block_entity_updated(key);
     }
+    /// `ShelfRenderer.extractRenderState`: the item models of a shelf's slots
+    /// (`updateForTopItem` for `ON_SHELF`, owned by the block entity and seeded
+    /// by fastutil's long-to-int hash of the packed position plus the slot), its
+    /// alignment, its facing and the light it stands in.
+    fn shelf_extract(&self, key: (i32, i32, i32), shelf: &Shelf) -> ShelfRenderState {
+        let state = self.world.block(key.0, key.1, key.2);
+        // Direction.get2DDataValue: south 0, west 1, north 2, east 3.
+        let facing: u8 = match self
+            .pack
+            .assets
+            .registry
+            .state(state)
+            .and_then(|s| s.properties.get("facing"))
+            .map(String::as_str)
+        {
+            Some("west") => 1,
+            Some("north") => 2,
+            Some("east") => 3,
+            _ => 0,
+        };
+        // `getVisualRotationYInDegrees` is the opposite facing's `toYRot`.
+        let owner = owner_at(
+            [
+                f64::from(key.0) + 0.5,
+                f64::from(key.1) + 0.5,
+                f64::from(key.2) + 0.5,
+            ],
+            ((facing + 2) % 4) as f32 * 90.0,
+            "",
+        );
+        let packed = BlockPos::new(key.0, key.1, key.2).pack();
+        let seed = (packed ^ ((packed as u64) >> 32) as i64) as i32;
+        let mut items: [Option<ItemRenderState>; 3] = Default::default();
+        for (slot, stack) in shelf.items.iter().enumerate() {
+            if let Some(stack) = stack {
+                items[slot] = Some(self.resolve_item(
+                    stack,
+                    DisplayContext::OnShelf,
+                    Some(&owner),
+                    seed.wrapping_add(slot as i32),
+                ));
+            }
+        }
+        ShelfRenderState {
+            items,
+            align_to_bottom: shelf.align_items_to_bottom,
+            facing,
+            light: vertex_light(self.world.light(key.0, key.1, key.2)),
+        }
+    }
+}
+
+/// `ShelfRenderState`: what is drawn of one shelf.
+struct ShelfRenderState {
+    items: [Option<ItemRenderState>; 3],
+    align_to_bottom: bool,
+    /// The facing's 2D data value (south 0, west 1, north 2, east 3).
+    facing: u8,
+    light: u32,
 }
