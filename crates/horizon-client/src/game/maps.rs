@@ -352,6 +352,22 @@ impl MapData {
         self.dirty = true;
         true
     }
+    /// `MapItemSavedData.checkBanners`: a banner marker in the column `x`,
+    /// `z` whose banner is gone or changed (`current` reads
+    /// `MapBanner.fromWorld` at a position) is dropped with its decoration.
+    fn check_banners(&mut self, x: i32, z: i32, current: impl Fn([i32; 3]) -> Option<MapBanner>) {
+        let stale: Vec<MapBanner> = self
+            .banners
+            .iter()
+            .filter(|b| b.pos[0] == x && b.pos[2] == z && current(b.pos).as_ref() != Some(*b))
+            .cloned()
+            .collect();
+        for banner in stale {
+            self.banners.retain(|b| *b != banner);
+            self.remove_decoration(Key::Banner(banner.pos));
+            self.dirty = true;
+        }
+    }
     /// `HoldingPlayer.nextUpdatePacket` for `who`: the changed pixels, and
     /// the decorations (at most every 5th call while they changed).
     fn update_packet(
@@ -1257,6 +1273,25 @@ impl Game<'_> {
             }
         }
     }
+    /// `MapItemSavedData.checkBanners` on map `id` for the column `x`, `z`
+    /// that `MapItem.update` is reading.
+    fn check_banners(&mut self, id: i32, x: i32, z: i32) {
+        let (world, res) = (&self.world, &self.res);
+        let Some(m) = self.maps.data.get_mut(&id) else {
+            return;
+        };
+        if m.banners.is_empty() {
+            return;
+        }
+        m.check_banners(x, z, |pos| {
+            let state = world.block(pos[0], pos[1], pos[2]);
+            super::banners::map_banner(
+                pos,
+                world.block_entities.get(&(pos[0], pos[1], pos[2])),
+                &res.facts().get(state).name,
+            )
+        });
+    }
     /// `MapItem.update` for the player holding map `id`.
     fn update_map(&mut self, id: i32) {
         let dim = self.dimension_id();
@@ -1356,6 +1391,7 @@ impl Game<'_> {
                                     }
                                 }
                             }
+                            self.check_banners(id, x, z);
                             height += f64::from(y) / f64::from(scale * scale);
                             add(color, 1);
                         }
