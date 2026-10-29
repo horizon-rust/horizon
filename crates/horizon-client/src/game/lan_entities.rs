@@ -115,6 +115,13 @@ impl Game<'_> {
                         .push((11 + k as u8, serializer::BOOLEAN, Value::Bool(true)));
                 }
             }
+            // AbstractBoat.DATA_ID_BUBBLE_TIME, back to 0 once the boat is off
+            // the column.
+            if b.bubble_time != 0 {
+                e.meta
+                    .push((13, serializer::INT, Value::Int(b.bubble_time)));
+            }
+            e.defaults.push((13, serializer::INT, Value::Int(0)));
             out.push(e);
         }
         for c in &self.carts {
