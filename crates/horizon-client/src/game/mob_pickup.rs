@@ -9,7 +9,7 @@ use super::{
 };
 use horizon_client::{
     entities::ItemEntity,
-    mobs::{Species, loot},
+    mobs::{Species, fox, loot},
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
 
@@ -24,7 +24,6 @@ fn picks_up_elsewhere(species: Species) -> bool {
             | Species::Panda
             | Species::Allay
             | Species::SulfurCube
-            | Species::Fox
             | Species::Dolphin
             | Species::Pillager
     )
@@ -62,8 +61,65 @@ impl Game<'_> {
                 {
                     continue;
                 }
-                self.equip_picked_up_item(i, id);
+                self.pick_up_item(i, id);
             }
+        }
+    }
+    /// `Mob.pickUpItem` and the overrides of the fox.
+    fn pick_up_item(&mut self, i: usize, id: u32) {
+        match self.mobs[i].species() {
+            Species::Fox => self.fox_pick_up_item(i, id),
+            _ => self.equip_picked_up_item(i, id),
+        }
+    }
+    /// `Fox.pickUpItem`: a fox that can hold the item leaves all but one of
+    /// the stack on the ground, spits out what it held (with a 40 tick pickup
+    /// delay) and takes the one into its mouth.
+    fn fox_pick_up_item(&mut self, i: usize, id: u32) {
+        let Some(j) = self.dropped.iter().position(|e| e.id == id) else {
+            return;
+        };
+        let entity = self.dropped[j].clone();
+        if !loot::can_hold_item(&self.mobs[i], self.res.items(), &entity.stack.item) {
+            return;
+        }
+        let m = &self.mobs[i];
+        let (mob, at, look) = (
+            m.id,
+            [m.position.x, m.position.y, m.position.z],
+            m.look_angle(),
+        );
+        let count = entity.stack.count;
+        // dropItemStack: a new item entity with no pickup delay.
+        if count > 1 {
+            let mut rest = entity.stack.clone();
+            rest.count = count - 1;
+            self.spawn_item(rest, at, new_item_motion(), 0);
+        }
+        // spitOutItem: thrown from in front of the face with a 40 tick delay.
+        if let Some(held) = loot::slot_stack(&self.mobs[i], "mainhand") {
+            let from = [at[0] + look[0], at[1] + 1.0, at[2] + look[2]];
+            self.spawn_item(held, from, new_item_motion(), 40);
+            let uuid = self.mob_uuid(mob);
+            if let Some(thrown) = self.dropped.last_mut() {
+                thrown.thrower = Some(uuid);
+            }
+            if !self.mobs[i].silent {
+                self.audio
+                    .play("minecraft:entity.fox.spit", Some(at), 1.0, 1.0);
+            }
+        }
+        // onItemPickup runs after the split, so it sees the one item kept.
+        let mut kept = entity.clone();
+        kept.stack.count = 1;
+        self.mob_item_picked_up(i, &kept);
+        let one = kept.stack;
+        let m = &mut self.mobs[i];
+        loot::set_slot_stack(m, "mainhand", &one);
+        loot::set_guaranteed_drop(m, "mainhand");
+        fox::reset_eaten(m);
+        if let Some(j) = self.dropped.iter().position(|e| e.id == id) {
+            self.mob_takes_item(i, j, count);
         }
     }
     /// `Mob.pickUpItem`: the mob equips the item entity's stack where it
