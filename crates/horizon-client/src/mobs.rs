@@ -1653,6 +1653,8 @@ pub struct Seen {
     pub effects: Vec<&'static str>,
     /// A piglin's `HUNTED_RECENTLY` memory.
     pub hunted_recently: bool,
+    /// A piglin's `HURT_BY` memory.
+    pub hurt_recently: bool,
 }
 impl Seen {
     /// `LivingEntity.hasEffect`, by id without namespace.
@@ -1755,6 +1757,7 @@ impl Mob {
                 .map(|e| e.0.trim_start_matches("minecraft:"))
                 .collect(),
             hunted_recently: m.species() == Species::Piglin && m.extra.ints[0] > 0,
+            hurt_recently: m.species() == Species::Piglin && m.extra.piglin.hurt,
         }
     }
     /// `EntityType.getCategory`'s name.
