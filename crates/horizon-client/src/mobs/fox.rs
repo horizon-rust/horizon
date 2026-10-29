@@ -2,8 +2,9 @@
 //! flags byte (sleeping, sitting, crouching, interested, pouncing,
 //! faceplanted), stalking and pouncing, napping in the shade by day, seeking
 //! shelter, perching, eating berries, searching for items on the ground and
-//! the food held in the mouth. Strolling through villages and trusting
-//! players (with defending them) are not ported yet.
+//! the food held in the mouth. The fox's trusted list
+//! (`Fox.getTrustedEntities`) is below; strolling through villages and
+//! defending trusted players are not ported yet.
 use super::{
     Mob, MobEvent, MobWorld, Seen, Species,
     goals::{
@@ -51,6 +52,25 @@ fn set_flag(m: &mut Mob, f: i32, on: bool) {
 /// `Fox.clearStates`.
 fn clear_states(m: &mut Mob) {
     m.extra.ints[0] = 0;
+}
+/// `Fox.getTrustedEntities`: the UUIDs a fox trusts, `DATA_TRUSTED_ID_0`
+/// first.
+pub fn trusted_entities(m: &Mob) -> impl Iterator<Item = [i32; 4]> + '_ {
+    m.extra.trusted.iter().flatten().copied()
+}
+/// `Fox.addTrustedEntity`: the first free slot, and once the first is taken
+/// the second, which a further one replaces.
+pub fn add_trusted_entity(m: &mut Mob, uuid: [i32; 4]) {
+    let slot = usize::from(m.extra.trusted[0].is_some());
+    m.extra.trusted[slot] = Some(uuid);
+}
+/// `Fox.clearTrusted`.
+pub fn clear_trusted(m: &mut Mob) {
+    m.extra.trusted = [None; 2];
+}
+/// `Fox.trusts`: the UUID is one of the trusted.
+pub fn trusts(m: &Mob, uuid: [i32; 4]) -> bool {
+    trusted_entities(m).any(|trusted| trusted == uuid)
 }
 /// `Fox.canMove`, which `FoxMoveControl` waits for.
 pub fn can_move(m: &Mob) -> bool {
