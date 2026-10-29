@@ -38,6 +38,11 @@ pub struct WorldOptions {
     pub bonus_chest: bool,
     /// `getGameRules`: the Game Rules screen's values, saved with the world.
     pub rules: crate::gamerules::GameRules,
+    /// `WorldCreationUiState`'s `DataPackConfig.Enabled`: the data packs the
+    /// world loads (`vanilla`, and any feature pack switched on).
+    pub data_packs: Vec<String>,
+    /// The packs the player turned off in the Data Packs screen.
+    pub data_packs_disabled: Vec<String>,
 }
 impl Default for WorldOptions {
     fn default() -> Self {
@@ -51,6 +56,16 @@ impl Default for WorldOptions {
             structures: true,
             bonus_chest: false,
             rules: crate::gamerules::GameRules::default(),
+            // `FeatureFlags.DEFAULT_FLAGS`: the feature packs start off.
+            data_packs: vec!["vanilla".to_owned()],
+            data_packs_disabled: [
+                "minecart_improvements",
+                "redstone_experiments",
+                "trade_rebalance",
+            ]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect(),
         }
     }
 }
@@ -77,6 +92,8 @@ impl WorldOptions {
             structures: generation.structures,
             bonus_chest: generation.bonus_chest,
             rules: crate::gamerules::GameRules::load(dir),
+            data_packs: level.data_packs_enabled(),
+            data_packs_disabled: level.data_packs_disabled.clone(),
             ..Self::default()
         }
     }
@@ -286,7 +303,6 @@ pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<B
                 28,
             ),
         ],
-        // Experiments and data packs have no screens yet.
         _ => [
             "selectWorld.gameRules",
             "selectWorld.experiments",
@@ -294,16 +310,7 @@ pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<B
         ]
         .iter()
         .enumerate()
-        .map(|(i, key)| {
-            b(
-                gx,
-                gy + 28.0 * i as f32,
-                210.0,
-                tr(key),
-                i == 0,
-                29 + i as u8,
-            )
-        })
+        .map(|(i, key)| b(gx, gy + 28.0 * i as f32, 210.0, tr(key), true, 29 + i as u8))
         .collect(),
     };
     // The footer: two 150-wide buttons 8 apart, centred in its 33 pixels.

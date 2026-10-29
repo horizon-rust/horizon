@@ -2741,6 +2741,11 @@ pub struct Level {
     pub allow_commands: Option<bool>,
     /// Game rule values by name without namespace (`keep_inventory`, ...).
     pub game_rules: BTreeMap<String, i32>,
+    /// `DataPacks.Enabled`: the data packs the world loads (`vanilla`, the
+    /// feature packs switched on and the world's own packs).
+    pub data_packs: Option<Vec<String>>,
+    /// `DataPacks.Disabled`: the packs the world has turned off.
+    pub data_packs_disabled: Vec<String>,
     pub player_uuid: Option<[i32; 4]>,
     pub selected_slot: i32,
     pub motion: [f64; 3],
@@ -2755,6 +2760,12 @@ pub struct Level {
     pub player_extra: Option<Tag>,
 }
 impl Level {
+    /// `DataPacks.Enabled`, with the default a new world starts from.
+    pub fn data_packs_enabled(&self) -> Vec<String> {
+        self.data_packs
+            .clone()
+            .unwrap_or_else(|| vec!["vanilla".to_owned()])
+    }
     /// `PrimaryLevelData.setDifficulty`: the level data holds the world's
     /// difficulty, so the game and the file follow each other and a world
     /// that was set to hard is hard when it is opened again.
@@ -2835,6 +2846,27 @@ impl Level {
             level.difficulty_locked = n(d.get("locked")) != 0;
         }
         level.allow_commands = Some(n(data.get("allowCommands")) != 0);
+        // `WorldDataConfiguration.CODEC`'s `DataPacks`.
+        if let Some(Tag::Compound(packs)) = data.get("DataPacks") {
+            let ids = |key: &str| -> Vec<String> {
+                let key = horizon_world::nbt::JavaString::from(key);
+                match packs.get(&key) {
+                    Some(Tag::List(list)) => list
+                        .iter()
+                        .filter_map(|t| match t {
+                            Tag::String(s) => Some(s.to_string_lossy()),
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                }
+            };
+            let enabled = ids("Enabled");
+            if !enabled.is_empty() {
+                level.data_packs = Some(enabled);
+            }
+            level.data_packs_disabled = ids("Disabled");
+        }
         let mut rules: BTreeMap<String, i32> = GAME_RULES
             .iter()
             .map(|(k, v)| ((*k).to_owned(), *v))
@@ -3378,24 +3410,25 @@ impl Level {
                 map.insert("allowCommands".into(), Tag::Byte(i8::from(allow)));
             }
             map.entry("WasModded".into()).or_insert(Tag::Byte(0));
-            map.entry("DataPacks".into()).or_insert_with(|| {
+            // `WorldDataConfiguration`, as the Create New World screen
+            // chose it (`vanilla` and the feature packs by default).
+            let data_packs = self
+                .data_packs
+                .clone()
+                .unwrap_or_else(|| vec!["vanilla".to_owned()]);
+            map.insert(
+                "DataPacks".into(),
                 Tag::compound([
-                    ("Enabled", Tag::List(vec![string("vanilla")])),
+                    (
+                        "Enabled",
+                        Tag::List(data_packs.iter().map(|s| string(s)).collect()),
+                    ),
                     (
                         "Disabled",
-                        Tag::List(
-                            [
-                                "minecart_improvements",
-                                "redstone_experiments",
-                                "trade_rebalance",
-                            ]
-                            .iter()
-                            .map(|s| string(s))
-                            .collect(),
-                        ),
+                        Tag::List(self.data_packs_disabled.iter().map(|s| string(s)).collect()),
                     ),
-                ])
-            });
+                ]),
+            );
         }
         // Saved data: weather, clocks, and (when missing or legacy) world
         // generation settings and game rules.

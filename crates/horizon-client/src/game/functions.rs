@@ -58,7 +58,16 @@ pub(super) fn pack_stack(
     vanilla_disabled: bool,
 ) -> PackStack {
     let builtin = (!vanilla_disabled).then(|| DataPack::builtin(resources));
-    let packs = datapack::discover(world_root);
+    // The feature packs the jar ships under `data/minecraft/datapacks`
+    // (`PackSource.FEATURE`): `ServerPacksSource.createPackRepository` adds
+    // them to every world's repository, switched off until a world enables one.
+    let mut packs = datapack::discover(world_root);
+    for (id, _) in FEATURE_PACKS {
+        let dir = resources.join("data/minecraft/datapacks").join(id);
+        if dir.join("pack.mcmeta").is_file() && !packs.iter().any(|p| p.id == *id) {
+            packs.push(DataPack::folder(id, &dir));
+        }
+    }
     let saved: Option<serde_json::Value> = std::fs::read(world_root.join("datapacks.json"))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok());
@@ -79,7 +88,8 @@ pub(super) fn pack_stack(
         .filter(|id| packs.iter().any(|p| &p.id == id))
         .collect();
     for p in &packs {
-        if !enabled.contains(&p.id) && !disabled.contains(&p.id) {
+        let feature = FEATURE_PACKS.iter().any(|(id, _)| *id == p.id);
+        if !enabled.contains(&p.id) && !disabled.contains(&p.id) && !feature {
             enabled.push(p.id.clone());
         }
     }

@@ -404,7 +404,8 @@ impl Game<'_> {
                 uuid: owner,
                 saved: Some(saved),
             });
-            host.hub.lan.connect_local()?
+            let p = host.hub.lan.connect_local();
+            p?
         };
         self.serving = Some(Serving {
             flags: flags.clone(),

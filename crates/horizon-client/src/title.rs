@@ -3,7 +3,7 @@
 use crate::{
     game_rules_screen::{Exit, RulesScreen},
     hud::{HudAtlas, HudBatch, rgba},
-    lang,
+    lang, pack_screen,
     save::Level,
     text::{Text, format_translation},
 };
@@ -14,6 +14,8 @@ use std::{
 };
 
 mod create_world;
+mod data_packs;
+mod experiments;
 mod flat;
 #[cfg(test)]
 mod tests;
@@ -32,6 +34,20 @@ fn edit_top(h: f32) -> f32 {
 }
 pub(crate) fn confirm_top(h: f32, lines: usize) -> f32 {
     ((h.ceil() - 61.0 - lines as f32 * 9.0) / 2.0).floor()
+}
+
+/// `Util.getPlatform().openPath`: the system file manager on the folder.
+fn open_folder(dir: &Path) {
+    let program = if cfg!(target_os = "windows") {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    if let Err(e) = std::process::Command::new(program).arg(dir).spawn() {
+        log::warn!("Horizon: could not open {}: {e}", dir.display());
+    }
 }
 
 fn translate(key: &str, fallback: &str, args: &[&dyn std::fmt::Display]) -> String {
@@ -169,6 +185,19 @@ pub struct Title {
     recent: std::cell::RefCell<Option<(std::time::Instant, Vec<WorldEntry>)>>,
     /// WorldCreationGameRulesScreen, over Create New World while it is open.
     rules: RefCell<Option<RulesScreen>>,
+    /// CreateWorldScreen's Data Packs screen, over Create New World.
+    data_packs: RefCell<Option<data_packs::DataPacksScreen>>,
+    /// CreateWorldScreen's Experiments screen, over Create New World.
+    experiments: RefCell<Option<experiments::ExperimentsScreen>>,
+    /// A screen the More tab asked for: opened by `press_rules`, which has
+    /// the atlas the screens measure text with.
+    pending_screen: Cell<Option<PendingScreen>>,
+}
+/// The More tab's two screens, opened on the press that asked for them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PendingScreen {
+    Experiments,
+    DataPacks,
 }
 pub(crate) struct Button {
     x: f32,
@@ -281,6 +310,9 @@ impl Title {
             ),
             recent: std::cell::RefCell::new(None),
             rules: RefCell::new(None),
+            data_packs: RefCell::new(None),
+            experiments: RefCell::new(None),
+            pending_screen: Cell::new(None),
         }
     }
     /// Vanilla bypasses the selector when there are no saves.
@@ -455,6 +487,9 @@ impl Title {
     }
     /// The pointer moved with the button held (`mouseDragged`).
     pub fn drag(&mut self, cursor: (f32, f32), size: (f32, f32)) {
+        if let Some(screen) = self.data_packs.get_mut() {
+            return screen.drag(cursor.1 as f64);
+        }
         if let Some(rules) = self.rules.get_mut() {
             return rules.drag(cursor.1, size.1.ceil());
         }
@@ -474,6 +509,9 @@ impl Title {
     }
     /// The button was released (`onRelease`).
     pub fn release(&mut self) {
+        if let Some(screen) = self.data_packs.get_mut() {
+            screen.release();
+        }
         if let Some(rules) = self.rules.get_mut() {
             rules.release();
         }
@@ -487,6 +525,14 @@ impl Title {
     }
     /// Mouse wheel over the classic world and server lists.
     pub fn scroll_worlds(&mut self, delta: f32, cursor: (f32, f32), size: (f32, f32)) {
+        if let Some(screen) = self.data_packs.get_mut() {
+            screen.scroll(cursor.0 as f64, cursor.1 as f64, f64::from(delta));
+            return;
+        }
+        if let Some(screen) = self.experiments.get_mut() {
+            screen.wheel(delta, (size.0.ceil(), size.1.ceil()));
+            return;
+        }
         if let Some(rules) = self.rules.get_mut() {
             return rules.wheel(delta, size.1.ceil());
         }
@@ -989,6 +1035,15 @@ impl Title {
         if let Some(rules) = self.rules.borrow_mut().as_mut() {
             return rules.draw(batch, atlas, cursor);
         }
+        if let Some(screen) = self.data_packs.borrow_mut().as_mut() {
+            if screen.screen.width != w as i32 || screen.screen.height != h as i32 {
+                screen.resize(atlas, w as i32, h as i32);
+            }
+            return screen.draw(batch, atlas, cursor);
+        }
+        if let Some(screen) = self.experiments.borrow().as_ref() {
+            return screen.draw(batch, atlas, cursor);
+        }
         match &self.mode {
             Mode::Main => {
                 // LogoRenderer: the logo's top 44 of 64 rows, then the edition
@@ -1406,8 +1461,12 @@ impl Title {
     /// Navigation buttons can return `Action::None` while still sounding.
     pub fn click(&mut self, x: f32, y: f32, size: (f32, f32)) -> (Action, bool) {
         self.remember_direct_address();
-        // The game rules take the press in `press_rules`, which has the atlas.
-        if self.rules.get_mut().is_some() {
+        // The game rules take the press in `press_rules`, which has the atlas,
+        // and so do the data pack and experiment screens (`press_screens`).
+        if self.rules.get_mut().is_some()
+            || self.data_packs.get_mut().is_some()
+            || self.experiments.get_mut().is_some()
+        {
             return (Action::None, false);
         }
         let (w, h) = (size.0.ceil(), size.1.ceil());
@@ -1611,6 +1670,17 @@ impl Title {
                 *self.rules.get_mut() = Some(RulesScreen::for_creation(&options.rules));
                 Action::None
             }
+            // CreateWorldScreen.openExperimentsScreen and
+            // openDataPackSelectionScreen: the screens need the atlas, which
+            // `press_rules` has on the same press.
+            (Mode::Create { .. }, Some(30)) => {
+                self.pending_screen.set(Some(PendingScreen::Experiments));
+                Action::None
+            }
+            (Mode::Create { .. }, Some(31)) => {
+                self.pending_screen.set(Some(PendingScreen::DataPacks));
+                Action::None
+            }
             (
                 Mode::Create {
                     name,
@@ -1692,6 +1762,41 @@ impl Title {
     /// EditBox.charTyped / insertText at the cursor.
     pub fn type_text(&mut self, text: &str) {
         self.edit_field(|edit| edit.insert_text(text));
+    }
+    /// Typed text with the atlas in hand, which the data pack screen's search
+    /// box needs (its text is measured through the font).
+    pub fn text_input(&mut self, atlas: &HudAtlas, text: &str) {
+        if let Some(screen) = self.data_packs.get_mut()
+            && screen.search_focused()
+        {
+            screen.type_text(atlas, text);
+            return;
+        }
+        self.type_text(text);
+    }
+    /// Backspace and Delete with the atlas in hand.
+    pub fn erase_input(&mut self, atlas: &HudAtlas, count: isize) {
+        if let Some(screen) = self.data_packs.get_mut() {
+            screen.erase(atlas, count);
+            return;
+        }
+        self.edit_field(|edit| {
+            edit.delete_chars(count);
+        });
+    }
+
+    /// Whether a screen over Create New World has the keyboard.
+    pub fn screen_open(&self) -> bool {
+        self.rules.borrow().is_some()
+            || self.data_packs.borrow().is_some()
+            || self.experiments.borrow().is_some()
+    }
+    /// The data pack screen takes the caret keys (`Backspace`, arrows).
+    pub fn packs_search_focused(&mut self) -> bool {
+        self.data_packs
+            .get_mut()
+            .as_ref()
+            .is_some_and(|s| s.search_focused())
     }
     pub fn backspace(&mut self) {
         self.field_key(winit::keyboard::KeyCode::Backspace, false, false);
@@ -1841,10 +1946,138 @@ impl Title {
         }
         outcome
     }
+    /// CreateWorldScreen's More tab asked for a screen: make it.
+    fn open_pending_screen(&mut self, atlas: &HudAtlas, size: (f32, f32)) -> bool {
+        let Some(pending) = self.pending_screen.take() else {
+            return false;
+        };
+        // `findResultFolder` reads only the saves folder: before the mode is
+        // borrowed mutably.
+        let folder = match &self.mode {
+            Mode::Create { name, .. } => Some(self.saves.join(self.target_folder(name))),
+            _ => None,
+        };
+        let Mode::Create { name, options, .. } = &mut self.mode else {
+            return false;
+        };
+        let _ = name;
+        match pending {
+            // `ExperimentsScreen.init`: every feature pack the repository has,
+            // switched on when the selection holds it.
+            PendingScreen::Experiments => {
+                let feature =
+                    |id: &str| !id.contains(':') && !id.starts_with("file/") && id != "vanilla";
+                let flags = data_packs::discover(&self.resources, None)
+                    .into_iter()
+                    .filter(|p| feature(&p.id))
+                    .map(|p| experiments::Flag {
+                        enabled: options.data_packs.contains(&p.id),
+                        id: p.id,
+                        title: p.title,
+                        description: p.description,
+                    })
+                    .collect();
+                *self.experiments.get_mut() = Some(experiments::ExperimentsScreen::new(flags));
+            }
+            // `openDataPackSelectionScreen`: the world's repository.
+            PendingScreen::DataPacks => {
+                let world = folder.clone().unwrap_or_else(|| self.saves.clone());
+                let packs = data_packs::discover(&self.resources, Some(&world));
+                let mut selected = options.data_packs.clone();
+                selected.retain(|id| packs.iter().any(|p| &p.id == id));
+                let screen = data_packs::DataPacksScreen::new(
+                    atlas,
+                    size.0 as i32,
+                    size.1 as i32,
+                    packs,
+                    &selected,
+                );
+                *self.data_packs.get_mut() = Some(screen);
+            }
+        }
+        true
+    }
     /// A left press on the game rules (they need the atlas for text): whether
     /// it lands on a button, for its sound.
     pub fn press_rules(&mut self, atlas: &HudAtlas, cursor: (f32, f32), size: (f32, f32)) -> bool {
         let size = (size.0.ceil(), size.1.ceil());
+        if self.open_pending_screen(atlas, size) {
+            return true;
+        }
+        if self.data_packs.borrow().is_some() {
+            let action = {
+                let mut screen = self.data_packs.borrow_mut();
+                let screen = screen.as_mut().expect("open above");
+                screen.click(atlas, cursor.0 as f64, cursor.1 as f64)
+            };
+            match action {
+                // `PackSelectionScreen.onClose`: the new selection is the
+                // world's.
+                pack_screen::Action::Done => {
+                    let ids = self
+                        .data_packs
+                        .borrow()
+                        .as_ref()
+                        .map(data_packs::DataPacksScreen::commit)
+                        .unwrap_or_default();
+                    if let Mode::Create { options, .. } = &mut self.mode {
+                        options.data_packs = ids;
+                    }
+                    *self.data_packs.borrow_mut() = None;
+                    return true;
+                }
+                pack_screen::Action::OpenFolder => {
+                    let world = match &self.mode {
+                        Mode::Create { name, .. } => self.saves.join(self.target_folder(name)),
+                        _ => self.saves.clone(),
+                    };
+                    let dir = world.join("datapacks");
+                    let _ = std::fs::create_dir_all(&dir);
+                    open_folder(&dir);
+                    return true;
+                }
+                pack_screen::Action::None => return false,
+            }
+        }
+        if self.experiments.borrow().is_some() {
+            let click = {
+                let mut screen = self.experiments.borrow_mut();
+                let screen = screen.as_mut().expect("open above");
+                screen.click(atlas, cursor, size)
+            };
+            match click {
+                Some(experiments::Click::Switch(i)) => {
+                    let flipped = {
+                        let mut screen = self.experiments.borrow_mut();
+                        let flag = screen.as_mut().and_then(|s| s.flags.get_mut(i));
+                        flag.map(|f| {
+                            f.enabled = !f.enabled;
+                            (f.id.clone(), f.enabled)
+                        })
+                    };
+                    if let (Some((id, on)), Mode::Create { options, .. }) =
+                        (flipped, &mut self.mode)
+                    {
+                        options.data_packs.retain(|p| p != &id);
+                        options.data_packs_disabled.retain(|p| p != &id);
+                        if on {
+                            options.data_packs.push(id);
+                        } else {
+                            options.data_packs_disabled.push(id);
+                        }
+                    }
+                    return true;
+                }
+                // `ExperimentsScreen.onDone`: the switches reached the
+                // selection as they were flipped. Cancel keeps them too (the
+                // screen edits the selection directly).
+                Some(experiments::Click::Outcome(_)) => {
+                    *self.experiments.borrow_mut() = None;
+                    return true;
+                }
+                None => return false,
+            }
+        }
         let Some(rules) = self.rules.get_mut() else {
             return false;
         };
@@ -1866,6 +2099,12 @@ impl Title {
         }
     }
     pub fn escape(&mut self) {
+        if self.data_packs.get_mut().take().is_some() {
+            return;
+        }
+        if self.experiments.get_mut().take().is_some() {
+            return;
+        }
         if let Some(rules) = self.rules.get_mut() {
             if let Some(exit) = rules.escape() {
                 self.close_rules(exit);

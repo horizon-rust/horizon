@@ -104,6 +104,15 @@ impl WorldRequest {
             )?;
             // WorldCreationUiState.getGameRules, written with the level.
             level.game_rules = o.rules.by_name();
+            // The Data Packs screen's selection: `DataPacks` in level.dat and
+            // the world's own list the data pack loader reads.
+            level.data_packs = Some(o.data_packs.clone());
+            level.data_packs_disabled = o.data_packs_disabled.clone();
+            let selection = serde_json::json!({
+                "enabled": o.data_packs,
+                "disabled": o.data_packs_disabled,
+            });
+            let _ = std::fs::write(save_root.join("datapacks.json"), selection.to_string());
         }
         // Worlds made without the Create New World screen (--world, the
         // control socket) take its default: commands on for Creative only.

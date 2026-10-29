@@ -822,11 +822,22 @@ fn create_world_tabs_follow_vanilla_and_their_choices_reach_the_action() {
             bonus_chest: true
         }
     );
-    // The More tab's Experiments and Data Packs screens don't exist yet.
+    // The More tab: Game Rules, Experiments and Data Packs all open.
     f.title.click(54.0 + 248.0 + 10.0, 10.0, size);
     assert_eq!(
         labels(&f)[..3].iter().map(|b| b.3).collect::<Vec<_>>(),
-        [true, false, false]
+        [true, true, true]
+    );
+    // A new world starts with the feature packs switched off, as vanilla's
+    // `FeatureFlags.DEFAULT_FLAGS` does.
+    assert_eq!(options.data_packs, ["vanilla".to_owned()]);
+    assert_eq!(
+        options.data_packs_disabled,
+        [
+            "minecart_improvements".to_owned(),
+            "redstone_experiments".to_owned(),
+            "trade_rebalance".to_owned()
+        ]
     );
 }
 

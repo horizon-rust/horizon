@@ -321,6 +321,9 @@ pub struct PackScreen {
     pub width: i32,
     pub height: i32,
     pub in_world: bool,
+    /// `PackSelectionScreen`'s title: `resourcePack.title`, or
+    /// `dataPack.title` for the world's data packs.
+    pub title: Text,
     pub packs: Vec<PackInfo>,
     pub model: SelectionModel,
     search: TextField,
@@ -363,6 +366,7 @@ impl PackScreen {
             width,
             height,
             in_world,
+            title: tr("resourcePack.title"),
             packs,
             icons,
             model,
@@ -382,7 +386,7 @@ impl PackScreen {
     }
     /// The header layout: title, drop info and search box, centred.
     fn header(&self, m: &Measure) -> [(i32, i32); 3] {
-        let tw = m.width(&tr("resourcePack.title"));
+        let tw = m.width(&self.title);
         let dw = m.width(&tr("pack.dropInfo"));
         let col = tw.max(dw).max(200);
         let frame = self.width.max(col);
@@ -837,7 +841,7 @@ impl PackScreen {
             return out;
         }
         let [(tx, ty), (dx, dy), _] = self.header(m);
-        d::string_widget(&mut out, m, &tr("resourcePack.title"), tx, ty, 0);
+        d::string_widget(&mut out, m, &self.title, tx, ty, 0);
         d::string_widget(
             &mut out,
             m,
