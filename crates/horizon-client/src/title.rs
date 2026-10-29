@@ -1985,6 +1985,45 @@ impl Title {
             Err(error) => self.failed(error),
         }
     }
+    /// `CreateWorldScreen.keyPressed`, `DirectJoinServerScreen.keyPressed` and
+    /// `WorldListEntry.keyPressed` on Enter (Space too on the list): Create New
+    /// World creates, a rename saves, Direct Connection joins, the selected
+    /// world joins.
+    pub fn confirm_key(&mut self) -> Action {
+        self.remember_direct_address();
+        if self.rules.get_mut().is_some() {
+            return Action::None;
+        }
+        if matches!(self.mode, Mode::Edit { .. }) {
+            self.confirm_edit();
+            return Action::None;
+        }
+        if self.list_focused() {
+            return self.join_selected();
+        }
+        match &self.mode {
+            Mode::Create { .. } => self.create_action(),
+            Mode::Multiplayer(screen) => match screen.confirm() {
+                crate::multiplayer::Outcome::Connect(address) => Action::Connect { address },
+                _ => Action::None,
+            },
+            _ => Action::None,
+        }
+    }
+    /// The world list has the keyboard: no search box focus.
+    pub fn list_focused(&self) -> bool {
+        matches!(self.mode, Mode::Select { .. }) && !self.search_focused
+    }
+    /// `WorldListEntry.keyPressed`: the selected world joins, as its click does.
+    fn join_selected(&mut self) -> Action {
+        let Mode::Select { worlds, selected } = &self.mode else {
+            return Action::None;
+        };
+        let Some(world) = selected.and_then(|i| worlds.get(i)).cloned() else {
+            return Action::None;
+        };
+        self.play(world)
+    }
     pub fn tab(&mut self) {
         if self.rules.get_mut().is_some() {
             return;
