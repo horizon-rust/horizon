@@ -4419,6 +4419,12 @@ impl Game<'_> {
                 }
                 return Ok(true);
             }
+            if let Some(swings) = self.use_shelf(hit, held.as_ref()) {
+                if swings {
+                    self.swing_arm();
+                }
+                return Ok(true);
+            }
             if self.use_composter(hit.pos, held.as_ref()) {
                 self.swing_arm();
                 return Ok(true);

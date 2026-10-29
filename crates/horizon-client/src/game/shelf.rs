@@ -3,17 +3,114 @@
 //! whole chain), `ShelfBlockEntity.setChanged` and `ShelfRenderer`. The slots
 //! are `containers::Shelf`; a server's clients get them through the block
 //! entity's update tag (`lan::chunks::entity_tag`), which they draw from.
-use super::{Game, item_draw::owner_at};
+use super::{Game, Hit, item_draw::owner_at, machines::dir_from_name};
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
     block_entity_render::vertex_light,
     containers::{BlockEntity, Shelf},
     item_render::ItemRenderState,
+    items::ItemStack,
     mesher::Vertex,
 };
-use horizon_core::position::BlockPos;
+use horizon_core::{
+    geometry::{Direction, Vec3},
+    position::BlockPos,
+};
+use horizon_world::level::hit_slot;
 
 impl Game<'_> {
+    /// `SelectableSlotContainer.getHitSlot` for the click on a shelf (one row
+    /// of three slots on its front face), and whether the shelf is powered.
+    /// None when the block is no shelf or the click is off the front face.
+    fn shelf_hit(&self, hit: &Hit) -> Option<(usize, bool)> {
+        let pos = hit.pos;
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let info = self
+            .pack
+            .assets
+            .registry
+            .state(state)
+            .filter(|s| s.name.ends_with("_shelf"))?;
+        let facing = info
+            .properties
+            .get("facing")
+            .and_then(|f| dir_from_name(f))?;
+        let powered = info.properties.get("powered").map(String::as_str) == Some("true");
+        let face = Direction::ALL
+            .into_iter()
+            .find(|d| d.normal() == hit.face)?;
+        let at = Vec3::new(hit.point[0], hit.point[1], hit.point[2]);
+        let slot = hit_slot(
+            facing,
+            face,
+            BlockPos::new(pos[0], pos[1], pos[2]),
+            at,
+            1,
+            3,
+        )?;
+        Some((slot, powered))
+    }
+
+    /// `ShelfBlock.useItemOn` on a server's level with `held` in the acting
+    /// hand: None when the block passes the click, else whether the use
+    /// swings the arm (`SUCCESS_SERVER`; a powered chain with nothing to swap
+    /// only consumes the click).
+    pub(super) fn use_shelf(&mut self, hit: &Hit, held: Option<&ItemStack>) -> Option<bool> {
+        // `!hand.equals(InteractionHand.OFF_HAND)`.
+        if self.hand != horizon_client::first_person::Hand::Main {
+            return None;
+        }
+        let (slot, powered) = self.shelf_hit(hit)?;
+        let pos = hit.pos;
+        let centre = pos.map(|v| f64::from(v) + 0.5);
+        let sound = if powered {
+            if !self.shelf_swap_hotbar(pos) {
+                // `InteractionResult.CONSUME`.
+                self.shelf_used_on(pos, held);
+                return Some(false);
+            }
+            "minecraft:block.shelf.multi_swap"
+        } else {
+            let held_empty = held.is_none();
+            let removed = self.shelf_swap_single_item(pos, slot)?;
+            if removed {
+                if held_empty {
+                    "minecraft:block.shelf.take_item"
+                } else {
+                    "minecraft:block.shelf.single_swap"
+                }
+            } else if held_empty {
+                return None;
+            } else {
+                "minecraft:block.shelf.place_item"
+            }
+        };
+        self.audio.play(sound, Some(centre), 1.0, 1.0);
+        self.shelf_used_on(pos, held);
+        Some(true)
+    }
+
+    /// `ServerPlayerGameMode.useItemOn` after a block that consumed the click:
+    /// `ITEM_USED_ON_BLOCK` with the stack as it was before the use (none for
+    /// an empty hand).
+    fn shelf_used_on(&mut self, pos: [i32; 3], held: Option<&ItemStack>) {
+        if let Some(used) = held {
+            self.trigger_block("minecraft:item_used_on_block", pos, used);
+        }
+    }
+
+    /// `ShelfBlock.useItemOn` on a client of a server (`isClientSide`): a click
+    /// on a slot with something in the selected slot is consumed, and the
+    /// server does the swap. Whether this click is one.
+    pub(super) fn shelf_consumes_click(&self, hit: &Hit) -> bool {
+        let key = (hit.pos[0], hit.pos[1], hit.pos[2]);
+        matches!(
+            self.world.block_entities.get(&key),
+            Some(BlockEntity::Shelf(_))
+        ) && self.shelf_hit(hit).is_some()
+            && self.stack_in(self.selected).is_some()
+    }
+
     /// The shelf's block entity (made if the block has none yet).
     fn shelf_entity(&mut self, pos: [i32; 3]) -> Option<&mut Shelf> {
         let entity = self
@@ -27,6 +124,7 @@ impl Game<'_> {
             _ => None,
         }
     }
+
     /// `ShelfBlock.swapSingleItem`: the selected stack goes into slot `slot`
     /// and what was there comes back into the selected slot (a player with
     /// infinite materials keeps the stack when the slot was empty), then the
@@ -57,6 +155,7 @@ impl Game<'_> {
         self.shelf_set_changed(pos, (!silent).then_some("minecraft:item_interact_finish"));
         Some(removed.is_some())
     }
+
     /// `ShelfBlock.swapHotbar`: the hotbar slots swap with the slots of the
     /// powered chain the shelf at `pos` is part of, its left end first, the
     /// chain's last slot against hotbar slot 8. Whether anything moved.
@@ -100,6 +199,7 @@ impl Game<'_> {
         }
         any_swapped
     }
+
     /// `ShelfBlockEntity.setChanged`: the chunk is saved and the comparators
     /// update (`BlockEntity.setChanged`), `event` goes out at the shelf with
     /// its state as context, and the clients get the new update tag
@@ -113,6 +213,7 @@ impl Game<'_> {
         }
         self.mark_block_entity_updated(key);
     }
+
     /// `ShelfRenderer.extractRenderState`: the item models of a shelf's slots
     /// (`updateForTopItem` for `ON_SHELF`, owned by the block entity and seeded
     /// by fastutil's long-to-int hash of the packed position plus the slot), its
@@ -163,6 +264,7 @@ impl Game<'_> {
             light: vertex_light(self.world.light(key.0, key.1, key.2)),
         }
     }
+
     /// `ShelfRenderer.submit`: every item of every shelf in range, turned to
     /// the shelf's front.
     pub(super) fn shelf_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
@@ -189,6 +291,7 @@ impl Game<'_> {
             }
         }
     }
+
     /// `ShelfRenderer.submitItem`: the item in slot `slot` a quarter of its
     /// size, `(slot - 1) * 0.3125` along the shelf and a quarter block in
     /// front of its centre, centred on that point or, when aligned to the
