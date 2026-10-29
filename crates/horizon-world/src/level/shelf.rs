@@ -1,7 +1,7 @@
 //! `ShelfBlock` power changes and its `SideChainPartBlock` linking: up to
 //! three powered wooden shelves facing the same way join into one chain.
 use super::{
-    LevelAccess, Sim,
+    Behaviours, LevelAccess, Sim, Ticks,
     query::{clockwise, counter_clockwise},
     update::rel,
 };
@@ -122,30 +122,41 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.set_block_and_update(pos, next);
         }
     }
-    /// `SideChainPartBlock.getAllBlocksConnectedTo(...).size()`.
-    fn shelf_chain_size(&mut self, pos: BlockPos) -> usize {
+    /// `SideChainPartBlock.getAllBlocksConnectedTo`: the shelf at `pos` and
+    /// the shelves chained to it, the one on the left end first (`left` is
+    /// the facing turned clockwise). Empty when it is not a connectable shelf.
+    fn shelf_connected_blocks(&mut self, pos: BlockPos) -> Vec<BlockPos> {
         let state = self.state(pos);
         if !self.shelf_connectable(state) {
-            return 0;
+            return Vec::new();
         }
         let mut n = Neighbors {
             facing: self.b.facing(state),
             center: pos,
             cache: HashMap::new(),
         };
-        let mut size = 1;
+        let mut chain = vec![pos];
         for (left, end) in [(true, Part::Left), (false, Part::Right)] {
             for steps in 1..MAX_CHAIN_LENGTH as i32 {
-                let (_, part) = self.chain_neighbor(&mut n, left, steps);
+                let (at, part) = self.chain_neighbor(&mut n, left, steps);
                 if part.is_some_and(|p| p.is_connection_towards(end)) {
-                    size += 1;
+                    // `addFirst` on the left, `addLast` on the right.
+                    if left {
+                        chain.insert(0, at);
+                    } else {
+                        chain.push(at);
+                    }
                 }
                 if part.is_none_or(Part::is_chain_end) {
                     break;
                 }
             }
         }
-        size
+        chain
+    }
+    /// `SideChainPartBlock.getAllBlocksConnectedTo(...).size()`.
+    fn shelf_chain_size(&mut self, pos: BlockPos) -> usize {
+        self.shelf_connected_blocks(pos).len()
     }
     /// `SideChainPartBlock.updateNeighborsAfterPoweringDown`.
     pub(crate) fn shelf_after_powering_down(&mut self, pos: BlockPos, state: BlockStateId) {
@@ -237,5 +248,18 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         };
         self.sound(pos, &sound.into(), 1.0, 1.0);
         self.game_event_state(pos, event, next);
+    }
+}
+
+impl Behaviours {
+    /// `SideChainPartBlock.getAllBlocksConnectedTo` for the shelf at `pos`:
+    /// the powered chain it is part of, left end first.
+    pub fn shelf_connected_blocks<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+    ) -> Vec<BlockPos> {
+        self.sim(level, ticks).shelf_connected_blocks(pos)
     }
 }

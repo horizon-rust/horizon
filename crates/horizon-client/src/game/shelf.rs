@@ -57,6 +57,49 @@ impl Game<'_> {
         self.shelf_set_changed(pos, (!silent).then_some("minecraft:item_interact_finish"));
         Some(removed.is_some())
     }
+    /// `ShelfBlock.swapHotbar`: the hotbar slots swap with the slots of the
+    /// powered chain the shelf at `pos` is part of, its left end first, the
+    /// chain's last slot against hotbar slot 8. Whether anything moved.
+    fn shelf_swap_hotbar(&mut self, pos: [i32; 3]) -> bool {
+        let at = BlockPos::new(pos[0], pos[1], pos[2]);
+        let connected =
+            self.with_level(|b, level, ticks| b.shelf_connected_blocks(level, ticks, at));
+        if connected.is_empty() {
+            return false;
+        }
+        let mut any_swapped = false;
+        for (index, part) in connected.iter().enumerate() {
+            let part = [part.x, part.y, part.z];
+            if self.shelf_entity(part).is_none() {
+                continue;
+            }
+            for slot in 0..3 {
+                let inventory_slot = 9 - (connected.len() as i32 - index as i32) * 3 + slot as i32;
+                let Ok(inventory_slot) = usize::try_from(inventory_slot) else {
+                    continue;
+                };
+                if inventory_slot >= self.inventory.len() {
+                    continue;
+                }
+                let placed = self.inventory[inventory_slot].take();
+                let placed_any = placed.is_some();
+                let limit = placed
+                    .as_ref()
+                    .map_or(1, |stack| self.max_stack(stack).clamp(1, 99));
+                let Some(shelf) = self.shelf_entity(part) else {
+                    self.inventory[inventory_slot] = placed;
+                    continue;
+                };
+                let (removed, _) = shelf.swap_item_no_update(slot, placed, limit);
+                if placed_any || removed.is_some() {
+                    self.inventory[inventory_slot] = removed;
+                    any_swapped = true;
+                }
+            }
+            self.shelf_set_changed(part, Some("minecraft:entity_interact"));
+        }
+        any_swapped
+    }
     /// `ShelfBlockEntity.setChanged`: the chunk is saved and the comparators
     /// update (`BlockEntity.setChanged`), `event` goes out at the shelf with
     /// its state as context, and the clients get the new update tag
