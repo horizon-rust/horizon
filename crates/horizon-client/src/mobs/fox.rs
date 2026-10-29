@@ -8,9 +8,9 @@
 use super::{
     Mob, MobEvent, MobWorld, Seen, Species, Who,
     goals::{
-        Avoid, AvoidEntity, Breed, Cx, Float, FollowParent, Goal, JUMP, LOOK, LeapAtTarget,
-        LookAtPlayer, MOVE, MeleeAttack, MoveToBlock, NearestTarget, Panic, Prey, Stroll, TARGET,
-        TargetState, goal_clone, hide_pos, reduced, target_continue,
+        Avoid, AvoidEntity, Breed, ClimbOnTopOfPowderSnow, Cx, Float, FollowParent, Goal, JUMP,
+        LOOK, LeapAtTarget, LookAtPlayer, MOVE, MeleeAttack, MoveToBlock, NearestTarget, Panic,
+        Prey, Stroll, TARGET, TargetState, goal_clone, hide_pos, reduced, target_continue,
     },
     living::wrap,
 };
@@ -141,6 +141,7 @@ pub fn register(m: &mut Mob) {
     let countdown = m.random.next_int_bound(reduced(140)).unwrap_or(0);
     let g = &mut m.ai.goals;
     g.add(0, Wrap::new(Float).on_start(clear_states));
+    g.add(0, ClimbOnTopOfPowderSnow);
     g.add(1, Faceplant { countdown: 0 });
     // FoxPanicGoal.shouldPanic: not while defending.
     g.add(2, Wrap::new(Panic::new(2.2)).when(|m| !defending(m), false));

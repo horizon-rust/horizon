@@ -2816,6 +2816,23 @@ impl Game<'_> {
             }
         }
     }
+    /// `AmethystBlock.onProjectileHit`: a projectile that strikes an amethyst
+    /// block rings `block.amethyst_block.chime` there, pitched by the level random.
+    fn amethyst_projectile_hit(&mut self, pos: [i32; 3]) {
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        if &*self.res.facts().get(state).name != "minecraft:amethyst_block" {
+            return;
+        }
+        let pitch = 0.5 + self.world.random.next_float() * 1.2;
+        self.level_events
+            .push(horizon_world::level::LevelEvent::Sound {
+                pos: BlockPos::new(pos[0], pos[1], pos[2]),
+                sound: "minecraft:block.amethyst_block.chime".into(),
+                volume: 1.0,
+                pitch,
+            });
+        let _ = self.process_level_events();
+    }
     /// `onProjectileHit` of chorus flowers, decorated pots and speleothems
     /// (pointed dripstone, sulfur spikes): an impact projectile
     /// (`#impact_projectiles`) breaks the block when `Projectile.mayInteract`
@@ -2877,6 +2894,7 @@ impl Game<'_> {
             ArrowParticle::Bubble => ParticleType::Bubble,
             ArrowParticle::Crit => ParticleType::Crit,
             ArrowParticle::Splash => ParticleType::Splash,
+            ArrowParticle::Spectral => ParticleType::Effect,
         };
         match event {
             ArrowEvent::Particle {
@@ -2884,7 +2902,11 @@ impl Game<'_> {
                 position,
                 velocity,
             } => self.particles.add(
-                &ParticleOptions::simple(kind(k)),
+                &match k {
+                    // SpellParticleOption.create(EFFECT, -1, 1.0F): white, power 1.
+                    ArrowParticle::Spectral => ParticleOptions::colored(kind(k), [1.0; 4]),
+                    _ => ParticleOptions::simple(kind(k)),
+                },
                 [position.x, position.y, position.z],
                 [velocity.x, velocity.y, velocity.z],
             ),
@@ -3038,6 +3060,7 @@ impl Game<'_> {
             && face != [0; 3]
         {
             self.bell_projectile_hit(p, pos, at, face);
+            self.amethyst_projectile_hit(pos);
             self.projectile_breaks_block(p, pos);
         }
         self.combat.projectile_owner = match p.owner {
