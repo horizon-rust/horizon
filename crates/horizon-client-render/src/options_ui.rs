@@ -1037,7 +1037,7 @@ pub enum Page {
     Online,
     /// Splitscreen: the profile another player joins as (`split_profiles`).
     SplitProfiles,
-    /// Splitscreen: enable joining on this computer.
+    /// Splitscreen: the monitor map and draft window arrangement.
     SplitSetup,
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -1197,13 +1197,12 @@ pub struct OptionsUi {
     center_language: bool,
     pub graphics: crate::graphics_ui::GraphicsUi,
     pub split_profiles: crate::split_profiles::SplitProfiles,
+    pub split_setup: crate::split_ui::SplitUi,
     /// The AI Agent page's status lines (set by the game while it shows).
     pub agent_status: Vec<String>,
     /// Splitscreen: another player's options. Language and resource packs are the whole
     /// process's (every player's text and textures), so they're P1's to change.
     pub split_guest: bool,
-    /// Other local players are joined: leave before turning splitscreen off.
-    pub split_joined: bool,
 }
 impl Default for OptionsUi {
     fn default() -> Self {
@@ -1237,9 +1236,9 @@ impl Default for OptionsUi {
             center_language: false,
             graphics: Default::default(),
             split_profiles: Default::default(),
+            split_setup: Default::default(),
             agent_status: Vec::new(),
             split_guest: false,
-            split_joined: false,
         }
     }
 }
@@ -1296,7 +1295,7 @@ fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
             "Optional additions, all off by default: the game stays vanilla until you turn one on."
         }
         Page::Agent => "Let your own AI agent play: horizon-ctl and MCP clients on this computer.",
-        Page::SplitSetup => "Players on this computer: controllers can join your world.",
+        Page::SplitSetup => "The windows and monitors, and who plays where.",
         Page::SplitProfiles => "Who plays: a profile kept in this game folder.",
         Page::ShaderPacks => {
             "Shader packs from the shaderpacks folder: Horizon's own and those in the shaders/ format. One runs at a time."
@@ -1411,6 +1410,9 @@ impl OptionsUi {
         ) {
             self.graphics.reset();
         }
+        if page == Page::SplitSetup {
+            self.split_setup.reset();
+        }
         if page == Page::SplitProfiles {
             self.split_profiles.reset();
         }
@@ -1450,7 +1452,7 @@ impl OptionsUi {
             Page::Horizon => "Horizon Settings",
             Page::Agent => "AI Agent",
             Page::SplitProfiles => "Who's playing?",
-            Page::SplitSetup => "Splitscreen",
+            Page::SplitSetup => "Splitscreen Setup",
         }
     }
     fn scrollbar_x(&self, width: f32) -> f32 {
@@ -1540,14 +1542,7 @@ impl OptionsUi {
 
     fn list_rows(&self, s: &Settings) -> Vec<Row> {
         match self.page() {
-            Page::SplitSetup => vec![Row::Buttons(
-                if self.split_guest || self.split_joined {
-                    inactive(self.extra_button(s, crate::extras::Item::Splitscreen))
-                } else {
-                    self.extra_button(s, crate::extras::Item::Splitscreen)
-                },
-                None,
-            )],
+            Page::SplitSetup => Vec::new(),
             Page::Extras => {
                 // Each section's switches two to a row, as vanilla's
                 // OptionsList.addSmall lays out an options screen.
@@ -2472,6 +2467,11 @@ impl OptionsUi {
                 .draw(level, s, batch, atlas, cursor, self.in_world);
             return;
         }
+        if self.page() == Page::SplitSetup {
+            self.split_setup.on = s.extras.splitscreen;
+            self.split_setup.draw(batch, atlas, cursor, self.in_world);
+            return;
+        }
         if self.page() == Page::SplitProfiles {
             self.split_profiles
                 .draw(batch, atlas, cursor, self.in_world, self.pad_style);
@@ -2726,6 +2726,26 @@ impl OptionsUi {
                 return vec![Event::ButtonClick];
             }
             return Vec::new();
+        }
+        if self.page() == Page::SplitSetup {
+            use crate::split_ui::Click;
+            if right {
+                return Vec::new();
+            }
+            self.split_setup.on = s.extras.splitscreen;
+            return match self.split_setup.click((x, y), size, drag) {
+                Click::Nothing => Vec::new(),
+                Click::Pressed => vec![Event::ButtonClick],
+                Click::Switch => {
+                    crate::extras::Item::Splitscreen.cycle(&mut s.extras, false);
+                    vec![Event::ButtonClick, Event::Changed]
+                }
+                Click::Done => {
+                    let mut events = vec![Event::ButtonClick];
+                    events.extend(self.back(s));
+                    events
+                }
+            };
         }
         if self.page() == Page::SplitProfiles {
             use crate::split_profiles::Click;

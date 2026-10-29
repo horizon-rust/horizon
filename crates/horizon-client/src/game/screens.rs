@@ -156,7 +156,7 @@ impl Game<'_> {
             true,
         );
         let links = !self.server_links().is_empty();
-        let split = self.options.split_guest;
+        let split = self.options.split_guest || self.split_hud.menu;
         let mut tooltip = None;
         for (x, y, bw, key, id, active) in pause_buttons(w, h, self.external_server(), links, split)
         {
@@ -233,7 +233,7 @@ impl Game<'_> {
             (b.width, b.height)
         };
         let links = !self.server_links().is_empty();
-        let split = self.options.split_guest;
+        let split = self.options.split_guest || self.split_hud.menu;
         let friends = pause_icons(w, h, links, split)[FRIENDS_ICON];
         let hit = pause_buttons(w, h, self.external_server(), links, split)
             .into_iter()
