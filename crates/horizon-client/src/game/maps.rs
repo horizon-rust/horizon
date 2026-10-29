@@ -303,6 +303,55 @@ impl MapData {
             }
         }
     }
+    /// `MapItemSavedData.isTrackedCountOverLimit`: more than `limit`
+    /// decorations count (`MapDecorationType.trackCount`).
+    fn tracked_over_limit(&self, limit: usize) -> bool {
+        self.decorations
+            .iter()
+            .filter(|d| tracks_count(d.sprite))
+            .count()
+            > limit
+    }
+    /// `MapItemSavedData.toggleBanner`: a banner inside the map that has no
+    /// marker gets one (unless the map tracks too many), one whose marker is
+    /// there as it stands loses it, and a changed banner's marker is renewed.
+    /// `current` is the banner at `pos` (`MapBanner.fromWorld`); true when
+    /// the markers changed.
+    fn toggle_banner(&mut self, pos: [i32; 3], current: Option<MapBanner>, game_time: i64) -> bool {
+        let (x_pos, z_pos) = (f64::from(pos[0]) + 0.5, f64::from(pos[2]) + 0.5);
+        let scale = f64::from(1 << self.scale);
+        let xd = (x_pos - f64::from(self.center[0])) / scale;
+        let yd = (z_pos - f64::from(self.center[1])) / scale;
+        if !(xd >= -63.0 && yd >= -63.0 && xd <= 63.0 && yd <= 63.0) {
+            return false;
+        }
+        let Some(banner) = current else {
+            return false;
+        };
+        if let Some(i) = self.banners.iter().position(|b| *b == banner) {
+            self.banners.remove(i);
+            self.remove_decoration(Key::Banner(pos));
+            self.dirty = true;
+            return true;
+        }
+        if self.tracked_over_limit(256) {
+            return false;
+        }
+        self.banners.retain(|b| b.pos != pos);
+        self.banners.push(banner.clone());
+        let sprite = banner.sprite();
+        self.add_decoration(
+            sprite,
+            Some(game_time),
+            Key::Banner(pos),
+            x_pos,
+            z_pos,
+            180.0,
+            banner.name,
+        );
+        self.dirty = true;
+        true
+    }
     /// `HoldingPlayer.nextUpdatePacket` for `who`: the changed pixels, and
     /// the decorations (at most every 5th call while they changed).
     fn update_packet(
@@ -515,6 +564,22 @@ fn shown_on_frame(sprite: &str) -> bool {
         decoration_type(sprite),
         Some("player" | "red_marker" | "blue_marker" | "player_off_map" | "player_off_limits")
     )
+}
+/// `MapDecorationType.trackCount`: the players' arrows, the markers, the
+/// frames and the banners count toward a map's limit, the structures do not.
+fn tracks_count(sprite: &str) -> bool {
+    decoration_type(sprite).is_some_and(|t| {
+        t.starts_with("banner_")
+            || matches!(
+                t,
+                "player"
+                    | "frame"
+                    | "red_marker"
+                    | "blue_marker"
+                    | "player_off_map"
+                    | "player_off_limits"
+            )
+    })
 }
 /// The sprite of a decoration type that a `minecraft:map_decorations`
 /// entry or a server's packet names.
