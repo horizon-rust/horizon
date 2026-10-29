@@ -180,6 +180,19 @@ pub fn finalize(m: &mut Mob, biome: &BiomeFacts, difficulty: &LocalDifficulty) {
         S::Pig | S::Cow | S::Chicken => m.extra.variant = climate_index,
         S::Sheep => m.extra.color = super::farm::sheep_color(biome.climate, &mut m.random),
         S::Mooshroom => m.extra.variant = 0,
+        // GoatAi.initMemories: the long jump and ram cooldowns start at random.
+        S::Goat => {
+            let jump = m
+                .random
+                .next_int_between_inclusive(600, 1200)
+                .unwrap_or(600);
+            let ram = m
+                .random
+                .next_int_between_inclusive(600, 6000)
+                .unwrap_or(600);
+            super::finalize::set_memory(m, "long_jump_cooldown", i64::from(jump), i64::MAX);
+            super::finalize::set_memory(m, "ram_cooldown", i64::from(ram), i64::MAX);
+        }
         // Turtle.finalizeSpawn: home is where it spawned.
         S::Turtle => {
             m.extra.home = Some([

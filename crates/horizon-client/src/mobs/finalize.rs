@@ -1990,7 +1990,7 @@ fn block(m: &Mob) -> [i32; 3] {
     ]
 }
 /// A brain memory finalizeSpawn sets: value and ticks until it expires.
-fn set_memory(m: &mut Mob, name: &'static str, value: i64, ttl: i64) {
+pub(super) fn set_memory(m: &mut Mob, name: &'static str, value: i64, ttl: i64) {
     match m.extra.memories.iter_mut().find(|x| x.0 == name) {
         Some(x) => *x = (name, value, ttl),
         None => m.extra.memories.push((name, value, ttl)),
