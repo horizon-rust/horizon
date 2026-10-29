@@ -380,10 +380,10 @@ impl Game<'_> {
                 owner.crossbow_charge_duration = 25;
             }
             use horizon_assets::item_model::DisplayContext as Context;
-            // PandaHoldsItemLayer and FoxHeldItemLayer show the item as it lies
-            // on the ground.
+            // PandaHoldsItemLayer, FoxHeldItemLayer and CrossedArmsItemLayer
+            // show the item as it lies on the ground.
             let (context, ordinal) = match (mob.species(), left) {
-                (Species::Panda | Species::Fox, _) => (Context::Ground, 7),
+                (Species::Panda | Species::Fox | Species::Villager, _) => (Context::Ground, 7),
                 (_, true) => (Context::ThirdPersonLeftHand, 1),
                 (_, false) => (Context::ThirdPersonRightHand, 2),
             };
