@@ -166,6 +166,11 @@ pub struct GeneratorData {
     densities: BTreeMap<String, String>,
     rules: BTreeMap<String, String>,
     settings: BTreeMap<String, String>,
+    /// The packs' level stems (`Registries.LEVEL_STEM`, `dimension/` in a
+    /// pack): vanilla 26.3 takes a world's dimensions from that registry
+    /// (`WorldGenSettings.of`), so a pack's `minecraft:overworld` replaces
+    /// the preset's inline definition.
+    dimensions: BTreeMap<String, String>,
     presets: BTreeMap<String, String>,
     world_presets: BTreeMap<String, String>,
     conditions: MaterialConditionRegistry,
@@ -551,6 +556,32 @@ impl GeneratorData {
                     .or_insert(quantize_parameter_report(&fs::read_to_string(&path)?)?);
             }
         }
+        // The packs' biome parameter lists: their `biomes` array is the
+        // overworld's climate table (26.3 keeps it in code, `presets` here;
+        // a pack that ships one means to replace it). `lithostitched:biomes`
+        // is where the packs built for that loader put the same list.
+        for (id, files) in overlay.kind("worldgen/multi_noise_biome_source_parameter_list") {
+            let Ok(v) = serde_json::from_slice::<Value>(crate::loot::PackOverlay::top(files))
+            else {
+                continue;
+            };
+            let biomes = v.get("biomes").or_else(|| v.get("lithostitched:biomes"));
+            let Some(biomes) = biomes.and_then(Value::as_array) else {
+                continue;
+            };
+            let report = serde_json::json!({ "biomes": biomes }).to_string();
+            presets.insert(id.to_owned(), quantize_parameter_report(&report)?);
+        }
+        // The packs' level stems (`WorldGenSettings.of`'s `LEVEL_STEM`).
+        let dimensions: BTreeMap<String, String> = overlay
+            .kind("dimension")
+            .map(|(id, files)| {
+                (
+                    id.to_owned(),
+                    String::from_utf8_lossy(crate::loot::PackOverlay::top(files)).into_owned(),
+                )
+            })
+            .collect();
         let source_catalog =
             BiomeSourceCatalog::new(&biome_set, &biome_tags, &presets.keys().cloned().collect())?;
         let carvers =
@@ -632,6 +663,7 @@ impl GeneratorData {
             densities: merged_bundle(dir, "densities", overlay, "worldgen/density_function")?,
             rules: merged_bundle(dir, "rules", overlay, "worldgen/material_rule")?,
             settings: merged_bundle(dir, "settings", overlay, "worldgen/noise_settings")?,
+            dimensions,
             world_presets: merged_bundle(dir, "world_presets", overlay, "worldgen/world_preset")?,
             presets,
             conditions,
@@ -714,8 +746,11 @@ impl GeneratorData {
                 .get(preset)
                 .ok_or_else(|| resource(format!("missing world preset {preset}")))?,
         )?;
-        let source_json =
-            preset_json["dimensions"][dimension]["generator"]["biome_source"].to_string();
+        let stem: Value = match self.dimensions.get(dimension) {
+            Some(json) => serde_json::from_str(json)?,
+            None => preset_json["dimensions"][dimension].clone(),
+        };
+        let source_json = stem["generator"]["biome_source"].to_string();
         let source = self
             .source_catalog
             .decode(&source_json)?
@@ -2616,10 +2651,14 @@ impl OverworldGenerator {
                 .get(preset)
                 .ok_or_else(|| resource(format!("missing world preset {preset}")))?,
         )?;
-        let generator = preset_json["dimensions"][dimension]["generator"].clone();
-        let level = preset_json["dimensions"][dimension]["type"]
-            .as_str()
-            .and_then(dimension_type_height);
+        // `Registries.LEVEL_STEM` first: a pack's `dimension/<id>.json` is a
+        // registry entry there and outranks the preset's inline copy.
+        let stem: Value = match data.dimensions.get(dimension) {
+            Some(json) => serde_json::from_str(json)?,
+            None => preset_json["dimensions"][dimension].clone(),
+        };
+        let generator = stem["generator"].clone();
+        let level = stem["type"].as_str().and_then(dimension_type_height);
         if generator["type"].as_str() != Some("minecraft:noise") {
             return Err(resource(format!("{dimension} is not a noise generator")));
         }

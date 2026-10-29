@@ -340,7 +340,7 @@ fn content_id(file: &str) -> Option<String> {
     let kind = match kind {
         "recipe" | "loot_table" | "advancement" | "trade_set" | "villager_trade"
         | "enchantment" | "banner_pattern" | "trim_pattern" | "trim_material" | "jukebox_song"
-        | "structure" => kind,
+        | "structure" | "dimension" | "dimension_type" => kind,
         "worldgen" => {
             let (sub, name) = rest.split_once('/')?;
             return Some(format!(
