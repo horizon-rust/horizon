@@ -977,6 +977,14 @@ pub fn entity_tag(entity: &BlockEntity) -> Option<Tag> {
             Some(Tag::compound(entries))
         }
         BlockEntity::Jukebox(_) | BlockEntity::Lectern(_) => None,
+        // ShelfBlockEntity.getUpdateTag: the items and the alignment.
+        BlockEntity::Shelf(s) => Some(Tag::compound([
+            ("Items", crate::save::encode_items(&s.items)),
+            (
+                "align_items_to_bottom",
+                Tag::Byte(i8::from(s.align_items_to_bottom)),
+            ),
+        ])),
         // CampfireBlockEntity.getUpdateTag: the items alone.
         BlockEntity::Campfire(c) => Some(Tag::compound([(
             "Items",

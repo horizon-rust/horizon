@@ -3,7 +3,7 @@
 //! from the data-driven `context_int_provider`/`context_float_provider` files.
 pub use crate::chunk::block_entity::{
     Banner, Beacon, BlockEntity, Campfire, ChiseledBookshelf, Crafter, CreakingHeart, EndGateway,
-    Furnace, FurnaceKind, Jukebox, Lectern, Skull, SkullSkin,
+    Furnace, FurnaceKind, Jukebox, Lectern, Shelf, Skull, SkullSkin,
 };
 use crate::items::ItemStack;
 use std::collections::HashMap;
@@ -126,6 +126,24 @@ impl Campfire {
             }
         }
         changed
+    }
+}
+impl Shelf {
+    /// `ShelfBlockEntity.swapItemNoUpdate`: `held` takes the slot, cut to
+    /// `limit` (`Container.getMaxStackSize(stack)`, which `setItemNoUpdate`
+    /// applies with `ItemStack.limitSize`), and what the slot held comes out.
+    /// Also the stack as the slot now holds it.
+    pub fn swap_item_no_update(
+        &mut self,
+        slot: usize,
+        mut held: Option<ItemStack>,
+        limit: u32,
+    ) -> (Option<ItemStack>, Option<ItemStack>) {
+        if let Some(stack) = held.as_mut() {
+            stack.count = stack.count.min(limit);
+        }
+        let removed = std::mem::replace(&mut self.items[slot], held.clone());
+        (removed, held)
     }
 }
 impl Skull {
@@ -295,6 +313,11 @@ impl BlockEntity {
         if name == "minecraft:chiseled_bookshelf" {
             return Some(Self::ChiseledBookshelf(Box::default()));
         }
+        // `ShelfBlock.newBlockEntity` of every wooden shelf; a saved shelf names
+        // its block entity type.
+        if name == "minecraft:shelf" || name.ends_with("_shelf") {
+            return Some(Self::Shelf(Box::default()));
+        }
         let size = match name {
             "minecraft:chest" | "minecraft:trapped_chest" | "minecraft:barrel" => 27,
             n if n.ends_with("copper_chest") => 27,
@@ -336,6 +359,7 @@ impl BlockEntity {
             Self::DaylightDetector => "minecraft:daylight_detector",
             Self::Campfire(_) => "minecraft:campfire",
             Self::ChiseledBookshelf(_) => "minecraft:chiseled_bookshelf",
+            Self::Shelf(_) => "minecraft:shelf",
         }
     }
     pub fn contents(&self) -> Vec<ItemStack> {
@@ -361,6 +385,7 @@ impl BlockEntity {
             Self::Crafter(c) => c.items.iter().flatten().cloned().collect(),
             Self::Campfire(c) => c.items.iter().flatten().cloned().collect(),
             Self::ChiseledBookshelf(b) => b.items.iter().flatten().cloned().collect(),
+            Self::Shelf(s) => s.items.iter().flatten().cloned().collect(),
         }
     }
     pub fn slots(&self) -> &[Option<ItemStack>] {
@@ -379,6 +404,7 @@ impl BlockEntity {
             | Self::DaylightDetector => &[],
             Self::Crafter(c) => &c.items,
             Self::ChiseledBookshelf(b) => &b.items,
+            Self::Shelf(s) => &s.items,
             Self::CreakingHeart(_)
             | Self::Spawner(_)
             | Self::TrialSpawner(_)
@@ -405,6 +431,7 @@ impl BlockEntity {
             | Self::DaylightDetector => &mut [],
             Self::Crafter(c) => &mut c.items,
             Self::ChiseledBookshelf(b) => &mut b.items,
+            Self::Shelf(s) => &mut s.items,
             Self::CreakingHeart(_)
             | Self::Spawner(_)
             | Self::TrialSpawner(_)
