@@ -198,6 +198,7 @@ mod tests {
             player: None,
             nearest_player: None,
             others: &[],
+            dropped: &[],
             others_grid: None,
             others_index: None,
             daylight: true,
