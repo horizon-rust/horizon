@@ -135,6 +135,7 @@ pub fn register(m: &mut Mob) {
             g.add(5, LookAtPlayer::new(6.0));
             g.add(5, super::dolphin::Jump::new(10));
             g.add(6, MeleeAttack::new(1.2, true));
+            g.add(7, super::dolphin::MoveToItem::default());
             g.add(8, super::dolphin::PlayWithItems);
             m.ai.targets.add(1, HurtByTarget::new().alert());
             m.ai.mov.kind = MoveKind::SmoothSwimming {

@@ -2,12 +2,12 @@
 //! and `DolphinJumpGoal`. `extra.flag` is `gotFish` and `extra.home` the
 //! `treasurePos` the game found for it (`MobEvent::DolphinTreasure`).
 use super::{
-    Mob, MobEvent, Who, drops,
+    Mob, MobEvent, MobWorld, Who, drops,
     goals::{Cx, Goal, JUMP, LOOK, MOVE, goal_clone, reduced},
     loot,
 };
 use crate::{blocks::Fluid, items::ItemStack};
-use horizon_core::random::RandomSource;
+use horizon_core::{geometry::Vec3, random::RandomSource};
 
 /// `Entity.getMotionDirection`: the horizontal step of the yaw
 /// (`Direction.fromYRot`: south, west, north, east).
@@ -296,6 +296,58 @@ fn drop_item(m: &mut Mob, cx: &mut Cx) -> bool {
     throw_item(m, stack, cx);
     drops::clear_slot(m, "mainhand");
     true
+}
+
+/// `Dolphin.MoveToItemGoal`: a dolphin swims to a floating item within 8
+/// blocks and lets go of it when it stops (there is a pause before it looks
+/// again).
+#[derive(Clone, Debug, Default)]
+pub struct MoveToItem {
+    cooldown: i64,
+}
+impl MoveToItem {
+    /// The first of the items within 8 blocks that `Dolphin.ALLOWED_ITEMS`
+    /// lets through: no pickup delay and in the water.
+    fn first_item(m: &Mob, w: &MobWorld) -> Option<[f64; 3]> {
+        let area = m.bounds().inflate(Vec3::new(8.0, 8.0, 8.0));
+        w.items_in(area)
+            .find(|e| e.pickup_delay == 0 && w.item_in_water(e))
+            .map(|e| [e.position.x, e.position.y, e.position.z])
+    }
+}
+impl Goal for MoveToItem {
+    goal_clone!();
+    fn flags(&self) -> u8 {
+        MOVE
+    }
+    /// `Dolphin.MoveToItemGoal.canUse`.
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        if self.cooldown > i64::from(m.age) {
+            return false;
+        }
+        Self::first_item(m, cx.w).is_some()
+    }
+    /// `Dolphin.MoveToItemGoal.stop`.
+    fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
+        if drop_item(m, cx) {
+            let pause = m.random.next_int_bound(100).unwrap_or(0);
+            self.cooldown = i64::from(m.age) + i64::from(pause);
+        }
+    }
+    /// `Dolphin.MoveToItemGoal.start`.
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
+        if let Some(at) = Self::first_item(m, cx.w) {
+            m.nav_move_to_entity(cx.w, at, 1, f64::from(1.2_f32));
+            m.sound("entity.dolphin.play", cx.events);
+        }
+        self.cooldown = 0;
+    }
+    /// `Dolphin.MoveToItemGoal.tick`.
+    fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
+        if let Some(at) = Self::first_item(m, cx.w) {
+            m.nav_move_to_entity(cx.w, at, 1, f64::from(1.2_f32));
+        }
+    }
 }
 
 /// `Dolphin.PlayWithItemsGoal`: a dolphin that holds an item throws it away
