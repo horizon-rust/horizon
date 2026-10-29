@@ -859,9 +859,10 @@
    "status": "later",
    "area": "servers",
    "plain": "Sign in with other account providers, such as Ely.by or any Yggdrasil-compatible one, beside Microsoft.",
-   "dev": "Issue #1270 asks for Ely.by and Yggdrasil-compatible servers with an account selector in the launcher. It builds on the Microsoft sign-in (docs/microsoft-account.md).",
+   "dev": "Issue #1270 asks for Ely.by and Yggdrasil-compatible servers with an account selector in the launcher. It builds on the Microsoft sign-in (docs/microsoft-account.md); docs/alt-accounts.md is the plan: the provider model, the Yggdrasil client, the session and textures, the owner gate, and the milestones.",
    "links": [
     "#1270",
+    "docs/alt-accounts.md",
     "docs/microsoft-account.md"
    ]
   },

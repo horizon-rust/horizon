@@ -738,7 +738,7 @@ Sign in with other account providers, such as Ely.by or any Yggdrasil-compatible
 
 <details><summary>Technical</summary>
 
-Issue [#1270](https://github.com/horizon-rust/horizon/issues/1270) asks for Ely.by and Yggdrasil-compatible servers with an account selector in the launcher. It builds on the Microsoft sign-in ([docs/microsoft-account.md](docs/microsoft-account.md)).
+Issue [#1270](https://github.com/horizon-rust/horizon/issues/1270) asks for Ely.by and Yggdrasil-compatible servers with an account selector in the launcher. It builds on the Microsoft sign-in ([docs/microsoft-account.md](docs/microsoft-account.md)); [docs/alt-accounts.md](docs/alt-accounts.md) is the plan: the provider model, the Yggdrasil client, the session and textures, the owner gate, and the milestones.
 
 </details>
 
