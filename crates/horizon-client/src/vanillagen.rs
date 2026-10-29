@@ -123,8 +123,9 @@ impl VanillaTerrain {
         registry: &'static BlockRegistry,
         biomes: &Biomes,
         seed: i64,
+        overlay: &horizon_world::loot::PackOverlay,
     ) -> crate::Result<Self> {
-        Self::for_dimension(dir, registry, biomes, seed, "minecraft:overworld")
+        Self::for_dimension(dir, registry, biomes, seed, "minecraft:overworld", overlay)
     }
     pub fn for_dimension(
         dir: &Path,
@@ -132,6 +133,7 @@ impl VanillaTerrain {
         biomes: &Biomes,
         seed: i64,
         dimension: &str,
+        overlay: &horizon_world::loot::PackOverlay,
     ) -> crate::Result<Self> {
         Self::for_world(
             dir,
@@ -141,11 +143,13 @@ impl VanillaTerrain {
             "minecraft:normal",
             dimension,
             true,
+            overlay,
         )
     }
     /// A dimension of a world preset (`worldgen/world_preset`) whose
     /// `generate_structures` is `structures` (`ChunkGenerator.createStructures`
-    /// and `findNearestMapStructure` do nothing without).
+    /// and `findNearestMapStructure` do nothing without). `overlay` adds the
+    /// world's data packs' structure content over the bundle.
     pub fn for_world(
         dir: &Path,
         registry: &'static BlockRegistry,
@@ -154,8 +158,9 @@ impl VanillaTerrain {
         preset: &str,
         dimension: &str,
         structures: bool,
+        overlay: &horizon_world::loot::PackOverlay,
     ) -> crate::Result<Self> {
-        let data: Arc<GeneratorData> = shared_data(dir, registry)?;
+        let data: Arc<GeneratorData> = shared_data(dir, registry, overlay)?;
         let biome_map = data
             .biome_names()
             .iter()
@@ -410,8 +415,14 @@ impl VanillaTerrain {
         u64::try_from(self.created.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 }
-static SHARED_DATA: std::sync::Mutex<Vec<(std::path::PathBuf, Arc<GeneratorData>)>> =
-    std::sync::Mutex::new(Vec::new());
+/// A cached bundle: the directory and the fingerprint of the pack files
+/// merged into it (a world's data packs change the structures).
+struct SharedEntry {
+    dir: std::path::PathBuf,
+    key: u64,
+    data: Arc<GeneratorData>,
+}
+static SHARED_DATA: std::sync::Mutex<Vec<SharedEntry>> = std::sync::Mutex::new(Vec::new());
 /// Let go of the bundles `shared_data` loaded: for a preload no world used
 /// (game/world_loading.rs). A generator that holds one keeps it.
 pub fn forget_shared_data() {
@@ -420,20 +431,43 @@ pub fn forget_shared_data() {
         .unwrap_or_else(|e| e.into_inner())
         .clear();
 }
-/// The worldgen bundle at `dir`, loaded once and shared by every generator
-/// and by live feature placement (sapling growth, bone meal).
+/// A fingerprint of the pack files a bundle was merged with: entries of
+/// different contents never share one.
+fn overlay_key(files: &[(String, Vec<Vec<u8>>)]) -> u64 {
+    let mut hash = 0xcbf29ce484222325;
+    for (id, versions) in files {
+        for bytes in versions {
+            for input in [id.as_bytes(), bytes] {
+                for &b in input {
+                    hash ^= u64::from(b);
+                    hash = hash.wrapping_mul(0x100000001b3);
+                }
+            }
+        }
+    }
+    hash
+}
+/// The worldgen bundle at `dir` with the packs' structure content over it,
+/// loaded once per (directory, packs) and shared by every generator and by
+/// live feature placement (sapling growth, bone meal).
 pub fn shared_data(
     dir: &Path,
     registry: &'static BlockRegistry,
+    overlay: &horizon_world::loot::PackOverlay,
 ) -> crate::Result<Arc<GeneratorData>> {
+    let key = overlay_key(overlay.files);
     let mut cache = SHARED_DATA.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((_, data)) = cache.iter().find(|(path, _)| path == dir) {
-        return Ok(data.clone());
+    if let Some(entry) = cache.iter().find(|e| e.dir == dir && e.key == key) {
+        return Ok(entry.data.clone());
     }
     let started = std::time::Instant::now();
-    let data = GeneratorData::load(dir, registry)?;
+    let data = GeneratorData::load(dir, registry, overlay)?;
     log::info!("Horizon: worldgen data loaded in {:?}", started.elapsed());
-    cache.push((dir.to_owned(), data.clone()));
+    cache.push(SharedEntry {
+        dir: dir.to_owned(),
+        key,
+        data: data.clone(),
+    });
     Ok(data)
 }
 impl ChunkGenerator for VanillaTerrain {

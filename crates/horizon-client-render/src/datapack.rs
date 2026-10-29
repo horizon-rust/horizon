@@ -322,16 +322,23 @@ pub struct DataStore {
 }
 /// `<kind-dir>/<ns>:<path>` for a pack file the content tables read:
 /// `recipe/`, `loot_table/`, `advancement/`, the registry directories the
-/// station, merchant and banner tables read, or `tags/<sub>/`, where the id
-/// keeps the sub path so a nested tag kind stays addressable.
+/// station, merchant and banner tables read, `structure/` (template NBT),
+/// `worldgen/<sub>/` (the generator's bundles) and `tags/<sub>/`, where the
+/// id keeps the sub path so a nested tag kind stays addressable.
 fn content_id(file: &str) -> Option<String> {
     let rest = file.strip_prefix("data/")?;
     let (ns, rest) = rest.split_once('/')?;
     let (kind, rest) = rest.split_once('/')?;
     let kind = match kind {
         "recipe" | "loot_table" | "advancement" | "trade_set" | "villager_trade"
-        | "enchantment" | "banner_pattern" | "trim_pattern" | "trim_material" | "jukebox_song" => {
-            kind
+        | "enchantment" | "banner_pattern" | "trim_pattern" | "trim_material" | "jukebox_song"
+        | "structure" => kind,
+        "worldgen" => {
+            let (sub, name) = rest.split_once('/')?;
+            return Some(format!(
+                "worldgen/{sub}/{ns}:{}",
+                name.strip_suffix(".json")?
+            ));
         }
         "tags" => {
             let (sub, name) = rest.rsplit_once('/')?;
@@ -339,7 +346,11 @@ fn content_id(file: &str) -> Option<String> {
         }
         _ => return None,
     };
-    Some(format!("{kind}/{ns}:{}", rest.strip_suffix(".json")?))
+    // A structure template is NBT, everything else JSON.
+    let path = rest
+        .strip_suffix(".json")
+        .or_else(|| rest.strip_suffix(".nbt"))?;
+    Some(format!("{kind}/{ns}:{path}"))
 }
 /// `ns:path` for a file `data/<ns>/<kind>/<path>.<ext>`.
 fn resource_id(file: &str, kind: &str, ext: &str) -> Option<String> {
@@ -369,11 +380,13 @@ impl DataStore {
                 "loot_table",
                 "predicate",
                 "recipe",
+                "structure",
                 "tags",
                 "trade_set",
                 "trim_material",
                 "trim_pattern",
                 "villager_trade",
+                "worldgen",
             ]) {
                 if !seen.insert(f.clone()) {
                     continue;

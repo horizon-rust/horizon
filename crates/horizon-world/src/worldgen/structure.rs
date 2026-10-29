@@ -282,6 +282,9 @@ pub struct StructureResources {
     sources: BTreeSet<BlockStateId>,
     /// Block names in each block tag, for processors matching tags by block.
     pub block_tags: BTreeMap<String, BTreeSet<String>>,
+    /// A world's packs' template NBT (`ns:path` -> gzip NBT), read before
+    /// the bundle directory's files.
+    pack_templates: BTreeMap<String, Vec<u8>>,
 }
 impl std::fmt::Debug for StructureResources {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -295,6 +298,7 @@ impl StructureResources {
         dir: &Path,
         processor_lists: BTreeMap<String, String>,
         block_tags: &BTreeMap<String, Vec<String>>,
+        pack_templates: BTreeMap<String, Vec<u8>>,
     ) -> Self {
         let mut sources = BTreeSet::new();
         let fluids = crate::fluid::FluidStateTable::new(registry).ok();
@@ -345,6 +349,7 @@ impl StructureResources {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.iter().cloned().collect()))
                 .collect(),
+            pack_templates,
         }
     }
     /// StructureTemplateManager.getOrCreate; missing templates are empty.
@@ -358,10 +363,9 @@ impl StructureResources {
             return found.clone();
         }
         let (namespace, path) = id.split_once(':').unwrap();
-        let file = self.dir.join(namespace).join(format!("{path}.nbt"));
-        let loaded = std::fs::read(&file).ok().and_then(|bytes| {
+        let read = |bytes: &[u8]| {
             let mut raw = Vec::new();
-            flate2::read::GzDecoder::new(bytes.as_slice())
+            flate2::read::GzDecoder::new(bytes)
                 .read_to_end(&mut raw)
                 .ok()?;
             let tag = nbt::read_named(&raw, Limits::templates()).ok()?.0.tag;
@@ -370,7 +374,15 @@ impl StructureResources {
                 self.registry,
                 &self.transforms,
             ))
-        });
+        };
+        let loaded = self
+            .pack_templates
+            .get(&id)
+            .map(|bytes| read(bytes))
+            .unwrap_or_else(|| {
+                let file = self.dir.join(namespace).join(format!("{path}.nbt"));
+                std::fs::read(&file).ok().and_then(|bytes| read(&bytes))
+            });
         // StructureTemplateManager.getOrCreate: missing templates are empty.
         let mut loaded = loaded.unwrap_or_else(StructureTemplate::empty);
         loaded.location = id.as_str().into();

@@ -6,6 +6,7 @@
 //! `canonical`), or `unsaved CX CZ ID` when Horizon cannot save it yet.
 use horizon_core::position::ChunkPos;
 use horizon_world::{
+    loot::PackOverlay,
     nbt::Tag,
     worldgen::generator::{GeneratorData, OverworldGenerator},
 };
@@ -54,7 +55,7 @@ pub fn main() -> Result<(), Error> {
     let seed: i64 = args.next().ok_or("seed")?.parse()?;
     let dimension = format!("minecraft:{}", args.next().ok_or("dimension")?);
     let registry = crate::structure_pieces::registry(&resources)?;
-    let data = GeneratorData::load(&resources.join("worldgen"), registry)?;
+    let data = GeneratorData::load(&resources.join("worldgen"), registry, &PackOverlay::NONE)?;
     let generator = OverworldGenerator::for_dimension(data, seed, "minecraft:normal", &dimension)?;
     let mut worker = generator.worker();
     for target in args {

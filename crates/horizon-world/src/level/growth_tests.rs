@@ -34,8 +34,12 @@ fn fixture() -> Option<&'static Fixture> {
             let registry: &'static BlockRegistry =
                 Box::leak(Box::new(data::load_registry(&root).expect("registry")));
             let behaviours = Behaviours::load(registry, &root).expect("behaviours");
-            let data =
-                GeneratorData::load(&root.join("worldgen"), registry).expect("worldgen data");
+            let data = GeneratorData::load(
+                &root.join("worldgen"),
+                registry,
+                &crate::loot::PackOverlay::NONE,
+            )
+            .expect("worldgen data");
             let features = LiveFeatures::new(&data)
                 .expect("features")
                 .expect("feature bundle");

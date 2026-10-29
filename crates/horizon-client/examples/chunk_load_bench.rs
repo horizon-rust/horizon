@@ -26,6 +26,7 @@ use horizon_client::{
     world::World,
 };
 use horizon_core::biome::{BiomeZoom, obfuscate_seed};
+use horizon_world::loot::PackOverlay;
 use horizon_world::registry::BlockStateId;
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
@@ -79,7 +80,13 @@ fn main() -> Result<(), Error> {
         assets: assets.clone(),
         render,
     });
-    let terrain = VanillaTerrain::new(&root.join("worldgen"), assets.registry, &biomes, seed)?;
+    let terrain = VanillaTerrain::new(
+        &root.join("worldgen"),
+        assets.registry,
+        &biomes,
+        seed,
+        &PackOverlay::NONE,
+    )?;
 
     // Generation and light, on the game's worker pool. Meshing is left out
     // here and measured on its own below.

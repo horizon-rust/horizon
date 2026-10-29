@@ -6,6 +6,7 @@
 use crate::support::common::tag;
 use horizon_world::{
     DATA_VERSION,
+    loot::PackOverlay,
     nbt::Tag,
     registry::BlockRegistry,
     worldgen::generator::{GeneratorData, OverworldGenerator},
@@ -32,7 +33,11 @@ fn registry(resources: &Path) -> Result<&'static BlockRegistry, Error> {
 pub fn main() -> Result<(), Error> {
     let mut args = crate::args().skip(1);
     let resources = std::path::PathBuf::from(args.next().ok_or("client resource directory")?);
-    let data = GeneratorData::load(&resources.join("worldgen"), registry(&resources)?)?;
+    let data = GeneratorData::load(
+        &resources.join("worldgen"),
+        registry(&resources)?,
+        &PackOverlay::NONE,
+    )?;
     for seed in args {
         let seed: i64 = seed.parse()?;
         let generator = OverworldGenerator::new(data.clone(), seed)?;

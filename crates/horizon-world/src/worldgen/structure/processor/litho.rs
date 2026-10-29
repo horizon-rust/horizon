@@ -465,6 +465,7 @@ mod tests {
                 std::path::Path::new("/nonexistent"),
                 lists,
                 &BTreeMap::new(),
+                Default::default(),
             );
             Self {
                 registry,

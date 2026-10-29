@@ -213,6 +213,25 @@ fn read_optional_bundle(dir: &Path, name: &str) -> Result<Option<Bundle>, Genera
         Ok(None)
     }
 }
+/// A world pack's JSON files of one generator kind, by resource id, as the
+/// bundle maps hold them (the top pack's file per id wins).
+fn overlay_bundle(overlay: &crate::loot::PackOverlay, kind: &str) -> Bundle {
+    let mut out = Bundle::new();
+    for (id, files) in overlay.kind(kind) {
+        out.insert(
+            id.to_owned(),
+            String::from_utf8_lossy(crate::loot::PackOverlay::top(files)).into_owned(),
+        );
+    }
+    out
+}
+/// The pack's structure template NBT by template id (`ns:path`).
+fn overlay_templates(overlay: &crate::loot::PackOverlay) -> BTreeMap<String, Vec<u8>> {
+    overlay
+        .kind("structure")
+        .map(|(id, files)| (id.to_owned(), crate::loot::PackOverlay::top(files).to_vec()))
+        .collect()
+}
 fn build_tags(
     raw: &Bundle,
     known: impl Fn(&str) -> bool,
@@ -303,7 +322,15 @@ impl GeneratorData {
     /// `feature_tags`, `fluid_tags`, `state_providers` and the Java-exported
     /// block behavior files in `blocks/` (see `generator_blocks`). Integer block properties are derived from
     /// the registry: properties whose every value is a decimal integer.
-    pub fn load(dir: &Path, registry: &'static BlockRegistry) -> Result<Arc<Self>, GeneratorError> {
+    /// `overlay` adds a world's data packs' structure content over the
+    /// bundle: `worldgen/structure`, `worldgen/structure_set`,
+    /// `worldgen/template_pool` and `worldgen/processor_list` JSON, and
+    /// `structure` template NBT.
+    pub fn load(
+        dir: &Path,
+        registry: &'static BlockRegistry,
+        overlay: &crate::loot::PackOverlay,
+    ) -> Result<Arc<Self>, GeneratorError> {
         let flags: Vec<(bool, bool)> =
             serde_json::from_str(&fs::read_to_string(dir.join("block_flags.json"))?)?;
         if flags.len() != registry.len() {
@@ -329,6 +356,9 @@ impl GeneratorData {
         // and the block behaviours) need only the tags: they run on threads of
         // their own while this one reads the rest. A new world's first chunks
         // wait for all of it, with the chunk workers idle.
+        let packs_structures = overlay_bundle(overlay, "worldgen/structure");
+        let packs_processors = overlay_bundle(overlay, "worldgen/processor_list");
+        let packs_templates = overlay_templates(overlay);
         let blocks = loading({
             let (dir, tags, fluids) = (dir.join("blocks"), block_tags.clone(), fluid_tags.clone());
             move || super::generator_blocks::BlockBehavior::load(&dir, registry, &tags, &fluids)
@@ -339,12 +369,16 @@ impl GeneratorData {
                 let Ok(json) = fs::read_to_string(dir.join("blocks/structure-blocks.json")) else {
                     return Ok(None);
                 };
+                let mut processors =
+                    read_optional_bundle(&dir, "processor_lists")?.unwrap_or_default();
+                processors.extend(packs_processors);
                 Ok(Some(Arc::new(super::structure::StructureResources::new(
                     registry,
                     super::structure::StateTransforms::from_json(&json, registry.len())?,
                     &dir.join("structure"),
-                    read_optional_bundle(&dir, "processor_lists")?.unwrap_or_default(),
+                    processors,
                     &tags,
+                    packs_templates,
                 ))))
             }
         })?;
@@ -464,11 +498,16 @@ impl GeneratorData {
             read_optional_bundle(dir, "structure_sets")?,
             read_optional_bundle(dir, "template_pools")?,
         ) {
-            (Some(structures), Some(sets), Some(pools)) => Some(StructureBundles {
-                structures,
-                sets,
-                pools,
-            }),
+            (Some(mut structures), Some(mut sets), Some(mut pools)) => {
+                structures.extend(packs_structures);
+                sets.extend(overlay_bundle(overlay, "worldgen/structure_set"));
+                pools.extend(overlay_bundle(overlay, "worldgen/template_pool"));
+                Some(StructureBundles {
+                    structures,
+                    sets,
+                    pools,
+                })
+            }
             _ => None,
         };
         let behaviours = joined(behaviours);
@@ -2693,7 +2732,12 @@ mod tests {
             return;
         }
         let registry = Box::leak(Box::new(crate::level::data::load_registry(&root).unwrap()));
-        let data = GeneratorData::load(&root.join("worldgen"), registry).unwrap();
+        let data = GeneratorData::load(
+            &root.join("worldgen"),
+            registry,
+            &crate::loot::PackOverlay::NONE,
+        )
+        .unwrap();
         let preset: Value = serde_json::from_str(&data.world_presets["minecraft:normal"]).unwrap();
         let settings: Value = serde_json::from_str(&data.settings["minecraft:end"]).unwrap();
         let mut pipeline = Pipeline::new(
@@ -2882,7 +2926,12 @@ mod tests {
         let registry: &'static BlockRegistry = Box::leak(Box::new(
             crate::level::data::load_registry(&root).expect("registry"),
         ));
-        let data = GeneratorData::load(&root.join("worldgen"), registry).expect("worldgen data");
+        let data = GeneratorData::load(
+            &root.join("worldgen"),
+            registry,
+            &crate::loot::PackOverlay::NONE,
+        )
+        .expect("worldgen data");
         let generator =
             OverworldGenerator::without_structures(data.clone(), 1234).expect("generator");
         let mut worker = generator.worker();
@@ -2982,7 +3031,12 @@ mod tests {
         let registry = Box::leak(Box::new(
             crate::level::data::load_registry(&root).expect("registry"),
         ));
-        let data = GeneratorData::load(&root.join("worldgen"), registry).unwrap();
+        let data = GeneratorData::load(
+            &root.join("worldgen"),
+            registry,
+            &crate::loot::PackOverlay::NONE,
+        )
+        .unwrap();
         let generator = OverworldGenerator::new(data.clone(), 12345).unwrap();
         let mut first = generator.worker();
         let mut second = generator.worker();
@@ -3033,7 +3087,14 @@ mod tests {
         let registry: &'static BlockRegistry = Box::leak(Box::new(
             crate::level::data::load_registry(&root).expect("registry"),
         ));
-        Some(GeneratorData::load(&root.join("worldgen"), registry).expect("worldgen data"))
+        Some(
+            GeneratorData::load(
+                &root.join("worldgen"),
+                registry,
+                &crate::loot::PackOverlay::NONE,
+            )
+            .expect("worldgen data"),
+        )
     }
 
     /// Seed 1234's strongholds where vanilla 26.3 puts them
@@ -3245,7 +3306,12 @@ mod tests {
         let registry = Box::leak(Box::new(
             crate::level::data::load_registry(&root).expect("registry"),
         ));
-        let data = GeneratorData::load(&root.join("worldgen"), registry).expect("worldgen data");
+        let data = GeneratorData::load(
+            &root.join("worldgen"),
+            registry,
+            &crate::loot::PackOverlay::NONE,
+        )
+        .expect("worldgen data");
         let preset: Value = serde_json::from_str(&data.world_presets["minecraft:normal"]).unwrap();
         let generator_json = &preset["dimensions"]["minecraft:overworld"]["generator"];
         let settings: Value =

@@ -382,6 +382,7 @@ mod tests {
             &biomes,
             seed,
             dimension,
+            &horizon_world::loot::PackOverlay::NONE,
         )
         .unwrap();
         let mut worker = terrain.worker();

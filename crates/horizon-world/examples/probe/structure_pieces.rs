@@ -9,6 +9,7 @@ use crate::support::common::tag;
 use horizon_core::position::ChunkPos;
 use horizon_world::{
     DATA_VERSION,
+    loot::PackOverlay,
     nbt::Tag,
     registry::BlockRegistry,
     worldgen::{
@@ -61,7 +62,11 @@ pub fn main() -> Result<(), Error> {
     let resources = std::path::PathBuf::from(args.next().ok_or("client resource directory")?);
     let seed: i64 = args.next().ok_or("seed")?.parse()?;
     let dimension = format!("minecraft:{}", args.next().ok_or("dimension")?);
-    let data = GeneratorData::load(&resources.join("worldgen"), registry(&resources)?)?;
+    let data = GeneratorData::load(
+        &resources.join("worldgen"),
+        registry(&resources)?,
+        &PackOverlay::NONE,
+    )?;
     let generator = OverworldGenerator::for_dimension(data, seed, "minecraft:normal", &dimension)?;
     let mut worker = generator.worker();
     for target in args {

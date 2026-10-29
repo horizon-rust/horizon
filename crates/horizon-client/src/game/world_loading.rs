@@ -252,6 +252,7 @@ pub(super) fn preload_world_data(
                     if let Ok(data) = horizon_client::vanillagen::shared_data(
                         &resources.join("worldgen"),
                         registry,
+                        &horizon_world::loot::PackOverlay::NONE,
                     ) {
                         // The Overworld's feature decoration, which every
                         // seed shares: about 140 ms off opening the world.
@@ -368,7 +369,10 @@ pub(super) fn make_streaming(
         let structures =
             horizon_client::save::WorldGen::read(world_root).is_none_or(|w| w.structures);
         let preset = horizon_client::save::WorldGen::preset(world_root);
-        let inner = Arc::new(VanillaTerrain::for_world(&options.resources.join("worldgen"), pack.assets.registry, res.biomes(), seed, preset, dim.id(), structures).map_err(|e| {
+        // The world's data packs' structures, over the prepared bundle.
+        let packs = super::functions::content_overlay(world_root, &options.resources, false);
+        let overlay = horizon_world::loot::PackOverlay { files: &packs };
+        let inner = Arc::new(VanillaTerrain::for_world(&options.resources.join("worldgen"), pack.assets.registry, res.biomes(), seed, preset, dim.id(), structures, &overlay).map_err(|e| {
                 format!("{e}\nPrepare the worldgen bundle with the launcher, or: horizon-prepare --prepare")
             })?);
         if dim == Dim::Overworld && structures {

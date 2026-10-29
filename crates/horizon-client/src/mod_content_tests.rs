@@ -264,7 +264,12 @@ fn content_root_loads_with_every_table() {
     crate::models::load_visibility(&root, new).unwrap();
     crate::light::LightTables::load(&root, new, &facts).unwrap();
     crate::motion::MotionResources::load(&root, &assets).unwrap();
-    horizon_world::worldgen::generator::GeneratorData::load(&root.join("worldgen"), new).unwrap();
+    horizon_world::worldgen::generator::GeneratorData::load(
+        &root.join("worldgen"),
+        new,
+        &PackOverlay::NONE,
+    )
+    .unwrap();
     assert!(root.join("assets/ruby/lang/en_us.json").is_file());
     // Blocks without a blockstate of their own take their template's.
     assert_eq!(
@@ -687,6 +692,7 @@ fn content_root_carries_a_structure_mod() {
         assets.registry,
         &biomes,
         1234,
+        &PackOverlay::NONE,
     )
     .unwrap();
     let (name, at) = terrain

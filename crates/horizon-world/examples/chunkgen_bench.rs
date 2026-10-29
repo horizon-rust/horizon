@@ -5,6 +5,7 @@
 //!     [--dimension overworld|the_nether|the_end]
 //!     [--warmup] [--json] [--no-map] [--snapshot PATH]
 use horizon_core::position::ChunkPos;
+use horizon_world::loot::PackOverlay;
 use horizon_world::{
     DATA_VERSION,
     heightmap::HeightmapType,
@@ -315,7 +316,7 @@ fn main() -> Result<(), Error> {
     }
     let start = Instant::now();
     let registry = registry(&resources)?;
-    let data = GeneratorData::load(&resources.join("worldgen"), registry)?;
+    let data = GeneratorData::load(&resources.join("worldgen"), registry, &PackOverlay::NONE)?;
     println!("loaded resources in {:.2?}", start.elapsed());
     if let Some(parity) = parity {
         verify(&data, &parity)?;

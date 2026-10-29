@@ -14,6 +14,7 @@ use horizon_client::{
     streaming::{ChunkGenerator, Proto, Streaming, WorkerContext},
     world::World,
 };
+use horizon_world::loot::PackOverlay;
 use horizon_world::registry::BlockStateId;
 use std::{
     collections::HashMap,
@@ -257,6 +258,7 @@ fn saved_proto_chunks_restore_exactly() {
         &biomes,
         -1860902098141295193,
         "minecraft:the_nether",
+        &PackOverlay::NONE,
     )
     .unwrap();
     let dir = std::env::temp_dir().join(format!("horizon-proto-saves-{}", std::process::id()));
@@ -337,6 +339,7 @@ fn saved_proto_block_entities_keep_their_id() {
         &biomes,
         12345,
         "minecraft:overworld",
+        &PackOverlay::NONE,
     )
     .unwrap();
     let dir = std::env::temp_dir().join(format!("horizon-proto-ids-{}", std::process::id()));

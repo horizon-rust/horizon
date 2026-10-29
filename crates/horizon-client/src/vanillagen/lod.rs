@@ -488,6 +488,7 @@ mod tests {
             assets.registry,
             &biomes,
             1234,
+            &horizon_world::loot::PackOverlay::NONE,
         )?);
         let mut sampler = VanillaLodSampler::new(terrain.clone());
         let mut fork = sampler.fork().expect("independent far sampler");
@@ -787,6 +788,7 @@ mod tests {
             &biomes,
             1234,
             "minecraft:the_end",
+            &horizon_world::loot::PackOverlay::NONE,
         )?);
         let mut worker = terrain.generator.worker();
         let chorus = |state| {

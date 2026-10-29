@@ -125,7 +125,13 @@ fn main() -> Result<()> {
     step("collision");
     let motion = MotionResources::load_with_facts(&root, &assets, &facts)?;
     step("motion");
-    let terrain = VanillaTerrain::new(&root.join("worldgen"), assets.registry, &biomes, 1234)?;
+    let terrain = VanillaTerrain::new(
+        &root.join("worldgen"),
+        assets.registry,
+        &biomes,
+        1234,
+        &PackOverlay::NONE,
+    )?;
     step("worldgen");
     println!(
         "{} block states; live {:.0} MB, RSS {:.0} MB",

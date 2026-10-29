@@ -18,6 +18,7 @@ use crate::support::common::tag;
 use horizon_core::position::ChunkPos;
 use horizon_world::{
     DATA_VERSION,
+    loot::PackOverlay,
     nbt::Tag,
     registry::BlockRegistry,
     worldgen::generator::{GeneratorData, OverworldGenerator, ProtoChunk},
@@ -126,7 +127,7 @@ pub fn main() -> Result<(), Error> {
         }
         return Ok(());
     }
-    let data = GeneratorData::load(&resources.join("worldgen"), blocks)?;
+    let data = GeneratorData::load(&resources.join("worldgen"), blocks, &PackOverlay::NONE)?;
     let generator = OverworldGenerator::for_dimension(data, seed, "minecraft:normal", &dimension)?;
     let mut worker = generator.worker();
     // HORIZON_PHASE: terrain (no decoration), structures (pieces only) or full.

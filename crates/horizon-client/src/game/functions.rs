@@ -197,6 +197,34 @@ impl Game<'_> {
             .map(|p| p.id.clone())
             .filter(|id| !self.fns.enabled.contains(id))
             .collect();
+        // The packs' worldgen ids join the completion registries
+        // (`command-registries.json` lists only the game's own).
+        let worldgen = [
+            ("minecraft:worldgen/structure", "worldgen/structure/"),
+            (
+                "minecraft:worldgen/structure_set",
+                "worldgen/structure_set/",
+            ),
+            (
+                "minecraft:worldgen/template_pool",
+                "worldgen/template_pool/",
+            ),
+            (
+                "minecraft:worldgen/processor_list",
+                "worldgen/processor_list/",
+            ),
+        ];
+        for (registry, kind) in worldgen {
+            let entry = reg.by_registry.entry(registry.to_owned()).or_default();
+            for id in self.fns.store.files.keys() {
+                if let Some(rest) = id.strip_prefix(kind)
+                    && !entry.ids.contains(&rest.to_owned())
+                {
+                    entry.ids.push(rest.to_owned());
+                }
+            }
+            entry.ids.sort();
+        }
     }
 
     // ---- scheduled events ------------------------------------------------------
