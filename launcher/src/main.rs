@@ -711,8 +711,8 @@ impl Launcher {
                                 continue;
                             }
                         };
-                        // Past the gate by the developer option alone is no owner.
-                        if !self.settings.dev_offline {
+                        // Past the gate by the player's offline choice alone is no owner.
+                        if !self.settings.offline_without_owner() {
                             self.owner = Some(true);
                         }
                         if let Some(file) = file {
@@ -1203,7 +1203,7 @@ impl Launcher {
         self.starting_client = Some(tag.clone());
         self.play_pressed = Some(Instant::now());
         let tx = self.tx.clone();
-        let offline_without_owner = self.settings.dev_offline;
+        let offline_without_owner = self.settings.offline_without_owner();
         std::thread::spawn(move || {
             backend::complete_assets(&tag);
             let session = account::session_for_game(&backend::game_home(), offline_without_owner);
@@ -3117,6 +3117,7 @@ impl Launcher {
         let mono = |s: String| div().font_family(theme::MONO).child(s).into_any_element();
         let plain = |s: &str| div().child(tr(s).to_string()).into_any_element();
         let (accounts, n) = self.account_rows(cx);
+        let (offline_play, n) = self.offline_play_row(n, cx);
         let (offline, n) = self.offline_rows(n, cx);
         let appearance = segments(
             "appearance",
@@ -3158,6 +3159,7 @@ impl Launcher {
                     .flex_col()
                     .child(group("Account", "user").mt_0())
                     .child(accounts)
+                    .child(offline_play)
                     .child(offline)
                     .child(group("Updates", "reload"))
                     .child(index_row(

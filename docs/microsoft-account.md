@@ -69,29 +69,38 @@ All requests use HTTPS and JSON except the two OAuth calls (form-encoded):
 ## The owner gate
 
 Decided 2026-10-27 (Ludovic, after a modder's suggestion): like other launchers, Horizon's
-launcher starts the game only while an account in it owns Java Edition. Offline play stays
-possible; the launcher just doesn't offer it on its own.
+launcher starts the game only while an account in it owns Java Edition, or while the player has
+chosen to play offline. The launcher doesn't offer offline play on its own; the choice is theirs.
 
-- **Play needs an owner.** Every Play (Home, instances and packs, `horizon-launcher play`,
-  `modpack play`, the MCP's `play`) asks `account::launch` first. It asks the Minecraft services
-  again for each account, the selected one first, until one owns the game: the token renewal
-  (below) if due, then entitlements and profile. Without an owner the game doesn't start and Play
-  says "Sign in with a Microsoft account that owns Minecraft: Java Edition to play", with Sign in.
+- **Play needs an owner, or the player's choice.** Every Play (Home, instances and packs,
+  `horizon-launcher play`, `modpack play`, the MCP's `play`) asks `account::launch` first. It asks
+  the Minecraft services again for each account, the selected one first, until one owns the game:
+  the token renewal (below) if due, then entitlements and profile. Without either, the game
+  doesn't start and Play says "Sign in with a Microsoft account that owns Minecraft: Java Edition
+  to play", with Sign in. Settings > Account's **Play without a Microsoft account**
+  (`backend::Settings::offline_play`, off by default, `settings play-offline on|off`) is the other
+  way: Play then starts offline, as the player's offline name or the game's own.
 - **The window says it once.** A player without an owner (one who played offline until now) sees
   the gate's screen once when the launcher opens: why Horizon needs the account ("like other
   launchers"), that worlds, offline names and settings stay where they are, and Sign in, which shows
   the device code on the same screen. It comes back whenever Play is refused; Not now closes it,
-  and Home keeps a Sign in row (`launcher/src/owner_page.rs`).
+  and Home keeps a Sign in row (`launcher/src/owner_page.rs`). The screen also offers **Play
+  offline**, which turns the setting on and closes it, for a player who would rather not sign in.
 - **The answer lives with the tokens.** Each account's keychain item keeps the last answer
   (`owns`), so no plain file can say yes. With no network (or a sign-in that can't be renewed) the
   last answer stands: being offline never blocks a player who passed before, and the game starts
   without a session, offline. An answer of "doesn't own" (or no profile) blocks at once.
-- **Offline names play behind an owner.** They can be added and played only while an owning
-  account is signed in. Signing the last one out keeps them, and they play again once one is back.
+- **Offline names play behind an owner, or behind that choice.** They can be added and played while
+  an owning account is signed in, or while Play without a Microsoft account is on. Signing the last
+  account out keeps them, and they play again once one is back (or the setting is on).
+- **Downloads stay the owner's.** `backend::download_for_owner` asks `account::launch` itself, so
+  neither the offline choice nor the hidden developer option (`Settings::dev_offline`) downloads
+  Mojang's game.
 - **Who isn't affected:** the game binary itself (`horizon-client`, `horizon-ctl launch`, the
-  harnesses, CI), the dedicated server and `horizon-server`, the website. There is no bypass flag:
-  the launcher's tests use accounts in a memory store (`MemoryStore`, and `HORIZON_NO_KEYCHAIN`
-  for the CLI and MCP tests, which then have no owner).
+  harnesses, CI), the dedicated server and `horizon-server`, the website. Java instances
+  (`java_player`) always need an owner: Mojang's game takes the account's token. The launcher's
+  tests use accounts in a memory store (`MemoryStore`, and `HORIZON_NO_KEYCHAIN` for the CLI and
+  MCP tests, which then have no owner).
 
 ## Downloading the game for an owner
 

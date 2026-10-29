@@ -14,11 +14,12 @@ impl Launcher {
             && self.opening.is_none()
     }
 
-    /// `owner` as the window shows it: the developer option that lets offline names play without
-    /// an owner (`dev_options`) hides the gate, as if the keychain hadn't answered yet.
+    /// `owner` as the window shows it: the player's "Play without a Microsoft account"
+    /// (Settings > Account) or the developer option (`dev_options`) hides the gate, as if the
+    /// keychain hadn't answered yet.
     pub(crate) fn owner_shown(&self) -> Option<bool> {
         match self.owner {
-            Some(false) if self.settings.dev_offline => None,
+            Some(false) if self.settings.offline_without_owner() => None,
             owner => owner,
         }
     }
@@ -61,6 +62,10 @@ impl Launcher {
             )))
             .child(text(theme::UI).text_color(t.muted).child(tr(
                 "Your worlds, offline names and settings stay where they are.",
+            )))
+            .child(text(theme::UI).text_color(t.muted).child(tr(
+                "Or play offline: worlds, LAN and offline-mode servers work without signing in. \
+                 Online-mode servers still need the account.",
             )));
         let status = match &self.sign_in_state {
             _ if !configured => Some(div().child(tr(account::NOT_CONFIGURED))),
@@ -97,6 +102,16 @@ impl Launcher {
             .gap(px(12.))
             .px(px(28.))
             .pb(px(28.))
+            .child(
+                button("owner-play-offline", "Play offline", Kind::Secondary, &t).on_click(
+                    cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.settings.offline_play = true;
+                        this.settings.save();
+                        this.close_owner_screen();
+                        cx.notify();
+                    }),
+                ),
+            )
             .child(
                 button("owner-later", "Not now", Kind::Secondary, &t).on_click(cx.listener(
                     |this, _: &ClickEvent, _, cx| {

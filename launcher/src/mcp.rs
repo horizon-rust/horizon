@@ -200,8 +200,10 @@ impl Session {
                     "plays_as": accounts.selected().map(|a| a.name.clone()),
                     "sign_in_configured": account::client_id().is_some(),
                     "keychain": account::store().persistent(),
-                    // Play needs an account that owns the game (the owner gate).
+                    // Play needs an account that owns the game (the owner gate) unless the
+                    // player chose to play offline (Settings > Account).
                     "owner": accounts.has_owner(account::store()),
+                    "plays_offline": backend::Settings::load().offline_play,
                     "sign_in": sign_in,
                 }))
                 .unwrap())

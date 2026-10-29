@@ -25,7 +25,7 @@ impl Launcher {
     pub(super) fn play_as(&mut self, who: Player) {
         let mut accounts = Accounts::load();
         let done = accounts
-            .play_as_with(account::store(), who, self.settings.dev_offline)
+            .play_as_with(account::store(), who, self.settings.offline_without_owner())
             .and_then(|()| accounts.save());
         match done {
             Ok(()) => self.accounts = accounts,
@@ -149,6 +149,35 @@ impl Launcher {
     /// Enter in the offline name field.
     pub(super) fn offline_name_enter(&mut self) {
         self.add_offline_name();
+    }
+
+    /// Settings' choice to play without a Microsoft account that owns the game
+    /// (`backend::Settings::offline_play`): the offline names below it, and Play itself, work
+    /// without one. Online-mode servers and downloads still need the account.
+    pub(super) fn offline_play_row(&mut self, n: usize, cx: &mut Context<Self>) -> (Div, usize) {
+        let t = self.theme;
+        let toggle = switch("offline-play", self.settings.offline_play, &t).on_click(cx.listener(
+            |this, _: &ClickEvent, _, cx| {
+                this.settings.offline_play = !this.settings.offline_play;
+                this.settings.save();
+                cx.notify();
+            },
+        ));
+        let row = index_row(
+            n,
+            tr("Play without a Microsoft account"),
+            Some(
+                div()
+                    .child(tr(
+                        "Worlds, LAN and offline-mode servers work without signing in. Online-mode \
+                         servers and downloading Minecraft still need an account that owns it.",
+                    ))
+                    .into_any_element(),
+            ),
+            Some(toggle.into_any_element()),
+            &t,
+        );
+        (div().flex().flex_col().child(row), n)
     }
 
     /// Settings' rows for the offline names, after the Microsoft accounts: each with Play as

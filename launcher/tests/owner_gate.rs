@@ -23,6 +23,18 @@ fn home(name: &str) -> PathBuf {
     root
 }
 
+/// `home` with the player's "Play without a Microsoft account" setting on (Settings > Account):
+/// Play and offline names no longer need an account that owns the game.
+fn home_playing_offline(name: &str) -> PathBuf {
+    let root = home(name);
+    std::fs::write(
+        root.join("launcher/settings.json"),
+        r#"{"offline_play":true}"#,
+    )
+    .unwrap();
+    root
+}
+
 fn launcher(root: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_horizon-launcher"));
     cmd.args(args)
@@ -55,6 +67,30 @@ fn the_cli_refuses_to_play_without_an_owner() {
     assert!(!root.join("game/sessions").exists());
     let accounts = std::fs::read_to_string(root.join("launcher/accounts.json")).unwrap();
     assert!(accounts.contains("Builder_1"), "{accounts}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_cli_plays_without_an_owner_when_the_player_chose_offline() {
+    let root = home_playing_offline("cli-offline");
+    let out = launcher(&root, &["play"]).output().unwrap();
+    let said = text(&out);
+    // Past the gate: what is left is the version not being prepared, never the owner.
+    assert!(!said.contains(REFUSED), "{said}");
+    assert!(said.contains("is not prepared yet"), "{said}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_cli_keeps_an_offline_name_without_an_owner_when_the_player_chose_offline() {
+    let root = home_playing_offline("cli-name");
+    let out = launcher(&root, &["account", "offline", "Builder_2"])
+        .output()
+        .unwrap();
+    let said = text(&out);
+    assert!(out.status.success(), "{said}");
+    let accounts = std::fs::read_to_string(root.join("launcher/accounts.json")).unwrap();
+    assert!(accounts.contains("Builder_2"), "{accounts}");
     let _ = std::fs::remove_dir_all(&root);
 }
 

@@ -2173,9 +2173,10 @@ pub fn need_prepared(tag: &str) -> Result<(), String> {
 
 /// The client's command, once the owner gate lets it start and its resources are prepared. Past
 /// the gate, a sign-in that can't be renewed (no network, expired) still lets the game start,
-/// offline.
+/// offline; the player's "Play without a Microsoft account" setting
+/// (`Settings::offline_play`) is the gate's other way past, for offline names.
 pub fn client(tag: &str) -> Result<Command, String> {
-    let (session, offline) = account::session_for_game(&game_home(), false)
+    let (session, offline) = account::session_for_game(&game_home(), Settings::load().offline_play)
         .map_err(|refused| format!("{refused} Sign in with `horizon-launcher account sign-in`."))?;
     need_prepared(tag)?;
     complete_assets(tag);
@@ -2965,6 +2966,12 @@ pub struct Settings {
     /// The player has read what installing a native mod starts (`native_mods::needs_notice`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub native_mods_noticed: bool,
+    /// The player plays without a Microsoft account that owns the game (Settings > Account):
+    /// worlds, LAN and offline-mode servers work; online-mode servers still need the account,
+    /// and downloading Mojang's game still needs an owner (`download_for_owner`). Off by
+    /// default, and absent from the file while off.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub offline_play: bool,
     /// Developer options (hidden: seven clicks on the sidebar's launcher version reveal them):
     /// offline names play without an account that owns the game, in the window only
     /// (`account::Accounts::play_as_with`, `account::launch_for_game`). Never a download: the game still
@@ -3012,6 +3019,12 @@ impl Settings {
     /// Whether the launcher keeps its entry in the applications menu (Linux).
     pub fn desktop_entry(&self) -> bool {
         self.desktop_entry.unwrap_or(true)
+    }
+    /// Whether the window plays without an account that owns the game: the player's choice
+    /// (`offline_play`), or the developer option (`dev_offline`). The command line and the MCP
+    /// server read `offline_play` alone, so the hidden option stays the window's.
+    pub fn offline_without_owner(&self) -> bool {
+        self.offline_play || self.dev_offline
     }
     /// The window's language: the one picked, else the system's.
     pub fn language(&self) -> crate::i18n::Language {
@@ -3430,6 +3443,22 @@ mod tests {
         assert_eq!(offered(before, &["v0.2.0"]), None);
         assert_eq!(offered(before, &["v0.2.12", "v0.2.0"]), None);
         assert_eq!(CHECK_EVERY.as_secs(), 30 * 60);
+    }
+
+    #[test]
+    fn offline_play_is_the_players_choice_beside_the_developer_option() {
+        let off = Settings::parse("{}");
+        assert!(!off.offline_without_owner());
+        // The hidden developer option keeps the window's old bypass.
+        let dev = Settings::parse(r#"{"dev_offline":true}"#);
+        assert!(dev.offline_without_owner());
+        // The player's setting, and only that one, is written down when it is on.
+        let picked = Settings::parse(r#"{"offline_play":true}"#);
+        assert!(picked.offline_without_owner());
+        let saved = serde_json::to_string(&picked).unwrap();
+        assert!(saved.contains(r#""offline_play":true"#), "{saved}");
+        let saved = serde_json::to_string(&off).unwrap();
+        assert!(!saved.contains("offline_play"), "{saved}");
     }
 
     #[test]

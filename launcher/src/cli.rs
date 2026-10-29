@@ -729,7 +729,8 @@ enum Cmd {
     /// ("default" removes it), while-playing stay|minimize|hide (what the window does while the game runs), language
     /// system|en|fr|ru (the window's language; system follows the computer's), accent
     /// violet|blue|teal|green|amber|red|pink, background PATH (a picture behind Home; "default"
-    /// shows Horizon's landscape)
+    /// shows Horizon's landscape), play-offline on|off (play without an account that owns the
+    /// game: worlds, LAN and offline-mode servers; online-mode servers still need it)
     Settings {
         #[arg(value_parser = SETTING_KEYS)]
         key: Option<String>,
@@ -877,7 +878,7 @@ pub fn command() -> clap::Command {
 pub const AI_COMMANDS: [&str; 2] = ["mcp", "agent-config"];
 
 /// The keys `settings` sets.
-const SETTING_KEYS: [&str; 12] = [
+const SETTING_KEYS: [&str; 13] = [
     "selected-version",
     "minecraft-dir",
     "server-dir",
@@ -890,6 +891,7 @@ const SETTING_KEYS: [&str; 12] = [
     "language",
     "accent",
     "background",
+    "play-offline",
 ];
 
 fn on_off(value: &str) -> Result<bool, String> {
@@ -940,6 +942,7 @@ fn set_setting(s: &mut backend::Settings, key: &str, value: &str) -> Result<(), 
                 )?),
             }
         }
+        "play-offline" => s.offline_play = on_off(value)?,
         "language" => {
             use horizon_launcher::i18n::Language;
             s.language = match value.trim() {
@@ -981,6 +984,7 @@ fn settings_json(s: &backend::Settings) -> serde_json::Value {
         "language": s.language.map_or("system", |l| l.code()),
         "accent": s.accent.name(),
         "background": horizon_launcher::themes::background(&backend::data_dir(), s.background.as_deref()),
+        "play_offline": s.offline_play,
         "no_ai": backend::no_ai(),
     })
 }
@@ -1611,12 +1615,21 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                     })).collect::<Vec<_>>(),
                     "sign_in_configured": account::client_id().is_some(),
                     "owner": accounts.has_owner(account::store()),
+                    "plays_offline": backend::Settings::load().offline_play,
                 }));
             } else if accounts.accounts.is_empty() && accounts.offline.is_empty() {
-                println!(
-                    "No Microsoft account signed in. Play needs one that owns Minecraft: Java \
-                     Edition: horizon-launcher account sign-in"
-                );
+                if backend::Settings::load().offline_play {
+                    println!(
+                        "No Microsoft account signed in; playing offline. Pick a name with \
+                         `horizon-launcher account offline NAME`."
+                    );
+                } else {
+                    println!(
+                        "No Microsoft account signed in. Play needs one that owns Minecraft: Java \
+                         Edition: horizon-launcher account sign-in (or Settings > Account > Play \
+                         without a Microsoft account)"
+                    );
+                }
             } else {
                 for a in &accounts.accounts {
                     let mark = if accounts.selected.as_ref() == Some(&a.uuid) {
@@ -1635,7 +1648,8 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                         "Playing offline as the game's own name (`account select NAME` to switch)."
                     );
                 }
-                if !accounts.has_owner(account::store()) {
+                if !accounts.has_owner(account::store()) && !backend::Settings::load().offline_play
+                {
                     println!("{}.", account::NEEDS_OWNER);
                 }
             }
@@ -1677,7 +1691,11 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                 ),
                 (None, None) => return Err(find(&accounts, &who).unwrap_err()),
             };
-            accounts.play_as(account::store(), player)?;
+            accounts.play_as_with(
+                account::store(),
+                player,
+                backend::Settings::load().offline_play,
+            )?;
             accounts.save()?;
             println!("The game plays as {name}.");
         }
@@ -1686,7 +1704,11 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                 Some(n) => account::Player::Offline(n),
                 None => account::Player::GameName,
             };
-            accounts.play_as(account::store(), player)?;
+            accounts.play_as_with(
+                account::store(),
+                player,
+                backend::Settings::load().offline_play,
+            )?;
             accounts.save()?;
             match accounts.name_arg() {
                 Some(n) => println!("The game plays offline as {n}."),
