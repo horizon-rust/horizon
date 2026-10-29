@@ -111,11 +111,11 @@ pub fn register(m: &mut Mob) {
     g.add(1, Faceplant { countdown: 0 });
     g.add(2, Panic::new(2.2));
     g.add(3, Wrap::new(Breed::new(1.0)).on_start(clear_states));
-    // AVOID_PLAYERS: not a sneaking player.
+    // AVOID_PLAYERS: not a sneaking player, and not one the fox trusts.
     g.add(
         4,
         AvoidEntity::new(Avoid::Player, 16.0, 1.6, 1.4)
-            .player_when(|p| !p.sneaking && !p.spectator),
+            .player_when(|m, p| !p.sneaking && !p.spectator && !trusts(m, p.uuid)),
     );
     g.add(
         4,
@@ -270,7 +270,8 @@ fn has_shelter(m: &Mob, w: &MobWorld) -> bool {
     !w.can_see_sky(at[0], at[1], at[2]) && m.walk_target_value(w, at) >= 0.0
 }
 /// `Fox.FoxBehaviorGoal.alertable`: someone within 12 blocks the fox would
-/// keep watch over (`FoxAlertableEntitiesSelector`).
+/// keep watch over (`FoxAlertableEntitiesSelector`: a player it trusts is
+/// not one).
 fn alertable(m: &Mob, w: &MobWorld) -> bool {
     let (from, id, y) = (m.position, m.id, m.position.y);
     let mob = w
@@ -292,6 +293,7 @@ fn alertable(m: &Mob, w: &MobWorld) -> bool {
             && !p.creative
             && !p.spectator
             && !p.sneaking
+            && !trusts(m, p.uuid)
             && (p.position.y - y).abs() <= 6.0
             && m.distance_sqr(p.position) <= 144.0
     })
