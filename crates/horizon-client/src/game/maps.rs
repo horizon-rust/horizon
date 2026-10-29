@@ -84,7 +84,7 @@ pub(super) struct MapFrame {
 }
 impl MapFrame {
     /// `MapFrame.CODEC`.
-    fn to_nbt(&self) -> Tag {
+    fn to_nbt(self) -> Tag {
         Tag::compound([
             ("pos", Tag::IntArray(self.pos.to_vec())),
             ("rotation", Tag::Int(self.rotation)),
@@ -533,7 +533,7 @@ impl MapData {
                     ),
                     (
                         "frames",
-                        Tag::List(self.frames.iter().map(MapFrame::to_nbt).collect()),
+                        Tag::List(self.frames.iter().copied().map(MapFrame::to_nbt).collect()),
                     ),
                 ]),
             ),

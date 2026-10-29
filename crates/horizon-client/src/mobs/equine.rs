@@ -342,14 +342,6 @@ impl Goal for RunAroundLikeCrazy {
         make_mad(m, cx.events);
     }
 }
-/// `AbstractHorse.standIfPossible`: `setStanding(20)` (which also stops the
-/// eating) when `canPerformRearing`.
-fn stand_if_possible(m: &mut Mob) {
-    if can_rear(m.species()) {
-        m.extra.counter = 20;
-        m.extra.flag = false;
-    }
-}
 /// `AbstractHorse.hurtServer`, after the hurt went through: one hit in three
 /// rears the horse. Llamas and camels make the draw too, but never rear.
 pub fn after_hurt_server(m: &mut Mob) {

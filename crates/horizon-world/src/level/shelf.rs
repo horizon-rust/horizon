@@ -1,7 +1,7 @@
 //! `ShelfBlock` power changes and its `SideChainPartBlock` linking: up to
 //! three powered wooden shelves facing the same way join into one chain.
 use super::{
-    Behaviours, LevelAccess, Sim, Ticks,
+    LevelAccess, Sim,
     query::{clockwise, counter_clockwise},
     update::rel,
 };
@@ -248,18 +248,5 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         };
         self.sound(pos, &sound.into(), 1.0, 1.0);
         self.game_event_state(pos, event, next);
-    }
-}
-
-impl Behaviours {
-    /// `SideChainPartBlock.getAllBlocksConnectedTo` for the shelf at `pos`:
-    /// the powered chain it is part of, left end first.
-    pub fn shelf_connected_blocks<L: LevelAccess + ?Sized>(
-        &self,
-        level: &mut L,
-        ticks: &mut Ticks,
-        pos: BlockPos,
-    ) -> Vec<BlockPos> {
-        self.sim(level, ticks).shelf_connected_blocks(pos)
     }
 }
