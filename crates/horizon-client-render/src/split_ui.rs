@@ -18,6 +18,8 @@ use crate::{
 pub struct SplitUi {
     /// Splitscreen is on (the options screen sets it from the settings).
     pub on: bool,
+    /// Enabled, but still using the solo rendering path (no compositor).
+    pub idle: bool,
     /// The arrangement now.
     pub live: Option<Draft>,
     /// The monitors, left to right, and the name of the one Window 1 is on.
@@ -292,6 +294,9 @@ impl SplitUi {
     /// window's number).
     #[allow(clippy::type_complexity)]
     fn map(&self, w: f32, h: f32) -> (Vec<[f32; 4]>, Vec<(u8, [f32; 4])>, Vec<(u8, [f32; 4])>) {
+        if self.idle {
+            return Default::default();
+        }
         match self.draft() {
             Some(draft) => self.map_of(draft, w, h),
             None => Default::default(),
@@ -501,8 +506,16 @@ impl SplitUi {
             Target::Names,
             true,
         );
-        if !self.on {
+        if !self.on || self.idle {
             let mut out = vec![switch];
+            if self.on && self.p1_pad {
+                out.push((
+                    [90.0, 6.0, 80.0, 20.0],
+                    "Give Up Pad".into(),
+                    Target::GiveUpPad,
+                    true,
+                ));
+            }
             row(&mut out, h - 27.0, vec![done]);
             return out;
         }
@@ -636,20 +649,42 @@ impl SplitUi {
             .collect()
     }
 
+    /// The state represented by the preview area, also available to agent controls.
+    pub fn status(&self) -> &'static str {
+        if !self.on {
+            "off"
+        } else if self.idle {
+            "idle"
+        } else {
+            "active"
+        }
+    }
+
+    fn status_lines(&self) -> Option<[&'static str; 3]> {
+        if !self.on {
+            Some([
+                "Splitscreen is off.",
+                "Turn it on, then in a world press a button on another",
+                "controller to add a player.",
+            ])
+        } else if self.idle {
+            Some([
+                "Splitscreen idle",
+                "No other local players.",
+                "Solo controls and controller feedback are unchanged.",
+            ])
+        } else {
+            None
+        }
+    }
+
     pub fn draw(&self, batch: &mut HudBatch, atlas: &HudAtlas, cursor: (f32, f32), in_world: bool) {
         let (w, h) = (batch.width, batch.height);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
         STYLE.title(batch, atlas, &Text::literal("Splitscreen Setup"));
-        if !self.on {
+        if let Some(lines) = self.status_lines() {
             let grey = rgba(170, 170, 170, 255);
-            for (k, line) in [
-                "Splitscreen is off.",
-                "Turn it on, then in a world press a button on another",
-                "controller to add a player.",
-            ]
-            .into_iter()
-            .enumerate()
-            {
+            for (k, line) in lines.into_iter().enumerate() {
                 let y = (h / 2.0 - 30.0 + 12.0 * k as f32).floor();
                 ui::centered_text(batch, atlas, &Text::literal(line), 0.0, y, w, grey);
             }
@@ -1378,6 +1413,30 @@ mod tests {
                 ui.edit
             );
         }
+    }
+
+    #[test]
+    fn idle_replaces_preview_but_keeps_the_switch_and_pad_handoff() {
+        let mut ui = screen(1);
+        ui.on = true;
+        ui.idle = true;
+        ui.p1_pad = true;
+        assert_eq!(ui.status_lines().unwrap()[0], "Splitscreen idle");
+        assert!(ui.map(SIZE.0, SIZE.1).2.is_empty());
+        let buttons = ui.buttons(SIZE.0, SIZE.1);
+        assert!(buttons.iter().any(|b| b.2 == Target::GiveUpPad));
+        assert!(
+            !buttons
+                .iter()
+                .any(|b| matches!(b.2, Target::Player(_) | Target::Apply | Target::Revert))
+        );
+        press(&mut ui, "Give Up Pad");
+        assert!(ui.give_up_pad);
+        ui.idle = false;
+        assert!(ui.status_lines().is_none());
+        assert_eq!(ui.map(SIZE.0, SIZE.1).2.len(), 1);
+        ui.on = false;
+        assert_eq!(ui.status_lines().unwrap()[0], "Splitscreen is off.");
     }
 
     #[test]

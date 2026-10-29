@@ -126,6 +126,8 @@ impl<'a> Split<'a> {
         if self.host.ui.options.page() != Page::SplitSetup {
             return false;
         }
+        // Window/fullscreen changes during P1's turn can invalidate Windows monitor handles.
+        self.refresh_monitors();
         let live = self.draft();
         let (monitors, main) = self.setup_monitors();
         let names: Vec<String> = (0..self.players())
@@ -153,15 +155,19 @@ impl<'a> Split<'a> {
             e.splitscreen_names = !e.splitscreen_names;
             self.host.settings.save(&Game::options_path());
         }
+        let in_world = self.in_world();
         let setup = &mut self.host.ui.options.split_setup;
         setup.names_shown = self.host.settings.extras.splitscreen_names;
-        setup.p1_pad = self.p1_pad.is_some();
+        setup.p1_pad = self.p1_pad.owner.is_some() && in_world;
+        setup.idle = !self.enabled;
         setup.live = Some(live);
         setup.monitors = monitors;
         setup.main = main;
         setup.names = names;
         if give_up {
             self.give_up_pad();
+            self.host.ui.options.split_setup.p1_pad =
+                self.p1_pad.owner.is_some() && self.in_world();
         }
         let changed = applied.is_some();
         if let Some(draft) = applied {

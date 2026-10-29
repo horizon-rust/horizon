@@ -168,7 +168,7 @@ class Game:
         off; its widgets."""
         def shown():
             labels = self.labels(n)
-            return 'Done' in labels and ('Identify' in labels or 'Splitscreen: Off' in labels)
+            return 'Done' in labels and any(label in labels for label in ['Identify', 'Splitscreen: Off', 'Splitscreen: On'])
         if shown():
             return self.ctl(n, 'ui')['widgets']  # still open (Esc taken during a rebuild)
         self.ctl(n, 'options', 'horizon')
@@ -313,13 +313,23 @@ def scenario_live():
         g.wait(lambda: 'Leave' in g.labels(2), "P2's pause menu", seconds=5)
         g.press(2, 'Leave')
         g.wait(lambda: not g.alive(2), 'P2 gone', seconds=10)
+        # Reopen repeatedly after the compositor was removed: Windows must refresh monitor
+        # handles from P1's window even with no compositor surface left.
+        for _ in range(3):
+            g.page()
+            check('alone: Setup shows idle instead of window previews',
+                  (g.ctl(1, 'state').get('menu') or {}).get('status'), 'idle')
+            check('idle: no player tile to drag', 'P1' in g.labels(), False)
+            g.close_page()
         g.page()
         g.ctl(1, 'click-button', 'Splitscreen: On')
+        g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'off', 'off indicator')
         g.close_page()
         full = g.settle([1], [(2 * half[0], half[1])])
         check('off: P1 has the whole window', full, [(2 * half[0], half[1])])
         g.page()
         g.ctl(1, 'click-button', 'Splitscreen: Off')
+        g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'idle', 'idle again without a compositor')
         g.close_page()
         time.sleep(1)
         status = g.ctl(1, 'status')

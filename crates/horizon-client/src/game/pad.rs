@@ -91,6 +91,8 @@ mod hardware {
         pub(in crate::game) fn events(&mut self) -> Vec<super::PadEvent> {
             Vec::new()
         }
+        pub(in crate::game) fn lend_output(&mut self, _: &mut Pads, _: PadId) {}
+        pub(in crate::game) fn reclaim_output(&mut self, _: &mut Pads) {}
         pub(in crate::game) fn connected(&self, _: PadId) -> bool {
             false
         }

@@ -419,6 +419,11 @@ impl<'a> Split<'a> {
         for k in (0..self.guests.len()).rev() {
             let g = &mut self.guests[k];
             g.entered |= g.game.remote.is_some() && g.game.player.is_some();
+            if g.entered
+                && let Some(id) = g.pad
+            {
+                self.p1_pad.joined(id);
+            }
             let g = &self.guests[k];
             // A player picking a profile has no connection yet.
             let playing = g.name.is_none() || g.game.remote.is_some();
@@ -454,6 +459,11 @@ impl<'a> Split<'a> {
             self.turn(0);
         }
         let guest = self.guests.remove(k);
+        if !guest.entered
+            && let Some(id) = guest.pad
+        {
+            self.restore_given_up_pad(id);
+        }
         let i = k + 1;
         if self.focus == i {
             self.focus = 0;

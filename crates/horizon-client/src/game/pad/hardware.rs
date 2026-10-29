@@ -182,6 +182,31 @@ pub(in crate::game) struct PadRouter {
 }
 
 impl PadRouter {
+    /// Solo play uses this reader's device IDs for feedback too: another pad cannot steal
+    /// the active output while its input is being offered to join. Reclaimed after P1's turn.
+    pub(in crate::game) fn lend_output(&mut self, pads: &mut Pads, id: PadId) {
+        if pads.devices.gilrs.is_some() {
+            pads.release_hardware();
+        }
+        if pads.devices.active != Some(id) {
+            pads.devices.rumbles.clear();
+            pads.devices.output = None;
+            pads.devices.shown = None;
+        }
+        pads.devices.dualsense = self
+            .gilrs
+            .as_ref()
+            .and_then(|g| g.connected_gamepad(id))
+            .is_some_and(|p| is_dualsense(&p));
+        pads.devices.active = Some(id);
+        pads.devices.started = true;
+        pads.devices.gilrs = self.gilrs.take();
+    }
+
+    pub(in crate::game) fn reclaim_output(&mut self, pads: &mut Pads) {
+        self.gilrs = pads.devices.gilrs.take();
+    }
+
     /// The buttons pressed and the controllers gone or back since the last call, in order.
     pub(in crate::game) fn events(&mut self) -> Vec<PadEvent> {
         if !self.started {

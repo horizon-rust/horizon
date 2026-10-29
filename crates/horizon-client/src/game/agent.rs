@@ -537,6 +537,11 @@ impl Game<'_> {
         if self.split_profiles_open() {
             return self.ui.options.split_profiles.state();
         }
+        if self.screen == Screen::Options
+            && self.ui.options.page() == horizon_client::options_ui::Page::SplitSetup
+        {
+            return json!({ "mode": "splitscreen-setup", "status": self.ui.options.split_setup.status() });
+        }
         let Some(title) = &self.title else {
             return Value::Null;
         };

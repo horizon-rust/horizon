@@ -111,7 +111,12 @@ impl<'a> Split<'a> {
 
     /// The monitors now, with their names, left to right, and the one Window 1 is on.
     pub(super) fn refresh_monitors(&mut self) {
-        let Some(window) = self.surfaces.first().map(|s| s.window.clone()) else {
+        let Some(window) = self
+            .surfaces
+            .first()
+            .map(|s| s.window.clone())
+            .or_else(|| self.host.window.clone())
+        else {
             return;
         };
         self.screens = window

@@ -137,6 +137,8 @@ which holds the switch. On but alone, nothing changes: P1 plays exactly as with
 it off (its own controller, a DualSense's rumble and triggers included), and
 only another controller pressing a button is watched for; the views move to
 the compositor when a second player joins, and back when the last one leaves.
+Setup shows **Splitscreen idle** while enabled with no other local players;
+the window preview appears when another player joins.
 While splitscreen is on, every player's pause menu has **Splitscreen
 Settings**: P1's Setup screen, another player's profiles.
 
@@ -154,6 +156,9 @@ Settings**: P1's Setup screen, another player's profiles.
   game starts all the same. P1 starts with the
   keyboard and mouse (they move to whichever view is clicked later) and the
   first controller used in a menu.
+  **Give Up Pad** in P1's Setup offers that controller to another player, with
+  the join prompt visible over Options too. Declining, letting the offer expire,
+  or canceling profile selection returns the controller to P1.
 - **Where players play:** in numbered windows, Window 1 being the game's. A
   window is free or fills a monitor (borderless, over its menu bar on macOS).
   Players in one window share it: halves for two (`splitscreenTwo`: auto, side

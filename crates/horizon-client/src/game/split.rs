@@ -121,7 +121,7 @@ pub(super) struct Split<'a> {
     /// `HORIZON_SPLIT=N`: players without controllers still to add once P1 is in a world.
     test_players: usize,
     pads: PadRouter,
-    p1_pad: Option<PadId>,
+    p1_pad: P1Pad<PadId>,
     p1_window: u8,
     /// The windows players play in (Window 1, the game's, always first), each free or filling a
     /// monitor: what the setup screen's draft starts from (`layout::Draft`).
@@ -192,7 +192,7 @@ impl<'a> Split<'a> {
             enabled: false,
             test_players,
             pads: PadRouter::default(),
-            p1_pad: None,
+            p1_pad: P1Pad::default(),
             p1_window: 1,
             windows: vec![layout::Window {
                 number: 1,
@@ -441,12 +441,20 @@ impl<'a> Split<'a> {
             self.remove_guest(k);
         }
         self.host.pad.feed = None;
+        if !watching {
+            self.host.pad.release_hardware();
+        }
         // Everything splitscreen kept, as when the game started: on again starts clean. P1's
         // controller stays P1's.
         self.host.split_hud = Default::default();
-        self.offers.clear();
-        self.fresh.clear();
-        self.lost.clear();
+        if !watching {
+            self.offers.clear();
+            self.fresh.clear();
+            self.lost.clear();
+            self.p1_pad.reset_transfer();
+        } else if !self.offers.is_empty() {
+            self.ask_to_join();
+        }
         // Its own reader of the pads goes when off: nobody would drain its events (P1 reads its
         // own).
         if !watching {
@@ -536,7 +544,10 @@ impl Split<'_> {
         for pad in pad_joins {
             match self.join(Some(pad), None) {
                 Ok(()) => changed = true,
-                Err(e) => log::warn!("Horizon: splitscreen: a player could not join: {e}"),
+                Err(e) => {
+                    self.restore_given_up_pad(pad);
+                    log::warn!("Horizon: splitscreen: a player could not join: {e}");
+                }
             }
         }
         // Testing: players without controllers, one per frame, once.
@@ -715,12 +726,29 @@ impl ApplicationHandler for Split<'_> {
         }
         if !self.enabled {
             if !on {
+                // Switching off while already solo has no compositor to disable, but must
+                // release routed input and restore the game's normal controller reader.
+                if self.host.pad.feed.take().is_some() {
+                    self.host.pad.release_hardware();
+                    self.host.split_hud = Default::default();
+                    self.offers.clear();
+                    self.fresh.clear();
+                    self.lost.clear();
+                    self.p1_pad.reset_transfer();
+                    self.pads = PadRouter::default();
+                }
                 return self.host.about_to_wait(event_loop);
             }
             // On but alone: the normal path, and the pads watched for someone joining.
             let pad_joins = self.route_pads();
             self.turn(0);
+            if let Some(id) = self.p1_pad.owner {
+                self.pads.lend_output(&mut self.host.pad, id);
+            }
             self.host.about_to_wait(event_loop);
+            if self.p1_pad.owner.is_some() {
+                self.pads.reclaim_output(&mut self.host.pad);
+            }
             // P1's Setup screen follows who plays (its switch greys while others are in).
             self.sync_setup();
             if self.admit(event_loop, pad_joins) && self.enabled {

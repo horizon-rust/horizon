@@ -6118,6 +6118,7 @@ impl Game<'_> {
         }
         if self.screen == Screen::Options {
             self.draw_options(&mut batch);
+            self.draw_split_hud(&mut batch, true);
             return batch;
         }
         if let Some(title) = &mut self.title {
