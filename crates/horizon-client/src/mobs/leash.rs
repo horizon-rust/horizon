@@ -346,6 +346,9 @@ pub fn leash_offset(m: &Mob) -> [f64; 3] {
     } else if m.species() == Species::Allay {
         // Allay.getLeashOffset.
         [0.0, m.eye_height() * 0.6, f64::from(m.width()) * 0.1]
+    } else if m.species() == super::Species::Bee {
+        // Bee.getLeashOffset: half the eye height, a fifth of the width ahead.
+        [0.0, 0.5 * m.eye_height(), f64::from(m.width() * 0.2)]
     } else {
         [0.0, m.eye_height(), f64::from(m.width() * 0.4)]
     }
