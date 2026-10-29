@@ -301,9 +301,14 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
             map.entry(key.into()).or_insert(value);
         }
     }
-    // Animal.addAdditionalSaveData: the love ticks left, whatever the save had.
+    // Animal.addAdditionalSaveData: the love ticks left, whatever the save had,
+    // and the player who fed it into love.
     if is_animal(id) {
         map.insert("InLove".into(), Tag::Int(m.extra.in_love.max(0)));
+        match m.extra.love_cause {
+            Some(cause) => map.insert("LoveCause".into(), Tag::IntArray(cause.to_vec())),
+            None => map.remove(&"LoveCause".into()),
+        };
     }
     let species = m.species();
     if let Some((_, variant)) =
@@ -1065,6 +1070,7 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
     }
     if is_animal(&m.kind.id) {
         m.extra.in_love = number(tag.get("InLove")).unwrap_or(0) as i32;
+        m.extra.love_cause = uuid_from_tag(tag.get("LoveCause"));
     }
     m.name_visible = flag(tag, "CustomNameVisible");
     m.no_ai = flag(tag, "NoAI");

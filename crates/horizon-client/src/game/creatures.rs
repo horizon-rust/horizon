@@ -1931,7 +1931,7 @@ impl Game<'_> {
             return;
         };
         // Animal.finalizeSpawnChildFromBreeding: the player who fed them.
-        if p.extra.love_player {
+        if p.extra.love_cause.is_some() {
             self.stats.custom("animals_bred", 1);
             let parent = self.mob_entity(&p);
             let partner_view = self
@@ -4100,7 +4100,7 @@ impl Game<'_> {
             {
                 // Animal.mobInteract: breed adults, speed up babies, then
                 // playEatingSound (silent unless the species overrides it).
-                match feed_animal(m, &mut self.world.random) {
+                match feed_animal(m, &mut self.world.random, acting) {
                     Some(sound) => {
                         consume = true;
                         eat = sound;

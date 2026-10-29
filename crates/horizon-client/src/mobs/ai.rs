@@ -1599,12 +1599,14 @@ pub fn voice_sounds(m: &Mob) -> [&'static str; 3] {
     }
 }
 /// `Animal.mobInteract` with its food in hand: an adult that can fall in
-/// love does, a baby grows up by a tenth, and either plays its eating sound
+/// love does (`Animal.setInLove` remembers `cause`, the feeding player), a
+/// baby grows up by a tenth, and either plays its eating sound
 /// (`Strider.mobInteract` plays its own afterwards). `None` when the animal
 /// does not take the food; otherwise the sound to play, if any.
 pub fn feed_animal(
     m: &mut Mob,
     level: &mut impl RandomSource,
+    cause: [i32; 4],
 ) -> Option<Option<(&'static str, f32, f32)>> {
     // Armadillo.mobInteract: a ball takes no food.
     if super::armadillo::scared(m) {
@@ -1612,7 +1614,7 @@ pub fn feed_animal(
     }
     if m.extra.age == 0 && m.extra.in_love <= 0 {
         m.extra.in_love = 600;
-        m.extra.love_player = true;
+        m.extra.love_cause = Some(cause);
     } else if m.extra.age < 0 {
         // AgeableMob.ageUp(getSpeedUpSecondsWhenFeeding(-age), true): a tenth.
         let secs = ((-m.extra.age / 20) as f32 * 0.1) as i32;

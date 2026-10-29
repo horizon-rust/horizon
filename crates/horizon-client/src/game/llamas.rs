@@ -23,13 +23,14 @@ impl Game<'_> {
             "minecraft:hay_block" => (90, 6, 10.0),
             _ => return false,
         };
+        let cause = self.acting_player_uuid();
         let m = &mut self.mobs[index];
         let mut used = false;
         let mut loved = false;
         if item == "minecraft:hay_block" && m.extra.tame && m.extra.age == 0 && m.extra.in_love <= 0
         {
             m.extra.in_love = 600;
-            m.extra.love_player = true;
+            m.extra.love_cause = Some(cause);
             used = true;
             loved = true;
         }

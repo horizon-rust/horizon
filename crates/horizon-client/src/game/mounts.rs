@@ -250,6 +250,7 @@ impl Game<'_> {
             "minecraft:golden_apple" | "minecraft:enchanted_golden_apple" => (10.0, 240, 10, true),
             _ => return false,
         };
+        let cause = self.acting_player_uuid();
         let m = &mut self.mobs[index];
         if matches!(m.species(), Species::SkeletonHorse | Species::ZombieHorse) {
             return false;
@@ -258,7 +259,7 @@ impl Game<'_> {
         let mut loved = false;
         if love && m.extra.tame && m.extra.age == 0 && m.extra.in_love <= 0 {
             m.extra.in_love = 600;
-            m.extra.love_player = true;
+            m.extra.love_cause = Some(cause);
             used = true;
             loved = true;
         }
