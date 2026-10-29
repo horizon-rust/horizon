@@ -882,6 +882,28 @@ pub fn register_ocelot(m: &mut Mob) {
 pub fn set_trusting(m: &mut Mob, trusting: bool) {
     m.extra.trusting = trusting;
 }
+/// `Ocelot.mobInteract`: once the fish is taken, one time in three
+/// (`random.nextInt(3) == 0`) the ocelot starts to trust players. Either way
+/// the server runs `Ocelot.spawnTrustingParticles`, whose `addParticle` goes
+/// nowhere but whose arguments draw from the ocelot's random. Returns whether
+/// it trusts now (entity event 41 for the hearts, 40 for the smoke).
+pub fn try_trusting(m: &mut Mob) -> bool {
+    let trusting = m.random.next_int_bound(3).unwrap_or(1) == 0;
+    if trusting {
+        set_trusting(m, true);
+    }
+    let feet = [m.position.x, m.position.y, m.position.z];
+    let (width, height) = (f64::from(m.width()), f64::from(m.height()));
+    crate::particles::around_self(
+        &mut m.random,
+        feet,
+        width,
+        height,
+        crate::particles::Burst::TAMING,
+        |_, _| {},
+    );
+    trusting
+}
 /// `Ocelot.OcelotTemptGoal(ocelot, 0.6, ocelot food, true)`.
 #[derive(Clone, Debug)]
 struct OcelotTempt(super::goals::Tempt);
