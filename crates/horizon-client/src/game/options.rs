@@ -74,6 +74,9 @@ impl Game<'_> {
         }
     }
     pub(super) fn options_path() -> std::path::PathBuf {
+        if let Some(path) = super::split::options_path() {
+            return path;
+        }
         std::env::current_dir()
             .unwrap_or_default()
             .join("options.txt")
@@ -281,13 +284,20 @@ impl Game<'_> {
         // window to change, so applying settings never undoes a fullscreen
         // the compositor set up.
         if let Some(w) = &self.window
+            && !self.options.split_guest
             && let Some(want) = self.fullscreen.request(s.fullscreen)
         {
             w.set_fullscreen(want.then_some(Fullscreen::Borderless(None)));
+            if !want {
+                windowed_again(w);
+            }
         }
         let mut volumes = s.volumes;
         volumes[0] = 1.0;
-        horizon_client::settings::set_source_volumes(volumes);
+        // Splitscreen: the speakers are P1's, and so are their volumes.
+        if !self.options.split_guest {
+            horizon_client::settings::set_source_volumes(volumes);
+        }
         let chat = s.chat_options();
         let rescale = {
             let o = &self.ui.chat.options;
@@ -309,6 +319,9 @@ impl Game<'_> {
     /// system is adopted by the option (`Minecraft.fullscreenStateChanged`).
     pub(super) fn observe_fullscreen(&mut self) {
         let Some(w) = &self.window else { return };
+        if self.options.split_guest {
+            return;
+        }
         if let Some(now) = self.fullscreen.observe(w.fullscreen().is_some())
             && self.settings.fullscreen != now
         {
@@ -318,6 +331,18 @@ impl Game<'_> {
     }
     /// F11 (key.fullscreen): Window.toggleFullScreen, remembered in options.txt.
     pub(super) fn toggle_fullscreen(&mut self) {
+        // Splitscreen: another player's F11 toggles the window it plays in, kept out of its
+        // options (a profile that saved it would turn the next window fullscreen on joining).
+        if self.options.split_guest {
+            if let Some(w) = &self.window {
+                let on = w.fullscreen().is_none();
+                w.set_fullscreen(on.then_some(Fullscreen::Borderless(None)));
+                if !on {
+                    windowed_again(w);
+                }
+            }
+            return;
+        }
         self.settings.fullscreen = !self.settings.fullscreen;
         self.settings.save(&Self::options_path());
         self.apply_ui_settings();
@@ -352,7 +377,7 @@ impl Game<'_> {
     /// below 260 frames per second, sleeping then spin-waiting until the
     /// frame's slot ends (not in scripted frame-count runs).
     pub(super) fn limit_frame(&mut self) {
-        if self.options.frames.is_some() {
+        if self.options.frames.is_some() || self.options.paced_by_split {
             return;
         }
         let limit = self.framerate_limit();
@@ -365,5 +390,30 @@ impl Game<'_> {
                 horizon_client::window::end_frame(&mut self.limiter, limit, &mut clock);
             }
         }
+    }
+}
+
+/// Out of fullscreen, a window that splitscreen opened to fill a monitor (no border, the
+/// monitor's size) is a window again: its border back and, still covering the monitor, the game's
+/// first size (854 x 480) in the middle of it, to be moved and sized.
+fn windowed_again(w: &winit::window::Window) {
+    // Only those: an ordinary window has its border, and its own size comes back by itself.
+    if w.is_decorated() {
+        return;
+    }
+    w.set_decorations(true);
+    let Some(m) = w.current_monitor() else {
+        return;
+    };
+    let (size, screen) = (w.inner_size(), m.size());
+    if size.width >= screen.width && size.height >= screen.height {
+        let scale = m.scale_factor();
+        let small = winit::dpi::LogicalSize::new(854.0, 480.0).to_physical::<u32>(scale);
+        let _ = w.request_inner_size(small);
+        let at = m.position();
+        w.set_outer_position(winit::dpi::PhysicalPosition::new(
+            at.x + (screen.width.saturating_sub(small.width) / 2) as i32,
+            at.y + (screen.height.saturating_sub(small.height) / 2) as i32,
+        ));
     }
 }

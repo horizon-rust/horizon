@@ -818,6 +818,15 @@ impl Game<'_> {
                 self.hit_special(super::dragon::SPECIAL, amount, true, false);
                 ok()
             }
+            // A splitscreen player leaves splitscreen; only P1's game ends the process.
+            "quit" if self.options.split_guest => {
+                if self.remote.is_some() {
+                    self.leave_server(None)?;
+                } else if let Some(title) = self.title.as_mut() {
+                    title.escape();
+                }
+                ok()
+            }
             "quit" => {
                 self.begin_closing_save(true)?;
                 ok()

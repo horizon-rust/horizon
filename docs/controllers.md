@@ -469,6 +469,15 @@ and the writer thread. Verified against the references only: everything
 else, the flag-less stop, the attenuation and LED reset reports, and all of
 Bluetooth.
 
+## Splitscreen
+
+With splitscreen on (docs/extras.md), one reader takes every controller
+(`game/pad/hardware.rs` `PadRouter`) and feeds each player's game the pad it
+was given: P1's is the first used in a menu, another joins in a world with A.
+Glyphs follow each player's own pad. A disconnected pad's player waits for one
+(`game/split/pads.rs`). The DualSense's own output (rumble, triggers, lights)
+is off while splitscreen reads the pads.
+
 ## Steam Deck
 
 - In Game Mode, or any game launched through Steam, Steam Input presents the

@@ -182,6 +182,7 @@ mod spawner;
 mod spear;
 mod spectator;
 mod spill;
+mod split;
 mod startup_menu;
 mod station_control;
 mod stations;
@@ -293,6 +294,11 @@ struct Options {
     creative: bool,
     test_terrain: bool,
     frames: Option<u64>,
+    /// A splitscreen player: the split window paces every player's frames, not each its own.
+    paced_by_split: bool,
+    /// A splitscreen player other than P1: its windows are the split's (P1 alone decides
+    /// fullscreen; this game neither asks for it nor adopts it into its options).
+    split_guest: bool,
     /// `--world-frames N`: exit after N frames drawn in the world (smoke runs; the world may load slowly).
     world_frames: Option<u64>,
     screenshot_after: Option<u64>,
@@ -362,6 +368,8 @@ impl Options {
             creative: false,
             test_terrain: false,
             frames: None,
+            paced_by_split: false,
+            split_guest: false,
             world_frames: None,
             screenshot_after: None,
             timeout: Duration::from_secs(120),
@@ -1482,12 +1490,23 @@ struct Game<'a> {
     keys: HashSet<KeyCode>,
     // Physical input is separate from remapped and toggled movement keys.
     physical_keys: HashSet<KeyCode>,
+    physical_buttons: HashSet<MouseButton>,
     left: bool,
     right: bool,
     cursor: (f32, f32),
     /// The cursor icon the window shows (`widgets::take_cursor` each frame).
     cursor_icon: horizon_client::widgets::Cursor,
     captured: bool,
+    /// Splitscreen: whether this player has the keyboard and mouse (one does; the others never
+    /// grab or free the pointer), and its view's corner in its window (the pointer goes to the
+    /// view's centre). Alone: true, and the window's corner.
+    keyboard_mouse: bool,
+    view_at: [u32; 2],
+    /// Splitscreen: this player's own Microsoft account session (one of the launcher's other
+    /// accounts), in place of the process's (P1's) for its connections and skin.
+    split_auth: Option<std::sync::Arc<horizon_client::auth::AuthSession>>,
+    /// Splitscreen: what it draws over this player's view (its badge, frame, questions).
+    split_hud: split::Hud,
     focused: bool,
     /// The keyboard's modifier state (`KeyEvent.modifiers`).
     modifiers: winit::keyboard::ModifiersState,
@@ -5829,13 +5848,21 @@ impl Game<'_> {
         }
         // The real pointer takes over from an agent's.
         self.agent_pointer = false;
+        // Splitscreen: another player has the pointer; this one's menus leave it alone.
+        if !self.keyboard_mouse {
+            self.captured = false;
+            return;
+        }
         let Some(window) = &self.window else { return };
         let size = self.renderer.as_ref().map_or_else(
             || window.inner_size().into(),
             |r| [r.config.width, r.config.height],
         );
-        let centre =
-            winit::dpi::PhysicalPosition::new(f64::from(size[0]) / 2.0, f64::from(size[1]) / 2.0);
+        let [vx, vy] = self.view_at.map(f64::from);
+        let centre = winit::dpi::PhysicalPosition::new(
+            vx + f64::from(size[0]) / 2.0,
+            vy + f64::from(size[1]) / 2.0,
+        );
         let warp = |window: &Window| {
             let _ = window.set_cursor_position(centre);
         };
@@ -5901,7 +5928,8 @@ impl Game<'_> {
         } else {
             Cursor::Arrow
         };
-        if effective == self.cursor_icon {
+        // Splitscreen: only the keyboard-and-mouse player sets the window's pointer.
+        if effective == self.cursor_icon || !self.keyboard_mouse {
             return;
         }
         if let Some(window) = &self.window {
@@ -9227,6 +9255,7 @@ impl Game<'_> {
         book.recipes.retain(|r| index.contains(r));
         book.to_be_displayed.retain(|r| index.contains(r));
         self.dim = dim;
+        self.audio.set_world(dim.id());
         self.world_root = save_root.clone();
         self.world_flat = horizon_client::save::WorldGen::read(&save_root).is_some_and(|w| w.flat);
         self.block_ticks = Ticks::new(self.level.seed as i32);
@@ -9354,6 +9383,7 @@ impl Game<'_> {
         self.world = world;
         self.save = save;
         self.dim = target;
+        self.audio.set_world(target.id());
         self.level.dimension = target.id().to_owned();
         self.block_ticks = Ticks::new(self.level.seed as i32);
         self.tick_chunks.clear();
@@ -9489,6 +9519,10 @@ impl Game<'_> {
     /// Keeps this play session's performance summary for the launcher to send, if the player
     /// allows performance statistics (`horizon_client::telemetry`), and starts the next one.
     pub(super) fn finish_perf(&mut self) {
+        // One session per computer: P1's (a splitscreen player's would count it again).
+        if self.options.split_guest {
+            return;
+        }
         let s = &self.settings;
         let settings = horizon_telemetry::payload::Settings {
             render_distance: s.render_distance.clamp(0, 255) as u8,
@@ -12825,8 +12859,16 @@ impl ApplicationHandler for Game<'_> {
                 self.physical_keys.remove(&key);
             }
         }
+        if let WindowEvent::MouseInput { state, button, .. } = &event {
+            if *state == ElementState::Pressed {
+                self.physical_buttons.insert(*button);
+            } else {
+                self.physical_buttons.remove(button);
+            }
+        }
         if let WindowEvent::Focused(false) = &event {
             self.physical_keys.clear();
+            self.physical_buttons.clear();
         }
         if let WindowEvent::ModifiersChanged(m) = &event {
             self.modifiers = m.state();
@@ -12930,7 +12972,7 @@ impl ApplicationHandler for Game<'_> {
                 WindowEvent::RedrawRequested => {
                     if let Err(error) = self.render_closing_save() {
                         self.error = Some(error);
-                        event_loop.exit();
+                        self.exit_on_error(event_loop);
                     }
                 }
                 _ => {}
@@ -13166,6 +13208,8 @@ impl ApplicationHandler for Game<'_> {
                         self.audio.play_button_click();
                     }
                     match action {
+                        // A splitscreen player's title never ends the process (P1's does).
+                        Action::Quit if self.options.split_guest => {}
                         Action::Quit => event_loop.exit(),
                         Action::Options => self.open_options(true),
                         Action::Accessibility => self
@@ -13756,7 +13800,7 @@ impl ApplicationHandler for Game<'_> {
         })();
         if let Err(e) = result {
             self.error = Some(e);
-            event_loop.exit();
+            self.exit_on_error(event_loop);
         }
     }
     fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
@@ -13772,7 +13816,9 @@ impl ApplicationHandler for Game<'_> {
         }
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // A splitscreen player's game has nothing to save: P1's shuts the process down.
         if horizon_threads::stop_requests() > 0
+            && !self.options.split_guest
             && self.pending_save.as_ref().is_none_or(|save| !save.quit)
         {
             // SIGTERM, SIGINT or SIGHUP: the shutdown hook's server halt, as a window close.
@@ -13796,14 +13842,14 @@ impl ApplicationHandler for Game<'_> {
                 }
                 Err(error) => {
                     self.error = Some(error);
-                    event_loop.exit();
+                    self.exit_on_error(event_loop);
                 }
             }
             return;
         }
         if let Err(error) = self.resume_world_entry() {
             self.error = Some(error);
-            event_loop.exit();
+            self.exit_on_error(event_loop);
             return;
         }
         // The world a backup made before its upgrade opens (EditWorldScreen's callback).
@@ -13970,11 +14016,16 @@ impl<'a> Game<'a> {
             },
             keys: HashSet::new(),
             physical_keys: HashSet::new(),
+            physical_buttons: HashSet::new(),
             left: false,
             right: false,
             cursor: (0.0, 0.0),
             cursor_icon: horizon_client::widgets::Cursor::Arrow,
             captured: false,
+            keyboard_mouse: true,
+            view_at: [0, 0],
+            split_auth: None,
+            split_hud: Default::default(),
             focused: true,
             modifiers: winit::keyboard::ModifiersState::empty(),
             fullscreen: horizon_client::window::FullscreenState::new(false),
@@ -15227,7 +15278,9 @@ fn leave_fullscreen_after(
 }
 
 fn run_event_loop(mut game: Game<'_>) -> Result<()> {
-    let result = EventLoop::new()?.run_app(&mut game);
+    let mut split = split::Split::new(game, None);
+    let result = EventLoop::new()?.run_app(&mut split);
+    game = split.host;
     leave_fullscreen_after(&result, &mut game.settings);
     result?;
     horizon_client::discord_presence::stop();
@@ -15403,7 +15456,7 @@ impl Loading {
             );
         }
     }
-    fn finish(&mut self, loaded: Loaded) -> Result<Option<Game<'static>>> {
+    fn finish(&mut self, loaded: Loaded) -> Result<Option<split::Split<'static>>> {
         let handoff_at = Instant::now();
         let mut options = self.options.take().ok_or("loading already finished")?;
         options.resources = loaded.root.clone();
@@ -15416,6 +15469,20 @@ impl Loading {
         if let Some(renderer) = &mut self.renderer {
             renderer.release_surface();
         }
+        // Splitscreen: a compositor presents on the window and every player renders offscreen.
+        // A window it can't present on (a surface format the copy can't take): off this time.
+        let compositor = match (&self.renderer, self.settings.extras.splitscreen) {
+            (Some(loader), true) => match loader.compositor(window.clone()) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    log::warn!("Horizon: splitscreen is off: {e}");
+                    self.settings.extras.splitscreen = false;
+                    None
+                }
+            },
+            _ => None,
+        };
+        options.offscreen |= compositor.is_some();
         let renderer_at = Instant::now();
         let renderer = build_renderer(
             window.clone(),
@@ -15473,7 +15540,7 @@ impl Loading {
             renderer_ms,
             game_ms
         );
-        Ok(Some(game))
+        Ok(Some(split::Split::new(game, compositor)))
     }
 }
 
@@ -15481,7 +15548,7 @@ impl Loading {
 /// the game itself, on the same event loop and window.
 enum App {
     Loading(Box<Loading>),
-    Ready(Box<Game<'static>>),
+    Ready(Box<split::Split<'static>>),
 }
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -15504,7 +15571,7 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         enum Step {
             Waiting,
-            Ready(Box<Game<'static>>),
+            Ready(Box<split::Split<'static>>),
             Done,
             Failed(Box<dyn std::error::Error>),
         }
@@ -15588,15 +15655,16 @@ fn run_loading(
     let mut app = App::Loading(Box::new(loading));
     let result = EventLoop::new()?.run_app(&mut app);
     match &mut app {
-        App::Ready(game) => leave_fullscreen_after(&result, &mut game.settings),
+        // Ready: splitscreen around P1's game.
+        App::Ready(split) => leave_fullscreen_after(&result, &mut split.host.settings),
         App::Loading(loading) => leave_fullscreen_after(&result, &mut loading.settings),
     }
     result?;
     horizon_client::discord_presence::stop();
     match app {
-        App::Ready(mut game) => {
-            write_report(&game)?;
-            if let Some(e) = game.error.take() {
+        App::Ready(mut split) => {
+            write_report(&split.host)?;
+            if let Some(e) = split.host.error.take() {
                 return Err(e);
             }
         }

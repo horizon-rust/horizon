@@ -54,6 +54,9 @@ struct Flags {
     simulation_distance: AtomicI32,
     /// `MinecraftServer.isCurrentlySaving`: the server is autosaving.
     saving: AtomicBool,
+    /// Splitscreen players joined through memory (offline uuids): let in although the world is
+    /// not open to the LAN, and the game no longer pauses while they play.
+    split_players: Mutex<Vec<u128>>,
 }
 
 /// Work the window hands its server thread (`MinecraftServer.execute`).
@@ -77,7 +80,42 @@ impl Integrated {
     }
     /// `IntegratedServer.tickServer` skips the world while the game is paused.
     pub fn set_paused(&self, paused: bool) {
-        self.flags.paused.store(paused, Ordering::Relaxed);
+        let split = !self.flags.split_players.lock().unwrap().is_empty();
+        self.flags.paused.store(paused && !split, Ordering::Relaxed);
+    }
+    /// Splitscreen: `name` left; the game pauses again once every such player has. The owner's
+    /// permissions it was given go with it (a LAN player could otherwise join under that name).
+    pub fn leave_split(&self, name: &str) {
+        let uuid = horizon_protocol::crypto::offline_uuid(name);
+        self.flags
+            .split_players
+            .lock()
+            .unwrap()
+            .retain(|&u| u != uuid);
+        self.call(move |g| {
+            if let Some(host) = g.lan.as_mut() {
+                host.hub.ops.remove(&uuid);
+            }
+        });
+    }
+    /// Splitscreen: a connection through memory for another player on this machine, who gets
+    /// the owner's permissions. `None` once the server has stopped.
+    pub fn join_split(&self, name: &str) -> Option<horizon_protocol::connection::Pipe> {
+        let uuid = horizon_protocol::crypto::offline_uuid(name);
+        self.flags.split_players.lock().unwrap().push(uuid);
+        let pipe = self
+            .call(move |g| {
+                let host = g.lan.as_mut()?;
+                let owner = host.owner.as_ref()?.uuid;
+                let level = host.hub.ops.get(&owner).copied().unwrap_or(0);
+                host.hub.ops.insert(uuid, level);
+                host.hub.lan.connect_local().ok()
+            })
+            .flatten();
+        if pipe.is_none() {
+            self.leave_split(name);
+        }
+        pipe
     }
     /// The window's render and simulation distances, for the server to follow.
     pub fn set_distances(&self, render: i32, simulation: i32) {
@@ -369,13 +407,21 @@ impl Game<'_> {
         };
         let owner = launch.owner;
         let published = flags.clone();
+        let local_players = flags.clone();
         let net = NetConfig {
             // No network until it is opened to the LAN; the memory connection
             // is not compressed (`Connection.isMemoryConnection`).
             listen: false,
+            // Registered local seats share this computer; the vanilla LAN capacity still
+            // applies to other connections when the world is published.
+            bypasses_limit: Some(Arc::new(move |uuid| {
+                local_players.split_players.lock().unwrap().contains(&uuid)
+            })),
             gate: Some(Arc::new(move |_, uuid, _| {
-                (uuid != owner && published.published.load(Ordering::Relaxed) == 0)
-                    .then(|| translatable("multiplayer.disconnect.not_whitelisted", &[]))
+                (uuid != owner
+                    && published.published.load(Ordering::Relaxed) == 0
+                    && !published.split_players.lock().unwrap().contains(&uuid))
+                .then(|| translatable("multiplayer.disconnect.not_whitelisted", &[]))
             })),
             // IntegratedServer.initServer: the MOTD names the owner and the world.
             ..NetConfig::lan(

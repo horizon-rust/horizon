@@ -356,8 +356,10 @@ impl Game<'_> {
                 horizon_client::net::shown_address(address),
             );
         }
-        // A signed-in account always plays under its own name.
-        let auth = horizon_client::auth::current();
+        // A signed-in account always plays under its own name; a splitscreen player is a profile
+        // of its own, never P1 again (P1's server lets it in by that name), signed in with its
+        // own account when it picked one.
+        let auth = self.auth();
         let name = auth.as_ref().map_or(name, |a| a.name.as_str());
         let user = auth.as_ref().map_or_else(
             || {
@@ -1053,6 +1055,7 @@ impl Game<'_> {
         r.predictions.clear();
         self.set_mode_id(spawn.game_type);
         self.dim = Dim::from_id(&spawn.dimension);
+        self.audio.set_world(&spawn.dimension);
         // ClientPacketListener.handleLogin / handleRespawn: the server's
         // Player.getLastDeathLocation, for the recovery compass.
         self.level.last_death = spawn
@@ -3178,10 +3181,21 @@ impl Game<'_> {
             .collect();
         Some((players, r.online_mode, upside_down))
     }
+    /// Connected to a server in online mode (its Login): each player needs its own account.
+    pub(super) fn online_server(&self) -> bool {
+        self.remote.as_ref().is_some_and(|r| r.online_mode)
+    }
+    /// This player's account: a splitscreen player's own, else the game's (P1's).
+    pub(super) fn auth(&self) -> Option<std::sync::Arc<horizon_client::auth::AuthSession>> {
+        match self.options.split_guest {
+            true => self.split_auth.clone(),
+            false => horizon_client::auth::current(),
+        }
+    }
     /// The signed-in account's `textures`, once the services answered.
     fn own_textures(&self) -> Option<horizon_client::skins::Textures> {
         use horizon_client::skins::{self, NameOrId, Resolve};
-        let auth = horizon_client::auth::current()?;
+        let auth = self.auth()?;
         let state = self
             .skin_profiles
             .borrow_mut()
@@ -3757,7 +3771,7 @@ impl Game<'_> {
         }
         let playing = self.screen == Screen::Playing;
         let held = |k| playing && self.keys.contains(&k);
-        let keys = Keys {
+        let mut keys = Keys {
             forward: held(KeyCode::KeyW),
             backward: held(KeyCode::KeyS),
             left: held(KeyCode::KeyA),
@@ -3768,6 +3782,13 @@ impl Game<'_> {
             analog: None,
         }
         .with_stick(stick.filter(|_| playing));
+        // On a server (not this game's own server thread), the stick moves as the keys it sets do
+        // (`KeyboardInput.tick`: 8 directions, full speed). The server only hears those keys
+        // (`ServerboundPlayerInputPacket`), and an anticheat that predicts from them pulls back
+        // a player moving at the stick's own angle and speed.
+        if self.integrated.is_none() && self.server_address().is_some() {
+            keys.analog = None;
+        }
         let input = u8::from(keys.forward)
             | u8::from(keys.backward) << 1
             | u8::from(keys.left) << 2

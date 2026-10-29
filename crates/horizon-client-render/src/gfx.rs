@@ -68,6 +68,7 @@ pub fn outline_vertices(edges: &[[f64; 6]], camera: glam::DVec3) -> Vec<[f32; 6]
 
 mod animate;
 mod arena;
+pub mod compositor;
 mod cull;
 mod end_sky;
 mod flat;
@@ -362,6 +363,9 @@ pub struct Renderer {
     offscreen: Option<wgpu::Texture>,
     /// Offscreen submissions still on the GPU: at most two frames run ahead.
     in_flight: std::collections::VecDeque<wgpu::SubmissionIndex>,
+    /// Splitscreen: the caller waits for the GPU once every player has submitted
+    /// (`wait_in_flight`), so one player's work overlaps the GPU drawing another's.
+    pub paced_elsewhere: bool,
     /// Which steps of the first frame on this device still go to the log
     /// (see `startup_step`).
     first_frame: FirstFrame,
@@ -2525,6 +2529,7 @@ impl Renderer {
             spare_surface: std::sync::Mutex::new(None),
             offscreen,
             in_flight: std::collections::VecDeque::new(),
+            paced_elsewhere: false,
             first_frame: if previous.is_none() {
                 FirstFrame::Acquire
             } else {
@@ -5260,14 +5265,9 @@ impl Renderer {
                 );
             }
         } else {
-            // No swapchain paces offscreen frames: keep two on the GPU at most.
             self.in_flight.push_back(submission);
-            while self.in_flight.len() > 2 {
-                let index = self.in_flight.pop_front();
-                let _ = self.device.poll(wgpu::PollType::Wait {
-                    submission_index: index,
-                    timeout: Some(std::time::Duration::from_secs(5)),
-                });
+            if !self.paced_elsewhere {
+                self.wait_in_flight();
             }
         }
         self.last_wait += present.elapsed();
@@ -5280,6 +5280,16 @@ impl Renderer {
     }
 }
 impl Renderer {
+    /// No swapchain paces offscreen frames: keep two on the GPU at most.
+    pub fn wait_in_flight(&mut self) {
+        while self.in_flight.len() > 2 {
+            let index = self.in_flight.pop_front();
+            let _ = self.device.poll(wgpu::PollType::Wait {
+                submission_index: index,
+                timeout: Some(std::time::Duration::from_secs(5)),
+            });
+        }
+    }
     fn padded_row(&self) -> u32 {
         (self.config.width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
     }

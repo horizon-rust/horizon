@@ -129,6 +129,64 @@ and the container screen tests are unchanged).
   server accepts it; a unit test replays the planned clicks through the menu
   engine on random chests.
 
+### Splitscreen (`splitscreen`, default off; `splitscreenTwo`, `splitscreenThree`, default 0)
+Up to 16 players on one computer, each with a controller, as on a console
+(`game/split.rs`, `game/split/`, `split_ui.rs`, `split_profiles.rs`,
+`split_layout.rs`). Horizon Settings → Splitscreen... opens the Setup screen,
+which holds the switch. While splitscreen is on, every player's pause menu has
+**Splitscreen Settings**: P1's Setup screen, another player's profiles.
+
+- **Joining:** in a world, another controller pressing a button is offered to
+  join; A adds a player, who picks a profile while its bumpers choose where its
+  view goes: a place in each window ("Window 1 (1 of 2)"), a new window, or
+  filling another monitor. Offline profiles belong to the game folder: each is
+  `splitscreen/profiles/<name>/`, with its own options, and its bin button
+  forgets it from the list (its options and saves are kept; making the name
+  again brings it back). Microsoft accounts handed to the game in
+  `HORIZON_ACCOUNT_SESSIONS` (name, UUID and a session file each) are listed
+  first and sign in as themselves, so online-mode servers let them in; the
+  launcher doesn't hand any over yet. P1 keeps the keyboard and
+  mouse, and the first controller used in a menu.
+- **Where players play:** in numbered windows, Window 1 being the game's. A
+  window is free or fills a monitor (borderless, over its menu bar on macOS).
+  Players in one window share it: halves for two (`splitscreenTwo`: auto, side
+  by side, top and bottom), three one wide and two (`splitscreenThree`), then
+  quarters and rows. Who comes first in a window stays until changed.
+- **Setup screen:** the monitors to scale with every window and player; move
+  players with the mouse (drag, or click then a destination) or the controller
+  (A picks up, left/right or LB/RB cycle, A drops, B puts back), swap two players; a square
+  button for how two (or three) share a window shows while a window has that
+  many. Nothing changes until Apply. It is P1's: the others move themselves
+  with their bumpers on their profile page.
+- **Switching profile:** another player's Splitscreen Settings lists the
+  profiles again; it plays on beneath until it picks one (Cancel changes
+  nothing), and its bumpers move its view meanwhile. Before it goes, the page
+  says when the pick can't play: an offline profile on an online-mode server,
+  or a Microsoft account whose sign-in has expired (sign in again in the
+  launcher, then restart the game).
+- **Leaving:** a player's pause menu (Leave). A controller that disconnects leaves its player waiting:
+  the same controller back takes it again, A on another takes over, B on
+  another lets it leave.
+- **Servers:** the others join wherever P1 plays: its own world (through
+  memory) or a server, LAN world or friend's invite, each as its own profile.
+  On an online-mode server only Microsoft accounts can join (the profile page
+  says so first); a player the server still turns away (whitelist, a sign-in
+  Mojang refused) is back on its profile page, told why. A server's resource
+  packs follow P1's answer.
+- **Sound:** one output; each sound is heard from the nearest player's camera,
+  once.
+- **Limits:** one keyboard and mouse (they drive the player whose view was
+  clicked last); no DualSense rumble or triggers while splitscreen reads the
+  controllers; every player renders on one thread, so the frame rate falls with
+  each player. `HORIZON_SPLIT_STATS=1` logs every 5 s where a frame's time
+  goes (the players' turns with their renders, the windows' presents, the GPU
+  wait, outside the loop) and each player's fps and CPU and GPU time.
+
+Off, the game runs as without it: P1 draws straight to its window. On, every
+player renders offscreen and a compositor copies the views into the windows.
+`tools/splitscreen_e2e.py` drives it with real windows (`HORIZON_SPLIT=N`
+adds N-1 players without controllers); it needs a desktop, so CI doesn't run it.
+
 ## Shared rules
 
 - All extras are hidden with F1 and drawn in the HUD layer: under screens, over

@@ -248,6 +248,10 @@ impl ServerPacks {
         }
         self.update = true;
     }
+    /// What the player answered for this server's packs (splitscreen: the others follow P1).
+    pub fn prompt(&self) -> Prompt {
+        self.prompt
+    }
     /// `allowServerPacks`: the prompt said yes (or the server is Enabled).
     pub fn allow(&mut self) {
         self.prompt = Prompt::Allowed;

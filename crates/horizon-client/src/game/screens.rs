@@ -42,18 +42,21 @@ impl Screen {
 /// `links`: the `minecraft:server_links` dialog's button, which the
 /// `pause_screen_additions` tag (empty in vanilla) falls back to when the
 /// server sent links — a full-width row that pushes the last two rows down.
+/// `split`: Horizon's Splitscreen Settings, another such row after it.
 /// https://mcsrc.dev/2/26.3/net/minecraft/client/gui/screens/PauseScreen
 fn pause_buttons(
     w: f32,
     h: f32,
     remote: bool,
     links: bool,
+    split: bool,
 ) -> Vec<(f32, f32, f32, &'static str, u8, bool)> {
+    let rows = 24.0 * f32::from(u8::from(links) + u8::from(split));
     // GridLayout of two 98px columns (padding 4), aligned at (0.5, 0.25).
-    let (grid_w, grid_h) = (212.0, 166.0 + if links { 24.0 } else { 0.0 });
+    let (grid_w, grid_h) = (212.0, 166.0 + rows);
     let x0 = ((w - grid_w) * 0.5).floor();
     let y0 = ((h - grid_h) * 0.25).floor();
-    let down = if links { 24.0 } else { 0.0 };
+    let down = rows;
     let mut v = vec![
         (x0 + 4.0, y0 + 50.0, 204.0, "menu.returnToGame", 0, true),
         (x0 + 4.0, y0 + 74.0, 98.0, "gui.advancements", 4, true),
@@ -62,6 +65,10 @@ fn pause_buttons(
     if links {
         // CommonDialogData.computeExternalTitle of Dialogs.SERVER_LINKS.
         v.push((x0 + 4.0, y0 + 122.0, 204.0, "menu.server_links", 11, true));
+    }
+    if split {
+        let y = y0 + 122.0 + if links { 24.0 } else { 0.0 };
+        v.push((x0 + 4.0, y, 204.0, SPLIT_SETTINGS, 12, true));
     }
     v.extend([
         (x0 + 4.0, y0 + 122.0 + down, 98.0, "menu.options", 1, true),
@@ -93,9 +100,12 @@ fn pause_buttons(
 /// `FRIENDS_ICON` (vanilla's `CommonButtons.friends`) opens Horizon's
 /// Play with Friends; the others stay inactive.
 const FRIENDS_ICON: usize = 2;
-fn pause_icons(w: f32, h: f32, links: bool) -> [(f32, f32, &'static str); 4] {
+/// Splitscreen's row: P1's Setup screen, another player's profiles (`open_split_settings`).
+const SPLIT_SETTINGS: &str = "Splitscreen Settings";
+fn pause_icons(w: f32, h: f32, links: bool, split: bool) -> [(f32, f32, &'static str); 4] {
     let x0 = ((w - 212.0) * 0.5).floor() + 60.0;
-    let y = ((h - 166.0 - if links { 24.0 } else { 0.0 }) * 0.25).floor() + 98.0;
+    let rows = 24.0 * f32::from(u8::from(links) + u8::from(split));
+    let y = ((h - 166.0 - rows) * 0.25).floor() + 98.0;
     [
         (x0, y, "gui/sprites/pause_menu/bug"),
         (x0 + 24.0, y, "gui/sprites/pause_menu/social_interactions"),
@@ -149,8 +159,10 @@ impl Game<'_> {
             true,
         );
         let links = !self.server_links().is_empty();
+        let split = self.split_hud.menu;
         let mut tooltip = None;
-        for (x, y, bw, key, id, active) in pause_buttons(w, h, self.external_server(), links) {
+        for (x, y, bw, key, id, active) in pause_buttons(w, h, self.external_server(), links, split)
+        {
             let hover = active && ui::hovered(self.cursor, x, y, bw, 20.0);
             ui::button(
                 batch,
@@ -159,7 +171,14 @@ impl Game<'_> {
                 y,
                 bw,
                 20.0,
-                &Text::translate(key, &[]),
+                // Splitscreen: another player leaves P1's world, the game goes on.
+                &if self.options.split_guest && key == "menu.disconnect" {
+                    Text::literal("Leave")
+                } else if id == 12 {
+                    Text::literal(key)
+                } else {
+                    Text::translate(key, &[])
+                },
                 active,
                 hover,
             );
@@ -168,7 +187,7 @@ impl Game<'_> {
                 tooltip = Some(Text::translate("menu.custom_options.tooltip", &[]));
             }
         }
-        for (i, (x, y, sprite)) in pause_icons(w, h, links).into_iter().enumerate() {
+        for (i, (x, y, sprite)) in pause_icons(w, h, links, split).into_iter().enumerate() {
             let active = i == FRIENDS_ICON && friends;
             let hover = ui::hovered(self.cursor, x, y, 20.0, 20.0);
             // The icon has no label: name it for controller focus and the
@@ -220,8 +239,9 @@ impl Game<'_> {
             (b.width, b.height)
         };
         let links = !self.server_links().is_empty();
-        let friends = pause_icons(w, h, links)[FRIENDS_ICON];
-        let hit = pause_buttons(w, h, self.external_server(), links)
+        let split = self.split_hud.menu;
+        let friends = pause_icons(w, h, links, split)[FRIENDS_ICON];
+        let hit = pause_buttons(w, h, self.external_server(), links, split)
             .into_iter()
             .find(|b| b.5 && ui::hovered(self.cursor, b.0, b.1, b.2, 20.0))
             .map(|b| b.4)
@@ -245,6 +265,7 @@ impl Game<'_> {
                 self.links_ui.scroll = 0.0;
                 self.screen = Screen::ServerLinks;
             }
+            Some(12) => self.open_split_settings(),
             Some(2) => self.close_world()?,
             _ => {}
         }
@@ -499,7 +520,7 @@ mod tests {
     #[test]
     fn pause_menu_uses_disconnect_for_servers_and_keeps_world_options() {
         for (remote, label) in [(false, "menu.returnToMenu"), (true, "menu.disconnect")] {
-            let buttons = pause_buttons(427.0, 240.0, remote, false);
+            let buttons = pause_buttons(427.0, 240.0, remote, false, false);
             let quit = buttons.iter().find(|b| b.4 == 2).unwrap();
             assert_eq!(quit.3, label);
             assert!(quit.5);
@@ -509,14 +530,14 @@ mod tests {
 
     #[test]
     fn server_links_adds_a_full_width_row_above_options() {
-        let with = pause_buttons(427.0, 240.0, true, true);
-        let without = pause_buttons(427.0, 240.0, true, false);
+        let with = pause_buttons(427.0, 240.0, true, true, false);
+        let without = pause_buttons(427.0, 240.0, true, false, false);
         let links = with.iter().find(|b| b.4 == 11).unwrap();
         assert_eq!(links.2, 204.0);
         assert_eq!(links.3, "menu.server_links");
         assert!(links.5);
         // The icon row sits above it; Options and Disconnect move down 24.
-        let icons = pause_icons(427.0, 240.0, true);
+        let icons = pause_icons(427.0, 240.0, true, false);
         let y0_icons = ((240.0f32 - 190.0) * 0.25).floor() + 98.0;
         assert_eq!(icons[0].1, y0_icons);
         assert!(links.1 > icons[0].1);
@@ -526,5 +547,27 @@ mod tests {
                 assert_eq!(b.1, same.1 + 24.0 - 6.0, "{}", b.3);
             }
         }
+    }
+
+    #[test]
+    fn splitscreen_settings_is_a_row_after_the_server_links() {
+        let both = pause_buttons(427.0, 240.0, true, true, true);
+        let links = both.iter().find(|b| b.4 == 11).unwrap();
+        let split = both.iter().find(|b| b.4 == 12).unwrap();
+        assert_eq!((split.2, split.3), (204.0, super::SPLIT_SETTINGS));
+        assert_eq!(split.1, links.1 + 24.0);
+        // Options below it; nothing of it without splitscreen.
+        let options = both.iter().find(|b| b.4 == 1).unwrap();
+        assert_eq!(options.1, split.1 + 24.0);
+        let alone = pause_buttons(427.0, 240.0, false, false, true);
+        assert_eq!(
+            alone.iter().find(|b| b.4 == 12).unwrap().1,
+            alone[0].1 + 72.0
+        );
+        assert!(
+            !pause_buttons(427.0, 240.0, true, true, false)
+                .iter()
+                .any(|b| b.4 == 12)
+        );
     }
 }
