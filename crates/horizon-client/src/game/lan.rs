@@ -489,6 +489,13 @@ fn mob_meta(
                 ));
             }
         }
+        // Ocelot.DATA_TRUSTING (after AgeableMob's two).
+        "minecraft:ocelot" => {
+            if e.trusting {
+                meta.push((18, serializer::BOOLEAN, Value::Bool(true)));
+            }
+            defaults.push((18, serializer::BOOLEAN, Value::Bool(false)));
+        }
         "minecraft:parrot" => {
             // TamableAnimal.DATA_FLAGS_ID: sitting 1, tame 4.
             let flags = i8::from(e.sitting) | if e.tame { 4 } else { 0 };

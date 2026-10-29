@@ -117,6 +117,8 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
                 m.extra.trusted[usize::from(slot - 20)] =
                     uuid.map(horizon_client::lan::playerdata::uuid_ints);
             }
+            // Ocelot.DATA_TRUSTING.
+            (Species::Ocelot, 18, Value::Bool(trusting)) => tame::set_trusting(m, *trusting),
             // Sheep.DATA_WOOL_ID: the colour in the low nibble, 16 sheared.
             (Species::Sheep, 18, Value::Byte(wool)) => {
                 m.extra.color = (*wool & 15) as u8;
