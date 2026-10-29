@@ -2090,6 +2090,14 @@ impl Game<'_> {
             if p.species() == Species::Sheep {
                 child.extra.color = p.extra.color;
             }
+            // Fox.FoxBreedGoal.breed: the baby trusts whoever fed its parents.
+            if p.species() == Species::Fox {
+                horizon_client::mobs::fox::trust_breeders(
+                    child,
+                    p.extra.love_cause,
+                    q.as_ref().and_then(|q| q.extra.love_cause),
+                );
+            }
         }
         let xp = 1 + self.world.random.next_int_bound(7).unwrap_or(0) as u32;
         self.spawn_breeding_orb([p.position.x, p.position.y, p.position.z], xp);
@@ -4348,11 +4356,15 @@ impl Game<'_> {
         let (species, variant, color) =
             (parent.species(), parent.extra.variant, parent.extra.color);
         let target = self.mob_entity(&self.mobs[index]);
+        let spawner = self.acting_player_uuid();
         let Some(id) = self.spawn_mob_spawned(&kind, at) else {
             return false;
         };
         if let Some(child) = self.mobs.iter_mut().find(|m| m.id == id) {
             horizon_client::mobs::finalize::spawn_egg_offspring(child, species, variant, color);
+            if species == Species::Fox {
+                horizon_client::mobs::fox::on_offspring_spawned_from_egg(child, spawner);
+            }
         }
         self.trigger_item_entity("minecraft:player_interacted_with_entity", &stack, &target);
         self.consume_held();
