@@ -4733,6 +4733,9 @@ impl Game<'_> {
                 sequence: seq,
             }));
             self.tutorial_destroy(state, 0.0);
+            // startDestroyBlock: BlockState.attack on the client, so a redstone
+            // ore's dust (RedStoneOreBlock.attack) comes before the break.
+            self.redstone_ore_particles(hit.pos);
             if progress >= 1.0 {
                 // startDestroyBlock: instant survival breaks have no destroy delay.
                 self.predict_break(hit.pos, state, seq);
@@ -4928,6 +4931,15 @@ impl Game<'_> {
                     !(sneaking && hands_full) && self.anchor_takes(hit.pos, held.as_ref());
                 (charges, DryUse::default())
             };
+            // RedStoneOreBlock.useItemOn: the clicking client's own dust, unless
+            // a sneak with something in hand skips useItemOn.
+            if hand == Hand::Main && !spectator {
+                let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
+                let hands_full = self.stack_in(self.selected).is_some() || self.offhand.is_some();
+                if !(sneaking && hands_full) {
+                    self.redstone_ore_particles(hit.pos);
+                }
+            }
             let seq = self.next_sequence();
             let cursor = [
                 (hit.point[0] - f64::from(hit.pos[0])) as f32,
