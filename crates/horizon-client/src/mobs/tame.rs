@@ -919,7 +919,10 @@ impl Goal for OcelotTempt {
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_use(m, cx)
     }
+    /// `Ocelot.OcelotTemptGoal.canScare`: only a wild ocelot is scared off by
+    /// a player who moves or turns, and `canContinueToUse` is where it counts.
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        self.0.can_scare = !m.extra.trusting;
         self.0.can_continue(m, cx)
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
