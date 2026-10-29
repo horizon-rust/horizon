@@ -2931,7 +2931,9 @@ impl B {
                 if let Some(target) = mem(m).interaction_target.value() {
                     mem(m).look_target.set(Tracker::Entity(target, true));
                 }
-                // No offer matches the player's item: look for a while only.
+                // No offer matches the player's item: hold nothing and look
+                // for a while only.
+                clear_held_item(m);
                 *look_time = (*look_time).min(40);
                 *look_time -= 1;
             }
@@ -3187,6 +3189,7 @@ impl B {
             B::ShowTrades { t, .. } => {
                 t.running = false;
                 mem(m).interaction_target.clear();
+                clear_held_item(m);
             }
             B::TradeWithVillager(t) => {
                 t.running = false;
@@ -3339,6 +3342,20 @@ fn show_trades_condition(m: &Mob, w: &MobWorld) -> bool {
         && !m.is_baby()
         && w.target_info(target)
             .is_some_and(|t| t.alive && m.distance_sqr(t.position) <= 17.0)
+}
+/// `ShowTradesToPlayer.clearHeldItem`: the main hand is empty again and
+/// drops with the default chance (the shown item never dropped).
+fn clear_held_item(m: &mut Mob) {
+    m.extra.main_hand = None;
+    m.extra.main_hand_count = 0;
+    if m.extra.gear.is_some() {
+        super::gear::set(m, super::gear::MAIN, Vec::new());
+    }
+    super::finalize::set_drop_chance(
+        m,
+        super::finalize::MAINHAND,
+        super::drops::DEFAULT_DROP_CHANCE,
+    );
 }
 /// `BehaviorUtils.targetIsValid` for a villager.
 fn villager_target_valid(m: &mut Mob, w: &MobWorld, which: Mem) -> bool {
