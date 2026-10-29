@@ -16,13 +16,16 @@ use std::collections::HashMap;
 
 /// What a decoration is filed under in `MapItemSavedData.decorations` (a
 /// `LinkedHashMap<String, MapDecoration>`): a player's marker by their
-/// connection.
+/// connection, the banner at a position (`MapBanner.getId`), a framed map's
+/// frame by its entity (`getFrameKey`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Key {
     Player(u32),
     /// An item's `minecraft:map_decorations` (an explorer map's target), or a
     /// decoration a server sent (`addClientSideDecorations`).
     Item,
+    Banner([i32; 3]),
+    Frame(i32),
 }
 /// A decoration (`MapDecoration`): sprite, map position (-128..127, half
 /// pixels), rotation (0..15) and name, filed under its key.
@@ -35,11 +38,90 @@ pub(super) struct Decoration {
     pub name: Option<String>,
     pub key: Key,
 }
+/// `MapBanner`: a banner a map marks, as `banners` saves it.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct MapBanner {
+    pub pos: [i32; 3],
+    /// `DyeColor.getName` of the banner's base colour.
+    pub color: String,
+    pub name: Option<String>,
+}
+impl MapBanner {
+    /// `MapBanner.getDecoration`: the marker of the banner's colour.
+    fn sprite(&self) -> &'static str {
+        decoration_sprite(&format!("banner_{}", self.color)).unwrap_or(BANNER_WHITE)
+    }
+    /// `MapBanner.CODEC`.
+    fn to_nbt(&self) -> Tag {
+        let mut entries = vec![
+            ("pos", Tag::IntArray(self.pos.to_vec())),
+            ("color", Tag::String(self.color.as_str().into())),
+        ];
+        if let Some(name) = &self.name {
+            entries.push(("name", Tag::String(name.as_str().into())));
+        }
+        Tag::compound(entries)
+    }
+    fn from_nbt(tag: &Tag) -> Option<Self> {
+        // DyeColor.CODEC is read leniently: white when missing or unknown.
+        let color = horizon_client::save::text(tag.get("color"))
+            .filter(|c| decoration_sprite(&format!("banner_{c}")).is_some())
+            .unwrap_or_else(|| "white".to_owned());
+        Some(Self {
+            pos: block_pos(tag.get("pos"))?,
+            color,
+            name: horizon_client::save::text(tag.get("name")),
+        })
+    }
+}
+/// `MapFrame`: an item frame a map hangs in, as `frames` saves it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct MapFrame {
+    pub pos: [i32; 3],
+    /// The frame's `Direction.get2DDataValue` times 90.
+    pub rotation: i32,
+    pub entity_id: i32,
+}
+impl MapFrame {
+    /// `MapFrame.CODEC`.
+    fn to_nbt(&self) -> Tag {
+        Tag::compound([
+            ("pos", Tag::IntArray(self.pos.to_vec())),
+            ("rotation", Tag::Int(self.rotation)),
+            ("entity_id", Tag::Int(self.entity_id)),
+        ])
+    }
+    fn from_nbt(tag: &Tag) -> Option<Self> {
+        let int = |k: &str| horizon_client::save::number(tag.get(k)).map(|v| v as i32);
+        Some(Self {
+            pos: block_pos(tag.get("pos"))?,
+            rotation: int("rotation")?,
+            entity_id: int("entity_id")?,
+        })
+    }
+}
+/// `BlockPos.CODEC`: three ints, as an int array or a list.
+fn block_pos(tag: Option<&Tag>) -> Option<[i32; 3]> {
+    match tag? {
+        Tag::IntArray(v) if v.len() == 3 => Some([v[0], v[1], v[2]]),
+        Tag::List(l) if l.len() == 3 => {
+            let int = |t: &Tag| match t {
+                Tag::Int(v) => Some(*v),
+                _ => None,
+            };
+            Some([int(&l[0])?, int(&l[1])?, int(&l[2])?])
+        }
+        _ => None,
+    }
+}
 /// The host among a map's holders (the guests are their connections).
 const HOST: u32 = u32::MAX;
 /// `MapDecorationTypes` the markers use: the player's arrow, the arrows that
-/// replace it past the map's edge.
+/// replace it past the map's edge, the item frame's, the white banner's (the
+/// fallback colour).
 const PLAYER: &str = "map/decorations/player";
+const FRAME: &str = "map/decorations/frame";
+const BANNER_WHITE: &str = "map/decorations/white_banner";
 const PLAYER_OFF_MAP: &str = "map/decorations/player_off_map";
 const PLAYER_OFF_LIMITS: &str = "map/decorations/player_off_limits";
 /// A player carrying a map, or seeing it framed
@@ -82,10 +164,9 @@ pub(super) struct MapData {
     pub unlimited: bool,
     pub colors: Vec<u8>,
     pub decorations: Vec<Decoration>,
-    /// `MapBanner` and `MapFrame` entries as saved (`banners`, `frames`), kept
-    /// so a save does not drop them.
-    pub banners: Vec<Tag>,
-    frames: Vec<Tag>,
+    /// `bannerMarkers` and `frameMarkers` (`banners`, `frames` when saved).
+    pub banners: Vec<MapBanner>,
+    frames: Vec<MapFrame>,
     holders: Vec<Holder>,
     /// Changed since the last save / texture upload.
     dirty: bool,
@@ -293,8 +374,14 @@ impl MapData {
                     ("trackingPosition", flag(self.tracking)),
                     ("unlimitedTracking", flag(self.unlimited)),
                     ("colors", Tag::ByteArray(self.colors.clone())),
-                    ("banners", Tag::List(self.banners.clone())),
-                    ("frames", Tag::List(self.frames.clone())),
+                    (
+                        "banners",
+                        Tag::List(self.banners.iter().map(MapBanner::to_nbt).collect()),
+                    ),
+                    (
+                        "frames",
+                        Tag::List(self.frames.iter().map(MapFrame::to_nbt).collect()),
+                    ),
                 ]),
             ),
             ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
@@ -320,7 +407,7 @@ impl MapData {
             Some(Tag::List(l)) => l.clone(),
             _ => Vec::new(),
         };
-        Some(Self {
+        let mut map = Self {
             center: [int("xCenter")?, int("zCenter")?],
             scale: int("scale").unwrap_or(0).clamp(0, 4) as u8,
             dimension,
@@ -329,12 +416,29 @@ impl MapData {
             unlimited: int("unlimitedTracking").unwrap_or(0) != 0,
             colors,
             decorations: Vec::new(),
-            banners: list("banners"),
-            frames: list("frames"),
+            banners: list("banners")
+                .iter()
+                .filter_map(MapBanner::from_nbt)
+                .collect(),
+            frames: list("frames")
+                .iter()
+                .filter_map(MapFrame::from_nbt)
+                .collect(),
             holders: Vec::new(),
             dirty: false,
             texture_dirty: true,
-        })
+        };
+        // The constructor adds each marker without a level: no Nether spin.
+        for b in map.banners.clone() {
+            let (x, z) = (f64::from(b.pos[0]), f64::from(b.pos[2]));
+            map.add_decoration(b.sprite(), None, Key::Banner(b.pos), x, z, 180.0, b.name);
+        }
+        for f in map.frames.clone() {
+            let (x, z) = (f64::from(f.pos[0]), f64::from(f.pos[2]));
+            let rotation = f64::from(f.rotation);
+            map.add_decoration(FRAME, None, Key::Frame(f.entity_id), x, z, rotation, None);
+        }
+        Some(map)
     }
 }
 #[derive(Default)]
@@ -363,7 +467,7 @@ pub(super) fn map_id(stack: &ItemStack) -> Option<i32> {
     stack.data().and_then(|d| d.map_id)
 }
 /// `MapDecorationTypes` Horizon draws: (type, sprite).
-const DECORATION_TYPES: [(&str, &str); 24] = [
+const DECORATION_TYPES: [(&str, &str); 40] = [
     ("player", "map/decorations/player"),
     ("frame", "map/decorations/frame"),
     ("red_marker", "map/decorations/red_marker"),
@@ -374,6 +478,22 @@ const DECORATION_TYPES: [(&str, &str); 24] = [
     ("player_off_limits", "map/decorations/player_off_limits"),
     ("mansion", "map/decorations/woodland_mansion"),
     ("monument", "map/decorations/ocean_monument"),
+    ("banner_white", "map/decorations/white_banner"),
+    ("banner_orange", "map/decorations/orange_banner"),
+    ("banner_magenta", "map/decorations/magenta_banner"),
+    ("banner_light_blue", "map/decorations/light_blue_banner"),
+    ("banner_yellow", "map/decorations/yellow_banner"),
+    ("banner_lime", "map/decorations/lime_banner"),
+    ("banner_pink", "map/decorations/pink_banner"),
+    ("banner_gray", "map/decorations/gray_banner"),
+    ("banner_light_gray", "map/decorations/light_gray_banner"),
+    ("banner_cyan", "map/decorations/cyan_banner"),
+    ("banner_purple", "map/decorations/purple_banner"),
+    ("banner_blue", "map/decorations/blue_banner"),
+    ("banner_brown", "map/decorations/brown_banner"),
+    ("banner_green", "map/decorations/green_banner"),
+    ("banner_red", "map/decorations/red_banner"),
+    ("banner_black", "map/decorations/black_banner"),
     ("red_x", "map/decorations/red_x"),
     ("village_desert", "map/decorations/desert_village"),
     ("village_plains", "map/decorations/plains_village"),
