@@ -24,7 +24,6 @@ fn picks_up_elsewhere(species: Species) -> bool {
             | Species::Panda
             | Species::Allay
             | Species::SulfurCube
-            | Species::Dolphin
             | Species::Pillager
     )
 }
@@ -65,10 +64,11 @@ impl Game<'_> {
             }
         }
     }
-    /// `Mob.pickUpItem` and the overrides of the fox.
+    /// `Mob.pickUpItem` and the overrides of the fox and the dolphin.
     fn pick_up_item(&mut self, i: usize, id: u32) {
         match self.mobs[i].species() {
             Species::Fox => self.fox_pick_up_item(i, id),
+            Species::Dolphin => self.dolphin_pick_up_item(i, id),
             _ => self.equip_picked_up_item(i, id),
         }
     }
@@ -121,6 +121,25 @@ impl Game<'_> {
         if let Some(j) = self.dropped.iter().position(|e| e.id == id) {
             self.mob_takes_item(i, j, count);
         }
+    }
+    /// `Dolphin.pickUpItem`: a dolphin with an empty mouth takes the whole
+    /// stack of the item entity, which it will drop again to play.
+    fn dolphin_pick_up_item(&mut self, i: usize, id: u32) {
+        if self.mobs[i].extra.main_hand.is_some() {
+            return;
+        }
+        let Some(j) = self.dropped.iter().position(|e| e.id == id) else {
+            return;
+        };
+        let entity = self.dropped[j].clone();
+        if !loot::can_hold_item(&self.mobs[i], self.res.items(), &entity.stack.item) {
+            return;
+        }
+        self.mob_item_picked_up(i, &entity);
+        let m = &mut self.mobs[i];
+        loot::set_slot_stack(m, "mainhand", &entity.stack);
+        loot::set_guaranteed_drop(m, "mainhand");
+        self.mob_takes_item(i, j, entity.stack.count);
     }
     /// `Mob.pickUpItem`: the mob equips the item entity's stack where it
     /// belongs (`equipItemIfPossible`); what it takes leaves the entity, which
