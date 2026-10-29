@@ -28,6 +28,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -37,12 +38,53 @@ if os.name == "nt":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+
+def _newer_python():
+    """A Python 3.11+ command this machine has, or None.
+
+    pr_ready's suite needs 3.11 (tomllib, hashlib.file_digest), but the
+    plain `python` of a Windows PATH is often older while the py launcher
+    (or a versioned name) has a newer one.
+    """
+    commands = [["py", f"-3.{minor}"] for minor in (14, 13, 12, 11) if os.name == "nt"]
+    commands += [[f"python3.{minor}"] for minor in (14, 13, 12, 11)]
+    for command in commands:
+        exe = shutil.which(command[0])
+        if not exe:
+            continue
+        probe = command[1:] + ["-c", "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)"]
+        try:
+            ok = subprocess.run(
+                [exe] + probe,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode == 0
+        except OSError:
+            continue
+        if ok:
+            return [exe] + command[1:]
+    return None
+
+
 if sys.version_info < (3, 11):
-    sys.exit(
+    message = (
         f"pr_ready needs Python 3.11 or newer (this is {sys.version.split()[0]}); "
-        "the Python tests it runs use tomllib and hashlib.file_digest. "
-        "On Windows: py -3.12 tools/pr_ready.py"
+        "the Python tests it runs use tomllib and hashlib.file_digest"
     )
+    if __name__ == "__main__" and not os.environ.get("PR_READY_ON_NEWER_PYTHON"):
+        newer = _newer_python()
+        if newer:
+            # Hand the whole check over: same arguments, same streams, its
+            # exit code becomes this one's (an import — tests/test_pr_ready —
+            # refuses instead of taking the process with it).
+            os.environ["PR_READY_ON_NEWER_PYTHON"] = "1"
+            sys.exit(
+                subprocess.run(
+                    newer + [str(Path(__file__).resolve())] + sys.argv[1:]
+                ).returncode
+            )
+        message += "; no Python 3.11+ found (Windows: py -3.12 tools/pr_ready.py)"
+    sys.exit(message)
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
