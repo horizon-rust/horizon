@@ -1343,6 +1343,21 @@ impl Default for TargetState {
         }
     }
 }
+impl TargetState {
+    /// A target goal that keeps a target out of sight for `unseen_memory`
+    /// ticks (`TargetGoal.unseenMemoryTicks`).
+    pub fn new(unseen_memory: i32) -> Self {
+        Self {
+            unseen: 0,
+            unseen_memory,
+            follow_scale: 1.0,
+        }
+    }
+    /// `TargetGoal.start`: nothing has been out of sight yet.
+    pub fn reset(&mut self) {
+        self.unseen = 0;
+    }
+}
 impl NearestTarget {
     pub fn new(prey: Prey, must_see: bool) -> Self {
         Self {
