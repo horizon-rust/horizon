@@ -1008,8 +1008,10 @@ pub enum Event {
     ButtonClick,
     /// Close the options screens (back to the pause menu or title).
     Close,
-    /// Settings changed: apply them.
+    /// Settings changed: apply and save them.
     Changed,
+    /// A slider is being dragged: apply settings live but defer saving.
+    SliderDrag,
     /// The language changed (reload translations).
     Language(String),
     /// The pack selection changed (reload resources).
@@ -1024,6 +1026,9 @@ pub enum Event {
     /// Open the mod's own settings page (capability `ui`): the installed
     /// mod's index in `mods.installed`.
     ModSettings(usize),
+    /// Native mod `.0`'s page opened: the game asks the mod for its labels
+    /// again (they were made with the list, maybe in another language).
+    NativeSettings(usize),
     /// Button `.1` of native mod `.0`'s page was pressed: the game tells the
     /// mod and refreshes the page.
     NativeButton(usize, usize),
@@ -2601,6 +2606,7 @@ impl OptionsUi {
                 match action {
                     Action::ButtonClick => events.push(Event::ButtonClick),
                     Action::Changed => events.push(Event::Changed),
+                    Action::SliderDrag => events.push(Event::SliderDrag),
                     Action::OpenAdvanced => self.push(Page::GraphicsAdvanced),
                     Action::OpenSimple => {
                         if self.stack.len() >= 2
@@ -2681,7 +2687,7 @@ impl OptionsUi {
                 let v = ui::slider_value(wd.x, wd.w, x);
                 self.slider_value = Some((opt, v, Instant::now()));
                 set_slider(opt, s, v);
-                events.push(Event::Changed);
+                events.push(Event::SliderDrag);
             }
             return events;
         }
@@ -2786,6 +2792,7 @@ impl OptionsUi {
                             events.push(Event::ButtonClick);
                             if s.mods.installed.get(i).is_some_and(|m| m.native.is_some()) {
                                 self.push(Page::NativeMod(i));
+                                events.push(Event::NativeSettings(i));
                             } else {
                                 events.push(Event::ModSettings(i));
                             }
@@ -2817,7 +2824,7 @@ impl OptionsUi {
                     let v = ui::slider_value(wd.x, wd.w, x);
                     self.slider_value = Some((opt, v, Instant::now()));
                     set_slider(opt, s, v);
-                    events.push(Event::Changed);
+                    events.push(Event::SliderDrag);
                 }
                 WKind::LanguageRow { code, .. } => {
                     if self.language_choice.as_deref() == Some(code.as_str()) {
@@ -2850,7 +2857,9 @@ impl OptionsUi {
         let slider = self.dragging.take().is_some();
         let graphics_slider = self.graphics.release();
         let split_drop = self.split_setup.release();
-        if slider || graphics_slider || split_drop {
+        if slider || graphics_slider {
+            vec![Event::ButtonClick, Event::Changed]
+        } else if split_drop {
             vec![Event::ButtonClick]
         } else {
             Vec::new()
@@ -3414,6 +3423,50 @@ mod tests {
     }
 
     #[test]
+    fn opening_a_native_mods_page_asks_the_game_for_its_labels_again() {
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        let size = (480.0, 240.0);
+        s.mods.installed.push(crate::mod_list::Installed {
+            id: "native".into(),
+            title: "Native 1.0".into(),
+            description: String::new(),
+            problem: None,
+            dev: false,
+            has_settings: false,
+            native: Some(crate::mod_list::NativePage::default()),
+        });
+        ui.show(Page::Mods);
+        let (widgets, ..) = ui.layout(&s, size.0, size.1);
+        let settings = widgets
+            .iter()
+            .find(|w| {
+                matches!(
+                    w.kind,
+                    WKind::Button {
+                        act: Act::ModSettings(0),
+                        ..
+                    }
+                )
+            })
+            .expect("a native mod's row has a Settings button");
+        let events = ui.click(
+            &mut s,
+            &atlas,
+            settings.x + 1.0,
+            settings.y + 1.0,
+            size,
+            [480, 240],
+            false,
+            false,
+        );
+        // Its labels were made with the list, maybe in another language.
+        assert_eq!(events.last(), Some(&Event::NativeSettings(0)));
+        assert_eq!(ui.page(), Page::NativeMod(0));
+    }
+
+    #[test]
     fn option_tooltip_keys_follow_value_dependent_descriptions() {
         let mut s = Settings::default();
         assert_eq!(
@@ -3849,22 +3902,22 @@ mod tests {
         let (x, y) = (slider.x + slider.w - 1.0, slider.y + 1.0);
         assert_eq!(
             ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false),
-            vec![Event::Changed]
+            vec![Event::SliderDrag]
         );
         assert_eq!(s.master_volume, 1.0);
-        assert_eq!(ui.release(), vec![Event::ButtonClick]);
+        assert_eq!(ui.release(), vec![Event::ButtonClick, Event::Changed]);
         assert!(ui.release().is_empty());
         assert_eq!(
             ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false),
-            vec![Event::Changed]
+            vec![Event::SliderDrag]
         );
         for cx in [-100.0, 250.0, 1000.0] {
             assert_eq!(
                 ui.click(&mut s, &atlas, cx, -100.0, size, [854, 480], true, false),
-                vec![Event::Changed]
+                vec![Event::SliderDrag]
             );
         }
-        assert_eq!(ui.release(), vec![Event::ButtonClick]);
+        assert_eq!(ui.release(), vec![Event::ButtonClick, Event::Changed]);
         assert!(
             ui.click(&mut s, &atlas, x, y, size, [854, 480], true, false)
                 .is_empty()
