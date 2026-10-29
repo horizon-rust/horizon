@@ -763,7 +763,12 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
             if let (Some(id), Some(g)) = (item, crate::mobs::gear::gear(m))
                 && (!g.slots[index].is_empty() || g.trims[index].is_some())
             {
-                let mut stack = crate::items::ItemStack::new(id, 1);
+                let count = if slot == "mainhand" {
+                    m.main_hand_count()
+                } else {
+                    1
+                };
+                let mut stack = crate::items::ItemStack::new(id, count);
                 stack.data_mut().enchantments = g.slots[index].clone();
                 stack.data_mut().trim = g.trims[index].clone();
                 equipment.insert(slot.into(), crate::save::item_to_nbt(&stack));
@@ -782,10 +787,18 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
             }
             match item {
                 Some(id) => {
-                    let keep = matches!(
-                        equipment.get(&slot.into()).and_then(|e| e.get("id")),
-                        Some(Tag::String(s)) if s.to_string_lossy() == **id
-                    );
+                    // The main hand keeps the stack a mob picked up.
+                    let count = if slot == "mainhand" {
+                        m.main_hand_count()
+                    } else {
+                        1
+                    };
+                    let keep =
+                        matches!(
+                            equipment.get(&slot.into()).and_then(|e| e.get("id")),
+                            Some(Tag::String(s)) if s.to_string_lossy() == **id
+                        ) && number(equipment.get(&slot.into()).and_then(|e| e.get("count")))
+                            .is_none_or(|c| c == i64::from(count));
                     if slot == "head"
                         && &**id == crate::mobs::raider::BANNER
                         && crate::mobs::raider::is_raider(m.species())
@@ -806,7 +819,7 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
                             slot.into(),
                             Tag::compound([
                                 ("id", Tag::String(id.as_ref().into())),
-                                ("count", Tag::Int(1)),
+                                ("count", Tag::Int(count as i32)),
                             ]),
                         );
                     }
@@ -993,6 +1006,10 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
             .get("mainhand")
             .and_then(|i| text(i.get("id")))
             .map(Into::into);
+        m.extra.main_hand_count = eq
+            .get("mainhand")
+            .and_then(|i| number(i.get("count")))
+            .map_or(1, |c| c.clamp(1, 99) as u32);
         m.extra.off_hand = eq
             .get("offhand")
             .and_then(|i| text(i.get("id")))
@@ -1020,6 +1037,7 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
         // Registration hands out default weapons (finalizeSpawn does in
         // vanilla); a loaded mob holds only what its file lists.
         m.extra.main_hand = None;
+        m.extra.main_hand_count = 0;
     }
     m.death_time = number(tag.get("DeathTime")).unwrap_or(0) as i32;
     // Mob.readAdditionalSaveData overrides what the constructor set (copper

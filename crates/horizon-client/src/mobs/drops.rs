@@ -244,9 +244,9 @@ pub fn slot_item(m: &Mob, slot: &str) -> Option<LootStack> {
         }
         _ => (None, None),
     };
-    // A panda keeps the whole stack it picked up in its mouth.
-    let count = if slot == "mainhand" && m.species() == Species::Panda {
-        super::panda::held_count(m)
+    // The main hand keeps the whole stack a mob picked up.
+    let count = if slot == "mainhand" {
+        m.main_hand_count()
     } else {
         1
     };
@@ -271,6 +271,7 @@ pub fn clear_slot(m: &mut Mob, slot: &str) {
     let index = match slot {
         "mainhand" => {
             m.extra.main_hand = None;
+            m.extra.main_hand_count = 0;
             gear::MAIN
         }
         "offhand" => {

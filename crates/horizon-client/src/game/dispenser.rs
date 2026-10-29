@@ -296,7 +296,10 @@ pub(super) fn mob_set_slot(m: &mut Mob, slot: Slot, stack: ItemStack) {
     let item: Arc<str> = stack.item.clone();
     let x = &mut m.extra;
     match slot {
-        Slot::MainHand => x.main_hand = Some(item),
+        Slot::MainHand => {
+            x.main_hand = Some(item);
+            x.main_hand_count = stack.count;
+        }
         Slot::OffHand => x.off_hand = Some(item),
         Slot::Feet => x.feet = Some(item),
         Slot::Legs => x.legs = Some(item),
