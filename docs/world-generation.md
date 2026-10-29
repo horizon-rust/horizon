@@ -205,8 +205,9 @@ decorate in that order instead of row-major.
 
 A world's enabled data packs (`<world>/datapacks`, in `datapacks.json`'s order) change its generation as vanilla's registries do:
 `worldgen::overrides` maps each pack file to the bundle it joins (noises, density functions, noise settings, material rules and
-conditions, carvers, configured and placed features, structures, structure sets, template pools, processor lists, biomes, level stems), a
-higher pack's file for an id replacing a lower one's, and its block, fluid and biome tag files to the tag bundles in pack order.
+conditions, carvers, configured and placed features, block state providers, structures, structure sets, template pools, processor
+lists, biomes, level stems), a higher pack's file for an id replacing a lower one's, and its block, fluid and biome tag files to the tag
+bundles in pack order.
 `GeneratorData::load_with` reads the bundles with them; the client caches the result per set of pack entries
 (`vanillagen::shared_data_with`). What Horizon leaves out is logged: a pack's new biomes (the game has no id, colours or sounds for them;
 their tag entries and climate points go with them), dimension types (every dimension keeps its vanilla build height, and noise settings
