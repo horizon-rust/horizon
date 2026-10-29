@@ -6,7 +6,9 @@
 use super::{Game, item_draw::owner_at};
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
-    block_entity_render::vertex_light, containers::Shelf, item_render::ItemRenderState,
+    block_entity_render::vertex_light,
+    containers::{BlockEntity, Shelf},
+    item_render::ItemRenderState,
     mesher::Vertex,
 };
 use horizon_core::position::BlockPos;
@@ -73,6 +75,32 @@ impl Game<'_> {
             align_to_bottom: shelf.align_items_to_bottom,
             facing,
             light: vertex_light(self.world.light(key.0, key.1, key.2)),
+        }
+    }
+    /// `ShelfRenderer.submit`: every item of every shelf in range, turned to
+    /// the shelf's front.
+    pub(super) fn shelf_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
+        for (key, entity) in &self.world.block_entities {
+            let BlockEntity::Shelf(shelf) = entity else {
+                continue;
+            };
+            if shelf.items.iter().all(Option::is_none) {
+                continue;
+            }
+            let at = glam::DVec3::new(f64::from(key.0), f64::from(key.1), f64::from(key.2));
+            // `BlockEntityRenderer.shouldRender`: the block's centre within 64.
+            if (at + glam::DVec3::splat(0.5)).distance_squared(camera) >= 64.0 * 64.0 {
+                continue;
+            }
+            let state = self.shelf_extract(*key, shelf);
+            // `-state.facing.toYRot()`.
+            let y_rot = -(f32::from(state.facing) * 90.0);
+            let origin = (at - camera).as_vec3();
+            for (slot, item) in state.items.iter().enumerate() {
+                if let Some(item) = item {
+                    self.shelf_submit_item(&state, item, origin, slot, y_rot, out);
+                }
+            }
         }
     }
     /// `ShelfRenderer.submitItem`: the item in slot `slot` a quarter of its
