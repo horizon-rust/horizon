@@ -3817,6 +3817,7 @@ impl Game<'_> {
         self.tick_block_entity_anims();
         self.tick_remote_spawners();
         self.client_tick_beacons();
+        self.tick_remote_potent_sulfur();
         self.with_level(|b, level, ticks| {
             b.client_tick_block_entities(level, ticks);
         });
