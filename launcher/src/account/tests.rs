@@ -320,6 +320,45 @@ fn kept(store: &MemoryStore) -> Secrets {
 }
 
 #[test]
+fn splitscreen_gets_the_other_accounts_that_still_hold() {
+    let store = MemoryStore::default();
+    let mut accounts = signed_in(&store, &secrets("mc-token", true));
+    let other = |name: &str, uuid: &str| Account {
+        uuid: uuid.into(),
+        name: name.into(),
+        skin: None,
+        cape: None,
+    };
+    let expired = Secrets {
+        minecraft_expires_at: 0,
+        ..secrets("old", true)
+    };
+    for (name, uuid, s) in [
+        ("Bea", "b", secrets("bea-token", true)),
+        ("Cal", "c", expired),
+        ("Dan", "d", secrets("dan-token", false)),
+    ] {
+        accounts.add(&store, other(name, uuid), &s).unwrap();
+    }
+    accounts.selected = Some(UUID.into());
+    let dir = std::env::temp_dir().join(format!("hz-split-sessions-{}", std::process::id()));
+    // No network: Cal can't be renewed and Dan doesn't own the game; neither stops the launch.
+    let env = account_sessions(&offline(), Some("test-client"), &store, &dir, &mut accounts);
+    let (key, json) = &env[0];
+    assert_eq!(*key, "HORIZON_ACCOUNT_SESSIONS");
+    let list: Vec<Value> = serde_json::from_str(json).unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["name"], "Bea");
+    let file = std::fs::read_to_string(list[0]["file"].as_str().unwrap()).unwrap();
+    assert!(file.contains("bea-token") && !file.contains("mc-token"));
+    let _ = std::fs::remove_dir_all(&dir);
+    // Alone: nothing.
+    let mut alone = signed_in(&store, &secrets("mc-token", true));
+    let env = account_sessions(&offline(), Some("test-client"), &store, &dir, &mut alone);
+    assert!(env.is_empty());
+}
+
+#[test]
 fn an_owner_plays_with_a_session() {
     let (_, ep) = mock(|_| {});
     let store = MemoryStore::default();

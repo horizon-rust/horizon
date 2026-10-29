@@ -142,10 +142,11 @@ which holds the switch. While splitscreen is on, every player's pause menu has
   filling another monitor. Offline profiles belong to the game folder: each is
   `splitscreen/profiles/<name>/`, with its own options, and its bin button
   forgets it from the list (its options and saves are kept; making the name
-  again brings it back). Microsoft accounts handed to the game in
-  `HORIZON_ACCOUNT_SESSIONS` (name, UUID and a session file each) are listed
-  first and sign in as themselves, so online-mode servers let them in; the
-  launcher doesn't hand any over yet. P1 keeps the keyboard and
+  again brings it back). The launcher's other signed-in Microsoft accounts are
+  listed first and sign in as themselves, so online-mode servers let them in:
+  at Play the launcher renews each one's token when due and hands the game a
+  session file per account (`HORIZON_ACCOUNT_SESSIONS`); an account it can't
+  renew is left out and the game starts all the same. P1 keeps the keyboard and
   mouse, and the first controller used in a menu.
 - **Where players play:** in numbered windows, Window 1 being the game's. A
   window is free or fills a monitor (borderless, over its menu bar on macOS).

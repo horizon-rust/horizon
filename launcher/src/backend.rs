@@ -2175,16 +2175,17 @@ pub fn need_prepared(tag: &str) -> Result<(), String> {
 /// the gate, a sign-in that can't be renewed (no network, expired) still lets the game start,
 /// offline.
 pub fn client(tag: &str) -> Result<Command, String> {
-    let (session, offline) = account::session_for_game(&game_home(), false)
+    let session = account::session_for_game(&game_home(), false)
         .map_err(|refused| format!("{refused} Sign in with `horizon-launcher account sign-in`."))?;
     need_prepared(tag)?;
     complete_assets(tag);
     crate::browser::horizon::before_play(&game_home());
     let mut cmd = client_command(tag);
-    if let Some(file) = session {
+    if let Some(file) = session.file {
         cmd.arg("--session-file").arg(file);
     }
-    if let Some(e) = offline {
+    cmd.envs(session.env);
+    if let Some(e) = session.offline {
         eprintln!("Playing offline: {e}");
     }
     append_game_args(&mut cmd);
@@ -2754,7 +2755,7 @@ pub enum Msg {
     Owner(bool),
     /// The owner gate's answer for the game about to start: the selected account's session
     /// file (none = offline) and why it plays offline, if it does.
-    Session(Result<(Option<PathBuf>, Option<String>), crate::account::NoOwner>),
+    Session(Result<crate::account::GameSession, crate::account::NoOwner>),
     /// A modpack step's line (`modpacks`).
     PackLine(String),
     /// A modpack step ended: the pack as it now is.
