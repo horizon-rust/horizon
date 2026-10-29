@@ -4109,7 +4109,7 @@ impl Launcher {
                         .child(
                             text(theme::HEADING)
                                 .text_color(t.ink)
-                                .child("Support the work below"),
+                                .child(tr("Support the work below")),
                         )
                         .child(text(theme::UI).text_color(t.muted).child(
                             "Horizon is built in the open. Sponsors fund the next release.",

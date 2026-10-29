@@ -141,7 +141,7 @@ pub fn tabs<T: Copy + PartialEq + 'static>(
                 .child(
                     pixel(15., FontWeight::MEDIUM)
                         .text_color(if open { t.ink } else { t.muted })
-                        .child(label),
+                        .child(horizon_launcher::i18n::tr(label)),
                 )
                 .when(!open, |d| d.hover(move |s| s.bg(t.raised)))
                 // The open tab covers the panel's outline under it.
