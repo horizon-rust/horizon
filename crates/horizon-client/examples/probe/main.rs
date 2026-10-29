@@ -24,9 +24,11 @@ mod breaking_fixture;
 mod camera_probe;
 mod cauldron_fixture;
 mod chat_screen_fixture;
+mod chest_pair_fixture;
 mod cloud_fixture;
 mod command_parse_fixture;
 mod container_screen_probe;
+mod container_title_fixture;
 mod creative_mining_probe;
 mod creative_search_fixture;
 mod cushion_placement_probe;
@@ -115,9 +117,11 @@ probes! {
     cushion_placement_probe,
     cauldron_fixture,
     chat_screen_fixture,
+    chest_pair_fixture,
     cloud_fixture,
     command_parse_fixture,
     container_screen_probe,
+    container_title_fixture,
     creative_search_fixture,
     emitter_particles_probe,
     enchanting_fixture,
