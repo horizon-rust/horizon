@@ -107,8 +107,8 @@ pub struct ItemInfo {
     pub weapon_damage: Option<u32>,
     /// `use_effects.speed_multiplier` (UseEffects.DEFAULT: 0.2).
     pub use_speed: f32,
-    /// `use_effects.interact_vibrations` (UseEffects.DEFAULT: true; spears: false).
-    pub use_interact_vibrations: bool,
+    /// `use_effects.interact_vibrations` (default true).
+    pub interact_vibrations: bool,
     /// `glider` (elytra).
     pub glider: bool,
     /// `equippable.swappable` and `equip_sound`.
@@ -665,7 +665,7 @@ impl Items {
                     use_speed: c["minecraft:use_effects"]["speed_multiplier"]
                         .as_f64()
                         .unwrap_or(0.2) as f32,
-                    use_interact_vibrations: c["minecraft:use_effects"]["interact_vibrations"]
+                    interact_vibrations: c["minecraft:use_effects"]["interact_vibrations"]
                         .as_bool()
                         .unwrap_or(true),
                     blocks_attacks: BlocksAttacks::parse(&c["minecraft:blocks_attacks"]),

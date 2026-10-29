@@ -3433,8 +3433,17 @@ impl Game<'_> {
                 continue;
             }
             loop {
-                let more =
-                    self.with_level(|b, level, ticks| b.scheduled_step(level, ticks, fluids));
+                // Due ticks run against one level while each leaves nothing for
+                // the game to apply (level events, spilled items or orbs): the
+                // next one would see the same level built again.
+                let more = self.with_level(|b, level, ticks| {
+                    loop {
+                        let more = b.scheduled_step(level, ticks, fluids);
+                        if !more || !level.events.is_empty() || !level.spill.is_empty() {
+                            break more;
+                        }
+                    }
+                });
                 if !self.level_events.is_empty() {
                     self.process_level_events()?;
                 }
@@ -4547,13 +4556,15 @@ impl Game<'_> {
                 self.swing_arm();
                 return Ok(true);
             }
-            if let Some(swings) = self.use_chiseled_bookshelf(hit, held.as_ref()) {
+            if let Some(swings) = self.use_shelf(hit) {
+                let used = held.unwrap_or_else(|| ItemStack::new("minecraft:air", 0));
+                self.trigger_block("minecraft:item_used_on_block", hit.pos, &used);
                 if swings {
                     self.swing_arm();
                 }
                 return Ok(true);
             }
-            if let Some(swings) = self.use_shelf(hit, held.as_ref()) {
+            if let Some(swings) = self.use_chiseled_bookshelf(hit, held.as_ref()) {
                 if swings {
                     self.swing_arm();
                 }
@@ -6348,6 +6359,7 @@ impl Game<'_> {
         self.frame_graph
             .draw(self.settings.horizon.overlay, &mut batch, &self.gui.atlas);
         self.draw_pad_cursor(&mut batch);
+        self.resolve_inline_profiles(&batch.inline_profiles);
         batch
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
@@ -6699,6 +6711,7 @@ impl Game<'_> {
                 | BlockEntity::DaylightDetector
                 | BlockEntity::Campfire(_)
                 | BlockEntity::ChiseledBookshelf(_)
+                | BlockEntity::Brushable(_)
                 | BlockEntity::Shelf(_)
                 | BlockEntity::PotentSulfur(_),
             ) => {}
@@ -6985,6 +6998,7 @@ impl Game<'_> {
                     | BlockEntity::DaylightDetector
                     | BlockEntity::Campfire(_)
                     | BlockEntity::ChiseledBookshelf(_)
+                    | BlockEntity::Brushable(_)
                     | BlockEntity::Shelf(_)
                     | BlockEntity::PotentSulfur(_),
                 ) => {}
@@ -8466,6 +8480,7 @@ impl Game<'_> {
         // `CampfireRenderer`.
         self.mark_entity(out.len(), "");
         self.campfire_geometry(camera, &mut out);
+        self.brushable_geometry(camera, &mut out);
         // `ShelfRenderer`.
         self.mark_entity(out.len(), "");
         self.shelf_geometry(camera, &mut out);

@@ -2,8 +2,8 @@
 //! kinds, ticking as `AbstractFurnaceBlockEntity.serverTick` with fuel times
 //! from the data-driven `context_int_provider`/`context_float_provider` files.
 pub use crate::chunk::block_entity::{
-    Banner, Beacon, BlockEntity, Campfire, ChiseledBookshelf, Crafter, CreakingHeart, EndGateway,
-    Furnace, FurnaceKind, Jukebox, Lectern, PotentSulfur, Shelf, Skull, SkullSkin,
+    Banner, Beacon, BlockEntity, Brushable, Campfire, ChiseledBookshelf, Crafter, CreakingHeart,
+    EndGateway, Furnace, FurnaceKind, Jukebox, Lectern, PotentSulfur, Shelf, Skull, SkullSkin,
 };
 use crate::items::ItemStack;
 use std::collections::HashMap;
@@ -248,6 +248,14 @@ impl BlockEntity {
                 recipes_used: HashMap::new(),
             }));
         }
+        if matches!(
+            name,
+            "minecraft:suspicious_sand"
+                | "minecraft:suspicious_gravel"
+                | "minecraft:brushable_block"
+        ) {
+            return Some(Self::Brushable(Box::default()));
+        }
         if name == "minecraft:creaking_heart" {
             return Some(Self::CreakingHeart(Box::default()));
         }
@@ -360,6 +368,7 @@ impl BlockEntity {
             Self::Skull(_) => "minecraft:skull",
             Self::EndGateway(_) => "minecraft:end_gateway",
             Self::DaylightDetector => "minecraft:daylight_detector",
+            Self::Brushable(_) => "minecraft:brushable_block",
             Self::Campfire(_) => "minecraft:campfire",
             Self::ChiseledBookshelf(_) => "minecraft:chiseled_bookshelf",
             Self::Shelf(_) => "minecraft:shelf",
@@ -383,14 +392,15 @@ impl BlockEntity {
             | Self::EndGateway(_)
             | Self::Skull(_)
             | Self::PotentSulfur(_)
-            | Self::DaylightDetector => Vec::new(),
+            | Self::DaylightDetector
+            | Self::Brushable(_) => Vec::new(),
             Self::Lectern(l) => l.book.iter().cloned().collect(),
             Self::Sculk(_) => Vec::new(),
             Self::Banner(_) => Vec::new(),
             Self::Crafter(c) => c.items.iter().flatten().cloned().collect(),
             Self::Campfire(c) => c.items.iter().flatten().cloned().collect(),
             Self::ChiseledBookshelf(b) => b.items.iter().flatten().cloned().collect(),
-            Self::Shelf(s) => s.items.iter().flatten().cloned().collect(),
+            Self::Shelf(b) => b.items.iter().flatten().cloned().collect(),
         }
     }
     pub fn slots(&self) -> &[Option<ItemStack>] {
@@ -407,10 +417,11 @@ impl BlockEntity {
             | Self::EndGateway(_)
             | Self::Skull(_)
             | Self::PotentSulfur(_)
-            | Self::DaylightDetector => &[],
+            | Self::DaylightDetector
+            | Self::Brushable(_) => &[],
             Self::Crafter(c) => &c.items,
             Self::ChiseledBookshelf(b) => &b.items,
-            Self::Shelf(s) => &s.items,
+            Self::Shelf(b) => &b.items,
             Self::CreakingHeart(_)
             | Self::Spawner(_)
             | Self::TrialSpawner(_)
@@ -435,10 +446,11 @@ impl BlockEntity {
             | Self::EndGateway(_)
             | Self::Skull(_)
             | Self::PotentSulfur(_)
-            | Self::DaylightDetector => &mut [],
+            | Self::DaylightDetector
+            | Self::Brushable(_) => &mut [],
             Self::Crafter(c) => &mut c.items,
             Self::ChiseledBookshelf(b) => &mut b.items,
-            Self::Shelf(s) => &mut s.items,
+            Self::Shelf(b) => &mut b.items,
             Self::CreakingHeart(_)
             | Self::Spawner(_)
             | Self::TrialSpawner(_)

@@ -531,18 +531,17 @@ pub fn encode_block_entity(
             }
         }
         BlockEntity::Sculk(s) => entries.extend(s.to_nbt()),
+        BlockEntity::Shelf(shelf) => {
+            entries.push(("Items", encode_items(&shelf.items)));
+            entries.push((
+                "align_items_to_bottom",
+                Tag::Byte(i8::from(shelf.align_to_bottom)),
+            ));
+        }
         // ChiseledBookShelfBlockEntity.saveAdditional.
         BlockEntity::ChiseledBookshelf(b) => {
             entries.push(("Items", encode_items(&b.items)));
             entries.push(("last_interacted_slot", Tag::Int(b.last_slot)));
-        }
-        // ShelfBlockEntity.saveAdditional.
-        BlockEntity::Shelf(s) => {
-            entries.push(("Items", encode_items(&s.items)));
-            entries.push((
-                "align_items_to_bottom",
-                Tag::Byte(i8::from(s.align_items_to_bottom)),
-            ));
         }
         // CampfireBlockEntity.saveAdditional.
         BlockEntity::Campfire(c) => {
@@ -603,6 +602,16 @@ pub fn encode_block_entity(
         BlockEntity::Vault(v) => entries.extend(v.save()),
         BlockEntity::Beehive(h) => entries.extend(h.to_nbt()),
         BlockEntity::CommandBlock(c) => entries.extend(c.save()),
+        BlockEntity::Brushable(b) => {
+            if let Some(table) = &b.loot_table {
+                entries.push(("LootTable", table.clone()));
+                if let Some(seed) = &b.loot_seed {
+                    entries.push(("LootTableSeed", seed.clone()));
+                }
+            } else if let Some(item) = &b.item {
+                entries.push(("item", item_to_nbt(item)));
+            }
+        }
         BlockEntity::DaylightDetector => {}
         // PotentSulfurBlockEntity.saveAdditional.
         BlockEntity::PotentSulfur(sulfur) => {
@@ -784,21 +793,30 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
                 _ => 1.0,
             };
         }
+        BlockEntity::Brushable(b) => {
+            b.loot_table = tag.get("LootTable").cloned();
+            b.loot_seed = tag.get("LootTableSeed").cloned();
+            b.item = if b.loot_table.is_none() {
+                tag.get("item").and_then(item_from_nbt)
+            } else {
+                None
+            };
+            b.hit_direction = int("hit_direction").filter(|v| (0..=5).contains(v));
+        }
         BlockEntity::Sign(sign) => sign.decode(tag),
         BlockEntity::Sculk(s) => s.load(tag),
+        BlockEntity::Shelf(shelf) => {
+            for (slot, item) in decode_items(tag.get("Items"), 3).into_iter().enumerate() {
+                shelf.items[slot] = item;
+            }
+            shelf.align_to_bottom = int("align_items_to_bottom").unwrap_or(0) != 0;
+        }
         // ChiseledBookShelfBlockEntity.loadAdditional.
         BlockEntity::ChiseledBookshelf(b) => {
             for (slot, item) in decode_items(tag.get("Items"), 6).into_iter().enumerate() {
                 b.items[slot] = item;
             }
             b.last_slot = int("last_interacted_slot").unwrap_or(-1);
-        }
-        // ShelfBlockEntity.loadAdditional.
-        BlockEntity::Shelf(s) => {
-            for (slot, item) in decode_items(tag.get("Items"), 3).into_iter().enumerate() {
-                s.items[slot] = item;
-            }
-            s.align_items_to_bottom = int("align_items_to_bottom").unwrap_or(0) != 0;
         }
         // CampfireBlockEntity.loadAdditional: missing time arrays stay zeros.
         BlockEntity::Campfire(c) => {

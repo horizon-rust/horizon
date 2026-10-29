@@ -74,10 +74,12 @@ pub enum BlockEntity {
     /// `DaylightDetectorBlockEntity`: no data, only the ticker
     /// (`DaylightDetectorBlock.tickEntity`).
     DaylightDetector,
+    /// Suspicious sand and gravel: saved loot and the transient brushed face.
+    Brushable(Box<Brushable>),
+    /// A shelf holds three displayed item stacks.
+    Shelf(Box<Shelf>),
     /// `ChiseledBookShelfBlockEntity`: a `Container` of six one-book slots.
     ChiseledBookshelf(Box<ChiseledBookshelf>),
-    /// `ShelfBlockEntity` of the wooden shelves.
-    Shelf(Box<Shelf>),
     /// `PotentSulfurBlockEntity` (`game/potent_sulfur.rs`).
     PotentSulfur(PotentSulfur),
 }
@@ -97,6 +99,21 @@ impl Default for PotentSulfur {
         }
     }
 }
+/// `BrushableBlockEntity`: the loot table is resolved on the first brush.
+#[derive(Clone, Debug, Default)]
+pub struct Brushable {
+    pub loot_table: Option<horizon_world::nbt::Tag>,
+    pub loot_seed: Option<horizon_world::nbt::Tag>,
+    pub item: Option<ItemStack>,
+    /// Direction's legacy network id; not saved to disk by vanilla.
+    pub hit_direction: Option<i32>,
+}
+/// `ShelfBlockEntity`'s displayed slots and alignment flag.
+#[derive(Clone, Debug, Default)]
+pub struct Shelf {
+    pub items: [Option<ItemStack>; 3],
+    pub align_to_bottom: bool,
+}
 /// `ChiseledBookShelfBlockEntity`: six slots and `lastInteractedSlot`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChiseledBookshelf {
@@ -110,13 +127,6 @@ impl Default for ChiseledBookshelf {
             last_slot: -1,
         }
     }
-}
-/// `ShelfBlockEntity`: three slots (a whole stack each, up to its item's
-/// stack size) and `align_items_to_bottom`.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Shelf {
-    pub items: [Option<ItemStack>; 3],
-    pub align_items_to_bottom: bool,
 }
 /// `TheEndGatewayBlockEntity`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

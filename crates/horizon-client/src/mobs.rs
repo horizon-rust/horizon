@@ -2463,6 +2463,10 @@ impl Mob {
         if self.species() == Species::GlowSquid {
             aquatic::hurt_server(self);
         }
+        // AbstractHorse.hurtServer: the rear roll after the hurt.
+        if equine::is_equine(self.species()) {
+            equine::after_hurt_server(self);
+        }
         true
     }
     /// A splash or cloud's harming effect on this mob: the potion's

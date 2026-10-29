@@ -1038,6 +1038,7 @@ impl Game<'_> {
             self.screen = super::Screen::Inventory;
             self.capture(false);
             self.right = false;
+            self.swing_arm();
             return true;
         }
         if sneaking
