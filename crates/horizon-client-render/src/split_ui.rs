@@ -285,9 +285,14 @@ impl SplitUi {
             }
         }
         // The windows' names over everything, so another window's tiles never hide them.
-        for (number, [x, y, _, _]) in windows.into_iter().filter(|w| !emptied(w.0)) {
+        for (number, [x, y, _, _]) in windows.iter().copied().filter(|w| !emptied(w.0)) {
             let (label, color) = (format!("Window {number}"), yellow);
-            batch.text_styled(atlas, &Text::literal(label), x + 3.0, y - 10.0, color, true);
+            // A title above this window can land on another player's visible tile.
+            let covered = windows.iter().any(|(n, r)| {
+                *n != number && ui::hovered((x + 3.0, y - 10.0), r[0], r[1], r[2], r[3])
+            });
+            let title_y = if covered { y + 3.0 } else { y - 10.0 };
+            batch.text_styled(atlas, &Text::literal(label), x + 3.0, title_y, color, true);
         }
         for b in buttons.iter().filter(|b| !matches!(b.2, Target::Player(_))) {
             self.draw_button(batch, atlas, cursor, b);
@@ -341,8 +346,12 @@ impl SplitUi {
                 self.names.get(i).map_or("this player", String::as_str)
             ),
         };
-        for (k, line) in std::iter::once(note)
-            .chain(self.warnings())
+        for (k, (line, color)) in std::iter::once((note, rgba(170, 170, 170, 255)))
+            .chain(
+                self.warnings()
+                    .into_iter()
+                    .map(|w| (w, rgba(255, 170, 85, 255))),
+            )
             .take(2)
             .enumerate()
         {
@@ -353,7 +362,7 @@ impl SplitUi {
                 0.0,
                 h - BOTTOM + 28.0 + k as f32 * 11.0,
                 w,
-                rgba(170, 170, 170, 255),
+                color,
             );
         }
         if buttons.iter().any(|(r, _, t, active)| {
