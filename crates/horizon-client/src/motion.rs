@@ -45,7 +45,10 @@ use std::{
 
 pub(crate) mod environment;
 mod fluids;
-pub use fluids::{FluidResources, FluidTags, LAVA, PlayerFluids, WATER, bubble_column_push};
+pub use fluids::{
+    BubbleColumnTouch, FluidResources, FluidTags, LAVA, PlayerFluids, WATER, bubble_column_push,
+    bubble_columns_touching,
+};
 
 pub struct MotionResources {
     pub attributes: Arc<Catalog>,

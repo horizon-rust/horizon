@@ -119,26 +119,32 @@ impl PlayerMotion {
         !self.fluids.first_tick && self.fluids.interaction.is_in_fluid(&FluidTags, LAVA)
     }
 }
-/// `BubbleColumnBlock.entityInside` for an entity that is not the player (a mob,
-/// a dropped item, an ender pearl): the bubble columns its box touches push it
-/// up or drag it down, harder at the surface (`Entity.handleOnAboveBubbleColumn`
-/// and `handleOnInsideBubbleColumn`). Returns whether it was inside a column
-/// below the surface, which resets its fall distance.
-pub fn bubble_column_push(
+/// A bubble column block that an entity's box touches, as
+/// `BubbleColumnBlock.entityInside` sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BubbleColumnTouch {
+    /// Nothing solid or fluid above the column (`onAboveBubbleColumn`); else
+    /// it is inside one (`onInsideBubbleColumn`).
+    pub above: bool,
+    /// `BubbleColumnBlock.DRAG_DOWN`.
+    pub drag_down: bool,
+}
+/// `BubbleColumnBlock.entityInside`: the bubble column blocks a box touches
+/// (deflated by 1e-5 as `Entity.checkInsideBlocks` does), in x, y, z order.
+pub fn bubble_columns_touching(
     world: &World,
     registry: &horizon_world::registry::BlockRegistry,
     facts: &crate::blocks::BlockFacts,
     collision: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
     bounds: Aabb,
-    velocity: &mut Vec3,
-) -> bool {
+) -> Vec<BubbleColumnTouch> {
     let b = bounds.deflate(Vec3::new(
         f64::from(1.0e-5f32),
         f64::from(1.0e-5f32),
         f64::from(1.0e-5f32),
     ));
     let (lo, hi) = (b.min_position(), b.max_position());
-    let mut reset_fall = false;
+    let mut touches = Vec::new();
     for x in lo.x.floor() as i32..=(hi.x.ceil() as i32 - 1) {
         for y in lo.y.floor() as i32..=(hi.y.ceil() as i32 - 1) {
             for z in lo.z.floor() as i32..=(hi.z.ceil() as i32 - 1) {
@@ -146,7 +152,7 @@ pub fn bubble_column_push(
                 if &*facts.get(state).name != "minecraft:bubble_column" {
                     continue;
                 }
-                let drag = registry
+                let drag_down = registry
                     .state(state)
                     .and_then(|s| s.properties.get("drag"))
                     .is_some_and(|d| d == "true");
@@ -168,15 +174,37 @@ pub fn bubble_column_push(
                     )
                     .is_ok_and(|shape| shape.is_empty())
                     && facts.get(above).fluid == crate::blocks::Fluid::None;
-                velocity.y = match (nothing_above, drag) {
-                    (true, true) => (-0.9_f64).max(velocity.y - 0.03),
-                    (true, false) => 1.8_f64.min(velocity.y + 0.1),
-                    (false, true) => (-0.3_f64).max(velocity.y - 0.03),
-                    (false, false) => 0.7_f64.min(velocity.y + 0.06),
-                };
-                reset_fall |= !nothing_above;
+                touches.push(BubbleColumnTouch {
+                    above: nothing_above,
+                    drag_down,
+                });
             }
         }
+    }
+    touches
+}
+/// `BubbleColumnBlock.entityInside` for an entity that is not the player (a mob,
+/// a dropped item, an ender pearl): the bubble columns its box touches push it
+/// up or drag it down, harder at the surface (`Entity.handleOnAboveBubbleColumn`
+/// and `handleOnInsideBubbleColumn`). Returns whether it was inside a column
+/// below the surface, which resets its fall distance.
+pub fn bubble_column_push(
+    world: &World,
+    registry: &horizon_world::registry::BlockRegistry,
+    facts: &crate::blocks::BlockFacts,
+    collision: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
+    bounds: Aabb,
+    velocity: &mut Vec3,
+) -> bool {
+    let mut reset_fall = false;
+    for touch in bubble_columns_touching(world, registry, facts, collision, bounds) {
+        velocity.y = match (touch.above, touch.drag_down) {
+            (true, true) => (-0.9_f64).max(velocity.y - 0.03),
+            (true, false) => 1.8_f64.min(velocity.y + 0.1),
+            (false, true) => (-0.3_f64).max(velocity.y - 0.03),
+            (false, false) => 0.7_f64.min(velocity.y + 0.06),
+        };
+        reset_fall |= !touch.above;
     }
     reset_fall
 }
