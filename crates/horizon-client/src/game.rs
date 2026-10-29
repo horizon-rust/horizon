@@ -9742,12 +9742,13 @@ impl Game<'_> {
                 let state = self.world.block(b[0], b[1], b[2]);
                 let f = self.res.facts().get(state);
                 let face = [last[0] - b[0], last[1] - b[1], last[2] - b[2]];
-                if f.fluid != Fluid::None
-                    && f.fluid_level == 8
-                    && !f.fluid_falling
-                    && !f.waterlogged
-                    && f.render_shape != horizon_client::blocks::RenderShape::Model
-                {
+                if stops_source_only_ray(
+                    f.fluid,
+                    f.fluid_level,
+                    f.fluid_falling,
+                    f.waterlogged,
+                    f.render_shape,
+                ) {
                     return Some(Hit {
                         pos: b,
                         face,
@@ -15708,6 +15709,24 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
+/// `ClipContext.Fluid.SOURCE_ONLY.canPick` for `pick_fluid`: a still source.
+/// A waterlogged block's water is one too (`SimpleWaterloggedBlock.getFluidState`),
+/// so a bucket or bottle aimed at a waterlogged slab, stair or fence gets that
+/// block (a `BucketPickup`). Other blocks drawn as a model that hold water of their
+/// own (seagrass, kelp) the traversal still looks past.
+fn stops_source_only_ray(
+    fluid: Fluid,
+    level: u8,
+    falling: bool,
+    waterlogged: bool,
+    shape: horizon_client::blocks::RenderShape,
+) -> bool {
+    fluid != Fluid::None
+        && level == 8
+        && !falling
+        && (waterlogged || shape != horizon_client::blocks::RenderShape::Model)
+}
+
 // Player.tick: cap the sleeping fade at 100, then fade out over 10 waking ticks.
 fn tick_sleep_timer(timer: u32, sleeping: bool) -> u32 {
     if sleeping {
@@ -15799,6 +15818,31 @@ mod tests {
     use super::*;
     use horizon_client::container_screen::{Button, Clicks, Release, Target};
     use horizon_client::keymapping::{KeyAction, SPRINT, ToggleKeys};
+
+    #[test]
+    fn source_only_ray_stops_at_waterlogged_blocks() {
+        use horizon_client::blocks::RenderShape::{Invisible, Model};
+        // (fluid, level, falling, waterlogged, shape, stops)
+        let cases = [
+            // A waterlogged slab: its water is a source a bucket picks up (#3592).
+            (Fluid::Water, 8, false, true, Model, true),
+            // Open water and lava sources.
+            (Fluid::Water, 8, false, false, Invisible, true),
+            (Fluid::Lava, 8, false, false, Invisible, true),
+            // Flowing or falling water, seagrass's own water, a plain block.
+            (Fluid::Water, 7, false, false, Invisible, false),
+            (Fluid::Water, 8, true, false, Invisible, false),
+            (Fluid::Water, 8, false, false, Model, false),
+            (Fluid::None, 0, false, false, Model, false),
+        ];
+        for (fluid, level, falling, waterlogged, shape, stops) in cases {
+            assert_eq!(
+                stops_source_only_ray(fluid, level, falling, waterlogged, shape),
+                stops,
+                "{fluid:?} level {level} falling {falling} waterlogged {waterlogged} {shape:?}"
+            );
+        }
+    }
 
     #[test]
     fn sleep_fade_lasts_ten_ticks_after_waking() {
