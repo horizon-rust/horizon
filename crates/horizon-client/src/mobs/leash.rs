@@ -343,6 +343,9 @@ pub fn leash_offset(m: &Mob) -> [f64; 3] {
             f64::from(0.6_f32 * m.eye_height() as f32),
             f64::from(m.width() * 0.4),
         ]
+    } else if m.species() == Species::Allay {
+        // Allay.getLeashOffset.
+        [0.0, m.eye_height() * 0.6, f64::from(m.width()) * 0.1]
     } else {
         [0.0, m.eye_height(), f64::from(m.width() * 0.4)]
     }

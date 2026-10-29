@@ -2178,12 +2178,15 @@ impl Game<'_> {
             {
                 child.extra.variant = q.as_ref().map_or(p.extra.variant, |q| q.extra.variant);
             }
-            // Sheep.getBreedOffspring: the lamb's wool mixes both parents' dyes.
-            if p.species() == Species::Sheep {
-                let other = q.as_ref().unwrap_or(&p);
-                let mixed = self.dye_mix(p.extra.color, other.extra.color);
-                if let Some(c) = self.mobs.iter_mut().find(|m| m.id == id) {
-                    c.extra.color = mixed;
+            // MushroomCow.getOffspringVariant: either parent's colour, and the
+            // other colour 1 time in 1024 when both parents have the same one.
+            if p.species() == Species::Mooshroom {
+                let mate = q.as_ref().map_or(p.extra.variant, |q| q.extra.variant);
+                child.extra.variant = if coin { p.extra.variant } else { mate };
+                if p.extra.variant == mate
+                    && self.world.random.next_int_bound(1024).unwrap_or(1) == 0
+                {
+                    child.extra.variant = if p.extra.variant == 1 { 0 } else { 1 };
                 }
             }
             // Fox.FoxBreedGoal.breed: the baby trusts whoever fed its parents.
@@ -2193,6 +2196,15 @@ impl Game<'_> {
                     p.extra.love_cause,
                     q.as_ref().and_then(|q| q.extra.love_cause),
                 );
+            }
+            // Sheep.getBreedOffspring: the lamb's wool mixes both parents' dyes;
+            // the mix needs all of `self`, so it comes after the last use of `child`.
+            if p.species() == Species::Sheep {
+                let other = q.as_ref().unwrap_or(&p);
+                let mixed = self.dye_mix(p.extra.color, other.extra.color);
+                if let Some(c) = self.mobs.iter_mut().find(|m| m.id == id) {
+                    c.extra.color = mixed;
+                }
             }
         }
         let xp = 1 + self.world.random.next_int_bound(7).unwrap_or(0) as u32;
