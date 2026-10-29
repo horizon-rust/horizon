@@ -1610,6 +1610,15 @@ impl Game<'_> {
                     }
                     HostEvent::PlayerChat { sender, text } => {
                         self.mod_player_chat(super::server_mods::Who::Uuid(sender), &text);
+                        if let Some(conn) = host
+                            .hub
+                            .guests
+                            .iter()
+                            .find(|g| g.uuid == sender)
+                            .map(|g| g.conn)
+                        {
+                            self.detect_rate_spam(&mut host, conn, false);
+                        }
                     }
                     HostEvent::Joined(conn) => {
                         self.lan_guest_joined(&mut host, conn, state.as_ref(), entities, spawn);
