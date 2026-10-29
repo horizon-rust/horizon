@@ -200,6 +200,7 @@ mod trading;
 mod trial_spawner;
 mod trial_visuals;
 mod trident;
+mod tutorial;
 mod tweaks;
 mod ui_control;
 mod vault;
@@ -1452,6 +1453,8 @@ struct Game<'a> {
     /// `FogRenderer`'s evolving state.
     fog: horizon_client::fog::FogState,
     screen_fx: horizon_client::screen_effects::ScreenEffects,
+    /// `LocalPlayer.itemActivation`: the totem flying up to the screen.
+    item_activation: horizon_client::item_activation::ItemActivation,
     weather_parameters: horizon_client::weather::ParameterCache,
     panorama_rotation: horizon_client::gfx::panorama::Rotation,
     world: World,
@@ -1526,6 +1529,9 @@ struct Game<'a> {
     /// Splitscreen: what it draws over this player's view (its badge, questions, notices).
     split_hud: split::Hud,
     focused: bool,
+    /// When the window lost focus, while it is still without
+    /// (`Minecraft.lastActiveTime`: pausing waits 500 ms).
+    focus_lost: Option<Instant>,
     /// The keyboard's modifier state (`KeyEvent.modifiers`).
     modifiers: winit::keyboard::ModifiersState,
     /// The window's fullscreen request and reported state.
@@ -1600,6 +1606,8 @@ struct Game<'a> {
     cart_sounds: HashSet<u32>,
     /// The minecart the riding sounds were started for (`LocalPlayer.startRiding`).
     riding_cart_sounds: Option<u32>,
+    /// `LocalPlayer.wasFallFlying` for the elytra's flying sound.
+    was_fall_flying: bool,
     /// Bees whose buzz is playing, and whether it is the aggressive one.
     bee_sounds: HashMap<u32, bool>,
     /// Guardians whose attack hum is playing.
@@ -1701,6 +1709,8 @@ struct Game<'a> {
     attack_clicks: u32,
     hand_strength: horizon_client::attack_strength::AttackStrength,
     settings: Settings,
+    tutorial: tutorial::Tutorial,
+    tutorial_toasts: Vec<tutorial::HintToast>,
     /// Where the options screen returns: true = title, false = pause menu.
     options_from_title: bool,
     dragging: bool,
@@ -2385,6 +2395,12 @@ impl Game<'_> {
     }
     /// Inventory.add: returns the stack that did not fit.
     fn give(&mut self, mut stack: ItemStack) -> Option<ItemStack> {
+        let tutorial_item = matches!(
+            self.tutorial.step,
+            tutorial::Step::FindTree | tutorial::Step::PunchTree | tutorial::Step::CraftPlanks
+        )
+        .then(|| stack.clone());
+        let mut added = false;
         let max = self
             .res
             .items()
@@ -2409,7 +2425,9 @@ impl Game<'_> {
                 let moved = (max - slot.count).min(stack.count);
                 slot.count += moved;
                 stack.count -= moved;
+                added |= moved > 0;
                 if stack.count == 0 {
+                    self.tutorial_get_item(tutorial_item.as_ref());
                     return None;
                 }
             }
@@ -2422,10 +2440,15 @@ impl Game<'_> {
                     ..stack.clone()
                 });
                 stack.count -= moved;
+                added |= moved > 0;
                 if stack.count == 0 {
+                    self.tutorial_get_item(tutorial_item.as_ref());
                     return None;
                 }
             }
+        }
+        if added {
+            self.tutorial_get_item(tutorial_item.as_ref());
         }
         Some(stack)
     }
@@ -5224,6 +5247,7 @@ impl Game<'_> {
         }
         self.tick_debug_keys()?;
         self.tick_debug_charts();
+        self.tick_tutorial();
         if self.remote.is_some() {
             return self.tick_remote();
         }
@@ -5239,8 +5263,10 @@ impl Game<'_> {
         self.track_experience_display();
         // `/tick freeze` stops the world but not the player.
         let running = self.clock.world_runs();
-        // GameRenderer.tick: a wither's bar darkens the world, then fades.
+        // GameRenderer.tick: a wither's bar darkens the world, then fades;
+        // the activated item counts down.
         self.boss_overlay.tick_darken(running);
+        self.tick_item_activation();
         if running {
             self.world.game_time += 1;
             if self.ui.rules.bool("advance_weather") {
@@ -5804,6 +5830,7 @@ impl Game<'_> {
             .mouse
             .handle_accumulated_movement(time, active, grabbed, look)
         {
+            self.tutorial.mouse(xo, yo);
             let mut rotation = Rotation {
                 x_rot: self.pitch,
                 y_rot: self.yaw,
@@ -5845,6 +5872,26 @@ impl Game<'_> {
                     | Screen::CommandBlock
             ) || self.book.is_some()
                 || self.win_screen_pauses())
+    }
+    /// `Minecraft.pauseIfInactive`: a window without focus for more than 500 ms
+    /// pauses the game. An open screen (books, signs, the pack prompt, a server
+    /// dialog) stays instead of pausing (`Gui.setPauseScreen`).
+    fn pause_if_inactive(&mut self) {
+        if self
+            .focus_lost
+            .is_some_and(|t| t.elapsed() > Duration::from_millis(500))
+            && self.control.is_none()
+            && self.screen == Screen::Playing
+            && self.player.is_some()
+            && !self.options.no_pause
+            && self.settings.file.bool("pauseOnLostFocus")
+            && self.book.is_none()
+            && self.sign_edit.is_none()
+            && self.server_packs.prompt.is_none()
+            && !self.dialog_open()
+        {
+            self.screen = Screen::Paused;
+        }
     }
     /// `MouseHandler.grabMouse` / `releaseMouse`. Both put the pointer at
     /// the window's centre, so a screen opened from gameplay (inventory,
@@ -6414,6 +6461,7 @@ impl Game<'_> {
         self.draw_saving_indicator(&mut batch);
         // ToastManager.extractRenderState: F1 hides the toasts too.
         self.draw_toasts(&mut batch, !show_hud);
+        self.draw_tutorial_toasts(&mut batch, !show_hud);
         self.draw_pack_toasts(&mut batch, !show_hud);
         if self.server_packs.prompt.is_none() {
             self.remote_hud(&mut batch);
@@ -9169,6 +9217,15 @@ impl Game<'_> {
             return Ok(());
         }
         self.join_world_rest()?;
+        // Create World's data packs, in the world before it opens.
+        if let Some(dir) = create.and_then(|o| o.pack_dir.as_deref()) {
+            let world = std::env::current_dir()?.join("saves").join(folder);
+            let packs = create.map_or(&[][..], |o| &o.data_packs[..]);
+            if let Err(e) = horizon_client::datapack::install(dir, &world, packs) {
+                log::warn!("Horizon: data packs for {folder}: {e}");
+            }
+            let _ = std::fs::remove_dir_all(dir);
+        }
         if self
             .options
             .execution_role
@@ -9207,6 +9264,7 @@ impl Game<'_> {
     }
 
     fn finish_open_world(&mut self, prepared: world_loading::PreparedWorld) -> Result<()> {
+        self.reset_tutorial();
         let world_loading::PreparedWorld {
             save_root,
             level,
@@ -9639,6 +9697,8 @@ impl Game<'_> {
         horizon_client::crash::clear_detail("World");
         self.debug_charts.reset();
         self.boss_overlay.reset();
+        // GameRenderer.resetData (Minecraft.clearClientLevel).
+        self.item_activation.reset();
         self.bosses = Default::default();
         self.streaming.paused = true;
         self.world = World::new(self.res.facts().air, 0);
@@ -12103,11 +12163,18 @@ impl Game<'_> {
         } else {
             (Vec::new(), None)
         };
-        let hand = if title || self.scoping() {
+        let mut hand = if title || self.scoping() {
             Vec::new()
         } else {
             self.hand_geometry(camera_alpha)
         };
+        // GameRenderer.render3dHud: the screen effects after the hand, in
+        // its pass (the hand pass draws with `bob * view`).
+        if !title {
+            let view = bob * horizon_client::camera::view_matrix(yaw, pitch);
+            let aspect = size[0] as f32 / size[1].max(1) as f32;
+            self.item_activation_geometry(camera_alpha as f32, view, aspect, &mut hand);
+        }
         let screen = if title {
             Vec::new()
         } else {
@@ -12468,6 +12535,9 @@ impl Game<'_> {
                 Screen::Playing => {
                     // key.inventory while riding a tamed mount opens its inventory.
                     if !self.open_ridden_mount_menu() {
+                        if self.tutorial.open_inventory() {
+                            self.persist_tutorial_step();
+                        }
                         if self.creative {
                             self.screen = Screen::Creative;
                             self.creative_screen.reopen();
@@ -13060,30 +13130,21 @@ impl ApplicationHandler for Game<'_> {
                 }
                 WindowEvent::Focused(focused) => {
                     self.focused = focused;
+                    self.focus_lost = (!focused).then(Instant::now);
                     if !focused && self.control.is_none() {
                         self.keys.clear();
                         self.left = false;
                         self.right = false;
                         self.capture(false);
-                        // Gui.setPauseScreen: an open screen (books, signs, the
-                        // pack prompt, a server dialog) stays instead of pausing.
-                        if self.screen == Screen::Playing
-                            && self.player.is_some()
-                            && !self.options.no_pause
-                            && self.settings.file.bool("pauseOnLostFocus")
-                            && self.book.is_none()
-                            && self.sign_edit.is_none()
-                            && self.server_packs.prompt.is_none()
-                            && !self.dialog_open()
-                        {
-                            self.screen = Screen::Paused;
-                        }
                     }
                 }
                 WindowEvent::CursorMoved { position, .. } => {
                     if let Some(r) = &self.renderer {
                         let b = HudBatch::new([r.config.width, r.config.height]);
                         self.cursor = (position.x as f32 / b.scale, position.y as f32 / b.scale);
+                        if self.dialog_open() {
+                            self.dialog_drag();
+                        }
                         if self.screen == Screen::Advancements {
                             self.advancements_drag();
                         }
@@ -13221,8 +13282,12 @@ impl ApplicationHandler for Game<'_> {
                     }
                 }
                 WindowEvent::MouseInput { state, button, .. } if self.dialog_open() => {
-                    if state == ElementState::Pressed && button == MouseButton::Left {
-                        self.dialog_click()?;
+                    if button == MouseButton::Left {
+                        if state == ElementState::Pressed {
+                            self.dialog_click()?;
+                        } else {
+                            self.dialog_release();
+                        }
                     }
                 }
                 // ConnectScreen's Cancel, under the prompts and dialogs above.
@@ -13299,6 +13364,13 @@ impl ApplicationHandler for Game<'_> {
                         }
                         Action::Connect { address } => {
                             self.connect_server(&address, &self.options.player_name())?
+                        }
+                        Action::DataPacks { dir, selected } => {
+                            self.keys.clear();
+                            self.screen = Screen::Options;
+                            self.options_from_title = true;
+                            let resources = self.vanilla_root();
+                            self.ui.options.open_data_packs(dir, selected, resources);
                         }
                         Action::None => {}
                     }
@@ -13671,8 +13743,15 @@ impl ApplicationHandler for Game<'_> {
                                 )?;
                             }
                             Err(button) => {
-                                if self.screen == Screen::Playing && !event.repeat {
-                                    self.play_mouse(button, event.state == ElementState::Pressed)?;
+                                let action = match (event.state, event.repeat) {
+                                    (ElementState::Released, _) => KeyAction::Release,
+                                    (_, false) => KeyAction::Press,
+                                    (_, true) => KeyAction::Repeat,
+                                };
+                                if let Some(pressed) =
+                                    keyboard_button(self.screen == Screen::Playing, action)
+                                {
+                                    self.play_mouse(button, pressed)?;
                                 }
                             }
                         }
@@ -13934,6 +14013,7 @@ impl ApplicationHandler for Game<'_> {
             return;
         }
         self.poll_pads(event_loop);
+        self.pause_if_inactive();
         if self.options.frames.is_some() && self.started.elapsed() > self.options.timeout {
             self.error = Some("frame-limited run timed out".into());
             event_loop.exit();
@@ -14012,6 +14092,9 @@ impl<'a> Game<'a> {
             .map(Ok)
             .unwrap_or_else(|| GameCpuResources::load(&root))?;
         let world = World::new(res.facts().air, 0);
+        let tutorial = tutorial::Tutorial::new(tutorial::Step::from_option(
+            settings.file.int("tutorialStep"),
+        ));
         let creative = options.creative;
         let inventory = vec![None; 36];
         let now = Instant::now();
@@ -14039,6 +14122,7 @@ impl<'a> Game<'a> {
             gui,
             fog: Default::default(),
             screen_fx: Default::default(),
+            item_activation: Default::default(),
             weather_parameters: Default::default(),
             panorama_rotation: Default::default(),
             world,
@@ -14095,6 +14179,7 @@ impl<'a> Game<'a> {
             view_at: [0, 0],
             split_hud: Default::default(),
             focused: true,
+            focus_lost: None,
             modifiers: winit::keyboard::ModifiersState::empty(),
             fullscreen: horizon_client::window::FullscreenState::new(false),
             mouse: MouseLook::default(),
@@ -14145,6 +14230,7 @@ impl<'a> Game<'a> {
             sound_paused: false,
             cart_sounds: HashSet::new(),
             riding_cart_sounds: None,
+            was_fall_flying: false,
             bee_sounds: HashMap::new(),
             guardian_sounds: HashSet::new(),
             dropped: Vec::new(),
@@ -14204,6 +14290,8 @@ impl<'a> Game<'a> {
             attack_clicks: 0,
             hand_strength: Default::default(),
             settings,
+            tutorial,
+            tutorial_toasts: Vec::new(),
             options_from_title: false,
             dragging: false,
             avatar: Default::default(),
@@ -15750,8 +15838,8 @@ pub fn run() -> Result<()> {
         // 10 to 200 ms to get one back.
         horizon_threads::favour_current();
     }
-    // Someone is playing: the anonymous ping behind the launcher's "N playing now". Not for a
-    // server, a benchmark or a run that quits by itself.
+    // Someone is playing: the anonymous ping behind the launcher's "N playing now", and the
+    // official server in their list. Not for a server, a benchmark or a run that quits by itself.
     if options.execution_role.is_client()
         && options.benchmark.is_none()
         && !options.offscreen
@@ -15759,6 +15847,10 @@ pub fn run() -> Result<()> {
         && options.world_frames.is_none()
     {
         horizon_client::heartbeat::start();
+        if let Err(e) = horizon_client::multiplayer::add_official_server(&std::env::current_dir()?)
+        {
+            log::warn!("could not add the official server to servers.dat: {e}");
+        }
     }
     if options.execution_role.is_client() {
         horizon_threads::catch_stop_signals();
@@ -15851,6 +15943,15 @@ fn tick_sleep_timer(timer: u32, sleeping: bool) -> u32 {
     }
 }
 
+/// `KeyboardHandler.keyPress` for a key bound to a mouse mapping (key.attack,
+/// key.use, key.pickItem): in game, a press and every repeat of the held key
+/// reach `KeyMapping.set(key, true)` and `KeyMapping.click` alike, so a held
+/// key keeps attacking; a release lets go. `None` behind a screen, which takes
+/// the key.
+fn keyboard_button(playing: bool, action: KeyAction) -> Option<bool> {
+    playing.then_some(action != KeyAction::Release)
+}
+
 fn reset_world_progress(adv: &mut advancements::AdvState, stats: &mut stats::Stats) {
     *adv = Default::default();
     *stats = Default::default();
@@ -15932,6 +16033,17 @@ mod tests {
     use horizon_client::container_screen::{Button, Clicks, Release, Target};
     use horizon_client::keymapping::{KeyAction, SPRINT, ToggleKeys};
 
+    /// A key bound to key.attack keeps attacking while it is held: each
+    /// repeat clicks like the press (#3243).
+    #[test]
+    fn a_held_key_bound_to_a_button_repeats_its_clicks() {
+        assert_eq!(keyboard_button(true, KeyAction::Press), Some(true));
+        assert_eq!(keyboard_button(true, KeyAction::Repeat), Some(true));
+        assert_eq!(keyboard_button(true, KeyAction::Release), Some(false));
+        for action in [KeyAction::Press, KeyAction::Repeat, KeyAction::Release] {
+            assert_eq!(keyboard_button(false, action), None);
+        }
+    }
     #[test]
     fn sleep_fade_lasts_ten_ticks_after_waking() {
         let alpha = |timer| match hud_overlays::sleep_overlay(320, 240, timer).first() {
