@@ -310,6 +310,12 @@ impl Game<'_> {
                     continue;
                 };
                 stack.clone()
+            } else if mob.species() == Species::Witch
+                && horizon_client::mobs::witch::holds_potion(item)
+                && &**item != "minecraft:potion"
+            {
+                // A drinking witch's main hand holds the potion's type, drawn as a potion item.
+                ItemStack::new("minecraft:potion", 1).with_potion(item)
             } else {
                 ItemStack::new(item, 1)
             };
@@ -343,7 +349,7 @@ impl Game<'_> {
             // PandaHoldsItemLayer and FoxHeldItemLayer show the item as it lies
             // on the ground.
             let (context, ordinal) = match (mob.species(), left) {
-                (Species::Panda | Species::Fox, _) => (Context::Ground, 7),
+                (Species::Panda | Species::Fox | Species::Witch, _) => (Context::Ground, 7),
                 (_, true) => (Context::ThirdPersonLeftHand, 1),
                 (_, false) => (Context::ThirdPersonRightHand, 2),
             };
