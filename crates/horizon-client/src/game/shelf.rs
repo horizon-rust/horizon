@@ -14,6 +14,49 @@ use horizon_client::{
 use horizon_core::position::BlockPos;
 
 impl Game<'_> {
+    /// The shelf's block entity (made if the block has none yet).
+    fn shelf_entity(&mut self, pos: [i32; 3]) -> Option<&mut Shelf> {
+        let entity = self
+            .world
+            .block_entities
+            .get_or_insert_with((pos[0], pos[1], pos[2]), || {
+                BlockEntity::Shelf(Box::default())
+            });
+        match entity {
+            BlockEntity::Shelf(shelf) => Some(&mut **shelf),
+            _ => None,
+        }
+    }
+    /// `ShelfBlock.swapSingleItem`: the selected stack goes into slot `slot`
+    /// and what was there comes back into the selected slot (a player with
+    /// infinite materials keeps the stack when the slot was empty), then the
+    /// shelf's `setChanged`. Whether an item was taken out.
+    fn shelf_swap_single_item(&mut self, pos: [i32; 3], slot: usize) -> Option<bool> {
+        let selected = self.selected;
+        let held = self.stack_in(selected).cloned();
+        let limit = held
+            .as_ref()
+            .map_or(1, |stack| self.max_stack(stack).clamp(1, 99));
+        let (removed, stored) = self
+            .shelf_entity(pos)?
+            .swap_item_no_update(slot, held, limit);
+        let now = if self.creative && removed.is_none() {
+            stored
+        } else {
+            removed.clone()
+        };
+        // An item whose `use_effects` has no `interact_vibrations` (a spear)
+        // makes no event.
+        let silent = now.as_ref().is_some_and(|stack| {
+            self.res
+                .items()
+                .get(&stack.item)
+                .is_some_and(|item| !item.use_interact_vibrations)
+        });
+        *self.stack_in_mut(selected) = now;
+        self.shelf_set_changed(pos, (!silent).then_some("minecraft:item_interact_finish"));
+        Some(removed.is_some())
+    }
     /// `ShelfBlockEntity.setChanged`: the chunk is saved and the comparators
     /// update (`BlockEntity.setChanged`), `event` goes out at the shelf with
     /// its state as context, and the clients get the new update tag
