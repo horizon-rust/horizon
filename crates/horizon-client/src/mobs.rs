@@ -758,7 +758,10 @@ pub struct Extra {
     /// AgeableMob.forcedAgeTimer: ticks of happy villager particles left.
     pub forced_age_timer: i32,
     pub in_love: i32,
-    pub love_player: bool,
+    /// `Animal.loveCause`: the UUID of the last player who fed it into love
+    /// (`setInLove`), which `LoveCause` keeps in the save. Kept after the love
+    /// ends, as vanilla does.
+    pub love_cause: Option<[i32; 4]>,
     /// Texture/model variant index (cat type, horse colour, rabbit type...).
     pub variant: u8,
     /// Secondary variant (horse markings, tropical fish pattern colours, panda hidden gene).
@@ -790,6 +793,12 @@ pub struct Extra {
     pub party_jukebox: Option<[i32; 3]>,
     /// The owner's UUID (tamed animals).
     pub owner: Option<[i32; 4]>,
+    /// `Fox.DATA_TRUSTED_ID_0` and `DATA_TRUSTED_ID_1`: the UUIDs of the
+    /// players a fox trusts (`Fox.getTrustedEntities`).
+    pub trusted: [Option<[i32; 4]>; 2],
+    /// `Ocelot.DATA_TRUSTING`: it trusts players, so it no longer runs from
+    /// them (`Trusting` in the save).
+    pub trusting: bool,
     /// Slime/magma cube size (0 = not sized).
     pub size: i32,
     /// Sheep eat-grass / iron golem attack / ravager animation ticks.

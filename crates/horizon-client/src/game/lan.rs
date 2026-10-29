@@ -474,6 +474,27 @@ fn mob_meta(
                 meta.push((19, serializer::BYTE, Value::Byte(flags)));
             }
             defaults.push((19, serializer::BYTE, Value::Byte(0)));
+            // Fox.DATA_TRUSTED_ID_0 and DATA_TRUSTED_ID_1: the trusted
+            // players, after the type and the flags.
+            for (slot, trusted) in e.trusted.iter().enumerate() {
+                let index = 20 + slot as u8;
+                if let Some(uuid) = trusted {
+                    let value = Value::OptUuid(Some(playerdata::ints_uuid(*uuid)));
+                    meta.push((index, serializer::OPTIONAL_LIVING_ENTITY_REFERENCE, value));
+                }
+                defaults.push((
+                    index,
+                    serializer::OPTIONAL_LIVING_ENTITY_REFERENCE,
+                    Value::OptUuid(None),
+                ));
+            }
+        }
+        // Ocelot.DATA_TRUSTING (after AgeableMob's two).
+        "minecraft:ocelot" => {
+            if e.trusting {
+                meta.push((18, serializer::BOOLEAN, Value::Bool(true)));
+            }
+            defaults.push((18, serializer::BOOLEAN, Value::Bool(false)));
         }
         "minecraft:parrot" => {
             // TamableAnimal.DATA_FLAGS_ID: sitting 1, tame 4.

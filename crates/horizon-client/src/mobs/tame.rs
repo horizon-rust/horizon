@@ -853,10 +853,11 @@ pub fn register_cat(m: &mut Mob) {
         NearestTarget::new(Prey::Filter(baby_turtle_on_land), false).when(|m, _| !m.extra.tame),
     );
 }
-/// `Ocelot.registerGoals`, then `reassessTrustingGoals` adds the player
-/// avoidance last. Trust (`Ocelot.mobInteract`, the `Trusting` tag) is not
-/// ported yet, so every ocelot is wild: it flees players and can be scared
-/// off while tempted.
+/// `Ocelot.registerGoals`, then `Ocelot.reassessTrustingGoals` adds the player
+/// avoidance last. Vanilla removes that goal from a trusting ocelot and adds
+/// it back otherwise; here it stays registered and `OcelotAvoid` refuses a
+/// trusting ocelot, which has the same effect (a running one stops on the next
+/// goal tick, before it can move again).
 pub fn register_ocelot(m: &mut Mob) {
     let food = m.kind.food.clone();
     let mut stroll = Stroll::avoiding_water(0.8);
@@ -877,6 +878,40 @@ pub fn register_ocelot(m: &mut Mob) {
         NearestTarget::new(Prey::Filter(baby_turtle_on_land), false),
     );
 }
+/// `Ocelot.setTrusting`: sets `DATA_TRUSTING`, which the avoid and tempt goals
+/// and `removeWhenFarAway` read.
+pub fn set_trusting(m: &mut Mob, trusting: bool) {
+    m.extra.trusting = trusting;
+}
+/// `Ocelot.removeWhenFarAway`: a wild ocelot older than 2400 ticks despawns
+/// when far from every player; a trusting one stays.
+pub fn remove_when_far_away(m: &Mob) -> bool {
+    !m.extra.trusting && m.age > 2400
+}
+/// The ocelot's roll for trust once a player's fish is taken: one time in
+/// three (`random.nextInt(3) == 0`) it starts to trust players. Either way the
+/// server runs `Ocelot.spawnTrustingParticles`, whose `addParticle` goes
+/// nowhere but whose arguments draw from the ocelot's random. Returns whether
+/// it trusts now (entity event 41 for the hearts, 40 for the smoke, shown by
+/// `entity_event_burst` to every client). The click itself is the `Ocelot`
+/// arm of `interact_mob` in game/creatures.rs (`Ocelot.mobInteract`).
+pub fn try_trusting(m: &mut Mob) -> bool {
+    let trusting = m.random.next_int_bound(3).unwrap_or(1) == 0;
+    if trusting {
+        set_trusting(m, true);
+    }
+    let feet = [m.position.x, m.position.y, m.position.z];
+    let (width, height) = (f64::from(m.width()), f64::from(m.height()));
+    crate::particles::around_self(
+        &mut m.random,
+        feet,
+        width,
+        height,
+        crate::particles::Burst::TAMING,
+        |_, _| {},
+    );
+    trusting
+}
 /// `Ocelot.OcelotTemptGoal(ocelot, 0.6, ocelot food, true)`.
 #[derive(Clone, Debug)]
 struct OcelotTempt(super::goals::Tempt);
@@ -891,7 +926,10 @@ impl Goal for OcelotTempt {
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_use(m, cx)
     }
+    /// `Ocelot.OcelotTemptGoal.canScare`: only a wild ocelot is scared off by
+    /// a player who moves or turns, and `canContinueToUse` is where it counts.
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        self.0.can_scare = !m.extra.trusting;
         self.0.can_continue(m, cx)
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
@@ -928,11 +966,13 @@ impl Goal for OcelotAvoid {
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    /// `Ocelot.OcelotAvoidEntityGoal.canUse`: never for a trusting ocelot.
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        self.0.can_use(m, cx)
+        !m.extra.trusting && self.0.can_use(m, cx)
     }
+    /// `Ocelot.OcelotAvoidEntityGoal.canContinueToUse`: nor to carry on.
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        self.0.can_continue(m, cx)
+        !m.extra.trusting && self.0.can_continue(m, cx)
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)

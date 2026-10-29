@@ -2,14 +2,15 @@
 //! flags byte (sleeping, sitting, crouching, interested, pouncing,
 //! faceplanted), stalking and pouncing, napping in the shade by day, seeking
 //! shelter, perching, eating berries, searching for items on the ground and
-//! the food held in the mouth. Strolling through villages and trusting
-//! players (with defending them) are not ported yet.
+//! the food held in the mouth. The trusted list (`Fox.getTrustedEntities`)
+//! decides whom a fox keeps its distance from and defends; strolling through
+//! villages is not ported yet.
 use super::{
-    Mob, MobEvent, MobWorld, Seen, Species,
+    Mob, MobEvent, MobWorld, Seen, Species, Who,
     goals::{
         Avoid, AvoidEntity, Breed, Cx, Float, FollowParent, Goal, JUMP, LOOK, LeapAtTarget,
-        LookAtPlayer, MOVE, MeleeAttack, MoveToBlock, NearestTarget, Panic, Prey, Stroll,
-        goal_clone, hide_pos, reduced,
+        LookAtPlayer, MOVE, MeleeAttack, MoveToBlock, NearestTarget, Panic, Prey, Stroll, TARGET,
+        TargetState, goal_clone, hide_pos, reduced, target_continue,
     },
     living::wrap,
 };
@@ -52,6 +53,54 @@ fn set_flag(m: &mut Mob, f: i32, on: bool) {
 fn clear_states(m: &mut Mob) {
     m.extra.ints[0] = 0;
 }
+/// `Fox.isDefending`: the defending flag, which `Fox.setTarget` ends when the
+/// target goes. Horizon drops targets in many places, so a fox without a
+/// target is not defending and `ai_step` clears the flag the same tick.
+fn defending(m: &Mob) -> bool {
+    flag(m, DEFENDING) && m.ai.target.is_some()
+}
+/// `Fox.getTrustedEntities`: the UUIDs a fox trusts, `DATA_TRUSTED_ID_0`
+/// first.
+pub fn trusted_entities(m: &Mob) -> impl Iterator<Item = [i32; 4]> + '_ {
+    m.extra.trusted.iter().flatten().copied()
+}
+/// `Fox.addTrustedEntity`: the first free slot, and once the first is taken
+/// the second, which a further one replaces.
+pub fn add_trusted_entity(m: &mut Mob, uuid: [i32; 4]) {
+    let slot = usize::from(m.extra.trusted[0].is_some());
+    m.extra.trusted[slot] = Some(uuid);
+}
+/// `Fox.clearTrusted`: forget everyone.
+pub fn clear_trusted(m: &mut Mob) {
+    m.extra.trusted = [None; 2];
+}
+/// The trust part of a fox's breeding: the baby trusts the player who put the
+/// breeding fox in love and, when it is another player, the one who put its
+/// partner in love (`Fox.FoxBreedGoal.breed`; the rest of it is `breed` in
+/// game/creatures.rs).
+pub fn trust_breeders(
+    baby: &mut Mob,
+    animal_love_cause: Option<[i32; 4]>,
+    partner_love_cause: Option<[i32; 4]>,
+) {
+    if let Some(cause) = animal_love_cause {
+        add_trusted_entity(baby, cause);
+    }
+    if let Some(cause) = partner_love_cause
+        && partner_love_cause != animal_love_cause
+    {
+        add_trusted_entity(baby, cause);
+    }
+}
+/// `Fox.onOffspringSpawnedFromEgg`: the baby from a spawn egg trusts the
+/// player who used it.
+pub fn on_offspring_spawned_from_egg(offspring: &mut Mob, spawner: [i32; 4]) {
+    add_trusted_entity(offspring, spawner);
+}
+/// `Fox.trusts`: the UUID is one of the trusted.
+pub fn trusts(m: &Mob, uuid: [i32; 4]) -> bool {
+    trusted_entities(m).any(|trusted| trusted == uuid)
+}
 /// `Fox.canMove`, which `FoxMoveControl` waits for.
 pub fn can_move(m: &Mob) -> bool {
     !flag(m, SLEEPING | SITTING | FACEPLANTED)
@@ -68,21 +117,27 @@ pub fn register(m: &mut Mob) {
     let g = &mut m.ai.goals;
     g.add(0, Wrap::new(Float).on_start(clear_states));
     g.add(1, Faceplant { countdown: 0 });
-    g.add(2, Panic::new(2.2));
+    // FoxPanicGoal.shouldPanic: not while defending.
+    g.add(2, Wrap::new(Panic::new(2.2)).when(|m| !defending(m), false));
     g.add(3, Wrap::new(Breed::new(1.0)).on_start(clear_states));
-    // AVOID_PLAYERS: not a sneaking player.
+    // AVOID_PLAYERS: not a sneaking player, and not one the fox trusts; none
+    // of the three avoid goals while it defends.
     g.add(
         4,
         AvoidEntity::new(Avoid::Player, 16.0, 1.6, 1.4)
-            .player_when(|p| !p.sneaking && !p.spectator),
+            .player_when(|m, p| !p.sneaking && !p.spectator && !trusts(m, p.uuid))
+            .when(|m| !defending(m)),
     );
     g.add(
         4,
-        AvoidEntity::new(Avoid::Species(vec![Species::Wolf]), 8.0, 1.6, 1.4).seen_when(|s| !s.tame),
+        AvoidEntity::new(Avoid::Species(vec![Species::Wolf]), 8.0, 1.6, 1.4)
+            .seen_when(|s| !s.tame)
+            .when(|m| !defending(m)),
     );
     g.add(
         4,
-        AvoidEntity::new(Avoid::Species(vec![Species::PolarBear]), 8.0, 1.6, 1.4),
+        AvoidEntity::new(Avoid::Species(vec![Species::PolarBear]), 8.0, 1.6, 1.4)
+            .when(|m| !defending(m)),
     );
     g.add(5, StalkPrey);
     g.add(6, Pounce);
@@ -97,7 +152,13 @@ pub fn register(m: &mut Mob) {
             .on_start(|m| set_flag(m, INTERESTED, false)),
     );
     g.add(7, Sleep { countdown });
-    g.add(8, Wrap::new(FollowParent::new(1.25)).on_start(clear_states));
+    // FoxFollowParentGoal: not while defending.
+    g.add(
+        8,
+        Wrap::new(FollowParent::new(1.25))
+            .when(|m| !defending(m), true)
+            .on_start(clear_states),
+    );
     g.add(10, EatBerries::new());
     g.add(10, LeapAtTarget::new(0.4));
     g.add(11, Stroll::avoiding_water(1.0));
@@ -114,6 +175,7 @@ pub fn register(m: &mut Mob) {
     let turtle = || NearestTarget::new(Prey::Filter(baby_turtle_on_land), false).interval(10);
     let fish = || NearestTarget::new(Prey::Filter(schooling_fish), false).interval(20);
     let t = &mut m.ai.targets;
+    t.add(3, DefendTrusted::new());
     t.add(4, land().gate(red));
     t.add(4, turtle().gate(red));
     t.add(6, fish().gate(red));
@@ -180,6 +242,14 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             let at = [m.position.x, m.position.y, m.position.z];
             events.push(MobEvent::Sound("entity.fox.eat", at, 1.0, 1.0));
         }
+    }
+    // Fox.setTarget ends the defence when the target is dropped.
+    if flag(m, DEFENDING) && m.ai.target.is_none() {
+        set_flag(m, DEFENDING, false);
+    }
+    // Fox.aiStep: a defending fox growls now and then.
+    if defending(m) && m.random.next_float() < 0.05 {
+        events.push(MobEvent::Sound("entity.fox.aggro", feet(m), 1.0, 1.0));
     }
     if !m.target_info(w).is_some_and(|t| t.alive) {
         set_flag(m, CROUCHING | INTERESTED, false);
@@ -302,7 +372,8 @@ fn has_shelter(m: &Mob, w: &MobWorld) -> bool {
     !w.can_see_sky(at[0], at[1], at[2]) && m.walk_target_value(w, at) >= 0.0
 }
 /// `Fox.FoxBehaviorGoal.alertable`: someone within 12 blocks the fox would
-/// keep watch over (`FoxAlertableEntitiesSelector`).
+/// keep watch over (`FoxAlertableEntitiesSelector`: a player it trusts is
+/// not one).
 fn alertable(m: &Mob, w: &MobWorld) -> bool {
     let (from, id, y) = (m.position, m.id, m.position.y);
     let mob = w
@@ -324,6 +395,7 @@ fn alertable(m: &Mob, w: &MobWorld) -> bool {
             && !p.creative
             && !p.spectator
             && !p.sneaking
+            && !trusts(m, p.uuid)
             && (p.position.y - y).abs() <= 6.0
             && m.distance_sqr(p.position) <= 144.0
     })
@@ -472,6 +544,111 @@ fn signum(x: f64) -> f64 {
         -1.0
     } else {
         0.0
+    }
+}
+
+/// Where a mob stands (`Entity.playSound` plays at its feet).
+fn feet(m: &Mob) -> [f64; 3] {
+    [m.position.x, m.position.y, m.position.z]
+}
+
+/// `Fox.DefendTrustedTargetGoal`: take on whatever hurt a player the fox
+/// trusts, growling and waking up to do it.
+#[derive(Clone, Debug)]
+struct DefendTrusted {
+    /// `NearestAttackableTargetGoal.randomInterval`.
+    interval: i32,
+    /// `trustedLastHurtBy` and the timestamp of the trusted player's
+    /// `getLastHurtByMobTimestamp`, which `can_use` found for `start`.
+    found: Option<(Who, i64)>,
+    /// `DefendTrustedTargetGoal.timestamp`: the hurt it last answered.
+    timestamp: i64,
+    state: TargetState,
+}
+impl DefendTrusted {
+    fn new() -> Self {
+        Self {
+            interval: reduced(10),
+            found: None,
+            timestamp: 0,
+            state: TargetState::new(60),
+        }
+    }
+    /// `TargetGoal.canAttack`: the selector (`TRUSTED_TARGET_SELECTOR` and not
+    /// trusted), then `TargetingConditions.forCombat().range(follow range)`. A
+    /// mob has no UUID here and no `getLastHurtMob`, so one that hurt the
+    /// player (the only kind the player remembers) counts as having hurt
+    /// something.
+    fn can_attack(m: &mut Mob, w: &MobWorld, who: Who) -> bool {
+        let range = m.attrs.follow_range;
+        match who {
+            Who::Player => {
+                let Some(p) = &w.player else { return false };
+                p.last_hurt.is_some() && !trusts(m, p.uuid) && m.can_target_player(w, range, true)
+            }
+            Who::Mob(id) => {
+                let Some(target) = w.target_info(who) else {
+                    return false;
+                };
+                // Mob.canAttack: never a ghast.
+                id != m.id
+                    && w.seen(id).is_some_and(|s| s.species != Species::Ghast)
+                    && target.alive
+                    && target.can_be_seen_as_enemy
+                    && m.distance_sqr(target.position) <= range * range
+                    && m.sees(w, who)
+            }
+        }
+    }
+}
+impl Goal for DefendTrusted {
+    goal_clone!();
+    fn name(&self) -> &'static str {
+        "DefendTrustedTargetGoal"
+    }
+    fn flags(&self) -> u8 {
+        TARGET
+    }
+    /// `Fox.DefendTrustedTargetGoal.canUse`.
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        if self.interval > 0 && m.random.next_int_bound(self.interval).unwrap_or(1) != 0 {
+            return false;
+        }
+        // The first trusted player in the level decides; one that is not in
+        // view is not found.
+        let trusted = m.extra.trusted;
+        for uuid in trusted.iter().flatten() {
+            let Some(p) = cx.w.player.as_ref().filter(|p| p.uuid == *uuid) else {
+                continue;
+            };
+            let Some((by, at)) = p.hurt_by else {
+                return false;
+            };
+            self.found = Some((by, at));
+            return at != self.timestamp && Self::can_attack(m, cx.w, by);
+        }
+        false
+    }
+    fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        target_continue(&mut self.state, false, m, cx)
+    }
+    /// `Fox.DefendTrustedTargetGoal.start`.
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
+        if let Some((by, at)) = self.found {
+            m.ai.target = Some(by);
+            self.timestamp = at;
+        }
+        cx.events
+            .push(MobEvent::Sound("entity.fox.aggro", feet(m), 1.0, 1.0));
+        set_flag(m, DEFENDING, true);
+        // Fox.wakeUp.
+        set_flag(m, SLEEPING, false);
+        self.state.reset();
+    }
+    fn stop(&mut self, m: &mut Mob, _: &mut Cx) {
+        // TargetGoal.stop: setTarget(null), which ends the defence.
+        m.ai.target = None;
+        set_flag(m, DEFENDING, false);
     }
 }
 

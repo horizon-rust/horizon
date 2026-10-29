@@ -1357,6 +1357,21 @@ impl Default for TargetState {
         }
     }
 }
+impl TargetState {
+    /// A target goal that keeps a target out of sight for `unseen_memory`
+    /// ticks (`TargetGoal.unseenMemoryTicks`).
+    pub fn new(unseen_memory: i32) -> Self {
+        Self {
+            unseen: 0,
+            unseen_memory,
+            follow_scale: 1.0,
+        }
+    }
+    /// `TargetGoal.start`: nothing has been out of sight yet.
+    pub fn reset(&mut self) {
+        self.unseen = 0;
+    }
+}
 impl NearestTarget {
     pub fn new(prey: Prey, must_see: bool) -> Self {
         Self {
@@ -1701,8 +1716,8 @@ pub struct AvoidEntity {
     /// Extra condition on the avoider (e.g. untamed cats only).
     pub when: Option<fn(&Mob) -> bool>,
     /// Extra condition on the player or mob avoided (`AvoidEntityGoal`'s
-    /// predicate: a sneaking player, a tame wolf).
-    pub player_when: Option<fn(&super::PlayerView) -> bool>,
+    /// predicate: a sneaking or trusted player, a tame wolf).
+    pub player_when: Option<fn(&Mob, &super::PlayerView) -> bool>,
     pub seen_when: Option<fn(&Seen) -> bool>,
     from: Vec3,
     /// The mob being avoided (`toAvoid`), when it is one.
@@ -1726,7 +1741,7 @@ impl AvoidEntity {
         self.when = Some(f);
         self
     }
-    pub fn player_when(mut self, f: fn(&super::PlayerView) -> bool) -> Self {
+    pub fn player_when(mut self, f: fn(&Mob, &super::PlayerView) -> bool) -> Self {
         self.player_when = Some(f);
         self
     }
@@ -1754,7 +1769,7 @@ impl Goal for AvoidEntity {
                     .filter(|p| {
                         p.alive
                             && !p.creative
-                            && self.player_when.is_none_or(|f| f(p))
+                            && self.player_when.is_none_or(|f| f(m, p))
                             && m.distance_sqr(p.position) <= max * max
                             && (p.position.y - m.position.y).abs() <= max + 3.0
                     })
