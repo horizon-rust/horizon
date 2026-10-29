@@ -30,6 +30,7 @@ use super::{
     pad::{PadId, PadRouter},
     start_game,
 };
+use horizon_client::gamepad::Button;
 use horizon_client::split_layout::{self as layout, MAX_PLAYERS, Placement, View};
 use horizon_client::{Result, gfx::compositor::Compositor, widgets};
 use std::{
@@ -77,6 +78,17 @@ impl Game<'_> {
     }
 }
 
+const WINDOW_1: &str = "Window 1";
+const NEW_WINDOW: &str = "New window";
+
+/// A place offered while picking a profile.
+#[derive(Clone, PartialEq)]
+enum Spot {
+    Window(u8),
+    New,
+    Fill(String),
+}
+
 struct Guest<'a> {
     game: Box<Game<'a>>,
     /// The profile it plays as; `None` while it picks one.
@@ -93,6 +105,7 @@ struct Guest<'a> {
     /// Its profile got into the world: turned away after that (a kick), it leaves; before, it
     /// picks again.
     entered: bool,
+    bumpers: [bool; 2],
 }
 
 pub(super) struct Split<'a> {
@@ -109,6 +122,8 @@ pub(super) struct Split<'a> {
     /// monitor, and P1's.
     windows: Vec<layout::Window>,
     p1_window: u8,
+    /// Seats in the order their views fill a shared window.
+    order: Vec<usize>,
     /// Where each numbered window was when it closed, to open there again (this session).
     window_rects: std::collections::HashMap<u8, (LogicalPosition<f64>, LogicalSize<f64>)>,
     /// The monitors with their names, left to right, and the one Window 1 is on: read once a
@@ -158,6 +173,7 @@ impl<'a> Split<'a> {
                 placement: Placement::Free(None),
             }],
             p1_window: 1,
+            order: Vec::new(),
             window_rects: Default::default(),
             screens: Vec::new(),
             main_screen: None,
@@ -690,6 +706,26 @@ impl ApplicationHandler for Split<'_> {
             // A player's game stops the event loop on an error, as P1's does: say why.
             if let Some(e) = &self.guests[i].game.error {
                 log::error!("Horizon: splitscreen: P{}: {e}", self.guests[i].seat);
+            }
+            // Choosing its profile, the bumpers move its view (its pad as its game read it: the
+            // controller, or `horizon-ctl pad`).
+            let place = self.stop_label(i + 1);
+            let game = &mut self.guests[i].game;
+            if game.ui.options.page() == horizon_client::options_ui::Page::SplitProfiles
+                && game.screen == super::Screen::Options
+            {
+                game.ui.options.split_profiles.place = place;
+                let state = game.pad.state;
+                let held = [
+                    state.held(Button::LeftBumper),
+                    state.held(Button::RightBumper),
+                ];
+                let before = std::mem::replace(&mut self.guests[i].bumpers, held);
+                if held[0] && !before[0] {
+                    self.move_with_bumpers(i + 1, true);
+                } else if held[1] && !before[1] {
+                    self.move_with_bumpers(i + 1, false);
+                }
             }
         }
         self.turn(0);

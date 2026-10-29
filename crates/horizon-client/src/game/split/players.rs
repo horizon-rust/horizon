@@ -70,6 +70,7 @@ impl Split<'_> {
             window: 1,
             widgets: Default::default(),
             entered: false,
+            bumpers: [false; 2],
         });
         self.planned_window(i, seat);
         if let Some(name) = name {
@@ -113,9 +114,26 @@ impl Split<'_> {
             let page = &mut g.game.ui.options.split_profiles;
             page.filled = true;
             page.names = names.clone();
+            if let Some(me) = g.name.as_ref().filter(|me| !names.contains(me)) {
+                page.names.insert(0, me.clone());
+            }
             page.taken = taken.clone();
             page.current = g.name.clone();
         }
+    }
+
+    /// Guest `i`, playing, switches to profile `name` where it plays: out of the world as its
+    /// old profile, in as the new one.
+    fn switch(&mut self, i: usize, name: String) -> Result<()> {
+        self.turn(i + 1);
+        let left = self.guests[i].game.leave_server(None);
+        self.turn(0);
+        let old = self.guests[i].name.take();
+        if let (Some(server), Some(old)) = (&self.host.integrated, &old) {
+            server.leave_split(old);
+        }
+        left?;
+        self.enter(i, name)
     }
 
     /// Guest `i` plays as profile `name`: its options, then into P1's world.
@@ -200,7 +218,16 @@ impl Split<'_> {
             }
             let joining = self.guests[i].name.is_none();
             match self.guests[i].game.ui.options.split_profiles.take_choice() {
-                Some(Some(name)) if joining => match self.enter(i, name) {
+                Some(Some(name)) => match (|| {
+                    if self.taken().iter().any(|n| n.eq_ignore_ascii_case(&name)) {
+                        return Err(format!("{name} is already playing.").into());
+                    }
+                    if joining {
+                        self.enter(i, name)
+                    } else {
+                        self.switch(i, name)
+                    }
+                })() {
                     Ok(()) => changed = true,
                     Err(why) => self.refuse(i, why.to_string()),
                 },

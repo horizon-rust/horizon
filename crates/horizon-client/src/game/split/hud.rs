@@ -77,6 +77,11 @@ pub(super) fn lost_prompt(name: &str) -> Prompt {
 }
 
 impl Game<'_> {
+    /// Another player's pause menu opens its profiles to switch identity.
+    pub(in crate::game) fn open_split_settings(&mut self) {
+        self.open_options_at(false, horizon_client::options_ui::Page::SplitProfiles);
+    }
+
     /// Splitscreen over this player's view, above the other toasts (`ToastManager`'s slots).
     pub(in crate::game) fn draw_split_hud(&mut self, batch: &mut HudBatch, hidden: bool) {
         let atlas = &self.gui.atlas;

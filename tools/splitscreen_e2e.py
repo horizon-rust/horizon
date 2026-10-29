@@ -223,6 +223,82 @@ def scenario_cancel():
         g.quit()
 
 
+def scenario_switch():
+    print('switch: pause menu changes profile, Cancel keeps it, saved progress survives')
+    g = Game(2)
+    try:
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'P2 playing')
+        half = g.size(2)
+
+        def settings():
+            g.ctl(2, 'key', 'esc', 'tap')
+            g.wait(lambda: any(w['label'] == 'Splitscreen Settings'
+                              for w in g.ctl(2, 'ui')['widgets']), 'pause settings row')
+            g.ctl(2, 'click-button', 'Splitscreen Settings')
+            g.wait(lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode')
+                   == 'splitscreen-profiles', 'profile settings')
+
+        settings()
+        check('current test profile appears even without a stored folder',
+              'P2' in g.ctl(2, 'state')['menu']['profiles'], True)
+        g.ctl(2, 'click-button', 'New Profile...')
+        g.ctl(2, 'type', 'Alex')
+        g.ctl(2, 'click-button', 'Create')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Alex playing')
+        g.ctl(2, 'command', 'experience set @s 7 levels')
+        g.wait(lambda: g.ctl(2, 'state')['player']['xp']['level'] == 7, 'Alex experience')
+        settings()
+        g.ctl(2, 'click-button', 'Cancel')
+        check('Cancel keeps the current player', g.ctl(2, 'state')['player']['xp']['level'], 7)
+        # Cancel returns to the pause menu; resume before opening it again.
+        g.ctl(2, 'key', 'esc', 'tap')
+        settings()
+        g.ctl(2, 'click-button', 'New Profile...')
+        g.ctl(2, 'type', 'Sam')
+        g.ctl(2, 'click-button', 'Create')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None
+               and g.ctl(2, 'state')['player']['xp']['level'] == 0, 'Sam playing')
+        check('switch keeps the view', g.size(2), half)
+        settings()
+        check('old profile is free', 'Alex' not in g.ctl(2, 'state')['menu']['taken'], True)
+        g.ctl(2, 'click-button', 'Alex')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None
+               and g.ctl(2, 'state')['player']['xp']['level'] == 7, 'Alex saved experience restored')
+        check('switching back restores its progress', g.ctl(2, 'state')['player']['xp']['level'], 7)
+    finally:
+        g.quit()
+
+
+def scenario_bumpers():
+    print('bumpers: reorder views, move into a new window, return and join there')
+    g = Game(2, HORIZON_SPLIT_PICK='1')
+    try:
+        g.wait(lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode')
+               == 'splitscreen-profiles', 'the picker')
+        half = g.size(1)
+        whole = (2 * half[0], half[1])
+        # From second place to first, then second again: neither opens a new window.
+        g.ctl(2, 'pad', 'lb', 'tap')
+        time.sleep(0.5)
+        g.ctl(2, 'pad', 'rb', 'tap')
+        time.sleep(0.5)
+        check('LB then RB keeps both views in Window 1', g.sizes([1, 2]), [half, half])
+        g.ctl(2, 'pad', 'rb', 'tap')
+        check('next RB opens Window 2', g.settle([1], [whole]), [whole])
+        own = g.size(2)
+        g.ctl(2, 'pad', 'lb', 'tap')
+        check('LB returns beside P1', g.settle([1, 2], [half, half]), [half, half])
+        g.ctl(2, 'pad', 'rb', 'tap')
+        g.settle([1, 2], [whole, own])
+        g.ctl(2, 'click-button', 'New Profile...')
+        g.ctl(2, 'type', 'Ann')
+        g.ctl(2, 'click-button', 'Create')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Ann playing')
+        check('Ann joins in the chosen window', g.settle([1, 2], [whole, own]), [whole, own])
+    finally:
+        g.quit()
+
+
 SCENARIOS = {
     'alone': scenario_alone,
     'join': scenario_join,
@@ -230,6 +306,8 @@ SCENARIOS = {
     'windows': scenario_windows,
     'picker': scenario_picker,
     'cancel': scenario_cancel,
+    'switch': scenario_switch,
+    'bumpers': scenario_bumpers,
 }
 
 
