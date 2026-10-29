@@ -64,6 +64,10 @@ impl<'a> Split<'a> {
     /// unless `name` is given (tests).
     pub(super) fn join(&mut self, pad: Option<PadId>, name: Option<String>) -> Result<()> {
         let seat = self.free_seat().ok_or("every seat is taken")?;
+        // The first other player: P1 moves to the compositor now, not when the setting was on.
+        if !self.enabled {
+            self.enable()?;
+        }
         // Until it has a profile, a scratch options file: never P1's.
         let options = Self::folder()?.join(".joining/options.txt");
         OPTIONS.set(Some(options.clone()));

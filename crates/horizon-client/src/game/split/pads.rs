@@ -85,7 +85,10 @@ impl<'a> Split<'a> {
             if !self.pads.connected(id) {
                 continue;
             }
-            if !self.in_world() {
+            // In a menu, or alone in a world, the first controller pressed is P1's (alone it
+            // drives P1 anyway); one P1 gave up is offered to join instead.
+            let offered = self.offers.iter().any(|(o, _)| *o == id);
+            if !self.in_world() || (self.guests.is_empty() && !offered) {
                 if self.p1_pad.is_none() {
                     self.p1_pad = Some(id);
                     self.fresh.push(id);
@@ -138,6 +141,12 @@ impl<'a> Split<'a> {
                 g.game.pad.style = self.pads.style(id);
             }
         }
+        // Alone, P1 reads its own controller as with splitscreen off (a DualSense's rumble and
+        // triggers too); the split feeds it only while others play.
+        if self.guests.is_empty() {
+            self.host.pad.feed = None;
+            return joins;
+        }
         self.host.pad.release_hardware();
         self.host.pad.feed = Some(self.pad_state(self.p1_pad));
         for i in 0..self.guests.len() {
@@ -145,6 +154,15 @@ impl<'a> Split<'a> {
             self.guests[i].game.pad.feed = Some(state);
         }
         joins
+    }
+
+    /// P1's Give Up Pad: its controller stops driving P1 and is offered to join, for a friend
+    /// to press A (P1 plays on with the keyboard and mouse).
+    pub(super) fn give_up_pad(&mut self) {
+        let Some(id) = self.p1_pad.take() else { return };
+        self.offers.retain(|(o, _)| *o != id);
+        self.offers.push((id, Instant::now()));
+        self.ask_to_join();
     }
 
     /// A controller disconnected: its offer and fresh press go; its player waits for one

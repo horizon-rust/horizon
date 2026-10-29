@@ -147,6 +147,7 @@ impl<'a> Split<'a> {
         }
         let applied = setup.apply.take();
         let identify = std::mem::take(&mut setup.identify);
+        let give_up = std::mem::take(&mut setup.give_up_pad);
         if std::mem::take(&mut setup.toggle_names) {
             let e = &mut self.host.settings.extras;
             e.splitscreen_names = !e.splitscreen_names;
@@ -154,10 +155,14 @@ impl<'a> Split<'a> {
         }
         let setup = &mut self.host.ui.options.split_setup;
         setup.names_shown = self.host.settings.extras.splitscreen_names;
+        setup.p1_pad = self.p1_pad.is_some();
         setup.live = Some(live);
         setup.monitors = monitors;
         setup.main = main;
         setup.names = names;
+        if give_up {
+            self.give_up_pad();
+        }
         let changed = applied.is_some();
         if let Some(draft) = applied {
             self.apply(draft);

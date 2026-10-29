@@ -115,8 +115,8 @@ struct Guest<'a> {
 pub(super) struct Split<'a> {
     pub(super) host: Game<'a>,
     guests: Vec<Guest<'a>>,
-    /// Splitscreen is on: every player renders through the compositors (else P1 draws on its
-    /// window and every event goes straight to it).
+    /// Compositing: another player is in, and every player renders through the compositors (else
+    /// P1 draws on its window and every event goes straight to it, the setting on or off).
     enabled: bool,
     /// `HORIZON_SPLIT=N`: players without controllers still to add once P1 is in a world.
     test_players: usize,
@@ -175,8 +175,9 @@ pub(super) struct Split<'a> {
 }
 
 impl<'a> Split<'a> {
-    /// P1's game, with its compositor when it was made on the loader's surface.
-    pub(super) fn new(mut host: Game<'a>, compositor: Option<Compositor>) -> Self {
+    /// P1's game. Splitscreen composites only once another player is in (`join`): on but alone,
+    /// P1 plays exactly as with it off, and only the pads are watched for someone joining.
+    pub(super) fn new(mut host: Game<'a>) -> Self {
         let test_players = std::env::var("HORIZON_SPLIT")
             .ok()
             .and_then(|n| n.parse::<usize>().ok())
@@ -184,29 +185,11 @@ impl<'a> Split<'a> {
         if test_players > 0 {
             host.settings.extras.splitscreen = true;
         }
-        let enabled = host.settings.extras.splitscreen;
         let p1_name = host.options.player_name();
-        if enabled {
-            host.options.offscreen = true;
-            host.options.paced_by_split = true;
-        }
-        // Made after the window on an ordinary launch (no `resumed` follows).
-        let surfaces = match (compositor, &host.window) {
-            (Some(compositor), Some(window)) => vec![Surface {
-                key: 1,
-                placement: Placement::Free(None),
-                window: window.clone(),
-                compositor,
-                size: window.inner_size(),
-                focused: true,
-                title: String::new(),
-            }],
-            _ => Vec::new(),
-        };
         Self {
             host,
             guests: Vec::new(),
-            enabled,
+            enabled: false,
             test_players,
             pads: PadRouter::default(),
             p1_pad: None,
@@ -224,7 +207,7 @@ impl<'a> Split<'a> {
             frame_started: None,
             p1_name: (p1_name, Instant::now()),
             accounts: launcher::accounts(),
-            surfaces,
+            surfaces: Vec::new(),
             applied: Vec::new(),
             window_rects: Default::default(),
             screens: Vec::new(),
@@ -449,9 +432,10 @@ impl<'a> Split<'a> {
         Ok(())
     }
 
-    /// Splitscreen turned off: the others leave, and P1 draws on its window again.
+    /// Splitscreen turned off, or P1 alone again: the others leave, and P1 draws on its window
+    /// again. `watching`: the setting stays on, so the pads are still watched for joins.
     #[inline(never)]
-    fn disable(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+    fn disable(&mut self, event_loop: &ActiveEventLoop, watching: bool) -> Result<()> {
         // P1's own buttons and focus targets back first: the others' go with them.
         for k in (0..self.guests.len()).rev() {
             self.remove_guest(k);
@@ -463,8 +447,11 @@ impl<'a> Split<'a> {
         self.offers.clear();
         self.fresh.clear();
         self.lost.clear();
-        // Its own reader of the pads goes: nobody would drain its events (P1 reads its own).
-        self.pads = PadRouter::default();
+        // Its own reader of the pads goes when off: nobody would drain its events (P1 reads its
+        // own).
+        if !watching {
+            self.pads = PadRouter::default();
+        }
         self.p1_window = 1;
         self.windows = vec![layout::Window {
             number: 1,
@@ -538,6 +525,38 @@ impl<'a> Split<'a> {
             return None;
         }
         self.host.server_address().map(str::to_owned)
+    }
+}
+
+impl Split<'_> {
+    /// The pads' players who accepted, and the testing players (`HORIZON_SPLIT`), join: whether
+    /// anyone did.
+    fn admit(&mut self, event_loop: &ActiveEventLoop, pad_joins: Vec<PadId>) -> bool {
+        let mut changed = false;
+        for pad in pad_joins {
+            match self.join(Some(pad), None) {
+                Ok(()) => changed = true,
+                Err(e) => log::warn!("Horizon: splitscreen: a player could not join: {e}"),
+            }
+        }
+        // Testing: players without controllers, one per frame, once.
+        if self.in_world() && self.test_players > 0 {
+            // HORIZON_SPLIT_PICK: they pick a profile like a controller's player, else P2...
+            let name = std::env::var_os("HORIZON_SPLIT_PICK")
+                .is_none()
+                .then(|| format!("P{}", self.free_seat().unwrap_or(0)));
+            match self.join(None, name) {
+                Ok(()) => {
+                    self.test_players -= 1;
+                    changed = true;
+                }
+                Err(e) => {
+                    self.host.error = Some(e);
+                    event_loop.exit();
+                }
+            }
+        }
+        changed
     }
 }
 
@@ -685,24 +704,29 @@ impl ApplicationHandler for Split<'_> {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.refresh_monitors();
-        // The Splitscreen switch, turned on or off in P1's settings: applied at once.
-        if self.host.settings.extras.splitscreen != self.enabled && self.host.window.is_some() {
-            let switched = if self.enabled {
-                self.disable(event_loop)
-            } else {
-                self.enable()
-            };
-            match switched {
-                Ok(()) if self.enabled => self.relayout(event_loop),
-                Ok(()) => {}
-                Err(e) => {
-                    log::warn!("Horizon: splitscreen could not switch: {e}");
-                    self.host.settings.extras.splitscreen = self.enabled;
-                }
-            }
+        let on = self.host.settings.extras.splitscreen;
+        // Off in P1's settings, or the last other player gone: P1 draws on its window again.
+        if self.enabled
+            && (!on || self.guests.is_empty())
+            && self.host.window.is_some()
+            && let Err(e) = self.disable(event_loop, on)
+        {
+            log::warn!("Horizon: splitscreen could not switch back: {e}");
         }
         if !self.enabled {
-            return self.host.about_to_wait(event_loop);
+            if !on {
+                return self.host.about_to_wait(event_loop);
+            }
+            // On but alone: the normal path, and the pads watched for someone joining.
+            let pad_joins = self.route_pads();
+            self.turn(0);
+            self.host.about_to_wait(event_loop);
+            // P1's Setup screen follows who plays (its switch greys while others are in).
+            self.sync_setup();
+            if self.admit(event_loop, pad_joins) && self.enabled {
+                self.relayout(event_loop);
+            }
+            return;
         }
         let started = Instant::now();
         if let Some(previous) = self.frame_started.replace(started) {
@@ -716,33 +740,10 @@ impl ApplicationHandler for Split<'_> {
         self.turn(0);
         self.host.about_to_wait(event_loop);
         let mut changed = self.drop_out();
-        for pad in pad_joins {
-            match self.join(Some(pad), None) {
-                Ok(()) => changed = true,
-                Err(e) => log::warn!("Horizon: splitscreen: a player could not join: {e}"),
-            }
-        }
+        changed |= self.admit(event_loop, pad_joins);
         self.sync_profiles();
         changed |= self.pick_profiles();
         self.follow_pack_answer();
-        // Testing: players without controllers, one per frame, once.
-        if self.in_world() && self.test_players > 0 {
-            // HORIZON_SPLIT_PICK: they pick a profile like a controller's player, else P2...
-            let name = std::env::var_os("HORIZON_SPLIT_PICK")
-                .is_none()
-                .then(|| format!("P{}", self.free_seat().unwrap_or(0)));
-            match self.join(None, name) {
-                Ok(()) => {
-                    self.test_players -= 1;
-                    changed = true;
-                }
-                Err(e) => {
-                    self.host.error = Some(e);
-                    event_loop.exit();
-                    return;
-                }
-            }
-        }
         changed |= self.sync_setup();
         changed |= self.sync_surfaces(event_loop);
         // Also a new arrangement from the settings (a screen, Two on a screen).

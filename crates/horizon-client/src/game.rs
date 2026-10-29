@@ -15303,7 +15303,7 @@ fn leave_fullscreen_after(
 }
 
 fn run_event_loop(mut game: Game<'_>) -> Result<()> {
-    let mut split = split::Split::new(game, None);
+    let mut split = split::Split::new(game);
     let result = EventLoop::new()?.run_app(&mut split);
     game = split.host;
     leave_fullscreen_after(&result, &mut game.settings);
@@ -15494,20 +15494,6 @@ impl Loading {
         if let Some(renderer) = &mut self.renderer {
             renderer.release_surface();
         }
-        // Splitscreen: a compositor presents on the window and every player renders offscreen.
-        // A window it can't present on (a surface format the copy can't take): off this time.
-        let compositor = match (&self.renderer, self.settings.extras.splitscreen) {
-            (Some(loader), true) => match loader.compositor(window.clone()) {
-                Ok(c) => Some(c),
-                Err(e) => {
-                    log::warn!("Horizon: splitscreen is off: {e}");
-                    self.settings.extras.splitscreen = false;
-                    None
-                }
-            },
-            _ => None,
-        };
-        options.offscreen |= compositor.is_some();
         let renderer_at = Instant::now();
         let renderer = build_renderer(
             window.clone(),
@@ -15565,7 +15551,7 @@ impl Loading {
             renderer_ms,
             game_ms
         );
-        Ok(Some(split::Split::new(game, compositor)))
+        Ok(Some(split::Split::new(game)))
     }
 }
 

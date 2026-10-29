@@ -133,8 +133,12 @@ and the container screen tests are unchanged).
 Up to 16 players on one computer, each with a controller, as on a console
 (`game/split.rs`, `game/split/`, `split_ui.rs`, `split_profiles.rs`,
 `split_layout.rs`). Horizon Settings → Splitscreen... opens the Setup screen,
-which holds the switch. While splitscreen is on, every player's pause menu has
-**Splitscreen Settings**: P1's Setup screen, another player's profiles.
+which holds the switch. On but alone, nothing changes: P1 plays exactly as with
+it off (its own controller, a DualSense's rumble and triggers included), and
+only another controller pressing a button is watched for; the views move to
+the compositor when a second player joins, and back when the last one leaves.
+While splitscreen is on, every player's pause menu has **Splitscreen
+Settings**: P1's Setup screen, another player's profiles.
 
 - **Joining:** in a world, another controller pressing a button is offered to
   join; A adds a player, who picks a profile while its bumpers choose where its
@@ -179,8 +183,8 @@ which holds the switch. While splitscreen is on, every player's pause menu has
 - **Sound:** one output; each sound is heard from the nearest player's camera,
   once.
 - **Limits:** one keyboard and mouse (they drive the player whose view was
-  clicked last); no DualSense rumble or triggers while splitscreen reads the
-  controllers; every player renders on one thread, so the frame rate falls with
+  clicked last); no DualSense rumble or triggers while others play (the
+  split reads the controllers then); every player renders on one thread, so the frame rate falls with
   each player. `HORIZON_SPLIT_STATS=1` logs every 5 s where a frame's time
   goes (the players' turns with their renders, the windows' presents, the GPU
   wait, outside the loop) and each player's fps and CPU and GPU time.

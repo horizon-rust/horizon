@@ -32,6 +32,9 @@ pub struct SplitUi {
     /// Names: the names in the views' corners are shown (the game sets it), and pressed.
     pub names_shown: bool,
     pub toggle_names: bool,
+    /// P1 has a controller (the game sets it), and Give Up Pad pressed: it's offered to join.
+    pub p1_pad: bool,
+    pub give_up_pad: bool,
     /// The changes not applied yet.
     edit: Option<Draft>,
     selected: Option<usize>,
@@ -77,6 +80,8 @@ enum Target {
     Done,
     /// Splitscreen on or off.
     Switch,
+    /// P1's controller freed and offered to join (handed to a friend).
+    GiveUpPad,
 }
 
 /// What a press did, for the options screen.
@@ -546,6 +551,14 @@ impl SplitUi {
         let mut footer = Vec::new();
         if let Some(draft) = self.draft() {
             out.extend([switch, names]);
+            if self.p1_pad {
+                out.push((
+                    [90.0, 6.0, 80.0, 20.0],
+                    "Give Up Pad".into(),
+                    Target::GiveUpPad,
+                    true,
+                ));
+            }
             let sharing = |k: usize| {
                 draft
                     .windows
@@ -588,6 +601,9 @@ impl SplitUi {
             }
             Target::Switch => "Splitscreen for this computer, on or off.".to_owned(),
             Target::Identify => "Each player's view shows which window it is in.".to_owned(),
+            Target::GiveUpPad => {
+                "Your controller stops driving you and is offered to join (A).".to_owned()
+            }
             Target::Names => "Each player's name in the corner of their view.".to_owned(),
             Target::Revert if *active => "Undo the changes not applied yet.".to_owned(),
             Target::Apply if *active => "Play the way the map shows.".to_owned(),
@@ -889,6 +905,7 @@ impl SplitUi {
                 }
             }
             Target::Identify => self.identify = true,
+            Target::GiveUpPad => self.give_up_pad = true,
             Target::Names => self.toggle_names = true,
             Target::Revert => self.edit = None,
             Target::Apply => {
@@ -1361,6 +1378,22 @@ mod tests {
                 ui.edit
             );
         }
+    }
+
+    #[test]
+    fn give_up_pad_shows_only_while_p1_has_one() {
+        let mut ui = screen(1);
+        ui.on = true;
+        let shown = |ui: &SplitUi| {
+            ui.buttons(SIZE.0, SIZE.1)
+                .iter()
+                .any(|b| b.2 == Target::GiveUpPad)
+        };
+        assert!(!shown(&ui));
+        ui.p1_pad = true;
+        assert!(shown(&ui));
+        press(&mut ui, "Give Up Pad");
+        assert!(ui.give_up_pad);
     }
 
     #[test]

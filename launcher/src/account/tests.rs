@@ -359,9 +359,17 @@ fn splitscreen_gets_the_other_accounts_that_still_hold() {
     // Only for a game whose Splitscreen setting is on.
     std::fs::create_dir_all(&dir).unwrap();
     assert!(!splitscreen_on(&dir));
-    std::fs::write(dir.join("horizon-extras.txt"), "zoom:false\nsplitscreen:false\n").unwrap();
+    std::fs::write(
+        dir.join("horizon-extras.txt"),
+        "zoom:false\nsplitscreen:false\n",
+    )
+    .unwrap();
     assert!(!splitscreen_on(&dir));
-    std::fs::write(dir.join("horizon-extras.txt"), "zoom:false\nsplitscreen:true\n").unwrap();
+    std::fs::write(
+        dir.join("horizon-extras.txt"),
+        "zoom:false\nsplitscreen:true\n",
+    )
+    .unwrap();
     assert!(splitscreen_on(&dir));
     let _ = std::fs::remove_dir_all(&dir);
 }
