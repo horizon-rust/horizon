@@ -883,7 +883,7 @@ pub fn set_baby(m: &mut Mob, baby: bool) {
 
 /// `EquipmentSlot` names (the `drops::SLOTS` order).
 pub const SLOT_NAMES: [&str; 8] = super::drops::SLOTS;
-const MAINHAND: usize = 0;
+pub const MAINHAND: usize = 0;
 const OFFHAND: usize = 1;
 const FEET: usize = 2;
 const LEGS: usize = 3;

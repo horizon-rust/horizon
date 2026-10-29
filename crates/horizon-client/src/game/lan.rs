@@ -986,7 +986,7 @@ fn mob_equipment(
         if let Some(item) = item {
             // The worn armour keeps its stack: a dyed leather piece keeps
             // its colour.
-            let stack = worn.cloned().unwrap_or_else(|| ItemStack {
+            let mut stack = worn.cloned().unwrap_or_else(|| ItemStack {
                 item: item.clone(),
                 // The main hand shows the whole stack a mob picked up.
                 count: if slot == 0 { m.main_hand_count() } else { 1 },
@@ -1002,6 +1002,14 @@ fn mob_equipment(
                     None
                 },
             });
+            // The main hand keeps its enchantments: the glint of the item a
+            // villager shows.
+            if slot == 0
+                && let Some(g) = horizon_client::mobs::gear::gear(m)
+                && !g.slots[horizon_client::mobs::gear::MAIN].is_empty()
+            {
+                stack.data_mut().enchantments = g.slots[horizon_client::mobs::gear::MAIN].clone();
+            }
             out.push((slot, hub.stack(&Some(stack))));
         }
     }

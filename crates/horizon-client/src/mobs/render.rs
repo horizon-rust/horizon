@@ -1770,13 +1770,14 @@ pub fn held_item_transform(
     let mut poses = Poses::new(&model);
     anim::setup(m, &s, &mut poses, &data.animations);
     // WitchItemLayer.applyTranslation: a potion is held at the nose, any other
-    // item as CrossedArmsItemLayer holds it; only the main hand's item is drawn.
-    if m.species() == Species::Witch {
+    // item as CrossedArmsItemLayer holds it, the layer a villager has; only
+    // the main hand's item is drawn.
+    if matches!(m.species(), Species::Witch | Species::Villager) {
         let item = m.extra.main_hand.as_deref()?;
         if left != m.main_arm_left() {
             return None;
         }
-        if super::witch::holds_potion(item) {
+        if m.species() == Species::Witch && super::witch::holds_potion(item) {
             let nose = part_matrix(&model, base, &poses, "nose", 0.0)?;
             return Some(
                 nose * glam::Mat4::from_translation(glam::Vec3::new(0.0625, 0.25, 0.0))
