@@ -1644,6 +1644,9 @@ struct Game<'a> {
     lectern_pulses: Vec<((i32, i32, i32), i32)>,
     /// LevelLoadingScreen.smoothedProgress while the player is not placed yet.
     loading_progress: f32,
+    /// The entry being prepared creates a world (`WorldOptions`): the
+    /// loading screen says `createWorld.preparing`.
+    entry_creates: bool,
     /// The world spawn search's origin chunk and fallback height, once known.
     spawn_origin: Option<((i32, i32), i32)>,
     spawn_spiral: horizon_client::world_spawn::ChunkSpiral,
@@ -9170,6 +9173,7 @@ impl Game<'_> {
         create: Option<&horizon_client::title::WorldOptions>,
     ) -> Result<()> {
         world_loading::world_data_used();
+        self.entry_creates = create.is_some();
         if self.defer_world_entry(PendingWorldEntry::Local {
             folder: folder.to_owned(),
             name: name.map(str::to_owned),
@@ -12277,11 +12281,14 @@ impl Game<'_> {
     /// The LevelLoadingScreen shown while the player waits for its chunks:
     /// opening a world, or after a portal or a respawn into another dimension.
     /// Whether the world being opened is being created (`WorldOptions`).
+    /// Kept on the game: the pending entry is taken before the loading
+    /// screen is drawn.
     fn creating_world(&self) -> bool {
-        match &self.pending_entry {
-            Some(PendingWorldEntry::Local { create, .. }) => create.is_some(),
-            _ => false,
-        }
+        self.entry_creates
+            || matches!(
+                &self.pending_entry,
+                Some(PendingWorldEntry::Local { create: Some(_), .. })
+            )
     }
     fn loading_reason(&self) -> Option<horizon_client::level_loading::Reason> {
         use horizon_client::level_loading::Reason;
@@ -14156,6 +14163,7 @@ impl<'a> Game<'a> {
             book: None,
             lectern_pulses: Vec::new(),
             loading_progress: 0.0,
+            entry_creates: false,
             spawn_origin: None,
             spawn_spiral: Default::default(),
             player_spawn: None,
