@@ -1136,7 +1136,9 @@ impl Title {
             let (tx, ty) = (w / 2.0 - tw / 2.0, h / 2.0 - 4.5);
             // `FocusableTextWidget` with `BackgroundFill.ALWAYS`: a black
             // box behind the text and its border.
-            let (pad_x, pad_y) = (3.0, 3.0);
+            // `FocusableTextWidget.builder(title, font, 12)`: 12 pixels of
+            // padding around the text on every side.
+            let (pad_x, pad_y) = (12.0, 12.0);
             let (bx, by) = (tx - pad_x, ty - pad_y);
             let (bw, bh) = (tw + pad_x * 2.0, 9.0 + pad_y * 2.0);
             batch.fill(atlas, bx - 1.0, by - 1.0, bw + 2.0, bh + 2.0, 0xFF_D0_D0_D0);
