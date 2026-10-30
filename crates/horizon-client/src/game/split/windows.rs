@@ -479,8 +479,10 @@ impl<'a> Split<'a> {
             .collect();
         let before = self.surfaces.len();
         for s in &self.surfaces {
+            // A free window's place only: a monitor's would open a later free one monitor-sized.
             if s.key != 1
                 && !wanted.contains(&s.key)
+                && matches!(s.placement, Placement::Free(_))
                 && let Ok(at) = s.window.outer_position()
             {
                 // In points: a window from a 1x TV opens there again beside a 2x screen.
@@ -500,8 +502,9 @@ impl<'a> Split<'a> {
             use winit::platform::macos::ActiveEventLoopExtMacOS;
             event_loop.set_allows_automatic_window_tabbing(false);
         }
+        let mut failed = Vec::new();
         for key in &wanted {
-            if self.surfaces.iter().any(|s| &s.key == key) {
+            if failed.contains(key) || self.surfaces.iter().any(|s| &s.key == key) {
                 continue;
             }
             // Opened without the focus: whoever types in the game's window keeps the keyboard.
@@ -571,24 +574,39 @@ impl<'a> Split<'a> {
                 above_menu_bar(&format!("Horizon {key}"));
             }
             match made {
-                Ok((window, compositor)) => self.surfaces.push(Surface {
-                    key: *key,
-                    placement: placement.clone().unwrap_or(Placement::Free(None)),
-                    size: window.inner_size(),
-                    window,
-                    compositor,
-                    focused: false,
-                    title: String::new(),
-                }),
-                Err(e) => log::warn!("Horizon: splitscreen: no Window {key}: {e}"),
+                Ok((window, compositor)) => {
+                    self.surfaces.push(Surface {
+                        key: *key,
+                        placement: placement.clone().unwrap_or(Placement::Free(None)),
+                        size: window.inner_size(),
+                        window,
+                        compositor,
+                        focused: false,
+                        title: String::new(),
+                    });
+                    changed = true;
+                }
+                // Not tried again each frame: its players play in Window 1 (where they were
+                // drawn meanwhile) and the window is forgotten.
+                Err(e) => {
+                    log::warn!("Horizon: splitscreen: no Window {key}: {e}");
+                    failed.push(*key);
+                }
             }
-            changed = true;
+        }
+        for key in failed {
+            for i in 0..self.players() {
+                if self.window_number(i) == key {
+                    self.set_window(i, 1);
+                }
+            }
+            self.windows.retain(|w| w.number != key);
         }
         // The game's window only while someone plays on it.
-        let main_used = wanted.contains(&1);
-        let main = &self.surfaces[0].window;
-        if main.is_visible() != Some(main_used) {
-            main.set_visible(main_used);
+        let main_used = (0..self.players()).any(|i| self.window_of(i) == 1);
+        if self.window1_shown != main_used {
+            self.surfaces[0].window.set_visible(main_used);
+            self.window1_shown = main_used;
         }
         for k in 0..self.surfaces.len() {
             let title = self.title(k);
@@ -625,5 +643,28 @@ impl<'a> Split<'a> {
         }
         self.turn(0);
         Ok(())
+    }
+}
+
+/// The surface whose presenting waits for the display (vsync), and whose monitor's refresh rate
+/// paces the frames: Window 1, or the next while Window 1 is hidden (a hidden window's present
+/// can block or be throttled).
+pub(super) fn paced_surface(window1_shown: bool, surfaces: usize) -> usize {
+    if window1_shown || surfaces < 2 { 0 } else { 1 }
+}
+
+#[cfg(test)]
+mod paced_tests {
+    use super::paced_surface;
+
+    #[test]
+    fn vsync_follows_the_first_shown_window() {
+        assert_eq!(paced_surface(true, 3), 0);
+        assert_eq!(
+            paced_surface(false, 3),
+            1,
+            "Window 1 hidden: the next window waits"
+        );
+        assert_eq!(paced_surface(false, 1), 0);
     }
 }
