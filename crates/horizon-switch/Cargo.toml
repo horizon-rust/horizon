@@ -1,0 +1,18 @@
+[package]
+name = "horizon-switch"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Nintendo Switch (libnx) input for Horizon: controllers, hotplug, touch"
+
+[features]
+# Builds the libnx bindings on any OS (declarations only), so that dependants can be type-checked
+# on a host; linking still needs libnx.
+ffi = []
+# Builds the runtime (rt) on an aarch64 host target, to type-check it: `cargo check --target
+# aarch64-pc-windows-msvc --features rt-check`.
+rt-check = ["ffi"]
+
+[lints]
+workspace = true

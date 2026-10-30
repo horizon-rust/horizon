@@ -1269,6 +1269,7 @@ dependencies = [
  "horizon-protocol",
  "horizon-server-files",
  "horizon-shaders",
+ "horizon-switch",
  "horizon-telemetry",
  "horizon-theme",
  "horizon-threads",
@@ -1458,6 +1459,10 @@ dependencies = [
  "naga",
  "zip",
 ]
+
+[[package]]
+name = "horizon-switch"
+version = "0.1.0"
 
 [[package]]
 name = "horizon-telemetry"
