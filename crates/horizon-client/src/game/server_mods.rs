@@ -5,10 +5,197 @@
 //! the last one, then ticks them; a player's command reaches them at once.
 //! Their lines go to the players they name. With no server mod on, each hook
 //! here is one check.
+#[cfg(not(feature = "mods"))]
+use super::native_hooks::NativeStack;
+use super::native_hooks::{NativeEntity, NativeWho};
 use super::{Game, lan::LanHost};
 use horizon_mods::items::Stack;
 #[cfg(not(feature = "mods"))]
 use horizon_world::registry::BlockStateId;
+
+/// Messages a player may send the mods (and the API 8 hook points) in one
+/// tick, and the helpers may send a player: past them the rest is dropped.
+const NET_PER_TICK: u32 = 32;
+
+/// `UUID.toString()`.
+fn uuid_string(u: u128) -> String {
+    let h = format!("{u:032x}");
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..]
+    )
+}
+
+/// A channel of the API 8 net hooks, as the helpers check it: the mod's
+/// own name, 1 to 64 bytes, not in the game's namespaces.
+fn hook_channel_ok(channel: &str) -> Result<(), String> {
+    if channel.is_empty() || channel.len() > 64 || channel.chars().any(char::is_whitespace) {
+        return Err(format!(
+            "the channel {channel:?} is not 1 to 64 bytes without whitespace"
+        ));
+    }
+    if channel.starts_with("minecraft:") || channel.starts_with("horizon:") {
+        return Err("the minecraft: and horizon: namespaces are the game's own".into());
+    }
+    Ok(())
+}
+
+/// A payload of the API 8 net hooks: at most the wire's cap.
+fn hook_data_ok(data: &[u8]) -> Result<(), String> {
+    if data.len() > horizon_protocol::mod_net::MAX_DATA {
+        return Err(format!(
+            "the data is {} bytes; at most {}",
+            data.len(),
+            horizon_protocol::mod_net::MAX_DATA
+        ));
+    }
+    Ok(())
+}
+
+/// The sender a channel names for the wire: before the `:`, else the whole
+/// channel (the compiled-in mods' own channels are bare).
+fn hook_channel_sender(channel: &str) -> &str {
+    channel.split(':').next().unwrap_or(channel)
+}
+
+/// Mob `index` of the game as the API 8 entity hooks read it.
+fn native_entity_of(game: &Game, index: usize) -> NativeEntity {
+    let m = &game.mobs[index];
+    NativeEntity {
+        id: m.id,
+        kind: format!("minecraft:{}", m.kind.id.trim_start_matches("minecraft:")),
+        dimension: game.dim.id().to_owned(),
+        pos: [m.position.x, m.position.y, m.position.z],
+        yaw: m.yaw,
+        health: m.health,
+        max_health: m.attrs.max_health,
+    }
+}
+
+/// A blow's cause as `native_player_hurt` names it.
+fn native_who_of(cause: &Option<horizon_mods::EntityWho>) -> Option<NativeWho> {
+    cause.as_ref().map(|c| NativeWho {
+        id: c.id,
+        kind: c.kind.clone(),
+        health: c.health,
+    })
+}
+
+/// The API 8 net channel: what the game needs in both feature
+/// configurations (the hooks themselves are `native_hooks.rs`).
+impl Game<'_> {
+    /// A `horizon:mod_net` payload `player` sent: within the caps it fires
+    /// `native_net_from_client` and the message comes back for the
+    /// compiled-in mods' half of the pipe; past them it is dropped in
+    /// silence, as the compiled-in mods' messages are.
+    pub(super) fn hook_net_from_client(
+        &mut self,
+        player: u128,
+        data: &[u8],
+    ) -> Option<horizon_protocol::mod_net::Message> {
+        let m = horizon_protocol::mod_net::decode(data).ok()?;
+        let allowed = {
+            let count = self.mods.net_counts.entry(player).or_default();
+            if *count >= NET_PER_TICK {
+                false
+            } else {
+                *count += 1;
+                true
+            }
+        };
+        if !allowed {
+            return None;
+        }
+        self.native_net_from_client(player, &m.name, &m.data);
+        Some(m)
+    }
+
+    /// `native_net_send_to_player`.
+    pub(super) fn hook_net_send_to_player(
+        &mut self,
+        player: u128,
+        channel: &str,
+        data: &[u8],
+    ) -> Result<(), String> {
+        hook_channel_ok(channel)?;
+        hook_data_ok(data)?;
+        if self
+            .mods
+            .net_out_counts
+            .get(&player)
+            .is_some_and(|c| *c >= NET_PER_TICK)
+        {
+            return Err(format!("past {NET_PER_TICK} messages to this player this tick"));
+        }
+        let id = uuid_string(player);
+        let Some(host) = self.lan.as_mut() else {
+            return Err("no players are connected".into());
+        };
+        let Some(conn) = host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.placed && uuid_string(g.uuid) == id && g.brand == "horizon")
+            .map(|g| g.conn)
+        else {
+            return Err(format!("player {id} is not on a Horizon client"));
+        };
+        let message = horizon_protocol::mod_net::Message {
+            mod_id: hook_channel_sender(channel).to_owned(),
+            name: channel.to_owned(),
+            data: data.to_vec(),
+        };
+        let Ok(bytes) = horizon_protocol::mod_net::encode(&message) else {
+            return Err("the message does not fit the wire".into());
+        };
+        let packet = horizon_protocol::packets::play::Clientbound::CustomPayload(
+            horizon_protocol::packets::configuration::CustomPayload {
+                channel: horizon_protocol::mod_net::CHANNEL.into(),
+                data: bytes,
+            },
+        );
+        host.hub.send_to(conn, &packet);
+        *self.mods.net_out_counts.entry(player).or_default() += 1;
+        Ok(())
+    }
+
+    /// `native_net_send_to_server`.
+    pub(super) fn hook_net_send_to_server(
+        &mut self,
+        channel: &str,
+        data: &[u8],
+    ) -> Result<(), String> {
+        hook_channel_ok(channel)?;
+        hook_data_ok(data)?;
+        if self.mods.net_client_sent >= NET_PER_TICK {
+            return Err(format!("past {NET_PER_TICK} messages this tick"));
+        }
+        if !self.remote.as_ref().is_some_and(|r| r.mod_net) {
+            return Err("the server carries no mod messages".into());
+        }
+        let message = horizon_protocol::mod_net::Message {
+            mod_id: hook_channel_sender(channel).to_owned(),
+            name: channel.to_owned(),
+            data: data.to_vec(),
+        };
+        let bytes = horizon_protocol::mod_net::encode(&message)
+            .map_err(|e| format!("the message does not fit the wire: {e}"))?;
+        self.send(
+            horizon_protocol::packets::play::Serverbound::CustomPayload(
+                horizon_protocol::packets::configuration::CustomPayload {
+                    channel: horizon_protocol::mod_net::CHANNEL.into(),
+                    data: bytes,
+                },
+            ),
+        );
+        self.mods.net_client_sent += 1;
+        Ok(())
+    }
+}
 
 /// Who did something a server mod hears about, resolved at the tick's end.
 #[cfg_attr(not(feature = "mods"), allow(dead_code))]
@@ -120,7 +307,10 @@ pub(super) enum ModEvent {
 
 #[cfg(not(feature = "mods"))]
 impl Game<'_> {
-    pub(super) fn tick_server_mods(&mut self) {}
+    pub(super) fn tick_server_mods(&mut self) {
+        self.mods.net_counts.clear();
+        self.mods.net_out_counts.clear();
+    }
     pub(super) fn mod_block_event(&mut self, _pos: [i32; 3], _state: BlockStateId, _placed: bool) {}
     pub(super) fn mod_player_chat(&mut self, _who: Who, _text: &str) {}
     pub(super) fn local_server_mod_command(&mut self, _line: &str) -> bool {
@@ -149,14 +339,39 @@ impl Game<'_> {
     pub(super) fn mod_block_use(&mut self, _pos: [i32; 3]) -> bool {
         false
     }
-    pub(super) fn guest_mod_net(&mut self, _conn: u32, _data: &[u8]) {}
-    pub(in crate::game) fn mod_entity_hurt(&mut self, _index: usize, damage: f32) -> f32 {
-        damage
+    pub(super) fn guest_mod_net(&mut self, _conn: u32, player: u128, data: &[u8]) {
+        self.hook_net_from_client(player, data);
     }
-    pub(in crate::game) fn mod_note_death(&mut self, _uuid: Option<u128>, _cause: String) {}
-    pub(in crate::game) fn mod_mob_killed(&mut self, _index: usize) {}
-    pub(in crate::game) fn mod_entity_use(&mut self, _index: usize) -> bool {
-        false
+    pub(in crate::game) fn mod_entity_hurt(&mut self, index: usize, damage: f32) -> f32 {
+        let entity = native_entity_of(self, index);
+        let mut amount = damage;
+        let mut canceled = false;
+        let player = self.native_acting_player();
+        self.native_entity_hurt(player, &entity, &mut amount, &mut canceled);
+        if canceled {
+            0.0
+        } else {
+            amount
+        }
+    }
+    pub(in crate::game) fn mod_note_death(&mut self, uuid: Option<u128>, cause: String) {
+        let player = match uuid {
+            Some(u) => u,
+            None => self.native_acting_player(),
+        };
+        self.native_player_died(player, &cause);
+    }
+    pub(in crate::game) fn mod_mob_killed(&mut self, index: usize) {
+        let entity = native_entity_of(self, index);
+        let player = self.native_acting_player();
+        self.native_mob_killed(player, entity.id, &entity.kind);
+    }
+    pub(in crate::game) fn mod_entity_use(&mut self, index: usize) -> bool {
+        let entity = native_entity_of(self, index);
+        let mut claimed = false;
+        let player = self.native_acting_player();
+        self.native_entity_interact(player, &entity, &mut claimed);
+        claimed
     }
     pub(in crate::game) fn mod_item_use(&mut self, _block_hit: Option<&super::Hit>) -> bool {
         false
@@ -186,27 +401,195 @@ impl Game<'_> {
     }
     pub(in crate::game) fn mod_player_hurt(
         &mut self,
-        _source: &str,
-        _cause: Option<horizon_mods::EntityWho>,
+        source: &str,
+        cause: Option<horizon_mods::EntityWho>,
         amount: f32,
     ) -> f32 {
-        amount
+        let mut amount = amount;
+        let mut canceled = false;
+        let player = self.native_acting_player();
+        self.native_player_hurt(
+            player,
+            source,
+            native_who_of(&cause).as_ref(),
+            &mut amount,
+            &mut canceled,
+        );
+        if canceled {
+            0.0
+        } else {
+            amount
+        }
     }
-    pub(in crate::game) fn mod_breaking_block(
-        &mut self,
-        _pos: [i32; 3],
-        _state: BlockStateId,
-    ) -> bool {
-        true
+    pub(in crate::game) fn mod_breaking_block(&mut self, pos: [i32; 3], state: BlockStateId) -> bool {
+        let mut canceled = false;
+        let player = self.native_acting_player();
+        self.native_block_breaking(
+            player,
+            horizon_core::position::BlockPos {
+                x: pos[0],
+                y: pos[1],
+                z: pos[2],
+            },
+            state,
+            &mut canceled,
+        );
+        !canceled
     }
-    pub(in crate::game) fn mod_picking_up(&mut self, _item: &str, _count: u32) -> bool {
-        true
+    pub(in crate::game) fn mod_picking_up(&mut self, item: &str, count: u32) -> bool {
+        let mut canceled = false;
+        let player = self.native_acting_player();
+        self.native_item_picked_up(player, item, count, &mut canceled);
+        !canceled
     }
-    pub(in crate::game) fn mod_note_drop(&mut self, _item: &str, _count: u32) {}
-    pub(in crate::game) fn mod_note_spawn(&mut self, _kind: &str, _at: [f64; 3], _natural: bool) {}
+    pub(in crate::game) fn mod_note_drop(&mut self, item: &str, count: u32) {
+        let player = self.native_acting_player();
+        self.native_item_dropped(player, item, count);
+    }
+    pub(in crate::game) fn mod_note_spawn(&mut self, kind: &str, at: [f64; 3], natural: bool) {
+        self.native_mob_spawned(self.dim.id(), kind, at, natural);
+    }
     pub(in crate::game) fn mod_note_pvp(&mut self, _cause: Option<horizon_mods::EntityWho>) {}
     pub(in crate::game) fn mod_take_pvp(&mut self) -> Option<horizon_mods::EntityWho> {
         None
+    }
+
+    /// The API 8 helpers that need the `mods` feature: a build without it
+    /// has none of the state they touch.
+    pub(super) fn hook_spawn_entity(
+        &mut self,
+        _kind: &str,
+        _pos: [f64; 3],
+        _options: &super::native_hooks::NativeSpawn,
+    ) -> Result<u32, String> {
+        Err("the mobs helper needs the mods feature".into())
+    }
+    pub(super) fn hook_entity_teleport(&mut self, _id: u32, _pos: [f64; 3]) -> Result<(), String> {
+        Err("the mobs helper needs the mods feature".into())
+    }
+    pub(super) fn hook_entity_push(
+        &mut self,
+        _id: u32,
+        _velocity: [f64; 3],
+    ) -> Result<(), String> {
+        Err("the mobs helper needs the mods feature".into())
+    }
+    pub(super) fn hook_entity_set_health(
+        &mut self,
+        _id: u32,
+        _health: f32,
+    ) -> Result<(), String> {
+        Err("the mobs helper needs the mods feature".into())
+    }
+    pub(super) fn hook_remove_entity(&mut self, _id: u32) -> Result<(), String> {
+        Err("the mobs helper needs the mods feature".into())
+    }
+    pub(super) fn hook_spawn_particle(
+        &mut self,
+        _particle: &super::native_hooks::NativeParticle,
+    ) -> Result<(), String> {
+        Err("the effects helper needs the mods feature".into())
+    }
+    pub(super) fn hook_play_sound(
+        &mut self,
+        _name: &str,
+        _pos: [f64; 3],
+        _volume: f32,
+        _pitch: f32,
+        _category: i32,
+    ) -> Result<(), String> {
+        Err("the effects helper needs the mods feature".into())
+    }
+    pub(super) fn hook_play_sound_to(
+        &mut self,
+        _player: u128,
+        _name: &str,
+        _volume: f32,
+        _pitch: f32,
+        _category: i32,
+    ) -> Result<(), String> {
+        Err("the effects helper needs the mods feature".into())
+    }
+    pub(super) fn hook_redstone_set_output(
+        &mut self,
+        _pos: [i32; 3],
+        _power: [u8; 6],
+        _strong: bool,
+    ) -> Result<(), String> {
+        Err("the redstone helper needs the mods feature".into())
+    }
+    pub(super) fn hook_show_text_display(
+        &mut self,
+        _name: &str,
+        _dimension: &str,
+        _pos: [f64; 3],
+        _text: &str,
+        _transform: &super::native_hooks::NativeTransform,
+        _interpolation: u32,
+    ) -> Result<(), String> {
+        Err("the displays helper needs the mods feature".into())
+    }
+    pub(super) fn hook_show_block_display(
+        &mut self,
+        _name: &str,
+        _dimension: &str,
+        _pos: [f64; 3],
+        _state: &str,
+        _transform: &super::native_hooks::NativeTransform,
+        _interpolation: u32,
+    ) -> Result<(), String> {
+        Err("the displays helper needs the mods feature".into())
+    }
+    pub(super) fn hook_show_item_display(
+        &mut self,
+        _name: &str,
+        _dimension: &str,
+        _pos: [f64; 3],
+        _stack: &NativeStack,
+        _transform: &super::native_hooks::NativeTransform,
+        _interpolation: u32,
+    ) -> Result<(), String> {
+        Err("the displays helper needs the mods feature".into())
+    }
+    pub(super) fn hook_move_display(
+        &mut self,
+        _name: &str,
+        _pos: [f64; 3],
+        _interpolation: u32,
+    ) -> Result<(), String> {
+        Err("the displays helper needs the mods feature".into())
+    }
+    pub(super) fn hook_hide_display(&mut self, _name: &str) -> Result<(), String> {
+        Err("the displays helper needs the mods feature".into())
+    }
+    pub(super) fn hook_fluid_tanks(
+        &mut self,
+        _dimension: &str,
+        _pos: [i32; 3],
+    ) -> Vec<super::native_hooks::NativeTank> {
+        Vec::new()
+    }
+    pub(super) fn hook_fluid_insert(
+        &mut self,
+        _dimension: &str,
+        _pos: [i32; 3],
+        _fluid: &str,
+        _amount: u64,
+    ) -> Result<u64, String> {
+        Err("the fluids helper needs the mods feature".into())
+    }
+    pub(super) fn hook_fluid_extract(
+        &mut self,
+        _dimension: &str,
+        _pos: [i32; 3],
+        _tank: u32,
+        _fluid: Option<&str>,
+        _amount: u64,
+    ) -> Result<u64, String> {
+        Err("the fluids helper needs the mods feature".into())
+    }
+    pub(super) fn hook_mod_publish(&mut self, _channel: &str, _data: &[u8]) -> Result<(), String> {
+        Err("the mods' bus needs the mods feature".into())
     }
 }
 
@@ -214,18 +597,20 @@ impl Game<'_> {
 mod run {
     use super::super::Hit;
     use super::ModDisplay;
-    use super::{Game, LanHost, ModEvent, ModMenu, Who};
+    use super::{
+        Game, LanHost, ModEvent, ModMenu, Who, native_entity_of, native_who_of, uuid_string,
+    };
+    use super::super::native_hooks::{
+        NativeParticle, NativeSpawn, NativeStack, NativeTank, NativeTransform,
+    };
     use horizon_client::chunk_map::ChunkMap;
     use horizon_client::items::ItemStack;
     use horizon_client::lan::containers::ModSlot;
     use horizon_mods::{
-        DisplayShape, HeldStack, ItemEntity, PlayerItems, PlayerStack, SlotMode, TICK_ITEMS,
-        Transform, items::Stack,
+        DisplayShape, EffectParticle, EntitySpawn, HeldStack, ItemEntity, PlayerItems, PlayerStack,
+        SlotMode, TICK_ITEMS, Transform, items::Stack,
     };
     use horizon_protocol::entity_data::{Value as Data, serializer};
-
-    /// Messages a player may send to the mods in one tick.
-    const NET_PER_TICK: u32 = 32;
 
     /// Mods' display entities take ids from here up, past the world's.
     const FIRST_DISPLAY_ID: i32 = 0x6000_0000;
@@ -265,6 +650,16 @@ mod run {
             meta.push((23, serializer::COMPONENT, Data::Text(text)));
         }
         meta
+    }
+
+    /// A display's transform as the API 8 helpers give it (`NativeTransform`)
+    /// and the game's displays take it.
+    fn hook_transform_of(t: &NativeTransform) -> Transform {
+        Transform {
+            translation: (t.translation[0], t.translation[1], t.translation[2]),
+            scale: (t.scale[0], t.scale[1], t.scale[2]),
+            rotation: (t.rotation[0], t.rotation[1], t.rotation[2], t.rotation[3]),
+        }
     }
     use horizon_client::{
         command::args::GameMode as Mode,
@@ -385,19 +780,6 @@ mod run {
             .map(|(k, v)| format!("{k}={v}"))
             .collect();
         format!("{}[{}]", s.name, props.join(","))
-    }
-
-    /// `UUID.toString()`.
-    fn uuid_string(u: u128) -> String {
-        let h = format!("{u:032x}");
-        format!(
-            "{}-{}-{}-{}-{}",
-            &h[..8],
-            &h[8..12],
-            &h[12..16],
-            &h[16..20],
-            &h[20..]
-        )
     }
 
     /// The key of a mod's own bytes on a stack (capability `item-hooks`): a
@@ -960,6 +1342,24 @@ mod run {
             cause: Option<horizon_mods::EntityWho>,
             amount: f32,
         ) -> f32 {
+            if amount <= 0.0 {
+                return amount;
+            }
+            // The API 8 hooks answer first; the compiled-in mods get what
+            // they left.
+            let mut amount = amount;
+            let mut canceled = false;
+            let player = self.native_acting_player();
+            self.native_player_hurt(
+                player,
+                source,
+                native_who_of(&cause).as_ref(),
+                &mut amount,
+                &mut canceled,
+            );
+            if canceled {
+                return 0.0;
+            }
             if !self.hears_players() || !self.mods.rich_events || amount <= 0.0 {
                 return amount;
             }
@@ -986,6 +1386,23 @@ mod run {
             pos: [i32; 3],
             state: BlockStateId,
         ) -> bool {
+            // The API 8 hooks answer first; the compiled-in mods get what
+            // they left.
+            let mut canceled = false;
+            let player = self.native_acting_player();
+            self.native_block_breaking(
+                player,
+                horizon_core::position::BlockPos {
+                    x: pos[0],
+                    y: pos[1],
+                    z: pos[2],
+                },
+                state,
+                &mut canceled,
+            );
+            if canceled {
+                return false;
+            }
             if !self.hears_players() || !self.mods.rich_events {
                 return true;
             }
@@ -1004,6 +1421,14 @@ mod run {
         /// Whether the acting player may take a dropped stack (capability
         /// `rich-events`): a refusing mod leaves it on the ground.
         pub(in crate::game) fn mod_picking_up(&mut self, item: &str, count: u32) -> bool {
+            // The API 8 hooks answer first; the compiled-in mods get what
+            // they left.
+            let mut canceled = false;
+            let player = self.native_acting_player();
+            self.native_item_picked_up(player, item, count, &mut canceled);
+            if canceled {
+                return false;
+            }
             if !self.hears_players() || !self.mods.rich_events {
                 return true;
             }
@@ -1022,6 +1447,8 @@ mod run {
         /// `rich-events`): told at the tick's end, the tick's drops of one
         /// player batched in one call.
         pub(in crate::game) fn mod_note_drop(&mut self, item: &str, count: u32) {
+            let player = self.native_acting_player();
+            self.native_item_dropped(player, item, count);
             if !self.hears_players() || !self.mods.rich_events {
                 return;
             }
@@ -1036,6 +1463,7 @@ mod run {
         /// call; past [`horizon_mods::RICH_SPAWNS_PER_TICK`] a tick the rest
         /// spawn unsaid.
         pub(in crate::game) fn mod_note_spawn(&mut self, kind: &str, at: [f64; 3], natural: bool) {
+            self.native_mob_spawned(self.dim.id(), kind, at, natural);
             if !self.mods.rich_events {
                 return;
             }
@@ -1217,6 +1645,7 @@ mod run {
                 }
             }
             self.mods.net_counts.clear();
+            self.mods.net_out_counts.clear();
             self.mods.mods.server_tick(self.ticks);
             self.mods.mods.block_entity_tick(self.ticks);
             // Capability `config`: a look at the config files every few seconds.
@@ -1859,24 +2288,18 @@ mod run {
         }
 
         /// A mod message a connection's player sent (`horizon_protocol::mod_net`):
-        /// the mod with the id it names hears it at the tick's end. A player
-        /// sends at most [`NET_PER_TICK`] a tick, and what breaks a cap or
-        /// names no running mod that listens is dropped.
-        pub(in crate::game) fn guest_mod_net(&mut self, conn: u32, data: &[u8]) {
-            if !self.hears_players() {
-                return;
-            }
-            let Ok(m) = horizon_protocol::mod_net::decode(data) else {
+        /// within the caps the API 8 hook `native_net_from_client` hears it,
+        /// then the mod with the id it names hears it at the tick's end. A
+        /// player sends at most [`NET_PER_TICK`] a tick (the hook and the
+        /// compiled-in mods share the count), and what breaks a cap or names
+        /// no running mod that listens is dropped.
+        pub(in crate::game) fn guest_mod_net(&mut self, conn: u32, player: u128, data: &[u8]) {
+            let Some(m) = self.hook_net_from_client(player, data) else {
                 return;
             };
-            if !self.mods.mods.hears_net(&m.mod_id) {
+            if !self.hears_players() || !self.mods.mods.hears_net(&m.mod_id) {
                 return;
             }
-            let count = self.mods.net_counts.entry(conn).or_default();
-            if *count >= NET_PER_TICK {
-                return;
-            }
-            *count += 1;
             let event = ModEvent::NetFromClient(Who::Conn(conn), m.mod_id, m.name, m.data);
             self.mods.events.push(event);
         }
@@ -2120,6 +2543,13 @@ mod run {
         /// tick's end, when the mods are told (capability `game-events`).
         /// `uuid` None is the window's own player.
         pub(in crate::game) fn mod_note_death(&mut self, uuid: Option<u128>, cause: String) {
+            {
+                let player = match uuid {
+                    Some(u) => u,
+                    None => self.native_acting_player(),
+                };
+                self.native_player_died(player, &cause);
+            }
             if !self.mods.mods.wants_game_events() {
                 return;
             }
@@ -2133,6 +2563,11 @@ mod run {
         /// The acting player's blow killed mob `index` (capability
         /// `game-events`).
         pub(in crate::game) fn mod_mob_killed(&mut self, index: usize) {
+            {
+                let entity = native_entity_of(self, index);
+                let player = self.native_acting_player();
+                self.native_mob_killed(player, entity.id, &entity.kind);
+            }
             if !self.hears_players() || !self.mods.mods.wants_game_events() {
                 return;
             }
@@ -2390,8 +2825,20 @@ mod run {
         /// A player's blow is about to hurt mob `index`: when it is a mod's,
         /// the mod answers with the damage to deal (capability `entities`).
         pub(in crate::game) fn mod_entity_hurt(&mut self, index: usize, damage: f32) -> f32 {
+            // The API 8 hooks answer first; the mob's owner gets what they
+            // left.
+            let mut amount = damage;
+            if amount > 0.0 {
+                let entity = native_entity_of(self, index);
+                let mut canceled = false;
+                let player = self.native_acting_player();
+                self.native_entity_hurt(player, &entity, &mut amount, &mut canceled);
+                if canceled {
+                    return 0.0;
+                }
+            }
             if !self.hears_players() {
-                return damage;
+                return amount;
             }
             let Some(info) = self
                 .mods
@@ -2400,14 +2847,14 @@ mod run {
                 .get(&self.mobs[index].id)
                 .map(|o| o.last.clone())
             else {
-                return damage;
+                return amount;
             };
             let Some(player) = self.acting_server_player(None) else {
-                return damage;
+                return amount;
             };
             let mut host = self.lan.take();
             let answer = self.with_mod_stores(host.as_mut(), |g| {
-                g.mods.mods.entity_hurt(&player, &info, damage)
+                g.mods.mods.entity_hurt(&player, &info, amount)
             });
             self.lan = host;
             answer
@@ -2420,6 +2867,17 @@ mod run {
         pub(in crate::game) fn mod_entity_use(&mut self, index: usize) -> bool {
             if !self.hears_players() || self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft) {
                 return false;
+            }
+            // The API 8 hooks claim the use first; the mob's owner hears it
+            // next.
+            {
+                let entity = native_entity_of(self, index);
+                let mut claimed = false;
+                let player = self.native_acting_player();
+                self.native_entity_interact(player, &entity, &mut claimed);
+                if claimed {
+                    return true;
+                }
             }
             let id = self.mobs[index].id;
             // A click names each hand in turn: the main hand's is the one.
@@ -3019,6 +3477,420 @@ mod run {
                 }
                 _ => {}
             }
+        }
+
+        // --- The API 8 helpers (`native_hooks.rs`): the same appliers the
+        // compiled-in mods' output takes, under the owner id `native`. ---
+
+        /// What owns the mobs, displays and bus messages the API 8 helpers
+        /// make: a pseudo-mod id, marked as a compiled-in mod's own is.
+        const HOOK_OWNER: &str = "native";
+        /// Particles one `native_spawn_particle` sends.
+        const HOOK_PARTICLES: u32 = 500;
+
+        /// Mob `id` is one of the helpers' own.
+        fn hook_own_entity(&self, id: u32) -> Result<(), String> {
+            if self
+                .mods
+                .mod_entities
+                .owned
+                .get(&id)
+                .is_some_and(|o| o.last.owner == Self::HOOK_OWNER)
+            {
+                Ok(())
+            } else {
+                Err(format!("mob {id} is not one the helpers made"))
+            }
+        }
+
+        /// `native_spawn_entity`.
+        pub(in crate::game) fn hook_spawn_entity(
+            &mut self,
+            kind: &str,
+            pos: [f64; 3],
+            options: &NativeSpawn,
+        ) -> Result<u32, String> {
+            let mine = self
+                .mods
+                .mod_entities
+                .owned
+                .values()
+                .filter(|o| o.last.owner == Self::HOOK_OWNER)
+                .count();
+            if mine >= horizon_mods::MAX_ENTITIES {
+                return Err(format!(
+                    "past {} mobs of the helpers'",
+                    horizon_mods::MAX_ENTITIES
+                ));
+            }
+            let id = self.next_entity + 1;
+            self.apply_entity_output(Output::SpawnEntity {
+                mod_id: Self::HOOK_OWNER.to_owned(),
+                id,
+                pos,
+                options: EntitySpawn {
+                    kind: kind.to_owned(),
+                    tag: options.tag.clone(),
+                    no_ai: options.no_ai,
+                    invisible: options.invisible,
+                    silent: options.silent,
+                    invulnerable: options.invulnerable,
+                    no_gravity: options.no_gravity,
+                    takes_use: options.takes_use,
+                    name: options.name.clone(),
+                    health: options.health,
+                },
+            });
+            if self.mods.mod_entities.owned.contains_key(&id) {
+                Ok(id)
+            } else {
+                Err(format!("{kind}: the game does not know it"))
+            }
+        }
+
+        /// `native_entity_teleport`.
+        pub(in crate::game) fn hook_entity_teleport(
+            &mut self,
+            id: u32,
+            pos: [f64; 3],
+        ) -> Result<(), String> {
+            self.hook_own_entity(id)?;
+            if !pos.iter().all(|v| v.is_finite()) {
+                return Err("a position must be finite".into());
+            }
+            self.apply_entity_output(Output::TeleportEntity {
+                mod_id: Self::HOOK_OWNER.to_owned(),
+                id,
+                pos,
+            });
+            Ok(())
+        }
+
+        /// `native_entity_push`.
+        pub(in crate::game) fn hook_entity_push(
+            &mut self,
+            id: u32,
+            velocity: [f64; 3],
+        ) -> Result<(), String> {
+            self.hook_own_entity(id)?;
+            if !velocity.iter().all(|v| v.is_finite()) {
+                return Err("a velocity must be finite".into());
+            }
+            self.apply_entity_output(Output::PushEntity {
+                mod_id: Self::HOOK_OWNER.to_owned(),
+                id,
+                velocity,
+            });
+            Ok(())
+        }
+
+        /// `native_entity_set_health`.
+        pub(in crate::game) fn hook_entity_set_health(
+            &mut self,
+            id: u32,
+            health: f32,
+        ) -> Result<(), String> {
+            self.hook_own_entity(id)?;
+            if !health.is_finite() || health <= 0.0 {
+                return Err("health is a number above 0".into());
+            }
+            self.apply_entity_output(Output::SetEntityHealth {
+                mod_id: Self::HOOK_OWNER.to_owned(),
+                id,
+                health,
+            });
+            Ok(())
+        }
+
+        /// `native_remove_entity`.
+        pub(in crate::game) fn hook_remove_entity(&mut self, id: u32) -> Result<(), String> {
+            self.hook_own_entity(id)?;
+            self.apply_entity_output(Output::RemoveEntity {
+                mod_id: Self::HOOK_OWNER.to_owned(),
+                id,
+            });
+            Ok(())
+        }
+
+        /// `native_spawn_particle`.
+        pub(in crate::game) fn hook_spawn_particle(
+            &mut self,
+            p: &NativeParticle,
+        ) -> Result<(), String> {
+            let particle = EffectParticle {
+                name: p.name.clone(),
+                pos: p.pos,
+                spread: p.spread,
+                speed: p.speed,
+                count: p.count.min(Self::HOOK_PARTICLES),
+                color: p.color,
+                scale: p.scale,
+                block: p.block.clone(),
+                always_show: p.always_show,
+            };
+            self.route_server_output(
+                None,
+                Output::Particle {
+                    dimension: self.dim.id().to_owned(),
+                    particle,
+                },
+            );
+            Ok(())
+        }
+
+        /// `native_play_sound`.
+        pub(in crate::game) fn hook_play_sound(
+            &mut self,
+            name: &str,
+            pos: [f64; 3],
+            volume: f32,
+            pitch: f32,
+            category: i32,
+        ) -> Result<(), String> {
+            self.route_server_output(
+                None,
+                Output::Sound {
+                    dimension: self.dim.id().to_owned(),
+                    name: name.to_owned(),
+                    pos,
+                    volume,
+                    pitch,
+                    category,
+                },
+            );
+            Ok(())
+        }
+
+        /// `native_play_sound_to`.
+        pub(in crate::game) fn hook_play_sound_to(
+            &mut self,
+            player: u128,
+            name: &str,
+            volume: f32,
+            pitch: f32,
+            category: i32,
+        ) -> Result<(), String> {
+            self.route_server_output(
+                None,
+                Output::SoundTo {
+                    player: uuid_string(player),
+                    name: name.to_owned(),
+                    volume,
+                    pitch,
+                    category,
+                },
+            );
+            Ok(())
+        }
+
+        /// `native_redstone_set_output`.
+        pub(in crate::game) fn hook_redstone_set_output(
+            &mut self,
+            pos: [i32; 3],
+            power: [u8; 6],
+            strong: bool,
+        ) -> Result<(), String> {
+            if power.iter().any(|p| *p > 15) {
+                return Err("a signal is 0 to 15".into());
+            }
+            self.apply_redstone_output(pos, power, strong);
+            Ok(())
+        }
+
+        /// `native_show_text_display`.
+        pub(in crate::game) fn hook_show_text_display(
+            &mut self,
+            name: &str,
+            dimension: &str,
+            pos: [f64; 3],
+            text: &str,
+            transform: &NativeTransform,
+            interpolation: u32,
+        ) -> Result<(), String> {
+            self.route_server_output(
+                None,
+                Output::ShowDisplay {
+                    mod_id: Self::HOOK_OWNER.to_owned(),
+                    name: name.to_owned(),
+                    dimension: dimension.to_owned(),
+                    pos,
+                    shape: DisplayShape::Text(text.to_owned()),
+                    transform: hook_transform_of(transform),
+                    interpolation,
+                },
+            );
+            Ok(())
+        }
+
+        /// `native_show_block_display`.
+        pub(in crate::game) fn hook_show_block_display(
+            &mut self,
+            name: &str,
+            dimension: &str,
+            pos: [f64; 3],
+            state: &str,
+            transform: &NativeTransform,
+            interpolation: u32,
+        ) -> Result<(), String> {
+            match crate::game::render_control::parse_state(self.pack.assets.registry, state) {
+                Ok(_) => {}
+                Err(e) => return Err(format!("{state}: {e}")),
+            }
+            self.route_server_output(
+                None,
+                Output::ShowDisplay {
+                    mod_id: Self::HOOK_OWNER.to_owned(),
+                    name: name.to_owned(),
+                    dimension: dimension.to_owned(),
+                    pos,
+                    shape: DisplayShape::Block(state.to_owned()),
+                    transform: hook_transform_of(transform),
+                    interpolation,
+                },
+            );
+            Ok(())
+        }
+
+        /// `native_show_item_display`.
+        pub(in crate::game) fn hook_show_item_display(
+            &mut self,
+            name: &str,
+            dimension: &str,
+            pos: [f64; 3],
+            stack: &NativeStack,
+            transform: &NativeTransform,
+            interpolation: u32,
+        ) -> Result<(), String> {
+            self.route_server_output(
+                None,
+                Output::ShowItemDisplay {
+                    mod_id: Self::HOOK_OWNER.to_owned(),
+                    name: name.to_owned(),
+                    dimension: dimension.to_owned(),
+                    pos,
+                    stack: Stack {
+                        item: stack.item.clone(),
+                        count: stack.count,
+                        components: stack.components.clone(),
+                    },
+                    transform: hook_transform_of(transform),
+                    interpolation,
+                },
+            );
+            Ok(())
+        }
+
+        /// `native_move_display`.
+        pub(in crate::game) fn hook_move_display(
+            &mut self,
+            name: &str,
+            pos: [f64; 3],
+            interpolation: u32,
+        ) -> Result<(), String> {
+            self.route_server_output(
+                None,
+                Output::MoveDisplay {
+                    mod_id: Self::HOOK_OWNER.to_owned(),
+                    name: name.to_owned(),
+                    pos,
+                    interpolation,
+                },
+            );
+            Ok(())
+        }
+
+        /// `native_hide_display`.
+        pub(in crate::game) fn hook_hide_display(&mut self, name: &str) -> Result<(), String> {
+            self.route_server_output(
+                None,
+                Output::HideDisplay {
+                    mod_id: Self::HOOK_OWNER.to_owned(),
+                    name: name.to_owned(),
+                },
+            );
+            Ok(())
+        }
+
+        /// `native_fluid_tanks`.
+        pub(in crate::game) fn hook_fluid_tanks(
+            &mut self,
+            dimension: &str,
+            pos: [i32; 3],
+        ) -> Vec<NativeTank> {
+            let key = (dimension.to_owned(), pos);
+            self.mods
+                .block_entities
+                .fluids
+                .get(&key)
+                .map_or_else(Vec::new, |tanks| {
+                    tanks
+                        .iter()
+                        .map(|t| NativeTank {
+                            fluid: t.fluid.clone(),
+                            amount: t.amount,
+                            capacity: t.spec.capacity,
+                        })
+                        .collect()
+                })
+        }
+
+        /// `native_fluid_insert`.
+        pub(in crate::game) fn hook_fluid_insert(
+            &mut self,
+            dimension: &str,
+            pos: [i32; 3],
+            fluid: &str,
+            amount: u64,
+        ) -> Result<u64, String> {
+            let key = (dimension.to_owned(), pos);
+            let moved = self
+                .mods
+                .block_entities
+                .fluids
+                .insert(&key, fluid, amount, false);
+            Ok(amount - moved)
+        }
+
+        /// `native_fluid_extract`.
+        pub(in crate::game) fn hook_fluid_extract(
+            &mut self,
+            dimension: &str,
+            pos: [i32; 3],
+            tank: u32,
+            fluid: Option<&str>,
+            amount: u64,
+        ) -> Result<u64, String> {
+            let key = (dimension.to_owned(), pos);
+            let index = usize::try_from(tank).map_err(|_| "no such tank".to_string())?;
+            let tanks = self
+                .mods
+                .block_entities
+                .fluids
+                .get(&key)
+                .ok_or("no tanks on the block entity there")?;
+            let Some(t) = tanks.get(index) else {
+                return Err(format!("tank {tank} is not one of the {} there", tanks.len()));
+            };
+            if let Some(want) = fluid && !t.fluid.is_empty() && t.fluid != want {
+                return Ok(0);
+            }
+            let taken = self
+                .mods
+                .block_entities
+                .fluids
+                .extract(&key, index, amount, false);
+            Ok(taken.map_or(0, |(_, n)| n))
+        }
+
+        /// `native_mod_publish`.
+        pub(in crate::game) fn hook_mod_publish(
+            &mut self,
+            channel: &str,
+            data: &[u8],
+        ) -> Result<(), String> {
+            self.mods
+                .mods
+                .inter_mod_publish(Self::HOOK_OWNER, channel, data.to_vec())
         }
     }
 }

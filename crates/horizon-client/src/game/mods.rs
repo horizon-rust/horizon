@@ -100,9 +100,13 @@ pub(super) struct ModsState {
     pub(super) displays: Vec<super::server_mods::ModDisplay>,
     #[cfg(feature = "mods")]
     pub(super) next_display: i32,
-    /// Capability `network`: the messages each connection sent this tick.
-    #[cfg(feature = "mods")]
-    pub(super) net_counts: std::collections::HashMap<u32, u32>,
+    /// Capability `network`: the messages each player sent this tick, and
+    /// (the API 8 hook points) the messages sent to them; the window's own
+    /// sends to its server are `net_client_sent`. All cleared at the tick's
+    /// end, in both feature configurations.
+    pub(super) net_counts: std::collections::HashMap<u128, u32>,
+    pub(super) net_out_counts: std::collections::HashMap<u128, u32>,
+    pub(super) net_client_sent: u32,
     /// Capability `entities`: which mobs are mods', their last state, the
     /// mobs as the last scan found them, and the kinds a mod may spawn.
     #[cfg(feature = "mods")]
@@ -334,13 +338,19 @@ impl Game<'_> {
     }
     pub(super) fn merge_remote_tree(&mut self) {}
     pub(super) fn sync_mods(&mut self) {}
-    pub(super) fn tick_mods(&mut self) {}
+    pub(super) fn tick_mods(&mut self) {
+        self.mods.net_client_sent = 0;
+    }
     pub(super) fn mods_frame(&mut self, _elapsed: Duration) {}
     pub(super) fn mod_command(&mut self, _command: &str) -> bool {
         false
     }
     pub(super) fn mods_chat(&mut self, _line: &str) {}
-    pub(super) fn mod_net_received(&mut self, _data: &[u8]) {}
+    pub(super) fn mod_net_received(&mut self, data: &[u8]) {
+        if let Ok(m) = horizon_protocol::mod_net::decode(data) {
+            self.native_net_from_server(&m.name, &m.data);
+        }
+    }
     pub(super) fn draw_mod_panels(&self, _batch: &mut HudBatch, _corners: &mut Corners) {}
     pub(super) fn open_mod_screen(&mut self, _owner: usize, _settings: bool) {}
     pub(super) fn close_mod_screen(&mut self, _tell: bool) {}
@@ -681,6 +691,7 @@ impl Game<'_> {
     }
     /// A game tick.
     pub(super) fn tick_mods(&mut self) {
+        self.mods.net_client_sent = 0;
         // Here, at the player's level: shown inside a console call (a control
         // socket command set the hook off), they would run as the console.
         for line in std::mem::take(&mut self.mods.commands) {
@@ -755,10 +766,12 @@ impl Game<'_> {
         self.show_mod_output();
     }
     /// A message of a server mod (`horizon_protocol::mod_net`) to the client
-    /// mod with the same id: a payload that breaks the caps is dropped.
+    /// mod with the same id: a payload that breaks the caps is dropped. The
+    /// API 8 hook `native_net_from_server` hears it first.
     pub(super) fn mod_net_received(&mut self, data: &[u8]) {
         match horizon_protocol::mod_net::decode(data) {
             Ok(m) => {
+                self.native_net_from_server(&m.name, &m.data);
                 self.mods.mods.net_server_sent(&m.mod_id, &m.name, &m.data);
                 self.show_mod_output();
             }

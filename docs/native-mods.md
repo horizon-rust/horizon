@@ -46,6 +46,18 @@ API 4 adds authoritative server tick events through `native_server_tick`: start 
 server tick, with `world_running`. A frozen world reports false except during a requested step. Bundles that
 use these events need `"hooks": 4`.
 
+API 8 adds the mod message channel and the server event hooks: `native_net_from_client` (a message a player's
+client half sent — the data is untrusted), `native_net_from_server` (a message the server half sent the
+window), `native_player_hurt` and `native_entity_hurt` (before armour; cancel, or take from, the amount),
+`native_player_died`, `native_mob_spawned`, `native_mob_killed`, `native_entity_interact` (claim the use),
+`native_item_dropped`, `native_item_picked_up` (cancel) and `native_block_breaking` (cancel: the block
+stands). The helpers beside them send on the channel (`native_net_send_to_player`,
+`native_net_send_to_server`, in every build), spawn and steer mobs, send particles and sounds, set redstone
+output, show displays, read and move fluid tanks, and publish on the compiled-in mods' bus
+(`native_mod_publish`); every helper but the net sends needs the `mods` feature. The new catalog entries also
+carry `side`, `cancellable` and the NeoForge event they mirror in `neoforge`. Bundles that use these need
+`"hooks": 8`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
@@ -170,3 +182,45 @@ A native server tick hook can call `native_server_block` with its context, a dim
 ### Server block changes (draft)
 
 `native_block_changed` observes a committed authoritative server `Level.setBlock` change before block side effects and neighbour updates. It supplies the dimension, position and old and new state IDs. It does not observe chunk loading or direct storage writes that bypass `Level.setBlock`.
+
+### The mod message channel (API 8)
+
+A mod in two halves — one in the window, one beside the world — talks over the game's own wire: a channel
+the mod names, and bytes. `native_net_from_client` hears what a player's client half sent (everything in
+`data` is the player's own bytes: untrusted, checked by nothing before the hook), `native_net_from_server`
+hears what a server half sent the window. The helpers `native_net_send_to_player` and
+`native_net_send_to_server` send the other way; they work in every build, with or without the `mods`
+feature. A channel is 1 to 64 bytes, without whitespace, and not in the game's `minecraft:` and `horizon:`
+namespaces; a payload is at most 30 000 bytes; at most 32 messages a player a tick each way, the rest
+dropped in silence. Only a client with the `horizon` brand is sent one — a vanilla client is sent nothing.
+The wire is the `horizon:mod_net` payload the compiled-in mods use, so both halves of one mod — a
+compiled-in one and a hooked one — share a channel.
+
+### Server event hooks (API 8)
+
+The event hooks fire on the authoritative server, before the compiled-in mods are told, in every build.
+Cancellable ones take `amount: &mut f32` / `canceled: &mut bool` or a `claimed: &mut bool`; several mods
+share a point through those. `native_player_hurt` and `native_entity_hurt` run before the armour and the
+rest of vanilla (a cancelled hurt deals none; what the hooks leave, the armour and the mods then work on);
+`native_block_breaking` cancelled keeps the block standing — no drop, no tool wear, no statistic;
+`native_item_picked_up` cancelled leaves the stack on the ground; `native_entity_interact` claimed keeps
+the vanilla use from running. `native_player_died` carries the death message's cause, `native_mob_spawned`
+fires for every mob the server spawns (`natural` when the world did it by itself),
+`native_mob_killed` names the killer, `native_item_dropped` the stack. Players are named by their UUID
+(the `native_acting_player` helper reads the one acting); blocks by position and state id.
+
+### Mob, effect, redstone, display and fluid helpers (API 8)
+
+`native_spawn_entity` spawns a mob of a kind the game knows with the `NativeSpawn` options (it belongs to
+the helper's own `native` mark, as a compiled-in mod's mobs belong to it, and counts against the same
+1024-mob budget), `native_entity_teleport`, `native_entity_push`, `native_entity_set_health` and
+`native_remove_entity` steer the helper's own mobs. `native_spawn_particle`, `native_play_sound` and
+`native_play_sound_to` send what the compiled-in `effects` capability sends, under the same caps.
+`native_redstone_set_output` sets what a block gives out on each face (down, up, north, south, west, east;
+`strong` powers through, as a lever does) and the game updates the neighbours.
+`native_show_text_display`, `native_show_block_display`, `native_show_item_display`,
+`native_move_display` and `native_hide_display` show the same display entities the compiled-in
+`displays` capability sends. `native_fluid_tanks`, `native_fluid_insert` and `native_fluid_extract` read
+and move the shared fluid tanks (millibuckets; a tank's own limits hold; nothing is created).
+`native_mod_publish` puts a message on the compiled-in mods' `inter-mod` bus. All of these need the
+`mods` feature: a build without it has none of the state they touch.

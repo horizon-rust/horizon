@@ -79,6 +79,94 @@
       "name": "panel_event",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_panel_event"
+    },
+    {
+      "name": "net_from_client",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_net_from_client",
+      "side": "server",
+      "cancellable": false,
+      "neoforge": "ServerCustomPayloadEvent"
+    },
+    {
+      "name": "net_from_server",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_net_from_server",
+      "side": "client",
+      "cancellable": false,
+      "neoforge": "ClientCustomPayloadEvent"
+    },
+    {
+      "name": "player_hurt",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_hurt",
+      "side": "server",
+      "cancellable": true,
+      "neoforge": "LivingIncomingDamageEvent"
+    },
+    {
+      "name": "player_died",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_died",
+      "side": "server",
+      "cancellable": false,
+      "neoforge": "LivingDeathEvent"
+    },
+    {
+      "name": "mob_spawned",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_mob_spawned",
+      "side": "server",
+      "cancellable": false,
+      "neoforge": "EntityJoinLevelEvent"
+    },
+    {
+      "name": "mob_killed",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_mob_killed",
+      "side": "server",
+      "cancellable": false,
+      "neoforge": "LivingDeathEvent"
+    },
+    {
+      "name": "entity_hurt",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_entity_hurt",
+      "side": "server",
+      "cancellable": true,
+      "neoforge": "MobIncomingDamageEvent"
+    },
+    {
+      "name": "entity_interact",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_entity_interact",
+      "side": "server",
+      "cancellable": true,
+      "neoforge": "PlayerInteractEvent.EntityInteract"
+    },
+    {
+      "name": "item_dropped",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_item_dropped",
+      "side": "server",
+      "cancellable": false,
+      "neoforge": "ItemTossEvent"
+    },
+    {
+      "name": "item_picked_up",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_item_picked_up",
+      "side": "server",
+      "cancellable": true,
+      "neoforge": "EntityPickupEvent"
+    },
+    {
+      "name": "block_breaking",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_block_breaking",
+      "side": "server",
+      "cancellable": true,
+      "neoforge": "BlockEvent.BreakEvent"
     }
   ]
 }

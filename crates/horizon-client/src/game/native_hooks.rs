@@ -6,6 +6,15 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 8 adds the mod message channel (`native_net_from_client`,
+//! `native_net_from_server`) and the server event hooks
+//! (`native_player_hurt`, `native_player_died`, `native_mob_spawned`,
+//! `native_mob_killed`, `native_entity_hurt`, `native_entity_interact`,
+//! `native_item_dropped`, `native_item_picked_up`,
+//! `native_block_breaking`), with their helpers: the net sends, mobs,
+//! effects, redstone output, displays, fluid tanks and the compiled-in
+//! mods' bus.
+//!
 //! API 7 adds block-change observations (`native_block_changed`).
 //!
 //! API 6 adds neighbour-change observations (`native_neighbor_changed`).
@@ -51,7 +60,7 @@ use winit::{event::MouseButton, keyboard::KeyCode};
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 7;
+pub(crate) const NATIVE_HOOKS_API: u32 = 8;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -116,6 +125,96 @@ pub(crate) struct NativePlayer {
     pub(crate) pitch: f32,
     /// `minecraft:overworld`, `minecraft:the_nether`, `minecraft:the_end`.
     pub(crate) dimension: &'static str,
+}
+
+/// A mob or player a blow came from, as `native_player_hurt` names it: its
+/// entity id, its kind and its health before the blow. API 8.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NativeWho {
+    pub(crate) id: u32,
+    /// `minecraft:zombie`, ...; `minecraft:player` for a PvP blow.
+    pub(crate) kind: String,
+    pub(crate) health: f32,
+}
+
+/// A mob as a native mod reads it (`native_entity_hurt`,
+/// `native_entity_interact`). API 8.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NativeEntity {
+    pub(crate) id: u32,
+    /// `minecraft:zombie`.
+    pub(crate) kind: String,
+    pub(crate) dimension: String,
+    pub(crate) pos: [f64; 3],
+    /// Degrees; 0 faces south.
+    pub(crate) yaw: f32,
+    pub(crate) health: f32,
+    pub(crate) max_health: f32,
+}
+
+/// A mob's options at spawn (`native_spawn_entity`), as the WebAssembly
+/// mods' `entities.spawn` took them. API 8.
+#[allow(dead_code)]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct NativeSpawn {
+    /// A name of the spawner's own, on the mob's saved data.
+    pub(crate) tag: String,
+    /// The mob takes the players' right clicks (`native_entity_interact`).
+    pub(crate) takes_use: bool,
+    pub(crate) no_ai: bool,
+    pub(crate) invisible: bool,
+    pub(crate) silent: bool,
+    pub(crate) invulnerable: bool,
+    pub(crate) no_gravity: bool,
+    /// A name over it, shown to everyone.
+    pub(crate) name: Option<String>,
+    pub(crate) health: Option<f32>,
+}
+
+/// A display's transform (`native_show_*_display`): where it stands, how
+/// big it is and how it is turned (x, y, z, w), blended over
+/// `interpolation` ticks. API 8.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NativeTransform {
+    pub(crate) translation: [f32; 3],
+    pub(crate) scale: [f32; 3],
+    pub(crate) rotation: [f32; 4],
+}
+
+/// A particle `native_spawn_particle` sends: the type by name, where, how
+/// spread and how fast, how many, and the looks of the types that take
+/// them. API 8.
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NativeParticle {
+    /// `minecraft:flame`.
+    pub(crate) name: String,
+    pub(crate) pos: [f64; 3],
+    pub(crate) spread: [f32; 3],
+    pub(crate) speed: f32,
+    pub(crate) count: u32,
+    /// The tint of the coloured types, 0xRRGGBB.
+    pub(crate) color: Option<u32>,
+    /// The size of the scalable types.
+    pub(crate) scale: Option<f32>,
+    /// A block state, for the types that take one (`minecraft:block`).
+    pub(crate) block: Option<String>,
+    /// Seen from far away (within 512 blocks, not 32).
+    pub(crate) always_show: bool,
+}
+
+/// One fluid tank `native_fluid_tanks` lists: what it holds, in
+/// millibuckets (a bucket is 1000), and how much it may. API 8.
+#[allow(dead_code)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct NativeTank {
+    /// `minecraft:water`; empty while the tank is.
+    pub(crate) fluid: String,
+    pub(crate) amount: u64,
+    pub(crate) capacity: u64,
 }
 
 /// A native mod as Options > Mods lists it (`native_mods`).
@@ -386,6 +485,109 @@ impl Game<'_> {
     pub(super) fn native_panel_event(&mut self, mod_id: &str, event: &NativePanelEvent) {
         let _ = (mod_id, event);
     }
+    /// A message of a native mod's client half arrived on its channel: a
+    /// `horizon:mod_net` payload `player` sent. Everything in `data` is the
+    /// player's own bytes — untrusted, checked by nothing before this.
+    /// Fires only for payloads within the wire caps (at most 30 000 bytes,
+    /// at most 32 a player a tick); the compiled-in mods hear it next.
+    /// Server-side. API 8.
+    pub(super) fn native_net_from_client(&mut self, player: u128, channel: &str, data: &[u8]) {
+        let _ = (player, channel, data);
+    }
+    /// A message of a native mod's server half arrived on its channel: a
+    /// `horizon:mod_net` payload this Horizon server sent the window.
+    /// `data` is the sender's own bytes, unchecked. The window's own game
+    /// only; the compiled-in mods hear it next. API 8.
+    pub(super) fn native_net_from_server(&mut self, channel: &str, data: &[u8]) {
+        let _ = (channel, data);
+    }
+    /// A hurt is about to land on `player` (before the armour and the rest
+    /// of vanilla): `source` is the damage type (`minecraft:mob_attack`),
+    /// `cause` the mob or player behind it, when there is one. Take from
+    /// `amount` or set `canceled` for no hurt at all; the compiled-in mods
+    /// answer next, with what the hooks left. Server-side. API 8.
+    pub(super) fn native_player_hurt(
+        &mut self,
+        player: u128,
+        source: &str,
+        cause: Option<&NativeWho>,
+        amount: &mut f32,
+        canceled: &mut bool,
+    ) {
+        let _ = (player, source, cause, amount, canceled);
+    }
+    /// `player` died; `cause` is the death message's cause, plain text.
+    /// Server-side. API 8.
+    pub(super) fn native_player_died(&mut self, player: u128, cause: &str) {
+        let _ = (player, cause);
+    }
+    /// The server spawned a mob of `kind` at `pos` in `dimension`: `natural`
+    /// when the world did it by itself, false when something asked for it.
+    /// Server-side. API 8.
+    pub(super) fn native_mob_spawned(
+        &mut self,
+        dimension: &str,
+        kind: &str,
+        pos: [f64; 3],
+        natural: bool,
+    ) {
+        let _ = (dimension, kind, pos, natural);
+    }
+    /// `player`'s blow killed the mob `entity` of `kind`. Server-side.
+    /// API 8.
+    pub(super) fn native_mob_killed(&mut self, player: u128, entity: u32, kind: &str) {
+        let _ = (player, entity, kind);
+    }
+    /// `player`'s blow is about to hurt `entity`: take from `amount` or set
+    /// `canceled` for none at all; the mob's owner answers next, with what
+    /// the hooks left. Server-side. API 8.
+    pub(super) fn native_entity_hurt(
+        &mut self,
+        player: u128,
+        entity: &NativeEntity,
+        amount: &mut f32,
+        canceled: &mut bool,
+    ) {
+        let _ = (player, entity, amount, canceled);
+    }
+    /// `player` right-clicked `entity`: set `claimed` to keep the vanilla
+    /// use (riding, trading, ...) from running. The mob's owner hears it
+    /// next. Server-side. API 8.
+    pub(super) fn native_entity_interact(
+        &mut self,
+        player: u128,
+        entity: &NativeEntity,
+        claimed: &mut bool,
+    ) {
+        let _ = (player, entity, claimed);
+    }
+    /// `player` dropped a stack of their own will. Server-side. API 8.
+    pub(super) fn native_item_dropped(&mut self, player: u128, item: &str, count: u32) {
+        let _ = (player, item, count);
+    }
+    /// `player` is about to take a dropped stack: set `canceled` to leave
+    /// it on the ground. Server-side. API 8.
+    pub(super) fn native_item_picked_up(
+        &mut self,
+        player: u128,
+        item: &str,
+        count: u32,
+        canceled: &mut bool,
+    ) {
+        let _ = (player, item, count, canceled);
+    }
+    /// `player` is about to break the block `state` at `pos`: set
+    /// `canceled` to keep it standing — no drop, no tool wear, no
+    /// statistic. Server-side. API 8.
+    pub(super) fn native_block_breaking(
+        &mut self,
+        player: u128,
+        pos: BlockPos,
+        state: BlockStateId,
+        canceled: &mut bool,
+    ) {
+        let _ = (player, pos, state, canceled);
+    }
 }
 
 /// Helpers for native mods, kept as stable as the hook points.
@@ -564,6 +766,231 @@ impl Game<'_> {
     /// hotbar, then the inventory. The count is cut to one stack.
     pub(super) fn native_give(&mut self, item: &str, count: u32) -> Result<(), String> {
         self.recipe_give(item, count)
+    }
+    /// The player acting: the guest whose turn it is, else the window's
+    /// own; the UUID the event hooks (`native_player_hurt`, ...) name a
+    /// player by. API 8.
+    pub(super) fn native_acting_player(&mut self) -> u128 {
+        let [a, b, c, d] = self.acting_player_uuid();
+        ((a as u32 as u128) << 96)
+            | ((b as u32 as u128) << 64)
+            | ((c as u32 as u128) << 32)
+            | (d as u32 as u128)
+    }
+    /// Sends `data` on `channel` to `player`'s client (a `horizon:mod_net`
+    /// payload): the channel is the mod's own name, 1 to 64 bytes without
+    /// whitespace, and not in the game's `minecraft:` and `horizon:`
+    /// namespaces; the data at most 30 000 bytes; at most 32 messages a
+    /// player a tick. Only a client with the `horizon` brand is sent it. In
+    /// every build, with or without the `mods` feature. API 8.
+    pub(super) fn native_net_send_to_player(
+        &mut self,
+        player: u128,
+        channel: &str,
+        data: &[u8],
+    ) -> Result<(), String> {
+        self.hook_net_send_to_player(player, channel, data)
+    }
+    /// The window's half of the channel: sends `data` on `channel` to the
+    /// server (the same caps and namespaces as
+    /// `native_net_send_to_player`). An error when the server carries no
+    /// mod messages (a vanilla server, or one that did not say it does).
+    /// API 8.
+    pub(super) fn native_net_send_to_server(
+        &mut self,
+        channel: &str,
+        data: &[u8],
+    ) -> Result<(), String> {
+        self.hook_net_send_to_server(channel, data)
+    }
+    /// Spawns a mob of `kind` at `pos` as one of the helper's own (`native`
+    /// owns it, in the mob's saved data, as a compiled-in mod's mobs are
+    /// its): returns its entity id. At most 1024 mobs of the helpers', a
+    /// kind the game knows. Needs the `mods` feature. API 8.
+    pub(super) fn native_spawn_entity(
+        &mut self,
+        kind: &str,
+        pos: [f64; 3],
+        options: &NativeSpawn,
+    ) -> Result<u32, String> {
+        self.hook_spawn_entity(kind, pos, options)
+    }
+    /// Walks the helper's mob `id` to `pos` (its fall distance resets).
+    /// Needs the `mods` feature. API 8.
+    pub(super) fn native_entity_teleport(
+        &mut self,
+        id: u32,
+        pos: [f64; 3],
+    ) -> Result<(), String> {
+        self.hook_entity_teleport(id, pos)
+    }
+    /// Adds a velocity to the helper's mob `id`. Needs the `mods` feature.
+    /// API 8.
+    pub(super) fn native_entity_push(
+        &mut self,
+        id: u32,
+        velocity: [f64; 3],
+    ) -> Result<(), String> {
+        self.hook_entity_push(id, velocity)
+    }
+    /// Sets the helper's mob `id`'s health (cut to its most). API 8.
+    pub(super) fn native_entity_set_health(
+        &mut self,
+        id: u32,
+        health: f32,
+    ) -> Result<(), String> {
+        self.hook_entity_set_health(id, health)
+    }
+    /// Removes the helper's mob `id`. Needs the `mods` feature. API 8.
+    pub(super) fn native_remove_entity(&mut self, id: u32) -> Result<(), String> {
+        self.hook_remove_entity(id)
+    }
+    /// Shows a particle of a type the game knows (`minecraft:flame`), as
+    /// the compiled-in mods' `effects.spawn-particle` does: at most 500 in
+    /// one send. Needs the `mods` feature. API 8.
+    pub(super) fn native_spawn_particle(
+        &mut self,
+        particle: &NativeParticle,
+    ) -> Result<(), String> {
+        self.hook_spawn_particle(particle)
+    }
+    /// Plays a sound at `pos`, on the `SoundSource` index `category`, for
+    /// the players around it. Needs the `mods` feature. API 8.
+    pub(super) fn native_play_sound(
+        &mut self,
+        name: &str,
+        pos: [f64; 3],
+        volume: f32,
+        pitch: f32,
+        category: i32,
+    ) -> Result<(), String> {
+        self.hook_play_sound(name, pos, volume, pitch, category)
+    }
+    /// Plays a sound for `player` alone, at where they stand. Needs the
+    /// `mods` feature. API 8.
+    pub(super) fn native_play_sound_to(
+        &mut self,
+        player: u128,
+        name: &str,
+        volume: f32,
+        pitch: f32,
+        category: i32,
+    ) -> Result<(), String> {
+        self.hook_play_sound_to(player, name, volume, pitch, category)
+    }
+    /// What the block at `pos` gives out as redstone from now on: a
+    /// strength 0 to 15 on each face, in the order down, up, north, south,
+    /// west, east; `strong` also powers the blocks it touches through, as a
+    /// lever does. All zeros for nothing. The game updates the neighbours.
+    /// Needs the `mods` feature. API 8.
+    pub(super) fn native_redstone_set_output(
+        &mut self,
+        pos: [i32; 3],
+        power: [u8; 6],
+        strong: bool,
+    ) -> Result<(), String> {
+        self.hook_redstone_set_output(pos, power, strong)
+    }
+    /// Shows the helper's text display `name` at `pos` (a display entity
+    /// the players in `dimension` see, never in the world itself), its
+    /// transform blended over `interpolation` ticks; showing the same name
+    /// again changes it. Needs the `mods` feature. API 8.
+    pub(super) fn native_show_text_display(
+        &mut self,
+        name: &str,
+        dimension: &str,
+        pos: [f64; 3],
+        text: &str,
+        transform: &NativeTransform,
+        interpolation: u32,
+    ) -> Result<(), String> {
+        self.hook_show_text_display(name, dimension, pos, text, transform, interpolation)
+    }
+    /// The helper's block display `name`, a block state the game knows.
+    /// Needs the `mods` feature. API 8.
+    pub(super) fn native_show_block_display(
+        &mut self,
+        name: &str,
+        dimension: &str,
+        pos: [f64; 3],
+        state: &str,
+        transform: &NativeTransform,
+        interpolation: u32,
+    ) -> Result<(), String> {
+        self.hook_show_block_display(name, dimension, pos, state, transform, interpolation)
+    }
+    /// The helper's item display `name`, an item's model. Needs the `mods`
+    /// feature. API 8.
+    pub(super) fn native_show_item_display(
+        &mut self,
+        name: &str,
+        dimension: &str,
+        pos: [f64; 3],
+        stack: &NativeStack,
+        transform: &NativeTransform,
+        interpolation: u32,
+    ) -> Result<(), String> {
+        self.hook_show_item_display(name, dimension, pos, stack, transform, interpolation)
+    }
+    /// Walks the helper's display `name` to `pos` without remaking it.
+    /// Needs the `mods` feature. API 8.
+    pub(super) fn native_move_display(
+        &mut self,
+        name: &str,
+        pos: [f64; 3],
+        interpolation: u32,
+    ) -> Result<(), String> {
+        self.hook_move_display(name, pos, interpolation)
+    }
+    /// Takes the helper's display `name` away. Needs the `mods` feature.
+    /// API 8.
+    pub(super) fn native_hide_display(&mut self, name: &str) -> Result<(), String> {
+        self.hook_hide_display(name)
+    }
+    /// The fluid tanks on the block entity at `pos` (at most 8, in the
+    /// mod's own order): the shared tanks the compiled-in mods keep, saved
+    /// with the world. Needs the `mods` feature. API 8.
+    pub(super) fn native_fluid_tanks(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+    ) -> Vec<NativeTank> {
+        self.hook_fluid_tanks(dimension, pos)
+    }
+    /// Puts up to `amount` mB of `fluid` into the tanks at `pos` — those
+    /// that hold it first, then the empty ones, each as far as its limits
+    /// allow: returns what did not fit (all of it when there are no tanks).
+    /// Nothing is created: the tanks' own limits hold. Needs the `mods`
+    /// feature. API 8.
+    pub(super) fn native_fluid_insert(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+        fluid: &str,
+        amount: u64,
+    ) -> Result<u64, String> {
+        self.hook_fluid_insert(dimension, pos, fluid, amount)
+    }
+    /// Takes up to `amount` mB out of tank `tank` (`fluid` `None`: whatever
+    /// it holds): returns what was taken, 0 for none. Needs the `mods`
+    /// feature. API 8.
+    pub(super) fn native_fluid_extract(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+        tank: u32,
+        fluid: Option<&str>,
+        amount: u64,
+    ) -> Result<u64, String> {
+        self.hook_fluid_extract(dimension, pos, tank, fluid, amount)
+    }
+    /// Puts a message on the compiled-in mods' bus (capability
+    /// `inter-mod`), as the pseudo-mod `native`: the mods subscribed to
+    /// `channel` hear it in the tick's last delivery round, under the bus's
+    /// own caps. An error when no running mod listens on the bus. Needs
+    /// the `mods` feature. API 8.
+    pub(super) fn native_mod_publish(&mut self, channel: &str, data: &[u8]) -> Result<(), String> {
+        self.hook_mod_publish(channel, data)
     }
 }
 

@@ -1493,7 +1493,10 @@ impl Game<'_> {
                 self.guest_quiet_commands(host, conn, &p.data)
             }
             S::CustomPayload(p) if p.channel == horizon_protocol::mod_net::CHANNEL => {
-                self.guest_mod_net(conn, &p.data)
+                // The player's UUID goes with it: the hub is out of the game
+                // while this packet is handled, so the hook cannot find the
+                // player from the game itself.
+                self.guest_mod_net(conn, host.hub.guests[gi].uuid, &p.data)
             }
             S::ChatCommandSigned(p) => self.guest_signed_command(host, conn, p),
             S::ChangeDifficulty(p) if host.hub.guests[gi].permission >= 2 => {
