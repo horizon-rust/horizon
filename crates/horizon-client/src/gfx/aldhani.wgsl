@@ -25,8 +25,8 @@ const ALDHANI_RADIANT: vec3<f32> = vec3<f32>(0.0, -0.1392, 0.99027);
 // The light the field gives a face turned to it at the storm's height, in full moons (the moon's
 // light overhead, `rt.held.z`), and the glow of the sky around the radiant at its brightest, in
 // paper whites (radiance; Lambert's 1/pi in the units, as the sky table's).
-const ALDHANI_MOONS: f32 = 16.0;
-const ALDHANI_GLOW: f32 = 0.2;
+const ALDHANI_MOONS: f32 = 64.0;
+const ALDHANI_GLOW: f32 = 0.8;
 // A meteor of the field: toward its streak's tail (xyz) and its core's width in pixels (w); toward
 // its head (xyz) and its seed (w, for the sparkles); the light of its core at the head (rgb, paper
 // whites) and its head's glow (w); the light it gives the terrain (rgb, luminance 1) and its share
@@ -164,7 +164,7 @@ fn aldhani_make(slot: u32, t: f32, period: f32) -> AldhaniMeteor {
     let shown = pow(power, 0.6) * (0.3 + 0.7 * curve) * fade * air * pow(160.0 / reach, 0.9);
     o.tail = vec4(tail, 0.8 + 0.2 * log2(power + 1.0));
     o.head = vec4(head, f32(seed & 65535u));
-    o.colour = vec4(colour * (1.6 * shown), clamp(power / 30.0, 0.0, 1.0) * curve * fade * air);
+    o.colour = vec4(colour * (6.4 * shown), clamp(power / 30.0, 0.0, 1.0) * curve * fade * air);
     // Its light on the terrain: by its power and the inverse square of its distance; its colour
     // half the sky's teal (thousands of them light the ground together, the teal ones the most).
     let lit = mix(colour, vec3(0.06, 1.0, 0.62), 0.4);
