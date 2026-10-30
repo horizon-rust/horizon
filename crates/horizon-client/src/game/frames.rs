@@ -132,6 +132,10 @@ impl Game<'_> {
             "minecraft:glow_item_frame" => true,
             _ => return false,
         };
+        // `HangingEntityItem.mayPlace`: a wall, not a floor or ceiling.
+        if hit.face[1] != 0 {
+            return false;
+        }
         let invisible = stack.extra.as_ref().is_some_and(|extra| {
             extra.other.iter().any(|(k, v)| {
                 (k == "minecraft:entity_data" || k == "entity_data")
