@@ -1164,7 +1164,9 @@ struct DebugLineOut {
 @fragment fn fs_rt_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let d = view_ray(in.ndc);
     let sky = rt_sky(d);
-    return vec4(sky + rt_sun_disc(d) + rt_moon_disc(d) + rt_glare(d) + rt_milky_way(d, sky), 1.0);
+    let pixel = length(fwidth(d));
+    return vec4(sky + rt_sun_disc(d) + rt_moon_disc(d) + rt_glare(d) + rt_milky_way(d, sky)
+        + rt_meteor(d, sky, pixel), 1.0);
 }
 // RT lighting's real stars (gfx/sky_stars.rs): the Yale Bright Star Catalogue's 9096 stars down
 // to magnitude 6.5 at their equatorial places, turned to the sky above the latitude the sun's
@@ -1258,4 +1260,67 @@ fn rt_milky_noise(p: vec3<f32>) -> f32 {
         v += w.x * w.y * w.z * f32(h >> 8u) / 16777216.0;
     }
     return v;
+}
+// A hash of `n` to 32 random bits (a PCG round), for the meteors' draws.
+fn meteor_hash(n: u32) -> u32 {
+    let state = n * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+fn meteor_rand(n: u32) -> f32 {
+    return f32(meteor_hash(n) >> 8u) / 16777216.0;
+}
+// A shooting star: the time is cut into slots of `rt_stars.y` seconds, each holding a meteor with
+// the chance `rt_stars.z`, its place in the slot, its sky, its heading, its length and its
+// magnitude all drawn from the slot's number, so no frame carries any state and a quiet sky costs
+// one branch. It is a streak on a great circle of the sky, a head that runs ahead and a tail that
+// fades behind it, the whole fading out over a few tenths of a second; mostly heading down (they
+// fall), reddened and dimmed by the air toward the horizon, outshone by the sky's own light like
+// the stars (`sky`), and none by day.
+fn rt_meteor(d: vec3<f32>, sky: vec3<f32>, pixel: f32) -> vec3<f32> {
+    let period = globals.rt_stars.y;
+    if period <= 0.0 || globals.rt_stars.w <= 0.0 || d.y <= 0.0 { return vec3(0.0); }
+    let slot = u32(globals.rt_water.z / period);
+    let seed = slot * 16u + 1u;
+    if meteor_rand(seed) > globals.rt_stars.z { return vec3(0.0); }
+    // Its life: 0.3 to 0.9 s, started somewhere in the slot where it still ends inside it.
+    let life = 0.3 + 0.6 * meteor_rand(seed + 1u);
+    let start = max(period - life, 0.0) * meteor_rand(seed + 2u);
+    let age = (globals.rt_water.z - f32(slot) * period - start) / life;
+    if age < 0.0 || age > 1.0 { return vec3(0.0); }
+    // Where it starts (25 to 70 degrees up) and which way it goes along its great circle: toward
+    // `u`, in the tangent plane, from straight down to nearly sideways, never up.
+    let azimuth = 6.2831853 * meteor_rand(seed + 3u);
+    let elevation = radians(25.0 + 45.0 * meteor_rand(seed + 4u));
+    let a = vec3(cos(elevation) * cos(azimuth), sin(elevation), cos(elevation) * sin(azimuth));
+    let east = normalize(cross(vec3(0.0, 1.0, 0.0), a));
+    let up = cross(a, east);
+    let heading = -(0.1 + 0.8 * meteor_rand(seed + 5u)) * PI;
+    let u = east * cos(heading) + up * sin(heading);
+    let span = radians(8.0 + 14.0 * meteor_rand(seed + 6u));
+    let trail = span * (0.3 + 0.3 * meteor_rand(seed + 7u));
+    // Its place on its circle: across it by `dot(d, n)`, along it by the angle `phi` from the start.
+    let n = cross(a, u);
+    let x = dot(d, a);
+    if x <= 0.0 { return vec3(0.0); }
+    let phi = atan2(dot(d, u), x);
+    let behind = (span * age - phi) / trail;
+    if behind < -0.02 || behind > 1.0 { return vec3(0.0); }
+    // A hair across (a pixel or two), a tail that thins to nothing, a head that ends sharply.
+    let width = max(0.0012, pixel * 1.2);
+    let across = dot(d, n) / width;
+    let along = pow(1.0 - clamp(behind, 0.0, 1.0), 1.7) * smoothstep(-0.02, 0.0, behind);
+    let fade = (1.0 - age) * smoothstep(0.0, 0.08, age);
+    // Magnitude -3 to 1 at its brightest: paper whites like the stars' (20 at magnitude 0), the
+    // streak being spread over many pixels, its head is worth more.
+    let magnitude = -3.0 + 4.0 * meteor_rand(seed + 8u);
+    let flux = 60.0 * pow(10.0, -0.4 * magnitude);
+    let airmass = 1.0 / max(d.y + 0.025, 0.03);
+    let air = exp(-vec3(0.12, 0.18, 0.3) * airmass);
+    let glare = exp(-dot(sky, vec3(0.2126, 0.7152, 0.0722)) * 60.0);
+    // Mostly white, some green (magnesium) or orange (sodium).
+    let tints = array<vec3<f32>, 4>(vec3(1.0, 1.0, 1.0), vec3(0.85, 1.0, 0.9), vec3(1.0, 0.8, 0.55),
+        vec3(0.9, 0.95, 1.0));
+    let tint = tints[meteor_hash(seed + 9u) & 3u];
+    return tint * (flux * along * fade * exp(-across * across) * glare * globals.rt_stars.w) * air;
 }

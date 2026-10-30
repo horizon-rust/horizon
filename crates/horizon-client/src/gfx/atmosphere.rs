@@ -28,6 +28,10 @@ pub const PAPER_WHITE: f32 = 1.25;
 /// The moon's light against the sun's (gameplay's, not the real 1/400000): moonlit nights stay
 /// readable.
 pub const MOONLIGHT: f32 = 0.05;
+/// What a new moon leaves of the night sky's light, as a fraction of a full moon's: the airglow, the
+/// starlight and the zodiacal light, enough to tell the ground from the sky and too little to hide
+/// a star.
+const NIGHT_GLOW: f32 = 0.1;
 
 // Remix's constants (sky_atmosphere.comp), in metres.
 const EARTH_RADIUS: f32 = 6_371_000.0;
@@ -97,7 +101,7 @@ pub struct Atmosphere {
     /// The transmittance table is made.
     lut_made: bool,
     /// The sun's direction the sky-view table holds.
-    made_for: Option<Vec3>,
+    made_for: Option<(Vec3, f32)>,
 }
 
 /// A compute pass: its pipeline, its bindings and the workgroups it runs.
@@ -169,7 +173,7 @@ impl Atmosphere {
         );
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Sky parameters"),
-            contents: bytemuck::bytes_of(&Sky::for_sun(Vec3::Y)),
+            contents: bytemuck::bytes_of(&Sky::for_sun(Vec3::Y, 1.0)),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -313,14 +317,17 @@ impl Atmosphere {
     }
 
     /// Makes the sky-view table again when the sun (toward `sun`, unit, y up) has moved since by
-    /// more than a tenth of a degree: Remix's passes on the GPU, in a command buffer of their
-    /// own, ahead of the frame's.
-    pub fn update(&mut self, queue: &wgpu::Queue, sun: Vec3) {
-        if self.made_for.is_some_and(|last| last.dot(sun) > 0.999_998) {
+    /// more than a tenth of a degree, or the moon's lit fraction `moon_lit` (0 new, 1 full) has
+    /// changed: Remix's passes on the GPU, in a command buffer of their own, ahead of the frame's.
+    pub fn update(&mut self, queue: &wgpu::Queue, sun: Vec3, moon_lit: f32) {
+        if self
+            .made_for
+            .is_some_and(|(last, lit)| last.dot(sun) > 0.999_998 && (lit - moon_lit).abs() < 1e-3)
+        {
             return;
         }
-        self.made_for = Some(sun);
-        let sky = Sky::for_sun(sun);
+        self.made_for = Some((sun, moon_lit));
+        let sky = Sky::for_sun(sun, moon_lit);
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&sky));
         let mut encoder = self
             .device
@@ -348,15 +355,18 @@ impl Atmosphere {
 }
 
 impl Sky {
-    /// Remix's `SkyParameters` for the sun toward `sun` and the moon opposite. The discs' angular
-    /// radii are 0: the sky table is 5.6 degrees a texel, a disc of the sun's size would light a
-    /// texel now and then; the sun and the moon are drawn on their own.
-    fn for_sun(sun: Vec3) -> Self {
+    /// Remix's `SkyParameters` for the sun toward `sun` and the moon opposite, its light by its
+    /// phase (`moon_lit`, the fraction of its face lit): the moon scatters in the air like the sun,
+    /// so a full moon lifts the night sky and hides the faint stars, a new moon leaves it dark.
+    /// The discs' angular radii are 0: the sky table is 5.6 degrees a texel, a disc of the sun's
+    /// size would light a texel now and then; the sun and the moon are drawn on their own.
+    fn for_sun(sun: Vec3, moon_lit: f32) -> Self {
+        let moon_light = MOONLIGHT * moon_lit.max(NIGHT_GLOW);
         Self {
             sun_direction_and_radius: [sun.x, sun.y, sun.z, 0.0],
             moon_direction_and_radius: [-sun.x, -sun.y, -sun.z, 0.0],
             sun_radiance_and_atmosphere_scale: [1.0, 1.0, 1.0, PAPER_WHITE * std::f32::consts::PI],
-            moon_radiance_value: [MOONLIGHT, MOONLIGHT, MOONLIGHT, 0.0],
+            moon_radiance_value: [moon_light, moon_light, moon_light, 0.0],
             atmosphere_parameters: [MIE_ANISOTROPY, 0.0, 0.0, 0.0],
         }
     }
@@ -385,7 +395,7 @@ mod tests {
     /// The sky table the GPU makes for `sun`, as f32 texels.
     fn gpu_sky(device: &wgpu::Device, queue: &wgpu::Queue, sun: Vec3) -> Vec<[f32; 4]> {
         let mut atmosphere = Atmosphere::new(device);
-        atmosphere.update(queue, sun);
+        atmosphere.update(queue, sun, 1.0);
         let row = SIZE[0] * 8;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sky readback"),
