@@ -867,7 +867,10 @@ fn light_path(index: u32, local: vec3<f32>, n: vec3<f32>, offset: vec3<f32>) -> 
     let d = select(max(max(max(near.x, near.y), near.z), 0.0), max(length_to - 0.1, 0.0), own);
     let reach = light.at.w;
     if d >= reach { return none; }
-    let facing = select(dot(n, l), 1.0, d < 0.05);
+    var facing = select(dot(n, l), 1.0, d < 0.05);
+    // Near its own flame (a torch's stick): the fire is a volume wrapping the stick's top, not a
+    // point above it, so the stick's sides get some of it.
+    if own && length_to < 0.8 { facing = max(facing, 0.35); }
     if facing <= 0.0 { return none; }
     let window = 1.0 - (d / reach) * (d / reach);
     // The distance to the point of the light drawn (a torch's flame stands above its block's
