@@ -402,7 +402,14 @@ fn rt_moon_disc(d: vec3<f32>) -> vec3<f32> {
     let albedo = map * 0.3;
     // Below the horizon's air: reddened and dimmed as the sky table's light toward it is.
     let air = clamp(m.y * 8.0 + 0.2, 0.0, 1.0);
-    let tint = vec3(1.0, 0.93, 0.85);
+    // Its colour through the air: by night the light the rays trace toward is the moon's (the
+    // sunlight the regolith reflects, through the air toward the moon, gfx.rs), so its hue is the
+    // disc's, orange to red as the moon sets; by day (the moon in a lit sky) the regolith's alone.
+    var tint = vec3(1.0, 0.93, 0.85);
+    if globals.rt_mode.z > 0.5 {
+        let light = globals.rt_sun_light.rgb;
+        tint = light / max(dot(light, vec3(0.2126, 0.7152, 0.0722)), 1e-6);
+    }
     // 3 paper whites at full moon, not its 12 (2500 nits): the eye adapts to the moon itself, the
     // tone mapping can't, and at 12 the night's exposure would wash its maria out.
     // The earthshine on its night side: the Earth's light (the Earth as seen from the Moon is in
