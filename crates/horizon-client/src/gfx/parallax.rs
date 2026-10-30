@@ -415,6 +415,14 @@ fn parallax_rt_lit(in: ParallaxOut, s: ParallaxSurface) -> vec3<f32> {
         if (thin_layers[layer] & 2u) != 0u {
             glow = horizon_terrain_rt_flame(color.rgb) * (1.0 - f);
             burning = horizon_terrain_rt_burning(s.texel.rgb);
+            // A fire's flame is the shader's own (terrain.wgsl `rt_fire`), cut where it is torn
+            // away by the noise.
+            if (thin_layers[layer] & 4u) != 0u {
+                let fire = horizon_terrain_rt_fire(s.texel.rgb, s.uv, in.position);
+                if fire.a < horizon_terrain_rt_dither(in.clip.xy) { discard; }
+                glow = fire.rgb * (1.0 - f);
+                burning = 1.0;
+            }
         }
         return vec4(mix(lit, glow, burning), 1.0);
     }

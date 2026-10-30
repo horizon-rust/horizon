@@ -90,6 +90,11 @@ fn in_range(center: (i32, i32), x: i32, z: i32) -> bool {
 }
 
 impl Voxels {
+    /// The flames near `camera` (within `range` blocks), for the heat haze above them.
+    pub fn flames(&self, camera: DVec3, range: f64) -> Vec<super::haze::Flame> {
+        super::haze::nearby(self.lights.iter(), camera, range)
+    }
+
     /// The section `key` now has these light sources (as meshed).
     pub fn set_lights(&mut self, key: SectionKey, lights: &[[u8; 10]]) {
         let changed = if lights.is_empty() {
@@ -451,6 +456,8 @@ fn light_cells(
             continue;
         }
         for &[lx, ly, lz, level, r, g, b, ax, ay, az] in lights {
+            // The high nibble is the flame's kind (`haze::nearby`).
+            let level = level & 15;
             // Where in the block it burns (the mesher's `light_at`), or its middle.
             let within = if ax == 255 {
                 [0.5; 3]

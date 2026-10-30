@@ -141,7 +141,8 @@ pub struct SectionMesh {
     pub occupancy: crate::occupancy::Occupancy,
     /// RT lighting's light sources (gfx/voxels.rs): the section's blocks that emit light and can
     /// be seen (a neighbour isn't solid), as section-relative x, y, z, the level, the colour, and
-    /// where in the block the light is (`Info::light_at`).
+    /// where in the block the light is (`Info::light_at`). The level's high nibble is the kind of
+    /// flame the block burns (`Info::flame`), for the heat haze above it.
     pub lights: Vec<[u8; 10]>,
     /// RT lighting's bounced light (gfx/voxels.rs): the solid blocks' map colours (`albedo`).
     pub albedo: crate::occupancy::Albedo,
@@ -325,7 +326,18 @@ fn lights(pad: &Padded, info: &[Info]) -> Vec<[u8; 10]> {
                 if open {
                     let [r, g, b] = s.light_colour;
                     let [ax, ay, az] = s.light_at;
-                    out.push([x as u8, y as u8, z as u8, s.emission, r, g, b, ax, ay, az]);
+                    out.push([
+                        x as u8,
+                        y as u8,
+                        z as u8,
+                        s.emission | s.flame << 4,
+                        r,
+                        g,
+                        b,
+                        ax,
+                        ay,
+                        az,
+                    ]);
                 }
             }
         }
@@ -373,6 +385,9 @@ struct Info {
     /// Where in the block its light is, in 32nds of a block (`light_at`; 255: the shaders' own
     /// guess, the block's middle).
     light_at: [u8; 3],
+    /// Which kind of flame the block burns, for the heat haze above it (`transmission::flame_kind`; 0
+    /// none): `lights` keeps it in the level's high nibble.
+    flame: u8,
     /// `getMapColor(..).id`: the block's colour to RT lighting's bounced light (`albedo`).
     map_color: u8,
     /// What the block is to the rays (`crate::occupancy` EMPTY, SOLID or CUTOUT) and its shape's
@@ -710,6 +725,7 @@ impl MeshTables {
                 cover,
                 light_colour: light_colour(name),
                 light_at: light_at(name, props.get("facing").map(String::as_str)),
+                flame: crate::gfx::transmission::flame_kind(name),
                 map_color: s.map_color,
                 ray,
                 ray_shape,
