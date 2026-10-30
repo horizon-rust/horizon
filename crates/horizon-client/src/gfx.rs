@@ -66,6 +66,7 @@ pub fn outline_vertices(edges: &[[f64; 6]], camera: glam::DVec3) -> Vec<[f32; 6]
         .collect()
 }
 
+mod aldhani;
 mod animate;
 mod arena;
 mod atmosphere;
@@ -229,7 +230,8 @@ struct Globals {
     /// and the real sky's turn (`sky_stars::frame`).
     rt_stars: [f32; 4],
     rt_star_frame: [[f32; 4]; 4],
-    /// RT lighting's water (`set_water_layers`) and the time; the camera wrapped every 4096 blocks.
+    /// RT lighting's water (`set_water_layers`) and the time; the camera wrapped every 4096 blocks,
+    /// and the seconds into the Eye of Aldhani (w, below 0 none).
     rt_water: [f32; 4],
     rt_camera: [f32; 4],
     /// RT lighting's moon (terrain.wgsl `rt_moon_disc`): toward it, and its angular radius.
@@ -627,6 +629,8 @@ pub struct Renderer {
     moon_map: wgpu::TextureView,
     /// RT lighting's Milky Way map (`milky_way_map`).
     milky_way_map: wgpu::TextureView,
+    /// RT lighting's Eye of Aldhani (`aldhani`): its field and the event's clock.
+    aldhani: aldhani::Aldhani,
     /// Bound in place of RT lighting's sun through tinting glass while there is none: all of it.
     rt_sun_unused: wgpu::TextureView,
     /// Bound in place of RT lighting's depth prepass while there is none.
@@ -762,6 +766,7 @@ fn terrain_group(
     refraction: &wgpu::TextureView,
     moon: &wgpu::TextureView,
     milky_way: &wgpu::TextureView,
+    aldhani: &aldhani::Aldhani,
 ) -> wgpu::BindGroup {
     let view = |binding, view| wgpu::BindGroupEntry {
         binding,
@@ -801,6 +806,14 @@ fn terrain_group(
             view(18, refraction),
             view(19, moon),
             view(20, milky_way),
+            wgpu::BindGroupEntry {
+                binding: 21,
+                resource: aldhani.field().as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 22,
+                resource: aldhani.tiles().as_entire_binding(),
+            },
         ],
     })
 }
@@ -1473,6 +1486,11 @@ impl Renderer {
             view_dimension: wgpu::TextureViewDimension::D2,
             multisampled: false,
         };
+        let aldhani_storage = wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        };
         let bindings = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Horizon terrain bindings"),
             entries: &[
@@ -1552,6 +1570,9 @@ impl Renderer {
                         multisampled: false,
                     },
                 ),
+                // The Eye of Aldhani's field and its streaks by tile of the sky.
+                entry(21, wgpu::ShaderStages::FRAGMENT, aldhani_storage),
+                entry(22, wgpu::ShaderStages::FRAGMENT, aldhani_storage),
                 // The sky table: the stars read it where they are (vs_rt_star).
                 entry(
                     14,
@@ -2045,6 +2066,7 @@ impl Renderer {
                 )
                 .create_view(&Default::default())
         };
+        let aldhani = aldhani::Aldhani::new(&device);
         // Bound in place of RT lighting's last light while there is none.
         let moon_map = moon_map(&device, &queue);
         let milky_way_map = sky_map(
@@ -2087,6 +2109,7 @@ impl Renderer {
             &rt_history_unused,
             &moon_map,
             &milky_way_map,
+            &aldhani,
         );
         let crosshair_group = terrain_group(
             &device,
@@ -2106,6 +2129,7 @@ impl Renderer {
             &rt_history_unused,
             &moon_map,
             &milky_way_map,
+            &aldhani,
         );
         let index_quads = 1 << 16;
         let indices = Self::quad_indices(&device, index_quads);
@@ -2954,7 +2978,8 @@ impl Renderer {
         let panorama =
             panorama::Panorama::new(&device, &queue, world_format, linear, panorama_faces);
         let hw = hw_rays::HwRays::supported(&device);
-        let shadow_rays = shadow_rays::ShadowRays::new(&device, hw, sprite_split());
+        let shadow_rays =
+            shadow_rays::ShadowRays::new(&device, hw, sprite_split(), aldhani.field());
         // Froxel volumetrics: hook 3.
         let froxels = froxels::Froxels::new(&device, hw, sprite_split());
         let hw_rays = hw.then(|| hw_rays::HwRays::new(&device));
@@ -3122,6 +3147,7 @@ impl Renderer {
             rt_history_unused,
             moon_map,
             milky_way_map,
+            aldhani,
             rt_sun_unused,
             rt_depth_unused,
             atmosphere,
@@ -4036,6 +4062,7 @@ impl Renderer {
             refraction,
             &self.moon_map,
             &self.milky_way_map,
+            &self.aldhani,
         );
         self.crosshair_group = terrain_group(
             &self.device,
@@ -4055,6 +4082,7 @@ impl Renderer {
             refraction,
             &self.moon_map,
             &self.milky_way_map,
+            &self.aldhani,
         );
     }
     /// This frame's ray-traced shadows: the grid written up to date, the light's direction (the
@@ -4113,7 +4141,19 @@ impl Renderer {
                 lights
             },
             moving_count: frame.dynamic_lights.len().min(shadow_rays::MOVING_LIGHTS),
+            // Set when the Eye of Aldhani's field is made this frame (`draw_frame`).
+            aldhani: [-1.0, 0.0],
         }
+    }
+    /// Runs the Eye of Aldhani from `seconds` into it, or stops it (`None`); refused unless
+    /// `HORIZON_METEORS=aldhani` armed it.
+    pub fn set_aldhani(&mut self, seconds: Option<f32>) -> std::result::Result<(), &'static str> {
+        let now = self.water_clock.elapsed().as_secs_f32();
+        self.aldhani.set(now, seconds)
+    }
+    /// The seconds into the Eye of Aldhani, while it runs.
+    pub fn aldhani_time(&mut self) -> Option<f32> {
+        self.aldhani.time(self.water_clock.elapsed().as_secs_f32())
     }
     /// Whether the frame is drawn in linear light (Linear Light, `tonemap`).
     pub fn linear(&self) -> bool {
@@ -4667,6 +4707,18 @@ impl Renderer {
             fog
         };
         let mut rt = self.ray_traced_shadows(frame);
+        // RT lighting's Eye of Aldhani: its field made before the rays light with it and the sky
+        // draws it (none: -1).
+        rt.aldhani = [-1.0, 0.0];
+        if let Some(t) = self
+            .aldhani
+            .time(self.water_clock.elapsed().as_secs_f32())
+            .filter(|_| self.rt_lighting && !frame.title)
+        {
+            self.aldhani
+                .run(&self.device, &mut self.uploads, &mut encoder, t);
+            rt.aldhani = [t, atmosphere::MOONLIGHT * atmosphere::PAPER_WHITE];
+        }
         if rt.any() {
             self.hw_update(&mut encoder, frame.camera);
             if let Some(hw) = &self.hw_rays {
@@ -4855,9 +4907,10 @@ impl Renderer {
                 self.water_clock.elapsed().as_secs_f32() % 3600.0,
                 self.lava_layers,
             ],
+            // w: the seconds into the Eye of Aldhani (below 0 none).
             rt_camera: {
                 let c = frame.camera.map(|v| v.rem_euclid(4096.0));
-                [c.x as f32, c.y as f32, c.z as f32, 0.0]
+                [c.x as f32, c.y as f32, c.z as f32, rt.aldhani[0]]
             },
             rt_moon: {
                 let m = -rt_sun;
