@@ -51,6 +51,8 @@ struct Globals {
     // and the camera's place in the world (xyz, wrapped every 4096 blocks), for its waves.
     rt_water: vec4<f32>,
     rt_camera: vec4<f32>,
+    // RT lighting's moon: toward it (xyz) and its angular radius (w); its phase in rt_stars.x.
+    rt_moon: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var sprites: texture_2d_array<f32>;
@@ -340,10 +342,61 @@ fn rt_sun_disc(d: vec3<f32>) -> vec3<f32> {
     if c < edge || globals.rt_sun.y < -0.01 { return vec3(0.0); }
     let r = clamp((1.0 - c) / (1.0 - edge), 0.0, 1.0);
     let limb = 1.0 - 0.6 * (1.0 - sqrt(1.0 - r));
-    // The disc's radiance is its light over its solid angle, capped so a frame's few pixels of it
-    // don't flood the tone mapping.
+    // The disc's radiance is its light over its solid angle: a hundred thousand times paper white
+    // and more, kept under the half floats' range. Its glare in the bloom is what makes it look as
+    // big as it does to the eye (the disc itself is half a degree, a hundredth of the view).
     let light = select(globals.rt_sun_light.rgb, vec3(0.0), globals.rt_mode.z > 0.5);
-    return min(light * (limb / (3.14159265 * radius * radius)), vec3(200.0));
+    return min(light * (limb / (3.14159265 * radius * radius)), vec3(30000.0));
+}
+// RT lighting: the eye's veiling glare around the sun (by night the moon) toward `d`, what makes
+// a disc half a degree across look as big as it does: Stiles and Holladay's law, a luminance of
+// 10 E / theta^2 at theta degrees from a source of illuminance E (here E the light a white face
+// turned to it gets, times pi), faded out past 30 degrees and inside the disc.
+fn rt_glare(d: vec3<f32>) -> vec3<f32> {
+    let toward = normalize(select(globals.rt_sun.xyz, globals.rt_moon.xyz, globals.rt_mode.z > 0.5));
+    if toward.y < -0.05 { return vec3(0.0); }
+    let theta = degrees(acos(clamp(dot(d, toward), -1.0, 1.0)));
+    let radius = degrees(globals.rt_sun_light.w);
+    let at = max(theta, radius);
+    let fade = 1.0 - smoothstep(10.0, 30.0, theta);
+    // The moon's a tenth as much: under the night sky the eye sees it sharp, its glare would hide
+    // the disc the night's exposure lifts.
+    let eye = select(1.0, 0.1, globals.rt_mode.z > 0.5);
+    return globals.rt_sun_light.rgb * (10.0 * 3.14159265 * eye / (at * at)) * fade
+        * smoothstep(-0.05, 0.02, toward.y);
+}
+// RT lighting: the real moon's disc toward `d` (0.52 degrees across, times the Moon Size
+// setting): Minecraft's phase lit from the sun's side by Lommel-Seeliger's law (the regolith
+// scatters back, its limb as bright as its middle at full moon), the maria darker (albedo 0.07
+// against the highlands' 0.16, a noise fixed on its face: it keeps the same face to the world),
+// the earthshine faint on its night side; about 12 paper whites at full moon (2500 nits).
+fn rt_moon_disc(d: vec3<f32>) -> vec3<f32> {
+    let m = normalize(globals.rt_moon.xyz);
+    let radius = globals.rt_moon.w;
+    let c = dot(d, m);
+    if c < cos(radius) || m.y < -0.01 { return vec3(0.0); }
+    // The disc's frame: across it (t, b) and toward the viewer.
+    let t = normalize(select(cross(m, vec3(0.0, 1.0, 0.0)), vec3(1.0, 0.0, 0.0), abs(m.y) > 0.99));
+    let b = cross(t, m);
+    let uv = vec2(dot(d, t), dot(d, b)) / sin(radius);
+    let r2 = dot(uv, uv);
+    if r2 >= 1.0 { return vec3(0.0); }
+    let n = vec3(uv, sqrt(1.0 - r2));
+    // The phase: 0 full (the sun behind the viewer), 4 new; the lit limb toward the sun.
+    let phase = globals.rt_stars.x * 0.78539816;
+    let sun = normalize(globals.rt_sun.xyz);
+    var side = vec2(dot(sun, t), dot(sun, b));
+    side = select(vec2(1.0, 0.0), normalize(side), dot(side, side) > 1e-8);
+    let l = vec3(side * sin(phase), cos(phase));
+    let mu0 = max(dot(n, l), 0.0);
+    let mu = max(n.z, 1e-3);
+    let lit = 2.0 * mu0 / (mu0 + mu);
+    let face = lava_fbm(n * 2.6 + vec3(3.7, 1.1, 5.3));
+    let albedo = mix(0.16, 0.07, smoothstep(0.42, 0.58, face));
+    // Below the horizon's air: reddened and dimmed as the sky table's light toward it is.
+    let air = clamp(m.y * 8.0 + 0.2, 0.0, 1.0);
+    let tint = vec3(1.0, 0.93, 0.85);
+    return tint * (albedo / 0.12) * (12.0 * lit + 0.02) * air;
 }
 // RT lighting: the light sources' traced light at this pixel (`rt_blocks`), this frame's rays only.
 // RT lighting: the sun's colour through stained glass at this pixel (`rt_sun_tint`), divided by the
@@ -1007,7 +1060,7 @@ struct DebugLineOut {
 @fragment fn fs_rt_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let d = view_ray(in.ndc);
     let sky = rt_sky(d);
-    return vec4(sky + rt_sun_disc(d) + rt_milky_way(d, sky), 1.0);
+    return vec4(sky + rt_sun_disc(d) + rt_moon_disc(d) + rt_glare(d) + rt_milky_way(d, sky), 1.0);
 }
 // RT lighting's real stars (gfx/sky_stars.rs): the Yale Bright Star Catalogue's 9096 stars down
 // to magnitude 6.5 at their equatorial places, turned to the sky above the latitude the sun's

@@ -44,6 +44,7 @@ pub enum H {
     RayTracedAo,
     RtLighting,
     SunSize,
+    MoonSize,
     AerialPerspective,
     SmoothFluids,
     Hdr,
@@ -255,6 +256,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 "RT Lighting's sun, times its real size: softer shadows, same light.",
             ),
             h(
+                H::MoonSize,
+                None,
+                "RT Lighting's moon, times its real size: its disc and night shadows.",
+            ),
+            h(
                 H::AerialPerspective,
                 None,
                 "RT Lighting: far blocks fade blue into the haze, times real air's.",
@@ -400,6 +406,7 @@ impl H {
             H::HdrPeak => Some((g.hdr_peak as f32 - 200.0) / 1800.0),
             H::SunPathTilt => Some((g.sun_path_tilt as f32 + 60.0) / 120.0),
             H::SunSize => Some((g.sun_size as f32 - 1.0) / 19.0),
+            H::MoonSize => Some((g.moon_size as f32 - 1.0) / 19.0),
             H::AerialPerspective => Some(match g.aerial_perspective {
                 0 => 0.0,
                 n => (1.0 + (n as f32).log2()) / 7.0,
@@ -436,6 +443,10 @@ impl H {
             H::SunSize => match g.sun_size {
                 1 => labelled("Sun Size", "1x (Real)"),
                 n => labelled("Sun Size", format!("{n}x")),
+            },
+            H::MoonSize => match g.moon_size {
+                1 => labelled("Moon Size", "1x (Real)"),
+                n => labelled("Moon Size", format!("{n}x")),
             },
             H::AerialPerspective => match g.aerial_perspective {
                 0 => labelled("Aerial Perspective", "Off"),
@@ -493,6 +504,7 @@ impl H {
             H::HdrPeak => g.hdr_peak = (200.0 + (v * 36.0).round() * 50.0) as u32,
             H::SunPathTilt => g.sun_path_tilt = -60 + (v * 24.0).round() as i32 * 5,
             H::SunSize => g.sun_size = 1 + (v * 19.0).round() as u32,
+            H::MoonSize => g.moon_size = 1 + (v * 19.0).round() as u32,
             H::AerialPerspective => {
                 g.aerial_perspective = match (v * 7.0).round() as u32 {
                     0 => 0,

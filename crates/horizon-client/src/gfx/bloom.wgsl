@@ -11,8 +11,9 @@
 @group(1) @binding(0) var scene: texture_2d<f32>;
 @group(1) @binding(1) var mask: texture_2d<f32>;
 
-// The sun's disc can be a thousand times paper white, a lone pixel of it would shimmer.
-const CEILING: f32 = 256.0;
+// The sun's disc is tens of thousands of times paper white: its glare spreads it as the eye's does
+// (the TAA keeps its pixels from shimmering); under the half floats' range.
+const CEILING: f32 = 30000.0;
 
 fn shadowed(c: vec4<f32>, p: vec2<f32>) -> vec3<f32> {
     let m = textureDimensions(mask);

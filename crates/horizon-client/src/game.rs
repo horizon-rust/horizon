@@ -8506,12 +8506,15 @@ impl Game<'_> {
             "waxing_gibbous",
         ];
         let phase = phases[(self.world.day_time / 24000).rem_euclid(8) as usize];
-        body(
-            &format!("environment/celestial/moon/{phase}"),
-            sky.moon_angle,
-            20.0,
-            0xFFFF_FFFF,
-        );
+        // RT lighting draws the real moon in the sky too (terrain.wgsl `rt_moon_disc`).
+        if !rt_sky {
+            body(
+                &format!("environment/celestial/moon/{phase}"),
+                sky.moon_angle,
+                20.0,
+                0xFFFF_FFFF,
+            );
+        }
         // SkyRenderer.renderStars: the static star buffer on the same frame.
         let stars =
             (sky.star_brightness > 0.0).then(|| (frame(sky.star_angle), sky.star_brightness));

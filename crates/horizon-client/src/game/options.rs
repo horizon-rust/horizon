@@ -277,7 +277,11 @@ impl Game<'_> {
                 s.horizon.ray_traced_ao,
                 s.horizon.rt_lighting,
             );
-            r.set_rt_sky(s.horizon.sun_size, s.horizon.aerial_perspective);
+            r.set_rt_sky(
+                s.horizon.sun_size,
+                s.horizon.moon_size,
+                s.horizon.aerial_perspective,
+            );
             r.set_hdr(
                 s.horizon.hdr,
                 s.horizon.hdr_paper_white as f32,

@@ -229,6 +229,8 @@ struct Globals {
     /// RT lighting's water (`set_water_layers`) and the time; the camera wrapped every 4096 blocks.
     rt_water: [f32; 4],
     rt_camera: [f32; 4],
+    /// RT lighting's moon (terrain.wgsl `rt_moon_disc`): toward it, and its angular radius.
+    rt_moon: [f32; 4],
 }
 pub type SectionKey = (i32, i32, i32);
 struct SectionGpu {
@@ -610,6 +612,8 @@ pub struct Renderer {
     /// RT lighting's sun's angular radius (the Sun Size setting) and aerial perspective's air
     /// density (`set_rt_sky`).
     rt_sun_radius: f32,
+    /// RT lighting's moon's angular radius (the Moon Size setting times the real one).
+    rt_moon_radius: f32,
     rt_aerial: f32,
     rt_history_unused: wgpu::TextureView,
     /// Bound in place of RT lighting's sun through tinting glass while there is none: all of it.
@@ -787,6 +791,8 @@ fn terrain_group(
 }
 /// The real sun's angular radius (0.53 degrees across).
 const SUN_RADIUS: f32 = 0.004_63;
+/// The real moon's angular radius (0.52 degrees across, its mean).
+const MOON_RADIUS: f32 = 0.004_52;
 /// A shadow ray's budget: 1 an empty brick crossed, 4 a full one; past it the light is taken
 /// to reach.
 const RT_STEPS: f32 = 48.0;
@@ -3019,6 +3025,7 @@ impl Renderer {
             lava_layers: -1.0,
             water_clock: std::time::Instant::now(),
             rt_sun_radius: SUN_RADIUS,
+            rt_moon_radius: MOON_RADIUS,
             rt_aerial: crate::graphics::DEFAULT_AERIAL_PERSPECTIVE as f32,
             rt_history_unused,
             rt_sun_unused,
@@ -3797,8 +3804,9 @@ impl Renderer {
             _ => -1.0,
         };
     }
-    pub fn set_rt_sky(&mut self, size: u32, aerial: u32) {
+    pub fn set_rt_sky(&mut self, size: u32, moon: u32, aerial: u32) {
         self.rt_sun_radius = SUN_RADIUS * size.max(1) as f32;
+        self.rt_moon_radius = MOON_RADIUS * moon.max(1) as f32;
         self.rt_aerial = aerial as f32;
     }
     fn rebuild_terrain_groups(&mut self) {
@@ -4622,13 +4630,22 @@ impl Renderer {
             && frame.clouds.is_some()
             && !frame.underwater
             && rt_clouds::mode() != rt_clouds::Mode::Off;
+        // Minecraft's moon phase (0 full, 4 new), and how much of the moon's face is lit.
+        let moon_phase = (frame.pack.day_time / 24000).rem_euclid(8) as f32;
+        let moon_lit = 0.5 + 0.5 * (moon_phase * std::f32::consts::FRAC_PI_4).cos();
         let rt_sun_light = {
-            let light = if rt_sun.y > 0.0 {
-                self.atmosphere.sunlight(rt_sun)
+            // By night the rays trace toward the moon: its light by its phase, its own disc for
+            // the shadows' penumbra (the Moon Size setting).
+            let (light, radius) = if rt_sun.y > 0.0 {
+                (self.atmosphere.sunlight(rt_sun), self.rt_sun_radius)
             } else {
-                self.atmosphere.sunlight(-rt_sun) * atmosphere::MOONLIGHT
-            } * atmosphere::PAPER_WHITE;
-            [light.x, light.y, light.z, self.rt_sun_radius]
+                (
+                    self.atmosphere.sunlight(-rt_sun) * (atmosphere::MOONLIGHT * moon_lit),
+                    self.rt_moon_radius,
+                )
+            };
+            let light = light * atmosphere::PAPER_WHITE;
+            [light.x, light.y, light.z, radius]
         };
         rt.sun_light = rt_sun_light;
         let globals = Globals {
@@ -4697,7 +4714,8 @@ impl Renderer {
             ],
             rt_sun: [rt_sun.x, rt_sun.y, rt_sun.z, f32::from(u8::from(rt_sky))],
             rt_sun_light,
-            rt_stars: [0.0, 0.0, 0.0, frame.sky.star_brightness],
+            // x: the moon's phase (terrain.wgsl `rt_moon_disc`).
+            rt_stars: [moon_phase, 0.0, 0.0, frame.sky.star_brightness],
             rt_star_frame: sky_stars::frame(frame.sky.sun_angle, frame.sun_path_tilt)
                 .to_cols_array_2d(),
             rt_water: [
@@ -4709,6 +4727,10 @@ impl Renderer {
             rt_camera: {
                 let c = frame.camera.map(|v| v.rem_euclid(4096.0));
                 [c.x as f32, c.y as f32, c.z as f32, 0.0]
+            },
+            rt_moon: {
+                let m = -rt_sun;
+                [m.x, m.y, m.z, self.rt_moon_radius]
             },
         };
         self.uploads

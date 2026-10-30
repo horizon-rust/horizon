@@ -47,6 +47,8 @@ struct Globals {
     // and the camera's place in the world (xyz, wrapped every 4096 blocks), for its waves.
     rt_water: vec4<f32>,
     rt_camera: vec4<f32>,
+    // RT lighting's moon: toward it (xyz) and its angular radius (w); its phase in rt_stars.x.
+    rt_moon: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas: texture_2d<f32>;

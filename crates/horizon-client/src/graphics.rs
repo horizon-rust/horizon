@@ -290,6 +290,9 @@ pub struct Graphics {
     /// RT lighting's sun, as many times its real size across (1..=20; 1 the real 0.53 degrees):
     /// softer shadows, a bigger disc, the same light.
     pub sun_size: u32,
+    /// RT lighting's moon, as many times its real size across (1..=20; 1 the real 0.52 degrees):
+    /// its disc, and the penumbra of its shadows by night.
+    pub moon_size: u32,
     /// RT lighting's aerial perspective: how many times denser than real air the air between
     /// the eye and distant terrain is (0 none, 1 real, up to 64): far blocks fade into the
     /// horizon's blue and lose their contrast. Real air by default: with the LOD terrain's
@@ -344,6 +347,7 @@ impl Default for Graphics {
             ray_traced_ao: false,
             rt_lighting: false,
             sun_size: 1,
+            moon_size: 1,
             aerial_perspective: DEFAULT_AERIAL_PERSPECTIVE,
             smooth_fluids: false,
             hdr: false,
@@ -409,6 +413,7 @@ impl Graphics {
                 "rayTracedAo" => g.ray_traced_ao = flag(g.ray_traced_ao),
                 "rtLighting" => g.rt_lighting = flag(g.rt_lighting),
                 "sunSize" => g.sun_size = number(g.sun_size).clamp(1, 20),
+                "moonSize" => g.moon_size = number(g.moon_size).clamp(1, 20),
                 "aerialPerspective" => g.aerial_perspective = number(g.aerial_perspective).min(64),
                 "smoothFluids" => g.smooth_fluids = flag(g.smooth_fluids),
                 "hdr" => g.hdr = flag(g.hdr),
@@ -431,7 +436,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nsunSize:{}\naerialPerspective:{}\nsmoothFluids:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nsunSize:{}\nmoonSize:{}\naerialPerspective:{}\nsmoothFluids:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -463,6 +468,7 @@ impl Graphics {
             bool_text(self.ray_traced_ao),
             bool_text(self.rt_lighting),
             self.sun_size,
+            self.moon_size,
             self.aerial_perspective,
             bool_text(self.smooth_fluids),
             bool_text(self.hdr),
@@ -586,6 +592,7 @@ mod tests {
             ray_traced_ao: true,
             rt_lighting: true,
             sun_size: 7,
+            moon_size: 3,
             aerial_perspective: 32,
             smooth_fluids: true,
             hdr: true,
