@@ -92,12 +92,25 @@ fn hw_opaque(c: RayIntersection) -> bool {
 fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>) -> vec3<f32> {
     let base = hw_quad(c, true);
     if base == 0xffffffffu { return vec3(1.0); }
-    // Water: the caustics its waves focus where the ray crosses its surface, the light lost on
-    // the way up through it (the ray starts under it: `c.t` is the depth crossed).
+    // Water: the ray starts under it (`c.t` is the length crossed to reach its surface, so the
+    // depth is that times the ray's rise). The sun's light came down through the surface bent by
+    // Snell's law, along a steeper line than `l`: the waves' caustics at the floor point (what
+    // those waves focus on it, a network continuous across blocks), the light lost on the way
+    // along that longer path in Remix's medium (and the biome's colour), and what the surface
+    // reflected of it (Fresnel). A ray that grazes the surface or goes down gets no caustics.
     let layer = f32(arena[base * 6u + 4u] & 0x7fffu);
     if layer == rt.water.x || layer == rt.water.y {
-        let at = pos + l * c.t + rt.camera.xyz + rt.fraction.xyz;
-        return water_caustics(at.xz, rt.water.z) * exp(-WATER_ABSORPTION * c.t);
+        let w = arena[base * 6u + 5u];
+        let tint = vec3(f32(w & 255u), f32((w >> 8u) & 255u), f32((w >> 16u) & 255u)) / 255.0;
+        let absorption = WATER_ABSORPTION + WATER_PURE_ABSORPTION + WATER_TINT_ABSORPTION * (1.0 - pow(tint, vec3(2.2)));
+        if l.y < 0.02 { return exp(-absorption * c.t); }
+        let depth = c.t * l.y;
+        let bent = refract(-l, vec3(0.0, 1.0, 0.0), 1.0 / WATER_INDEX);
+        let floor_at = pos + rt.camera.xyz + rt.fraction.xyz;
+        let footprint = length(pos) * 1.5 / rt.size.y;
+        let focus = water_caustics(floor_at.xz, depth, l, rt.water.z, footprint);
+        let fresnel = 0.02 + 0.98 * pow(1.0 - l.y, 5.0);
+        return focus * (1.0 - fresnel) * exp(-absorption * depth / max(-bent.y, 0.1));
     }
     let texel = hw_texel(c, base);
     if texel.a < 0.0 { return vec3(1.0); }
@@ -127,44 +140,104 @@ fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     let hit = rayQueryGetCommittedIntersection(&q);
     return select(through, vec3(0.0), hit.kind != RAY_QUERY_INTERSECTION_NONE);
 }
-// RT lighting's water (terrain.wgsl `rt_water`, shadow_rays_hw.wgsl `hw_tint`): the surface's
-// waves, a few long and short ones crossing, at world `p` (x, z) and `t` seconds: the height and
-// its slopes along x and z; and the caustics they focus on what lies under them, from the
-// surface's curvature (1 on average, bright where the waves gather the light).
-fn water_waves(p: vec2<f32>, t: f32) -> vec3<f32> {
-    let dirs = array<vec2<f32>, 4>(vec2(0.96, 0.28), vec2(-0.51, 0.86), vec2(0.66, -0.75),
-        vec2(-0.2, -0.98));
-    // A calm surface: a slight swell and finer ripples (the slopes stay within a few degrees).
-    let ks = vec4(1.3, 2.9, 6.1, 11.7);
-    let amps = vec4(0.012, 0.006, 0.003, 0.0012);
-    let speeds = vec4(1.1, 1.4, 1.9, 2.6);
-    var out = vec3(0.0);
-    for (var i = 0; i < 4; i++) {
-        let phase = ks[i] * dot(dirs[i], p) - speeds[i] * t;
-        out.x += amps[i] * sin(phase);
-        let slope = amps[i] * ks[i] * cos(phase);
-        out.y += slope * dirs[i].x;
-        out.z += slope * dirs[i].y;
-    }
-    return out;
+// RT lighting's water (terrain.wgsl `rt_water`, shadow_rays_hw.wgsl `hw_tint` and `hw_reflect`): the
+// surface's waves at world `p` (x, z) and `t` seconds, a sum of sixteen plane waves of every
+// length from a long swell (4.8 m) down to capillary ripples (15 cm), their directions turning by
+// the golden angle so no two line up, each travelling at its water-wave speed (gravity and surface
+// tension). Every wave is the same slope's worth of sine whatever its length, capped so the
+// finest ones keep their curvature (what focuses light) without roughening the glints: the height,
+// its slopes and its curvature (the second derivatives along x, xz and z) are exact sums, the
+// same in the shader that shows the water, the one that traces what it reflects and refracts, and
+// the one that traces the sun's light through it (these three copies are identical).
+struct WaterSurface {
+    height: f32,
+    slope: vec2<f32>,
+    curvature: vec3<f32>,
 }
-fn water_caustics(p: vec2<f32>, t: f32) -> f32 {
-    let dirs = array<vec2<f32>, 4>(vec2(0.96, 0.28), vec2(-0.51, 0.86), vec2(0.66, -0.75),
-        vec2(-0.2, -0.98));
-    let ks = vec4(1.3, 2.1, 3.7, 6.3) * 1.6;
-    let amps = vec4(0.03, 0.018, 0.009, 0.004);
-    let speeds = vec4(1.1, 1.4, 1.9, 2.6);
-    var curvature = 0.0;
-    for (var i = 0; i < 4; i++) {
-        let phase = ks[i] * dot(dirs[i], p) - speeds[i] * t;
-        curvature += amps[i] * ks[i] * ks[i] * sin(phase);
-    }
-    // Soft: the light gathered under a crest, spread under a trough, never all of it gone.
-    let c = clamp(1.0 + curvature * 2.5, 0.35, 2.2);
-    return c * c * 0.85;
+// `footprint`: the world size of a pixel here, in metres; the ripples finer than two of them
+// fade out (they would only shimmer), the way a distant lake's glitter blurs into a sheen.
+// One plane wave: `d` its direction (x, z), its wavenumber (rad/m) and its slope's amplitude; `w`
+// its angular frequency and its phase. The sixteen below are the law above written out, the
+// directions turning 2.39996 rad (the golden angle) a wave, the wavenumbers 1.3 rad/m growing
+// by 1.25 a wave (4.8 m to 15 cm), the slope min(0.8 / k, 0.035, 0.012 sqrt(k)), the frequency
+// sqrt(9.81 k + 7.3e-5 k^3) (gravity and surface tension, blocks being metres), the phase 2.1 a
+// wave. Written out, no shader has to work them out: each costs a sine and a cosine.
+fn water_wave(p: vec2<f32>, t: f32, footprint: f32, d: vec4<f32>, w: vec2<f32>) -> WaterSurface {
+    let slope = d.w * (1.0 - smoothstep(1.0, 2.2, d.z * footprint));
+    let phase = d.z * dot(d.xy, p) - w.x * t + w.y;
+    let s = sin(phase);
+    let dir = d.xy;
+    return WaterSurface(slope / d.z * s, slope * cos(phase) * dir,
+        -slope * d.z * s * vec3(dir.x * dir.x, dir.x * dir.y, dir.y * dir.y));
 }
-// Pure water's absorption a block (a metre), red most: deep water turns blue-green.
-const WATER_ABSORPTION: vec3<f32> = vec3(0.35, 0.065, 0.025);
+fn water_sum(a: WaterSurface, b: WaterSurface) -> WaterSurface {
+    return WaterSurface(a.height + b.height, a.slope + b.slope, a.curvature + b.curvature);
+}
+fn water_surface(p: vec2<f32>, t: f32, footprint: f32) -> WaterSurface {
+    var s = WaterSurface(0.0, vec2(0.0), vec3(0.0));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.92106, 0.38942, 1.3000, 0.01368), vec2(3.5712, 0.0)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.94221, 0.33503, 1.6250, 0.01530), vec2(3.9927, 2.1)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.46845, -0.88349, 2.0312, 0.01710), vec2(4.4640, 4.2)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.25138, 0.96789, 2.5391, 0.01912), vec2(4.9909, 6.3)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.83916, -0.54389, 3.1738, 0.02138), vec2(5.5801, 8.4)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.98616, -0.16580, 3.9673, 0.02390), vec2(6.2389, 10.5)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.61516, 0.78840, 4.9591, 0.02672), vec2(6.9755, 12.6)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.07896, -0.99688, 6.1989, 0.02988), vec2(7.7993, 14.7)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.73160, 0.68173, 7.7486, 0.03340), vec2(8.7205, 16.8)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.99996, -0.00849, 9.6858, 0.03500), vec2(9.7511, 18.9)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.74308, -0.66921, 12.1072, 0.03500), vec2(10.9042, 21.0)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.09587, 0.99539, 15.1340, 0.03500), vec2(12.1950, 23.1)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.60169, -0.79873, 18.9175, 0.03500), vec2(13.6409, 25.2)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.98320, 0.18252, 23.6469, 0.03383), vec2(15.2624, 27.3)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.84827, 0.52956, 29.5586, 0.02706), vec2(17.0838, 29.4)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.26778, -0.96348, 36.9482, 0.02165), vec2(19.1349, 31.5)));
+    return s;
+}
+// The height and the slopes along x and z, for the shaders that only look at the surface.
+fn water_waves(p: vec2<f32>, t: f32, footprint: f32) -> vec3<f32> {
+    let w = water_surface(p, t, footprint);
+    return vec3(w.height, w.slope);
+}
+// Where a sun ray (`l` toward the sun) goes after the surface bends it by Snell's law (water's
+// index 1.33) at a surface with `slope`: its horizontal travel per metre of depth.
+fn water_bent(slope: vec2<f32>, l: vec3<f32>) -> vec2<f32> {
+    let n = normalize(vec3(-slope.x, 1.0, -slope.y));
+    let d = refract(-l, n, 1.0 / 1.33);
+    return d.xz / max(-d.y, 1e-3);
+}
+// The sunlight a point of the floor `depth` metres under the surface, at world `p` (x, z), gets
+// relative to a flat surface (1 on average) at `t` seconds, `l` the unit direction to the sun
+// and `footprint` the world size of the pixel looking at it. The light's ray is followed up
+// through the waves: the surface point a flat surface would send the ray from (the waves'
+// own bending moves it by centimetres, small against the network's scale), then the Jacobian of
+// the surface-to-floor map there, the surface's curvature through Snell's law's own derivative
+// (the first-order approximation of the focusing every caustic renderer makes): the energy a bundle of
+// rays carries is conserved, so the floor's light is the inverse of its area ratio. Where the
+// map folds, that area goes to zero and the light piles up in a thin bright line: the caustic
+// network, continuous across blocks since it is a function of the world position alone, finer
+// the shallower the water (the light's reach is short, only the finest ripples focus it). The
+// sun's disc and the water's scattering wash it out with depth, and far from the eye it blurs
+// to its mean, rather than shimmer.
+fn water_caustics(p: vec2<f32>, depth: f32, l: vec3<f32>, t: f32, footprint: f32) -> f32 {
+    let x = p - depth * water_bent(vec2(0.0), l);
+    let w = water_surface(x, t, 0.0);
+    let r = water_bent(w.slope, l);
+    let e = 0.01;
+    let to_slope = mat2x2<f32>((water_bent(w.slope + vec2(e, 0.0), l) - r) / e,
+        (water_bent(w.slope + vec2(0.0, e), l) - r) / e);
+    let hessian = mat2x2<f32>(vec2(w.curvature.x, w.curvature.y), vec2(w.curvature.y, w.curvature.z));
+    let det = determinant(mat2x2<f32>(vec2(1.0, 0.0), vec2(0.0, 1.0)) + depth * (to_slope * hessian));
+    // Soft at the fold (the sun's disc has a size, the line a width), never infinite.
+    let eps = 0.12 + 0.02 * depth;
+    let gathered = 1.0 / sqrt(det * det + eps * eps);
+    let keeps = exp(-0.12 * depth) * (1.0 - smoothstep(0.03, 0.12, footprint));
+    return mix(1.0, gathered, keeps) / (1.0 + 0.04 * min(depth, 5.0));
+}
+// Remix's water medium (terrain.wgsl `WATER_ABSORPTION`): its extinction a block (a metre).
+const WATER_ABSORPTION: vec3<f32> = vec3(0.025541, 0.005268, 0.005827);
+const WATER_TINT_ABSORPTION: f32 = 0.06;
+// What real water adds to Remix's clear medium (terrain.wgsl `WATER_PURE_ABSORPTION`).
+const WATER_PURE_ABSORPTION: vec3<f32> = vec3(0.30, 0.045, 0.012);
 // The nearest opaque triangle from camera-relative `pos` along `l` (unit) within `reach`, as
 // Remix's bounce rays meet it: its distance (-1 none), its face's normal toward the ray, its
 // texel's colour times the vertex tint in light (the grid's map colour past the first arena page
@@ -256,13 +329,13 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     let layer = f32(arena[base * 6u + 4u] & 0x7fffu);
     if n.y > 0.5 && (layer == rt.water.x || layer == rt.water.y) {
         let world = at + rt.camera.xyz + rt.fraction.xyz;
-        let w = water_waves(world.xz, rt.water.z);
+        let w = water_waves(world.xz, rt.water.z, hit.t * 1.5 / rt.size.y);
         n = normalize(vec3(-w.y, 1.0, -w.z));
     }
     // Under the water, looking up at its top: the waves seen from below.
     if n.y < -0.5 && (layer == rt.water.x || layer == rt.water.y) {
         let world = at + rt.camera.xyz + rt.fraction.xyz;
-        let w = water_waves(world.xz, rt.water.z);
+        let w = water_waves(world.xz, rt.water.z, hit.t * 1.5 / rt.size.y);
         n = -normalize(vec3(-w.y, 1.0, -w.z));
     }
     // Its top (seen from above or below) refracts; its sides blend as before.
