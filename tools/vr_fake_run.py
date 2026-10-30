@@ -82,6 +82,7 @@ def main() -> int:
     ap.add_argument("--seed", default="1")
     ap.add_argument("--settings-from", help="a game folder whose options.txt and horizon-*.txt to play with")
     ap.add_argument("--shaderpacks", help="a shaderpacks folder to link beside the game (pickedShaderPack picks one)")
+    ap.add_argument("--resourcepacks", help="a resourcepacks folder to link beside the game (options.txt's resourcePacks picks them)")
     ap.add_argument("--timeout", type=float, default=600.0)
     ap.add_argument("--keep", action="store_true", help="keep the temporary game folder")
     ap.add_argument("--ctl", help="a file of horizon-ctl commands sent to the game in turn (one a line, "
@@ -123,6 +124,8 @@ def main() -> int:
                     shutil.copy2(src, game / name)
         if args.shaderpacks:
             link_dir(Path(args.shaderpacks).resolve(), game / "shaderpacks")
+        if args.resourcepacks:
+            link_dir(Path(args.resourcepacks).resolve(), game / "resourcepacks")
         if args.no_clouds:
             options = game / "options.txt"
             lines = options.read_text().splitlines() if options.is_file() else []
