@@ -55,9 +55,11 @@ struct Grid {
 pub const MAX_LIGHTS: usize = 8192;
 /// Cells a side of `Grid::cells`, x, then z, then y (8 blocks each).
 const CELLS: [u32; 3] = [WIDTH / 8, WIDTH / 8, HEIGHT / 8];
-/// How far a light of level 15 reaches, in blocks (one level a block less); its light is gone
-/// there (terrain.wgsl's falloff window).
-const LIGHT_REACH: f32 = 16.0;
+/// How far a light of level 15 reaches, in blocks (in proportion to the level); its light is gone
+/// there (shadow_rays.wgsl `light_path`'s falloff window). Half again vanilla's 16: Remix's lights
+/// fall off by the inverse square without a cut, so a lamp still lights a little past the 15
+/// blocks of its level.
+const LIGHT_REACH: f32 = 24.0;
 
 /// One light source for the GPU: its centre relative to the grid's first block (y from the
 /// world's bottom) and its reach; its colour (gamma-space, 0..1) and strength.
