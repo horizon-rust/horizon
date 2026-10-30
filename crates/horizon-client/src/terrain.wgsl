@@ -1251,10 +1251,14 @@ fn star_colour(kelvin: f32) -> vec3<f32> {
 // the stars' scale (a magnitude 0 star 20 paper whites over a couple of pixels, 175 arcseconds
 // across at 3440x1440) puts at 0.015 paper whites. The eye sums an extended light over its area
 // (Piper's law: its threshold falls as the square root of the area, Blackwell 1946), which a
-// screen's pixel does not, and the exposure stops at +1.5: the band is brought up by that summation
-// over a degree (MILKY_SUMMATION, the square root of a degree over a 175 arcsecond pixel), its rifts and colours as the map has them. No light pollution
-// here, so it shows whole under a dark sky.
+// screen's pixel does not, and the exposure stops at +1.5: the band is brought up by that
+// summation over a degree (the square root of a degree over a 175 arcsecond pixel, about 20),
+// from the map averaged over a degree as the eye does (its unresolved stars no grain), less its
+// floor away from the band (MILKY_FLOOR, its darkest: the faint stars the sky draws itself), its
+// rifts and colours as the map has them. No light pollution here, so it shows whole
+// under a dark sky.
 const MILKY_SUMMATION: f32 = 20.0;
+const MILKY_FLOOR: f32 = 0.008;
 fn rt_milky_way(d: vec3<f32>, sky: vec3<f32>) -> vec3<f32> {
     let brightness = globals.rt_stars.w;
     if brightness <= 0.0 || d.y <= 0.0 { return vec3(0.0); }
@@ -1264,7 +1268,8 @@ fn rt_milky_way(d: vec3<f32>, sky: vec3<f32>) -> vec3<f32> {
     let ra = atan2(e.y, e.x);
     let dec = asin(clamp(e.z, -1.0, 1.0));
     let uv = vec2(fract(0.5 - ra / 6.2831853), 0.5 - dec / 3.14159265);
-    let map = textureSampleLevel(rt_milky_map, lightmap_sampler, uv, 0.0).rgb;
+    let map = max(textureSampleLevel(rt_milky_map, lightmap_sampler, uv, 0.0).rgb - MILKY_FLOOR,
+        vec3(0.0));
     let glare = exp(-dot(sky, vec3(0.2126, 0.7152, 0.0722)) * 60.0);
     let air = exp(-vec3(0.12, 0.18, 0.3) * (1.0 / max(d.y + 0.025, 0.03)));
     return map * (0.015 * MILKY_SUMMATION * brightness * glare) * air;
