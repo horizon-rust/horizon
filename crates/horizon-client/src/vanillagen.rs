@@ -694,7 +694,7 @@ impl ChunkGenerator for VanillaTerrain {
             crate::structure_blocks::block_entities(&chunk, self.loot.as_deref());
         out.block_entities = block_entities;
         // The block entities Horizon does not model (decorated pots with their
-        // sherds and loot table, brushable blocks) stay as placed, like a
+        // sherds and loot table) stay as placed, like a
         // loaded chunk's.
         let mut unmodelled: Vec<Tag> = chunk
             .block_entities
@@ -751,7 +751,7 @@ mod default_block_entity_tests {
         out.set(4, -40, 9, 7);
         out.set(5, -40, 9, 6);
         let mut kinds = vec![None; 8];
-        kinds[6] = Some("minecraft:potent_sulfur");
+        kinds[6] = Some("minecraft:conduit");
         kinds[7] = Some("minecraft:sculk_sensor");
         let mut raw = vec![];
         add_default_block_entities(&kinds, &mut out, &mut raw);
@@ -762,7 +762,7 @@ mod default_block_entity_tests {
         assert_eq!(raw.len(), 1);
         assert_eq!(
             raw[0].get("id"),
-            Some(&Tag::String("minecraft:potent_sulfur".into()))
+            Some(&Tag::String("minecraft:conduit".into()))
         );
         add_default_block_entities(&kinds, &mut out, &mut raw);
         assert_eq!(
