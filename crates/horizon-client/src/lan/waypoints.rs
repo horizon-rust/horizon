@@ -130,6 +130,7 @@ struct Connection {
 /// What the manager remembers of a player between ticks.
 struct Memo {
     position: [f64; 3],
+    first_tick: bool,
     /// The centre of the player's ChunkTrackingView (`ChunkMap.move`).
     view_center: [i32; 2],
     transmitting: bool,
@@ -517,6 +518,7 @@ impl Waypoints {
                 p.uuid,
                 Memo {
                     position: p.position,
+                    first_tick: p.first_tick || respawned.contains(&p.uuid),
                     view_center: center,
                     transmitting,
                     team: p.team.clone(),
@@ -535,6 +537,7 @@ impl Waypoints {
         }
         for p in players {
             let memo = &self.memo[&p.uuid];
+            let finished_first_tick = memo.first_tick && !p.first_tick;
             // Entity.setPosRaw, then ServerChunkCache.move.
             if memo.position != p.position {
                 let moved_view = memo.view_center != p.chunk();
@@ -573,6 +576,15 @@ impl Waypoints {
                     self.create_connection(&mut t, receiver, p.uuid);
                 }
             }
+            // LivingEntity.makeWaypointConnectionWith rejects the first tick.
+            // Subsequent unchanged movement packets still call ServerChunkCache.move
+            // and updatePlayer in vanilla. Retry that deferred source once it is ready,
+            // even if the hub has seen no position change since it joined.
+            self.memo.get_mut(&p.uuid).unwrap().first_tick =
+                p.first_tick || respawned.contains(&p.uuid);
+            if finished_first_tick && transmitting {
+                self.update_waypoint(&mut t, p.uuid);
+            }
         }
         t.out
     }
@@ -609,7 +621,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_player_shows_once_it_moves() {
+    fn a_new_player_shows_after_its_first_tick_without_moving() {
         let mut w = Waypoints::default();
         let a = player(1, 10, [0.5, 100.0, 0.5]);
         let mut b = player(2, 20, [5.5, 100.0, 0.5]);
@@ -620,10 +632,13 @@ mod tests {
         assert_eq!(to(&out, 20), [(0, WaypointTarget::Block([0, 100, 0]))]);
         assert!(to(&out, 10).is_empty());
         b.first_tick = false;
+        let out = w.tick(&[a.clone(), b.clone()], &[], true);
+        assert_eq!(to(&out, 10), [(0, WaypointTarget::Block([5, 100, 0]))]);
+        assert!(to(&out, 20).is_empty());
         assert!(w.tick(&[a.clone(), b.clone()], &[], true).is_empty());
         b.position[0] += 1.0;
         let out = w.tick(&[a.clone(), b.clone()], &[], true);
-        assert_eq!(to(&out, 10), [(0, WaypointTarget::Block([6, 100, 0]))]);
+        assert_eq!(to(&out, 10), [(2, WaypointTarget::Block([6, 100, 0]))]);
         // One block: an update. Three: a new connection. Out of view: a chunk.
         b.position[0] += 1.0;
         let out = w.tick(&[a.clone(), b.clone()], &[], true);
