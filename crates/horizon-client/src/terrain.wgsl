@@ -893,8 +893,10 @@ fn face_normal(pos: vec3<f32>) -> vec3<f32> {
     // shine (a torch's flame and embers, not its stick: `rt_burning`).
     if globals.rt_mode.x > 0.5 && linear_on() {
         let lit = rt_lit(texel.rgb * in.tint, in, n);
-        let f = fog_amount(in.spherical, in.cylindrical) * globals.fog_color.a;
-        let glow = rt_flame(color.rgb) * (1.0 - f);
+        // Without the per-layer flags (parallax.rs `thin_layers`) a block's emission is its own
+        // colour as bright as its level, as before the black bodies.
+        let glow = scene_color(vec4(color.rgb, 0.0), emission_gain(in.emission), in.spherical,
+            in.cylindrical).rgb;
         return vec4(mix(lit, glow, rt_burning(texel.rgb)), 1.0);
     }
     // Alpha 0 tells HDR output (hdr.wgsl) a light-emitting block's bright pixels

@@ -374,7 +374,7 @@ fn parallax_rt_lit(in: ParallaxOut, s: ParallaxSurface) -> vec3<f32> {
     var m = horizon_terrain_rt_labpbr(albedo, s.normal, s.ao, specular);
     // The map's word on the subsurface scattering wins; where it has none, thin blocks scatter
     // and thick ones do not.
-    let thin = thin_layers[layer] != 0u;
+    let thin = (thin_layers[layer] & 1u) != 0u;
     let intensity = select(select(0.0, SSS_THIN, thin), m.subsurface, m.subsurface > 0.0);
     // The pack's tint, with the face's biome colour as a hue only (the map is as bright as the
     // light through the leaf), or the albedo's twice.
@@ -406,8 +406,17 @@ fn parallax_rt_lit(in: ParallaxOut, s: ParallaxSurface) -> vec3<f32> {
         let color = s.texel * in.color;
         let f = horizon_terrain_fog_amount(in.spherical, in.cylindrical)
             * horizon_terrain_globals.fog_color.a;
-        let glow = horizon_terrain_rt_flame(color.rgb) * (1.0 - f);
-        return vec4(mix(lit, glow, horizon_terrain_rt_burning(s.texel.rgb)), 1.0);
+        // A flame's texels burn as a black body; a lamp's or a froglight's glow in their own
+        // colour, as bright as their level (`thin_layers` bit 1).
+        let layer = in.layer & 0x7fffu;
+        var glow = horizon_terrain_scene_color(vec4(color.rgb, 0.0),
+            horizon_terrain_emission_gain(in.emission), in.spherical, in.cylindrical).rgb;
+        var burning = 1.0;
+        if (thin_layers[layer] & 2u) != 0u {
+            glow = horizon_terrain_rt_flame(color.rgb) * (1.0 - f);
+            burning = horizon_terrain_rt_burning(s.texel.rgb);
+        }
+        return vec4(mix(lit, glow, burning), 1.0);
     }
     let color = parallax_color(in, true);
     if color.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }

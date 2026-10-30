@@ -33,16 +33,28 @@ pub fn is_thin(name: &str, has_class: impl Fn(&str) -> bool) -> bool {
         || name.ends_with("_roots")
 }
 
-/// The blocks' thin textures, by sprite layer (`layers` of them): 1 for a layer that a thin
-/// block's model draws, 0 for the rest.
+/// Whether the block named `name` (no namespace) burns with a flame: its emitting texels are a
+/// black body's (terrain.wgsl `rt_flame`), where a lamp's or a froglight's keep their own colour.
+pub fn is_flame(name: &str) -> bool {
+    ["torch", "fire", "campfire", "candle", "lantern"]
+        .iter()
+        .any(|part| name.ends_with(part) || name.contains(&format!("{part}_")))
+}
+
+/// The blocks' thin textures and flames, by sprite layer (`layers` of them): bit 0 for a layer
+/// that a thin block's model draws, bit 1 for one a flame's model draws.
 pub fn thin_layers(facts: &BlockFacts, render: &RenderAssets, layers: usize) -> Vec<u32> {
     let mut out = vec![0u32; layers];
     let mut models = Vec::new();
     for (id, s) in facts.states.iter().enumerate() {
         let name = s.name.strip_prefix("minecraft:").unwrap_or(&s.name);
-        if !is_thin(name, |class| s.has_class(class)) {
+        let bit = if is_thin(name, |class| s.has_class(class)) {
+            1
+        } else if is_flame(name) {
+            2
+        } else {
             continue;
-        }
+        };
         // A block's model may vary with its position: look at a few of them.
         for (x, z) in [(0, 0), (1, 0), (0, 1), (1, 1), (2, 3), (5, 7)] {
             let at = BlockPos::new(x, 0, z);
@@ -55,7 +67,7 @@ pub fn thin_layers(facts: &BlockFacts, render: &RenderAssets, layers: usize) -> 
             }
             for face in models.iter().flat_map(|m| &m.faces) {
                 if let Some(thin) = out.get_mut(face.layer as usize) {
-                    *thin = 1;
+                    *thin |= bit;
                 }
             }
         }
