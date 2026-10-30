@@ -397,6 +397,17 @@ fn parallax_rt_lit(in: ParallaxOut, s: ParallaxSurface) -> vec3<f32> {
         if s.texel.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
         return vec4(parallax_rt_lit(in, s), 1.0);
     }
+    // RT lighting: a light-emitting block lit as any other, its burning texels shining
+    // (terrain.wgsl `rt_burning`).
+    if horizon_terrain_globals.rt_mode.x > 0.5 && horizon_terrain_linear_on() {
+        let s = parallax_surface(in, true);
+        if s.texel.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
+        let lit = parallax_rt_lit(in, s);
+        let color = s.texel * in.color;
+        let glow = horizon_terrain_scene_color(vec4(color.rgb, 0.0),
+            horizon_terrain_emission_gain(in.emission), in.spherical, in.cylindrical).rgb;
+        return vec4(mix(lit, glow, horizon_terrain_rt_burning(s.texel.rgb)), 1.0);
+    }
     let color = parallax_color(in, true);
     if color.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
     let emissive = select(1.0, 0.0, in.emission > 0u);

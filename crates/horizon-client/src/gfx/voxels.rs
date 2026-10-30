@@ -80,7 +80,7 @@ pub struct Voxels {
     /// Every resident section's blocks' colours (`SectionMesh::albedo`), for RT lighting.
     albedo: HashMap<SectionKey, Albedo>,
     /// Every resident section's light sources (`SectionMesh::lights`), for RT lighting.
-    lights: HashMap<SectionKey, Vec<[u8; 7]>>,
+    lights: HashMap<SectionKey, Vec<[u8; 10]>>,
     grid: Option<Grid>,
 }
 
@@ -91,7 +91,7 @@ fn in_range(center: (i32, i32), x: i32, z: i32) -> bool {
 
 impl Voxels {
     /// The section `key` now has these light sources (as meshed).
-    pub fn set_lights(&mut self, key: SectionKey, lights: &[[u8; 7]]) {
+    pub fn set_lights(&mut self, key: SectionKey, lights: &[[u8; 10]]) {
         let changed = if lights.is_empty() {
             self.lights.remove(&key).is_some()
         } else {
@@ -440,7 +440,7 @@ impl Voxels {
 /// each cell of the grid the eight (indices + 1, two to a word) whose light reaching its centre is
 /// the strongest.
 fn light_cells(
-    sections: &HashMap<SectionKey, Vec<[u8; 7]>>,
+    sections: &HashMap<SectionKey, Vec<[u8; 10]>>,
     center: (i32, i32),
     origin: [i32; 2],
     camera: DVec3,
@@ -450,7 +450,13 @@ fn light_cells(
         if !in_range(center, x, z) {
             continue;
         }
-        for &[lx, ly, lz, level, r, g, b] in lights {
+        for &[lx, ly, lz, level, r, g, b, ax, ay, az] in lights {
+            // Where in the block it burns (the mesher's `light_at`), or its middle.
+            let within = if ax == 255 {
+                [0.5; 3]
+            } else {
+                [ax, ay, az].map(|v| f32::from(v) / 32.0)
+            };
             let world = [
                 x * 16 + i32::from(lx),
                 crate::chunk::MIN_Y + sy * 16 + i32::from(ly),
@@ -462,9 +468,9 @@ fn light_cells(
                 d.length_squared(),
                 GpuLight {
                     at: [
-                        (world[0] - origin[0]) as f32 + 0.5,
-                        (world[1] - crate::chunk::MIN_Y) as f32 + 0.5,
-                        (world[2] - origin[1]) as f32 + 0.5,
+                        (world[0] - origin[0]) as f32 + within[0],
+                        (world[1] - crate::chunk::MIN_Y) as f32 + within[1],
+                        (world[2] - origin[1]) as f32 + within[2],
                         LIGHT_REACH * (f32::from(level) + 1.0) / 16.0,
                     ],
                     colour: [
@@ -535,7 +541,7 @@ mod tests {
     fn a_light_reaches_the_cells_around_it_only() {
         // A torch (level 14) at world (33, 201, 26): section (2, 16, 1), grid around chunk (0, 0).
         let mut sections = HashMap::new();
-        sections.insert((2, 16, 1), vec![[1, 9, 10, 14, 255, 170, 90]]);
+        sections.insert((2, 16, 1), vec![[1, 9, 10, 14, 255, 170, 90, 255, 255, 255]]);
         let origin = [-RADIUS * 16, -RADIUS * 16];
         let (lights, cells) = light_cells(&sections, (0, 0), origin, DVec3::ZERO);
         assert_eq!(lights.len(), 1);

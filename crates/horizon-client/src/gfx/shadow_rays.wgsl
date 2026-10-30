@@ -850,8 +850,12 @@ fn light_path(index: u32, local: vec3<f32>, n: vec3<f32>, offset: vec3<f32>) -> 
     let block = floor(light.at.xyz);
     let world = vec3<i32>(block) + vec3<i32>(i32(rt.grid.x), -64, i32(rt.grid.y));
     let cube = solid_at(world);
-    let size = select(0.1, 0.5, cube);
-    let middle = block + vec3(0.5, select(0.6, 0.5, cube), 0.5);
+    // A light with its own point (a torch's flame, gfx/voxels.rs): there, small; else the block's
+    // middle (a lamp's whole cube), or a little above it for a shape.
+    let within = light.at.xyz - block;
+    let own = any(abs(within - vec3(0.5)) > vec3(0.01));
+    let size = select(select(0.1, 0.5, cube), 0.06, own);
+    let middle = select(block + vec3(0.5, select(0.6, 0.5, cube), 0.5), light.at.xyz, own);
     let to = middle + offset * size - local;
     let length_to = length(to);
     let l = to / max(length_to, 1e-4);
@@ -859,7 +863,8 @@ fn light_path(index: u32, local: vec3<f32>, n: vec3<f32>, offset: vec3<f32>) -> 
     let low = (block - local) / select(l, vec3(1e-6), abs(l) < vec3(1e-6));
     let high = (block + 1.0 - local) / select(l, vec3(1e-6), abs(l) < vec3(1e-6));
     let near = min(low, high);
-    let d = max(max(max(near.x, near.y), near.z), 0.0);
+    // A flame's ray runs into its own block, to just short of it: the torch's stick shadows.
+    let d = select(max(max(max(near.x, near.y), near.z), 0.0), max(length_to - 0.1, 0.0), own);
     let reach = light.at.w;
     if d >= reach { return none; }
     let facing = select(dot(n, l), 1.0, d < 0.05);

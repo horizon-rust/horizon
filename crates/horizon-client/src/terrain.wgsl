@@ -850,6 +850,14 @@ fn face_normal(pos: vec3<f32>) -> vec3<f32> {
         }
         return vec4(rt_lit(texel.rgb * in.tint, in, n), 1.0);
     }
+    // RT lighting: a light-emitting block is lit as any other, and only its burning texels
+    // shine (a torch's flame and embers, not its stick: `rt_burning`).
+    if globals.rt_mode.x > 0.5 && linear_on() {
+        let lit = rt_lit(texel.rgb * in.tint, in, n);
+        let glow = scene_color(vec4(color.rgb, 0.0), emission_gain(in.emission), in.spherical,
+            in.cylindrical).rgb;
+        return vec4(mix(lit, glow, rt_burning(texel.rgb)), 1.0);
+    }
     // Alpha 0 tells HDR output (hdr.wgsl) a light-emitting block's bright pixels
     // may shine. Nothing else reads the frame's alpha.
     let emissive = select(1.0, 0.0, in.emission > 0u);
@@ -857,6 +865,11 @@ fn face_normal(pos: vec3<f32>) -> vec3<f32> {
         in.cylindrical);
     if linear_on() { out.a = 0.5 * sun_share(in.light, in.emission); }
     return out;
+}
+// How much of a light-emitting block's texel `c` (gamma) burns: its brightest, where a torch's
+// flame and a lamp's glow are; a stick's wood, darker, is lit by the light, not a light itself.
+fn rt_burning(c: vec3<f32>) -> f32 {
+    return smoothstep(0.6, 0.85, max(c.r, max(c.g, c.b)));
 }
 // RT lighting's depth prepass (gfx.rs `rt_prepass`): the solid terrain's depth alone, with the
 // same alpha test, for this frame's rays to trace from before the world is drawn.

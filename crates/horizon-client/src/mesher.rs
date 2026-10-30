@@ -140,8 +140,9 @@ pub struct SectionMesh {
     /// What the section's blocks are to the rays (`occupancy`, gfx/voxels.rs).
     pub occupancy: crate::occupancy::Occupancy,
     /// RT lighting's light sources (gfx/voxels.rs): the section's blocks that emit light and can
-    /// be seen (a neighbour isn't solid), as section-relative x, y, z, the level and the colour.
-    pub lights: Vec<[u8; 7]>,
+    /// be seen (a neighbour isn't solid), as section-relative x, y, z, the level, the colour, and
+    /// where in the block the light is (`Info::light_at`).
+    pub lights: Vec<[u8; 10]>,
     /// RT lighting's bounced light (gfx/voxels.rs): the solid blocks' map colours (`albedo`).
     pub albedo: crate::occupancy::Albedo,
 }
@@ -305,7 +306,7 @@ fn albedo(pad: &Padded, info: &[Info]) -> crate::occupancy::Albedo {
 }
 /// The section's light sources for RT lighting (`SectionMesh::lights`): the blocks that emit light,
 /// leaving out those no neighbour lets the light out of (buried lava, a lamp inside a wall).
-fn lights(pad: &Padded, info: &[Info]) -> Vec<[u8; 7]> {
+fn lights(pad: &Padded, info: &[Info]) -> Vec<[u8; 10]> {
     let mut out = Vec::new();
     for y in 0..16 {
         for z in 0..16 {
@@ -323,7 +324,8 @@ fn lights(pad: &Padded, info: &[Info]) -> Vec<[u8; 7]> {
                 });
                 if open {
                     let [r, g, b] = s.light_colour;
-                    out.push([x as u8, y as u8, z as u8, s.emission, r, g, b]);
+                    let [ax, ay, az] = s.light_at;
+                    out.push([x as u8, y as u8, z as u8, s.emission, r, g, b, ax, ay, az]);
                 }
             }
         }
@@ -368,6 +370,9 @@ struct Info {
     cover: [f32; 6],
     /// The colour of the light the block emits, for RT lighting's traced lights (`light_colour`).
     light_colour: [u8; 3],
+    /// Where in the block its light is, in 32nds of a block (`light_at`; 255: the shaders' own
+    /// guess, the block's middle).
+    light_at: [u8; 3],
     /// `getMapColor(..).id`: the block's colour to RT lighting's bounced light (`albedo`).
     map_color: u8,
     /// What the block is to the rays (`crate::occupancy` EMPTY, SOLID or CUTOUT) and its shape's
@@ -491,6 +496,28 @@ fn light_colour(name: &str) -> [u8; 3] {
     } else {
         [255, 190, 120]
     }
+}
+/// Where in its block a light burns, for RT lighting's shadow rays to start from the flame: a
+/// torch's at the top of its stick (TorchBlock's flame particles, 0.7 up); a wall torch's leaning
+/// out, 0.92 up and 0.23 from the wall (WallTorchBlock's: 0.27 toward the wall from the middle).
+/// In 32nds of a block; 255 the shaders' own guess for any other light.
+fn light_at(name: &str, facing: Option<&str>) -> [u8; 3] {
+    let at = |x: f32, y: f32, z: f32| [x, y, z].map(|v| (v * 32.0).round().clamp(0.0, 32.0) as u8);
+    if name.ends_with("wall_torch") {
+        // The facing points out of the wall: the wall is the other way.
+        let (wx, wz) = match facing {
+            Some("north") => (0.0, 1.0),
+            Some("south") => (0.0, -1.0),
+            Some("west") => (1.0, 0.0),
+            Some("east") => (-1.0, 0.0),
+            _ => (0.0, 0.0),
+        };
+        return at(0.5 + 0.27 * wx, 0.92, 0.5 + 0.27 * wz);
+    }
+    if name.ends_with("torch") {
+        return at(0.5, 0.7, 0.5);
+    }
+    [255; 3]
 }
 /// Derived per-state facts, exposed for the section-mesh parity gate.
 #[derive(Clone, Copy, Debug)]
@@ -675,6 +702,7 @@ impl MeshTables {
                 face,
                 cover,
                 light_colour: light_colour(name),
+                light_at: light_at(name, props.get("facing").map(String::as_str)),
                 map_color: s.map_color,
                 ray,
                 ray_shape,
