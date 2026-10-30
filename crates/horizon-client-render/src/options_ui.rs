@@ -2984,8 +2984,12 @@ impl OptionsUi {
         // release, even if the pointer has left the widget or its value stayed.
         let slider = self.dragging.take().is_some();
         let graphics_slider = self.graphics.release();
+        // A Setup tile dropped somewhere: moved in the draft.
+        let split_drop = self.split_setup.release();
         if slider || graphics_slider {
             vec![Event::ButtonClick, Event::Changed]
+        } else if split_drop {
+            vec![Event::ButtonClick]
         } else {
             Vec::new()
         }
