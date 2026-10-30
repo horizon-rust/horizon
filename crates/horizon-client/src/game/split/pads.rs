@@ -69,7 +69,7 @@ impl Split<'_> {
         };
         let state = self.pads.state(id);
         if self.fresh.contains(&id) {
-            if state.buttons != 0 {
+            if pressing(&state) {
                 return Default::default();
             }
             self.fresh.retain(|&p| p != id);
@@ -80,7 +80,8 @@ impl Split<'_> {
     /// Controllers: P1's is the first used in a menu, or alone; in a world another one is
     /// offered to join (A), or to drive P1 (Y) while P1 has none. The pads whose players
     /// should join now.
-    pub(super) fn route_pads(&mut self) -> Vec<PadId> {
+    /// `solo`: no compositor, P1 alone (its controller's output is lent to it after this).
+    pub(super) fn route_pads(&mut self, solo: bool) -> Vec<PadId> {
         let now = Instant::now();
         let owner_before = self.p1_pad;
         let offers_before = self.offers.len();
@@ -166,8 +167,12 @@ impl Split<'_> {
             }
         }
         // P1 alone keeps its controller's output (rumble, the DualSense's triggers): the router
-        // lends it its reader for P1's turn (`lend_output`), so no second reader opens.
-        self.host.pad.release_hardware();
+        // lends it its reader for P1's turn (`lend_output`), so no second reader opens. Only
+        // when nothing is lent does P1's own reader close: releasing a lent one each frame
+        // would stop its rumble a frame after it starts.
+        if !lends_output(solo, self.p1_pad.is_some()) {
+            self.host.pad.release_hardware();
+        }
         self.host.pad.feed = Some(self.pad_state(self.p1_pad));
         for i in 0..self.guests.len() {
             let state = self.pad_state(self.guests[i].pad);
@@ -286,6 +291,17 @@ impl Split<'_> {
     }
 }
 
+/// Whether P1 gets the split's reader for its turn (`lend_output`): solo, with a controller.
+fn lends_output(solo: bool, p1_has_pad: bool) -> bool {
+    solo && p1_has_pad
+}
+
+/// Still holding the press that gave the pad its player: a button, or a trigger off its rest
+/// (gilrs reports a trigger press as a button, but `PadState` keeps it in `triggers`).
+fn pressing(state: &PadState) -> bool {
+    state.buttons != 0 || state.triggers.iter().any(|&t| t > 0.05)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,6 +312,37 @@ mod tests {
             id: seat,
             uuid,
         }
+    }
+
+    #[test]
+    fn a_lone_p1_keeps_its_lent_output_between_frames() {
+        assert!(
+            lends_output(true, true),
+            "rumble and triggers survive the next frame"
+        );
+        assert!(
+            !lends_output(true, false),
+            "no controller: P1's own reader closes"
+        );
+        assert!(
+            !lends_output(false, true),
+            "others play: the router owns every pad"
+        );
+    }
+
+    #[test]
+    fn the_trigger_that_gave_a_pad_is_held_back_too() {
+        assert!(!pressing(&PadState::default()));
+        let trigger = PadState {
+            triggers: [0.0, 0.8],
+            ..Default::default()
+        };
+        assert!(pressing(&trigger), "a held trigger would attack or use");
+        let button = PadState {
+            buttons: 1,
+            ..Default::default()
+        };
+        assert!(pressing(&button));
     }
 
     #[test]

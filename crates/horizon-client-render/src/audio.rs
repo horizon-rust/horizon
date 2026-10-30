@@ -275,6 +275,12 @@ fn variantless(key: &str) -> &str {
 impl MixerBackend {
     /// Splitscreen: another player's game started this same sound here just now (both clients
     /// heard it); this copy stays stopped, the first is heard from the nearest camera.
+    ///
+    /// A copy is recognised only by its file (without the variant), world, place and time: the
+    /// games pick variants on their own and play many sounds client-side (steps, digging), so
+    /// nothing marks two copies of one event. Two different events alike in all four (two
+    /// players' steps on grass, side by side, within 150 ms) are heard once. That is accepted:
+    /// at that distance and timing they sound like one; a doubled sound is the louder fault.
     fn duplicate(&self, channel: ChannelId, (namespace, path): (&str, &str)) -> bool {
         // Alone: nobody else's copy, and no lock taken for it.
         if self.shares.load(std::sync::atomic::Ordering::Relaxed) == 0 {
