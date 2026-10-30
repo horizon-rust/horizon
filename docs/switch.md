@@ -1,5 +1,16 @@
 # Horizon on Nintendo Switch (homebrew, .nro): status and plan
 
+**Status (2026-10-30): it builds, it links, it has not been run on a console.** A 45 MB `horizon.nro`
+comes out of `packaging/switch/linux/` (WSL2 Debian 13, 6 GB of RAM: devkitA64 r30, libnx 4.12, a
+nightly Rust, NVK from mesa-switch with bevy-horizon's 24 patches, LLVM 19; about 5 minutes for NVK and
+3 for the game, once the toolchain is in). The first real build found these, all fixed: wgpu-hal 30's
+signature change, socket2 (libnx lacks `recvmsg`), a missing Discord stub, the inline
+`swkbdConfigSetStringLenMax`, and libnx older than 4.10. Static checks: a valid NRO0 with an asset
+section, `userAppInit`, `userAppExit` and the `--wrap`ped `threadCreate` and `rename` present, the vk*
+entry points linked in. Undefined `nvk_*`, `wsi_*` and `vk_*` entries in the ELF are NVK's optional
+entry points (weak, null at run time), as in bevy-horizon's own builds. What is unknown is everything that
+only a console shows: the first frame, memory, the pad, the keyboard, the touch screen.
+
 Reference: `skate3rust-switch` (a Skate 3 engine on **Bevy**) built with
 [bevy-horizon](https://github.com/JohnUzoka/bevy-horizon) (toolchain, patched crates, NVK, libnx glue).
 Horizon is **not** Bevy: it is winit + wgpu 30 + gilrs, so only part of that method carries over.
