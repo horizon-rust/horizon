@@ -11778,7 +11778,21 @@ impl Game<'_> {
                     h,
                     false,
                 );
-                horizon_client::level_loading::draw(&mut hud, &self.gui.atlas, None, None);
+                // Vanilla's `LevelLoadingScreen` says what it is doing:
+                // `createWorld.preparing` for a new world, the opening line
+                // otherwise. The chunk map stays for when the server's own
+                // progress is visible here.
+                let text = if self.creating_world() {
+                    lang::get_or("createWorld.preparing", "Preparing for world creation...")
+                } else {
+                    lang::get_or("menu.loadingLevel", "Opening world")
+                };
+                horizon_client::level_loading::draw_progress(
+                    &mut hud,
+                    &self.gui.atlas,
+                    &text,
+                    self.loading_progress,
+                );
                 return renderer.render(&loading_frame(&hud));
             }
             return Ok(false);
@@ -11786,14 +11800,19 @@ impl Game<'_> {
         if let Some(loader) = &self.world_loader {
             if let Some(renderer) = &mut self.renderer {
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+                // `createWorld.preparing` / `menu.loadingLevel`, as
+                // `WorldOpenFlows` shows them while the world is built.
+                let text = if loader.cancelled {
+                    lang::get_or("menu.loadingLevel", "Cancelling world")
+                } else if self.creating_world() {
+                    lang::get_or("createWorld.preparing", "Preparing for world creation...")
+                } else {
+                    lang::get_or("menu.loadingLevel", "Opening world")
+                };
                 horizon_client::level_loading::draw_progress(
                     &mut hud,
                     &self.gui.atlas,
-                    if loader.cancelled {
-                        "Cancelling world"
-                    } else {
-                        "Opening world"
-                    },
+                    &text,
                     0.0,
                 );
                 return renderer.render(&loading_frame(&hud));
@@ -12257,6 +12276,13 @@ impl Game<'_> {
     }
     /// The LevelLoadingScreen shown while the player waits for its chunks:
     /// opening a world, or after a portal or a respawn into another dimension.
+    /// Whether the world being opened is being created (`WorldOptions`).
+    fn creating_world(&self) -> bool {
+        match &self.pending_entry {
+            Some(PendingWorldEntry::Local { create, .. }) => create.is_some(),
+            _ => false,
+        }
+    }
     fn loading_reason(&self) -> Option<horizon_client::level_loading::Reason> {
         use horizon_client::level_loading::Reason;
         if self.title.is_some() || self.remote.is_some() || self.player.is_some() {
