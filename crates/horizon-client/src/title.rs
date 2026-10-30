@@ -1118,12 +1118,18 @@ impl Title {
         // `CreateWorldScreen.openCreateWorldScreen`'s queued loading screen
         // does, instead of showing a Create World screen it cannot fill yet.
         if self.preparing {
+            // `GenericMessageScreen`: the menu background and the message
+            // alone, centred, no progress (`queueLoadScreen` shows this).
             crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
-            crate::level_loading::draw_progress(
-                batch,
+            let text = lang::get_or("createWorld.preparing", "Preparing for world creation...");
+            let tw = HudBatch::text_width(atlas, &text);
+            batch.text(
                 atlas,
-                &lang::get_or("createWorld.preparing", "Preparing for world creation..."),
-                0.0,
+                &text,
+                w / 2.0 - tw / 2.0,
+                h / 2.0 - 4.5,
+                u32::MAX,
+                true,
             );
             return;
         }
