@@ -541,7 +541,10 @@ mod tests {
     fn a_light_reaches_the_cells_around_it_only() {
         // A torch (level 14) at world (33, 201, 26): section (2, 16, 1), grid around chunk (0, 0).
         let mut sections = HashMap::new();
-        sections.insert((2, 16, 1), vec![[1, 9, 10, 14, 255, 170, 90, 255, 255, 255]]);
+        sections.insert(
+            (2, 16, 1),
+            vec![[1, 9, 10, 14, 255, 170, 90, 255, 255, 255]],
+        );
         let origin = [-RADIUS * 16, -RADIUS * 16];
         let (lights, cells) = light_cells(&sections, (0, 0), origin, DVec3::ZERO);
         assert_eq!(lights.len(), 1);
