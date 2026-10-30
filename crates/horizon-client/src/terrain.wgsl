@@ -406,25 +406,25 @@ fn aldhani_tile(d: vec3<f32>) -> u32 {
     return c.y * ALDHANI_TILES + c.x;
 }
 // The sky's own light toward `d` during the event (`t` seconds in), in paper whites: the glow the
-// thousands of meteors too far and faint to tell apart make, a teal sky brightest toward the
-// radiant, and the eye itself, a bright saturated glow on the horizon around the radiant, teal on
-// its east side and pink-white on its west. ALDHANI_PALETTE: the colours are the show's (Andor,
-// "The Eye"), no spectrum is known for it.
+// thousands of meteors too far and faint to tell apart make, a pale cyan sky brightest toward the
+// radiant and pinkish grey on its west side, and the eye itself, a bright glow on the horizon
+// around the radiant, whitish cyan on its east side and pink-white on its west. ALDHANI_PALETTE:
+// the colours are the show's (Andor, "The Eye"), no spectrum is known for it.
 fn aldhani_glow(d: vec3<f32>, t: f32) -> vec3<f32> {
     let strength = aldhani_envelope(t);
     if strength <= 0.0 { return vec3(0.0); }
     let c = clamp(dot(d, ALDHANI_RADIANT), -1.0, 1.0);
     let theta = acos(c);
     let up = max(d.y, 0.0);
-    let teal = vec3(0.05, 0.9, 0.65);
-    // The sky: the faint meteors everywhere, thicker toward the radiant's half of the sky.
-    let sky = teal * (0.35 + 0.65 * (0.5 + 0.5 * c)) * (0.55 + 0.45 * exp(-up * 2.0));
-    // The eye: a few degrees of white-hot core in a wide glow, its sides two colours.
     let east = d.x / max(sin(theta), 1e-3);
-    let side = mix(teal, vec3(1.0, 0.55, 0.8), smoothstep(-0.7, 0.7, -east));
+    // The sky: the faint meteors everywhere, thicker toward the radiant's half of the sky.
+    let tint = mix(vec3(0.42, 0.95, 0.9), vec3(0.95, 0.74, 0.82), 0.7 * smoothstep(-0.2, 0.9, -east));
+    let sky = tint * (3.5 * (0.35 + 0.65 * (0.5 + 0.5 * c)) * (0.55 + 0.45 * exp(-up * 2.0)));
+    // The eye: a few degrees of white-hot core in a wide glow, its sides two colours.
+    let side = mix(vec3(0.45, 0.95, 0.92), vec3(1.0, 0.72, 0.84), smoothstep(-0.7, 0.7, -east));
     let core = exp(-theta * theta / (2.0 * 0.08 * 0.08));
     let wide = exp(-theta / 0.25) * (0.4 + 0.6 * exp(-up / 0.15));
-    let eye = side * (8.0 * wide) + mix(side, vec3(1.0), 0.5) * (60.0 * core);
+    let eye = side * (8.0 * wide) + mix(side, vec3(1.0), 0.6) * (60.0 * core);
     // Under the horizon the ground hides it (the rays see the ground there).
     let above = smoothstep(-0.06, 0.0, d.y);
     return (sky + eye) * (ALDHANI_GLOW * strength * above);
@@ -465,10 +465,12 @@ fn aldhani_streak(m: AldhaniMeteor, line: vec4<f32>, d: vec3<f32>, pixel: f32) -
     if r2 > 150.0 || across > ALDHANI_REACH { return vec3(0.0); }
     // Its light fades to nothing ALDHANI_REACH away (the tiles it is binned into).
     let fade = 1.0 - across / ALDHANI_REACH;
-    let core = exp(-r2 * 1.4) + 0.03 * exp(-r2 * 0.15) * fade * fade;
-    var light = m.colour.rgb * (core * (0.15 + 0.85 * along * along));
-    // The head's glow, white-hot in its middle.
+    // Its core whiter than its glow (it burns hottest in its middle).
     let top = max(m.colour.r, max(m.colour.g, m.colour.b));
+    let core = mix(m.colour.rgb, vec3(top), 0.2) * exp(-r2 * 1.4)
+        + m.colour.rgb * (0.03 * exp(-r2 * 0.15) * fade * fade);
+    var light = core * (0.15 + 0.85 * along * along);
+    // The head's glow, white-hot in its middle.
     let white = mix(m.colour.rgb, vec3(top), 0.6);
     let h2 = dot(d - b, d - b) / (width * width);
     light += white * (m.colour.w * 0.8 * exp(-h2 * 0.6) * fade * fade);
