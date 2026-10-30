@@ -93,6 +93,14 @@ class Game:
             raise RuntimeError(f'P{n} {" ".join(words)}: {reply["error"]}')
         return reply
 
+    def press(self, n, label):
+        """Click a button once it's drawn and enabled: `ui` lists the last drawn frame's
+        widgets, which lag a page change (by most of a second on GNOME Wayland)."""
+        def ready():
+            return any(w['label'] == label and w['enabled'] for w in self.ctl(n, 'ui')['widgets'])
+        self.wait(ready, f'P{n} button {label!r}')
+        self.ctl(n, 'click-button', label)
+
     def alive(self, n):
         try:
             self.ctl(n, 'status')
@@ -358,9 +366,7 @@ def scenario_setup():
         return next(w['enabled'] for w in g.ctl(1, 'ui')['widgets'] if w['label'] == label)
     def page():
         g.ctl(1, 'options', 'horizon')
-        # ui lists the last drawn frame's widgets: wait for the page to be drawn.
-        g.wait(lambda: 'Splitscreen...' in labels(), 'Horizon Settings')
-        g.ctl(1, 'click-button', 'Splitscreen...')
+        g.press(1, 'Splitscreen...')
         g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'active', 'Setup active')
     try:
         g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'P2 playing')
@@ -368,29 +374,29 @@ def scenario_setup():
         whole = (2 * half[0], half[1])
         g.ctl(1, 'key', 'esc', 'tap')
         g.wait(lambda: 'Splitscreen Settings' in labels(), 'P1 pause shortcut')
-        g.ctl(1, 'click-button', 'Splitscreen Settings')
+        g.press(1, 'Splitscreen Settings')
         g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'active', 'Setup active')
-        g.ctl(1, 'click-button', 'P2')
-        g.ctl(1, 'click-button', 'New window')
+        g.press(1, 'P2')
+        g.press(1, 'New window')
         check('preview leaves the real views alone', g.sizes([1, 2]), [half, half])
         check('draft enables Apply', enabled('Apply'), True)
-        g.ctl(1, 'click-button', 'Revert')
+        g.press(1, 'Revert')
         check('Revert clears the draft', enabled('Apply'), False)
-        g.ctl(1, 'click-button', 'P2')
-        g.ctl(1, 'click-button', 'New window')
-        g.ctl(1, 'click-button', 'Apply')
+        g.press(1, 'P2')
+        g.press(1, 'New window')
+        g.press(1, 'Apply')
         check('Apply gives P1 its whole window', g.settle([1], [whole]), [whole])
         own = g.size(2)
         check('P2 gets a separate window', own != half, True)
         g.wait(lambda: not enabled('Apply'), 'the applied draft is current')
-        g.ctl(1, 'click-button', 'P2')
-        g.ctl(1, 'click-button', 'Window 1')
-        g.ctl(1, 'click-button', 'Done')
+        g.press(1, 'P2')
+        g.press(1, 'Window 1')
+        g.press(1, 'Done')
         check('Done discards unapplied placement', g.sizes([1, 2]), [whole, own])
         page()
-        g.ctl(1, 'click-button', 'P2')
-        g.ctl(1, 'click-button', 'Window 1')
-        g.ctl(1, 'click-button', 'Apply')
+        g.press(1, 'P2')
+        g.press(1, 'Window 1')
+        g.press(1, 'Apply')
         check('Apply reunites both views', g.settle([1, 2], [half, half]), [half, half])
         g.ctl(2, 'disconnect')
         g.wait(lambda: not g.alive(2), 'P2 gone')
@@ -398,14 +404,13 @@ def scenario_setup():
         check('idle map has no stale player tiles', 'P2' in labels(), False)
         check('idle P1 has the full window', g.settle([1], [whole]), [whole])
         for _ in range(3):
-            g.ctl(1, 'click-button', 'Done')
+            g.press(1, 'Done')
             g.ctl(1, 'options', 'horizon')
-            g.wait(lambda: 'Splitscreen...' in labels(), 'Horizon Settings')
-            g.ctl(1, 'click-button', 'Splitscreen...')
+            g.press(1, 'Splitscreen...')
             g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'idle', 'reopened idle')
-        g.ctl(1, 'click-button', 'Splitscreen: On')
+        g.press(1, 'Splitscreen: On')
         g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'off', 'Setup off')
-        g.ctl(1, 'click-button', 'Splitscreen: Off')
+        g.press(1, 'Splitscreen: Off')
         g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'idle', 'Setup idle again')
     finally:
         g.quit()
@@ -417,10 +422,10 @@ def scenario_setup_leave():
     try:
         g.wait(lambda: g.ctl(3, 'state').get('player') is not None, 'P3 playing')
         g.ctl(1, 'options', 'horizon')
-        g.ctl(1, 'click-button', 'Splitscreen...')
+        g.press(1, 'Splitscreen...')
         g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'active', 'Setup active')
-        g.ctl(1, 'click-button', 'P3')
-        g.ctl(1, 'click-button', 'New window')
+        g.press(1, 'P3')
+        g.press(1, 'New window')
         g.ctl(2, 'disconnect')
         g.wait(lambda: not g.alive(2), 'P2 gone')
         def reset():
