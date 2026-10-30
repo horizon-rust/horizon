@@ -54,7 +54,6 @@ pub struct TileKey {
 
 /// A tile's buffers for the renderer: where its origin is in the world now (vertices are from it),
 /// vertex buffers of `Vertex`, and `u32` triangle indices.
-#[allow(dead_code)] // The ray structures read it (the main session), not the shading here.
 pub struct CloudTile<'a> {
     pub key: TileKey,
     pub origin: DVec3,
@@ -276,20 +275,32 @@ impl RtCloudMesh {
                 }
                 continue;
             }
+            // Where the GPU traces rays, the hybrid builds the tile's structure from these buffers
+            // (gfx/hw_rays.rs).
+            let input = if device
+                .features()
+                .contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
+            {
+                wgpu::BufferUsages::BLAS_INPUT
+            } else {
+                wgpu::BufferUsages::empty()
+            };
             let tile = Tile {
                 vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Cloud tile vertices"),
                     contents: bytemuck::cast_slice(&made.vertices),
                     usage: wgpu::BufferUsages::VERTEX
                         | wgpu::BufferUsages::STORAGE
-                        | wgpu::BufferUsages::COPY_SRC,
+                        | wgpu::BufferUsages::COPY_SRC
+                        | input,
                 }),
                 indices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("Cloud tile indices"),
                     contents: bytemuck::cast_slice(&made.indices),
                     usage: wgpu::BufferUsages::INDEX
                         | wgpu::BufferUsages::STORAGE
-                        | wgpu::BufferUsages::COPY_SRC,
+                        | wgpu::BufferUsages::COPY_SRC
+                        | input,
                 }),
                 vertex_count: made.vertices.len() as u32,
                 index_count: made.indices.len() as u32,
