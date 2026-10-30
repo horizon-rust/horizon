@@ -1253,7 +1253,7 @@ fn star_colour(kelvin: f32) -> vec3<f32> {
 // (Piper's law: its threshold falls as the square root of the area, Blackwell 1946), which a
 // screen's pixel does not, and the exposure stops at +1.5: the band is brought up by that
 // summation over a degree (the square root of a degree over a 175 arcsecond pixel, about 20),
-// from the map averaged over a degree as the eye does (its unresolved stars no grain), less its
+// from the map averaged over half a degree (its unresolved stars no grain), less its
 // floor away from the band (MILKY_FLOOR, its darkest: the faint stars the sky draws itself), its
 // rifts and colours as the map has them. No light pollution here, so it shows whole
 // under a dark sky.
