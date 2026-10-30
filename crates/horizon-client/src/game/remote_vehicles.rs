@@ -100,8 +100,9 @@ impl Game<'_> {
     }
 
     /// `ClientPacketListener.handleSetEntityPassengersPacket`: who rides
-    /// `vehicle` now. The local player gets in or out; mobs and other
-    /// players sit where the server keeps them.
+    /// `vehicle` now. The local player gets in or out; mobs, other players
+    /// and the server mods' display entities sit where the server keeps
+    /// them.
     pub(super) fn remote_set_passengers(&mut self, vehicle: i32, passengers: &[i32]) {
         let Some(me) = self.remote.as_ref().map(|r| r.entity_id) else {
             return;

@@ -433,6 +433,13 @@ impl<'a> Game<'a> {
             mob.id = self.next_entity;
             mob.persistent = persistent;
             let id = mob.id;
+            // Capability `rich-events`: natural spawning made this one (the
+            // jockeys it calls in report themselves the other way).
+            self.mod_note_spawn(
+                &format!("minecraft:{}", mob.kind.id.trim_start_matches("minecraft:")),
+                [mob.position.x, mob.position.y, mob.position.z],
+                true,
+            );
             self.mobs.push(mob);
             self.enchant_spawn_equipment(id);
             if !persistent {

@@ -9,6 +9,7 @@ use super::{Game, lan::LanHost, lan_mobs::guest_bounds, mace::Spared, ray_box};
 
 use horizon_client::{
     Result,
+    items::ItemStack,
     mobs::Who,
     projectiles::{Hit, Projectile, ProjectileKind},
 };
@@ -36,6 +37,10 @@ pub(super) struct Strike {
     /// The attacking guest, kept after their turn through `as_guest` ends.
     attacker: Option<u32>,
     amount: f32,
+    /// The main hand's stack as the attacker struck (capability
+    /// `item-hooks`): a claimed item answers for the blow when it lands,
+    /// the attacker's turn over by then.
+    weapon: Option<ItemStack>,
     scale: f32,
     crit: bool,
     /// `Player.attack`'s `magicBoost > 0`: the enchantments added damage.
@@ -79,6 +84,25 @@ impl Strike {
 }
 
 impl Game<'_> {
+    /// The striking player as the hurt ask names its cause (capability
+    /// `rich-events`): the guest `conn`, else the window's own player.
+    /// Noted where the blow is struck; the hurt funnel takes it.
+    fn note_pvp_attacker(&mut self, host: &LanHost, attacker: Option<u32>) {
+        let who = match attacker {
+            Some(conn) => host.hub.guest(conn).map(|g| horizon_mods::EntityWho {
+                id: g.entity_id as u32,
+                kind: "minecraft:player".to_owned(),
+                health: g.health,
+            }),
+            None => Some(horizon_mods::EntityWho {
+                id: host.host_entity as u32,
+                kind: "minecraft:player".to_owned(),
+                health: self.player.as_ref().map_or(0.0, |p| p.health.health()),
+            }),
+        };
+        self.mod_note_pvp(who);
+    }
+
     /// The guest on the host's crosshair and how far, within reach.
     pub(super) fn guest_hit(&self) -> Option<(u32, f64)> {
         let host = self.lan.as_ref()?;
@@ -178,6 +202,7 @@ impl Game<'_> {
         Some(Strike {
             attacker: self.lan_acting,
             amount,
+            weapon: self.stack_in(self.selected).cloned(),
             scale,
             crit,
             magic,
@@ -296,9 +321,25 @@ impl Game<'_> {
         }
         // Player.attack: the hurt (with its knockback away from the
         // attacker), then causeExtraKnockback along the attacker's yaw.
+        // A claimed item in the attacker's main hand answers for the blow
+        // (capability `item-hooks`), before the hurt lands.
+        let (id, health) = match victim {
+            Victim::Host => (
+                host.host_entity as u32,
+                self.player.as_ref().map_or(0.0, |p| p.health.health()),
+            ),
+            Victim::Guest(conn) => host
+                .hub
+                .guest(conn)
+                .map_or((0, 0.0), |g| (g.entity_id as u32, g.health)),
+        };
+        let amount = match &s.weapon {
+            Some(weapon) => self.mod_pvp_blow(host, s.attacker, weapon, id, health, s.amount),
+            None => s.amount,
+        };
         let land = |g: &mut Self| {
             g.combat.player_attacker = Some((s.from, s.disable_blocking));
-            let hurt = g.mob_hits_player(s.amount, s.from, "minecraft:player_attack");
+            let hurt = g.mob_hits_player(amount, s.from, "minecraft:player_attack");
             g.combat.player_attacker = None;
             let (strength, xd, zd) = s.knockback;
             if hurt && strength > 0.0 {
@@ -310,8 +351,16 @@ impl Game<'_> {
         };
         let (hurt, thorns) = if self.ui.rules.bool("pvp") && harm {
             match victim {
-                Victim::Host => land(self),
-                Victim::Guest(conn) => self.guest_struck_by(host, conn, land).unwrap_or_default(),
+                Victim::Host => {
+                    // The ask inside `land` names the striking player
+                    // (capability `rich-events`).
+                    self.note_pvp_attacker(host, s.attacker);
+                    land(self)
+                }
+                Victim::Guest(conn) => {
+                    self.note_pvp_attacker(host, s.attacker);
+                    self.guest_struck_by(host, conn, land).unwrap_or_default()
+                }
             }
         } else {
             Default::default()
@@ -497,8 +546,14 @@ impl Game<'_> {
                 continue;
             }
             match victim {
-                Victim::Host => land(self),
+                Victim::Host => {
+                    // The ask inside `land` names the striking player
+                    // (capability `rich-events`).
+                    self.note_pvp_attacker(host, sweep.attacker);
+                    land(self);
+                }
                 Victim::Guest(conn) => {
+                    self.note_pvp_attacker(host, sweep.attacker);
                     self.guest_struck_by(host, conn, land);
                 }
             }

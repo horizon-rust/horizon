@@ -7,13 +7,13 @@
 //! version's level so the launcher can tell before it installs.
 
 /// The newest level this Horizon serves.
-pub const LEVEL: u32 = 7;
+pub const LEVEL: u32 = 25;
 
 /// Every function the game offers mods, as `interface.function`, with its
 /// level. Level 0 is the contract of Horizon 0.2.67 to 0.2.69. A new
 /// function takes the next level and raises [`LEVEL`] (the `api_reference`
 /// test fails until it is listed here).
-pub const FUNCTIONS: [(&str, u32); 46] = [
+pub const FUNCTIONS: [(&str, u32); 112] = [
     ("log.write", 0),
     ("game.get-player", 0),
     ("game.get-clock", 0),
@@ -60,6 +60,72 @@ pub const FUNCTIONS: [(&str, u32); 46] = [
     ("recipes.place", 6),
     ("recipes.give", 6),
     ("render.set-far-terrain", 7),
+    ("block-entities.get", 8),
+    ("block-entities.set", 8),
+    ("energy.get", 9),
+    ("energy.set-storage", 9),
+    ("energy.set-stored", 9),
+    ("energy.insert", 9),
+    ("energy.extract", 9),
+    ("energy.push", 9),
+    ("menus.open", 10),
+    ("menus.set-items", 10),
+    ("menus.close", 10),
+    ("displays.show", 11),
+    ("displays.hide", 11),
+    ("displays.show-item", 23),
+    ("displays.move", 23),
+    ("displays.ride", 23),
+    ("items.set-slots", 12),
+    ("items.get", 12),
+    ("items.set", 12),
+    ("items.insert", 12),
+    ("items.extract", 12),
+    ("menus.open-inventory", 12),
+    ("machine-recipes.all", 13),
+    ("machine-recipes.by-input", 13),
+    ("multiblocks.all", 14),
+    ("multiblocks.check", 14),
+    ("multiblocks.watch", 14),
+    ("saved-data.get", 15),
+    ("saved-data.set", 15),
+    ("saved-data.delete", 15),
+    ("saved-data.keys", 15),
+    ("item-hooks.stack", 16),
+    ("item-hooks.set-data", 16),
+    ("network.send-to", 17),
+    ("network.send", 17),
+    ("entities.spawn", 18),
+    ("entities.get", 18),
+    ("entities.list", 18),
+    ("entities.teleport", 18),
+    ("entities.push", 18),
+    ("entities.set-health", 18),
+    ("entities.remove", 18),
+    ("fluids.set-tanks", 19),
+    ("fluids.get", 19),
+    ("fluids.set", 19),
+    ("fluids.insert", 19),
+    ("fluids.extract", 19),
+    ("fluids.push", 19),
+    ("fluids.fluid-of-bucket", 19),
+    ("fluids.bucket-of-fluid", 19),
+    ("redstone.get-input", 20),
+    ("redstone.set-output", 20),
+    ("redstone.get-output", 20),
+    ("effects.spawn-particle", 21),
+    ("effects.play-sound", 21),
+    ("effects.play-sound-to", 21),
+    ("config.declare", 22),
+    ("config.get", 22),
+    ("config.set", 22),
+    ("inter-mod.expose", 24),
+    ("inter-mod.providers", 24),
+    ("inter-mod.subscribe", 24),
+    ("inter-mod.publish", 24),
+    ("inter-mod.send-to", 24),
+    ("gui-screens.open", 25),
+    ("gui-screens.close", 25),
 ];
 
 /// What the game's program carries so the launcher can read its level

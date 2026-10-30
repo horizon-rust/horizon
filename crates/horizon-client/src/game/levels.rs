@@ -126,6 +126,15 @@ impl Levels {
     pub(super) fn parked_dims(&self) -> Vec<Dim> {
         self.parked.keys().copied().collect()
     }
+    /// The parked levels' chunks, by dimension (server mods with capability
+    /// `world` read them).
+    pub(super) fn parked_chunks(
+        &mut self,
+    ) -> impl Iterator<Item = (Dim, &mut horizon_client::chunk_map::ChunkMap)> {
+        self.parked
+            .iter_mut()
+            .map(|(d, p)| (*d, &mut p.world.chunks))
+    }
 }
 
 impl Game<'_> {

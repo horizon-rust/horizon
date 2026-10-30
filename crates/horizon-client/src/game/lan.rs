@@ -1652,7 +1652,9 @@ impl Game<'_> {
                     event @ (HostEvent::Chat { .. } | HostEvent::Warn(_) | HostEvent::Error(_)) => {
                         self.lan_log_event(event);
                     }
-                    HostEvent::PlayerChat { sender, .. } => {
+                    HostEvent::PlayerChat { sender, text } => {
+                        // The wasm server mods hear it (capability `chat`).
+                        self.mod_player_chat(super::server_mods::Who::Uuid(sender), &text);
                         if let Some(conn) = host
                             .hub
                             .guests

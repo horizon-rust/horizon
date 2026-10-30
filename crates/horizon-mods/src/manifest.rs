@@ -58,6 +58,15 @@ pub struct Manifest {
     /// accepted here, so the manifest keeps loading once it is promoted.
     #[serde(default)]
     pub experimental: Vec<Capability>,
+    /// The APIs this mod provides to other server mods, capability
+    /// `inter-mod`'s `name@version` entries (`["spin-lib@1.0"]`).
+    #[serde(default)]
+    pub provides: Vec<String>,
+    /// The APIs this mod needs, as `provides` spells them (`["spin-lib@1"]`):
+    /// the game starts their providers first and keeps it off, with the
+    /// reason, when no turned-on mod provides one.
+    #[serde(default)]
+    pub requires: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -83,8 +92,9 @@ pub enum Capability {
     Storage,
     /// Runs vanilla commands as the player, with the player's permissions.
     Command,
-    /// New blocks and items from the mod's `data/` (API 0.2): no WIT
-    /// interface, the game reads them before the world loads.
+    /// New blocks and items from the mod's `data/` (API 0.2, and API 0.3
+    /// for a server mod): no WIT interface, the game reads them before the
+    /// world loads.
     Registries,
     /// A screen the mod owns and a settings page in Options > Mods, drawn
     /// with the menus' own widgets (interface `ui`, calls `ui-events`).
@@ -103,9 +113,62 @@ pub enum Capability {
     /// The recipes and items the game knows, for recipe viewers
     /// (interface `recipes`).
     Recipes,
+    /// Data kept on placed copies of the mod's blocks, saved with the world
+    /// (server mods).
+    BlockEntities,
+    /// Energy buffers on block entities, shared by every mod (server mods).
+    Energy,
+    /// Chest menus the mod opens for players, with its own items (server
+    /// mods).
+    Menus,
+    /// Block models and text the mod shows in the world (server mods).
+    Displays,
+    /// Inventories on block entities, shared by every mod (server mods).
+    Items,
+    /// The recipes of the mod's own machines, from its `data/<id>/recipe/`
+    /// files (server mods).
+    MachineRecipes,
+    /// The mod's own multiblock structures, from its
+    /// `data/<id>/multiblock/` files, checked against the world (server
+    /// mods).
+    Multiblocks,
+    /// Data the mod keeps on the world itself, saved with it (server mods).
+    SavedData,
+    /// Behaviour on the items the mod claims: their use and their blow,
+    /// each tick held or worn, and bytes of its own on each stack (server
+    /// mods).
+    ItemHooks,
+    /// Messages between the two halves of one mod, the server's and the
+    /// player's game (server mods and client mods).
+    Network,
+    /// Mobs of the mod's own: vanilla mobs it marks, steers, hurts and
+    /// removes (server mods).
+    Entities,
+    /// Fluid tanks on block entities, shared by every mod (server mods).
+    Fluids,
+    /// Redstone for the mod's own blocks: read the signals around them, give
+    /// signals out (server mods).
+    Redstone,
+    /// Particles and sounds in the world, for the players near (server mods).
+    Effects,
+    /// Notices of what happens to players and the world (server mods).
+    GameEvents,
+    /// Settings the player edits in a file (server mods).
+    Config,
+    /// Messages to other server mods, and theirs: a library mod's API
+    /// shared by the mods that need it (server mods).
+    InterMod,
+    /// A screen the mod lays out itself, as tech mods' panels are: its own
+    /// background and pictures, its widgets where it puts them (client
+    /// mods; interface `gui-screens`, calls `gui-screens-events`).
+    GuiScreens,
+    /// Events a mod answers, before vanilla settles the outcome: a player's
+    /// hurts, digs and pickups, and notices of drops and spawns (server
+    /// mods).
+    RichEvents,
 }
 impl Capability {
-    pub const ALL: [Capability; 12] = [
+    pub const ALL: [Capability; 31] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -118,12 +181,59 @@ impl Capability {
         Capability::Players,
         Capability::World,
         Capability::Recipes,
+        Capability::BlockEntities,
+        Capability::Energy,
+        Capability::Menus,
+        Capability::Displays,
+        Capability::Items,
+        Capability::MachineRecipes,
+        Capability::Multiblocks,
+        Capability::SavedData,
+        Capability::ItemHooks,
+        Capability::Network,
+        Capability::Entities,
+        Capability::Fluids,
+        Capability::Redstone,
+        Capability::Effects,
+        Capability::GameEvents,
+        Capability::Config,
+        Capability::InterMod,
+        Capability::GuiScreens,
+        Capability::RichEvents,
     ];
+    /// Whether a mod of either side may have it, as a server mod's `storage`
+    /// is also a client mod's, and either side's may carry content.
+    pub fn both_sides(self) -> bool {
+        matches!(
+            self,
+            Capability::Storage | Capability::Network | Capability::Registries
+        )
+    }
     /// Whether a server mod may have it: the others act on a local player.
     pub fn on_server(self) -> bool {
         matches!(
             self,
-            Capability::Storage | Capability::Players | Capability::World
+            Capability::Storage
+                | Capability::Players
+                | Capability::World
+                | Capability::BlockEntities
+                | Capability::Energy
+                | Capability::Menus
+                | Capability::Displays
+                | Capability::Items
+                | Capability::MachineRecipes
+                | Capability::Multiblocks
+                | Capability::SavedData
+                | Capability::ItemHooks
+                | Capability::Network
+                | Capability::Entities
+                | Capability::Fluids
+                | Capability::Redstone
+                | Capability::Effects
+                | Capability::GameEvents
+                | Capability::Config
+                | Capability::InterMod
+                | Capability::RichEvents
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -141,6 +251,25 @@ impl Capability {
             Capability::Players => "players",
             Capability::World => "world",
             Capability::Recipes => "recipes",
+            Capability::BlockEntities => "block-entities",
+            Capability::Energy => "energy",
+            Capability::Menus => "menus",
+            Capability::Displays => "displays",
+            Capability::Items => "items",
+            Capability::MachineRecipes => "machine-recipes",
+            Capability::Multiblocks => "multiblocks",
+            Capability::SavedData => "saved-data",
+            Capability::ItemHooks => "item-hooks",
+            Capability::Network => "network",
+            Capability::Entities => "entities",
+            Capability::Fluids => "fluids",
+            Capability::Redstone => "redstone",
+            Capability::Effects => "effects",
+            Capability::GameEvents => "game-events",
+            Capability::Config => "config",
+            Capability::InterMod => "inter-mod",
+            Capability::GuiScreens => "gui-screens",
+            Capability::RichEvents => "rich-events",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -148,7 +277,29 @@ impl Capability {
     pub fn is_experimental(self) -> bool {
         matches!(
             self,
-            Capability::Ui | Capability::Render | Capability::Input | Capability::Recipes
+            Capability::Ui
+                | Capability::Render
+                | Capability::Input
+                | Capability::Recipes
+                | Capability::BlockEntities
+                | Capability::Energy
+                | Capability::Menus
+                | Capability::Displays
+                | Capability::Items
+                | Capability::MachineRecipes
+                | Capability::Multiblocks
+                | Capability::SavedData
+                | Capability::ItemHooks
+                | Capability::Network
+                | Capability::Entities
+                | Capability::Fluids
+                | Capability::Redstone
+                | Capability::Effects
+                | Capability::GameEvents
+                | Capability::Config
+                | Capability::InterMod
+                | Capability::GuiScreens
+                | Capability::RichEvents
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -169,6 +320,53 @@ impl Capability {
             Capability::World => "read and change the world's blocks",
             Capability::Recipes => {
                 "read the game's recipes and items and which recipes you know, place recipes in your crafting grid and, in creative mode, give you items"
+            }
+            Capability::BlockEntities => {
+                "keep its own data on the blocks it claims, saved with the world"
+            }
+            Capability::Energy => {
+                "store energy in its blocks and move energy between any mod's blocks"
+            }
+            Capability::Menus => "open menus of its own for you, and see what you click in them",
+            Capability::Displays => {
+                "show block models, items and text of its own in the world, moved smoothly or riding its mobs"
+            }
+            Capability::Items => "keep items in its blocks and move items between any mod's blocks",
+            Capability::MachineRecipes => "read the recipes of its own machines from data files",
+            Capability::Multiblocks => {
+                "keep multiblock structures of its own: read the world's blocks to check them, and hear when they come together and break"
+            }
+            Capability::SavedData => "keep data of its own on the world, saved with the world",
+            Capability::ItemHooks => {
+                "act on the items it claims: their use and their blow, each tick held or worn, and data of its own on each stack"
+            }
+            Capability::Network => {
+                "send messages to the other half of the mod, on the server or on your game, and hear its messages"
+            }
+            Capability::Config => {
+                "keep settings in a file you can edit while the game runs, and read them"
+            }
+            Capability::GameEvents => {
+                "be told when players are hurt, die, respawn or change dimension or game mode, when they kill mobs, and when the weather turns"
+            }
+            Capability::Effects => {
+                "show particles and play sounds in the world for the players near them"
+            }
+            Capability::Redstone => {
+                "read the redstone signals around its blocks and give redstone signals out of them"
+            }
+            Capability::Fluids => {
+                "store fluids in its blocks and move fluids between any mod's blocks"
+            }
+            Capability::Entities => {
+                "spawn mobs of its own that it moves, hurts and removes, and hear when they are struck, used and die"
+            }
+            Capability::InterMod => "send messages to other server mods, and hear theirs",
+            Capability::GuiScreens => {
+                "draw its own screens: its own backgrounds and pictures where it puts them"
+            }
+            Capability::RichEvents => {
+                "change what happens: turn a player's hurts aside, keep blocks from breaking and items from being picked up, and be told of drops and spawns"
             }
         }
     }
@@ -211,6 +409,25 @@ impl fmt::Display for Capability {
             Capability::Players => "players",
             Capability::World => "world",
             Capability::Recipes => "recipes",
+            Capability::BlockEntities => "block-entities",
+            Capability::Energy => "energy",
+            Capability::Menus => "menus",
+            Capability::Displays => "displays",
+            Capability::Items => "items",
+            Capability::MachineRecipes => "machine-recipes",
+            Capability::Multiblocks => "multiblocks",
+            Capability::SavedData => "saved-data",
+            Capability::ItemHooks => "item-hooks",
+            Capability::Network => "network",
+            Capability::Entities => "entities",
+            Capability::Fluids => "fluids",
+            Capability::Redstone => "redstone",
+            Capability::Effects => "effects",
+            Capability::GameEvents => "game-events",
+            Capability::Config => "config",
+            Capability::InterMod => "inter-mod",
+            Capability::GuiScreens => "gui-screens",
+            Capability::RichEvents => "rich-events",
         };
         f.write_str(name)
     }
@@ -236,9 +453,12 @@ impl Manifest {
                 APIS.join(" and ")
             ));
         }
-        if m.capabilities.contains(&Capability::Registries) && m.api == API {
+        if m.capabilities.contains(&Capability::Registries)
+            && !matches!(m.api.as_str(), "0.2" | SERVER_API)
+        {
             return Err(format!(
-                "{MANIFEST}: capability registries needs api = \"0.2\""
+                "{MANIFEST}: capability registries needs api = \"0.2\" or \"{SERVER_API}\" \
+                 (0.3: a server mod may carry it too)"
             ));
         }
         let server = m.side == Side::Server;
@@ -250,10 +470,22 @@ impl Manifest {
         if let Some(c) = m
             .capabilities
             .iter()
-            .find(|c| c.on_server() != server && **c != Capability::Storage)
+            .find(|c| c.on_server() != server && !c.both_sides())
         {
             let side = if server { "client" } else { "server" };
             return Err(format!("{MANIFEST}: capability {c} is for {side} mods"));
+        }
+        // A multiblock structure is anchored on one of the mod's block
+        // entities and checked against the world's blocks: both must be
+        // asked for beside it (the world read is the player's to see).
+        if m.capabilities.contains(&Capability::Multiblocks)
+            && [Capability::BlockEntities, Capability::World]
+                .into_iter()
+                .any(|c| !m.capabilities.contains(&c))
+        {
+            return Err(format!(
+                "{MANIFEST}: capability multiblocks needs capabilities block-entities and world"
+            ));
         }
         if let Some(c) = m
             .capabilities
@@ -290,6 +522,39 @@ impl Manifest {
                 return Err(format!("{MANIFEST}: namespace {ns} is listed twice"));
             }
         }
+        // A library mod's `provides` and `requires` (capability `inter-mod`):
+        // `name@version` entries, the name a channel's characters, the
+        // version major[.minor[.patch]] — both lists need the capability.
+        for (list, what) in [(&m.provides, "provides"), (&m.requires, "requires")] {
+            for (i, entry) in list.iter().enumerate() {
+                let check = |ok: bool, text: String| ok.then_some(()).ok_or(text);
+                let (name, version) = match api_of(entry) {
+                    Some(pair) => pair,
+                    None => {
+                        return Err(format!("{MANIFEST}: {what} {entry:?} is not name@version"));
+                    }
+                };
+                check(
+                    (1..=64).contains(&name.len())
+                        && name.bytes().all(|b| {
+                            b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b)
+                        }),
+                    format!("{MANIFEST}: {what} name {name:?} is not [a-z0-9_.-]{{1,64}}"),
+                )?;
+                check(
+                    version_ok(version),
+                    format!("{MANIFEST}: {what} version {version:?} is not major[.minor[.patch]]"),
+                )?;
+                if list[..i].contains(entry) {
+                    return Err(format!("{MANIFEST}: {what} {entry} is listed twice"));
+                }
+            }
+            if !list.is_empty() && !m.capabilities.contains(&Capability::InterMod) {
+                return Err(format!(
+                    "{MANIFEST}: {what} are for library mods, which need capability inter-mod"
+                ));
+            }
+        }
         Ok(m)
     }
     /// The namespaces the mod's content owns: its id, then `namespaces`.
@@ -309,6 +574,44 @@ impl Manifest {
             }
         }
         Ok(())
+    }
+}
+
+/// One `provides`/`requires` entry as the manifest spells it, `name@version`,
+/// split. None for a malformed one (a parsed manifest holds none).
+pub fn api_of(entry: &str) -> Option<(&str, &str)> {
+    let (name, version) = entry.split_once('@')?;
+    (!name.is_empty() && !version.is_empty()).then_some((name, version))
+}
+
+/// A `provides`/`requires` version: `major[.minor[.patch]]`, digits.
+fn version_ok(version: &str) -> bool {
+    let parts: Vec<&str> = version.split('.').collect();
+    (1..=3).contains(&parts.len())
+        && parts
+            .iter()
+            .all(|p| (1..=9).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// A version as comparable numbers, missing parts 0 (`1` is `1.0.0`).
+fn numbers(version: &str) -> (u32, u32, u32) {
+    let mut parts = version.split('.');
+    let part = |parts: &mut std::str::Split<'_, char>| {
+        parts.next().and_then(|p| p.parse().ok()).unwrap_or(0)
+    };
+    (part(&mut parts), part(&mut parts), part(&mut parts))
+}
+
+/// Whether `provides` (one manifest's entry) serves `requires` (another's
+/// need): the same name, the same major version and one at least as new —
+/// a need of `1` takes any `1.x`, a need of `1.2` takes `1.2` and later in
+/// the 1 line, and `2` never serves `1`.
+pub fn serves(provides: &str, requires: &str) -> bool {
+    match (api_of(provides), api_of(requires)) {
+        (Some((pn, pv)), Some((rn, rv))) => {
+            pn == rn && numbers(pv).0 == numbers(rv).0 && numbers(pv) >= numbers(rv)
+        }
+        _ => false,
     }
 }
 
@@ -406,6 +709,49 @@ pub fn find(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// Turns a `wasm32-unknown-unknown` cdylib built with the SDK into the
+/// component the game loads.
+#[cfg(feature = "pack")]
+pub fn componentize(core: &[u8]) -> Result<Vec<u8>, String> {
+    wit_component::ComponentEncoder::default()
+        .module(core)
+        .and_then(|e| e.validate(true).encode())
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// The names a component imports: `horizon:mods/game@0.1.0`, ... Only the
+/// interfaces whose functions the component takes: an interface with none
+/// of them — the shape an exported interface's shared types leave in a
+/// component (`item-events` uses `item-hooks`' `held-stack`) — asks for no
+/// capability, as the game's own load has it (a capability is what a mod
+/// calls).
+#[cfg(feature = "pack")]
+pub fn component_imports(component: &[u8]) -> Result<Vec<String>, String> {
+    use wit_parser::{WorldItem, WorldKey};
+    let wit_component::DecodedWasm::Component(resolve, world) =
+        wit_component::decode(component).map_err(|e| format!("{e:#}"))?
+    else {
+        return Err("a WIT package, not a component".into());
+    };
+    let names = resolve.worlds[world]
+        .imports
+        .iter()
+        .filter_map(|(key, item)| {
+            if let WorldItem::Interface { id, .. } = item
+                && resolve.interfaces[*id].functions.is_empty()
+            {
+                return None;
+            }
+            Some(match (key, item) {
+                (WorldKey::Interface(id), _) | (_, WorldItem::Interface { id, .. }) => resolve
+                    .id_of(*id)
+                    .unwrap_or_else(|| resolve.name_world_key(key)),
+                _ => resolve.name_world_key(key),
+            })
+        });
+    Ok(names.collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,6 +827,41 @@ capabilities = ["game-read", "hud"]
     }
 
     #[test]
+    fn a_server_mod_may_carry_registries() {
+        let server = |caps: &str, extra: &str| {
+            Manifest::parse(&format!(
+                "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\n\
+                 capabilities = [{caps}]\n{extra}"
+            ))
+        };
+        // Content beside the code, and namespaces as a content mod lists
+        // them, under the same rules.
+        let m = server("\"players\", \"storage\", \"registries\"", "").unwrap();
+        assert!(m.capabilities.contains(&Capability::Registries));
+        let m = server("\"players\", \"registries\"", "namespaces = [\"kaisyn\"]\n").unwrap();
+        assert_eq!(m.owned_namespaces().collect::<Vec<_>>(), ["m", "kaisyn"]);
+        // API 0.1 still refuses it, naming the lines that may carry it.
+        let e = Manifest::parse(
+            "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.1\"\ncapabilities = [\"registries\"]\n",
+        )
+        .unwrap_err();
+        assert!(
+            e.contains("capability registries needs api = \"0.2\" or \"0.3\""),
+            "{e}"
+        );
+        // A content mod of either side still parses: the capability belongs
+        // to both sides.
+        for side in ["client", "both"] {
+            let m = Manifest::parse(&format!(
+                "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.2\"\nside = \"{side}\"\n\
+                 capabilities = [\"registries\"]\n"
+            ))
+            .unwrap();
+            assert!(m.capabilities.contains(&Capability::Registries), "{side}");
+        }
+    }
+
+    #[test]
     fn checks_extra_namespaces() {
         let content = "id = \"t_and_t\"\nname = \"T\"\nversion = \"1\"\napi = \"0.2\"\ncapabilities = [\"registries\"]\n";
         let with = |list: &str| Manifest::parse(&format!("{content}namespaces = [{list}]\n"));
@@ -512,6 +893,45 @@ capabilities = ["game-read", "hud"]
     }
 
     #[test]
+    fn multiblocks_need_their_anchor_and_the_world() {
+        let base = "id = \"m\"
+name = \"M\"
+version = \"1\"
+api = \"0.3\"
+side = \"server\"
+";
+        let parse = |caps: &str, extra: &str| {
+            Manifest::parse(&format!(
+                "{base}capabilities = [{caps}]
+{extra}"
+            ))
+        };
+        let both = parse(
+            "\"block-entities\", \"world\", \"multiblocks\"",
+            "experimental = [\"block-entities\", \"multiblocks\"]
+",
+        )
+        .unwrap();
+        assert!(both.capabilities.contains(&Capability::Multiblocks));
+        for caps in [
+            "\"multiblocks\"",
+            "\"world\", \"multiblocks\"",
+            "\"block-entities\", \"multiblocks\"",
+        ] {
+            let e = parse(
+                caps,
+                "experimental = [\"multiblocks\"]
+",
+            )
+            .unwrap_err();
+            assert!(
+                e.contains("multiblocks needs capabilities block-entities and world"),
+                "{e}"
+            );
+        }
+    }
+
+    #[test]
     fn experimental_capabilities_need_the_opt_in() {
         let base = "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.1\"\n";
         let err = Manifest::parse(&format!("{base}capabilities = [\"ui\"]\n")).unwrap_err();
@@ -526,5 +946,116 @@ capabilities = ["game-read", "hud"]
             "{base}capabilities = [\"hud\"]\nexperimental = [\"hud\"]\n"
         ))
         .unwrap();
+    }
+
+    #[test]
+    fn free_screens_are_a_client_capability_of_their_own() {
+        let base = "id = \"m\"\nname = \"M\"\nversion = \"1\"\n";
+        let m = Manifest::parse(&format!(
+            "{base}api = \"0.1\"\ncapabilities = [\"gui-screens\"]\n\
+             experimental = [\"gui-screens\"]\n"
+        ))
+        .unwrap();
+        assert!(m.capabilities.contains(&Capability::GuiScreens));
+        assert_eq!(Capability::GuiScreens.to_string(), "gui-screens");
+        assert!(Capability::GuiScreens.is_experimental());
+        assert!(!Capability::GuiScreens.on_server());
+        // Without the opt-in, the manifest says what to add.
+        let e = Manifest::parse(&format!(
+            "{base}api = \"0.1\"\ncapabilities = [\"gui-screens\"]\n"
+        ))
+        .unwrap_err();
+        assert!(e.contains("experimental = [\"gui-screens\"]"), "{e}");
+        // A server mod cannot ask for it.
+        let e = Manifest::parse(&format!(
+            "{base}api = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \
+             \"gui-screens\"]\nexperimental = [\"gui-screens\"]\n"
+        ))
+        .unwrap_err();
+        assert!(
+            e.contains("capability gui-screens is for client mods"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn rich_events_are_a_server_capability_of_their_own() {
+        let base = "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\n";
+        let m = Manifest::parse(&format!(
+            "{base}capabilities = [\"players\", \"rich-events\"]\n\
+             experimental = [\"rich-events\"]\n"
+        ))
+        .unwrap();
+        assert!(m.capabilities.contains(&Capability::RichEvents));
+        assert_eq!(Capability::RichEvents.to_string(), "rich-events");
+        assert_eq!(Capability::RichEvents.interface(), "rich-events");
+        assert!(Capability::RichEvents.is_experimental());
+        assert!(Capability::RichEvents.on_server());
+        assert_eq!(Capability::ALL.len(), 31);
+        // Without the opt-in, the manifest says what to add.
+        let e = Manifest::parse(&format!(
+            "{base}capabilities = [\"players\", \"rich-events\"]\n"
+        ))
+        .unwrap_err();
+        assert!(e.contains("experimental = [\"rich-events\"]"), "{e}");
+        // A client mod cannot ask for it.
+        let e = Manifest::parse(
+            "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.1\"\n\
+             capabilities = [\"rich-events\"]\nexperimental = [\"rich-events\"]\n",
+        )
+        .unwrap_err();
+        assert!(
+            e.contains("capability rich-events is for server mods"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn library_mods_list_what_they_provide_and_need() {
+        let base = "id = \"spin_bell\"\nname = \"Bell\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\n";
+        let parse = |caps: &str, extra: &str| {
+            Manifest::parse(&format!(
+                "{base}capabilities = [{caps}]\nexperimental = [\"inter-mod\"]\n{extra}"
+            ))
+        };
+        let m = parse(
+            "\"inter-mod\", \"players\"",
+            "provides = [\"spin-lib@1.0\"]\nrequires = [\"spin-lib@1\"]\n",
+        )
+        .unwrap();
+        assert_eq!(m.provides, ["spin-lib@1.0"]);
+        assert_eq!(m.requires, ["spin-lib@1"]);
+        assert_eq!(Capability::InterMod.to_string(), "inter-mod");
+        assert!(Capability::InterMod.is_experimental());
+        assert!(Capability::InterMod.on_server());
+        // The entries need the capability, and their shape is checked.
+        for what in ["provides", "requires"] {
+            let e = parse("\"players\"", &format!("{what} = [\"spin-lib@1\"]\n")).unwrap_err();
+            assert!(e.contains(&format!("{what} are for library mods")), "{e}");
+            for bad in ["spin-lib", "spin-lib@", "spin-lib@1.2.3.4", "spin-lib@x"] {
+                let e = parse(
+                    "\"inter-mod\", \"players\"",
+                    &format!("{what} = [\"{bad}\"]\n"),
+                )
+                .unwrap_err();
+                assert!(e.contains("is not"), "{bad}: {e}");
+            }
+            let e = parse(
+                "\"inter-mod\", \"players\"",
+                &format!("{what} = [\"spin-lib@1\", \"spin-lib@1\"]\n"),
+            )
+            .unwrap_err();
+            assert!(e.contains("twice"), "{e}");
+        }
+        // A name of the wrong characters, and a version past patch.
+        let e = parse("\"inter-mod\", \"players\"", "provides = [\"Spin@1\"]\n").unwrap_err();
+        assert!(e.contains("is not [a-z0-9_.-]"), "{e}");
+        // `serves`: same name, same major, at least the asked version.
+        assert!(serves("spin-lib@1.0", "spin-lib@1"));
+        assert!(serves("spin-lib@1.2.5", "spin-lib@1.2"));
+        assert!(serves("spin-lib@1.0", "spin-lib@1.0"));
+        assert!(!serves("spin-lib@2.0", "spin-lib@1"));
+        assert!(!serves("spin-lib@1.0", "spin-lib@1.2"));
+        assert!(!serves("other@1.0", "spin-lib@1"));
     }
 }

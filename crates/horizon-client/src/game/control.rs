@@ -422,15 +422,19 @@ impl Game<'_> {
                 match arg(2)? {
                     "down" => {
                         self.extras_mouse(button, true);
+                        self.mod_mouse_key(button, true);
                         self.play_mouse(button, true)?
                     }
                     "up" => {
                         self.extras_mouse(button, false);
+                        self.mod_mouse_key(button, false);
                         self.play_mouse(button, false)?
                     }
                     "click" => {
                         self.extras_mouse(button, true);
+                        self.mod_mouse_key(button, true);
                         self.extras_mouse(button, false);
+                        self.mod_mouse_key(button, false);
                         self.play_mouse(button, true)?;
                         self.play_mouse(button, false)?;
                     }
@@ -896,6 +900,7 @@ impl Game<'_> {
             Screen::ConfirmLink => "confirm-link",
             Screen::DialogWarning => "dialog-warning",
             Screen::CommandBlock => "command-block",
+            Screen::Mod => "mod",
             Screen::Win => "win",
         }
     }

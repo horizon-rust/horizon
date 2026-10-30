@@ -145,16 +145,25 @@ mod llamas;
 mod locator_bar;
 mod loom;
 mod mace;
+#[cfg(feature = "mods")]
+mod machine_recipes;
 mod machines;
 mod maps;
 mod minecarts;
 mod mob_blocks;
 mod mob_gear;
 mod mob_sounds;
+mod mod_input;
+#[cfg(feature = "mods")]
+mod mod_recipes;
+mod mod_render;
 mod mods;
 mod mount_menu;
 mod mounts;
+mod moved_extras;
 mod moving_pistons;
+#[cfg(feature = "mods")]
+mod multiblocks;
 mod music;
 mod names;
 mod native_hooks;
@@ -209,6 +218,7 @@ mod screens;
 mod sculk;
 mod sculk_fixture;
 mod server_links;
+mod server_mods;
 mod server_packs;
 mod server_travel;
 mod shader_packs;
@@ -671,6 +681,9 @@ enum Screen {
     DialogWarning,
     /// WinScreen: the end poem and the credits (game/win.rs).
     Win,
+    /// A `ui` mod's own screen, or its settings page from Options > Mods
+    /// (game/mods.rs).
+    Mod,
 }
 struct Mining {
     pos: [i32; 3],
@@ -760,6 +773,9 @@ struct GameLevel<'w> {
     random_tick_sections: &'w mut horizon_client::random_tick_sections::RandomTickSections,
     /// Players with each chest open (a trapped chest's signal).
     lid_openers: &'w HashMap<(i32, i32, i32), i32>,
+    /// What the mods' blocks give out as redstone signals (capability
+    /// `redstone`), by place.
+    mod_emitters: &'w HashMap<(i32, i32, i32), ([u8; 6], bool)>,
     /// `Level.isClientSide`: a client's copy of the level (a guest of a LAN
     /// world, a window on its server thread, a dedicated server's client).
     client_side: bool,
@@ -1036,6 +1052,27 @@ impl LevelAccess for GameLevel<'_> {
                 .as_ref()
                 .map_or(0, |_| i32::from(frame.rotation % 8) + 1),
         )
+    }
+    fn mod_signal(&self, pos: BlockPos, side: Direction, strong: bool) -> i32 {
+        if self.mod_emitters.is_empty() {
+            return 0;
+        }
+        let Some((power, is_strong)) = self.mod_emitters.get(&(pos.x, pos.y, pos.z)) else {
+            return 0;
+        };
+        if strong && !is_strong {
+            return 0;
+        }
+        // The order down, up, north, south, west, east.
+        let face = match side {
+            Direction::Down => 0,
+            Direction::Up => 1,
+            Direction::North => 2,
+            Direction::South => 3,
+            Direction::West => 4,
+            Direction::East => 5,
+        };
+        i32::from(power[face])
     }
     fn block_entity_signal(
         &self,
@@ -2161,6 +2198,10 @@ struct Game<'a> {
     /// `ContainerOpenersCounter`: how many players (the host and the guests)
     /// have each chest open.
     lid_openers: HashMap<(i32, i32, i32), i32>,
+    /// The signals the mods' blocks give out in this level (capability
+    /// `redstone`): the six faces down, up, north, south, west, east, and
+    /// whether the signal is strong.
+    mod_emitters: HashMap<(i32, i32, i32), ([u8; 6], bool)>,
     lan_acting: Option<u32>,
     /// The block the acting player is breaking (`break_block`): its destroy
     /// event, and the ones before it, are the player's own (`Level.levelEvent`
@@ -2919,6 +2960,9 @@ impl Game<'_> {
         let Some(eye) = self.eye_position() else {
             return;
         };
+        // Capability `rich-events`: a drop of the player's own will, told at
+        // the tick's end (a death's scattered inventory is not).
+        self.mod_note_drop(thrown.item.as_ref(), thrown.count);
         // LivingEntity.drop: every drop swings the main hand, a menu's
         // THROW and a creative tab's drop included.
         self.swing_hand(Hand::Main, SwingAnimation::DEFAULT);
@@ -3075,6 +3119,9 @@ impl Game<'_> {
         );
         let feet = [p.position.x, p.position.y, p.position.z];
         let own = self.level.ensure_player_uuid();
+        // Capability `rich-events`: at most 16 pickup asks a player a tick;
+        // past them vanilla takes the rest.
+        let mut asked = 0usize;
         let mut kept = Vec::with_capacity(items.len());
         for mut item in items {
             let b = item.bounds();
@@ -3086,6 +3133,17 @@ impl Game<'_> {
                 && b.max_position().z > min[2];
             // ItemEntity.playerTouch: no pickup delay, and the target (if any) is this player.
             if touching && item.pickup_delay == 0 && item.target.is_none_or(|t| t == own) {
+                if asked < horizon_mods::RICH_PICKUP_ASKS {
+                    asked += 1;
+                    // A refusing mod (capability `rich-events`) leaves the
+                    // stack on the ground, with a 10-tick pickup delay so a
+                    // standing player is not asked again at once.
+                    if !self.mod_picking_up(item.stack.item.as_ref(), item.stack.count) {
+                        item.pickup_delay = 10;
+                        kept.push(item);
+                        continue;
+                    }
+                }
                 let before = item.stack.count;
                 let kind = item.stack.item.clone();
                 let thrower = item.thrower;
@@ -3273,6 +3331,7 @@ impl Game<'_> {
             tickets: self.tickets.levels(),
             random_tick_sections: &mut self.random_tick_sections,
             lid_openers: &self.lid_openers,
+            mod_emitters: &self.mod_emitters,
             client_side: self.remote.is_some(),
             native_authoritative: self.serving.is_some() || self.options.dedicated.is_some(),
         };
@@ -4392,6 +4451,13 @@ impl Game<'_> {
         broken
     }
     fn break_block_as_player(&mut self, pos: [i32; 3]) -> Result<()> {
+        // Capability `rich-events`: a refusing mod keeps the block standing
+        // — no drop, no tool wear, no statistic. The state is read before
+        // `can_destroy_block`, so the mod is asked whatever the held tool.
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        if !self.mod_breaking_block(pos, state) {
+            return Ok(());
+        }
         // DebugStickItem.canDestroyBlock: a left click selects a property and
         // never destroys the block.
         if !self.debug_stick_can_destroy(pos)? {
@@ -4463,6 +4529,9 @@ impl Game<'_> {
                 correct_tool,
             )
         });
+        if removed {
+            self.mod_block_event(pos, broken, false);
+        }
         if removed && !creative {
             let held = self.held().cloned();
             self.mine_block_with_held(&facts.name, facts.hardness);
@@ -4647,6 +4716,11 @@ impl Game<'_> {
         if !(sneaking && hands_full)
             && let Some(hit) = block_hit
         {
+            // A server mod's block: the mod takes the click.
+            if self.hand == Hand::Main && self.mod_block_use(hit.pos) {
+                self.swing_arm();
+                return Ok(true);
+            }
             let held = self.held().cloned();
             if self.use_lectern(hit.pos, held.as_ref()) {
                 self.swing_arm();
@@ -4801,6 +4875,12 @@ impl Game<'_> {
         {
             return Ok(false);
         }
+        // A server mod's item (capability `item-hooks`): the mod takes the
+        // click, main hand only — the off hand's turn stays vanilla's.
+        if self.hand == Hand::Main && self.mod_item_use(block_hit) {
+            self.swing_arm();
+            return Ok(true);
+        }
         // ItemStack.useOn: after the block's own useItemOn/useWithoutItem
         // passed. DebugStickItem.useOn cycles the selected property.
         if let Some(hit) = block_hit
@@ -4953,6 +5033,7 @@ impl Game<'_> {
         };
         let target = [pos.x, pos.y, pos.z];
         let state = self.apply_item_block_state(target, state, &stack)?;
+        self.mod_block_event(target, state, true);
         if let Some(entity) = BlockEntity::for_block(&self.res.facts().get(state).name) {
             let key = (target[0], target[1], target[2]);
             self.world.block_entities.insert(key, entity);
@@ -5598,7 +5679,8 @@ impl Game<'_> {
         self.update_totem_ready();
         self.tick_command_extras();
         self.native_tick();
-        self.tell_native_now();
+        self.tick_mods();
+        self.tick_server_mods();
         let camera_eye = self.camera_eye_height();
         let stick = self.pad_move();
         if self.riding.is_some() && self.player.is_some() {
@@ -6572,6 +6654,7 @@ impl Game<'_> {
             // Hud: the action bar and titles draw over the hotbar (nextStratum).
             self.draw_boss_bars(&mut batch);
             self.draw_extras(&mut batch);
+            self.draw_mod_shapes(&mut batch);
         }
         if show_hud {
             // Hud.nextContextualInfoState: the jump bar, the experience bar or
@@ -6750,6 +6833,7 @@ impl Game<'_> {
                 self.draw_creative(&mut batch);
             }
             Screen::Chat => self.draw_chat_screen(&mut batch),
+            Screen::Mod => self.draw_mod_screen(&mut batch),
             Screen::Playing | Screen::Options | Screen::Win => {}
         }
         self.draw_saving_indicator(&mut batch);
@@ -9234,6 +9318,17 @@ impl Game<'_> {
         let target_kind = self.mobs[index].kind.id.clone();
         let target_kind = format!("minecraft:{}", target_kind.trim_start_matches("minecraft:"));
         let (amount, scale, crit, magic) = self.melee_damage(&target_kind, true);
+        // A claimed item in the main hand answers for the blow (capability
+        // `item-hooks`), before the hit lands.
+        let amount = self.mod_item_blow(
+            self.mobs[index].id,
+            &target_kind,
+            self.mobs[index].health,
+            amount,
+        );
+        // A mob of a mod: its mod answers for the blow too (capability
+        // `entities`).
+        let amount = self.mod_entity_hurt(index, amount);
         let sweep = self.sweep_attack_position(scale, crit);
         let (knockback, knockback_attack) = self.extra_knockback(&target_kind, scale);
         self.attack_ticks = 0;
@@ -9251,6 +9346,10 @@ impl Game<'_> {
             None => horizon_client::mobs::Damage::of(horizon_client::mobs::DamageKind::Generic),
         };
         let landed = self.hurt_by_player(index, amount, source);
+        // A blow that killed it (capability `game-events`).
+        if landed && old_health > 0.0 && !self.mobs[index].alive() {
+            self.mod_mob_killed(index);
+        }
         if landed {
             let victim = self.mob_entity(&self.mobs[index]);
             self.player_hit(
@@ -12241,6 +12340,7 @@ impl Game<'_> {
         self.store_owner();
         self.level.write(&self.world_root)?;
         self.save_world_state();
+        self.save_mod_block_entities();
         self.message = Some(("Saved the game".into(), Instant::now()));
         Ok(())
     }
@@ -12405,6 +12505,7 @@ impl Game<'_> {
                 self.pitch,
             ),
         };
+        let (view_yaw, view_pitch) = self.shaken_view(view_yaw, view_pitch);
         self.audio
             .set_listener([camera.x, camera.y, camera.z], view_yaw, view_pitch);
         let block = [
@@ -12918,6 +13019,9 @@ impl Game<'_> {
             }
             return Ok(());
         }
+        if self.screen == Screen::Mod && self.mod_screen_key(key) {
+            return Ok(());
+        }
         if self.sort_key_press(key) {
             return Ok(());
         }
@@ -12955,6 +13059,7 @@ impl Game<'_> {
                 Screen::CommandBlock => self.close_command_block(),
                 Screen::Chat => self.close_chat(),
                 Screen::Win => self.close_win_screen()?,
+                Screen::Mod => self.close_mod_screen(true),
             },
             KeyCode::Digit1
             | KeyCode::Digit2
@@ -13084,6 +13189,10 @@ impl Game<'_> {
     }
     /// A mouse button while playing (window or control socket).
     fn play_mouse(&mut self, button: MouseButton, pressed: bool) -> Result<()> {
+        // A mod's claimed item takes the use button (capability `input`).
+        if self.mod_use(button, pressed) {
+            return Ok(());
+        }
         if self.sleeping.is_some() {
             return Ok(());
         }
@@ -13155,7 +13264,13 @@ impl Game<'_> {
     fn far_terrain_choice(&self) -> (u32, bool) {
         let g = &self.settings.horizon;
         let reduced = g.far_detail == horizon_client::graphics::FarDetail::Reduced;
-        (g.lod_distance, reduced)
+        if g.lod_distance > 0 {
+            return (g.lod_distance, reduced);
+        }
+        match self.mod_far_terrain() {
+            Some(f) => (f.distance, reduced || f.reduced),
+            None => (0, reduced),
+        }
     }
     /// LOD Distance as far terrain uses it (`graphics::lod_distance_capped`).
     fn lod_distance(&self) -> u32 {
@@ -13677,6 +13792,7 @@ impl ApplicationHandler for Game<'_> {
                         && self.sleeping.is_none()
                         && self.player.is_some()
                         && !self.native_wheel_event(d)
+                        && !self.mod_wheel(d)
                         && let Some((wheel, (_, vertical_steps))) =
                             self.mouse
                                 .on_scroll(raw_x, raw_y, discrete, wheel_sensitivity)
@@ -13707,6 +13823,9 @@ impl ApplicationHandler for Game<'_> {
                     }
                     if self.screen == Screen::Options && d != 0.0 {
                         self.options_scroll(d)?;
+                    }
+                    if self.screen == Screen::Mod && d != 0.0 {
+                        self.mod_screen_scroll(d);
                     }
                     // AbstractContainerScreen.mouseScrolled: a bundle under the
                     // cursor takes the wheel before the screen's own scrolling.
@@ -13859,6 +13978,7 @@ impl ApplicationHandler for Game<'_> {
                                 return Ok(());
                             }
                             self.extras_mouse(button, pressed);
+                            self.mod_mouse_key(button, pressed);
                             if pressed
                                 && self.settings.keys.get("key.smoothCamera")
                                     == horizon_client::keybinds::mouse_name(button)
@@ -13961,6 +14081,7 @@ impl ApplicationHandler for Game<'_> {
                             self.stats_click(size);
                         }
                         Screen::Stats if button == MouseButton::Left => self.stats_release(),
+                        Screen::Mod if pressed => self.mod_screen_click(button),
                         _ => {}
                     }
                 }
@@ -14168,6 +14289,7 @@ impl ApplicationHandler for Game<'_> {
                     let PhysicalKey::Code(key) = event.physical_key else {
                         return Ok(());
                     };
+                    self.mod_key(key, event.state == ElementState::Pressed, event.repeat);
                     self.native_key_event(key, event.state == ElementState::Pressed, event.repeat);
                     // key.smoothCamera toggles the cinematic camera.
                     if self.screen == Screen::Playing
@@ -14278,6 +14400,8 @@ impl ApplicationHandler for Game<'_> {
                         }
                     }
                     self.extras_frame(elapsed);
+                    self.mods_frame(elapsed);
+                    self.poll_moved_extras();
                     self.extras_retry()?;
                     self.apply_mouse_look();
                     self.pad_look(elapsed.as_secs_f32());
@@ -14908,6 +15032,7 @@ impl<'a> Game<'a> {
             kinetic_feedback: HashMap::new(),
             lan_global_events: Vec::new(),
             lid_openers: HashMap::new(),
+            mod_emitters: HashMap::new(),
             lan_acting: None,
             lan_break_pos: None,
             guest_packets: Vec::new(),
@@ -15891,6 +16016,7 @@ fn start_game<'a>(
     // Benchmarks measure the game alone.
     if game.options.benchmark.is_none() {
         game.mods.dev = game.options.dev_mods.clone();
+        game.start_moved_extras();
         game.start_mods();
     }
     game.start_agent_control()?;

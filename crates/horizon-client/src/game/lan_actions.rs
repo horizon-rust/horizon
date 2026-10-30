@@ -211,6 +211,11 @@ impl GuestPlay {
 }
 
 struct ItemRules<'a>(&'a horizon_client::items::Items);
+/// The item rules a click in a menu follows.
+#[cfg_attr(not(feature = "mods"), allow(dead_code))]
+pub(super) fn item_rules(items: &horizon_client::items::Items) -> impl Rules + '_ {
+    ItemRules(items)
+}
 impl Rules for ItemRules<'_> {
     fn items(&self) -> &horizon_client::items::Items {
         self.0
@@ -1405,6 +1410,7 @@ impl Game<'_> {
                     });
                 }
             }
+            S::ContainerClick(p) if self.lan_mod_menu_click(host, conn, &p) => {}
             S::ContainerClick(p) if self.lan_merchant_click(host, conn, &p) => {}
             S::ContainerClick(p) if self.lan_inventory_click(host, conn, &p) => {}
             S::ContainerClick(p) if self.lan_crafting_click(host, conn, &p) => {}
@@ -1432,6 +1438,7 @@ impl Game<'_> {
             }
             S::SetBeacon(p) => self.lan_station_beacon(host, conn, p.primary, p.secondary),
             S::SelectTrade(p) => self.lan_select_trade(host, conn, p.item),
+            S::ContainerClose(p) if self.lan_mod_menu_closed(conn, p.container) => {}
             S::ContainerClose(p) if self.lan_merchant_closed(host, conn, Some(p.container)) => {
                 self.guest_carried_back(host, gi);
             }
@@ -1484,6 +1491,9 @@ impl Game<'_> {
             S::ChatCommand(c) => self.guest_chat_command(host, conn, &c.command),
             S::CustomPayload(p) if p.channel == horizon_protocol::quiet::CHANNEL => {
                 self.guest_quiet_commands(host, conn, &p.data)
+            }
+            S::CustomPayload(p) if p.channel == horizon_protocol::mod_net::CHANNEL => {
+                self.guest_mod_net(conn, &p.data)
             }
             S::ChatCommandSigned(p) => self.guest_signed_command(host, conn, p),
             S::ChangeDifficulty(p) if host.hub.guests[gi].permission >= 2 => {
@@ -1960,6 +1970,10 @@ impl Game<'_> {
                     overlay: false,
                 }),
             );
+            return;
+        }
+        // A server mod's command, for every player whatever their level.
+        if self.guest_server_mod_command(host, conn, command.trim_start_matches('/')) {
             return;
         }
         // An integrated server runs every player's commands at their own
@@ -2455,6 +2469,7 @@ impl Game<'_> {
                     }
                     None => self.guest_death_message(conn, me),
                 };
+                self.mod_note_death(Some(uuid), text.plain());
                 let message = horizon_client::lan::data::component_nbt(&text.component());
                 let board = &self.score.board;
                 host.hub.system_message_to(message.clone(), |other| {
@@ -3076,6 +3091,19 @@ impl Game<'_> {
         self.as_guest(host, conn, |g| {
             let _ = g.break_block(pos);
         });
+        // The block still stands (a refusing mod, capability `rich-events`,
+        // or a tool that cannot): the guest had broken it on their screen,
+        // so the block comes back to it.
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        if !self.res.facts().is_air(state) {
+            host.hub.send_to(
+                conn,
+                &C::BlockUpdate(play::BlockUpdate {
+                    pos,
+                    state: state.0 as i32,
+                }),
+            );
+        }
         self.guest_crack_gone(host, conn, pos);
     }
 
@@ -3190,8 +3218,25 @@ impl Game<'_> {
             .map(|(i, _)| i)
             .collect();
         let mut taken = Vec::new();
+        // Capability `rich-events`: at most 16 pickup asks a player a tick;
+        // past them vanilla takes the rest.
+        let mut asked = 0usize;
         for i in near.into_iter().rev() {
             let (stack, item_id) = (self.dropped[i].stack.clone(), self.dropped[i].id);
+            if asked < horizon_mods::RICH_PICKUP_ASKS {
+                asked += 1;
+                // The ask runs as the guest, whose turn lends the game their
+                // state (as `give` below does).
+                let take = self
+                    .as_guest(host, conn, |g| {
+                        g.mod_picking_up(stack.item.as_ref(), stack.count)
+                    })
+                    .unwrap_or(true);
+                if !take {
+                    self.dropped[i].pickup_delay = 10;
+                    continue;
+                }
+            }
             let before = stack.count;
             let thrower = self.dropped[i].thrower;
             let rest = self.as_guest(host, conn, |g| g.give(stack)).flatten();

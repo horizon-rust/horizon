@@ -8,7 +8,7 @@
 //! tags (`c`, which NeoForge and Fabric mods share). Paths are plain, files
 //! and totals are capped, vanilla ids cannot be redefined, and no two mods
 //! share a namespace ([`clash`]).
-use crate::manifest::{Capability, MANIFEST, Manifest};
+use crate::manifest::{Capability, MANIFEST, Manifest, Side};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -269,9 +269,24 @@ impl Content {
     fn check(&mut self, manifest: &Manifest) -> Result<(), String> {
         let id = manifest.id.as_str();
         if !self.files.is_empty() && !manifest.capabilities.contains(&Capability::Registries) {
-            return Err(format!(
-                "has assets/ or data/ but not capability registries in {MANIFEST}"
-            ));
+            // The exceptions (docs/mods.md, "Machine recipes" and
+            // "Multiblocks"): a server mod with capability `machine-recipes`
+            // carries its machines' recipes, one with `multiblocks` its
+            // structure templates, and nothing else besides them.
+            let server = manifest.side == Side::Server;
+            let recipes = server && manifest.capabilities.contains(&Capability::MachineRecipes);
+            let structures = server && manifest.capabilities.contains(&Capability::Multiblocks);
+            let allowed = |f: &str| {
+                (recipes && f.starts_with(&format!("data/{id}/recipe/")) && f.ends_with(".json"))
+                    || (structures
+                        && f.starts_with(&format!("data/{id}/multiblock/"))
+                        && f.ends_with(".json"))
+            };
+            if !self.files.iter().all(|f| allowed(f)) {
+                return Err(format!(
+                    "has assets/ or data/ but not capability registries in {MANIFEST}"
+                ));
+            }
         }
         let mut blocks = Vec::new();
         let mut items = Vec::new();
@@ -533,6 +548,132 @@ capabilities = ["registries"]
             ]
         );
         assert_eq!(components["minecraft:max_damage"], 900);
+    }
+
+    #[test]
+    fn a_server_mod_carries_only_its_machine_recipes() {
+        let manifest = "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\n\
+             capabilities = [\"machine-recipes\"]\nexperimental = [\"machine-recipes\"]\n";
+        let read = |files: &[(&str, &[u8])]| {
+            let dir = scratch("machine-recipes");
+            let path = dir.join("m.hmod");
+            std::fs::write(
+                &path,
+                Package::write_files(manifest, Some(b"\0asm"), files).unwrap(),
+            )
+            .unwrap();
+            let out = Package::read(&path).and_then(|p| Content::read(&path, &p.manifest));
+            std::fs::remove_dir_all(&dir).unwrap();
+            out
+        };
+        let recipes: &[(&str, &[u8])] = &[
+            ("data/m/recipe/grind/a.json", b"{}"),
+            ("data/m/recipe/grind/deep/b.json", b"{}"),
+        ];
+        let content = read(recipes).unwrap();
+        assert_eq!(
+            content.files,
+            [
+                "data/m/recipe/grind/a.json",
+                "data/m/recipe/grind/deep/b.json"
+            ]
+        );
+        // Anything else under assets/ or data/ is still refused, as is any
+        // recipe of another namespace.
+        for extra in [
+            "assets/m/textures/a.png",
+            "data/m/horizon/block/a.json",
+            "data/m/loot/a.json",
+            "data/other/recipe/a.json",
+            "data/m/recipe/readme.txt",
+        ] {
+            let files: Vec<(&str, &[u8])> = vec![("data/m/recipe/a.json", b"{}"), (extra, b"x")];
+            let e = read(&files).unwrap_err();
+            assert!(e.contains("not capability registries"), "{extra}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_server_mod_carries_only_its_structures() {
+        let manifest = "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\n\
+             capabilities = [\"block-entities\", \"world\", \"multiblocks\"]\n\
+             experimental = [\"block-entities\", \"multiblocks\"]\n";
+        let read = |files: &[(&str, &[u8])]| {
+            let dir = scratch("multiblocks");
+            let path = dir.join("m.hmod");
+            std::fs::write(
+                &path,
+                Package::write_files(manifest, Some(b"\0asm"), files).unwrap(),
+            )
+            .unwrap();
+            let out = Package::read(&path).and_then(|p| Content::read(&path, &p.manifest));
+            std::fs::remove_dir_all(&dir).unwrap();
+            out
+        };
+        let structures: &[(&str, &[u8])] = &[
+            ("data/m/multiblock/core.json", b"{}"),
+            ("data/m/multiblock/tier/deep/core.json", b"{}"),
+        ];
+        let content = read(structures).unwrap();
+        assert_eq!(
+            content.files,
+            [
+                "data/m/multiblock/core.json",
+                "data/m/multiblock/tier/deep/core.json"
+            ]
+        );
+        // Anything else under assets/ or data/ is still refused — recipes
+        // too, without capability `machine-recipes` — as is any structure
+        // of another namespace.
+        for extra in [
+            "assets/m/textures/a.png",
+            "data/m/horizon/block/a.json",
+            "data/m/recipe/a.json",
+            "data/other/multiblock/a.json",
+            "data/m/multiblock/readme.txt",
+        ] {
+            let files: Vec<(&str, &[u8])> =
+                vec![("data/m/multiblock/a.json", b"{}"), (extra, b"x")];
+            let e = read(&files).unwrap_err();
+            assert!(e.contains("not capability registries"), "{extra}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_server_mod_with_registries_carries_its_content() {
+        let manifest = "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\n\
+             capabilities = [\"players\", \"machine-recipes\", \"registries\"]\n\
+             experimental = [\"machine-recipes\"]\n";
+        let read = |manifest: &str, files: &[(&str, &[u8])]| {
+            let dir = scratch("server-content");
+            let path = dir.join("m.hmod");
+            std::fs::write(
+                &path,
+                Package::write_files(manifest, Some(b"\0asm"), files).unwrap(),
+            )
+            .unwrap();
+            let out = Package::read(&path).and_then(|p| Content::read(&path, &p.manifest));
+            std::fs::remove_dir_all(&dir).unwrap();
+            out
+        };
+        // The same fence a 0.2 content mod lives in: a block and an item
+        // declared, an asset of its own, a vanilla tag and its recipes, all
+        // in the one package with the code.
+        let files: &[(&str, &[u8])] = &[
+            ("data/m/horizon/block/cell.json", BLOCK),
+            ("data/m/horizon/item/gem.json", ITEM),
+            ("assets/m/textures/block/cell.png", b"png"),
+            ("data/minecraft/tags/block/mineable/pickaxe.json", b"{}"),
+            ("data/m/recipe/grind/a.json", b"{}"),
+        ];
+        let content = read(manifest, files).unwrap();
+        assert_eq!(content.files.len(), 5);
+        assert_eq!(content.blocks[0].id, "m:cell");
+        assert_eq!(content.items[0].id, "m:gem");
+        // Without `registries` it is back to its recipes and structures.
+        let bare = manifest.replace(", \"registries\"", "");
+        let e = read(&bare, files).unwrap_err();
+        assert!(e.contains("not capability registries"), "{e}");
     }
 
     #[test]

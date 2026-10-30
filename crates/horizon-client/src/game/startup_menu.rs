@@ -434,6 +434,9 @@ impl Loading {
                 }
                 // Mods' settings pages open only in a running game.
                 Event::NativeSettings(_) | Event::NativeButton(..) => {}
+                // A WebAssembly mod's settings screen opens in the world
+                // (game/options.rs); the title's Options has no world.
+                Event::ModSettings(_) => {}
                 // The startup menu runs before the game opens a control socket.
                 Event::ButtonClick | Event::CopyAgentDetails => {}
             }

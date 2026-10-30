@@ -1,12 +1,41 @@
-//! Horizon's mod files (`docs/mods.md`): content mods (`.hmod`: blocks, items, data and
-//! assets, no code), modpacks and, with `index`, the mod registry's index. Code mods are
-//! native (docs/native-mods.md).
+//! Horizon's mods (`docs/mods.md`): WebAssembly components written against
+//! `crates/horizon-mod-sdk/wit/horizon.wit`, each in its own sandbox with
+//! no file, network or clock access, a memory cap and a time budget per
+//! call. A mod that traps or overruns is turned off; the game goes on.
+//!
+//! Nothing here runs unless a mod is installed and turned on: an empty
+//! [`Mods`] makes no engine and every hook returns at once.
 pub mod api_level;
+pub mod block_entities;
+#[cfg(feature = "runtime")]
+pub mod commands;
+pub mod config;
 pub mod content;
+pub mod energy;
+pub mod fluids;
 #[cfg(feature = "index")]
 pub mod index;
+pub mod inter_mod;
+pub mod items;
+pub mod machine_recipes;
 pub mod manifest;
 pub mod modpack;
+pub mod multiblocks;
+pub mod redstone;
+pub mod rich_events;
+#[cfg(feature = "runtime")]
+mod runtime;
+pub mod saved_data;
+#[cfg(feature = "runtime")]
+pub mod testing;
 
+pub use block_entities::BlockEntities;
 pub use content::Content;
 pub use manifest::{Capability, Manifest, Package, Side, find};
+/// What capability `rich-events` carries between the game and the mods,
+/// whatever else is built (the runtime's hosts are behind feature `runtime`).
+pub use rich_events::{
+    DamageSource, EntityWho, MobSpawnNote, RICH_PICKUP_ASKS, RICH_SPAWNS_PER_TICK,
+};
+#[cfg(feature = "runtime")]
+pub use runtime::*;

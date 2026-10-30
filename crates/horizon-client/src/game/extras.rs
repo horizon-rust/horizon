@@ -131,7 +131,20 @@ impl Game<'_> {
         if self.title.is_some() || self.ui.hide_gui {
             return None;
         }
-        let m = self.minimap_wanted()?;
+        let m = match self.minimap_wanted() {
+            Some(m) => m,
+            // A WebAssembly mod's minimap (capability `render`).
+            None => {
+                let m = self.mod_minimap()?;
+                super::native_hooks::NativeMinimap {
+                    corner: m.corner,
+                    size: m.size,
+                    blocks_per_pixel: m.blocks_per_pixel,
+                    rotate: m.rotate,
+                    round: m.round,
+                }
+            }
+        };
         let view = View {
             x: p.position.x,
             z: p.position.z,
@@ -150,7 +163,9 @@ impl Game<'_> {
     /// image when the view or a tile changed, and queue the upload.
     fn update_minimap(&mut self) {
         let Some((_, _, view)) = self.minimap_shown() else {
-            if self.minimap_wanted().is_none() || self.player.is_none() {
+            if (self.minimap_wanted().is_none() && self.mod_minimap().is_none())
+                || self.player.is_none()
+            {
                 self.extras.minimap.clear();
                 self.extras.minimap_dim = None;
             }
@@ -201,9 +216,13 @@ impl Game<'_> {
     /// A mod's zoom in effect (`native_zoom`): (factor, smooth, turning
     /// scale); none is 1.
     fn zoom_now(&self) -> (f32, bool, f64) {
-        self.native_zoom_now().map_or((1.0, true, 1.0), |z| {
-            (z.factor, z.smooth, f64::from(z.turn))
-        })
+        match self.native_zoom_now() {
+            Some(z) => (z.factor, z.smooth, f64::from(z.turn)),
+            // A WebAssembly mod's zoom (capability `render`).
+            None => self.mod_zoom().map_or((1.0, true, 1.0), |z| {
+                (z.factor, z.smooth, f64::from(z.turn))
+            }),
+        }
     }
     /// The field-of-view modifier target, divided by a smooth zoom.
     pub(super) fn zoomed_fov_target(&self, vanilla: f32) -> f32 {
@@ -227,6 +246,7 @@ impl Game<'_> {
     /// by the caller). The top left corner gives way to the debug screen.
     pub(super) fn draw_extras(&mut self, batch: &mut HudBatch) {
         let map = self.minimap_shown();
+        let mod_panels = self.mods.has_panels();
         let visible = |corner| !(self.debug && corner == Corner::TopLeft);
         let mut corners = Corners::new(batch.width, batch.height, self.effect_rows_height());
         let atlas = &self.gui.atlas;
@@ -248,6 +268,9 @@ impl Game<'_> {
                 north,
             };
             extras_hud::draw_minimap(batch, atlas, &mut corners, &look);
+        }
+        if mod_panels {
+            self.draw_mod_panels(batch, &mut corners);
         }
         self.native_hud(batch, &mut corners);
     }

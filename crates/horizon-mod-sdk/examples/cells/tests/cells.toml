@@ -1,0 +1,220 @@
+# A placed lodestone becomes a cell that charges each tick; /cell reads it; breaking it says what was lost.
+
+[[step]]
+join = "Alex"
+place = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
+
+[[step]]
+ticks = 20
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 100 / 100000 FE"
+
+# The menu: Fill puts 1000 FE in, Drain takes 1000 out, the other slots do nothing.
+[[step]]
+command = "cellgui"
+
+[[step]]
+click = { menu = "cell", slot = 15 }
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 1100 / 100000 FE"
+
+[[step]]
+click = { menu = "cell", slot = 11 }
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 100 / 100000 FE"
+
+# Drain made a redstone dust in the output slot.
+[[step]]
+command = "cellitems"
+expect.feedback = "Cell at 0 63 0: 0 in, 1 out"
+
+[[step]]
+click = { menu = "cell", slot = 0 }
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 100 / 100000 FE"
+
+# Close, then a right click on the cell opens its menu again: Fill works
+# only in an open menu.
+[[step]]
+click = { menu = "cell", slot = 22 }
+
+[[step]]
+click = { menu = "cell", slot = 15 }
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 100 / 100000 FE"
+
+[[step]]
+use = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
+click = { menu = "cell", slot = 15 }
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 1100 / 100000 FE"
+
+[[step]]
+click = { menu = "cell", slot = 11 }
+
+[[step]]
+command = "cellgui 5 63 5"
+expect.error = "No cell there"
+
+[[step]]
+command = "cell 5 63 5"
+expect.error = "No cell there"
+
+# The mod's own machine recipes (data/cells/recipe), loaded before init:
+# /cellrecipes counts them, and the cell grinds what its input slot holds —
+# cobblestone into two redstone on top of the two Drain made (andesite
+# would make one), the whole result only when it fits.
+[[step]]
+command = "cellrecipes"
+expect.feedback = "2 grinding recipes"
+
+[[step]]
+command = "cellgui"
+
+# Load cobble puts one cobblestone in the input slot; the two Dust buttons
+# earlier left two redstone in the output one.
+[[step]]
+click = { menu = "cell", slot = 24 }
+command = "cellitems"
+expect.feedback = "Cell at 0 63 0: 1 in, 2 out"
+
+[[step]]
+ticks = 2
+command = "cellitems"
+expect.feedback = "Cell at 0 63 0: 0 in, 4 out"
+
+# The core (capability multiblocks, data/cells/multiblock/core.json): a
+# ring of iron around the cell, which /cellcore says is whole or names the
+# first block it needs — the cell's own quarter turn first, the closest
+# missing cell of it.
+[[step]]
+command = "cellcore"
+expect.feedback = "needs minecraft:iron_block at -1 62 -1 (minecraft:air there)"
+
+# The ring of iron stands (24 blocks, the ring of each layer): the next
+# check pass sees the core whole and says so, and the cell charges ten
+# times over from then on.
+[[step]]
+blocks = [
+    { x = -1, y = 62, z = -1, state = "minecraft:iron_block" },
+    { x = -1, y = 62, z = 0, state = "minecraft:iron_block" },
+    { x = -1, y = 62, z = 1, state = "minecraft:iron_block" },
+    { x = 0, y = 62, z = -1, state = "minecraft:iron_block" },
+    { x = 0, y = 62, z = 1, state = "minecraft:iron_block" },
+    { x = 1, y = 62, z = -1, state = "minecraft:iron_block" },
+    { x = 1, y = 62, z = 0, state = "minecraft:iron_block" },
+    { x = 1, y = 62, z = 1, state = "minecraft:iron_block" },
+    { x = -1, y = 63, z = -1, state = "minecraft:iron_block" },
+    { x = -1, y = 63, z = 0, state = "minecraft:iron_block" },
+    { x = -1, y = 63, z = 1, state = "minecraft:iron_block" },
+    { x = 0, y = 63, z = -1, state = "minecraft:iron_block" },
+    { x = 0, y = 63, z = 1, state = "minecraft:iron_block" },
+    { x = 1, y = 63, z = -1, state = "minecraft:iron_block" },
+    { x = 1, y = 63, z = 0, state = "minecraft:iron_block" },
+    { x = 1, y = 63, z = 1, state = "minecraft:iron_block" },
+    { x = -1, y = 64, z = -1, state = "minecraft:iron_block" },
+    { x = -1, y = 64, z = 0, state = "minecraft:iron_block" },
+    { x = -1, y = 64, z = 1, state = "minecraft:iron_block" },
+    { x = 0, y = 64, z = -1, state = "minecraft:iron_block" },
+    { x = 0, y = 64, z = 1, state = "minecraft:iron_block" },
+    { x = 1, y = 64, z = -1, state = "minecraft:iron_block" },
+    { x = 1, y = 64, z = 0, state = "minecraft:iron_block" },
+    { x = 1, y = 64, z = 1, state = "minecraft:iron_block" },
+]
+ticks = 21
+expect.broadcast = ["The core at 0 63 0 formed"]
+command = "cell"
+expect.feedback = "Cell at 0 63 0: 350 / 100000 FE"
+
+# Disassembly: break alone — a step's ticks run before its break, so the
+# broadcast would land in the next step — then the pass sees it no longer
+# holds.
+[[step]]
+break = { x = -1, y = 63, z = -1, state = "minecraft:iron_block" }
+
+[[step]]
+ticks = 21
+expect.broadcast = ["The core at 0 63 0 broke"]
+
+# The block a cell stood on is checked at the next tick. A cell yields
+# only to the energy staff (capability `rich-events`), so one is held.
+[[step]]
+hold = { item = "minecraft:blaze_rod" }
+
+[[step]]
+break = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
+
+[[step]]
+ticks = 1
+expect.broadcast = ["The cell at 0 63 0 is gone with 1220 FE"]
+
+[[step]]
+command = "cell"
+expect.error = "No cell there"
+
+# Any other block placed is not a cell.
+[[step]]
+place = { x = 0, y = 63, z = 0, state = "minecraft:stone" }
+
+[[step]]
+ticks = 5
+command = "cell"
+expect.error = "No cell there"
+
+# The mod's world data (capability saved-data): /cellnet <name> joins the
+# cell to a power grid kept on the world itself, not in the mod's memory.
+[[step]]
+place = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
+
+[[step]]
+ticks = 1
+command = "cellnet main"
+expect.feedback = "Cell at 0 63 0 joined grid main"
+
+[[step]]
+place = { x = 5, y = 63, z = 5, state = "minecraft:lodestone" }
+
+# The second cell is under the player only after they walk to it (cellnet
+# takes no pos: the parser has no backtracking, so a pos argument would
+# eat a grid name as a coordinate).
+[[step]]
+player = { x = 5.5, y = 64.0, z = 5.5 }
+ticks = 1
+command = "cellnet aux"
+expect.feedback = "Cell at 5 63 5 joined grid aux"
+
+[[step]]
+command = "cellnet"
+expect.feedback = "Grids: aux (1 cell), main (1 cell)"
+
+[[step]]
+command = "cellnet MAIN"
+expect.error = "a grid name is [a-z0-9_.-]{1,64}"
+
+# The grids live in the world's store: a restart of the mod (a rebuild)
+# loses nothing.
+[[step]]
+reload = true
+
+[[step]]
+ticks = 1
+command = "cellnet"
+expect.feedback = "Grids: aux (1 cell), main (1 cell)"
+
+# Breaking a cell takes it out of its grid; the last cell takes the grid
+# with it.
+[[step]]
+break = { x = 5, y = 63, z = 5, state = "minecraft:lodestone" }
+
+[[step]]
+ticks = 1
+command = "cellnet"
+expect.feedback = "Grids: main (1 cell)"
+
+[[step]]
+break = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
+
+[[step]]
+ticks = 1
+command = "cellnet"
+expect.feedback = "No grids"

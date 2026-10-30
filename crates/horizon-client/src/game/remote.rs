@@ -113,6 +113,8 @@ pub(super) struct Remote {
     pub brand: String,
     /// The server announced it runs mods' quiet commands.
     pub quiet_commands: bool,
+    /// The server announced it carries mod messages.
+    pub mod_net: bool,
     pub(super) builtin: Arc<Builtin>,
     lang: Arc<Language>,
     pub(super) registries: Arc<Dynamic>,
@@ -476,6 +478,7 @@ impl Game<'_> {
             session,
             brand: "unknown".into(),
             quiet_commands: false,
+            mod_net: false,
             builtin: Arc::new(builtin),
             lang,
             registries: Arc::new(Dynamic::default()),
@@ -786,6 +789,9 @@ impl Game<'_> {
             self.ticks,
             self.screen == Screen::Chat,
         );
+        if self.mods.running() {
+            self.mods_chat(&text);
+        }
         if let Some(r) = self.remote.as_mut() {
             r.chat.push((text, Instant::now()));
             r.chat_received += 1;
@@ -1046,6 +1052,11 @@ impl Game<'_> {
                 Event::QuietCommands => {
                     if let Some(remote) = &mut self.remote {
                         remote.quiet_commands = true;
+                    }
+                }
+                Event::ModNet => {
+                    if let Some(remote) = &mut self.remote {
+                        remote.mod_net = true;
                     }
                 }
                 Event::Reconfigured(registries) => {
@@ -1984,6 +1995,10 @@ impl Game<'_> {
             // ClientCommonPacketListenerImpl.handlePing runs on the game
             // thread, after all preceding packets (especially teleports).
             C::Ping(p) => self.send(S::Pong(p)),
+            // A message of a server mod to its client half.
+            C::CustomPayload(p) if p.channel == horizon_protocol::mod_net::CHANNEL => {
+                self.mod_net_received(&p.data);
+            }
             // PingDebugMonitor.onPongReceived.
             C::PongResponse(p) => {
                 let delay = self.debug_millis() - p.time;
@@ -3063,6 +3078,7 @@ impl Game<'_> {
                 if let Some(r) = self.remote.as_mut() {
                     r.commands = Some(tree);
                 }
+                self.merge_remote_tree();
             }
             C::Cooldown(p) => {
                 // ClientPacketListener.handleItemCooldown: the server starts
@@ -4018,7 +4034,6 @@ impl Game<'_> {
         self.tick_remote_level()?;
         // Client mods tick on any server, single player's own included.
         self.native_tick();
-        self.tell_native_now();
         // Minecraft.tick sends this even when the player cannot tick yet,
         // including while waiting for chunks. Keep it outside early returns.
         if self.remote.as_ref().is_some_and(|r| r.joined) {

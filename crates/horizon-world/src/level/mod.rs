@@ -427,6 +427,13 @@ pub trait LevelAccess {
     /// `PotentSulfurBlockEntity.resetCountdown` for the potent sulfur block
     /// entity at `pos` (`PotentSulfurBlock.validBlockState`).
     fn reset_potent_sulfur_countdown(&mut self, _pos: BlockPos) {}
+    /// The redstone signal a mod's block at `pos` gives out through its
+    /// face `side` (the one touching the block that reads it): its weak
+    /// signal, or its strong one (`strong`: what powers the blocks it
+    /// touches through). 0 for every block no mod drives.
+    fn mod_signal(&self, _pos: BlockPos, _side: Direction, _strong: bool) -> i32 {
+        0
+    }
     /// Weak/strong signal of a block-entity-driven source (trapped chest
     /// openers); other sources are evaluated by the library.
     fn block_entity_signal(
@@ -757,6 +764,17 @@ impl Behaviours {
     ) -> BlockStateId {
         self.sim(level, ticks)
             .update_from_neighbour_shapes(state, pos)
+    }
+    /// The signals the six neighbours of `pos` give it, as
+    /// `getSignal(pos.relative(d), d)` reads them, in the order down, up,
+    /// north, south, west, east.
+    pub fn neighbor_signals<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+    ) -> [i32; 6] {
+        self.sim(level, ticks).neighbor_signals(pos)
     }
     /// `Level.updateNeighborsAt(pos, block)`: notify the six neighbours.
     pub fn update_neighbors_at<L: LevelAccess + ?Sized>(

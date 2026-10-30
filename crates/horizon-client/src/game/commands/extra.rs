@@ -1145,4 +1145,16 @@ impl Game<'_> {
             },
         )
     }
+    /// The same id as `UUID.toString()` (server mods' `ServerPlayer.id`).
+    pub(in crate::game) fn player_uuid_string(&self) -> String {
+        let h = format!("{:032x}", self.player_uuid());
+        format!(
+            "{}-{}-{}-{}-{}",
+            &h[..8],
+            &h[8..12],
+            &h[12..16],
+            &h[16..20],
+            &h[20..]
+        )
+    }
 }

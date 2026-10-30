@@ -593,6 +593,7 @@ impl Game<'_> {
                 problem: None,
                 dev: false,
                 native: Some(page),
+                has_settings: false,
             });
         }
     }

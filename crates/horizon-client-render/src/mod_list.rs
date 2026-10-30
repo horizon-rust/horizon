@@ -41,6 +41,9 @@ pub struct Installed {
     /// A native mod (`game/native_hooks.rs`): built into the game, on until
     /// the player turns it off, and its settings page.
     pub native: Option<NativePage>,
+    /// A WebAssembly mod with a settings screen of its own (capability
+    /// `ui`): its Settings button opens that screen (game/mods.rs).
+    pub has_settings: bool,
 }
 
 /// A native mod's settings page: its keys as Key Binds rows, then its
@@ -176,6 +179,7 @@ mod tests {
             problem: None,
             dev,
             native: None,
+            has_settings: false,
         };
         let mut list = ModList {
             installed: vec![installed("a", false), installed("b", true)],

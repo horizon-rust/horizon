@@ -1,0 +1,9 @@
+id = "cells"
+name = "Energy Cells screen"
+version = "0.1.0"
+description = "The client half of Energy Cells: /cellui on the server opens a screen this half draws itself (capability gui-screens) - a machine panel of its own pictures with a cell's charge, a bar that fills with it, the redstone waiting and made, and buttons and a menu - and what the player presses goes back as messages. The panel's pictures travel in the mod's own file (api 0.2). It shares its id with the server half, so turning one on turns on both."
+authors = ["Horizon"]
+api = "0.2"
+side = "client"
+capabilities = ["gui-screens", "network", "registries"]
+experimental = ["gui-screens", "network"]

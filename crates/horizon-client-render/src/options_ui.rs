@@ -1124,6 +1124,9 @@ pub enum Event {
     /// Native mod `.0`'s page opened: the game asks the mod for its labels
     /// again (they were made with the list, maybe in another language).
     NativeSettings(usize),
+    /// WebAssembly mod `.0`'s settings screen opened (capability `ui`): the
+    /// game shows the screen the mod made.
+    ModSettings(usize),
     /// Button `.1` of native mod `.0`'s page was pressed: the game tells the
     /// mod and refreshes the page.
     NativeButton(usize, usize),
@@ -1804,8 +1807,9 @@ impl OptionsUi {
                         }
                         let dead = installed.dev || installed.id.is_empty();
                         // A native mod gets its settings page's button beside
-                        // the toggle.
-                        if installed.native.is_some() {
+                        // the toggle; so does a WebAssembly mod with a
+                        // settings screen of its own (capability `ui`).
+                        if installed.native.is_some() || installed.has_settings {
                             let toggle = button(0.0, 0.0, 150.0, label, Act::ToggleMod(i));
                             let settings = button(
                                 0.0,
@@ -2832,8 +2836,14 @@ impl OptionsUi {
                         }
                         Act::ModSettings(i) => {
                             events.push(Event::ButtonClick);
-                            self.push(Page::NativeMod(i));
-                            events.push(Event::NativeSettings(i));
+                            if s.mods.installed.get(i).is_some_and(|m| m.native.is_some()) {
+                                self.push(Page::NativeMod(i));
+                                events.push(Event::NativeSettings(i));
+                            } else {
+                                // A WebAssembly mod's own settings screen
+                                // (game/mods.rs opens it).
+                                events.push(Event::ModSettings(i));
+                            }
                         }
                         Act::NativeKey(i, k) => {
                             self.selected_key = Some(NATIVE_KEY);
@@ -3548,6 +3558,7 @@ mod tests {
                 problem: id.is_empty().then(|| "Invalid package".into()),
                 dev,
                 native: None,
+                has_settings: false,
             });
         }
         let (widgets, ..) = ui.layout(&s, size.0, size.1);
@@ -3615,6 +3626,7 @@ mod tests {
             problem: None,
             dev: false,
             native: Some(crate::mod_list::NativePage::default()),
+            has_settings: false,
         });
         ui.show(Page::Mods);
         let (widgets, ..) = ui.layout(&s, size.0, size.1);

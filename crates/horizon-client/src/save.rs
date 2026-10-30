@@ -144,6 +144,10 @@ impl SessionLock {
         use std::io::Write;
         fs::create_dir_all(world)?;
         let mut file = fs::OpenOptions::new()
+            // Read-write, as vanilla's RandomAccessFile("rw"): the lock's
+            // own descriptor reads the file back (Windows's mandatory locks
+            // keep any other handle from it).
+            .read(true)
             .write(true)
             .create(true)
             .truncate(false)

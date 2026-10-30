@@ -257,7 +257,7 @@ impl Game<'_> {
         let block = self.command_block(screen_pos).cloned();
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
-            dispatcher: super::chat::chat_tree(&self.remote),
+            dispatcher: super::chat::chat_tree(&self.remote, &self.mods),
             registries: &self.ui.registries,
         };
         let Some(screen) = self.command_block_screen.as_mut() else {
@@ -491,7 +491,7 @@ impl Game<'_> {
         let (w, h) = self.gui_size();
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
-            dispatcher: super::chat::chat_tree(&self.remote),
+            dispatcher: super::chat::chat_tree(&self.remote, &self.mods),
             registries: &self.ui.registries,
         };
         let mut command = ChatScreen::command_block(&m, &c, &block.command, w as i32, h as i32);
@@ -566,7 +566,7 @@ impl Game<'_> {
         // The command box, then its suggestions over the widgets.
         let m = Measure(&atlas.font);
         let c = Commands {
-            dispatcher: super::chat::chat_tree(&self.remote),
+            dispatcher: super::chat::chat_tree(&self.remote, &self.mods),
             registries: &self.ui.registries,
         };
         s.command.resize(&m, &c, w as i32, h as i32);
@@ -599,7 +599,7 @@ impl Game<'_> {
         };
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
-            dispatcher: super::chat::chat_tree(&self.remote),
+            dispatcher: super::chat::chat_tree(&self.remote, &self.mods),
             registries: &self.ui.registries,
         };
         s.command.server_suggestions(&m, &c, id, range, list);
@@ -613,7 +613,7 @@ impl Game<'_> {
         {
             let m = Measure(&self.gui.atlas.font);
             let c = Commands {
-                dispatcher: super::chat::chat_tree(&self.remote),
+                dispatcher: super::chat::chat_tree(&self.remote, &self.mods),
                 registries: &self.ui.registries,
             };
             let (x, y) = (f64::from(self.cursor.0), f64::from(self.cursor.1));
@@ -686,7 +686,7 @@ impl Game<'_> {
         };
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
-            dispatcher: super::chat::chat_tree(&self.remote),
+            dispatcher: super::chat::chat_tree(&self.remote, &self.mods),
             registries: &self.ui.registries,
         };
         if s.command.suggestions_key(&m, &c, key, shift) {
@@ -733,7 +733,7 @@ impl Game<'_> {
         };
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
-            dispatcher: super::chat::chat_tree(&self.remote),
+            dispatcher: super::chat::chat_tree(&self.remote, &self.mods),
             registries: &self.ui.registries,
         };
         s.command.type_text(&m, &c, &allowed);
