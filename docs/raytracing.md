@@ -382,6 +382,79 @@ Remix itself could not be measured on the same scene here: it runs inside Minecr
 own runtime, which cannot be driven offscreen by `horizon-ctl`; its numbers on the same copy are
 to be taken by hand (its in-game profiler) for the comparison.
 
+## GPU budget for Vision Pro (90 Hz, two eyes)
+
+The target: 11.1 ms of GPU a frame for both eyes, with RT lighting on. Measured on 30 October 2026 on the
+RTX 4090, with the copy of NVIDIA's RTX Demo world (the player at its spawn), NVIDIA's RTX-Remix-Materials pack,
+`parallax:true`, HDR on, every technique of the RT lighting on. The simulated headset (`tools/vr_fake_run.py`,
+`--hz 1000`) at KRVR's 1648x1328 an eye, the size the Vision Pro is streamed at; bigger eyes are listed apart.
+
+**How it was timed.** `HORIZON_GPU_PASSES=1` (`gfx/gpu_passes.rs`) writes a GPU timestamp between the frame's
+stages and logs each stage's median every 60 frames, per view (`desktop`, `eye1`, `eye2`); `tools/gpu_passes_report.py
+game.log` sums the reports (`--by-look` one a head pose, `--best 0.25` the shortest-framed ones, for a run that
+shares the GPU). `HORIZON_RT_SKIP` (a mask: 1 the sun's ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR) leaves parts of the
+trace kernel out to time each alone, `HORIZON_RT_SHARP` (degrees) moves the foveation's sharp zone (0: sparse all over,
+180: sharp all over). The head's sweep is `tools/vr_fake_scripts/gpu_budget.txt`.
+
+**Caveat on the numbers.** The GPU was shared with the player's own running game (86 % of the 3D engine) the whole
+time, which time-slices it. In VR the stages were stable from window to window (the raster 1.9 to 2.6 ms an eye), so those
+are taken as they are, perhaps 10-20 % high. On the desktop the long kernels were hit hard (the same frame measured 25 to 95
+ms by the minute, 15.8 ms on an idle GPU), so the desktop is given as shares of the frame, with the idle frame
+(15.8 ms) spread over them; re-measure both on an idle GPU before relying on a second decimal.
+
+### Where it goes
+
+| Stage (ms) | Desktop 3440x1440, shares of 15.8 ms idle | VR 1648x1328, both eyes | VR 2560x2048, both eyes | VR 3660x3200, both eyes |
+|---|---|---|---|---|
+| World raster (terrain with parallax, entities, water; phase 1 and rest on the desktop) | 2.7 (17 %) | 4.5 | 8.0 | 18 |
+| RT trace kernel (sun, ReSTIR DI, ReSTIR GI, PSR, one dispatch) | 10 (65 %) | 1.6 | 3.6 | 17 (4-9 an eye, see below) |
+| Depth prepass for the rays | 0.6 | 1.6 | 1.7 | 1.9 |
+| Denoiser (4 passes) | 1.2 (7 %) | 0.4 | 0.9 | 2.0 |
+| Froxels (inject, blend, integrate, apply) | 0.3 | 1.0 | 2.1 | 4.1 |
+| BLAS/TLAS structures | 0.2 | 0.0 | 0.0 | 0.0 |
+| TAA, bloom, exposure, grading, tone curve, HUD | 0.5 | 0.5 | 1.1 | 2.2 |
+| Window view drawn again in VR (HDR on), 1280x720 | | 4.2 | 4.3 | 7.7 |
+| **Frame** | 15.8 (26.9 measured shared) | **13.8** (9.6 of eyes) | **23.1** (18.8 of eyes) | **54** (46 of eyes) |
+
+Sweeping the head (`gpu_budget.txt`: ahead, 90 degrees to each side, behind, 40 degrees up, 50 down) the two eyes take
+8.7 to 11.6 ms at 1648x1328 (behind the least, the sky 40 degrees up the most). In the desktop frame the trace
+kernel is the budget: by `HORIZON_RT_SKIP`, ReSTIR GI is about 70 % of it (6.8 ms of 9.8), the light sources (DI) 14 %, the
+PSR 15 %, the sun's own ray nothing (its shadow rays at the bounce hits are in GI). In the headset, foveated, the kernel
+is small (0.84 ms an eye): GI 51 %, the rest 34 %, a floor of 14 % (the accumulation and the stores).
+
+### Findings
+
+1. **With HDR on, VR draws the window too.** `Renderer::render` mirrors an eye into the window only with HDR off
+   (`present_mirror`); with HDR on it calls `draw_frame` for the window as well, a whole RT frame at the window's size, every
+   frame: 4.2 ms at 1280x720 (13.8 ms against 9.54 ms with `hdr:false`, measured), and a monitor of 3440x1440 is 5.4 times as
+   many pixels, unfoveated. This is the largest item of the budget and costs the headset nothing to remove.
+2. **Foveation of the rays already pays** at 1648x1328: sharp all over the trace is 3.0 ms an eye, at 25 degrees 0.84, sparse
+   all over 0.54. Little is left to take there. At 3660x3200 it did not hold: the foveated trace (8.6 ms an eye, 3.7 to 9.2
+   from window to window) was slower than sharp all over (5.0), so the sparse blocks (one thread of sixteen traces) are not
+   free there; not explained yet.
+3. **The raster is now the biggest stage in the headset**: 4.5 of the 9.6 ms of the eyes at 1648x1328, and it grows with the
+   pixels (x4 for x5.3 the pixels). The pack's parallax makes the fragments heavy, and nothing is foveated in it.
+4. The structure builds are nothing (0.001 ms in VR: the scene was static), the denoiser runs on the 2x2 mask (0.2 ms an eye)
+   and the radiance cache resolve is 0.03 ms: neither is worth work.
+
+### The levers, ranked (ms of a two-eye frame at 1648x1328 unless said)
+
+| # | Lever | Saving | Basis |
+|---|---|---|---|
+| 1 | Do not draw the window's own frame in VR with HDR on (mirror the eye, or one HDR blit, as with HDR off) | 4.2 (more on a big window) | measured: 13.80 to 9.54 ms |
+| 2 | Per-eye resolution | about 3 for each million pixels an eye gains (1648x1328 to 2560x2048: 9.2 of the eyes; 3660x3200 is 46 ms, out of reach at 90 Hz) | measured at three sizes |
+| 3 | Foveated raster (a rate image from the gaze, as `HORIZON_XR_VRS`; the pack's parallax cut off the periphery) | 1.5 to 2.2 | estimated: 30-50 % of the raster's 4.5 |
+| 4 | Reuse between the eyes: one froxel volume (0.5), the depth prepass once or at the mask's size (0.8), the trace and denoiser once for a view between the eyes then reprojected (0.9) | 1.5 to 2.2 | estimated from the second eye's own stage times |
+| 5 | Fewer ray samples: GI on a checkerboard of the mask texels over two frames (half of 51 % of the trace), the sparse zone's rays compacted | 0.3 to 0.6 | measured by `HORIZON_RT_SKIP=2` (GI is 0.43 ms an eye) |
+| - | Already in: ray foveation (sharp all over would add 4.3), the denoiser at the 2x2 mask, one TLAS for both eyes | | measured |
+| - | Not worth it: fewer denoiser passes (0.1), exposure and bloom once for both eyes (0.1) | < 0.2 | measured stage times |
+
+With 1 alone the headset is at 9.6 ms at 1648x1328 (1.5 ms of margin, the worst look 11.6 when sweeping the head); with
+1, 3 and 4 about 5.5 to 6.5 ms, which buys an eye of about 2000x1650 inside the 11.1 ms.
+
+**To do first:** lever 1; then measure a window at 3440x1440 in VR (the fake runtime's window is 1280x720), 3 on the
+Vision Pro's real gaze, and the whole table again on an idle GPU.
+
 ## What exists: the spike (`origin/feat/raytracing-spike`, 42c752d6b)
 
 A research spike, not on main (it branched 2 800 commits ago; a worktree of it is `../horizon-rt`, and its build is

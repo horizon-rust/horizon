@@ -1,0 +1,18 @@
+# The head's sweep of the GPU budget runs (docs/raytracing.md, "GPU budget for Vision Pro"): it holds each
+# pose for 15 seconds (the script runs on wall time), so that a run's frames cover the view ahead, to
+# either side, behind, the sky and the ground, whatever the world, and never moves the player (two runs
+# see the same scene). The world has loaded by 120 s (a slow disk and a full GPU make it 90); before the
+# first step the gaze isn't valid, so the rays' sharp zone follows the head.
+0   head 0 0
+120 head 0 -15
+135 head 0 -15
+136 head 90 0
+151 head 90 0
+152 head 180 10
+167 head 180 10
+168 head 270 0
+183 head 270 0
+184 head 0 40
+199 head 0 40
+200 head 0 -50
+215 head 0 -50

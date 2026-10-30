@@ -105,6 +105,7 @@ mod rt_cloud_mesh;
 mod rt_clouds;
 // Froxel volumetrics (gfx/froxels.rs).
 mod froxels;
+mod gpu_passes;
 pub use froxels::CameraMedium;
 mod shadow_rays;
 mod sky_stars;
@@ -1548,6 +1549,7 @@ impl Renderer {
             startup_step(format_args!("creating the pipelines"));
         }
         let gpu_timer = timing::GpuTimer::new(&device, &queue);
+        gpu_passes::init(&device, &queue);
         // What the world, the hand and the screen effects draw into: the screen, or with Linear
         // Light the float scene (`tonemap`).
         let world_format = if linear {
@@ -4095,6 +4097,7 @@ impl Renderer {
             self.draw_sections(&mut pass, &self.indirect, 0, 0, phase1);
             self.draw_sections_with(&mut pass, &self.indirect, 0, phase1, draws - phase1, false);
         }
+        gpu_passes::stamp(encoder, "rays: depth prepass");
         let view = self.eye.map_or(0, |e| e.view_index);
         let foveation = match &self.eye {
             Some(eye) => eye.foveation,
@@ -4725,6 +4728,21 @@ impl Renderer {
                     label: Some("Horizon frame"),
                 })
         });
+        gpu_passes::begin(
+            &self.device,
+            &mut encoder,
+            &self
+                .eye
+                .map_or("desktop".to_owned(), |e| format!("eye{}", e.view_index)),
+        );
+        // Only the eyes say where the head looks (the frames the game draws for the window between
+        // them have no pose): the windows would start again at every other frame.
+        if let (Some(_), Some((yaw, pitch))) = (self.eye, self.xr_state.head) {
+            // `+ 0.0` turns a rounded -0 into 0: the note must not flicker between the two.
+            gpu_passes::note(|| {
+                format!("head {:.0} {:.0}", yaw.round() + 0.0, pitch.round() + 0.0)
+            });
+        }
         if self.animated_textures {
             self.animate(&mut encoder, frame.ticks);
             self.hud
@@ -5901,10 +5919,12 @@ impl Renderer {
         // RT lighting: this frame's rays, from a depth prepass of the solid terrain, before the
         // world draws (the flat draws, Metal's, still read the last frame's, reprojected).
         let rt_now = rt.lighting && world_linear && !flat_frame && self.voxels.views().is_some();
+        gpu_passes::stamp(&mut encoder, "prep (copies, lightmap, cull)");
         if rt.any() {
             // The entities' vertices are known now: they join the terrain in the rays.
             let clouds = rt_clouds_on && rt_clouds::mode() == rt_clouds::Mode::Mesh;
             self.hw_finish(&mut encoder, frame, entity_quads, clouds);
+            gpu_passes::stamp(&mut encoder, "structures (BLAS, TLAS)");
         }
         if rt_now {
             // The rays work on the still frame, not the TAA's jittered one: a thin contact shadow
@@ -6163,7 +6183,9 @@ impl Renderer {
                             flat.draw(&mut pass, &flat.calls[..flat.phase1_calls], vertices);
                             cull.test(&mut pass);
                             drop(pass);
+                            gpu_passes::stamp(&mut encoder, "world: phase 1 (sky, visible solid)");
                             cull.test_pass(&mut encoder);
+                            gpu_passes::stamp(&mut encoder, "world: occlusion test");
                             flat.flatten_phase2(&mut encoder);
                             pass = world_pass_after_culling(
                                 &mut encoder,
@@ -6194,7 +6216,9 @@ impl Renderer {
                             self.draw_sections(&mut pass, &self.indirect, 0, 0, phase1_draws);
                             cull.test(&mut pass);
                             drop(pass);
+                            gpu_passes::stamp(&mut encoder, "world: phase 1 (sky, visible solid)");
                             cull.test_pass(&mut encoder);
+                            gpu_passes::stamp(&mut encoder, "world: occlusion test");
                             pass = world_pass_after_culling(
                                 &mut encoder,
                                 world_view,
@@ -6407,6 +6431,10 @@ impl Renderer {
                 );
             }
         }
+        gpu_passes::stamp(
+            &mut encoder,
+            "world: raster (rest of the solid, entities, water)",
+        );
         // Ray-traced shadows: a ray a pixel of the world's depth, before the resolve (RT lighting
         // traced its rays before the world).
         let hw = self.hw_bindings();
@@ -6468,6 +6496,7 @@ impl Renderer {
                     },
                     &self.atmosphere.view,
                 );
+                gpu_passes::stamp(&mut encoder, "clouds: mesh");
             }
         }
         if rt_clouds_on
@@ -6498,6 +6527,7 @@ impl Renderer {
                 },
                 &self.atmosphere.view,
             );
+            gpu_passes::stamp(&mut encoder, "clouds: march");
         }
         // Froxel volumetrics (froxels.rs, hook 7): this view's medium on the world drawn, before
         // the tone mapping. `Frame::underwater` says the water; the sky light and the weather come
@@ -6530,6 +6560,7 @@ impl Renderer {
                 },
             );
             self.froxels.camera = saved;
+            gpu_passes::stamp(&mut encoder, "froxels: apply");
         }
         // Temporal anti-aliasing (taa.rs): the world and its media resolved against the history,
         // before the tone mapping's exposure and bloom read them (the hand and the HUD come after).
@@ -6547,6 +6578,7 @@ impl Renderer {
                     camera: frame.camera,
                 },
             );
+            gpu_passes::stamp(&mut encoder, "taa");
         }
         // Heat haze above the flames in view (haze.rs), on the resolved scene; nothing is recorded
         // with no flame in range.
@@ -6570,6 +6602,7 @@ impl Renderer {
         } else {
             self.haze.release();
         }
+        gpu_passes::stamp(&mut encoder, "heat haze");
         if let Some((color, depth)) = &scaled
             && pack_post
             && let Some((dimension, Some(mut post))) = self.pack_post.take()
@@ -6685,6 +6718,7 @@ impl Renderer {
         {
             hdr.keep_world(&mut encoder);
         }
+        gpu_passes::stamp(&mut encoder, "world post (scaling, packs)");
         if hand_quads > 0 && !pack_draws_hand && self.eye.is_none() {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: layer,
@@ -6779,6 +6813,7 @@ impl Renderer {
             let first = debug_depth + debug_top;
             pass.draw(0..4, first..first + crosshair);
         }
+        gpu_passes::stamp(&mut encoder, "hand, outline, screen effects");
         if let Some(t) = &self.tonemap {
             t.run(
                 &self.device,
@@ -6832,6 +6867,7 @@ impl Renderer {
                 0..0
             },
         );
+        gpu_passes::stamp(&mut encoder, "hud");
         if culling && let Some(cull) = &mut self.cull {
             cull.end(&self.device, &mut encoder);
         }
@@ -6904,6 +6940,8 @@ impl Renderer {
                 None => hdr.present(&self.queue, &mut encoder, &f.texture, !frame.title),
             }
         }
+        gpu_passes::stamp(&mut encoder, "output (copies, HDR present)");
+        gpu_passes::end(&mut encoder);
         crate::spans::mark("passes", passes_started);
         let commands = crate::spans::time("encode", || encoder.finish());
         let first_frame = self.first_frame == FirstFrame::Submit;
@@ -6915,6 +6953,7 @@ impl Renderer {
         if let Some(cull) = &mut self.cull {
             cull.submitted();
         }
+        gpu_passes::submitted();
         if let Some(timer) = &mut self.gpu_timer {
             timer.submitted(&self.queue);
             timer.collect(&self.device, &mut self.gpu_times);

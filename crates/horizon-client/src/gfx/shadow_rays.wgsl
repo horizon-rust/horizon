@@ -289,6 +289,10 @@ const MAP_COLORS: array<u32, 62> = array<u32, 62>(
 // `HORIZON_RT_DEBUG` 3, 4 or 5 (with tonemap.wgsl's 1 showing the mask): the depth, the facing, the
 // ray alone.
 override DEBUG: u32 = 0u;
+// `HORIZON_RT_SKIP`, a mask of what the kernel leaves out, to time each part alone (the GPU budget,
+// docs/raytracing.md): 1 the sun's ray, 2 the sky and bounced light (ReSTIR GI), 4 the light
+// sources' (ReSTIR DI), 8 the mirrors and water (PSR).
+override SKIP: u32 = 0u;
 
 // Ray-traced shadows (gfx/voxels.rs, docs/raytracing.md): whether world block `v` is in the grid.
 fn in_grid(v: vec3<i32>) -> bool {
@@ -1258,7 +1262,7 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         // without the faces' facing (the terrain has its own normal), the light around, and the
         // distance to recognise the surface by.
         var sun_through = vec3(1.0);
-        if rt.mode.y > 0.5 && rt.light.w > 0.0 {
+        if rt.mode.y > 0.5 && rt.light.w > 0.0 && (SKIP & 1u) == 0u {
             sun_through = mix(vec3(1.0), sun_disc_ray(lifted, random2(texel, 2u)), edge);
         }
         let v = max(sun_through.r, max(sun_through.g, sun_through.b));
@@ -1267,10 +1271,14 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         // The light sources' light (ReSTIR DI) and the sky's and bounced light (ReSTIR GI), over
         // the reservoirs the last frame left where this surface was.
         let back = restir_last(pos);
-        let sky = restir_gi(lifted, n, texel, back.xy, back.z == 1);
+        var sky = vec4(0.0, 0.0, 0.0, 1.0);
+        if (SKIP & 2u) == 0u { sky = restir_gi(lifted, n, texel, back.xy, back.z == 1); }
         let blocks = vec4(sky.rgb, select(edge, -1.0, edge < 0.5));
-        let direct = vec4(restir_light(lifted, n, texel, back.xy, back.z == 1).rgb
-            + moving_light(lifted, n, texel) + aldhani_light(lifted, n, texel), face_of(n));
+        var direct = vec4(0.0, 0.0, 0.0, face_of(n));
+        if (SKIP & 4u) == 0u {
+            direct = vec4(restir_light(lifted, n, texel, back.xy, back.z == 1).rgb
+                + moving_light(lifted, n, texel) + aldhani_light(lifted, n, texel), face_of(n));
+        }
         // What this pixel found, into the radiance cache for the bounce rays of the frames after.
         cache_add(pos, n, sky.rgb + direct.rgb);
         // The sun mask's alpha: the indirect and direct light's luminance squared, its second
@@ -1429,8 +1437,13 @@ var<workgroup> shared_rays: array<Traced, 4>;
             textureStore(gi_b, texel, gi_out_b);
             textureStore(sun_mask, texel, v.sun);
             textureStore(fast, texel, fast_out);
-            textureStore(reflection, texel, finite4(hw_reflect(pixel_of(texel))));
-            textureStore(refraction, texel, finite4(hw_refract(pixel_of(texel))));
+            if (SKIP & 8u) == 0u {
+                textureStore(reflection, texel, finite4(hw_reflect(pixel_of(texel))));
+                textureStore(refraction, texel, finite4(hw_refract(pixel_of(texel))));
+            } else {
+                textureStore(reflection, texel, vec4(0.0));
+                textureStore(refraction, texel, vec4(0.0));
+            }
         }
     }
 }
