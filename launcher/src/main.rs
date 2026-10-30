@@ -29,6 +29,7 @@ mod launch_page;
 mod line_edit;
 mod markdown;
 mod mcp;
+mod microsoft;
 mod modpacks_page;
 mod mods_page;
 mod mods_project;
@@ -2769,14 +2770,12 @@ impl Launcher {
                         cx.notify();
                     })),
                 ),
-            Some(false) => div().child(
-                button("prepare-sign-in", "Sign in", Kind::Secondary, &t).on_click(cx.listener(
-                    |this, _: &ClickEvent, _, cx| {
-                        this.sign_in_to_play();
-                        cx.notify();
-                    },
-                )),
-            ),
+            Some(false) => div().child(microsoft::sign_in_button("prepare-sign-in", &t).on_click(
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.sign_in_to_play();
+                    cx.notify();
+                }),
+            )),
             None => div().child(prepare),
         };
         let owner = self.owner == Some(true);
@@ -2851,7 +2850,7 @@ impl Launcher {
                             .into_any_element(),
                     ),
                     Some(
-                        button("gate-sign-in", "Sign in", Kind::Primary, &t)
+                        microsoft::sign_in_button("gate-sign-in", &t)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.sign_in_to_play();
                                 cx.notify();
@@ -3826,26 +3825,22 @@ impl Launcher {
         } else {
             let target = self.sign_in_target.as_ref().map(|a| a.uuid.clone());
             let targeted = target.is_some();
-            let mut actions = div().flex().gap(px(4.)).child(
-                button(
-                    "sign-in",
-                    if targeted {
-                        "Sign in again"
-                    } else {
-                        "Sign in with Microsoft"
-                    },
-                    Kind::Secondary,
-                    &t,
-                )
-                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+            // Re-signing one account names it; adding one is Microsoft's own button.
+            let sign_in = if targeted {
+                button("sign-in", "Sign in again", Kind::Secondary, &t)
+            } else {
+                microsoft::sign_in_button("sign-in", &t)
+            };
+            let mut actions = div().flex().gap(px(4.)).child(sign_in.on_click(cx.listener(
+                move |this, _: &ClickEvent, _, cx| {
                     if let Some(uuid) = &target {
                         this.re_sign_in(uuid);
                     } else {
                         this.start_sign_in();
                     }
                     cx.notify();
-                })),
-            );
+                },
+            )));
             if targeted {
                 actions = actions.child(
                     button("sign-in-cancel-target", "Cancel", Kind::Ghost, &t).on_click(
