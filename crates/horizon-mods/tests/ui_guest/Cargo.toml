@@ -7,7 +7,7 @@ publish = false
 description = "A mod that shows widgets, for horizon-mods' sandbox tests"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]
 
 [dependencies]
 horizon-mod-sdk = { path = "../../../horizon-mod-sdk" }

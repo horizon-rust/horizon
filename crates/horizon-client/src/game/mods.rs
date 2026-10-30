@@ -1,10 +1,10 @@
 //! Horizon mods in the game (`docs/mods.md`): loading the ones turned on,
 //! their tick, frame, chat and command hooks, their HUD panels and what
-//! they print. With no mod on, `horizon_mods::Mods` holds no engine and
-//! every hook here returns after one check.
+//! they print. With no mod on, `horizon_mods::Mods` holds no running mod
+//! and every hook here returns after one check.
 //!
 //! Code mods run only in builds with the `mods` feature (release builds):
-//! without it the game links no wasmtime, and every hook does nothing.
+//! without it the game links no mod runtime, and every hook does nothing.
 //! Content mods (`content_root`) load in every build.
 use super::Game;
 use horizon_client::{

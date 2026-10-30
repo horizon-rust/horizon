@@ -7,7 +7,7 @@ publish = false
 description = "Example Horizon mod: coordinates, facing and the time of day on the HUD, and /where"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]
 
 [dependencies]
 horizon-mod-sdk = { path = "../.." }

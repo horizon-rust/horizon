@@ -4,7 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]
+
+[features]
+# The WebAssembly component's exports (`cargo horizon-mod build`); the
+# native path (the default) is for tests and running in the process.
+wit = ["horizon-mod-sdk/wit"]
 
 [dependencies]
 horizon-mod-sdk = {sdk}
@@ -12,3 +17,8 @@ horizon-mod-sdk = {sdk}
 [profile.release]
 opt-level = "s"
 lto = true
+
+[lints.rust]
+# The SDK's export macros expand `cfg(feature = "wit")` here, where no such
+# feature exists; it is the SDK's own switch.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("wit"))'] }

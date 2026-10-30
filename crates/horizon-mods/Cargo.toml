@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 rust-version = "1.95"
-description = "Horizon's mod runtime: sandboxed WebAssembly components (docs/mods.md)"
+description = "Horizon's mod runtime: mods compiled into the process (docs/mods.md)"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -12,11 +12,8 @@ serde_json = "1"
 toml = "1.1.6"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 log = "0.4"
-# The 48 LTS line: security fixes until August 2028, on the same wasm-tools (0.254) as wit-component and the SDK's wit-bindgen.
-# Spike step 0: the runtime no longer uses wasmtime; a mod compiled into the
-# process calls the host through the SDK's native module instead.
-wasmtime = { version = "48.0.7", default-features = false, features = ["runtime", "cranelift", "component-model", "std"], optional = true }
-# The native bindings (types, Host traits, vtable) the runtime impls sit on.
+# The native bindings (types, Host traits, vtable) the runtime impls sit on:
+# a mod compiled into the process calls the host through them. No wasmtime.
 horizon-mod-sdk = { path = "../horizon-mod-sdk", features = ["native"], optional = true }
 # Turns a mod's core module into a component (cargo horizon-mod build, the tests).
 wit-component = { version = "0.254", optional = true }
@@ -30,14 +27,25 @@ minisign-verify = { version = "0.3", optional = true }
 horizon-shader-api = { path = "../horizon-shader-api", optional = true }
 
 [dev-dependencies]
-# A component made for a newer Horizon, from the WIT alone (tests/sandbox.rs).
-wit-component = { version = "0.254", features = ["dummy-module"] }
+# The example mods and the test guests run in tests/sandbox.rs with their
+# code compiled into this test binary, through their `__native_mod()`.
+coords-hud = { path = "../horizon-mod-sdk/examples/coords-hud" }
+predator-missile = { path = "../horizon-mod-sdk/examples/predator-missile" }
+welcome = { path = "../horizon-mod-sdk/examples/welcome" }
+beacons = { path = "../horizon-mod-sdk/examples/beacons" }
+spin-lib = { path = "../horizon-mod-sdk/examples/spin-lib" }
+spin-bell = { path = "../horizon-mod-sdk/examples/spin-bell" }
+cells = { path = "../horizon-mod-sdk/examples/cells" }
+cells-ui = { path = "../horizon-mod-sdk/examples/cells-ui" }
+horizon-mods-test-guest = { path = "tests/guest" }
+horizon-mods-test-ui-guest = { path = "tests/ui_guest" }
+# docs/api/mods-reference.md from the WIT contract (tests/api_reference.rs).
 wit-parser = "0.254"
 
 [features]
 # Loads and runs mods (the game's `mods` feature); without it only manifests,
-# content and packaging. Off by default so builds that don't run mods (the
-# game's tests and probes) skip wasmtime and cranelift.
+# content and packaging. The runtime is the SDK's native bindings: a mod
+# compiled into the process calls the host directly, in `catch_unwind`.
 runtime = ["dep:horizon-mod-sdk", "dep:wasmparser"]
 pack = ["dep:wit-component", "dep:wit-parser"]
 # The mod registry's index (docs/api/mod-index.md): the launcher, the registry server and its CI.

@@ -7,7 +7,7 @@ publish = false
 description = "Example Horizon server mod: /beacon lights a pillar beside you, /ground says what you stand on"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]
 
 [dependencies]
 horizon-mod-sdk = { path = "../.." }

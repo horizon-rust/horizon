@@ -7,7 +7,7 @@ publish = false
 description = "Example Horizon server mod: the consumer of a library (capability inter-mod), requires spin-lib@1 and rings when the library answers"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]
 
 [dependencies]
 horizon-mod-sdk = { path = "../.." }

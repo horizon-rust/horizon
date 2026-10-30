@@ -203,6 +203,15 @@ fn play(path: &Path, report: &mut Report) -> Result<(), String> {
     if let Some(reason) = failed(&mods) {
         return Err(format!("it didn't start: {reason}"));
     }
+    // A `.hmod`'s code runs only where a mod compiled into the process
+    // stands in for it (the runner's registry); here none does, so a mod
+    // with code never starts. TODO(native, step 5): trial-run a `.hmod`'s
+    // own code again when the trust and distribution model is decided.
+    if !mods.is_running() {
+        return Err("it didn't start: this build runs no `.hmod` code (no mod \
+                    compiled in answered its id)"
+            .into());
+    }
     let client: Vec<String> = mods.commands().map(str::to_owned).collect();
     let server: Vec<String> = mods.server_commands().map(|c| c.name.clone()).collect();
     report.commands = [client.clone(), server.clone()].concat();

@@ -41,7 +41,7 @@ wit_bindgen::generate!({
     export_macro_name: "__export_horizon_mod",
     default_bindings_module: "horizon_mod_sdk",
 });
-/// The native path (spike step 0): the same types, traits and functions,
+/// The native path: the same types, traits and functions,
 /// generated into `src/native.rs` from the same `horizon.wit` — a mod
 /// compiled into the process calls the host directly.
 #[cfg(feature = "native")]
@@ -226,7 +226,7 @@ macro_rules! export_mod {
                     <Export as $crate::__GuiScreensGuest>::clicked,
                 );
             };
-            /// The mod's exports as function pointers (spike step 0).
+            /// The mod's exports as function pointers.
             #[cfg(not(feature = "wit"))]
             pub fn __native_mod() -> $crate::native::NativeVtable {
                 use $crate::native as n;
@@ -293,9 +293,9 @@ pub mod server {
     // The native path: one set of types for both worlds, so `horizon` here
     // points at the same modules the client side re-exports.
     #[cfg(feature = "native")]
-    pub use crate::native::horizon;
-    #[cfg(feature = "native")]
     pub use crate::native::exports;
+    #[cfg(feature = "native")]
+    pub use crate::native::horizon;
 
     pub use crate::network;
     pub use exports::horizon::mods::block_entity_events::{BlockEntity, Guest as __BlockGuest};
@@ -1303,7 +1303,7 @@ macro_rules! export_server_mod {
             const _: () = {
                 let _ = <Export as $crate::server::__Guest>::init;
             };
-            /// The mod's exports as function pointers (spike step 0): the
+            /// The mod's exports as function pointers: the
             /// game calls these directly, with the host in a thread-local.
             #[cfg(not(feature = "wit"))]
             pub fn __native_mod() -> $crate::native::NativeVtable {

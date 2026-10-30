@@ -7,7 +7,7 @@ publish = false
 description = "Example Horizon server mod: greets players, announces newcomers, /online and /mined"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]
 
 [dependencies]
 horizon-mod-sdk = { path = "../.." }

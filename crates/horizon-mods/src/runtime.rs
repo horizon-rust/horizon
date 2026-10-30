@@ -1,6 +1,6 @@
-//! Loading and calling mods compiled into the process (spike step 0): the
-//! SDK's native bindings replace wasmtime's `bindgen!`; a mod's exports are
-//! a vtable of function pointers and its imports call a thread-local host.
+//! Loading and calling mods compiled into the process: the SDK's native
+//! bindings replace wasmtime's `bindgen!`; a mod's exports are a vtable of
+//! function pointers and its imports call a thread-local host.
 use crate::manifest::{Manifest, Package, Side};
 use horizon_mod_sdk::native::{
     self, NativeError, NativeStore, NativeVtable,
@@ -13,21 +13,15 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-pub use native::horizon::mods::{
-    game::{Clock, Hit, Player},
-    hud::{Corner, Line},
-};
-use native::horizon::mods::{
-    chat, command, game, gui_screens, hud, log as mod_log, machine_recipes, saved_data, storage,
-};
-use native::horizon::mods::input;
-use native::horizon::mods::render;
-use native::horizon::mods::recipes;
-use native::horizon::mods::browser;
-use native::horizon::mods::multiblocks;
-use native::horizon::mods::ui;
-use native::{HorizonMod, HorizonServerMod};
+use native::BlockEntityHost;
+use native::GuiScreensHost;
 pub use native::exports::horizon::mods::events::Registration;
+pub use native::exports::horizon::mods::server_events::{
+    Argument, ArgumentKind, ArgumentValue, BlockPos, ServerCommand,
+};
+pub use native::horizon::mods::block_entity_events::BlockEntity;
+pub use native::horizon::mods::block_use_events::UsedBlock;
+use native::horizon::mods::browser;
 /// The free screen a `gui-screens.open` pushed (WIT `interface
 /// gui-screens`), for the game to draw as the mod laid it out.
 pub use native::horizon::mods::gui_screens::{
@@ -35,17 +29,23 @@ pub use native::horizon::mods::gui_screens::{
     ItemWidget as GuiItem, ListWidget as GuiList, Point as GuiPoint, Rect as GuiRect,
     TextWidget as GuiText, Widget as GuiWidget,
 };
-use native::GuiScreensHost;
-pub use native::horizon::mods::players::{GameMode, Player as ServerPlayer};
-pub use native::horizon::mods::world::BlockChange;
-pub use native::exports::horizon::mods::server_events::{
-    Argument, ArgumentKind, ArgumentValue, BlockPos, ServerCommand,
-};
-pub use native::horizon::mods::block_entity_events::BlockEntity;
-pub use native::horizon::mods::block_use_events::UsedBlock;
-use native::horizon::mods::{block_entities, energy, fluids, items as mod_items};
-use native::BlockEntityHost;
+use native::horizon::mods::input;
 pub use native::horizon::mods::menus::{MenuItem, MenuSlot, SlotMode};
+use native::horizon::mods::multiblocks;
+pub use native::horizon::mods::players::{GameMode, Player as ServerPlayer};
+use native::horizon::mods::recipes;
+use native::horizon::mods::render;
+use native::horizon::mods::ui;
+pub use native::horizon::mods::world::BlockChange;
+use native::horizon::mods::{block_entities, energy, fluids, items as mod_items};
+use native::horizon::mods::{
+    chat, command, game, gui_screens, hud, log as mod_log, machine_recipes, saved_data, storage,
+};
+pub use native::horizon::mods::{
+    game::{Clock, Hit, Player},
+    hud::{Corner, Line},
+};
+use native::{HorizonMod, HorizonServerMod};
 /// The inventory a menu's bound slots show (`menus.open-inventory`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MenuInventory {
@@ -53,22 +53,22 @@ pub struct MenuInventory {
     pub pos: [i32; 3],
     pub slots: Vec<MenuSlot>,
 }
-use native::horizon::mods::menus;
-use native::{MenuHost, UseHost};
+use native::horizon::mods::config as mod_config;
+use native::horizon::mods::entities;
 /// A mob's options at spawn, as the mod gave them.
 pub use native::horizon::mods::entities::SpawnOptions as EntitySpawn;
-use native::horizon::mods::entities;
-use native::{EntityHost, ConfigHost};
-use native::horizon::mods::config as mod_config;
+use native::horizon::mods::menus;
+use native::{ConfigHost, EntityHost};
+use native::{MenuHost, UseHost};
 /// How many ticks pass between two looks at the config files.
 pub const CONFIG_POLL: u64 = 100;
 /// Config files one hook call may write.
 const CONFIG_WRITES_PER_CALL: u32 = 16;
 use native::GameEventsHost;
-pub use native::exports::horizon::mods::rich_events::{GroundStack, MobSpawn};
-use native::RichEventsHost;
-use native::horizon::mods::redstone;
 use native::RedstoneHost;
+use native::RichEventsHost;
+pub use native::exports::horizon::mods::rich_events::{GroundStack, MobSpawn};
+use native::horizon::mods::redstone;
 /// Block entities one `input-changed` pass tells a mod of.
 const REDSTONE_PER_TICK: usize = 256;
 /// Mobs one mod may have, and spawn in one call.
@@ -83,13 +83,14 @@ impl DamageSource {
     fn to_wit(&self) -> native::horizon::mods::rich_events::DamageSource {
         native::horizon::mods::rich_events::DamageSource {
             kind: self.kind.clone(),
-            cause: self.cause.as_ref().map(|c| {
-                native::horizon::mods::rich_events::EntityWho {
+            cause: self
+                .cause
+                .as_ref()
+                .map(|c| native::horizon::mods::rich_events::EntityWho {
                     id: c.id,
                     kind: c.kind.clone(),
                     health: c.health,
-                }
-            }),
+                }),
         }
     }
 }
@@ -154,9 +155,9 @@ pub struct EntityState {
 }
 /// The state lent for the current calls, shared by every mod's store.
 type EntityStateSlot = Arc<Mutex<Option<EntityState>>>;
+use native::horizon::mods::network;
 /// Capability `network`'s messages, one per side.
 use native::{NetClientHost, NetServerHost};
-use native::horizon::mods::network;
 /// Messages one hook call may send, and their bytes.
 const NET_MESSAGES_PER_CALL: u32 = 64;
 const NET_BYTES_PER_CALL: usize = 256 * 1024;
@@ -165,22 +166,22 @@ const NET_BYTES_PER_CALL: usize = 256 * 1024;
 /// cloned into each `State`.
 pub type InterModSlot = Arc<Mutex<crate::inter_mod::InterMod>>;
 use crate::inter_mod::{Delivery, Message, Target};
-use native::horizon::mods::inter_mod;
 use native::InterModHost;
+use native::ItemHost;
 /// The struck entity as `hurt-entity` tells of it.
 pub use native::exports::horizon::mods::item_events::Entity as ItemEntity;
 /// One player's claimed stack in an `inventory-tick` list.
 pub use native::exports::horizon::mods::item_events::PlayerStack;
 /// The block under the crosshair in `used-on-block`.
 pub use native::exports::horizon::mods::item_events::UsedBlock as ItemUsedBlock;
-/// A stack as capability `item-hooks` hands it to a mod: the item, its count
-/// and the mod's own bytes on it.
-pub use native::horizon::mods::item_hooks::HeldStack;
-use native::horizon::mods::item_hooks;
-use native::ItemHost;
 pub use native::horizon::mods::displays;
 pub use native::horizon::mods::displays::{Shape as DisplayShape, Transform};
 pub use native::horizon::mods::effects;
+use native::horizon::mods::inter_mod;
+use native::horizon::mods::item_hooks;
+/// A stack as capability `item-hooks` hands it to a mod: the item, its count
+/// and the mod's own bytes on it.
+pub use native::horizon::mods::item_hooks::HeldStack;
 /// Particles and sounds one hook call may send.
 const EFFECTS_PER_CALL: u32 = 128;
 /// Particles one `spawn-particle` sends.
@@ -220,45 +221,41 @@ const STACK_DATA: usize = 4096;
 /// (`displays.show-item`): its stack is a look, not storage.
 const DISPLAY_COMPONENTS: usize = 512;
 /// `set-data` calls one hook call may make: each rewrites the stack's
-/// components, so a loop of them needs its own bound beside fuel.
+/// components, so a loop of them needs its own bound.
 const SET_DATA_PER_CALL: u32 = 32;
 /// Stacks one `inventory-tick` call gets; a longer list comes in turns
 /// (the game walks it round-robin).
 pub const TICK_ITEMS: usize = 512;
-/// Capability `render`'s records: the game draws the shapes.
-pub use native::horizon::mods::input::{Event as InputEvent, HeldItem, ItemUse};
-/// What capability `render` asks the game to draw (WIT `interface render`).
-pub use native::horizon::mods::render::{
-    Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape,
-    Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape, SpriteShape,
-    TextShape, Zoom as ModZoom,
-};
+use native::MultiblockHost;
+pub use native::exports::horizon::mods::multiblock_events::Multiblock;
 /// What capability `recipes` reads (WIT `interface recipes`).
 pub use native::horizon::mods::browser::{
     Click as BrowserClick, Event as BrowserEvent, ItemKey as BrowserItemKey,
     Layout as BrowserLayout, RecipeView as BrowserRecipe, SlotClick as BrowserSlotClick,
     Stack as BrowserStack,
 };
+/// Capability `render`'s records: the game draws the shapes.
+pub use native::horizon::mods::input::{Event as InputEvent, HeldItem, ItemUse};
+pub use native::horizon::mods::multiblocks::{Cell, Mismatch, Structure};
 pub use native::horizon::mods::recipes::{
     Item as RecipeItem, Kind as RecipeKind, Recipe, Stack as RecipeStack,
 };
-pub use native::horizon::mods::multiblocks::{Cell, Mismatch, Structure};
-pub use native::exports::horizon::mods::multiblock_events::Multiblock;
-use native::MultiblockHost;
+/// What capability `render` asks the game to draw (WIT `interface render`).
+pub use native::horizon::mods::render::{
+    Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape,
+    Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape, SpriteShape,
+    TextShape, Zoom as ModZoom,
+};
 type ClientEvents = HorizonMod;
 type ServerEvents = native::HorizonServerMod;
+use native::UiHost;
 /// The widget model a `ui` screen or settings page shows (WIT `interface
 /// `ui`), for the game to draw with its menus' own widgets.
 pub use native::horizon::mods::ui::{
     ButtonWidget as UiButtonWidget, ItemWidget as UiItemWidget, ListWidget as UiListWidget,
     Screen as UiScreen, TextWidget as UiTextWidget, Widget as UiWidget,
 };
-use native::UiHost;
 
-
-const FUEL_TICK: u64 = 50_000_000;
-const FUEL_FRAME: u64 = 10_000_000;
-const FUEL_EVENT: u64 = 100_000_000;
 /// Blocks a mod may set per `world.set-blocks` call.
 pub const BLOCKS_PER_CALL: usize = 4096;
 /// Chat lines a mod may show per call, HUD lines and their length.
@@ -276,10 +273,9 @@ const STORAGE_QUOTA: u64 = 4 << 20;
 /// bound a flood of zero- or near-zero-byte files (each still a file name,
 /// a directory entry and an inode).
 const STORAGE_MAX_KEYS: usize = 64;
-/// Bytes `storage::set` may write across one hook call: fuel bounds a
-/// mod's CPU time per call, not the time a synchronous disk write takes, so
-/// a cheap-in-fuel loop replacing one key with large payloads needs its own
-/// cap, separate from the on-disk quota it would otherwise stay under.
+/// Bytes `storage::set` may write across one hook call: a loop replacing
+/// one key with large payloads would otherwise stay under the on-disk
+/// quota, so it needs a cap of its own.
 const STORAGE_WRITE_BUDGET: u64 = 1 << 20;
 
 /// What mods may read of the game, copied once per tick by the game.
@@ -674,10 +670,21 @@ struct Running {
     gui: Option<GuiScreensHost>,
     hooks: Hooks,
     /// It imports `game.raycast`.
+    ///
+    /// TODO(native, step 5): a compiled-in mod's imports are not read off a
+    /// component anymore, so this stands at `false`: the game computes no
+    /// view hit for a mod. Replace with an honest answer (or drop the flag
+    /// with the hook-points rework) when the native trust model is decided.
     raycasts: bool,
     /// It imports capability `recipes`.
+    ///
+    /// TODO(native, step 5): as `raycasts`, unreadable from a vtable; `false`
+    /// keeps the game from building recipe tables no mod reads.
     reads_recipes: bool,
     /// It imports capability `machine-recipes`.
+    ///
+    /// TODO(native, step 5): as `raycasts`; `true` keeps the machine-recipes
+    /// table built, which every mod that declared the capability gets.
     reads_machine_recipes: bool,
     /// Capability `block-entities`: the export and the blocks it claims.
     blocks: Option<(BlockEntityHost, Vec<String>)>,
@@ -824,9 +831,8 @@ struct State {
     /// Capability `storage`'s folder; made on first `set`.
     data_dir: PathBuf,
     /// Bytes `storage::set` may still write before this hook call ends
-    /// (reset per call in [`Mods::call`]): fuel bounds a mod's CPU time but
-    /// not disk I/O time, so a loop of small-fuel, large-payload `set`s
-    /// needs its own budget.
+    /// (reset per call in [`Mods::call`]): a loop of large-payload `set`s
+    /// needs its own budget beside the on-disk quota.
     storage_budget: u64,
     world: WorldSlot,
     entities: EntitySlot,
@@ -862,11 +868,12 @@ struct State {
     inter_sent: (u32, usize),
 }
 
-/// The installed mods and the engine running them. `Mods::default()` is
-/// the state with none: no engine, and every hook a no-op.
+/// The installed mods and the runtime calling them. `Mods::default()` is
+/// the state with none: no mods, and every hook a no-op.
 #[derive(Default)]
 pub struct Mods {
-    /// The mods compiled into this process (spike step 0), by mod id.
+    /// The mods compiled into this process, by mod id: the vtable each
+    /// one's `__native_mod()` gave whoever tied it into this build.
     native: Vec<(String, NativeVtable)>,
     entries: Vec<Entry>,
     snapshot: Arc<Snapshot>,
@@ -986,7 +993,7 @@ impl Mods {
                 return;
             };
             for e in gone {
-                self.call(i, FUEL_EVENT, |run| match &run.blocks {
+                self.call(i, |run| match &run.blocks {
                     Some((h, _)) => h
                         .horizon_mods_block_entity_events()
                         .call_removed(&mut run.store, &e),
@@ -1039,7 +1046,7 @@ impl Mods {
                 }
             }
             if !live.is_empty() {
-                self.call(i, FUEL_TICK, |run| match &run.blocks {
+                self.call(i, |run| match &run.blocks {
                     Some((h, _)) => {
                         h.horizon_mods_block_entity_events()
                             .call_tick(&mut run.store, tick, &live)
@@ -1063,7 +1070,7 @@ impl Mods {
 
     /// `multiblock-events.broken` in mod `i`.
     fn multiblock_broken(&mut self, i: usize, block: &Multiblock) {
-        self.call(i, FUEL_EVENT, |run| match &run.multiblocks {
+        self.call(i, |run| match &run.multiblocks {
             Some(h) => h
                 .horizon_mods_multiblock_events()
                 .call_broken(&mut run.store, block),
@@ -1207,7 +1214,7 @@ impl Mods {
         }
         for (formed, block) in events {
             if formed {
-                self.call(i, FUEL_EVENT, |run| match &run.multiblocks {
+                self.call(i, |run| match &run.multiblocks {
                     Some(h) => h
                         .horizon_mods_multiblock_events()
                         .call_formed(&mut run.store, &block),
@@ -1267,7 +1274,7 @@ impl Mods {
             state: state.to_owned(),
             data,
         };
-        self.call(i, FUEL_EVENT, |run| match &run.uses {
+        self.call(i, |run| match &run.uses {
             Some((h, _)) => {
                 h.horizon_mods_block_use_events()
                     .call_used(&mut run.store, player, &block)
@@ -1300,7 +1307,7 @@ impl Mods {
             if reload.changed.is_empty() {
                 continue;
             }
-            self.call(i, FUEL_EVENT, |run| match &run.config {
+            self.call(i, |run| match &run.config {
                 Some(h) => h
                     .horizon_mods_config_events()
                     .call_changed(&mut run.store, &reload.changed),
@@ -1321,7 +1328,7 @@ impl Mods {
             {
                 continue;
             }
-            self.call(i, FUEL_EVENT, |run| match &run.game_events {
+            self.call(i, |run| match &run.game_events {
                 Some(h) => call(h, &mut run.store),
                 None => Ok(()),
             });
@@ -1402,7 +1409,7 @@ impl Mods {
             {
                 continue;
             }
-            self.call(i, FUEL_EVENT, |run| match &run.rich_events {
+            self.call(i, |run| match &run.rich_events {
                 Some(h) => call(h, &mut run.store),
                 None => Ok(()),
             });
@@ -1430,7 +1437,7 @@ impl Mods {
             {
                 continue;
             }
-            let answered = self.call(i, FUEL_EVENT, |run| match &run.rich_events {
+            let answered = self.call(i, |run| match &run.rich_events {
                 Some(h) => h.horizon_mods_rich_events().call_hurt_player(
                     &mut run.store,
                     player,
@@ -1465,7 +1472,7 @@ impl Mods {
             {
                 continue;
             }
-            let answered = self.call(i, FUEL_EVENT, |run| match &run.rich_events {
+            let answered = self.call(i, |run| match &run.rich_events {
                 Some(h) => h.horizon_mods_rich_events().call_breaking_block(
                     &mut run.store,
                     player,
@@ -1498,7 +1505,7 @@ impl Mods {
             {
                 continue;
             }
-            let answered = self.call(i, FUEL_EVENT, |run| match &run.rich_events {
+            let answered = self.call(i, |run| match &run.rich_events {
                 Some(h) => h.horizon_mods_rich_events().call_picking_up_item(
                     &mut run.store,
                     player,
@@ -1580,7 +1587,7 @@ impl Mods {
         };
         for ((dimension, [x, y, z]), input) in changed {
             let input = sides_to_wit(input);
-            self.call(i, FUEL_EVENT, |run| match &run.redstone {
+            self.call(i, |run| match &run.redstone {
                 Some(h) => h.horizon_mods_redstone_events().call_input_changed(
                     &mut run.store,
                     &dimension,
@@ -1656,7 +1663,7 @@ impl Mods {
             if own.is_empty() {
                 continue;
             }
-            self.call(i, FUEL_TICK, |run| match &run.entities {
+            self.call(i, |run| match &run.entities {
                 Some(h) => h
                     .horizon_mods_entity_events()
                     .call_tick(&mut run.store, tick, &own),
@@ -1672,7 +1679,7 @@ impl Mods {
             return damage;
         };
         let wit = entity.to_wit();
-        let answered = self.call(i, FUEL_EVENT, |run| match &run.entities {
+        let answered = self.call(i, |run| match &run.entities {
             Some(h) => {
                 h.horizon_mods_entity_events()
                     .call_hurt(&mut run.store, player, &wit, damage)
@@ -1690,7 +1697,7 @@ impl Mods {
             return;
         };
         let wit = entity.to_wit();
-        self.call(i, FUEL_EVENT, |run| match &run.entities {
+        self.call(i, |run| match &run.entities {
             Some(h) => h
                 .horizon_mods_entity_events()
                 .call_died(&mut run.store, &wit),
@@ -1703,7 +1710,7 @@ impl Mods {
             return;
         };
         let wit = entity.to_wit();
-        self.call(i, FUEL_EVENT, |run| match &run.entities {
+        self.call(i, |run| match &run.entities {
             Some(h) => h
                 .horizon_mods_entity_events()
                 .call_removed(&mut run.store, &wit),
@@ -1716,7 +1723,7 @@ impl Mods {
             return;
         };
         let wit = entity.to_wit();
-        self.call(i, FUEL_EVENT, |run| match &run.entities {
+        self.call(i, |run| match &run.entities {
             Some(h) => h
                 .horizon_mods_entity_events()
                 .call_used(&mut run.store, player, &wit),
@@ -1736,7 +1743,7 @@ impl Mods {
             return;
         };
         let data = data.to_vec();
-        self.call(i, FUEL_EVENT, |run| match &run.net_server {
+        self.call(i, |run| match &run.net_server {
             Some(h) => h.horizon_mods_network_events().call_client_sent(
                 &mut run.store,
                 player,
@@ -1753,7 +1760,7 @@ impl Mods {
             return;
         };
         let data = data.to_vec();
-        self.call(i, FUEL_EVENT, |run| match &run.net_client {
+        self.call(i, |run| match &run.net_client {
             Some(h) => h.horizon_mods_network_client_events().call_server_sent(
                 &mut run.store,
                 channel,
@@ -1782,8 +1789,8 @@ impl Mods {
     /// at the tick's end, after every other hook: in rounds, so a library's
     /// answer reaches its asker within the same tick — a chain four hops
     /// deep fits four rounds, and what the last round still leaves waits
-    /// for the next tick. Each message is one event call's fuel for the
-    /// hearing mod; a call that traps turns it off, as any other does.
+    /// for the next tick. Each message is one event call into the hearing
+    /// mod; a call that panics turns it off, as any other does.
     pub fn inter_mod_tick(&mut self) {
         if !self.wants_inter_mod() {
             return;
@@ -1816,7 +1823,7 @@ impl Mods {
             let Some(i) = self.running_index(&to) else {
                 continue;
             };
-            self.call(i, FUEL_EVENT, |run| match &run.inter_mod {
+            self.call(i, |run| match &run.inter_mod {
                 Some(h) => h.horizon_mods_inter_mod_events().call_message(
                     &mut run.store,
                     &from,
@@ -1848,7 +1855,7 @@ impl Mods {
         let Some(i) = self.running_index(mod_id) else {
             return;
         };
-        self.call(i, FUEL_EVENT, |run| match &run.menus {
+        self.call(i, |run| match &run.menus {
             Some(h) => h.horizon_mods_menu_events().call_clicked(
                 &mut run.store,
                 player,
@@ -1865,7 +1872,7 @@ impl Mods {
         let Some(i) = self.running_index(mod_id) else {
             return;
         };
-        self.call(i, FUEL_EVENT, |run| match &run.menus {
+        self.call(i, |run| match &run.menus {
             Some(h) => h
                 .horizon_mods_menu_events()
                 .call_closed(&mut run.store, player, menu),
@@ -1906,7 +1913,7 @@ impl Mods {
             z: pos[2],
             state: state.to_owned(),
         });
-        self.call(i, FUEL_EVENT, |run| match &run.items {
+        self.call(i, |run| match &run.items {
             Some((h, _)) => match &block {
                 Some(b) => h.horizon_mods_item_events().call_used_on_block(
                     &mut run.store,
@@ -1933,7 +1940,7 @@ impl Mods {
             if stacks.is_empty() {
                 continue;
             }
-            self.call(i, FUEL_TICK, |run| match &run.items {
+            self.call(i, |run| match &run.items {
                 Some((h, _)) => {
                     h.horizon_mods_item_events()
                         .call_inventory_tick(&mut run.store, tick, stacks)
@@ -1957,7 +1964,7 @@ impl Mods {
         let Some(i) = self.running_index(mod_id) else {
             return damage;
         };
-        let answer = self.call(i, FUEL_EVENT, |run| match &run.items {
+        let answer = self.call(i, |run| match &run.items {
             Some((h, _)) => h.horizon_mods_item_events().call_hurt_entity(
                 &mut run.store,
                 player,
@@ -1985,7 +1992,7 @@ impl Mods {
             {
                 continue;
             }
-            let answer = self.call(i, FUEL_EVENT, |run| match &run.items {
+            let answer = self.call(i, |run| match &run.items {
                 Some((h, _)) => {
                     h.horizon_mods_item_events()
                         .call_hurt(&mut run.store, player, damage, source)
@@ -2059,10 +2066,10 @@ impl Mods {
     ) -> Mods {
         Mods::load_for(Runs::Both, paths, enabled, reserved, None, None)
     }
-    /// Starts the mod whose folder is `dir` with the code compiled into the
-    /// process (spike step 0): the manifest and the content are read as the
-    /// game reads a folder mod's, and the exports come from `vt`, the vtable
-    /// the mod's `__native_mod()` gave the runner.
+    /// Starts the mod whose folder (or `.hmod`) is `dir` with the code
+    /// compiled into the process: the manifest and the content are read as
+    /// the game reads a folder mod's, and the exports come from `vt`, the
+    /// vtable the mod's `__native_mod()` gave the runner.
     pub fn load_native(
         runs: Runs,
         dir: &Path,
@@ -2070,53 +2077,49 @@ impl Mods {
         recipes: Option<Arc<crate::machine_recipes::MachineRecipes>>,
         multiblocks: Option<Arc<crate::multiblocks::Templates>>,
     ) -> Mods {
-        let mut mods = Mods::default();
-        if let Some(recipes) = recipes
-            && let Ok(mut slot) = mods.machine_recipes.lock()
-        {
-            *slot = Some(recipes);
-        }
-        if let Some(multiblocks) = multiblocks
-            && let Ok(mut slot) = mods.multiblocks.lock()
-        {
-            *slot = Some(multiblocks);
-        }
-        let read = Package::read(dir);
-        let mut entry = Entry {
-            path: dir.to_path_buf(),
-            manifest: None,
-            status: Status::Off,
-            cost: Duration::ZERO,
-            run: None,
-            modified: modified(dir),
-        };
-        match &read {
-            Err(e) => entry.status = Status::Failed(e.clone()),
-            Ok(package) => {
-                entry.manifest = Some(package.manifest.clone());
-                if runs.starts(package.manifest.side) {
-                    mods.native.push((package.manifest.id.clone(), vt));
-                    let content = crate::Content::read(dir, &package.manifest);
-                    let started = content.and_then(|_| mods.start(dir, package, &|_| false));
-                    entry.status = match started {
-                        Ok(run) => {
-                            entry.run = run;
-                            Status::Running
-                        }
-                        Err(e) => Status::Failed(e),
-                    };
-                } else {
-                    entry.status = Status::Elsewhere;
-                }
+        let id = Package::read(dir)
+            .map(|p| p.manifest.id)
+            .unwrap_or_else(|_| "?".into());
+        Mods::load_with(
+            runs,
+            std::slice::from_ref(&dir.to_path_buf()),
+            vec![(id, vt)],
+            |_| true,
+            |_| false,
+            recipes,
+            multiblocks,
+        )
+    }
+    /// [`Mods::load_native`] for several mods at once: `native` pairs each
+    /// package path with its mod's vtable (the mod's `__native_mod()`), and
+    /// the same gates as [`Mods::load_for`] — `enabled`, `reserved`, `runs`
+    /// and capability `inter-mod`'s start order — decide which of them runs.
+    pub fn load_native_for(
+        runs: Runs,
+        native: &[(&Path, NativeVtable)],
+        enabled: impl Fn(&str) -> bool,
+        reserved: impl Fn(&str) -> bool,
+        recipes: Option<Arc<crate::machine_recipes::MachineRecipes>>,
+        multiblocks: Option<Arc<crate::multiblocks::Templates>>,
+    ) -> Mods {
+        let mut registry = Vec::with_capacity(native.len());
+        let mut paths = Vec::with_capacity(native.len());
+        for (path, vt) in native {
+            let id = Package::read(path).ok().map(|p| p.manifest.id);
+            paths.push(path.to_path_buf());
+            if let Some(id) = id {
+                registry.push((id, *vt));
             }
         }
-        if let Status::Failed(reason) = &entry.status {
-            let id = entry.manifest.as_ref().map_or("?", |m| m.id.as_str());
-            log::warn!("Horizon: native mod {id} did not start: {reason}");
-        }
-        mods.entries.push(entry);
-        mods.generation += 1;
-        mods
+        Mods::load_with(
+            runs,
+            &paths,
+            registry,
+            enabled,
+            reserved,
+            recipes,
+            multiblocks,
+        )
     }
     /// [`Mods::load`], starting only the mods `runs` says this game runs; the
     /// others that are on are [`Status::Elsewhere`]. `recipes` is capability
@@ -2134,6 +2137,28 @@ impl Mods {
         recipes: Option<Arc<crate::machine_recipes::MachineRecipes>>,
         multiblocks: Option<Arc<crate::multiblocks::Templates>>,
     ) -> Mods {
+        Mods::load_with(
+            runs,
+            paths,
+            Vec::new(),
+            enabled,
+            reserved,
+            recipes,
+            multiblocks,
+        )
+    }
+    /// [`Mods::load_for`]'s body, with `native` the vtables of the mods
+    /// compiled into the process, by manifest id: a package whose id is in
+    /// it runs that code, the others are content-only.
+    fn load_with(
+        runs: Runs,
+        paths: &[PathBuf],
+        native: Vec<(String, NativeVtable)>,
+        enabled: impl Fn(&str) -> bool,
+        reserved: impl Fn(&str) -> bool,
+        recipes: Option<Arc<crate::machine_recipes::MachineRecipes>>,
+        multiblocks: Option<Arc<crate::multiblocks::Templates>>,
+    ) -> Mods {
         let mut mods = Mods::default();
         if let Some(recipes) = recipes
             && let Ok(mut slot) = mods.machine_recipes.lock()
@@ -2145,6 +2170,7 @@ impl Mods {
         {
             *slot = Some(multiblocks);
         }
+        mods.native = native;
         // Every package read once, before any of them starts: the start
         // order below needs every manifest. The entries themselves keep the
         // paths' own order — the Mods page's rows and the commands'
@@ -2238,12 +2264,22 @@ impl Mods {
         reserved: &dyn Fn(&str) -> bool,
     ) -> Result<Option<Running>, String> {
         let m = &package.manifest;
-        // A mod compiled into the process (spike step 0): its vtable stands
-        // in for the component. Such a mod imports everything it was built
-        // with, so the manifest's import gate and the API-level check do not
-        // apply to it; a vtable the runner did not register is a content
-        // mod's `None`.
-        let Some(vt) = self.native.iter().find(|(id, _)| id == &m.id).map(|(_, vt)| *vt) else {
+        // A mod compiled into the process: its vtable stands in for the
+        // component. Such a mod imports everything it was built with, so
+        // the manifest's import gate (`check_imports`) and the API-level
+        // check do not apply to it.
+        //
+        // TODO(native, step 5): decide the trust model for compiled-in
+        // mods — the capabilities their manifest declares against what they
+        // actually call cannot be read off a vtable the way they were read
+        // off a component's imports. A vtable the runner did not register
+        // is a content mod's `None`.
+        let Some(vt) = self
+            .native
+            .iter()
+            .find(|(id, _)| id == &m.id)
+            .map(|(_, vt)| *vt)
+        else {
             return Ok(None);
         };
         // Two running mods with the same id would share one `data_dir`
@@ -2378,7 +2414,7 @@ impl Mods {
             && m.capabilities.contains(&crate::Capability::BlockEntities)
             && let Some(host) = BlockEntityHost::new(&vt)
         {
-                let mut claimed = host
+            let mut claimed = host
                 .horizon_mods_block_entity_events()
                 .call_blocks(&mut store)
                 .map_err(|e| reason(&e))?;
@@ -2420,7 +2456,7 @@ impl Mods {
             && m.capabilities.contains(&crate::Capability::ItemHooks)
             && let Some(host) = ItemHost::new(&vt)
         {
-                let mut claimed = host
+            let mut claimed = host
                 .horizon_mods_item_events()
                 .call_items(&mut store)
                 .map_err(|e| reason(&e))?;
@@ -2497,6 +2533,7 @@ impl Mods {
             ui,
             gui,
             hooks,
+            // TODO(native, step 5): see the fields on `Running`.
             raycasts: false,
             reads_recipes: false,
             reads_machine_recipes: true,
@@ -2534,10 +2571,9 @@ impl Mods {
         self.snapshot = Arc::new(snapshot);
     }
 
-    /// Calls `f` on every running mod whose hooks `wants`, with `fuel`.
+    /// Calls `f` on every running mod whose hooks `wants`.
     fn each(
         &mut self,
-        fuel: u64,
         wants: impl Fn(&Hooks) -> bool,
         mut f: impl FnMut(&mut Running) -> Result<(), NativeError>,
     ) {
@@ -2547,19 +2583,17 @@ impl Mods {
                 .as_ref()
                 .is_some_and(|r| wants(&r.hooks))
             {
-                self.call(i, fuel, &mut f);
+                self.call(i, &mut f);
             }
         }
     }
     /// [`Mods::each`] over the client mods.
     fn each_client(
         &mut self,
-        fuel: u64,
         wants: impl Fn(&Registration) -> bool,
         mut f: impl FnMut(&ClientEvents, &mut NativeStore<State>) -> Result<(), NativeError>,
     ) {
         self.each(
-            fuel,
             |h| h.client().is_some_and(&wants),
             |run| match &run.hooks {
                 Hooks::Client(m, _) => f(m.horizon_mods_events(), &mut run.store),
@@ -2570,12 +2604,10 @@ impl Mods {
     /// [`Mods::each`] over the server mods.
     fn each_server(
         &mut self,
-        fuel: u64,
         wants: impl Fn(&ServerRegistration) -> bool,
         mut f: impl FnMut(&ServerEvents, &mut NativeStore<State>) -> Result<(), NativeError>,
     ) {
         self.each(
-            fuel,
             |h| h.server().is_some_and(&wants),
             |run| match &run.hooks {
                 Hooks::Server(m, _) => f(m.horizon_mods_server_events(), &mut run.store),
@@ -2584,11 +2616,10 @@ impl Mods {
         );
     }
 
-    /// One call into mod `i`; a trap or an overrun turns the mod off.
+    /// One call into mod `i`; a panic turns the mod off.
     fn call<R>(
         &mut self,
         i: usize,
-        fuel: u64,
         f: impl FnOnce(&mut Running) -> Result<R, NativeError>,
     ) -> Option<R> {
         let entry = &mut self.entries[i];
@@ -2602,7 +2633,7 @@ impl Mods {
         run.store.data_mut().effects_sent = 0;
         run.store.data_mut().config_writes = 0;
         let started = Instant::now();
-        let result = run.store.set_fuel(fuel).and_then(|()| f(run));
+        let result = f(run);
         // An average over about the last 64 calls.
         entry.cost = (entry.cost * 63 + started.elapsed()) / 64;
         let data = run.store.data_mut();
@@ -2639,15 +2670,15 @@ impl Mods {
 
     /// A game tick.
     pub fn tick(&mut self, tick: u64) {
-        self.each_client(FUEL_TICK, |h| h.tick, |m, s| m.call_tick(s, tick));
+        self.each_client(|h| h.tick, |m, s| m.call_tick(s, tick));
     }
     /// A rendered frame, `seconds` after the last.
     pub fn frame(&mut self, seconds: f32) {
-        self.each_client(FUEL_FRAME, |h| h.frame, |m, s| m.call_frame(s, seconds));
+        self.each_client(|h| h.frame, |m, s| m.call_frame(s, seconds));
     }
     /// A chat line the player received, as plain text.
     pub fn chat(&mut self, text: &str) {
-        self.each_client(FUEL_EVENT, |h| h.chat, |m, s| m.call_chat(s, text));
+        self.each_client(|h| h.chat, |m, s| m.call_chat(s, text));
     }
     /// Whether a running client mod owns `/name`.
     pub fn has_command(&self, name: &str) -> bool {
@@ -2667,7 +2698,7 @@ impl Mods {
         let Some(i) = self.command_owner(false, name) else {
             return false;
         };
-        let result = self.call(i, FUEL_EVENT, |run| match &run.hooks {
+        let result = self.call(i, |run| match &run.hooks {
             Hooks::Client(m, _) => m
                 .horizon_mods_events()
                 .call_command(&mut run.store, name, args),
@@ -2694,32 +2725,23 @@ impl Mods {
 
     /// A server tick.
     pub fn server_tick(&mut self, tick: u64) {
-        self.each_server(FUEL_TICK, |h| h.tick, |m, s| m.call_tick(s, tick));
+        self.each_server(|h| h.tick, |m, s| m.call_tick(s, tick));
     }
     /// `player` joined the server (they are in the snapshot's players).
     pub fn player_joined(&mut self, player: &ServerPlayer) {
-        self.each_server(
-            FUEL_EVENT,
-            |h| h.joins,
-            |m, s| m.call_player_joined(s, player),
-        );
+        self.each_server(|h| h.joins, |m, s| m.call_player_joined(s, player));
     }
     /// `player` left the server (they are no longer in the snapshot's players).
     pub fn player_left(&mut self, player: &ServerPlayer) {
-        self.each_server(
-            FUEL_EVENT,
-            |h| h.joins,
-            |m, s| m.call_player_left(s, player),
-        );
+        self.each_server(|h| h.joins, |m, s| m.call_player_left(s, player));
     }
     /// A chat message `player` sent, as plain text.
     pub fn player_chat(&mut self, player: &ServerPlayer, text: &str) {
-        self.each_server(FUEL_EVENT, |h| h.chat, |m, s| m.call_chat(s, player, text));
+        self.each_server(|h| h.chat, |m, s| m.call_chat(s, player, text));
     }
     /// `player` broke `state` at `pos`.
     pub fn block_broken(&mut self, player: &ServerPlayer, pos: BlockPos, state: &str) {
         self.each_server(
-            FUEL_EVENT,
             |h| h.blocks,
             |m, s| m.call_block_broken(s, player, pos, state),
         );
@@ -2727,7 +2749,6 @@ impl Mods {
     /// `player` placed `state` at `pos`.
     pub fn block_placed(&mut self, player: &ServerPlayer, pos: BlockPos, state: &str) {
         self.each_server(
-            FUEL_EVENT,
             |h| h.blocks,
             |m, s| m.call_block_placed(s, player, pos, state),
         );
@@ -2767,7 +2788,7 @@ impl Mods {
                 return true;
             }
         };
-        let result = self.call(i, FUEL_EVENT, |run| match &run.hooks {
+        let result = self.call(i, |run| match &run.hooks {
             Hooks::Server(m, _) => m.horizon_mods_server_events().call_command(
                 &mut run.store,
                 player,
@@ -3131,7 +3152,7 @@ impl Mods {
             .and_then(|e| e.run.as_ref())
             .is_some_and(|r| r.ui.is_some());
         if has_ui {
-            self.call(i, FUEL_EVENT, |run| {
+            self.call(i, |run| {
                 f(run.ui.as_ref().expect("checked above"), &mut run.store)
             });
         }
@@ -3149,7 +3170,7 @@ impl Mods {
             .and_then(|e| e.run.as_ref())
             .is_some_and(|r| r.gui.is_some());
         if has_gui {
-            self.call(i, FUEL_EVENT, |run| {
+            self.call(i, |run| {
                 f(run.gui.as_ref().expect("checked above"), &mut run.store)
             });
         }
@@ -4002,7 +4023,7 @@ impl inter_mod::Host for State {
 impl State {
     /// One more message on the bus, within the call's caps: the same
     /// channel rule and size as `network`'s, and a per-call budget of its
-    /// own, so a loop of sends costs more than fuel alone.
+    /// own, so a loop of sends is capped in calls, not only bytes.
     fn inter_send(
         &mut self,
         to: Option<String>,

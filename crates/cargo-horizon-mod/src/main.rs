@@ -211,8 +211,19 @@ fn build_in(root: &Path, release: bool) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Builds the crate for WebAssembly: its component, and Cargo's target folder.
+/// Builds the crate for WebAssembly: its component, and Cargo's target
+/// folder. The SDK's default is its native path (a mod compiled into the
+/// process); a component's exports come from the `wit` feature, which the
+/// mod's own Cargo.toml must forward to the SDK.
 fn compile(root: &Path, release: bool) -> Result<(Vec<u8>, PathBuf), String> {
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).map_err(|e| e.to_string())?;
+    if !manifest.contains("horizon-mod-sdk/wit") {
+        return Err(
+            "the mod's Cargo.toml forwards no `wit` feature, so the component \
+                    would have no exports: add\n  [features]\n  wit = [\"horizon-mod-sdk/wit\"]"
+                .into(),
+        );
+    }
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let mut cmd = Command::new(cargo);
     cmd.current_dir(root).args([
@@ -220,6 +231,9 @@ fn compile(root: &Path, release: bool) -> Result<(Vec<u8>, PathBuf), String> {
         "--lib",
         "--target",
         TARGET,
+        "--no-default-features",
+        "--features",
+        "wit",
         "--message-format=json-render-diagnostics",
     ]);
     if release {

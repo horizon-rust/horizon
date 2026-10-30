@@ -23,9 +23,9 @@ pub struct TestGame {
     mods: Mods,
     dir: PathBuf,
     hmod: PathBuf,
-    /// The mod compiled into the process (spike step 0), if that is how it
-    /// runs: its folder copy and its export vtable, for a `reload`.
-    native: Option<(PathBuf, NativeVtable)>,
+    /// The mods compiled into the process, if that is how they run: each
+    /// one's folder copy and its export vtable, for a `reload`.
+    native: Vec<(PathBuf, NativeVtable)>,
     /// What the mod reads with `game-read`; ticks move the clock as the game does.
     pub player: Option<Player>,
     pub clock: Option<Clock>,
@@ -247,17 +247,13 @@ fn scratch_dir() -> PathBuf {
 }
 
 impl TestGame {
-    /// Starts the mod at `hmod`, as the game would with it turned on. Errs
-    /// when it doesn't start, with the game's reason.
-    pub fn load(hmod: &Path) -> Result<TestGame, String> {
-        let dir = scratch_dir();
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        let copy = dir.join(hmod.file_name().unwrap_or("mod.hmod".as_ref()));
-        let mut game = TestGame {
+    /// An empty game whose scratch folder is `dir` and whose first mod (or
+    /// the only `.hmod`) is `hmod`.
+    fn fresh(dir: PathBuf, hmod: PathBuf) -> TestGame {
+        TestGame {
             mods: Mods::default(),
-            hmod: copy.clone(),
-            native: None,
+            hmod,
+            native: Vec::new(),
             dir,
             player: Some(default_player()),
             clock: Some(Clock {
@@ -279,48 +275,27 @@ impl TestGame {
             entity_lent: false,
             redstone_in: Default::default(),
             picked: Vec::new(),
-        };
+        }
+    }
+
+    /// Starts the mod at `hmod`, as the game would with it turned on. Errs
+    /// when it doesn't start, with the game's reason.
+    pub fn load(hmod: &Path) -> Result<TestGame, String> {
+        let dir = scratch_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let copy = dir.join(hmod.file_name().unwrap_or("mod.hmod".as_ref()));
+        let mut game = TestGame::fresh(dir, copy.clone());
         copy_mod(hmod, &copy)?;
         game.start()?;
         Ok(game)
     }
 
     /// Starts the mod whose folder is `dir` with its code compiled into
-    /// the process (spike step 0): the same sandbox as `load`, the exports
+    /// the process: the same sandbox as `load`, the exports
     /// from `vt` (the mod's `__native_mod()`), not a `.hmod`.
     pub fn load_native(dir: &Path, vt: NativeVtable) -> Result<TestGame, String> {
-        let scratch = scratch_dir();
-        let _ = std::fs::remove_dir_all(&scratch);
-        std::fs::create_dir_all(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
-        let copy = scratch.join(dir.file_name().unwrap_or("mod".as_ref()));
-        copy_tree(dir, &copy)?;
-        let mut game = TestGame {
-            mods: Mods::default(),
-            hmod: copy.clone(),
-            native: Some((copy.clone(), vt)),
-            dir: scratch,
-            player: Some(default_player()),
-            clock: Some(Clock {
-                game_time: 0,
-                day_time: 0,
-            }),
-            players: Vec::new(),
-            names: Vec::new(),
-            tick: 0,
-            world: Default::default(),
-            block_entities: Default::default(),
-            stacks: Default::default(),
-            entities: Vec::new(),
-            displays: Vec::new(),
-            entity_takes_use: Default::default(),
-            entity_next: 1000,
-            entity_died: Vec::new(),
-            entity_removed: Vec::new(),
-            entity_lent: false,
-            redstone_in: Default::default(),
-            picked: Vec::new(),
-        };
-        game.start_native();
+        let game = TestGame::load_native_multi(&[(dir, vt)])?;
         match &game.mods.entries()[0].status {
             Status::Failed(reason) => Err(format!("the mod didn't start: {reason}")),
             _ if !game.mods.is_running() => Err("the mod has no code to run".into()),
@@ -328,14 +303,87 @@ impl TestGame {
         }
     }
 
-    /// Starts (or restarts) the native mod this game holds.
+    /// [`TestGame::load_pair`] with the two mods' code compiled into the
+    /// process: a library and the mod that needs it, each with its own
+    /// vtable (the mod's `__native_mod()`), started together as `load_pair`
+    /// starts them.
+    pub fn load_native_pair(
+        a: &Path,
+        vt_a: NativeVtable,
+        b: &Path,
+        vt_b: NativeVtable,
+    ) -> Result<TestGame, String> {
+        let game = TestGame::load_native_multi(&[(a, vt_a), (b, vt_b)])?;
+        let failed = game
+            .mods
+            .entries()
+            .iter()
+            .find(|e| matches!(e.status, Status::Failed(_)))
+            .map(|e| match &e.status {
+                Status::Failed(reason) => format!("the mod didn't start: {reason}"),
+                _ => unreachable!("found only Failed above"),
+            });
+        match failed {
+            Some(e) => Err(e),
+            None => {
+                if !game.mods.is_running() {
+                    return Err("the mods have no code to run".into());
+                }
+                Ok(game)
+            }
+        }
+    }
+
+    /// The body of the native loaders: copies each mod's folder whole into
+    /// one scratch copy and starts them together, their code compiled into
+    /// the process.
+    fn load_native_multi(dirs: &[(&Path, NativeVtable)]) -> Result<TestGame, String> {
+        let scratch = scratch_dir();
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
+        let mut native = Vec::with_capacity(dirs.len());
+        for (i, (dir, vt)) in dirs.iter().enumerate() {
+            let mut copy = scratch.join(dir.file_name().unwrap_or("mod".as_ref()));
+            if dirs.len() > 1
+                && native
+                    .iter()
+                    .any(|(p, _): &(PathBuf, NativeVtable)| p == &copy)
+            {
+                copy = scratch.join(format!("mod_{i}"));
+            }
+            copy_tree(dir, &copy)?;
+            native.push((copy, *vt));
+        }
+        let hmod = native
+            .first()
+            .map(|(p, _)| p.clone())
+            .ok_or("no mods to run")?;
+        let mut game = TestGame::fresh(scratch, hmod);
+        game.native = native;
+        game.start_native();
+        Ok(game)
+    }
+
+    /// Starts (or restarts) the native mods this game holds.
     fn start_native(&mut self) {
-        let Some((dir, vt)) = &self.native else {
+        if self.native.is_empty() {
             return;
-        };
-        let recipes = machine_recipes_of(dir);
-        let multiblocks = multiblocks_of(dir);
-        self.mods = Mods::load_native(Runs::Both, dir, *vt, recipes, multiblocks);
+        }
+        let recipes = machine_recipes_of(&self.hmod);
+        let multiblocks = multiblocks_of(&self.hmod);
+        let native: Vec<(&Path, NativeVtable)> = self
+            .native
+            .iter()
+            .map(|(p, vt)| (p.as_path(), *vt))
+            .collect();
+        self.mods = Mods::load_native_for(
+            Runs::Both,
+            &native,
+            |_| true,
+            |_| false,
+            recipes,
+            multiblocks,
+        );
     }
 
     fn start(&mut self) -> Result<(), String> {
@@ -370,32 +418,7 @@ impl TestGame {
         let copy_b = dir.join(b.file_name().unwrap_or("mod.hmod".as_ref()));
         copy_mod(a, &copy_a)?;
         copy_mod(b, &copy_b)?;
-        let mut game = TestGame {
-            mods: Mods::default(),
-            hmod: copy_a.clone(),
-            native: None,
-            dir,
-            player: Some(default_player()),
-            clock: Some(Clock {
-                game_time: 0,
-                day_time: 0,
-            }),
-            players: Vec::new(),
-            names: Vec::new(),
-            tick: 0,
-            world: Default::default(),
-            block_entities: Default::default(),
-            stacks: Default::default(),
-            entities: Vec::new(),
-            displays: Vec::new(),
-            entity_takes_use: Default::default(),
-            entity_next: 1000,
-            entity_died: Vec::new(),
-            entity_removed: Vec::new(),
-            entity_lent: false,
-            redstone_in: Default::default(),
-            picked: Vec::new(),
-        };
+        let mut game = TestGame::fresh(dir, copy_a.clone());
         game.start_paths(&[copy_a, copy_b])?;
         let failed = game
             .mods
@@ -416,7 +439,7 @@ impl TestGame {
     /// memory starts over, its `storage` stays.
     pub fn reload(&mut self) -> Result<(), String> {
         self.mods = Mods::default();
-        if self.native.is_some() {
+        if !self.native.is_empty() {
             self.start_native();
             return match &self.mods.entries()[0].status {
                 Status::Failed(reason) => Err(format!("the mod didn't start: {reason}")),

@@ -1131,7 +1131,7 @@ fn content_root_carries_a_server_mods_content() {
     assert_eq!(cell, BlockStateId(vanilla.registry.len() as u32));
     let facts = BlockFacts::load(&root, assets.registry).unwrap();
     assert_eq!(facts.get(cell).emission, 3);
-    let items = Items::load(&root, assets.registry, &facts).unwrap();
+    let items = Items::load(&root, assets.registry, &facts, &PackOverlay::NONE).unwrap();
     assert_eq!(items.items["cells:cell"].block, Some(cell));
     assert!(root.join("assets/cells/lang/en_us.json").is_file());
     let _ = fs::remove_dir_all(&scratch);

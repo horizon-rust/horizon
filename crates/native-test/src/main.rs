@@ -27,7 +27,10 @@ fn main() {
                 Ok(script.steps.len())
             });
         match result {
-            Ok(steps) => println!("test {} ... ok ({steps} steps)", script_path.to_string_lossy()),
+            Ok(steps) => println!(
+                "test {} ... ok ({steps} steps)",
+                script_path.to_string_lossy()
+            ),
             Err(e) => {
                 failed += 1;
                 println!("test {} ... FAILED\n  {e}", script_path.to_string_lossy());

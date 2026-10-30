@@ -7,7 +7,7 @@ publish = false
 description = "Example Horizon mod: a missile you launch with /missile and steer with the mouse"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]
 
 [dependencies]
 horizon-mod-sdk = { path = "../.." }
