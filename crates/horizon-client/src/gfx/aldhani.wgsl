@@ -10,9 +10,9 @@
 // them equal.
 // The slots a frame looks back over (one meteor at most each), the sky's tiles a side (a square
 // folded over the upper half of the sky, `aldhani_tile`) and the streaks a tile holds at most.
-const ALDHANI_METEORS: u32 = 8192u;
+const ALDHANI_METEORS: u32 = 32768u;
 const ALDHANI_TILES: u32 = 64u;
-const ALDHANI_TILE_CAP: u32 = 64u;
+const ALDHANI_TILE_CAP: u32 = 256u;
 // How far from its line a streak's light reaches at most, in radians (its glow fades to nothing
 // there): a streak is binned into every tile within it.
 const ALDHANI_REACH: f32 = 0.012;
@@ -226,7 +226,7 @@ fn bin(k: u32, m: AldhaniMeteor) {
     field.lines[k] = vec4(select(vec3(0.0), normal / s, s > 1e-7), atan2(s, dot(m.tail.xyz, m.head.xyz)));
     if max(m.colour.r, max(m.colour.g, m.colour.b)) > 0.0 { bin(k, m); }
 }
-// The shares' running sum (one workgroup: 32 meteors a thread, then a scan of the threads' sums)
+// The shares' running sum (one workgroup: 128 meteors a thread, then a scan of the threads' sums)
 // and the counts.
 var<workgroup> sums: array<f32, 256>;
 var<workgroup> burning: atomic<u32>;

@@ -350,9 +350,9 @@ fn rt_sky(d: vec3<f32>) -> vec3<f32> {
 // them equal.
 // The slots a frame looks back over (one meteor at most each), the sky's tiles a side (a square
 // folded over the upper half of the sky, `aldhani_tile`) and the streaks a tile holds at most.
-const ALDHANI_METEORS: u32 = 8192u;
+const ALDHANI_METEORS: u32 = 32768u;
 const ALDHANI_TILES: u32 = 64u;
-const ALDHANI_TILE_CAP: u32 = 64u;
+const ALDHANI_TILE_CAP: u32 = 256u;
 // How far from its line a streak's light reaches at most, in radians (its glow fades to nothing
 // there): a streak is binned into every tile within it.
 const ALDHANI_REACH: f32 = 0.012;
