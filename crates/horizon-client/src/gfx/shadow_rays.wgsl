@@ -65,6 +65,14 @@ struct Light {
 // For each 8-block cell of the grid (x, then z, then y), the eight lights lighting it most
 // (indices + 1, 0 none, 16 bits each, two to a word).
 @group(0) @binding(8) var<storage, read> cells: array<vec4<u32>>;
+// RT lighting's NEE cache (gfx/voxels.rs `Grid::visibility`): for each cell's eight lights, the
+// shadow rays drawn toward it and those that got there, so a light the cell can't see (behind a
+// wall) is drawn less, as Remix's NEE cache learns which lights reach a place.
+struct Seen {
+    tried: atomic<u32>,
+    reached: atomic<u32>,
+}
+@group(0) @binding(38) var<storage, read_write> visibility: array<Seen>;
 // RT lighting's light from the light sources reaching the pixel (rgb, linear, the faces' facing
 // in); a below 0 past the grid, where the terrain falls back on the block light level.
 @group(0) @binding(9) var block_mask: texture_storage_2d<rgba16float, write>;
@@ -797,10 +805,32 @@ const LIGHT_BUDGET: i32 = 16;
 // The cell of the grid holding grid-local `local`, its lights (up to eight, two indices a word) and
 // how many there are.
 fn light_cell(local: vec3<f32>) -> vec4<u32> {
+    let i = light_cell_index(local);
+    if i < 0 { return vec4(0u); }
+    return cells[i];
+}
+// The index of the cell `local` is in (-1 outside the grid).
+fn light_cell_index(local: vec3<f32>) -> i32 {
     let cell = vec3<i32>(floor(local / 8.0));
     let count = vec3<i32>(i32(rt.grid.z) / 8, 48, i32(rt.grid.z) / 8);
-    if any(cell < vec3(0)) || any(cell >= count) { return vec4(0u); }
-    return cells[(cell.y * count.z + cell.z) * count.x + cell.x];
+    if any(cell < vec3(0)) || any(cell >= count) { return -1; }
+    return (cell.y * count.z + cell.z) * count.x + cell.x;
+}
+// How often the shadow rays from cell `cell` toward its light in `slot` got there, as learnt so
+// far (a prior of one in two; at least a tenth, so a light that comes into view is found again).
+fn learnt(cell: i32, slot: i32) -> f32 {
+    if cell < 0 || slot < 0 { return 1.0; }
+    let s = u32(cell) * 8u + u32(slot);
+    let tried = f32(atomicLoad(&visibility[s].tried));
+    let reached = f32(atomicLoad(&visibility[s].reached));
+    return max((reached + 1.0) / (tried + 2.0), 0.1);
+}
+// The slot of light `index` in the cell's list (-1 not in it).
+fn slot_of(words: vec4<u32>, index: u32) -> i32 {
+    for (var k = 0; k < 8; k++) {
+        if cell_light(words, k) == index { return k; }
+    }
+    return -1;
 }
 fn cell_light(words: vec4<u32>, i: i32) -> u32 {
     return (words[i / 2] >> (u32(i % 2) * 16u)) & 0xffffu;
@@ -903,6 +933,7 @@ const RESERVOIR_HISTORY: f32 = 160.0;
 fn restir_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>, last_at: vec2<i32>,
     has_last: bool) -> vec4<f32> {
     let local = pos + rt.camera.xyz + rt.fraction.xyz - vec3(rt.grid.x, -64.0, rt.grid.y);
+    let cell = light_cell_index(local);
     let words = light_cell(local);
     var r = Reservoir(0u, 0.0, 0.0, 0.0);
     var chosen = 0.0;
@@ -916,7 +947,8 @@ fn restir_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>, last_at: vec2<i3
     for (var k = 0; k < 8; k++) {
         let index = cell_light(words, k);
         if index == 0u { continue; }
-        let p = luminance(light_path(index, local, n, vec3(0.0)).light);
+        // The target: the light's unshadowed light times how often it gets here (the NEE cache).
+        let p = luminance(light_path(index, local, n, vec3(0.0)).light) * learnt(cell, k);
         let w = p * candidates;
         r.sum += w;
         u = fract(u + vec2(0.618034, 0.754878));
@@ -933,7 +965,8 @@ fn restir_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>, last_at: vec2<i3
             let off = select(vec2<i32>((jitter * 2.0 - 1.0) * 6.0), vec2(0), j == 0);
             let last = last_reservoir(last_at + off);
             if last.x == 0u || light_key(last.x) != last.y { continue; }
-            let p = luminance(light_path(last.x, local, n, vec3(0.0)).light);
+            let p = luminance(light_path(last.x, local, n, vec3(0.0)).light)
+                * learnt(cell, slot_of(words, last.x));
             let seen = min(bitcast<f32>(last.z), RESERVOIR_HISTORY / 3.0);
             let w = p * bitcast<f32>(last.w) * seen;
             r.sum += w;
@@ -950,7 +983,15 @@ fn restir_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>, last_at: vec2<i3
     // The light chosen, toward a point of it drawn this frame, through one shadow ray.
     let offset = vec3(random2(texel, 60u), random2(texel, 61u).x) * 2.0 - 1.0;
     let path = light_path(r.light, local, n, offset);
-    let light = path.light * light_through(pos, path) * r.weight;
+    let through = light_through(pos, path);
+    let light = path.light * through * r.weight;
+    // What this shadow ray found, for the cell's NEE cache.
+    let slot = slot_of(words, r.light);
+    if cell >= 0 && slot >= 0 {
+        let s = u32(cell) * 8u + u32(slot);
+        atomicAdd(&visibility[s].tried, 1u);
+        if luminance(through) > 0.01 { atomicAdd(&visibility[s].reached, 1u); }
+    }
     reservoir_out = vec4(r.light, light_key(r.light), bitcast<u32>(r.seen), bitcast<u32>(r.weight));
     return vec4(light, 1.0);
 }

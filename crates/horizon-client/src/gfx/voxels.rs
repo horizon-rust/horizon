@@ -47,6 +47,10 @@ struct Grid {
     /// the eight that light it most (indices + 1, 0 none, two to a word).
     lights: wgpu::Buffer,
     cells: wgpu::Buffer,
+    /// RT lighting's NEE cache: for each cell's eight lights, the shadow rays drawn toward it and
+    /// those that reached it (two words), learnt by the rays (shadow_rays.wgsl `restir_light`) and
+    /// emptied when the cells' lists are made again.
+    visibility: wgpu::Buffer,
     /// The light sources changed in range: the buffers are made again.
     lights_dirty: bool,
 }
@@ -232,6 +236,12 @@ impl Voxels {
                     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 }),
+                visibility: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("RT lighting's NEE cache"),
+                    size: u64::from(CELLS[0] * CELLS[1] * CELLS[2]) * 8 * 8,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }),
                 lights_dirty: true,
             }
         });
@@ -241,6 +251,11 @@ impl Voxels {
     /// RT lighting's light sources and cells, and the blocks' shapes, while the grid runs.
     pub fn light_buffers(&self) -> Option<[&wgpu::Buffer; 3]> {
         self.grid.as_ref().map(|g| [&g.lights, &g.cells, &g.shapes])
+    }
+
+    /// RT lighting's NEE cache (`Grid::visibility`), while the grid runs.
+    pub fn light_visibility(&self) -> Option<&wgpu::Buffer> {
+        self.grid.as_ref().map(|g| &g.visibility)
     }
 
     /// The grid's solid and cutout masks, its bricks, its 32-block bricks and its blocks' colours,
@@ -414,6 +429,8 @@ impl Voxels {
             log::debug!("Horizon: {} light sources in the rays' grid", lights.len());
             queue.write_buffer(&grid.lights, 0, bytemuck::cast_slice(&lights));
             queue.write_buffer(&grid.cells, 0, bytemuck::cast_slice(&cells));
+            let size = u64::from(CELLS[0] * CELLS[1] * CELLS[2]) * 8 * 8;
+            queue.write_buffer(&grid.visibility, 0, &vec![0; size as usize]);
         }
         Some([origin[0], origin[1], grid.top])
     }

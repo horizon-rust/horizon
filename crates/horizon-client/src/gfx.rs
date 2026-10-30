@@ -3844,6 +3844,7 @@ impl Renderer {
             foveation,
             grid,
             lights,
+            self.voxels.light_visibility().expect("the grid runs"),
             &self.atmosphere.view,
             hw.as_ref().map(hw_rays::Bindings::hardware),
         )
@@ -6046,6 +6047,7 @@ impl Renderer {
                     },
                     grid,
                     self.voxels.light_buffers().expect("the grid runs"),
+                    self.voxels.light_visibility().expect("the grid runs"),
                     &self.atmosphere.view,
                     hw.as_ref().map(hw_rays::Bindings::hardware),
                 )[0]

@@ -356,6 +356,7 @@ impl ShadowRays {
                 entry(32, last),
                 entry(33, output),
                 entry(34, output),
+                entry(38, cache_binding),
             ]
             .into_iter()
             .chain(
@@ -650,6 +651,7 @@ impl ShadowRays {
         foveation: Foveation,
         grid: [&wgpu::TextureView; 5],
         lights: [&wgpu::Buffer; 3],
+        visibility: &wgpu::Buffer,
         sky: &wgpu::TextureView,
         hardware: Option<Hardware<'_>>,
     ) -> [wgpu::TextureView; 5] {
@@ -768,6 +770,10 @@ impl ShadowRays {
             view(32, &last_fast),
             view(33, &reflection),
             view(34, &refraction),
+            wgpu::BindGroupEntry {
+                binding: 38,
+                resource: visibility.as_entire_binding(),
+            },
         ];
         if let (true, Some(hw)) = (self.hardware, &hardware) {
             entries.extend([
