@@ -692,7 +692,7 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
         }
         // SlimeOuterLayer: the translucent outer cube.
         S::Slime => push(&mut v, "slime#outer", "entity/slime/slime", white, false),
-        S::Sheep if !m.extra.sheared => {
+        S::Sheep => {
             // MobRenderer.checkMagicName(entity, "jeb_"): an exact custom name.
             let jeb = m.custom_name.as_deref() == Some("jeb_");
             let color = abgr(if jeb {
@@ -700,6 +700,10 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
             } else {
                 sheep_wool_rgb(m.extra.color)
             });
+            // SheepWoolUndercoatLayer.submit tests neither `isSheared` nor the
+            // wool: its guard is `!isInvisible && (isJebSheep || woolColor !=
+            // WHITE) && !isBaby` (invisibility is the renderer's, above), so a
+            // sheared dyed sheep keeps its undercoat.
             if !m.is_baby() && (jeb || m.extra.color != 0) {
                 push(
                     &mut v,
@@ -709,22 +713,26 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
                     false,
                 );
             }
-            if m.is_baby() {
-                push(
-                    &mut v,
-                    "sheep_baby#wool",
-                    "entity/sheep/sheep_wool_baby",
-                    color,
-                    false,
-                );
-            } else {
-                push(
-                    &mut v,
-                    "sheep#wool",
-                    "entity/sheep/sheep_wool",
-                    color,
-                    false,
-                );
+            // SheepWoolLayer.submit starts with `if (state.isSheared) return;`:
+            // shearing takes the wool off, the undercoat stays.
+            if !m.extra.sheared {
+                if m.is_baby() {
+                    push(
+                        &mut v,
+                        "sheep_baby#wool",
+                        "entity/sheep/sheep_wool_baby",
+                        color,
+                        false,
+                    );
+                } else {
+                    push(
+                        &mut v,
+                        "sheep#wool",
+                        "entity/sheep/sheep_wool",
+                        color,
+                        false,
+                    );
+                }
             }
         }
         S::Creaking if super::creaking::eyes_glowing(m) => push(
@@ -2473,10 +2481,31 @@ mod tests {
             abgr(0x953A8D)
         );
         assert!(sheep_layer(&mob, "sheep#wool_undercoat", 50.0).is_none());
-        // Sheared: no wool layer at all.
+        // Sheared: no wool layer at all, but the dyed undercoat stays, since
+        // SheepWoolUndercoatLayer.submit tests no `isSheared` (#4305).
+        mob.custom_name = Some("jeb".into());
+        mob.extra.color = 14;
         mob.extra.age = 0;
         mob.extra.sheared = true;
         assert!(sheep_layer(&mob, "sheep#wool", 0.0).is_none());
+        assert_eq!(
+            sheep_layer(&mob, "sheep#wool_undercoat", 0.0)
+                .expect("a sheared dyed sheep keeps its undercoat")
+                .color,
+            dyed
+        );
+        // A sheared white sheep still shows nothing: the undercoat's own guard
+        // fails for white, exactly as for an unsheared one.
+        mob.extra.color = 0;
+        assert!(sheep_layer(&mob, "sheep#wool_undercoat", 0.0).is_none());
+        // A sheared `jeb_` sheep keeps its cycling undercoat (`isJebSheep`).
+        mob.custom_name = Some("jeb_".into());
+        assert_eq!(
+            sheep_layer(&mob, "sheep#wool_undercoat", 0.0)
+                .expect("a sheared jeb_ sheep keeps its undercoat")
+                .color,
+            abgr(0xE6E6E6)
+        );
     }
 }
 
