@@ -63,16 +63,31 @@ fn virtual_interface(name: &str) -> bool {
     .any(|p| name.starts_with(p))
 }
 
+/// Every interface's name and address.
+#[cfg(not(target_os = "horizon"))]
+fn interfaces() -> Vec<(String, IpAddr)> {
+    if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|i| (i.name.clone(), i.ip()))
+        .collect()
+}
+
+/// The Switch has no `getifaddrs`: no local addresses are offered (the relay still connects).
+#[cfg(target_os = "horizon")]
+fn interfaces() -> Vec<(String, IpAddr)> {
+    Vec::new()
+}
+
 /// This machine's addresses worth offering, best first: private IPv4 (the
 /// LAN), shared IPv4 (Tailscale's 100.64/10, CGNAT), other IPv4, one global
 /// IPv6. No link-local or unique-local; loopback on request.
 pub fn interface_addresses(loopback: bool) -> Vec<IpAddr> {
     let mut found: Vec<(u8, IpAddr)> = Vec::new();
-    for i in if_addrs::get_if_addrs().unwrap_or_default() {
-        if virtual_interface(&i.name) {
+    for (name, ip) in interfaces() {
+        if virtual_interface(&name) {
             continue;
         }
-        let ip = i.ip();
         let rank = match ip {
             IpAddr::V4(v4) if v4.is_loopback() => {
                 if loopback {

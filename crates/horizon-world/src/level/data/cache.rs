@@ -140,7 +140,7 @@ fn fingerprint(registry: &BlockRegistry, root: &Path) -> io::Result<[u8; 32]> {
     hasher.update(b"horizon resolved behaviours 2");
     // The build that resolved the tables: the version constant alone misses
     // loader changes that keep the snapshot layout.
-    let exe = std::env::current_exe()?;
+    let exe = horizon_core::exe::current_exe()?;
     let built = fs::metadata(&exe)?;
     hash_str(&mut hasher, &exe.to_string_lossy());
     hasher.update(built.len().to_le_bytes());
