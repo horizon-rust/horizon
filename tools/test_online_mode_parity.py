@@ -180,19 +180,21 @@ def session_file(directory, token):
 
 
 def fake_launcher(directory, renewed):
-    """The launcher's `account session` for the game: a renewed session file holding `renewed`,
-    or, without one, the answer that the account must sign in again in the browser."""
-    script = directory / 'launcher.sh'
+    """The launcher's `account session` for the game: a renewed session file holding `renewed` in
+    the sessions folder of the game's home (HORIZON_HOME, which the game passes on, as the real
+    launcher reads it), or, without one, the answer that the account must sign in again in the
+    browser. The game only runs a file named horizon-launcher."""
+    script = directory / 'horizon-launcher'
     if renewed:
-        renewed_file = directory / 'renewed.json'
-        answer = json.dumps({'session_file': str(renewed_file)})
-        body = (f"umask 077\nprintf '%s' '{json.dumps({'name': PLAYER, 'uuid': PLAYER_UUID, 'access_token': renewed})}'"
-                f" > '{renewed_file}'\n")
+        session = json.dumps({'name': PLAYER, 'uuid': PLAYER_UUID, 'access_token': renewed})
+        body = ('umask 077\nmkdir -p "$HORIZON_HOME/sessions"\n'
+                f"printf '%s' '{session}' > \"$HORIZON_HOME/sessions/renewed.json\"\n")
+        answer = """printf '{"session_file": "%s"}' "$HORIZON_HOME/sessions/renewed.json"\n"""
     else:
-        answer = json.dumps({'authentication': {'state': 'sign_in_required', 'message': 'Sign in again.'}})
-        body = ''
+        status = json.dumps({'authentication': {'state': 'sign_in_required', 'message': 'Sign in again.'}})
+        body, answer = '', f"printf '%s' '{status}'\n"
     script.write_text(f"#!/bin/sh\n[ \"$2 $3 $4\" = 'account session {PLAYER_UUID}' ] || exit 1\n"
-                      f"{body}printf '%s' '{answer}'\n")
+                      f"{body}{answer}")
     script.chmod(0o700)
     return script
 

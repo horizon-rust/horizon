@@ -141,9 +141,23 @@ pub enum Renewal {
     Failed(String),
 }
 
-/// The launcher that started the game, if it did.
+/// The launcher that started the game, if it did. The variable comes from the environment,
+/// which anything can set: only an absolute path to a `horizon-launcher` file is run.
 fn launcher_exe() -> Option<std::ffi::OsString> {
-    std::env::var_os("HORIZON_LAUNCHER_EXE")
+    std::env::var_os("HORIZON_LAUNCHER_EXE").filter(|exe| is_launcher(Path::new(exe)))
+}
+
+fn is_launcher(exe: &Path) -> bool {
+    exe.is_absolute()
+        && exe.is_file()
+        && exe
+            .file_stem()
+            .is_some_and(|stem| stem.eq_ignore_ascii_case("horizon-launcher"))
+}
+
+/// Where the launcher writes the sessions it renews (launcher/src/cli.rs `account session`).
+fn sessions_dir() -> std::path::PathBuf {
+    crate::logging::game_home().join("sessions")
 }
 
 /// The launcher `exe`, running `--json` and `args`, its answers on stdout.
@@ -170,17 +184,33 @@ fn launcher(
 /// Ask the launcher for a renewed session for this account (`account session`), keep it for
 /// later joins and return it. Blocks for the renewal: call it off the drawing thread.
 pub fn renew(uuid: u128) -> Result<Arc<AuthSession>, Renewal> {
-    renew_with(launcher_exe(), uuid)
+    renew_with(launcher_exe(), &sessions_dir(), uuid)
 }
 
-fn renew_with(exe: Option<std::ffi::OsString>, uuid: u128) -> Result<Arc<AuthSession>, Renewal> {
+fn renew_with(
+    exe: Option<std::ffi::OsString>,
+    sessions: &Path,
+    uuid: u128,
+) -> Result<Arc<AuthSession>, Renewal> {
     let out = launcher(exe, &["account", "session", &format!("{uuid:032x}")])?
         .wait_with_output()
         .map_err(|e| Renewal::Failed(e.to_string()))?;
     let answer: serde_json::Value = serde_json::from_slice(&out.stdout)
         .map_err(|_| Renewal::Failed("The launcher could not renew the session.".into()))?;
     if let Some(file) = answer["session_file"].as_str() {
-        let session = AuthSession::load(Path::new(file)).map_err(Renewal::Failed)?;
+        // Loading deletes the file: only ever one in the game's own sessions folder.
+        let file = Path::new(file);
+        let inside = |p: &Path| p.canonicalize().ok();
+        if file
+            .parent()
+            .and_then(inside)
+            .is_none_or(|d| Some(d) != inside(sessions))
+        {
+            return Err(Renewal::Failed(
+                "The launcher's session is not in the game's folder.".into(),
+            ));
+        }
+        let session = AuthSession::load(file).map_err(Renewal::Failed)?;
         if session.uuid != uuid {
             return Err(Renewal::Failed(
                 "The launcher renewed another account.".into(),
@@ -523,19 +553,37 @@ mod tests {
             r#"{"authentication":{"state":"sign_in_required","message":"Sign in again in your browser."}}"#,
         );
         assert_eq!(
-            renew_with(Some(refused), UUID).unwrap_err(),
+            renew_with(Some(refused), &dir, UUID).unwrap_err(),
             Renewal::SignIn
         );
         assert!(needs_sign_in(UUID));
         assert!(latest(&old).is_none());
         let renewed = fake_launcher(&dir, "renewed", r#"{"session_file":"FILE"}"#);
-        let fresh = renew_with(Some(renewed), UUID).unwrap();
+        let fresh = renew_with(Some(renewed), &dir, UUID).unwrap();
         assert_eq!(fresh.access_token, "renewed");
         assert_eq!(latest(&old).unwrap().access_token, "renewed");
         assert!(!needs_sign_in(UUID));
         // The read-once file is gone; no launcher means no renewal.
         assert!(!dir.join("renewed.json").exists());
-        assert_eq!(renew_with(None, UUID).unwrap_err(), Renewal::NoLauncher);
+        assert_eq!(
+            renew_with(None, &dir, UUID).unwrap_err(),
+            Renewal::NoLauncher
+        );
+        // A session file outside the game's sessions folder is neither read nor deleted.
+        let elsewhere = dir.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let stray = fake_launcher(&dir, "stray", r#"{"session_file":"FILE"}"#);
+        assert!(matches!(
+            renew_with(Some(stray), &elsewhere, UUID),
+            Err(Renewal::Failed(_))
+        ));
+        assert!(dir.join("stray.json").exists());
+        // Only an absolute path to a horizon-launcher file counts as the launcher.
+        let exe = dir.join("horizon-launcher");
+        std::fs::write(&exe, "").unwrap();
+        assert!(is_launcher(&exe));
+        assert!(!is_launcher(&dir.join("refused")));
+        assert!(!is_launcher(Path::new("horizon-launcher")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

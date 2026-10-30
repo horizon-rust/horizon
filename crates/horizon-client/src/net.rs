@@ -516,7 +516,12 @@ fn run(
                             Err(crate::auth::Renewal::SignIn) => {
                                 return Ok(SIGN_IN_AGAIN.to_owned());
                             }
-                            Err(_) => joined,
+                            Err(why) => {
+                                eprintln!(
+                                    "Horizon: the launcher could not renew the session: {why:?}"
+                                );
+                                joined
+                            }
                         };
                     }
                     if let Err(err) = joined {
