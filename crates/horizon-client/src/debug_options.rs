@@ -41,13 +41,18 @@ impl Category {
         }
     }
 }
-/// The switch an entry drives in the game, for the ones it can.
+/// What an entry drives in the game, for the ones Horizon draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Toggle {
-    /// `entity_hitboxes`: F3 + B.
+pub enum Effect {
+    /// The entry's own lines in the overlay (`DebugScreenEntry.display`):
+    /// its status decides whether they are drawn.
+    Lines,
+    /// `entity_hitboxes`: the F3 + B renderer.
     Hitboxes,
-    /// `chunk_borders`: F3 + G.
+    /// `chunk_borders`: the F3 + G renderer.
     ChunkBorders,
+    /// `3d_crosshair`: the crosshair drawn while the overlay is open.
+    Crosshair,
 }
 /// One `DebugScreenEntries` entry: its id, its category and, where Horizon
 /// draws it, the switch it drives.
@@ -55,30 +60,38 @@ pub struct Entry {
     /// `Identifier`'s path (the screen shows the id, not a label).
     pub id: &'static str,
     pub category: Category,
-    pub toggle: Option<Toggle>,
+    /// None: Horizon draws no such entry, so it lists it as unavailable.
+    pub effect: Option<Effect>,
 }
 const fn e(id: &'static str, category: Category) -> Entry {
     Entry {
         id,
         category,
-        toggle: None,
+        effect: None,
     }
 }
-const fn e_toggle(id: &'static str, category: Category, toggle: Toggle) -> Entry {
+const fn e_lines(id: &'static str, category: Category) -> Entry {
     Entry {
         id,
         category,
-        toggle: Some(toggle),
+        effect: Some(Effect::Lines),
+    }
+}
+const fn e_effect(id: &'static str, category: Category, effect: Effect) -> Entry {
+    Entry {
+        id,
+        category,
+        effect: Some(effect),
     }
 }
 /// `DebugScreenEntries`' entries, in its registration order.
 pub const ENTRIES: &[Entry] = &[
-    e("game_version", Category::Text),
-    e("fps", Category::Text),
-    e("tps", Category::Text),
+    e_lines("game_version", Category::Text),
+    e_lines("fps", Category::Text),
+    e_lines("tps", Category::Text),
     e("memory", Category::Text),
     e("detailed_memory", Category::Text),
-    e("system_specs", Category::Text),
+    e_lines("system_specs", Category::Text),
     e("looking_at_block_state", Category::Text),
     e("looking_at_block_tags", Category::Text),
     e("looking_at_fluid_state", Category::Text),
@@ -90,8 +103,8 @@ pub const ENTRIES: &[Entry] = &[
     e("entity_render_stats", Category::Text),
     e("particle_render_stats", Category::Text),
     e("chunk_source_stats", Category::Text),
-    e("player_position", Category::Text),
-    e("player_section_position", Category::Text),
+    e_lines("player_position", Category::Text),
+    e_lines("player_section_position", Category::Text),
     e("player_speed", Category::Text),
     e("light_levels", Category::Text),
     e("heightmap", Category::Text),
@@ -102,12 +115,12 @@ pub const ENTRIES: &[Entry] = &[
     e("sound_mood", Category::Text),
     e("sound_cache", Category::Text),
     e("post_effects", Category::Text),
-    e_toggle("entity_hitboxes", Category::Renderer, Toggle::Hitboxes),
-    e_toggle("chunk_borders", Category::Renderer, Toggle::ChunkBorders),
-    e("3d_crosshair", Category::Renderer),
+    e_effect("entity_hitboxes", Category::Renderer, Effect::Hitboxes),
+    e_effect("chunk_borders", Category::Renderer, Effect::ChunkBorders),
+    e_effect("3d_crosshair", Category::Renderer, Effect::Crosshair),
     e("chunk_section_paths", Category::Renderer),
     e("gpu_utilization", Category::Text),
-    e("simple_performance_impactors", Category::Text),
+    e_lines("simple_performance_impactors", Category::Text),
     e("chunk_section_octree", Category::Renderer),
     e("visualize_water_levels", Category::Renderer),
     e("visualize_heightmap", Category::Renderer),
@@ -142,6 +155,88 @@ impl Profile {
         match self {
             Self::Default => Text::translate("debug.options.profile.default", &[]),
             Self::Performance => Text::translate("debug.options.profile.performance", &[]),
+        }
+    }
+}
+/// `DebugScreenEntryList`: the status of every entry, kept across sessions.
+/// The screen edits it; the overlay and the F3 keys read it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entries {
+    status: Vec<Status>,
+}
+impl Default for Entries {
+    fn default() -> Self {
+        Self {
+            status: vec![Status::Always; ENTRIES.len()],
+        }
+    }
+}
+impl Entries {
+    /// The entry's index, by id.
+    pub fn index(id: &str) -> Option<usize> {
+        ENTRIES.iter().position(|e| e.id == id)
+    }
+    pub fn status(&self, id: &str) -> Status {
+        Self::index(id).map_or(Status::Always, |i| self.status[i])
+    }
+    pub fn set(&mut self, id: &str, status: Status) {
+        if let Some(i) = Self::index(id) {
+            self.status[i] = status;
+        }
+    }
+    pub fn set_at(&mut self, index: usize, status: Status) {
+        if let Some(slot) = self.status.get_mut(index) {
+            *slot = status;
+        }
+    }
+    pub fn statuses(&self) -> &[Status] {
+        &self.status
+    }
+    /// Whether the overlay draws the entry: `ALWAYS_ON` and `IN_OVERLAY` both
+    /// do while the overlay is open (Horizon has the one surface).
+    pub fn draws(&self, id: &str) -> bool {
+        self.status(id) != Status::Off
+    }
+    /// `DebugScreenEntryList.save`'s text: the entries that are not
+    /// `ALWAYS_ON`, as `id=1` (in the overlay) or `id=2` (never).
+    pub fn encode(&self) -> String {
+        self.status
+            .iter()
+            .enumerate()
+            .filter_map(|(i, status)| match status {
+                Status::Always => None,
+                Status::Overlay => Some(format!("{}=1", ENTRIES[i].id)),
+                Status::Off => Some(format!("{}=2", ENTRIES[i].id)),
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+    /// `DebugScreenEntryList`'s read: an unknown id or value is left out.
+    pub fn decode(text: &str) -> Self {
+        let mut entries = Self::default();
+        for part in text.split(',').filter(|p| !p.is_empty()) {
+            let Some((id, value)) = part.split_once('=') else {
+                continue;
+            };
+            let status = match value {
+                "1" => Status::Overlay,
+                "2" => Status::Off,
+                _ => continue,
+            };
+            entries.set(id, status);
+        }
+        entries
+    }
+    /// `DebugScreenProfile`: the default leaves the entries on, the
+    /// performance profile drops everything the profile turns off.
+    pub fn apply_profile(&mut self, profile: Profile) {
+        for (i, entry) in ENTRIES.iter().enumerate() {
+            self.status[i] = match (profile, entry.effect) {
+                (Profile::Performance, Some(Effect::Lines)) => Status::Off,
+                (Profile::Performance, Some(_)) => Status::Off,
+                (_, None) => self.status[i],
+                (Profile::Default, Some(_)) => Status::Always,
+            };
         }
     }
 }
@@ -281,13 +376,56 @@ mod tests {
     }
 
     #[test]
-    fn only_the_entries_horizon_draws_have_a_switch() {
-        let switches: Vec<&str> = ENTRIES
+    fn the_entries_horizon_draws_have_an_effect() {
+        let drawn: Vec<&str> = ENTRIES
             .iter()
-            .filter(|e| e.toggle.is_some())
+            .filter(|e| e.effect.is_some())
             .map(|e| e.id)
             .collect();
-        assert_eq!(switches, vec!["entity_hitboxes", "chunk_borders"]);
+        assert_eq!(
+            drawn,
+            vec![
+                "game_version",
+                "fps",
+                "tps",
+                "system_specs",
+                "player_position",
+                "player_section_position",
+                "entity_hitboxes",
+                "chunk_borders",
+                "3d_crosshair",
+                "simple_performance_impactors",
+            ]
+        );
+    }
+
+    #[test]
+    fn statuses_round_trip_through_the_saved_text() {
+        let mut e = Entries::default();
+        assert!(e.encode().is_empty());
+        e.set("fps", Status::Off);
+        e.set("biome", Status::Overlay);
+        // Sorted by entry order, the rest always on.
+        assert_eq!(e.encode(), "fps=2,biome=1");
+        let back = Entries::decode(&e.encode());
+        assert_eq!(back, e);
+        assert!(!back.draws("fps"));
+        assert!(back.draws("biome"));
+        assert!(back.draws("tps"));
+        // Unknown ids and values are ignored.
+        assert_eq!(Entries::decode("nope=2,fps=9"), Entries::default());
+    }
+
+    #[test]
+    fn the_performance_profile_turns_the_switches_off() {
+        let mut e = Entries::default();
+        e.apply_profile(Profile::Performance);
+        assert_eq!(e.status("entity_hitboxes"), Status::Off);
+        assert_eq!(e.status("fps"), Status::Off);
+        // Entries Horizon does not draw keep what they had.
+        assert_eq!(e.status("biome"), Status::Always);
+        e.apply_profile(Profile::Default);
+        assert_eq!(e.status("fps"), Status::Always);
     }
 
     #[test]

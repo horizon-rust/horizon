@@ -166,6 +166,8 @@ static TABLE: LazyLock<Vec<Def>> = LazyLock::new(|| {
         i("simulationDistance", 5, 32, 12),
         u("screenEffectScale", 1.0),
         def("soundDevice", O(AnyStr), V::Str(String::new())),
+        // `DebugScreenEntryList.save`: the debug entries that are not always on.
+        def("debugEntries", O(AnyStr), V::Str(String::new())),
         b("vignette", true),
         i("weatherRadius", 3, 10, 10),
         b("autoJump", false),

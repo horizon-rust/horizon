@@ -2,7 +2,7 @@
 //! three-state choice each, a search box and the default/performance profiles.
 use super::{Game, Screen};
 use horizon_client::{
-    debug_options::{DebugOptions, ENTRIES, LIST_WIDTH, Profile, Row, Status, Toggle},
+    debug_options::{DebugOptions, ENTRIES, Effect, LIST_WIDTH, Profile, Row, Status},
     hud::HudBatch,
     lang,
     text::Text,
@@ -16,13 +16,8 @@ const DONE_WIDTH: i32 = 60;
 const PROFILE_WIDTH: i32 = 120;
 impl Game<'_> {
     pub(super) fn open_debug_options(&mut self) {
-        let status = ENTRIES
-            .iter()
-            .map(|e| match e.toggle {
-                Some(toggle) if !self.debug_switch_on(toggle) => Status::Off,
-                _ => Status::Always,
-            })
-            .collect();
+        // The saved statuses are the source; the switches follow them.
+        let status = self.debug_entries.statuses().to_vec();
         self.debug_options = Some(DebugOptions::new(status));
         self.screen = Screen::DebugOptions;
         self.keys.clear();
@@ -35,37 +30,50 @@ impl Game<'_> {
         self.debug_options = None;
         self.screen = Screen::Playing;
         self.capture(true);
+        // `DebugScreenEntryList.save`: kept beside the other options.
+        self.settings.file.set(
+            "debugEntries",
+            horizon_client::options_file::V::Str(self.debug_entries.encode()),
+        );
+        self.settings.save(&Self::options_path());
     }
-    fn debug_switch_on(&self, toggle: Toggle) -> bool {
-        match toggle {
-            Toggle::Hitboxes => self.show_hitboxes,
-            Toggle::ChunkBorders => self.show_chunk_borders,
+    fn set_debug_switch(&mut self, effect: Effect, on: bool) {
+        match effect {
+            Effect::Hitboxes => self.show_hitboxes = on,
+            Effect::ChunkBorders => self.show_chunk_borders = on,
+            Effect::Crosshair => {}
+            Effect::Lines => {}
         }
     }
-    fn set_debug_switch(&mut self, toggle: Toggle, on: bool) {
-        match toggle {
-            Toggle::Hitboxes => self.show_hitboxes = on,
-            Toggle::ChunkBorders => self.show_chunk_borders = on,
+    /// Set one entry's status everywhere it is read.
+    fn set_debug_status(&mut self, index: usize, status: Status) {
+        if let Some(options) = self.debug_options.as_mut() {
+            options.status[index] = status;
+        }
+        self.debug_entries.set_at(index, status);
+        if let Some(effect) = ENTRIES[index].effect
+            && effect != Effect::Lines
+        {
+            self.set_debug_switch(effect, status != Status::Off);
         }
     }
     /// `DebugScreenProfile`: the default profile leaves every entry on, the
     /// performance profile keeps the screen text and drops the renderers.
     fn apply_debug_profile(&mut self, profile: Profile) {
-        for (i, entry) in ENTRIES.iter().enumerate() {
-            let status = match (profile, entry.toggle.is_some()) {
-                (_, false) => Status::Always,
-                (Profile::Performance, true) => Status::Off,
-                (Profile::Default, true) => Status::Always,
-            };
-            if let Some(options) = self.debug_options.as_mut() {
-                options.status[i] = status;
-            }
-            if let Some(toggle) = entry.toggle {
-                self.set_debug_switch(toggle, status != Status::Off);
-            }
-        }
+        self.debug_entries.apply_profile(profile);
         if let Some(options) = self.debug_options.as_mut() {
+            options
+                .status
+                .copy_from_slice(self.debug_entries.statuses());
             options.profile = profile;
+        }
+        for (i, entry) in ENTRIES.iter().enumerate() {
+            if let Some(effect) = entry.effect
+                && effect != Effect::Lines
+            {
+                let on = self.debug_entries.statuses()[i] != Status::Off;
+                self.set_debug_switch(effect, on);
+            }
         }
     }
     pub(super) fn draw_debug_options(&mut self, batch: &mut HudBatch) {
@@ -129,14 +137,14 @@ impl Game<'_> {
                     let entry = &ENTRIES[i];
                     // `OptionEntry`: the id, italic when the entry cannot be
                     // switched (vanilla's `isAllowed`).
-                    let name = if entry.toggle.is_some() {
+                    let name = if entry.effect.is_some() {
                         Text::literal(entry.id)
                     } else {
                         Text::literal(entry.id).italic()
                     };
                     batch.text_styled(atlas, &name, (x + 2) as f32, (y + 6) as f32, u32::MAX, true);
                     for (choice, [bx, by, bw, bh]) in DebugOptions::button_rects(rect) {
-                        let hover = entry.toggle.is_some()
+                        let hover = entry.effect.is_some()
                             && cursor.0 >= bx
                             && cursor.0 < bx + bw
                             && cursor.1 >= by
@@ -149,7 +157,7 @@ impl Game<'_> {
                             bw as f32,
                             bh as f32,
                             &choice.text(),
-                            entry.toggle.is_some(),
+                            entry.effect.is_some(),
                             hover,
                         );
                         // The chosen one is drawn as the pressed button.
@@ -274,13 +282,12 @@ impl Game<'_> {
             let Row::Entry(i, _) = row else {
                 continue;
             };
-            let Some(toggle) = ENTRIES[i].toggle else {
+            if ENTRIES[i].effect.is_none() {
                 continue;
-            };
+            }
             for (choice, [bx, by, bw, bh]) in DebugOptions::button_rects(rect) {
                 if cursor.0 >= bx && cursor.0 < bx + bw && cursor.1 >= by && cursor.1 < by + bh {
-                    options.status[i] = choice;
-                    self.set_debug_switch(toggle, choice != Status::Off);
+                    self.set_debug_status(i, choice);
                     return;
                 }
             }

@@ -309,17 +309,21 @@ impl Game<'_> {
             .map_or("0".into(), |mhz| {
                 debug_overlay::refresh_rate_label(f64::from(mhz) / 1000.0)
             });
-        d.priority(format!(
-            "{} fps T: {}{present} @{refresh}Hz",
-            self.fps.round() as i32,
-            if limit == 260 {
-                "inf".into()
-            } else {
-                limit.to_string()
-            },
-        ));
+        if self.debug_entries.draws("fps") {
+            d.priority(format!(
+                "{} fps T: {}{present} @{refresh}Hz",
+                self.fps.round() as i32,
+                if limit == 260 {
+                    "inf".into()
+                } else {
+                    limit.to_string()
+                },
+            ));
+        }
         // game_version: DebugEntryVersion (the launched version and brand).
-        d.priority(format!("Minecraft {VERSION_NAME} ({VERSION_NAME}/horizon)"));
+        if self.debug_entries.draws("game_version") {
+            d.priority(format!("Minecraft {VERSION_NAME} ({VERSION_NAME}/horizon)"));
+        }
         // player_position, player_section_position.
         if let Some(p) = self.player.as_ref() {
             let mut lines = debug_overlay::position(
@@ -330,38 +334,44 @@ impl Game<'_> {
                 self.streaming.forced.len(),
             );
             let section = lines.pop().unwrap_or_default();
-            if !self.reduced_debug_info() {
+            if self.debug_entries.draws("player_position") && !self.reduced_debug_info() {
                 d.group("position", lines);
             }
-            d.group("position", [section]);
+            if self.debug_entries.draws("player_section_position") {
+                d.group("position", [section]);
+            }
         }
         // simple_performance_impactors.
         let s = &self.settings;
-        d.line(format!(
-            "{}{}B: {}",
-            if s.improved_transparency {
-                "improved-transparency "
-            } else {
-                ""
-            },
-            match s.clouds.as_str() {
-                "false" => "",
-                "fast" => "fast-clouds ",
-                _ => "fancy-clouds ",
-            },
-            s.biome_blend
-        ));
-        d.line("Filtering: None");
-        d.line(format!(
-            "Terrain Rendering: {}",
-            if self.renderer.as_ref().is_some_and(|r| r.multi_draw) {
-                "multidrawindirect"
-            } else {
-                "naive"
-            }
-        ));
+        if self.debug_entries.draws("simple_performance_impactors") {
+            d.line(format!(
+                "{}{}B: {}",
+                if s.improved_transparency {
+                    "improved-transparency "
+                } else {
+                    ""
+                },
+                match s.clouds.as_str() {
+                    "false" => "",
+                    "fast" => "fast-clouds ",
+                    _ => "fancy-clouds ",
+                },
+                s.biome_blend
+            ));
+            d.line("Filtering: None");
+            d.line(format!(
+                "Terrain Rendering: {}",
+                if self.renderer.as_ref().is_some_and(|r| r.multi_draw) {
+                    "multidrawindirect"
+                } else {
+                    "naive"
+                }
+            ));
+        }
         // system_specs (no Java line: Horizon has no JVM).
-        if let Some(r) = self.renderer.as_ref() {
+        if self.debug_entries.draws("system_specs")
+            && let Some(r) = self.renderer.as_ref()
+        {
             static CPU: std::sync::OnceLock<String> = std::sync::OnceLock::new();
             d.group(
                 "system",
@@ -434,7 +444,7 @@ impl Game<'_> {
             d.group("shader pack", pass_lines);
         }
         // tps: DebugEntryTps for local and remote connections.
-        if self.player.is_some() {
+        if self.debug_entries.draws("tps") && self.player.is_some() {
             let [tx, rx] = self.debug_charts.packet_rates.map(|n| n.round() as i64);
             let (target, status) = if self.clock.sprinting() {
                 ("-".to_owned(), " (sprinting)")
@@ -525,7 +535,7 @@ impl Game<'_> {
     /// The default profile's `3d_crosshair` entry: on while the overlay is
     /// open, unless debug info is reduced.
     pub(super) fn debug_crosshair(&self) -> bool {
-        self.debug && !self.reduced_debug_info()
+        self.debug && !self.reduced_debug_info() && self.debug_entries.draws("3d_crosshair")
     }
     /// `Permissions.COMMANDS_GAMEMASTER` (`GameModeCommand.PERMISSION_CHECK`).
     pub(super) fn gamemaster(&self) -> bool {

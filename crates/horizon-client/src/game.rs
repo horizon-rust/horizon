@@ -1962,6 +1962,9 @@ struct Game<'a> {
     debug_charts: horizon_client::debug_chart::DebugCharts,
     /// The F3 + F6 screen's state.
     debug_options: Option<horizon_client::debug_options::DebugOptions>,
+    /// `DebugScreenEntryList`: each debug entry's status, the overlay's
+    /// source of truth (`debug_options.entries`, options `debugEntries`).
+    debug_entries: horizon_client::debug_options::Entries,
     show_hitboxes: bool,
     show_chunk_borders: bool,
     /// PauseScreen.showPauseMenu (false after F3+Escape).
@@ -14587,6 +14590,11 @@ impl<'a> Game<'a> {
             clicks: Default::default(),
             attack_clicks: 0,
             hand_strength: Default::default(),
+            // Read before `settings` moves into the struct: the saved
+            // `debugEntries` statuses.
+            debug_entries: horizon_client::debug_options::Entries::decode(
+                &settings.file.string("debugEntries"),
+            ),
             settings,
             tutorial,
             tutorial_toasts: Vec::new(),
