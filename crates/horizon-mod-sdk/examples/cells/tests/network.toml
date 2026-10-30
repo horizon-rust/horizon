@@ -59,6 +59,9 @@ command = "cellui"
 expect.net = ["Alex: cells/open=0 63 0 100 100000 0 1"]
 
 [[step]]
+hold = { item = "minecraft:blaze_rod" }
+
+[[step]]
 break = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
 
 [[step]]

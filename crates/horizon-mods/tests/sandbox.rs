@@ -1037,7 +1037,7 @@ fn the_examples_test_scripts_pass() {
             ran += 1;
         }
     }
-    assert_eq!(ran, 18);
+    assert_eq!(ran, 19);
 }
 
 /// Capability `inter-mod`: a library mod and the mod that needs it talk,

@@ -136,7 +136,11 @@ break = { x = -1, y = 63, z = -1, state = "minecraft:iron_block" }
 ticks = 21
 expect.broadcast = ["The core at 0 63 0 broke"]
 
-# The block a cell stood on is checked at the next tick.
+# The block a cell stood on is checked at the next tick. A cell yields
+# only to the energy staff (capability `rich-events`), so one is held.
+[[step]]
+hold = { item = "minecraft:blaze_rod" }
+
 [[step]]
 break = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
 

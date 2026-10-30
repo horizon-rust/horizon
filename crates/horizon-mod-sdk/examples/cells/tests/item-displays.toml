@@ -51,7 +51,12 @@ expect.displays = [
 
 # The cell broken: its charge, core and orbit go on the next tick (a
 # step's ticks run before its break, so tick 30 first moved the orbit to 90
-# degrees); the sentinel keeps its star.
+# degrees); the sentinel keeps its star. A cell yields only to the energy
+# staff (capability `rich-events`), so one is held first — in a step of its
+# own, for the mod reads the stacks as the step began.
+[[step]]
+hold = { item = "minecraft:blaze_rod" }
+
 [[step]]
 break = { x = 0, y = 64, z = 0, state = "minecraft:lodestone" }
 

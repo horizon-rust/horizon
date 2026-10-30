@@ -62,19 +62,33 @@ expect.told = ["Alex: 890 FE into the cell (890 FE)"]
 command = "staff"
 expect.feedback = "Staff in slot 0: 0 / 100000 FE"
 
-# The helmet's 10 FE take a hurt each: the fixed share, an FE a point.
+# The helmet's 10 FE take a hurt each: the fixed share, an FE a point. The
+# rich-events half lands first (capability `rich-events`), so the helmet
+# hears half of what was rolled.
 [[step]]
 hurt = { amount = 10.0, source = "minecraft:fireworks" }
-expect.told = ["Alex: The helmet takes 5.0 of 10.0 minecraft:fireworks"]
+expect.hurt = 0.0
+expect.told = [
+  "Alex: struck by minecraft:fireworks for 10, taking 5",
+  "Alex: The helmet takes 5.0 of 5.0 minecraft:fireworks",
+]
 
 [[step]]
 hurt = { amount = 10.0, source = "minecraft:fireworks" }
-expect.told = ["Alex: The helmet takes 5.0 of 10.0 minecraft:fireworks"]
+expect.hurt = 0.0
+expect.told = [
+  "Alex: struck by minecraft:fireworks for 10, taking 5",
+  "Alex: The helmet takes 5.0 of 5.0 minecraft:fireworks",
+]
 
-# Out of charge, it takes nothing and says so.
+# Out of charge, it takes nothing and says so; only the mod's half is left.
 [[step]]
 hurt = { amount = 10.0, source = "minecraft:fireworks" }
-expect.told = ["Alex: The helmet is out of charge"]
+expect.hurt = 5.0
+expect.told = [
+  "Alex: struck by minecraft:fireworks for 10, taking 5",
+  "Alex: The helmet is out of charge",
+]
 
 # A stack of rods carries no charge: a split copies a stack's components
 # to both halves, so charge would double.

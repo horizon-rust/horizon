@@ -1,0 +1,65 @@
+# Capability rich-events: events a mod answers, before vanilla settles the
+# outcome. The cells example takes half of every blow, keeps its cells
+# standing, lets redstone be picked up only with the energy staff in hand,
+# and is told of what players drop and what the server spawns.
+
+# Half of a zombie's blow, whose cause the ask names.
+[[step]]
+join = "Alex"
+hurt = { amount = 6.0, source = "minecraft:mob_attack",
+         by = { kind = "minecraft:zombie", id = 7, health = 20.0 } }
+expect.hurt = 3.0
+expect.told = ["Alex: struck by minecraft:zombie for 6, taking 3"]
+
+# A blow no mob or player caused names the damage's own kind.
+[[step]]
+hurt = { amount = 4.0, source = "minecraft:fall" }
+expect.hurt = 2.0
+expect.told = ["Alex: struck by minecraft:fall for 4, taking 2"]
+
+# A cell is kept standing: the vanilla lodestone, and the mod's own block.
+[[step]]
+blocks = [{ x = 0, y = 64, z = 0, state = "minecraft:lodestone" }]
+break = { x = 0, y = 64, z = 0, state = "minecraft:lodestone" }
+expect.told = ["Alex: A cell is kept at 0 64 0"]
+expect.blocks = [{ x = 0, y = 64, z = 0, state = "minecraft:lodestone" }]
+
+[[step]]
+blocks = [{ x = 2, y = 64, z = 0, state = "cells:cell" }]
+break = { x = 2, y = 64, z = 0, state = "cells:cell" }
+expect.told = ["Alex: A cell is kept at 2 64 0"]
+expect.blocks = [{ x = 2, y = 64, z = 0, state = "cells:cell" }]
+
+# Another block breaks as vanilla has it: no notice, the block is gone.
+[[step]]
+blocks = [{ x = 4, y = 64, z = 0, state = "minecraft:stone" }]
+break = { x = 4, y = 64, z = 0, state = "minecraft:stone" }
+expect.told = []
+expect.blocks = [{ x = 4, y = 64, z = 0, state = "minecraft:air" }]
+
+# Redstone on the ground waits for the staff: refused by hand, taken with
+# one in the main hand.
+[[step]]
+pick-up = { item = "minecraft:redstone", count = 2 }
+expect.picked = []
+expect.told = ["Alex: The redstone waits for a staff"]
+
+# Held in a step of its own: the mod reads the stacks as a step began.
+[[step]]
+hold = { item = "minecraft:blaze_rod" }
+
+[[step]]
+pick-up = { item = "minecraft:redstone", count = 2 }
+expect.picked = ["minecraft:redstone x2"]
+
+# A drop of the player's own will, and a mob the server spawned.
+[[step]]
+drop = { item = "minecraft:dirt", count = 1 }
+spawn = { kind = "minecraft:creeper", x = 2.5, y = 64.0, z = 2.5 }
+expect.told = ["Alex: minecraft:dirt x1 dropped"]
+expect.broadcast = ["The server spawned a minecraft:creeper at 2.5 64.0 2.5"]
+
+# Natural spawning is named as such.
+[[step]]
+spawn = { kind = "minecraft:zombie", x = -4.5, y = 64.0, z = 0.5, natural = true }
+expect.broadcast = ["The server spawned a minecraft:zombie at -4.5 64.0 0.5 (natural)"]

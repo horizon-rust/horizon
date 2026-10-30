@@ -28,18 +28,22 @@
 //! power grids (capability `saved-data`) are data on the world itself:
 //! `/cellnet <name>` joins the cell under the player to a grid, `/cellnet`
 //! lists them; a grid goes when its last cell does, and a restart of the
-//! mod loses nothing. Its energy staff (capability `item-hooks`) is a
+//! mod loses nothing. It takes half of every blow a player is about to
+//! take, keeps its cells from being broken and lets redstone be picked up
+//! only with the energy staff in hand, and is told of what players drop
+//! and what the server spawns (capability `rich-events`). Its energy staff (capability `item-hooks`) is a
 //! blaze rod in the main hand: `/staff` reads its charge, a use spends it,
 //! a blow with it deals twice over, a click or a tick on a cell moves
 //! energy between the two, and a golden helmet worn takes a hurt a share
 //! at a time — their charge is the mod's own bytes on the stack, saved
 //! with it wherever it goes.
 use horizon_mod_sdk::server::{
-    Args, Argument, BlockEntity, ConfigEntry, ConfigValue, DisplayStack, Entity, HeldStack,
-    ItemUsedBlock, MenuItem, MenuSlot, ModEntity, Multiblock, Particle, Player, PlayerStack,
-    RedstoneOutput, Registration, ServerMod, Shape, Sides, SlotMode, SpawnOptions, Stack, TankSpec,
-    Transform, UsedBlock, block_entities, displays, effects, energy, entities, fluids, item_hooks,
-    items, machine_recipes, menus, multiblocks, network, players, redstone, saved_data,
+    Args, Argument, BlockEntity, BlockPos, ConfigEntry, ConfigValue, DamageSource, DisplayStack,
+    Entity, GroundStack, HeldStack, ItemUsedBlock, MenuItem, MenuSlot, MobSpawn, ModEntity,
+    Multiblock, Particle, Player, PlayerStack, RedstoneOutput, Registration, ServerMod, Shape,
+    Sides, SlotMode, SpawnOptions, Stack, TankSpec, Transform, UsedBlock, block_entities, displays,
+    effects, energy, entities, fluids, item_hooks, items, machine_recipes, menus, multiblocks,
+    network, players, redstone, saved_data,
 };
 use horizon_mod_sdk::server::{config, config_flag, config_integer, config_number, config_text};
 use std::collections::BTreeMap;
@@ -528,6 +532,13 @@ fn staff_blow(count: u32, energy: u64) -> Option<u64> {
 /// left, an FE a point.
 fn helmet_take(damage: f32, energy: u64) -> f32 {
     damage.min(HELMET_TAKE).min(energy as f32)
+}
+
+/// What the hurt ask tells (capability `rich-events`): the mob or player
+/// that struck, or the damage's own kind, and the half that is taken.
+fn struck_text(source: &DamageSource, amount: f32, taking: f32) -> String {
+    let by = source.cause.as_ref().map_or(&source.kind, |c| &c.kind);
+    format!("struck by {by} for {amount}, taking {taking}")
 }
 
 /// The energy in the buffer at a position; 0 where there is none yet.
@@ -1454,6 +1465,82 @@ impl ServerMod for Cells {
         players::broadcast(&format!("The weather turns to {weather}"));
     }
 
+    fn player_struck(
+        &mut self,
+        player: &Player,
+        source: &DamageSource,
+        amount: f32,
+    ) -> Result<Option<f32>, String> {
+        // Capability `rich-events`: half of every blow, whatever its source,
+        // before armour and the rest of vanilla.
+        let taking = amount / 2.0;
+        players::tell(&player.id, &struck_text(source, amount, taking));
+        Ok(Some(taking))
+    }
+
+    fn breaking_block(
+        &mut self,
+        player: &Player,
+        pos: BlockPos,
+        state: &str,
+    ) -> Result<bool, String> {
+        // A cell is kept standing, whoever digs it and whatever the tool —
+        // unless the energy staff is in the main hand, the same key that
+        // lifts the cells' fuel off the ground.
+        if !is_cell(state) {
+            return Ok(true);
+        }
+        let staff = held_slot(player, STAFF).is_some_and(|slot| {
+            item_hooks::stack(&player.id, slot).is_some_and(|held| held.item == STAFF)
+        });
+        if !staff {
+            players::tell(
+                &player.id,
+                &format!("A cell is kept at {} {} {}", pos.x, pos.y, pos.z),
+            );
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    fn picking_up_item(&mut self, player: &Player, stack: &GroundStack) -> Result<bool, String> {
+        // Redstone on the ground waits for the energy staff in the main
+        // hand: the cells' fuel is not picked up by hand (capability
+        // `rich-events` beside `item-hooks`).
+        if stack.item != REDSTONE {
+            return Ok(true);
+        }
+        let staff = held_slot(player, STAFF).is_some_and(|slot| {
+            item_hooks::stack(&player.id, slot).is_some_and(|held| held.item == STAFF)
+        });
+        if !staff {
+            players::tell(&player.id, "The redstone waits for a staff");
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    fn dropped_items(&mut self, player: &Player, stacks: &[GroundStack]) {
+        let what: Vec<String> = stacks
+            .iter()
+            .map(|s| format!("{} x{}", s.item, s.count))
+            .collect();
+        players::tell(&player.id, &format!("{} dropped", what.join(", ")));
+    }
+
+    fn mobs_spawned(&mut self, spawns: &[MobSpawn]) {
+        for m in spawns {
+            players::broadcast(&format!(
+                "The server spawned a {} at {:.1} {:.1} {:.1}{}",
+                m.kind,
+                m.x,
+                m.y,
+                m.z,
+                if m.natural { " (natural)" } else { "" }
+            ));
+        }
+    }
+
     fn redstone_changed(&mut self, dimension: &str, x: i32, y: i32, z: i32, input: &Sides) {
         let cell = (dimension.to_owned(), x, y, z);
         // Only the top face counts: the cells beside it give out their own
@@ -1835,5 +1922,27 @@ mod tests {
         assert_eq!(take(3.5, 100), 3.5);
         assert_eq!(take(10.0, 3), 3.0);
         assert_eq!(take(10.0, 0), 0.0);
+    }
+
+    /// The hurt ask names the mob or player that struck, or the damage's
+    /// own kind, with the half the mod takes of it (capability
+    /// `rich-events`).
+    #[test]
+    fn the_hurt_ask_names_its_cause() {
+        let zombie = DamageSource::by(7, "minecraft:zombie", 20.0).of("minecraft:mob_attack");
+        assert_eq!(
+            struck_text(&zombie, 6.0, 3.0),
+            "struck by minecraft:zombie for 6, taking 3"
+        );
+        let pvp = DamageSource::by(2, "minecraft:player", 20.0).of("minecraft:player_attack");
+        assert_eq!(
+            struck_text(&pvp, 4.0, 2.0),
+            "struck by minecraft:player for 4, taking 2"
+        );
+        let fall = DamageSource::new("minecraft:fall");
+        assert_eq!(
+            struck_text(&fall, 4.0, 2.0),
+            "struck by minecraft:fall for 4, taking 2"
+        );
     }
 }

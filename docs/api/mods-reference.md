@@ -37,6 +37,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `config` | [`config`](#config) | keep settings in a file you can edit while the game runs, and read them |
 | `inter-mod` | [`inter-mod`](#inter-mod) | send messages to other server mods, and hear theirs |
 | `gui-screens` | [`gui-screens`](#gui-screens) | draw its own screens: its own backgrounds and pictures where it puts them |
+| `rich-events` | [`rich-events`](#rich-events) | change what happens: turn a player's hurts aside, keep blocks from breaking and items from being picked up, and be told of drops and spawns |
 
 ## World `horizon-mod`
 
@@ -57,7 +58,7 @@ A server mod (manifest `side = "server"`, `api = "0.3"`, experimental): runs whe
 A server mod with block entities (capability `block-entities`): the SDK builds every server mod against this world. Mods built for `horizon-server-mod` alone still load and simply keep none.
 
 - Imports (what the game offers): `block-entities`, `energy`, `fluids`, `menus`, `displays`, `items`, `machine-recipes`, `multiblocks`, `saved-data`, `item-hooks`, `network`, `entities`, `redstone`, `effects`, `config`, `inter-mod`, `log`, `storage`, `players`, `world`
-- Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `multiblock-events`, `item-events`, `network-events`, `entity-events`, `redstone-events`, `game-events`, `config-events`, `inter-mod-events`, `server-events`
+- Exports (what the mod provides): `block-entity-events`, `menu-events`, `block-use-events`, `multiblock-events`, `item-events`, `network-events`, `entity-events`, `redstone-events`, `game-events`, `rich-events`, `config-events`, `inter-mod-events`, `server-events`
 
 ## World `block-entity-host`
 
@@ -86,6 +87,13 @@ The game's side of capability `game-events`: a world of its own, so server mods 
 
 - Imports (what the game offers): `players`
 - Exports (what the mod provides): `game-events`
+
+## World `rich-events-host`
+
+The game's side of capability `rich-events`: a world of its own, so server mods built before it (no `rich-events` export) still load.
+
+- Imports (what the game offers): `players`
+- Exports (what the mod provides): `rich-events`
 
 ## World `effects-host`
 
@@ -1694,6 +1702,61 @@ Capability `game-events`, server mods only (manifest `api = "0.3"`, experimental
 | `game-mode-changed` | `func(player: player, before: game-mode, after: game-mode)` | A player's game mode changed. |
 | `mob-killed` | `func(player: player, kind: string, id: u32)` | A player's blow killed a mob: its kind (`minecraft:zombie`) and its entity id. Melee blows only: a bow, a trident or an explosion are not told. |
 | `weather-changed` | `func(weather: string)` | The weather turned: `clear`, `rain` or `thunder`. |
+
+## `rich-events`
+
+Access: exported by the mod: the game calls it.
+
+Capability `rich-events`, server mods only (manifest `api = "0.3"`, experimental): events a mod may answer, before vanilla settles the outcome — a player about to take a blow, a dig finishing, a dropped stack about to be picked up — and notices of drops and spawns. A server mod built before it has no such export and keeps working. Within one tick the order of different events is not promised.
+
+### type `player`
+
+`type player = player`
+
+### record `entity-who`
+
+The mob or player a damage came from, as `hurt-player` tells of it.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `u32` | The entity's id, as the server counts entities. |
+| `kind` | `string` | `minecraft:zombie`, ...; `minecraft:player` for a PvP blow. |
+| `health` | `f32` | Its hit points before the blow. |
+
+### record `damage-source`
+
+| Field | Type | |
+| --- | --- | --- |
+| `kind` | `string` | The damage type id, as `minecraft:mob_attack`, `minecraft:fall`. |
+| `cause` | `option<entity-who>` | The mob or player that caused it, when there is one. |
+
+### record `ground-stack`
+
+A stack lying in the world: no components, for a mod's own bytes do not ride a drop.
+
+| Field | Type | |
+| --- | --- | --- |
+| `item` | `string` | `minecraft:redstone`, `<mod>:<path>`. |
+| `count` | `u32` |  |
+
+### record `mob-spawn`
+
+| Field | Type | |
+| --- | --- | --- |
+| `kind` | `string` |  |
+| `dimension` | `string` |  |
+| `x` | `f64` |  |
+| `y` | `f64` |  |
+| `z` | `f64` |  |
+| `natural` | `bool` | Natural spawning made it (the dark, a random spawn); false: a spawner block, a raid or patrol, a jockey, `/summon`. |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `hurt-player` | `func(player: player, source: damage-source, amount: f32) -> result<option<f32>, string>` | A player is about to take `amount` damage of `source`, before armour and the rest of vanilla: ok(some(d)) deals `d` instead (0 cancels; clamped to 0..4x, never above what vanilla rolled), ok(none) leaves it, err leaves it and is logged. Mods hear it in load order, each the amount the last left. A player who died of the vanilla blow is told to game-events' `player-died` as before. |
+| `breaking-block` | `func(player: player, x: s32, y: s32, z: s32, state: string) -> result<bool, string>` | A player's dig finished; `state` is what stands at x y z in the player's dimension. ok(false) cancels: the block stays, no drop, no tool wear, no statistic. The first mod to refuse wins; err breaks as vanilla. Not told for `/setblock`, world.set-blocks or a mod's own writes, nor for the block a piston takes. |
+| `picking-up-item` | `func(player: player, stack: ground-stack) -> result<bool, string>` | A dropped stack is about to enter `player`'s inventory: ok(false) leaves it on the ground (the item takes a 10-tick pickup delay, so a standing player asks again at most twice a second); ok(true)/err takes it as vanilla. At most 16 asks a player a tick; past that vanilla takes the rest. |
+| `dropped-items` | `func(player: player, stacks: list<ground-stack>)` | `player` dropped `stack` of their own will (the drop key, a menu's throw, the creative screen). A death's scattered inventory is not told. A notice, once a tick at most per mod, batched in one call. |
+| `mobs-spawned` | `func(spawns: list<mob-spawn>)` | Mobs the server itself spawned this tick (natural spawning, spawner blocks, raids and patrols, `/summon`): a notice, one call a tick, at most 64 in the list (the rest spawn unsaid and are logged). Mobs loaded from the world's save, other players' mobs and the mod's own (capability `entities`) are not told. |
 
 ## `effects`
 

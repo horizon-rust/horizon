@@ -61,6 +61,10 @@ pub struct TestGame {
     /// `redstone`): what the block there reads on each face, as the game
     /// would read it from the neighbours.
     pub redstone_in: std::collections::BTreeMap<(i32, i32, i32), crate::redstone::Sides>,
+    /// The stacks this step's `pick-up` parts took (capability
+    /// `rich-events`), as `minecraft:redstone x2`; a refused one never
+    /// lands here.
+    pub picked: Vec<String>,
 }
 
 /// The vanilla mobs a test's mods may spawn.
@@ -269,6 +273,7 @@ impl TestGame {
             entity_removed: Vec::new(),
             entity_lent: false,
             redstone_in: Default::default(),
+            picked: Vec::new(),
         };
         copy_mod(hmod, &copy)?;
         game.start()?;
@@ -330,6 +335,7 @@ impl TestGame {
             entity_removed: Vec::new(),
             entity_lent: false,
             redstone_in: Default::default(),
+            picked: Vec::new(),
         };
         game.start_paths(&[copy_a, copy_b])?;
         let failed = game
@@ -864,12 +870,55 @@ impl TestGame {
         }
         Ok(damage)
     }
-    /// `player` is hurt for `damage` of `source`: the claiming mods'
-    /// armour takes its share, and what it leaves is the answer (capability
+    /// `player` is hurt for `damage` of `source`, caused by `by`: the mods
+    /// answer first, each with the amount the last left (capability
+    /// `rich-events`), then the claiming mods' armour takes its share of
+    /// what is left, and what it all leaves is the answer (capability
     /// `item-hooks`).
-    pub fn hurt_player(&mut self, player: &ServerPlayer, source: &str, damage: f32) -> f32 {
+    pub fn hurt_player(
+        &mut self,
+        player: &ServerPlayer,
+        source: &str,
+        by: Option<crate::EntityWho>,
+        damage: f32,
+    ) -> f32 {
         self.snapshot();
-        self.mods.item_hurt(player, damage, source)
+        let source = crate::DamageSource {
+            kind: source.to_owned(),
+            cause: by,
+        };
+        let left = self.mods.rich_hurt_player(player, &source, damage);
+        left - self.mods.item_hurt(player, left, &source.kind)
+    }
+    /// A dropped stack of `item` x`count` is about to enter `player`'s
+    /// inventory (capability `rich-events`): whether the mods let them take
+    /// it — a taken stack lands in [`TestGame::picked`].
+    pub fn pick_up(&mut self, player: &ServerPlayer, item: &str, count: u32) -> bool {
+        self.snapshot();
+        let take = self.mods.rich_picking_up_item(player, item, count);
+        if take {
+            self.picked.push(format!("{item} x{count}"));
+        }
+        take
+    }
+    /// `player` drops a stack of `item` x`count` of their own will
+    /// (capability `rich-events`): the mods are told.
+    pub fn drop_item(&mut self, player: &ServerPlayer, item: &str, count: u32) {
+        self.snapshot();
+        self.mods
+            .rich_dropped_items(player, &[(item.to_owned(), count)]);
+    }
+    /// The server itself spawns a mob of `kind` at `at` in the Overworld
+    /// (capability `rich-events`): the mods are told, as the game tells them
+    /// at its tick's end.
+    pub fn spawn_mob(&mut self, kind: &str, at: [f64; 3], natural: bool) {
+        self.snapshot();
+        self.mods.rich_mobs_spawned(&[crate::MobSpawnNote {
+            kind: kind.to_owned(),
+            dimension: "minecraft:overworld".to_owned(),
+            pos: at,
+            natural,
+        }]);
     }
     /// The main hand's stack, when it is `count` of `item`: slot 0.
     fn held(
@@ -1034,8 +1083,18 @@ impl TestGame {
         }
     }
     /// `player` breaks (or places) `state` at `pos`.
+    /// `player` breaks (or places) `state` at `pos`: a break the mods may
+    /// refuse (capability `rich-events`) — a refused one leaves the block
+    /// standing and tells no `block-broken`.
     pub fn block(&mut self, player: &ServerPlayer, pos: BlockPos, state: &str, placed: bool) {
         self.snapshot();
+        if !placed
+            && !self
+                .mods
+                .rich_breaking_block(player, [pos.x, pos.y, pos.z], state)
+        {
+            return;
+        }
         if player.dimension == "minecraft:overworld" {
             let at = (pos.x, pos.y, pos.z);
             match placed {
@@ -1386,13 +1445,58 @@ pub struct InteractSet {
     tag: String,
 }
 
-/// A player hurt while wearing a claimed item (capability `item-hooks`).
+/// A player hurt while wearing a claimed item (capability `item-hooks`) or
+/// answered first by a mod (capability `rich-events`).
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HurtSet {
     amount: f32,
     #[serde(default)]
     source: Option<String>,
+    /// The mob or player that caused it, as the hurt ask names it
+    /// (capability `rich-events`).
+    #[serde(default)]
+    by: Option<EntityWhoSet>,
+}
+
+/// The mob or player a damage source names (capability `rich-events`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EntityWhoSet {
+    id: u32,
+    kind: String,
+    health: f32,
+}
+
+/// A dropped stack the player is about to take (capability `rich-events`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PickUpSet {
+    item: String,
+    #[serde(default = "one")]
+    count: u32,
+}
+
+/// A stack the player drops of their own will (capability `rich-events`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DropSet {
+    item: String,
+    #[serde(default = "one")]
+    count: u32,
+}
+
+/// A mob the server itself spawns (capability `rich-events`): a notice, not
+/// a spawn of its own.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpawnSet {
+    kind: String,
+    x: f64,
+    y: f64,
+    z: f64,
+    #[serde(default)]
+    natural: bool,
 }
 
 fn one() -> u32 {
@@ -1412,8 +1516,10 @@ pub struct ClockSet {
 /// made, and `expect` is checked against what the mod showed and changed
 /// during the step. For a server mod, `player`, `chat`, `command`, `break`
 /// and `place` are the doing of the player named by `as`, or of the first
-/// player on; so are `hold`, `use`, `use-item`, `attack` and `hurt`, which
-/// run in that order between the `chat` and `command` parts.
+/// player on; so are `hold`, `use`, `use-item`, `attack`, `hurt`, `pick-up`,
+/// `drop`, `strike` and `interact`, which run in that order between the
+/// `chat` and `command` parts (`spawn` follows `interact` and needs no
+/// player).
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Step {
@@ -1449,6 +1555,16 @@ pub struct Step {
     use_item: Option<UseItemSet>,
     attack: Option<AttackSet>,
     hurt: Option<HurtSet>,
+    /// Server mods: the player is about to take a dropped stack (capability
+    /// `rich-events`), after `hurt`; a taken one lands in `expect.picked`.
+    pick_up: Option<PickUpSet>,
+    /// Server mods: the player drops a stack of their own will (capability
+    /// `rich-events`), after `pick-up`.
+    drop: Option<DropSet>,
+    /// Server mods: the server itself spawns a mob (capability
+    /// `rich-events`), after `interact` and before `click`; no player
+    /// needed.
+    spawn: Option<SpawnSet>,
     /// Server mods: the player edits the mod's config file (capability
     /// `config`) to this text, which the mod hears at once, before `chat`.
     config_file: Option<String>,
@@ -1528,6 +1644,12 @@ pub struct Expect {
     displays: Option<Vec<String>>,
     /// The damage the mob's mod let through the step's `strike`.
     dealt: Option<f32>,
+    /// The damage left after the step's `hurt`: what the mods answered
+    /// (capability `rich-events`), then the claiming armour took.
+    hurt: Option<f32>,
+    /// The stacks the step's `pick-up` took, as `minecraft:redstone x2`;
+    /// `[]` when every ask was refused.
+    picked: Option<Vec<String>>,
     /// Server mods: every `players.tell` as `"Name: text"`, and every
     /// `players.broadcast`, in order.
     told: Option<Vec<String>>,
@@ -1641,6 +1763,15 @@ impl Step {
         if self.hurt.is_some() {
             parts.push("is hurt".to_string());
         }
+        if let Some(s) = &self.pick_up {
+            parts.push(format!("picks up {} x{}", s.item, s.count));
+        }
+        if let Some(s) = &self.drop {
+            parts.push(format!("drops {} x{}", s.item, s.count));
+        }
+        if let Some(s) = &self.spawn {
+            parts.push(format!("a {} spawns", s.kind));
+        }
         if let Some(name) = &self.join {
             parts.insert(0, format!("{name} joins"));
         }
@@ -1718,6 +1849,8 @@ impl Step {
             || self.use_item.is_some()
             || self.attack.is_some()
             || self.hurt.is_some()
+            || self.pick_up.is_some()
+            || self.drop.is_some()
             || self.strike.is_some()
             || self.interact.is_some();
         let actor = if server && acts {
@@ -1784,12 +1917,25 @@ impl Step {
                 attack.damage,
             )?;
         }
+        let mut hurt_left = None;
         if let (Some(hurt), Some(p)) = (&self.hurt, &who) {
             let source = hurt
                 .source
                 .clone()
                 .unwrap_or_else(|| "minecraft:generic".into());
-            game.hurt_player(p, &source, hurt.amount);
+            let by = hurt.by.as_ref().map(|b| crate::EntityWho {
+                id: b.id,
+                kind: b.kind.clone(),
+                health: b.health,
+            });
+            hurt_left = Some(game.hurt_player(p, &source, by, hurt.amount));
+        }
+        game.picked.clear();
+        if let (Some(s), Some(p)) = (&self.pick_up, &who) {
+            game.pick_up(p, &s.item, s.count);
+        }
+        if let (Some(s), Some(p)) = (&self.drop, &who) {
+            game.drop_item(p, &s.item, s.count);
         }
         let mut dealt = None;
         if let (Some(s), Some(p)) = (&self.strike, &who) {
@@ -1797,6 +1943,9 @@ impl Step {
         }
         if let (Some(s), Some(p)) = (&self.interact, &who) {
             game.interact_entity(p, &s.tag)?;
+        }
+        if let Some(s) = &self.spawn {
+            game.spawn_mob(&s.kind, [s.x, s.y, s.z], s.natural);
         }
         if let (Some(c), Some(p)) = (&self.click, &who) {
             game.menu_click(p, &c.menu, c.slot, c.button, c.shift);
@@ -2082,6 +2231,12 @@ impl Step {
         }
         if let Some(want) = e.dealt {
             same("dealt", &Some(want), &dealt)?;
+        }
+        if let Some(want) = e.hurt {
+            same("hurt", &Some(want), &hurt_left)?;
+        }
+        if let Some(want) = &e.picked {
+            same("picked", want, &game.picked)?;
         }
         if let Some(want) = &e.told {
             let name = |id: &str| {

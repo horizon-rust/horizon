@@ -49,6 +49,9 @@ expect.redstone = ["0 63 0 1 1 1 1 1 1"]
 
 # The signal goes with its block.
 [[step]]
+hold = { item = "minecraft:blaze_rod" }
+
+[[step]]
 break = { x = 0, y = 63, z = 0, state = "minecraft:lodestone" }
 
 [[step]]

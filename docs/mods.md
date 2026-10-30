@@ -282,7 +282,8 @@ expect.feedback = "Coordinates panel hidden"
 
 A step's parts happen in this order: `reload`, `title-screen`, `blocks`,
 `join`, `player`, `clock`, `hold`, `ticks`, `frames`, `chat`, then — for
-a server mod — `use`, `use-item`, `attack`, `hurt`, `strike` and `interact` (`strike = {
+a server mod — `use`, `use-item`, `attack`, `hurt`, `pick-up`, `drop`,
+`strike` and `interact` (`strike = {
 tag = "sentinel", damage = 6.0 }` has the player hit the mod's mob of that
 tag, `interact = { tag = "sentinel" }` right-click it; `expect.dealt` is the
 damage its mod let through; the mobs of a test have 20 health, ids from 1000,
@@ -292,7 +293,15 @@ villager) (`use-item = { item =
 "minecraft:lodestone" } }` uses the main hand's stack in the air or on a
 block, `attack = { item = ..., kind = "minecraft:zombie", health = 20.0,
 damage = 4.0 }` strikes an entity with it, `hurt = { amount = 10.0,
-source = "minecraft:fireworks" }` hurts the player), then `click`,
+source = "minecraft:fireworks", by = { kind = "minecraft:zombie", id = 7,
+health = 20.0 } }` hurts the player — `by`, the mob or player that caused
+it, may be left out; `expect.hurt` is the damage the mods left, and
+`pick-up = { item = "minecraft:redstone", count = 2 }` and `drop = { item
+= ..., count = ... }` take and drop a stack, `expect.picked` the stacks
+taken, `[]` when every ask was refused; `spawn = { kind =
+"minecraft:creeper", x = 2.5, y = 64.0, z = 2.5, natural = true }` has the
+server itself spawn a mob, which needs no player; the asks and notices are
+capability `rich-events`), then `click`,
 `command`, `break`, `place` and `leave`. For a client mod, `net` (a message
 of the mod's other half), `select` (a press of one of its screen's widgets,
 stacked or free) and `ui-close` (Esc) run between `chat` and `command`.
@@ -307,7 +316,8 @@ stacked or free) and `ui-close` (Esc) run between `chat` and `command`.
 | `ticks = n`, `frames = n` | that many ticks (the game's tick counter and the clock move on), then frames 1/60 s apart |
 | `chat = "<Steve> hi"` | a chat line the player receives |
 | `command = "where north"` | the player types `/where north`; a command the mod doesn't own fails the step |
-| `break = { x = 1, y = 63, z = 0, state = "minecraft:stone" }`, `place = { ... }` | server mods: the player breaks or places that block |
+| `break = { x = 1, y = 63, z = 0, state = "minecraft:stone" }`, `place = { ... }` | server mods: the player breaks or places that block — a break a mod refuses (capability `rich-events`) leaves the block standing and tells no `block-broken` |
+| `pick-up = { item = "minecraft:redstone", count = 2 }`, `drop = { item = ..., count = ... }`, `spawn = { kind = ..., x = ..., y = ..., z = ..., natural = false }` | server mods: the player is about to take a dropped stack, drops one of their own will, or the server itself spawns a mob (capability `rich-events`; `spawn` needs no player) |
 | `leave = "Alex"` | server mods: that player leaves |
 
 A server mod starts with nobody on: `join = "Alex"` (after `reload` and `title-screen`) brings a
@@ -331,6 +341,7 @@ checked:
 | `told = ["Alex: Welcome!"]`, `broadcast = ["..."]` | server mods: every `players.tell` (as `name: text`) and `players.broadcast`, in order |
 | `blocks = [{ x = 2, y = 64, z = 0, state = "minecraft:glowstone" }]` | server mods with `world`: those blocks of the Overworld after the step, the mod's `set-blocks` made (the script checks a state's shape; the game checks its name) |
 | `entities = ["sentinel minecraft:iron_golem 2.5 64.0 0.5 hp=20"]`, `dealt = 2.0` | server mods with `entities`: the mods' mobs after the step as `tag kind x y z hp=health` (` dying` after it for a body), ordered by id; and the damage the step's `strike` dealt |
+| `hurt = 3.0`, `picked = ["minecraft:redstone x2"]` | server mods: the damage the step's `hurt` left after the mods answered and the armour took (capability `rich-events`), and the stacks its `pick-up` parts took (`[]`: every ask refused) |
 | `displays = ["item minecraft:nether_star x1 @ 0.5 64.6 0.5 riding 1000"]` | server mods with `displays`: their display entities after the step as `kind what @ x y z` (`text 8000 FE`, `block minecraft:redstone_block`, `item minecraft:nether_star x1`), ordered by name, ` riding <mob id>` after a riding one |
 | `stopped = "panic"` | the mod was turned off, for a reason holding this text; without it, a mod that traps, panics or overruns fails the test |
 
@@ -795,11 +806,82 @@ fn player_died(&mut self, player: &Player, cause: &str) {
   level stays where it was; an older Horizon refuses the mod's `game-events`
   capability by name instead.
 
-**Not yet.** Damage sources and attackers for `player_damaged`, mobs killed
-by ranged weapons, explosions or other mobs, mob spawns and despawns, item
-pickups and drops, advancements, commands run by players, and events that a
-mod can cancel (blocks broken and placed, chat and the hooks above already
-exist as their own hooks).
+**Not yet.** Mobs killed by ranged weapons, explosions or other mobs, mob
+despawns, advancements, commands run by players, and events a mod can
+cancel that this capability does not carry yet (chat, places) — the
+cancellable ones there are belong to `rich-events` below.
+
+#### Rich events (capability `rich-events`, experimental)
+
+Events a mod may **answer**, before vanilla settles the outcome, and two
+notices. Where `game-events` tells what happened, `rich-events` asks what
+should: the answer replaces the outcome, and 0 or `false` cancels it. A mod
+implements only the hooks it wants; a mod built before the capability has no
+such export and keeps working. Within one tick the order of different
+events is not promised.
+
+| `ServerMod` hook | Asked or told when |
+| --- | --- |
+| `player_struck(player, source, amount) -> Result<Option<f32>, String>` | a player is about to take `amount` damage, before armour and the rest of vanilla; `Ok(Some(d))` deals `d` instead (0 cancels; clamped to 0..4x, never above what vanilla rolled), `Ok(None)` leaves it. The mods hear it in load order, each the amount the last left; the last answer that came back wins |
+| `breaking_block(player, pos, state) -> Result<bool, String>` | a player's dig finished; `Ok(false)` cancels: the block stays, no drop, no tool wear, no statistic. The first mod to refuse wins; an error breaks as vanilla |
+| `picking_up_item(player, stack) -> Result<bool, String>` | a dropped stack is about to enter the player's inventory; `Ok(false)` leaves it on the ground (it takes a 10-tick pickup delay). The first mod to refuse wins; an error takes it |
+| `dropped_items(player, stacks)` | a player dropped stacks of their own will (the drop key, a menu's throw, the creative screen; a death's scattered inventory is not told) — a notice, once a tick at most per mod, batched in one call |
+| `mobs_spawned(spawns)` | the server itself spawned these mobs this tick: natural spawning, spawner blocks, raids and patrols, `/summon` — a notice, one call a tick, at most 64 in the list |
+
+`source` is a `DamageSource`: the damage type id (`minecraft:mob_attack`,
+`minecraft:fall`) and, when there is one, the mob or player that caused it
+(`EntityWho`: entity id, `minecraft:zombie` kind — `minecraft:player` for a
+PvP blow — and its health before the blow). In Rust, `DamageSource::new`
+names a kind no attacker caused, `DamageSource::by(id, kind, health)` one
+that was.
+
+```rust
+fn player_struck(
+    &mut self,
+    player: &Player,
+    source: &DamageSource,
+    amount: f32,
+) -> Result<Option<f32>, String> {
+    let by = source.cause.as_ref().map_or(&source.kind, |c| &c.kind);
+    players::tell(&player.id, &format!("struck by {by} for {amount}"));
+    Ok(Some(amount / 2.0)) // half of every blow
+}
+```
+
+- **How they are found.** A hurt is asked in the funnels every damage goes
+  through, once a blow (the vanilla windows of invulnerability bound them);
+  the mods answer first, then a mod's claimed armour (capability
+  `item-hooks`) takes its share of what is left, and vanilla settles the
+  rest — a hurt a mod answers 0 never lands, and a player who died of the
+  vanilla blow reaches `game-events`' `player_died` as before. A dig is
+  asked once, before the held tool is checked, so a mod may keep any block
+  standing whatever digs it; `/setblock`, `world.set-blocks`, a mod's own
+  writes and the block a piston takes are never asked. A pickup is asked
+  before the stack enters the inventory, at most 16 asks a player a tick —
+  past them vanilla takes the rest — and a refusal gives the item a
+  10-tick pickup delay, so a standing player is asked again at most twice
+  a second. Guests are asked in their own turn, and a guest whose client
+  had already broken a refused block gets it back as a packet. Spawns are
+  gathered over the tick and told at its end, natural spawning marked
+  `natural`; mobs loaded from the world's save, other players' mobs and
+  the mod's own (capability `entities`) are not told, and past 64 the rest
+  spawn unsaid and are logged.
+- **What a mod may do while it answers.** The same stores a blow's hooks
+  lend: block entities and the players' stacks to read and steer, its own
+  mobs to read and steer — never to spawn, for the call is mid-tick; what
+  a mod asks the game to do (`Output`) is applied after it returns. A mod
+  that traps or overruns is turned off as any other, and the vanilla
+  outcome carries on: no answer is a change of nothing.
+- **Test scripts** drive the asks with `hurt = { amount = 6.0, source =
+  "minecraft:mob_attack", by = { kind = "minecraft:zombie", id = 7,
+  health = 20.0 } }`, `pick-up`, `drop` and `spawn`, and read what the
+  mods left with `expect.hurt` and `expect.picked`. The `cells` example
+  takes half of every blow, keeps its cells from being broken and lets
+  redstone be picked up only with its energy staff in hand, and is told of
+  drops and spawns.
+- **No level change.** The capability adds no function a mod calls, so the
+  API level stays where it was; an older Horizon refuses the mod's
+  `rich-events` capability by name instead.
 
 #### Particles and sounds (capability `effects`, experimental)
 
