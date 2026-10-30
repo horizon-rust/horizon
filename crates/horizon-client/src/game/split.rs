@@ -114,6 +114,8 @@ pub(super) struct Split<'a> {
     guests: Vec<Guest<'a>>,
     /// `HORIZON_SPLIT=N`: players still to add once P1 is in a world.
     test_players: usize,
+    /// `HORIZON_SPLIT` is set: splitscreen is on for this run, without touching the saved switch.
+    forced: bool,
     /// While another player is in, the windows players play in, each with its compositor: the
     /// game's first, then the others (else P1 draws on its window).
     surfaces: Vec<Surface>,
@@ -158,11 +160,8 @@ pub(super) struct Split<'a> {
 }
 
 impl<'a> Split<'a> {
-    pub(super) fn new(mut host: Game<'a>) -> Self {
+    pub(super) fn new(host: Game<'a>) -> Self {
         let split = std::env::var("HORIZON_SPLIT").ok();
-        if split.is_some() {
-            host.settings.extras.splitscreen = true;
-        }
         let test_players = split
             .as_ref()
             .and_then(|n| n.parse::<usize>().ok())
@@ -171,6 +170,7 @@ impl<'a> Split<'a> {
             host,
             guests: Vec::new(),
             test_players,
+            forced: split.is_some(),
             surfaces: Vec::new(),
             windows: vec![layout::Window {
                 number: 1,
@@ -667,7 +667,7 @@ impl ApplicationHandler for Split<'_> {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.refresh_monitors();
-        let on = self.host.settings.extras.splitscreen;
+        let on = self.host.settings.extras.splitscreen || self.forced;
         self.host.ui.options.split_joined = self.guests.iter().any(|g| g.name.is_some());
         // Off, or the last other player gone: P1 draws on its window again.
         if !self.surfaces.is_empty()
