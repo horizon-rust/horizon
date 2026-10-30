@@ -616,18 +616,35 @@ fn lava_blackbody(x: f32) -> vec3<f32> {
     return select(mix(orange, white, (x - 0.6) / 0.4), mix(deep, orange, x / 0.6), x < 0.6);
 }
 const LAVA_GLOW: f32 = 14.0;
-fn rt_lava(pos: vec3<f32>, n: vec3<f32>, pixel: vec2<f32>, light: vec2<f32>, spherical: f32,
-    cylindrical: f32) -> vec3<f32> {
-    let world = pos + globals.rt_camera.xyz;
-    let t = globals.rt_water.z;
-    // A noise of the world's plane (the flowing surface's height changes from block to block:
-    // none of it, no seam), drifting with the time; on the sides it streaks down.
-    let p = vec3(world.x * 0.45, world.z * 0.45, t * 0.04) + vec3(0.0, 0.0, world.y * 0.02);
+// The lava's heat (0 cooled, 1 white-hot) at noise point `p`: domain-warped noise, bright veins
+// where it cracks.
+fn lava_heat(p: vec3<f32>) -> f32 {
     let warp = vec3(lava_fbm(p), lava_fbm(p + vec3(5.2, 1.3, 2.7)), lava_fbm(p + vec3(2.9, 7.1, 4.4)));
     let q = p + 2.2 * warp;
     let body = lava_fbm(q);
     let crack = 1.0 - abs(lava_fbm(q * 2.1 + vec3(3.1, 7.7, 0.0)) * 2.0 - 1.0);
-    let heat = clamp(0.95 * body + 0.7 * pow(crack, 7.0) - 0.15, 0.0, 1.0);
+    return clamp(0.95 * body + 0.7 * pow(crack, 7.0) - 0.15, 0.0, 1.0);
+}
+fn rt_lava(pos: vec3<f32>, n: vec3<f32>, pixel: vec2<f32>, light: vec2<f32>, spherical: f32,
+    cylindrical: f32) -> vec3<f32> {
+    let world = pos + globals.rt_camera.xyz;
+    let t = globals.rt_water.z;
+    // Triplanar: on the top it drifts on the world's plane, on a side (or a fall) it runs down,
+    // stretched as falling lava streams; a slope blends them by its normal, so no face sees the
+    // top's pattern smeared along it.
+    var w = pow(abs(n), vec3(4.0));
+    w /= max(w.x + w.y + w.z, 1e-4);
+    var heat = 0.0;
+    if w.y > 0.01 {
+        heat += w.y * lava_heat(vec3(world.x * 0.45, world.z * 0.45, t * 0.04));
+    }
+    let fall = (world.y + t * 1.2) * 0.2;
+    if w.x > 0.01 {
+        heat += w.x * lava_heat(vec3(world.z * 0.45, fall, t * 0.04 + 11.0));
+    }
+    if w.z > 0.01 {
+        heat += w.z * lava_heat(vec3(world.x * 0.45, fall, t * 0.04 + 23.0));
+    }
     let crust = 1.0 - smoothstep(0.28, 0.46, heat);
     let glow = lava_blackbody(heat) * (0.15 + LAVA_GLOW * heat * heat * heat) * (1.0 - 0.9 * crust);
     let rock = rt_material_lit(rt_plain(vec3(0.07, 0.06, 0.055), n), n, pos, pixel, light,
