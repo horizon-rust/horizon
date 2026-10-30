@@ -210,6 +210,44 @@ fn around(rotation: Mat4, pivot: Vec3) -> Mat4 {
     Mat4::from_translation(pivot) * rotation * Mat4::from_translation(-pivot)
 }
 
+/// Drops, from the quads `out[from..]` holds, each one whose twin lies on the same plane facing
+/// the other way and which itself faces `inside`. Vanilla's models have zero-thickness cuboids (the
+/// decorated pot's top and bottom planes) whose two faces coincide; vanilla's culling shows the
+/// one facing the viewer, but the entity pipeline draws both sides, so the two fight for the
+/// depth test and the plane flips between its lit and its shadowed shade as the sub-pixel jitter
+/// moves the sampling points. Keeping only the face that looks out of the model settles it.
+fn drop_inward_twins(out: &mut Vec<Vertex>, from: usize, inside: Vec3) {
+    let quads: Vec<[Vec3; 4]> = out[from..]
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|q| [0, 1, 2, 3].map(|i| Vec3::from(q[i].pos)))
+        .collect();
+    let normal = |q: &[Vec3; 4]| (q[1] - q[0]).cross(q[2] - q[0]);
+    let mut kept = Vec::with_capacity(out.len() - from);
+    for (i, chunk) in out[from..].as_chunks::<4>().0.iter().enumerate() {
+        let q = &quads[i];
+        let n = normal(q);
+        let twin = n.length_squared() > 1e-12
+            && quads.iter().enumerate().any(|(j, other)| {
+                let m = normal(other);
+                j != i
+                    && m.length_squared() > 1e-12
+                    && n.normalize().dot(m.normalize()) < -0.999
+                    && other
+                        .iter()
+                        .all(|p| (*p - q[0]).dot(n.normalize()).abs() < 1e-4)
+            });
+        let centre = (q[0] + q[1] + q[2] + q[3]) / 4.0;
+        if twin && n.dot(inside - centre) > 0.0 {
+            continue;
+        }
+        kept.extend_from_slice(chunk);
+    }
+    out.truncate(from);
+    out.extend(kept);
+}
+
 /// `DyeColor` names and texture diffuse colours, by id.
 pub const DYES: [(&str, u32); 16] = [
     ("white", 0xF9FFFE),
@@ -1388,6 +1426,7 @@ impl BlockEntityRenderer {
                         m *= around(Mat4::from_rotation_y(turn * decay), pivot);
                     }
                 }
+                let first = out.len();
                 if let Some(paint) =
                     paint("entity/decorated_pot/decorated_pot_base", 0xFFFFFF, packed)
                 {
@@ -1405,6 +1444,7 @@ impl BlockEntityRenderer {
                         draw_part(part, side, m, &none, paint, out);
                     }
                 }
+                drop_inward_twins(out, first, m.transform_point3(Vec3::splat(0.5)));
             }
             Kind::EndPortal => {
                 // TheEndPortalRenderer.TRANSFORMATION: y from 6/16 to 12/16; only the
@@ -1795,6 +1835,49 @@ fn portal_cube(m: Mat4, faces: &[Direction], layer: u32, out: &mut Vec<Vertex>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn quad(corners: [[f32; 3]; 4]) -> Vec<Vertex> {
+        corners
+            .map(|pos| Vertex {
+                pos,
+                normal: [0; 4],
+                uv: [0.0, 0.0],
+                layer: 0,
+                color: 0,
+                light: 0,
+            })
+            .to_vec()
+    }
+
+    #[test]
+    fn a_flat_plane_drawn_both_ways_keeps_only_the_face_looking_out() {
+        // The pot's top plane at y = 1: an upward face and its downward twin, over a side quad.
+        let up = [
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+        ];
+        let mut down = up;
+        down.reverse();
+        let side = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let mut out = quad(side);
+        let from = out.len();
+        out.extend(quad(down));
+        out.extend(quad(up));
+        drop_inward_twins(&mut out, from, Vec3::splat(0.5));
+        assert_eq!(out.len(), 8);
+        assert!(out[from..].iter().all(|v| v.pos[1] == 1.0));
+        let n = (Vec3::from(out[from + 1].pos) - Vec3::from(out[from].pos))
+            .cross(Vec3::from(out[from + 2].pos) - Vec3::from(out[from].pos));
+        assert!(n.y > 0.0, "the face that stays looks up, out of the model");
+    }
+
     #[test]
     #[ignore = "requires prepared models/textures in HORIZON_TEST_RESOURCES"]
     fn entity_block_particles_and_breaking_use_exported_models() -> crate::Result<()> {

@@ -270,11 +270,10 @@ impl Taa {
 
     /// The jitter this view's next frame is drawn with, in pixels.
     pub fn jitter(&self, view: usize) -> [f32; 2] {
-        // Off by default for now: with it a surface beside a block entity (a decorated pot's
-        // block) flickered between two shadings frame to frame, a cause not yet found;
-        // `HORIZON_TAA_JITTER=1` turns it on to look for it.
+        // `HORIZON_TAA_JITTER=0` draws the world without it (the resolve still runs), to tell what
+        // the jitter does from what the resolve does.
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if !*ON.get_or_init(|| std::env::var("HORIZON_TAA_JITTER").is_ok_and(|v| v != "0")) {
+        if !*ON.get_or_init(|| !std::env::var("HORIZON_TAA_JITTER").is_ok_and(|v| v == "0")) {
             return [0.0; 2];
         }
         let frame = self

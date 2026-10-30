@@ -5694,10 +5694,9 @@ impl Renderer {
             self.hw_finish(&mut encoder, frame, entity_quads, clouds);
         }
         if rt_now {
-            // The rays work on the still frame, not the TAA's jittered one: jittered, a thin
-            // contact shadow (a pot's on the block it stands on) falls on other mask texels each
-            // frame and flickers. Their depth prepass draws with the clean matrix, the world after
-            // it with the jittered one again.
+            // The rays work on the still frame, not the TAA's jittered one: a thin contact shadow
+            // then falls on the same mask texels every frame. Their depth prepass draws with the
+            // clean matrix, the world after it with the jittered one again.
             let view_proj_offset = std::mem::offset_of!(Globals, view_proj) as u64;
             if taa_now {
                 self.uploads.buffer(
