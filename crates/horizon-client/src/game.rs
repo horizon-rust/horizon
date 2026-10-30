@@ -2274,6 +2274,9 @@ struct Game<'a> {
     /// the operators (`DedicatedServer.shouldInformAdmins`,
     /// `broadcast-console-to-ops`).
     console_broadcast: Option<bool>,
+    /// A dedicated server's operator, whitelist and ban lists, for `/op`,
+    /// `/ban` and friends (`DedicatedPlayerList`).
+    server_lists: Option<std::sync::Arc<std::sync::Mutex<dedicated::Lists>>>,
     /// State of `/spectate`, `/posteffect`, `/debug`, `/waypoint` and friends.
     cmds: commands::extra::CommandExtras,
     ui: chat::UiState,
@@ -7201,7 +7204,8 @@ impl Game<'_> {
                 | BlockEntity::Brushable(_)
                 | BlockEntity::Shelf(_)
                 | BlockEntity::Mod(_)
-                | BlockEntity::PotentSulfur(_),
+                | BlockEntity::PotentSulfur(_)
+                | BlockEntity::StructureBlock(_),
             ) => {}
             None => {
                 v.extend((0..self.craft_size * self.craft_size).map(|i| 100 + i));
@@ -7495,7 +7499,8 @@ impl Game<'_> {
                     | BlockEntity::Brushable(_)
                     | BlockEntity::Shelf(_)
                     | BlockEntity::Mod(_)
-                    | BlockEntity::PotentSulfur(_),
+                    | BlockEntity::PotentSulfur(_)
+                    | BlockEntity::StructureBlock(_),
                 ) => {}
                 None if self.mount_active() => self.draw_mount_background(batch, ox, oy),
                 None => {
@@ -10009,7 +10014,13 @@ impl Game<'_> {
     fn load_world(&mut self, request: world_loading::WorldRequest) -> Result<()> {
         self.join_world_rest()?;
         self.perf.world_opening();
-        let prepared = request.prepare(&self.res, &self.pack, &self.options, &self.settings)?;
+        let prepared = request.prepare(
+            &self.res,
+            &self.pack,
+            &self.options,
+            &self.settings,
+            &horizon_world::datafix::progress::UpgradeProgress::new(),
+        )?;
         self.finish_open_world(prepared)
     }
 
@@ -12780,6 +12791,17 @@ impl Game<'_> {
         if let Some(loader) = &self.world_loader {
             if let Some(renderer) = &mut self.renderer {
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
+                // WorldOpenFlows.upgradeAndOpenWorld: the file fixers run on
+                // FileFixerProgressScreen.
+                if loader.upgrade.is_file_fixing() && !loader.cancelled {
+                    horizon_client::level_loading::draw_file_fixer(
+                        &mut hud,
+                        &self.gui.atlas,
+                        &loader.upgrade,
+                        self.cursor,
+                    );
+                    return renderer.render(&loading_frame(&hud));
+                }
                 horizon_client::level_loading::draw_progress(
                     &mut hud,
                     &self.gui.atlas,
@@ -13984,6 +14006,37 @@ impl ApplicationHandler for Game<'_> {
                 | WindowEvent::CursorMoved { .. }
         ) {
             self.last_input = Instant::now();
+        }
+        // FileFixerProgressScreen: Cancel is the only way out (`shouldCloseOnEsc`
+        // is false), so it takes the pointer and Escape does nothing.
+        if let Some(loader) = &self.world_loader
+            && loader.upgrade.is_file_fixing()
+            && !loader.cancelled
+        {
+            match &event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    if let Some(r) = &self.renderer {
+                        let b = HudBatch::new([r.config.width, r.config.height]);
+                        self.cursor = (position.x as f32 / b.scale, position.y as f32 / b.scale);
+                    }
+                }
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                } if !loader.upgrade.is_canceled() => {
+                    let (w, h) = self.gui_size();
+                    let (x, y) = horizon_client::level_loading::file_fixer_cancel(w, h);
+                    if horizon_client::ui::hovered(self.cursor, x, y, 200.0, 20.0) {
+                        self.audio.play_button_click();
+                        loader.upgrade.set_canceled();
+                    }
+                }
+                _ => {}
+            }
+            if matches!(&event, WindowEvent::KeyboardInput { .. }) {
+                return;
+            }
         }
         if (self.pending_entry.is_some() || self.world_loader.is_some())
             && matches!(&event, WindowEvent::KeyboardInput { event, .. }
@@ -15418,6 +15471,7 @@ impl<'a> Game<'a> {
             chat_capture: None,
             admin_feedback: Vec::new(),
             console_broadcast: None,
+            server_lists: None,
             world_tables: None,
             cmds: Default::default(),
             ui: chat::UiState::new(),
@@ -15579,9 +15633,11 @@ impl Game<'_> {
                 .world_loader
                 .take()
                 .ok_or("missing world initialization worker")?;
+            // FileFixerProgressScreen's Cancel: the upgrade stopped, back to the title.
             let cancelled = loader.cancelled;
+            let upgrade_canceled = loader.upgrade.is_canceled();
             let prepared = loader.finish();
-            if !cancelled {
+            if !cancelled && !(upgrade_canceled && prepared.is_err()) {
                 self.finish_open_world(prepared?)?;
             }
         }
