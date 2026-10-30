@@ -870,6 +870,7 @@ impl Game<'_> {
         match self.screen {
             Screen::Playing => "playing",
             Screen::GameModeSwitcher => "gamemode-switcher",
+            Screen::DebugOptions => "debug-options",
             Screen::Paused => "paused",
             Screen::Options => "options",
             Screen::Inventory => "inventory",
