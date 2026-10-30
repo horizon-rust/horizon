@@ -1035,6 +1035,10 @@ pub enum Page {
     Skin,
     /// OnlineOptionsScreen: server listing, Realms and friends notifications.
     Online,
+    /// Splitscreen: the profile another player joins as (`split_profiles`).
+    SplitProfiles,
+    /// Splitscreen: enable joining on this computer.
+    SplitSetup,
 }
 #[derive(Clone, Debug, PartialEq)]
 enum Act {
@@ -1192,8 +1196,14 @@ pub struct OptionsUi {
     /// Scroll the selected language into the middle on the next layout.
     center_language: bool,
     pub graphics: crate::graphics_ui::GraphicsUi,
+    pub split_profiles: crate::split_profiles::SplitProfiles,
     /// The AI Agent page's status lines (set by the game while it shows).
     pub agent_status: Vec<String>,
+    /// Splitscreen: another player's options. Language and resource packs are the whole
+    /// process's (every player's text and textures), so they're P1's to change.
+    pub split_guest: bool,
+    /// Other local players are joined: leave before turning splitscreen off.
+    pub split_joined: bool,
 }
 impl Default for OptionsUi {
     fn default() -> Self {
@@ -1226,7 +1236,10 @@ impl Default for OptionsUi {
             in_world: false,
             center_language: false,
             graphics: Default::default(),
+            split_profiles: Default::default(),
             agent_status: Vec::new(),
+            split_guest: false,
+            split_joined: false,
         }
     }
 }
@@ -1279,6 +1292,8 @@ fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
         Page::Controller => "horizon.pages.controller.tooltip",
         Page::Extras => "horizon.pages.extras.tooltip",
         Page::Agent => "horizon.pages.agent.tooltip",
+        Page::SplitSetup => "horizon.pages.split_setup.tooltip",
+        Page::SplitProfiles => "horizon.pages.split_profiles.tooltip",
         Page::ShaderPacks => "horizon.pages.shader_packs.tooltip",
         Page::Mods => "horizon.pages.mods.tooltip",
         _ => return None,
@@ -1388,6 +1403,9 @@ impl OptionsUi {
         ) {
             self.graphics.reset();
         }
+        if page == Page::SplitProfiles {
+            self.split_profiles.reset();
+        }
     }
     /// The graphics screen level of `page`, if it is one.
     fn graphics_level(page: Page) -> Option<crate::graphics_ui::Level> {
@@ -1423,6 +1441,8 @@ impl OptionsUi {
             Page::Credits => "credits_and_attribution.screen.title",
             Page::Horizon => "horizon.pages.settings",
             Page::Agent => "horizon.pages.agent",
+            Page::SplitProfiles => "horizon.pages.split_profiles",
+            Page::SplitSetup => "horizon.pages.split_setup",
         }
     }
     fn scrollbar_x(&self, width: f32) -> f32 {
@@ -1512,6 +1532,14 @@ impl OptionsUi {
 
     fn list_rows(&self, s: &Settings) -> Vec<Row> {
         match self.page() {
+            Page::SplitSetup => vec![Row::Buttons(
+                if self.split_guest || self.split_joined {
+                    inactive(self.extra_button(s, crate::extras::Item::Splitscreen))
+                } else {
+                    self.extra_button(s, crate::extras::Item::Splitscreen)
+                },
+                None,
+            )],
             Page::Extras => {
                 // Each section's switches two to a row, as vanilla's
                 // OptionsList.addSmall lays out an options screen.
@@ -1577,6 +1605,17 @@ impl OptionsUi {
                     Row::Buttons(
                         open("horizon.pages.open.extras", Page::Extras),
                         Some(open("horizon.pages.open.mods", Page::Mods)),
+                    ),
+                    Row::Buttons(
+                        open(
+                            "horizon.pages.open.split_setup",
+                            if self.split_guest {
+                                Page::SplitProfiles
+                            } else {
+                                Page::SplitSetup
+                            },
+                        ),
+                        None,
                     ),
                     // No AI hides the AI Agent page and everything AI.
                     Row::Buttons(
@@ -1891,9 +1930,15 @@ impl OptionsUi {
                     ("options.sounds", Some(Page::Sound)),
                     ("options.video", Some(Page::Video)),
                     ("options.controls", Some(Page::Controls)),
-                    ("options.language", Some(Page::Language)),
+                    (
+                        "options.language",
+                        (!self.split_guest).then_some(Page::Language),
+                    ),
                     ("options.chat", Some(Page::Chat)),
-                    ("options.resourcepack", Some(Page::Packs)),
+                    (
+                        "options.resourcepack",
+                        (!self.split_guest).then_some(Page::Packs),
+                    ),
                     ("options.accessibility", Some(Page::Accessibility)),
                     // Vanilla's Telemetry Data and Credits slots: Horizon's
                     // settings and its mods, as a mod adds its button here.
@@ -2306,7 +2351,12 @@ impl OptionsUi {
                             y += 16.0;
                         }
                         Row::Big(opt) => {
-                            out.push(option_widget(s, opt, cx - 155.0, y + 2.0, 310.0));
+                            let widget = option_widget(s, opt, cx - 155.0, y + 2.0, 310.0);
+                            out.push(if self.split_guest && opt == Opt::SoundDevice {
+                                inactive(widget)
+                            } else {
+                                widget
+                            });
                             y += 25.0;
                         }
                         Row::Pair(a, b) => {
@@ -2406,6 +2456,11 @@ impl OptionsUi {
         if let Some(level) = Self::graphics_level(self.page()) {
             self.graphics
                 .draw(level, s, batch, atlas, cursor, self.in_world);
+            return;
+        }
+        if self.page() == Page::SplitProfiles {
+            self.split_profiles
+                .draw(batch, atlas, cursor, self.in_world, self.pad_style);
             return;
         }
         if self.page() == Page::Packs {
@@ -2652,6 +2707,21 @@ impl OptionsUi {
                 return vec![Event::ButtonClick];
             }
             return Vec::new();
+        }
+        if self.page() == Page::SplitProfiles {
+            use crate::split_profiles::Click;
+            if right || drag {
+                return Vec::new();
+            }
+            return match self.split_profiles.click(atlas, (x, y), size) {
+                Click::Nothing => Vec::new(),
+                Click::Pressed => vec![Event::ButtonClick],
+                Click::Done => {
+                    let mut events = vec![Event::ButtonClick];
+                    events.extend(self.back(s));
+                    events
+                }
+            };
         }
         if let Some(level) = Self::graphics_level(self.page()) {
             use crate::graphics_ui::Action;
@@ -3106,6 +3176,8 @@ impl OptionsUi {
         if self.page() == Page::Language {
             self.language_search.insert_text(text);
             self.scroll = 0.0;
+        } else if self.page() == Page::SplitProfiles {
+            self.split_profiles.type_text(text);
         } else if self.settings_search_active() {
             self.settings_search.insert_text(text);
             self.scroll = 0.0;
@@ -3133,6 +3205,9 @@ impl OptionsUi {
                 self.scroll = 0.0;
             }
             return true;
+        }
+        if self.page() == Page::SplitProfiles {
+            return self.split_profiles.shortcut(shortcut, clipboard);
         }
         if self.settings_search_active() {
             if self.settings_search.shortcut(shortcut, clipboard) {
@@ -3221,6 +3296,9 @@ impl OptionsUi {
                     .to_owned()
             };
             return self.bind_key(s, value);
+        }
+        if self.page() == Page::SplitProfiles && self.split_profiles.key(key, text) {
+            return Vec::new();
         }
         if key == K::Escape {
             return self.back(s);
@@ -4651,9 +4729,15 @@ mod tests {
                 Page::Controller,
                 Page::Extras,
                 Page::Mods,
+                Page::SplitSetup,
                 Page::Agent,
             ]
         );
+        ui.split_guest = true;
+        let guest_pages = pushes(&mut ui);
+        assert!(guest_pages.contains(&Page::SplitProfiles));
+        assert!(!guest_pages.contains(&Page::SplitSetup));
+        ui.split_guest = false;
         // No AI hides the AI Agent page.
         let mut no_ai = Settings::default();
         no_ai.extras.no_ai = true;
@@ -4698,6 +4782,16 @@ mod tests {
             rows.iter().any(|r| matches!(r, Row::Big(Opt::SoundDevice))),
             "Sound page should contain Row::Big(Opt::SoundDevice)"
         );
+        ui.split_guest = true;
+        let (widgets, _, _, _) = ui.layout(&s, 480.0, 480.0);
+        assert!(widgets.iter().any(|w| matches!(
+            w.kind,
+            WKind::Button {
+                act: Act::Cycle(Opt::SoundDevice),
+                active: false,
+                ..
+            }
+        )));
         assert_eq!(s.sound_device, "");
         let devices = crate::audio::output_devices();
         let count = 1 + devices.len();
