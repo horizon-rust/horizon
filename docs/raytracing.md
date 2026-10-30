@@ -365,6 +365,19 @@ Alongside, in their own worktrees: post-processing, clouds and SSS (merged), fro
 **Measuring:** each step is one commit, measured on the desktop (3440x1440) and in the simulated headset
 (`tools/vr_fake_run.py`), and compared on the copy of NVIDIA's world.
 
+**Measured (30 October 2026, RTX 4090, the GPU otherwise idle, NVIDIA's RTX-Remix-Materials pack, every technique above on):**
+
+| Scene | Resolution | GPU or frame time |
+|---|---|---|
+| Copy of NVIDIA RTX Demo, at its spawn, noon | 3440x1440 | 15.8 ms GPU p50 (16.2 p95) |
+| RT test scene, the many-lights hall at night | 3440x1440 | 8.5 ms GPU p50 (before the PSR, the held light and the moving geometry) |
+| Simulated headset (`tools/vr_fake_run.py`, a forest world, unpaced) | 1648x1328 an eye | 6.1 ms a frame median (165 fps) |
+| Simulated headset, the same | 4096x3288 an eye | 18.5 ms a frame median (54 fps) |
+
+Remix itself could not be measured on the same scene here: it runs inside Minecraft Java with its
+own runtime, which cannot be driven offscreen by `horizon-ctl`; its numbers on the same copy are
+to be taken by hand (its in-game profiler) for the comparison.
+
 ## What exists: the spike (`origin/feat/raytracing-spike`, 42c752d6b)
 
 A research spike, not on main (it branched 2 800 commits ago; a worktree of it is `../horizon-rt`, and its build is
