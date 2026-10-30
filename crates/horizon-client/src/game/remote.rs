@@ -714,6 +714,9 @@ impl Game<'_> {
             Some(reason) => horizon_client::multiplayer::Screen::Disconnected {
                 reason,
                 retry: None,
+                sign_in: horizon_client::auth::current().and_then(|a| {
+                    horizon_client::multiplayer::SignInAgain::needed(a.uuid, super::packs::open_uri)
+                }),
             },
             None => horizon_client::multiplayer::Screen::list(&saves),
         });

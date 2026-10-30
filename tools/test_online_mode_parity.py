@@ -179,12 +179,32 @@ def session_file(directory, token):
     return path
 
 
-def run_client(binary, build, port, label, token, discovery):
+def fake_launcher(directory, renewed):
+    """The launcher's `account session` for the game: a renewed session file holding `renewed`,
+    or, without one, the answer that the account must sign in again in the browser."""
+    script = directory / 'launcher.sh'
+    if renewed:
+        renewed_file = directory / 'renewed.json'
+        answer = json.dumps({'session_file': str(renewed_file)})
+        body = (f"umask 077\nprintf '%s' '{json.dumps({'name': PLAYER, 'uuid': PLAYER_UUID, 'access_token': renewed})}'"
+                f" > '{renewed_file}'\n")
+    else:
+        answer = json.dumps({'authentication': {'state': 'sign_in_required', 'message': 'Sign in again.'}})
+        body = ''
+    script.write_text(f"#!/bin/sh\n[ \"$2 $3 $4\" = 'account session {PLAYER_UUID}' ] || exit 1\n"
+                      f"{body}printf '%s' '{answer}'\n")
+    script.chmod(0o700)
+    return script
+
+
+def run_client(binary, build, port, label, token, discovery, renewed=None, launcher=False):
     directory = build / f'client-{label}'
     shutil.rmtree(directory, ignore_errors=True)
     directory.mkdir()
     report = directory / 'report.json'
     env = lab.game_env(HORIZON_NET_REPORT=report, HORIZON_API_DISCOVERY=discovery)
+    if launcher:
+        env['HORIZON_LAUNCHER_EXE'] = str(fake_launcher(directory, renewed))
     command = [binary, '--resources', lab.RESOURCES, '--render-distance', 2,
                '--server', f'127.0.0.1:{port}', '--name', PLAYER]
     if token:
@@ -259,12 +279,12 @@ def run_side(label, command, binary, build, services, discovery):
     def check(name, actual, expected):
         checks.append(f'{name}: ' + ('ok' if actual == expected else f'expected {expected!r}, got {actual!r}'))
 
-    def login(name, token):
+    def login(name, token, **launcher):
         """One client run, over once the server logged the end of its connection: the server notices the
         closed connection at its next tick, and the next run's lines must not come before that one."""
         start = len(server.lines)
         starts.append(start)
-        got = run_client(binary, build, port, f'{label}-{name}', token, discovery)
+        got = run_client(binary, build, port, f'{label}-{name}', token, discovery, **launcher)
         wait_after(server, start, r'lost connection: ')
         return got
 
@@ -315,6 +335,19 @@ def run_side(label, command, binary, build, services, discovery):
               'Sign in with your Microsoft account in the Horizon launcher to join it.')
         check('no account: no service calls', services.take_log(), [])
         check('no player joined after the first', 'joined the game' in '\n'.join(server.lines[mark:]), False)
+
+        # 4b. A rejected token the launcher renews (Horizon's): the client joins on its second try.
+        got = login('renewed', BAD, renewed=GOOD, launcher=True)
+        server.wait_for(r'Tester left the game', timeout=30)
+        check('renewed: connected throughout', got['error'], None)
+        check('renewed: refused, then joined with the renewed token',
+              [(e[0], e[3]) for e in services.take_log()], [('join', False), ('join', True), ('verify', True)])
+
+        # 4c. The launcher can't renew it: the client says to sign in again.
+        got = login('sign-in', BAD, launcher=True)
+        check('sign in again: client message', got['error'], "disconnected: Your Microsoft account's sign-in "
+              'has expired. Sign in again to join online-mode servers.')
+        check('sign in again: one refused join', [(e[0], e[3]) for e in services.take_log()], [('join', False)])
 
         # 5. Verified, but not on the whitelist.
         server.console('whitelist on')

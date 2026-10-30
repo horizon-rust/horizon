@@ -171,6 +171,14 @@ leaves who plays unchanged. `account session` is not an MCP tool: its file holds
 only the game reads it. Renewing in the launcher does not change the token a running game
 already holds until the game asks.
 
+The game asks when the session service refuses its token while joining an online-mode server
+(`auth::renew`, from `net.rs`): it shows "Renewing your session...", keeps the renewed session for
+that account (later joins use it, and so does every splitscreen player signed in as it) and tries
+the join once more. When the launcher answers that the account needs a browser sign-in, the
+Disconnected screen says so and offers **Sign in again**: it runs `account sign-in --for`, opens
+the sign-in page, shows the code, and renews the session when it finishes; the player then joins
+again. A game the launcher didn't start keeps vanilla's "Invalid session" message.
+
 ### Profile heads, progress, and targeted re-sign-in
 
 Microsoft accounts show their public Minecraft profile head in Settings, the selected-account

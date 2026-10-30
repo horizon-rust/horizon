@@ -157,6 +157,7 @@ mod tests {
         ));
         assert!(!allowed("You are not white-listed on this server!", true));
         assert!(!allowed("You logged in from another location", true));
+        assert!(!allowed(crate::net::SIGN_IN_AGAIN, true));
         assert!(!allowed("Incompatible client! Please use 26.3", true));
         assert!(!allowed("You have been idle for too long!", true));
         assert!(

@@ -110,7 +110,165 @@ pub fn set_current(session: AuthSession) {
     let _ = CURRENT.set(Arc::new(session));
 }
 pub fn current() -> Option<Arc<AuthSession>> {
-    CURRENT.get().cloned()
+    CURRENT
+        .get()
+        .map(|s| latest(s).unwrap_or_else(|| s.clone()))
+}
+
+/// Sessions the launcher renewed while the game ran, one per account (splitscreen players' too).
+static RENEWED: Mutex<Vec<Arc<AuthSession>>> = Mutex::new(Vec::new());
+/// Accounts the launcher said need a browser sign-in.
+static SIGN_IN_NEEDED: Mutex<Vec<u128>> = Mutex::new(Vec::new());
+
+/// This account's renewed session, if the launcher renewed it since the game started.
+pub fn latest(session: &AuthSession) -> Option<Arc<AuthSession>> {
+    let renewed = RENEWED.lock().unwrap();
+    renewed.iter().find(|s| s.uuid == session.uuid).cloned()
+}
+
+/// Whether the launcher said this account needs signing in again in the browser.
+pub fn needs_sign_in(uuid: u128) -> bool {
+    SIGN_IN_NEEDED.lock().unwrap().contains(&uuid)
+}
+
+/// Why [`renew`] gave no session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Renewal {
+    /// The game wasn't started by the launcher (no `HORIZON_LAUNCHER_EXE`).
+    NoLauncher,
+    /// The Microsoft sign-in was refused: [`sign_in_again`].
+    SignIn,
+    Failed(String),
+}
+
+/// The launcher that started the game, if it did.
+fn launcher_exe() -> Option<std::ffi::OsString> {
+    std::env::var_os("HORIZON_LAUNCHER_EXE")
+}
+
+/// The launcher `exe`, running `--json` and `args`, its answers on stdout.
+fn launcher(
+    exe: Option<std::ffi::OsString>,
+    args: &[&str],
+) -> Result<std::process::Child, Renewal> {
+    let mut cmd = std::process::Command::new(exe.ok_or(Renewal::NoLauncher)?);
+    cmd.arg("--json")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.spawn()
+        .map_err(|e| Renewal::Failed(format!("Could not run the launcher: {e}")))
+}
+
+/// Ask the launcher for a renewed session for this account (`account session`), keep it for
+/// later joins and return it. Blocks for the renewal: call it off the drawing thread.
+pub fn renew(uuid: u128) -> Result<Arc<AuthSession>, Renewal> {
+    renew_with(launcher_exe(), uuid)
+}
+
+fn renew_with(exe: Option<std::ffi::OsString>, uuid: u128) -> Result<Arc<AuthSession>, Renewal> {
+    let out = launcher(exe, &["account", "session", &format!("{uuid:032x}")])?
+        .wait_with_output()
+        .map_err(|e| Renewal::Failed(e.to_string()))?;
+    let answer: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .map_err(|_| Renewal::Failed("The launcher could not renew the session.".into()))?;
+    if let Some(file) = answer["session_file"].as_str() {
+        let session = AuthSession::load(Path::new(file)).map_err(Renewal::Failed)?;
+        if session.uuid != uuid {
+            return Err(Renewal::Failed(
+                "The launcher renewed another account.".into(),
+            ));
+        }
+        let session = Arc::new(session);
+        let mut renewed = RENEWED.lock().unwrap();
+        renewed.retain(|s| s.uuid != uuid);
+        renewed.push(session.clone());
+        SIGN_IN_NEEDED.lock().unwrap().retain(|u| *u != uuid);
+        return Ok(session);
+    }
+    let status = &answer["authentication"];
+    if status["state"] == "sign_in_required" {
+        let mut needed = SIGN_IN_NEEDED.lock().unwrap();
+        if !needed.contains(&uuid) {
+            needed.push(uuid);
+        }
+        return Err(Renewal::SignIn);
+    }
+    Err(Renewal::Failed(
+        status["message"]
+            .as_str()
+            .unwrap_or("The launcher could not renew the session.")
+            .to_owned(),
+    ))
+}
+
+/// Where a browser sign-in started from the game is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SignInStep {
+    Starting,
+    /// Waiting for the player to enter `code` at `link`.
+    Code {
+        link: String,
+        code: String,
+    },
+    Done(Result<(), String>),
+}
+
+/// Sign this account in again through the launcher (`account sign-in --for`, which refuses any
+/// other Microsoft account), then renew its session, on a thread of its own. `open` gets the
+/// sign-in page's link once the launcher has one.
+pub fn sign_in_again(uuid: u128, open: impl Fn(&str) + Send + 'static) -> Arc<Mutex<SignInStep>> {
+    let step = Arc::new(Mutex::new(SignInStep::Starting));
+    let shared = step.clone();
+    std::thread::spawn(move || {
+        let set = |s| *shared.lock().unwrap() = s;
+        let result = (|| {
+            let who = format!("{uuid:032x}");
+            let args = ["account", "sign-in", "--for", &who];
+            let mut child = launcher(launcher_exe(), &args).map_err(|e| match e {
+                Renewal::Failed(why) => why,
+                _ => "Sign in again in the launcher.".to_owned(),
+            })?;
+            let stdout = child.stdout.take().ok_or("The launcher gave no answer.")?;
+            let mut signed_in = false;
+            // One JSON object per answer: the link and code, then who signed in.
+            let reader = serde_json::Deserializer::from_reader(std::io::BufReader::new(stdout));
+            for answer in reader
+                .into_iter::<serde_json::Value>()
+                .map_while(Result::ok)
+            {
+                if let (Some(link), Some(code)) = (answer["link"].as_str(), answer["code"].as_str())
+                {
+                    open(link);
+                    set(SignInStep::Code {
+                        link: link.to_owned(),
+                        code: code.to_owned(),
+                    });
+                }
+                signed_in |= answer["signed_in"].is_string();
+            }
+            let _ = child.wait();
+            if !signed_in {
+                return Err(
+                    "The sign-in did not finish. Try again, or sign in from the launcher."
+                        .to_owned(),
+                );
+            }
+            renew(uuid).map(|_| ()).map_err(|e| match e {
+                Renewal::Failed(why) => why,
+                _ => "Signed in, but the session could not be renewed.".to_owned(),
+            })
+        })();
+        set(SignInStep::Done(result));
+    });
+    step
 }
 
 /// Why joining a server through the session service failed, like the
@@ -329,6 +487,56 @@ mod tests {
         }
         let _ = mode;
         path
+    }
+
+    /// A launcher stand-in for `account session`: it prints `answer` (`FILE` becomes the session
+    /// file it writes) when asked for UUID.
+    #[cfg(unix)]
+    fn fake_launcher(dir: &Path, name: &str, answer: &str) -> std::ffi::OsString {
+        use std::os::unix::fs::PermissionsExt;
+        let file = dir.join(format!("{name}.json"));
+        let script = dir.join(name);
+        let session = r#"{"name":"Notch","uuid":"069a79f444e94726a5befca90e38aaf5","access_token":"renewed"}"#;
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n[ \"$2 $3 $4\" = 'account session {UUID:032x}' ] || exit 1\n\
+                 umask 077\nprintf '%s' '{session}' > '{f}'\nprintf '%s' '{a}'\n",
+                f = file.display(),
+                a = answer.replace("FILE", &file.display().to_string()),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        script.into_os_string()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_launcher_renews_a_refused_session_or_asks_for_a_sign_in() {
+        let dir = std::env::temp_dir().join(format!("horizon-renew-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = AuthSession::new("Notch", UUID, "expired");
+        let refused = fake_launcher(
+            &dir,
+            "refused",
+            r#"{"authentication":{"state":"sign_in_required","message":"Sign in again in your browser."}}"#,
+        );
+        assert_eq!(
+            renew_with(Some(refused), UUID).unwrap_err(),
+            Renewal::SignIn
+        );
+        assert!(needs_sign_in(UUID));
+        assert!(latest(&old).is_none());
+        let renewed = fake_launcher(&dir, "renewed", r#"{"session_file":"FILE"}"#);
+        let fresh = renew_with(Some(renewed), UUID).unwrap();
+        assert_eq!(fresh.access_token, "renewed");
+        assert_eq!(latest(&old).unwrap().access_token, "renewed");
+        assert!(!needs_sign_in(UUID));
+        // The read-once file is gone; no launcher means no renewal.
+        assert!(!dir.join("renewed.json").exists());
+        assert_eq!(renew_with(None, UUID).unwrap_err(), Renewal::NoLauncher);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

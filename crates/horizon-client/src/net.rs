@@ -368,6 +368,9 @@ fn status(send: &Sender<Event>, text: &str) {
 
 /// Shown when an online-mode server asks a client without an account to authenticate.
 pub const NOT_SIGNED_IN: &str = "This server is in online mode. Sign in with your Microsoft account in the Horizon launcher to join it.";
+/// The session was refused and the launcher couldn't renew it (auto-reconnect never retries it).
+pub const SIGN_IN_AGAIN: &str =
+    "Your Microsoft account's sign-in has expired. Sign in again to join online-mode servers.";
 
 /// A translation, or the key itself (Language.getOrDefault).
 fn tr(lang: &Language, key: &str) -> String {
@@ -501,8 +504,22 @@ fn run(
                 let secret = generate_secret().map_err(e)?;
                 if hello.should_authenticate {
                     let account = auth.ok_or_else(|| NOT_SIGNED_IN.to_owned())?;
+                    let renewed = crate::auth::latest(account);
+                    let account = renewed.as_deref().unwrap_or(account);
                     let hash = server_hash(&hello.server_id, &secret, &hello.public_key);
-                    if let Err(err) = crate::auth::join_server(account, &hash) {
+                    let mut joined = crate::auth::join_server(account, &hash);
+                    // An expired or revoked token: the launcher renews it, then one more try.
+                    if joined == Err(crate::auth::JoinError::InvalidSession) {
+                        status(send, "Renewing your session...");
+                        joined = match crate::auth::renew(account.uuid) {
+                            Ok(fresh) => crate::auth::join_server(&fresh, &hash),
+                            Err(crate::auth::Renewal::SignIn) => {
+                                return Ok(SIGN_IN_AGAIN.to_owned());
+                            }
+                            Err(_) => joined,
+                        };
+                    }
+                    if let Err(err) = joined {
                         let reason = match err.reason() {
                             Ok(key) => tr(lang, key),
                             Err(message) => message.to_owned(),

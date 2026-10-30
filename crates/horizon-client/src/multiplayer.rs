@@ -121,7 +121,56 @@ pub enum Screen {
         reason: String,
         /// Auto-reconnect's next attempt, until it is cancelled.
         retry: Option<crate::reconnect::Retry>,
+        /// The account whose sign-in expired, for a Sign in again button.
+        sign_in: Option<SignInAgain>,
     },
+}
+
+/// Horizon's Sign in again on the Disconnected screen: the account, and its browser sign-in
+/// through the launcher once started.
+#[derive(Clone, Debug)]
+pub struct SignInAgain {
+    pub uuid: u128,
+    /// Opens the sign-in page in the browser (the game's `open_uri`).
+    open: fn(&str),
+    step: Option<Arc<std::sync::Mutex<crate::auth::SignInStep>>>,
+}
+
+impl SignInAgain {
+    /// When the launcher said this account must sign in again.
+    pub fn needed(uuid: u128, open: fn(&str)) -> Option<Self> {
+        crate::auth::needs_sign_in(uuid).then_some(Self {
+            uuid,
+            open,
+            step: None,
+        })
+    }
+    fn step(&self) -> Option<crate::auth::SignInStep> {
+        Some(self.step.as_ref()?.lock().unwrap().clone())
+    }
+    /// The button shows until a sign-in runs, and again after one failed.
+    fn button(&self) -> bool {
+        matches!(
+            self.step(),
+            None | Some(crate::auth::SignInStep::Done(Err(_)))
+        )
+    }
+    /// What the screen says about the sign-in.
+    fn lines(&self) -> Vec<String> {
+        use crate::auth::SignInStep;
+        match self.step() {
+            None => vec![],
+            Some(SignInStep::Starting) => vec!["Asking the launcher...".into()],
+            Some(SignInStep::Code { link, code }) => vec![
+                format!("In your browser, open {link}"),
+                format!("and enter the code {code}"),
+            ],
+            Some(SignInStep::Done(Ok(()))) => {
+                vec!["Signed in again. Join the server again.".into()]
+            }
+            Some(SignInStep::Done(Err(e))) => vec![e],
+        }
+    }
 }
 /// What a click asks the title screen to do.
 pub enum Outcome {
@@ -673,7 +722,7 @@ impl Screen {
                     57,
                 ),
             ],
-            Self::Disconnected { retry, .. } => {
+            Self::Disconnected { retry, sign_in, .. } => {
                 let mut v = vec![b(
                     half(w) - 100.0,
                     half(h) + 30.0,
@@ -693,6 +742,16 @@ impl Screen {
                         ),
                         true,
                         55,
+                    ));
+                }
+                if sign_in.as_ref().is_some_and(SignInAgain::button) {
+                    v.push(b(
+                        half(w) - 100.0,
+                        half(h) + 54.0,
+                        200.0,
+                        "Sign in again",
+                        true,
+                        61,
                     ));
                 }
                 v
@@ -1089,7 +1148,11 @@ impl Screen {
                     *focus == 1,
                 );
             }
-            Self::Disconnected { reason, retry } => {
+            Self::Disconnected {
+                reason,
+                retry,
+                sign_in,
+            } => {
                 centered(
                     batch,
                     &crate::lang::get_or("disconnect.lost", "Connection Lost"),
@@ -1102,6 +1165,15 @@ impl Screen {
                 if let Some(r) = retry {
                     let text = r.text(std::time::Instant::now());
                     centered(batch, &text, half(h) + 16.0, rgba(170, 170, 170, 255));
+                }
+                let below = sign_in.as_ref().map(SignInAgain::lines).unwrap_or_default();
+                let top = if sign_in.as_ref().is_some_and(SignInAgain::button) {
+                    half(h) + 80.0
+                } else {
+                    half(h) + 58.0
+                };
+                for (i, line) in below.iter().enumerate() {
+                    centered(batch, line, top + i as f32 * 9.0, rgba(170, 170, 170, 255));
                 }
             }
         }
@@ -1322,6 +1394,14 @@ impl Screen {
                 Some(51 | 53 | 54 | 57),
             ) => *self = Self::list(saves),
             (Self::Disconnected { retry, .. }, Some(55)) => *retry = None,
+            (
+                Self::Disconnected {
+                    sign_in: Some(s), ..
+                },
+                Some(61),
+            ) => {
+                s.step = Some(crate::auth::sign_in_again(s.uuid, s.open));
+            }
             (Self::Direct { address }, Some(52)) => {
                 return Outcome::Connect(direct_address(address));
             }
@@ -1622,8 +1702,20 @@ mod tests {
         let lost = Screen::Disconnected {
             reason: String::new(),
             retry: None,
+            sign_in: None,
         };
         assert_eq!(at(&lost, 427.0, 253.0), [(113.0, 156.0)]);
+        // Horizon's Sign in again goes where Cancel Reconnecting would.
+        let expired = Screen::Disconnected {
+            reason: String::new(),
+            retry: None,
+            sign_in: Some(SignInAgain {
+                uuid: 1,
+                open: |_| {},
+                step: None,
+            }),
+        };
+        assert_eq!(at(&expired, 427.0, 253.0), [(113.0, 156.0), (113.0, 180.0)]);
         // centeredText: `width / 2 - font.width(text) / 2`.
         assert_eq!(centered_x(427.0, 85.0), 171.0);
         assert_eq!(centered_x(320.0, 84.0), 118.0);
