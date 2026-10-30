@@ -109,6 +109,9 @@ pub struct Rays {
     /// `moving_count` of them.
     pub moving: [[f32; 4]; MOVING_LIGHTS],
     pub moving_count: usize,
+    /// The Eye of Aldhani (`aldhani`): the seconds into it (below 0 none) and a full moon's light
+    /// overhead, its meteors' light's unit.
+    pub aldhani: [f32; 2],
 }
 
 impl Rays {
@@ -221,6 +224,8 @@ pub struct ShadowRays {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
     uniform: wgpu::Buffer,
+    /// The Eye of Aldhani's field (`aldhani::Aldhani::field`), its meteors the rays light with.
+    aldhani: wgpu::Buffer,
     views: Vec<ViewMasks>,
     /// Passes run, for the rays' directions to change.
     frame: u32,
@@ -228,8 +233,8 @@ pub struct ShadowRays {
 
 impl ShadowRays {
     /// The pass, with the hybrid's hardware rays when `hardware` (sprite layers past `split` go to
-    /// the next arrays, which the alpha test takes as opaque).
-    pub fn new(device: &wgpu::Device, hardware: bool, split: u32) -> Self {
+    /// the next arrays, which the alpha test takes as opaque); `aldhani` the Eye of Aldhani's field.
+    pub fn new(device: &wgpu::Device, hardware: bool, split: u32, aldhani: &wgpu::Buffer) -> Self {
         let source = source(hardware, split);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Ray-traced shadows"),
@@ -357,6 +362,7 @@ impl ShadowRays {
                 entry(33, output),
                 entry(34, output),
                 entry(38, cache_binding),
+                entry(39, storage),
             ]
             .into_iter()
             .chain(
@@ -532,6 +538,7 @@ impl ShadowRays {
             layout,
             pipeline,
             uniform,
+            aldhani: aldhani.clone(),
             views: Vec::new(),
             frame: 0,
         }
@@ -710,7 +717,12 @@ impl ShadowRays {
             sun_light: rays.sun_light,
             water: rays.water,
             hw_offset: rays.hw_offset,
-            held: [rays.moving_count.min(MOVING_LIGHTS) as f32, 0.0, 0.0, 0.0],
+            held: [
+                rays.moving_count.min(MOVING_LIGHTS) as f32,
+                rays.aldhani[0],
+                rays.aldhani[1],
+                0.0,
+            ],
             moving: rays.moving,
         };
         uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));
@@ -773,6 +785,10 @@ impl ShadowRays {
             wgpu::BindGroupEntry {
                 binding: 38,
                 resource: visibility.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 39,
+                resource: self.aldhani.as_entire_binding(),
             },
         ];
         if let (true, Some(hw)) = (self.hardware, &hardware) {

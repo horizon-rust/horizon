@@ -39,7 +39,8 @@ struct Rt {
     water: vec4<f32>,
     // The camera's offset from the hardware rays' instances' anchor (gfx/hw_rays.rs).
     hw_offset: vec4<f32>,
-    // x: how many of `moving` are set.
+    // x: how many of `moving` are set, y: the seconds into the Eye of Aldhani (below 0 none), z: a
+    // full moon's light overhead (paper whites), its meteors' light's unit.
     held: vec4<f32>,
     // RT lighting's moving lights (a held torch, a burning mob: Remix's held light): camera-relative
     // position and light level (`moving_light`).
@@ -73,6 +74,8 @@ struct Seen {
     reached: atomic<u32>,
 }
 @group(0) @binding(38) var<storage, read_write> visibility: array<Seen>;
+// The Eye of Aldhani's field this frame (gfx/aldhani.wgsl): its meteors' light and its running sum.
+@group(0) @binding(39) var<storage, read> aldhani_field: AldhaniField;
 // RT lighting's light from the light sources reaching the pixel (rgb, linear, the faces' facing
 // in); a below 0 past the grid, where the terrain falls back on the block light level.
 @group(0) @binding(9) var block_mask: texture_storage_2d<rgba16float, write>;
@@ -496,8 +499,14 @@ fn ambient(pos: vec3<f32>, n: vec3<f32>) -> f32 {
     }
     return 1.0 - rt.size.w * closed / 6.0;
 }
-// RT lighting's sky toward `d` (unit), from the sky table, bilinear (terrain.wgsl `rt_sky`).
+// RT lighting's sky toward `d` (unit), from the sky table, bilinear (terrain.wgsl `rt_sky`), and
+// during the Eye of Aldhani its glow.
 fn sky_at(d: vec3<f32>) -> vec3<f32> {
+    var glow = vec3(0.0);
+    if rt.held.y >= 0.0 { glow = aldhani_glow(d, rt.held.y); }
+    return sky_table(d) + glow;
+}
+fn sky_table(d: vec3<f32>) -> vec3<f32> {
     let flat = d.xz / max(length(d.xz), 1e-5);
     let sun = rt.sun.xz / max(length(rt.sun.xz), 1e-5);
     let azimuth = acos(clamp(dot(flat, sun), -1.0, 1.0)) / 3.14159265;
@@ -1058,6 +1067,136 @@ fn moving_gain(light: vec4<f32>, pos: vec3<f32>, n: vec3<f32>, offset: vec3<f32>
     let window = 1.0 - (d / reach) * (d / reach);
     return (reach / 15.0) * window * window * facing / ((1.0 + d) * (1.0 + d));
 }
+// ALDHANI-BEGIN: the Eye of Aldhani's field, the same text in gfx/aldhani.wgsl (which makes it),
+// terrain.wgsl (the sky draws it) and gfx/shadow_rays.wgsl (the terrain is lit by it); a test keeps
+// them equal.
+// The slots a frame looks back over (one meteor at most each), the sky's tiles a side (a square
+// folded over the upper half of the sky, `aldhani_tile`) and the streaks a tile holds at most.
+const ALDHANI_METEORS: u32 = 8192u;
+const ALDHANI_TILES: u32 = 64u;
+const ALDHANI_TILE_CAP: u32 = 64u;
+// How far from its line a streak's light reaches at most, in radians (its glow fades to nothing
+// there): a streak is binned into every tile within it.
+const ALDHANI_REACH: f32 = 0.012;
+// The event's seconds: the storm builds over a minute, holds, and dies out over the last minute.
+const ALDHANI_EVENT: f32 = 300.0;
+// Where the meteors come from: a fixed direction of the world, due south eight degrees under the
+// horizon, far behind it, so the streaks rise out of the haze beyond the mountains and fan out
+// upward and outward over the whole sky.
+const ALDHANI_RADIANT: vec3<f32> = vec3<f32>(0.0, -0.1392, 0.99027);
+// The light the field gives a face turned to it at the storm's height, in full moons (the moon's
+// light overhead, `rt.held.z`), and the glow of the sky around the radiant at its brightest, in
+// paper whites (radiance; Lambert's 1/pi in the units, as the sky table's).
+const ALDHANI_MOONS: f32 = 16.0;
+const ALDHANI_GLOW: f32 = 0.2;
+// A meteor of the field: toward its streak's tail (xyz) and its core's width in pixels (w); toward
+// its head (xyz) and its seed (w, for the sparkles); the light of its core at the head (rgb, paper
+// whites) and its head's glow (w); the light it gives the terrain (rgb, luminance 1) and its share
+// (w, the cdf's weight; 0: not burning).
+struct AldhaniMeteor {
+    tail: vec4<f32>,
+    head: vec4<f32>,
+    colour: vec4<f32>,
+    light: vec4<f32>,
+}
+// x: the meteors' shares summed, y: the meteors burning, z: those drawn in the sky; the shares'
+// running sum (`cdf[i]` the sum up to meteor i); each streak's great circle (its normal, xyz, 0
+// for a point, and its angle, w), for the sky to pass a streak by from one read; and the meteors.
+struct AldhaniField {
+    total: vec4<f32>,
+    cdf: array<f32, ALDHANI_METEORS>,
+    lines: array<vec4<f32>, ALDHANI_METEORS>,
+    meteors: array<AldhaniMeteor, ALDHANI_METEORS>,
+}
+// A hash of `n` to [0, 1) (a PCG round, as terrain.wgsl's `meteor_hash`).
+fn aldhani_rand(n: u32) -> f32 {
+    let state = n * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return f32(((word >> 22u) ^ word) >> 8u) / 16777216.0;
+}
+// How strong the storm is `t` seconds into the event (0 to 1; 0 before and after it).
+fn aldhani_envelope(t: f32) -> f32 {
+    return smoothstep(0.0, 60.0, t) * (1.0 - smoothstep(ALDHANI_EVENT - 60.0, ALDHANI_EVENT, t));
+}
+// The sky tile direction `d` falls in: the upper half of the sky folded flat (an octahedron's top,
+// turned to a square), ALDHANI_TILES a side, the horizon on the square's edges.
+fn aldhani_tile(d: vec3<f32>) -> u32 {
+    let up = vec3(d.x, max(d.y, 0.0), d.z);
+    let p = up.xz / (abs(up.x) + up.y + abs(up.z) + 1e-6);
+    let q = vec2(p.x + p.y, p.x - p.y) * 0.5 + 0.5;
+    let c = min(vec2<u32>(max(q, vec2(0.0)) * f32(ALDHANI_TILES)), vec2(ALDHANI_TILES - 1u));
+    return c.y * ALDHANI_TILES + c.x;
+}
+// The sky's own light toward `d` during the event (`t` seconds in), in paper whites: the glow the
+// thousands of meteors too far and faint to tell apart make, a teal sky brightest toward the
+// radiant, and the eye itself, a bright saturated glow on the horizon around the radiant, teal on
+// its east side and pink-white on its west. ALDHANI_PALETTE: the colours are the show's (Andor,
+// "The Eye"), no spectrum is known for it.
+fn aldhani_glow(d: vec3<f32>, t: f32) -> vec3<f32> {
+    let strength = aldhani_envelope(t);
+    if strength <= 0.0 { return vec3(0.0); }
+    let c = clamp(dot(d, ALDHANI_RADIANT), -1.0, 1.0);
+    let theta = acos(c);
+    let up = max(d.y, 0.0);
+    let teal = vec3(0.05, 0.9, 0.65);
+    // The sky: the faint meteors everywhere, thicker toward the radiant's half of the sky.
+    let sky = teal * (0.35 + 0.65 * (0.5 + 0.5 * c)) * (0.55 + 0.45 * exp(-up * 2.0));
+    // The eye: a few degrees of white-hot core in a wide glow, its sides two colours.
+    let east = d.x / max(sin(theta), 1e-3);
+    let side = mix(teal, vec3(1.0, 0.55, 0.8), smoothstep(-0.7, 0.7, -east));
+    let core = exp(-theta * theta / (2.0 * 0.08 * 0.08));
+    let wide = exp(-theta / 0.25) * (0.4 + 0.6 * exp(-up / 0.15));
+    let eye = side * (8.0 * wide) + mix(side, vec3(1.0), 0.5) * (60.0 * core);
+    // Under the horizon the ground hides it (the rays see the ground there).
+    let above = smoothstep(-0.06, 0.0, d.y);
+    return (sky + eye) * (ALDHANI_GLOW * strength * above);
+}
+// ALDHANI-END
+// The Eye of Aldhani's meteors' light on camera-relative `pos` (normal `n`): every meteor burning
+// is a light far away toward its head, its light its share of the field's (ALDHANI_MOONS full
+// moons at the storm's height, split by each one's power and the inverse square of its distance).
+// Two candidates are drawn by their share from the running sum (a binary search, no loop over the
+// thousands), one of them kept by its share times its facing (resampled importance sampling), and
+// one shadow ray toward it: the light is the field's times the candidates' mean facing in the
+// chosen one's colour, bounded (no firefly), the shadows moving with the meteors. Their light
+// changes only as their curves do, so the frames' average holds still.
+fn aldhani_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>) -> vec3<f32> {
+    let t = rt.held.y;
+    let total = aldhani_field.total.x;
+    if t < 0.0 || total <= 0.0 { return vec3(0.0); }
+    var sum = 0.0;
+    var chosen = 0u;
+    var chosen_facing = 0.0;
+    let random = random2(texel, 90u);
+    var pick = random.y;
+    for (var c = 0u; c < 2u; c++) {
+        // Stratified over the running sum.
+        let want = (f32(c) + random.x) * 0.5 * total;
+        var lo = 0u;
+        var hi = ALDHANI_METEORS - 1u;
+        while lo < hi {
+            let mid = (lo + hi) / 2u;
+            if aldhani_field.cdf[mid] > want { hi = mid; } else { lo = mid + 1u; }
+        }
+        let facing = max(dot(n, aldhani_field.meteors[lo].head.xyz), 0.0);
+        sum += facing;
+        pick = fract(pick + 0.618034);
+        if facing > 0.0 && pick * sum < facing {
+            chosen = lo;
+            chosen_facing = facing;
+        }
+    }
+    if chosen_facing <= 0.0 { return vec3(0.0); }
+    let m = aldhani_field.meteors[chosen];
+    var through = vec3(0.0);
+    if HW {
+        through = hw_light(pos, m.head.xyz, 4096.0);
+    } else {
+        through = vec3(ray(pos, m.head.xyz, BOUNCE_BUDGET, 1e30));
+    }
+    let field = rt.held.z * ALDHANI_MOONS * aldhani_envelope(t);
+    return m.light.rgb * through * (field * sum * 0.5);
+}
 // What the rays give the surface depth pixel `p` shows.
 struct Traced {
     // The sun's light reaching it and the light around (r, g), and with RT lighting the sky seen
@@ -1131,7 +1270,7 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         let sky = restir_gi(lifted, n, texel, back.xy, back.z == 1);
         let blocks = vec4(sky.rgb, select(edge, -1.0, edge < 0.5));
         let direct = vec4(restir_light(lifted, n, texel, back.xy, back.z == 1).rgb
-            + moving_light(lifted, n, texel), face_of(n));
+            + moving_light(lifted, n, texel) + aldhani_light(lifted, n, texel), face_of(n));
         // What this pixel found, into the radiance cache for the bounce rays of the frames after.
         cache_add(pos, n, sky.rgb + direct.rgb);
         // The sun mask's alpha: the indirect and direct light's luminance squared, its second

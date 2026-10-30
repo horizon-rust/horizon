@@ -116,6 +116,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | --- | --- | --- | --- |
 | `give ITEM [COUNT]` | `give` | Add items to the inventory | `item` (string, required): item id<br>`count` (integer): how many (default 1) |
 | `time TICKS` | `time` | Set the time of day (0 sunrise, 6000 noon, 13000 night) | `ticks` (integer, required): day time |
+| `aldhani start\|stop\|SECONDS` | `aldhani` | Run the Eye of Aldhani meteor storm (RT lighting), from SECONDS into its 300 | `when` (string, required): start, stop or the seconds into the event |
 | `setblock X Y Z BLOCK[props]` | `setblock` (destructive) | Set a block (with neighbour updates) | `x` (integer, required): block X<br>`y` (integer, required): block Y<br>`z` (integer, required): block Z<br>`block` (string, required): block state such as oak_stairs[facing=east] |
 | `summon KIND [X Y Z] [baby]` | `summon` | Spawn a mob (in front of the player without a position) | `kind` (string, required): mob type<br>`x` (number): X<br>`y` (number): Y<br>`z` (number): Z<br>`baby` (boolean): a baby |
 | `effect ID SECONDS [AMPLIFIER] \| effect clear` | `effect` | Give a status effect, or clear them all | `id` (string, required): effect id such as speed, or clear<br>`seconds` (number): duration<br>`amplifier` (integer): level - 1 (default 0) |

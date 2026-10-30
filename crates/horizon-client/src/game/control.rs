@@ -608,6 +608,18 @@ impl Game<'_> {
                     .map_err(|e| e.to_string())?;
                 ok()
             }
+            "aldhani" => {
+                let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
+                let seconds = match arg(1)? {
+                    "start" => Some(0.0),
+                    "stop" => None,
+                    s => Some(s.parse::<f32>().map_err(|_| "aldhani start|stop|SECONDS")?),
+                };
+                renderer.set_aldhani(seconds)?;
+                Ok(Some(
+                    json!({ "ok": true, "seconds": renderer.aldhani_time() }),
+                ))
+            }
             "chat" => {
                 let text = line.trim_start().strip_prefix("chat").unwrap_or("").trim();
                 if self.remote.is_some() {

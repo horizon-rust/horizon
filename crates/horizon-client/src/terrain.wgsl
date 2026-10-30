@@ -93,6 +93,10 @@ struct Globals {
 // RT lighting: the Milky Way's diffuse light (NASA's Deep Star Maps 2020, celestial coordinates,
 // right ascension 0h in the middle and increasing to the left).
 @group(0) @binding(20) var rt_milky_map: texture_2d<f32>;
+// RT lighting: the Eye of Aldhani's field this frame (gfx/aldhani.wgsl), and its streaks by tile
+// of the sky (each tile's count, then its meteors).
+@group(0) @binding(21) var<storage, read> aldhani_field: AldhaniField;
+@group(0) @binding(22) var<storage, read> aldhani_tiles: array<u32>;
 // The traced reflection for the fragment being lit (`rt_reflection`), which `rt_shade` takes in
 // place of the sky's: rgb its light, a 1 when there is one.
 var<private> rt_mirror: vec4<f32>;
@@ -329,14 +333,159 @@ fn rt_visibility(pos: vec3<f32>, pixel: vec2<f32>) -> vec3<f32> {
     }
     return best;
 }
-// RT lighting's sky toward `d` (unit): the atmosphere's light (gfx/atmosphere.rs `sky_view`).
+// RT lighting's sky toward `d` (unit): the atmosphere's light (gfx/atmosphere.rs `sky_view`),
+// and during the Eye of Aldhani its glow (`rt_camera.w` the seconds into it, below 0 none).
 fn rt_sky(d: vec3<f32>) -> vec3<f32> {
     let flat = d.xz / max(length(d.xz), 1e-5);
     let sun = globals.rt_sun.xz / max(length(globals.rt_sun.xz), 1e-5);
     let azimuth = acos(clamp(dot(flat, sun), -1.0, 1.0)) / 3.14159265;
     let e = asin(clamp(d.y, -1.0, 1.0)) / 1.5707963;
     let v = 0.5 + 0.5 * sign(e) * sqrt(abs(e));
-    return textureSampleLevel(rt_sky_view, lightmap_sampler, vec2(azimuth, v), 0.0).rgb;
+    var sky = textureSampleLevel(rt_sky_view, lightmap_sampler, vec2(azimuth, v), 0.0).rgb;
+    if globals.rt_camera.w >= 0.0 { sky += aldhani_glow(d, globals.rt_camera.w); }
+    return sky;
+}
+// ALDHANI-BEGIN: the Eye of Aldhani's field, the same text in gfx/aldhani.wgsl (which makes it),
+// terrain.wgsl (the sky draws it) and gfx/shadow_rays.wgsl (the terrain is lit by it); a test keeps
+// them equal.
+// The slots a frame looks back over (one meteor at most each), the sky's tiles a side (a square
+// folded over the upper half of the sky, `aldhani_tile`) and the streaks a tile holds at most.
+const ALDHANI_METEORS: u32 = 8192u;
+const ALDHANI_TILES: u32 = 64u;
+const ALDHANI_TILE_CAP: u32 = 64u;
+// How far from its line a streak's light reaches at most, in radians (its glow fades to nothing
+// there): a streak is binned into every tile within it.
+const ALDHANI_REACH: f32 = 0.012;
+// The event's seconds: the storm builds over a minute, holds, and dies out over the last minute.
+const ALDHANI_EVENT: f32 = 300.0;
+// Where the meteors come from: a fixed direction of the world, due south eight degrees under the
+// horizon, far behind it, so the streaks rise out of the haze beyond the mountains and fan out
+// upward and outward over the whole sky.
+const ALDHANI_RADIANT: vec3<f32> = vec3<f32>(0.0, -0.1392, 0.99027);
+// The light the field gives a face turned to it at the storm's height, in full moons (the moon's
+// light overhead, `rt.held.z`), and the glow of the sky around the radiant at its brightest, in
+// paper whites (radiance; Lambert's 1/pi in the units, as the sky table's).
+const ALDHANI_MOONS: f32 = 16.0;
+const ALDHANI_GLOW: f32 = 0.2;
+// A meteor of the field: toward its streak's tail (xyz) and its core's width in pixels (w); toward
+// its head (xyz) and its seed (w, for the sparkles); the light of its core at the head (rgb, paper
+// whites) and its head's glow (w); the light it gives the terrain (rgb, luminance 1) and its share
+// (w, the cdf's weight; 0: not burning).
+struct AldhaniMeteor {
+    tail: vec4<f32>,
+    head: vec4<f32>,
+    colour: vec4<f32>,
+    light: vec4<f32>,
+}
+// x: the meteors' shares summed, y: the meteors burning, z: those drawn in the sky; the shares'
+// running sum (`cdf[i]` the sum up to meteor i); each streak's great circle (its normal, xyz, 0
+// for a point, and its angle, w), for the sky to pass a streak by from one read; and the meteors.
+struct AldhaniField {
+    total: vec4<f32>,
+    cdf: array<f32, ALDHANI_METEORS>,
+    lines: array<vec4<f32>, ALDHANI_METEORS>,
+    meteors: array<AldhaniMeteor, ALDHANI_METEORS>,
+}
+// A hash of `n` to [0, 1) (a PCG round, as terrain.wgsl's `meteor_hash`).
+fn aldhani_rand(n: u32) -> f32 {
+    let state = n * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return f32(((word >> 22u) ^ word) >> 8u) / 16777216.0;
+}
+// How strong the storm is `t` seconds into the event (0 to 1; 0 before and after it).
+fn aldhani_envelope(t: f32) -> f32 {
+    return smoothstep(0.0, 60.0, t) * (1.0 - smoothstep(ALDHANI_EVENT - 60.0, ALDHANI_EVENT, t));
+}
+// The sky tile direction `d` falls in: the upper half of the sky folded flat (an octahedron's top,
+// turned to a square), ALDHANI_TILES a side, the horizon on the square's edges.
+fn aldhani_tile(d: vec3<f32>) -> u32 {
+    let up = vec3(d.x, max(d.y, 0.0), d.z);
+    let p = up.xz / (abs(up.x) + up.y + abs(up.z) + 1e-6);
+    let q = vec2(p.x + p.y, p.x - p.y) * 0.5 + 0.5;
+    let c = min(vec2<u32>(max(q, vec2(0.0)) * f32(ALDHANI_TILES)), vec2(ALDHANI_TILES - 1u));
+    return c.y * ALDHANI_TILES + c.x;
+}
+// The sky's own light toward `d` during the event (`t` seconds in), in paper whites: the glow the
+// thousands of meteors too far and faint to tell apart make, a teal sky brightest toward the
+// radiant, and the eye itself, a bright saturated glow on the horizon around the radiant, teal on
+// its east side and pink-white on its west. ALDHANI_PALETTE: the colours are the show's (Andor,
+// "The Eye"), no spectrum is known for it.
+fn aldhani_glow(d: vec3<f32>, t: f32) -> vec3<f32> {
+    let strength = aldhani_envelope(t);
+    if strength <= 0.0 { return vec3(0.0); }
+    let c = clamp(dot(d, ALDHANI_RADIANT), -1.0, 1.0);
+    let theta = acos(c);
+    let up = max(d.y, 0.0);
+    let teal = vec3(0.05, 0.9, 0.65);
+    // The sky: the faint meteors everywhere, thicker toward the radiant's half of the sky.
+    let sky = teal * (0.35 + 0.65 * (0.5 + 0.5 * c)) * (0.55 + 0.45 * exp(-up * 2.0));
+    // The eye: a few degrees of white-hot core in a wide glow, its sides two colours.
+    let east = d.x / max(sin(theta), 1e-3);
+    let side = mix(teal, vec3(1.0, 0.55, 0.8), smoothstep(-0.7, 0.7, -east));
+    let core = exp(-theta * theta / (2.0 * 0.08 * 0.08));
+    let wide = exp(-theta / 0.25) * (0.4 + 0.6 * exp(-up / 0.15));
+    let eye = side * (8.0 * wide) + mix(side, vec3(1.0), 0.5) * (60.0 * core);
+    // Under the horizon the ground hides it (the rays see the ground there).
+    let above = smoothstep(-0.06, 0.0, d.y);
+    return (sky + eye) * (ALDHANI_GLOW * strength * above);
+}
+// ALDHANI-END
+// The Eye of Aldhani's streaks toward `d` (`pixel` radians a pixel), in paper whites: the field's
+// meteors whose streaks cross `d`'s tile of the sky (no more than ALDHANI_TILE_CAP, however many
+// burn), each a thin core about a pixel wide with a soft glow, brighter toward its head.
+fn aldhani_streaks(d: vec3<f32>, pixel: f32) -> vec3<f32> {
+    if globals.rt_camera.w < 0.0 || d.y < -0.02 { return vec3(0.0); }
+    let tile = aldhani_tile(d);
+    let count = min(aldhani_tiles[tile], ALDHANI_TILE_CAP);
+    var sum = vec3(0.0);
+    for (var i = 0u; i < count; i++) {
+        let k = aldhani_tiles[ALDHANI_TILES * ALDHANI_TILES + tile * ALDHANI_TILE_CAP + i];
+        let line = aldhani_field.lines[k];
+        if abs(dot(d, line.xyz)) > ALDHANI_REACH { continue; }
+        sum += aldhani_streak(aldhani_field.meteors[k], line, d, pixel);
+    }
+    return sum;
+}
+// One streak's light toward `d`. The short bright ones (a fireball breaking up near the radiant)
+// sparkle: a few points along it flare and fade, each in its own rhythm.
+fn aldhani_streak(m: AldhaniMeteor, line: vec4<f32>, d: vec3<f32>, pixel: f32) -> vec3<f32> {
+    let a = m.tail.xyz;
+    let b = m.head.xyz;
+    let span = line.w;
+    var across = length(d - b);
+    var along = 1.0;
+    if any(line.xyz != vec3(0.0)) {
+        let phi = atan2(dot(d, cross(line.xyz, a)), dot(d, a));
+        along = clamp(phi / span, 0.0, 1.0);
+        across = select(min(length(d - a), length(d - b)), abs(dot(d, line.xyz)),
+            phi >= 0.0 && phi <= span);
+    }
+    let width = pixel * m.tail.w;
+    let r2 = across * across / (width * width);
+    if r2 > 150.0 || across > ALDHANI_REACH { return vec3(0.0); }
+    // Its light fades to nothing ALDHANI_REACH away (the tiles it is binned into).
+    let fade = 1.0 - across / ALDHANI_REACH;
+    let core = exp(-r2 * 1.4) + 0.03 * exp(-r2 * 0.15) * fade * fade;
+    var light = m.colour.rgb * (core * (0.15 + 0.85 * along * along));
+    // The head's glow, white-hot in its middle.
+    let top = max(m.colour.r, max(m.colour.g, m.colour.b));
+    let white = mix(m.colour.rgb, vec3(top), 0.6);
+    let h2 = dot(d - b, d - b) / (width * width);
+    light += white * (m.colour.w * 0.8 * exp(-h2 * 0.6) * fade * fade);
+    // Sparkles along the short, bright ones.
+    let short = 1.0 - smoothstep(20.0 * pixel, 80.0 * pixel, span);
+    let sparkle = m.colour.w * short;
+    if sparkle > 0.05 && across < width * 4.0 {
+        let seed = u32(m.head.w);
+        for (var j = 0u; j < 4u; j++) {
+            let u = aldhani_rand(seed * 8u + j);
+            let p = normalize(mix(a, b, 0.2 + 0.8 * u));
+            let q = dot(d - p, d - p) / (width * width);
+            let beat = 0.5 + 0.5 * sin(globals.rt_water.z * (9.0 + 14.0 * u) + 40.0 * u);
+            light += white * (sparkle * 3.0 * pow(beat, 6.0) * exp(-q * 0.7));
+        }
+    }
+    return light;
 }
 // RT lighting: the real sun's disc toward `d`, its radiance limb-darkened (0.53 degrees across,
 // times the Sun Size setting: the angular radius in `rt_sun_light.w`).
@@ -819,7 +968,13 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
         v.z >= 0.0);
     let sun = globals.rt_sun_light.rgb * globals.rt_light.w * v.x;
     // Reflected: the sky that way, and the sun's glint (GGX, a calm surface).
-    var reflected = rt_sky(reflect(ray, n)) * max(sky_seen, 0.15 * v.x);
+    let mirrored = reflect(ray, n);
+    var reflected = rt_sky(mirrored) * max(sky_seen, 0.15 * v.x);
+    // The Eye of Aldhani's streaks in it, blurred by the waves over a few pixels.
+    if globals.rt_camera.w >= 0.0 {
+        reflected += aldhani_streaks(mirrored, 6.0 * globals.misc.w / globals.outline_params.y)
+            * max(sky_seen, 0.15 * v.x);
+    }
     if globals.rt_motion.w > 1.5 {
         let traced = rt_reflection(in.clip, in.pos);
         if traced.a > 0.5 { reflected = traced.rgb; }
@@ -1176,13 +1331,13 @@ struct DebugLineOut {
 }
 
 // RT lighting's sky (gfx.rs draws it in place of fs_sky and the dark disc): the atmosphere's
-// (gfx/atmosphere.rs) and the real sun's disc, in light.
+// (gfx/atmosphere.rs) and the real sun's disc, in light; the Eye of Aldhani's streaks over it.
 @fragment fn fs_rt_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let d = view_ray(in.ndc);
     let sky = rt_sky(d);
     let pixel = length(fwidth(d));
     return vec4(sky + rt_sun_disc(d) + rt_moon_disc(d) + rt_glare(d) + rt_milky_way(d, sky, pixel)
-        + rt_meteor(d, sky, pixel), 1.0);
+        + rt_meteor(d, sky, pixel) + aldhani_streaks(d, pixel), 1.0);
 }
 // RT lighting's real stars (gfx/sky_stars.rs): the Yale Bright Star Catalogue's 9096 stars down
 // to magnitude 6.5 at their equatorial places, turned to the sky above the latitude the sun's
@@ -1284,9 +1439,7 @@ fn rt_milky_way(d: vec3<f32>, sky: vec3<f32>, pixel: f32) -> vec3<f32> {
     let rods = tint * (dot(own, vec3(0.05, 0.55, 0.40)) / dot(tint, vec3(0.2126, 0.7152, 0.0722)));
     return mix(rods, own, cones) * (MILKY_SUMMATION * brightness * glare) * air;
 }
-// METEOR-BEGIN: the shooting stars' model, the same text in terrain.wgsl (the sky draws them) and in
-// gfx/shadow_rays.wgsl (the Eye of Aldhani mode lights the terrain with them); a test keeps them equal.
-// A hash of `n` to 32 random bits (a PCG round), for the meteors' draws.
+// The shooting stars' model (`rt_meteor`). A hash of `n` to 32 random bits (a PCG round), for the meteors' draws.
 fn meteor_hash(n: u32) -> u32 {
     let state = n * 747796405u + 2891336453u;
     let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
@@ -1295,11 +1448,9 @@ fn meteor_hash(n: u32) -> u32 {
 fn meteor_rand(n: u32) -> f32 {
     return f32(meteor_hash(n) >> 8u) / 16777216.0;
 }
-// The Eye of Aldhani's radiant: where its meteors come from, a fixed direction of the world.
-const ALDHANI_RADIANT: vec3<f32> = vec3<f32>(0.0, 0.64, 0.77);
 // A meteor, drawn from its slot's number `seed`: `since` seconds after the slot's start, in slots of
 // `period` seconds each holding one with the chance `chance`. The sky of the stars' `frame` holds
-// the Perseids' radiant; `aldhani` is the mode with one radiant, a dense ring of bright, fast ones.
+// the Perseids' radiant.
 struct Meteor {
     on: bool,
     // Seconds since it lit up.
@@ -1322,7 +1473,7 @@ struct Meteor {
     // Its composition: sodium, magnesium, iron, calcium.
     comp: vec4<f32>,
 }
-fn meteor_make(seed: u32, since: f32, period: f32, chance: f32, frame: mat4x4<f32>, aldhani: bool) -> Meteor {
+fn meteor_make(seed: u32, since: f32, period: f32, chance: f32, frame: mat4x4<f32>) -> Meteor {
     var o: Meteor;
     o.on = false;
     if meteor_rand(seed) > chance { return o; }
@@ -1334,16 +1485,10 @@ fn meteor_make(seed: u32, since: f32, period: f32, chance: f32, frame: mat4x4<f3
     let ry = 0.12 + 0.88 * meteor_rand(seed + 3u);
     let ph = 6.2831853 * meteor_rand(seed + 4u);
     let rc = sqrt(1.0 - ry * ry);
-    var radiant = select(vec3(rc * cos(ph), ry, rc * sin(ph)), radiant_sh, shower);
-    var speed = select(14.0 + 56.0 * pow(meteor_rand(seed + 5u), 1.3), 59.0, shower);
-    var index = select(2.8, 2.2, shower);
-    var faintest = 2.2;
-    if aldhani {
-        radiant = ALDHANI_RADIANT;
-        speed = 35.0 + 35.0 * meteor_rand(seed + 5u);
-        index = 1.5;
-        faintest = 0.5;
-    }
+    let radiant = select(vec3(rc * cos(ph), ry, rc * sin(ph)), radiant_sh, shower);
+    let speed = select(14.0 + 56.0 * pow(meteor_rand(seed + 5u), 1.3), 59.0, shower);
+    let index = select(2.8, 2.2, shower);
+    let faintest = 2.2;
     // Magnitude from the population index (the count grows as index^magnitude).
     let magnitude = max(faintest + log(max(meteor_rand(seed + 6u), 1e-4)) / log(index), -9.0);
     o.bright = max(faintest - magnitude, 0.0);
@@ -1351,19 +1496,10 @@ fn meteor_make(seed: u32, since: f32, period: f32, chance: f32, frame: mat4x4<f3
     let bottom = max(top - 15.0 - 5.0 * o.bright, 52.0);
     o.span = min((top - bottom) / radiant.y, 4.0 * speed);
     o.speed = speed;
-    // Where it lights up: anywhere in the sky, the Eye's mostly on a ring 18 to 52 degrees around
-    // its radiant, its streaks radiating from it.
+    // Where it lights up: anywhere in the sky.
     let az = 6.2831853 * meteor_rand(seed + 8u);
     let el = radians(15.0 + 65.0 * meteor_rand(seed + 9u));
-    var a = vec3(cos(el) * cos(az), sin(el), cos(el) * sin(az));
-    if aldhani && meteor_rand(seed + 18u) < 0.6 {
-        let p1 = normalize(cross(radiant, vec3(0.0, 1.0, 0.0)));
-        let p2 = cross(radiant, p1);
-        let th = radians(18.0 + 34.0 * meteor_rand(seed + 19u));
-        let ps = 6.2831853 * meteor_rand(seed + 20u);
-        let ring = cos(th) * radiant + sin(th) * (cos(ps) * p1 + sin(ps) * p2);
-        if ring.y > 0.1 { a = ring; }
-    }
+    let a = vec3(cos(el) * cos(az), sin(el), cos(el) * sin(az));
     o.a = a;
     o.w = -radiant;
     o.reach = top / a.y;
@@ -1406,9 +1542,8 @@ fn meteor_colour(m: Meteor, x: f32) -> vec3<f32> {
 fn meteor_direction(m: Meteor, along: f32) -> vec3<f32> {
     return normalize(m.reach * m.a + along * m.w);
 }
-// METEOR-END
 // Shooting stars. The time is cut into slots of `rt_stars.y` seconds, each holding a meteor with the
-// chance `rt_stars.z` (above 1.5: the Eye of Aldhani mode); everything about it is drawn from the
+// chance `rt_stars.z`; everything about it is drawn from the
 // slot's number (`meteor_make`), so no frame carries any state and a quiet sky costs a few hashes.
 // A meteoroid falls along a straight line, parallel to the others of its stream, away from the
 // stream's radiant: the Perseids' (right ascension 48, declination +58 degrees, 59 km/s,
@@ -1428,14 +1563,13 @@ fn rt_meteor(d: vec3<f32>, sky: vec3<f32>, pixel: f32) -> vec3<f32> {
     let now = globals.rt_water.z;
     let slot0 = u32(now / period);
     let slots = 2u + u32(8.0 / period);
-    let aldhani = globals.rt_stars.z > 1.5;
     var sum = vec3(0.0);
     for (var k = 0u; k < slots; k++) {
         if k > slot0 { break; }
         let slot = slot0 - k;
         let m = meteor_make(slot * 32u + 1u, now - f32(slot) * period, period, globals.rt_stars.z,
-            globals.rt_star_frame, aldhani);
-        if m.on { sum += meteor_streak(m, d, pixel, aldhani); }
+            globals.rt_star_frame);
+        if m.on { sum += meteor_streak(m, d, pixel); }
     }
     if all(sum == vec3(0.0)) { return sum; }
     let airmass = 1.0 / max(d.y + 0.025, 0.03);
@@ -1444,7 +1578,7 @@ fn rt_meteor(d: vec3<f32>, sky: vec3<f32>, pixel: f32) -> vec3<f32> {
     return sum * air * (glare * globals.rt_stars.w);
 }
 // The light, in nits, of meteor `m` at the pixel looking toward `d`.
-fn meteor_streak(m: Meteor, d: vec3<f32>, pixel: f32, aldhani: bool) -> vec3<f32> {
+fn meteor_streak(m: Meteor, d: vec3<f32>, pixel: f32) -> vec3<f32> {
     // It is seen along its great circle: `phi` the angle along it from where it lights up.
     let wa = dot(m.w, m.a);
     let wv = m.w - wa * m.a;
@@ -1468,10 +1602,10 @@ fn meteor_streak(m: Meteor, d: vec3<f32>, pixel: f32, aldhani: bool) -> vec3<f32
     let core = exp(-across * across / (pixel * pixel * 0.36));
     let halo = 0.1 * clamp(m.bright / 4.0, 0.0, 1.0) * exp(-across * across / (pixel * pixel * 16.0));
     var light = meteor_colour(m, x) * (m.power * curve * exp(-age / glow) * (core + halo));
-    // The train of a bright, fast one: faint, green, seconds (the Eye's are longer and more).
-    let train = clamp((m.speed - 30.0) / 30.0, 0.0, 1.0) * clamp((m.bright - select(3.0, 1.5, aldhani)) / 4.0, 0.0, 1.0);
+    // The train of a bright, fast one: faint, green, seconds.
+    let train = clamp((m.speed - 30.0) / 30.0, 0.0, 1.0) * clamp((m.bright - 3.0) / 4.0, 0.0, 1.0);
     if train > 0.0 {
-        let lasts = select(1.2, 2.0, aldhani) + 0.35 * m.bright;
+        let lasts = 1.2 + 0.35 * m.bright;
         let wide = exp(-across * across / (pixel * pixel * 2.5));
         light += vec3(0.25, 1.0, 0.4) * (train * 0.0025 * m.power * sqrt(max(curve, 0.0)) * exp(-age / lasts) * wide);
     }
