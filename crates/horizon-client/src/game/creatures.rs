@@ -313,6 +313,10 @@ impl Game<'_> {
         }
         let id = mob.id;
         self.mobs.push(mob);
+        // Capability `rich-events`: the server itself spawned a mob (a
+        // breed, a patrol, a raid, a jockey's mount, `/summon`); natural
+        // spawning reports its own from where it adds its batches.
+        self.mod_note_spawn(&kind, at, false);
         self.enchant_spawn_equipment(id);
         if !persistent && !scripted {
             self.spawn_jockeys(id, true);
@@ -2047,6 +2051,9 @@ impl Game<'_> {
         damage_type: &str,
         known: Option<Option<u32>>,
     ) -> bool {
+        // Capability `rich-events`: the striking player of a PvP blow, noted
+        // where the blow was struck; taken whatever happens next.
+        let pvp = self.mod_take_pvp();
         // ServerPlayer.canHarmPlayer refused another player's projectile.
         if self.creative || self.combat.refuse_player_hit {
             return false;
@@ -2080,6 +2087,26 @@ impl Game<'_> {
         };
         // The causing entity for the death message.
         let owner = self.combat.projectile_owner.take();
+        // Capability `rich-events`: the mods answer first, each the amount
+        // the last left; what they leave is what vanilla settles, and 0 is
+        // no hurt at all. The cause names the mob that struck, or the
+        // player of a PvP blow.
+        let cause = pvp.or_else(|| {
+            attacker.or(owner).and_then(|id| {
+                self.mobs
+                    .iter()
+                    .find(|m| m.id == id)
+                    .map(|m| horizon_mods::EntityWho {
+                        id: m.id,
+                        kind: format!("minecraft:{}", m.kind.id.trim_start_matches("minecraft:")),
+                        health: m.health,
+                    })
+            })
+        });
+        let amount = self.mod_player_hurt(damage_type, cause, amount);
+        if amount <= 0.0 {
+            return false;
+        }
         if let Some(a) = attacker.or(owner) {
             self.note_attacker(damage_type, a);
         }
@@ -2202,6 +2229,10 @@ impl Game<'_> {
         if self.creative {
             return;
         }
+        // Capability `rich-events`: the mods answer first, each the amount
+        // the last left; what they leave is what vanilla settles, and 0 is
+        // no hurt at all. These sources have no attacker to name.
+        let amount = self.mod_player_hurt(damage_type, None, amount);
         // A mod's claimed armour takes its share first (capability
         // `item-hooks`); what it takes is gone, the rest hurts.
         let amount = self.mod_armor_absorb(damage_type, amount);

@@ -182,7 +182,7 @@ mod rich_event_bindings {
 }
 use rich_event_bindings::{
     RichEventsHost,
-    horizon::mods::rich_events::{GroundStack, MobSpawn},
+    exports::horizon::mods::rich_events::{GroundStack, MobSpawn},
 };
 /// Capability `redstone`'s world: its own, so server mods built before it
 /// (no `redstone-events` export) still load.
@@ -203,41 +203,15 @@ pub const MAX_ENTITIES: usize = 1024;
 const SPAWNS_PER_CALL: u32 = 32;
 /// Mobs one `tick` call is told of.
 const ENTITIES_PER_TICK: usize = 512;
-
-/// A mob or player a blow came from, as `hurt-player` names it (capability
-/// `rich-events`): the entity's id and kind, and its health before the blow.
-#[derive(Clone, Debug, PartialEq)]
-pub struct EntityWho {
-    pub id: u32,
-    /// `minecraft:zombie`, ...; `minecraft:player` for a PvP blow.
-    pub kind: String,
-    pub health: f32,
-}
-/// What hurt a player, as capability `rich-events` tells the mods.
-#[derive(Clone, Debug, PartialEq)]
-pub struct DamageSource {
-    /// The damage type id, `minecraft:mob_attack`, `minecraft:fall`.
-    pub kind: String,
-    /// The mob or player that caused it, when there is one.
-    pub cause: Option<EntityWho>,
-}
-/// One of the mobs the server spawned, for the `mobs-spawned` notice.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MobSpawnNote {
-    /// `minecraft:zombie`, ...
-    pub kind: String,
-    pub dimension: String,
-    pub pos: [f64; 3],
-    /// Natural spawning made it (the dark, a random spawn); false: a
-    /// spawner block, a raid or patrol, a jockey, `/summon`.
-    pub natural: bool,
-}
+/// What capability `rich-events` carries between the game and the mods:
+/// the ask's damage source and the spawn notes (types only, nothing saved).
+use crate::rich_events::{DamageSource, MobSpawnNote};
 impl DamageSource {
-    fn to_wit(&self) -> rich_event_bindings::horizon::mods::rich_events::DamageSource {
-        rich_event_bindings::horizon::mods::rich_events::DamageSource {
+    fn to_wit(&self) -> rich_event_bindings::exports::horizon::mods::rich_events::DamageSource {
+        rich_event_bindings::exports::horizon::mods::rich_events::DamageSource {
             kind: self.kind.clone(),
             cause: self.cause.as_ref().map(|c| {
-                rich_event_bindings::horizon::mods::rich_events::EntityWho {
+                rich_event_bindings::exports::horizon::mods::rich_events::EntityWho {
                     id: c.id,
                     kind: c.kind.clone(),
                     health: c.health,
@@ -258,12 +232,6 @@ impl MobSpawnNote {
         }
     }
 }
-/// Spawns one `mobs-spawned` call is told of; the rest spawn unsaid and are
-/// logged.
-const RICH_SPAWNS_PER_TICK: usize = 64;
-/// Pickup asks one player is asked a tick (capability `rich-events`); past
-/// them vanilla takes the rest.
-pub const RICH_PICKUP_ASKS: usize = 16;
 
 /// One mob of a mod, as the game tells it and the mod reads it.
 #[derive(Clone, Debug, PartialEq)]

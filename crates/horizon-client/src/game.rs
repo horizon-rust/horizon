@@ -2642,6 +2642,9 @@ impl Game<'_> {
         let Some(eye) = self.eye_position() else {
             return;
         };
+        // Capability `rich-events`: a drop of the player's own will, told at
+        // the tick's end (a death's scattered inventory is not).
+        self.mod_note_drop(thrown.item.as_ref(), thrown.count);
         // LivingEntity.drop: every drop swings the main hand, a menu's
         // THROW and a creative tab's drop included.
         self.swing_hand(Hand::Main, SwingAnimation::DEFAULT);
@@ -2798,6 +2801,9 @@ impl Game<'_> {
         );
         let feet = [p.position.x, p.position.y, p.position.z];
         let own = self.level.ensure_player_uuid();
+        // Capability `rich-events`: at most 16 pickup asks a player a tick;
+        // past them vanilla takes the rest.
+        let mut asked = 0usize;
         let mut kept = Vec::with_capacity(items.len());
         for mut item in items {
             let b = item.bounds();
@@ -2809,6 +2815,17 @@ impl Game<'_> {
                 && b.max_position().z > min[2];
             // ItemEntity.playerTouch: no pickup delay, and the target (if any) is this player.
             if touching && item.pickup_delay == 0 && item.target.is_none_or(|t| t == own) {
+                if asked < horizon_mods::RICH_PICKUP_ASKS {
+                    asked += 1;
+                    // A refusing mod (capability `rich-events`) leaves the
+                    // stack on the ground, with a 10-tick pickup delay so a
+                    // standing player is not asked again at once.
+                    if !self.mod_picking_up(item.stack.item.as_ref(), item.stack.count) {
+                        item.pickup_delay = 10;
+                        kept.push(item);
+                        continue;
+                    }
+                }
                 let before = item.stack.count;
                 let kind = item.stack.item.clone();
                 match self.give(item.stack.clone()) {
@@ -4012,6 +4029,13 @@ impl Game<'_> {
         self.with_player_actor(|game| game.break_block_as_player(pos))
     }
     fn break_block_as_player(&mut self, pos: [i32; 3]) -> Result<()> {
+        // Capability `rich-events`: a refusing mod keeps the block standing
+        // — no drop, no tool wear, no statistic. The state is read before
+        // `can_destroy_block`, so the mod is asked whatever the held tool.
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        if !self.mod_breaking_block(pos, state) {
+            return Ok(());
+        }
         if !self
             .res
             .items()

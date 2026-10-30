@@ -2921,6 +2921,19 @@ impl Game<'_> {
         self.as_guest(host, conn, |g| {
             let _ = g.break_block(pos);
         });
+        // The block still stands (a refusing mod, capability `rich-events`,
+        // or a tool that cannot): the guest had broken it on their screen,
+        // so the block comes back to it.
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        if !self.res.facts().is_air(state) {
+            host.hub.send_to(
+                conn,
+                &C::BlockUpdate(play::BlockUpdate {
+                    pos,
+                    state: state.0 as i32,
+                }),
+            );
+        }
         self.guest_crack_gone(host, conn, pos);
     }
 
@@ -3034,8 +3047,25 @@ impl Game<'_> {
             .map(|(i, _)| i)
             .collect();
         let mut taken = Vec::new();
+        // Capability `rich-events`: at most 16 pickup asks a player a tick;
+        // past them vanilla takes the rest.
+        let mut asked = 0usize;
         for i in near.into_iter().rev() {
             let (stack, item_id) = (self.dropped[i].stack.clone(), self.dropped[i].id);
+            if asked < horizon_mods::RICH_PICKUP_ASKS {
+                asked += 1;
+                // The ask runs as the guest, whose turn lends the game their
+                // state (as `give` below does).
+                let take = self
+                    .as_guest(host, conn, |g| {
+                        g.mod_picking_up(stack.item.as_ref(), stack.count)
+                    })
+                    .unwrap_or(true);
+                if !take {
+                    self.dropped[i].pickup_delay = 10;
+                    continue;
+                }
+            }
             let before = stack.count;
             let rest = self.as_guest(host, conn, |g| g.give(stack)).flatten();
             match rest {

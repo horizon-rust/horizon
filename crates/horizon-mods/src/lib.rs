@@ -22,6 +22,7 @@ pub mod manifest;
 pub mod modpack;
 pub mod multiblocks;
 pub mod redstone;
+pub mod rich_events;
 #[cfg(feature = "runtime")]
 mod runtime;
 pub mod saved_data;
@@ -31,5 +32,10 @@ pub mod testing;
 pub use block_entities::BlockEntities;
 pub use content::Content;
 pub use manifest::{Capability, Manifest, Package, Side, find};
+/// What capability `rich-events` carries between the game and the mods,
+/// whatever else is built (the runtime's hosts are behind feature `runtime`).
+pub use rich_events::{
+    DamageSource, EntityWho, MobSpawnNote, RICH_PICKUP_ASKS, RICH_SPAWNS_PER_TICK,
+};
 #[cfg(feature = "runtime")]
 pub use runtime::*;

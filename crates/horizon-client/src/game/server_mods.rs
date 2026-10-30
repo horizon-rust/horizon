@@ -100,6 +100,10 @@ pub(super) enum ModEvent {
     /// A player's blow killed a mob (capability `game-events`): its kind and
     /// entity id.
     MobKilled(Who, String, u32),
+    /// A player dropped a stack of their own will (capability
+    /// `rich-events`): the item and its count. The tick's drops reach a mod
+    /// as one call.
+    Dropped(Who, (String, u32)),
     /// A player used (right-clicked) an item a mod takes the behaviour of
     /// (capability `item-hooks`): the mod, the stack as the mod's
     /// inventories keep it, and the block under the crosshair if there was
@@ -180,6 +184,30 @@ impl Game<'_> {
     }
     pub(in crate::game) fn mod_armor_absorb(&mut self, _source: &str, damage: f32) -> f32 {
         damage
+    }
+    pub(in crate::game) fn mod_player_hurt(
+        &mut self,
+        _source: &str,
+        _cause: Option<horizon_mods::EntityWho>,
+        amount: f32,
+    ) -> f32 {
+        amount
+    }
+    pub(in crate::game) fn mod_breaking_block(
+        &mut self,
+        _pos: [i32; 3],
+        _state: BlockStateId,
+    ) -> bool {
+        true
+    }
+    pub(in crate::game) fn mod_picking_up(&mut self, _item: &str, _count: u32) -> bool {
+        true
+    }
+    pub(in crate::game) fn mod_note_drop(&mut self, _item: &str, _count: u32) {}
+    pub(in crate::game) fn mod_note_spawn(&mut self, _kind: &str, _at: [f64; 3], _natural: bool) {}
+    pub(in crate::game) fn mod_note_pvp(&mut self, _cause: Option<horizon_mods::EntityWho>) {}
+    pub(in crate::game) fn mod_take_pvp(&mut self) -> Option<horizon_mods::EntityWho> {
+        None
     }
 }
 
@@ -923,6 +951,122 @@ mod run {
             left
         }
 
+        /// What the mods leave of a hurt about to land on the acting player
+        /// (capability `rich-events`): each answers in turn with the amount
+        /// the last left, and 0 is no hurt at all. Called before the armour
+        /// and the rest of vanilla, in both hurt funnels.
+        pub(in crate::game) fn mod_player_hurt(
+            &mut self,
+            source: &str,
+            cause: Option<horizon_mods::EntityWho>,
+            amount: f32,
+        ) -> f32 {
+            if !self.hears_players() || !self.mods.rich_events || amount <= 0.0 {
+                return amount;
+            }
+            let Some(player) = self.acting_server_player(None) else {
+                return amount;
+            };
+            let source = horizon_mods::DamageSource {
+                kind: source.to_owned(),
+                cause,
+            };
+            let mut host = self.lan.take();
+            let left = self.with_mod_stores(host.as_mut(), |g| {
+                g.mods.mods.rich_hurt_player(&player, &source, amount)
+            });
+            self.lan = host;
+            left
+        }
+
+        /// Whether the acting player may break the block `state` at `pos`
+        /// (capability `rich-events`): a refusing mod keeps it standing — no
+        /// drop, no tool wear, no statistic.
+        pub(in crate::game) fn mod_breaking_block(
+            &mut self,
+            pos: [i32; 3],
+            state: BlockStateId,
+        ) -> bool {
+            if !self.hears_players() || !self.mods.rich_events {
+                return true;
+            }
+            let state = self.state_string(state);
+            let Some(player) = self.acting_server_player(None) else {
+                return true;
+            };
+            let mut host = self.lan.take();
+            let ok = self.with_mod_stores(host.as_mut(), |g| {
+                g.mods.mods.rich_breaking_block(&player, pos, &state)
+            });
+            self.lan = host;
+            ok
+        }
+
+        /// Whether the acting player may take a dropped stack (capability
+        /// `rich-events`): a refusing mod leaves it on the ground.
+        pub(in crate::game) fn mod_picking_up(&mut self, item: &str, count: u32) -> bool {
+            if !self.hears_players() || !self.mods.rich_events {
+                return true;
+            }
+            let Some(player) = self.acting_server_player(None) else {
+                return true;
+            };
+            let mut host = self.lan.take();
+            let ok = self.with_mod_stores(host.as_mut(), |g| {
+                g.mods.mods.rich_picking_up_item(&player, item, count)
+            });
+            self.lan = host;
+            ok
+        }
+
+        /// The acting player dropped a stack of their own will (capability
+        /// `rich-events`): told at the tick's end, the tick's drops of one
+        /// player batched in one call.
+        pub(in crate::game) fn mod_note_drop(&mut self, item: &str, count: u32) {
+            if !self.hears_players() || !self.mods.rich_events {
+                return;
+            }
+            let who = self.lan_acting.map_or(Who::Local, Who::Conn);
+            self.mods
+                .events
+                .push(ModEvent::Dropped(who, (item.to_owned(), count)));
+        }
+
+        /// The server itself spawned a mob of `kind` at `at` (capability
+        /// `rich-events`): told at the tick's end, the tick's spawns in one
+        /// call; past [`horizon_mods::RICH_SPAWNS_PER_TICK`] a tick the rest
+        /// spawn unsaid.
+        pub(in crate::game) fn mod_note_spawn(&mut self, kind: &str, at: [f64; 3], natural: bool) {
+            if !self.mods.rich_events {
+                return;
+            }
+            if self.mods.spawn_notes.len() >= horizon_mods::RICH_SPAWNS_PER_TICK {
+                log::debug!("Horizon: a mod is not told of a {kind} the server spawned");
+                return;
+            }
+            self.mods.spawn_notes.push(horizon_mods::MobSpawnNote {
+                kind: kind.to_owned(),
+                dimension: self.dim.id().to_owned(),
+                pos: at,
+                natural,
+            });
+        }
+
+        /// The player about to land a PvP blow, as the hurt funnel's ask
+        /// names its cause (capability `rich-events`); taken by the funnel
+        /// the blow runs through. None clears it.
+        pub(in crate::game) fn mod_note_pvp(&mut self, cause: Option<horizon_mods::EntityWho>) {
+            if !self.mods.rich_events {
+                return;
+            }
+            self.mods.rich_pvp = cause;
+        }
+
+        /// The noted PvP cause, off the note (capability `rich-events`).
+        pub(in crate::game) fn mod_take_pvp(&mut self) -> Option<horizon_mods::EntityWho> {
+            self.mods.rich_pvp.take()
+        }
+
         /// The tick's end: joins and leaves, the tick's events, the tick hook.
         pub(in crate::game) fn tick_server_mods(&mut self) {
             if !self.options.execution_role.is_client() {
@@ -951,6 +1095,14 @@ mod run {
                 self.mods.mods.player_joined(p);
             }
             self.tell_game_events(&players, &before);
+            // Capability `rich-events`: the mobs the server itself spawned
+            // this tick, one call a mod, before the tick's events.
+            let spawns = std::mem::take(&mut self.mods.spawn_notes);
+            if !spawns.is_empty() {
+                self.mods.mods.rich_mobs_spawned(&spawns);
+            }
+            // The tick's drops, batched per player as the events are walked.
+            let mut drops: Vec<(horizon_mods::ServerPlayer, Vec<(String, u32)>)> = Vec::new();
             for event in std::mem::take(&mut self.mods.events) {
                 let who = |w: &Who| {
                     let id = match w {
@@ -985,6 +1137,14 @@ mod run {
                     ModEvent::MobKilled(w, kind, id) => {
                         if let Some(p) = who(&w) {
                             self.mods.mods.mob_killed(&p, &kind, id);
+                        }
+                    }
+                    ModEvent::Dropped(w, stack) => {
+                        if let Some(p) = who(&w) {
+                            match drops.last_mut() {
+                                Some((q, stacks)) if q.id == p.id => stacks.push(stack),
+                                _ => drops.push((p, vec![stack])),
+                            }
                         }
                     }
                     ModEvent::EntityUse(w, id) => {
@@ -1041,6 +1201,11 @@ mod run {
                         }
                     }
                 }
+            }
+            // Capability `rich-events`: each player's drops of the tick in
+            // one call.
+            for (p, stacks) in drops {
+                self.mods.mods.rich_dropped_items(&p, &stacks);
             }
             // Menus of players who left close with them.
             let (gone, open): (Vec<_>, Vec<_>) = std::mem::take(&mut self.mods.menus)

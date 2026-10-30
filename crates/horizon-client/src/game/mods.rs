@@ -73,6 +73,18 @@ pub(super) struct ModsState {
     /// calls get the players' stacks.
     #[cfg(feature = "mods")]
     pub(super) player_items: bool,
+    /// A running server mod answers rich events (capability `rich-events`):
+    /// the game asks before an outcome settles.
+    #[cfg(feature = "mods")]
+    pub(super) rich_events: bool,
+    /// Capability `rich-events`: the mobs the server itself spawned this
+    /// tick, for the `mobs-spawned` notice at the tick's end.
+    #[cfg(feature = "mods")]
+    pub(super) spawn_notes: Vec<horizon_mods::MobSpawnNote>,
+    /// Capability `rich-events`: the player about to land a PvP blow, for
+    /// the hurt ask's cause; taken by the funnel the blow runs through.
+    #[cfg(feature = "mods")]
+    pub(super) rich_pvp: Option<horizon_mods::EntityWho>,
     /// Capability `block-entities`' store, and the world folder it was read
     /// from (`None`: not read yet).
     #[cfg(feature = "mods")]
@@ -394,6 +406,7 @@ impl Game<'_> {
         self.mods.server = self.mods.mods.runs_server();
         self.mods.world = self.mods.mods.wants_world();
         self.mods.player_items = self.mods.mods.wants_player_items();
+        self.mods.rich_events = self.mods.mods.wants_rich_events();
         let dev = &self.mods.dev;
         self.settings.mods.installed = self
             .mods
