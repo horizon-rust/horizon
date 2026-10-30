@@ -89,6 +89,7 @@ folder, loads no runtime and plays exactly like vanilla 26.3.
 | `storage` | `storage` | `get(key)`, `set(key, value)`, `delete(key)`: a per-mod folder of up to 64 files, 4 MiB total, at most 1 MiB written per call |
 | `command` | `command` | `run(line)`: a vanilla command run as the player, with the player's permissions, after the hook returns (8 per call); mods' own commands are not run. `run-quiet(lines)`: up to 256 a call, the same rights, nothing in the chat (single player and Horizon's servers run them 64 a tick and log one line a batch; elsewhere they go as chat commands and their feedback shows) |
 | `ui` | `ui` | `open-screen`, `close-screen`, `set-settings`: a screen the mod owns and a page in Options > Mods, of text, button, item and list widgets the game lays out and draws with its own menus' code; `browser.set-items`, `browser.poll`: a recipe viewer's panel of items right of the inventory and container screens (not the creative one), which the game pages and draws with its own slots and search box, and the mod hears its clicks, its searches and the mod's own keys (`input.register-key`) pressed over any item on the screen; `browser.set-recipes`: recipes in the panel's place (crafting grids, cooking, stonecutting, smithing and brewing layouts, their slots cycling through their stacks, a note and an action button each), paged by the game, with clicks on their slots, action buttons, page turns and a back button. **Experimental:** the manifest needs `experimental = ["ui"]` |
+| `gui-screens` | `gui-screens` | `open(screen)`, `close()`: a screen the mod lays out itself, as tech mods' panels are — a centred panel of up to 1024 × 1024 GUI pixels over the dimmed world, with its own background (a fill and a sprite) and up to 128 widgets (text, the game's buttons, item icons, pictures and scrolling lists) in the panel's own coordinates; what the player does comes back as `clicked`, `picked` and `closed`. The mod's own pictures are GUI sprites from `assets/<id>/textures/gui/sprites/` (capability `registries`), named `cells:panel/main` beside the game's `widget/button`. **Experimental:** the manifest needs `experimental = ["gui-screens"]` |
 | `render` | `render` | `set-hud(shapes)`: up to 1024 fills, four-cornered shapes, GUI sprites, items and text, kept on the HUD (over the hotbar, under chat and screens, hidden with F1) until replaced; `set-corner(corner, w, h, shapes)`: a box the game places in a corner, stacked with its overlays and other panels, as `hud`'s panels are; `text-width(text)`; `frame-stats()`: the game's FPS, min and 1% low; `gui-size()`; `shake(strength, seconds)`: the view turns, the player doesn't, scaled by Distortion Effects; `set-zoom(zoom)`: the field of view divided by up to 10, eased or at once, with slower turning, while playing and not through a spyglass (the strongest of several mods' zooms counts); `set-minimap(minimap)`: a map of the world around the player in a corner, as a map item colours it (the floor underground and under roofs), square or round, turning with the player or north up, with the player's arrow; the game keeps its tiles within its own frame budget (one map at a time, the first loaded mod's); `set-far-terrain(far-terrain)`: the world past the render distance as distant terrain, out to 64 to 1024 chunks, built by the game's own workers (the player's LOD Distance, when on, wins; the first loaded mod's). The game's own HUD renderer draws them: a mod never supplies shader code. **Experimental:** `experimental = ["render"]` |
 | `input` | `input` | `claim-items(ids)`: the use button on those items is the mod's (`use-start`, `use-stop` with the ticks held; the game doesn't place, eat or swing); `register-key(name, label, key)`: up to 16 keys (`key.keyboard.r`), heard while playing as `key-down` / `key-up` (the game's own mapping on that key still runs; a screen opening lets held keys up), mouse buttons as `key.mouse.4`. The player rebinds them on the mod's page in Options > Mods, where the game lists them first as Key Binds rows (click, then press a key or mouse button; Esc binds none), even for a mod without `ui`; the choice is kept in `horizon-mods.txt` (`key.<mod>.<name>:key.keyboard.z`) and wins over `register-key`'s default; `claim-wheel(on)`: the wheel's steps become `wheel` events and the hotbar doesn't move (the one input a mod takes from the game; a mod's keys never do); `held()`; `mapping(name)`: a movement or click mapping's key label and whether it is held; `clicks-per-second()`; `poll()` returns the events, at most 256 kept. **Experimental:** `experimental = ["input"]` |
 | `recipes` | `recipes` | `items()`: every item in the registry's order, with its name in the player's language and its tags; `all()`: every recipe (crafting, smelting, blasting, smoking, campfire, stonecutting, smithing, brewing), its slots as the stacks that fit each, its results, cooking time and experience, and the recipe book's id for it; `known()`: the book ids the player's recipe book holds; `place(book-id, all)`: the recipe book's click on a recipe, in the open inventory's or crafting table's grid (refused for a recipe the player's book doesn't hold, as vanilla's server refuses it); `give(stack)`: in creative mode, the stack into the player's inventory, as from the creative inventory. The recipes are the world's in single player and on Horizon's servers, vanilla 26.3's on any other server (a client is sent no others), while `known` follows that server's book. The game makes the tables once, when a mod first reads them. **Experimental:** `experimental = ["recipes"]` |
@@ -292,7 +293,9 @@ villager) (`use-item = { item =
 block, `attack = { item = ..., kind = "minecraft:zombie", health = 20.0,
 damage = 4.0 }` strikes an entity with it, `hurt = { amount = 10.0,
 source = "minecraft:fireworks" }` hurts the player), then `click`,
-`command`, `break`, `place` and `leave`.
+`command`, `break`, `place` and `leave`. For a client mod, `net` (a message
+of the mod's other half), `select` (a press of one of its screen's widgets,
+stacked or free) and `ui-close` (Esc) run between `chat` and `command`.
 
 | Key | Does |
 | --- | --- |
@@ -323,6 +326,7 @@ checked:
 | `commands = ["where"]` | the commands the mod owns |
 | `chat = ["..."]` | every chat line it showed, in order (`[]`: none) |
 | `feedback = "..."`, `error = "..."` | the command's answer, shown plain or in red |
+| `screen = ["..."]`, `free-screen = ["..."]` | client mods: its screen as lines — the stacked one (capability `ui`: `# title`, then its widgets) or the free one (capability `gui-screens`: `# w h` of the panel, then each widget where the mod put it, pictures by name, for the sandbox loads no textures) — `[]` for none open |
 | `panel = ["..."]`, `corner = "top-left"` | its HUD panel's lines (`[]`: no panel) and corner |
 | `told = ["Alex: Welcome!"]`, `broadcast = ["..."]` | server mods: every `players.tell` (as `name: text`) and `players.broadcast`, in order |
 | `blocks = [{ x = 2, y = 64, z = 0, state = "minecraft:glowstone" }]` | server mods with `world`: those blocks of the Overworld after the step, the mod's `set-blocks` made (the script checks a state's shape; the game checks its name) |
@@ -1247,9 +1251,56 @@ experimental = ["network"]           experimental = ["ui", "network"]
 **Not yet.** Telling whether a player's client has the mod's half (a screen
 opened for one without it just doesn't show: `/cellgui`'s chest menu is the
 fallback); the half running in in-frame single player (the server mod and
-its client half would share an id in one game); screens beyond the `ui`
-widgets (text, buttons, item rows, lists: no free layout, textures or
-sliders); mod messages through a proxy that drops unknown payloads.
+its client half would share an id in one game); screens with sliders and
+the like beyond the `ui` widgets (a free layout with textures of its own is
+[capability `gui-screens`](#free-screens-capability-gui-screens-experimental));
+mod messages through a proxy that drops unknown payloads.
+
+#### Free screens (capability `gui-screens`, experimental)
+
+A client mod may lay its screen out itself, as tech mods' panels are: where
+`ui`'s widgets are the game's to place, `gui-screens` puts the mod in
+charge of the layout and the game just draws it. `gui_screens::open` takes
+a **panel** — `width` × `height` GUI pixels (at most 1024 each, clamped to
+the screen), centred over the dimmed world, with a background (a fill,
+0xAARRGGBB, and a sprite over it) — and up to 128 **widgets** in the
+panel's own coordinates, from its top left: text (a colour, centred or not,
+a shadow), the game's own buttons nine-sliced to any rectangle, item icons
+at any scale, pictures and scrolling lists. The game adds no widgets of its
+own; Esc leaves, heard as `Mod::gui_closed`; a button click is
+`Mod::gui_clicked(id)` and a list row `Mod::gui_picked(id, row)`. Text,
+items and pictures take no clicks.
+
+- **Pictures.** A picture is a GUI sprite, as `render`'s sprite shapes name
+  them: `widget/button` is the game's own; `cells:panel/main` is the mod's —
+  `assets/cells/textures/gui/sprites/panel/main.png` in the mod's file
+  (manifest `api = "0.2"`, capability `registries`; the content fence keeps
+  every other folder out). A sprite with `gui.scaling` nine-slice metadata
+  (`panel/main.png.mcmeta`) draws nine-sliced to its rectangle, one without
+  stretched; at most 1024 × 512 GUI pixels each, as resource packs' sprites
+  are, and the atlas they all pack into must fit (too much and the mod's
+  content doesn't load, as a pack's wouldn't). An unknown name draws
+  nothing.
+- **One screen a mod.** A second `open` while one shows replaces it, and it
+  replaces a screen `ui.open-screen` showed (a later `ui.open-screen`
+  replaces it back): the player sees one screen of the mod's, however it
+  was opened. `close` is the mod's own doing — no `closed` comes back for
+  it.
+- **Limits.** Up to 128 widgets; a list holds 512 rows of 256 characters;
+  texts and sprites are cut to 256 characters; the panel is at most 1024
+  GUI pixels a side. Widgets wholly outside the panel are not drawn.
+- **The pair.** The server half decides and sends the state through
+  `network`; this half draws it (a vanilla client sees nothing — `/cellgui`'s
+  chest menu stays the fallback). The `cells` example's `/cellui` opens such
+  a panel: a background picture of its own, the charge as text, a bar that
+  fills with it (the same sprite tinted, its width set by the charge), the
+  redstone waiting and made as an item row, two buttons and a menu; test
+  scripts check it with `expect.free-screen`.
+
+**Not yet.** Sliders and text fields; a mod's own fonts; keys and focus on
+the screen (Esc is the game's); clicks on text, items and pictures;
+arbitrary polygons; several screens at once; `render`'s shapes on a screen;
+a free screen from a server mod.
 
 #### Mobs of the mod (capability `entities`, experimental)
 

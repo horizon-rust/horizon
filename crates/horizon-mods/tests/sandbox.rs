@@ -124,6 +124,32 @@ fn mods_dir() -> &'static Path {
                     .map(|(n, b)| (n.as_str(), b.as_slice()))
                     .collect();
                 Package::write_files(&manifest, Some(&component), &files).unwrap()
+            } else if name == "cells_ui" {
+                // The client half carries its panel pictures (capability
+                // `gui-screens`, api 0.2): the same files as the example's
+                // folder.
+                let sprites = root.join(
+                    "crates/horizon-mod-sdk/examples/cells-ui/assets/cells/textures/gui/sprites/panel",
+                );
+                let files: Vec<(String, Vec<u8>)> = ["cell", "bar"]
+                    .iter()
+                    .map(|n| {
+                        (
+                            format!("assets/cells/textures/gui/sprites/panel/{n}.png"),
+                            std::fs::read(sprites.join(format!("{n}.png"))).unwrap(),
+                        )
+                    })
+                    .collect();
+                assert_eq!(
+                    files.len(),
+                    2,
+                    "the cells-ui example carries a panel and a bar picture"
+                );
+                let files: Vec<(&str, &[u8])> = files
+                    .iter()
+                    .map(|(n, b)| (n.as_str(), b.as_slice()))
+                    .collect();
+                Package::write_files(&manifest, Some(&component), &files).unwrap()
             } else {
                 Package::write(&manifest, &component).unwrap()
             };

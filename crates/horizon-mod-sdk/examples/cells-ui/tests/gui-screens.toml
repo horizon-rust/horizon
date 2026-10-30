@@ -1,0 +1,98 @@
+# The client half of the cells mod: the server's messages become a screen
+# the mod draws itself (capability `gui-screens`) - a panel of its own
+# layout - and the player's presses go back as messages.
+
+# The server opens the screen: 25,000 of 100,000 FE, a dust waiting, none
+# made. The panel is 176 x 96 over its own background picture, the bar a
+# quarter full, the menu holding the server's three actions.
+[[step]]
+net = { channel = "cells/open", data = "0 64 0 25000 100000 1 0" }
+expect.free-screen = [
+    "# 176x96",
+    "sprite cells:panel/cell @ 0 0 176 96",
+    'text "Energy Cell 0 64 0" @ 88 7',
+    'text "25000 / 100000 FE" @ 88 19',
+    "sprite cells:panel/bar @ 30 31 116 7",
+    "sprite cells:panel/bar @ 30 31 29 7",
+    "item minecraft:redstone @ 8 43",
+    'text "1 waiting, 0 made" @ 26 47',
+    "rows Fill | Drain | Close @ 8 62 78 30",
+    "[Fill 1000 FE] @ 90 62 78 16",
+    "[Drain 1000 FE] @ 90 80 78 16",
+]
+
+# A new state replaces the numbers on the open screen: 80%, the bar 93 of
+# 116 pixels (its fill reaches as far as the charge).
+[[step]]
+net = { channel = "cells/state", data = "0 64 0 80000 100000 0 4" }
+expect.free-screen = [
+    "# 176x96",
+    "sprite cells:panel/cell @ 0 0 176 96",
+    'text "Energy Cell 0 64 0" @ 88 7',
+    'text "80000 / 100000 FE" @ 88 19',
+    "sprite cells:panel/bar @ 30 31 116 7",
+    "sprite cells:panel/bar @ 30 31 93 7",
+    "item minecraft:redstone @ 8 43",
+    'text "0 waiting, 4 made" @ 26 47',
+    "rows Fill | Drain | Close @ 8 62 78 30",
+    "[Fill 1000 FE] @ 90 62 78 16",
+    "[Drain 1000 FE] @ 90 80 78 16",
+]
+
+# The buttons ask the server; they change nothing here.
+[[step]]
+select = { id = 1 }
+expect.net = ["cells/action=fill"]
+
+[[step]]
+select = { id = 2 }
+expect.net = ["cells/action=drain"]
+
+# Anything that isn't one of the screen's widgets is ignored.
+[[step]]
+select = { id = 99 }
+expect.net = []
+
+# The menu's first row does what the Fill button does.
+[[step]]
+select = { id = 3, row = 0 }
+expect.net = ["cells/action=fill"]
+
+# A message that isn't a state is ignored, and the screen stays.
+[[step]]
+net = { channel = "cells/state", data = "garbage" }
+expect.free-screen = [
+    "# 176x96",
+    "sprite cells:panel/cell @ 0 0 176 96",
+    'text "Energy Cell 0 64 0" @ 88 7',
+    'text "80000 / 100000 FE" @ 88 19',
+    "sprite cells:panel/bar @ 30 31 116 7",
+    "sprite cells:panel/bar @ 30 31 93 7",
+    "item minecraft:redstone @ 8 43",
+    'text "0 waiting, 4 made" @ 26 47',
+    "rows Fill | Drain | Close @ 8 62 78 30",
+    "[Fill 1000 FE] @ 90 62 78 16",
+    "[Drain 1000 FE] @ 90 80 78 16",
+]
+
+# Leaving the screen tells the server, and a late state is not drawn again.
+[[step]]
+ui-close = true
+expect.net = ["cells/action=close"]
+
+[[step]]
+net = { channel = "cells/state", data = "0 64 0 1 100000 0 0" }
+expect.net = []
+expect.free-screen = [
+    "# 176x96",
+    "sprite cells:panel/cell @ 0 0 176 96",
+    'text "Energy Cell 0 64 0" @ 88 7',
+    'text "80000 / 100000 FE" @ 88 19',
+    "sprite cells:panel/bar @ 30 31 116 7",
+    "sprite cells:panel/bar @ 30 31 93 7",
+    "item minecraft:redstone @ 8 43",
+    'text "0 waiting, 4 made" @ 26 47',
+    "rows Fill | Drain | Close @ 8 62 78 30",
+    "[Fill 1000 FE] @ 90 62 78 16",
+    "[Drain 1000 FE] @ 90 80 78 16",
+]
