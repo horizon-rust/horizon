@@ -237,6 +237,7 @@
   "{source} · needed by another mod": "{source} · 其他模组需要",
   "Local file · {file}": "本地文件 · {file}",
   "Update {version}": "更新到 {version}",
+  "Choose image…": "选择图片…",
   "Waiting for account access…": "正在等待访问账户…",
   "Reading keychain…": "正在读取钥匙串…",
   "Renewing Microsoft sign-in…": "正在续期 Microsoft 登录…",
@@ -261,5 +262,6 @@
   "Could not read the saved sign-in. Sign in again.": "无法读取已保存的登录信息。请重新登录。",
   "Could not read the saved sign-in.": "无法读取已保存的登录信息。",
   "Could not save the renewed sign-in.": "无法保存续期后的登录信息。",
-  "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "无法将续期后的登录信息保存到钥匙串。请解锁后重试。"
+  "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "无法将续期后的登录信息保存到钥匙串。请解锁后重试。",
+  "Another account operation is running. Try again in a moment.": "另一个账户操作正在进行。请稍后重试。"
 }

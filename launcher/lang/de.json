@@ -237,6 +237,7 @@
   "{source} · needed by another mod": "{source} · von einem anderen Mod benötigt",
   "Local file · {file}": "Lokale Datei · {file}",
   "Update {version}": "Update {version}",
+  "Choose image…": "Bild wählen…",
   "Waiting for account access…": "Warten auf Kontozugriff…",
   "Reading keychain…": "Schlüsselbund wird gelesen…",
   "Renewing Microsoft sign-in…": "Microsoft-Anmeldung wird erneuert…",
@@ -261,5 +262,6 @@
   "Could not read the saved sign-in. Sign in again.": "Die gespeicherte Anmeldung konnte nicht gelesen werden. Melde dich erneut an.",
   "Could not read the saved sign-in.": "Die gespeicherte Anmeldung konnte nicht gelesen werden.",
   "Could not save the renewed sign-in.": "Die erneuerte Anmeldung konnte nicht gespeichert werden.",
-  "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "Die erneuerte Anmeldung konnte nicht im Schlüsselbund gespeichert werden. Entsperre ihn und versuche es erneut."
+  "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "Die erneuerte Anmeldung konnte nicht im Schlüsselbund gespeichert werden. Entsperre ihn und versuche es erneut.",
+  "Another account operation is running. Try again in a moment.": "Ein anderer Kontovorgang läuft. Versuche es gleich noch einmal."
 }

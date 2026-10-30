@@ -237,6 +237,7 @@
   "{source} · needed by another mod": "{source} · requis par un autre mod",
   "Local file · {file}": "Fichier local · {file}",
   "Update {version}": "Mettre à jour : {version}",
+  "Choose image…": "Choisir une image…",
   "Waiting for account access…": "En attente de l’accès au compte…",
   "Reading keychain…": "Lecture du trousseau…",
   "Renewing Microsoft sign-in…": "Renouvellement de la connexion Microsoft…",
@@ -261,5 +262,6 @@
   "Could not read the saved sign-in. Sign in again.": "Impossible de lire la connexion enregistrée. Reconnectez-vous.",
   "Could not read the saved sign-in.": "Impossible de lire la connexion enregistrée.",
   "Could not save the renewed sign-in.": "Impossible d'enregistrer la connexion renouvelée.",
-  "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "Impossible d'enregistrer la connexion renouvelée dans le trousseau. Déverrouillez-le et réessayez."
+  "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "Impossible d'enregistrer la connexion renouvelée dans le trousseau. Déverrouillez-le et réessayez.",
+  "Another account operation is running. Try again in a moment.": "Une autre opération de compte est en cours. Réessayez dans un instant."
 }

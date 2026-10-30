@@ -237,6 +237,7 @@
   "{source} · needed by another mod": "{source} · потрібен іншому моду",
   "Local file · {file}": "Локальний файл · {file}",
   "Update {version}": "Оновити до {version}",
+  "Choose image…": "Вибрати зображення…",
   "Waiting for account access…": "Очікування доступу до облікового запису…",
   "Reading keychain…": "Читання в’язки ключів…",
   "Renewing Microsoft sign-in…": "Оновлення входу Microsoft…",
@@ -261,5 +262,6 @@
   "Could not read the saved sign-in. Sign in again.": "Не вдалося прочитати збережений вхід. Увійдіть знову.",
   "Could not read the saved sign-in.": "Не вдалося прочитати збережений вхід.",
   "Could not save the renewed sign-in.": "Не вдалося зберегти оновлений вхід.",
-  "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "Не вдалося зберегти оновлений вхід у в'язці ключів. Розблокуйте її та повторіть."
+  "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "Не вдалося зберегти оновлений вхід у в'язці ключів. Розблокуйте її та повторіть.",
+  "Another account operation is running. Try again in a moment.": "Виконується інша операція з обліковим записом. Спробуйте ще раз за мить."
 }

@@ -3,6 +3,7 @@
 use super::*;
 use std::fs::{File, OpenOptions};
 use std::sync::MutexGuard;
+use std::time::{Duration, Instant};
 
 /// Public progress only; no account credentials or provider response bodies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -109,12 +110,44 @@ pub(super) struct Operation {
     _file: Option<File>,
 }
 
+/// How long a status read waits behind another account operation (a refresh or a launch check
+/// can hold the lock for a network timeout) before it answers "busy" instead.
+const STATUS_WAIT: Duration = Duration::from_secs(3);
+const BUSY: &str = "Another account operation is running. Try again in a moment.";
+
 /// Serialize refresh with sign-in, sign-out and launch, before reading any credential.
 /// The file is a lock only: it never contains tokens. Fail closed if locking fails.
 pub(super) fn lock(store: &dyn SecretStore) -> Result<Operation, String> {
-    let process = OPERATIONS
-        .lock()
-        .map_err(|_| "Account operation failed. Restart the launcher.")?;
+    lock_within(store, None)
+}
+
+/// [`lock`], giving up with [`BUSY`] after `within` when one is given.
+pub(super) fn lock_within(
+    store: &dyn SecretStore,
+    within: Option<Duration>,
+) -> Result<Operation, String> {
+    let deadline = within.map(|d| Instant::now() + d);
+    // Waits for `take` to stop answering None (busy), or until the deadline.
+    let wait = |take: &mut dyn FnMut() -> Result<Option<()>, String>| loop {
+        match take()? {
+            Some(()) => return Ok(()),
+            None if deadline.is_some_and(|d| Instant::now() >= d) => return Err(BUSY.to_string()),
+            None => std::thread::sleep(Duration::from_millis(50)),
+        }
+    };
+    let failed = "Account operation failed. Restart the launcher.";
+    let mut process = None;
+    match deadline {
+        None => process = Some(OPERATIONS.lock().map_err(|_| failed)?),
+        Some(_) => wait(&mut || match OPERATIONS.try_lock() {
+            Ok(guard) => {
+                process = Some(guard);
+                Ok(Some(()))
+            }
+            Err(std::sync::TryLockError::WouldBlock) => Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => Err(failed.into()),
+        })?,
+    }
     let file = store
         .lock_file()
         .map(|path| {
@@ -129,13 +162,20 @@ pub(super) fn lock(store: &dyn SecretStore) -> Result<Operation, String> {
                 .write(true)
                 .open(path)
                 .map_err(|_| "Could not open the account lock.")?;
-            file.lock()
-                .map_err(|_| "Could not lock account operations.")?;
+            let failed = "Could not lock account operations.";
+            match deadline {
+                None => file.lock().map_err(|_| failed)?,
+                Some(_) => wait(&mut || match file.try_lock() {
+                    Ok(()) => Ok(Some(())),
+                    Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+                    Err(std::fs::TryLockError::Error(_)) => Err(failed.into()),
+                })?,
+            }
             Ok::<_, String>(file)
         })
         .transpose()?;
     Ok(Operation {
-        _process: process,
+        _process: process.expect("taken above"),
         _file: file,
     })
 }
@@ -161,7 +201,7 @@ pub fn status_with_progress(
 ) -> Status {
     let result = (|| {
         progress(Phase::Queued);
-        let _operation = lock(store)?;
+        let _operation = lock_within(store, Some(STATUS_WAIT))?;
         progress(Phase::Keychain);
         Ok::<_, String>(Status::from_secrets(read(store, uuid)?.as_ref()))
     })();

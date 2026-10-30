@@ -1210,3 +1210,15 @@ fn refresh_reports_real_service_steps_in_order() {
         &[Xbox, Minecraft, Ownership, Profile, Saving]
     );
 }
+
+#[test]
+fn a_status_read_gives_up_behind_a_long_operation() {
+    let store = MemoryStore::default();
+    let held = session::lock(&store).unwrap();
+    let start = std::time::Instant::now();
+    let busy = session::lock_within(&store, Some(std::time::Duration::from_millis(150)));
+    assert!(busy.is_err(), "a held lock must not be taken twice");
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    drop(held);
+    assert!(session::lock_within(&store, Some(std::time::Duration::from_secs(5))).is_ok());
+}
