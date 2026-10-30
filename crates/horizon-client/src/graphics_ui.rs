@@ -46,6 +46,7 @@ pub enum H {
     SunSize,
     MoonSize,
     NightVision,
+    ShootingStars,
     AerialPerspective,
     SmoothFluids,
     Hdr,
@@ -267,6 +268,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 "RT Lighting: dim scenes fade to grey as the eye sees at night.",
             ),
             h(
+                H::ShootingStars,
+                None,
+                "RT Lighting's shooting stars: none, a few a night, or frequent.",
+            ),
+            h(
                 H::AerialPerspective,
                 None,
                 "RT Lighting: far blocks fade blue into the haze, times real air's.",
@@ -451,6 +457,14 @@ impl H {
                 n => labelled("Sun Size", format!("{n}x")),
             },
             H::NightVision => labelled("Night Vision", on_off(g.night_vision)),
+            H::ShootingStars => labelled(
+                "Shooting Stars",
+                match g.shooting_stars {
+                    0 => "Off",
+                    1 => "Rare",
+                    _ => "Frequent",
+                },
+            ),
             H::MoonSize => match g.moon_size {
                 1 => labelled("Moon Size", "1x (Real)"),
                 n => labelled("Moon Size", format!("{n}x")),
@@ -555,6 +569,9 @@ impl H {
             H::RayTracedAo => g.ray_traced_ao = !g.ray_traced_ao,
             H::RtLighting => g.rt_lighting = !g.rt_lighting,
             H::NightVision => g.night_vision = !g.night_vision,
+            H::ShootingStars => {
+                g.shooting_stars = (g.shooting_stars + if back { 2 } else { 1 }) % 3
+            }
             H::SmoothFluids => g.smooth_fluids = !g.smooth_fluids,
             H::Hdr => g.hdr = !g.hdr,
             H::BatteryMode => g.battery = !g.battery,

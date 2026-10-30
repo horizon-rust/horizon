@@ -622,6 +622,8 @@ pub struct Renderer {
     /// RT lighting's moon's angular radius (the Moon Size setting times the real one).
     rt_moon_radius: f32,
     rt_aerial: f32,
+    /// The Shooting Stars setting (`set_shooting_stars`).
+    shooting_stars: u32,
     rt_history_unused: wgpu::TextureView,
     /// RT lighting's moon map (`moon_map`).
     moon_map: wgpu::TextureView,
@@ -3119,6 +3121,7 @@ impl Renderer {
             rt_sun_radius: SUN_RADIUS,
             rt_moon_radius: MOON_RADIUS,
             rt_aerial: crate::graphics::DEFAULT_AERIAL_PERSPECTIVE as f32,
+            shooting_stars: 1,
             rt_history_unused,
             moon_map,
             milky_way_map,
@@ -3908,6 +3911,10 @@ impl Renderer {
         if let Some(t) = &mut self.tonemap {
             t.set_night_vision(on);
         }
+    }
+    /// RT lighting's shooting stars (the Shooting Stars setting, gfx/sky_stars.rs `meteors`).
+    pub fn set_shooting_stars(&mut self, setting: u32) {
+        self.shooting_stars = setting;
     }
     pub fn set_rt_sky(&mut self, size: u32, moon: u32, aerial: u32) {
         self.rt_sun_radius = SUN_RADIUS * size.max(1) as f32;
@@ -4746,7 +4753,7 @@ impl Renderer {
             && frame.clouds.is_some()
             && !frame.underwater
             && rt_clouds::mode() != rt_clouds::Mode::Off;
-        let meteors = sky_stars::meteors();
+        let meteors = sky_stars::meteors(self.shooting_stars);
         let rt_sun_light = {
             // By night the rays trace toward the moon: its light by its phase, its own disc for
             // the shadows' penumbra (the Moon Size setting).

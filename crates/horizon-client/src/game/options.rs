@@ -283,6 +283,7 @@ impl Game<'_> {
                 s.horizon.aerial_perspective,
             );
             r.set_night_vision(s.horizon.night_vision);
+            r.set_shooting_stars(s.horizon.shooting_stars);
             r.set_hdr(
                 s.horizon.hdr,
                 s.horizon.hdr_paper_white as f32,
