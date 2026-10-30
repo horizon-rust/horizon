@@ -3473,8 +3473,9 @@ impl TradeDisplay {
 /// `ShowTradesToPlayer.displayAsHeldItem`: the stack in the main hand, which
 /// never drops.
 fn display_as_held_item(m: &mut Mob, stack: &ItemStack) {
-    super::finalize::set_item(m, super::finalize::MAINHAND, &stack.item);
-    m.extra.main_hand_count = stack.count;
+    // The whole stack stays in the hand (its count and components); the
+    // enchantments go to the gear table, which is what draws the glint.
+    m.extra.set_main_hand_stack(Some(stack.clone()));
     super::finalize::set_slot_enchantments(
         m,
         super::finalize::MAINHAND,
@@ -3485,8 +3486,7 @@ fn display_as_held_item(m: &mut Mob, stack: &ItemStack) {
 /// `ShowTradesToPlayer.clearHeldItem`: the main hand is empty again and
 /// drops with the default chance (the shown item never dropped).
 fn clear_held_item(m: &mut Mob) {
-    m.extra.main_hand = None;
-    m.extra.main_hand_count = 0;
+    m.extra.take_main_hand();
     if m.extra.gear.is_some() {
         super::gear::set(m, super::gear::MAIN, Vec::new());
     }
