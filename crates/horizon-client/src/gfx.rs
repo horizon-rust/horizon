@@ -4410,6 +4410,9 @@ impl Renderer {
         let sun_angle = frame.sky.sun_angle.to_radians();
         // Celestial bodies rotate around the X axis; angle 0 = noon.
         let sun = Vec3::new(0.0, sun_angle.cos(), -sun_angle.sin());
+        // RT lighting under water: the froxels' medium (Remix's water) is the fog, vanilla's
+        // underwater one is pushed past the view (its render distance fog stays).
+        let medium_fog = self.rt_lighting && self.froxels.enabled && frame.underwater;
         let (fog_color, fog) = if let Some(f) = frame.fog {
             (
                 f.color,
@@ -4445,6 +4448,11 @@ impl Renderer {
                     [start, end, (d - d.min(64.0) * 0.25).max(0.0), d]
                 },
             )
+        };
+        let fog = if medium_fog {
+            [f32::MAX, f32::MAX, fog[2], fog[3]]
+        } else {
+            fog
         };
         let mut rt = self.ray_traced_shadows(frame);
         if rt.any() {
