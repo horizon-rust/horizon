@@ -290,8 +290,8 @@ pub struct Graphics {
     /// RT lighting's sun, as many times its real size across (1..=20; 1 the real 0.53 degrees):
     /// softer shadows, a bigger disc, the same light.
     pub sun_size: u32,
-    /// RT lighting's moon, as many times its real size across (1..=20; 1 the real 0.52 degrees):
-    /// its disc, and the penumbra of its shadows by night.
+    /// RT lighting's moon, as many times its real size across (1..=20; 1 the real 0.52 degrees,
+    /// 2 by default: as it looks to the eye near the horizon): its disc, and its shadows' penumbra.
     pub moon_size: u32,
     /// RT lighting's aerial perspective: how many times denser than real air the air between
     /// the eye and distant terrain is (0 none, 1 real, up to 64): far blocks fade into the
@@ -347,7 +347,7 @@ impl Default for Graphics {
             ray_traced_ao: false,
             rt_lighting: false,
             sun_size: 1,
-            moon_size: 1,
+            moon_size: 2,
             aerial_perspective: DEFAULT_AERIAL_PERSPECTIVE,
             smooth_fluids: false,
             hdr: false,

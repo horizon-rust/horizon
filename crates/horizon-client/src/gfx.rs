@@ -3680,7 +3680,12 @@ impl Renderer {
     /// with `CameraMedium { sky_light, .. }` filled; water, rain and thunder are also read from the
     /// frame.
     pub fn set_volumetrics(&mut self, on: bool, camera: froxels::CameraMedium) {
-        self.froxels.enabled = on || std::env::var("HORIZON_FROXELS").is_ok_and(|v| v != "0");
+        // `HORIZON_FROXELS=1` forces them on, `=0` off (to compare).
+        self.froxels.enabled = match std::env::var("HORIZON_FROXELS").as_deref() {
+            Ok("0") => false,
+            Ok(_) => true,
+            Err(_) => on,
+        };
         self.froxels.camera = camera;
     }
     /// RT lighting's hybrid: structures for the sections near `camera` that lack one (a frame's
@@ -4664,7 +4669,14 @@ impl Renderer {
                 aspect,
                 tan_half,
             ],
-            inverse_view: view.inverse().to_cols_array_2d(),
+            // With the view bobbing the world is drawn with (`view_projection`): the sky's rays
+            // (terrain.wgsl `view_ray`) bob with it, as vanilla's sky does, or the sun and its halo
+            // would sway against the landscape at each step.
+            inverse_view: match &self.eye {
+                Some(_) => view.inverse(),
+                None => (frame.bob * view).inverse(),
+            }
+            .to_cols_array_2d(),
             sunrise: frame.sky.sunrise_color,
             sun: [sun.x, sun.y, sun.z, frame.sky.star_brightness],
             fog_ends: [
