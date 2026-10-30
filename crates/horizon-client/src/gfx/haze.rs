@@ -28,10 +28,11 @@ pub const RANGE: f64 = 24.0;
 /// At most this many columns a view, the nearest ones.
 pub const MAX_FLAMES: usize = 32;
 
-/// `HORIZON_HAZE=0` leaves the heat haze off, for comparison.
+/// Off by default for now (too coarse, and it lags the camera when it turns); `HORIZON_HAZE=1`
+/// turns it on.
 fn enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| !std::env::var("HORIZON_HAZE").is_ok_and(|v| v == "0"))
+    *ON.get_or_init(|| std::env::var("HORIZON_HAZE").is_ok_and(|v| v != "0"))
 }
 
 /// One flame in the world.
