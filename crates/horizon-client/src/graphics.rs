@@ -532,6 +532,20 @@ pub fn apply_preset(preset: Preset, s: &mut crate::settings::Settings) {
     g.sky = true;
     g.fog = true;
     g.weather = true;
+    // The ray tracing by preset, as Remix's low to ultra: linear light always; the traced shadows
+    // and ambient occlusion from Balanced; the full RT lighting (GI, reflections, volumetrics)
+    // from Quality; the packs' materials (normal and parallax maps) at Ultra.
+    let rank = match preset {
+        Preset::Performance => 0,
+        Preset::Balanced => 1,
+        Preset::Quality => 2,
+        Preset::Ultra | Preset::Custom => 3,
+    };
+    g.linear_light = true;
+    g.ray_traced_shadows = rank >= 1;
+    g.ray_traced_ao = rank >= 1;
+    g.rt_lighting = rank >= 2;
+    g.parallax = rank >= 3;
 }
 
 #[cfg(test)]
