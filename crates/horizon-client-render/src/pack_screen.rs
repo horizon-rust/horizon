@@ -1074,6 +1074,7 @@ mod icon_tests {
             description_style: Style::default(),
             source: Source::BuiltIn,
             compat: Compat::Compatible,
+            features: Vec::new(),
             icon,
             required: false,
             position: Position::Top,

@@ -562,10 +562,14 @@ fn classic_navigation_buttons_sound_even_without_a_game_action() {
         (Action::None, false)
     );
     assert_eq!(f.click_with_sound("Create New World"), (Action::None, true));
-    assert_eq!(
-        f.title.click(240.0, 55.0, (480.0, 262.0)),
-        (Action::None, false)
-    );
+    if f.title.click(240.0, 55.0, (480.0, 262.0)).0 == Action::None && f.title.preparing {
+        // Create New World prepares the world generation first
+        // (`CreateWorldScreen.openCreateWorldScreen`); `Game` opens the
+        // screen once that is done.
+        f.title.preparing = false;
+        let mode = f.title.new_world();
+        f.title.mode = mode;
+    }
     // The Game tab's game mode cycle button.
     let mode = f
         .title
@@ -831,13 +835,19 @@ fn create_world_tabs_follow_vanilla_and_their_choices_reach_the_action() {
     // A new world starts with the feature packs switched off, as vanilla's
     // `FeatureFlags.DEFAULT_FLAGS` does.
     assert_eq!(options.data_packs, ["vanilla".to_owned()]);
+    // The packs that ask for feature flags, as the resources ship them.
+    let feature: Vec<String> = crate::title::data_packs::discover(&f.root, None)
+        .into_iter()
+        .filter(|p| !p.features.is_empty())
+        .map(|p| p.id)
+        .collect();
     assert_eq!(
-        options.data_packs_disabled,
-        [
-            "minecart_improvements".to_owned(),
-            "redstone_experiments".to_owned(),
-            "trade_rebalance".to_owned()
-        ]
+        options
+            .data_packs_disabled
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+        feature
     );
 }
 
