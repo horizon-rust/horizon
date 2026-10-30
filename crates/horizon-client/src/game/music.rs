@@ -39,6 +39,7 @@ impl Game<'_> {
         }
         let (vehicle, carts) = self.start_cart_sounds();
         let mobs = self.start_mob_sounds();
+        let ridden = self.start_riding_sound();
         let (player_position, player_speed_sqr, player_fall_flying) =
             self.player.as_ref().map_or(([0.0; 3], 0.0, false), |p| {
                 let at = p.position;
@@ -65,6 +66,7 @@ impl Game<'_> {
             player_position,
             player_speed_sqr,
             player_fall_flying,
+            ridden,
         };
         self.audio.tick(self.pause, &ctx);
     }

@@ -12,6 +12,7 @@
 //! portal) until the player is in that dimension and its exit is loaded.
 use super::{Dim, Game, Screen};
 use horizon_client::Result;
+use horizon_client::fast_hash::FxHashMap;
 use horizon_client::nether_portal::{ENTITY_DELAY, PortalState};
 use horizon_core::{
     geometry::{Aabb, Axis, Vec3},
@@ -87,7 +88,7 @@ pub(super) struct Portals {
     /// Items and mobs, by entity id.
     entities: HashMap<u32, PortalState>,
     /// Positions before this tick's moves, by entity id.
-    pub(super) before: HashMap<u32, Vec3>,
+    pub(super) before: FxHashMap<u32, Vec3>,
     arrivals: Vec<Arrival>,
     /// The vehicles server players ride that went through a portal this
     /// tick, in their level, with their entry: they carry their riders
@@ -339,7 +340,7 @@ impl Game<'_> {
                     }) {
                         continue;
                     }
-                    let base = horizon_client::chunk::MIN_Y + 16 * s as i32;
+                    let base = self.world.bottom_y() + 16 * s as i32;
                     for y in base..base + 16 {
                         for lz in 0..16 {
                             for lx in 0..16 {
@@ -632,19 +633,29 @@ impl Game<'_> {
         for c in &self.carts {
             self.portals.before.insert(c.id, c.position);
         }
-        let ids: Vec<(u32, bool)> = self
-            .dropped
-            .iter()
-            .map(|e| (e.id, true))
-            .chain(self.mobs.iter().map(|m| (m.id, self.mob_can_use_portal(m))))
-            .chain(
-                self.boats
-                    .iter()
-                    .map(|b| b.id)
-                    .chain(self.carts.iter().map(|c| c.id))
-                    .map(|id| (id, self.vehicle_can_use_portal(id))),
-            )
-            .collect();
+        // Only an entity in a portal, or cooling down from one, has a state
+        // here: whether the others could use a portal is not worth asking
+        // for each of them on every tick.
+        let mut ids: Vec<(u32, bool)> = Vec::new();
+        if !self.portals.entities.is_empty() {
+            let tracked = &self.portals.entities;
+            for e in &self.dropped {
+                if tracked.contains_key(&e.id) {
+                    ids.push((e.id, true));
+                }
+            }
+            for m in &self.mobs {
+                if tracked.contains_key(&m.id) {
+                    ids.push((m.id, self.mob_can_use_portal(m)));
+                }
+            }
+            let vehicles = self.boats.iter().map(|b| b.id);
+            for id in vehicles.chain(self.carts.iter().map(|c| c.id)) {
+                if tracked.contains_key(&id) {
+                    ids.push((id, self.vehicle_can_use_portal(id)));
+                }
+            }
+        }
         let present: std::collections::HashSet<u32> = ids.iter().map(|(id, _)| *id).collect();
         self.portals.entities.retain(|id, _| present.contains(id));
         for (id, allowed) in ids {
@@ -869,18 +880,18 @@ impl Game<'_> {
         reach: horizon_core::geometry::Aabb,
         sections: &mut horizon_client::portal_sections::PortalSections,
     ) -> bool {
-        use horizon_client::chunk::{MIN_Y, SECTIONS};
+        use horizon_client::section_mask::SectionMask;
         let (min, max) = (reach.min_position(), reach.max_position());
         if !min.is_finite() || !max.is_finite() {
             return true;
         }
         let (min, max) = (BlockPos::containing(min), BlockPos::containing(max));
-        let top = SECTIONS as i32 - 1;
+        let top = self.world.layout().sections() as i32 - 1;
         let (x0, x1) = (min.x >> 4, max.x >> 4);
         let (z0, z1) = (min.z >> 4, max.z >> 4);
         let (y0, y1) = (
-            ((min.y - MIN_Y) >> 4).clamp(0, top),
-            ((max.y - MIN_Y) >> 4).clamp(0, top),
+            ((min.y - self.world.bottom_y()) >> 4).clamp(0, top),
+            ((max.y - self.world.bottom_y()) >> 4).clamp(0, top),
         );
         let count = (i64::from(x1) - i64::from(x0) + 1)
             * (i64::from(y1) - i64::from(y0) + 1)
@@ -888,20 +899,17 @@ impl Game<'_> {
         if count > 64 {
             return true;
         }
-        let mut y_mask = 0u32;
-        for sy in y0..=y1 {
-            y_mask |= 1 << sy;
-        }
+        let y_mask = SectionMask::below(y1 as usize + 1).from(y0 as usize);
         let behaviours = self.res.behaviours();
         let chunks = &self.world.chunks;
         (x0..=x1).any(|cx| {
             (z0..=z1).any(|cz| {
                 chunks.get(&(cx, cz)).is_some_and(|chunk| {
-                    sections.get((cx, cz), chunk, |v| {
+                    let portals = sections.get((cx, cz), chunk, |v| {
                         let state = horizon_world::registry::BlockStateId(v);
                         behaviours.portal_axis(state).is_some() || self.is_end_portal(state)
-                    }) & y_mask
-                        != 0
+                    });
+                    !(portals & y_mask).is_empty()
                 })
             })
         })
