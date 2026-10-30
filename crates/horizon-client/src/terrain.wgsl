@@ -1181,7 +1181,7 @@ struct DebugLineOut {
     let d = view_ray(in.ndc);
     let sky = rt_sky(d);
     let pixel = length(fwidth(d));
-    return vec4(sky + rt_sun_disc(d) + rt_moon_disc(d) + rt_glare(d) + rt_milky_way(d, sky)
+    return vec4(sky + rt_sun_disc(d) + rt_moon_disc(d) + rt_glare(d) + rt_milky_way(d, sky, pixel)
         + rt_meteor(d, sky, pixel), 1.0);
 }
 // RT lighting's real stars (gfx/sky_stars.rs): the Yale Bright Star Catalogue's 9096 stars down
@@ -1252,14 +1252,14 @@ fn star_colour(kelvin: f32) -> vec3<f32> {
 // across at 3440x1440) puts at 0.015 paper whites. The eye sums an extended light over its area
 // (Piper's law: its threshold falls as the square root of the area, Blackwell 1946), which a
 // screen's pixel does not, and the exposure stops at +1.5: the band is brought up by that
-// summation over a degree (the square root of a degree over a 175 arcsecond pixel, about 20),
-// from the map averaged over half a degree (its unresolved stars no grain), less its
-// floor away from the band (MILKY_FLOOR, its darkest: the faint stars the sky draws itself), its
-// rifts and colours as the map has them. No light pollution here, so it shows whole
-// under a dark sky.
-const MILKY_SUMMATION: f32 = 20.0;
-const MILKY_FLOOR: f32 = 0.008;
-fn rt_milky_way(d: vec3<f32>, sky: vec3<f32>) -> vec3<f32> {
+// summation, MILKY_SUMMATION 10 (about half the square root of a degree over a 175 arcsecond
+// pixel): the naked eye's Milky Way under a dark country sky (Bortle 2 to 3, as France's would be
+// without light pollution), plain but quiet, not a long exposure's. Less its floor away from the
+// band (MILKY_FLOOR, the faint stars the sky draws itself), its rifts as the map has them, its
+// colours as the eye sees so faint a light; the map's level the pixel covers (`pixel`, its angle), sharp up close and steady far.
+const MILKY_SUMMATION: f32 = 10.0;
+const MILKY_FLOOR: f32 = 0.005;
+fn rt_milky_way(d: vec3<f32>, sky: vec3<f32>, pixel: f32) -> vec3<f32> {
     let brightness = globals.rt_stars.w;
     if brightness <= 0.0 || d.y <= 0.0 { return vec3(0.0); }
     let m = globals.rt_star_frame;
@@ -1268,11 +1268,21 @@ fn rt_milky_way(d: vec3<f32>, sky: vec3<f32>) -> vec3<f32> {
     let ra = atan2(e.y, e.x);
     let dec = asin(clamp(e.z, -1.0, 1.0));
     let uv = vec2(fract(0.5 - ra / 6.2831853), 0.5 - dec / 3.14159265);
-    let map = max(textureSampleLevel(rt_milky_map, lightmap_sampler, uv, 0.0).rgb - MILKY_FLOOR,
+    let texel = 6.2831853 / f32(textureDimensions(rt_milky_map).x);
+    let level = max(log2(pixel / texel), 0.0);
+    let map = max(textureSampleLevel(rt_milky_map, lightmap_sampler, uv, level).rgb - MILKY_FLOOR,
         vec3(0.0));
     let glare = exp(-dot(sky, vec3(0.2126, 0.7152, 0.0722)) * 60.0);
     let air = exp(-vec3(0.12, 0.18, 0.3) * (1.0 / max(d.y + 0.025, 0.03)));
-    return map * (0.015 * MILKY_SUMMATION * brightness * glare) * air;
+    // Seen as its own light is, not as the summation shows it: about a thousandth of a candela a
+    // square metre, the rods' (tonemap.wgsl `night_vision`'s grey with its slight blue), the cones
+    // only toward its brightest.
+    let own = map * 0.015;
+    let cones = smoothstep(log(0.002), log(0.03), log(max(dot(own, vec3(0.2126, 0.7152, 0.0722)),
+        1e-7)));
+    let tint = vec3(0.80, 0.90, 1.08);
+    let rods = tint * (dot(own, vec3(0.05, 0.55, 0.40)) / dot(tint, vec3(0.2126, 0.7152, 0.0722)));
+    return mix(rods, own, cones) * (MILKY_SUMMATION * brightness * glare) * air;
 }
 // METEOR-BEGIN: the shooting stars' model, the same text in terrain.wgsl (the sky draws them) and in
 // gfx/shadow_rays.wgsl (the Eye of Aldhani mode lights the terrain with them); a test keeps them equal.

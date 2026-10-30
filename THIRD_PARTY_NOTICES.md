@@ -36,7 +36,7 @@ Lunar Reconnaissance Orbiter Camera), scaled to 1024x512. NASA's imagery is in t
 
 ## The Milky Way's map
 
-`crates/horizon-client/src/gfx/milky_way_svs.png` is the Milky Way layer of NASA's
-[Deep Star Maps 2020](https://svs.gsfc.nasa.gov/4851/) (NASA's Scientific Visualization Studio,
-from the Hipparcos, Tycho-2 and Gaia catalogues), scaled to 2048x1024 and averaged over half a
-degree (a Gaussian 0.5 degree across). NASA's imagery is in the public domain.
+`crates/horizon-client/src/gfx/milky_way_luminance.png` and `milky_way_colour.png` are the Milky
+Way layer of NASA's [Deep Star Maps 2020](https://svs.gsfc.nasa.gov/4851/) (NASA's Scientific
+Visualization Studio, from the Hipparcos, Tycho-2 and Gaia catalogues): its luminance at its full
+4096x2048, its colour averaged to 1024x512. NASA's imagery is in the public domain.

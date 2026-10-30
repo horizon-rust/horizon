@@ -48,15 +48,46 @@ pub fn buffer(device: &wgpu::Device) -> wgpu::Buffer {
 
 /// World directions (x east, y up, z south) from equatorial ones (z toward the celestial north
 /// pole, x toward the vernal equinox) at latitude `latitude` degrees north (`tilt`, the sun's
-/// path's lean) when the sun stands `sun_angle` degrees past noon, on today's date.
+/// path's lean) when the sun stands `sun_angle` degrees past noon, on today's date (the
+/// environment's `HORIZON_SKY_DATE=YYYY-MM-DD` another, to see the sky of a season).
 pub fn frame(sun_angle: f32, latitude: f32) -> Mat4 {
-    let days = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0.0, |d| d.as_secs_f64() / 86400.0)
-        + 2_440_587.5
-        - 2_451_545.0;
+    static DATE: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
+    let date = *DATE.get_or_init(|| {
+        std::env::var("HORIZON_SKY_DATE")
+            .ok()
+            .and_then(|d| days_of(&d))
+    });
+    let days = date.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64() / 86400.0)
+            + 2_440_587.5
+            - 2_451_545.0
+    });
     let local_hours = (12.0 + f64::from(sun_angle) / 15.0).rem_euclid(24.0);
     sky_turn(days, local_hours, latitude)
+}
+
+/// `YYYY-MM-DD`'s noon in days since J2000 (the Julian day of the Gregorian date).
+fn days_of(date: &str) -> Option<f64> {
+    let mut parts = date.trim().splitn(3, '-').map(str::parse::<i64>);
+    let (y, m, d) = (
+        parts.next()?.ok()?,
+        parts.next()?.ok()?,
+        parts.next()?.ok()?,
+    );
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let (y, m) = if m <= 2 { (y - 1, m + 12) } else { (y, m) };
+    let century = y.div_euclid(100);
+    let leap = 2 - century + century.div_euclid(4);
+    let julian = (365.25 * (y + 4716) as f64).floor()
+        + (30.6001 * (m + 1) as f64).floor()
+        + d as f64
+        + leap as f64
+        - 1524.5;
+    Some(julian + 0.5 - 2_451_545.0)
 }
 
 /// The turn for `days` since J2000 (the date's midnight counts), `local_hours` of local solar
@@ -91,6 +122,13 @@ fn sky_turn(days: f64, local_hours: f64, latitude: f32) -> Mat4 {
 mod tests {
     use super::*;
     use glam::Vec3;
+
+    #[test]
+    fn a_date_is_its_days_since_j2000() {
+        assert_eq!(days_of("2000-01-01"), Some(0.0));
+        assert_eq!(days_of("2026-07-15"), Some(9692.0));
+        assert_eq!(days_of("2026-13-01"), None);
+    }
 
     #[test]
     fn the_pole_stands_at_the_latitude_over_the_north() {
