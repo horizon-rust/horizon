@@ -2187,6 +2187,10 @@ impl Title {
                         .unwrap_or_default();
                     if let Mode::Create { options, .. } = &mut self.mode {
                         options.data_packs = ids;
+                        // `CreateWorldScreen`'s second `queueLoadScreen`: the
+                        // world generation data is read again for the packs
+                        // the create screen now has, before it is shown.
+                        self.preparing = true;
                     }
                     *self.data_packs.borrow_mut() = None;
                     return true;

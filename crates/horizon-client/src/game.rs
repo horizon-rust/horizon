@@ -11806,7 +11806,12 @@ impl Game<'_> {
         }
         if let Some(title) = self.title.as_mut() {
             title.preparing = false;
-            title.mode = Title::new_world();
+            // Entering from the world list opens a fresh create screen; a
+            // re-read after the data packs changed keeps the one the player
+            // already filled in.
+            if !matches!(title.mode, horizon_client::title::Mode::Create { .. }) {
+                title.mode = Title::new_world();
+            }
         }
     }
     fn render(&mut self) -> Result<bool> {
