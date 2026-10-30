@@ -42,7 +42,8 @@ use Op::{Black, Move};
 
 /// R, out of the D: its bowl rides eight rows higher (the D's bottom arm
 /// becomes the bowl's bottom), the bowl's right side stays, and the E's lower
-/// stem is the leg.
+/// stroke of the V's left arm, the one diagonal the texture has, is the leg:
+/// a straight one under the bowl reads as a Q's tail at 1x.
 const R: &[Op] = &[
     Move {
         from: (256, 33),
@@ -54,9 +55,9 @@ const R: &[Op] = &[
         to: (45, 51),
     },
     Move {
-        from: (208, 28),
-        to: (34, 28),
-        size: (11, 23),
+        from: (101, 24),
+        to: (28, 24),
+        size: (15, 27),
     },
 ];
 
