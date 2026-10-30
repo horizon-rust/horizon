@@ -88,6 +88,8 @@ struct Globals {
 // RT lighting: what the water at the pixel refracts, traced (shadow_rays_psr.wgsl `hw_refract`):
 // rgb its light, a the distance the ray ran in the water (0: none, the scene behind shows).
 @group(0) @binding(18) var rt_refract: texture_2d<f32>;
+// RT lighting: the Moon's map (NASA's LROC colours, equirectangular, the near side in the middle).
+@group(0) @binding(19) var rt_moon_map: texture_2d<f32>;
 // The traced reflection for the fragment being lit (`rt_reflection`), which `rt_shade` takes in
 // place of the sky's: rgb its light, a 1 when there is one.
 var<private> rt_mirror: vec4<f32>;
@@ -367,9 +369,9 @@ fn rt_glare(d: vec3<f32>) -> vec3<f32> {
 }
 // RT lighting: the real moon's disc toward `d` (0.52 degrees across, times the Moon Size
 // setting): Minecraft's phase lit from the sun's side by Lommel-Seeliger's law (the regolith
-// scatters back, its limb as bright as its middle at full moon), the maria darker (albedo 0.07
-// against the highlands' 0.16, a noise fixed on its face: it keeps the same face to the world),
-// the earthshine faint on its night side; about 12 paper whites at full moon (2500 nits).
+// scatters back, its limb as bright as its middle at full moon), its face NASA's map of it (the
+// maria, the craters and their rays), the earthshine faint on its night side; about 12 paper
+// whites at full moon (2500 nits).
 fn rt_moon_disc(d: vec3<f32>) -> vec3<f32> {
     let m = normalize(globals.rt_moon.xyz);
     let radius = globals.rt_moon.w;
@@ -391,12 +393,19 @@ fn rt_moon_disc(d: vec3<f32>) -> vec3<f32> {
     let mu0 = max(dot(n, l), 0.0);
     let mu = max(n.z, 1e-3);
     let lit = 2.0 * mu0 / (mu0 + mu);
-    let face = lava_fbm(n * 2.6 + vec3(3.7, 1.1, 5.3));
-    let albedo = mix(0.16, 0.07, smoothstep(0.42, 0.58, face));
+    // Its face from NASA's map (it keeps its near side to the world): longitude about the axis
+    // across the disc, the map's mean on the near side (0.40) brought to the Moon's albedo, 0.12.
+    let lon = atan2(n.x, n.z);
+    let lat = asin(clamp(n.y, -1.0, 1.0));
+    let map = textureSampleLevel(rt_moon_map, lightmap_sampler,
+        vec2(0.5 + lon / 6.2831853, 0.5 - lat / 3.14159265), 0.0).rgb;
+    let albedo = map * 0.3;
     // Below the horizon's air: reddened and dimmed as the sky table's light toward it is.
     let air = clamp(m.y * 8.0 + 0.2, 0.0, 1.0);
     let tint = vec3(1.0, 0.93, 0.85);
-    return tint * (albedo / 0.12) * (12.0 * lit + 0.02) * air;
+    // 3 paper whites at full moon, not its 12 (2500 nits): the eye adapts to the moon itself, the
+    // tone mapping can't, and at 12 the night's exposure would wash its maria out.
+    return tint * (albedo / 0.12) * (3.0 * lit + 0.005) * air;
 }
 // RT lighting: the light sources' traced light at this pixel (`rt_blocks`), this frame's rays only.
 // RT lighting: the sun's colour through stained glass at this pixel (`rt_sun_tint`), divided by the

@@ -27,3 +27,9 @@ RTX Remix for Minecraft (the renderer's `shaders/sky_atmosphere.comp`), Copyrigh
 CORPORATION & AFFILIATES, licensed under the Apache License, Version 2.0
 (<https://www.apache.org/licenses/LICENSE-2.0>). The file's header says what was ported and what is
 Horizon's own (the last pass, which resamples the sky into Horizon's sky-view table).
+
+## The Moon's map
+
+`crates/horizon-client/src/gfx/moon_lroc.png` is NASA's LROC colour map of the Moon from the
+[CGI Moon Kit](https://svs.gsfc.nasa.gov/4720/) (NASA's Scientific Visualization Studio, from the
+Lunar Reconnaissance Orbiter Camera), scaled to 1024x512. NASA's imagery is in the public domain.

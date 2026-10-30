@@ -616,6 +616,8 @@ pub struct Renderer {
     rt_moon_radius: f32,
     rt_aerial: f32,
     rt_history_unused: wgpu::TextureView,
+    /// RT lighting's moon map (`moon_map`).
+    moon_map: wgpu::TextureView,
     /// Bound in place of RT lighting's sun through tinting glass while there is none: all of it.
     rt_sun_unused: wgpu::TextureView,
     /// Bound in place of RT lighting's depth prepass while there is none.
@@ -749,6 +751,7 @@ fn terrain_group(
     depth: &wgpu::TextureView,
     reflection: &wgpu::TextureView,
     refraction: &wgpu::TextureView,
+    moon: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     let view = |binding, view| wgpu::BindGroupEntry {
         binding,
@@ -786,8 +789,36 @@ fn terrain_group(
             view(16, depth),
             view(17, reflection),
             view(18, refraction),
+            view(19, moon),
         ],
     })
+}
+/// RT lighting's moon map: NASA's LROC colour map of the Moon (CGI Moon Kit, Scientific
+/// Visualization Studio, public domain), equirectangular, the near side in the middle, sRGB.
+fn moon_map(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
+    let (width, height, rgba) = crate::hud::decode_bytes(include_bytes!("gfx/moon_lroc.png"))
+        .expect("the moon map decodes");
+    device
+        .create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: Some("RT lighting's moon"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &rgba,
+        )
+        .create_view(&Default::default())
 }
 /// The real sun's angular radius (0.53 degrees across).
 const SUN_RADIUS: f32 = 0.004_63;
@@ -1465,6 +1496,15 @@ impl Renderer {
                 entry(17, wgpu::ShaderStages::FRAGMENT, rt_texture),
                 entry(18, wgpu::ShaderStages::FRAGMENT, rt_texture),
                 entry(
+                    19,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(
                     16,
                     wgpu::ShaderStages::FRAGMENT,
                     wgpu::BindingType::Texture {
@@ -1967,6 +2007,7 @@ impl Renderer {
                 .create_view(&Default::default())
         };
         // Bound in place of RT lighting's last light while there is none.
+        let moon_map = moon_map(&device, &queue);
         let rt_history_unused = device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("No RT light"),
@@ -1999,6 +2040,7 @@ impl Renderer {
             &rt_depth_unused,
             &rt_history_unused,
             &rt_history_unused,
+            &moon_map,
         );
         let crosshair_group = terrain_group(
             &device,
@@ -2016,6 +2058,7 @@ impl Renderer {
             &rt_depth_unused,
             &rt_history_unused,
             &rt_history_unused,
+            &moon_map,
         );
         let index_quads = 1 << 16;
         let indices = Self::quad_indices(&device, index_quads);
@@ -3028,6 +3071,7 @@ impl Renderer {
             rt_moon_radius: MOON_RADIUS,
             rt_aerial: crate::graphics::DEFAULT_AERIAL_PERSPECTIVE as f32,
             rt_history_unused,
+            moon_map,
             rt_sun_unused,
             rt_depth_unused,
             atmosphere,
@@ -3934,6 +3978,7 @@ impl Renderer {
             depth,
             reflection,
             refraction,
+            &self.moon_map,
         );
         self.crosshair_group = terrain_group(
             &self.device,
@@ -3951,6 +3996,7 @@ impl Renderer {
             depth,
             reflection,
             refraction,
+            &self.moon_map,
         );
     }
     /// This frame's ray-traced shadows: the grid written up to date, the light's direction (the
