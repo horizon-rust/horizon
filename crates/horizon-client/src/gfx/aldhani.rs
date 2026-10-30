@@ -14,17 +14,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::upload::Uploads;
 
 /// The slots a frame looks back over (aldhani.wgsl `ALDHANI_METEORS`).
-const METEORS: u64 = 4096;
+const METEORS: u64 = 8192;
 /// The sky's tiles a side and the streaks a tile holds at most (`ALDHANI_TILES`, `ALDHANI_TILE_CAP`).
 const TILES: u64 = 64;
 const TILE_CAP: u64 = 64;
 /// The event's seconds (`ALDHANI_EVENT`).
 pub const EVENT: f32 = 300.0;
-/// A slot's seconds: at most one meteor each, so 1500 a second at the storm's height, burning for
-/// one to two seconds each (the slots looked back over cover 2.7 s, the longest a meteor lasts).
-const SLOT: f32 = 1.0 / 1500.0;
-/// The field's bytes: the totals, the running sum, the meteors (aldhani.wgsl `AldhaniField`).
-const FIELD_BYTES: u64 = 16 + METEORS * 4 + METEORS * 64;
+/// A slot's seconds: at most one meteor each, so 2000 a second at the storm's height, burning for
+/// one to two seconds each (the slots looked back over cover 4.1 s, past the longest a meteor
+/// lasts, 2.8 s).
+const SLOT: f32 = 1.0 / 2000.0;
+/// The field's bytes: the totals, the running sum, the streaks' lines, the meteors (aldhani.wgsl
+/// `AldhaniField`).
+const FIELD_BYTES: u64 = 16 + METEORS * 4 + METEORS * 16 + METEORS * 64;
 
 /// Whether the environment arms the mode (`HORIZON_METEORS=aldhani`).
 pub fn armed() -> bool {

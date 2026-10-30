@@ -350,19 +350,23 @@ fn rt_sky(d: vec3<f32>) -> vec3<f32> {
 // them equal.
 // The slots a frame looks back over (one meteor at most each), the sky's tiles a side (a square
 // folded over the upper half of the sky, `aldhani_tile`) and the streaks a tile holds at most.
-const ALDHANI_METEORS: u32 = 4096u;
+const ALDHANI_METEORS: u32 = 8192u;
 const ALDHANI_TILES: u32 = 64u;
 const ALDHANI_TILE_CAP: u32 = 64u;
+// How far from its line a streak's light reaches at most, in radians (its glow fades to nothing
+// there): a streak is binned into every tile within it.
+const ALDHANI_REACH: f32 = 0.012;
 // The event's seconds: the storm builds over a minute, holds, and dies out over the last minute.
 const ALDHANI_EVENT: f32 = 300.0;
-// Where the meteors come from: a fixed direction of the world, due south a degree under the
-// horizon, so the streaks fan out of the horizon upward and outward over the whole sky.
-const ALDHANI_RADIANT: vec3<f32> = vec3<f32>(0.0, -0.0349, 0.99939);
+// Where the meteors come from: a fixed direction of the world, due south eight degrees under the
+// horizon, far behind it, so the streaks rise out of the haze beyond the mountains and fan out
+// upward and outward over the whole sky.
+const ALDHANI_RADIANT: vec3<f32> = vec3<f32>(0.0, -0.1392, 0.99027);
 // The light the field gives a face turned to it at the storm's height, in full moons (the moon's
 // light overhead, `rt.held.z`), and the glow of the sky around the radiant at its brightest, in
 // paper whites (radiance; Lambert's 1/pi in the units, as the sky table's).
-const ALDHANI_MOONS: f32 = 10.0;
-const ALDHANI_GLOW: f32 = 0.1;
+const ALDHANI_MOONS: f32 = 16.0;
+const ALDHANI_GLOW: f32 = 0.2;
 // A meteor of the field: toward its streak's tail (xyz) and its core's width in pixels (w); toward
 // its head (xyz) and its seed (w, for the sparkles); the light of its core at the head (rgb, paper
 // whites) and its head's glow (w); the light it gives the terrain (rgb, luminance 1) and its share
@@ -374,10 +378,12 @@ struct AldhaniMeteor {
     light: vec4<f32>,
 }
 // x: the meteors' shares summed, y: the meteors burning, z: those drawn in the sky; the shares'
-// running sum (`cdf[i]` the sum up to meteor i), and the meteors.
+// running sum (`cdf[i]` the sum up to meteor i); each streak's great circle (its normal, xyz, 0
+// for a point, and its angle, w), for the sky to pass a streak by from one read; and the meteors.
 struct AldhaniField {
     total: vec4<f32>,
     cdf: array<f32, ALDHANI_METEORS>,
+    lines: array<vec4<f32>, ALDHANI_METEORS>,
     meteors: array<AldhaniMeteor, ALDHANI_METEORS>,
 }
 // A hash of `n` to [0, 1) (a PCG round, as terrain.wgsl's `meteor_hash`).
@@ -416,9 +422,9 @@ fn aldhani_glow(d: vec3<f32>, t: f32) -> vec3<f32> {
     // The eye: a few degrees of white-hot core in a wide glow, its sides two colours.
     let east = d.x / max(sin(theta), 1e-3);
     let side = mix(teal, vec3(1.0, 0.55, 0.8), smoothstep(-0.7, 0.7, -east));
-    let core = exp(-theta * theta / (2.0 * 0.05 * 0.05));
+    let core = exp(-theta * theta / (2.0 * 0.08 * 0.08));
     let wide = exp(-theta / 0.25) * (0.4 + 0.6 * exp(-up / 0.15));
-    let eye = side * (6.0 * wide) + mix(side, vec3(1.0), 0.5) * (30.0 * core);
+    let eye = side * (8.0 * wide) + mix(side, vec3(1.0), 0.5) * (60.0 * core);
     // Under the horizon the ground hides it (the rays see the ground there).
     let above = smoothstep(-0.06, 0.0, d.y);
     return (sky + eye) * (ALDHANI_GLOW * strength * above);
@@ -434,38 +440,38 @@ fn aldhani_streaks(d: vec3<f32>, pixel: f32) -> vec3<f32> {
     var sum = vec3(0.0);
     for (var i = 0u; i < count; i++) {
         let k = aldhani_tiles[ALDHANI_TILES * ALDHANI_TILES + tile * ALDHANI_TILE_CAP + i];
-        sum += aldhani_streak(aldhani_field.meteors[k], d, pixel);
+        let line = aldhani_field.lines[k];
+        if abs(dot(d, line.xyz)) > ALDHANI_REACH { continue; }
+        sum += aldhani_streak(aldhani_field.meteors[k], line, d, pixel);
     }
     return sum;
 }
 // One streak's light toward `d`. The short bright ones (a fireball breaking up near the radiant)
 // sparkle: a few points along it flare and fade, each in its own rhythm.
-fn aldhani_streak(m: AldhaniMeteor, d: vec3<f32>, pixel: f32) -> vec3<f32> {
+fn aldhani_streak(m: AldhaniMeteor, line: vec4<f32>, d: vec3<f32>, pixel: f32) -> vec3<f32> {
     let a = m.tail.xyz;
     let b = m.head.xyz;
-    let normal = cross(a, b);
-    let s = length(normal);
-    let span = atan2(s, dot(a, b));
+    let span = line.w;
     var across = length(d - b);
     var along = 1.0;
-    if s > 1e-7 {
-        let nn = normal / s;
-        let off = dot(d, nn);
-        if abs(off) > pixel * 12.0 { return vec3(0.0); }
-        let phi = atan2(dot(d, cross(nn, a)), dot(d, a));
+    if any(line.xyz != vec3(0.0)) {
+        let phi = atan2(dot(d, cross(line.xyz, a)), dot(d, a));
         along = clamp(phi / span, 0.0, 1.0);
-        across = select(min(length(d - a), length(d - b)), abs(off), phi >= 0.0 && phi <= span);
+        across = select(min(length(d - a), length(d - b)), abs(dot(d, line.xyz)),
+            phi >= 0.0 && phi <= span);
     }
     let width = pixel * m.tail.w;
     let r2 = across * across / (width * width);
-    if r2 > 150.0 { return vec3(0.0); }
-    let core = exp(-r2 * 1.4) + 0.06 * exp(-r2 * 0.08);
+    if r2 > 150.0 || across > ALDHANI_REACH { return vec3(0.0); }
+    // Its light fades to nothing ALDHANI_REACH away (the tiles it is binned into).
+    let fade = 1.0 - across / ALDHANI_REACH;
+    let core = exp(-r2 * 1.4) + 0.03 * exp(-r2 * 0.15) * fade * fade;
     var light = m.colour.rgb * (core * (0.15 + 0.85 * along * along));
     // The head's glow, white-hot in its middle.
     let top = max(m.colour.r, max(m.colour.g, m.colour.b));
     let white = mix(m.colour.rgb, vec3(top), 0.6);
     let h2 = dot(d - b, d - b) / (width * width);
-    light += white * (m.colour.w * 3.0 * exp(-h2 * 0.25));
+    light += white * (m.colour.w * 0.8 * exp(-h2 * 0.6) * fade * fade);
     // Sparkles along the short, bright ones.
     let short = 1.0 - smoothstep(20.0 * pixel, 80.0 * pixel, span);
     let sparkle = m.colour.w * short;
@@ -476,7 +482,7 @@ fn aldhani_streak(m: AldhaniMeteor, d: vec3<f32>, pixel: f32) -> vec3<f32> {
             let p = normalize(mix(a, b, 0.2 + 0.8 * u));
             let q = dot(d - p, d - p) / (width * width);
             let beat = 0.5 + 0.5 * sin(globals.rt_water.z * (9.0 + 14.0 * u) + 40.0 * u);
-            light += white * (sparkle * 6.0 * pow(beat, 6.0) * exp(-q * 0.7));
+            light += white * (sparkle * 3.0 * pow(beat, 6.0) * exp(-q * 0.7));
         }
     }
     return light;

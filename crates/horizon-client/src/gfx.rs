@@ -4707,16 +4707,14 @@ impl Renderer {
             fog
         };
         let mut rt = self.ray_traced_shadows(frame);
-        // RT lighting's Eye of Aldhani: its field made before the rays light with it and the sky
-        // draws it (none: -1).
+        // RT lighting's Eye of Aldhani: the seconds into it (none: -1); its field is made at the
+        // start of the frame's passes, before the rays light with it and the sky draws it.
         rt.aldhani = [-1.0, 0.0];
         if let Some(t) = self
             .aldhani
             .time(self.water_clock.elapsed().as_secs_f32())
             .filter(|_| self.rt_lighting && !frame.title)
         {
-            self.aldhani
-                .run(&self.device, &mut self.uploads, &mut encoder, t);
             rt.aldhani = [t, atmosphere::MOONLIGHT * atmosphere::PAPER_WHITE];
         }
         if rt.any() {
@@ -5713,6 +5711,10 @@ impl Renderer {
         });
         if let Some(timer) = &mut self.gpu_timer {
             timer.begin(&mut encoder);
+        }
+        if rt.aldhani[0] >= 0.0 {
+            self.aldhani
+                .run(&self.device, &mut self.uploads, &mut encoder, rt.aldhani[0]);
         }
         // With Linear Light the world, the hand and the screen effects draw into the scene of the
         // target's size (the window or an eye), tone mapped onto the target under the HUD.
