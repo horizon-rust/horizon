@@ -11730,6 +11730,7 @@ impl Game<'_> {
             KeyCode::Slash if self.screen == Screen::Playing => self.open_chat("/"),
             KeyCode::F1 => self.toggle_hide_gui(),
             KeyCode::F11 => self.toggle_fullscreen(),
+            KeyCode::F2 if self.modifiers.shift_key() => self.record_video(),
             KeyCode::F2 => self.take_screenshot(),
             KeyCode::F5 if self.screen == Screen::Playing => self.cycle_camera(),
             KeyCode::KeyE

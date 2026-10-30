@@ -31,6 +31,7 @@ const HELP: &[&str] = &[
     "fill X1 Y1 Z1 X2 Y2 Z2 BLOCK   set a box of loaded blocks",
     "resume                         leave the pause menu",
     "screenshot PATH                write the next frame as PNG",
+    "record SECONDS DIR             record RT lighting's HDR video (half size) into DIR",
     "chat TEXT                      send a chat line or /command as if typed",
     "type TEXT                      type into the open chat box (key enter tap sends)",
     "chat-log [N]                   the newest N chat messages (default 10)",
@@ -588,6 +589,24 @@ impl Game<'_> {
                 renderer.screenshot = Some(path.trim().into());
                 self.pending_screenshot = Some(reply.clone());
                 Ok(None)
+            }
+            "record" => {
+                let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
+                let seconds: f32 = arg(1)?.parse().map_err(|_| "SECONDS: a number")?;
+                arg(2)?;
+                // The rest of the line: a path may hold spaces.
+                let rest = line
+                    .trim_start()
+                    .strip_prefix("record")
+                    .unwrap_or("")
+                    .trim_start();
+                let dir = rest
+                    .split_once(char::is_whitespace)
+                    .map_or("", |(_, d)| d.trim());
+                renderer
+                    .start_recording(dir.into(), seconds)
+                    .map_err(|e| e.to_string())?;
+                ok()
             }
             "chat" => {
                 let text = line.trim_start().strip_prefix("chat").unwrap_or("").trim();

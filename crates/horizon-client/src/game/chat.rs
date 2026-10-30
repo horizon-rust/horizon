@@ -932,6 +932,31 @@ impl Game<'_> {
         renderer.screenshot = Some(path.clone());
         self.ui.screenshot_message = Some(path);
     }
+    /// Shift+F2: four seconds of RT lighting's HDR video (gfx/capture.rs) into a folder of
+    /// `screenshots/` named as a screenshot would be.
+    pub(super) fn record_video(&mut self) {
+        let dir = std::env::current_dir()
+            .unwrap_or_default()
+            .join("screenshots");
+        let name = screenshot_name(&dir);
+        let folder = dir.join(name.trim_end_matches(".png"));
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        let text = match renderer.start_recording(folder.clone(), 4.0) {
+            Ok(()) => format!("Recording 4 s of HDR video into {}", folder.display()),
+            Err(e) => format!("Couldn't record a video: {e}"),
+        };
+        let focused = self.screen == Screen::Chat;
+        self.ui.chat.add(
+            &self.gui.atlas,
+            Text::literal(text),
+            None,
+            ChatSource::Client,
+            self.ticks,
+            focused,
+        );
+    }
     /// After a frame: report a finished F2 screenshot in chat.
     pub(super) fn finish_screenshot(&mut self, result: &std::result::Result<[u32; 2], String>) {
         let Some(path) = self.ui.screenshot_message.take() else {
