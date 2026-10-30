@@ -140,8 +140,11 @@ machine can read it in the process list. Horizon keeps it out of argv:
 - `HORIZON_SESSION_FILE` is the same as `--session-file` (development and harnesses).
 - While the game's Splitscreen setting is on (`splitscreen:true` in `horizon-extras.txt`), the
   other signed-in accounts get a session file each too, for splitscreen players to sign in with, listed in `HORIZON_ACCOUNT_SESSIONS` (`[{"name", "uuid", "file"}]`). Each token is renewed
-  first when due; an account that can't be renewed or doesn't own the game is left out, and the
-  game starts all the same.
+  first when due. Accounts whose sessions cannot be provided are listed with `skipped` instead
+  of `file`, with no token. They remain in the picker marked “(Offline)”, with a “Sign in again
+  in the launcher” tooltip; valid sessions have a “Microsoft online” tooltip. The game logs
+  unavailable accounts and still starts. These names can play locally or on offline-mode
+  servers; online-mode servers require a renewed session from the launcher.
 
 ## Online-mode login (game)
 

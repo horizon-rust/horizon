@@ -56,6 +56,7 @@ pub struct SplitProfiles {
     pub names: Vec<String>,
     pub taken: Vec<String>,
     pub accounts: Vec<String>,
+    pub offline_accounts: Vec<String>,
     pub current: Option<String>,
     /// Why the last pick can't play (an online server, an expired sign-in), until the next.
     pub refused: Option<String>,
@@ -163,7 +164,11 @@ impl SplitProfiles {
             let microsoft = self.accounts.contains(name);
             let mut label = name.clone();
             if microsoft {
-                label.push_str(" (Microsoft)");
+                label.push_str(if self.offline_accounts.contains(name) {
+                    " (Offline)"
+                } else {
+                    " (Microsoft)"
+                });
             }
             if self.current.as_ref() == Some(name) {
                 label.push_str(" - you");
@@ -262,6 +267,16 @@ impl SplitProfiles {
         for ([x, y, bw, bh], label, enabled, target) in &buttons {
             let hover = ui::hovered(cursor, *x, *y, *bw, *bh);
             let remove = matches!(target, Target::Remove(_));
+            if hover && let Target::Profile(i) = target {
+                let name = &self.names[*i];
+                if self.accounts.contains(name) {
+                    tip = Some(if self.offline_accounts.contains(name) {
+                        "Sign in again in the launcher".to_owned()
+                    } else {
+                        "Microsoft online".to_owned()
+                    });
+                }
+            }
             let mut text = Text::literal(if remove { "" } else { label });
             if matches!(target, Target::Forget) {
                 text = text.with_color(0xFF5555);
@@ -510,6 +525,22 @@ mod tests {
         assert_eq!(p.take_choice(), Some(Some("Player10".into())));
         press(&mut p, &atlas, "Previous");
         assert!(p.buttons(427.0, 240.0).iter().any(|b| b.1 == "Player4"));
+    }
+
+    #[test]
+    fn unavailable_accounts_are_marked_and_cannot_be_forgotten() {
+        let mut p = SplitProfiles {
+            names: vec!["Cal".into()],
+            accounts: vec!["Cal".into()],
+            offline_accounts: vec!["Cal".into()],
+            ..Default::default()
+        };
+        assert!(!p.editable("Cal"));
+        let buttons = p.buttons(427.0, 240.0);
+        assert!(buttons.iter().any(|b| b.1 == "Cal (Offline)" && b.2));
+        assert!(!buttons.iter().any(|b| b.1 == "Forget Cal"));
+        press(&mut p, &atlas(), "Cal (Offline)");
+        assert_eq!(p.take_choice(), Some(Some("Cal".into())));
     }
 
     #[test]

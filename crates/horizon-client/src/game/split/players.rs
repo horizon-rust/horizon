@@ -113,6 +113,14 @@ impl Split<'_> {
             .iter()
             .find(|a| a.name.eq_ignore_ascii_case(name))
         {
+            None if launcher::unavailable()
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case(name)) =>
+            {
+                Err(format!(
+                    "{name} is offline. Sign in again in the launcher, then restart the game."
+                ))
+            }
             None => Err(ONLINE_ONLY.to_owned()),
             Some(a) if a.expired() => Err(format!(
                 "{name}'s Microsoft sign-in has expired. Sign in again in the launcher, then restart the game."
@@ -165,6 +173,13 @@ impl Split<'_> {
             }
             page.taken = taken.clone();
             page.accounts = accounts.clone();
+            page.offline_accounts = launcher::unavailable();
+            page.offline_accounts.extend(
+                self.accounts
+                    .iter()
+                    .filter(|a| a.expired())
+                    .map(|a| a.name.clone()),
+            );
             page.current = g.name.clone();
         }
     }
@@ -173,7 +188,8 @@ impl Split<'_> {
     fn profile_names(&self) -> Result<(Vec<String>, Vec<String>)> {
         let profiles = Self::folder()?.join("profiles");
         let mut offline = horizon_client::split_profiles::store::names(&profiles)?;
-        let accounts: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
+        let mut accounts: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
+        accounts.extend(launcher::unavailable());
         offline.retain(|n| !accounts.iter().any(|a| a.eq_ignore_ascii_case(n)));
         offline.sort_by_key(|n| n.to_lowercase());
         let mut names = accounts.clone();
@@ -272,6 +288,10 @@ impl Split<'_> {
                     .accounts
                     .iter()
                     .any(|a| a.name.eq_ignore_ascii_case(&name));
+                let signed_in = signed_in
+                    || launcher::unavailable()
+                        .iter()
+                        .any(|a| a.eq_ignore_ascii_case(&name));
                 let hidden = if signed_in
                     || self.taken().iter().any(|n| n.eq_ignore_ascii_case(&name))
                 {

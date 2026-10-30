@@ -1043,13 +1043,15 @@ def scenario_launcher():
                                    'access_token': 'not-a-real-token', 'user_type': 'msa'}))
     session.chmod(0o600)
     os.environ['HORIZON_ACCOUNT_SESSIONS'] = json.dumps(
-        [{'name': 'Ann', 'uuid': '069a79f444e94726a5befca90e38aaf5', 'file': str(session)}])
+        [{'name': 'Ann', 'uuid': '069a79f444e94726a5befca90e38aaf5', 'file': str(session)}, {'name': 'Cal', 'uuid': '00000000000000000000000000000001', 'skipped': 'Sign in again'}])
     g = Game(3, pick=True, seed=lambda home: (home / 'splitscreen/profiles/Bea').mkdir(parents=True))
     try:
         menu = lambda n: g.ctl(n, 'state').get('menu') or {}  # noqa: E731
         g.wait(lambda: menu(2).get('mode') == 'splitscreen-profiles', 'the picker')
-        check('the accounts, then the offline profiles', menu(2).get('profiles'), ['Ann', 'Bea'])
+        check('the accounts, then the offline profiles', menu(2).get('profiles'), ['Ann', 'Cal', 'Bea'])
         check('the account marked', 'Ann (Microsoft)' in g.labels(2), True)
+        check('unavailable account marked offline', 'Cal (Offline)' in g.labels(2), True)
+        check('unavailable account cannot be forgotten', 'Forget Cal' in g.labels(2), False)
         g.ctl(2, 'click-button', 'Ann (Microsoft)')
         g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Ann in the world')
         g.wait(lambda: menu(3).get('mode') == 'splitscreen-profiles', "P3's picker")
@@ -1219,13 +1221,15 @@ def scenario_launcher():
                                    'access_token': 'not-a-real-token', 'user_type': 'msa'}))
     session.chmod(0o600)
     os.environ['HORIZON_ACCOUNT_SESSIONS'] = json.dumps(
-        [{'name': 'Ann', 'uuid': '069a79f444e94726a5befca90e38aaf5', 'file': str(session)}])
+        [{'name': 'Ann', 'uuid': '069a79f444e94726a5befca90e38aaf5', 'file': str(session)}, {'name': 'Cal', 'uuid': '00000000000000000000000000000001', 'skipped': 'Sign in again'}])
     g = Game(3, pick=True, seed=lambda home: (home / 'splitscreen/profiles/Bea').mkdir(parents=True))
     try:
         menu = lambda n: g.ctl(n, 'state').get('menu') or {}  # noqa: E731
         g.wait(lambda: menu(2).get('mode') == 'splitscreen-profiles', 'the picker')
-        check('the accounts, then the offline profiles', menu(2).get('profiles'), ['Ann', 'Bea'])
+        check('the accounts, then the offline profiles', menu(2).get('profiles'), ['Ann', 'Cal', 'Bea'])
         check('the account marked', 'Ann (Microsoft)' in g.labels(2), True)
+        check('unavailable account marked offline', 'Cal (Offline)' in g.labels(2), True)
+        check('unavailable account cannot be forgotten', 'Forget Cal' in g.labels(2), False)
         g.ctl(2, 'click-button', 'Ann (Microsoft)')
         g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Ann in the world')
         g.wait(lambda: menu(3).get('mode') == 'splitscreen-profiles', "P3's picker")

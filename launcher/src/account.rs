@@ -1334,9 +1334,13 @@ fn account_sessions(
         .collect();
     let mut list = Vec::new();
     for account in others {
+        let skipped =
+            |reason: &str| json!({ "name": account.name, "uuid": account.uuid, "skipped": reason });
         let Some(secrets) = secrets_in(store, &account.uuid) else {
+            list.push(skipped("Sign in again in the launcher."));
             continue;
         };
+        let fallback = skipped("Sign in again in the launcher.");
         let before = serde_json::to_string(&secrets).ok();
         let uuid = account.uuid.clone();
         let known = secrets.owns && secrets.minecraft_expires_at > now() + RENEW_BEFORE;
@@ -1363,9 +1367,17 @@ fn account_sessions(
         if let (true, Some(text)) = (after != before, after) {
             let _ = store.set(&uuid, &text);
         }
-        let Some(account) = account else { continue };
-        if let Ok(file) = write_session_file(dir, &account, &secrets) {
-            list.push(json!({ "name": account.name, "uuid": account.uuid, "file": file }));
+        let Some(account) = account else {
+            list.push(if secrets.owns { fallback } else {
+                json!({ "name": fallback["name"], "uuid": uuid, "skipped": "This account needs Minecraft: Java Edition ownership confirmed in the launcher." })
+            });
+            continue;
+        };
+        match write_session_file(dir, &account, &secrets) {
+            Ok(file) => {
+                list.push(json!({ "name": account.name, "uuid": account.uuid, "file": file }))
+            }
+            Err(_) => list.push(fallback),
         }
     }
     if list.is_empty() {

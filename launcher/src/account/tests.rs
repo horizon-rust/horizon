@@ -406,8 +406,17 @@ fn splitscreen_gets_the_other_accounts_that_still_hold() {
     let (key, json) = &env[0];
     assert_eq!(*key, "HORIZON_ACCOUNT_SESSIONS");
     let list: Vec<Value> = serde_json::from_str(json).unwrap();
-    assert_eq!(list.len(), 1);
+    assert_eq!(list.len(), 3);
     assert_eq!(list[0]["name"], "Bea");
+    assert_eq!(list[1]["name"], "Cal");
+    assert!(list[1]["skipped"]
+        .as_str()
+        .unwrap()
+        .contains("Sign in again"));
+    assert!(list[1].get("file").is_none());
+    assert_eq!(list[2]["name"], "Dan");
+    assert!(list[2]["skipped"].as_str().unwrap().contains("ownership"));
+    assert!(!json.contains("access_token") && !json.contains("dan-token"));
     let file = std::fs::read_to_string(list[0]["file"].as_str().unwrap()).unwrap();
     assert!(file.contains("bea-token") && !file.contains("mc-token"));
     let _ = std::fs::remove_dir_all(&dir);
