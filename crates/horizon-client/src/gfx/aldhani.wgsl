@@ -65,26 +65,52 @@ fn aldhani_tile(d: vec3<f32>) -> u32 {
     let c = min(vec2<u32>(max(q, vec2(0.0)) * f32(ALDHANI_TILES)), vec2(ALDHANI_TILES - 1u));
     return c.y * ALDHANI_TILES + c.x;
 }
+// The colours of the show's frame, in light (ALDHANI_PALETTE), by patches of sky rather than
+// meteor by meteor (neighbours there differ by some 10 degrees of hue), richer than the frame.
+// `around` and `theta` are where a meteor lights up about the radiant (0 east, pi west). The cold
+// ones there, from green through turquoise and cyan to blue and violet, drifting slowly across the
+// sky (`u` a meteor's own draw, 0.5 the patch's own colour):
+fn aldhani_cold(around: f32, theta: f32, u: f32) -> vec3<f32> {
+    let drift = 0.5 + 0.35 * sin(1.9 * around + 4.0 * theta + 1.0) + 0.25 * sin(3.7 * around - 6.0 * theta);
+    let h = clamp(drift + 0.2 * (u - 0.5), 0.0, 1.0);
+    var cold = mix(vec3(0.25, 1.0, 0.3), vec3(0.0, 1.0, 0.6), smoothstep(0.0, 0.3, h));
+    cold = mix(cold, vec3(0.0, 0.75, 1.0), smoothstep(0.35, 0.65, h));
+    cold = mix(cold, vec3(0.25, 0.4, 1.0), smoothstep(0.62, 0.78, h));
+    return mix(cold, vec3(0.62, 0.25, 1.0), smoothstep(0.8, 0.95, h));
+}
+// The warm ones there, gold, orange and rose:
+fn aldhani_warm(around: f32, theta: f32) -> vec3<f32> {
+    let warm = 0.5 + 0.5 * sin(6.0 * theta + 2.0 * around);
+    let gold = mix(vec3(1.0, 0.72, 0.12), vec3(1.0, 0.35, 0.1), smoothstep(0.0, 0.5, warm));
+    return mix(gold, vec3(1.0, 0.25, 0.6), smoothstep(0.5, 1.0, warm));
+}
+// And their share there: a few everywhere and many on the west (the right, facing the radiant).
+fn aldhani_warmth(around: f32) -> f32 {
+    let west = smoothstep(0.2, 1.0, -cos(around));
+    return 0.08 + 0.5 * west * west;
+}
 // The sky's own light toward `d` during the event (`t` seconds in), in paper whites: the glow the
-// thousands of meteors too far and faint to tell apart make, a pale cyan sky brightest toward the
-// radiant and pinkish grey on its west side, and the eye itself, a bright glow on the horizon
-// around the radiant, whitish cyan on its east side and pink-white on its west. ALDHANI_PALETTE:
-// the colours are the show's (Andor, "The Eye"), no spectrum is known for it.
+// thousands of meteors too far and faint to tell apart make, brightest toward the radiant, in the
+// colours of the streaks of its patch of sky (their mix: the patch's cold colour and its share of
+// warm ones), a little paler (so many of them blend), and the eye itself, a bright glow on the
+// horizon around the radiant, white-hot in its middle.
 fn aldhani_glow(d: vec3<f32>, t: f32) -> vec3<f32> {
     let strength = aldhani_envelope(t);
     if strength <= 0.0 { return vec3(0.0); }
     let c = clamp(dot(d, ALDHANI_RADIANT), -1.0, 1.0);
     let theta = acos(c);
     let up = max(d.y, 0.0);
-    let east = d.x / max(sin(theta), 1e-3);
+    let east = normalize(cross(vec3(0.0, 1.0, 0.0), ALDHANI_RADIANT));
+    let around = abs(atan2(dot(d, cross(ALDHANI_RADIANT, east)), dot(d, east)));
+    let mixed = mix(aldhani_cold(around, theta, 0.5), aldhani_warm(around, theta), aldhani_warmth(around));
+    let pale = mix(mixed, vec3(dot(mixed, vec3(0.2126, 0.7152, 0.0722))), 0.25);
+    let tint = pale * (0.8 / dot(pale, vec3(0.2126, 0.7152, 0.0722)));
     // The sky: the faint meteors everywhere, thicker toward the radiant's half of the sky.
-    let tint = mix(vec3(0.2, 0.95, 0.8), vec3(1.0, 0.55, 0.75), 0.75 * smoothstep(-0.2, 0.9, -east));
     let sky = tint * (3.5 * (0.35 + 0.65 * (0.5 + 0.5 * c)) * (0.55 + 0.45 * exp(-up * 2.0)));
-    // The eye: a few degrees of white-hot core in a wide glow, its sides two colours.
-    let side = mix(vec3(0.1, 0.95, 0.8), vec3(1.0, 0.5, 0.78), smoothstep(-0.7, 0.7, -east));
+    // The eye: a few degrees of white-hot core in a wide glow.
     let core = exp(-theta * theta / (2.0 * 0.08 * 0.08));
     let wide = exp(-theta / 0.25) * (0.4 + 0.6 * exp(-up / 0.15));
-    let eye = side * (8.0 * wide) + mix(side, vec3(1.0), 0.6) * (60.0 * core);
+    let eye = tint * (8.0 * wide) + mix(tint, vec3(1.0), 0.6) * (60.0 * core);
     // Under the horizon the ground hides it (the rays see the ground there).
     let above = smoothstep(-0.06, 0.0, d.y);
     return (sky + eye) * (ALDHANI_GLOW * strength * above);
@@ -98,31 +124,10 @@ struct Params {
 @group(0) @binding(1) var<storage, read_write> field: AldhaniField;
 // Each tile's count, then its list of meteors (ALDHANI_TILE_CAP a tile).
 @group(0) @binding(2) var<storage, read_write> tiles: array<atomic<u32>>;
-// The colours of the show's frame, in light (ALDHANI_PALETTE), by patches of sky rather than
-// meteor by meteor (neighbours there differ by some 10 degrees of hue), richer than the frame:
-// the cold ones from green through turquoise and cyan to blue, drifting slowly across the sky,
-// and the warm ones, gold, orange and rose, a few everywhere and many on the west (the right,
-// facing the radiant). `around` and `theta` are where it lights up about the radiant (0 east, pi
-// west), `u` and `v` its own draws.
+// A meteor's colour (`u` and `v` its own draws): its patch of sky's, warm or cold.
 fn palette(around: f32, theta: f32, u: f32, v: f32) -> vec3<f32> {
-    let drift = 0.5 + 0.35 * sin(1.9 * around + 4.0 * theta + 1.0) + 0.25 * sin(3.7 * around - 6.0 * theta);
-    let h = clamp(drift + 0.2 * (u - 0.5), 0.0, 1.0);
-    let green = vec3(0.25, 1.0, 0.3);
-    let turquoise = vec3(0.0, 1.0, 0.6);
-    let cyan = vec3(0.0, 0.75, 1.0);
-    let blue = vec3(0.25, 0.4, 1.0);
-    var cold = mix(green, turquoise, smoothstep(0.0, 0.3, h));
-    cold = mix(cold, cyan, smoothstep(0.35, 0.65, h));
-    cold = mix(cold, blue, smoothstep(0.7, 1.0, h));
-    let west = smoothstep(0.2, 1.0, -cos(around));
-    if v < 0.08 + 0.5 * west * west {
-        let warm = 0.5 + 0.5 * sin(6.0 * theta + 2.0 * around);
-        let gold = vec3(1.0, 0.72, 0.12);
-        let orange = vec3(1.0, 0.35, 0.1);
-        let rose = vec3(1.0, 0.25, 0.6);
-        return mix(mix(gold, orange, smoothstep(0.0, 0.5, warm)), rose, smoothstep(0.5, 1.0, warm));
-    }
-    return cold;
+    if v < aldhani_warmth(around) { return aldhani_warm(around, theta); }
+    return aldhani_cold(around, theta, u);
 }
 const EARTH_KM: f32 = 6371.0;
 // The meteor of slot `slot` (slots of `period` seconds from the event's start), `t` seconds into

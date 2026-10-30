@@ -405,26 +405,52 @@ fn aldhani_tile(d: vec3<f32>) -> u32 {
     let c = min(vec2<u32>(max(q, vec2(0.0)) * f32(ALDHANI_TILES)), vec2(ALDHANI_TILES - 1u));
     return c.y * ALDHANI_TILES + c.x;
 }
+// The colours of the show's frame, in light (ALDHANI_PALETTE), by patches of sky rather than
+// meteor by meteor (neighbours there differ by some 10 degrees of hue), richer than the frame.
+// `around` and `theta` are where a meteor lights up about the radiant (0 east, pi west). The cold
+// ones there, from green through turquoise and cyan to blue and violet, drifting slowly across the
+// sky (`u` a meteor's own draw, 0.5 the patch's own colour):
+fn aldhani_cold(around: f32, theta: f32, u: f32) -> vec3<f32> {
+    let drift = 0.5 + 0.35 * sin(1.9 * around + 4.0 * theta + 1.0) + 0.25 * sin(3.7 * around - 6.0 * theta);
+    let h = clamp(drift + 0.2 * (u - 0.5), 0.0, 1.0);
+    var cold = mix(vec3(0.25, 1.0, 0.3), vec3(0.0, 1.0, 0.6), smoothstep(0.0, 0.3, h));
+    cold = mix(cold, vec3(0.0, 0.75, 1.0), smoothstep(0.35, 0.65, h));
+    cold = mix(cold, vec3(0.25, 0.4, 1.0), smoothstep(0.62, 0.78, h));
+    return mix(cold, vec3(0.62, 0.25, 1.0), smoothstep(0.8, 0.95, h));
+}
+// The warm ones there, gold, orange and rose:
+fn aldhani_warm(around: f32, theta: f32) -> vec3<f32> {
+    let warm = 0.5 + 0.5 * sin(6.0 * theta + 2.0 * around);
+    let gold = mix(vec3(1.0, 0.72, 0.12), vec3(1.0, 0.35, 0.1), smoothstep(0.0, 0.5, warm));
+    return mix(gold, vec3(1.0, 0.25, 0.6), smoothstep(0.5, 1.0, warm));
+}
+// And their share there: a few everywhere and many on the west (the right, facing the radiant).
+fn aldhani_warmth(around: f32) -> f32 {
+    let west = smoothstep(0.2, 1.0, -cos(around));
+    return 0.08 + 0.5 * west * west;
+}
 // The sky's own light toward `d` during the event (`t` seconds in), in paper whites: the glow the
-// thousands of meteors too far and faint to tell apart make, a pale cyan sky brightest toward the
-// radiant and pinkish grey on its west side, and the eye itself, a bright glow on the horizon
-// around the radiant, whitish cyan on its east side and pink-white on its west. ALDHANI_PALETTE:
-// the colours are the show's (Andor, "The Eye"), no spectrum is known for it.
+// thousands of meteors too far and faint to tell apart make, brightest toward the radiant, in the
+// colours of the streaks of its patch of sky (their mix: the patch's cold colour and its share of
+// warm ones), a little paler (so many of them blend), and the eye itself, a bright glow on the
+// horizon around the radiant, white-hot in its middle.
 fn aldhani_glow(d: vec3<f32>, t: f32) -> vec3<f32> {
     let strength = aldhani_envelope(t);
     if strength <= 0.0 { return vec3(0.0); }
     let c = clamp(dot(d, ALDHANI_RADIANT), -1.0, 1.0);
     let theta = acos(c);
     let up = max(d.y, 0.0);
-    let east = d.x / max(sin(theta), 1e-3);
+    let east = normalize(cross(vec3(0.0, 1.0, 0.0), ALDHANI_RADIANT));
+    let around = abs(atan2(dot(d, cross(ALDHANI_RADIANT, east)), dot(d, east)));
+    let mixed = mix(aldhani_cold(around, theta, 0.5), aldhani_warm(around, theta), aldhani_warmth(around));
+    let pale = mix(mixed, vec3(dot(mixed, vec3(0.2126, 0.7152, 0.0722))), 0.25);
+    let tint = pale * (0.8 / dot(pale, vec3(0.2126, 0.7152, 0.0722)));
     // The sky: the faint meteors everywhere, thicker toward the radiant's half of the sky.
-    let tint = mix(vec3(0.2, 0.95, 0.8), vec3(1.0, 0.55, 0.75), 0.75 * smoothstep(-0.2, 0.9, -east));
     let sky = tint * (3.5 * (0.35 + 0.65 * (0.5 + 0.5 * c)) * (0.55 + 0.45 * exp(-up * 2.0)));
-    // The eye: a few degrees of white-hot core in a wide glow, its sides two colours.
-    let side = mix(vec3(0.1, 0.95, 0.8), vec3(1.0, 0.5, 0.78), smoothstep(-0.7, 0.7, -east));
+    // The eye: a few degrees of white-hot core in a wide glow.
     let core = exp(-theta * theta / (2.0 * 0.08 * 0.08));
     let wide = exp(-theta / 0.25) * (0.4 + 0.6 * exp(-up / 0.15));
-    let eye = side * (8.0 * wide) + mix(side, vec3(1.0), 0.6) * (60.0 * core);
+    let eye = tint * (8.0 * wide) + mix(tint, vec3(1.0), 0.6) * (60.0 * core);
     // Under the horizon the ground hides it (the rays see the ground there).
     let above = smoothstep(-0.06, 0.0, d.y);
     return (sky + eye) * (ALDHANI_GLOW * strength * above);
@@ -465,13 +491,12 @@ fn aldhani_streak(m: AldhaniMeteor, line: vec4<f32>, d: vec3<f32>, pixel: f32) -
     if r2 > 150.0 || across > ALDHANI_REACH { return vec3(0.0); }
     // Its light fades to nothing ALDHANI_REACH away (the tiles it is binned into).
     let fade = 1.0 - across / ALDHANI_REACH;
-    // Its core whiter than its glow (it burns hottest in its middle).
     let top = max(m.colour.r, max(m.colour.g, m.colour.b));
-    let core = mix(m.colour.rgb, vec3(top), 0.1) * exp(-r2 * 1.4)
+    let core = m.colour.rgb * exp(-r2 * 1.4)
         + m.colour.rgb * (0.03 * exp(-r2 * 0.15) * fade * fade);
     var light = core * (0.15 + 0.85 * along * along);
     // The head's glow, white-hot in its middle.
-    let white = mix(m.colour.rgb, vec3(top), 0.6);
+    let white = mix(m.colour.rgb, vec3(top), 0.3);
     let h2 = dot(d - b, d - b) / (width * width);
     light += white * (m.colour.w * 0.8 * exp(-h2 * 0.6) * fade * fade);
     // Sparkles along the short, bright ones.
@@ -1579,37 +1604,105 @@ fn rt_meteor(d: vec3<f32>, sky: vec3<f32>, pixel: f32) -> vec3<f32> {
     let glare = exp(-dot(sky, vec3(0.2126, 0.7152, 0.0722)) * 60.0);
     return sum * air * (glare * globals.rt_stars.w);
 }
-// The light, in nits, of meteor `m` at the pixel looking toward `d`.
+// The light, in nits, of meteor `m` at the pixel looking toward `d`, `pixel` radians wide: what a
+// long exposure and the eye see. The head is a sharp point, over-exposed, in a soft halo; the trail
+// behind it fades and tapers, green just behind a fast head (the oxygen and magnesium lines) and
+// orange-red further back (sodium, the air's nitrogen); a fragment's flare throws sparks that lag
+// behind the head and drift off the line; the brightest, fast ones leave a persistent train that
+// widens and drifts with the winds at 90 km for seconds. The lines are Gaussian, a pixel wide at
+// least (the eye's own blur, an arcminute, where pixels are smaller: VR, ultrawide), and keep their
+// light as a whole whatever their width, so a thin one stays continuous and steady under the TAA's
+// jitter instead of stair-stepping or shimmering.
 fn meteor_streak(m: Meteor, d: vec3<f32>, pixel: f32) -> vec3<f32> {
-    // It is seen along its great circle: `phi` the angle along it from where it lights up.
+    // It is seen along its great circle: `phi` the angle along it from where it lights up, `across`
+    // the angle off it.
     let wa = dot(m.w, m.a);
     let wv = m.w - wa * m.a;
     let we = length(wv);
     if we < 1e-3 { return vec3(0.0); }
     let e = wv / we;
-    let across = dot(d, cross(m.a, e));
-    if abs(across) > pixel * 10.0 { return vec3(0.0); }
+    let n = cross(m.a, e);
+    let across = dot(d, n);
+    let big = min(m.bright, 8.0);
+    // The band it can light: the halo's and the train's drift's reach.
+    if abs(across) > pixel * (14.0 + 2.5 * big) + 0.004 { return vec3(0.0); }
+    // The width (a Gaussian's sigma): a pixel's at least, the eye's blur where pixels are smaller,
+    // wider when bright; `gain` keeps the light as a whole where the width is not a pixel's.
+    let sigma = max(pixel * (0.62 + 0.04 * big), 0.00025 * (1.0 + 0.1 * big));
+    let gain = 0.62 * pixel / sigma;
+    let s2 = 2.0 * sigma * sigma;
+    let a2 = across * across;
+    // The head: where it is now (gone past the end of its path, its light curve is zero), a point
+    // brighter than the trail, in a halo of a few pixels, more when bright (the glare).
+    let along_h = min(m.time * m.speed, m.span);
+    let x_h = along_h / m.span;
+    let to_h = m.reach * m.a + along_h * m.w;
+    let dh = to_h / length(to_h);
+    let r2 = dot(d - dh, d - dh);
+    let halo_sigma = sigma * (2.5 + 0.25 * big);
+    let head = gain * gain * 2.5 * exp(-r2 / s2)
+        + (0.03 + 0.01 * big) * exp(-r2 / (2.0 * halo_sigma * halo_sigma));
+    var light = mix(meteor_colour(m, x_h), vec3(1.0), 0.5) * (m.power * meteor_curve(m, x_h) * head);
+    // The trail: the glow the head left along the path, fading behind it.
     let phi = atan2(dot(d, e), dot(d, m.a));
     let theta = atan2(we, wa);
     let rest = sin(theta - phi);
-    if phi < 0.0 || phi >= theta || rest < 1e-5 { return vec3(0.0); }
-    let along = m.reach * sin(phi) / rest;
-    if along > m.span { return vec3(0.0); }
-    let x = along / m.span;
-    let age = m.time - along / m.speed;
-    if age < 0.0 { return vec3(0.0); }
-    let curve = meteor_curve(m, x);
-    let glow = 0.07 + 0.03 * min(m.bright, 6.0);
-    // The core is about a pixel wide; a bright one has a soft halo of a few.
-    let core = exp(-across * across / (pixel * pixel * 0.36));
-    let halo = 0.1 * clamp(m.bright / 4.0, 0.0, 1.0) * exp(-across * across / (pixel * pixel * 16.0));
-    var light = meteor_colour(m, x) * (m.power * curve * exp(-age / glow) * (core + halo));
-    // The train of a bright, fast one: faint, green, seconds.
-    let train = clamp((m.speed - 30.0) / 30.0, 0.0, 1.0) * clamp((m.bright - 3.0) / 4.0, 0.0, 1.0);
-    if train > 0.0 {
-        let lasts = 1.2 + 0.35 * m.bright;
-        let wide = exp(-across * across / (pixel * pixel * 2.5));
-        light += vec3(0.25, 1.0, 0.4) * (train * 0.0025 * m.power * sqrt(max(curve, 0.0)) * exp(-age / lasts) * wide);
+    if phi > 0.0 && phi < theta && rest > 1e-5 {
+        let along = m.reach * sin(phi) / rest;
+        let age = m.time - along / m.speed;
+        if along <= m.span && age > 0.0 {
+            let x = along / m.span;
+            let dist = m.reach * sin(theta) / rest;
+            let curve = meteor_curve(m, x);
+            let glow = 0.07 + 0.03 * min(m.bright, 6.0);
+            // Its end at the head, smoothed over a pixel (no stair-step at the tip).
+            let tip = smoothstep(0.0, pixel * dist / m.speed, age);
+            let wake = exp(-age / glow) * tip;
+            // Its colour: the composition's at the head, green just behind a fast one (the oxygen
+            // and magnesium lines), then the ember of sodium and the air's nitrogen.
+            let hot = clamp((m.speed - 18.0) / 45.0, 0.0, 1.0);
+            var colour = meteor_colour(m, x);
+            colour = mix(colour, vec3(0.4, 1.0, 0.55),
+                (0.45 * hot) * clamp(age / (0.5 * glow), 0.0, 1.0) * exp(-age / 0.7));
+            colour = mix(colour, vec3(1.0, 0.42, 0.18), 0.55 * clamp(age / glow - 0.7, 0.0, 1.0));
+            // A pixel wide, widening a little as the wake diffuses; a bright one in a soft halo.
+            let st = sigma * (1.0 + 0.35 * min(age / glow, 2.0));
+            let line = (0.62 * pixel / st) * exp(-a2 / (2.0 * st * st))
+                + 0.03 * clamp(m.bright / 4.0, 0.0, 1.0) * exp(-a2 / (32.0 * sigma * sigma));
+            light += colour * (m.power * curve * wake * line);
+            // The train of a bright, fast one: faint, green (the oxygen line at 557.7 nm), seconds;
+            // it widens as it diffuses, drifts with the winds at 90 km (a pixel or two a second), and
+            // is uneven along its length.
+            let train = clamp((m.speed - 30.0) / 30.0, 0.0, 1.0)
+                * clamp((m.bright - 3.0) / 4.0, 0.0, 1.0);
+            if train > 0.0 {
+                let lasts = 1.2 + 0.35 * m.bright;
+                let drift = (m.comp.w / 0.7 - 0.5) * 0.0012 * age;
+                let off = across - drift;
+                let stt = 2.0 * sigma + 0.0005 * age;
+                let wide = (0.62 * pixel / stt) * exp(-off * off / (2.0 * stt * stt));
+                let wisp = 0.75 + 0.25 * sin(along * (0.9 + m.comp.z) + 6.0 * m.comp.x);
+                light += vec3(0.25, 1.0, 0.4)
+                    * (train * 0.004 * m.power * sqrt(max(curve, 0.0)) * exp(-age / lasts) * wide * wisp);
+            }
+        }
+    }
+    // A fragment's sparks: three pieces thrown at the flare, slower than the body so they lag
+    // behind the head, a pixel or two off the line, orange (sodium, iron), out in a fifth of a second.
+    if m.breaks && m.bright > 1.5 {
+        let age_f = m.time - m.flare_at * m.span / m.speed;
+        if age_f > 0.0 && age_f < 0.6 {
+            for (var k = 0u; k < 3u; k++) {
+                let r1 = fract(m.comp.x * 7.31 + f32(k) * 0.618);
+                let r2k = fract(m.comp.y * 5.17 + f32(k) * 0.618);
+                let along_s = m.flare_at * m.span + m.speed * age_f * (0.55 + 0.35 * r1);
+                let to_s = m.reach * m.a + along_s * m.w;
+                let ds = normalize(to_s / length(to_s) + n * ((r2k - 0.5) * 0.012 * age_f));
+                let q2 = dot(d - ds, d - ds);
+                light += vec3(1.0, 0.65, 0.3) * (m.power * m.flare * 0.12 * exp(-age_f / (0.08 + 0.06 * r1))
+                    * gain * gain * exp(-q2 / s2));
+            }
+        }
     }
     return light;
 }
