@@ -221,8 +221,17 @@ pub enum Action {
         address: String,
     },
 }
+/// `PackSelectionScreen.onFilesDrop`'s dialogs.
+pub enum DropPending {
+    /// `ConfirmScreen(pack.dropConfirm, names)`: yes copies the entries.
+    Confirm(Vec<PathBuf>),
+    /// `AlertScreen(pack.dropRejected.*)`: the entries that were not packs.
+    Rejected(Vec<String>),
+}
 pub struct Title {
     pub mode: Mode,
+    /// A drop waiting for `pack.dropConfirm`, or the entries it refused.
+    pub pending_drop: Option<DropPending>,
     /// `CreateWorldScreen.openCreateWorldScreen`'s `queueLoadScreen`: the
     /// world generation data the Create World screen needs is being read, so
     /// the screen shows `createWorld.preparing` until it is done.
@@ -360,6 +369,7 @@ impl Title {
         let now = std::time::Instant::now();
         Self {
             mode,
+            pending_drop: None,
             preparing: false,
             last_server: String::new(),
             saves,
@@ -1153,6 +1163,7 @@ impl Title {
             }
             screen.draw(batch, atlas, cursor);
             *self.data_packs.borrow_mut() = Some(screen);
+            self.draw_drop(batch, atlas, w, h);
             return;
         }
         if let Some(screen) = self.experiments.borrow().as_ref() {
@@ -2109,12 +2120,161 @@ impl Title {
         if self.data_packs.borrow().is_none() {
             return;
         }
-        let dir = self.pack_dir();
-        if copy_pack(&path, &dir) {
-            self.packs_dirty.set(true);
-        } else {
-            log::warn!("Horizon: {} is not a data pack", path.display());
+        // `onFilesDrop`: the drop is confirmed first; nothing is copied yet.
+        match &mut self.pending_drop {
+            Some(DropPending::Confirm(files)) => files.push(path),
+            _ => self.pending_drop = Some(DropPending::Confirm(vec![path])),
         }
+    }
+
+    /// The drop dialog's box: (title, message, buttons) rects, centred like
+    /// `FrameLayout.centerInRectangle`. `gui.yes`/`gui.no` or one `gui.back`.
+    fn drop_panel(w: f32, h: f32, two: bool) -> ([f32; 4], [[f32; 4]; 2]) {
+        let bw = 100.0;
+        let gap = 4.0;
+        let (bw_total, count) = if two { (bw * 2.0 + gap, 2) } else { (bw, 1) };
+        let title_h = 9.0;
+        let msg_h = 9.0;
+        let pad = 16.0;
+        let box_h = title_h + 8.0 + msg_h + pad + 20.0;
+        let top = h / 2.0 - box_h / 2.0;
+        let by = top + title_h + 8.0 + msg_h + pad;
+        let bx = w / 2.0 - bw_total / 2.0;
+        let mut buttons = [[0.0; 4]; 2];
+        buttons[0] = [bx, by, bw, 20.0];
+        buttons[1] = [bx + if count == 2 { bw + gap } else { 0.0 }, by, bw, 20.0];
+        ([w / 2.0, top, title_h, msg_h], buttons)
+    }
+    /// The drop dialog: `ConfirmScreen`'s title, `MultiLineTextWidget`
+    /// message and buttons, over the pack screen.
+    fn draw_drop(&self, batch: &mut HudBatch, atlas: &HudAtlas, w: f32, h: f32) {
+        let Some(drop) = &self.pending_drop else {
+            return;
+        };
+        let two = matches!(drop, DropPending::Confirm(_));
+        let (title, buttons) = Self::drop_panel(w, h, two);
+        batch.fill(atlas, 0.0, 0.0, w, h, 0xC0_10_10_10);
+        let centered = |batch: &mut HudBatch, text: &str, y: f32, color: u32| {
+            let tw = HudBatch::text_width(atlas, text);
+            batch.text(atlas, text, w / 2.0 - tw / 2.0, y, color, true);
+        };
+        let name = |list: &[String]| list.join(", ");
+        match drop {
+            DropPending::Confirm(files) => {
+                centered(
+                    batch,
+                    &lang::get_or(
+                        "pack.dropConfirm",
+                        "Do you want to add the following packs?",
+                    ),
+                    title[1],
+                    u32::MAX,
+                );
+                let names = Self::drop_names(files);
+                centered(batch, &names, title[1] + 9.0 + 8.0, 0xFF_A0_A0_A0);
+                let yes = lang::get_or("gui.yes", "Yes");
+                let no = lang::get_or("gui.no", "No");
+                for (rect, text) in [(buttons[0], yes), (buttons[1], no)] {
+                    batch.fill(atlas, rect[0], rect[1], rect[2], rect[3], 0xFF_50_50_50);
+                    let tw = HudBatch::text_width(atlas, &text);
+                    batch.text(
+                        atlas,
+                        &text,
+                        rect[0] + (rect[2] - tw) / 2.0,
+                        rect[1] + 6.0,
+                        u32::MAX,
+                        true,
+                    );
+                }
+            }
+            DropPending::Rejected(list) => {
+                centered(
+                    batch,
+                    &lang::get_or("pack.dropRejected.title", "Non-pack entries"),
+                    title[1],
+                    u32::MAX,
+                );
+                centered(
+                    batch,
+                    &lang::get_or(
+                        "pack.dropRejected.message",
+                        "The following entries were not valid packs:",
+                    ),
+                    title[1] + 9.0 + 8.0,
+                    0xFF_A0_A0_A0,
+                );
+                centered(
+                    batch,
+                    &name(list),
+                    title[1] + (9.0 + 8.0) * 2.0,
+                    0xFF_FF_55_55,
+                );
+                let back = lang::get_or("gui.back", "Back");
+                let r = buttons[0];
+                batch.fill(atlas, r[0], r[1], r[2], r[3], 0xFF_50_50_50);
+                let tw = HudBatch::text_width(atlas, &back);
+                batch.text(
+                    atlas,
+                    &back,
+                    r[0] + (r[2] - tw) / 2.0,
+                    r[1] + 6.0,
+                    u32::MAX,
+                    true,
+                );
+            }
+        }
+    }
+    /// A press in the drop dialog.
+    fn press_drop(&mut self, cursor: (f32, f32), size: (f32, f32)) {
+        let two = matches!(self.pending_drop, Some(DropPending::Confirm(_)));
+        let (_, buttons) = Self::drop_panel(size.0, size.1, two);
+        let hit = |r: [f32; 4]| {
+            cursor.0 >= r[0] && cursor.0 < r[0] + r[2] && cursor.1 >= r[1] && cursor.1 < r[1] + r[3]
+        };
+        if two {
+            if hit(buttons[0]) {
+                self.accept_drop();
+            } else if hit(buttons[1]) {
+                self.pending_drop = None;
+            }
+        } else if hit(buttons[0]) {
+            self.pending_drop = None;
+        }
+    }
+    /// Yes in `pack.dropConfirm`: copy the entries that are packs, then list
+    /// the ones that are not (`PackDetector.detectPackResources`).
+    pub fn accept_drop(&mut self) {
+        let Some(DropPending::Confirm(files)) = self.pending_drop.take() else {
+            return;
+        };
+        let dir = self.pack_dir();
+        let mut rejected = Vec::new();
+        let mut copied = false;
+        for path in files {
+            if copy_pack(&path, &dir) {
+                copied = true;
+            } else {
+                rejected.push(
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                );
+            }
+        }
+        if copied {
+            self.packs_dirty.set(true);
+        }
+        if !rejected.is_empty() {
+            self.pending_drop = Some(DropPending::Rejected(rejected));
+        }
+    }
+    /// The names a drop dialog lists, `", "`-joined (`extractPackNames`).
+    fn drop_names(files: &[PathBuf]) -> String {
+        files
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
     /// CreateWorldScreen's More tab asked for a screen: make it.
     fn open_pending_screen(&mut self, atlas: &HudAtlas, size: (f32, f32)) -> bool {
@@ -2167,6 +2327,12 @@ impl Title {
     pub fn press_rules(&mut self, atlas: &HudAtlas, cursor: (f32, f32), size: (f32, f32)) -> bool {
         let size = (size.0.ceil(), size.1.ceil());
         if self.open_pending_screen(atlas, size) {
+            return true;
+        }
+        // `pack.dropConfirm` / `pack.dropRejected` sit over the pack screen
+        // and take the press.
+        if self.pending_drop.is_some() {
+            self.press_drop(cursor, size);
             return true;
         }
         if self.data_packs.borrow().is_some() {
@@ -2264,6 +2430,11 @@ impl Title {
         }
     }
     pub fn escape(&mut self) {
+        // A drop dialog is modal: `shouldCloseOnEsc` of `AlertScreen`, and
+        // the cancel of `pack.dropConfirm`.
+        if self.pending_drop.take().is_some() {
+            return;
+        }
         if self.data_packs.get_mut().take().is_some() {
             return;
         }
