@@ -3901,6 +3901,14 @@ impl Renderer {
             ],
             // Set after the hybrid's structures are made this frame (`hw_update`).
             hw_offset: [0.0; 4],
+            moving: {
+                let mut lights = [[0.0; 4]; shadow_rays::MOVING_LIGHTS];
+                for (to, from) in lights.iter_mut().zip(frame.dynamic_lights) {
+                    *to = *from;
+                }
+                lights
+            },
+            moving_count: frame.dynamic_lights.len().min(shadow_rays::MOVING_LIGHTS),
         }
     }
     /// Whether the frame is drawn in linear light (Linear Light, `tonemap`).

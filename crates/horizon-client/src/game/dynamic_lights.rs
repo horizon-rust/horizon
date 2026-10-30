@@ -10,7 +10,10 @@ impl Game<'_> {
     pub(super) fn gather_dynamic_lights(&mut self, camera: DVec3, alpha: f64) {
         let mut out = std::mem::take(&mut self.dynamic_lights);
         out.clear();
-        if !self.settings.extras.dynamic_lights {
+        // RT lighting traces them whatever the extra (Remix's held light): only the light levels'
+        // dynamic light is the extra's.
+        let rt = self.settings.horizon.rt_lighting && self.settings.horizon.linear_light;
+        if !self.settings.extras.dynamic_lights && !rt {
             self.dynamic_lights = out;
             return;
         }

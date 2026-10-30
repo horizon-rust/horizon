@@ -74,7 +74,12 @@ struct Uniform {
     sun_light: [f32; 4],
     water: [f32; 4],
     hw_offset: [f32; 4],
+    held: [f32; 4],
+    moving: [[f32; 4]; MOVING_LIGHTS],
 }
+
+/// The moving lights the rays light the terrain with at most (`Rays::moving`).
+pub const MOVING_LIGHTS: usize = 8;
 
 /// This frame's rays (`Renderer::ray_traced_shadows`): toward the light and the strength (0: no
 /// shadows); the camera's block (and the Y above the grid's highest block) and its place in it;
@@ -99,6 +104,11 @@ pub struct Rays {
     pub water: [f32; 4],
     /// The camera's offset from the hardware rays' instances' anchor (`HwRays::offset`).
     pub hw_offset: [f32; 4],
+    /// RT lighting's moving lights (a held torch, a burning mob, a dropped lantern: Remix's held
+    /// light and its dynamic lights): camera-relative position and light level, the first
+    /// `moving_count` of them.
+    pub moving: [[f32; 4]; MOVING_LIGHTS],
+    pub moving_count: usize,
 }
 
 impl Rays {
@@ -675,6 +685,8 @@ impl ShadowRays {
             sun_light: rays.sun_light,
             water: rays.water,
             hw_offset: rays.hw_offset,
+            held: [rays.moving_count.min(MOVING_LIGHTS) as f32, 0.0, 0.0, 0.0],
+            moving: rays.moving,
         };
         uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));
         let view = |binding, view| wgpu::BindGroupEntry {

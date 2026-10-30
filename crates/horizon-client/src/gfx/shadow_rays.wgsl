@@ -39,6 +39,11 @@ struct Rt {
     water: vec4<f32>,
     // The camera's offset from the hardware rays' instances' anchor (gfx/hw_rays.rs).
     hw_offset: vec4<f32>,
+    // x: how many of `moving` are set.
+    held: vec4<f32>,
+    // RT lighting's moving lights (a held torch, a burning mob: Remix's held light): camera-relative
+    // position and light level (`moving_light`).
+    moving: array<vec4<f32>, 8>,
 }
 @group(0) @binding(0) var<uniform> rt: Rt;
 @group(0) @binding(1) var depth: texture_depth_2d;
@@ -943,6 +948,54 @@ fn restir_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>, last_at: vec2<i3
     reservoir_out = vec4(r.light, light_key(r.light), bitcast<u32>(r.seen), bitcast<u32>(r.weight));
     return vec4(light, 1.0);
 }
+// The moving lights' light at camera-relative `pos` (normal `n`): one of them drawn each frame by
+// its unshadowed light (RIS over them all), toward a point of a small sphere around it through
+// one shadow ray, weighed by the chance of drawing it. A torch's warm colour; its reach its level
+// in blocks, as the block lights'.
+const MOVING_COLOUR: vec3<f32> = vec3(1.0, 0.62, 0.3);
+fn moving_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>) -> vec3<f32> {
+    let count = min(i32(rt.held.x), 8);
+    if count == 0 { return vec3(0.0); }
+    var sum = 0.0;
+    var chosen = -1;
+    var chosen_p = 0.0;
+    var u = random2(texel, 70u).x;
+    for (var k = 0; k < count; k++) {
+        let p = moving_gain(rt.moving[k], pos, n, vec3(0.0));
+        sum += p;
+        u = fract(u + 0.618034);
+        if p > 0.0 && u * sum < p {
+            chosen = k;
+            chosen_p = p;
+        }
+    }
+    if chosen < 0 { return vec3(0.0); }
+    let light = rt.moving[chosen];
+    let offset = (vec3(random2(texel, 71u), random2(texel, 72u).x) * 2.0 - 1.0) * 0.15;
+    let to = light.xyz + offset - pos;
+    let d = length(to);
+    let l = to / max(d, 1e-4);
+    var through = vec3(0.0);
+    if HW {
+        through = hw_light(pos, l, max(d - 0.1, 0.0));
+    } else {
+        through = vec3(ray(pos, l, LIGHT_BUDGET, max(d - 0.1, 0.0)));
+    }
+    let gain = moving_gain(light, pos, n, offset);
+    // The chosen light's own light times the sum over the chance of drawing it (p / sum).
+    return pow(MOVING_COLOUR, vec3(2.2)) * BLOCK_LIGHT * through * (gain * sum / chosen_p);
+}
+// A moving light's unshadowed light at `pos` (normal `n`), as the block lights' fall off.
+fn moving_gain(light: vec4<f32>, pos: vec3<f32>, n: vec3<f32>, offset: vec3<f32>) -> f32 {
+    let to = light.xyz + offset - pos;
+    let d = length(to);
+    let reach = light.w;
+    if d >= reach || reach <= 0.0 { return 0.0; }
+    let facing = dot(n, to / max(d, 1e-4));
+    if facing <= 0.0 { return 0.0; }
+    let window = 1.0 - (d / reach) * (d / reach);
+    return (reach / 15.0) * window * window * facing / ((1.0 + d) * (1.0 + d));
+}
 // What the rays give the surface depth pixel `p` shows.
 struct Traced {
     // The sun's light reaching it and the light around (r, g), and with RT lighting the sky seen
@@ -1015,7 +1068,8 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         let back = restir_last(pos);
         let sky = restir_gi(lifted, n, texel, back.xy, back.z == 1);
         let blocks = vec4(sky.rgb, select(edge, -1.0, edge < 0.5));
-        let direct = vec4(restir_light(lifted, n, texel, back.xy, back.z == 1).rgb, face_of(n));
+        let direct = vec4(restir_light(lifted, n, texel, back.xy, back.z == 1).rgb
+            + moving_light(lifted, n, texel), face_of(n));
         // What this pixel found, into the radiance cache for the bounce rays of the frames after.
         cache_add(pos, n, sky.rgb + direct.rgb);
         // The sun mask's alpha: the indirect and direct light's luminance squared, its second
