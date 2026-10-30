@@ -8,7 +8,9 @@
 // Schied et al. 2017): the variance of the accumulated light from its first and second moments, so
 // grainy light smooths out and real changes (a contact shadow, the edge of a lit patch) stay.
 // Where the history is short (a surface just uncovered, its moments not yet meaningful) the
-// variance is taken as large, so the filter blurs wider there (ReLAX's history fix).
+// variance is taken as large, so the filter blurs wider there (ReLAX's history fix). On the first
+// pass a pixel far brighter than every neighbour on its face is brought down to them (ReLAX's
+// anti-firefly): one lucky ray toward a bright light would otherwise bloom into a blob.
 struct Params {
     // x: the taps' spacing in pixels, y: 1 on the last pass.
     step: vec4<i32>,
@@ -36,6 +38,8 @@ fn face_in(a: f32) -> f32 {
 }
 // Below this many frames of history the moments say little: the variance is raised instead.
 const SHORT_HISTORY: f32 = 4.0;
+// How many times its brightest neighbour's light a pixel may hold before it counts as a firefly.
+const FIREFLY: f32 = 4.0;
 // The light a tap filters: on the first pass the accumulated indirect light plus the direct.
 fn signal(c: vec4<f32>, q: vec2<i32>, first: bool) -> vec3<f32> {
     if first { return c.rgb + max(textureLoad(direct, q, 0).rgb, vec3(0.0)); }
@@ -55,6 +59,22 @@ const KERNEL: array<f32, 5> = array<f32, 5>(0.0625, 0.25, 0.375, 0.25, 0.0625);
     let first = params.step.x == 1;
     let face = face_in(here.a);
     var light = signal(centre, p, first);
+    if first && d0 >= 0.0 && centre.a >= 0.0 {
+        var brightest = 0.0;
+        for (var y = -1; y <= 1; y++) {
+            for (var x = -1; x <= 1; x++) {
+                if x == 0 && y == 0 { continue; }
+                let q = clamp(p + vec2(x, y), vec2(0), size - 1);
+                let c = textureLoad(input, q, 0);
+                if c.a < 0.0 || textureLoad(mask, q, 0).a < 0.0 { continue; }
+                if abs(face_in(textureLoad(direct, q, 0).a) - face_in(here.a)) > 0.5 { continue; }
+                brightest = max(brightest, luminance(signal(c, q, true)));
+            }
+        }
+        let l = luminance(light);
+        let cap = FIREFLY * brightest + 1e-3;
+        if brightest > 0.0 && l > cap { light *= cap / l; }
+    }
     if d0 >= 0.0 && centre.a >= 0.0 {
         let step = params.step.x;
         let tolerance = 0.03 * d0 + 0.05;

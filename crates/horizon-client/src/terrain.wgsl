@@ -466,7 +466,7 @@ fn rt_material_lit(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, pixel: vec2<f3
     let v = rt_visibility(pos, pixel);
     rt_mirror = rt_reflection(pixel, pos);
     let lit = rt_shade(m, geo, pos, light, v, rt_traced(pixel), rt_sun_colour(pixel, v.x));
-    let f = fog_amount(spherical, cylindrical) * globals.fog_color.a;
+    let f = rt_fade(spherical, cylindrical, pos) * globals.fog_color.a;
     let sky = select(pow(clamp(light.x * 16.0 / 15.0, 0.0, 1.0), 2.0), v.z, v.z >= 0.0);
     // Aerial perspective: the air between the eye and the surface takes some of its light away
     // (blue the most, Rayleigh's) and scatters the sky's toward the eye, so far terrain fades into
@@ -573,6 +573,19 @@ fn lava_fbm(p: vec3<f32>) -> f32 {
         amp *= 0.5;
     }
     return sum;
+}
+// RT lighting's edge of the world, Remix's distance fade (its `viewDistance` mode 3, function 1,
+// noise scale 20, from 87.5 % of the distance to all of it): past the start the surface gives way
+// to the horizon pixel by pixel, where a world-space noise (20 blocks across) is below how far it
+// is into the fade, instead of vanilla's linear fog; the environment's fog (water, lava,
+// blindness) stays vanilla's.
+fn rt_fade(spherical: f32, cylindrical: f32, pos: vec3<f32>) -> f32 {
+    let end = globals.fog.w;
+    let into = linear_fog(cylindrical, end * 0.875, end);
+    let world = pos + globals.rt_camera.xyz;
+    let noise = lava_noise(vec3(world.x, world.y, world.z) / 20.0);
+    let faded = select(0.0, 1.0, into > 0.0 && noise < into);
+    return max(linear_fog(spherical, globals.fog.x, globals.fog.y), faded);
 }
 // The black body's colour from cooler (0) to hotter (1), linear.
 fn lava_blackbody(x: f32) -> vec3<f32> {
@@ -691,7 +704,7 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
     var added = fresnel * reflected + (1.0 - fresnel) * glow;
     var shows = (1.0 - fresnel) * through;
     // The air in front, as for the terrain: it dims both and adds the horizon's light.
-    let f = fog_amount(in.spherical, in.cylindrical) * globals.fog_color.a;
+    let f = rt_fade(in.spherical, in.cylindrical, in.pos) * globals.fog_color.a;
     let toward = normalize(vec3(in.pos.x, 0.0, in.pos.z) + vec3(0.0, 0.05 * length(in.pos.xz), 0.0));
     let horizon = rt_sky(toward) * sky_seen;
     let air = vec3(5.802e-3 + 4.44e-3, 13.558e-3 + 4.44e-3, 33.1e-3 + 4.44e-3);
