@@ -2147,6 +2147,21 @@ impl Mods {
             multiblocks,
         )
     }
+    /// [`Mods::load_for`], with the vtables of the mods compiled into this
+    /// build, by manifest id: a package whose id is in it runs that code,
+    /// the others are content-only ([`Mods::load_native_for`] pairs whole
+    /// paths with vtables instead).
+    pub fn load_for_native(
+        runs: Runs,
+        paths: &[PathBuf],
+        native: Vec<(String, NativeVtable)>,
+        enabled: impl Fn(&str) -> bool,
+        reserved: impl Fn(&str) -> bool,
+        recipes: Option<Arc<crate::machine_recipes::MachineRecipes>>,
+        multiblocks: Option<Arc<crate::multiblocks::Templates>>,
+    ) -> Mods {
+        Mods::load_with(runs, paths, native, enabled, reserved, recipes, multiblocks)
+    }
     /// [`Mods::load_for`]'s body, with `native` the vtables of the mods
     /// compiled into the process, by manifest id: a package whose id is in
     /// it runs that code, the others are content-only.

@@ -30,6 +30,11 @@ horizon-friends = { path = "../horizon-friends" }
 # Horizon mods: sandboxed WebAssembly components, off unless installed and turned on (docs/mods.md).
 # Their runtime is the `mods` feature.
 horizon-mods = { path = "../horizon-mods", default-features = false, features = ["index"] }
+# The cells example pair, compiled into this build for its live verification
+# (feature `mod-cells`): the server half runs where the world does, the
+# client half in the window.
+cells = { path = "../horizon-mod-sdk/examples/cells", optional = true }
+cells-ui = { path = "../horizon-mod-sdk/examples/cells-ui", optional = true }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }
 winit = "0.30.13"
 pollster = "0.4"
@@ -95,6 +100,10 @@ controllers = ["dep:gilrs", "dep:horizon-dualsense", "horizon-client-input/contr
 # On in every release build (release.yml); the tests and probes don't need it.
 # Content mods load without it.
 mods = ["horizon-mods/runtime"]
+# The cells example pair (server half and client half) compiled into this
+# build, for the live verification of the mod system outside the test
+# runners: `cargo build --profile fast -p horizon-client --features mod-cells`.
+mod-cells = ["dep:cells", "dep:cells-ui", "mods"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
 rng-trace = ["horizon-core/rng-trace"]
 

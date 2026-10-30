@@ -381,7 +381,19 @@ impl Game<'_> {
         // The server mods' structures, before any of them starts: each
         // mod's `init` already reads its templates (docs/mods.md).
         let multiblocks = super::multiblocks::multiblocks(&paths, &self.options.resources, runs);
-        let mods = Mods::load_for(runs, &paths, on, vanilla_command, recipes, multiblocks);
+        // The mods compiled into this build (feature `mod-cells`: the cells
+        // example pair, for its live verification): each half runs where its
+        // side does, the server half on the server thread, the client half
+        // in the window — one id, one vtable per role.
+        #[cfg(feature = "mod-cells")]
+        let native = match runs {
+            Runs::Server => vec![("cells".to_string(), cells::__native_mod())],
+            Runs::Client => vec![("cells".to_string(), cells_ui::__native_mod())],
+            Runs::Both => vec![("cells".to_string(), cells::__native_mod())],
+        };
+        #[cfg(not(feature = "mod-cells"))]
+        let native = Vec::new();
+        let mods = Mods::load_for_native(runs, &paths, native, on, vanilla_command, recipes, multiblocks);
         self.mods.mods = mods;
         let chosen = &self.settings.mods;
         self.mods.mods.set_bindings(|id| chosen.keys_of(id));
