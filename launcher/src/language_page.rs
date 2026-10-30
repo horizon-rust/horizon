@@ -18,7 +18,12 @@ impl Launcher {
                     cx.notify();
                 });
             }
-        });
+        })
+        // Languages grow with the translation list: give them the row's full width and
+        // wrap whole choices instead of taking space away from the description.
+        .w_full()
+        .min_w_0()
+        .flex_wrap();
         let said = trf(
             "System follows your computer's language: {language} here. A string not translated \
              yet shows in English.",
@@ -31,5 +36,10 @@ impl Launcher {
             Some(picker.into_any_element()),
             &t,
         )
+        .flex_col()
+        .map(|mut row| {
+            row.style().align_items = Some(gpui::AlignItems::Stretch);
+            row
+        })
     }
 }
