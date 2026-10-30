@@ -1,0 +1,12 @@
+# Target blocks with the eyes (tools/vr_fake_run.py --script, with HORIZON_FAKE_XR_GAZE_STEP=12 in the
+# environment for the Vision Pro's coarse gaze). Until 40 s the gaze isn't valid: the head aims. Then the
+# eyes look down at the ground ahead and sweep across it while the head stays still; capture at
+# 38,42,45,48,51 to see the outline stay on the head's block, then move once per gaze step.
+0   head 0 -30
+40  pose /user/eyes_ext/input/gaze_ext/pose 0 -10
+43  pose /user/eyes_ext/input/gaze_ext/pose 0 -10
+44  pose /user/eyes_ext/input/gaze_ext/pose 25 -10     # left, in two or three steps
+47  pose /user/eyes_ext/input/gaze_ext/pose 25 -10
+48  pose /user/eyes_ext/input/gaze_ext/pose -25 -10    # right
+51  pose /user/eyes_ext/input/gaze_ext/pose -25 -10
+52  head 30 -30                                         # the head turns; the eyes stay right of it

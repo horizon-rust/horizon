@@ -1,0 +1,90 @@
+# Ray tracing test scene (docs/raytracing.md): a 48x48 platform at y = 200 above any world, the same
+# every run, with every case the rays have to get right in view at once. One /command a line,
+# run in order by tools/rt_test_scene.sh (horizon-ctl `command`); blank lines and # are skipped.
+#
+# The floor, and air above it.
+fill -8 199 -8 39 199 39 minecraft:smooth_stone
+fill -8 200 -8 39 207 39 minecraft:air
+fill -8 208 -8 39 215 39 minecraft:air
+# Albedo: the sixteen concretes along z = 0.
+setblock 0 200 0 minecraft:white_concrete
+setblock 1 200 0 minecraft:light_gray_concrete
+setblock 2 200 0 minecraft:gray_concrete
+setblock 3 200 0 minecraft:black_concrete
+setblock 4 200 0 minecraft:brown_concrete
+setblock 5 200 0 minecraft:red_concrete
+setblock 6 200 0 minecraft:orange_concrete
+setblock 7 200 0 minecraft:yellow_concrete
+setblock 8 200 0 minecraft:lime_concrete
+setblock 9 200 0 minecraft:green_concrete
+setblock 10 200 0 minecraft:cyan_concrete
+setblock 11 200 0 minecraft:light_blue_concrete
+setblock 12 200 0 minecraft:blue_concrete
+setblock 13 200 0 minecraft:purple_concrete
+setblock 14 200 0 minecraft:magenta_concrete
+setblock 15 200 0 minecraft:pink_concrete
+# Shapes that cast shadows of their own shape: slabs, stairs, fences, bars, panes, a trapdoor.
+fill 0 200 4 3 200 4 minecraft:stone_slab
+fill 5 200 4 8 200 4 minecraft:oak_stairs
+fill 10 200 4 13 200 4 minecraft:oak_fence
+fill 15 200 4 17 201 4 minecraft:iron_bars
+fill 19 200 4 21 201 4 minecraft:glass_pane
+setblock 23 200 4 minecraft:oak_trapdoor[half=top,open=false]
+# Plants on a grass strip.
+fill 0 199 8 17 199 8 minecraft:grass_block
+fill 0 200 8 5 200 8 minecraft:short_grass
+fill 6 200 8 8 200 8 minecraft:poppy
+fill 9 200 8 11 200 8 minecraft:dandelion
+fill 12 200 8 14 202 8 minecraft:sugar_cane
+fill 15 200 8 17 200 8 minecraft:fern
+# A wall and an overhang: shadows and ambient occlusion beneath.
+fill 20 200 10 30 206 10 minecraft:stone_bricks
+fill 20 206 11 30 206 14 minecraft:stone_bricks
+fill 20 200 11 20 205 14 minecraft:stone_bricks
+# A tree: leaves let light through in part.
+fill 5 200 20 5 204 20 minecraft:oak_log
+fill 3 203 18 7 206 22 minecraft:oak_leaves[persistent=true] keep
+# A glass box, a water pool, a lava pool.
+fill 11 200 17 13 202 19 minecraft:glass hollow
+fill 18 199 18 23 199 23 minecraft:water
+fill 26 199 18 28 199 20 minecraft:lava
+# Light sources in a row: torch, lantern, glowstone, sea lantern, jack o'lantern, redstone torch.
+setblock 2 200 14 minecraft:torch
+setblock 4 200 14 minecraft:lantern
+setblock 6 200 14 minecraft:glowstone
+setblock 8 200 14 minecraft:sea_lantern
+setblock 10 200 14 minecraft:jack_o_lantern
+setblock 12 200 14 minecraft:redstone_torch
+# A closed tunnel lit by one torch on its floor: its falloff and the hard shadow of a wall post.
+fill 30 200 24 38 203 28 minecraft:stone_bricks hollow
+setblock 30 201 26 minecraft:air
+setblock 30 202 26 minecraft:air
+setblock 34 201 25 minecraft:torch
+setblock 34 201 27 minecraft:stone_brick_wall
+# A sealed room with no light in it: it must be black.
+fill -6 200 24 -1 204 29 minecraft:stone_bricks hollow
+# A stained-glass window facing the noon sun, a torch behind it: the light it lets through takes
+# its colours, by day and by night.
+fill 30 200 6 31 203 6 minecraft:red_stained_glass
+fill 32 200 6 33 203 6 minecraft:lime_stained_glass
+fill 34 200 6 35 203 6 minecraft:blue_stained_glass
+setblock 33 200 8 minecraft:torch
+# A pool four blocks deep on sand: the water's depth, reflections and the caustics on its floor.
+fill 13 194 29 20 199 36 minecraft:stone
+fill 14 195 30 19 195 35 minecraft:sand
+fill 14 196 30 19 199 35 minecraft:water
+# A hall lit by many lights (ReSTIR DI): torches, soul torches and redstone torches along its
+# floor, pillars casting their shadows, a lantern on each pillar.
+fill -6 200 31 8 205 38 minecraft:stone_bricks hollow
+setblock -6 201 34 minecraft:air
+setblock -6 202 34 minecraft:air
+fill -4 201 32 6 201 32 minecraft:torch
+fill -4 201 37 6 201 37 minecraft:soul_torch
+setblock -2 201 34 minecraft:redstone_torch
+setblock 4 201 35 minecraft:redstone_torch
+setblock -1 201 34 minecraft:stone_brick_wall
+setblock -1 202 34 minecraft:stone_brick_wall
+setblock -1 203 34 minecraft:lantern
+setblock 3 201 35 minecraft:stone_brick_wall
+setblock 3 202 35 minecraft:stone_brick_wall
+setblock 3 203 35 minecraft:soul_lantern

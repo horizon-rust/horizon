@@ -1,0 +1,909 @@
+// Terrain, sky and outline shaders, ported from the pinned vanilla
+// terrain.vsh/fsh, fog.glsl and sample_lightmap.glsl.
+struct Globals {
+    view_proj: mat4x4<f32>,
+    fog_color: vec4<f32>,
+    // environmental start/end, render-distance start/end
+    fog: vec4<f32>,
+    sky_color: vec4<f32>,
+    // x: sky darkening, y: game time, z: aspect, w: tan(fov/2)
+    misc: vec4<f32>,
+    inverse_view: mat4x4<f32>,
+    sunrise: vec4<f32>,
+    // xyz: sun direction, w: star brightness
+    sun: vec4<f32>,
+    // x: sky fog end, y: cloud fog end, z: dark disc flag
+    fog_ends: vec4<f32>,
+    // Atlas rects (u0, v0, width, height) of end_sky.png and end_portal.png.
+    end_portal_sprites: array<vec4<f32>, 2>,
+    // x: vanilla's GameTime ((game time % 24000 + partial tick) / 24000), z: how many
+    // dynamic_lights are set, w: 1 when the frame is drawn in linear light (scene_rgb)
+    time: vec4<f32>,
+    // Atlas rect of the current destroy stage (read by entity.wgsl).
+    crumbling_sprite: vec4<f32>,
+    outline_params: vec4<f32>,
+    // Horizon Extras' dynamic lights: camera-relative position and level (dynamic_light.rs).
+    dynamic_lights: array<vec4<f32>, 16>,
+    // Ray-traced shadows (gfx/shadow_rays.rs): xyz toward the sun or the moon, w the shadows'
+    // strength (0: no shadows).
+    rt_light: vec4<f32>,
+    // RT lighting (gfx/shadow_rays.rs): the last frame's view projection (clip space from world
+    // space relative to its camera), the camera's move since (xyz; w 1 when that frame's light can
+    // be read; w 2: this frame's, xy the world target's size), and x: the terrain's vertices hold
+    // their tint alone (mesher.rs SHADE_BITS),
+    // y: HORIZON_RT_DEBUG=7, z: the light traced toward is the moon, w: the aerial perspective's
+    // air density (times real air's).
+    rt_prev_view_proj: mat4x4<f32>,
+    rt_motion: vec4<f32>,
+    rt_mode: vec4<f32>,
+    // RT lighting's real sun (gfx/atmosphere.rs): xyz toward the sun, w 1 when the sky table
+    // (`rt_sky`) holds its sky; rgb the light the rays trace toward (the sun's through the
+    // atmosphere, or the moon's), in paper whites, w the sun's angular radius.
+    rt_sun: vec4<f32>,
+    rt_sun_light: vec4<f32>,
+    // RT lighting's stars (terrain.wgsl `vs_rt_star`): w their brightness (vanilla's, 0 by day);
+    // and the real sky's turn (gfx/sky_stars.rs `frame`): world directions from the equatorial
+    // ones, at the latitude the sun's path leans by and the real sidereal time.
+    rt_stars: vec4<f32>,
+    rt_star_frame: mat4x4<f32>,
+    // RT lighting's water: x and y its still and flowing sprite layers, z the time in seconds;
+    // and the camera's place in the world (xyz, wrapped every 4096 blocks), for its waves.
+    rt_water: vec4<f32>,
+    rt_camera: vec4<f32>,
+}
+@group(0) @binding(0) var<uniform> globals: Globals;
+@group(0) @binding(1) var sprites: texture_2d_array<f32>;
+@group(0) @binding(2) var sprite_sampler: sampler;
+@group(0) @binding(3) var lightmap: texture_2d<f32>;
+@group(0) @binding(4) var lightmap_sampler: sampler;
+// Layers past the first array's SPRITE_SPLIT (2048, gfx.rs): mods' sprites.
+@group(0) @binding(5) var sprites_1: texture_2d_array<f32>;
+@group(0) @binding(6) var sprites_2: texture_2d_array<f32>;
+@group(0) @binding(7) var sprites_3: texture_2d_array<f32>;
+@group(0) @binding(8) var sprites_4: texture_2d_array<f32>;
+@group(0) @binding(9) var sprites_5: texture_2d_array<f32>;
+@group(0) @binding(10) var sprites_6: texture_2d_array<f32>;
+@group(0) @binding(11) var sprites_7: texture_2d_array<f32>;
+// RT lighting: this view's light from the last frame (rgb, and the distance in a), from the rays
+// (gfx/shadow_rays.rs); 1x1 without it.
+@group(0) @binding(12) var rt_history: texture_2d<f32>;
+// RT lighting: this frame's light from the light sources, traced (shadow_rays.wgsl `block_mask`):
+// rgb the light, a below 0 where the level's stands in.
+@group(0) @binding(13) var rt_blocks: texture_2d<f32>;
+// RT lighting's sky (gfx/atmosphere.rs): its radiance by azimuth from the sun (0..pi) and
+// elevation, in paper whites.
+@group(0) @binding(14) var rt_sky_view: texture_2d<f32>;
+// RT lighting: this frame's sun reaching the pixel through what tints it (stained glass, water),
+// rgb, all of it 1 (shadow_rays.wgsl `sun_mask`).
+@group(0) @binding(15) var rt_sun_tint: texture_2d<f32>;
+// RT lighting: this frame's depth prepass (the solid terrain alone), for the water to know how
+// deep it is at its pixel.
+@group(0) @binding(16) var rt_depth: texture_depth_2d;
+// How many sprite arrays hold layers (a pipeline constant): 1 for vanilla,
+// which then samples exactly as before.
+override SPRITE_ARRAYS: u32 = 1u;
+override SPRITE_SPLIT: u32 = 2048u;
+fn sprite(uv: vec2<f32>, layer: u32) -> vec4<f32> {
+    if SPRITE_ARRAYS == 1u {
+        return textureSample(sprites, sprite_sampler, uv, i32(layer));
+    }
+    // The array is chosen per fragment: sample with the derivatives taken here.
+    let dx = dpdx(uv);
+    let dy = dpdy(uv);
+    let l = i32(layer % SPRITE_SPLIT);
+    switch layer / SPRITE_SPLIT {
+        case 0u: { return textureSampleGrad(sprites, sprite_sampler, uv, l, dx, dy); }
+        case 1u: { return textureSampleGrad(sprites_1, sprite_sampler, uv, l, dx, dy); }
+        case 2u: { return textureSampleGrad(sprites_2, sprite_sampler, uv, l, dx, dy); }
+        case 3u: { return textureSampleGrad(sprites_3, sprite_sampler, uv, l, dx, dy); }
+        case 4u: { return textureSampleGrad(sprites_4, sprite_sampler, uv, l, dx, dy); }
+        case 5u: { return textureSampleGrad(sprites_5, sprite_sampler, uv, l, dx, dy); }
+        case 6u: { return textureSampleGrad(sprites_6, sprite_sampler, uv, l, dx, dy); }
+        default: { return textureSampleGrad(sprites_7, sprite_sampler, uv, l, dx, dy); }
+    }
+}
+
+struct TerrainOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) @interpolate(flat) layer: u32,
+    @location(2) color: vec4<f32>,
+    @location(3) spherical: f32,
+    @location(4) cylindrical: f32,
+    // The light the face emits, 0 to 15 (mesher.rs's `EMISSION_BITS`).
+    @location(5) @interpolate(flat) emission: u32,
+    // A distant tile's fade (`terrain_fade`): 1 drawn whole.
+    @location(6) @interpolate(flat) fade: f32,
+    // For ray-traced shadows: the sky and block light levels (0..15) the lightmap is read at.
+    @location(7) light: vec2<f32>,
+    // The camera-relative position.
+    @location(9) pos: vec3<f32>,
+    // For RT lighting: the face's tint (its albedo with the sprite's texel).
+    @location(8) tint: vec3<f32>,
+}
+// Horizon Extras' dynamic lights (dynamic_light.rs): the block light, in the vertex's units
+// (16 per level), a vertex at camera-relative `pos` gets from the frame's light sources, one
+// level less per block. time.z of them are set: none when the extra is off, so no loop runs.
+fn dynamic_block_light(pos: vec3<f32>) -> f32 {
+    let count = min(u32(globals.time.z), 16u);
+    var level = 0.0;
+    for (var i = 0u; i < count; i++) {
+        let l = globals.dynamic_lights[i];
+        level = max(level, l.w - distance(pos, l.xyz));
+    }
+    return level * 16.0;
+}
+fn sample_lightmap(sky: f32, block: f32) -> vec4<f32> {
+    let uv = vec2(block, sky) * 16.0;
+    return textureSampleLevel(lightmap, lightmap_sampler,
+        clamp(uv / 256.0 + 0.5 / 16.0, vec2(0.5 / 16.0), vec2(15.5 / 16.0)), 0.0);
+}
+// mesher.rs's TerrainVertex holds the UV in fixed point; the instance's
+// origin.w is the step: 1/32768 per unit for sections (a power of two on an
+// integer below 2^24, so it decodes exactly), 1/32 per block for distant
+// terrain tiles (TerrainVertex::tiled). A distant tile fading in or out
+// (gfx/lod.rs `instance`) has 2 + progress or 4 + progress there instead,
+// with the step of 1/32.
+fn terrain_uv(packed: vec2<u32>, w: f32) -> vec2<f32> {
+    return vec2<f32>(packed) * select(w, 1.0 / 32.0, w >= 1.0);
+}
+// The fade an instance's origin.w gives: below 4 the part of the pattern drawn, from its
+// start (1: all of it); 4 and over, 4 + the part left out, from its start.
+fn terrain_fade(w: f32) -> f32 {
+    if w < 2.0 { return 1.0; }
+    if w < 4.0 { return w - 2.0; }
+    return w;
+}
+// Whether a fragment at `pixel` of a fading tile is drawn: a 4x4 ordered dither, so a tile
+// fading in and the one fading out with the same progress draw opposite pixels.
+fn faded_out(fade: f32, pixel: vec2<f32>) -> bool {
+    let p = vec2<u32>(pixel) & vec2(3u);
+    let bayer = array<u32, 16>(0u, 8u, 2u, 10u, 12u, 4u, 14u, 6u, 3u, 11u, 1u, 9u, 15u, 7u, 13u, 5u);
+    let t = (f32(bayer[p.y * 4u + p.x]) + 0.5) / 16.0;
+    if fade < 4.0 { return t >= fade; }
+    return t < fade - 4.0;
+}
+@vertex fn vs_terrain(
+    @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
+    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
+    @location(5) origin: vec4<f32>) -> TerrainOut {
+    var out = terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz);
+    out.fade = terrain_fade(origin.w);
+    return out;
+}
+// Flat section draws (gfx/flat.rs): one draw per arena page over the frame's
+// index list. A section's vertices fill whole 256-vertex blocks of its page:
+// the block gives its resident slot, the slot its camera-relative origin.
+@group(1) @binding(0) var<storage, read> block_slots: array<u32>;
+@group(1) @binding(1) var<storage, read> slot_origins: array<vec4<f32>>;
+@vertex fn vs_terrain_flat(
+    @builtin(vertex_index) vertex: u32,
+    @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
+    @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
+) -> TerrainOut {
+    let origin = slot_origins[block_slots[vertex >> 8u]];
+    var out = terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz);
+    out.fade = terrain_fade(origin.w);
+    return out;
+}
+fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
+    light: vec2<u32>, origin: vec3<f32>) -> TerrainOut {
+    let pos = position + origin;
+    var out: TerrainOut;
+    out.clip = globals.view_proj * vec4(pos, 1.0);
+    out.uv = uv;
+    out.layer = layer;
+    let block = max(f32(light.y), dynamic_block_light(pos));
+    // With RT lighting the vertex holds its tint alone and its shade, to four bits, in the alpha's
+    // high nibble: vanilla's colour, for where the rays don't reach, is their product.
+    var shade = 1.0;
+    if globals.rt_mode.x > 0.5 {
+        shade = (f32(u32(round(color.a * 255.0)) >> 4u) * 16.0 + 8.0) / 255.0;
+    }
+    out.tint = color.rgb;
+    out.pos = pos;
+    out.color = vec4(color.rgb * shade, 1.0) * sample_lightmap(f32(light.x) / 16.0, block / 16.0);
+    out.light = vec2(f32(light.x), block) / 16.0;
+    out.emission = 15u - (u32(round(color.a * 255.0)) & 15u);
+    out.spherical = length(pos);
+    out.cylindrical = max(length(pos.xz), abs(pos.y));
+    out.fade = 1.0;
+    return out;
+}
+fn linear_fog(d: f32, start: f32, end: f32) -> f32 {
+    if d <= start { return 0.0; }
+    if d >= end { return 1.0; }
+    return (d - start) / (end - start);
+}
+// Linear Light (gfx/tonemap.rs): the frame goes to a float scene target in linear light, and a
+// tone mapping takes it to the screen. Shaders still compute vanilla's gamma-space colours and
+// decode them on the way out: a product of gamma values decodes to the product of the decoded
+// ones, so lit surfaces come out as vanilla's, while blending, fog and light sources work in light.
+fn linear_on() -> bool { return globals.time.w > 0.5; }
+fn decode_gamma(rgb: vec3<f32>) -> vec3<f32> { return pow(max(rgb, vec3(0.0)), vec3(2.2)); }
+fn scene_rgb(rgb: vec3<f32>) -> vec3<f32> {
+    if linear_on() { return decode_gamma(rgb); }
+    return rgb;
+}
+// How much brighter than paper white a block that emits `emission` (0..15) shines in linear
+// light: up to 4x for level 15 (lava, glowstone, sea lanterns), 1 for blocks that emit nothing.
+fn emission_gain(emission: u32) -> f32 {
+    let e = f32(emission) / 15.0;
+    return 1.0 + 3.0 * e * e;
+}
+fn fog_amount(spherical: f32, cylindrical: f32) -> f32 {
+    return max(linear_fog(spherical, globals.fog.x, globals.fog.y),
+               linear_fog(cylindrical, globals.fog.z, globals.fog.w));
+}
+fn apply_fog(color: vec4<f32>, spherical: f32, cylindrical: f32) -> vec4<f32> {
+    let f = fog_amount(spherical, cylindrical);
+    return vec4(mix(color.rgb, globals.fog_color.rgb, f * globals.fog_color.a), color.a);
+}
+// A world colour as the frame target takes it: vanilla's, fogged in gamma space; in linear light
+// that decoded (fog distances are tuned for gamma-space mixing: mixed in light, the fog would
+// thicken), plus what a light source (`gain` > 1) shines beyond paper white, under the same fog.
+fn scene_color(color: vec4<f32>, gain: f32, spherical: f32, cylindrical: f32) -> vec4<f32> {
+    let fogged = apply_fog(color, spherical, cylindrical);
+    if !linear_on() { return fogged; }
+    let f = fog_amount(spherical, cylindrical) * globals.fog_color.a;
+    let extra = decode_gamma(color.rgb) * ((gain - 1.0) * (1.0 - f));
+    return vec4(decode_gamma(fogged.rgb) + extra, color.a);
+}
+// Ray-traced shadows (gfx/shadow_rays.rs): a face the sun does not reach keeps this much of its sky
+// light level, and all its block light.
+const SHADOW_SKY: f32 = 0.55;
+// With Linear Light the frame's alpha (free then) is half the share of the pixel's light it keeps
+// in the shadow: under 0.5 for solid terrain, 1 for everything else (entities, the hand, the sky),
+// so the tone mapping darkens only terrain with the rays' mask (gfx/tonemap.wgsl).
+// `light` is the sky and block light levels, `emission` the light the face emits.
+fn sun_share(light: vec2<f32>, emission: u32) -> f32 {
+    if emission > 0u { return 1.0; }
+    let lit = sample_lightmap(light.x, light.y).rgb;
+    let dark = sample_lightmap(light.x * SHADOW_SKY, light.y).rgb;
+    let y = vec3(0.2126, 0.7152, 0.0722);
+    return clamp(pow(dot(dark, y) / max(dot(lit, y), 1e-4), 2.2), 0.0, 1.0);
+}
+// RT lighting: what the rays found here last frame (x the sun's visibility, y the light around, z
+// the sky seen, below 0 when no ray got there: past the grid), reprojected into this view's last
+// mask; (1, 1, -1) where none of the four texels around showed this surface (a disocclusion, the
+// view's edge): lit and open for that frame.
+fn rt_visibility(pos: vec3<f32>, pixel: vec2<f32>) -> vec3<f32> {
+    // This frame's rays, traced on the depth prepass (rt_motion.xy the world target's size): the
+    // mask at this very pixel.
+    if globals.rt_motion.w > 1.5 {
+        let size = vec2<f32>(textureDimensions(rt_history));
+        let at = clamp(vec2<i32>(pixel / globals.rt_motion.xy * size), vec2(0), vec2<i32>(size) - 1);
+        return textureLoad(rt_history, at, 0).rgb;
+    }
+    if globals.rt_motion.w < 0.5 { return vec3(1.0, 1.0, -1.0); }
+    let q = pos + globals.rt_motion.xyz;
+    let c = globals.rt_prev_view_proj * vec4(q, 1.0);
+    if c.w <= 0.0 { return vec3(1.0, 1.0, -1.0); }
+    let ndc = c.xy / c.w;
+    if any(abs(ndc) > vec2(1.0)) { return vec3(1.0, 1.0, -1.0); }
+    let size = vec2<f32>(textureDimensions(rt_history));
+    let px = vec2((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y) - 0.5;
+    let base = vec2<i32>(floor(px));
+    let d = length(q);
+    var best = vec3(1.0, 1.0, -1.0);
+    var error = 0.2 + 0.03 * d;
+    for (var i = 0; i < 4; i++) {
+        let at = clamp(base + vec2(i & 1, i >> 1u), vec2(0), vec2<i32>(size) - 1);
+        let h = textureLoad(rt_history, at, 0);
+        let e = abs(h.a - d);
+        if h.a >= 0.0 && e < error {
+            error = e;
+            best = h.rgb;
+        }
+    }
+    return best;
+}
+// RT lighting's sky toward `d` (unit): the atmosphere's light (gfx/atmosphere.rs `sky_view`).
+fn rt_sky(d: vec3<f32>) -> vec3<f32> {
+    let flat = d.xz / max(length(d.xz), 1e-5);
+    let sun = globals.rt_sun.xz / max(length(globals.rt_sun.xz), 1e-5);
+    let azimuth = acos(clamp(dot(flat, sun), -1.0, 1.0)) / 3.14159265;
+    let e = asin(clamp(d.y, -1.0, 1.0)) / 1.5707963;
+    let v = 0.5 + 0.5 * sign(e) * sqrt(abs(e));
+    return textureSampleLevel(rt_sky_view, lightmap_sampler, vec2(azimuth, v), 0.0).rgb;
+}
+// RT lighting: the real sun's disc toward `d`, its radiance limb-darkened (0.53 degrees across,
+// times the Sun Size setting: the angular radius in `rt_sun_light.w`).
+fn rt_sun_disc(d: vec3<f32>) -> vec3<f32> {
+    let radius = globals.rt_sun_light.w;
+    let edge = cos(radius);
+    let c = dot(d, normalize(globals.rt_sun.xyz));
+    if c < edge || globals.rt_sun.y < -0.01 { return vec3(0.0); }
+    let r = clamp((1.0 - c) / (1.0 - edge), 0.0, 1.0);
+    let limb = 1.0 - 0.6 * (1.0 - sqrt(1.0 - r));
+    // The disc's radiance is its light over its solid angle, capped so a frame's few pixels of it
+    // don't flood the tone mapping.
+    let light = select(globals.rt_sun_light.rgb, vec3(0.0), globals.rt_mode.z > 0.5);
+    return min(light * (limb / (3.14159265 * radius * radius)), vec3(200.0));
+}
+// RT lighting: the light sources' traced light at this pixel (`rt_blocks`), this frame's rays only.
+// RT lighting: the sun's colour through stained glass at this pixel (`rt_sun_tint`), divided by the
+// visibility the mask already holds; white without this frame's rays.
+fn rt_sun_colour(pixel: vec2<f32>, visible: f32) -> vec3<f32> {
+    if globals.rt_motion.w < 1.5 { return vec3(1.0); }
+    let size = vec2<f32>(textureDimensions(rt_sun_tint));
+    let at = clamp(vec2<i32>(pixel / globals.rt_motion.xy * size), vec2(0), vec2<i32>(size) - 1);
+    return textureLoad(rt_sun_tint, at, 0).rgb / max(visible, 1e-3);
+}
+fn rt_traced(pixel: vec2<f32>) -> vec4<f32> {
+    if globals.rt_motion.w < 1.5 { return vec4(0.0, 0.0, 0.0, -1.0); }
+    let size = vec2<f32>(textureDimensions(rt_blocks));
+    let at = clamp(vec2<i32>(pixel / globals.rt_motion.xy * size), vec2(0), vec2<i32>(size) - 1);
+    return textureLoad(rt_blocks, at, 0);
+}
+// RT lighting's model: physical light, in linear light and multiples of paper white, on a surface's
+// material (`RtMaterial`) from the rays. Nothing of vanilla's lightmap, its minimum brightness or
+// its shading: a closed tunnel with no light in it is black. Light bouncing off surfaces (global
+// illumination) is to come (docs/raytracing.md); until then a shadow is lit by the sky alone.
+// - The sun (by night the moon): its colour where the rays reach, on the material's normal, as
+//   diffuse light and a GGX specular highlight (Fresnel, Smith visibility); through leaves and
+//   plants by their subsurface scattering.
+// - The sky: its colour as much as the face sees of it, by the rays fanned toward it (z of `v`);
+//   where none got there, the sky light level squared from a dome (all of it on tops, 60 % on
+//   sides, a quarter beneath); diffuse, and reflected as much as Fresnel says.
+// - Light sources (torches, lava, glowstone): traced, each its colour falling off as the inverse
+//   square of the distance with a shadow ray toward it (`traced`, shadow_rays.wgsl `block_light`);
+//   past the grid or on a frame without this frame's rays, warm light from the block light level
+//   (one level a block).
+// - The material's own emission (LabPBR's), added.
+const BLOCK_LIGHT: vec3<f32> = vec3(3.0, 1.9, 0.9);
+// A LabPBR emission of 1, in paper whites.
+const MATERIAL_EMISSION: f32 = 4.0;
+const RT_PI: f32 = 3.14159265;
+// A surface as RT lighting lights it: its albedo (linear), its shading normal (a normal map's, or
+// the face's), its own occlusion, its roughness (GGX alpha's square root), its reflectance at normal
+// incidence, whether it's a metal, how much light scatters through it, and its emission.
+struct RtMaterial {
+    albedo: vec3<f32>,
+    normal: vec3<f32>,
+    ao: f32,
+    roughness: f32,
+    f0: vec3<f32>,
+    metal: f32,
+    subsurface: f32,
+    emission: f32,
+}
+// A face without maps: rough, a dielectric's 4 % reflectance.
+fn rt_plain(albedo: vec3<f32>, n: vec3<f32>) -> RtMaterial {
+    return RtMaterial(decode_gamma(albedo), n, 1.0, 1.0, vec3(0.04), 0.0, 0.0, 0.0);
+}
+// A LabPBR specular texel `s` on albedo `albedo` (linear): red the perceptual smoothness, green the
+// reflectance (230 and up a metal, its albedo then the reflectance), blue porosity up to 64 then
+// subsurface scattering, alpha the emission (255 none).
+fn rt_labpbr(albedo: vec3<f32>, n: vec3<f32>, ao: f32, s: vec4<f32>) -> RtMaterial {
+    let g = round(s.g * 255.0);
+    let metal = select(0.0, 1.0, g >= 230.0);
+    let f0 = select(vec3(s.g), albedo, g >= 230.0);
+    let b = round(s.b * 255.0);
+    let subsurface = select(0.0, (b - 65.0) / 190.0, b >= 65.0);
+    let a = round(s.a * 255.0);
+    let emission = select(a / 254.0, 0.0, a >= 255.0);
+    let roughness = max((1.0 - s.r) * (1.0 - s.r), 0.02);
+    return RtMaterial(albedo, n, ao, roughness, f0, metal, subsurface, emission);
+}
+fn rt_fresnel(f0: vec3<f32>, cosine: f32) -> vec3<f32> {
+    return f0 + (1.0 - f0) * pow(1.0 - clamp(cosine, 0.0, 1.0), 5.0);
+}
+// The material `m` (on a face of normal `geo`, camera-relative `pos`) lit, before the fog; `light`
+// its sky and block light levels (0..1), `v` the rays' visibility, `traced` the light sources'.
+fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: vec3<f32>,
+    traced: vec4<f32>, tint: vec3<f32>) -> vec3<f32> {
+    let n = m.normal;
+    let view = -normalize(pos);
+    let nv = max(dot(n, view), 1e-3);
+    let l = globals.rt_light.xyz;
+    // The real sun's light through the atmosphere, or the moon's (gfx/atmosphere.rs).
+    let sun = globals.rt_sun_light.rgb * globals.rt_light.w * v.x * tint;
+    let diffuse = m.albedo * (1.0 - m.metal);
+    // The sun: lit where the face (not only its normal map) turns to it.
+    let gate = smoothstep(0.0, 0.15, dot(geo, l));
+    let nl = max(dot(n, l), 0.0);
+    let h = normalize(l + view);
+    let nh = max(dot(n, h), 0.0);
+    let alpha = m.roughness * m.roughness;
+    let a2 = alpha * alpha;
+    let dd = nh * nh * (a2 - 1.0) + 1.0;
+    let distribution = a2 / (RT_PI * dd * dd);
+    let k = alpha * 0.5;
+    let visibility = 0.25 / ((nl * (1.0 - k) + k) * (nv * (1.0 - k) + k));
+    let fresnel = rt_fresnel(m.f0, dot(h, view));
+    // Paper white is the light a white diffuse surface facing the sun gives back: the 1/pi of a
+    // Lambertian surface is in the units, the specular lobe takes it back.
+    let specular = fresnel * (distribution * visibility * RT_PI);
+    let direct = (diffuse * (1.0 - fresnel) + specular) * nl * gate;
+    // Through leaves and plants: the light from behind, a third of it out the other side, filtered
+    // by the leaf on its way in and out (its colour twice: a deeper green than its face's).
+    let through = diffuse * m.albedo * m.subsurface * 0.35 * max(dot(-geo, l), 0.0)
+        * (1.0 - gate);
+    // The sky and the light sources: traced (`traced`, the sky's light seen through rays in every
+    // direction, accumulated), or past the grid from the light levels: the sky from where the face
+    // sees most of it, between its normal and the zenith, as much as its sky light level says,
+    // the light sources by the inverse square of the distance the block light level stands for.
+    let sky_level = pow(clamp(light.x * 16.0 / 15.0, 0.0, 1.0), 2.0);
+    let dome = select(mix(0.6, 1.0, n.y), mix(0.6, 0.25, -n.y), n.y < 0.0);
+    let seen = select(sky_level * dome, v.z, v.z >= 0.0);
+    let open = v.y * m.ao;
+    let steps = max(15.0 - light.y * 16.0, 0.0);
+    let level = select(vec3(0.0), BLOCK_LIGHT / ((1.0 + steps) * (1.0 + steps)), light.y > 0.0);
+    let by_level = (rt_sky(normalize(n + vec3(0.0, 1.0, 0.0))) * sky_level * dome + level) * open;
+    let around = mix(by_level, traced.rgb * m.ao, clamp(traced.a, 0.0, 1.0));
+    // Reflected: the sky the way the view bounces off the surface, as much as Fresnel says (the
+    // rougher, the less of it).
+    let ambient_f = rt_fresnel(m.f0, nv) * (1.0 - m.roughness * 0.7);
+    let reflected = rt_sky(reflect(-view, n)) * seen * m.ao * ambient_f;
+    return sun * (direct + through) + diffuse * (1.0 - ambient_f) * around + reflected
+        + m.albedo * m.emission * MATERIAL_EMISSION;
+}
+// RT lighting: material `m`'s linear colour, lit by the model and fogged. The fog scatters the
+// light it gets: the sky's, as much as the surface sees of it (a sealed room's air carries none).
+fn rt_material_lit(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, pixel: vec2<f32>,
+    light: vec2<f32>, spherical: f32, cylindrical: f32) -> vec3<f32> {
+    let v = rt_visibility(pos, pixel);
+    let lit = rt_shade(m, geo, pos, light, v, rt_traced(pixel), rt_sun_colour(pixel, v.x));
+    let f = fog_amount(spherical, cylindrical) * globals.fog_color.a;
+    let sky = select(pow(clamp(light.x * 16.0 / 15.0, 0.0, 1.0), 2.0), v.z, v.z >= 0.0);
+    // Aerial perspective: the air between the eye and the surface takes some of its light away
+    // (blue the most, Rayleigh's) and scatters the sky's toward the eye, so far terrain fades into
+    // the horizon's colour that way and loses its contrast. The air's extinction near the ground
+    // (gfx/atmosphere.rs), times the Aerial Perspective setting (`rt_mode.w`); what it scatters in
+    // tends to the horizon's sky as the distance grows, as much as the surface's air sees the sky.
+    let toward = normalize(vec3(pos.x, 0.0, pos.z) + vec3(0.0, 0.05 * length(pos.xz), 0.0));
+    let horizon = rt_sky(toward);
+    let air = vec3(5.802e-3 + 4.44e-3, 13.558e-3 + 4.44e-3, 33.1e-3 + 4.44e-3);
+    let through = exp(-air * (length(pos) * 0.001 * globals.rt_mode.w));
+    let seen = lit * through + horizon * sky * (1.0 - through);
+    // Past the loaded world's edge (vanilla's distance fog), the horizon alone.
+    return mix(seen, horizon * sky, f);
+}
+// RT lighting's water (terrain.wgsl `rt_water`, shadow_rays_hw.wgsl `hw_tint`): the surface's
+// waves, a few long and short ones crossing, at world `p` (x, z) and `t` seconds: the height and
+// its slopes along x and z; and the caustics they focus on what lies under them, from the
+// surface's curvature (1 on average, bright where the waves gather the light).
+fn water_waves(p: vec2<f32>, t: f32) -> vec3<f32> {
+    let dirs = array<vec2<f32>, 4>(vec2(0.96, 0.28), vec2(-0.51, 0.86), vec2(0.66, -0.75),
+        vec2(-0.2, -0.98));
+    // A calm surface: a slight swell and finer ripples (the slopes stay within a few degrees).
+    let ks = vec4(1.3, 2.9, 6.1, 11.7);
+    let amps = vec4(0.012, 0.006, 0.003, 0.0012);
+    let speeds = vec4(1.1, 1.4, 1.9, 2.6);
+    var out = vec3(0.0);
+    for (var i = 0; i < 4; i++) {
+        let phase = ks[i] * dot(dirs[i], p) - speeds[i] * t;
+        out.x += amps[i] * sin(phase);
+        let slope = amps[i] * ks[i] * cos(phase);
+        out.y += slope * dirs[i].x;
+        out.z += slope * dirs[i].y;
+    }
+    return out;
+}
+fn water_caustics(p: vec2<f32>, t: f32) -> f32 {
+    let dirs = array<vec2<f32>, 4>(vec2(0.96, 0.28), vec2(-0.51, 0.86), vec2(0.66, -0.75),
+        vec2(-0.2, -0.98));
+    let ks = vec4(1.3, 2.1, 3.7, 6.3) * 1.6;
+    let amps = vec4(0.03, 0.018, 0.009, 0.004);
+    let speeds = vec4(1.1, 1.4, 1.9, 2.6);
+    var curvature = 0.0;
+    for (var i = 0; i < 4; i++) {
+        let phase = ks[i] * dot(dirs[i], p) - speeds[i] * t;
+        curvature += amps[i] * ks[i] * ks[i] * sin(phase);
+    }
+    // Soft: the light gathered under a crest, spread under a trough, never all of it gone.
+    let c = clamp(1.0 + curvature * 2.5, 0.35, 2.2);
+    return c * c * 0.85;
+}
+// Pure water's absorption a block (a metre), red most: deep water turns blue-green.
+const WATER_ABSORPTION: vec3<f32> = vec3(0.35, 0.065, 0.025);
+// RT lighting's water, its own look: no texture, waves for its normal; the sky and the sun
+// reflected as Fresnel says (a glint where the sun is); what lies under it seen through its
+// depth, the light lost to the water's absorption (red first) and the water's own blue-green
+// glow scattered toward the eye in its place. The depth: from the surface to the solid terrain
+// behind it at this pixel (`rt_depth`). Then the air in front, as for the terrain.
+fn rt_is_water(layer: u32) -> bool {
+    let l = f32(layer & 0x7fffu);
+    return l == globals.rt_water.x || l == globals.rt_water.y;
+}
+fn rt_bottom(pixel: vec2<f32>, ray: vec3<f32>) -> f32 {
+    if globals.rt_motion.w < 1.5 { return -1.0; }
+    let size = vec2<f32>(textureDimensions(rt_depth));
+    let at = clamp(vec2<i32>(pixel / globals.rt_motion.xy * size), vec2(0), vec2<i32>(size) - 1);
+    let depth = textureLoad(rt_depth, at, 0);
+    if depth <= 0.0 { return -1.0; }
+    // The distance s along `ray` where clip z / w is `depth`.
+    let m = globals.view_proj;
+    let z = vec4(m[0].z, m[1].z, m[2].z, m[3].z);
+    let w = vec4(m[0].w, m[1].w, m[2].w, m[3].w);
+    let s = (z.w - depth * w.w) / (depth * dot(w.xyz, ray) - dot(z.xyz, ray));
+    return s;
+}
+// What the water adds over what lies behind it, and how much of that shows through it, in colour
+// (red absorbed first); its alpha for a blend without colour (`through`'s luminance).
+struct WaterLight {
+    added: vec3<f32>,
+    through: vec3<f32>,
+    alpha: f32,
+}
+fn rt_water(in: TerrainOut, face: vec3<f32>) -> WaterLight {
+    let world = in.pos + globals.rt_camera.xyz;
+    var n = face;
+    if face.y > 0.5 {
+        let w = water_waves(world.xz, globals.rt_water.z);
+        n = normalize(vec3(-w.y, 1.0, -w.z));
+    }
+    let distance = length(in.pos);
+    let ray = in.pos / max(distance, 1e-4);
+    let view = -ray;
+    let nv = max(dot(n, view), 1e-3);
+    let fresnel = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
+    let v = rt_visibility(in.pos, in.clip.xy);
+    let sky_seen = select(pow(clamp(in.light.x * 16.0 / 15.0, 0.0, 1.0), 2.0), max(v.z, 0.0),
+        v.z >= 0.0);
+    let sun = globals.rt_sun_light.rgb * globals.rt_light.w * v.x;
+    // Reflected: the sky that way, and the sun's glint (GGX, a calm surface).
+    var reflected = rt_sky(reflect(ray, n)) * max(sky_seen, 0.15 * v.x);
+    let l = globals.rt_light.xyz;
+    let h = normalize(l + view);
+    let nl = max(dot(n, l), 0.0);
+    let a2 = 0.0004;
+    let nh = max(dot(n, h), 0.0);
+    let dd = nh * nh * (a2 - 1.0) + 1.0;
+    let glint = a2 / (3.14159265 * dd * dd) * 0.25 / max(nl * nv, 1e-3) * nl * 3.14159265;
+    reflected += sun * min(glint, 200.0);
+    // Through the depth: what lies behind dims by the water's absorption, the water's own glow
+    // (the light it scatters toward the eye) in its place.
+    let bottom = rt_bottom(in.clip.xy, ray);
+    let thickness = select(12.0, max(bottom - distance, 0.0), bottom > 0.0);
+    let through = exp(-WATER_ABSORPTION * thickness);
+    let lit = rt_sky(vec3(0.0, 1.0, 0.0)) * sky_seen + sun * max(l.y, 0.0);
+    let glow = lit * vec3(0.012, 0.06, 0.07) * (1.0 - through);
+    var added = fresnel * reflected + (1.0 - fresnel) * glow;
+    var shows = (1.0 - fresnel) * through;
+    // The air in front, as for the terrain: it dims both and adds the horizon's light.
+    let f = fog_amount(in.spherical, in.cylindrical) * globals.fog_color.a;
+    let toward = normalize(vec3(in.pos.x, 0.0, in.pos.z) + vec3(0.0, 0.05 * length(in.pos.xz), 0.0));
+    let horizon = rt_sky(toward) * sky_seen;
+    let air = vec3(5.802e-3 + 4.44e-3, 13.558e-3 + 4.44e-3, 33.1e-3 + 4.44e-3);
+    let air_through = exp(-air * (distance * 0.001 * globals.rt_mode.w)) * (1.0 - f);
+    added = added * air_through + horizon * (1.0 - air_through);
+    shows *= air_through;
+    let alpha = clamp(1.0 - dot(shows, vec3(0.2126, 0.7152, 0.0722)), 0.02, 1.0);
+    return WaterLight(added, shows, alpha);
+}
+// RT lighting: a fragment without maps, its albedo (`albedo`, gamma) lit and fogged.
+fn rt_lit(albedo: vec3<f32>, in: TerrainOut, n: vec3<f32>) -> vec3<f32> {
+    return rt_material_lit(rt_plain(albedo, n), n, in.pos, in.clip.xy, in.light, in.spherical,
+        in.cylindrical);
+}
+// The face's normal toward the camera, from the fragment's position (faces are flat: exact).
+fn face_normal(pos: vec3<f32>) -> vec3<f32> {
+    let n = normalize(cross(dpdx(pos), dpdy(pos)));
+    return select(n, -n, dot(n, pos) > 0.0);
+}
+@fragment fn fs_solid(in: TerrainOut) -> @location(0) vec4<f32> {
+    let n = face_normal(in.pos);
+    // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
+    let texel = sprite(in.uv, in.layer & 0x7fffu);
+    let color = texel * in.color;
+    if (color.a < 0.5 && (in.layer & 0x8000u) == 0u) || faded_out(in.fade, in.clip.xy) { discard; }
+    // RT lighting: the albedo (the texel times the tint) under the model's light, fogged in light.
+    // Light-emitting blocks shine by themselves.
+    if globals.rt_mode.x > 0.5 && linear_on() && in.emission == 0u {
+        // HORIZON_RT_DEBUG=7: the rays' visibility (sun red, light around green).
+        if globals.rt_mode.y > 1.5 {
+            let t = rt_traced(in.clip.xy);
+            return vec4(select(t.rgb, vec3(1.0, 0.0, 1.0), t.a < 0.0), 1.0);
+        }
+        if globals.rt_mode.y > 0.5 {
+            return vec4(max(rt_visibility(in.pos, in.clip.xy), vec3(0.0)), 1.0);
+        }
+        return vec4(rt_lit(texel.rgb * in.tint, in, n), 1.0);
+    }
+    // Alpha 0 tells HDR output (hdr.wgsl) a light-emitting block's bright pixels
+    // may shine. Nothing else reads the frame's alpha.
+    let emissive = select(1.0, 0.0, in.emission > 0u);
+    var out = scene_color(vec4(color.rgb, emissive), emission_gain(in.emission), in.spherical,
+        in.cylindrical);
+    if linear_on() { out.a = 0.5 * sun_share(in.light, in.emission); }
+    return out;
+}
+// RT lighting's depth prepass (gfx.rs `rt_prepass`): the solid terrain's depth alone, with the
+// same alpha test, for this frame's rays to trace from before the world is drawn.
+@fragment fn fs_depth(in: TerrainOut) {
+    let color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
+    if (color.a < 0.5 && (in.layer & 0x8000u) == 0u) || faded_out(in.fade, in.clip.xy) { discard; }
+}
+@fragment fn fs_translucent(in: TerrainOut) -> @location(0) vec4<f32> {
+    let n = face_normal(in.pos);
+    let texel = sprite(in.uv, in.layer & 0x7fffu);
+    let color = texel * in.color;
+    if color.a < 0.01 || faded_out(in.fade, in.clip.xy) { discard; }
+    // RT lighting: water its own way (`rt_water`), glass by the same model as the terrain (the rays
+    // saw what is behind it or the surface).
+    if globals.rt_mode.x > 0.5 && linear_on() && in.emission == 0u {
+        if rt_is_water(in.layer) {
+            let w = rt_water(in, n);
+            return vec4(w.added / w.alpha, w.alpha);
+        }
+        return vec4(rt_lit(texel.rgb * in.tint, in, n), color.a);
+    }
+    return scene_color(color, emission_gain(in.emission), in.spherical, in.cylindrical);
+}
+
+// Sky (SkyRenderer): the 10-vertex sky disc fan at y = 16 (radius 512) in
+// the sky colour with sky fog (sky.fsh: fog 0..FogSkyEnd on the spherical
+// distance, a step at FogSkyEnd on the cylindrical one), evaluated per pixel
+// along the view ray with the fan's interpolated vertex distances; the
+// clear colour (fog colour) elsewhere; the sunrise/sunset fan blended over
+// it; the dark disc (y = -4) below the horizon when the camera is low.
+struct SkyOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) ndc: vec2<f32>,
+}
+@vertex fn vs_sky(@builtin(vertex_index) i: u32) -> SkyOut {
+    let p = vec2(f32(i32(i & 1u) * 4 - 1), f32(i32(i >> 1u) * 4 - 1));
+    var out: SkyOut;
+    out.clip = vec4(p, 0.0, 1.0);
+    out.ndc = p;
+    return out;
+}
+fn view_ray(ndc: vec2<f32>) -> vec3<f32> {
+    return normalize((globals.inverse_view * vec4(ndc.x * globals.misc.z * globals.misc.w,
+        ndc.y * globals.misc.w, -1.0, 0.0)).xyz);
+}
+const PI: f32 = 3.14159265;
+// Interpolated (spherical, cylindrical) distance where the ray meets a disc
+// fan at height y, or negative when it misses.
+fn disc_distance(d: vec3<f32>, y: f32) -> vec2<f32> {
+    if d.y * y <= 0.0 { return vec2(-1.0); }
+    let p = d * (y / d.y);
+    let h = length(p.xz);
+    let phi = atan2(p.z, p.x);
+    let sector = PI / 4.0;
+    let delta = phi - (floor(phi / sector) * sector + sector * 0.5);
+    let edge = 512.0 * cos(sector * 0.5) / cos(delta);
+    if h > edge { return vec2(-1.0); }
+    let s = h / edge;
+    let ay = abs(y);
+    let rim = sqrt(512.0 * 512.0 + y * y);
+    return vec2(ay + s * (rim - ay), ay + s * (512.0 - ay));
+}
+fn sky_fog(color: vec3<f32>, dist: vec2<f32>) -> vec3<f32> {
+    let end = globals.fog_ends.x;
+    let f = max(linear_fog(dist.x, 0.0, end), linear_fog(dist.y, end, end));
+    return mix(color, globals.fog_color.rgb, f * globals.fog_color.a);
+}
+fn rotate_x90(v: vec3<f32>) -> vec3<f32> { return vec3(v.x, -v.z, v.y); }
+// Weight of the fan centre where the ray crosses the sunrise fan (0 when missed).
+fn sunrise_weight(d: vec3<f32>) -> f32 {
+    let alpha = globals.sunrise.a;
+    if alpha <= 0.001 { return 0.0; }
+    // sin(sunAngle) < 0 flips the fan to the other horizon; sun.z = -sin(sunAngle).
+    let flip = select(0.0, 180.0, -globals.sun.z < 0.0);
+    let theta = radians(flip + 90.0);
+    let c = cos(theta);
+    let s = sin(theta);
+    var best = 0.0;
+    let apex = rotate_x90(vec3(-100.0 * s, 100.0 * c, 0.0));
+    for (var i = 0; i < 16; i++) {
+        let a0 = f32(i) * 2.0 * PI / 16.0;
+        let a1 = f32(i + 1) * 2.0 * PI / 16.0;
+        let l0 = vec3(sin(a0) * 120.0, cos(a0) * 120.0, -cos(a0) * 40.0 * alpha);
+        let l1 = vec3(sin(a1) * 120.0, cos(a1) * 120.0, -cos(a1) * 40.0 * alpha);
+        let r0 = rotate_x90(vec3(l0.x * c - l0.y * s, l0.x * s + l0.y * c, l0.z));
+        let r1 = rotate_x90(vec3(l1.x * c - l1.y * s, l1.x * s + l1.y * c, l1.z));
+        // Moller-Trumbore from the origin along d.
+        let e1 = r0 - apex;
+        let e2 = r1 - apex;
+        let pv = cross(d, e2);
+        let det = dot(e1, pv);
+        if abs(det) < 1e-6 { continue; }
+        let tv = -apex;
+        let u = dot(tv, pv) / det;
+        let qv = cross(tv, e1);
+        let v = dot(d, qv) / det;
+        let t = dot(e2, qv) / det;
+        if u >= 0.0 && v >= 0.0 && u + v <= 1.0 && t > 0.0 {
+            best = max(best, 1.0 - u - v);
+        }
+    }
+    return best;
+}
+// The sky's colour along the view ray `d` (a shader pack's sky stage gets it as its input:
+// gfx/native_sky.rs builds that stage from this section).
+fn sky_along_ray(d: vec3<f32>) -> vec3<f32> {
+    var color = globals.fog_color.rgb;
+    let dist = disc_distance(d, 16.0);
+    if dist.x >= 0.0 {
+        color = sky_fog(globals.sky_color.rgb, dist);
+    }
+    let w = sunrise_weight(d);
+    if w > 0.0 {
+        color = mix(color, globals.sunrise.rgb, w * globals.sunrise.a);
+    }
+    return color;
+}
+@fragment fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
+    return vec4(scene_rgb(sky_along_ray(view_ray(in.ndc))), 1.0);
+}
+@fragment fn fs_dark_disc(in: SkyOut) -> @location(0) vec4<f32> {
+    let d = view_ray(in.ndc);
+    let dist = disc_distance(d, -4.0);
+    if dist.x < 0.0 { discard; }
+    return vec4(scene_rgb(sky_fog(vec3(0.0), dist)), 1.0);
+}
+
+// rendertype_lines.vsh: screen-space stroke and camera-space depth separation.
+fn outline_clip(vertex: u32, start: vec3<f32>, end: vec3<f32>, width: f32) -> vec4<f32> {
+    let position = select(start, end, vertex >= 2u);
+    let normal = normalize(end - start);
+    let view_shrink = 1.0 - 1.0 / 256.0;
+    let line_start = globals.view_proj * vec4((position * globals.outline_params.w) * view_shrink, 1.0);
+    let line_end = globals.view_proj * vec4(((position + normal) * globals.outline_params.w) * view_shrink, 1.0);
+    let ndc1 = line_start.xyz / line_start.w;
+    let ndc2 = line_end.xyz / line_end.w;
+    let screen = globals.outline_params.xy;
+    let direction = normalize((ndc2.xy - ndc1.xy) * screen);
+    var offset = vec2(-direction.y, direction.x) * width / screen;
+    if offset.x < 0.0 { offset = -offset; }
+    if vertex % 2u != 0u { offset = -offset; }
+    return vec4((ndc1 + vec3(offset, 0.0)) * line_start.w, line_start.w);
+}
+struct LineOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) spherical: f32,
+    @location(1) cylindrical: f32,
+    @location(2) color: vec4<f32>,
+}
+@vertex fn vs_line(@builtin(vertex_index) vertex: u32,
+    @location(0) start: vec3<f32>, @location(1) end: vec3<f32>,
+    @location(2) argb: vec4<f32>, @location(3) width: f32) -> LineOut {
+    let position = select(start, end, vertex >= 2u);
+    var out: LineOut;
+    out.clip = outline_clip(vertex, start, end, width);
+    out.spherical = length(position);
+    out.cylindrical = max(length(position.xz), abs(position.y));
+    // ARGB in a little-endian u32 reads as B, G, R, A.
+    out.color = argb.zyxw;
+    return out;
+}
+@fragment fn fs_line(in: LineOut) -> @location(0) vec4<f32> {
+    return scene_color(in.color, 1.0, in.spherical, in.cylindrical);
+}
+// Gizmo lines (rendertype_lines with a per-vertex colour and LineWidth in
+// pixels; no layering transform).
+struct DebugLineOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) spherical: f32,
+    @location(1) cylindrical: f32,
+    @location(2) color: vec4<f32>,
+}
+@vertex fn vs_debug_line(@builtin(vertex_index) vertex: u32,
+    @location(0) start: vec3<f32>, @location(1) end: vec3<f32>,
+    @location(2) argb: vec4<f32>, @location(3) width: f32) -> DebugLineOut {
+    let position = select(start, end, vertex >= 2u);
+    let view_shrink = 1.0 - 1.0 / 256.0;
+    let line_start = globals.view_proj * vec4(position * view_shrink, 1.0);
+    let line_end = globals.view_proj * vec4((position + (end - start)) * view_shrink, 1.0);
+    let ndc1 = line_start.xyz / line_start.w;
+    let ndc2 = line_end.xyz / line_end.w;
+    let screen = globals.outline_params.xy;
+    let direction = normalize((ndc2.xy - ndc1.xy) * screen);
+    var offset = vec2(-direction.y, direction.x) * width / screen;
+    if offset.x < 0.0 { offset = -offset; }
+    if vertex % 2u != 0u { offset = -offset; }
+    var out: DebugLineOut;
+    out.clip = vec4((ndc1 + vec3(offset, 0.0)) * line_start.w, line_start.w);
+    out.spherical = length(position);
+    out.cylindrical = max(length(position.xz), abs(position.y));
+    // ARGB in a little-endian u32 reads as B, G, R, A.
+    out.color = argb.zyxw;
+    return out;
+}
+@fragment fn fs_debug_line(in: DebugLineOut) -> @location(0) vec4<f32> {
+    return scene_color(in.color, 1.0, in.spherical, in.cylindrical);
+}
+
+// RT lighting's sky (gfx.rs draws it in place of fs_sky and the dark disc): the atmosphere's
+// (gfx/atmosphere.rs) and the real sun's disc, in light.
+@fragment fn fs_rt_sky(in: SkyOut) -> @location(0) vec4<f32> {
+    let d = view_ray(in.ndc);
+    let sky = rt_sky(d);
+    return vec4(sky + rt_sun_disc(d) + rt_milky_way(d, sky), 1.0);
+}
+// RT lighting's real stars (gfx/sky_stars.rs): the Yale Bright Star Catalogue's 9096 stars down
+// to magnitude 6.5 at their equatorial places, turned to the sky above the latitude the sun's
+// path leans by (`rt_star_frame`), a small quad each added to the sky. Their light by their
+// magnitude, their colour by their temperature; the atmosphere dims and reddens them toward the
+// horizon, the sky's own light outshines them (none by day, the faint ones go first at dusk), and
+// the air above makes them twinkle.
+struct StarOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) corner: vec2<f32>,
+    @location(1) light: vec3<f32>,
+}
+@vertex fn vs_rt_star(@builtin(vertex_index) vertex: u32, @builtin(instance_index) id: u32,
+    @location(0) star: vec4<i32>) -> StarOut {
+    var out: StarOut;
+    out.clip = vec4(0.0, 0.0, 2.0, 1.0);
+    let packed = u32(star.w) & 0xffffu;
+    let magnitude = f32(packed & 255u) / 25.0 - 2.0;
+    let kelvin = f32(packed >> 8u) * 100.0;
+    let d = normalize((globals.rt_star_frame * vec4(vec3<f32>(star.xyz) / 32767.0, 0.0)).xyz);
+    let brightness = globals.rt_stars.w;
+    if brightness <= 0.0 || d.y <= 0.0 { return out; }
+    let sky = rt_sky(d);
+    let glare = exp(-dot(sky, vec3(0.2126, 0.7152, 0.0722)) * 60.0);
+    // Through the air: airmass over the zenith's, more of the blue lost (the stars redden low).
+    let airmass = 1.0 / max(d.y + 0.025, 0.03);
+    let air = exp(-vec3(0.12, 0.18, 0.3) * airmass);
+    let twinkle = 1.0 + 0.3 * sin(globals.time.x * 24000.0 * 1.7 + f32(id) * 1.618)
+        * clamp(airmass * 0.2, 0.1, 1.0);
+    // Paper whites at the quad's middle: a magnitude 0 star 20 (the eye adapted to the night),
+    // each magnitude 2.5 times dimmer.
+    let flux = 20.0 * pow(10.0, -0.4 * magnitude);
+    out.light = star_colour(kelvin) * (flux * brightness * glare * twinkle) * air;
+    if max(out.light.r, max(out.light.g, out.light.b)) < 0.004 { return out; }
+    let corners = array<vec2<f32>, 6>(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0),
+        vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
+    let corner = corners[vertex];
+    let centre = globals.view_proj * vec4(d * 500.0, 1.0);
+    // Two pixels across, a little more for the brightest.
+    let radius = (1.2 + 0.6 * clamp(-magnitude * 0.5 + 0.5, 0.0, 2.0)) * 2.0 / globals.outline_params.xy;
+    out.clip = vec4(centre.xy + corner * radius * centre.w, 0.0, centre.w);
+    out.corner = corner;
+    return out;
+}
+@fragment fn fs_rt_star(in: StarOut) -> @location(0) vec4<f32> {
+    let falloff = exp(-dot(in.corner, in.corner) * 3.0);
+    return vec4(in.light * falloff, 0.0);
+}
+// A blackbody's colour at `kelvin`, normalized (Tanner Helland's fit), in light.
+fn star_colour(kelvin: f32) -> vec3<f32> {
+    let t = clamp(kelvin, 2000.0, 30000.0) / 100.0;
+    var c = vec3(1.0);
+    if t <= 66.0 {
+        c.g = clamp(0.39008158 * log(t) - 0.63184144, 0.0, 1.0);
+        c.b = select(clamp(0.54320679 * log(t - 10.0) - 1.19625409, 0.0, 1.0), 0.0, t <= 19.0);
+    } else {
+        c.r = clamp(1.29293619 * pow(t - 60.0, -0.1332047592), 0.0, 1.0);
+        c.g = clamp(1.12989086 * pow(t - 60.0, -0.0755148492), 0.0, 1.0);
+    }
+    return pow(c, vec3(2.2));
+}
+// The Milky Way, where it is: a faint, uneven band along the galactic plane (its north pole at
+// right ascension 192.86 degrees, declination 27.13 degrees), brighter toward its centre in
+// Sagittarius; the sky's light outshines it like the stars.
+fn rt_milky_way(d: vec3<f32>, sky: vec3<f32>) -> vec3<f32> {
+    let brightness = globals.rt_stars.w;
+    if brightness <= 0.0 || d.y <= 0.0 { return vec3(0.0); }
+    let m = globals.rt_star_frame;
+    let e = vec3(dot(d, m[0].xyz), dot(d, m[1].xyz), dot(d, m[2].xyz));
+    let pole = vec3(-0.8676, -0.1981, 0.4560);
+    let centre = vec3(-0.0548, -0.8734, -0.4838);
+    let b = dot(e, pole);
+    let toward = max(dot(e, centre), 0.0);
+    let grain = rt_milky_noise(e * 9.0) * 0.6 + rt_milky_noise(e * 27.0) * 0.4;
+    let band = exp(-b * b / 0.012) * (0.35 + grain) * (1.0 + 2.5 * toward * toward * toward);
+    let glare = exp(-dot(sky, vec3(0.2126, 0.7152, 0.0722)) * 60.0);
+    let air = exp(-0.2 / max(d.y + 0.025, 0.03));
+    return vec3(0.8, 0.85, 1.0) * (0.006 * band * brightness * glare * air);
+}
+fn rt_milky_noise(p: vec3<f32>) -> f32 {
+    let i = floor(p);
+    let f = p - i;
+    let u = f * f * (3.0 - 2.0 * f);
+    var v = 0.0;
+    for (var k = 0u; k < 8u; k++) {
+        let o = vec3(f32(k & 1u), f32((k >> 1u) & 1u), f32(k >> 2u));
+        let w = select(1.0 - u, u, o > vec3(0.5));
+        let c = vec3<i32>(i + o);
+        var h = u32(c.x) * 73856093u ^ u32(c.y) * 19349663u ^ u32(c.z) * 83492791u;
+        h = (h ^ (h >> 13u)) * 1274126177u;
+        v += w.x * w.y * w.z * f32(h >> 8u) / 16777216.0;
+    }
+    return v;
+}

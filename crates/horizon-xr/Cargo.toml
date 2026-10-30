@@ -1,0 +1,18 @@
+[package]
+name = "horizon-xr"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "EXPERIMENTAL OpenXR for Horizon: a session on the active runtime, rendered through wgpu's Vulkan backend"
+publish = false
+
+[dependencies]
+ash = "0.38"
+log = "0.4"
+openxr = { version = "0.22", default-features = false, features = ["loaded"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "wgsl"] }
+wgpu-hal = { version = "30.0.1", features = ["vulkan"] }
+
+[lints]
+workspace = true
