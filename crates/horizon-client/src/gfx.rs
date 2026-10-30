@@ -4552,10 +4552,14 @@ impl Renderer {
                 .eye
                 .map_or("desktop".to_owned(), |e| format!("eye{}", e.view_index)),
         );
-        gpu_passes::note(|| match (self.eye, self.xr_state.head) {
-            (Some(_), Some((yaw, pitch))) => format!("head {yaw:.0} {pitch:.0}"),
-            _ => String::new(),
-        });
+        // Only the eyes say where the head looks (the frames the game draws for the window between
+        // them have no pose): the windows would start again at every other frame.
+        if let (Some(_), Some((yaw, pitch))) = (self.eye, self.xr_state.head) {
+            // `+ 0.0` turns a rounded -0 into 0: the note must not flicker between the two.
+            gpu_passes::note(|| {
+                format!("head {:.0} {:.0}", yaw.round() + 0.0, pitch.round() + 0.0)
+            });
+        }
         if self.animated_textures {
             self.animate(&mut encoder, frame.ticks);
             self.hud
@@ -6214,7 +6218,10 @@ impl Renderer {
                 );
             }
         }
-        gpu_passes::stamp(&mut encoder, "world: raster (rest of the solid, entities, water)");
+        gpu_passes::stamp(
+            &mut encoder,
+            "world: raster (rest of the solid, entities, water)",
+        );
         // Ray-traced shadows: a ray a pixel of the world's depth, before the resolve (RT lighting
         // traced its rays before the world).
         let hw = self.hw_bindings();

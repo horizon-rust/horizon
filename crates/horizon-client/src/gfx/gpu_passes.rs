@@ -1,7 +1,7 @@
 //! GPU time of each stage of a frame, for finding where a frame's budget goes (the VR budget in
 //! docs/raytracing.md): `HORIZON_GPU_PASSES=1` stamps the GPU's timestamp between the frame's
-//! stages and logs each stage's median every `REPORT` frames, per view (`desktop`, `eye0`,
-//! `eye1`, ...).
+//! stages and logs each stage's median every `WINDOW` frames, per view (`desktop`, `eye1`,
+//! `eye2`, ...).
 //!
 //! A stamp is a timestamp written between two passes: a stage's time is the gap since the last
 //! stamp, so it counts what the GPU drained in it (passes that overlap are charged to the one that
@@ -23,7 +23,7 @@ const SLOTS: usize = 12;
 /// Stamps a frame takes at most.
 const CAPACITY: u32 = 96;
 /// Timed frames each stage's median is taken over, and the number between two reports.
-const WINDOW: usize = 120;
+const WINDOW: usize = 60;
 
 const FREE: u8 = 0;
 const PENDING: u8 = 1;
@@ -59,6 +59,10 @@ struct Profiler {
     views: Vec<(String, History)>,
     /// What the frames being timed show (the VR head's pose): a change starts the windows again.
     note: String,
+    /// Frames begun, read back and thrown away (stamps out of order), for the log's tally.
+    begun: u32,
+    read: u32,
+    dropped: u32,
 }
 
 /// Whether `HORIZON_GPU_PASSES` asks for the stage times.
@@ -110,6 +114,9 @@ pub fn init(device: &wgpu::Device, queue: &wgpu::Queue) {
             period_ns: queue.get_timestamp_period(),
             views: Vec::new(),
             note: String::new(),
+            begun: 0,
+            read: 0,
+            dropped: 0,
         });
         ENABLED.store(true, Ordering::Relaxed);
         log::info!("Horizon: timing the GPU's stages (HORIZON_GPU_PASSES)");
@@ -141,6 +148,15 @@ pub fn begin(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, label: &
     // Frames whose timestamps have arrived are read before a slot is taken.
     let _ = device.poll(wgpu::PollType::Poll);
     p.collect();
+    p.begun += 1;
+    if p.begun % 600 == 0 {
+        log::info!(
+            "GPU stages: {} frames begun, {} read back, {} thrown away (stamps out of order)",
+            p.begun,
+            p.read,
+            p.dropped
+        );
+    }
     let slot = p.next;
     p.current = (p.slots[slot].state.load(Ordering::Acquire) == FREE).then_some(slot);
     let Some(slot) = p.current else { return };
@@ -222,7 +238,9 @@ impl Profiler {
             s.read.unmap();
             s.state.store(FREE, Ordering::Release);
             let ms = |ticks: u64| (ticks as f64 * f64::from(self.period_ns) / 1e6) as f32;
+            self.read += 1;
             if stamps.len() < 2 || stamps.windows(2).any(|w| w[1] < w[0]) {
+                self.dropped += 1;
                 continue;
             }
             let s = &self.slots[slot];

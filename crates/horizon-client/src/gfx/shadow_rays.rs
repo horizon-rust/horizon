@@ -420,14 +420,23 @@ impl ShadowRays {
             module: &shader,
             entry_point: Some("cs_shadow"),
             compilation_options: wgpu::PipelineCompilationOptions {
-                constants: &[(
-                    "DEBUG",
-                    std::env::var("HORIZON_RT_DEBUG")
-                        .ok()
-                        .and_then(|v| v.parse::<u32>().ok())
-                        .filter(|v| *v >= 3)
-                        .map_or(0.0, f64::from),
-                )],
+                constants: &[
+                    (
+                        "DEBUG",
+                        std::env::var("HORIZON_RT_DEBUG")
+                            .ok()
+                            .and_then(|v| v.parse::<u32>().ok())
+                            .filter(|v| *v >= 3)
+                            .map_or(0.0, f64::from),
+                    ),
+                    (
+                        "SKIP",
+                        std::env::var("HORIZON_RT_SKIP")
+                            .ok()
+                            .and_then(|v| v.parse::<u32>().ok())
+                            .map_or(0.0, f64::from),
+                    ),
+                ],
                 ..Default::default()
             },
             cache: None,
