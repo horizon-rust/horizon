@@ -648,7 +648,7 @@ impl ApplicationHandler for Split<'_> {
 
     fn device_event(&mut self, event_loop: &ActiveEventLoop, id: DeviceId, event: DeviceEvent) {
         // Alone: exactly P1's path, as in window_event (no GUI-scale store per mouse motion).
-        if self.compositor.is_none() {
+        if self.surfaces.is_empty() {
             return self.host.device_event(event_loop, id, event);
         }
         if let Some((player, _)) = self.player(self.focus) {
