@@ -96,14 +96,16 @@ fn sample_lightmap(sky: f32, block: f32) -> vec4<f32> {
 // origin.w is the step: 1/32768 per unit for sections (a power of two on an
 // integer below 2^24, so it decodes exactly), 1/32 per block for distant
 // terrain tiles (TerrainVertex::tiled).
-fn terrain_uv(packed: vec2<u32>, step: f32) -> vec2<f32> {
-    return vec2<f32>(packed) * step;
+fn terrain_uv(packed: vec2<u32>, step: f32, layer: u32) -> vec2<f32> {
+    // Close-up greedy faces (mesher::TILED_UV_LAYER) use the block scale of
+    // distant terrain: their UVs repeat the sprite once per block.
+    return vec2<f32>(packed) * select(step, 1.0 / 32.0, (layer & 0x4000u) != 0u);
 }
 @vertex fn vs_terrain(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
     @location(5) origin: vec4<f32>) -> TerrainOut {
-    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz);
+    return terrain_vertex(position, terrain_uv(uv, origin.w, layer), layer, color, light, origin.xyz);
 }
 // Flat section draws (gfx/flat.rs): one draw per arena page over the frame's
 // index list. A section's vertices fill whole 256-vertex blocks of its page:
@@ -116,7 +118,7 @@ fn terrain_uv(packed: vec2<u32>, step: f32) -> vec2<f32> {
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
 ) -> TerrainOut {
     let origin = slot_origins[block_slots[vertex >> 8u]];
-    return terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz);
+    return terrain_vertex(position, terrain_uv(uv, origin.w, layer), layer, color, light, origin.xyz);
 }
 fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
     light: vec2<u32>, origin: vec3<f32>) -> TerrainOut {
@@ -144,7 +146,7 @@ fn apply_fog(color: vec4<f32>, spherical: f32, cylindrical: f32) -> vec4<f32> {
 }
 @fragment fn fs_solid(in: TerrainOut) -> @location(0) vec4<f32> {
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
-    let color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
+    let color = sprite(in.uv, in.layer & 0x3fffu) * in.color;
     if color.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
     // Below 0.75, alpha tells HDR output (hdr.wgsl) a light source's bright
     // pixels may shine, and at which tier (mesher::hdr_tier): 0.525 at the
@@ -153,7 +155,7 @@ fn apply_fog(color: vec4<f32>, spherical: f32, cylindrical: f32) -> vec4<f32> {
     return apply_fog(vec4(color.rgb, emissive), in.spherical, in.cylindrical);
 }
 @fragment fn fs_translucent(in: TerrainOut) -> @location(0) vec4<f32> {
-    let color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
+    let color = sprite(in.uv, in.layer & 0x3fffu) * in.color;
     if color.a < 0.01 { discard; }
     return apply_fog(color, in.spherical, in.cylindrical);
 }

@@ -38,10 +38,22 @@ impl Game<'_> {
     pub(super) fn shader_pack_inputs(&mut self, camera: glam::DVec3, partial: f32) -> PackInputs {
         static DEV_PACK: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
         let dev = DEV_PACK.get_or_init(|| std::env::var("HORIZON_SHADER_PACK").ok());
-        let picked = dev.as_deref().unwrap_or(&self.settings.horizon.shader_pack);
+        let picked = dev
+            .as_deref()
+            .unwrap_or(&self.settings.horizon.shader_pack)
+            .to_owned();
+        // Third-party shader packs receive atlas UVs and expect one sprite
+        // per quad. Close-up greedy quads use repeating array-layer UVs, so
+        // fall back to the ordinary model mesher while any pack is selected.
+        // Rebuild loaded sections when crossing that boundary.
+        let greedy_meshing = picked.is_empty();
+        if self.streaming.greedy_meshing != greedy_meshing {
+            self.streaming.greedy_meshing = greedy_meshing;
+            self.all_sections_changed();
+        }
         if self.native_shaders.picked != picked {
             // Another pack, or none: drop what ran.
-            self.native_shaders = super::native_shaders::NativeShaders::picking(picked);
+            self.native_shaders = super::native_shaders::NativeShaders::picking(&picked);
             self.pack_ids = None;
             if let Some(renderer) = &mut self.renderer {
                 renderer.drop_shader_packs();
@@ -50,7 +62,7 @@ impl Game<'_> {
         if picked.is_empty() {
             return PackInputs::default();
         }
-        let name = picked.to_owned();
+        let name = picked;
         let dimension = match self.dim {
             Dim::Overworld => 0,
             Dim::Nether => -1,
