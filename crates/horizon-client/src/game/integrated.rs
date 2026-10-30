@@ -443,10 +443,13 @@ impl Game<'_> {
             bypasses_limit: Some(Arc::new(move |uuid| {
                 local_players.split_players.lock().unwrap().contains(&uuid)
             })),
-            gate: Some(Arc::new(move |_, uuid, _| {
-                (uuid != owner
-                    && published.published.load(Ordering::Relaxed) == 0
-                    && !published.split_players.lock().unwrap().contains(&uuid))
+            gate: Some(Arc::new(move |address, uuid, _| {
+                refused(
+                    uuid == owner,
+                    published.published.load(Ordering::Relaxed) != 0,
+                    published.split_players.lock().unwrap().contains(&uuid),
+                    address == horizon_client::lan::conn::MEMORY_ADDRESS,
+                )
                 .then(|| translatable("multiplayer.disconnect.not_whitelisted", &[]))
             })),
             // IntegratedServer.initServer: the MOTD names the owner and the world.
@@ -900,8 +903,36 @@ fn server_game(
     Game::new(res, pack, gui, options, settings, audio, None)
 }
 
+/// Who the integrated server turns away: anyone but the owner until it is opened to the LAN,
+/// except a splitscreen seat. A seat's name is let in only through memory, so a LAN player
+/// logging in under it never gets its place or the owner's permissions it holds.
+fn refused(owner: bool, published: bool, split_seat: bool, memory: bool) -> bool {
+    if split_seat {
+        !memory
+    } else {
+        !owner && !published
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_splitscreen_seat_is_let_in_only_through_memory() {
+        // (owner, published, seat, memory)
+        assert!(!refused(false, false, true, true), "a local seat joins");
+        assert!(
+            refused(false, true, true, false),
+            "a LAN player under a seat's name"
+        );
+        assert!(refused(false, false, true, false));
+        assert!(
+            !refused(false, true, false, false),
+            "anyone once open to the LAN"
+        );
+        assert!(refused(false, false, false, false), "nobody else before");
+        assert!(!refused(true, false, false, true), "the owner");
+    }
+
     use super::*;
 
     #[test]

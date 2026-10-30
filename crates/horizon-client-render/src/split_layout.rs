@@ -299,14 +299,16 @@ impl Draft {
         number
     }
 
-    /// Player `i` to `spot`: a new window opens for it; a window it leaves empty closes (not
-    /// Window 1, the game's).
+    /// Player `i` to `spot`: a new window opens for it. A window it leaves empty stays in the
+    /// draft until `drop_empty` (at Apply), so numbers hold still while players move. A window
+    /// number the draft doesn't have is ignored.
     pub fn place_player(&mut self, i: usize, spot: Spot) {
         if i >= self.players.len() {
             return;
         }
         let number = match spot {
-            Spot::Window(n) => n,
+            Spot::Window(n) if self.windows.iter().any(|w| w.number == n) => n,
+            Spot::Window(_) => return,
             Spot::New => self.add_window(),
             Spot::Fill(name) => self.open(Placement::Fill(name)),
         };
@@ -347,33 +349,43 @@ impl Draft {
     /// Where each window would be: its corner on the desktop (`Monitor::desktop`'s units) and its
     /// size in pixels, in `windows` order: free ones where they were (new ones at `main`'s
     /// corner), the others over their monitor; a window over a missing monitor or Window 1's
-    /// (its players play in Window 1, as the game does): `None`.
+    /// (its players play in Window 1, as the game does): `None`. Window 1 always has one: give
+    /// it its real rect (`Free(Some)`); else it is taken as a new window would open.
     pub fn rects(&self, monitors: &[Monitor], main: &str) -> Vec<Option<([i32; 2], [u32; 2])>> {
         let home = monitors
             .iter()
             .find(|m| m.name == main)
             .or(monitors.first());
+        // Centred on Window 1's monitor, as the game opens a new window.
+        let new = |number: u8| {
+            let (at, scale, k) = home.map_or(([0.0; 4], 1.0, 1.0), |m| {
+                let at = m.desktop();
+                (at, m.scale, at[2] / f64::from(m.size[0].max(1)))
+            });
+            let size = NEW_WINDOW.map(|v| (v * scale).round() as u32);
+            let step = cascade(number) * scale * k;
+            let x = at[0] + (at[2] - f64::from(size[0]) * k) / 2.0 + step;
+            let y = at[1] + (at[3] - f64::from(size[1]) * k) / 2.0 + step;
+            ([x as i32, y as i32], size)
+        };
         self.windows
             .iter()
-            .map(|w| match &w.placement {
-                Placement::Free(Some(rect)) => Some(*rect),
-                Placement::Free(None) => {
-                    // Centred on Window 1's monitor, as the game opens it.
-                    let (at, scale, k) = home.map_or(([0.0; 4], 1.0, 1.0), |m| {
+            .map(|w| {
+                let rect = match &w.placement {
+                    Placement::Free(Some(rect)) => Some(*rect),
+                    Placement::Free(None) => Some(new(w.number)),
+                    Placement::Fill(name) if w.number != 1 && name == main => None,
+                    Placement::Fill(name) => monitors.iter().find(|m| &m.name == name).map(|m| {
                         let at = m.desktop();
-                        (at, m.scale, at[2] / f64::from(m.size[0].max(1)))
-                    });
-                    let size = NEW_WINDOW.map(|v| (v * scale).round() as u32);
-                    let step = cascade(w.number) * scale * k;
-                    let x = at[0] + (at[2] - f64::from(size[0]) * k) / 2.0 + step;
-                    let y = at[1] + (at[3] - f64::from(size[1]) * k) / 2.0 + step;
-                    Some(([x as i32, y as i32], size))
+                        ([at[0] as i32, at[1] as i32], m.size)
+                    }),
+                };
+                // Everyone with nowhere else plays in Window 1: it never has no size.
+                if w.number == 1 {
+                    rect.or_else(|| Some(new(1)))
+                } else {
+                    rect
                 }
-                Placement::Fill(name) if w.number != 1 && name == main => None,
-                Placement::Fill(name) => monitors.iter().find(|m| &m.name == name).map(|m| {
-                    let at = m.desktop();
-                    ([at[0] as i32, at[1] as i32], m.size)
-                }),
             })
             .collect()
     }
@@ -405,6 +417,21 @@ impl Draft {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn window_1_always_has_a_size_and_unknown_windows_take_nobody() {
+        let monitors = [Monitor {
+            name: "Main".into(),
+            at: [0, 0],
+            size: [1920, 1080],
+            scale: 1.0,
+        }];
+        let mut d = Draft::everyone_here(2, Placement::Fill("Gone".into()), 0, 0);
+        assert!(d.rects(&monitors, "Main")[0].is_some());
+        assert!(d.preview(&monitors, "Main").iter().all(|v| v.2.width > 1));
+        d.place_player(1, Spot::Window(9));
+        assert_eq!(d.players, [1, 1], "no Window 9 in the draft");
+    }
 
     fn size(w: u32, h: u32) -> PhysicalSize<u32> {
         PhysicalSize::new(w, h)
