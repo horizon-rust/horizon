@@ -288,11 +288,15 @@ fn parallax_surface(in: ParallaxOut, march: bool) -> ParallaxSurface {
     let dy = dpdy(in.uv);
     let dp1 = dpdx(in.position);
     let dp2 = dpdy(in.position);
-    var n = normalize(cross(dp1, dp2));
+    // The cotangent frame (Schüler 2013): the world directions of +u and +v on the face, from the
+    // normal as the derivatives' cross product gives it. Flipped toward the camera first (in
+    // screen space, y down, that cross product points away from it), the frame came out reversed:
+    // the relief marched away from the view and the normal maps' slopes were mirrored.
+    let towards = normalize(cross(dp1, dp2));
+    let p2 = cross(dp2, towards);
+    let p1 = cross(towards, dp1);
+    var n = towards;
     if dot(n, in.position) > 0.0 { n = -n; }
-    // The cotangent frame: the world directions of +u and +v on the face.
-    let p2 = cross(dp2, n);
-    let p1 = cross(n, dp1);
     let tu = normalize(p2 * dx.x + p1 * dy.x);
     let tv = normalize(p2 * dx.y + p1 * dy.y);
     let layer = in.layer & 0x7fffu;
