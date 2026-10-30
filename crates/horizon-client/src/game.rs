@@ -11770,6 +11770,15 @@ impl Game<'_> {
         // server starts. Its chunk map and progress are the server's, which
         // the window doesn't see yet: the title alone, over the menu background.
         if self.integrated_starting.is_some() {
+            // Vanilla's `LevelLoadingScreen` says what it is doing:
+            // `createWorld.preparing` for a new world, the opening line
+            // otherwise. (Read before the renderer borrow.)
+            let text = if self.creating_world() {
+                horizon_client::lang::get_or("createWorld.preparing", "Preparing for world creation...")
+            } else {
+                horizon_client::lang::get_or("menu.loadingLevel", "Opening world")
+            };
+            let progress = self.loading_progress;
             if let Some(renderer) = &mut self.renderer {
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
                 let (w, h) = (hud.width, hud.height);
@@ -11782,37 +11791,29 @@ impl Game<'_> {
                     h,
                     false,
                 );
-                // Vanilla's `LevelLoadingScreen` says what it is doing:
-                // `createWorld.preparing` for a new world, the opening line
-                // otherwise. The chunk map stays for when the server's own
-                // progress is visible here.
-                let text = if self.creating_world() {
-                    lang::get_or("createWorld.preparing", "Preparing for world creation...")
-                } else {
-                    lang::get_or("menu.loadingLevel", "Opening world")
-                };
                 horizon_client::level_loading::draw_progress(
                     &mut hud,
                     &self.gui.atlas,
                     &text,
-                    self.loading_progress,
+                    progress,
                 );
                 return renderer.render(&loading_frame(&hud));
             }
             return Ok(false);
         }
         if let Some(loader) = &self.world_loader {
+            // `createWorld.preparing` / `menu.loadingLevel`, as
+            // `WorldOpenFlows` shows them while the world is built.
+            let creates = self.creating_world();
+            let text = if loader.cancelled {
+                horizon_client::lang::get_or("menu.loadingLevel", "Cancelling world")
+            } else if creates {
+                horizon_client::lang::get_or("createWorld.preparing", "Preparing for world creation...")
+            } else {
+                horizon_client::lang::get_or("menu.loadingLevel", "Opening world")
+            };
             if let Some(renderer) = &mut self.renderer {
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
-                // `createWorld.preparing` / `menu.loadingLevel`, as
-                // `WorldOpenFlows` shows them while the world is built.
-                let text = if loader.cancelled {
-                    lang::get_or("menu.loadingLevel", "Cancelling world")
-                } else if self.creating_world() {
-                    lang::get_or("createWorld.preparing", "Preparing for world creation...")
-                } else {
-                    lang::get_or("menu.loadingLevel", "Opening world")
-                };
                 horizon_client::level_loading::draw_progress(
                     &mut hud,
                     &self.gui.atlas,
