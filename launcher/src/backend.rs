@@ -86,16 +86,26 @@ pub(crate) const CLIENT: &str = if cfg!(windows) {
 
 /// The agent `url` is fetched with: the launcher's own user agent, through the player's proxy when
 /// one is set (`proxy`).
+///
+/// It is kept between requests (`keep`), with a connection kept open for each file fetched at a
+/// time: a fresh agent starts a new connection pool, so one per file was a new connection, and a
+/// new look-up of the host, for each of Minecraft's 5,000 asset files, and a single look-up the
+/// network dropped could cost a file.
 fn agent(url: &str) -> ureq::Agent {
-    crate::proxy::agent(
-        ureq::AgentBuilder::new()
+    let spec = crate::proxy::spec_for(url);
+    horizon_port_pack::net::keep("launcher", spec.as_deref(), |proxy| {
+        let builder = ureq::AgentBuilder::new()
             .user_agent(&format!("horizon-launcher/{VERSION}"))
             // A connection that goes quiet fails instead of waiting for ever.
             .timeout_connect(std::time::Duration::from_secs(15))
-            .timeout_read(std::time::Duration::from_secs(60)),
-        url,
-    )
-    .build()
+            .timeout_read(std::time::Duration::from_secs(60))
+            // `download_for` fetches Mojang's files 8 at a time; ureq keeps 1 per host otherwise.
+            .max_idle_connections_per_host(8);
+        match proxy {
+            Some(proxy) => builder.proxy(proxy).build(),
+            None => builder.build(),
+        }
+    })
 }
 
 /// A file's body, from the network as the launcher reaches it.
@@ -3097,6 +3107,10 @@ mod release_loading_tests;
 #[cfg(test)]
 #[path = "backend/java_tests.rs"]
 mod java_tests;
+
+#[cfg(test)]
+#[path = "backend/agent_tests.rs"]
+mod agent_tests;
 
 #[cfg(test)]
 mod tests {

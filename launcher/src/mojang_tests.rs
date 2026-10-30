@@ -602,3 +602,103 @@ fn a_download_goes_on_past_an_asset_that_keeps_failing() {
     assert!(last.contains("1 of 2 files failed"), "{last}");
     fs::remove_dir_all(&dir).unwrap();
 }
+
+/// An asset's address on the fake server.
+const ASSET: &str = "https://resources.download.minecraft.net/ab/ab12";
+
+/// A file whose first `fails` fetches get no answer at all, as when the network drops a DNS
+/// lookup.
+struct Flaky {
+    fails: usize,
+    tries: AtomicUsize,
+}
+
+impl Flaky {
+    fn new(fails: usize) -> Self {
+        Flaky {
+            fails,
+            tries: AtomicUsize::new(0),
+        }
+    }
+
+    fn fetch(&self, url: &str) -> Result<Vec<u8>, String> {
+        match self.tries.fetch_add(1, Relaxed) < self.fails {
+            true => Err(format!("No connection: {url}: Dns Failed")),
+            false => Ok(SOUND.to_vec()),
+        }
+    }
+}
+
+/// No answer at all (a DNS lookup or a connection the network dropped) is most often back seconds
+/// later: the file is tried again after longer and longer waits, not three times in one instant.
+#[test]
+fn a_file_the_network_drops_is_tried_again_after_longer_and_longer_waits() {
+    let flaky = Flaky::new(4);
+    let waited = Mutex::new(Vec::new());
+    let got = fetch_retrying(
+        &|url| flaky.fetch(url),
+        ASSET,
+        &GO,
+        &AtomicBool::new(false),
+        &|wait| waited.lock().unwrap().push(wait),
+    );
+    assert_eq!(got.unwrap(), SOUND);
+    assert_eq!(flaky.tries.load(Relaxed), 5);
+    assert_eq!(
+        *waited.lock().unwrap(),
+        [1, 2, 4, 8].map(Duration::from_secs)
+    );
+}
+
+#[test]
+fn a_cancelled_download_tries_no_more() {
+    let cancel = AtomicBool::new(true);
+    let flaky = Flaky::new(1);
+    let got = fetch_retrying(
+        &|url| flaky.fetch(url),
+        ASSET,
+        &cancel,
+        &AtomicBool::new(false),
+        &|_| {},
+    );
+    assert!(got.is_err());
+    assert_eq!(flaky.tries.load(Relaxed), 1);
+}
+
+/// A network that stays gone is not waited out file after file (5,000 files of 15 seconds each):
+/// once a file has waited through every try, the next one that gets no answer fails at once.
+#[test]
+fn a_network_that_stays_gone_is_waited_for_once_not_for_every_file() {
+    let gone = AtomicBool::new(false);
+    let down = Flaky::new(usize::MAX);
+    let waited = Mutex::new(Vec::new());
+    for _ in 0..2 {
+        let got = fetch_retrying(&|url| down.fetch(url), ASSET, &GO, &gone, &|wait| {
+            waited.lock().unwrap().push(wait)
+        });
+        assert!(got.is_err());
+    }
+    assert_eq!(waited.lock().unwrap().len(), 4, "only the first file waits");
+    assert_eq!(down.tries.load(Relaxed), 5 + 1);
+}
+
+/// A file that comes is the network back: the next one without an answer is waited for again.
+#[test]
+fn a_file_that_comes_means_the_network_is_back() {
+    let gone = AtomicBool::new(true);
+    let up = Flaky::new(0);
+    assert!(fetch_retrying(&|url| up.fetch(url), ASSET, &GO, &gone, &|_| {}).is_ok());
+    assert!(!gone.load(Relaxed));
+}
+
+#[test]
+fn a_cancelled_download_stops_waiting_at_once() {
+    let cancel = AtomicBool::new(true);
+    let started = std::time::Instant::now();
+    pause(Duration::from_secs(5), &cancel);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+}

@@ -125,18 +125,12 @@ pub fn download(
         .and_then(|_| objects(&read_json(&index.path)?, dir))
         .and_then(|objects| {
             log(format!("Downloading the sounds ({} files)", objects.len()));
-            // A connection that fails now and then is tried again, and a file that still fails
-            // does not stop the others: the next download fetches what is left.
-            let retrying = |url: &str| {
-                let mut got = fetch(url);
-                for _ in 0..2 {
-                    if got.is_ok() {
-                        break;
-                    }
-                    got = fetch(url);
-                }
-                got
-            };
+            // A file that fails is tried again (`fetch_retrying`), after a wait when the network
+            // gave no answer; one that still fails does not stop the others: the next download
+            // fetches what is left.
+            let gone = AtomicBool::new(false);
+            let retrying =
+                |url: &str| fetch_retrying(fetch, url, cancel, &gone, &|wait| pause(wait, cancel));
             fetch_each(&objects, jobs, &retrying, cancel, log, false)
         });
     match assets {
@@ -358,6 +352,77 @@ fn fetch_file(fetch: Fetch, file: &File) -> Result<Vec<u8>, String> {
     match sha1_hex(&body) {
         actual if actual == file.sha1 => Ok(body),
         actual => Err(format!("is not the one Horizon pins (sha1 {actual})")),
+    }
+}
+
+/// How many more times a file is fetched, at once, after the server answered with an error: the
+/// same answer is likely, but a server that stumbled gets another chance.
+const RETRIES_ANSWERED: usize = 2;
+
+/// The waits before each new try of a file the network gave no answer for. A DNS lookup or a
+/// connection that fails (a home router dropping a query) is most often back seconds later, where
+/// tries one right after another all fall inside the same hiccup.
+const RETRY_WAITS: [Duration; 4] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+];
+
+/// Whether `error` is the server's own answer (`backend::get`'s "… answered 404"), the same a
+/// moment later, rather than no answer at all.
+fn answered(error: &str) -> bool {
+    error.contains(" answered ")
+}
+
+/// `url` from `fetch`, tried again while it fails: at once after an answer from the server
+/// (`RETRIES_ANSWERED`), after each of `RETRY_WAITS` (`sleep`) when there was none. A file that
+/// waited through them all marks the network `gone`, and the next files without an answer fail at
+/// once instead of each waiting as long, until a file comes again. A cancelled download tries no
+/// more.
+fn fetch_retrying(
+    fetch: Fetch,
+    url: &str,
+    cancel: &AtomicBool,
+    gone: &AtomicBool,
+    sleep: &dyn Fn(Duration),
+) -> Result<Vec<u8>, String> {
+    let mut quick = RETRIES_ANSWERED;
+    let mut waits = RETRY_WAITS.iter();
+    loop {
+        let got = fetch(url);
+        let Err(error) = &got else {
+            gone.store(false, Relaxed);
+            return got;
+        };
+        if answered(error) {
+            if quick == 0 {
+                return got;
+            }
+            quick -= 1;
+        } else if gone.load(Relaxed) {
+            return got;
+        } else {
+            let Some(&wait) = waits.next() else {
+                gone.store(true, Relaxed);
+                return got;
+            };
+            sleep(wait);
+            if cancel.load(Relaxed) {
+                return got;
+            }
+        }
+    }
+}
+
+/// Sleeps `wait`, a tenth of a second at a time, so the window's Cancel stops it at once.
+fn pause(wait: Duration, cancel: &AtomicBool) {
+    let step = Duration::from_millis(100);
+    let mut left = wait;
+    while !left.is_zero() && !cancel.load(Relaxed) {
+        let now = left.min(step);
+        std::thread::sleep(now);
+        left -= now;
     }
 }
 

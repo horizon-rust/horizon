@@ -76,14 +76,13 @@ pub fn keep(
             ""
         }
     );
-    if let Some(agent) = lock(&KEPT).as_ref().and_then(|kept| kept.get(&key)) {
-        return agent.clone();
-    }
-    let agent = build(proxy);
+    // Looked up and built under the one lock: requests that start together (Mojang's files come 8
+    // at a time) would otherwise each build an agent, and only the last one would be kept.
     lock(&KEPT)
         .get_or_insert_with(HashMap::new)
-        .insert(key, agent.clone());
-    agent
+        .entry(key)
+        .or_insert_with(|| build(proxy))
+        .clone()
 }
 
 /// `spec` as a proxy, when it is one. An address that can't be used is said once: a download left
@@ -262,6 +261,29 @@ mod tests {
         );
         assert_eq!(redacted("http://u:p/a@ss@proxy:1"), "http://***@proxy:1");
         assert_eq!(redacted("http://user:pass@"), "http://***@");
+    }
+
+    /// Downloads that start together (the launcher fetches Mojang's files 8 at a time) all get the
+    /// one agent: one built for each would keep only the last, and lose the others' connections.
+    #[test]
+    fn requests_that_start_together_share_one_agent() {
+        let _turn = alone();
+        let built = std::sync::atomic::AtomicUsize::new(0);
+        let start = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    start.wait();
+                    keep("together", None, |_| {
+                        built.fetch_add(1, Ordering::SeqCst);
+                        // Long enough for every thread to come asking before the first is kept.
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        ureq::AgentBuilder::new().build()
+                    });
+                });
+            }
+        });
+        assert_eq!(built.load(Ordering::SeqCst), 1);
     }
 
     #[test]
