@@ -29,7 +29,8 @@ impl Screen {
             | Self::Creative
             | Self::Inventory
             | Self::Dead
-            | Self::CommandBlock => false,
+            | Self::CommandBlock
+            | Self::BlockEditor => false,
             // WinScreen.extractBackground: the poem fills the screen with the End portal, the
             // credits alone blur. Game::menu_blur knows which one rolls.
             Self::Win => false,
@@ -67,7 +68,7 @@ fn pause_buttons(
     }
     if split {
         let y = y0 + 122.0 + if links { 24.0 } else { 0.0 };
-        v.push((x0 + 4.0, y, 204.0, SPLIT_SETTINGS, 12, true));
+        v.push((x0 + 4.0, y, 204.0, SPLIT_SETTINGS, 30, true));
     }
     v.extend([
         (x0 + 4.0, y0 + 122.0 + down, 98.0, "menu.options", 1, true),
@@ -97,8 +98,37 @@ fn pause_buttons(
 
 /// The icon row: report bugs, feedback, friends, player reporting.
 /// `FRIENDS_ICON` (vanilla's `CommonButtons.friends`) opens Horizon's
-/// Play with Friends; the others stay inactive.
+/// Play with Friends; the first two open their link through
+/// `ConfirmLinkScreen`; player reporting (`SocialInteractionsScreen`, not
+/// ported) stays inactive.
 const FRIENDS_ICON: usize = 2;
+/// `CommonLinks.SNAPSHOT_BUGS_FEEDBACK`, behind `PauseScreen.REPORT_BUGS`.
+const BUGS_LINK: &str = "https://aka.ms/snapshotbugs?ref=game";
+/// `CommonLinks.RELEASE_FEEDBACK` / `SNAPSHOT_FEEDBACK`, by `WorldVersion.stable()`.
+fn feedback_link() -> &'static str {
+    if horizon_core::version::STABLE {
+        "https://aka.ms/javafeedback?ref=game"
+    } else {
+        "https://aka.ms/snapshotfeedback?ref=game"
+    }
+}
+/// `PauseScreen.createPauseMenu`'s icon tooltips (`SpriteIconButton.withTootip`).
+const ICON_LABELS: [&str; 4] = [
+    "menu.reportBugs",
+    "menu.sendFeedback",
+    "gui.friends.open",
+    "menu.playerReporting",
+];
+/// Whether an icon button is active: `reportBugsButton.active =
+/// !dataVersion().isSideSeries()` (26.3 is the `main` series), the feedback
+/// button always, friends when the friends list is shown.
+fn icon_active(icon: usize, friends: bool) -> bool {
+    match icon {
+        0 | 1 => true,
+        FRIENDS_ICON => friends,
+        _ => false,
+    }
+}
 /// Another player's profiles (`open_split_settings`).
 const SPLIT_SETTINGS: &str = "Splitscreen Settings";
 fn pause_icons(w: f32, h: f32, links: bool, split: bool) -> [(f32, f32, &'static str); 4] {
@@ -171,7 +201,7 @@ impl Game<'_> {
                 // Splitscreen: another player leaves P1's world, the game goes on.
                 &if self.options.split_guest && key == "menu.disconnect" {
                     Text::literal("Leave")
-                } else if id == 12 {
+                } else if id == 30 {
                     Text::literal(key)
                 } else {
                     Text::translate(key, &[])
@@ -185,7 +215,7 @@ impl Game<'_> {
             }
         }
         for (i, (x, y, sprite)) in pause_icons(w, h, links, split).into_iter().enumerate() {
-            let active = i == FRIENDS_ICON && friends;
+            let active = icon_active(i, friends);
             let hover = ui::hovered(self.cursor, x, y, 20.0, 20.0);
             // The icon has no label: name it for controller focus and the
             // control socket's widget tree.
@@ -211,8 +241,12 @@ impl Game<'_> {
             // x + width / 2 - 15 / 2 in integer pixels, untinted even
             // when the button is inactive.
             batch.sprite_scaled(atlas, sprite, x + 3.0, y + 3.0, 15.0, 15.0, u32::MAX);
-            if i == FRIENDS_ICON && hover {
-                tooltip = Some(Text::literal(horizon_client::friends_screen::TITLE));
+            if hover {
+                tooltip = Some(if i == FRIENDS_ICON {
+                    Text::literal(horizon_client::friends_screen::TITLE)
+                } else {
+                    Text::translate(ICON_LABELS[i], &[])
+                });
             }
         }
         // SpriteIconButton.withTootip: the label as a tooltip.
@@ -237,11 +271,18 @@ impl Game<'_> {
         };
         let links = !self.server_links().is_empty();
         let split = self.options.split_guest || self.split_hud.menu;
-        let friends = pause_icons(w, h, links, split)[FRIENDS_ICON];
+        let icons = pause_icons(w, h, links, split);
+        let friends = icons[FRIENDS_ICON];
         let hit = pause_buttons(w, h, self.external_server(), links, split)
             .into_iter()
             .find(|b| b.5 && ui::hovered(self.cursor, b.0, b.1, b.2, 20.0))
             .map(|b| b.4)
+            .or_else(|| {
+                // The report bugs and feedback icons (ids 12 and 13).
+                (0..2)
+                    .find(|&i| ui::hovered(self.cursor, icons[i].0, icons[i].1, 20.0, 20.0))
+                    .map(|i| 12 + i as u8)
+            })
             .or_else(|| {
                 (self.friends_view().shown
                     && ui::hovered(self.cursor, friends.0, friends.1, 20.0, 20.0))
@@ -262,7 +303,10 @@ impl Game<'_> {
                 self.links_ui.scroll = 0.0;
                 self.screen = Screen::ServerLinks;
             }
-            Some(12) => self.open_split_settings(),
+            // ConfirmLinkScreen.confirmLink(this, CommonLinks...) on the pause screen.
+            Some(12) => self.confirm_trusted_link(BUGS_LINK, Screen::Paused),
+            Some(13) => self.confirm_trusted_link(feedback_link(), Screen::Paused),
+            Some(30) => self.open_split_settings(),
             Some(2) => self.close_world()?,
             _ => {}
         }
@@ -519,6 +563,7 @@ mod tests {
             Screen::Inventory,
             Screen::Dead,
             Screen::CommandBlock,
+            Screen::BlockEditor,
             Screen::Win,
         ] {
             assert!(!screen.blurs_background(true));
@@ -535,6 +580,16 @@ mod tests {
             assert!(quit.5);
             assert!(buttons.iter().any(|b| b.4 == 9 && b.5));
         }
+    }
+
+    #[test]
+    fn pause_icons_report_bugs_and_feedback_are_active_like_vanilla() {
+        use super::{FRIENDS_ICON, icon_active};
+        // PauseScreen.createPauseMenu: the bug and feedback buttons are live,
+        // friends follows its list, player reporting waits for its screen.
+        assert!(icon_active(0, false) && icon_active(1, false));
+        assert!(icon_active(FRIENDS_ICON, true) && !icon_active(FRIENDS_ICON, false));
+        assert!(!icon_active(3, true));
     }
 
     #[test]
@@ -562,7 +617,7 @@ mod tests {
     fn splitscreen_settings_is_a_row_after_the_server_links() {
         let both = pause_buttons(427.0, 240.0, true, true, true);
         let links = both.iter().find(|b| b.4 == 11).unwrap();
-        let split = both.iter().find(|b| b.4 == 12).unwrap();
+        let split = both.iter().find(|b| b.4 == 30).unwrap();
         assert_eq!((split.2, split.3), (204.0, super::SPLIT_SETTINGS));
         assert_eq!(split.1, links.1 + 24.0);
         // Options below it; nothing of it without splitscreen.
@@ -570,13 +625,13 @@ mod tests {
         assert_eq!(options.1, split.1 + 24.0);
         let alone = pause_buttons(427.0, 240.0, false, false, true);
         assert_eq!(
-            alone.iter().find(|b| b.4 == 12).unwrap().1,
+            alone.iter().find(|b| b.4 == 30).unwrap().1,
             alone[0].1 + 72.0
         );
         assert!(
             !pause_buttons(427.0, 240.0, true, true, false)
                 .iter()
-                .any(|b| b.4 == 12)
+                .any(|b| b.4 == 30)
         );
     }
 }
