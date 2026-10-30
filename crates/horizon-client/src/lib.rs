@@ -38,7 +38,6 @@ pub mod cushion;
 pub mod data_cmd;
 pub mod debug_chart;
 pub mod debug_keys;
-pub mod debug_options;
 pub mod debug_overlay;
 pub mod dialog;
 pub mod dialog_screen;

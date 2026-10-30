@@ -91,7 +91,6 @@ mod creatures;
 mod crossbow;
 pub(crate) mod cushions;
 mod debug_keys;
-mod debug_options_screen;
 mod decorated_pot;
 mod dedicated;
 mod deflect;
@@ -557,8 +556,6 @@ impl Options {
 enum Screen {
     Playing,
     GameModeSwitcher,
-    /// `DebugOptionsScreen` (F3 + F6).
-    DebugOptions,
     Paused,
     Options,
     Chat,
@@ -1943,8 +1940,6 @@ struct Game<'a> {
     debug_keys: horizon_client::debug_keys::DebugKeys,
     /// The F3 overlay's charts (F3+2, F3+3).
     debug_charts: horizon_client::debug_chart::DebugCharts,
-    /// The F3 + F6 screen's state.
-    debug_options: Option<horizon_client::debug_options::DebugOptions>,
     show_hitboxes: bool,
     show_chunk_borders: bool,
     /// PauseScreen.showPauseMenu (false after F3+Escape).
@@ -6442,7 +6437,6 @@ impl Game<'_> {
             }
             Screen::Chat => self.draw_chat_screen(&mut batch),
             Screen::Mod => self.draw_mod_screen(&mut batch),
-            Screen::DebugOptions => self.draw_debug_options(&mut batch),
             Screen::Playing | Screen::Options | Screen::Win => {}
         }
         self.draw_saving_indicator(&mut batch);
@@ -12394,7 +12388,6 @@ impl Game<'_> {
         }
         match key {
             KeyCode::Escape => match self.screen {
-                Screen::DebugOptions => self.close_debug_options(),
                 Screen::Options => self.options_key(KeyCode::Escape, None)?,
                 Screen::Playing => {
                     self.screen = Screen::Paused;
@@ -13168,9 +13161,6 @@ impl ApplicationHandler for Game<'_> {
                     if self.screen == Screen::Options && d != 0.0 {
                         self.options_scroll(d);
                     }
-                    if self.screen == Screen::DebugOptions && d != 0.0 {
-                        self.debug_options_scroll(d);
-                    }
                     if self.screen == Screen::Mod && d != 0.0 {
                         self.mod_screen_scroll(d);
                     }
@@ -13422,9 +13412,6 @@ impl ApplicationHandler for Game<'_> {
                         Screen::Friends if pressed && button == MouseButton::Left => {
                             self.friends_screen_click()
                         }
-                        Screen::DebugOptions if pressed && button == MouseButton::Left => {
-                            self.debug_options_click()
-                        }
                         Screen::CommandBlock if pressed && button == MouseButton::Left => {
                             self.command_block_click()
                         }
@@ -13577,16 +13564,6 @@ impl ApplicationHandler for Game<'_> {
                 }
                 WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::CommandBlock => {
                     self.command_block_key(&event)
-                }
-                WindowEvent::KeyboardInput { event, .. }
-                    if self.screen == Screen::DebugOptions
-                        && event.state == ElementState::Pressed =>
-                {
-                    if let PhysicalKey::Code(key) = event.physical_key
-                        && self.debug_options_key(key, event.text.as_deref())
-                    {
-                        return Ok(());
-                    }
                 }
                 // Options consumes presses; releases still reach the bound
                 // gameplay mapping below, including sneak/sprint toggles.
@@ -14329,7 +14306,6 @@ impl<'a> Game<'a> {
             command_block_screen: None,
             friends: None,
             debug_keys: Default::default(),
-            debug_options: None,
             debug_charts: Default::default(),
             show_hitboxes: false,
             show_chunk_borders: false,

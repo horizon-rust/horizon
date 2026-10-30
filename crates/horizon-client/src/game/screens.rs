@@ -23,7 +23,6 @@ impl Screen {
             | Self::ServerLinks
             | Self::ConfirmLink
             | Self::DialogWarning
-            | Self::DebugOptions
             | Self::Mod => true,
             Self::Playing
             | Self::GameModeSwitcher

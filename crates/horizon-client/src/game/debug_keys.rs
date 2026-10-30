@@ -118,9 +118,6 @@ impl Game<'_> {
                     | KeyCode::Digit9
             ),
             Screen::Playing => false,
-            // A screen owns its keys; the debug combinations do not fire
-            // from it.
-            Screen::DebugOptions => true,
             _ => key == KeyCode::Escape,
         };
         if pressed && (typing || screen_key) {
@@ -661,17 +658,11 @@ impl Game<'_> {
                 self.debug_charts.toggle_lightmap(&mut self.debug);
                 true
             }
-            DebugAction::DebugOptions => {
-                if self.screen == Screen::DebugOptions {
-                    self.close_debug_options();
-                } else {
-                    self.open_debug_options();
-                }
-                true
-            }
-            // Overlays Horizon does not draw yet (the profiler and its chart,
-            // the texture dump): the keys are used up as in vanilla.
-            DebugAction::DumpDynamicTextures
+            // Screens and overlays Horizon does not draw yet (the debug
+            // options screen, the profiler and its chart, the texture dump):
+            // the keys are used up as in vanilla.
+            DebugAction::DebugOptions
+            | DebugAction::DumpDynamicTextures
             | DebugAction::Profiling
             | DebugAction::ProfilingChart => true,
             DebugAction::ShowHitboxes
