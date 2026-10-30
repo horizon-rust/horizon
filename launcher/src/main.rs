@@ -202,6 +202,8 @@ struct Launcher {
     picker_open: bool,
     /// The top bar's quick switch of who plays (`switch_page.rs`).
     account_menu: bool,
+    /// Settings' Language dropdown (`language_page.rs`).
+    language_menu: bool,
     /// Where the mouse went down to close a menu by pressing outside it, so that the
     /// same press, ending on the menu's own button, doesn't open it again.
     menu_closed_at: Option<Point<Pixels>>,
@@ -443,6 +445,7 @@ impl Launcher {
             confirm_remove: None,
             picker_open: false,
             account_menu: false,
+            language_menu: false,
             menu_closed_at: None,
             skin: None,
             background_error: None,
@@ -586,6 +589,7 @@ impl Launcher {
         }
         self.picker_open = false;
         self.account_menu = false;
+        self.language_menu = false;
     }
 
     fn check_updates(&mut self) {
