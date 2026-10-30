@@ -1161,9 +1161,17 @@ impl Title {
             } else if screen.screen.width != w as i32 || screen.screen.height != h as i32 {
                 screen.resize(atlas, w as i32, h as i32);
             }
+            if self.pending_drop.is_some() {
+                // The dialog is a screen of its own (`ConfirmScreen` /
+                // `AlertScreen`), over the menu background, not over the pack
+                // screen it was opened from.
+                crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
+                self.draw_drop(batch, atlas, w, h);
+                *self.data_packs.borrow_mut() = Some(screen);
+                return;
+            }
             screen.draw(batch, atlas, cursor);
             *self.data_packs.borrow_mut() = Some(screen);
-            self.draw_drop(batch, atlas, w, h);
             return;
         }
         if let Some(screen) = self.experiments.borrow().as_ref() {
@@ -2130,35 +2138,44 @@ impl Title {
     /// The drop dialog's box: (title, message, buttons) rects, centred like
     /// `FrameLayout.centerInRectangle`. `gui.yes`/`gui.no` or one `gui.back`.
     fn drop_panel(w: f32, h: f32, two: bool) -> ([f32; 4], [[f32; 4]; 2]) {
-        let bw = 100.0;
+        // `ConfirmScreen`: a centred vertical layout, spacing 8, the buttons
+        // a horizontal row 16 below the message, each 150 wide.
+        let bw = 150.0;
         let gap = 4.0;
-        let (bw_total, count) = if two { (bw * 2.0 + gap, 2) } else { (bw, 1) };
-        let title_h = 9.0;
-        let msg_h = 9.0;
-        let pad = 16.0;
-        let box_h = title_h + 8.0 + msg_h + pad + 20.0;
+        let box_h = 9.0 + 8.0 + 9.0 + 16.0 + 20.0;
         let top = h / 2.0 - box_h / 2.0;
-        let by = top + title_h + 8.0 + msg_h + pad;
-        let bx = w / 2.0 - bw_total / 2.0;
+        let by = top + 9.0 + 8.0 + 9.0 + 16.0;
+        let count = if two { 2.0 } else { 1.0 };
+        let bx = w / 2.0 - (bw * count + gap * (count - 1.0)) / 2.0;
         let mut buttons = [[0.0; 4]; 2];
         buttons[0] = [bx, by, bw, 20.0];
-        buttons[1] = [bx + if count == 2 { bw + gap } else { 0.0 }, by, bw, 20.0];
-        ([w / 2.0, top, title_h, msg_h], buttons)
+        buttons[1] = [bx + bw + gap, by, bw, 20.0];
+        ([w / 2.0, top, 9.0, 9.0], buttons)
     }
-    /// The drop dialog: `ConfirmScreen`'s title, `MultiLineTextWidget`
-    /// message and buttons, over the pack screen.
+    /// The dialog `ConfirmScreen`/`AlertScreen` draws: title, message and
+    /// buttons on a vertical layout, centred on the screen.
     fn draw_drop(&self, batch: &mut HudBatch, atlas: &HudAtlas, w: f32, h: f32) {
         let Some(drop) = &self.pending_drop else {
             return;
         };
         let two = matches!(drop, DropPending::Confirm(_));
         let (title, buttons) = Self::drop_panel(w, h, two);
-        batch.fill(atlas, 0.0, 0.0, w, h, 0xC0_10_10_10);
         let centered = |batch: &mut HudBatch, text: &str, y: f32, color: u32| {
             let tw = HudBatch::text_width(atlas, text);
             batch.text(atlas, text, w / 2.0 - tw / 2.0, y, color, true);
         };
-        let name = |list: &[String]| list.join(", ");
+        let button = |batch: &mut HudBatch, rect: [f32; 4], text: &str| {
+            batch.fill(atlas, rect[0], rect[1], rect[2], rect[3], 0xFF_50_50_50);
+            let tw = HudBatch::text_width(atlas, text);
+            batch.text(
+                atlas,
+                text,
+                rect[0] + (rect[2] - tw) / 2.0,
+                rect[1] + 6.0,
+                u32::MAX,
+                true,
+            );
+        };
         match drop {
             DropPending::Confirm(files) => {
                 centered(
@@ -2170,22 +2187,9 @@ impl Title {
                     title[1],
                     u32::MAX,
                 );
-                let names = Self::drop_names(files);
-                centered(batch, &names, title[1] + 9.0 + 8.0, 0xFF_A0_A0_A0);
-                let yes = lang::get_or("gui.yes", "Yes");
-                let no = lang::get_or("gui.no", "No");
-                for (rect, text) in [(buttons[0], yes), (buttons[1], no)] {
-                    batch.fill(atlas, rect[0], rect[1], rect[2], rect[3], 0xFF_50_50_50);
-                    let tw = HudBatch::text_width(atlas, &text);
-                    batch.text(
-                        atlas,
-                        &text,
-                        rect[0] + (rect[2] - tw) / 2.0,
-                        rect[1] + 6.0,
-                        u32::MAX,
-                        true,
-                    );
-                }
+                centered(batch, &Self::drop_names(files), title[1] + 17.0, u32::MAX);
+                button(batch, buttons[0], &lang::get_or("gui.yes", "Yes"));
+                button(batch, buttons[1], &lang::get_or("gui.no", "No"));
             }
             DropPending::Rejected(list) => {
                 centered(
@@ -2200,27 +2204,11 @@ impl Title {
                         "pack.dropRejected.message",
                         "The following entries were not valid packs:",
                     ),
-                    title[1] + 9.0 + 8.0,
+                    title[1] + 17.0,
                     0xFF_A0_A0_A0,
                 );
-                centered(
-                    batch,
-                    &name(list),
-                    title[1] + (9.0 + 8.0) * 2.0,
-                    0xFF_FF_55_55,
-                );
-                let back = lang::get_or("gui.back", "Back");
-                let r = buttons[0];
-                batch.fill(atlas, r[0], r[1], r[2], r[3], 0xFF_50_50_50);
-                let tw = HudBatch::text_width(atlas, &back);
-                batch.text(
-                    atlas,
-                    &back,
-                    r[0] + (r[2] - tw) / 2.0,
-                    r[1] + 6.0,
-                    u32::MAX,
-                    true,
-                );
+                centered(batch, &list.join(", "), title[1] + 34.0, 0xFF_FF_55_55);
+                button(batch, buttons[0], &lang::get_or("gui.back", "Back"));
             }
         }
     }
