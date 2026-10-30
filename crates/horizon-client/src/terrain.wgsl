@@ -893,8 +893,8 @@ fn face_normal(pos: vec3<f32>) -> vec3<f32> {
     // shine (a torch's flame and embers, not its stick: `rt_burning`).
     if globals.rt_mode.x > 0.5 && linear_on() {
         let lit = rt_lit(texel.rgb * in.tint, in, n);
-        let glow = scene_color(vec4(color.rgb, 0.0), emission_gain(in.emission), in.spherical,
-            in.cylindrical).rgb;
+        let f = fog_amount(in.spherical, in.cylindrical) * globals.fog_color.a;
+        let glow = rt_flame(color.rgb) * (1.0 - f);
         return vec4(mix(lit, glow, rt_burning(texel.rgb)), 1.0);
     }
     // Alpha 0 tells HDR output (hdr.wgsl) a light-emitting block's bright pixels
@@ -909,6 +909,20 @@ fn face_normal(pos: vec3<f32>) -> vec3<f32> {
 // flame and a lamp's glow are; a stick's wood, darker, is lit by the light, not a light itself.
 fn rt_burning(c: vec3<f32>) -> f32 {
     return smoothstep(0.6, 0.85, max(c.r, max(c.g, c.b)));
+}
+// The light a burning texel `c` (gamma) gives off, a black body's: its temperature read from its
+// colour (red the coolest, about 1300 K; yellow-white the hottest, 2200 K), its colour Planck's
+// law's at that temperature through the CIE 1931 observer (fitted, linear sRGB), its luminance the
+// visible part's steep rise with it (as exp(-hc / lambda k T) at 555 nm, at half the slope, so a
+// flame's cool red tips still show), about 25 paper whites at a torch's 1900 K (a candle's flame is
+// some 10 000 cd/m2). A texel bluer than red (soul fire) isn't a black body: its own colour.
+fn rt_flame(c: vec3<f32>) -> vec3<f32> {
+    if c.b > c.r { return decode_gamma(c) * 8.0; }
+    let warmth = clamp((c.g / max(c.r, 1e-3) - 0.2) / 0.8, 0.0, 1.0);
+    let kelvin = mix(1300.0, 2200.0, warmth);
+    let colour = vec3(1.0, 0.0968 + 0.000241 * (kelvin - 1300.0), max((kelvin - 1925.0) * 0.000102, 0.0));
+    let luminance = 60.0 * exp(-12965.0 * (1.0 / kelvin - 1.0 / 2200.0));
+    return colour / dot(colour, vec3(0.2126, 0.7152, 0.0722)) * luminance;
 }
 // RT lighting's depth prepass (gfx.rs `rt_prepass`): the solid terrain's depth alone, with the
 // same alpha test, for this frame's rays to trace from before the world is drawn.

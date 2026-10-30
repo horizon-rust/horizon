@@ -801,6 +801,9 @@ fn restir_gi(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>, last_at: vec2<i32>,
 // Physical falloff, the inverse square of the distance to the light's block, eased to nothing at
 // the light's reach; through stained glass the light takes its colour (hardware rays).
 const BLOCK_LIGHT: f32 = 3.0;
+// The luminance of every light's colour (that of the warm white lights had before their colours
+// came from their black bodies).
+const LIGHT_LUMINANCE: f32 = 0.59;
 const LIGHT_BUDGET: i32 = 16;
 // The cell of the grid holding grid-local `local`, its lights (up to eight, two indices a word) and
 // how many there are.
@@ -876,7 +879,11 @@ fn light_path(index: u32, local: vec3<f32>, n: vec3<f32>, offset: vec3<f32>) -> 
     // The distance to the point of the light drawn (a torch's flame stands above its block's
     // floor, so the block it stands on isn't lit as if touching it).
     let gain = light.colour.w * window * window * facing / ((1.0 + length_to) * (1.0 + length_to));
-    return LightPath(pow(light.colour.rgb, vec3(2.2)) * (BLOCK_LIGHT * gain), vec4(l, max(d - 0.02, 0.0)));
+    // The colour tints the light, the level sets how bright it is (as vanilla's light levels do):
+    // a 1900 K flame's deep orange as bright as a white lamp of its level.
+    let tint = pow(light.colour.rgb, vec3(2.2));
+    let colour = tint * (LIGHT_LUMINANCE / max(dot(tint, vec3(0.2126, 0.7152, 0.0722)), 1e-3));
+    return LightPath(colour * (BLOCK_LIGHT * gain), vec4(l, max(d - 0.02, 0.0)));
 }
 // What the terrain lets through along `path` from camera-relative `pos`.
 fn light_through(pos: vec3<f32>, path: LightPath) -> vec3<f32> {

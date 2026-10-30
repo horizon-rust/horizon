@@ -485,7 +485,14 @@ fn light_colour(name: &str) -> [u8; 3] {
         [255, 50, 25]
     } else if has("sea_lantern") || has("beacon") || has("end_rod") || has("conduit") {
         [200, 230, 255]
-    } else if has("lava") || has("magma") || has("fire") {
+    } else if has("torch") || has("campfire") || has("candle") || has("fire") {
+        // A wood or wax flame: a black body at about 1900 K (Planck's law through the CIE 1931
+        // observer, in sRGB: deep orange, no blue).
+        [255, 135, 0]
+    } else if has("lantern") {
+        // An oil lamp's flame, hotter: about 2000 K.
+        [255, 141, 21]
+    } else if has("lava") || has("magma") {
         [255, 120, 40]
     } else if has("amethyst") || has("crying_obsidian") || has("respawn_anchor") {
         [180, 100, 255]

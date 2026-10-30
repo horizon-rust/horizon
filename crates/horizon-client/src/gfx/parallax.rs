@@ -404,8 +404,9 @@ fn parallax_rt_lit(in: ParallaxOut, s: ParallaxSurface) -> vec3<f32> {
         if s.texel.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
         let lit = parallax_rt_lit(in, s);
         let color = s.texel * in.color;
-        let glow = horizon_terrain_scene_color(vec4(color.rgb, 0.0),
-            horizon_terrain_emission_gain(in.emission), in.spherical, in.cylindrical).rgb;
+        let f = horizon_terrain_fog_amount(in.spherical, in.cylindrical)
+            * horizon_terrain_globals.fog_color.a;
+        let glow = horizon_terrain_rt_flame(color.rgb) * (1.0 - f);
         return vec4(mix(lit, glow, horizon_terrain_rt_burning(s.texel.rgb)), 1.0);
     }
     let color = parallax_color(in, true);
