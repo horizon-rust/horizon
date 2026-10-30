@@ -83,6 +83,9 @@ struct Globals {
 // RT lighting: what the water at the pixel reflects, traced (Remix's primary surface replacement,
 // shadow_rays_hw.wgsl `hw_reflect`): rgb its light, a 1 a surface, 0 the sky (reflected here).
 @group(0) @binding(17) var rt_reflect: texture_2d<f32>;
+// RT lighting: what the water at the pixel refracts, traced (shadow_rays_psr.wgsl `hw_refract`):
+// rgb its light, a the distance the ray ran in the water (0: none, the scene behind shows).
+@group(0) @binding(18) var rt_refract: texture_2d<f32>;
 // The traced reflection for the fragment being lit (`rt_reflection`), which `rt_shade` takes in
 // place of the sky's: rgb its light, a 1 when there is one.
 var<private> rt_mirror: vec4<f32>;
@@ -695,7 +698,17 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
     // Through the depth: what lies behind dims by the water's absorption, the water's own glow
     // (the light it scatters toward the eye) in its place.
     let bottom = rt_bottom(in.clip, ray);
-    let thickness = select(64.0, max(bottom - distance, 0.0), bottom > 0.0);
+    var thickness = select(64.0, max(bottom - distance, 0.0), bottom > 0.0);
+    // Remix's primary surface replacement: what the bent ray met, through the water it crossed
+    // (the scene behind, unbent, no longer shows).
+    var refracted = vec4(0.0);
+    if globals.rt_motion.w > 1.5 {
+        let size = vec2<f32>(textureDimensions(rt_refract));
+        let at = clamp(vec2<i32>(in.clip / globals.rt_motion.xy * size), vec2(0),
+            vec2<i32>(size) - 1);
+        refracted = textureLoad(rt_refract, at, 0);
+        if refracted.a > 0.0 { thickness = refracted.a; }
+    }
     let through = exp(-absorption * thickness);
     let lit = rt_sky(vec3(0.0, 1.0, 0.0)) * sky_seen + sun * max(l.y, 0.0);
     // What the water scatters back: Remix's single-scattering albedo (0.206, 0.999, 0.903) in the
@@ -711,6 +724,9 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
     let air_through = exp(-air * (distance * 0.001 * globals.rt_mode.w)) * (1.0 - f);
     added = added * air_through + horizon * (1.0 - air_through);
     shows *= air_through;
+    if refracted.a > 0.0 {
+        return WaterLight(added + shows * refracted.rgb, vec3(0.0), 1.0);
+    }
     let alpha = clamp(1.0 - dot(shows, vec3(0.2126, 0.7152, 0.0722)), 0.02, 1.0);
     return WaterLight(added, shows, alpha);
 }

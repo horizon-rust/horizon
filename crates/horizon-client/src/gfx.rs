@@ -737,6 +737,7 @@ fn terrain_group(
     sun: &wgpu::TextureView,
     depth: &wgpu::TextureView,
     reflection: &wgpu::TextureView,
+    refraction: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     let view = |binding, view| wgpu::BindGroupEntry {
         binding,
@@ -773,6 +774,7 @@ fn terrain_group(
             view(15, sun),
             view(16, depth),
             view(17, reflection),
+            view(18, refraction),
         ],
     })
 }
@@ -1448,6 +1450,7 @@ impl Renderer {
                 entry(13, wgpu::ShaderStages::FRAGMENT, rt_texture),
                 entry(15, wgpu::ShaderStages::FRAGMENT, rt_texture),
                 entry(17, wgpu::ShaderStages::FRAGMENT, rt_texture),
+                entry(18, wgpu::ShaderStages::FRAGMENT, rt_texture),
                 entry(
                     16,
                     wgpu::ShaderStages::FRAGMENT,
@@ -1982,6 +1985,7 @@ impl Renderer {
             &rt_sun_unused,
             &rt_depth_unused,
             &rt_history_unused,
+            &rt_history_unused,
         );
         let crosshair_group = terrain_group(
             &device,
@@ -1997,6 +2001,7 @@ impl Renderer {
             &atmosphere.view,
             &rt_sun_unused,
             &rt_depth_unused,
+            &rt_history_unused,
             &rt_history_unused,
         );
         let index_quads = 1 << 16;
@@ -3720,7 +3725,7 @@ impl Renderer {
         self.rt_aerial = aerial as f32;
     }
     fn rebuild_terrain_groups(&mut self) {
-        self.terrain_groups_with(None, None, None, None, None);
+        self.terrain_groups_with(None, None, None, None, None, None);
     }
     /// RT lighting's rays on this frame: the solid terrain's `draws` into a depth of the world
     /// target's `size`, then the rays' pass on it; returns the mask and the light sources' light
@@ -3734,7 +3739,7 @@ impl Renderer {
         camera: DVec3,
         rt: &shadow_rays::Rays,
         draws: u32,
-    ) -> [wgpu::TextureView; 4] {
+    ) -> [wgpu::TextureView; 5] {
         let depth = match self.rt_depths.iter().find(|(s, _)| *s == size) {
             Some((_, d)) => d.clone(),
             None => {
@@ -3809,6 +3814,7 @@ impl Renderer {
         sun: Option<&wgpu::TextureView>,
         depth: Option<&wgpu::TextureView>,
         reflection: Option<&wgpu::TextureView>,
+        refraction: Option<&wgpu::TextureView>,
     ) {
         let views = sprite_views(
             &self.sprite_textures,
@@ -3820,6 +3826,7 @@ impl Renderer {
         let sun = sun.unwrap_or(&self.rt_sun_unused);
         let depth = depth.unwrap_or(&self.rt_depth_unused);
         let reflection = reflection.unwrap_or(&self.rt_history_unused);
+        let refraction = refraction.unwrap_or(&self.rt_history_unused);
         self.group = terrain_group(
             &self.device,
             "Horizon terrain resources",
@@ -3835,6 +3842,7 @@ impl Renderer {
             sun,
             depth,
             reflection,
+            refraction,
         );
         self.crosshair_group = terrain_group(
             &self.device,
@@ -3851,6 +3859,7 @@ impl Renderer {
             sun,
             depth,
             reflection,
+            refraction,
         );
     }
     /// This frame's ray-traced shadows: the grid written up to date, the light's direction (the
@@ -4485,7 +4494,7 @@ impl Renderer {
         };
         if self.rt_lighting {
             let mask = rt_history.as_ref().map(|h| h.2.clone());
-            self.terrain_groups_with(mask.as_ref(), None, None, None, None);
+            self.terrain_groups_with(mask.as_ref(), None, None, None, None, None);
         }
         let rt_history = rt_history.map(|(view_proj, camera, _)| (view_proj, camera));
         // RT lighting's real sun and sky: the sky table follows the sun; the light traced toward is
@@ -5488,7 +5497,7 @@ impl Renderer {
         // world draws (the flat draws, Metal's, still read the last frame's, reprojected).
         let rt_now = rt.lighting && world_linear && !flat_frame && self.voxels.views().is_some();
         if rt_now {
-            let [mask, blocks, sun, reflection] = self.rt_prepass(
+            let [mask, blocks, sun, reflection, refraction] = self.rt_prepass(
                 &mut encoder,
                 world_size,
                 view_proj,
@@ -5507,6 +5516,7 @@ impl Renderer {
                 Some(&sun),
                 depth.as_ref(),
                 Some(&reflection),
+                Some(&refraction),
             );
             let motion = [world_size[0] as f32, world_size[1] as f32, 0.0, 2.0];
             self.uploads.buffer(
@@ -6779,9 +6789,9 @@ mod tests {
             &mut files,
         );
         assert!(files.len() >= 10, "{files:?}");
-        // The rays' pass is made of two files, with or without hardware rays (shadow_rays.rs).
+        // The rays' pass is made of three files, with or without hardware rays (shadow_rays.rs).
         let named = |p: &std::path::Path, name: &str| p.file_name().is_some_and(|f| f == name);
-        files.retain(|p| !named(p, "shadow_rays_hw.wgsl"));
+        files.retain(|p| !named(p, "shadow_rays_hw.wgsl") && !named(p, "shadow_rays_psr.wgsl"));
         // The froxels' hardware section replaces a stub in froxels.wgsl (froxels.rs, hook 8; its
         // own test validates both variants).
         files.retain(|p| !named(p, "froxels_hw.wgsl"));

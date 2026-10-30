@@ -147,8 +147,9 @@ struct ViewMasks {
     gi: [[wgpu::TextureView; 2]; 2],
     /// RT lighting's fast history (ReLAX's), one a mask.
     fast: [wgpu::TextureView; 2],
-    /// RT lighting's water reflections (Remix's primary surface replacement).
+    /// RT lighting's water reflections and refractions (Remix's primary surface replacement).
     reflection: wgpu::TextureView,
+    refraction: wgpu::TextureView,
     light: [wgpu::TextureView; 2],
     /// The mask the next pass writes.
     next: usize,
@@ -169,7 +170,10 @@ pub struct Hardware<'a> {
 /// The hybrid's part of the shader (`hw_rays`): the sun's and the light sources' shadow rays
 /// against the drawn terrain, alpha-tested; without hardware rays, `hw_light` says to use the
 /// voxel grid's.
-const HARDWARE: &str = include_str!("shadow_rays_hw.wgsl");
+const HARDWARE: &str = concat!(
+    include_str!("shadow_rays_hw.wgsl"),
+    include_str!("shadow_rays_psr.wgsl")
+);
 const NO_HARDWARE: &str = "
 const HW: bool = false;
 fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> { return vec3(-1.0); }
@@ -177,6 +181,7 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
     return HwHit(-1.0, vec3(0.0), vec3(0.0), vec3(1.0));
 }
 fn hw_reflect(p: vec2<i32>) -> vec4<f32> { return vec4(0.0); }
+fn hw_refract(p: vec2<i32>) -> vec4<f32> { return vec4(0.0); }
 ";
 
 /// The pass's shader, with the hybrid's hardware rays or without (`ShadowRays::new`).
@@ -346,6 +351,7 @@ impl ShadowRays {
                 entry(31, output),
                 entry(32, last),
                 entry(33, output),
+                entry(34, output),
             ]
             .into_iter()
             .chain(
@@ -553,6 +559,7 @@ impl ShadowRays {
                     scratch: mask(),
                     fast: [mask(), mask()],
                     reflection: mask(),
+                    refraction: mask(),
                     light: [mask(), mask()],
                     next: 0,
                     last: None,
@@ -630,7 +637,7 @@ impl ShadowRays {
         lights: [&wgpu::Buffer; 3],
         sky: &wgpu::TextureView,
         hardware: Option<Hardware<'_>>,
-    ) -> [wgpu::TextureView; 4] {
+    ) -> [wgpu::TextureView; 5] {
         let scale = foveation.scale;
         let mask_size = size.map(|v| v.div_ceil(scale));
         let masks = self.masks(device, view, mask_size);
@@ -649,6 +656,7 @@ impl ShadowRays {
         let fast = masks.fast[masks.next].clone();
         let last_fast = masks.fast[1 - masks.next].clone();
         let reflection = masks.reflection.clone();
+        let refraction = masks.refraction.clone();
         let scratch = masks.scratch.clone();
         let light = masks.light[masks.next].clone();
         let last_light = masks.light[1 - masks.next].clone();
@@ -696,7 +704,7 @@ impl ShadowRays {
         // Without the hybrid's this frame (no section yet), a pipeline that traces hardware rays
         // has nothing to bind: the pass waits.
         if self.hardware && hardware.is_none() {
-            return [mask, blocks, sun, reflection];
+            return [mask, blocks, sun, reflection, refraction];
         }
         let mut entries = vec![
             wgpu::BindGroupEntry {
@@ -744,6 +752,7 @@ impl ShadowRays {
             view(31, &fast),
             view(32, &last_fast),
             view(33, &reflection),
+            view(34, &refraction),
         ];
         if let (true, Some(hw)) = (self.hardware, &hardware) {
             entries.extend([
@@ -776,7 +785,7 @@ impl ShadowRays {
         pass.dispatch_workgroups(mask_size[0].div_ceil(8), mask_size[1].div_ceil(8), 1);
         drop(pass);
         if !rays.lighting {
-            return [mask, blocks, sun, reflection];
+            return [mask, blocks, sun, reflection, refraction];
         }
         // The radiance cache: this pass's sums become its cells' light for the next views.
         {
@@ -821,7 +830,7 @@ impl ShadowRays {
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(mask_size[0].div_ceil(8), mask_size[1].div_ceil(8), 1);
         }
-        [mask, light, sun, reflection]
+        [mask, light, sun, reflection, refraction]
     }
 }
 

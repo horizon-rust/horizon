@@ -108,6 +108,12 @@ var<private> fast_out: vec4<f32>;
 // `hw_reflect`): the light of what the water at the pixel reflects (rgb), a 1 a surface, 0 the
 // sky or no water (the water's shader then reflects its own sky).
 @group(0) @binding(33) var reflection: texture_storage_2d<rgba16float, write>;
+// The same for what the water refracts (shadow_rays_psr.wgsl `hw_refract`): rgb its light, a the
+// distance the ray runs in the water (0: none).
+@group(0) @binding(34) var refraction: texture_storage_2d<rgba16float, write>;
+// Where `hw_reflect` met the water: its normal toward the camera (xyz) and distance (w, below 0
+// none), for `hw_refract`.
+var<private> water_at: vec4<f32>;
 var<private> gi_out_a: vec4<f32>;
 var<private> gi_out_b: vec4<u32>;
 // RT lighting's radiance cache (SHaRC-like, gfx/radiance_cache.wgsl resolves it): a hash table of
@@ -1229,6 +1235,7 @@ var<workgroup> shared_rays: array<Traced, 4>;
             textureStore(sun_mask, texel, v.sun);
             textureStore(fast, texel, fast_out);
             textureStore(reflection, texel, finite4(hw_reflect(pixel_of(texel))));
+            textureStore(refraction, texel, finite4(hw_refract(pixel_of(texel))));
         }
     }
 }

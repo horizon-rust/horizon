@@ -197,6 +197,7 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
         rayQueryConfirmIntersection(&q);
     }
     let hit = rayQueryGetCommittedIntersection(&q);
+    water_at = vec4(0.0, 0.0, 0.0, -1.0);
     if hit.kind == RAY_QUERY_INTERSECTION_NONE { return vec4(0.0); }
     let at = ray * hit.t;
     // The waves on the water's top, as its shader's (terrain.wgsl `rt_water`).
@@ -212,6 +213,14 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
         let w = water_waves(world.xz, rt.water.z);
         n = normalize(vec3(-w.y, 1.0, -w.z));
     }
+    // Under the water, looking up at its top: the waves seen from below.
+    if n.y < -0.5 && (layer == rt.water.x || layer == rt.water.y) {
+        let world = at + rt.camera.xyz + rt.fraction.xyz;
+        let w = water_waves(world.xz, rt.water.z);
+        n = -normalize(vec3(-w.y, 1.0, -w.z));
+    }
+    // Its top (seen from above or below) refracts; its sides blend as before.
+    if abs(n.y) > 0.5 && (layer == rt.water.x || layer == rt.water.y) { water_at = vec4(n, hit.t); }
     var r = reflect(ray, n);
     if dot(r, n) < 0.0 { r = normalize(r - n * 2.0 * dot(r, n)); }
     let start = at + n * 0.02;
