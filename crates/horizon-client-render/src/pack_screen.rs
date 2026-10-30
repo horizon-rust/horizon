@@ -46,6 +46,10 @@ pub enum Source {
 /// A pack as the screen shows it.
 #[derive(Clone, Debug)]
 pub struct PackInfo {
+    /// `pack.mcmeta`'s `features` (`FeatureFlagsMetadataSection`): the flags
+    /// the pack asks for, which make it experimental
+    /// (`FeatureFlags.isExperimental`).
+    pub features: Vec<String>,
     pub id: String,
     pub title: Text,
     pub description: Text,

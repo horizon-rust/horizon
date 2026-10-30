@@ -22,6 +22,23 @@ fn feature_title(id: &str, fallback: Text) -> Text {
     }
 }
 
+/// `pack.mcmeta`'s `features` section: the flags the pack asks for, each as
+/// a namespaced id.
+fn feature_flags(meta: &serde_json::Value) -> Vec<String> {
+    meta["features"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| {
+            let id = e.as_str().or_else(|| e["id"].as_str())?;
+            Some(if id.contains(':') {
+                id.to_owned()
+            } else {
+                format!("minecraft:{id}")
+            })
+        })
+        .collect()
+}
 /// A `pack.mcmeta` description, as the pack screen draws it.
 fn description(meta: &serde_json::Value) -> (Text, Style) {
     component_root(&meta["pack"]["description"])
@@ -54,6 +71,7 @@ pub fn discover(vanilla: &Path, dir: Option<&Path>) -> Vec<PackInfo> {
             continue;
         };
         let (raw, style) = description(&meta);
+        let features = feature_flags(&meta);
         out.push(PackInfo {
             id: name.clone(),
             title: feature_title(&name, raw.clone().resolve_legacy()),
@@ -61,6 +79,7 @@ pub fn discover(vanilla: &Path, dir: Option<&Path>) -> Vec<PackInfo> {
             description_style: style,
             source: Source::Feature,
             compat: pack_screen::Compat::Compatible,
+            features,
             icon: read_icon(fs::read(dir.join("pack.png")).ok()),
             required: false,
             position: Position::Top,
@@ -77,6 +96,7 @@ pub fn discover(vanilla: &Path, dir: Option<&Path>) -> Vec<PackInfo> {
                 description_style: style,
                 source: Source::World,
                 compat: pack_screen::Compat::Compatible,
+                features: feature_flags(&user.meta()),
                 icon: read_icon(user.icon()),
                 required: false,
                 position: Position::Top,
@@ -91,6 +111,7 @@ pub fn discover(vanilla: &Path, dir: Option<&Path>) -> Vec<PackInfo> {
         description_style: Style::default(),
         source: Source::BuiltIn,
         compat: pack_screen::Compat::Compatible,
+        features: Vec::new(),
         icon: read_icon(fs::read(vanilla.join("pack.png")).ok()),
         required: true,
         position: Position::Bottom,

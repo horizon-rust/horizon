@@ -80,6 +80,7 @@ fn info(p: &Pack) -> PackInfo {
             PackSource::Default
         },
         compat: p.compatibility,
+        features: Vec::new(),
         icon: p.icon_png().as_deref().and_then(pack_screen::load_icon),
         required: false,
         position: Position::Top,
@@ -95,6 +96,7 @@ fn vanilla_info(vanilla: &Path) -> PackInfo {
         description: Text::translate("resourcePack.vanilla.description", &[]),
         description_style: Style::default(),
         source: PackSource::BuiltIn,
+        features: Vec::new(),
         compat: Compat::Compatible,
         icon: std::fs::read(vanilla.join("pack.png"))
             .ok()

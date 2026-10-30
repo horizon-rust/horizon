@@ -433,8 +433,10 @@ impl Title {
             options: WorldOptions::with_feature_packs(
                 data_packs::discover(&self.resources, None)
                     .into_iter()
+                    // The packs that ask for feature flags start switched off
+                    // (`FeatureFlags.DEFAULT_FLAGS` has none of them).
+                    .filter(|p| !p.features.is_empty())
                     .map(|p| p.id)
-                    .filter(|id| id != "vanilla" && !id.contains(':') && !id.starts_with("file/"))
                     .collect(),
             ),
         }
@@ -2289,11 +2291,12 @@ impl Title {
             // `ExperimentsScreen.init`: every feature pack the repository has,
             // switched on when the selection holds it.
             PendingScreen::Experiments => {
-                let feature =
-                    |id: &str| !id.contains(':') && !id.starts_with("file/") && id != "vanilla";
+                // `ExperimentsScreen`: the packs that ask for feature flags
+                // (`pack.mcmeta`'s `features`), not the ones whose id looks
+                // like a feature pack.
                 let flags = data_packs::discover(&self.resources, None)
                     .into_iter()
-                    .filter(|p| feature(&p.id))
+                    .filter(|p| !p.features.is_empty())
                     .map(|p| experiments::Flag {
                         enabled: options.data_packs.contains(&p.id),
                         id: p.id,
