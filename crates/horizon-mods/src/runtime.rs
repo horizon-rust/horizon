@@ -1785,6 +1785,45 @@ impl Mods {
             .iter()
             .any(|e| e.run.as_ref().is_some_and(|r| r.inter_mod.is_some()))
     }
+    /// A message from outside the mods (the native hook helper
+    /// `native_mod_publish`, sent as the pseudo-mod `from`): onto the bus,
+    /// delivered at the tick's end under the bus's own caps. Refused while
+    /// no running mod hears the bus, for a channel that is not 1 to 64
+    /// bytes, or for data past a call's bytes — and when a hearing mod's
+    /// pending is full, as the mods' own sends are.
+    pub fn inter_mod_publish(
+        &mut self,
+        from: &str,
+        channel: &str,
+        data: Vec<u8>,
+    ) -> Result<(), String> {
+        if !self.wants_inter_mod() {
+            return Err("no running mod listens on the bus".into());
+        }
+        if channel.is_empty() || channel.len() > 64 {
+            return Err("the channel is 1 to 64 bytes".into());
+        }
+        if data.len() > crate::inter_mod::BYTES_PER_CALL {
+            return Err(format!(
+                "the data is {} bytes; a call carries at most {}",
+                data.len(),
+                crate::inter_mod::BYTES_PER_CALL
+            ));
+        }
+        let message = Message {
+            from: from.to_owned(),
+            target: Target::Channel,
+            channel: channel.to_owned(),
+            data,
+        };
+        match self.inter_bus.lock().map(|mut bus| bus.push(message)) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(
+                "a hearing mod's pending is full; the message waits for the next tick".into(),
+            ),
+            Err(_) => Err("the bus is busy".into()),
+        }
+    }
     /// The messages server mods sent each other (capability `inter-mod`),
     /// at the tick's end, after every other hook: in rounds, so a library's
     /// answer reaches its asker within the same tick — a chain four hops
