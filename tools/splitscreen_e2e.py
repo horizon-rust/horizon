@@ -648,7 +648,8 @@ def scenario_profile_availability():
 
 def scenario_gui_scales():
     print('gui_scales: each player keeps its own GUI scale across turns and settings changes')
-    g = Game(2)
+    # Room for scale 2 in a half (vanilla's 320 x 240 minimum) on a 100% display too.
+    g = Game(2, args=('--width', '2000', '--height', '1200'))
     try:
         g.ctl(1, 'options-set', 'guiScale', '1')
         g.ctl(2, 'options-set', 'guiScale', '2')
@@ -789,9 +790,10 @@ def scenario_monitor():
         size = g.size(2)
         check('P2 fills the monitor: a window of its own', size != g.size(1), True)
         g.play_on(1, 'Window 2')
-        half = (size[0] // 2, size[1])
-        g.wait(lambda: g.size(1) == half, 'P1 beside P2 on the monitor', seconds=15)
-        check('P1 joins it: halves of the monitor', (g.size(1), g.size(2)), (half, half))
+        # Halves side by side, or top and bottom on a portrait monitor.
+        halves = [(size[0] // 2, size[1]), (size[0], size[1] // 2)]
+        g.wait(lambda: g.size(1) in halves and g.size(2) == g.size(1), 'P1 beside P2 on the monitor', seconds=15)
+        check('P1 joins it: halves of the monitor', g.size(1) in halves and g.size(2) == g.size(1), True)
     finally:
         g.quit()
 
@@ -819,7 +821,8 @@ def scenario_eight():
 
 def scenario_sixteen():
     print('sixteen: sixteen players in a 4x4 grid, P16 moves to its own window and leaves')
-    g = Game(16)
+    # Room for P1's menus in a sixteenth of the window on a 100% display too.
+    g = Game(16, args=('--width', '2000', '--height', '1200'))
     try:
         players = range(1, 17)
         g.wait(lambda: all(g.ctl(n, 'state').get('player') is not None for n in players),
