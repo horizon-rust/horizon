@@ -19,6 +19,17 @@ pub const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
     attributes: &wgpu::vertex_attr_array![0 => Sint16x4],
 };
 
+/// The shooting stars' rate (terrain.wgsl `rt_meteor`): the seconds of a slot that holds a meteor
+/// with the given chance. Rare by default, a few a night (a night lasts about eight minutes); the
+/// environment's `HORIZON_METEORS=frequent` makes one every couple of seconds to test them, `off` none.
+pub fn meteors() -> [f32; 2] {
+    static RATE: std::sync::OnceLock<[f32; 2]> = std::sync::OnceLock::new();
+    *RATE.get_or_init(|| match std::env::var("HORIZON_METEORS").as_deref() {
+        Ok("off" | "0") => [0.0, 0.0],
+        Ok("frequent") => [2.5, 1.0],
+        _ => [30.0, 0.2],
+    })
+}
 pub fn buffer(device: &wgpu::Device) -> wgpu::Buffer {
     use wgpu::util::DeviceExt;
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

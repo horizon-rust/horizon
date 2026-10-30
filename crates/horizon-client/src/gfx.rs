@@ -225,7 +225,8 @@ struct Globals {
     /// sky; the light the rays trace toward (the sun's or the moon's), in paper whites.
     rt_sun: [f32; 4],
     rt_sun_light: [f32; 4],
-    /// RT lighting's stars: their brightness (w), and the real sky's turn (`sky_stars::frame`).
+    /// RT lighting's stars: the moon's phase (x), the meteors' slot and chance (y, z), their brightness (w),
+    /// and the real sky's turn (`sky_stars::frame`).
     rt_stars: [f32; 4],
     rt_star_frame: [[f32; 4]; 4],
     /// RT lighting's water (`set_water_layers`) and the time; the camera wrapped every 4096 blocks.
@@ -4671,9 +4672,12 @@ impl Renderer {
         // RT lighting's real sun and sky: the sky table follows the sun; the light traced toward is
         // the sun's through the atmosphere or, once it has set, the moon's.
         let rt_sun = crate::celestial::direction(frame.sky.sun_angle, frame.sun_path_tilt);
+        // Minecraft's moon phase (0 full, 4 new), and how much of the moon's face is lit.
+        let moon_phase = frame.moon_phase.min(7) as f32;
+        let moon_lit = 0.5 + 0.5 * (moon_phase * std::f32::consts::FRAC_PI_4).cos();
         let rt_sky = self.rt_lighting && world_linear && !(frame.title || frame.end_sky);
         if rt_sky {
-            self.atmosphere.update(&self.queue, rt_sun);
+            self.atmosphere.update(&self.queue, rt_sun, moon_lit);
         }
         // Remix's per-situation post-processing (its minecraft-logic confs): storms first, then
         // the sun's height.
@@ -4695,9 +4699,7 @@ impl Renderer {
             && frame.clouds.is_some()
             && !frame.underwater
             && rt_clouds::mode() != rt_clouds::Mode::Off;
-        // Minecraft's moon phase (0 full, 4 new), and how much of the moon's face is lit.
-        let moon_phase = frame.moon_phase.min(7) as f32;
-        let moon_lit = 0.5 + 0.5 * (moon_phase * std::f32::consts::FRAC_PI_4).cos();
+        let meteors = sky_stars::meteors();
         let rt_sun_light = {
             // By night the rays trace toward the moon: its light by its phase, its own disc for
             // the shadows' penumbra (the Moon Size setting).
@@ -4786,8 +4788,8 @@ impl Renderer {
             ],
             rt_sun: [rt_sun.x, rt_sun.y, rt_sun.z, f32::from(u8::from(rt_sky))],
             rt_sun_light,
-            // x: the moon's phase (terrain.wgsl `rt_moon_disc`).
-            rt_stars: [moon_phase, 0.0, 0.0, frame.sky.star_brightness],
+            // x: the moon's phase (terrain.wgsl `rt_moon_disc`); y, z: the shooting stars' rate.
+            rt_stars: [moon_phase, meteors[0], meteors[1], frame.sky.star_brightness],
             rt_star_frame: sky_stars::frame(frame.sky.sun_angle, frame.sun_path_tilt)
                 .to_cols_array_2d(),
             rt_water: [
