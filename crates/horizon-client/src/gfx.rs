@@ -108,6 +108,7 @@ mod froxels;
 mod gpu_passes;
 pub use froxels::CameraMedium;
 mod shadow_rays;
+mod sky_planets;
 mod sky_stars;
 mod stars;
 // Temporal anti-aliasing for RT lighting (gfx/taa.rs).
@@ -453,6 +454,11 @@ pub struct Renderer {
     /// RT lighting's real stars (`sky_stars`): their pipeline and the catalogue's buffer.
     rt_star_pipeline: wgpu::RenderPipeline,
     rt_star_buffer: wgpu::Buffer,
+    /// RT lighting's planets (`sky_planets`): their pipeline, their places' buffer and the day
+    /// (since J2000) it holds them on, recomputed as the date turns.
+    rt_planet_pipeline: wgpu::RenderPipeline,
+    rt_planet_buffer: wgpu::Buffer,
+    rt_planet_day: i64,
     dark_disc: wgpu::RenderPipeline,
     lines: wgpu::RenderPipeline,
     lines_secondary: wgpu::RenderPipeline,
@@ -1949,6 +1955,30 @@ impl Renderer {
             }),
         );
         let rt_star_buffer = sky_stars::buffer(&device);
+        // The planets (`sky_planets`): the stars' quads and light, their own instances.
+        let rt_planet_pipeline = pipeline(
+            "RT lighting's planets",
+            "vs_rt_planet",
+            "fs_rt_star",
+            &[Some(sky_planets::LAYOUT)],
+            tri,
+            None,
+            false,
+            false,
+            Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Zero,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            }),
+        );
+        let rt_planet_buffer = sky_planets::buffer(&device);
         let dark_disc = pipeline(
             "Dark disc",
             "vs_sky",
@@ -3124,6 +3154,9 @@ impl Renderer {
             rt_sky,
             rt_star_pipeline,
             rt_star_buffer,
+            rt_planet_pipeline,
+            rt_planet_buffer,
+            rt_planet_day: i64::MIN,
             dark_disc,
             lines,
             lines_secondary,
@@ -5034,6 +5067,22 @@ impl Renderer {
         };
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));
+        // The planets move against the stars by up to a degree or two a day (Mercury, Venus):
+        // their places once a day.
+        if rt_sky {
+            let days = sky_stars::days();
+            let day = days.floor() as i64;
+            if day != self.rt_planet_day {
+                self.rt_planet_day = day;
+                let planets = sky_planets::instances(days);
+                self.uploads.buffer(
+                    &mut encoder,
+                    &self.rt_planet_buffer,
+                    0,
+                    bytemuck::cast_slice(&planets),
+                );
+            }
+        }
         // GameRenderer.render3dHud: the hand's projection at hudFov, with the
         // bob in its pose rather than the projection (same product).
         let hand_projection = Mat4::from_cols_array(&crate::camera::hand_projection(
@@ -6136,6 +6185,9 @@ impl Renderer {
                                 pass.set_pipeline(&self.rt_star_pipeline);
                                 pass.set_vertex_buffer(0, self.rt_star_buffer.slice(..));
                                 pass.draw(0..6, 0..sky_stars::COUNT);
+                                pass.set_pipeline(&self.rt_planet_pipeline);
+                                pass.set_vertex_buffer(0, self.rt_planet_buffer.slice(..));
+                                pass.draw(0..6, 0..sky_planets::COUNT);
                             }
                         }
                     }

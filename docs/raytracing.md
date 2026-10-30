@@ -137,6 +137,14 @@ counts the blocks right beside a surface.
    latitude the sun's path leans by (43 degrees for Aix-en-Provence) at the real sidereal time (the
    date and the in-game hour), coloured by their temperature, dimmed and reddened toward the horizon,
    outshone by the sky's light; the Milky Way along the galactic plane, brighter toward Sagittarius.
+   The naked-eye planets (`gfx/sky_planets.rs`): Mercury, Venus, Mars, Jupiter, Saturn and Uranus
+   where their orbits put them on the sky's date (Standish's JPL Keplerian elements for 1800 to 2050,
+   the Earth's too, a few arcminutes off the full ephemeris; recomputed once a day), turned with the
+   stars, as bright as their distances and phase make them (Mallama & Hilton 2018, Saturn's rings by
+   their tilt to us), in the colour their surfaces reflect (Mars orange-red, Jupiter cream, Saturn
+   pale yellow); they do not twinkle, but for a faint flicker right on the horizon. Tested against
+   JPL Horizons' places and magnitudes on eight dates (Saturn 0.09 degrees off, the others within a
+   hundredth; magnitudes within 0.06).
 11. Water (done, first step): no texture; waves for its normal; the sky and the sun's glint reflected
    by Fresnel; its depth from the depth prepass, what lies under it tinted by pure water's
    absorption (dual-source blending, where the GPU has it) and its blue-green glow in its place;
