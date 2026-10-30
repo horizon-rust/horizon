@@ -41,7 +41,8 @@ struct Channel {
     relative: bool,
     /// Whose sounds these are: 0 the game's, another splitscreen player's (`Audio::share`).
     owner: u8,
-    world: String,
+    /// Its world (`Mixer::world_id`; 0 none).
+    world: u32,
     /// The sound file it started and when, to tell another player's copy of it.
     started: Option<(String, std::time::Instant)>,
 }
@@ -54,8 +55,28 @@ struct Mixer {
     /// Splitscreen: the other players' cameras (position, yaw, pitch) by owner. A world sound is
     /// heard from the nearest camera, and panned half as wide while several share the speakers.
     listeners: HashMap<u8, ([f64; 3], f32, f32)>,
-    worlds: HashMap<u8, String>,
+    /// Each camera's world by owner, as ids: the callback compares and copies integers.
+    worlds: HashMap<u8, u32>,
+    /// World names by id - 1 (`world_id`).
+    world_names: Vec<String>,
+    /// The callback's cameras (position, basis, world), kept to be refilled without allocating.
+    cameras: Vec<([f64; 3], Basis, u32)>,
     limiter_peak: f32,
+}
+/// A camera's forward, up and right vectors.
+type Basis = ([f64; 3], [f64; 3], [f64; 3]);
+impl Mixer {
+    /// The id of world `name` (1 and up), given once per name.
+    fn world_id(&mut self, name: &str) -> u32 {
+        let i = match self.world_names.iter().position(|w| w == name) {
+            Some(i) => i,
+            None => {
+                self.world_names.push(name.to_owned());
+                self.world_names.len() - 1
+            }
+        };
+        i as u32 + 1
+    }
 }
 /// A sound the player could have heard (`SoundEventListener.onPlaySound`):
 /// what the subtitle overlay needs.
@@ -80,14 +101,19 @@ pub struct MixerBackend {
     live: bool,
     /// Whose channels these are (`Channel::owner`).
     owner: u8,
-    world: String,
+    world: u32,
+    /// How many other players share this output: alone, a sound never looks for its copy.
+    shares: Arc<std::sync::atomic::AtomicUsize>,
 }
 /// A splitscreen player's backend leaving: its camera and sounds go with it.
 impl Drop for MixerBackend {
     fn drop(&mut self) {
-        if self.owner != 0
-            && let Ok(mut m) = self.mixer.lock()
-        {
+        if self.owner == 0 {
+            return;
+        }
+        self.shares
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut m) = self.mixer.lock() {
             m.listeners.remove(&self.owner);
             m.worlds.remove(&self.owner);
             let owner = self.owner;
@@ -250,6 +276,10 @@ impl MixerBackend {
     /// Splitscreen: another player's game started this same sound here just now (both clients
     /// heard it); this copy stays stopped, the first is heard from the nearest camera.
     fn duplicate(&self, channel: ChannelId, (namespace, path): (&str, &str)) -> bool {
+        // Alone: nobody else's copy, and no lock taken for it.
+        if self.shares.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            return false;
+        }
         let Ok(mut m) = self.mixer.lock() else {
             return false;
         };
@@ -263,7 +293,7 @@ impl MixerBackend {
         let key = format!("{namespace}:{path}");
         let key = variantless(&key);
         let at = c.at;
-        let world = c.world.clone();
+        let world = c.world;
         let twin = m.channels.values().any(|o| {
             o.owner != self.owner
                 && o.world == world
@@ -307,7 +337,7 @@ impl Backend for MixerBackend {
                 at: [0.0; 3],
                 relative: false,
                 owner: self.owner,
-                world: self.world.clone(),
+                world: self.world,
                 started: None,
             },
         );
@@ -479,25 +509,28 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         ];
         (forward, up, right)
     };
-    // Every camera hearing (splitscreen: the other players' too).
-    let cameras: Vec<_> = std::iter::once((
-        0,
-        (mixer.listener, mixer.listener_yaw, mixer.listener_pitch),
-    ))
-    .chain(
-        mixer
-            .listeners
-            .iter()
-            .map(|(&owner, &camera)| (owner, camera)),
-    )
-    .map(|(owner, (at, yaw, pitch))| {
-        (
-            at,
-            basis(yaw, pitch),
-            mixer.worlds.get(&owner).cloned().unwrap_or_default(),
+    // Every camera hearing (splitscreen: the other players' too), in the mixer's own buffer.
+    let mut cameras = std::mem::take(&mut mixer.cameras);
+    cameras.clear();
+    cameras.extend(
+        std::iter::once((
+            0,
+            (mixer.listener, mixer.listener_yaw, mixer.listener_pitch),
+        ))
+        .chain(
+            mixer
+                .listeners
+                .iter()
+                .map(|(&owner, &camera)| (owner, camera)),
         )
-    })
-    .collect();
+        .map(|(owner, (at, yaw, pitch))| {
+            (
+                at,
+                basis(yaw, pitch),
+                mixer.worlds.get(&owner).copied().unwrap_or_default(),
+            )
+        }),
+    );
     let shared = cameras.len() > 1;
     let dot = |a: [f64; 3], b: [f64; 3]| (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) as f32;
     // Gains and pans per source for this buffer.
@@ -550,6 +583,7 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         let step = f64::from(*source_rate) / f64::from(rate) * f64::from(c.pitch.max(0.0));
         voices.push((*id, [left, right, gain], step));
     }
+    mixer.cameras = cameras;
     for (id, [left, right, gain], step) in voices {
         let Some(c) = mixer.channels.get_mut(&id) else {
             continue;
@@ -744,7 +778,8 @@ impl Audio {
                 next: 0,
                 live,
                 owner: 0,
-                world: String::new(),
+                world: 0,
+                shares: Arc::default(),
             },
             record_heard: false,
             listener: [0.0; 3],
@@ -857,11 +892,10 @@ impl Audio {
     }
     /// World identity for this player's sources and camera. Existing channels keep their world.
     pub fn set_world(&mut self, world: &str) {
-        if self.backend.world != world {
-            self.backend.world = world.to_owned();
-        }
         if let Ok(mut mixer) = self.backend.mixer.lock() {
-            mixer.worlds.insert(self.backend.owner, world.to_owned());
+            let id = mixer.world_id(world);
+            self.backend.world = id;
+            mixer.worlds.insert(self.backend.owner, id);
         }
     }
 
@@ -885,6 +919,9 @@ impl Audio {
     /// (`owner`: 1 to 255, its own). Dropped, its camera and sounds go.
     pub fn share(&self, owner: u8) -> Self {
         assert_ne!(owner, 0, "shared audio owners must be nonzero");
+        self.backend
+            .shares
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut engine = SoundEngine::new(self.engine.registry.clone());
         engine.loaded = self.backend.live;
         Self {
@@ -900,7 +937,8 @@ impl Audio {
                     << 40,
                 live: self.backend.live,
                 owner,
-                world: self.backend.world.clone(),
+                world: self.backend.world,
+                shares: self.backend.shares.clone(),
             },
             record_heard: false,
             listener: [0.0; 3],
@@ -1172,7 +1210,7 @@ mod tests {
             at,
             relative: false,
             owner: 0,
-            world: String::new(),
+            world: 0,
             started: None,
         }
     }
@@ -1363,11 +1401,13 @@ mod tests {
         guest.set_listener([1.0, 2.0, 3.0], 0.0, 0.0);
         let id = guest.backend.create(false).unwrap();
         let mixer = host.backend.mixer.lock().unwrap();
-        assert_eq!(
-            mixer.worlds.get(&1).map(String::as_str),
-            Some("minecraft:overworld")
-        );
-        assert_eq!(mixer.channels[&id].world, "minecraft:overworld");
+        let overworld = mixer
+            .world_names
+            .iter()
+            .position(|w| w == "minecraft:overworld");
+        let overworld = overworld.map(|i| i as u32 + 1);
+        assert_eq!(mixer.worlds.get(&1).copied(), overworld);
+        assert_eq!(Some(mixer.channels[&id].world), overworld);
     }
 
     #[test]
@@ -1377,7 +1417,8 @@ mod tests {
             ..Default::default()
         };
         m.listeners.insert(1, ([0.0, 0.0, 1.0], 0.0, 0.0));
-        m.worlds.insert(1, "nether".into());
+        let nether = m.world_id("nether");
+        m.worlds.insert(1, nether);
         m.channels
             .insert(1, channel(vec![1.0; 4], Some(16.0), [0.0, 0.0, 2.0], true));
         let mut data = [0.0; 2];
@@ -1386,10 +1427,11 @@ mod tests {
             data, [0.0; 2],
             "nearby Nether camera must not hear Overworld source"
         );
-        m.channels.get_mut(&1).unwrap().world = "nether".into();
+        m.channels.get_mut(&1).unwrap().world = nether;
         mix(&mut m, &mut data, 2, 48_000);
         assert!(data[0] > 0.5, "same-world camera must hear source");
-        m.worlds.insert(1, "end".into());
+        let end = m.world_id("end");
+        m.worlds.insert(1, end);
         data.fill(0.0);
         mix(&mut m, &mut data, 2, 48_000);
         assert_eq!(data, [0.0; 2], "no listener remains in source's world");
@@ -1399,7 +1441,8 @@ mod tests {
     fn sounds_in_a_world_without_listeners_finish_while_inaudible() {
         let mut mixer = Mixer::default();
         let mut source = channel(vec![1.0; 4], None, [0.0; 3], false);
-        source.world = "nether".into();
+        let nether = mixer.world_id("nether");
+        source.world = nether;
         mixer.channels.insert(1, source);
         let mut data = [0.0; 4];
         mix(&mut mixer, &mut data, 2, 48_000);
@@ -1407,7 +1450,7 @@ mod tests {
         assert!(mixer.channels[&1].position > 0.0);
         mix(&mut mixer, &mut data, 2, 48_000);
         assert_eq!(mixer.channels[&1].state, State::Stopped);
-        mixer.worlds.insert(0, "nether".into());
+        mixer.worlds.insert(0, nether);
         mix(&mut mixer, &mut data, 2, 48_000);
         assert_eq!(data, [0.0; 4], "returning must not resume the old one-shot");
     }
@@ -1431,6 +1474,8 @@ mod tests {
     #[test]
     fn another_players_copy_of_a_sound_is_dropped() {
         let mixer = Arc::new(Mutex::new(Mixer::default()));
+        // One other player shares the output.
+        let shares = Arc::new(std::sync::atomic::AtomicUsize::new(1));
         let backend = |owner| MixerBackend {
             mixer: mixer.clone(),
             root: PathBuf::new(),
@@ -1439,7 +1484,8 @@ mod tests {
             next: (u64::from(owner)) << 40,
             live: true,
             owner,
-            world: String::new(),
+            world: 0,
+            shares: shares.clone(),
         };
         let (mut p1, mut p2) = (backend(0), backend(1));
         // P2 is listening (its camera is in the mixer), so two players share the speakers.
@@ -1460,7 +1506,7 @@ mod tests {
         assert!(started(&mut p2, [40.0, 64.0, 5.0]));
         assert!(started(&mut p1, [5.0, 64.0, 5.0]));
         // Equal coordinates in another dimension describe a different sound.
-        p2.world = "nether".into();
+        p2.world = mixer.lock().unwrap().world_id("nether");
         assert!(started(&mut p2, [5.0, 64.0, 5.0]));
         // P2 leaving takes its sounds.
         drop(p2);
