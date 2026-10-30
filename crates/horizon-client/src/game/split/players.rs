@@ -141,6 +141,11 @@ impl Split<'_> {
         if self.taken().iter().any(|n| n.eq_ignore_ascii_case(&name)) {
             return Err(format!("{name} is already playing.").into());
         }
+        // The page's names are player names; a test seat's (P2) isn't one, but no name leaves
+        // the profiles folder.
+        if !folder_name(&name) {
+            return Err(format!("{name:?} can't be a profile.").into());
+        }
         let profiles = Self::folder()?.join("profiles");
         if horizon_client::split_profiles::valid_name(&name) {
             horizon_client::split_profiles::store::restore(&profiles, &name)?;
@@ -380,6 +385,24 @@ impl Split<'_> {
         }
         if let (Some(server), Some(name)) = (&self.host.integrated, &guest.name) {
             server.leave_split(name);
+        }
+    }
+}
+
+/// A name that stays one folder inside `profiles`.
+fn folder_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && !name.contains(['/', '\\']) && !name.contains("..")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::folder_name;
+
+    #[test]
+    fn a_profile_name_never_leaves_the_profiles_folder() {
+        assert!(folder_name("P2") && folder_name("Steve"));
+        for bad in ["", ".", "..", "../x", "a/b", "a\\b"] {
+            assert!(!folder_name(bad), "{bad:?}");
         }
     }
 }
