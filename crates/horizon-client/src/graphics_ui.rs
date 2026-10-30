@@ -45,6 +45,7 @@ pub enum H {
     RtLighting,
     SunSize,
     MoonSize,
+    NightVision,
     AerialPerspective,
     SmoothFluids,
     Hdr,
@@ -261,6 +262,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 "RT Lighting's moon, times its real size: its disc and night shadows.",
             ),
             h(
+                H::NightVision,
+                None,
+                "RT Lighting: dim scenes fade to grey as the eye sees at night.",
+            ),
+            h(
                 H::AerialPerspective,
                 None,
                 "RT Lighting: far blocks fade blue into the haze, times real air's.",
@@ -444,6 +450,7 @@ impl H {
                 1 => labelled("Sun Size", "1x (Real)"),
                 n => labelled("Sun Size", format!("{n}x")),
             },
+            H::NightVision => labelled("Night Vision", on_off(g.night_vision)),
             H::MoonSize => match g.moon_size {
                 1 => labelled("Moon Size", "1x (Real)"),
                 n => labelled("Moon Size", format!("{n}x")),
@@ -547,6 +554,7 @@ impl H {
             H::RayTracedShadows => g.ray_traced_shadows = !g.ray_traced_shadows,
             H::RayTracedAo => g.ray_traced_ao = !g.ray_traced_ao,
             H::RtLighting => g.rt_lighting = !g.rt_lighting,
+            H::NightVision => g.night_vision = !g.night_vision,
             H::SmoothFluids => g.smooth_fluids = !g.smooth_fluids,
             H::Hdr => g.hdr = !g.hdr,
             H::BatteryMode => g.battery = !g.battery,
@@ -593,6 +601,7 @@ impl Item {
             Item::Horizon(H::RayTracedShadows) => g.ray_traced_shadows,
             Item::Horizon(H::RayTracedAo) => g.ray_traced_ao,
             Item::Horizon(H::RtLighting) => g.rt_lighting,
+            Item::Horizon(H::NightVision) => g.night_vision,
             Item::Horizon(H::SmoothFluids) => g.smooth_fluids,
             Item::Horizon(H::Hdr) => g.hdr,
             Item::Horizon(H::BatteryMode) => g.battery,

@@ -88,7 +88,7 @@ fn aces(light: vec3<f32>) -> vec3<f32> {
 @group(1) @binding(2) var<uniform> exposure: vec4<f32>;
 // gfx/tonemap.rs `Grading::params`.
 struct Params {
-    // dt, the exposure's top and bottom in stops (exposure.wgsl).
+    // dt, the exposure's top and bottom in stops (exposure.wgsl); w 1 for the eye's night vision.
     exposure: vec4<f32>,
     // The bloom's burn intensity and luminance threshold (bloom.wgsl).
     bloom: vec4<f32>,
@@ -120,6 +120,7 @@ fn local_tone(light: vec3<f32>, average: f32) -> vec3<f32> {
 // white face 1: colour down to a moonlit field's (0.03), grey under a starlit one's (0.002), the
 // mesopic range between them on a log scale. A torch's or a lamp's light stays in colour.
 fn night_vision(c: vec3<f32>) -> vec3<f32> {
+    if params.exposure.w < 0.5 { return c; }
     let y = dot(c, vec3(0.2126, 0.7152, 0.0722));
     let cones = smoothstep(log(0.002), log(0.03), log(max(y, 1e-7)));
     if cones >= 1.0 { return c; }

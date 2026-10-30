@@ -177,6 +177,8 @@ pub struct Tonemap {
     params: PostParams,
     /// `HORIZON_POST_SITUATION` holds `params`.
     held: bool,
+    /// The eye's night vision (`set_night_vision`).
+    night_vision: bool,
     grading: Option<Grading>,
 }
 
@@ -450,6 +452,7 @@ impl Tonemap {
             // `HORIZON_POST_SITUATION=dusk|night|rain|thunder` holds a situation's values, to
             // look at one whatever the sky (`set_params` then changes nothing).
             held: std::env::var_os("HORIZON_POST_SITUATION").is_some(),
+            night_vision: true,
             params: match std::env::var("HORIZON_POST_SITUATION").as_deref() {
                 Ok("dusk") => PostParams::DUSK,
                 Ok("night") => PostParams::NIGHT,
@@ -462,6 +465,10 @@ impl Tonemap {
     }
 
     /// Grades the scene before the curve (RT lighting): exposure and bloom, tonemap.rs's header.
+    /// The eye's night vision on or off (tonemap.wgsl `night_vision`), from the next frame.
+    pub fn set_night_vision(&mut self, on: bool) {
+        self.night_vision = on;
+    }
     pub fn set_post(&mut self, on: bool) {
         self.post = on && std::env::var("HORIZON_POST").as_deref() != Ok("0");
     }
@@ -695,7 +702,8 @@ impl Tonemap {
         if let (true, Some(post), Some(grading)) = (self.post, &t.post, &self.grading) {
             // The parameters are copied in with the commands, not written ahead of them: in VR
             // an eye's frame can still be queued when the other's is encoded.
-            let words = self.params.words(grading.meter.step(), bloom_burn());
+            let mut words = self.params.words(grading.meter.step(), bloom_burn());
+            words[3] = f32::from(u8::from(self.night_vision));
             let staging = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Horizon post-processing parameters"),
                 size: 64,

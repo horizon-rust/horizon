@@ -347,6 +347,8 @@ pub struct Frame<'a> {
     /// The world border wall, when near enough to be drawn.
     pub border: Option<BorderDraw>,
     pub game_time: f32,
+    /// Minecraft's moon phase, 0 full to 7 (`DimensionType.moonPhase`: the day count mod 8).
+    pub moon_phase: u32,
     /// `GlobalSettingsUniform` GameTime: (game time % 24000 + partial tick) / 24000.
     pub shader_game_time: f32,
     /// Atlas rects (u0, v0, width, height) of end_sky.png and end_portal.png
@@ -3853,6 +3855,12 @@ impl Renderer {
             _ => -1.0,
         };
     }
+    /// RT lighting's night vision (the Night Vision setting, gfx/tonemap.wgsl `night_vision`).
+    pub fn set_night_vision(&mut self, on: bool) {
+        if let Some(t) = &mut self.tonemap {
+            t.set_night_vision(on);
+        }
+    }
     pub fn set_rt_sky(&mut self, size: u32, moon: u32, aerial: u32) {
         self.rt_sun_radius = SUN_RADIUS * size.max(1) as f32;
         self.rt_moon_radius = MOON_RADIUS * moon.max(1) as f32;
@@ -4682,7 +4690,7 @@ impl Renderer {
             && !frame.underwater
             && rt_clouds::mode() != rt_clouds::Mode::Off;
         // Minecraft's moon phase (0 full, 4 new), and how much of the moon's face is lit.
-        let moon_phase = (frame.pack.day_time / 24000).rem_euclid(8) as f32;
+        let moon_phase = frame.moon_phase.min(7) as f32;
         let moon_lit = 0.5 + 0.5 * (moon_phase * std::f32::consts::FRAC_PI_4).cos();
         let rt_sun_light = {
             // By night the rays trace toward the moon: its light by its phase, its own disc for

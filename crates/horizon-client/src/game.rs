@@ -11494,6 +11494,7 @@ impl Game<'_> {
             pack: pack_inputs,
             border,
             game_time: self.world.game_time as f32,
+            moon_phase: (self.world.day_time / 24000).rem_euclid(8) as u32,
             shader_game_time: ((self.world.game_time % 24000) as f32 + alpha as f32) / 24000.0,
             crumbling_sprite: self
                 .gui
@@ -14301,6 +14302,7 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         pack: Default::default(),
         border: None,
         game_time: 0.0,
+        moon_phase: 0,
         shader_game_time: 0.0,
         end_portal_sprites: [[0.0; 4]; 2],
         crumbling_sprite: [0.0; 4],

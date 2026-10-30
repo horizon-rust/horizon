@@ -282,6 +282,7 @@ impl Game<'_> {
                 s.horizon.moon_size,
                 s.horizon.aerial_perspective,
             );
+            r.set_night_vision(s.horizon.night_vision);
             r.set_hdr(
                 s.horizon.hdr,
                 s.horizon.hdr_paper_white as f32,
