@@ -897,6 +897,315 @@ def scenario_pausemenu():
         g.quit()
 
 
+@contextlib.contextmanager
+def dedicated(directory=None, **extra):
+    """A Horizon dedicated server, offline mode, started and ready: (server, port)."""
+    from test_dedicated_server_parity import Server
+    port = lab.free_port()
+    folder = Path(tempfile.mkdtemp(prefix='hz-split-server-'))
+    directory = Path(directory) if directory is not None else folder / 'server'
+    directory.mkdir(parents=True, exist_ok=True)
+    properties = {'online-mode': 'false', 'white-list': 'false', 'server-port': str(port), 'level-type': 'minecraft\\:flat',
+                  'generate-structures': 'false', 'view-distance': '3', 'simulation-distance': '3',
+                  'pause-when-empty-seconds': '-1', 'spawn-protection': '0', **extra}
+    (directory / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in properties.items()),
+                                                 encoding='iso-8859-1')
+    (directory / 'eula.txt').write_text('eula=true\n')
+    server = Server([lab.cargo_target() / ('fast/horizon-client' + ('.exe' if os.name == 'nt' else '')), '--resources', RESOURCES, '--dedicated',
+                     '--nogui'], directory, 'server')
+    try:
+        server.wait_for(r'Done \(')
+        yield server, port
+    finally:
+        server.stop()
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def scenario_packs():
+    print("packs: the server's resource pack: P1 says Yes, the others follow without being asked")
+    from server_pack_e2e import Files, build_pack
+    folder = Path(tempfile.mkdtemp(prefix='hz-split-pack-'))
+    sha1 = build_pack(folder / 'pack.zip')
+    files = Files({'/pack.zip': (folder / 'pack.zip').read_bytes()})
+    try:
+        with dedicated(**{'resource-pack': files.url('/pack.zip'), 'resource-pack-sha1': sha1,
+                          'require-resource-pack': 'false'}) as (server, port):
+            g = Game(2, args=('--server', f'127.0.0.1:{port}'), ready=False)
+            try:
+                g.wait(lambda: 'Yes' in g.labels(1), "P1 asked about the server's pack", seconds=60)
+                g.ctl(1, 'click-button', 'Yes')
+                server.wait_for(r'P2 joined the game', timeout=90)
+                check("P2 joins on P1's Yes, never asked itself", True, True)
+                # P2 finds P1's copy in their shared downloads folder (same SHA-1).
+                downloads = [p for p, _ in files.requests if p == '/pack.zip']
+                check('the pack downloaded once, for both', len(downloads), 1)
+            finally:
+                g.quit()
+    finally:
+        files.shutdown()
+        shutil.rmtree(folder, ignore_errors=True)
+
+def scenario_server():
+    print('server: P1 on a dedicated server; the others join it, a kicked one drops out, all leave with P1')
+    with dedicated() as (server, port):
+        g = Game(3, args=('--server', f'127.0.0.1:{port}'))
+        try:
+            server.wait_for(r'P2 joined the game', timeout=60)
+            server.wait_for(r'P3 joined the game', timeout=60)
+            check('P2 and P3 join the server P1 is on', True, True)
+            server.console('kick P3 Testing')
+            g.wait(lambda: not g.alive(3), 'P3 gone after its kick', seconds=20)
+            check('kicked: P3 drops out, P1 plays on', g.ctl(1, 'state').get('player') is not None, True)
+            g.ctl(1, 'disconnect')
+            server.wait_for(r'P2 left the game', timeout=30)
+            check('P1 leaves: P2 leaves with it', True, True)
+        finally:
+            g.quit()
+
+
+def scenario_eight():
+    print('eight: eight players in one window')
+    g = Game(8)
+    try:
+        sizes = g.sizes(range(1, 9))
+        near = lambda a, b: abs(a - b) <= 1  # thirds of an odd width differ by a pixel
+        # Rows of three, three and two: six equal views, then two wider ones; all the same height.
+        check(f'rows of 3, 3 and 2: {sizes}',
+              all(near(x[0], sizes[0][0]) and near(x[1], sizes[0][1]) for x in sizes[:6])
+              and near(sizes[6][0], sizes[7][0]) and sizes[6][0] > sizes[0][0] + 100
+              and all(near(x[1], sizes[0][1]) for x in sizes), True)
+        drawing = lambda: all(g.ctl(n, 'status')['fps'] > 10 for n in range(1, 9))
+        try:
+            g.wait(drawing, 'every view drawing', seconds=20)
+        except RuntimeError:
+            pass
+        check('every view draws', drawing(), True)
+    finally:
+        g.quit()
+
+
+
+def scenario_sixteen():
+    print('sixteen: sixteen players in a 4x4 grid, P16 moves to its own window and leaves')
+    g = Game(16)
+    try:
+        players = range(1, 17)
+        g.wait(lambda: all(g.ctl(n, 'state').get('player') is not None for n in players),
+               'all sixteen players admitted to the world', seconds=60)
+        check('all sixteen players enter the world', True, True)
+        sizes = g.sizes(players)
+        near = lambda a, b: abs(a - b) <= 1
+        check('all sixteen views have equal dimensions',
+              all(near(w, sizes[0][0]) and near(h, sizes[0][1]) for w, h in sizes), True)
+        drawing = lambda: all(g.ctl(n, 'status')['fps'] > 0 for n in players)
+        g.wait(drawing, 'all sixteen views drawing', seconds=30)
+        check('every player renders', drawing(), True)
+        print('  FPS per player:', [round(g.ctl(n, 'status')['fps'], 1) for n in players])
+        g.play_on(16, 'New window')
+        check('P16 gets its own larger view', g.size(16)[0] > sizes[15][0], True)
+        g.ctl(16, 'disconnect')
+        g.wait(lambda: not g.alive(16), 'P16 leaving')
+        check('P15 still plays after P16 leaves', g.ctl(15, 'state').get('player') is not None, True)
+    finally:
+        g.quit()
+
+
+def scenario_pointer():
+    print('pointer: only the player with the keyboard and mouse grabs the pointer')
+    g = Game(2)
+    try:
+        time.sleep(3)
+        grabbed = lambda n: g.ctl(n, 'state').get('pointer_grabbed')  # noqa: E731
+        g.ctl(1, 'mouse', 'left', 'click')
+        time.sleep(0.5)
+        check('P1 plays with the mouse, P2 never grabs it', (grabbed(1), grabbed(2)), (True, False))
+        # P2's menus (its controller) leave P1's pointer alone.
+        g.ctl(2, 'key', 'e', 'tap')
+        time.sleep(0.6)
+        g.ctl(2, 'key', 'esc', 'tap')
+        time.sleep(0.6)
+        check("after P2's inventory: still P1's", (grabbed(1), grabbed(2)), (True, False))
+    finally:
+        g.quit()
+
+
+
+def scenario_launcher():
+    print("launcher: its other accounts are profiles; offline ones stay in this instance")
+    folder = Path(tempfile.mkdtemp(prefix='hz-launcher-'))
+    # Another signed-in account's session, as the launcher writes it (a token nobody checks:
+    # P1's own world is offline-mode).
+    session = folder / 'session-ann.json'
+    session.write_text(json.dumps({'name': 'Ann', 'uuid': '069a79f444e94726a5befca90e38aaf5',
+                                   'access_token': 'not-a-real-token', 'user_type': 'msa'}))
+    session.chmod(0o600)
+    os.environ['HORIZON_ACCOUNT_SESSIONS'] = json.dumps(
+        [{'name': 'Ann', 'uuid': '069a79f444e94726a5befca90e38aaf5', 'file': str(session)}])
+    g = Game(3, pick=True, seed=lambda home: (home / 'splitscreen/profiles/Bea').mkdir(parents=True))
+    try:
+        menu = lambda n: g.ctl(n, 'state').get('menu') or {}  # noqa: E731
+        g.wait(lambda: menu(2).get('mode') == 'splitscreen-profiles', 'the picker')
+        check('the accounts, then the offline profiles', menu(2).get('profiles'), ['Ann', 'Bea'])
+        check('the account marked', 'Ann (Microsoft)' in g.labels(2), True)
+        g.ctl(2, 'click-button', 'Ann (Microsoft)')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Ann in the world')
+        g.wait(lambda: menu(3).get('mode') == 'splitscreen-profiles', "P3's picker")
+        g.ctl(3, 'click-button', 'New Profile...')
+        g.ctl(3, 'type', 'Dan')
+        g.ctl(3, 'click-button', 'Create')
+        g.wait(lambda: g.ctl(3, 'state').get('player') is not None, 'Dan in the world')
+        check('a new offline profile is kept in the instance',
+              (g.home / 'splitscreen/profiles/Dan').is_dir(), True)
+    finally:
+        g.quit()
+        os.environ.pop('HORIZON_ACCOUNT_SESSIONS', None)
+
+
+
+def scenario_pausemenu():
+    print("pausemenu: Splitscreen Settings in the pause menu only while another player has joined")
+    g = Game(2, pick=True)
+    try:
+        def paused(n):
+            """Player n's pause menu: its buttons, then closed again."""
+            g.ctl(n, 'key', 'esc', 'tap')
+            g.wait(lambda: 'Options...' in g.labels(n), f"P{n}'s pause menu", seconds=5)
+            labels = g.labels(n)
+            g.close_page(n)
+            return labels
+        menu = lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode')  # noqa: E731
+        g.wait(lambda: menu() == 'splitscreen-profiles', "P2's picker")
+        # P2 still choosing: P1 plays alone, so no Splitscreen Settings; Horizon Settings has it.
+        check('alone: none in the pause menu', 'Splitscreen Settings' in paused(1), False)
+        g.page(1)
+        check('alone: Horizon Settings > Splitscreen... still there', 'Done' in g.labels(1), True)
+        g.close_page(1)
+        g.ctl(2, 'click-button', 'New Profile...')
+        g.ctl(2, 'type', 'Dee')
+        g.ctl(2, 'click-button', 'Create')
+        g.wait(lambda: g.ctl(2, 'state').get('player') is not None, 'Dee in the world')
+        time.sleep(1)
+        check('joined: in P1\'s pause menu', 'Splitscreen Settings' in paused(1), True)
+        check("joined: in Dee's", 'Splitscreen Settings' in paused(2), True)
+        # Dee leaves: P1 alone again, gone.
+        g.ctl(2, 'key', 'esc', 'tap')
+        g.wait(lambda: 'Leave' in g.labels(2), "Dee's pause menu", seconds=5)
+        g.press(2, 'Leave')
+        g.wait(lambda: not g.alive(2), 'Dee gone', seconds=10)
+        time.sleep(1)
+        check('alone again: none in the pause menu', 'Splitscreen Settings' in paused(1), False)
+    finally:
+        g.quit()
+
+def pick_profile(g, n, name):
+    """Choose or create an instance-local offline profile, through the actual picker."""
+    g.wait(lambda: (g.ctl(n, 'state').get('menu') or {}).get('mode') == 'splitscreen-profiles',
+           f"P{n}'s picker")
+    if name in (g.ctl(n, 'state').get('menu') or {}).get('profiles', []):
+        for _ in range(8):
+            if name in g.labels(n):
+                g.press(n, name)
+                break
+            g.press(n, 'Next')
+        else:
+            raise RuntimeError(f'profile {name} never appeared')
+    else:
+        g.press(n, 'New Profile...')
+        g.ctl(n, 'type', name)
+        g.press(n, 'Create')
+    g.wait(lambda: g.ctl(n, 'state').get('player') is not None, f'{name} playing')
+
+
+def progress(g, n):
+    p = g.ctl(n, 'state').get('player') or {}
+    return {'diamonds': g.ctl(n, 'inventory')['counts'].get('minecraft:diamond', 0),
+            'position': [round(v, 2) for v in p.get('position', [])],
+            'health': p.get('health'), 'xp': p.get('xp')}
+
+
+def prepare_progress(run, name, count, levels, x):
+    for command in ['gamerule natural_health_regeneration false',
+                    'fill 0 99 0 31 99 31 minecraft:stone',
+                    'fill 0 100 0 31 105 31 minecraft:air',
+                    f'gamemode survival {name}', f'clear {name}',
+                    f'give {name} minecraft:diamond {count}',
+                    f'xp set {name} {levels} levels', f'xp set {name} 0 points',
+                    f'tp {name} {x} 100 8.5', f'damage {name} 4 minecraft:generic']:
+        run(command)
+
+
+def await_progress(g, n, count, levels, x):
+    def ready():
+        p = progress(g, n)
+        return (p['diamonds'] == count and p['health'] == 16
+                and p['position'] == [x, 100.0, 8.5] and (p['xp'] or {}).get('level') == levels)
+    try:
+        g.wait(ready, f'P{n} inventory, position, health and XP', seconds=20)
+    except RuntimeError as error:
+        raise RuntimeError(f'{error}; actual: {progress(g, n)}') from error
+    return progress(g, n)
+
+
+def scenario_dedicated_profiles():
+    print('dedicated_profiles: guest becomes independent P1; identities survive server restart')
+    with tempfile.TemporaryDirectory(prefix='hz-profile-server-') as folder:
+        directory = Path(folder) / 'server'
+        with dedicated(directory=directory) as (server, port):
+            g = Game(2, pick=True, args=('--server', f'127.0.0.1:{port}'))
+            try:
+                pick_profile(g, 2, 'jordank')
+                prepare_progress(server.console, 'jordank', 7, 12, 8.5)
+                expected = await_progress(g, 2, 7, 12, 8.5)
+                g.ctl(2, 'disconnect')
+                g.wait(lambda: not g.alive(2), 'Jordan leaving splitscreen')
+                remote = Game(1, args=('--server', f'127.0.0.1:{port}', '--name', 'jordank'))
+                try:
+                    check('independent P1 uses the guest save', await_progress(remote, 1, 7, 12, 8.5), expected)
+                finally:
+                    remote.quit()
+            finally:
+                g.quit()
+        with dedicated(directory=directory) as (server, port):
+            for name in ['someone_else', 'jordank']:
+                g = Game(1, args=('--server', f'127.0.0.1:{port}', '--name', name))
+                try:
+                    if name == 'jordank':
+                        check('server restart keeps Jordan progress', await_progress(g, 1, 7, 12, 8.5), expected)
+                    else:
+                        check('a different offline name has separate inventory',
+                              progress(g, 1)['diamonds'], 0)
+                finally:
+                    g.quit()
+
+
+def scenario_integrated_profiles():
+    print('integrated_profiles: P1 rename keeps solo save; Jordan moves from splitscreen to LAN')
+    g = Game(2, pick=True)
+    home = g.home
+    try:
+        pick_profile(g, 2, 'jordank')
+        run = lambda command: g.ctl(1, 'command', command)
+        prepare_progress(run, 'P1', 3, 5, 20.5)
+        owner = await_progress(g, 1, 3, 5, 20.5)
+        prepare_progress(run, 'jordank', 7, 12, 8.5)
+        jordan = await_progress(g, 2, 7, 12, 8.5)
+        g.ctl(2, 'disconnect')
+        g.wait(lambda: not g.alive(2), 'Jordan leaving')
+        port = g.ctl(1, 'lan', 'open', '0', 'commands')['port']
+        remote = Game(1, args=('--server', f'127.0.0.1:{port}', '--name', 'jordank'))
+        try:
+            check('LAN Jordan uses splitscreen progress', await_progress(remote, 1, 7, 12, 8.5), jordan)
+        finally:
+            remote.quit()
+    finally:
+        g.quit()
+    g = Game(1, home=home, args=('--name', 'AnotherName'))
+    try:
+        check('changing P1 launcher name keeps solo progress', await_progress(g, 1, 3, 5, 20.5), owner)
+    finally:
+        g.quit()
+
+
 SCENARIOS = {
     'alone': scenario_alone,
     'join': scenario_join,
@@ -922,6 +1231,10 @@ SCENARIOS = {
     'sixteen': scenario_sixteen,
     'pointer': scenario_pointer,
     'pausemenu': scenario_pausemenu,
+    'server': scenario_server,
+    'packs': scenario_packs,
+    'dedicated_profiles': scenario_dedicated_profiles,
+    'integrated_profiles': scenario_integrated_profiles,
 }
 
 

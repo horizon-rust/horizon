@@ -170,7 +170,12 @@ press A; if nobody joins, the offer runs out, or it's declined, it drives P1 aga
 whose controller disconnected shows "(no controller)" on its tile. Other players' pause menus
 say **Leave** for disconnecting. `HORIZON_SPLIT_STATS=1` logs every 5 s where a frame's time
 goes (each player's turn and render, the presents, the GPU wait) and each player's frame rate.
-Joining P1 on an external server follows separately.
+On a server P1 joined (a dedicated server, another computer's LAN world, a friend's invite) the
+others join the same server, each as its own profile; a name already on the server can't be
+picked, and an online-mode server refuses offline profiles, said on the profile page before it
+tries. A player the server turns away as it comes in picks again, told why; one kicked later
+leaves; when P1 leaves the server, everyone does. The server's resource packs are asked once,
+of P1: the others follow P1's answer.
 
 ## Shared rules
 

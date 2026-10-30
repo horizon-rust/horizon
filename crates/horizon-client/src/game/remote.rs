@@ -911,6 +911,10 @@ impl Game<'_> {
         )
     }
 
+    /// Connected to a server in online mode (its Login): each player needs its own account.
+    pub(super) fn online_server(&self) -> bool {
+        self.remote.as_ref().is_some_and(|r| r.online_mode)
+    }
     /// The names in the server's player list, sorted.
     pub(super) fn remote_online_names(&self) -> Option<Vec<String>> {
         let r = self.remote.as_ref()?;
