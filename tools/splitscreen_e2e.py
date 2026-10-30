@@ -358,6 +358,8 @@ def scenario_setup():
         return next(w['enabled'] for w in g.ctl(1, 'ui')['widgets'] if w['label'] == label)
     def page():
         g.ctl(1, 'options', 'horizon')
+        # ui lists the last drawn frame's widgets: wait for the page to be drawn.
+        g.wait(lambda: 'Splitscreen...' in labels(), 'Horizon Settings')
         g.ctl(1, 'click-button', 'Splitscreen...')
         g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'active', 'Setup active')
     try:
@@ -398,6 +400,7 @@ def scenario_setup():
         for _ in range(3):
             g.ctl(1, 'click-button', 'Done')
             g.ctl(1, 'options', 'horizon')
+            g.wait(lambda: 'Splitscreen...' in labels(), 'Horizon Settings')
             g.ctl(1, 'click-button', 'Splitscreen...')
             g.wait(lambda: (g.ctl(1, 'state').get('menu') or {}).get('status') == 'idle', 'reopened idle')
         g.ctl(1, 'click-button', 'Splitscreen: On')
