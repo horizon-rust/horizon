@@ -318,6 +318,12 @@ impl SplitUi {
         if matches!(target, Target::Player(_)) {
             (x, y, bw, bh) = (x + 1.0, y + 1.0, (bw - 2.0).max(4.0), (bh - 2.0).max(4.0));
         }
+        // The selected player's name in yellow: picked, not just under the pointer.
+        let text = if selected {
+            Text::colored(label.as_str(), crate::text::YELLOW)
+        } else {
+            Text::literal(label.as_str())
+        };
         ui::button(
             batch,
             atlas,
@@ -325,7 +331,7 @@ impl SplitUi {
             y,
             bw,
             bh,
-            &Text::literal(label),
+            &text,
             *active,
             hover || selected,
         );
