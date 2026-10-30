@@ -42,6 +42,15 @@ mod ui_bindings {
         world: "ui-host",
     });
 }
+/// Capability `gui-screens`' world: its own, so client mods built before it
+/// (no `gui-screens-events` export) still load and hear nothing of their
+/// free screens.
+mod gui_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "gui-screens-host",
+    });
+}
 pub use bindings::horizon::mods::{
     game::{Clock, Hit, Player},
     hud::{Corner, Line},
@@ -51,6 +60,14 @@ use bindings::{
     exports::horizon::mods::events::Registration,
     horizon::mods::{chat, command, game, hud, log as mod_log, storage},
 };
+/// The free screen a `gui-screens.open` pushed (WIT `interface
+/// gui-screens`), for the game to draw as the mod laid it out.
+pub use gui_bindings::horizon::mods::gui_screens::{
+    Background as GuiBackground, ButtonWidget as GuiButton, FreeScreen, ImageWidget as GuiImage,
+    ItemWidget as GuiItem, ListWidget as GuiList, Point as GuiPoint, Rect as GuiRect,
+    TextWidget as GuiText, Widget as GuiWidget,
+};
+use gui_bindings::{GuiScreensHost, horizon::mods::gui_screens};
 pub use server_bindings::{
     exports::horizon::mods::server_events::{
         Argument, ArgumentKind, ArgumentValue, BlockPos, ServerCommand,
@@ -829,6 +846,9 @@ struct Running {
     /// The mod's `ui-events` export; none for a mod built before `ui`, or a
     /// server mod.
     ui: Option<UiHost>,
+    /// The mod's `gui-screens-events` export; none for a mod built before
+    /// `gui-screens`, or a server mod.
+    gui: Option<GuiScreensHost>,
     hooks: Hooks,
     /// It imports `game.raycast`.
     raycasts: bool,
@@ -904,6 +924,18 @@ struct UiState {
     close: bool,
 }
 
+/// What capability `gui-screens` pushed since the hooks last ran. A mod has
+/// one screen slot, shared with `ui`: whichever of the two last opened is
+/// the one the game shows.
+#[derive(Default)]
+struct GuiState {
+    /// The screen `gui-screens.open` last pushed, until `gui-screens.close`.
+    screen: Option<FreeScreen>,
+    /// The calls since the last hook ended, for [`Output`].
+    open: bool,
+    close: bool,
+}
+
 /// Capability `ui`'s panel beside container screens (`browser`).
 #[derive(Default)]
 struct BrowserState {
@@ -951,6 +983,7 @@ struct State {
     out: Vec<Output>,
     panel: Option<Panel>,
     ui: UiState,
+    gui: GuiState,
     /// Capability `render`'s HUD shapes, drawn until replaced.
     shapes: Vec<Shape>,
     /// Capability `render`'s corner panel.
@@ -2172,6 +2205,8 @@ impl Mods {
                 .map_err(|e| e.to_string())?;
             UiHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
+            GuiScreensHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
+                .map_err(|e| e.to_string())?;
             RenderHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
                 .map_err(|e| e.to_string())?;
             RecipesHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
@@ -2294,6 +2329,7 @@ impl Mods {
             out: Vec::new(),
             panel: None,
             ui: UiState::default(),
+            gui: GuiState::default(),
             shapes: Vec::new(),
             corner: None,
             zoom: None,
@@ -2338,23 +2374,26 @@ impl Mods {
         let instance = linker
             .instantiate(&mut store, &component)
             .map_err(|e| reason(&e))?;
-        let (mut hooks, ui) = if server {
+        let (mut hooks, ui, gui) = if server {
             let exports = HorizonServerMod::new(&mut store, &instance).map_err(|e| reason(&e))?;
             let r = exports
                 .horizon_mods_server_events()
                 .call_init(&mut store)
                 .map_err(|e| reason(&e))??;
-            (Hooks::Server(exports, r), None)
+            (Hooks::Server(exports, r), None, None)
         } else {
             let exports = HorizonMod::new(&mut store, &instance).map_err(|e| reason(&e))?;
             // `ui-events` is a mod built since `ui`'s; older mods have no export
             // and stay callable through `events` alone.
             let ui = UiHost::new(&mut store, &instance).ok();
+            // `gui-screens-events`: the same, for mods built since
+            // `gui-screens`.
+            let gui = GuiScreensHost::new(&mut store, &instance).ok();
             let r = exports
                 .horizon_mods_events()
                 .call_init(&mut store)
                 .map_err(|e| reason(&e))??;
-            (Hooks::Client(exports, r), ui)
+            (Hooks::Client(exports, r), ui, gui)
         };
         let free = |c: &str| {
             let free = !reserved(c) && !taken.iter().any(|t| t == c);
@@ -2499,6 +2538,7 @@ impl Mods {
         Ok(Some(Running {
             store,
             ui,
+            gui,
             hooks,
             raycasts: functions.iter().any(|f| f == "game.raycast"),
             reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
@@ -2609,8 +2649,8 @@ impl Mods {
         entry.cost = (entry.cost * 63 + started.elapsed()) / 64;
         let data = run.store.data_mut();
         let (open, close) = (
-            std::mem::take(&mut data.ui.open),
-            std::mem::take(&mut data.ui.close),
+            std::mem::take(&mut data.ui.open) || std::mem::take(&mut data.gui.open),
+            std::mem::take(&mut data.ui.close) || std::mem::take(&mut data.gui.close),
         );
         self.out.append(&mut data.out);
         if open {
@@ -3063,6 +3103,19 @@ impl Mods {
             .screen
             .as_ref()
     }
+    /// The free screen mod `i` last pushed with `gui-screens.open`, while it
+    /// is up: the mod's own layout, for the game to draw as it says.
+    pub fn free_screen(&self, i: usize) -> Option<&FreeScreen> {
+        self.entries
+            .get(i)?
+            .run
+            .as_ref()?
+            .store
+            .data()
+            .gui
+            .screen
+            .as_ref()
+    }
     /// The widgets `ui.set-settings` pushed: mod `i`'s page in
     /// Options > Mods. Empty while it has none.
     pub fn settings_widgets(&self, i: usize) -> &[UiWidget] {
@@ -3087,6 +3140,26 @@ impl Mods {
             ui.horizon_mods_ui_events().call_settings_opened(s)
         });
     }
+    /// A `button` of mod `i`'s free screen was clicked (capability
+    /// `gui-screens`).
+    pub fn gui_clicked(&mut self, i: usize, id: u32) {
+        self.gui_event(i, |gui, s| {
+            gui.horizon_mods_gui_screens_events().call_clicked(s, id)
+        });
+    }
+    /// A row of one of mod `i`'s free screen's `list` widgets was picked.
+    pub fn gui_picked(&mut self, i: usize, id: u32, row: u32) {
+        self.gui_event(i, |gui, s| {
+            gui.horizon_mods_gui_screens_events()
+                .call_picked(s, id, row)
+        });
+    }
+    /// The player left mod `i`'s free screen (Esc).
+    pub fn gui_closed(&mut self, i: usize) {
+        self.gui_event(i, |gui, s| {
+            gui.horizon_mods_gui_screens_events().call_closed(s)
+        });
+    }
     /// A `ui-events` call on mod `i`; no export, no call (mods built
     /// before `ui` have none).
     fn ui_event(
@@ -3102,6 +3175,24 @@ impl Mods {
         if has_ui {
             self.call(i, FUEL_EVENT, |run| {
                 f(run.ui.as_ref().expect("checked above"), &mut run.store)
+            });
+        }
+    }
+    /// A `gui-screens-events` call on mod `i`; no export, no call (mods
+    /// built before `gui-screens` have none).
+    fn gui_event(
+        &mut self,
+        i: usize,
+        f: impl FnOnce(&GuiScreensHost, &mut Store<State>) -> wasmtime::Result<()>,
+    ) {
+        let has_gui = self
+            .entries
+            .get(i)
+            .and_then(|e| e.run.as_ref())
+            .is_some_and(|r| r.gui.is_some());
+        if has_gui {
+            self.call(i, FUEL_EVENT, |run| {
+                f(run.gui.as_ref().expect("checked above"), &mut run.store)
             });
         }
     }
@@ -3244,6 +3335,82 @@ fn clip_widgets(widgets: Vec<UiWidget>) -> Vec<UiWidget> {
             }
         })
         .collect()
+}
+
+/// Widgets on a free screen (capability `gui-screens`), and the panel's
+/// sides' most (clamped to, as the game can only draw that much).
+const FREE_WIDGETS: usize = 128;
+const FREE_SIDE: f32 = 1024.0;
+
+/// A place or size the game can draw: NaN and infinity become 0, the rest
+/// stays as it is (bounded by the caller).
+fn spot(v: f32) -> f32 {
+    if v.is_finite() { v } else { 0.0 }
+}
+
+fn clip_free_screen(screen: FreeScreen) -> FreeScreen {
+    let rect = |mut r: GuiRect| {
+        (r.x, r.y, r.w, r.h) = (spot(r.x), spot(r.y), spot(r.w), spot(r.h));
+        r
+    };
+    let at = |mut p: GuiPoint| {
+        (p.x, p.y) = (spot(p.x), spot(p.y));
+        p
+    };
+    let mut background = screen.background;
+    background.sprite = background.sprite.map(|s| clip(s));
+    FreeScreen {
+        width: if screen.width.is_finite() {
+            screen.width.clamp(1.0, FREE_SIDE)
+        } else {
+            1.0
+        },
+        height: if screen.height.is_finite() {
+            screen.height.clamp(1.0, FREE_SIDE)
+        } else {
+            1.0
+        },
+        background,
+        widgets: screen
+            .widgets
+            .into_iter()
+            .take(FREE_WIDGETS)
+            .map(|w| match w {
+                GuiWidget::Text(mut t) => {
+                    t.text = clip(t.text);
+                    t.color &= 0xFF_FFFF;
+                    t.at = at(t.at);
+                    GuiWidget::Text(t)
+                }
+                GuiWidget::Button(mut b) => {
+                    b.label = clip(b.label);
+                    b.rect = rect(b.rect);
+                    GuiWidget::Button(b)
+                }
+                GuiWidget::Item(mut i) => {
+                    i.item = clip(i.item);
+                    i.at = at(i.at);
+                    i.scale = if i.scale.is_finite() {
+                        i.scale.clamp(0.0, 16.0)
+                    } else {
+                        1.0
+                    };
+                    GuiWidget::Item(i)
+                }
+                GuiWidget::Image(mut i) => {
+                    i.sprite = clip(i.sprite);
+                    i.rect = rect(i.rect);
+                    GuiWidget::Image(i)
+                }
+                GuiWidget::List(mut l) => {
+                    l.rect = rect(l.rect);
+                    l.rows = l.rows.into_iter().take(LIST_ROWS).map(clip).collect();
+                    l.selected = l.selected.filter(|&s| (s as usize) < l.rows.len());
+                    GuiWidget::List(l)
+                }
+            })
+            .collect(),
+    }
 }
 
 impl mod_log::Host for State {
@@ -5243,6 +5410,8 @@ impl ui::Host for State {
     fn open_screen(&mut self, mut screen: ui::Screen) {
         screen.title = clip(screen.title);
         screen.widgets = clip_widgets(screen.widgets);
+        // One screen a mod: the stacked screen replaces a free one.
+        self.gui.screen = None;
         self.ui.screen = Some(screen);
         self.ui.open = true;
     }
@@ -5252,6 +5421,18 @@ impl ui::Host for State {
     }
     fn set_settings(&mut self, widgets: Vec<ui::Widget>) {
         self.ui.settings = clip_widgets(widgets);
+    }
+}
+impl gui_screens::Host for State {
+    fn open(&mut self, screen: gui_screens::FreeScreen) {
+        // One screen a mod: the free screen replaces a stacked one.
+        self.ui.screen = None;
+        self.gui.screen = Some(clip_free_screen(screen));
+        self.gui.open = true;
+    }
+    fn close(&mut self) {
+        self.gui.screen = None;
+        self.gui.close = true;
     }
 }
 impl storage::Host for State {

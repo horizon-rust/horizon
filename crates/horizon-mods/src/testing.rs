@@ -908,15 +908,45 @@ impl TestGame {
         }
     }
     /// The player picks `row` of the mod's widget `id` (a button is row 0):
-    /// a client mod's `ui-events::select`.
+    /// a client mod's `ui-events::select`, or — while the mod's free screen
+    /// (capability `gui-screens`) is open — a button's `clicked` or a list's
+    /// `picked`.
     pub fn ui_select(&mut self, id: u32, row: u32) {
         self.snapshot();
+        if self.mods.free_screen(0).is_some() {
+            // On a free screen a button is `clicked` and a list row `picked`;
+            // the other widgets take no clicks.
+            let widget = self.mods.free_screen(0).and_then(|s| {
+                s.widgets.iter().find(|w| {
+                    let wid = match w {
+                        crate::GuiWidget::Text(t) => t.id,
+                        crate::GuiWidget::Button(b) => b.id,
+                        crate::GuiWidget::Item(i) => i.id,
+                        crate::GuiWidget::Image(i) => i.id,
+                        crate::GuiWidget::List(l) => l.id,
+                    };
+                    wid == id
+                })
+            });
+            match widget {
+                Some(crate::GuiWidget::Button(_)) => self.mods.gui_clicked(0, id),
+                Some(crate::GuiWidget::List(_)) => self.mods.gui_picked(0, id, row),
+                _ => {}
+            }
+            return;
+        }
         self.mods.ui_select(0, id, row);
     }
-    /// The player leaves the mod's screen (Esc or Done).
+    /// The player leaves the mod's screen (Esc or Done): its `closed`, of
+    /// the free screen (capability `gui-screens`) while one is open, else of
+    /// the stacked one (capability `ui`).
     pub fn ui_closed(&mut self) {
         self.snapshot();
-        self.mods.ui_closed(0);
+        if self.mods.free_screen(0).is_some() {
+            self.mods.gui_closed(0);
+        } else {
+            self.mods.ui_closed(0);
+        }
     }
     /// The mod's screen as lines: `# title`, then each widget (text as is,
     /// `[label]` for a button, `item: name` for an item, `rows` for a
@@ -931,6 +961,48 @@ impl TestGame {
                 UiWidget::Button(b) => format!("[{}]", b.label),
                 UiWidget::Item(i) => format!("{}: {}", i.item, i.name),
                 UiWidget::List(l) => l.rows.join(" | "),
+            });
+        }
+        Some(lines)
+    }
+    /// The mod's free screen (capability `gui-screens`) as lines: `# w h` of
+    /// the panel, then each widget where the mod put it — `text "…" @ x y`,
+    /// `[label] @ x y w h`, `item minecraft:redstone @ x y`, `sprite
+    /// cells:panel/cell @ x y w h` and `rows a | b | c @ x y w h` — `None`
+    /// while none is open. The sandbox loads no textures: pictures show as
+    /// their sprites' names.
+    pub fn free_screen_lines(&self) -> Option<Vec<String>> {
+        use crate::GuiWidget;
+        let screen = self.mods.free_screen(0)?;
+        let mut lines = vec![format!("# {:.0}x{:.0}", screen.width, screen.height)];
+        if let Some(sprite) = &screen.background.sprite {
+            lines.push(format!(
+                "sprite {sprite} @ 0 0 {:.0} {:.0}",
+                screen.width, screen.height
+            ));
+        }
+        for w in &screen.widgets {
+            lines.push(match w {
+                GuiWidget::Text(t) => {
+                    format!("text {:?} @ {:.0} {:.0}", t.text, t.at.x, t.at.y)
+                }
+                GuiWidget::Button(b) => format!(
+                    "[{}] @ {:.0} {:.0} {:.0} {:.0}",
+                    b.label, b.rect.x, b.rect.y, b.rect.w, b.rect.h
+                ),
+                GuiWidget::Item(i) => format!("item {} @ {:.0} {:.0}", i.item, i.at.x, i.at.y),
+                GuiWidget::Image(i) => format!(
+                    "sprite {} @ {:.0} {:.0} {:.0} {:.0}",
+                    i.sprite, i.rect.x, i.rect.y, i.rect.w, i.rect.h
+                ),
+                GuiWidget::List(l) => format!(
+                    "rows {} @ {:.0} {:.0} {:.0} {:.0}",
+                    l.rows.join(" | "),
+                    l.rect.x,
+                    l.rect.y,
+                    l.rect.w,
+                    l.rect.h
+                ),
             });
         }
         Some(lines)
@@ -1395,7 +1467,8 @@ pub struct Step {
     /// player's client half for a server mod, the server half for a client
     /// mod. Before `command`.
     net: Option<NetSet>,
-    /// Client mods: the player presses a widget of the mod's screen, or
+    /// Client mods: the player presses a widget of the mod's screen —
+    /// stacked (`ui`) or free (`gui-screens`), whichever is open — or
     /// leaves the screen. After `net`, before `command`.
     select: Option<SelectSet>,
     #[serde(default)]
@@ -1429,6 +1502,9 @@ pub struct Expect {
     /// The mod's screen after the step, as [`TestGame::screen_lines`]
     /// shows it; `[]` for no screen open.
     screen: Option<Vec<String>>,
+    /// The mod's free screen (capability `gui-screens`) after the step, as
+    /// [`TestGame::free_screen_lines`] shows it; `[]` for none open.
+    free_screen: Option<Vec<String>>,
     /// Text the mod's config file holds after the step (capability
     /// `config`): each string must be in it.
     config_file: Option<Vec<String>>,
@@ -1854,6 +1930,10 @@ impl Step {
         if let Some(want) = &e.screen {
             let got = game.screen_lines().unwrap_or_default();
             same("screen", want, &got)?;
+        }
+        if let Some(want) = &e.free_screen {
+            let got = game.free_screen_lines().unwrap_or_default();
+            same("free-screen", want, &got)?;
         }
         if let Some(want) = &e.net {
             let name = |id: &str| {

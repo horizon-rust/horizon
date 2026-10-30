@@ -1,6 +1,9 @@
 //! A mod for the runtime's `ui` tests: `/ui_screen` opens a screen with one
 //! of each widget, `/ui_settings` sets a settings page, `/ui_close` closes
 //! the screen; the `ui-events` calls answer in chat so the host sees them.
+//! `/free_screen` opens a free screen of the mod's own layout (capability
+//! `gui-screens`) with one of each widget, `/free_close` closes it, and the
+//! `gui-screens-events` calls answer in chat the same way.
 //! `/render_hud`, `/render_clear` and `/render_shake` test `render`;
 //! `/input_claim`, `/input_poll`, `/input_held` and `/input_wheel` test
 //! `input`; `/zoom FACTOR SMOOTH TURN` tests `render.set-zoom`;
@@ -16,7 +19,7 @@
 //! with `recipes.place`; `/recipe_give ITEM [COUNT]` gives with
 //! `recipes.give`.
 use horizon_mod_sdk::{
-    Mod, Registration, browser, chat, command, game,
+    Mod, Registration, browser, chat, command, game, gui_screens,
     input::{self, Event},
     recipes,
     render::{self, FillShape, ItemShape, Point, QuadShape, Rect, Shape, SpriteShape, TextShape},
@@ -97,12 +100,63 @@ fn widgets() -> Vec<Widget> {
     ]
 }
 
+/// A free screen with one of each widget, laid out as a tech mod's panel:
+/// a 176 × 96 panel with a dark fill, the title centred, a picture of the
+/// game's own, a button, an item and a list, each where the mod puts it.
+fn free_screen() -> gui_screens::FreeScreen {
+    let p = |x: f32, y: f32| gui_screens::Point { x, y };
+    let r = |x: f32, y: f32, w: f32, h: f32| gui_screens::Rect { x, y, w, h };
+    gui_screens::FreeScreen {
+        width: 176.0,
+        height: 96.0,
+        background: gui_screens::Background {
+            sprite: None,
+            color: 0xC010_1010,
+        },
+        widgets: vec![
+            gui_screens::Widget::Text(gui_screens::TextWidget {
+                id: 1,
+                text: "Free panel".into(),
+                at: p(88.0, 8.0),
+                color: 0xFFAA00,
+                centered: true,
+                shadow: true,
+            }),
+            gui_screens::Widget::Image(gui_screens::ImageWidget {
+                id: 2,
+                sprite: "widget/button".into(),
+                rect: r(8.0, 22.0, 40.0, 16.0),
+                color: 0xFFFF_FFFF,
+            }),
+            gui_screens::Widget::Item(gui_screens::ItemWidget {
+                id: 3,
+                item: "minecraft:redstone".into(),
+                at: p(120.0, 22.0),
+                scale: 1.0,
+            }),
+            gui_screens::Widget::Button(gui_screens::ButtonWidget {
+                id: 4,
+                label: "Fill".into(),
+                rect: r(8.0, 70.0, 80.0, 18.0),
+            }),
+            gui_screens::Widget::List(gui_screens::ListWidget {
+                id: 5,
+                rect: r(94.0, 44.0, 74.0, 44.0),
+                rows: vec!["one".into(), "two".into()],
+                selected: Some(0),
+            }),
+        ],
+    }
+}
+
 impl Mod for Guest {
     fn init() -> Result<(Self, Registration), String> {
         let hooks = [
             "ui_screen",
             "ui_settings",
             "ui_close",
+            "free_screen",
+            "free_close",
             "render_hud",
             "render_clear",
             "render_shake",
@@ -136,6 +190,8 @@ impl Mod for Guest {
                 title: "Guest's screen".into(),
                 widgets: widgets(),
             }),
+            "free_screen" => gui_screens::open(&free_screen()),
+            "free_close" => gui_screens::close(),
             "ui_settings" => ui::set_settings(&widgets()),
             "ui_close" => ui::close_screen(),
             "render_hud" => render::set_hud(&shapes()),
@@ -506,6 +562,15 @@ impl Mod for Guest {
             }),
         ]);
         chat::show("settings opened");
+    }
+    fn gui_clicked(&mut self, id: u32) {
+        chat::show(&format!("clicked {id}"));
+    }
+    fn gui_picked(&mut self, id: u32, row: u32) {
+        chat::show(&format!("picked {id}:{row}"));
+    }
+    fn gui_closed(&mut self) {
+        chat::show("gui closed");
     }
 }
 

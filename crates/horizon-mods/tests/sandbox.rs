@@ -26,8 +26,8 @@ id = "test_ui_guest"
 name = "Test UI Guest"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "command", "ui", "render", "input", "recipes"]
-experimental = ["ui", "render", "input", "recipes"]
+capabilities = ["game-read", "chat", "command", "ui", "gui-screens", "render", "input", "recipes"]
+experimental = ["ui", "gui-screens", "render", "input", "recipes"]
 "#;
 
 /// Builds the mods once and writes their `.hmod` files; returns the folder.
@@ -303,8 +303,9 @@ experimental = ["ui", "gui-screens", "render", "input", "recipes", "network"]
         needed(imports(&wasm).unwrap().iter().map(String::as_str)).0
     };
     assert_eq!(level("coords_hud.hmod"), 0);
-    // The UI guest draws far terrain (`render.set-far-terrain`).
-    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 7);
+    // The UI guest opens free screens (`gui-screens.open`, the newest
+    // functions of level 25), having drawn far terrain since level 7.
+    assert_eq!(level("horizon_mods_test_ui_guest.hmod"), 25);
     // Cells keeps block entities (`block-entities.get`, `.set`); the level
     // below this Horizon's belongs to `inter-mod`'s functions.
     assert_eq!(level("cells.hmod"), 23);
@@ -578,6 +579,53 @@ fn ui_screens_settings_and_events() {
     assert!(mods.command("ui_close"));
     assert!(mods.drain().contains(&Output::CloseScreen { owner: 0 }));
     assert!(mods.screen(0).is_none());
+}
+
+/// Capability `gui-screens`: the mod's own layout, one screen a mod
+/// whichever interface opened it, and the events of what the player did.
+#[test]
+fn free_screens_open_and_answer() {
+    let mut mods = load("horizon_mods_test_ui_guest.hmod");
+    // `/free_screen` pushes it; the outputs are the `ui` screen's own.
+    assert!(mods.command("free_screen"));
+    assert_eq!(mods.drain(), [Output::OpenScreen { owner: 0 }]);
+    let screen = mods.free_screen(0).expect("a pushed free screen");
+    assert_eq!((screen.width, screen.height), (176.0, 96.0));
+    assert_eq!(screen.widgets.len(), 5);
+    // What the player did comes back through `gui-screens-events`.
+    mods.gui_clicked(0, 4);
+    mods.gui_picked(0, 5, 1);
+    mods.gui_closed(0);
+    let chat = |mods: &mut Mods| {
+        mods.drain()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Chat { text, .. } => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        chat(&mut mods),
+        [
+            "clicked 4".to_owned(),
+            "picked 5:1".into(),
+            "gui closed".into()
+        ]
+    );
+    assert!(mods.free_screen(0).is_some(), "leaving tells, not closes");
+    // A stacked screen replaces a free one, and back: one screen a mod.
+    assert!(mods.command("ui_screen"));
+    assert_eq!(mods.drain(), [Output::OpenScreen { owner: 0 }]);
+    assert!(mods.free_screen(0).is_none());
+    assert!(mods.screen(0).is_some());
+    assert!(mods.command("free_screen"));
+    assert_eq!(mods.drain(), [Output::OpenScreen { owner: 0 }]);
+    assert!(mods.screen(0).is_none());
+    // `/free_close` is the mod's own doing: closed, but told nothing.
+    assert!(mods.command("free_close"));
+    assert!(mods.drain().contains(&Output::CloseScreen { owner: 0 }));
+    assert!(mods.free_screen(0).is_none());
 }
 
 #[test]
