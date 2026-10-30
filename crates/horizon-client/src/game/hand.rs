@@ -185,6 +185,9 @@ impl Game<'_> {
         } else {
             // Minecraft.tick: a screen keeps the attack from starting.
             self.clicks.miss_time = 10000;
+            // ...and takes the use key away, so an item being used is released
+            // instead of finishing with the screen up.
+            self.release_using_item();
         }
         let d = &self.clicks.destroying;
         self.mining = d.active.then_some(Mining {

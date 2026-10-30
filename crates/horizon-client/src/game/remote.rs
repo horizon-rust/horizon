@@ -6354,6 +6354,29 @@ impl Game<'_> {
         }
     }
 
+    /// `MultiPlayerGameMode.releaseUsingItem`: the packet, then `Item.releaseUsing`
+    /// on the client (a riptide launch moves the player by itself).
+    pub(super) fn release_using_item(&mut self) {
+        let Some((slot, ticks)) = self.using else {
+            return;
+        };
+        self.send(S::PlayerAction(play::PlayerAction {
+            action: 6,
+            pos: [0; 3],
+            direction: 0,
+            sequence: 0,
+        }));
+        let hand = self.used_hand();
+        self.using = None;
+        if let Some(hand) = hand
+            && self
+                .stack_in(slot)
+                .is_some_and(|s| &*s.item == "minecraft:trident")
+        {
+            self.with_hand(hand, |g| g.release_trident(ticks));
+        }
+    }
+
     fn remote_handle_input(&mut self) {
         let Some(r) = self.remote.as_mut() else {
             return;
@@ -6365,6 +6388,11 @@ impl Game<'_> {
             self.stop_remote_mining();
         }
         if !ready {
+            // A screen (or sleep) takes the use key away from the game
+            // (`Minecraft.handleKeybinds` runs only with no screen open), so
+            // the item being used is released instead of finishing with the
+            // screen up: `MultiPlayerGameMode.releaseUsingItem`.
+            self.release_using_item();
             return;
         }
         // MultiPlayerGameMode.tick syncs the carried slot before keybinds.
@@ -7681,24 +7709,7 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
         self.0.using.is_some()
     }
     fn release_using(&mut self) {
-        self.0.send(S::PlayerAction(play::PlayerAction {
-            action: 6,
-            pos: [0; 3],
-            direction: 0,
-            sequence: 0,
-        }));
-        // MultiPlayerGameMode.releaseUsingItem also runs `Item.releaseUsing` here: the
-        // player moves by itself, so a Riptide launch happens on the client.
-        let hand = self.0.used_hand();
-        if let Some((slot, ticks)) = self.0.using.take()
-            && let Some(hand) = hand
-            && self
-                .0
-                .stack_in(slot)
-                .is_some_and(|s| &*s.item == "minecraft:trident")
-        {
-            self.0.with_hand(hand, |g| g.release_trident(ticks));
-        }
+        self.0.release_using_item();
     }
     fn start_attack(&mut self) -> bool {
         self.0.remote_start_attack()
