@@ -1,13 +1,18 @@
 // Froxel volumetrics (gfx/froxels.rs, docs/raytracing.md "Next: ... RTX Remix"): a homogeneous
 // medium around the camera in a grid of frustum voxels (x, y: the view's screen; z: the distance
 // along the ray, exponential slices to `far`). Three passes:
-//   cs_inject    per froxel, the light scattered toward the camera: the sun (a shadow ray, tinted by
-//                stained glass and water), the sky's ambient (a ray toward the sky), and one light
-//                source drawn by importance, each through a shadow ray; blended with the last frame's
-//                froxels reprojected (a long history, 8 frames while settling).
+//   cs_inject    per froxel, the light scattered toward the camera at a point of the froxel drawn
+//                this frame (a low-discrepancy sequence, so the history supersamples the froxel): the
+//                sun (a shadow ray, tinted by stained glass and water), the sky's ambient (a ray toward
+//                the sky), and one light source drawn by importance, each through a shadow ray.
+//   cs_blend     per froxel, that sample blended with the last frame's froxels reprojected (a long
+//                history, 8 frames while settling), the history shortened where the froxel's content
+//                moved a lot and held within the range the new samples' neighbourhood shows.
 //   cs_integrate per screen column, front to back: the in-scatter and (in alpha) the transmittance
 //                up to each slice.
-//   fs_scatter / fs_transmit  the composite, `scene * T + in-scatter` at each pixel's depth.
+//   fs_scatter / fs_transmit  the composite, `scene * T + in-scatter` at each pixel's depth, the
+//                in-scatter read through a cubic B-spline across the screen (a trilinear read shows
+//                the 16 pixel grid as kinked, blocky stripes in the halo).
 // Units are those of terrain.wgsl's diffuse light: radiance times pi (Lambert's 1/pi left out), so
 // the sun's light in `sun_light` scatters as `pi * HG * E` and an isotropic sky as its mean.
 struct Fx {
@@ -46,6 +51,12 @@ struct Fx {
     history: vec4<f32>,
     // The depth's size in pixels.
     size: vec4<f32>,
+    // xyz: where the view's rays start (camera-relative; the view bobbing moves it off the camera),
+    // this frame's and the last frame's.
+    eye: vec4<f32>,
+    prev_eye: vec4<f32>,
+    // xyz: this frame's offset within a froxel before the froxel's own shift (a 3D R-sequence).
+    jitter: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> fx: Fx;
 @group(0) @binding(1) var depth: texture_depth_2d;
@@ -67,12 +78,14 @@ struct Light {
 @group(0) @binding(8) var<storage, read> cells: array<vec4<u32>>;
 // The sky (gfx/atmosphere.rs): its radiance by azimuth from the sun and elevation.
 @group(0) @binding(10) var sky_view: texture_2d<f32>;
-// The last frame's froxels (rgb: the source, a: how many frames it holds), the froxels written, the
-// integrated ones, and what the composite reads.
+// The last frame's froxels (rgb: the source, a: how many frames it holds), the sample drawn this
+// frame, the froxels written, the integrated ones, and what the composite reads.
 @group(0) @binding(11) var history: texture_3d<f32>;
 @group(0) @binding(12) var linear_sampler: sampler;
 @group(0) @binding(13) var source_out: texture_storage_3d<rgba16float, write>;
+@group(0) @binding(21) var fresh_in: texture_3d<f32>;
 @group(0) @binding(14) var integrated_out: texture_storage_3d<rgba16float, write>;
+@group(0) @binding(22) var fresh_out: texture_storage_3d<rgba16float, write>;
 @group(0) @binding(19) var source_in: texture_3d<f32>;
 @group(0) @binding(20) var integrated: texture_3d<f32>;
 
@@ -88,11 +101,13 @@ fn slice_r(t: f32) -> f32 {
 fn slice_t(r: f32) -> f32 {
     return clamp(log(max(r, fx.depth.x) / fx.depth.x) / fx.depth.z, 0.0, 1.0);
 }
-// The unit direction, camera-relative, of the view's screen position `uv` (0..1, y down).
+// The unit direction of the view's screen position `uv` (0..1, y down), from the eye the view's rays
+// start at: the point unprojected at mid depth lies a decimetre ahead of the eye, so the eye's
+// offset from the camera (the view bobbing's) has to come off it, or every step would swing the rays.
 fn ray_dir(uv: vec2<f32>) -> vec3<f32> {
     let ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     let c = fx.inverse_view_proj * vec4(ndc, 0.5, 1.0);
-    return normalize(c.xyz / c.w);
+    return normalize(c.xyz / c.w - fx.eye.xyz);
 }
 // Henyey-Greenstein's phase function (it integrates to 1 over the sphere), `c` the cosine between
 // the light's travel and the view's (1: scattering forward, toward the light when looking at it).
@@ -335,32 +350,77 @@ fn cs_inject(@builtin(global_invocation_id) id: vec3<u32>) {
     let rnd = random3(vec3(id.x + u32(fx.dims.w) * 16411u, id.y * 3571u, id.z + 977u * u32(fx.dims.w)));
     let rnd2 = random3(id * 7919u + vec3(u32(fx.dims.w) * 31u, 17u, 5u));
     let size = fx.dims.xyz;
-    // The froxel's centre, and the point drawn within it this frame (the grid's aliasing averages
-    // out in the history).
-    let centre = (vec3<f32>(id) + 0.5) / size;
-    let at = (vec3<f32>(id) + rnd) / size;
+    // The point drawn within the froxel this frame: the frame's R3 offset shifted by the froxel's own
+    // random number (a Cranley-Patterson rotation), so each froxel's samples over the frames cover
+    // it evenly, far sooner than random ones, and the grid's aliasing leaves no pattern across it.
+    let shift = random3(id * 2654435761u + vec3(101u, 7u, 13u));
+    let at = (vec3<f32>(id) + fract(fx.jitter.xyz + shift)) / size;
     let dir = ray_dir(at.xy);
-    let pos = dir * slice_r(at.z);
+    let pos = fx.eye.xyz + dir * slice_r(at.z);
     var fresh = sun_scatter(pos, dir, rnd2);
     fresh += ambient_scatter(pos, rnd.zx);
     fresh += lights_scatter(pos, dir, rnd2.zxy);
-    // Frame to frame: where this froxel stood in the last frame's grid.
-    var old = vec4(0.0);
-    var count = 0.0;
-    if fx.motion.w > 0.5 {
-        let here = ray_dir(centre.xy) * slice_r(centre.z);
-        let before = here + fx.motion.xyz;
-        let clip = fx.prev_view_proj * vec4(before, 1.0);
-        if clip.w > 0.0 {
-            let ndc = clip.xy / clip.w;
-            let uv = vec3(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5, slice_t(length(before)));
-            let r = length(before);
-            if all(uv >= vec3(0.0)) && all(uv <= vec3(1.0)) && r <= fx.depth.y {
-                old = textureSampleLevel(history, linear_sampler, uv, 0.0);
-                count = old.a;
+    textureStore(fresh_out, vec3<i32>(id), vec4(fresh, 1.0));
+}
+
+// The most the history keeps of its length where its froxel moved far, and the froxels' move (the
+// grid's own units) it starts to shorten and is shortest at.
+const MOVED_KEEPS: f32 = 0.1;
+const MOVED_FROM: f32 = 0.25;
+const MOVED_TO: f32 = 1.75;
+
+@compute @workgroup_size(4, 4, 4)
+fn cs_blend(@builtin(global_invocation_id) id: vec3<u32>) {
+    let dims = vec3<u32>(fx.dims.xyz);
+    if any(id >= dims) { return; }
+    let size = fx.dims.xyz;
+    let top = vec3<i32>(dims) - 1;
+    let here_id = vec3<i32>(id);
+    var fresh = textureLoad(fresh_in, here_id, 0).rgb;
+    // This frame's samples around the froxel: their mean and spread say what the light there is now.
+    var sum = vec3(0.0);
+    var sum_squares = vec3(0.0);
+    for (var dz = -1; dz <= 1; dz++) {
+        for (var dy = -1; dy <= 1; dy++) {
+            for (var dx = -1; dx <= 1; dx++) {
+                let c = textureLoad(fresh_in, clamp(here_id + vec3(dx, dy, dz), vec3(0), top), 0).rgb;
+                sum += c;
+                sum_squares += c * c;
             }
         }
     }
+    let mean = sum / 27.0;
+    let spread = sqrt(max(sum_squares / 27.0 - mean * mean, vec3(0.0)));
+    // Frame to frame: where this froxel's centre stood in the last frame's grid, in world space from
+    // the eye each frame's rays start at.
+    var old = vec4(0.0);
+    var moved = 0.0;
+    if fx.motion.w > 0.5 {
+        let centre = (vec3<f32>(id) + 0.5) / size;
+        let here = fx.eye.xyz + ray_dir(centre.xy) * slice_r(centre.z);
+        let before = here + fx.motion.xyz;
+        let clip = fx.prev_view_proj * vec4(before, 1.0);
+        let r = length(before - fx.prev_eye.xyz);
+        if clip.w > 0.0 {
+            let ndc = clip.xy / clip.w;
+            let uv = vec3(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5, slice_t(r));
+            if all(uv >= vec3(0.0)) && all(uv <= vec3(1.0)) && r <= fx.depth.y {
+                old = textureSampleLevel(history, linear_sampler, uv, 0.0);
+                moved = length((uv - centre) * size);
+            }
+        }
+    }
+    var count = old.a;
+    // Where the froxel's content moved a lot, the history has been resampled blurred and its shafts
+    // lag: it keeps a shorter length there, and is held within what the neighbourhood now shows
+    // (loosely when the froxel stayed, whose long history the shadows' noise would spoil).
+    let shake = smoothstep(MOVED_FROM, MOVED_TO, moved);
+    count *= mix(1.0, MOVED_KEEPS, shake);
+    let band = mix(6.0, 1.5, shake) * spread + 0.15 * mean + vec3(1e-4);
+    old = vec4(clamp(old.rgb, mean - band, mean + band), old.a);
+    // A froxel the last frame's grid had no light for (new at the view's edge) takes its
+    // neighbourhood's mean rather than one noisy sample.
+    if count <= 0.0 { fresh = mean; }
     let n = min(count + 1.0, fx.history.x);
     // Bright outliers (a ray through a gap) are held to what the history shows, beyond a few
     // times its light, so one lucky ray doesn't flash.
@@ -368,7 +428,7 @@ fn cs_inject(@builtin(global_invocation_id) id: vec3<u32>) {
     let lum = luminance(fresh);
     if count > 0.0 && lum > limit { fresh *= limit / lum; }
     let out = mix(old.rgb, fresh, 1.0 / n);
-    textureStore(source_out, vec3<i32>(id), vec4(out, n));
+    textureStore(source_out, here_id, vec4(out, n));
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -402,13 +462,39 @@ fn vs_apply(@builtin(vertex_index) i: u32) -> Screen {
     let p = vec2(f32((i << 1u) & 2u), f32(i & 2u));
     return Screen(vec4(p * 2.0 - 1.0, 0.0, 1.0), vec2(p.x, 1.0 - p.y));
 }
-// The distance along the ray of the pixel at `texel` of the depth (the far end for the sky).
+// The distance along the ray (from the eye) of the pixel at `texel` of the depth (the far end for
+// the sky).
 fn pixel_distance(texel: vec2<i32>, uv: vec2<f32>) -> f32 {
     let d = textureLoad(depth, texel, 0);
     if d <= 0.0 { return fx.depth.y; }
     let ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     let c = fx.inverse_view_proj * vec4(ndc, d, 1.0);
-    return min(length(c.xyz / c.w), fx.depth.y);
+    return min(length(c.xyz / c.w - fx.eye.xyz), fx.depth.y);
+}
+// The integrated froxels at screen `uv` and slice coordinate `w`, read through a cubic B-spline
+// across the screen (each axis' four taps folded into two bilinear fetches, whose weights come from
+// the spline's), linear in depth: smooth to the second derivative, where a plain trilinear read has
+// the grid's cell edges show as kinks.
+fn integrated_cubic(uv: vec2<f32>, w: f32) -> vec4<f32> {
+    let size = fx.dims.xy;
+    let p = uv * size - 0.5;
+    let base = floor(p);
+    let f = p - base;
+    let f2 = f * f;
+    let f3 = f2 * f;
+    let w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0;
+    let w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+    let w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0;
+    let w3 = f3 / 6.0;
+    let g0 = w0 + w1;
+    let g1 = w2 + w3;
+    let h0 = (base - 0.5 + w1 / g0) / size;
+    let h1 = (base + 1.5 + w3 / g1) / size;
+    let a = textureSampleLevel(integrated, linear_sampler, vec3(h0.x, h0.y, w), 0.0);
+    let b = textureSampleLevel(integrated, linear_sampler, vec3(h1.x, h0.y, w), 0.0);
+    let c = textureSampleLevel(integrated, linear_sampler, vec3(h0.x, h1.y, w), 0.0);
+    let d = textureSampleLevel(integrated, linear_sampler, vec3(h1.x, h1.y, w), 0.0);
+    return g0.y * (g0.x * a + g1.x * b) + g1.y * (g0.x * c + g1.x * d);
 }
 // The integrated froxels at screen `uv` and distance `r`: the in-scatter and the luminance of the
 // transmittance (slice `z` holds the value at its far end: coordinate `(z + 0.5) / n`, the near
@@ -417,7 +503,7 @@ fn froxel_at(uv: vec2<f32>, r: f32) -> vec4<f32> {
     let n = fx.dims.z;
     let t = slice_t(r);
     let w = clamp(t - 0.5 / n, 0.5 / n, 1.0 - 0.5 / n);
-    var v = textureSampleLevel(integrated, linear_sampler, vec3(uv, w), 0.0);
+    var v = integrated_cubic(uv, w);
     if t < 1.0 / n { v = mix(vec4(0.0, 0.0, 0.0, 1.0), v, t * n); }
     return v;
 }

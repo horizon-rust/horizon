@@ -6,17 +6,21 @@
 //! ray, exponential from `NEAR` to `FAR` blocks (1 block = 1 metre, Remix's `rtx.sceneScale` 0.01 over
 //! centimetre units). Each frame, for every view (the window, each VR eye), `Froxels::run`:
 //!
-//! 1. *injects* (`cs_inject`): for each froxel a point drawn inside it, the light the medium
-//!    scatters toward the camera: the sun (a shadow ray, tinted by stained glass and water, times the
-//!    Henyey-Greenstein phase), the sky (a ray toward it, times the sky's mean light) and one light
-//!    source drawn by importance (a shadow ray), through hardware ray queries against the terrain's
-//!    TLAS (`hw_rays`) where the GPU has them, else the voxel grid's DDA; blended with the last
-//!    frame's froxels reprojected (the history `MAX_ACCUMULATION` frames long, `SETTLING_ACCUMULATION`
-//!    for `SETTLING_FRAMES` after the medium changes or the view is new);
+//! 1. *injects* (`cs_inject`): for each froxel a point drawn inside it (a 3D R-sequence shifted per
+//!    froxel, so the history supersamples the froxel), the light the medium scatters toward the
+//!    camera: the sun (a shadow ray, tinted by stained glass and water, times the Henyey-Greenstein
+//!    phase), the sky (a ray toward it, times the sky's mean light) and one light source drawn by
+//!    importance (a shadow ray), through hardware ray queries against the terrain's TLAS (`hw_rays`)
+//!    where the GPU has them, else the voxel grid's DDA; then *blends* (`cs_blend`) that sample with
+//!    the last frame's froxels reprojected in world space (the history `MAX_ACCUMULATION` frames
+//!    long, `SETTLING_ACCUMULATION` for `SETTLING_FRAMES` after the medium changes or the view is
+//!    new), the history shortened where its froxel moved a lot and clamped to the neighbourhood of
+//!    the new samples;
 //! 2. *integrates* (`cs_integrate`): front to back along each column, the in-scatter up to every
 //!    slice (the transmittance is Beer-Lambert's, closed form for a homogeneous medium);
 //! 3. *applies* (two full-screen draws onto the world's colour, before the tone mapping): the scene
-//!    times the transmittance at the pixel's distance, plus the in-scatter there.
+//!    times the transmittance at the pixel's distance, plus the in-scatter there (read through a
+//!    cubic B-spline across the screen).
 //!
 //! What the main session fills: `CameraMedium` (where the camera is) through `Renderer::
 //! set_volumetrics`; `CameraMedium::medium` turns it into the medium.
@@ -196,6 +200,29 @@ struct Uniform {
     albedo: [f32; 4],
     history: [f32; 4],
     size: [f32; 4],
+    eye: [f32; 4],
+    prev_eye: [f32; 4],
+    jitter: [f32; 4],
+}
+
+/// Where a view's rays start, camera-relative: the point whose clip x, y and w are all 0 (the view
+/// bobbing moves it off the camera). Float64, the projection's reversed depth being ill-conditioned.
+fn eye_of(view_proj: Mat4) -> Vec3 {
+    let e = view_proj.as_dmat4().inverse() * glam::DVec4::new(0.0, 0.0, 1.0, 0.0);
+    if e.w.abs() < 1e-12 {
+        return Vec3::ZERO;
+    }
+    (e.truncate() / e.w).as_vec3()
+}
+
+/// Frame `n`'s offset within a froxel: the 3D R-sequence (Roberts), whose points spread evenly in
+/// the unit cube however many are taken.
+fn jitter(n: u32) -> [f32; 4] {
+    // The plastic number, whose powers' reciprocals step the three axes.
+    const G: f64 = 1.220_744_084_605_759_5;
+    let f = f64::from(n);
+    let axis = |k: i32| (0.5 + f * G.powi(-k)).fract() as f32;
+    [axis(1), axis(2), axis(3), 0.0]
 }
 
 /// A view's froxels: two grids of the source (the last frame's is the history) and the integrated
@@ -204,6 +231,8 @@ struct ViewFroxels {
     view: usize,
     dims: [u32; 3],
     source: [wgpu::TextureView; 2],
+    /// The samples drawn this frame, before they meet the history.
+    fresh: wgpu::TextureView,
     integrated: wgpu::TextureView,
     /// The grid written next.
     next: usize,
@@ -260,6 +289,8 @@ pub struct Froxels {
     hardware: bool,
     inject: wgpu::ComputePipeline,
     inject_layout: wgpu::BindGroupLayout,
+    blend: wgpu::ComputePipeline,
+    blend_layout: wgpu::BindGroupLayout,
     integrate: wgpu::ComputePipeline,
     integrate_layout: wgpu::BindGroupLayout,
     shader: wgpu::ShaderModule,
@@ -351,9 +382,7 @@ impl Froxels {
                     multisampled: false,
                 },
             ),
-            entry(11, compute, froxels(true)),
-            entry(12, compute, sampler),
-            entry(13, compute, output),
+            entry(22, compute, output),
         ];
         if hardware {
             inject_entries.extend([
@@ -380,6 +409,16 @@ impl Froxels {
         let inject_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Froxel volumetrics' inject"),
             entries: &inject_entries,
+        });
+        let blend_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Froxel volumetrics' blend"),
+            entries: &[
+                entry(0, compute, uniform),
+                entry(11, compute, froxels(true)),
+                entry(12, compute, sampler),
+                entry(13, compute, output),
+                entry(21, compute, froxels(false)),
+            ],
         });
         let integrate_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Froxel volumetrics' integrate"),
@@ -424,6 +463,7 @@ impl Froxels {
             })
         };
         let inject = pipeline("Froxel volumetrics' inject", &inject_layout, "cs_inject");
+        let blend = pipeline("Froxel volumetrics' blend", &blend_layout, "cs_blend");
         let integrate = pipeline(
             "Froxel volumetrics' integrate",
             &integrate_layout,
@@ -439,6 +479,8 @@ impl Froxels {
             hardware,
             inject,
             inject_layout,
+            blend,
+            blend_layout,
             integrate,
             integrate_layout,
             shader,
@@ -585,6 +627,7 @@ impl Froxels {
                 texture("Froxel volumetrics' source"),
                 texture("Froxel volumetrics' source"),
             ],
+            fresh: texture("Froxel volumetrics' samples"),
             integrated: texture("Froxel volumetrics' integral"),
             next: 0,
             last: None,
@@ -629,8 +672,11 @@ impl Froxels {
         let from = state.source[1 - state.next].clone();
         let to = state.source[state.next].clone();
         state.next = 1 - state.next;
+        let fresh = state.fresh.clone();
         let integrated = state.integrated.clone();
         let rays = inputs.rays;
+        let eye = eye_of(inputs.view_proj);
+        let prev_eye = last.map_or(eye, |l| eye_of(l.0));
         let uniform = Uniform {
             inverse_view_proj: inputs.view_proj.inverse().to_cols_array_2d(),
             prev_view_proj: last.map_or([[0.0; 4]; 4], |l| l.0.to_cols_array_2d()),
@@ -665,6 +711,9 @@ impl Froxels {
             albedo: [medium.albedo.x, medium.albedo.y, medium.albedo.z, 1.0],
             history: [cap, 1.0, 0.0, 0.0],
             size: [inputs.size[0] as f32, inputs.size[1] as f32, 0.0, 0.0],
+            eye: [eye.x, eye.y, eye.z, 0.0],
+            prev_eye: [prev_eye.x, prev_eye.y, prev_eye.z, 0.0],
+            jitter: jitter(frame),
         };
         uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));
         let (view, buffer) = (texture_entry, buffer_entry);
@@ -677,12 +726,7 @@ impl Froxels {
             buffer(7, inputs.lights[0]),
             buffer(8, inputs.lights[1]),
             view(10, inputs.sky),
-            view(11, &from),
-            wgpu::BindGroupEntry {
-                binding: 12,
-                resource: wgpu::BindingResource::Sampler(&self.sampler),
-            },
-            view(13, &to),
+            view(22, &fresh),
         ];
         if let (true, Some(hw)) = (self.hardware, &inputs.hardware) {
             entries.extend([
@@ -706,6 +750,33 @@ impl Froxels {
                 timestamp_writes: None,
             });
             pass.set_pipeline(&self.inject);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(
+                dims[0].div_ceil(4),
+                dims[1].div_ceil(4),
+                dims[2].div_ceil(4),
+            );
+        }
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Froxel volumetrics' blend"),
+            layout: &self.blend_layout,
+            entries: &[
+                buffer(0, &self.uniform),
+                view(11, &from),
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                view(13, &to),
+                view(21, &fresh),
+            ],
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Froxel volumetrics' blend"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.blend);
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(
                 dims[0].div_ceil(4),
