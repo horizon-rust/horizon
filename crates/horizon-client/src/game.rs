@@ -251,6 +251,7 @@ mod titles;
 mod tnt;
 mod totem;
 mod trading;
+mod transient_blocks;
 mod trial_spawner;
 mod trial_visuals;
 mod trident;
@@ -1872,7 +1873,7 @@ struct Game<'a> {
     /// The minecart the riding sounds were started for (`LocalPlayer.startRiding`).
     riding_cart_sounds: Option<u32>,
     /// The happy ghast its riding sound was started for (`LocalPlayer.startRiding`).
-    riding_ghast_sound: Option<u32>,
+    riding_sound: Option<u32>,
     /// `LocalPlayer.wasFallFlying` for the elytra's flying sound.
     was_fall_flying: bool,
     /// Bees whose buzz is playing, and whether it is the aggressive one.
@@ -2043,6 +2044,8 @@ struct Game<'a> {
     random_tick_sections: horizon_client::random_tick_sections::RandomTickSections,
     level_events: Vec<LevelEvent>,
     falling: Vec<FallingBlock>,
+    /// Blocks the server shows for a moment (`ClientboundAddTransientBlockPacket`).
+    transient_blocks: transient_blocks::TransientBlocks,
     paintings: Vec<horizon_client::entities::Painting>,
     painting_variants: paintings::PaintingVariants,
     item_frames: Vec<horizon_client::entities::ItemFrame>,
@@ -2136,6 +2139,7 @@ struct Game<'a> {
     spawn_scratch: natural_spawning::SpawnScratch,
     trident_model: Option<horizon_client::mobs::Part>,
     arrow_model: Option<horizon_client::mobs::Part>,
+    bee_stinger_model: Option<horizon_client::mobs::Part>,
     tnts: Vec<tnt::PrimedTnt>,
     hoppers: HashMap<(i32, i32, i32), machines::HopperState>,
     /// The screen of a mod block's menu open on this client (`native_screen`).
@@ -8944,6 +8948,8 @@ impl Game<'_> {
         mut out: Vec<Vertex>,
     ) -> Vec<Vertex> {
         self.entity_spans.borrow_mut().clear();
+        // LevelExtractor.extract: the transient blocks queued since the last frame.
+        self.drain_transient_block_queue();
         self.prepare_entity_culling(camera);
         self.prepare_trims();
         self.mark_entity(out.len(), "minecraft:entity_flame");
@@ -9307,6 +9313,8 @@ impl Game<'_> {
         }
         self.mark_entity(out.len(), "");
         self.moving_piston_geometry(camera, alpha, &mut out);
+        // LevelRenderer.submitTransientBlocks.
+        self.transient_block_geometry(camera, &mut out);
         self.mark_entity(out.len(), "minecraft:tnt");
         self.tnt_geometry(camera, alpha, &mut out);
         self.mark_entity(out.len(), "minecraft:painting");
@@ -10026,6 +10034,14 @@ impl Game<'_> {
         creative: bool,
         create: Option<&horizon_client::title::WorldOptions>,
     ) -> Result<()> {
+        // openWorldLoadLevelData: an existing world whose level data does not read opens
+        // RecoverWorldDataScreen instead.
+        if create.is_none()
+            && let Some(title) = self.title.as_mut()
+            && title.open_recover(folder)
+        {
+            return Ok(());
+        }
         world_loading::world_data_used();
         if self.defer_world_entry(PendingWorldEntry::Local {
             folder: folder.to_owned(),
@@ -10336,6 +10352,7 @@ impl Game<'_> {
         self.block_ticks = Ticks::new(self.level.seed as i32);
         self.tick_chunks.clear();
         self.falling.clear();
+        self.transient_blocks.clear();
         self.tnts.clear();
         self.mobs.clear();
         self.creatures.projectiles.clear();
@@ -10590,6 +10607,7 @@ impl Game<'_> {
         self.orbs.clear();
         self.creatures.projectiles.clear();
         self.falling.clear();
+        self.transient_blocks.clear();
         self.tnts.clear();
         self.boats.clear();
         self.carts.clear();
@@ -13494,7 +13512,7 @@ impl Game<'_> {
                 Screen::WorldOptions => self.world_options_escape(),
                 Screen::CommandBlock => self.close_command_block(),
                 Screen::BlockEditor => self.close_block_editor(),
-                Screen::Chat => self.close_chat(),
+                Screen::Chat => self.close_chat(chat::ChatExit::Intentional),
                 Screen::Win => self.close_win_screen()?,
             },
             KeyCode::Digit1
@@ -15318,7 +15336,7 @@ impl<'a> Game<'a> {
             sound_paused: false,
             cart_sounds: HashSet::new(),
             riding_cart_sounds: None,
-            riding_ghast_sound: None,
+            riding_sound: None,
             was_fall_flying: false,
             bee_sounds: HashMap::new(),
             guardian_sounds: HashSet::new(),
@@ -15415,6 +15433,7 @@ impl<'a> Game<'a> {
             random_tick_sections: Default::default(),
             level_events: Vec::new(),
             falling: Vec::new(),
+            transient_blocks: Default::default(),
             paintings: Vec::new(),
             painting_variants: prepared.painting_variants,
             item_frames: Vec::new(),
@@ -15477,6 +15496,7 @@ impl<'a> Game<'a> {
             spawn_scratch: Default::default(),
             trident_model: prepared.trident_model,
             arrow_model: prepared.arrow_model,
+            bee_stinger_model: prepared.bee_stinger_model,
             tnts: Vec::new(),
             hoppers: HashMap::new(),
             mod_screen: None,
@@ -15605,6 +15625,7 @@ struct GameCpuResources {
     cushion_model: Option<horizon_client::mobs::Part>,
     dragon_model: Option<horizon_client::mobs::Part>,
     arrow_model: Option<horizon_client::mobs::Part>,
+    bee_stinger_model: Option<horizon_client::mobs::Part>,
     trident_model: Option<horizon_client::mobs::Part>,
     creative_screen: Creative,
 }
@@ -15626,6 +15647,7 @@ impl GameCpuResources {
             cushion_model: model("minecraft:cushion#main"),
             dragon_model: model("minecraft:ender_dragon#main"),
             arrow_model: model("minecraft:arrow#main"),
+            bee_stinger_model: model("minecraft:bee_stinger#main"),
             trident_model: model("minecraft:trident#main"),
             creative_screen: Creative::load(root)?,
         })

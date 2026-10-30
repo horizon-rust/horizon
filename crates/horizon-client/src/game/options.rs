@@ -298,8 +298,42 @@ impl Game<'_> {
         self.ui.chat.rescale(&self.gui.atlas);
         self.creative_screen.forget_items();
     }
+    /// Window.updateFullscreenIfChanged: only a changed option asks the
+    /// window to change, so applying settings never undoes a fullscreen
+    /// the compositor set up.
+    fn apply_fullscreen(&mut self) {
+        // A splitscreen guest draws in a window it shares: its option never changes the window.
+        if self.options.split_guest {
+            return;
+        }
+        if let Some(w) = self.window.clone() {
+            let modes = w
+                .current_monitor()
+                .or_else(|| w.primary_monitor())
+                .map(|m| horizon_client::window::monitor_video_modes(&m))
+                .unwrap_or_default();
+            let in_video_screen = self.screen == Screen::Options
+                && self.ui.options.page() == horizon_client::options_ui::Page::Video;
+            let wanted = self.settings.fullscreen;
+            let exclusive = self.settings.file.bool("exclusiveFullscreen");
+            let preferred = self
+                .settings
+                .file
+                .fullscreen_resolution
+                .as_deref()
+                .and_then(horizon_client::window::VideoMode::read);
+            let leaving = !wanted && w.fullscreen().is_some();
+            self.fullscreen
+                .apply(&w, wanted, exclusive, preferred, in_video_screen);
+            if leaving {
+                windowed_again(&w);
+            }
+            self.settings.video_modes = modes;
+        }
+    }
     /// Settings that Horizon applies beyond render distance, volume and GUI scale.
     pub(super) fn apply_ui_settings(&mut self) {
+        self.apply_fullscreen();
         let s = &self.settings;
         if let Some(r) = self.renderer.as_mut() {
             r.gamma = s.gamma;
@@ -321,18 +355,6 @@ impl Game<'_> {
                 s.horizon.hdr_ui_brightness as f32 / 100.0,
                 &Self::options_path().with_file_name(horizon_client::graphics::HDR_MARKER),
             );
-        }
-        // Window.updateFullscreenIfChanged: only a changed option asks the
-        // window to change, so applying settings never undoes a fullscreen
-        // the compositor set up.
-        if let Some(w) = &self.window
-            && !self.options.split_guest
-            && let Some(want) = self.fullscreen.request(s.fullscreen)
-        {
-            w.set_fullscreen(want.then_some(Fullscreen::Borderless(None)));
-            if !want {
-                windowed_again(w);
-            }
         }
         let mut volumes = s.volumes;
         volumes[0] = 1.0;
@@ -403,7 +425,11 @@ impl Game<'_> {
                 .as_ref()
                 .is_some_and(|w| w.is_minimized().unwrap_or(false)),
             focused: self.focused,
-            exclusive_fullscreen: false,
+            // Window.isExclusiveFullscreen.
+            exclusive_fullscreen: self
+                .window
+                .as_ref()
+                .is_some_and(|w| matches!(w.fullscreen(), Some(Fullscreen::Exclusive(_)))),
             now_ms: self.started.elapsed().as_millis() as i64,
             latest_input_ms: self.last_input.duration_since(self.started).as_millis() as i64,
             has_level: self.title.is_none(),
