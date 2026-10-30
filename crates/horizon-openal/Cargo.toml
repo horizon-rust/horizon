@@ -1,0 +1,14 @@
+[package]
+name = "horizon-openal"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version = "1.90"
+description = "OpenAL Soft callback output for Horizon's audio mixer"
+
+[dependencies]
+libloading = "0.8.9"
+log = "0.4"
+
+[lints]
+workspace = true

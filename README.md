@@ -94,6 +94,10 @@ Commands block until the action is done and reply with what happened; errors are
 
 For developers. Requirements: Rust 1.90 or newer, Python 3.10 or newer, JDK 25, and on Linux the ALSA and udev development headers (`libasound2-dev libudev-dev` on Debian and Ubuntu). Development and the vanilla harnesses run on Linux.
 
+Game sound uses OpenAL Soft by default. Release archives include its shared library and source;
+Linux source builds can use OpenAL Soft 1.22 or newer (`libopenal1` on recent Debian/Ubuntu, `openal` on Void).
+For a local release build, run `python3 tools/bundle_openal.py` before packaging.
+
 Horizon contains no game files, and `horizon-prepare` never downloads them (the launcher downloads them from Mojang only for a signed-in account that owns the game). It builds its resources from **your own copy** of Minecraft: Java Edition 26.3, verified against the checksums in `research-lock.json`:
 
 1. **Client:** install Java Edition with the official launcher and play 26.3 once. Horizon reads `versions/26.3/`, `libraries/` and `assets/` from the launcher's game directory (`~/.minecraft` on Linux). If yours lives elsewhere, pass `--minecraft-dir` or set `HORIZON_MINECRAFT_DIR`.

@@ -2,7 +2,7 @@
 //! and 4 drive the left and right voice-coil actuators (1 and 2 are its speaker and headset).
 //! Vibrations are synthesized as waveforms on those two channels; the first two stay silent.
 //! Over Bluetooth there is no audio device, and the motors' emulation is used instead.
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use horizon_openal::OutputStream;
 use std::collections::VecDeque;
 use std::f32::consts::TAU;
 use std::sync::{Arc, Mutex};
@@ -18,37 +18,42 @@ const RAMP: f32 = 0.004;
 /// The pad's audio output, playing the queued samples (left, right actuator).
 pub struct Haptics {
     queue: Arc<Mutex<VecDeque<[f32; 2]>>>,
-    _stream: cpal::Stream,
+    _stream: OutputStream,
 }
 
 impl Haptics {
     /// The DualSense's audio device, if one is there with its four channels (USB).
     pub fn open() -> Option<Haptics> {
-        let host = cpal::default_host();
-        let device = host.output_devices().ok()?.find(is_dualsense)?;
-        let config = cpal::StreamConfig {
-            channels: 4,
-            sample_rate: cpal::SampleRate(RATE),
-            buffer_size: cpal::BufferSize::Default,
-        };
+        let devices = horizon_openal::output_devices().ok()?;
         let queue = Arc::new(Mutex::new(VecDeque::new()));
         let source = queue.clone();
-        let stream = device
-            .build_output_stream(
-                &config,
-                move |data: &mut [f32], _| {
-                    let mut queue = source.lock().unwrap_or_else(|e| e.into_inner());
-                    for frame in data.chunks_mut(4) {
-                        let [left, right] = queue.pop_front().unwrap_or_default();
-                        frame.copy_from_slice(&[0.0, 0.0, left, right]);
+        let stream = devices
+            .into_iter()
+            .filter(|name| is_dualsense_name(name))
+            .find_map(|name| {
+                let source = source.clone();
+                match OutputStream::open_quad(&name, move |data, rate| {
+                    if rate != RATE {
+                        data.fill(0.0);
+                        return;
                     }
-                },
-                |e| log::debug!("DualSense haptics: {e}"),
-                None,
-            )
-            .map_err(|e| log::info!("Horizon: DualSense haptics unavailable: {e}"))
-            .ok()?;
-        stream.play().ok()?;
+                    if let Ok(mut queue) = source.try_lock() {
+                        for frame in data.chunks_exact_mut(4) {
+                            let [left, right] = queue.pop_front().unwrap_or_default();
+                            frame.copy_from_slice(&[0.0, 0.0, left, right]);
+                        }
+                    } else {
+                        data.fill(0.0);
+                    }
+                }) {
+                    Ok(stream) if stream.sample_rate() == RATE => Some(stream),
+                    Ok(_) => None,
+                    Err(error) => {
+                        log::info!("Horizon: DualSense haptics unavailable on {name}: {error}");
+                        None
+                    }
+                }
+            })?;
         log::info!("DualSense HD haptics through its audio device");
         Some(Haptics {
             queue,
@@ -69,18 +74,6 @@ impl Haptics {
     pub fn stop(&self) {
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
-}
-
-fn is_dualsense(device: &cpal::Device) -> bool {
-    device.name().is_ok_and(|n| is_dualsense_name(&n))
-        && device.supported_output_configs().is_ok_and(|mut configs| {
-            configs.any(|c| {
-                c.channels() >= 4
-                    && c.min_sample_rate().0 <= RATE
-                    && c.max_sample_rate().0 >= RATE
-                    && c.sample_format() == cpal::SampleFormat::F32
-            })
-        })
 }
 
 /// "DualSense Wireless Controller" on macOS; on Windows the endpoint is often just "Speakers

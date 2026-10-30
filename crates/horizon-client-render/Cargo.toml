@@ -24,8 +24,8 @@ horizon-threads = { path = "../horizon-threads" }
 horizon-world = { path = "../horizon-world" }
 ab_glyph = "0.2.32"
 bytemuck = { version = "1.24", features = ["derive"] }
-# Sound (ALSA on Linux); the `audio` feature.
-cpal = { version = "0.16", optional = true }
+# OpenAL Soft output, enabled by the audio feature.
+horizon-openal = { path = "../horizon-openal", optional = true }
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 glam = "0.30"
@@ -55,7 +55,7 @@ wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 
 [features]
 # Sound output: horizon-client's `audio` feature.
-audio = ["dep:cpal"]
+audio = ["dep:horizon-openal"]
 # Helpers horizon-client's tests build their fixtures with.
 test-support = []
 

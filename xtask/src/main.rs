@@ -222,9 +222,31 @@ fn package(binary: &Path, out: &Path) -> Result<(), String> {
     let repo = new_folder(out)?;
     copy_into(binary, out)?;
     copy_beside(binary, &TOOLS, out)?;
+    copy_openal(binary, out)?;
     copy_exporters(&repo.join("exporters"), &out.join("exporters"))?;
     let play = repo.join("packaging/PLAY.txt");
     copy(&play, &out.join("PLAY.txt"))
+}
+
+fn copy_openal(binary: &Path, out: &Path) -> Result<(), String> {
+    let native = binary.parent().unwrap_or(Path::new(".")).join("native");
+    let library = ["OpenAL32.dll", "libopenal.so.1", "libopenal.1.dylib"]
+        .into_iter()
+        .find(|name| native.join(name).is_file())
+        .ok_or("Missing OpenAL Soft: run python3 tools/bundle_openal.py beside the build before packaging")?;
+    let target = out.join("native");
+    fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+    for name in [
+        library,
+        "COPYING.OpenAL-Soft",
+        "LICENSE.fmt",
+        "LICENSE.gsl",
+        "SOURCE.txt",
+        "openal-soft-1.25.2.tar.bz2",
+    ] {
+        copy(&native.join(name), &target.join(name))?;
+    }
+    Ok(())
 }
 
 fn package_server(engine: &Path, out: &Path) -> Result<(), String> {
@@ -456,6 +478,39 @@ fn extract(tar: &[u8], out: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn client_packaging_requires_the_replaceable_library_and_its_sources() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-openal-package-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let binary = root.join("horizon-client");
+        let out = root.join("package");
+        assert!(copy_openal(&binary, &out).is_err());
+        let native = root.join("native");
+        fs::create_dir_all(&native).unwrap();
+        for name in [
+            "libopenal.so.1",
+            "COPYING.OpenAL-Soft",
+            "LICENSE.fmt",
+            "LICENSE.gsl",
+            "SOURCE.txt",
+            "openal-soft-1.25.2.tar.bz2",
+        ] {
+            fs::write(native.join(name), name).unwrap();
+        }
+        copy_openal(&binary, &out).unwrap();
+        for entry in fs::read_dir(&native).unwrap() {
+            let entry = entry.unwrap();
+            assert_eq!(
+                fs::read(out.join("native").join(entry.file_name())).unwrap(),
+                fs::read(entry.path()).unwrap()
+            );
+        }
+        fs::remove_file(native.join("COPYING.OpenAL-Soft")).unwrap();
+        assert!(copy_openal(&binary, &root.join("incomplete")).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn header(name: &str, mode: u32, size: usize, kind: u8) -> Vec<u8> {
         let mut h = vec![0u8; 512];

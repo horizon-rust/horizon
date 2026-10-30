@@ -31,7 +31,7 @@ LINUX_SYSTEM = {
     "libc.so.6", "libm.so.6", "libgcc_s.so.1", "libdl.so.2", "libpthread.so.0", "librt.so.1",
     "ld-linux-x86-64.so.2", "libasound.so.2", "libudev.so.1",
 }
-# The game's sound (cpal) and controllers (gilrs): a desktop has them, a server image may not.
+# Controllers (gilrs) need desktop libraries that a server image may not have.
 LINUX_DESKTOP_ONLY = {"libasound.so.2", "libudev.so.1"}
 
 

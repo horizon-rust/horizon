@@ -407,8 +407,8 @@ channels 1 and 2 silent), the same shapes come out crisp. Per OS:
 
 | | USB | Bluetooth |
 |---|---|---|
-| macOS | the pad lists as a 4-channel CoreAudio output ("DualSense Wireless Controller", seen on the Mac mini by dualsense-1); cpal opens it by name | no audio device |
-| Linux | snd-usb-audio exposes the card "Controller" with 4 channels; cpal opens it through ALSA (`plughw:CARD=Controller`), which fails while PipeWire or PulseAudio holds the card, as desktops do: then the motors' emulation stays | no audio device |
+| macOS | the pad lists as a 4-channel CoreAudio output ("DualSense Wireless Controller", seen on the Mac mini by dualsense-1); OpenAL Soft opens it by name when it exposes quad output | no audio device |
+| Linux | snd-usb-audio exposes the card "Controller" with 4 channels; OpenAL Soft opens it by name when it exposes quad output; otherwise the motors' emulation stays | no audio device |
 | Windows | a WASAPI endpoint named "Wireless Controller" (or "DualSense Wireless Controller"), stereo until its speaker setup is set to Quadraphonic in the Sound control panel (`mmsys.cpl`, Configure); until then Horizon finds no 4-channel output and keeps the motors | no audio device |
 
 The audio haptics play only while the pad is out of its rumble emulation:

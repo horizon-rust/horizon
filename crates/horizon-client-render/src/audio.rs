@@ -1,5 +1,5 @@
 //! Sound playback: vanilla's `SoundEngine` bookkeeping (`sound_engine`) over a
-//! small mixer standing in for OpenAL: one channel per source with its gain,
+//! OpenAL Soft sources: one channel per sound with its gain,
 //! pitch, linear distance attenuation (`AL_LINEAR_DISTANCE`, reference 0,
 //! rolloff 1), looping, relative flag and source state, Ogg/Vorbis decoding
 //! (streams on a worker thread) and OpenAL Soft's stereo panning.
@@ -9,9 +9,9 @@ use crate::sound_engine::{
     Sounds, TickContext,
 };
 use crate::sound_events::{Sound, SoundRegistry};
-#[cfg(feature = "audio")]
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use horizon_core::random::{LegacyRandom, RandomSource};
+#[cfg(feature = "audio")]
+use horizon_openal::{NativeOutput, VoiceSettings, VoiceState};
 use std::{
     collections::HashMap,
     fs,
@@ -30,7 +30,6 @@ enum State {
 /// An OpenAL source.
 struct Channel {
     samples: Option<(Arc<Vec<f32>>, u32)>,
-    position: f64,
     state: State,
     gain: f32,
     pitch: f32,
@@ -43,10 +42,7 @@ struct Channel {
 #[derive(Default)]
 struct Mixer {
     channels: HashMap<ChannelId, Channel>,
-    listener: [f64; 3],
-    listener_yaw: f32,
     listener_pitch: f32,
-    limiter_peak: f32,
 }
 /// A sound the player could have heard (`SoundEventListener.onPlaySound`):
 /// what the subtitle overlay needs.
@@ -60,9 +56,11 @@ pub struct Heard {
     pub range: f32,
     pub looping: bool,
 }
-/// The mixer side of the engine (`Backend`).
+/// Channel bookkeeping and the native OpenAL backend (`Backend`).
 pub struct MixerBackend {
     mixer: Arc<Mutex<Mixer>>,
+    #[cfg_attr(not(feature = "audio"), allow(dead_code))]
+    native: Option<Stream>,
     root: PathBuf,
     cache: Arc<Mutex<SoundCache>>,
     /// The decoder thread for static sounds, started with the first one.
@@ -131,19 +129,16 @@ fn attach(mixer: &Mutex<Mixer>, channel: ChannelId, samples: Samples, looping: b
         && c.state == State::Initial
     {
         c.samples = Some(samples);
-        c.position = 0.0;
         c.state = State::Playing;
         c.looping |= looping;
     }
 }
-/// The open output stream. A build without the `audio` feature (the server build, which must not
-/// need libasound) never has one.
+/// The OpenAL device. A server build never opens one.
 #[cfg(feature = "audio")]
-type Stream = cpal::Stream;
+type Stream = NativeOutput;
 #[cfg(not(feature = "audio"))]
 type Stream = std::convert::Infallible;
 pub struct Audio {
-    _stream: Option<Stream>,
     device_name: String,
     pub engine: SoundEngine,
     backend: MixerBackend,
@@ -211,11 +206,67 @@ fn decode(path: &Path) -> Option<(Vec<f32>, u32)> {
     Some((mono, rate))
 }
 impl MixerBackend {
-    fn with(&self, channel: ChannelId, f: impl FnOnce(&mut Channel)) {
+    fn with(&mut self, channel: ChannelId, f: impl FnOnce(&mut Channel)) {
         if let Ok(mut m) = self.mixer.lock()
             && let Some(c) = m.channels.get_mut(&channel)
         {
             f(c);
+        }
+        self.sync_channel(channel);
+    }
+
+    fn sync_channel(&mut self, channel: ChannelId) {
+        #[cfg(feature = "audio")]
+        if let Some(native) = &mut self.native
+            && let Ok(mut mixer) = self.mixer.lock()
+            && let Some(c) = mixer.channels.get_mut(&channel)
+        {
+            let state = match c.state {
+                State::Initial => VoiceState::Initial,
+                State::Playing => VoiceState::Playing,
+                State::Paused => VoiceState::Paused,
+                State::Stopped => VoiceState::Stopped,
+            };
+            let settings = VoiceSettings {
+                samples: c
+                    .samples
+                    .as_ref()
+                    .map(|(samples, rate)| (samples.as_slice(), *rate)),
+                state,
+                gain: c.gain,
+                pitch: c.pitch,
+                max_distance: c.linear,
+                looping: c.looping,
+                position: c.at,
+                relative: c.relative,
+            };
+            match native.sync_voice(channel, settings) {
+                Ok(true) => c.state = State::Stopped,
+                Err(error) => {
+                    log::warn!("Horizon: OpenAL source {channel}: {error}");
+                    c.state = State::Stopped;
+                }
+                Ok(false) => {}
+            }
+        }
+        #[cfg(not(feature = "audio"))]
+        let _ = channel;
+    }
+
+    fn sync_native(&mut self) {
+        #[cfg(feature = "audio")]
+        {
+            if self.native.is_none() {
+                return;
+            }
+            let channels = self
+                .mixer
+                .lock()
+                .map(|m| m.channels.keys().copied().collect::<Vec<_>>())
+                .unwrap_or_default();
+            for channel in channels {
+                self.sync_channel(channel);
+            }
         }
     }
 }
@@ -227,7 +278,6 @@ impl Backend for MixerBackend {
             id,
             Channel {
                 samples: None,
-                position: 0.0,
                 state: State::Initial,
                 gain: 1.0,
                 pitch: 1.0,
@@ -237,11 +287,20 @@ impl Backend for MixerBackend {
                 relative: false,
             },
         );
+        self.sync_channel(id);
+        if self.mixer.lock().ok()?.channels[&id].state == State::Stopped {
+            self.destroy(id);
+            return None;
+        }
         Some(id)
     }
     fn destroy(&mut self, channel: ChannelId) {
         if let Ok(mut m) = self.mixer.lock() {
             m.channels.remove(&channel);
+        }
+        #[cfg(feature = "audio")]
+        if let Some(native) = &mut self.native {
+            native.remove_voice(channel);
         }
     }
     fn set_pitch(&mut self, channel: ChannelId, pitch: f32) {
@@ -263,8 +322,8 @@ impl Backend for MixerBackend {
         self.with(channel, |c| c.relative = relative);
     }
     /// `getCompleteBuffer` (cached, else decoded on the decoder thread) or
-    /// `getStream` (decoded on a thread of its own), then attach and
-    /// `alSourcePlay`. A sound that cannot load leaves its source initial,
+    /// `getStream` (decoded on a thread of its own), then attach and play
+    /// at the next client tick. A sound that cannot load leaves its source initial,
     /// as a failed buffer future does in vanilla.
     fn start(&mut self, channel: ChannelId, sound: &Sound, looping: bool) {
         if !self.live {
@@ -285,6 +344,7 @@ impl Backend for MixerBackend {
         let cached = self.cache.lock().ok().and_then(|mut c| c.get(&key));
         if let Some(samples) = cached {
             attach(&self.mixer, channel, samples, false);
+            self.sync_channel(channel);
             return;
         }
         let decoder = self.decoder.get_or_insert_with(|| {
@@ -331,6 +391,7 @@ impl Backend for MixerBackend {
         });
     }
     fn stopped(&mut self, channel: ChannelId) -> bool {
+        self.sync_channel(channel);
         self.mixer
             .lock()
             .map(|m| {
@@ -339,143 +400,6 @@ impl Backend for MixerBackend {
                     .is_none_or(|c| c.state == State::Stopped)
             })
             .unwrap_or(true)
-    }
-}
-/// OpenAL Soft's stereo gains `[left, right]` for a mono source in a
-/// direction given in listener space (right, up, forward; any length).
-/// Vanilla's context (`Library.createAttributes`: HRTF off) on a stereo
-/// output renders pairwise: front azimuths are stretched by 1.5
-/// (`ScaleAzimuthFront`, so 60 degrees off-centre pans fully) and the
-/// direction is decoded by the first-order stereo decoder, 0.5 W, 0.5 Y and
-/// 0.0957 X in this scaling. A centred source gets 0.596 on each side, one
-/// behind 0.404, one above or below 0.5, one at the source's own position
-/// is panned to the front. Matches OpenAL Soft 1.25.2 (LWJGL 3.4.3, the
-/// pinned client's) rendered through `ALC_SOFT_loopback` within 1e-5.
-fn stereo_gains(right: f32, up: f32, forward: f32) -> [f32; 2] {
-    let length = (right * right + up * up + forward * forward).sqrt();
-    if length <= f32::EPSILON {
-        return stereo_gains(0.0, 0.0, 1.0);
-    }
-    let elevation = (up / length).clamp(-1.0, 1.0).asin();
-    let mut azimuth = right.atan2(forward);
-    if azimuth.abs() < std::f32::consts::FRAC_PI_2 {
-        azimuth = (azimuth.abs() * 1.5)
-            .min(std::f32::consts::FRAC_PI_2)
-            .copysign(azimuth);
-    }
-    let side = azimuth.sin() * elevation.cos();
-    let front = azimuth.cos() * elevation.cos() * 0.095_660_8;
-    [0.5 - 0.5 * side + front, 0.5 + 0.5 * side + front]
-}
-/// The gain OpenAL applies for distance (`AL_LINEAR_DISTANCE` with reference
-/// distance 0 and rolloff 1: the distance clamps to the max distance).
-fn distance_gain(linear: Option<f32>, distance: f32) -> f32 {
-    match linear {
-        None => 1.0,
-        Some(max) if max > 0.0 => (1.0 - distance.min(max) / max).clamp(0.0, 1.0),
-        Some(_) => 0.0,
-    }
-}
-// Only the output stream mixes; a build without one (no `audio` feature) never does.
-#[cfg_attr(not(feature = "audio"), allow(dead_code))]
-fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
-    data.fill(0.0);
-    let listener = mixer.listener;
-    // The camera's forward and up vectors (`Camera.forwardVector`/`upVector`)
-    // and OpenAL's right = forward x up.
-    let (yaw, pitch) = (
-        f64::from(mixer.listener_yaw.to_radians()),
-        f64::from(mixer.listener_pitch.to_radians()),
-    );
-    let forward = [
-        -yaw.sin() * pitch.cos(),
-        -pitch.sin(),
-        yaw.cos() * pitch.cos(),
-    ];
-    let up = [
-        -yaw.sin() * pitch.sin(),
-        pitch.cos(),
-        yaw.cos() * pitch.sin(),
-    ];
-    let right = [
-        forward[1] * up[2] - forward[2] * up[1],
-        forward[2] * up[0] - forward[0] * up[2],
-        forward[0] * up[1] - forward[1] * up[0],
-    ];
-    let dot = |a: [f64; 3], b: [f64; 3]| (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) as f32;
-    // Gains and pans per source for this buffer.
-    let mut voices: Vec<(ChannelId, [f32; 3], f64)> = Vec::new();
-    for (id, c) in &mixer.channels {
-        let Some((_, source_rate)) = &c.samples else {
-            continue;
-        };
-        if c.state != State::Playing {
-            continue;
-        }
-        let d = if c.relative {
-            [f64::from(c.at[0]), f64::from(c.at[1]), f64::from(c.at[2])]
-        } else {
-            [
-                f64::from(c.at[0]) - listener[0],
-                f64::from(c.at[1]) - listener[1],
-                f64::from(c.at[2]) - listener[2],
-            ]
-        };
-        let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() as f32;
-        let gain = c.gain.clamp(0.0, 1.0) * distance_gain(c.linear, distance);
-        // Relative sources are already in OpenAL's listener space (-Z ahead).
-        let [left, right] = if c.relative {
-            stereo_gains(d[0] as f32, d[1] as f32, -d[2] as f32)
-        } else {
-            stereo_gains(dot(d, right), dot(d, up), dot(d, forward))
-        }
-        .map(|pan| gain * pan);
-        let step = f64::from(*source_rate) / f64::from(rate) * f64::from(c.pitch.max(0.0));
-        voices.push((*id, [left, right, gain], step));
-    }
-    for (id, [left, right, gain], step) in voices {
-        let Some(c) = mixer.channels.get_mut(&id) else {
-            continue;
-        };
-        let Some((samples, _)) = c.samples.clone() else {
-            continue;
-        };
-        for frame in data.chunks_mut(channels) {
-            let mut i = c.position as usize;
-            if i + 1 >= samples.len() {
-                if c.looping && samples.len() > 1 {
-                    c.position = 0.0;
-                    i = 0;
-                } else {
-                    c.state = State::Stopped;
-                    break;
-                }
-            }
-            let t = (c.position - i as f64) as f32;
-            let s = samples[i] * (1.0 - t) + samples[i + 1] * t;
-            if channels >= 2 {
-                frame[0] += s * left;
-                frame[1] += s * right;
-            } else {
-                // A mono output has no panning: the source's own gain.
-                frame[0] += s * gain;
-            }
-            c.position += step;
-        }
-    }
-    // Limit the whole buffer together, preserving waveform and stereo balance
-    // instead of flattening each overloaded sample; release over 200 ms
-    // (OpenAL Soft's output limiter, `ALC_OUTPUT_LIMITER_SOFT`, releases
-    // over 0.2 s).
-    let peak = data.iter().fold(1.0f32, |peak, s| peak.max(s.abs()));
-    mixer.limiter_peak = mixer.limiter_peak.max(peak);
-    let release = (-1.0 / (0.2 * rate as f32)).exp();
-    for frame in data.chunks_mut(channels) {
-        let gain = mixer.limiter_peak.recip();
-        for s in frame {
-            *s *= gain;
-        }
-        mixer.limiter_peak = (mixer.limiter_peak * release).max(peak);
     }
 }
 /// Why the game should not open an output, if it should not:
@@ -496,54 +420,14 @@ fn output_disabled(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<S
         .any(|c| c.as_os_str() == "vscreen")
         .then(|| "audio off on a virtual screen (vscreen); HORIZON_AUDIO=1 opens it".into())
 }
-/// An output stream on `device` in its default configuration, whatever its
-/// sample format: the mixer works in f32 and converts.
+/// OpenAL Soft owns the output device, listener and each sound's native source.
 #[cfg(feature = "audio")]
-fn open_device(
-    device: &cpal::Device,
-    mixer: Arc<Mutex<Mixer>>,
-) -> Result<(cpal::Stream, cpal::SupportedStreamConfig)> {
-    use cpal::SampleFormat as F;
-    let config = device.default_output_config()?;
-    let stream = match config.sample_format() {
-        F::F32 => build_stream::<f32>(device, &config, mixer),
-        F::F64 => build_stream::<f64>(device, &config, mixer),
-        F::I16 => build_stream::<i16>(device, &config, mixer),
-        F::I32 => build_stream::<i32>(device, &config, mixer),
-        F::I8 => build_stream::<i8>(device, &config, mixer),
-        F::U16 => build_stream::<u16>(device, &config, mixer),
-        F::U32 => build_stream::<u32>(device, &config, mixer),
-        F::U8 => build_stream::<u8>(device, &config, mixer),
-        other => Err(format!("unsupported sample format {other}").into()),
-    }?;
-    stream.play()?;
-    Ok((stream, config))
-}
-#[cfg(feature = "audio")]
-fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
-    device: &cpal::Device,
-    config: &cpal::SupportedStreamConfig,
-    mixer: Arc<Mutex<Mixer>>,
-) -> Result<cpal::Stream> {
-    let rate = config.sample_rate().0;
-    let channels = config.channels() as usize;
-    let mut scratch = Vec::new();
-    let stream = device.build_output_stream(
-        &config.config(),
-        move |data: &mut [T], _| {
-            scratch.resize(data.len(), 0.0f32);
-            if let Ok(mut m) = mixer.lock() {
-                mix(&mut m, &mut scratch, channels, rate);
-            } else {
-                scratch.fill(0.0);
-            }
-            for (out, s) in data.iter_mut().zip(&scratch) {
-                *out = T::from_sample(*s);
-            }
-        },
-        |e| log::warn!("Horizon: audio stream error: {e}"),
-        None,
-    )?;
+fn open_device(target: &str) -> Result<Stream> {
+    let stream = NativeOutput::open(target)?;
+    log::info!(
+        "Horizon: audio output OpenAL Soft: {} (native sources)",
+        stream.device_name()
+    );
     Ok(stream)
 }
 /// Available audio output device names.
@@ -552,18 +436,7 @@ pub fn output_devices() -> Vec<String> {
     if output_disabled(|name| std::env::var_os(name)).is_some() {
         return Vec::new();
     }
-    let host = cpal::default_host();
-    let mut names = Vec::new();
-    if let Ok(devices) = host.output_devices() {
-        for device in devices {
-            if let Ok(name) = device.name()
-                && !names.contains(&name)
-            {
-                names.push(name);
-            }
-        }
-    }
-    names
+    horizon_openal::output_devices().unwrap_or_default()
 }
 
 #[cfg(not(feature = "audio"))]
@@ -600,7 +473,7 @@ impl Audio {
         }
         let mixer = Arc::new(Mutex::new(Mixer::default()));
         let opened = if output {
-            Self::open_named(mixer.clone(), target_device)
+            Self::open_named(target_device)
         } else {
             Err("no output on a dedicated server".into())
         };
@@ -616,11 +489,11 @@ impl Audio {
         let mut engine = SoundEngine::new(registry);
         engine.loaded = live;
         Self {
-            _stream: stream,
             device_name: target_device.to_owned(),
             engine,
             backend: MixerBackend {
                 mixer,
+                native: stream,
                 root: root.to_owned(),
                 cache: Arc::default(),
                 decoder: None,
@@ -640,50 +513,34 @@ impl Audio {
         }
     }
     #[cfg(not(feature = "audio"))]
-    fn open_named(_: Arc<Mutex<Mixer>>, _: &str) -> Result<Stream> {
+    fn open_named(_: &str) -> Result<Stream> {
         Err("this build has no sound output (built without the `audio` feature)".into())
     }
     #[cfg(feature = "audio")]
-    fn open_named(mixer: Arc<Mutex<Mixer>>, target: &str) -> Result<Stream> {
+    fn open_named(target: &str) -> Result<Stream> {
         if let Some(reason) = output_disabled(|name| std::env::var_os(name)) {
             return Err(reason.into());
         }
-        let host = cpal::default_host();
-        if !target.is_empty()
-            && let Ok(devices) = host.output_devices()
-        {
-            for device in devices {
-                let name = device.name().unwrap_or_else(|_| "unnamed device".into());
-                if name == target {
-                    match open_device(&device, mixer.clone()) {
-                        Ok((stream, config)) => {
-                            log::info!(
-                                "Horizon: audio output {name} ({} Hz, {} channels, {})",
-                                config.sample_rate().0,
-                                config.channels(),
-                                config.sample_format()
-                            );
-                            return Ok(stream);
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "Horizon: could not open audio device '{target}': {e}; falling back to default"
-                            );
-                        }
-                    }
-                    break;
-                }
+        if !target.is_empty() {
+            match open_device(target) {
+                Ok(stream) => return Ok(stream),
+                Err(e) => log::warn!(
+                    "Horizon: could not open OpenAL device '{target}': {e}; falling back to default"
+                ),
             }
         }
-        Self::open(mixer)
+        Self::open()
     }
     #[cfg(feature = "audio")]
     pub fn set_device(&mut self, name: &str) -> Result<()> {
-        if !self.backend.live && self._stream.is_none() && !self.engine.loaded {
+        if !self.backend.live && self.backend.native.is_none() && !self.engine.loaded {
             self.device_name = name.to_owned();
             return Ok(());
         }
-        self._stream = Some(Self::open_named(self.backend.mixer.clone(), name)?);
+        self.backend.native = Some(Self::open_named(name)?);
+        let pitch = self.backend.mixer.lock().map_or(0.0, |m| m.listener_pitch);
+        self.set_listener(self.listener, self.listener_yaw, pitch);
+        self.backend.sync_native();
         self.device_name = name.to_owned();
         self.backend.live = true;
         self.engine.loaded = true;
@@ -695,41 +552,15 @@ impl Audio {
         Ok(())
     }
     #[cfg(feature = "audio")]
-    fn open(mixer: Arc<Mutex<Mixer>>) -> Result<Stream> {
-        if let Some(reason) = output_disabled(|name| std::env::var_os(name)) {
-            return Err(reason.into());
-        }
-        let host = cpal::default_host();
+    fn open() -> Result<Stream> {
         let mut errors = Vec::new();
-        // The default device first, then any other output a host lists:
-        // a default that cannot open (busy, or a stale ALSA default) should
-        // not leave the game silent when another device works.
-        let default = host.default_output_device();
-        let others = host.output_devices().into_iter().flatten();
-        let mut tried = Vec::new();
-        for device in default.into_iter().chain(others) {
-            let name = device.name().unwrap_or_else(|_| "unnamed device".into());
-            if tried.contains(&name) {
-                continue;
-            }
-            tried.push(name.clone());
-            match open_device(&device, mixer.clone()) {
-                Ok((stream, config)) => {
-                    log::info!(
-                        "Horizon: audio output {name} ({} Hz, {} channels, {})",
-                        config.sample_rate().0,
-                        config.channels(),
-                        config.sample_format()
-                    );
-                    return Ok(stream);
-                }
-                Err(e) => errors.push(format!("{name}: {e}")),
+        for name in std::iter::once(String::new()).chain(output_devices()) {
+            match open_device(&name) {
+                Ok(stream) => return Ok(stream),
+                Err(e) => errors.push(e.to_string()),
             }
         }
-        if errors.is_empty() {
-            return Err(format!("no audio output device on the {} host", host.id().name()).into());
-        }
-        Err(format!("no audio output device opened ({})", errors.join("; ")).into())
+        Err(format!("no OpenAL output device opened ({})", errors.join("; ")).into())
     }
     fn bound(&mut self) -> Bound<'_, MixerBackend> {
         Bound {
@@ -743,9 +574,25 @@ impl Audio {
         self.listener = position;
         self.listener_yaw = yaw;
         if let Ok(mut m) = self.backend.mixer.lock() {
-            m.listener = position;
-            m.listener_yaw = yaw;
             m.listener_pitch = pitch;
+        }
+        #[cfg(feature = "audio")]
+        if let Some(native) = &mut self.backend.native {
+            let yaw = yaw.to_radians();
+            let pitch = pitch.to_radians();
+            let forward = [
+                -yaw.sin() * pitch.cos(),
+                -pitch.sin(),
+                yaw.cos() * pitch.cos(),
+            ];
+            let up = [
+                -yaw.sin() * pitch.sin(),
+                pitch.cos(),
+                yaw.cos() * pitch.sin(),
+            ];
+            if let Err(error) = native.set_listener(position, forward, up) {
+                log::warn!("Horizon: OpenAL listener: {error}");
+            }
         }
     }
     /// Sync the volume options, refreshing the categories that changed
@@ -766,6 +613,7 @@ impl Audio {
     }
     /// `SoundManager.tick(paused)`, once per client tick.
     pub fn tick(&mut self, paused: bool, ctx: &TickContext) {
+        self.backend.sync_native();
         self.sync_volumes();
         self.engine.tick(paused, ctx, &mut self.backend);
     }
@@ -978,7 +826,7 @@ mod tests {
             br#"{"ui.button.click":{"sounds":["gui/button"]}}"#,
             &|_, _| true,
         );
-        // Exercise the mixer without opening an output device. The missing
+        // Exercise channel bookkeeping without opening an output device. The missing
         // sample is harmless: this test checks the source the engine creates.
         audio.engine.loaded = true;
         audio.backend.live = true;
@@ -1000,20 +848,6 @@ mod tests {
             State::Initial
         );
         audio.stop_all();
-    }
-
-    fn channel(samples: Vec<f32>, linear: Option<f32>, at: [f32; 3], looping: bool) -> Channel {
-        Channel {
-            samples: Some((Arc::new(samples), 48_000)),
-            position: 0.0,
-            state: State::Playing,
-            gain: 1.0,
-            pitch: 1.0,
-            linear,
-            looping,
-            at,
-            relative: false,
-        }
     }
 
     #[test]
@@ -1056,127 +890,5 @@ mod tests {
         assert!(
             output_disabled(env(&[("HORIZON_NO_AUDIO", "1"), ("HORIZON_AUDIO", "1")])).is_some()
         );
-    }
-    #[test]
-    fn linear_attenuation_reaches_zero_at_the_max_distance() {
-        assert_eq!(distance_gain(None, 100.0), 1.0);
-        assert_eq!(distance_gain(Some(16.0), 0.0), 1.0);
-        assert_eq!(distance_gain(Some(16.0), 8.0), 0.5);
-        assert_eq!(distance_gain(Some(16.0), 16.0), 0.0);
-        assert_eq!(distance_gain(Some(16.0), 40.0), 0.0);
-    }
-
-    #[test]
-    fn overlapping_voices_are_limited_without_flattening_or_changing_stereo_balance() {
-        let mut m = Mixer::default();
-        let wave = vec![0.25, 0.5, 0.75, 1.0, -1.0, -0.75, -0.5, -0.25, 0.0];
-        for id in 1..=4 {
-            m.channels
-                .insert(id, channel(wave.clone(), None, [-1.0, 0.0, 0.0], false));
-        }
-        let mut data = [0.0; 16];
-        mix(&mut m, &mut data, 2, 48_000);
-        // West of a listener facing south: fully on the right.
-        for (frame, sample) in data.as_chunks::<2>().0.iter().zip(wave) {
-            assert!(frame[0].abs() < 1e-6, "{frame:?}");
-            assert!((frame[1] - sample).abs() < 1e-6, "{frame:?}");
-        }
-        assert!(data.iter().all(|s| s.abs() <= 1.0));
-    }
-
-    #[test]
-    fn limiter_leaves_quiet_audio_alone_and_recovers_across_callbacks() {
-        let mut m = Mixer::default();
-        m.channels
-            .insert(1, channel(vec![0.25; 2], None, [0.0; 3], true));
-        let quiet = 0.25 * stereo_gains(0.0, 0.0, 1.0)[0];
-        let mut data = [0.0; 16];
-        mix(&mut m, &mut data, 2, 48_000);
-        assert_eq!(data, [quiet; 16]);
-
-        for id in 2..=5 {
-            m.channels
-                .insert(id, channel(vec![1.0; 2], None, [0.0; 3], true));
-        }
-        mix(&mut m, &mut data, 2, 48_000);
-        assert!(data.iter().all(|s| s.abs() <= 1.0));
-        m.channels.retain(|&id, _| id == 1);
-        let mut recovery = vec![0.0; 2 * 48_000];
-        mix(&mut m, &mut recovery, 2, 48_000);
-        assert!(recovery[0] > 0.0 && recovery[0] < 0.1);
-        assert!(recovery.windows(2).all(|w| w[1] >= w[0]));
-        assert_eq!(*recovery.last().unwrap(), quiet);
-    }
-
-    #[test]
-    fn sources_play_attenuated_then_stop_or_loop() {
-        let mut m = Mixer::default();
-        m.channels
-            .insert(1, channel(vec![1.0; 4], Some(16.0), [8.0, 0.0, 0.0], false));
-        m.channels
-            .insert(2, channel(vec![1.0; 4], None, [0.0; 3], true));
-        let mut data = [0.0f32; 16];
-        mix(&mut m, &mut data, 2, 48_000);
-        assert_eq!(m.channels[&1].state, State::Stopped);
-        assert_eq!(m.channels[&2].state, State::Playing);
-        // Mono sum of the two at the first frame: the far one is half as loud.
-        let first = data[0] + data[1];
-        assert!(first > 1.4 && first < 3.1, "{first}");
-    }
-
-    #[test]
-    fn stereo_panning_matches_openal_soft() {
-        // OpenAL Soft 1.25.2 (LWJGL 3.4.3's macOS build), stereo loopback
-        // device with vanilla's attributes, 1 kHz sine 4 blocks away.
-        let cases = [
-            ((0.0, 0.0, 1.0), [0.5957, 0.5957]),
-            ((-1.0, 0.0, 0.0), [1.0, 0.0]),
-            ((1.0, 0.0, 0.0), [0.0, 1.0]),
-            ((0.0, 0.0, -1.0), [0.4043, 0.4043]),
-            ((0.0, 1.0, 0.0), [0.5, 0.5]),
-            ((0.0, -1.0, 0.0), [0.5, 0.5]),
-            ((-1.0, 0.0, 1.0), [0.9985, 0.0747]),
-            ((-1.0, 0.0, -1.0), [0.7859, 0.0788]),
-            ((0.0, 0.0, 0.0), [0.5957, 0.5957]),
-        ];
-        for ((right, up, forward), expected) in cases {
-            let gains = stereo_gains(right, up, forward);
-            for (g, e) in gains.into_iter().zip(expected) {
-                assert!((g - e).abs() < 1e-4, "{right} {up} {forward}: {gains:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn panning_follows_the_camera_rotation() {
-        let gains = |yaw: f32, pitch: f32, at: [f32; 3]| {
-            let mut m = Mixer {
-                listener_yaw: yaw,
-                listener_pitch: pitch,
-                ..Mixer::default()
-            };
-            m.channels.insert(1, channel(vec![1.0; 4], None, at, true));
-            let mut data = [0.0; 2];
-            mix(&mut m, &mut data, 2, 48_000);
-            data
-        };
-        let close =
-            |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-4 && (a[1] - b[1]).abs() < 1e-4;
-        // Facing south (yaw 0), east is on the left; facing north, on the right.
-        assert!(close(gains(0.0, 0.0, [1.0, 0.0, 0.0]), [1.0, 0.0]));
-        assert!(close(gains(180.0, 0.0, [1.0, 0.0, 0.0]), [0.0, 1.0]));
-        // Looking straight down, a source below is ahead and one south is above.
-        assert!(close(gains(0.0, 90.0, [0.0, -1.0, 0.0]), [0.5957, 0.5957]));
-        assert!(close(gains(0.0, 90.0, [0.0, 0.0, 1.0]), [0.5, 0.5]));
-    }
-
-    #[test]
-    fn a_mono_output_plays_sources_unpanned() {
-        let mut m = Mixer::default();
-        m.channels
-            .insert(1, channel(vec![0.5; 4], None, [0.0, 0.0, -3.0], true));
-        let mut data = [0.0; 2];
-        mix(&mut m, &mut data, 1, 48_000);
-        assert_eq!(data, [0.5; 2]);
     }
 }

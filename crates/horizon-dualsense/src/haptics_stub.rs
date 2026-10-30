@@ -1,5 +1,5 @@
 //! No HD haptics on iOS: they play through the pad's own four-channel audio device over USB,
-//! which needs cpal, and cpal is left out there with hidapi (see Cargo.toml).
+//! which has no audio endpoint on iOS.
 
 /// The pad's audio output, playing the queued samples (left, right actuator).
 pub struct Haptics;

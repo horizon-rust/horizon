@@ -55,7 +55,7 @@ distance 10. The vanilla server was the pinned 26.3 `server.jar` on Java 25 with
 | What has to be installed | one 46.8 MB binary + 589 MB of prepared resources | Java 25 + the 62 MB jar |
 | Crates linked | 384 (wgpu, winit, cpal, gilrs, arboard, naga…) | n/a |
 
-On Linux the full game loads `libasound.so.2` (cpal) and `libudev.so.1` (gilrs) at startup. wgpu, winit
+On Linux the full game loads `libudev.so.1` (gilrs) at startup; audio uses OpenAL Soft. wgpu, winit
 and the Wayland/X11 libraries are loaded only when a window opens. The server build (`horizon-engine`,
 section 3) is the same program built without its `audio` and `controllers` features, so it needs neither
 library, and a minimal server image runs it as it is.

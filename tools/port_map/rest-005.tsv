@@ -70,9 +70,9 @@ SoundEngine.loadLibrary	port	crates/horizon-client-render/src/audio.rs::Audio::w
 SoundEngine.shouldChangeDevice	missing		player: when the output device is lost or the system default changes, vanilla reopens sound output; Horizon's Audio has no device watch
 SoundEngine.notifyListeners	port	crates/horizon-client-render/src/sound_engine.rs::SoundEngine::notify	subtitle and listener notification with range
 SoundEngine.updateSource	port	crates/horizon-client-render/src/audio.rs::Audio::set_listener	listener position and orientation
-SoundEngineExecutor.createThread	skip:other		sound thread creation; Horizon's audio runs on the cpal callback
-SoundEngineExecutor.run	skip:other		sound thread loop; Horizon's audio runs on the cpal callback
-SoundEngineExecutor.shutDown	skip:other		sound thread shutdown; Horizon's audio runs on the cpal callback
+SoundEngineExecutor.createThread	skip:other		sound thread creation; Horizon updates OpenAL sources on the client thread
+SoundEngineExecutor.run	skip:other		sound thread loop; Horizon updates OpenAL sources on the client thread
+SoundEngineExecutor.shutDown	skip:other		sound thread shutdown; Horizon updates OpenAL sources on the client thread
 SoundManager.prepare	port	crates/horizon-client-render/src/sound_events.rs::SoundRegistry::load	reads sounds.json per namespace
 SoundManager.apply	port	crates/horizon-client-render/src/audio.rs::Audio::reload	applies the registry and reloads the engine
 SoundManager.validateSoundResource	inline	crates/horizon-client-render/src/sound_events.rs::SoundRegistry::add_file	file existence check through the exists closure
