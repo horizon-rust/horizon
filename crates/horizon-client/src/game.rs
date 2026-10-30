@@ -1,5 +1,44 @@
 //! The playable game loop: streaming world, player simulation at 20 ticks/s,
 //! block interaction, inventory and HUD.
+
+/// The content tables the world plays with, as field-level borrows: the
+/// world's data packs' over the game's own. The `Game::items`/`recipes`/
+/// `stations` methods read the same tables, but taking `&self` blocks a
+/// `&mut self.…` in the same scope; these expand to a match on the fields,
+/// which borrows stay disjoint from.
+macro_rules! world_items {
+    ($s:ident) => {
+        match &$s.world_tables {
+            Some(t) => &t.items,
+            None => $s.res.items(),
+        }
+    };
+}
+macro_rules! world_recipes {
+    ($s:ident) => {
+        match &$s.world_tables {
+            Some(t) => &t.recipes,
+            None => $s.res.recipes(),
+        }
+    };
+}
+macro_rules! world_stations {
+    ($s:ident) => {
+        match &$s.world_tables {
+            Some(t) => &t.stations,
+            None => $s.res.stations(),
+        }
+    };
+}
+
+/// The world's packs' content files, as a field-level borrow (see the macros).
+fn pack_files(world_tables: &Option<WorldTables>) -> horizon_world::loot::PackOverlay<'_> {
+    match world_tables {
+        Some(t) => horizon_world::loot::PackOverlay { files: &t.files },
+        None => horizon_world::loot::PackOverlay::NONE,
+    }
+}
+
 mod advancements;
 mod advancements_screen;
 mod agent;
@@ -1242,6 +1281,19 @@ struct WorldRest {
     stations: horizon_client::stations::StationData,
 }
 
+/// The content tables a world's data packs change, loaded when the world
+/// opens and on `/reload`: `ReloadableServerResources` loads a server's
+/// recipes, loot tables and tags from the world's pack stack, over the
+/// resource root's own. Worlds without packs use `Resources.rest` directly.
+struct WorldTables {
+    /// The pack files the tables were built from, for the advancement tree
+    /// reload and the loot data.
+    files: Vec<(String, Vec<Vec<u8>>)>,
+    items: Items,
+    recipes: Recipes,
+    stations: horizon_client::stations::StationData,
+}
+
 impl Resources {
     fn rest(&self) -> &WorldRest {
         self.rest
@@ -1343,6 +1395,17 @@ impl UiResources {
         Ok(Self {
             atlas: HudAtlas::build_over(root, defaults)?,
             panorama: Arc::new(horizon_client::gfx::panorama::Faces::load(root)),
+        })
+    }
+    /// What a server's game holds, since it draws nothing: the font, which books
+    /// and chat measure with, and a one-pixel panorama.
+    pub fn server(root: &std::path::Path) -> Result<Self> {
+        Ok(Self {
+            atlas: HudAtlas::fonts(root)?,
+            panorama: Arc::new(horizon_client::gfx::panorama::Faces {
+                size: 1,
+                pixels: [0u8; 4].repeat(6),
+            }),
         })
     }
 }
@@ -1767,6 +1830,9 @@ struct Game<'a> {
     sleep_seen: (i64, i64),
     dim: Dim,
     world_root: PathBuf,
+    /// The world's data packs' content tables, when it has packs (`None`
+    /// keeps `Resources.rest`'s own in use).
+    world_tables: Option<WorldTables>,
     /// The world is superflat (`ServerLevel.isFlat`, for every dimension).
     world_flat: bool,
     /// A player carried through a portal, re-placed once the destination loads.
@@ -2011,6 +2077,10 @@ struct Game<'a> {
     /// have each chest open.
     lid_openers: HashMap<(i32, i32, i32), i32>,
     lan_acting: Option<u32>,
+    /// The block the acting player is breaking (`break_block`): its destroy
+    /// event, and the ones before it, are the player's own (`Level.levelEvent`
+    /// with the player excluded); the events after it are not.
+    lan_break_pos: Option<[i32; 3]>,
     /// The name of the guest `lan_acting` acts for (`Player.getName`).
     lan_acting_name: Option<String>,
     /// Their UUID (`Player.getUUID`).
@@ -2404,7 +2474,7 @@ impl Game<'_> {
                     self.inventory.get(slot)?.as_ref()
                 }
             })
-            .and_then(|s| self.res.items().get(&s.item));
+            .and_then(|s| self.items().get(&s.item));
         let item_use_speed = item_in_use.map(|i| i.use_speed);
         let item_use_slows_sprint = item_in_use.is_some_and(|i| !i.can_sprint);
         let respiration = self.armor[0]
@@ -2716,14 +2786,14 @@ impl Game<'_> {
     ) -> Vec<ItemStack> {
         let registry = self.pack.assets.registry;
         let dynamic = self.pending.dynamic(pos);
-        match self.res.items().block_loot_sequence(registry, state) {
+        match world_items!(self).block_loot_sequence(registry, state) {
             Some(sequence) => {
                 let random = self.rand_sequences.get(&sequence, self.level.seed);
                 self.res
                     .items()
                     .block_drops_by_player(registry, state, held, &dynamic, random)
             }
-            None => self.res.items().block_drops_by_player(
+            None => world_items!(self).block_drops_by_player(
                 registry,
                 state,
                 held,
@@ -2805,7 +2875,7 @@ impl Game<'_> {
         let ticking = self.entity_ticking_area();
         let mut removed = vec![false; items.len()];
         let mut cells = horizon_client::entities::ItemCells::new(&items);
-        let catalog = self.res.items();
+        let catalog = world_items!(self);
         let max_stack =
             |stack: &ItemStack| catalog.get(&stack.item).map_or(64, |i| i.max_stack).max(1);
         // A LAN or server guest only shows the host's items.
@@ -2875,7 +2945,7 @@ impl Game<'_> {
                 &self.world,
                 self.res.facts(),
                 self.pack.assets.registry,
-                self.res.items(),
+                world_items!(self),
             );
             // shortcut: age is the fresh-drop clock; use entity ticks for saved/frozen-age phase parity.
             if environment.should_play_lava_hurt_sound(item.age) {
@@ -3093,14 +3163,17 @@ impl Game<'_> {
             biomes: self.res.biomes(),
             seed: self.level.seed,
             behaviours: self.res.behaviours(),
-            items: self.res.items(),
-            recipes: self.res.recipes(),
+            items: world_items!(self),
+            recipes: world_recipes!(self),
             // A client rolls no loot (LootTable.getRandomItems needs a
             // ServerLevel): it doesn't load the tables on its game thread.
             loot: if self.remote.is_some() {
                 None
             } else {
-                horizon_client::structure_blocks::loot_data(&self.options.resources)
+                horizon_client::structure_blocks::loot_data(
+                    &self.options.resources,
+                    &pack_files(&self.world_tables),
+                )
             },
             registry: self.pack.assets.registry,
             rules,
@@ -3903,6 +3976,10 @@ impl Game<'_> {
             return;
         }
         if horizon_client::command_block::Mode::of_block(&name).is_some() {
+            // `ServerPlayer.openCommandBlock` sends the block entity's data
+            // (`ClientboundBlockEntityDataPacket`) so the opening client shows
+            // the stored command, not its stale copy.
+            self.mark_block_entity_updated(key);
             self.open_command_block(key);
             return;
         }
@@ -4177,7 +4254,7 @@ impl Game<'_> {
             .item_tags
             .get("minecraft:breaks_decorated_pots")
             .is_some_and(|t| t.contains(&*held.item));
-        let enchantments = &self.res.stations().enchantments;
+        let enchantments = &self.stations().enchantments;
         let kept = held
             .enchantments()
             .iter()
@@ -4210,7 +4287,7 @@ impl Game<'_> {
             return;
         };
         let wears = if &*stack.item == "minecraft:shears" {
-            !self.res.items().block_in_tag("minecraft:fire", name)
+            !self.items().block_in_tag("minecraft:fire", name)
         } else {
             hardness != 0.0
         };
@@ -4220,7 +4297,10 @@ impl Game<'_> {
         self.stats.add("used", &stack.item, 1);
     }
     fn break_block(&mut self, pos: [i32; 3]) -> Result<()> {
-        self.with_player_actor(|game| game.break_block_as_player(pos))
+        self.lan_break_pos = Some(pos);
+        let broken = self.with_player_actor(|game| game.break_block_as_player(pos));
+        self.lan_break_pos = None;
+        broken
     }
     fn break_block_as_player(&mut self, pos: [i32; 3]) -> Result<()> {
         // DebugStickItem.canDestroyBlock: a left click selects a property and
@@ -4618,7 +4698,7 @@ impl Game<'_> {
         let Some(stack) = self.held().cloned() else {
             return Ok(false);
         };
-        let Some(info) = self.res.items().get(&stack.item).cloned() else {
+        let Some(info) = self.items().get(&stack.item).cloned() else {
             return Ok(false);
         };
         // ServerPlayerGameMode.useItem and useItemOn: an item on cooldown is
@@ -4949,7 +5029,7 @@ impl Game<'_> {
         }
         // ServerPlayer.updateUsingItem: USING_ITEM every tick of the use.
         self.trigger_using_item(&stack);
-        let Some(info) = self.res.items().get(&stack.item).cloned() else {
+        let Some(info) = self.items().get(&stack.item).cloned() else {
             self.using = None;
             return;
         };
@@ -5036,7 +5116,7 @@ impl Game<'_> {
     /// `BundleItem.dropContent`: `removeOneItemFromBundle` and `Player.drop`,
     /// then the drop sound and the used statistic.
     fn drop_bundle_content(&mut self, slot: usize) {
-        let items = self.res.items();
+        let items = self.items();
         let Some(mut bundle) = self.stack_in(slot).cloned() else {
             return;
         };
@@ -5143,7 +5223,7 @@ impl Game<'_> {
         }
         // Player.getDestroySpeed / BlockBehaviour.getDestroyProgress.
         let held = self.held();
-        let mut speed = self.res.items().mining_speed(held, &facts.name);
+        let mut speed = self.items().mining_speed(held, &facts.name);
         speed = self.modify_destroy_speed(speed);
         let player = self.player.as_ref().ok_or("no player")?;
         if !player.ground.on_ground {
@@ -5163,7 +5243,7 @@ impl Game<'_> {
         {
             speed *= self.submerged_mining_speed();
         }
-        let harvest = !facts.requires_tool || self.res.items().correct_for_drops(held, &facts.name);
+        let harvest = !facts.requires_tool || self.items().correct_for_drops(held, &facts.name);
         let progress = if facts.hardness == 0.0 {
             1.0
         } else {
@@ -6264,7 +6344,7 @@ impl Game<'_> {
     ) {
         // GuiGraphicsExtractor.itemDecorations, laid out at the origin and
         // moved to (x, y): the damage bar, the cooldown shade and the count.
-        let info = self.res.items().get(&stack.item);
+        let info = self.items().get(&stack.item);
         let max_damage = info.map_or(0, |info| info.max_damage as i32);
         let cooldown =
             horizon_client::cooldowns::group(stack, info.and_then(|i| i.use_cooldown.as_ref()));
@@ -6273,7 +6353,7 @@ impl Game<'_> {
             count: stack.count,
             count_text,
             // BundleItem overrides the bar with its fullness.
-            bar: horizon_client::bundle::Contents::of(self.res.items(), stack)
+            bar: horizon_client::bundle::Contents::of(self.items(), stack)
                 .map(|c| c.bar())
                 .unwrap_or_else(|| hud_overlays::damage_bar(stack.damage as i32, max_damage)),
             cooldown: self.cooldowns.percent(&cooldown, partial),
@@ -6793,7 +6873,7 @@ impl Game<'_> {
             self.trigger_recipe_crafted(recipe, ingredients);
         }
         let recipes: Vec<String> = crafts.iter().map(|(r, _)| r.clone()).collect();
-        let index = &self.res.stations().recipe_index;
+        let index = &world_stations!(self).recipe_index;
         let (_, unlocked) = self.level.recipe_book.add_recipes(index, &recipes);
         self.recipe_unlocked(&unlocked);
     }
@@ -7090,7 +7170,7 @@ impl Game<'_> {
         let shown = self
             .creative_screen
             .shown(&self.pack.names, first * 9 + slot - Creative::DISPLAY);
-        let catalog = self.res.items();
+        let catalog = world_items!(self);
         let max = |s: &ItemStack| catalog.get(&s.item).map_or(64, |i| i.max_stack);
         match click_display(&mut self.carried, shown.as_ref(), max, button, input) {
             DisplayClick::Hotbar(i, stack) if i < self.inventory.len() => {
@@ -7458,17 +7538,17 @@ impl Game<'_> {
             next_id: std::cell::Cell::new(next_map),
         };
         let trade_env = horizon_client::merchant::TradeEnv {
-            trades: &self.res.stations().trades,
-            enchantments: &self.res.stations().enchantments,
+            trades: &self.stations().trades,
+            enchantments: &self.stations().enchantments,
             maps: Some(&maps),
         };
         let env = Env {
-            items: self.res.items(),
-            recipes: self.res.recipes(),
-            brewing: &self.res.stations().brewing,
-            banners: &self.res.stations().banners,
-            station_recipes: &self.res.stations().recipes,
-            enchantments: &self.res.stations().enchantments,
+            items: self.items(),
+            recipes: self.recipes(),
+            brewing: &self.stations().brewing,
+            banners: &self.stations().banners,
+            station_recipes: &self.stations().recipes,
+            enchantments: &self.stations().enchantments,
             names: &self.pack.names,
             trade: Some(&trade_env),
             maps: level_maps
@@ -7654,7 +7734,7 @@ impl Game<'_> {
                 .and_then(|k| self.world.block_entities.get_mut(&k))
         {
             // AbstractFurnaceBlockEntity.setItem: only a new input restarts cooking.
-            f.input_clicked(self.res.recipes(), before[0].clone());
+            f.input_clicked(world_recipes!(self), before[0].clone());
         }
         match equipment_before {
             Some(before) => self.player_equipment_changed(&before),
@@ -8175,7 +8255,7 @@ impl Game<'_> {
                 None => self.carried = Some(result),
                 Some(c)
                     if c.item == result.item
-                        && c.count + result.count <= max(self.res.items(), c) =>
+                        && c.count + result.count <= max(world_items!(self), c) =>
                 {
                     c.count += result.count
                 }
@@ -8192,7 +8272,7 @@ impl Game<'_> {
                 let made = (result.item.clone(), result.count);
                 let cells = self.craft_size * self.craft_size;
                 let ingredients = self.craft_grid[..cells].to_vec();
-                let remainders = self.res.recipes().remainders(
+                let remainders = world_recipes!(self).remainders(
                     &recipe,
                     &self.craft_grid[..cells],
                     self.craft_size,
@@ -8206,7 +8286,7 @@ impl Game<'_> {
                         None => self.carried = Some(result),
                         Some(c)
                             if c.item == result.item
-                                && c.count + result.count <= max(self.res.items(), c) =>
+                                && c.count + result.count <= max(world_items!(self), c) =>
                         {
                             c.count += result.count
                         }
@@ -8262,7 +8342,7 @@ impl Game<'_> {
         }
         let carried = self.carried.take();
         let current = self.slot_mut(slot).take();
-        let items = self.res.items();
+        let items = self.items();
         let (new_slot, new_carried) = match (carried, current) {
             (None, Some(mut s)) if right => {
                 let half = s.count.div_ceil(2);
@@ -8303,7 +8383,7 @@ impl Game<'_> {
                 .container
                 .and_then(|k| self.world.block_entities.get_mut(&k))
         {
-            f.input_clicked(self.res.recipes(), before);
+            f.input_clicked(world_recipes!(self), before);
         }
     }
     /// `Camera.setRotation`: the camera's orientation, turned round in
@@ -9458,6 +9538,7 @@ impl Game<'_> {
             locator,
         } = prepared;
         let dim = Dim::from_id(&level.dimension);
+        self.world_root = save_root.clone();
         horizon_client::crash::set_detail(
             "World",
             format!("{} ({})", level.name, save_root.display()),
@@ -9467,6 +9548,14 @@ impl Game<'_> {
         self.share_spawn_conditions();
         self.score = Default::default();
         self.fns = Default::default();
+        self.world_tables = self.build_world_tables();
+        horizon_client::structure_blocks::forget_loot_data();
+        // Warm the loot data with this world's packs before chunks decode
+        // (`save::roll_loaded_loot` reads the cached copy).
+        let _ = horizon_client::structure_blocks::loot_data(
+            &self.options.resources,
+            &pack_files(&self.world_tables),
+        );
         self.bosses = Default::default();
         reset_world_progress(&mut self.adv, &mut self.stats);
         self.prefetch_advancement_tree();
@@ -9534,13 +9623,12 @@ impl Game<'_> {
         self.save = save;
         self.level = level;
         // ServerRecipeBook.loadUntrusted: recipes the manager does not have are dropped.
-        let index = &self.res.stations().recipe_index;
+        let index = &world_stations!(self).recipe_index;
         let book = &mut self.level.recipe_book;
         book.recipes.retain(|r| index.contains(r));
         book.to_be_displayed.retain(|r| index.contains(r));
         self.dim = dim;
         self.audio.set_world(dim.id());
-        self.world_root = save_root.clone();
         // LevelStorageAccess.getIconFile: this save's icon.png is what the
         // Select World list shows.
         self.world_icon = Some(WorldIcon {
@@ -9965,7 +10053,7 @@ impl Game<'_> {
             .collect();
         equipped.push((self.inventory[self.selected].as_ref(), "mainhand"));
         for (stack, slot) in equipped {
-            let Some(info) = stack.and_then(|s| self.res.items().get(&s.item)) else {
+            let Some(info) = stack.and_then(|s| world_items!(self).get(&s.item)) else {
                 continue;
             };
             for (attribute, id, amount, op, group) in &info.modifiers {
@@ -10030,7 +10118,7 @@ impl Game<'_> {
                         .items()
                         .get(&s.item)
                         .is_some_and(|info| info.equip_damage_on_hurt)
-                        && !(fire && self.res.items().resists_fire(&s, &name)) =>
+                        && !(fire && world_items!(self).resists_fire(&s, &name)) =>
                 {
                     self.wear(&s, amount)
                 }
@@ -10039,7 +10127,7 @@ impl Game<'_> {
             .collect();
         for (slot, amount) in self.armor.iter_mut().zip(losses) {
             if let Some(stack) = slot.as_mut()
-                && let Some(info) = self.res.items().get(&stack.item)
+                && let Some(info) = world_items!(self).get(&stack.item)
                 && info.max_damage > 0
             {
                 stack.damage += amount;
@@ -10163,7 +10251,7 @@ impl Game<'_> {
         let Some(held) = self.held() else {
             return Ok(false);
         };
-        let removes_dye = cauldron::removes_dye(self.res.items(), &held.item);
+        let removes_dye = cauldron::removes_dye(self.items(), &held.item);
         let above = self.world.block(pos[0], pos[1] + 1, pos[2]);
         let under_water = registry
             .state(above)
@@ -10232,7 +10320,7 @@ impl Game<'_> {
         let shield = self
             .offhand
             .as_ref()
-            .and_then(|s| self.res.items().get(&s.item))
+            .and_then(|s| self.items().get(&s.item))
             .is_some_and(|i| i.blocks_attacks.is_some());
         if shield && !self.keys.contains(&KeyCode::ShiftLeft) {
             return None;
@@ -10254,7 +10342,7 @@ impl Game<'_> {
         let (_, t, state) =
             self.res
                 .transformers()
-                .apply(self.res.items(), registry, &id, face_name, &around)?;
+                .apply(self.items(), registry, &id, face_name, &around)?;
         let new = registry.resolve(&state).ok()?;
         Some((
             new,
@@ -10368,7 +10456,7 @@ impl Game<'_> {
         };
         let max = self
             .held()
-            .and_then(|s| self.res.items().get(&s.item))
+            .and_then(|s| self.items().get(&s.item))
             .map_or(0, |i| i.max_damage);
         let cell = self.held_mut();
         if let Some(stack) = cell.as_mut()
@@ -10400,7 +10488,7 @@ impl Game<'_> {
             return;
         };
         let amount = self.wear(&held, amount);
-        let max = self.res.items().get(&held.item).map_or(0, |i| i.max_damage);
+        let max = self.items().get(&held.item).map_or(0, |i| i.max_damage);
         if amount == 0 || max == 0 {
             return;
         }
@@ -10862,7 +10950,7 @@ impl Game<'_> {
     pub(super) fn award_furnace_recipes(&mut self, pos: (i32, i32, i32), at: [f64; 3]) {
         let used = match self.world.block_entities.get_mut(&pos) {
             Some(BlockEntity::Furnace(f)) => {
-                let used = f.recipe_experience(self.res.recipes());
+                let used = f.recipe_experience(world_recipes!(self));
                 f.recipes_used.clear();
                 used
             }
@@ -14725,6 +14813,7 @@ impl<'a> Game<'a> {
             lan_global_events: Vec::new(),
             lid_openers: HashMap::new(),
             lan_acting: None,
+            lan_break_pos: None,
             guest_packets: Vec::new(),
             guest_cooldowns: Vec::new(),
             guest_entity_events: Vec::new(),
@@ -14734,6 +14823,7 @@ impl<'a> Game<'a> {
             chat_capture: None,
             admin_feedback: Vec::new(),
             console_broadcast: None,
+            world_tables: None,
             cmds: Default::default(),
             ui: chat::UiState::new(),
             combat: Default::default(),
@@ -14951,6 +15041,85 @@ impl Game<'_> {
         Ok(())
     }
 
+    // ---- the world's data packs' content tables ---------------------------
+
+    /// The content tables the world plays with: its data packs' over the
+    /// game's own when it has packs, `Resources.rest`'s own otherwise.
+    fn items(&self) -> &Items {
+        match &self.world_tables {
+            Some(t) => &t.items,
+            None => self.res.items(),
+        }
+    }
+    fn recipes(&self) -> &Recipes {
+        match &self.world_tables {
+            Some(t) => &t.recipes,
+            None => self.res.recipes(),
+        }
+    }
+    fn stations(&self) -> &horizon_client::stations::StationData {
+        match &self.world_tables {
+            Some(t) => &t.stations,
+            None => self.res.stations(),
+        }
+    }
+    /// The world's packs' content files, none without packs.
+    fn pack_files(&self) -> horizon_world::loot::PackOverlay<'_> {
+        pack_files(&self.world_tables)
+    }
+    /// Load the world's data packs' content tables (`None`: the world has no
+    /// packs, and `Resources.rest` stays in use). This re-reads the tables,
+    /// so it runs once per world open and on `/reload`.
+    fn build_world_tables(&self) -> Option<WorldTables> {
+        let files = functions::content_overlay(
+            &self.world_root,
+            &self.options.resources,
+            self.cmds.vanilla_disabled,
+        );
+        if files.is_empty() {
+            return None;
+        }
+        let overlay = horizon_world::loot::PackOverlay { files: &files };
+        let root = &self.options.resources;
+        let items = match Items::load(root, self.pack.assets.registry, self.res.facts(), &overlay) {
+            Ok(items) => items,
+            Err(e) => {
+                log::warn!("Horizon: the world's data packs are not applied: {e}");
+                return None;
+            }
+        };
+        let recipes = match Recipes::load(root, &items, &overlay) {
+            Ok(recipes) => recipes,
+            Err(e) => {
+                log::warn!("Horizon: the world's data packs are not applied: {e}");
+                return None;
+            }
+        };
+        let stations = horizon_client::stations::StationData::load(root, &items, &overlay);
+        Some(WorldTables {
+            files,
+            items,
+            recipes,
+            stations,
+        })
+    }
+    /// Reload the content tables with the world's packs, as
+    /// `/reload` reloads a server's (`ReloadableServerResources`).
+    pub(super) fn reload_world_tables(&mut self) {
+        if self.remote.is_some() {
+            return;
+        }
+        self.world_tables = self.build_world_tables();
+        horizon_client::structure_blocks::forget_loot_data();
+        lan::forget_sync_data();
+        let overlay = pack_files(&self.world_tables);
+        self.adv.tree = Arc::new(horizon_client::advancements::Tree::load_with(
+            &self.options.resources.join("data"),
+            &overlay,
+        ));
+        self.adv.reset_tree();
+    }
+
     fn join_world_rest(&mut self) -> Result<()> {
         if self.rest_loader.is_some() {
             let waited = Instant::now();
@@ -15062,6 +15231,7 @@ fn load_resources(
     settings: &Settings,
     started: Instant,
     menu: bool,
+    headless: bool,
     progress: &Progress,
     publish: &mut dyn FnMut(UiResources, &std::path::Path),
 ) -> Result<Loaded> {
@@ -15073,7 +15243,16 @@ fn load_resources(
     let mut loaded_gui = None;
     let mut ui_ready = false;
     let mut pack_error = None;
-    let ui = match UiResources::load(&root, vanilla_root) {
+    // A dedicated server builds only the font (UiResources::server), as the
+    // integrated server's game does: the full atlas and panorama are 144 MB.
+    let load_ui = |root: &std::path::Path| {
+        if headless {
+            UiResources::server(root)
+        } else {
+            UiResources::load(root, vanilla_root)
+        }
+    };
+    let ui = match load_ui(&root) {
         Ok(ui) => Some(ui),
         // Minecraft.rollbackResourcePacks: the packs' textures don't fit, start
         // with the game's own resources.
@@ -15099,8 +15278,16 @@ fn load_resources(
         ui_ready = true;
     }
     progress.set(0);
+    // Nor the block sprites' pixels, which only the renderer reads (32 MB).
+    let reload = |assets: &Assets, root: &std::path::Path| {
+        if headless {
+            assets.reload_for_server(root)
+        } else {
+            assets.reload(root)
+        }
+    };
     let (assets, render) = match Assets::load(&root).and_then(|assets| {
-        let render = assets.reload(&root)?;
+        let render = reload(&assets, &root)?;
         Ok((assets, render))
     }) {
         Ok(bundle) => bundle,
@@ -15111,7 +15298,7 @@ fn load_resources(
             pack_error = Some(e.to_string());
             root = vanilla_root.to_path_buf();
             let assets = Assets::load(vanilla_root)?;
-            let render = assets.reload(vanilla_root)?;
+            let render = reload(&assets, vanilla_root)?;
             (assets, render)
         }
         Err(e) => {
@@ -15125,7 +15312,7 @@ fn load_resources(
     let render = Arc::new(render);
     // The menu bundle must come from the same root as the world bundle.
     if !ui_ready || root != requested_root {
-        let ui = UiResources::load(&root, vanilla_root)?;
+        let ui = load_ui(&root)?;
         if menu {
             horizon_client::telemetry::mark_ui_ready();
             log::info!(
@@ -15301,10 +15488,15 @@ fn load_world_rest(
     let mob_data = horizon_client::mobs::MobData::load(root, facts);
     horizon_client::mobs::trial_spawner::load_registry(root);
 
-    let items = Items::load(root, assets.registry, facts)?;
+    let items = Items::load(
+        root,
+        assets.registry,
+        facts,
+        &horizon_world::loot::PackOverlay::NONE,
+    )?;
     log::info!("load items: {:.2}s", started.elapsed().as_secs_f32());
     progress.set(7);
-    let recipes = Recipes::load(root, &items)?;
+    let recipes = Recipes::load(root, &items, &horizon_world::loot::PackOverlay::NONE)?;
     let transformers = horizon_client::block_transform::Transformers::load(root, assets.registry)?;
     log::info!(
         "Horizon: resources loaded in {:.1}s; {} block states, {} items, {} biomes; {} worker threads",
@@ -15315,7 +15507,11 @@ fn load_world_rest(
         threads
     );
     progress.set(8);
-    let stations = horizon_client::stations::StationData::load(root, &items);
+    let stations = horizon_client::stations::StationData::load(
+        root,
+        &items,
+        &horizon_world::loot::PackOverlay::NONE,
+    );
     let animate =
         horizon_client::animate_tick::AnimateTables::load(root, registry_owner.registry, biomes)?;
     let fog = horizon_client::fog::FogTables::load(root, biomes);
@@ -16198,6 +16394,7 @@ pub fn run() -> Result<()> {
         &early_settings,
         started,
         false,
+        options.dedicated.is_some(),
         &Progress::new(),
         &mut |_, _| {},
     )?;

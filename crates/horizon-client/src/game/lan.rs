@@ -28,13 +28,18 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// The registries and tags are the same for every world: load them once.
+/// The registries and tags, loaded once per world (a world open or a
+/// `/reload` forgets them, as `forget_sync_data` does).
 static SYNC: Mutex<Option<std::result::Result<Arc<SyncData>, String>>> = Mutex::new(None);
 
-/// The registries and tags a server sends, loaded from `root` the first time.
-pub(super) fn sync_data(root: &std::path::Path) -> std::result::Result<Arc<SyncData>, String> {
+/// The registries and tags a server sends, loaded from `root` the first
+/// time, with the world's data packs' recipes and advancements over them.
+pub(super) fn sync_data(
+    root: &std::path::Path,
+    overlay: &horizon_world::loot::PackOverlay,
+) -> std::result::Result<Arc<SyncData>, String> {
     let mut sync = SYNC.lock().unwrap_or_else(|e| e.into_inner());
-    sync.get_or_insert_with(|| SyncData::load(root).map(Arc::new))
+    sync.get_or_insert_with(|| SyncData::load(root, overlay).map(Arc::new))
         .clone()
 }
 
@@ -1146,7 +1151,7 @@ impl Game<'_> {
         config: HubConfig,
         host: Option<u128>,
     ) -> Result<()> {
-        let sync = sync_data(&self.options.resources)?;
+        let sync = sync_data(&self.options.resources, &self.pack_files())?;
         let biome_names: Vec<String> = self
             .res
             .biomes()
@@ -1862,9 +1867,18 @@ impl Game<'_> {
         if self.audio.capture.is_none() {
             return;
         }
+        // The acting guest's own break: `Block.playerWillDestroy` excludes the
+        // player from the destroy events up to the broken block's. What a
+        // break sets off after that (a torch popping off, a stalk falling) is
+        // `destroyBlock` with no player, which the breaker hears and sees too.
+        let mut own_break = self.lan_break_pos.is_some();
         for e in events {
             match e {
                 horizon_world::level::LevelEvent::LevelEvent { id, pos, data } => {
+                    let own = *id == 2001 && own_break;
+                    if own && self.lan_break_pos == Some([pos.x, pos.y, pos.z]) {
+                        own_break = false;
+                    }
                     // The acting guest does not predict the egg's teleport
                     // particles, bone meal's growth, anvil result sounds, or a
                     // finished brushing or an eye inserted in a portal frame (these calls name no
@@ -1873,7 +1887,8 @@ impl Game<'_> {
                     let except = if matches!(
                         *id,
                         2015 | 1503 | 1505 | 1029 | 1030 | 1045 | 1052 | 2019 | 2020 | 3000 | 3008
-                    ) {
+                    ) || (*id == 2001 && self.lan_break_pos.is_some() && !own)
+                    {
                         None
                     } else {
                         self.lan_acting
@@ -2264,7 +2279,7 @@ impl Game<'_> {
                         m.extra.main_hand.as_ref()
                     }
                 })
-                .and_then(|i| self.res.items().get(i))
+                .and_then(|i| self.items().get(i))
                 .is_some_and(|i| i.blocks_attacks.is_some());
         }
     }
