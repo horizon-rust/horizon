@@ -116,6 +116,15 @@ impl Post {
         }
     }
 
+    /// The size of the world's own target for a `window`, or `None` when the world draws straight
+    /// to the screen (`prepare`'s rule, known before the frame's targets are).
+    pub fn scaled_size(&self, window: [u32; 2], always: bool) -> Option<[u32; 2]> {
+        if self.scale == 1.0 && !self.antialias && !always {
+            return None;
+        }
+        Some(window.map(|v| ((v as f32 * self.scale).round() as u32).clamp(1, 8192)))
+    }
+
     /// The world's colour and depth targets this frame, or `None` to draw
     /// it straight to the screen.
     /// `always`: a target even at scale 1 without FXAA (a shader pack reads it).
@@ -125,11 +134,10 @@ impl Post {
         window: [u32; 2],
         always: bool,
     ) -> Option<(wgpu::TextureView, wgpu::TextureView)> {
-        if self.scale == 1.0 && !self.antialias && !always {
+        let Some(size) = self.scaled_size(window, always) else {
             self.target = None;
             return None;
-        }
-        let size = window.map(|v| ((v as f32 * self.scale).round() as u32).clamp(1, 8192));
+        };
         if self.target.as_ref().is_none_or(|t| t.size != size) {
             let extent = wgpu::Extent3d {
                 width: size[0],
