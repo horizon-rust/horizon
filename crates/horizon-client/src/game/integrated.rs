@@ -19,7 +19,7 @@ use super::{
 use horizon_client::{
     Result,
     audio::Audio,
-    lan::{Lan, MAX_PLAYERS, NetConfig, hub::HubConfig},
+    lan::{Lan, MAX_PLAYERS, NetConfig, OwnerProfile, hub::HubConfig},
     settings::Settings,
     title::WorldOptions,
 };
@@ -237,6 +237,8 @@ struct Launch {
     owner: u128,
     /// Its name, for the LAN's MOTD.
     player: String,
+    /// The signed-in account's profile, fetched while the world loads.
+    owner_profile: Option<Arc<OwnerProfile>>,
 }
 
 impl Game<'_> {
@@ -276,6 +278,21 @@ impl Game<'_> {
             // An offline-mode server names its players by their offline profile.
             owner: offline_uuid(&player),
             player: player.clone(),
+            owner_profile: auth.as_ref().map(|a| {
+                let id = a.uuid;
+                Arc::new(OwnerProfile::new(move || {
+                    horizon_client::skins::fetch_own_properties(id)
+                        .into_iter()
+                        .map(|(name, value, signature)| {
+                            horizon_protocol::packets::login::Property {
+                                name,
+                                value,
+                                signature,
+                            }
+                        })
+                        .collect()
+                }))
+            }),
         };
         let mut options = self.options.clone();
         // A server without a console: no local player, no window, no control socket.
@@ -401,94 +418,28 @@ impl Game<'_> {
         tasks: Receiver<Task>,
         ready: &Sender<Ready>,
     ) -> Result<()> {
-        self.load_world(WorldRequest::new(
-            &launch.folder,
-            launch.name.as_deref(),
-            launch.seed,
-            launch.creative,
-            launch.create.as_ref(),
-        )?)?;
-        let saved = Box::new(self.level.clone());
-        // IntegratedServer runs the server mods; the window the client mods.
-        self.mods.dev = self.options.dev_mods.clone();
-        self.start_mods();
-        // Math.max(2, options.renderDistance): past vanilla's 32 when the
-        // window's render distance is (Horizon's options go to 64).
-        let view_distance = self.settings.render_distance.max(2);
-        let config = HubConfig {
-            default_game_mode: self.level.mode(),
-            // Only the owner until it is opened to the LAN.
-            guest_commands: false,
-            force_game_mode: false,
-            hardcore: self.level.hardcore,
-            view_distance,
-            simulation_distance: self.settings.simulation_distance.max(2),
-            dimension: self.dim.id().to_owned(),
-            seed: self.level.seed,
-            max_players: MAX_PLAYERS,
-            // No player of its own: the hub runs without a host.
-            dedicated: true,
-            integrated: true,
-        };
-        let owner = launch.owner;
-        let published = flags.clone();
-        let local_players = flags.clone();
-        let net = NetConfig {
-            // No network until it is opened to the LAN; the memory connection
-            // is not compressed (`Connection.isMemoryConnection`).
-            listen: false,
-            online: horizon_client::lan::OnlineMode::lan(),
-            // Registered local seats share this computer; the vanilla LAN capacity still
-            // applies to other connections when the world is published.
-            bypasses_limit: Some(Arc::new(move |uuid| {
-                local_players.split_players.lock().unwrap().contains(&uuid)
-            })),
-            gate: Some(Arc::new(move |address, uuid, _| {
-                refused(
-                    uuid == owner,
-                    published.published.load(Ordering::Relaxed) != 0,
-                    published.split_players.lock().unwrap().contains(&uuid),
-                    address == horizon_client::lan::conn::MEMORY_ADDRESS,
-                )
-                .then(|| translatable("multiplayer.disconnect.not_whitelisted", &[]))
-            })),
-            // IntegratedServer.initServer: the MOTD names the owner and the world.
-            ..NetConfig::lan(
-                0,
-                format!("{} - {}", launch.player, self.level.name),
-                MAX_PLAYERS,
-            )
-        };
-        let settings = LanSettings {
-            port: 0,
-            guest_commands: false,
-            force_game_mode: false,
-        };
-        self.lan_host(settings, net, config, None)?;
-        let commands = self.allow_commands();
-        let pipe = {
-            let host = self
-                .lan
-                .as_mut()
-                .ok_or("the integrated server did not start")?;
-            // The owner is an operator when the world allows commands
-            // (`IntegratedPlayerList`, `MinecraftServer.getProfilePermissions`).
-            host.hub.ops.insert(owner, if commands { 4 } else { 0 });
-            host.hub.singleplayer_owner = Some(owner);
-            host.owner = Some(Owner {
-                uuid: owner,
-                saved: Some(saved),
-            });
-            host.hub.lan.connect_local()?
-        };
-        self.serving = Some(Serving {
-            flags: flags.clone(),
-            tasks,
-            owner,
-            pending: None,
-        });
-        let _ = ready.send(Ok((pipe, self.level.name.clone())));
-        self.settle_spawn()?;
+        let result = self.run_integrated_inner(launch, flags, tasks, ready);
+        if let Err(error) = &result {
+            self.native_lifecycle_close_failed(&error.to_string());
+        }
+        result
+    }
+
+    fn run_integrated_inner(
+        &mut self,
+        launch: Launch,
+        flags: Arc<Flags>,
+        tasks: Receiver<Task>,
+        ready: &Sender<Ready>,
+    ) -> Result<()> {
+        // The open segment runs as one unit (`integrated_open`) so its
+        // failures fire `WorldOpenFailed` with the engine's own error text.
+        if let Err(e) = self.integrated_open(&launch, &flags, tasks, ready) {
+            self.native_lifecycle_world_failed(&e.to_string());
+            return Err(e);
+        }
+        // The server thread's `WorldOpenReady` site, before the tick loop.
+        self.native_lifecycle_world_ready();
         if let (Some(script), Some(output)) = (
             std::env::var_os("HORIZON_COMMAND_SCRIPT"),
             std::env::var_os("HORIZON_COMMAND_OUTPUT"),
@@ -539,9 +490,116 @@ impl Game<'_> {
         self.stop_integrated()
     }
 
+    /// The integrated server's world open: `run_integrated`'s segment
+    /// from `load_world` through `settle_spawn`, whole so its failures are
+    /// one open failure (`WorldOpenFailed`, the engine's own error text).
+    fn integrated_open(
+        &mut self,
+        launch: &Launch,
+        flags: &Arc<Flags>,
+        tasks: Receiver<Task>,
+        ready: &Sender<Ready>,
+    ) -> Result<()> {
+        self.native_lifecycle_open_started();
+        self.load_world(WorldRequest::new(
+            &launch.folder,
+            launch.name.as_deref(),
+            launch.seed,
+            launch.creative,
+            launch.create.as_ref(),
+        )?)?;
+        let saved = Box::new(self.level.clone());
+        // IntegratedServer runs the server mods; the window the client mods.
+        self.mods.dev = self.options.dev_mods.clone();
+        self.start_mods();
+        // Math.max(2, options.renderDistance): past vanilla's 32 when the
+        // window's render distance is (Horizon's options go to 64).
+        let view_distance = self.settings.render_distance.max(2);
+        let config = HubConfig {
+            allow_flight: true,
+            default_game_mode: self.level.mode(),
+            // Only the owner until it is opened to the LAN.
+            guest_commands: false,
+            force_game_mode: false,
+            hardcore: self.level.hardcore,
+            view_distance,
+            simulation_distance: self.settings.simulation_distance.max(2),
+            dimension: self.dim.id().to_owned(),
+            levels: self.level_shapes,
+            seed: self.level.seed,
+            max_players: MAX_PLAYERS,
+            // No player of its own: the hub runs without a host.
+            dedicated: true,
+            integrated: true,
+        };
+        let owner = launch.owner;
+        let published = flags.clone();
+        let local_players = flags.clone();
+        let net = NetConfig {
+            // No network until it is opened to the LAN; the memory connection
+            // is not compressed (`Connection.isMemoryConnection`).
+            listen: false,
+            online: horizon_client::lan::OnlineMode::lan(),
+            // Registered local seats share this computer; the vanilla LAN capacity still
+            // applies to other connections when the world is published.
+            bypasses_limit: Some(Arc::new(move |uuid| {
+                local_players.split_players.lock().unwrap().contains(&uuid)
+            })),
+            gate: Some(Arc::new(move |address, uuid, _| {
+                refused(
+                    uuid == owner,
+                    published.published.load(Ordering::Relaxed) != 0,
+                    published.split_players.lock().unwrap().contains(&uuid),
+                    address == horizon_client::lan::conn::MEMORY_ADDRESS,
+                )
+                .then(|| translatable("multiplayer.disconnect.not_whitelisted", &[]))
+            })),
+            levels: self.level_shapes,
+            owner_profile: launch.owner_profile.clone(),
+            // IntegratedServer.initServer: the MOTD names the owner and the world.
+            ..NetConfig::lan(
+                0,
+                format!("{} - {}", launch.player, self.level.name),
+                MAX_PLAYERS,
+            )
+        };
+        let settings = LanSettings {
+            port: 0,
+            guest_commands: false,
+            force_game_mode: false,
+        };
+        self.lan_host(settings, net, config, None)?;
+        let commands = self.allow_commands();
+        let pipe = {
+            let host = self
+                .lan
+                .as_mut()
+                .ok_or("the integrated server did not start")?;
+            // The owner is an operator when the world allows commands
+            // (`IntegratedPlayerList`, `MinecraftServer.getProfilePermissions`).
+            host.hub.ops.insert(owner, if commands { 4 } else { 0 });
+            host.hub.singleplayer_owner = Some(owner);
+            host.owner = Some(Owner {
+                uuid: owner,
+                saved: Some(saved),
+            });
+            host.hub.lan.connect_local()?
+        };
+        self.serving = Some(Serving {
+            flags: flags.clone(),
+            tasks,
+            owner,
+            pending: None,
+        });
+        let _ = ready.send(Ok((pipe, self.level.name.clone())));
+        self.settle_spawn()
+    }
+
     /// `MinecraftServer.stopServer`: the players are saved and sent away,
     /// then the world is saved.
     fn stop_integrated(&mut self) -> Result<()> {
+        // The close request: lifecycle observation stops.
+        self.native_lifecycle.begin_close();
         // IntegratedServer.stopServer: teardownPublishedState.
         if let Some(s) = self.serving.take() {
             s.flags.published.store(0, Ordering::Relaxed);
@@ -567,6 +625,8 @@ impl Game<'_> {
         self.save_game()?;
         self.lan_close(false);
         self.save.flush()?;
+        // `WorldCloseFinal` follows a successful final save.
+        self.native_lifecycle_world_closed();
         self.session_lock = None;
         Ok(())
     }
@@ -916,6 +976,8 @@ fn refused(owner: bool, published: bool, split_seat: bool, memory: bool) -> bool
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn a_splitscreen_seat_is_let_in_only_through_memory() {
         // (owner, published, seat, memory)
@@ -932,8 +994,6 @@ mod tests {
         assert!(refused(false, false, false, false), "nobody else before");
         assert!(!refused(true, false, false, true), "the owner");
     }
-
-    use super::*;
 
     #[test]
     fn shutdown_request_does_not_join_a_server_still_saving() {
