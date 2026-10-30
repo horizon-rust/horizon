@@ -51,6 +51,11 @@ const BUILDS_PER_FRAME: usize = 128;
 
 /// A section's structure and where its quads were when it was built: its page, first vertex,
 /// solid quads, and which of its geometries is the translucent one (2: none).
+/// A stale structure's page (`HwRays::forget`): past every arena page, so the rays find no quads
+/// of it to read (shadow_rays_hw.wgsl `hw_quad`) and take its hits as opaque.
+const PAGE_GONE: u32 = u32::MAX;
+/// How many frames a stale structure stands in for a section's new mesh at most.
+const STALE_FRAMES: u32 = 30;
 struct Built {
     blas: wgpu::Blas,
     page: u32,
@@ -61,6 +66,10 @@ struct Built {
 
 pub struct HwRays {
     built: HashMap<SectionKey, Built>,
+    /// Sections meshed again whose old structure stands in until the new one is built, and the
+    /// frames it has stood in: the section never leaves the rays between its two meshes (it
+    /// would let the light through it for a frame, the world flickering as a block is placed).
+    stale: HashMap<SectionKey, u32>,
     pub tlas: wgpu::Tlas,
     /// Where each instance's quads are, by its custom data (shadow_rays_hw.wgsl `instances`):
     /// the page, the solid quads' first vertex, the translucent ones', the translucent geometry.
@@ -219,6 +228,7 @@ impl HwRays {
     pub fn new(device: &wgpu::Device) -> Self {
         Self {
             built: HashMap::new(),
+            stale: HashMap::new(),
             tlas: device.create_tlas(&wgpu::CreateTlasDescriptor {
                 label: Some("RT lighting's terrain"),
                 max_instances: MAX_INSTANCES,
@@ -268,7 +278,11 @@ impl HwRays {
 
     /// Section `key` was meshed again or went: its structure goes, made again if still near.
     pub fn forget(&mut self, key: SectionKey) {
-        if self.built.remove(&key).is_some() {
+        if let Some(built) = self.built.get_mut(&key) {
+            // Its vertices are freed: the old structure's quads are taken as opaque, without
+            // their texels (`PAGE_GONE`), until the new mesh's structure replaces it.
+            built.page = PAGE_GONE;
+            self.stale.insert(key, 0);
             self.changed = true;
         }
     }
@@ -278,9 +292,9 @@ impl HwRays {
         (key.0 - center.0).abs() <= RADIUS && (key.2 - center.1).abs() <= RADIUS
     }
 
-    /// Whether section `key` already has its structure.
+    /// Whether section `key` already has its structure (a stale one, standing in, doesn't count).
     pub fn has(&self, key: SectionKey) -> bool {
-        self.built.contains_key(&key)
+        self.built.contains_key(&key) && !self.stale.contains_key(&key)
     }
 
     /// How many more sections this frame may build.
@@ -302,6 +316,22 @@ impl HwRays {
         camera: glam::DVec3,
     ) {
         let before = self.built.len();
+        // A stale structure no new mesh replaced within a few frames (the section went empty,
+        // or out of range) goes.
+        let mut gone = Vec::new();
+        for (key, frames) in &mut self.stale {
+            *frames += 1;
+            if *frames > STALE_FRAMES {
+                gone.push(*key);
+            }
+        }
+        for key in gone {
+            self.stale.remove(&key);
+            self.built.remove(&key);
+        }
+        for t in todo {
+            self.stale.remove(&t.key);
+        }
         self.built.retain(|key, _| Self::near(center, *key));
         self.changed |= self.built.len() != before || !todo.is_empty();
         // A section's geometries: its solid quads, then its translucent ones (stained glass, water,
