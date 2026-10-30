@@ -370,7 +370,7 @@ impl ShadowRays {
                             ),
                             entry(16, storage),
                             entry(23, storage),
-                            entry(34, storage),
+                            entry(36, storage),
                             entry(
                                 17,
                                 wgpu::BindingType::Texture {
@@ -382,7 +382,7 @@ impl ShadowRays {
                                 },
                             ),
                             entry(
-                                35,
+                                37,
                                 wgpu::BindingType::Texture {
                                     sample_type: wgpu::TextureSampleType::Float {
                                         filterable: true,
@@ -785,10 +785,10 @@ impl ShadowRays {
                     resource: hw.instances.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
-                    binding: 34,
+                    binding: 36,
                     resource: hw.dynamics.as_entire_binding(),
                 },
-                view(35, hw.atlas),
+                view(37, hw.atlas),
             ]);
         }
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {

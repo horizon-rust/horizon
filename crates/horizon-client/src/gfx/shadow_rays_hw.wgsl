@@ -24,8 +24,8 @@ fn hw_uv(v: u32) -> vec2<f32> {
 // colour, light, normal), and the atlas. An instance whose row starts with `DYN_ENTITY` holds
 // quads from the vertex in its second word; one with `DYN_CLOUD` is a cloud tile (opaque, and
 // left out of the bounce rays by their mask: `NO_CLOUDS`).
-@group(0) @binding(34) var<storage, read> dynamics: array<u32>;
-@group(0) @binding(35) var entity_atlas: texture_2d<f32>;
+@group(0) @binding(36) var<storage, read> dynamics: array<u32>;
+@group(0) @binding(37) var entity_atlas: texture_2d<f32>;
 const DYN_ENTITY: u32 = 0xfffffff0u;
 const NO_CLOUDS: u32 = 0xfbu;
 const NO_QUAD: u32 = 0xffffffffu;
