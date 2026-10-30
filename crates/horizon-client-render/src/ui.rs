@@ -541,12 +541,16 @@ pub(crate) fn scrollbar_thumb(
     scroll: f32,
 ) -> Option<(f32, f32)> {
     let height = bottom - top;
-    if content <= height {
+    // A viewport too short for the 32px thumb (a mod's list may be barely
+    // taller than its rows) still shows one, as large as its own track
+    // allows; a track of 8px or less shows none at all.
+    if content <= height || height <= 8.0 {
         return None;
     }
+    let track = height - 8.0;
     let bar = (height * height / content)
-        .clamp(32.0, height - 8.0)
-        .floor();
+        .floor()
+        .clamp(f32::min(32.0, track), track);
     let y = top + ((scroll / (content - height)) * (height - bar)).floor();
     Some((y, bar))
 }
@@ -598,9 +602,8 @@ impl Scroll {
             self.amount = 0.0;
         } else if y > bottom {
             self.amount = max;
-        } else {
+        } else if let Some((_, bar)) = scrollbar_thumb(top, bottom, content, self.amount) {
             let height = bottom - top;
-            let bar = ((height * height / content).trunc()).clamp(32.0, height - 8.0);
             self.amount += (y - last) * (max.max(1.0) / (height - bar)).max(1.0);
         }
         self.clamp(top, bottom, content);
@@ -1677,5 +1680,29 @@ mod tests {
         let mut v = "stone".to_string();
         assert!(!delete_words(&mut v, 1));
         assert_eq!(v, "stone");
+    }
+    #[test]
+    fn a_list_that_fits_shows_no_scrollbar() {
+        // One row in a 30px list: nothing to scroll, no thumb.
+        assert!(scrollbar_thumb(4.0, 26.0, 12.0, 0.0).is_none());
+    }
+    #[test]
+    fn a_list_too_short_for_the_32px_thumb_still_scrolls() {
+        // The cells panel's menu: a 30px list of three rows, 22px of
+        // viewport over 36px of rows — a 32px thumb cannot fit a 14px
+        // track, which once panicked the clamp. The thumb is as large as
+        // its track allows and stays within the list while dragged.
+        let (y, bar) = scrollbar_thumb(4.0, 26.0, 36.0, 0.0).unwrap();
+        assert_eq!((y, bar), (4.0, 14.0));
+        let (y, bar) = scrollbar_thumb(4.0, 26.0, 36.0, 14.0).unwrap();
+        assert_eq!((y, bar), (12.0, 14.0));
+        let mut s = Scroll::default();
+        s.wheel(-1.0, 12.0, 4.0, 26.0, 36.0);
+        assert_eq!(s.amount, 12.0);
+        assert!(s.press((200.0, 10.0), 200.0, 4.0, 26.0, 36.0));
+        s.drag(30.0, 4.0, 26.0, 36.0);
+        assert_eq!(s.amount, 14.0);
+        s.drag(6.0, 4.0, 26.0, 36.0);
+        assert!((0.0..=14.0).contains(&s.amount));
     }
 }
