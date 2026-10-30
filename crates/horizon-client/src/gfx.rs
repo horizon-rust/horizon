@@ -829,6 +829,9 @@ fn moon_map(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
 }
 /// The real sun's angular radius (0.53 degrees across).
 const SUN_RADIUS: f32 = 0.004_63;
+/// The lunar regolith's reflectance by colour, relative to green (red, green, blue): its spectrum
+/// rises toward the red, a B-V 0.27 redder than the sunlight it reflects; its luminance kept.
+const MOON_REFLECTANCE: [f32; 3] = [1.12, 1.0, 0.82];
 /// The real moon's angular radius (0.52 degrees across, its mean).
 const MOON_RADIUS: f32 = 0.004_52;
 /// A shadow ray's budget: 1 an empty brick crossed, 4 a full one; past it the light is taken
@@ -4710,8 +4713,13 @@ impl Renderer {
             let (light, radius) = if rt_sun.y > 0.0 {
                 (self.atmosphere.sunlight(rt_sun), self.rt_sun_radius)
             } else {
+                // The sun's light reflected by the lunar regolith, which reflects red better than
+                // blue (the Moon's B-V of 0.92 against the Sun's 0.65), then filtered by the air on
+                // the way down as the sun's own is (`sunlight` toward the moon).
                 (
-                    self.atmosphere.sunlight(-rt_sun) * (atmosphere::MOONLIGHT * moon_lit),
+                    self.atmosphere.sunlight(-rt_sun)
+                        * Vec3::from(MOON_REFLECTANCE)
+                        * (atmosphere::MOONLIGHT * moon_lit),
                     self.rt_moon_radius,
                 )
             };
