@@ -42,6 +42,7 @@ fn info() -> Vec<Info> {
         cover: [0.0; 6],
         light_colour: [0; 3],
         light_at: [255; 3],
+        flame: 0,
         map_color: 0,
         ray: 0,
         ray_shape: 0,

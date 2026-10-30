@@ -930,6 +930,38 @@ fn rt_flame(c: vec3<f32>) -> vec3<f32> {
     let luminance = 60.0 * exp(-12965.0 * (1.0 / kelvin - 1.0 / 2200.0));
     return colour / dot(colour, vec3(0.2126, 0.7152, 0.0722)) * luminance;
 }
+// A fire's flame (fire, soul fire, the campfires: parallax.rs `thin_layers` bit 2) in place of
+// its sprite's texels, which gave a still picture its colours: the sprite keeps the flame's shape
+// (its alpha), the shader gives it a heat, noise streaming up with the time (world-fixed, so the
+// planes of a campfire and the blocks of a blaze agree), hottest at the foot and cooling to the
+// tips, which the noise tears off as they rise. Its colour is a black body's by that heat
+// (`rt_flame`, which reads the temperature from a texel's green over its red: 0.2 the coolest,
+// 1.0 the hottest); soul fire burns blue. The result is the light and the flame's coverage, to be
+// cut by a dither (`rt_dither`: the temporal resolve softens it), a few ALU on the flame's
+// fragments and no more geometry.
+fn rt_fire(texel: vec3<f32>, uv: vec2<f32>, pos: vec3<f32>) -> vec4<f32> {
+    let world = pos + globals.rt_camera.xyz;
+    let t = globals.rt_water.z;
+    // 0 at the foot of the sprite, 1 at its tip.
+    let rise = 1.0 - uv.y;
+    // Tongues of two sizes streaming up, the small ones faster.
+    let p = vec3(world.x * 2.2, world.y * 1.3 - t * 2.4, world.z * 2.2);
+    let n = 0.62 * lava_noise(p) + 0.38 * lava_noise(p * 2.3 + vec3(5.2, -t * 1.8, 1.3));
+    let heat = clamp((1.2 - 1.05 * rise) * (0.35 + 1.1 * n), 0.0, 1.0);
+    let coverage = smoothstep(0.1, 0.32, heat);
+    if texel.b > texel.r {
+        let cold = mix(vec3(0.02, 0.2, 1.0), vec3(0.25, 0.8, 1.0), heat);
+        return vec4(cold * (1.0 + 5.0 * heat * heat), coverage);
+    }
+    return vec4(rt_flame(vec3(1.0, 0.2 + 0.8 * heat, 0.0)), coverage);
+}
+// An interleaved gradient noise (Jimenez 2014) of the pixel, changing every frame, to cut a
+// coverage with: the temporal resolve averages a partial coverage into a soft edge.
+fn rt_dither(pixel: vec2<f32>) -> f32 {
+    let frame = floor(globals.rt_water.z * 60.0) % 64.0;
+    let p = pixel + 5.588238 * frame;
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
 // RT lighting's depth prepass (gfx.rs `rt_prepass`): the solid terrain's depth alone, with the
 // same alpha test, for this frame's rays to trace from before the world is drawn.
 @fragment fn fs_depth(in: TerrainOut) {

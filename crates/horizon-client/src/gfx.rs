@@ -75,6 +75,8 @@ mod end_sky;
 mod exposure;
 mod flat;
 mod hdr;
+// Heat haze above the flames, for RT lighting (gfx/haze.rs).
+mod haze;
 mod hw_rays;
 pub mod lightning;
 mod lod;
@@ -597,6 +599,8 @@ pub struct Renderer {
     world_post: world_post::Post,
     /// Temporal anti-aliasing of the RT-lit scene: the histories and the resolve (taa.rs).
     taa: taa::Taa,
+    /// Heat haze above the flames, over the RT-lit scene (haze.rs).
+    haze: haze::Haze,
     /// Linear Light: the scene targets and the tone mapping (`None`: vanilla's gamma-space frame).
     tonemap: Option<tonemap::Tonemap>,
     /// Ray-traced shadows and ambient occlusion: which run, the voxel grid around the camera and
@@ -2894,6 +2898,7 @@ impl Renderer {
         let world_post =
             world_post::Post::new(&device, world_format, config.format.remove_srgb_suffix());
         let taa = taa::Taa::new(&device);
+        let haze = haze::Haze::new(&device);
         let tonemap =
             linear.then(|| tonemap::Tonemap::new(&device, config.format.remove_srgb_suffix()));
         let uploads = upload::Uploads::new(&device);
@@ -3062,6 +3067,7 @@ impl Renderer {
             occlusion: occlusion::Occlusion::new(crate::chunk::MIN_Y, crate::chunk::HEIGHT / 16),
             world_post,
             taa,
+            haze,
             tonemap,
             rt_shadows: false,
             rt_ambient: false,
@@ -6329,6 +6335,28 @@ impl Renderer {
                     camera: frame.camera,
                 },
             );
+        }
+        // Heat haze above the flames in view (haze.rs), on the resolved scene; nothing is recorded
+        // with no flame in range.
+        if rt.lighting && world_linear && self.world_format == tonemap::SCENE_FORMAT {
+            let flames = self.voxels.flames(frame.camera, haze::RANGE);
+            self.haze.run(
+                &self.device,
+                &mut self.uploads,
+                &mut encoder,
+                haze::Inputs {
+                    view: rt_view,
+                    color: world_view,
+                    depth: world_depth,
+                    size: world_size,
+                    view_proj: clean_view_proj,
+                    camera: frame.camera,
+                    time: self.water_clock.elapsed().as_secs_f32() % 3600.0,
+                    flames: &flames,
+                },
+            );
+        } else {
+            self.haze.release();
         }
         if let Some((color, depth)) = &scaled
             && pack_post
