@@ -8,6 +8,57 @@ use horizon_client::gamepad::{Button, PadState};
 /// How long a controller's offer to join stays up.
 const OFFER: Duration = Duration::from_secs(10);
 
+/// P1's controller, and one P1 gave away (Give Up Pad) while it's offered to join: until the
+/// other player is in the world, cancelling, declining or the offer running out gives that same
+/// pad back, never another player's.
+pub(super) struct P1Pad<Id> {
+    pub(super) owner: Option<Id>,
+    released: Option<Id>,
+}
+impl<Id> Default for P1Pad<Id> {
+    fn default() -> Self {
+        Self {
+            owner: None,
+            released: None,
+        }
+    }
+}
+impl<Id: Copy + Eq> P1Pad<Id> {
+    pub(super) fn claim(&mut self, id: Id) {
+        self.owner = Some(id);
+        if self.released == Some(id) {
+            self.released = None;
+        }
+    }
+    fn release(&mut self) -> Option<Id> {
+        let id = self.owner.take()?;
+        self.released = Some(id);
+        Some(id)
+    }
+    fn cancel(&mut self, id: Id) -> bool {
+        if self.released != Some(id) {
+            return false;
+        }
+        self.released = None;
+        if self.owner.is_some() {
+            return false;
+        }
+        self.owner = Some(id);
+        true
+    }
+    pub(super) fn joined(&mut self, id: Id) {
+        if self.released == Some(id) {
+            self.released = None;
+        }
+    }
+    fn gone(&mut self, id: Id) {
+        if self.owner == Some(id) {
+            self.owner = None;
+        }
+        self.joined(id);
+    }
+}
+
 /// A player whose controller disconnected, waiting for one: its seat (1 = P1), and the
 /// controller's id and kind (`PadRouter::uuid`) to know it back.
 pub(super) struct Lost<Id> {
@@ -72,7 +123,7 @@ impl Split<'_> {
             self.offers.clear();
             self.fresh.clear();
             self.lost.clear();
-            self.p1_pad = None;
+            self.p1_pad = P1Pad::default();
             self.pads = PadRouter::default();
         }
     }
@@ -98,7 +149,7 @@ impl Split<'_> {
     /// `solo`: no compositor, P1 alone (its controller's output is lent to it after this).
     pub(super) fn route_pads(&mut self, solo: bool) -> Vec<PadId> {
         let now = Instant::now();
-        let owner_before = self.p1_pad;
+        let owner_before = self.p1_pad.owner;
         let offers_before = self.offers.len();
         let mut joins = Vec::new();
         let mut presses = Vec::new();
@@ -116,7 +167,7 @@ impl Split<'_> {
         }
         self.forget_lost();
         for (id, button) in presses {
-            if Some(id) == self.p1_pad || self.guests.iter().any(|g| g.pad == Some(id)) {
+            if Some(id) == self.p1_pad.owner || self.guests.iter().any(|g| g.pad == Some(id)) {
                 continue;
             }
             // Pressed, then gone in the same frame.
@@ -127,10 +178,10 @@ impl Split<'_> {
             // drives P1 anyway).
             let offered = self.offers.iter().any(|(o, _)| *o == id);
             // P1 with controllers off plays on keyboard and mouse: a pad given to it is dead.
-            let p1_takes = self.p1_pad.is_none() && self.host.settings.controller.enabled;
+            let p1_takes = self.p1_pad.owner.is_none() && self.host.settings.controller.enabled;
             if !self.in_world() || (self.guests.is_empty() && p1_takes && !offered) {
                 if p1_takes {
-                    self.p1_pad = Some(id);
+                    self.p1_pad.claim(id);
                     self.fresh.push(id);
                 }
                 continue;
@@ -146,14 +197,16 @@ impl Split<'_> {
                         joins.push(id);
                     }
                     Button::North
-                        if self.p1_pad.is_none() && self.host.settings.controller.enabled =>
+                        if self.p1_pad.owner.is_none() && self.host.settings.controller.enabled =>
                     {
                         self.offers.remove(k);
-                        self.p1_pad = Some(id);
+                        self.p1_pad.claim(id);
                         self.fresh.push(id);
                     }
+                    // No: a pad P1 gave up goes back to P1.
                     Button::East => {
                         self.offers.remove(k);
+                        self.restore_given_up_pad(id);
                     }
                     _ => {}
                 },
@@ -166,18 +219,28 @@ impl Split<'_> {
             }
         }
         let in_world = self.in_world();
+        // An offer that ran out: a pad P1 gave up goes back to P1.
+        let expired: Vec<_> = self
+            .offers
+            .iter()
+            .filter(|(_, since)| now - *since > OFFER || !in_world)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in expired {
+            self.restore_given_up_pad(id);
+        }
         self.offers
             .retain(|(_, since)| now - *since <= OFFER && in_world);
         if self.offers.is_empty() {
             self.prompt_join(None);
         } else if self.offers.len() != offers_before
-            || self.p1_pad != owner_before
+            || self.p1_pad.owner != owner_before
             || !joins.is_empty()
         {
             self.ask_to_join();
         }
         // Each player's glyphs follow its own controller (its game never reads the pads itself).
-        if let Some(id) = self.p1_pad {
+        if let Some(id) = self.p1_pad.owner {
             self.host.pad.style = self.pads.style(id);
         }
         for g in &mut self.guests {
@@ -189,15 +252,36 @@ impl Split<'_> {
         // lends it its reader for P1's turn (`lend_output`), so no second reader opens. Only
         // when nothing is lent does P1's own reader close: releasing a lent one each frame
         // would stop its rumble a frame after it starts.
-        if !lends_output(solo, self.p1_pad.is_some()) {
+        if !lends_output(solo, self.p1_pad.owner.is_some()) {
             self.host.pad.release_hardware();
         }
-        self.host.pad.feed = Some(self.pad_state(self.p1_pad));
+        self.host.pad.feed = Some(self.pad_state(self.p1_pad.owner));
         for i in 0..self.guests.len() {
             let state = self.pad_state(self.guests[i].pad);
             self.guests[i].game.pad.feed = Some(state);
         }
         joins
+    }
+
+    /// P1's Give Up Pad: its controller stops driving P1 and is offered to join, for a friend
+    /// to press A (P1 plays on with the keyboard and mouse).
+    pub(super) fn give_up_pad(&mut self) {
+        let Some(id) = self.p1_pad.release() else {
+            return;
+        };
+        self.offers.retain(|(o, _)| *o != id);
+        self.offers.push((id, Instant::now()));
+        self.host.pad.release_hardware();
+        self.host.pad.feed = Some(PadState::default());
+        self.ask_to_join();
+    }
+
+    /// A pad P1 gave up whose offer ended without a player in the world: P1's again.
+    pub(super) fn restore_given_up_pad(&mut self, id: PadId) {
+        if self.pads.connected(id) && self.p1_pad.cancel(id) {
+            // The Cancel/No press belongs to the transfer, not P1's menu.
+            self.fresh.push(id);
+        }
     }
 
     /// A controller disconnected: its offer and fresh press go; its player waits for one
@@ -210,8 +294,9 @@ impl Split<'_> {
             self.ask_to_join();
         }
         let uuid = self.pads.uuid(id);
-        if self.p1_pad == Some(id) {
-            self.p1_pad = None;
+        let owned = self.p1_pad.owner == Some(id);
+        self.p1_pad.gone(id);
+        if owned {
             if self.in_world() {
                 self.lost.push(Lost { seat: 1, id, uuid });
                 self.host.split_hud.notice = Some(Notice::new(
@@ -242,7 +327,7 @@ impl Split<'_> {
     fn give_pad(&mut self, seat: usize, id: PadId) {
         self.fresh.push(id);
         let hud = if seat == 1 {
-            self.p1_pad = Some(id);
+            self.p1_pad.claim(id);
             &mut self.host.split_hud
         } else {
             let Some(g) = self.guests.iter_mut().find(|g| g.seat == seat) else {
@@ -288,7 +373,7 @@ impl Split<'_> {
     /// Nobody waits for a player who left or has a controller again (another way), nor for P1
     /// out of a world.
     fn forget_lost(&mut self) {
-        let p1 = self.in_world() && self.p1_pad.is_none();
+        let p1 = self.in_world() && self.p1_pad.owner.is_none();
         let guests = &self.guests;
         self.lost.retain(|l| match l.seat {
             1 => p1,
@@ -303,7 +388,7 @@ impl Split<'_> {
             offers => format!("{} controllers want to join", offers.len()),
         };
         let mut choices = vec![(Button::South, "Join")];
-        if self.p1_pad.is_none() && self.host.settings.controller.enabled {
+        if self.p1_pad.owner.is_none() && self.host.settings.controller.enabled {
             choices.push((Button::North, "Play as P1"));
         }
         choices.push((Button::East, "No"));
@@ -424,5 +509,35 @@ mod tests {
     fn a_controller_the_system_does_not_describe_is_not_known_back() {
         let waiting = [lost(2, [0; 16])];
         assert_eq!(claim(&waiting, [0; 16], Button::North, true), Claim::Wait);
+    }
+
+    #[test]
+    fn a_pending_transfer_can_be_canceled_without_claiming_an_unrelated_pad() {
+        let mut p1 = P1Pad::default();
+        p1.claim(7);
+        assert_eq!(p1.release(), Some(7));
+        assert_eq!(p1.owner, None);
+        assert!(!p1.cancel(8));
+        assert!(p1.cancel(7));
+        assert_eq!(p1.owner, Some(7));
+        assert!(!p1.cancel(7));
+    }
+
+    #[test]
+    fn entering_the_world_commits_the_transfer_and_reclaim_does_not_steal_a_pad() {
+        let mut p1 = P1Pad::default();
+        p1.claim(7);
+        p1.release();
+        p1.joined(7);
+        assert!(!p1.cancel(7));
+        assert_eq!(p1.owner, None);
+        p1.claim(7);
+        p1.release();
+        p1.claim(8);
+        assert!(!p1.cancel(7));
+        assert_eq!(p1.owner, Some(8));
+        p1.release();
+        p1.gone(8);
+        assert!(!p1.cancel(8));
     }
 }
