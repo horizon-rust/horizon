@@ -9,7 +9,7 @@ fn on_profiles(game: &Game<'_>) -> bool {
 }
 
 /// An offline profile on an online-mode server: the session service knows no such player.
-const ONLINE_ONLY: &str = "This server is in online mode: offline profiles can't join it, each player needs its own Minecraft account.";
+const ONLINE_ONLY: &str = "This server is in online mode: offline profiles can't join it. Pick a Microsoft account, or sign in to another in the launcher.";
 
 /// Why a player's game left its server, when the server said (its Disconnected or error screen).
 fn turned_away(game: &Game<'_>) -> Option<String> {
@@ -103,10 +103,22 @@ impl Split<'_> {
         if self.taken().iter().any(|n| n.eq_ignore_ascii_case(name)) {
             return Err(format!("{name} is already playing."));
         }
-        if self.p1_server().is_some() && self.host.online_server() {
-            return Err(ONLINE_ONLY.to_owned());
+        if self.p1_server().is_none() || !self.host.online_server() {
+            return Ok(());
         }
-        Ok(())
+        // An online-mode server: only a Microsoft account whose sign-in still holds (the
+        // launcher renews it, and hands the game a session at start).
+        match self
+            .accounts
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case(name))
+        {
+            None => Err(ONLINE_ONLY.to_owned()),
+            Some(a) if a.expired() => Err(format!(
+                "{name}'s Microsoft sign-in has expired. Sign in again in the launcher, then restart the game."
+            )),
+            Some(_) => Ok(()),
+        }
     }
 
     /// A server's resource packs: the others answer as P1 did (asked once, by P1). A player
@@ -140,20 +152,10 @@ impl Split<'_> {
         if !self.guests.iter().any(open) {
             return;
         }
-        let names = Self::folder()
-            .and_then(|f| {
-                Ok(horizon_client::split_profiles::store::names(
-                    &f.join("profiles"),
-                )?)
-            })
-            .map(|mut names| {
-                names.sort_by_key(|n| n.to_lowercase());
-                names
-            })
-            .unwrap_or_else(|e| {
-                log::warn!("Horizon: splitscreen: the profiles: {e}");
-                Vec::new()
-            });
+        let (names, accounts) = self.profile_names().unwrap_or_else(|e| {
+            log::warn!("Horizon: splitscreen: the profiles: {e}");
+            Default::default()
+        });
         for g in self.guests.iter_mut().filter(|g| open(g)) {
             let page = &mut g.game.ui.options.split_profiles;
             page.filled = true;
@@ -162,8 +164,21 @@ impl Split<'_> {
                 page.names.insert(0, me.clone());
             }
             page.taken = taken.clone();
+            page.accounts = accounts.clone();
             page.current = g.name.clone();
         }
+    }
+
+    /// The launcher's other Microsoft accounts, then this instance's offline profiles.
+    fn profile_names(&self) -> Result<(Vec<String>, Vec<String>)> {
+        let profiles = Self::folder()?.join("profiles");
+        let mut offline = horizon_client::split_profiles::store::names(&profiles)?;
+        let accounts: Vec<String> = self.accounts.iter().map(|a| a.name.clone()).collect();
+        offline.retain(|n| !accounts.iter().any(|a| a.eq_ignore_ascii_case(n)));
+        offline.sort_by_key(|n| n.to_lowercase());
+        let mut names = accounts.clone();
+        names.extend(offline);
+        Ok((names, accounts))
     }
 
     /// Guest `i`, playing, switches to profile `name` where it plays: out of the world as its
@@ -186,7 +201,14 @@ impl Split<'_> {
             return Err(format!("{name} is already playing.").into());
         }
         let profiles = Self::folder()?.join("profiles");
-        if horizon_client::split_profiles::valid_name(&name) {
+        // A Microsoft account signs in as itself (its own connections and skin).
+        let account = self
+            .accounts
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case(&name))
+            .cloned();
+        self.guests[i].game.split_auth = account.clone();
+        if account.is_none() && horizon_client::split_profiles::valid_name(&name) {
             horizon_client::split_profiles::store::restore(&profiles, &name)?;
         }
         let profile = profiles.join(&name);
@@ -246,8 +268,14 @@ impl Split<'_> {
                 .split_profiles
                 .take_forgotten()
             {
-                let hidden = if self.taken().iter().any(|n| n.eq_ignore_ascii_case(&name)) {
-                    Err("This profile cannot be forgotten while it is playing.".into())
+                let signed_in = self
+                    .accounts
+                    .iter()
+                    .any(|a| a.name.eq_ignore_ascii_case(&name));
+                let hidden = if signed_in
+                    || self.taken().iter().any(|n| n.eq_ignore_ascii_case(&name))
+                {
+                    Err("This profile cannot be forgotten while it is playing or signed in.".into())
                 } else {
                     Self::folder().and_then(|f| {
                         Ok(horizon_client::split_profiles::store::hide(

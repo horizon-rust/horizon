@@ -1,7 +1,7 @@
 //! Splitscreen's profile page (Horizon's Splitscreen setting): a joining player picks a profile,
 //! or makes one, before entering P1's world, and a player in it switches to another from its
 //! pause menu (Splitscreen Settings), playing on until the new one can join. A profile is a name
-//! (kept in the game folder), with its own options. The
+//! (instance-local offline names and the launcher's Microsoft accounts), with its own options. The
 //! game fills the list when the page opens (`filled`), takes the choice, and says why a pick
 //! can't play (`refused`). Built from vanilla's widgets, as Horizon's own pages are.
 use crate::{
@@ -51,10 +51,11 @@ pub fn wrap(text: &str, max: f32, width: impl Fn(&str) -> f32) -> Vec<String> {
 pub struct SplitProfiles {
     /// The game filled the page since it opened.
     pub filled: bool,
-    /// The profiles; those playing now (none can be picked twice); and the one this player plays
-    /// as (switching; none while joining).
+    /// The profiles; those playing now (none can be picked twice); the signed-in Microsoft
+    /// accounts among them; and the one this player plays as (switching; none while joining).
     pub names: Vec<String>,
     pub taken: Vec<String>,
+    pub accounts: Vec<String>,
     pub current: Option<String>,
     /// Why the last pick can't play (an online server, an expired sign-in), until the next.
     pub refused: Option<String>,
@@ -117,7 +118,7 @@ impl SplitProfiles {
     }
 
     fn editable(&self, name: &str) -> bool {
-        !self.taken.contains(&name.to_owned())
+        !self.accounts.contains(&name.to_owned()) && !self.taken.contains(&name.to_owned())
     }
 
     fn buttons(&self, w: f32, h: f32) -> Vec<Button> {
@@ -159,23 +160,29 @@ impl SplitProfiles {
             .skip(self.page * SHOWN)
             .take(SHOWN)
         {
+            let microsoft = self.accounts.contains(name);
             let mut label = name.clone();
+            if microsoft {
+                label.push_str(" (Microsoft)");
+            }
             if self.current.as_ref() == Some(name) {
                 label.push_str(" - you");
             }
             let y = 44.0 + (i % SHOWN) as f32 * 24.0;
             buttons.push((
-                [x, y, 176.0, 20.0],
+                [x, y, if microsoft { 200.0 } else { 176.0 }, 20.0],
                 label,
                 !self.taken.contains(name),
                 Target::Profile(i),
             ));
-            buttons.push((
-                [x + 180.0, y, 20.0, 20.0],
-                format!("Forget {name}"),
-                self.editable(name),
-                Target::Remove(i),
-            ));
+            if !microsoft {
+                buttons.push((
+                    [x + 180.0, y, 20.0, 20.0],
+                    format!("Forget {name}"),
+                    self.editable(name),
+                    Target::Remove(i),
+                ));
+            }
         }
         let mut y = 52.0 + self.names.len().min(SHOWN) as f32 * 24.0;
         if self.names.len() > SHOWN {
@@ -496,9 +503,10 @@ mod tests {
             names: (0..11).map(|i| format!("Player{i}")).collect(),
             ..Default::default()
         };
+        p.accounts = vec!["Player10".into()];
         press(&mut p, &atlas, "Next");
         press(&mut p, &atlas, "Next");
-        press(&mut p, &atlas, "Player10");
+        press(&mut p, &atlas, "Player10 (Microsoft)");
         assert_eq!(p.take_choice(), Some(Some("Player10".into())));
         press(&mut p, &atlas, "Previous");
         assert!(p.buttons(427.0, 240.0).iter().any(|b| b.1 == "Player4"));

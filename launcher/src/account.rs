@@ -1253,13 +1253,24 @@ impl SignIn {
     }
 }
 
+/// What the game about to start gets from the accounts.
+#[derive(Debug, Default)]
+pub struct GameSession {
+    /// The playing account's session (`--session-file`); none: offline.
+    pub file: Option<PathBuf>,
+    /// Why the account plays offline this time, if it does.
+    pub offline: Option<String>,
+    /// The other accounts' sessions, for splitscreen players (`account_sessions`).
+    pub env: Vec<(&'static str, String)>,
+}
+
 /// The owner gate for the game about to start, then the selected account's session in a file
-/// for it: the file (none: offline) and why the account plays offline this time, if it does.
-/// `offline_without_owner`: see [`launch_for_game`].
+/// for it, and the other accounts' for its splitscreen players. `offline_without_owner`: see
+/// [`launch_for_game`].
 pub fn session_for_game(
     game_home: &Path,
     offline_without_owner: bool,
-) -> Result<(Option<PathBuf>, Option<String>), NoOwner> {
+) -> Result<GameSession, NoOwner> {
     let mut accounts = Accounts::load();
     let pass = launch_for_game(
         &Endpoints::live(),
@@ -1268,14 +1279,102 @@ pub fn session_for_game(
         &mut accounts,
         offline_without_owner,
     )?;
-    let _ = accounts.save();
-    let Some((account, secrets)) = pass.session else {
-        return Ok((None, pass.offline));
+    let dir = game_home.join("sessions");
+    let env = if splitscreen_on(game_home) {
+        account_sessions(
+            &Endpoints::live(),
+            client_id().as_deref(),
+            store(),
+            &dir,
+            &mut accounts,
+        )
+    } else {
+        Vec::new()
     };
-    match write_session_file(&game_home.join("sessions"), &account, &secrets) {
-        Ok(file) => Ok((Some(file), None)),
-        Err(e) => Ok((None, Some(e))),
+    let _ = accounts.save();
+    let mut out = GameSession {
+        env,
+        offline: pass.offline,
+        ..GameSession::default()
+    };
+    if let Some((account, secrets)) = pass.session {
+        match write_session_file(&dir, &account, &secrets) {
+            Ok(file) => out.file = Some(file),
+            Err(e) => out.offline = Some(e),
+        }
     }
+    Ok(out)
+}
+
+/// Whether the game's Splitscreen setting is on (`horizon-extras.txt`, `splitscreen:true`): only
+/// then do the other accounts' sessions go to it.
+fn splitscreen_on(game_home: &Path) -> bool {
+    std::fs::read_to_string(game_home.join("horizon-extras.txt"))
+        .is_ok_and(|text| text.lines().any(|l| l.trim() == "splitscreen:true"))
+}
+
+/// The signed-in accounts but the one that plays, each its session in a file of its own, for
+/// the game's splitscreen players to sign in with (`HORIZON_ACCOUNT_SESSIONS`: name, uuid and
+/// file each). A token known to own the game and not due goes as it is; otherwise it is renewed
+/// and asked about (`check`), and an account that can't be renewed, doesn't own the game or
+/// whose token names another profile is left out: the game starts all the same. Nothing with one
+/// account.
+fn account_sessions(
+    ep: &Endpoints,
+    client_id: Option<&str>,
+    store: &dyn SecretStore,
+    dir: &Path,
+    accounts: &mut Accounts,
+) -> Vec<(&'static str, String)> {
+    let others: Vec<Account> = accounts
+        .accounts
+        .iter()
+        .filter(|a| Some(&a.uuid) != accounts.selected.as_ref())
+        .cloned()
+        .collect();
+    let mut list = Vec::new();
+    for account in others {
+        let Some(secrets) = secrets_in(store, &account.uuid) else {
+            continue;
+        };
+        let before = serde_json::to_string(&secrets).ok();
+        let uuid = account.uuid.clone();
+        let known = secrets.owns && secrets.minecraft_expires_at > now() + RENEW_BEFORE;
+        let (account, secrets) = match known {
+            true => (Some(account), secrets),
+            false => match check(ep, client_id, &account, secrets) {
+                Check::Owns(renewed, secrets) => {
+                    accounts.update(renewed.clone());
+                    (Some(renewed), secrets)
+                }
+                Check::DoesNot(secrets) => (None, secrets),
+                // A token for another profile would sign this one in as someone else.
+                Check::NoAnswer(e, secrets) if e == OTHER_PROFILE => (None, secrets),
+                Check::NoAnswer(e, secrets) => {
+                    eprintln!("{}'s session for splitscreen: {e}", account.name);
+                    // Its token may still hold: offered only while it does.
+                    let fresh = secrets.owns && secrets.minecraft_expires_at > now() + 60;
+                    (fresh.then_some(account), secrets)
+                }
+            },
+        };
+        // A renewed token, or the services' answer, kept for the next launch.
+        let after = serde_json::to_string(&secrets).ok();
+        if let (true, Some(text)) = (after != before, after) {
+            let _ = store.set(&uuid, &text);
+        }
+        let Some(account) = account else { continue };
+        if let Ok(file) = write_session_file(dir, &account, &secrets) {
+            list.push(json!({ "name": account.name, "uuid": account.uuid, "file": file }));
+        }
+    }
+    if list.is_empty() {
+        return Vec::new();
+    }
+    vec![(
+        "HORIZON_ACCOUNT_SESSIONS",
+        serde_json::Value::from(list).to_string(),
+    )]
 }
 
 /// Who plays the real Minecraft: Java Edition (a Java instance), past the owner gate itself

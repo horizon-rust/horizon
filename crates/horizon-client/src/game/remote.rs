@@ -372,8 +372,9 @@ impl Game<'_> {
                 horizon_client::net::shown_address(address),
             );
         }
-        // A signed-in account always plays under its own name.
-        let auth = horizon_client::auth::current();
+        // A signed-in account always plays under its own name; a splitscreen player signs in
+        // with its own account when it picked one.
+        let auth = self.auth();
         let name = auth.as_ref().map_or(name, |a| a.name.as_str());
         let user = auth.as_ref().map_or_else(
             || {
@@ -911,6 +912,13 @@ impl Game<'_> {
         )
     }
 
+    /// This player's account: a splitscreen player's own, else the game's (P1's).
+    pub(super) fn auth(&self) -> Option<std::sync::Arc<horizon_client::auth::AuthSession>> {
+        match self.options.split_guest {
+            true => self.split_auth.clone(),
+            false => horizon_client::auth::current(),
+        }
+    }
     /// Connected to a server in online mode (its Login): each player needs its own account.
     pub(super) fn online_server(&self) -> bool {
         self.remote.as_ref().is_some_and(|r| r.online_mode)
@@ -3485,7 +3493,7 @@ impl Game<'_> {
     /// The signed-in account's `textures`, once the services answered.
     fn own_textures(&self) -> Option<horizon_client::skins::Textures> {
         use horizon_client::skins::{self, NameOrId, Resolve};
-        let auth = horizon_client::auth::current()?;
+        let auth = self.auth()?;
         let state = self
             .skin_profiles
             .borrow_mut()

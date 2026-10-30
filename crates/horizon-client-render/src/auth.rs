@@ -101,6 +101,22 @@ impl AuthSession {
         let _ = std::fs::remove_file(path);
         Self::parse(&text.map_err(|e| format!("{}: {e}", path.display()))?)
     }
+    /// The access token's expiry (its JWT `exp`) has passed, or is a minute away: the session
+    /// service would refuse it. A token that doesn't read as a JWT counts as good: the server
+    /// says.
+    pub fn expired(&self) -> bool {
+        let exp = self
+            .access_token
+            .split('.')
+            .nth(1)
+            .and_then(|p| crate::skins::base64_decode(&p.replace('-', "+").replace('_', "/")))
+            .and_then(|json| serde_json::from_slice::<serde_json::Value>(&json).ok())
+            .and_then(|v| v.get("exp")?.as_u64());
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        exp.is_some_and(|exp| exp <= now + 60)
+    }
 }
 
 static CURRENT: OnceLock<Arc<AuthSession>> = OnceLock::new();
@@ -318,6 +334,42 @@ mod tests {
     use super::*;
 
     const UUID: u128 = 0x069a79f444e94726a5befca90e38aaf5;
+
+    /// base64url without padding, as a JWT's parts are.
+    fn base64url(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let n =
+                chunk.iter().fold(0u32, |n, &b| n << 8 | u32::from(b)) << (8 * (3 - chunk.len()));
+            for k in 0..=chunk.len() {
+                out.push(char::from(ALPHABET[(n >> (18 - 6 * k) & 63) as usize]));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_token_past_its_exp_is_expired() {
+        // header.payload.signature, the payload base64url without padding.
+        let token = |exp: u64| {
+            let json = format!(r#"{{"exp":{exp}}}"#);
+            let payload = base64url(json.as_bytes());
+            AuthSession::new("Ann", UUID, &format!("e30.{payload}.sig"))
+        };
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(token(now - 10).expired());
+        assert!(
+            token(now + 30).expired(),
+            "a minute from its end: as good as gone"
+        );
+        assert!(!token(now + 3600).expired());
+        assert!(!AuthSession::new("Ann", UUID, "not-a-jwt").expired());
+    }
 
     fn write(dir: &Path, text: &str, mode: u32) -> std::path::PathBuf {
         let path = dir.join("session.json");

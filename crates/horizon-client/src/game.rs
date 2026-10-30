@@ -567,6 +567,8 @@ impl Options {
                 Err(e) => eprintln!("Horizon: not signed in: {e}"),
             }
         }
+        // The other accounts' session files too, while they are fresh.
+        split::launcher::read_now();
         Ok(Some(o))
     }
 }
@@ -1622,6 +1624,9 @@ struct Game<'a> {
     view_at: [u32; 2],
     /// Splitscreen: what it draws over this player's view (its badge, questions, notices).
     split_hud: split::Hud,
+    /// Splitscreen: this player's own Microsoft account session (one of the launcher's other
+    /// accounts), in place of the process's (P1's) for its connections and skin.
+    split_auth: Option<std::sync::Arc<horizon_client::auth::AuthSession>>,
     focused: bool,
     /// When the window lost focus, while it is still without
     /// (`Minecraft.lastActiveTime`: pausing waits 500 ms).
@@ -14543,6 +14548,7 @@ impl<'a> Game<'a> {
             keyboard_mouse: true,
             view_at: [0, 0],
             split_hud: Default::default(),
+            split_auth: None,
             focused: true,
             focus_lost: None,
             modifiers: winit::keyboard::ModifiersState::empty(),
