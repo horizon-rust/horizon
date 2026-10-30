@@ -904,6 +904,7 @@ impl Game<'_> {
                         s.patrol_leader = true;
                         s.patrolling = true;
                         m.extra.head = Some(raider::BANNER.into());
+                        m.extra.armor[0] = Some(raider::ominous_banner());
                     }
                 }
             }

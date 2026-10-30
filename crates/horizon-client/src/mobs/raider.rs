@@ -115,9 +115,17 @@ pub fn in_raid(m: &Mob) -> bool {
 pub fn has_active_raid(m: &Mob) -> bool {
     state(m).is_some_and(|s| s.active_raid)
 }
-/// `Raider.isCaptain`: the banner on the head of a patrol leader.
+/// `Raider.isCaptain`: the ominous banner on the head of a patrol leader.
+///
+/// The server keeps `PatrolLeader` in its AI state and never sends it; a
+/// client only has the worn stack, so the banner's own component decides
+/// there. A plain white banner (a dispenser, not a captain) stays plain.
 pub fn is_captain(m: &Mob) -> bool {
-    m.extra.head.as_deref() == Some(BANNER) && state(m).is_some_and(|s| s.patrol_leader)
+    m.extra.head.as_deref() == Some(BANNER)
+        && (state(m).is_some_and(|s| s.patrol_leader)
+            || m.extra.armor[0]
+                .as_ref()
+                .is_some_and(|s| s.data().is_some_and(|d| d.ominous_banner)))
 }
 
 /// `PatrollingMonster.registerGoals` then `Raider.registerGoals`: the goals
@@ -173,6 +181,10 @@ pub fn find_patrol_target_from(m: &mut Mob, [x, y, z]: [i32; 3]) {
 /// The leader's ominous banner and its drop chance of 2.0 (always dropped).
 pub fn wear_banner(m: &mut Mob) {
     m.extra.head = Some(BANNER.into());
+    // The ominous component lives on the worn stack, which the equipment
+    // packet carries: a client cannot see `PatrolLeader`, so without this it
+    // draws the item id as a plain white banner.
+    m.extra.armor[0] = Some(ominous_banner());
 }
 /// Why a mob was spawned (`EntitySpawnReason`), as far as raiders care.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -706,6 +718,48 @@ pub fn read_nbt(m: &mut Mob, tag: &Tag) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mobs::Species;
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    fn pillager() -> Mob {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        let k = Arc::make_mut(&mut kind);
+        k.id = "minecraft:pillager".into();
+        k.species = Species::Pillager;
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `Raider.getBanner` is a white banner with the ominous component, and
+    /// the equipment packet carries that stack, so the client can see it.
+    #[test]
+    fn a_leaders_banner_is_the_worn_head_stack() {
+        let mut m = pillager();
+        set_patrol_leader(&mut m, true);
+        wear_banner(&mut m);
+        assert_eq!(m.extra.head.as_deref(), Some(BANNER));
+        let worn = m.extra.armor[0].as_ref().expect("the worn head stack");
+        assert!(worn.data().is_some_and(|d| d.ominous_banner));
+        assert!(is_captain(&m));
+    }
+
+    /// A client has the synced stack but never the server's `PatrolLeader`.
+    #[test]
+    fn a_synced_banner_alone_makes_a_captain() {
+        let mut m = pillager();
+        m.extra.head = Some(BANNER.into());
+        m.extra.armor[0] = Some(ominous_banner());
+        assert!(is_captain(&m));
+    }
+
+    /// A plain white banner (a dispenser put it there) is not a captain.
+    #[test]
+    fn a_plain_white_banner_is_not_a_captain() {
+        let mut m = pillager();
+        m.extra.head = Some(BANNER.into());
+        m.extra.armor[0] = Some(crate::items::ItemStack::new(BANNER, 1));
+        assert!(!is_captain(&m));
+    }
 
     #[test]
     fn raiders_and_leaders() {
