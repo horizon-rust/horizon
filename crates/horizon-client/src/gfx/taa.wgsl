@@ -168,8 +168,14 @@ fn fs_resolve(screen: Screen) -> Resolved {
     // Where the history saw what this pixel shows: the world is still, so the camera's motion is
     // all there is.
     let place = unproject(uv, closest);
-    let moved = place.position + taa.motion.xyz;
-    let c = taa.prev_view_proj * vec4(moved, 1.0);
+    // The sky is at infinity: only the camera's turning moves it on the screen, never its
+    // moving (reprojected from the far plane, the sun's halo would sway as the player walks).
+    var c = taa.prev_view_proj * vec4(place.position + taa.motion.xyz, 1.0);
+    if closest <= 0.0 {
+        let ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+        let far = taa.inverse_view_proj * vec4(ndc, 1e-6, 1.0);
+        c = taa.prev_view_proj * vec4(normalize(far.xyz / far.w), 0.0);
+    }
     let prev_uv = vec2(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5);
     var age = 0.0;
     var seen = c.w > 0.0 && taa.motion.w < 0.5 && all(prev_uv >= vec2(0.0)) && all(prev_uv <= vec2(1.0));
