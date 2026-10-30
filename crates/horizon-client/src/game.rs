@@ -11810,7 +11810,7 @@ impl Game<'_> {
             // re-read after the data packs changed keeps the one the player
             // already filled in.
             if !matches!(title.mode, horizon_client::title::Mode::Create { .. }) {
-                title.mode = Title::new_world();
+                title.mode = title.new_world();
             }
         }
     }

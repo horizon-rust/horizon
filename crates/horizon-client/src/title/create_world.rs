@@ -70,6 +70,15 @@ impl Default for WorldOptions {
     }
 }
 impl WorldOptions {
+    /// The defaults with the resources' feature packs switched off
+    /// (`FeatureFlags.DEFAULT_FLAGS` has none of them on).
+    pub fn with_feature_packs(disabled: Vec<String>) -> Self {
+        Self {
+            data_packs_disabled: disabled.into_iter().collect(),
+            ..Self::default()
+        }
+    }
+
     /// Re-Create: the saved world's choices.
     pub(super) fn of_world(
         level: &crate::save::Level,

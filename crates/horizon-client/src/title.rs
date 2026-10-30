@@ -413,7 +413,7 @@ impl Title {
         let worlds = list_worlds(&self.saves);
         self.create_return_to_main = worlds.is_empty();
         self.mode = if worlds.is_empty() {
-            Self::new_world()
+            self.new_world()
         } else {
             Mode::Select {
                 worlds,
@@ -421,13 +421,22 @@ impl Title {
             }
         };
     }
-    pub fn new_world() -> Mode {
+    pub fn new_world(&self) -> Mode {
         Mode::Create {
             name: lang::get_or("selectWorld.newWorld", "New World"),
             seed: String::new(),
             creative: false,
             focus: 0,
-            options: WorldOptions::default(),
+            // `FeatureFlags.DEFAULT_FLAGS`: every feature pack the resources
+            // ship starts switched off, whatever ids they carry
+            // (`ServerPacksSource`'s `PACKS_DIR`).
+            options: WorldOptions::with_feature_packs(
+                data_packs::discover(&self.resources, None)
+                    .into_iter()
+                    .map(|p| p.id)
+                    .filter(|id| id != "vanilla" && !id.contains(':') && !id.starts_with("file/"))
+                    .collect(),
+            ),
         }
     }
     /// WorldSelectionList.handleNewLevels: a singleplayer list that comes
@@ -438,7 +447,7 @@ impl Title {
         *self.recent.borrow_mut() = None;
         if worlds.is_empty() {
             self.create_return_to_main = true;
-            self.mode = Self::new_world();
+            self.mode = self.new_world();
             return;
         }
         let selected = folder.and_then(|folder| {
