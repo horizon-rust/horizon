@@ -412,6 +412,7 @@ fn rt_fresnel(f0: vec3<f32>, cosine: f32) -> vec3<f32> {
 }
 // The material `m` (on a face of normal `geo`, camera-relative `pos`) lit, before the fog; `light`
 // its sky and block light levels (0..1), `v` the rays' visibility, `traced` the light sources'.
+const FIREFLY_LUMINANCE: f32 = 5.0;
 fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: vec3<f32>,
     traced: vec4<f32>, tint: vec3<f32>) -> vec3<f32> {
     let n = m.normal;
@@ -436,7 +437,13 @@ fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: 
     // Paper white is the light a white diffuse surface facing the sun gives back: the 1/pi of a
     // Lambertian surface is in the units, the specular lobe takes it back.
     let specular = fresnel * (distribution * visibility * RT_PI);
-    let direct = (diffuse * (1.0 - fresnel) + specular) * nl * gate;
+    let direct = diffuse * (1.0 - fresnel) * nl * gate;
+    // The sun's highlight, kept under Remix's firefly filter (`fireflyFilteringLuminanceThreshold`
+    // 1000 in its units, about five paper whites): a normal map's facet catching the low sun
+    // would otherwise glitter pixel by pixel.
+    let glint = sun * specular * (nl * gate);
+    let glint_luminance = dot(glint, vec3(0.2126, 0.7152, 0.0722));
+    let highlight = glint * min(1.0, FIREFLY_LUMINANCE / max(glint_luminance, 1e-6));
     // Through leaves and plants: the light from behind, a third of it out the other side, filtered
     // by the leaf on its way in and out (its colour twice: a deeper green than its face's).
     let through = diffuse * m.albedo * m.subsurface * 0.35 * max(dot(-geo, l), 0.0)
@@ -459,7 +466,7 @@ fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: 
     var reflected = rt_sky(reflect(-view, n)) * seen * m.ao * ambient_f;
     // Water and glass: what the rays found that way (Remix's primary surface replacement).
     if rt_mirror.a > 0.5 { reflected = rt_mirror.rgb * ambient_f; }
-    return sun * (direct + through) + diffuse * (1.0 - ambient_f) * around + reflected
+    return sun * (direct + through) + highlight + diffuse * (1.0 - ambient_f) * around + reflected
         + m.albedo * m.emission * MATERIAL_EMISSION;
 }
 // RT lighting: material `m`'s linear colour, lit by the model and fogged. The fog scatters the
