@@ -1392,8 +1392,7 @@ struct StarOut {
     // Through the air: airmass over the zenith's, more of the blue lost (the stars redden low).
     let airmass = 1.0 / max(d.y + 0.025, 0.03);
     let air = exp(-vec3(0.12, 0.18, 0.3) * airmass);
-    let twinkle = 1.0 + 0.3 * sin(globals.time.x * 24000.0 * 1.7 + f32(id) * 1.618)
-        * clamp(airmass * 0.2, 0.1, 1.0);
+    let twinkle = rt_scintillation(id, airmass);
     // Paper whites at the quad's middle: a magnitude 0 star 20 (the eye adapted to the night),
     // each magnitude 2.5 times dimmer.
     let flux = 20.0 * pow(10.0, -0.4 * magnitude);
@@ -1412,6 +1411,27 @@ struct StarOut {
 @fragment fn fs_rt_star(in: StarOut) -> @location(0) vec4<f32> {
     let falloff = exp(-dot(in.corner, in.corner) * 3.0);
     return vec4(in.light * falloff, 0.0);
+}
+// A star's scintillation, the light of each of red, green and blue: the air's turbulent cells,
+// blown across its beam by the wind, focus and spread it a few to a few tens of times a second
+// (a point of light: a planet's disc, wider than a cell's angle, averages them out and hardly
+// twinkles). More through more air (its spread grows as airmass^1.75, Young's), and low down the
+// air's dispersion splits the beam by colour, each crossing other cells: its colours flicker apart
+// around its own, a white one flashing red, green and blue near the horizon, a red one mostly in
+// its red. Its mean stays its light.
+fn rt_scintillation(id: u32, airmass: f32) -> vec3<f32> {
+    let t = globals.rt_water.z;
+    let seed = f32(id);
+    let spread = clamp(0.06 * pow(airmass, 1.75), 0.05, 0.75);
+    // The beams' parting, as time apart through the same moving cells: none overhead, a tenth of
+    // a second toward the horizon (several of the flickers' periods).
+    let lag = 0.1 * clamp((airmass - 1.5) / 8.0, 0.0, 1.0);
+    let at = vec3(t - lag, t, t + lag);
+    let phase = vec3(fract(seed * 0.618), fract(seed * 0.414), fract(seed * 0.302)) * 6.2831853;
+    let wave = sin(at * (7.3 + 3.0 * fract(seed * 0.17)) * 6.2831853 + phase.x) * 0.5
+        + sin(at * (13.1 + 5.0 * fract(seed * 0.29)) * 6.2831853 + phase.y) * 0.33
+        + sin(at * (23.7 + 7.0 * fract(seed * 0.37)) * 6.2831853 + phase.z) * 0.17;
+    return max(vec3(1.0) + spread * 1.6 * wave, vec3(0.0));
 }
 // A blackbody's colour at `kelvin`, normalized (Tanner Helland's fit), in light.
 fn star_colour(kelvin: f32) -> vec3<f32> {
