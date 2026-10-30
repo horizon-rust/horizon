@@ -1274,6 +1274,8 @@ fn rt_milky_noise(p: vec3<f32>) -> f32 {
     }
     return v;
 }
+// METEOR-BEGIN: the shooting stars' model, the same text in terrain.wgsl (the sky draws them) and in
+// gfx/shadow_rays.wgsl (the Eye of Aldhani mode lights the terrain with them); a test keeps them equal.
 // A hash of `n` to 32 random bits (a PCG round), for the meteors' draws.
 fn meteor_hash(n: u32) -> u32 {
     let state = n * 747796405u + 2891336453u;
@@ -1283,57 +1285,185 @@ fn meteor_hash(n: u32) -> u32 {
 fn meteor_rand(n: u32) -> f32 {
     return f32(meteor_hash(n) >> 8u) / 16777216.0;
 }
-// A shooting star: the time is cut into slots of `rt_stars.y` seconds, each holding a meteor with
-// the chance `rt_stars.z`, its place in the slot, its sky, its heading, its length and its
-// magnitude all drawn from the slot's number, so no frame carries any state and a quiet sky costs
-// one branch. It is a streak on a great circle of the sky, a head that runs ahead and a tail that
-// fades behind it, the whole fading out over a few tenths of a second; mostly heading down (they
-// fall), reddened and dimmed by the air toward the horizon, outshone by the sky's own light like
-// the stars (`sky`), and none by day.
+// The Eye of Aldhani's radiant: where its meteors come from, a fixed direction of the world.
+const ALDHANI_RADIANT: vec3<f32> = vec3<f32>(0.0, 0.64, 0.77);
+// A meteor, drawn from its slot's number `seed`: `since` seconds after the slot's start, in slots of
+// `period` seconds each holding one with the chance `chance`. The sky of the stars' `frame` holds
+// the Perseids' radiant; `aldhani` is the mode with one radiant, a dense ring of bright, fast ones.
+struct Meteor {
+    on: bool,
+    // Seconds since it lit up.
+    time: f32,
+    // Toward where it lights up, and its heading (unit vectors), the km from the observer to it,
+    // the km of its path, its speed in km/s.
+    a: vec3<f32>,
+    w: vec3<f32>,
+    reach: f32,
+    span: f32,
+    speed: f32,
+    // The magnitudes brighter than the faintest shown, and its peak light (nits).
+    bright: f32,
+    power: f32,
+    // Its light curve: the peak's place along the path, and a fragment's flare.
+    peak_at: f32,
+    flare_at: f32,
+    flare: f32,
+    breaks: bool,
+    // Its composition: sodium, magnesium, iron, calcium.
+    comp: vec4<f32>,
+}
+fn meteor_make(seed: u32, since: f32, period: f32, chance: f32, frame: mat4x4<f32>, aldhani: bool) -> Meteor {
+    var o: Meteor;
+    o.on = false;
+    if meteor_rand(seed) > chance { return o; }
+    o.time = since - period * meteor_rand(seed + 1u);
+    if o.time < 0.0 { return o; }
+    // Its stream: the shower's radiant, if it is up, or a random one; where the meteoroid comes from.
+    let radiant_sh = 0.3546 * frame[0].xyz + 0.3938 * frame[1].xyz + 0.8480 * frame[2].xyz;
+    let shower = radiant_sh.y > 0.12 && meteor_rand(seed + 2u) < 0.6 * min(1.0, radiant_sh.y * 2.0);
+    let ry = 0.12 + 0.88 * meteor_rand(seed + 3u);
+    let ph = 6.2831853 * meteor_rand(seed + 4u);
+    let rc = sqrt(1.0 - ry * ry);
+    var radiant = select(vec3(rc * cos(ph), ry, rc * sin(ph)), radiant_sh, shower);
+    var speed = select(14.0 + 56.0 * pow(meteor_rand(seed + 5u), 1.3), 59.0, shower);
+    var index = select(2.8, 2.2, shower);
+    var faintest = 2.2;
+    if aldhani {
+        radiant = ALDHANI_RADIANT;
+        speed = 35.0 + 35.0 * meteor_rand(seed + 5u);
+        index = 1.5;
+        faintest = 0.5;
+    }
+    // Magnitude from the population index (the count grows as index^magnitude).
+    let magnitude = max(faintest + log(max(meteor_rand(seed + 6u), 1e-4)) / log(index), -9.0);
+    o.bright = max(faintest - magnitude, 0.0);
+    let top = min(78.0 + 0.6 * speed + 8.0 * meteor_rand(seed + 7u) + 0.8 * min(o.bright, 8.0), 125.0);
+    let bottom = max(top - 15.0 - 5.0 * o.bright, 52.0);
+    o.span = min((top - bottom) / radiant.y, 4.0 * speed);
+    o.speed = speed;
+    // Where it lights up: anywhere in the sky, the Eye's mostly on a ring 18 to 52 degrees around
+    // its radiant, its streaks radiating from it.
+    let az = 6.2831853 * meteor_rand(seed + 8u);
+    let el = radians(15.0 + 65.0 * meteor_rand(seed + 9u));
+    var a = vec3(cos(el) * cos(az), sin(el), cos(el) * sin(az));
+    if aldhani && meteor_rand(seed + 18u) < 0.6 {
+        let p1 = normalize(cross(radiant, vec3(0.0, 1.0, 0.0)));
+        let p2 = cross(radiant, p1);
+        let th = radians(18.0 + 34.0 * meteor_rand(seed + 19u));
+        let ps = 6.2831853 * meteor_rand(seed + 20u);
+        let ring = cos(th) * radiant + sin(th) * (cos(ps) * p1 + sin(ps) * p2);
+        if ring.y > 0.1 { a = ring; }
+    }
+    o.a = a;
+    o.w = -radiant;
+    o.reach = top / a.y;
+    o.peak_at = 0.5 + 0.35 * meteor_rand(seed + 10u);
+    o.breaks = meteor_rand(seed + 11u) < 0.25;
+    o.flare_at = 0.3 + 0.6 * meteor_rand(seed + 12u);
+    o.flare = 0.8 + 2.0 * meteor_rand(seed + 13u);
+    o.power = min(50.0 * pow(10.0, -0.4 * magnitude), 300.0);
+    o.comp = vec4(meteor_rand(seed + 14u), meteor_rand(seed + 15u), meteor_rand(seed + 16u), 0.7 * meteor_rand(seed + 17u));
+    o.on = true;
+    return o;
+}
+// Its light along its path (`x` 0 to 1, 1 at its end), 1 at most: the classical single-body curve,
+// a rise to a peak at 50 to 85% of the path and a fall that ends abruptly; a fragment of a quarter
+// flares at some point and ends soon after.
+fn meteor_curve(m: Meteor, x: f32) -> f32 {
+    var curve = select(pow(x / m.peak_at, 1.6), pow(max(1.0 - (x - m.peak_at) / (1.0 - m.peak_at), 0.0), 0.8), x > m.peak_at);
+    if m.breaks {
+        let q = (x - m.flare_at) / 0.025;
+        curve = (curve + m.flare * exp(-q * q)) * exp(-max(x - m.flare_at - 0.06, 0.0) / 0.01) / (1.0 + 0.5 * m.flare);
+    }
+    return curve;
+}
+// Its colour (largest channel 1) at `x`: sodium orange-yellow rising along the path, magnesium
+// blue-green early, iron yellow-white, calcium violet and the air's red, by composition, the
+// speed's excitation and the brightness (the faint ones look white).
+fn meteor_colour(m: Meteor, x: f32) -> vec3<f32> {
+    let hot = clamp((m.speed - 18.0) / 45.0, 0.0, 1.0);
+    let w_na = m.comp.x * (0.25 + 1.3 * x) * (1.4 - hot);
+    let w_mg = m.comp.y * (1.4 - 0.9 * x) * (0.4 + hot);
+    let w_fe = m.comp.z * 0.8;
+    let w_ca = m.comp.w * hot * (1.4 - 1.2 * x);
+    let w_red = hot * hot * max(0.35 - x, 0.0) * 3.0 + (1.0 - hot) * x * x * 0.8;
+    var colour = (w_na * vec3(1.0, 0.6, 0.15) + w_mg * vec3(0.3, 1.0, 0.6) + w_fe * vec3(1.0, 0.9, 0.65)
+        + w_ca * vec3(0.6, 0.45, 1.0) + w_red * vec3(1.0, 0.3, 0.2)) / (w_na + w_mg + w_fe + w_ca + w_red + 1e-3);
+    colour = colour / max(max(colour.r, colour.g), max(colour.b, 1e-3));
+    return mix(vec3(1.0), colour, clamp(0.45 + 0.08 * m.bright, 0.0, 0.9));
+}
+// Toward its head `along` km down its path.
+fn meteor_direction(m: Meteor, along: f32) -> vec3<f32> {
+    return normalize(m.reach * m.a + along * m.w);
+}
+// METEOR-END
+// Shooting stars. The time is cut into slots of `rt_stars.y` seconds, each holding a meteor with the
+// chance `rt_stars.z` (above 1.5: the Eye of Aldhani mode); everything about it is drawn from the
+// slot's number (`meteor_make`), so no frame carries any state and a quiet sky costs a few hashes.
+// A meteoroid falls along a straight line, parallel to the others of its stream, away from the
+// stream's radiant: the Perseids' (right ascension 48, declination +58 degrees, 59 km/s,
+// population index 2.2) stand fixed among the stars, so the shower is only there while its
+// radiant is above the horizon, its meteors short near the radiant and long far from it, which the
+// perspective of the line gives for free; the rest are sporadic (a random radiant, 14 to 70 km/s,
+// index 2.8). Its magnitude follows the population index (many faint, few bright; the mass
+// follows), and sets how deep it goes: it lights up at 80 to 120 km (higher when faster) and burns
+// out 15 km lower (a bright one, 5 km more per magnitude). The light is the classical single-body
+// curve, the glow stays behind the head for a tenth of a second, so the streak is the head's few
+// kilometres; the colour changes along the path with its composition; the brightest, fast ones
+// leave a faint green train (the oxygen line at 557.7 nm) that lasts seconds. Dimmed and reddened
+// by the air toward the horizon, outshone by the sky's own light like the stars, and none by day.
 fn rt_meteor(d: vec3<f32>, sky: vec3<f32>, pixel: f32) -> vec3<f32> {
     let period = globals.rt_stars.y;
     if period <= 0.0 || globals.rt_stars.w <= 0.0 || d.y <= 0.0 { return vec3(0.0); }
-    let slot = u32(globals.rt_water.z / period);
-    let seed = slot * 16u + 1u;
-    if meteor_rand(seed) > globals.rt_stars.z { return vec3(0.0); }
-    // Its life: 0.3 to 0.9 s, started somewhere in the slot where it still ends inside it.
-    let life = 0.3 + 0.6 * meteor_rand(seed + 1u);
-    let start = max(period - life, 0.0) * meteor_rand(seed + 2u);
-    let age = (globals.rt_water.z - f32(slot) * period - start) / life;
-    if age < 0.0 || age > 1.0 { return vec3(0.0); }
-    // Where it starts (25 to 70 degrees up) and which way it goes along its great circle: toward
-    // `u`, in the tangent plane, from straight down to nearly sideways, never up.
-    let azimuth = 6.2831853 * meteor_rand(seed + 3u);
-    let elevation = radians(25.0 + 45.0 * meteor_rand(seed + 4u));
-    let a = vec3(cos(elevation) * cos(azimuth), sin(elevation), cos(elevation) * sin(azimuth));
-    let east = normalize(cross(vec3(0.0, 1.0, 0.0), a));
-    let up = cross(a, east);
-    let heading = -(0.1 + 0.8 * meteor_rand(seed + 5u)) * PI;
-    let u = east * cos(heading) + up * sin(heading);
-    let span = radians(8.0 + 14.0 * meteor_rand(seed + 6u));
-    let trail = span * (0.3 + 0.3 * meteor_rand(seed + 7u));
-    // Its place on its circle: across it by `dot(d, n)`, along it by the angle `phi` from the start.
-    let n = cross(a, u);
-    let x = dot(d, a);
-    if x <= 0.0 { return vec3(0.0); }
-    let phi = atan2(dot(d, u), x);
-    let behind = (span * age - phi) / trail;
-    if behind < -0.02 || behind > 1.0 { return vec3(0.0); }
-    // A hair across (a pixel or two), a tail that thins to nothing, a head that ends sharply.
-    let width = max(0.0012, pixel * 1.2);
-    let across = dot(d, n) / width;
-    let along = pow(1.0 - clamp(behind, 0.0, 1.0), 1.7) * smoothstep(-0.02, 0.0, behind);
-    let fade = (1.0 - age) * smoothstep(0.0, 0.08, age);
-    // Magnitude -3 to 1 at its brightest: paper whites like the stars' (20 at magnitude 0), the
-    // streak being spread over many pixels, its head is worth more.
-    let magnitude = -3.0 + 4.0 * meteor_rand(seed + 8u);
-    let flux = 60.0 * pow(10.0, -0.4 * magnitude);
+    let now = globals.rt_water.z;
+    let slot0 = u32(now / period);
+    let slots = 2u + u32(8.0 / period);
+    let aldhani = globals.rt_stars.z > 1.5;
+    var sum = vec3(0.0);
+    for (var k = 0u; k < slots; k++) {
+        if k > slot0 { break; }
+        let slot = slot0 - k;
+        let m = meteor_make(slot * 32u + 1u, now - f32(slot) * period, period, globals.rt_stars.z,
+            globals.rt_star_frame, aldhani);
+        if m.on { sum += meteor_streak(m, d, pixel, aldhani); }
+    }
+    if all(sum == vec3(0.0)) { return sum; }
     let airmass = 1.0 / max(d.y + 0.025, 0.03);
     let air = exp(-vec3(0.12, 0.18, 0.3) * airmass);
     let glare = exp(-dot(sky, vec3(0.2126, 0.7152, 0.0722)) * 60.0);
-    // Mostly white, some green (magnesium) or orange (sodium).
-    let tints = array<vec3<f32>, 4>(vec3(1.0, 1.0, 1.0), vec3(0.85, 1.0, 0.9), vec3(1.0, 0.8, 0.55),
-        vec3(0.9, 0.95, 1.0));
-    let tint = tints[meteor_hash(seed + 9u) & 3u];
-    return tint * (flux * along * fade * exp(-across * across) * glare * globals.rt_stars.w) * air;
+    return sum * air * (glare * globals.rt_stars.w);
+}
+// The light, in nits, of meteor `m` at the pixel looking toward `d`.
+fn meteor_streak(m: Meteor, d: vec3<f32>, pixel: f32, aldhani: bool) -> vec3<f32> {
+    // It is seen along its great circle: `phi` the angle along it from where it lights up.
+    let wa = dot(m.w, m.a);
+    let wv = m.w - wa * m.a;
+    let we = length(wv);
+    if we < 1e-3 { return vec3(0.0); }
+    let e = wv / we;
+    let across = dot(d, cross(m.a, e));
+    if abs(across) > pixel * 10.0 { return vec3(0.0); }
+    let phi = atan2(dot(d, e), dot(d, m.a));
+    let theta = atan2(we, wa);
+    let rest = sin(theta - phi);
+    if phi < 0.0 || phi >= theta || rest < 1e-5 { return vec3(0.0); }
+    let along = m.reach * sin(phi) / rest;
+    if along > m.span { return vec3(0.0); }
+    let x = along / m.span;
+    let age = m.time - along / m.speed;
+    if age < 0.0 { return vec3(0.0); }
+    let curve = meteor_curve(m, x);
+    let glow = 0.07 + 0.03 * min(m.bright, 6.0);
+    // The core is about a pixel wide; a bright one has a soft halo of a few.
+    let core = exp(-across * across / (pixel * pixel * 0.36));
+    let halo = 0.1 * clamp(m.bright / 4.0, 0.0, 1.0) * exp(-across * across / (pixel * pixel * 16.0));
+    var light = meteor_colour(m, x) * (m.power * curve * exp(-age / glow) * (core + halo));
+    // The train of a bright, fast one: faint, green, seconds (the Eye's are longer and more).
+    let train = clamp((m.speed - 30.0) / 30.0, 0.0, 1.0) * clamp((m.bright - select(3.0, 1.5, aldhani)) / 4.0, 0.0, 1.0);
+    if train > 0.0 {
+        let lasts = select(1.2, 2.0, aldhani) + 0.35 * m.bright;
+        let wide = exp(-across * across / (pixel * pixel * 2.5));
+        light += vec3(0.25, 1.0, 0.4) * (train * 0.0025 * m.power * sqrt(max(curve, 0.0)) * exp(-age / lasts) * wide);
+    }
+    return light;
 }
