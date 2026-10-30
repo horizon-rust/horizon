@@ -55,13 +55,6 @@ fn halton(mut index: u32, base: u32) -> f32 {
 /// The jitter of frame `frame`, in pixels within [-0.5, 0.5): how far the image moves right and
 /// down. Halton's index starts at 1 (its first number, 0, is no jitter at all).
 pub fn jitter(frame: u32) -> [f32; 2] {
-    // Off by default for now: with it a surface beside a block entity (a decorated pot's block)
-    // flickered between two shadings frame to frame, a cause not yet found;
-    // `HORIZON_TAA_JITTER=1` turns it on to look for it.
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if !*ON.get_or_init(|| std::env::var("HORIZON_TAA_JITTER").is_ok_and(|v| v != "0")) {
-        return [0.0; 2];
-    }
     let index = frame % PHASES + 1;
     [halton(index, 2) - 0.5, halton(index, 3) - 0.5]
 }
@@ -277,6 +270,13 @@ impl Taa {
 
     /// The jitter this view's next frame is drawn with, in pixels.
     pub fn jitter(&self, view: usize) -> [f32; 2] {
+        // Off by default for now: with it a surface beside a block entity (a decorated pot's
+        // block) flickered between two shadings frame to frame, a cause not yet found;
+        // `HORIZON_TAA_JITTER=1` turns it on to look for it.
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if !*ON.get_or_init(|| std::env::var("HORIZON_TAA_JITTER").is_ok_and(|v| v != "0")) {
+            return [0.0; 2];
+        }
         let frame = self
             .views
             .get(view)
