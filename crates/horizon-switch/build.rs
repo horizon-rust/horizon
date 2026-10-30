@@ -24,6 +24,11 @@ fn main() {
 
     // NVK as scripts/localize_nvk.sh leaves it: one object whose only globals are the vk* entry
     // points (and bevy-horizon's allocator hooks), so its copy of Rust's std cannot clash with ours.
+    // `HORIZON_NVK_LIB=skip` compiles without the driver, to find compile errors before NVK is
+    // built; the final link then fails on the vk* symbols.
+    if std::env::var_os("HORIZON_NVK_LIB").is_some_and(|v| v == "skip") {
+        return;
+    }
     let dir = std::env::var_os("HORIZON_NVK_LIB")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("../bevy-horizon/nvk/lib"));

@@ -573,7 +573,7 @@ impl super::Instance {
             })?
         };
 
-        Ok(self.create_surface_from_vk_surface_khr(surface))
+        Ok(self.create_surface_from_vk_surface_khr(surface, None))
     }
 
     pub(super) fn create_surface_from_vk_surface_khr(

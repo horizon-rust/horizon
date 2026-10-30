@@ -428,6 +428,12 @@ fn open(path: &std::path::Path) -> io::Result<Box<dyn Pipe>> {
     Ok(Box::new(stream))
 }
 
+/// The Switch has no Discord to talk to.
+#[cfg(target_os = "horizon")]
+fn open(_path: &std::path::Path) -> io::Result<Box<dyn Pipe>> {
+    Err(io::Error::from(io::ErrorKind::Unsupported))
+}
+
 #[cfg(windows)]
 fn open(path: &std::path::Path) -> io::Result<Box<dyn Pipe>> {
     let pipe = std::fs::OpenOptions::new()

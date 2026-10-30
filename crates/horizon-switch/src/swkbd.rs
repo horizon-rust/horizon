@@ -16,7 +16,6 @@ unsafe extern "C" {
     fn swkbdConfigSetOkButtonText(config: *mut Config, text: *const c_char);
     fn swkbdConfigSetGuideText(config: *mut Config, text: *const c_char);
     fn swkbdConfigSetInitialText(config: *mut Config, text: *const c_char);
-    fn swkbdConfigSetStringLenMax(config: *mut Config, length: u32);
     fn swkbdShow(config: *mut Config, out: *mut c_char, size: usize) -> u32;
 }
 
@@ -28,7 +27,8 @@ pub struct Prompt<'a> {
     pub ok: &'a str,
     /// Text the field starts with.
     pub initial: &'a str,
-    /// The longest text it accepts, in characters.
+    /// The longest text kept, in characters (`swkbdConfigSetStringLenMax` is an inline function of
+    /// libnx's header, so the applet's own limit stays; the game's fields enforce theirs).
     pub max_len: u32,
 }
 
@@ -49,7 +49,6 @@ pub fn text_input(prompt: &Prompt<'_>) -> Option<String> {
         swkbdConfigSetOkButtonText(&mut *config, ok.as_ptr());
         swkbdConfigSetGuideText(&mut *config, guide.as_ptr());
         swkbdConfigSetInitialText(&mut *config, initial.as_ptr());
-        swkbdConfigSetStringLenMax(&mut *config, prompt.max_len);
         let rc = swkbdShow(&mut *config, out.as_mut_ptr().cast(), out.len());
         swkbdClose(&mut *config);
         if rc != 0 {
