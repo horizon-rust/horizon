@@ -154,10 +154,22 @@ fn cache_slot(key: u32, insert: bool) -> u32 {
     }
     return 0xffffffffu;
 }
+// A value with its NaNs and infinities as 0 (by their bits: a compiler's fast maths may drop
+// `x != x`), as Remix sanitises its buffers: one bad sample would spread through the histories,
+// the reservoirs and the cache.
+fn finite(x: f32) -> f32 {
+    return select(x, 0.0, (bitcast<u32>(x) & 0x7f800000u) == 0x7f800000u);
+}
+fn finite3(v: vec3<f32>) -> vec3<f32> {
+    return vec3(finite(v.x), finite(v.y), finite(v.z));
+}
+fn finite4(v: vec4<f32>) -> vec4<f32> {
+    return vec4(finite(v.x), finite(v.y), finite(v.z), finite(v.w));
+}
 fn cache_add(pos: vec3<f32>, n: vec3<f32>, light: vec3<f32>) {
     let slot = cache_slot(cache_key(pos, n), true);
     if slot == 0xffffffffu { return; }
-    let fixed = vec3<u32>(clamp(light, vec3(0.0), vec3(64.0)) * CACHE_SCALE);
+    let fixed = vec3<u32>(clamp(finite3(light), vec3(0.0), vec3(64.0)) * CACHE_SCALE);
     atomicAdd(&cache[slot].r, fixed.r);
     atomicAdd(&cache[slot].g, fixed.g);
     atomicAdd(&cache[slot].b, fixed.b);
@@ -750,7 +762,10 @@ fn restir_gi(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>, last_at: vec2<i32>,
             seen = 1.0;
         }
     }
-    gi_out_a = vec4(chosen.at, weight);
+    // Half floats past 65504 are infinite: the sample's light kept within them.
+    chosen.light = min(finite3(chosen.light), vec3(60000.0));
+    weight = min(finite(weight), 1e6);
+    gi_out_a = finite4(vec4(chosen.at, weight));
     gi_out_b = vec4(pack2x16float(chosen.light.rg), pack2x16float(vec2(chosen.light.b, seen)),
         pack4x8snorm(vec4(chosen.normal, 0.0)), 0u);
     let cosine = max(dot(n, normalize(chosen.at - pos)), 0.0);
@@ -1145,6 +1160,11 @@ var<workgroup> shared_rays: array<Traced, 4>;
     if rt.mode.x > 0.5 { v = accumulate(texel, v); }
     if DEBUG == 3u { v.rays = vec4(textureLoad(depth, pixel_of(texel), 0) * 20.0 + 0.25); }
     if all(vec2<u32>(texel) < textureDimensions(mask)) {
+        v.rays = finite4(v.rays);
+        v.blocks = finite4(v.blocks);
+        v.direct = finite4(v.direct);
+        v.sun = finite4(v.sun);
+        fast_out = finite4(fast_out);
         textureStore(mask, texel, v.rays);
         if rt.mode.x > 0.5 {
             textureStore(block_mask, texel, v.blocks);
@@ -1154,7 +1174,7 @@ var<workgroup> shared_rays: array<Traced, 4>;
             textureStore(gi_b, texel, gi_out_b);
             textureStore(sun_mask, texel, v.sun);
             textureStore(fast, texel, fast_out);
-            textureStore(reflection, texel, hw_reflect(pixel_of(texel)));
+            textureStore(reflection, texel, finite4(hw_reflect(pixel_of(texel))));
         }
     }
 }
