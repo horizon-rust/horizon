@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The keychain service name every secret is stored under.
 pub const SERVICE: &str = "dev.playhorizon.launcher";
@@ -1319,12 +1319,34 @@ fn splitscreen_on(game_home: &Path) -> bool {
 /// and asked about (`check`), and an account that can't be renewed, doesn't own the game or
 /// whose token names another profile is left out: the game starts all the same. Nothing with one
 /// account.
+/// How long Play spends renewing the other accounts' sessions, in all: past it, the rest are
+/// offered only with a token that still holds (no request starts; one under way finishes).
+const OTHERS_WAIT: Duration = Duration::from_secs(10);
+
 fn account_sessions(
     ep: &Endpoints,
     client_id: Option<&str>,
     store: &dyn SecretStore,
     dir: &Path,
     accounts: &mut Accounts,
+) -> Vec<(&'static str, String)> {
+    account_sessions_until(
+        ep,
+        client_id,
+        store,
+        dir,
+        accounts,
+        Instant::now() + OTHERS_WAIT,
+    )
+}
+
+fn account_sessions_until(
+    ep: &Endpoints,
+    client_id: Option<&str>,
+    store: &dyn SecretStore,
+    dir: &Path,
+    accounts: &mut Accounts,
+    deadline: Instant,
 ) -> Vec<(&'static str, String)> {
     let others: Vec<Account> = accounts
         .accounts
@@ -1344,8 +1366,14 @@ fn account_sessions(
         let before = serde_json::to_string(&secrets).ok();
         let uuid = account.uuid.clone();
         let known = secrets.owns && secrets.minecraft_expires_at > now() + RENEW_BEFORE;
+        let late = Instant::now() >= deadline;
         let (account, secrets) = match known {
             true => (Some(account), secrets),
+            // Out of time: its token while it holds, else Sign in again.
+            false if late => {
+                let fresh = secrets.owns && secrets.minecraft_expires_at > now() + 60;
+                (fresh.then_some(account), secrets)
+            }
             false => match check(ep, client_id, &account, secrets) {
                 Check::Owns(renewed, secrets) => {
                     accounts.update(renewed.clone());

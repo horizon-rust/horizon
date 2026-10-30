@@ -892,3 +892,50 @@ fn the_java_edition_plays_as_an_owner_even_offline() {
         NoOwner.to_string()
     );
 }
+
+#[test]
+fn splitscreen_stops_renewing_other_accounts_once_out_of_time() {
+    // A sign-in service that never answers: any request would hang the test.
+    let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/x", silent.local_addr().unwrap());
+    let ep = Endpoints {
+        microsoft: url.clone(),
+        xbox_user: url.clone(),
+        xsts: url.clone(),
+        minecraft: url,
+    };
+    let store = MemoryStore::default();
+    let mut accounts = signed_in(&store, &secrets("mc-token", true));
+    let expired = Secrets {
+        minecraft_expires_at: 0,
+        ..secrets("old", true)
+    };
+    let cal = Account {
+        uuid: "c".into(),
+        name: "Cal".into(),
+        skin: None,
+        cape: None,
+    };
+    accounts.add(&store, cal, &expired).unwrap();
+    accounts.selected = Some(UUID.into());
+    let dir = std::env::temp_dir().join(format!("hz-split-late-{}", std::process::id()));
+    let start = std::time::Instant::now();
+    let env = account_sessions_until(
+        &ep,
+        Some("test-client"),
+        &store,
+        &dir,
+        &mut accounts,
+        std::time::Instant::now(),
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "no request started"
+    );
+    let list: Vec<Value> = serde_json::from_str(&env[0].1).unwrap();
+    assert!(list[0]["skipped"]
+        .as_str()
+        .unwrap()
+        .contains("Sign in again"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
