@@ -405,7 +405,13 @@ fn rt_moon_disc(d: vec3<f32>) -> vec3<f32> {
     let tint = vec3(1.0, 0.93, 0.85);
     // 3 paper whites at full moon, not its 12 (2500 nits): the eye adapts to the moon itself, the
     // tone mapping can't, and at 12 the night's exposure would wash its maria out.
-    return tint * (albedo / 0.12) * (3.0 * lit + 0.005) * air;
+    // The earthshine on its night side: the Earth's light (the Earth as seen from the Moon is in
+    // the opposite phase: full at new moon), its surface some 8.5 magnitudes (1/2500) under the
+    // lit side's at its brightest (the Big Bear Earthshine Project, about 12 against 3.5 mag per
+    // square arcsecond).
+    let earth_lit = 0.5 - 0.5 * cos(phase);
+    let earthshine = 3.0 * 4e-4 * earth_lit;
+    return tint * (albedo / 0.12) * (3.0 * lit + earthshine) * air;
 }
 // RT lighting: the light sources' traced light at this pixel (`rt_blocks`), this frame's rays only.
 // RT lighting: the sun's colour through stained glass at this pixel (`rt_sun_tint`), divided by the

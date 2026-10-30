@@ -4672,9 +4672,13 @@ impl Renderer {
         // RT lighting's real sun and sky: the sky table follows the sun; the light traced toward is
         // the sun's through the atmosphere or, once it has set, the moon's.
         let rt_sun = crate::celestial::direction(frame.sky.sun_angle, frame.sun_path_tilt);
-        // Minecraft's moon phase (0 full, 4 new), and how much of the moon's face is lit.
+        // Minecraft's moon phase (0 full, 4 new), and the moon's light against the full moon's by
+        // its phase angle (Allen's lunar phase law, 10^(-0.4 (0.026 a + 4e-9 a^4)), a in degrees):
+        // the regolith's shadows make a half moon not a half but about 9 % of a full one, a thin
+        // crescent well under 1 %.
         let moon_phase = frame.moon_phase.min(7) as f32;
-        let moon_lit = 0.5 + 0.5 * (moon_phase * std::f32::consts::FRAC_PI_4).cos();
+        let angle = moon_phase.min(8.0 - moon_phase) * 45.0;
+        let moon_lit = 10f32.powf(-0.4 * (0.026 * angle + 4e-9 * angle.powi(4)));
         let rt_sky = self.rt_lighting && world_linear && !(frame.title || frame.end_sky);
         if rt_sky {
             self.atmosphere.update(&self.queue, rt_sun, moon_lit);
