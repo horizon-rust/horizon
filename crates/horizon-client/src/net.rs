@@ -512,12 +512,16 @@ fn run(
                     if joined == Err(crate::auth::JoinError::InvalidSession) {
                         status(send, "Renewing your session...");
                         joined = match crate::auth::renew(account.uuid) {
-                            Ok(fresh) => crate::auth::join_server(&fresh, &hash),
+                            Ok(fresh) => {
+                                log::info!("Horizon: the launcher renewed the refused session");
+                                crate::auth::join_server(&fresh, &hash)
+                            }
                             Err(crate::auth::Renewal::SignIn) => {
+                                log::info!("Horizon: the session needs a browser sign-in");
                                 return Ok(SIGN_IN_AGAIN.to_owned());
                             }
                             Err(why) => {
-                                eprintln!(
+                                log::warn!(
                                     "Horizon: the launcher could not renew the session: {why:?}"
                                 );
                                 joined
