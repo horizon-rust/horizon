@@ -1091,8 +1091,8 @@ const ALDHANI_RADIANT: vec3<f32> = vec3<f32>(0.0, -0.1392, 0.99027);
 // The light the field gives a face turned to it at the storm's height, in full moons (the moon's
 // light overhead, `rt.held.z`), and the glow of the sky around the radiant at its brightest, in
 // paper whites (radiance; Lambert's 1/pi in the units, as the sky table's).
-const ALDHANI_MOONS: f32 = 64.0;
-const ALDHANI_GLOW: f32 = 0.8;
+const ALDHANI_MOONS: f32 = 16.0;
+const ALDHANI_GLOW: f32 = 0.2;
 // A meteor of the field: toward its streak's tail (xyz) and its core's width in pixels (w); toward
 // its head (xyz) and its seed (w, for the sparkles); the light of its core at the head (rgb, paper
 // whites) and its head's glow (w); the light it gives the terrain (rgb, luminance 1) and its share
