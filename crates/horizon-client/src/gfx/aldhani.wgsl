@@ -78,10 +78,10 @@ fn aldhani_glow(d: vec3<f32>, t: f32) -> vec3<f32> {
     let up = max(d.y, 0.0);
     let east = d.x / max(sin(theta), 1e-3);
     // The sky: the faint meteors everywhere, thicker toward the radiant's half of the sky.
-    let tint = mix(vec3(0.42, 0.95, 0.9), vec3(0.95, 0.74, 0.82), 0.7 * smoothstep(-0.2, 0.9, -east));
+    let tint = mix(vec3(0.2, 0.95, 0.8), vec3(1.0, 0.55, 0.75), 0.75 * smoothstep(-0.2, 0.9, -east));
     let sky = tint * (3.5 * (0.35 + 0.65 * (0.5 + 0.5 * c)) * (0.55 + 0.45 * exp(-up * 2.0)));
     // The eye: a few degrees of white-hot core in a wide glow, its sides two colours.
-    let side = mix(vec3(0.45, 0.95, 0.92), vec3(1.0, 0.72, 0.84), smoothstep(-0.7, 0.7, -east));
+    let side = mix(vec3(0.1, 0.95, 0.8), vec3(1.0, 0.5, 0.78), smoothstep(-0.7, 0.7, -east));
     let core = exp(-theta * theta / (2.0 * 0.08 * 0.08));
     let wide = exp(-theta / 0.25) * (0.4 + 0.6 * exp(-up / 0.15));
     let eye = side * (8.0 * wide) + mix(side, vec3(1.0), 0.6) * (60.0 * core);
@@ -99,19 +99,28 @@ struct Params {
 // Each tile's count, then its list of meteors (ALDHANI_TILE_CAP a tile).
 @group(0) @binding(2) var<storage, read_write> tiles: array<atomic<u32>>;
 // The colours of the show's frame, in light (ALDHANI_PALETTE), by patches of sky rather than
-// meteor by meteor (neighbours there differ by some 10 degrees of hue): turquoise and cyan nine in
-// ten, drifting slowly across the sky with a touch of blue, and the few warm ones, gold and rose,
-// gathered on the west (the right, facing the radiant). `around` and `theta` are where it lights
-// up about the radiant (0 east, pi west), `u` and `v` its own draws.
+// meteor by meteor (neighbours there differ by some 10 degrees of hue), richer than the frame:
+// the cold ones from green through turquoise and cyan to blue, drifting slowly across the sky,
+// and the warm ones, gold, orange and rose, a few everywhere and many on the west (the right,
+// facing the radiant). `around` and `theta` are where it lights up about the radiant (0 east, pi
+// west), `u` and `v` its own draws.
 fn palette(around: f32, theta: f32, u: f32, v: f32) -> vec3<f32> {
-    let drift = 0.5 + 0.3 * sin(1.9 * around + 4.0 * theta + 1.0) + 0.2 * sin(3.7 * around - 6.0 * theta);
+    let drift = 0.5 + 0.35 * sin(1.9 * around + 4.0 * theta + 1.0) + 0.25 * sin(3.7 * around - 6.0 * theta);
     let h = clamp(drift + 0.2 * (u - 0.5), 0.0, 1.0);
-    let cold = select(mix(vec3(0.05, 0.8, 1.0), vec3(0.25, 0.55, 1.0), (h - 0.85) / 0.15),
-        mix(vec3(0.0, 1.0, 0.55), vec3(0.05, 0.8, 1.0), h / 0.85), h < 0.85);
+    let green = vec3(0.25, 1.0, 0.3);
+    let turquoise = vec3(0.0, 1.0, 0.6);
+    let cyan = vec3(0.0, 0.75, 1.0);
+    let blue = vec3(0.25, 0.4, 1.0);
+    var cold = mix(green, turquoise, smoothstep(0.0, 0.3, h));
+    cold = mix(cold, cyan, smoothstep(0.35, 0.65, h));
+    cold = mix(cold, blue, smoothstep(0.7, 1.0, h));
     let west = smoothstep(0.2, 1.0, -cos(around));
-    if v < 0.45 * west * west {
-        let rose = 0.5 + 0.5 * sin(6.0 * theta + 2.0 * around);
-        return mix(vec3(1.0, 0.66, 0.24), vec3(1.0, 0.42, 0.5), rose);
+    if v < 0.08 + 0.5 * west * west {
+        let warm = 0.5 + 0.5 * sin(6.0 * theta + 2.0 * around);
+        let gold = vec3(1.0, 0.72, 0.12);
+        let orange = vec3(1.0, 0.35, 0.1);
+        let rose = vec3(1.0, 0.25, 0.6);
+        return mix(mix(gold, orange, smoothstep(0.0, 0.5, warm)), rose, smoothstep(0.5, 1.0, warm));
     }
     return cold;
 }
@@ -167,9 +176,7 @@ fn aldhani_make(slot: u32, t: f32, period: f32) -> AldhaniMeteor {
     // Through the air toward it (grey: the show's colours stay): a low one is dimmed by its
     // airmass, and the haze over the horizon swallows the lowest streaks.
     let air = exp(-0.15 / max(head.y + 0.025, 0.03)) * smoothstep(-0.01, 0.06, head.y);
-    // A little paler than pure (the frame's streaks are; the sky's streak whitens its core more).
-    let pure = palette(around, theta, aldhani_rand(seed + 10u), aldhani_rand(seed + 11u));
-    let colour = mix(pure, vec3(dot(pure, vec3(0.2126, 0.7152, 0.0722))), 0.05);
+    let colour = palette(around, theta, aldhani_rand(seed + 10u), aldhani_rand(seed + 11u));
     // The sky's streak: faint ones still seen (the light compressed), dimmer far away.
     let shown = pow(power, 0.6) * (0.3 + 0.7 * curve) * fade * air * pow(160.0 / reach, 0.9);
     o.tail = vec4(tail, 0.8 + 0.2 * log2(power + 1.0));

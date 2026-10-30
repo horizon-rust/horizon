@@ -1144,10 +1144,10 @@ fn aldhani_glow(d: vec3<f32>, t: f32) -> vec3<f32> {
     let up = max(d.y, 0.0);
     let east = d.x / max(sin(theta), 1e-3);
     // The sky: the faint meteors everywhere, thicker toward the radiant's half of the sky.
-    let tint = mix(vec3(0.42, 0.95, 0.9), vec3(0.95, 0.74, 0.82), 0.7 * smoothstep(-0.2, 0.9, -east));
+    let tint = mix(vec3(0.2, 0.95, 0.8), vec3(1.0, 0.55, 0.75), 0.75 * smoothstep(-0.2, 0.9, -east));
     let sky = tint * (3.5 * (0.35 + 0.65 * (0.5 + 0.5 * c)) * (0.55 + 0.45 * exp(-up * 2.0)));
     // The eye: a few degrees of white-hot core in a wide glow, its sides two colours.
-    let side = mix(vec3(0.45, 0.95, 0.92), vec3(1.0, 0.72, 0.84), smoothstep(-0.7, 0.7, -east));
+    let side = mix(vec3(0.1, 0.95, 0.8), vec3(1.0, 0.5, 0.78), smoothstep(-0.7, 0.7, -east));
     let core = exp(-theta * theta / (2.0 * 0.08 * 0.08));
     let wide = exp(-theta / 0.25) * (0.4 + 0.6 * exp(-up / 0.15));
     let eye = side * (8.0 * wide) + mix(side, vec3(1.0), 0.6) * (60.0 * core);
