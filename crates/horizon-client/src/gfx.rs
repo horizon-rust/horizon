@@ -107,6 +107,7 @@ mod shadow_rays;
 mod sky_stars;
 mod stars;
 // Temporal anti-aliasing for RT lighting (gfx/taa.rs).
+mod capture;
 mod taa;
 mod timing;
 mod tonemap;
@@ -669,6 +670,8 @@ pub struct Renderer {
     pub screenshot: Option<PathBuf>,
     /// Outcome of the last screenshot: frame size, or the error.
     pub screenshot_result: Option<std::result::Result<[u32; 2], String>>,
+    /// RT lighting's HDR video being recorded (`start_recording`, Shift+F2).
+    recording: Option<capture::Recording>,
     /// Brightness option (lightmap gamma), 0..1.
     pub gamma: f32,
     /// Optional full-light lightmap (Horizon Extras).
@@ -3050,6 +3053,7 @@ impl Renderer {
             started: Instant::now(),
             screenshot: None,
             screenshot_result: None,
+            recording: None,
             gamma: 0.5,
             fullbright: false,
             animated_textures: true,
@@ -3417,6 +3421,18 @@ impl Renderer {
         first: u32,
         count: u32,
     ) {
+        self.draw_sections_with(pass, indirect, base, first, count, self.multi_draw);
+    }
+    /// `draw_sections`, from the indirect arguments (`multi`) or from the draws' own counts.
+    fn draw_sections_with(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        indirect: &wgpu::Buffer,
+        base: u32,
+        first: u32,
+        count: u32,
+        multi: bool,
+    ) {
         let (draws, pages) = (&self.draws[..], &self.draw_pages[..]);
         let (mut i, end) = (first as usize, (first + count) as usize);
         // Back-to-front translucent draws often change one buffer of the two, not both.
@@ -3436,7 +3452,7 @@ impl Renderer {
                 pass.set_index_buffer(buffer.slice(..), wgpu::IndexFormat::Uint32);
             }
             bound = Some((page, index_page));
-            if self.multi_draw {
+            if multi {
                 let offset = (i - base as usize) as u64 * 20;
                 pass.multi_draw_indexed_indirect(indirect, offset, run as u32);
             } else {
@@ -3799,6 +3815,7 @@ impl Renderer {
         view_proj: Mat4,
         camera: DVec3,
         rt: &shadow_rays::Rays,
+        phase1: u32,
         draws: u32,
     ) -> [wgpu::TextureView; 5] {
         let depth = match self.rt_depths.iter().find(|(s, _)| *s == size) {
@@ -3833,7 +3850,12 @@ impl Renderer {
             pass.set_bind_group(0, &self.group, &[]);
             pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.set_vertex_buffer(1, self.instances.slice(..));
-            self.draw_sections(&mut pass, &self.indirect, 0, 0, draws);
+            // The sections occlusion culling left to its second phase have no instance yet in the
+            // indirect arguments (the GPU's test after the world's first phase gives them one):
+            // the rays see them all, from the draws' own counts, or a section meshed again (no
+            // visibility history) would be missing for a frame, the room behind it lit as if open.
+            self.draw_sections(&mut pass, &self.indirect, 0, 0, phase1);
+            self.draw_sections_with(&mut pass, &self.indirect, 0, phase1, draws - phase1, false);
         }
         let view = self.eye.map_or(0, |e| e.view_index);
         let foveation = match &self.eye {
@@ -5584,6 +5606,7 @@ impl Renderer {
                 view_proj,
                 frame.camera,
                 &rt,
+                phase1_draws,
                 solid_draws,
             );
             let depth = self
@@ -6490,7 +6513,16 @@ impl Renderer {
             let texture = self.tonemap.as_ref()?.graded_texture(target_size)?;
             let size = [texture.width(), texture.height()];
             Some((
-                path.with_extension("hdr"),
+                path.clone(),
+                Self::copy_graded(&self.device, &mut encoder, texture, size),
+                size,
+            ))
+        });
+        // The video's frame (`start_recording`), read back the same way.
+        let video_readback = self.recording.as_ref().filter(|r| r.wants()).and_then(|_| {
+            let texture = self.tonemap.as_ref()?.graded_texture(target_size)?;
+            let size = [texture.width(), texture.height()];
+            Some((
                 Self::copy_graded(&self.device, &mut encoder, texture, size),
                 size,
             ))
@@ -6548,9 +6580,27 @@ impl Renderer {
             );
         }
         if let Some((path, buffer, size)) = hdr_readback
-            && let Err(e) = self.write_radiance(&path, &buffer, size)
+            && let Err(e) = self.write_hdr_screenshot(&path, &buffer, size)
         {
             log::warn!("Horizon: HDR screenshot {}: {e}", path.display());
+        }
+        if let Some((buffer, size)) = video_readback {
+            let paper_white = self.hdr.as_ref().map_or(200.0, |h| h.paper_white);
+            match self.read_graded(&buffer, size) {
+                Ok(rgb) => {
+                    if let Some(r) = &mut self.recording {
+                        r.push(&rgb, size, paper_white);
+                    }
+                }
+                Err(e) => log::warn!("Horizon: video frame: {e}"),
+            }
+        }
+        if self
+            .recording
+            .as_ref()
+            .is_some_and(|r| r.done() || !r.wants())
+        {
+            self.recording = None;
         }
         let present = Instant::now();
         if let Some(surface_frame) = surface_frame {
@@ -6663,14 +6713,43 @@ impl Renderer {
         );
         buffer
     }
-    /// The graded light read back (`copy_graded`) as a Radiance RGBE file, uncompressed.
-    fn write_radiance(
+    /// RT lighting's HDR video: `seconds` of the graded scene's frames, at half size, as HDR10
+    /// PNGs into `dir` (gfx/capture.rs). The game slows while it records (each frame is read
+    /// back); `frames.txt` holds their times.
+    pub fn start_recording(&mut self, dir: PathBuf, seconds: f32) -> Result<()> {
+        self.recording = Some(capture::Recording::new(dir, seconds)?);
+        Ok(())
+    }
+    /// Whether a video is being recorded.
+    pub fn recording(&self) -> bool {
+        self.recording.is_some()
+    }
+    /// An F2 screenshot's HDR copies beside its PNG (`path`): the graded light as a Radiance
+    /// file (`.hdr`, linear, for measuring) and as an HDR10 PNG (`-hdr.png`, to look at).
+    fn write_hdr_screenshot(
         &self,
         path: &std::path::Path,
         buffer: &wgpu::Buffer,
-        [width, height]: [u32; 2],
+        size: [u32; 2],
     ) -> Result<()> {
-        use std::io::Write;
+        let rgb = self.read_graded(buffer, size)?;
+        write_radiance(&path.with_extension("hdr"), size, &rgb)?;
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+        let paper_white = self.hdr.as_ref().map_or(200.0, |h| h.paper_white);
+        capture::write_pq_png(
+            &path.with_file_name(format!("{stem}-hdr.png")),
+            size,
+            &rgb,
+            paper_white,
+        )?;
+        Ok(())
+    }
+    /// The graded light read back (`copy_graded`): linear BT.709, 1 = paper white.
+    fn read_graded(
+        &self,
+        buffer: &wgpu::Buffer,
+        [width, height]: [u32; 2],
+    ) -> Result<Vec<[f32; 3]>> {
         let (sender, receiver) = std::sync::mpsc::channel();
         buffer.map_async(wgpu::MapMode::Read, .., move |r| {
             let _ = sender.send(r);
@@ -6683,31 +6762,24 @@ impl Renderer {
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
         let row = (width * 8).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) as usize;
-        let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
-        write!(
-            out,
-            "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\nEXPOSURE=1.0\n\n-Y {height} +X {width}\n"
-        )?;
+        let mut rgb = Vec::with_capacity((width * height) as usize);
         {
             let data = buffer.get_mapped_range(..).map_err(|e| e.to_string())?;
-            let mut line = Vec::with_capacity(width as usize * 4);
             for y in 0..height as usize {
-                line.clear();
                 for px in data[y * row..y * row + width as usize * 8]
                     .as_chunks::<8>()
                     .0
                 {
                     let channel = |i: usize| {
-                        half_to_f32(u16::from_le_bytes([px[i * 2], px[i * 2 + 1]])).max(0.0)
+                        let v = half_to_f32(u16::from_le_bytes([px[i * 2], px[i * 2 + 1]]));
+                        if v.is_finite() { v.max(0.0) } else { 0.0 }
                     };
-                    line.extend_from_slice(&rgbe([channel(0), channel(1), channel(2)]));
+                    rgb.push([channel(0), channel(1), channel(2)]);
                 }
-                out.write_all(&line)?;
             }
         }
         buffer.unmap();
-        out.flush()?;
-        Ok(())
+        Ok(rgb)
     }
     fn write_screenshot(&self, path: &std::path::Path, buffer: &wgpu::Buffer) -> Result<[u32; 2]> {
         if !self.config.usage.contains(wgpu::TextureUsages::COPY_SRC) {
@@ -6757,6 +6829,24 @@ impl Renderer {
         encoder.write_header()?.write_image_data(&pixels)?;
         Ok([width, height])
     }
+}
+/// Linear light (1 = paper white) as a Radiance RGBE file, uncompressed.
+fn write_radiance(
+    path: &std::path::Path,
+    [width, height]: [u32; 2],
+    rgb: &[[f32; 3]],
+) -> Result<()> {
+    use std::io::Write;
+    let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
+    write!(
+        out,
+        "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\nEXPOSURE=1.0\n\n-Y {height} +X {width}\n"
+    )?;
+    for c in rgb {
+        out.write_all(&rgbe(*c))?;
+    }
+    out.flush()?;
+    Ok(())
 }
 /// An IEEE half float's value.
 fn half_to_f32(h: u16) -> f32 {
