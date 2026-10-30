@@ -241,7 +241,9 @@ impl super::Instance {
         if cfg!(all(
             unix,
             not(target_os = "android"),
-            not(target_os = "macos")
+            not(target_os = "macos"),
+            // bevy-horizon: the Switch has none of X11, Wayland or DRM.
+            not(target_os = "horizon")
         )) {
             // VK_KHR_xlib_surface
             extensions.push(khr::xlib_surface::NAME);
@@ -272,7 +274,12 @@ impl super::Instance {
             extensions.push(khr::get_display_properties2::NAME);
         }
 
-        if flags.contains(wgt::InstanceFlags::DEBUG) {
+        // bevy-horizon: on Horizon the messenger is always wanted. NVK attaches the reason, with
+        // its source file and line, to every error it returns (vk_error, vk_errorf), and a
+        // release build of Mesa sends those messages only to a VK_EXT_debug_utils messenger
+        // (`__vk_log_impl` in mesa src/vulkan/runtime/vk_log.c). The Switch has no other log for
+        // them, so without one a driver failure reaches wgpu as a bare VkResult.
+        if flags.contains(wgt::InstanceFlags::DEBUG) || cfg!(target_os = "horizon") {
             // VK_EXT_debug_utils
             extensions.push(ext::debug_utils::NAME);
         }
@@ -545,6 +552,30 @@ impl super::Instance {
         Ok(self.create_surface_from_vk_surface_khr(surface, None))
     }
 
+    // bevy-horizon
+    #[cfg(target_os = "horizon")]
+    fn create_surface_from_vi(
+        &self,
+        n_window: *mut c_void,
+    ) -> Result<super::Surface, crate::InstanceError> {
+        if !self.shared.extensions.contains(&ash::nn::vi_surface::NAME) {
+            return Err(crate::InstanceError::new(String::from(
+                "Vulkan driver does not support VK_NN_vi_surface",
+            )));
+        }
+
+        let surface = {
+            let vi_loader = ash::nn::vi_surface::Instance::new(&self.shared.entry, &self.shared.raw);
+            let info = vk::ViSurfaceCreateInfoNN::default().window(n_window);
+
+            unsafe { vi_loader.create_vi_surface(&info, None) }.map_err(|err| {
+                crate::InstanceError::with_source(String::from("vkCreateViSurfaceNN failed"), err)
+            })?
+        };
+
+        Ok(self.create_surface_from_vk_surface_khr(surface))
+    }
+
     pub(super) fn create_surface_from_vk_surface_khr(
         &self,
         surface: vk::SurfaceKHR,
@@ -573,6 +604,7 @@ impl super::Instance {
     ) -> Result<Self, crate::InstanceError> {
         profiling::scope!("Init Vulkan Backend");
 
+        #[cfg(not(target_os = "horizon"))]
         let entry = unsafe {
             profiling::scope!("Load vk library");
             // ohos support is already fixed on ash main, but it's unclear when
@@ -586,6 +618,30 @@ impl super::Instance {
         .map_err(|err| {
             crate::InstanceError::with_source(String::from("missing Vulkan entry points"), err)
         })?;
+        // bevy-horizon: Horizon has no dynamic loader, so the driver (NVK, for Switch homebrew) is
+        // linked into the executable and provides vkGetInstanceProcAddr itself. An app built
+        // without a driver links a stub that returns null for every name.
+        #[cfg(target_os = "horizon")]
+        let entry = {
+            unsafe extern "system" {
+                fn vkGetInstanceProcAddr(
+                    instance: vk::Instance,
+                    p_name: *const core::ffi::c_char,
+                ) -> vk::PFN_vkVoidFunction;
+            }
+            let create_instance =
+                unsafe { vkGetInstanceProcAddr(vk::Instance::null(), c"vkCreateInstance".as_ptr()) };
+            if create_instance.is_none() {
+                return Err(crate::InstanceError::new(String::from(
+                    "no Vulkan driver is linked into this executable",
+                )));
+            }
+            unsafe {
+                ash::Entry::from_static_fn(ash::StaticFn {
+                    get_instance_proc_addr: vkGetInstanceProcAddr,
+                })
+            }
+        };
         let version = {
             profiling::scope!("vkEnumerateInstanceVersion");
             unsafe { entry.try_enumerate_instance_version() }
@@ -909,6 +965,9 @@ impl crate::Instance for super::Instance {
             (Rwh::AndroidNdk(handle), _) => {
                 self.create_surface_android(handle.a_native_window.as_ptr())
             }
+            // bevy-horizon
+            #[cfg(target_os = "horizon")]
+            (Rwh::Horizon(handle), _) => self.create_surface_from_vi(handle.n_window.as_ptr()),
             (Rwh::Win32(handle), _) => {
                 let hinstance = handle.hinstance.ok_or_else(|| {
                     crate::InstanceError::new(String::from(
