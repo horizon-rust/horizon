@@ -315,14 +315,24 @@ impl Settings {
                 mods,
                 ..Self::parse(&String::from_utf8_lossy(&bytes))
             },
-            Err(_) => Self {
-                horizon,
-                controller,
-                extras,
-                mods,
-                ..Self::default()
-            },
+            Err(_) => {
+                let mut first = Self {
+                    horizon,
+                    controller,
+                    extras,
+                    mods,
+                    ..Self::default()
+                };
+                if crate::switch_profile::active() {
+                    crate::switch_profile::defaults(&mut first);
+                }
+                first
+            }
         };
+        let mut settings = settings;
+        if crate::switch_profile::active() {
+            crate::switch_profile::clamp(&mut settings);
+        }
         settings.describe_for_crashes();
         settings
     }

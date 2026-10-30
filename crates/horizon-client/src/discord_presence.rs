@@ -420,7 +420,7 @@ fn sockets_with(var: impl Fn(&str) -> Option<std::ffi::OsString>, windows: bool)
     paths
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "horizon")))]
 fn open(path: &std::path::Path) -> io::Result<Box<dyn Pipe>> {
     let stream = std::os::unix::net::UnixStream::connect(path)?;
     // A Discord that stops answering costs this thread a few seconds, never the game.
@@ -578,7 +578,7 @@ mod tests {
     }
 
     /// A fake Discord: answers the handshake with READY, each command with its nonce, after a ping.
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "horizon")))]
     #[test]
     fn talks_to_discord_over_its_socket() {
         let dir = std::env::temp_dir().join(format!("horizon-discord-{}", std::process::id()));

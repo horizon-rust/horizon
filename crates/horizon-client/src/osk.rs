@@ -7,6 +7,21 @@
 use crate::gamepad::{Button, GlyphStyle};
 use crate::ui_theme::{self, Face, Ui, color};
 
+/// What a whole text from the system keyboard (the Switch's) does to the focused field: it
+/// replaces what was there (`clear` backspaces first, enough for any field), and `Enter` confirms,
+/// as for a chat message. Nothing for an empty text.
+pub fn replace_with(text: &str, clear: usize, enter: bool) -> Vec<Output> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![Output::Backspace; clear];
+    out.push(Output::Text(text.to_owned()));
+    if enter {
+        out.push(Output::Enter);
+    }
+    out
+}
+
 /// What a key press does to the focused field.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Output {
@@ -408,5 +423,23 @@ mod tests {
         assert_eq!(k.button(Button::West), Some(Output::Backspace));
         assert_eq!(k.button(Button::East), Some(Output::Close));
         assert_eq!(k.button(Button::Start), Some(Output::Enter));
+    }
+
+    #[test]
+    fn system_keyboard_text_replaces_the_field() {
+        assert!(replace_with("", 8, true).is_empty());
+        assert_eq!(
+            replace_with("hi", 2, true),
+            vec![
+                Output::Backspace,
+                Output::Backspace,
+                Output::Text("hi".into()),
+                Output::Enter
+            ]
+        );
+        assert_eq!(
+            replace_with("hi", 0, false),
+            vec![Output::Text("hi".into())]
+        );
     }
 }

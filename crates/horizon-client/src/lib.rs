@@ -175,6 +175,7 @@ pub mod stations;
 pub mod stopwatches;
 pub mod streaming;
 pub mod structure_blocks;
+pub mod switch_profile;
 pub mod tab_list;
 pub mod telemetry;
 pub mod testgen;

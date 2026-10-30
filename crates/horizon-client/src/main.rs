@@ -5,6 +5,9 @@ mod game;
 use horizon_client::{crash, logging};
 
 fn main() {
+    // The Switch's runtime (log.txt beside the NRO, thread shims, romfs, sockets) before anything else.
+    #[cfg(target_os = "horizon")]
+    horizon_switch::rt::init("horizon");
     horizon_client::telemetry::mark_start();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let game_args = args.iter().take_while(|a| *a != "--dedicated");

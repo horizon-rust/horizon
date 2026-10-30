@@ -21,12 +21,12 @@ use std::{
     thread,
 };
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "horizon")))]
 pub use std::os::unix::net::{UnixListener, UnixStream};
 
 /// A connection to the control endpoint, over either transport.
 pub enum Stream {
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "horizon")))]
     Unix(UnixStream),
     Tcp(TcpStream),
 }
@@ -34,7 +34,7 @@ pub enum Stream {
 impl Stream {
     pub fn try_clone(&self) -> io::Result<Self> {
         Ok(match self {
-            #[cfg(unix)]
+            #[cfg(all(unix, not(target_os = "horizon")))]
             Self::Unix(s) => Self::Unix(s.try_clone()?),
             Self::Tcp(s) => Self::Tcp(s.try_clone()?),
         })
@@ -42,7 +42,7 @@ impl Stream {
     /// A read timeout (None waits forever).
     pub fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> io::Result<()> {
         match self {
-            #[cfg(unix)]
+            #[cfg(all(unix, not(target_os = "horizon")))]
             Self::Unix(s) => s.set_read_timeout(timeout),
             Self::Tcp(s) => s.set_read_timeout(timeout),
         }
@@ -51,7 +51,7 @@ impl Stream {
 impl Read for Stream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self {
-            #[cfg(unix)]
+            #[cfg(all(unix, not(target_os = "horizon")))]
             Self::Unix(s) => s.read(buf),
             Self::Tcp(s) => s.read(buf),
         }
@@ -60,14 +60,14 @@ impl Read for Stream {
 impl Write for Stream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self {
-            #[cfg(unix)]
+            #[cfg(all(unix, not(target_os = "horizon")))]
             Self::Unix(s) => s.write(buf),
             Self::Tcp(s) => s.write(buf),
         }
     }
     fn flush(&mut self) -> io::Result<()> {
         match self {
-            #[cfg(unix)]
+            #[cfg(all(unix, not(target_os = "horizon")))]
             Self::Unix(s) => s.flush(),
             Self::Tcp(s) => s.flush(),
         }
@@ -76,7 +76,7 @@ impl Write for Stream {
 
 /// Whether the endpoint at `path` is a TCP port described by a JSON file.
 pub fn uses_tcp(path: &Path) -> bool {
-    !cfg!(unix) || path.extension().is_some_and(|e| e == "json")
+    !cfg!(all(unix, not(target_os = "horizon"))) || path.extension().is_some_and(|e| e == "json")
 }
 
 /// The TCP endpoint file: (port, token).
@@ -94,7 +94,7 @@ fn read_endpoint(path: &Path) -> io::Result<(u16, String)> {
 
 /// Connect to a running game's control endpoint (and authenticate over TCP).
 pub fn connect(path: &Path) -> io::Result<Stream> {
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "horizon")))]
     if !uses_tcp(path) {
         return UnixStream::connect(path).map(Stream::Unix);
     }
@@ -135,7 +135,7 @@ fn random_token() -> String {
 fn write_private(path: &Path, text: &str) -> io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "horizon")))]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     options.open(path)?.write_all(text.as_bytes())
 }
@@ -169,7 +169,7 @@ pub fn default_path() -> PathBuf {
     if let Some(path) = std::env::var_os("HORIZON_CONTROL") {
         return path.into();
     }
-    if !cfg!(unix) {
+    if !cfg!(all(unix, not(target_os = "horizon"))) {
         return std::env::temp_dir().join("horizon-control.json");
     }
     let dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
@@ -210,7 +210,7 @@ impl Server {
                 },
             )?;
         } else {
-            #[cfg(unix)]
+            #[cfg(all(unix, not(target_os = "horizon")))]
             {
                 let listener = UnixListener::bind(path)?;
                 spawn_listener(
@@ -332,9 +332,9 @@ impl Drop for Server {
         self.closed.store(true, Ordering::Relaxed);
         match self.port {
             Some(port) => drop(TcpStream::connect((Ipv4Addr::LOCALHOST, port))),
-            #[cfg(unix)]
+            #[cfg(all(unix, not(target_os = "horizon")))]
             None => drop(UnixStream::connect(&self.path)),
-            #[cfg(not(unix))]
+            #[cfg(not(all(unix, not(target_os = "horizon"))))]
             None => {}
         }
         let _ = std::fs::remove_file(&self.path);

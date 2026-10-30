@@ -4,6 +4,11 @@ fn main() {
     let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let ico = format!("{dir}/../../packaging/icons/horizon.ico");
     println!("cargo:rerun-if-changed={ico}");
+    // The Switch's NRO is position independent with relocations in the text segment (docs/switch.md).
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("horizon") {
+        println!("cargo:rustc-link-arg-bins=-z");
+        println!("cargo:rustc-link-arg-bins=notext");
+    }
     #[cfg(windows)]
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut resource = winresource::WindowsResource::new();

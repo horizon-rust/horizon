@@ -865,6 +865,12 @@ impl Game<'_> {
     /// Steam's on a Steam Deck (`steam://open/keyboard`, which types into
     /// the window like a real keyboard).
     fn pad_open_keyboard(&mut self) {
+        // The Switch: the system keyboard, unless Horizon's own is chosen.
+        #[cfg(target_os = "horizon")]
+        if self.settings.controller.keyboard != gamepad::TextKeyboard::Horizon {
+            self.pad_system_keyboard();
+            return;
+        }
         // Without xdg-open (macOS, Windows), Horizon's keyboard instead.
         if gamepad::steam_keyboard(self.settings.controller.keyboard)
             && std::process::Command::new("xdg-open")
@@ -878,6 +884,36 @@ impl Game<'_> {
             return;
         }
         self.pad.menu.osk = Some(Keyboard::default());
+    }
+
+    /// The Switch's system keyboard over the focused field: what it returns replaces the field's
+    /// text (a book page is appended to instead, so a page is not lost), and a chat message is
+    /// sent. It blocks while the applet is open.
+    #[cfg(target_os = "horizon")]
+    fn pad_system_keyboard(&mut self) {
+        let chat = self.screen == Screen::Chat && self.title.is_none();
+        let sign = self.sign_edit.is_some();
+        let book = self.book.is_some();
+        let (guide, max_len) = if chat {
+            ("Message", 256)
+        } else if sign {
+            ("Sign line", 15)
+        } else {
+            ("Text", 256)
+        };
+        let prompt = horizon_switch::swkbd::Prompt {
+            guide,
+            ok: "Done",
+            initial: "",
+            max_len,
+        };
+        let Some(text) = horizon_switch::swkbd::text_input(&prompt) else {
+            return;
+        };
+        let clear = if book { 0 } else { 256 };
+        for out in osk::replace_with(&text, clear, chat) {
+            self.pad_osk_output(out);
+        }
     }
 
     /// Chat or a sign opened by the pad in focus mode: the keyboard opens

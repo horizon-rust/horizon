@@ -28,6 +28,9 @@ pub(super) struct Pads {
     /// The real controllers and the DualSense's output.
     #[cfg(feature = "controllers")]
     devices: hardware::Devices,
+    /// The Switch's own controllers (libnx HID), opened on first use.
+    #[cfg(target_os = "horizon")]
+    hid: Option<horizon_switch::Hid>,
     /// The virtual pad of `horizon-ctl pad`.
     injected: PadState,
     /// The virtual pad was in use at the last poll.
@@ -58,7 +61,7 @@ mod hardware;
 
 /// A build without the `controllers` feature (the server build, which must not need libudev): no
 /// hardware pads, only `horizon-ctl pad`'s virtual one.
-#[cfg(not(feature = "controllers"))]
+#[cfg(all(not(feature = "controllers"), not(target_os = "horizon")))]
 mod hardware {
     use super::{super::Game, Pads};
     use horizon_client::gamepad::{PadState, Pulse, Rumble};
@@ -77,6 +80,85 @@ mod hardware {
         pub(super) fn pad_vibrate(&mut self, _: Rumble, _: Pulse) {}
         pub(super) fn pad_devices_status(&self) -> Value {
             json!({ "backend": false, "controllers": [] })
+        }
+    }
+}
+
+/// The Switch: libnx HID instead of gilrs, no DualSense output.
+#[cfg(target_os = "horizon")]
+mod hardware {
+    use super::{super::Game, Pads};
+    use horizon_client::gamepad::{Button, GlyphStyle, PadState, Pulse, Rumble};
+    use horizon_switch::{Hid, Key};
+    use serde_json::{Value, json};
+
+    /// Rest drift of a Switch stick (~0.08), cut before the game's own dead zones.
+    const DRIFT: f32 = 0.1;
+
+    fn button(key: Key) -> Button {
+        match key {
+            Key::South => Button::South,
+            Key::East => Button::East,
+            Key::West => Button::West,
+            Key::North => Button::North,
+            Key::LeftBumper => Button::LeftBumper,
+            Key::RightBumper => Button::RightBumper,
+            Key::LeftTrigger => Button::LeftTrigger,
+            Key::RightTrigger => Button::RightTrigger,
+            Key::Select => Button::Select,
+            Key::Start => Button::Start,
+            Key::LeftStick => Button::LeftStick,
+            Key::RightStick => Button::RightStick,
+            Key::DPadUp => Button::DPadUp,
+            Key::DPadDown => Button::DPadDown,
+            Key::DPadLeft => Button::DPadLeft,
+            Key::DPadRight => Button::DPadRight,
+        }
+    }
+
+    impl Pads {
+        pub(super) fn read(&mut self) -> PadState {
+            let hid = self.hid.get_or_insert_with(Hid::new);
+            let frame = hid.pad(DRIFT);
+            if let Some(styles) = hid.style_changed() {
+                log::info!("Controllers changed (HID style set {styles:#x})");
+            }
+            self.style = GlyphStyle::Nintendo;
+            let mut state = PadState::default();
+            for key in KEYS {
+                state.set(button(key), frame.is_held(key));
+            }
+            state.left = frame.left;
+            state.right = frame.right;
+            state.triggers = frame.triggers;
+            state
+        }
+    }
+
+    const KEYS: [Key; 14] = [
+        Key::South,
+        Key::East,
+        Key::West,
+        Key::North,
+        Key::LeftBumper,
+        Key::RightBumper,
+        Key::Select,
+        Key::Start,
+        Key::LeftStick,
+        Key::RightStick,
+        Key::DPadUp,
+        Key::DPadDown,
+        Key::DPadLeft,
+        Key::DPadRight,
+    ];
+
+    impl Game<'_> {
+        pub(super) fn pad_output_off(&mut self) {}
+        pub(super) fn pad_output_frame(&mut self) {}
+        pub(in crate::game) fn pad_close_output(&mut self) {}
+        pub(super) fn pad_vibrate(&mut self, _: Rumble, _: Pulse) {}
+        pub(super) fn pad_devices_status(&self) -> Value {
+            json!({ "backend": "libnx", "controllers": [] })
         }
     }
 }

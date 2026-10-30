@@ -309,7 +309,7 @@ impl Options {
         })
     }
     fn read() -> Result<Option<Self>> {
-        let sibling = std::env::current_exe()?
+        let sibling = horizon_core::exe::current_exe()?
             .parent()
             .ok_or("missing executable directory")?
             .join("resources");
@@ -10833,6 +10833,19 @@ impl ApplicationHandler for Game<'_> {
             if self.debug_key(key, action) {
                 return;
             }
+        }
+        // The Switch's touch screen arrives as a mouse. With the pointer captured (playing) there is
+        // nothing to point at, and a stray touch would attack, place or scroll the hotbar: ignore it.
+        #[cfg(target_os = "horizon")]
+        if self.captured
+            && matches!(
+                event,
+                WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::CursorMoved { .. }
+            )
+        {
+            return;
         }
         if matches!(
             event,
