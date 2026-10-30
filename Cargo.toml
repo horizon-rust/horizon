@@ -28,6 +28,8 @@ members = [
     "crates/horizon-mods/tests/guest",
     "crates/horizon-mods/tests/ui_guest",
     "crates/cargo-horizon-mod",
+    "crates/native-gen",
+    "crates/native-test",
     "crates/horizon-port-pack",
     "crates/horizon-shaders",
     "crates/horizon-shader-api",

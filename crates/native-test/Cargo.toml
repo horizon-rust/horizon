@@ -1,0 +1,14 @@
+[package]
+name = "native-test"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Spike step 0: runs a mod's TOML test scripts against the mod compiled into the process"
+
+[dependencies]
+horizon-mods = { path = "../horizon-mods", features = ["runtime"] }
+cells = { path = "../horizon-mod-sdk/examples/cells" }
+
+[lints]
+workspace = true

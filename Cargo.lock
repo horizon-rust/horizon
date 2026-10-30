@@ -1569,6 +1569,7 @@ dependencies = [
 name = "horizon-mods"
 version = "0.1.0"
 dependencies = [
+ "horizon-mod-sdk",
  "horizon-shader-api",
  "log",
  "minisign-verify",
@@ -2311,6 +2312,21 @@ dependencies = [
  "indexmap",
  "rustc-hash 1.1.0",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "native-gen"
+version = "0.1.0"
+dependencies = [
+ "wit-parser",
+]
+
+[[package]]
+name = "native-test"
+version = "0.1.0"
+dependencies = [
+ "cells",
+ "horizon-mods",
 ]
 
 [[package]]

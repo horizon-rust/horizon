@@ -33,6 +33,7 @@
 //! panel's coordinates; the player's clicks come back as
 //! [`Mod::gui_clicked`], [`Mod::gui_picked`] and [`Mod::gui_closed`].
 
+#[cfg(feature = "wit")]
 wit_bindgen::generate!({
     path: "wit",
     world: "horizon-ui-mod",
@@ -40,11 +41,23 @@ wit_bindgen::generate!({
     export_macro_name: "__export_horizon_mod",
     default_bindings_module: "horizon_mod_sdk",
 });
+/// The native path (spike step 0): the same types, traits and functions,
+/// generated into `src/native.rs` from the same `horizon.wit` — a mod
+/// compiled into the process calls the host directly.
+#[cfg(feature = "native")]
+pub mod native;
+#[cfg(feature = "native")]
+pub use native::{exports, horizon};
 
+#[cfg(any(feature = "wit", feature = "native"))]
 pub use exports::horizon::mods::events::{Guest as __Guest, Registration};
+#[cfg(any(feature = "wit", feature = "native"))]
 pub use exports::horizon::mods::gui_screens_events::Guest as __GuiScreensGuest;
+#[cfg(any(feature = "wit", feature = "native"))]
 pub use exports::horizon::mods::network_client_events::Guest as __NetClientGuest;
+#[cfg(any(feature = "wit", feature = "native"))]
 pub use exports::horizon::mods::ui_events::Guest as __UiEventsGuest;
+#[cfg(any(feature = "wit", feature = "native"))]
 pub use horizon::mods::{
     browser, chat, command, game, gui_screens, hud, input, log, network, recipes, render, storage,
     ui,
@@ -133,11 +146,13 @@ pub fn warn(message: &str) {
 }
 
 /// Exports a [`Mod`] as the component's `events` interface. The state lives
-/// in a thread local: a mod instance is single-threaded.
+/// in a thread local: a mod instance is single-threaded. On a native build
+/// (feature `native`) it instead fills the vtable `__native_mod()` returns.
 #[macro_export]
 macro_rules! export_mod {
     ($t:ty) => {
-        const _: () = {
+        mod __native_export {
+            use super::*;
             use ::std::cell::RefCell;
             ::std::thread_local! {
                 static STATE: RefCell<Option<$t>> = const { RefCell::new(None) };
@@ -201,15 +216,59 @@ macro_rules! export_mod {
             // Only WebAssembly has the component's exports: a host build (cargo test or
             // clippy on the workspace) checks the mod without them, which macOS
             // couldn't link (its exported-symbols list cuts names at the `#`).
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(all(target_arch = "wasm32", feature = "wit"))]
             $crate::__export_horizon_mod!(Export);
-            #[cfg(not(target_arch = "wasm32"))]
-            let _ = (
-                <Export as $crate::__Guest>::init,
-                <Export as $crate::__UiEventsGuest>::select,
-                <Export as $crate::__GuiScreensGuest>::clicked,
-            );
-        };
+            #[cfg(not(all(target_arch = "wasm32", feature = "wit")))]
+            const _: () = {
+                let _ = (
+                    <Export as $crate::__Guest>::init,
+                    <Export as $crate::__UiEventsGuest>::select,
+                    <Export as $crate::__GuiScreensGuest>::clicked,
+                );
+            };
+            /// The mod's exports as function pointers (spike step 0).
+            #[cfg(not(feature = "wit"))]
+            pub fn __native_mod() -> $crate::native::NativeVtable {
+                use $crate::native as n;
+                n::NativeVtable {
+                    server_events: None,
+                    block_entity_events: None,
+                    block_use_events: None,
+                    menu_events: None,
+                    multiblock_events: None,
+                    item_events: None,
+                    network_events: None,
+                    entity_events: None,
+                    redstone_events: None,
+                    game_events: None,
+                    rich_events: None,
+                    config_events: None,
+                    inter_mod_events: None,
+                    events: Some(n::EventsVt {
+                        init: <Export as $crate::__Guest>::init,
+                        tick: <Export as $crate::__Guest>::tick,
+                        frame: <Export as $crate::__Guest>::frame,
+                        command: <Export as $crate::__Guest>::command,
+                        chat: <Export as $crate::__Guest>::chat,
+                    }),
+                    ui_events: Some(n::UiEventsVt {
+                        select: <Export as $crate::__UiEventsGuest>::select,
+                        closed: <Export as $crate::__UiEventsGuest>::closed,
+                        settings_opened: <Export as $crate::__UiEventsGuest>::settings_opened,
+                    }),
+                    gui_screens_events: Some(n::GuiScreensEventsVt {
+                        clicked: <Export as $crate::__GuiScreensGuest>::clicked,
+                        picked: <Export as $crate::__GuiScreensGuest>::picked,
+                        closed: <Export as $crate::__GuiScreensGuest>::closed,
+                    }),
+                    network_client_events: Some(n::NetworkClientEventsVt {
+                        server_sent: <Export as $crate::__NetClientGuest>::server_sent,
+                    }),
+                }
+            }
+        }
+        #[cfg(not(feature = "wit"))]
+        pub use __native_export::__native_mod;
     };
 }
 
@@ -218,6 +277,7 @@ macro_rules! export_mod {
 /// [`export_server_mod!`]. It runs where the world is simulated, and reads
 /// and messages the players with capability `players`.
 pub mod server {
+    #[cfg(feature = "wit")]
     wit_bindgen::generate!({
         path: "wit",
         world: "horizon-block-mod",
@@ -230,6 +290,12 @@ pub mod server {
             "horizon:mods/network@0.1.0": crate::network,
         },
     });
+    // The native path: one set of types for both worlds, so `horizon` here
+    // points at the same modules the client side re-exports.
+    #[cfg(feature = "native")]
+    pub use crate::native::horizon;
+    #[cfg(feature = "native")]
+    pub use crate::native::exports;
 
     pub use crate::network;
     pub use exports::horizon::mods::block_entity_events::{BlockEntity, Guest as __BlockGuest};
@@ -995,10 +1061,13 @@ pub mod server {
 
 /// Exports a [`ServerMod`](server::ServerMod) as the component's
 /// `server-events` interface, as [`export_mod!`] does for a client mod.
+/// On a native build (feature `native`) it instead fills the vtable
+/// `__native_mod()` returns, for a mod compiled into the process.
 #[macro_export]
 macro_rules! export_server_mod {
     ($t:ty) => {
-        const _: () = {
+        mod __native_export {
+            use super::*;
             use ::std::cell::RefCell;
             use $crate::server::{Args, ArgumentValue, BlockPos, Player, Registration, ServerMod};
             ::std::thread_local! {
@@ -1228,10 +1297,97 @@ macro_rules! export_server_mod {
                     out
                 }
             }
-            #[cfg(target_arch = "wasm32")]
+            #[cfg(all(target_arch = "wasm32", feature = "wit"))]
             $crate::server::__export_horizon_server_mod!(Export);
-            #[cfg(not(target_arch = "wasm32"))]
-            let _ = <Export as $crate::server::__Guest>::init;
-        };
+            #[cfg(not(all(target_arch = "wasm32", feature = "wit")))]
+            const _: () = {
+                let _ = <Export as $crate::server::__Guest>::init;
+            };
+            /// The mod's exports as function pointers (spike step 0): the
+            /// game calls these directly, with the host in a thread-local.
+            #[cfg(not(feature = "wit"))]
+            pub fn __native_mod() -> $crate::native::NativeVtable {
+                use $crate::native as n;
+                use $crate::server as s;
+                n::NativeVtable {
+                    events: None,
+                    ui_events: None,
+                    gui_screens_events: None,
+                    network_client_events: None,
+                    server_events: Some(n::ServerEventsVt {
+                        init: <Export as s::__Guest>::init,
+                        tick: <Export as s::__Guest>::tick,
+                        player_joined: <Export as s::__Guest>::player_joined,
+                        player_left: <Export as s::__Guest>::player_left,
+                        chat: <Export as s::__Guest>::chat,
+                        command: <Export as s::__Guest>::command,
+                        block_broken: <Export as s::__Guest>::block_broken,
+                        block_placed: <Export as s::__Guest>::block_placed,
+                    }),
+                    block_entity_events: Some(n::BlockEntityEventsVt {
+                        blocks: <Export as s::__BlockGuest>::blocks,
+                        tick: <Export as s::__BlockGuest>::tick,
+                        removed: <Export as s::__BlockGuest>::removed,
+                    }),
+                    block_use_events: Some(n::BlockUseEventsVt {
+                        uses: <Export as s::__UseGuest>::uses,
+                        used: <Export as s::__UseGuest>::used,
+                    }),
+                    menu_events: Some(n::MenuEventsVt {
+                        clicked: <Export as s::__MenuGuest>::clicked,
+                        closed: <Export as s::__MenuGuest>::closed,
+                    }),
+                    multiblock_events: Some(n::MultiblockEventsVt {
+                        formed: <Export as s::__MultiblockGuest>::formed,
+                        broken: <Export as s::__MultiblockGuest>::broken,
+                    }),
+                    item_events: Some(n::ItemEventsVt {
+                        items: <Export as s::__ItemGuest>::items,
+                        used: <Export as s::__ItemGuest>::used,
+                        used_on_block: <Export as s::__ItemGuest>::used_on_block,
+                        inventory_tick: <Export as s::__ItemGuest>::inventory_tick,
+                        hurt_entity: <Export as s::__ItemGuest>::hurt_entity,
+                        hurt: <Export as s::__ItemGuest>::hurt,
+                    }),
+                    network_events: Some(n::NetworkEventsVt {
+                        client_sent: <Export as s::__NetGuest>::client_sent,
+                    }),
+                    entity_events: Some(n::EntityEventsVt {
+                        tick: <Export as s::__EntityGuest>::tick,
+                        hurt: <Export as s::__EntityGuest>::hurt,
+                        died: <Export as s::__EntityGuest>::died,
+                        removed: <Export as s::__EntityGuest>::removed,
+                        used: <Export as s::__EntityGuest>::used,
+                    }),
+                    redstone_events: Some(n::RedstoneEventsVt {
+                        input_changed: <Export as s::__RedstoneGuest>::input_changed,
+                    }),
+                    game_events: Some(n::GameEventsVt {
+                        player_hurt: <Export as s::__GameEventsGuest>::player_hurt,
+                        player_died: <Export as s::__GameEventsGuest>::player_died,
+                        player_respawned: <Export as s::__GameEventsGuest>::player_respawned,
+                        dimension_changed: <Export as s::__GameEventsGuest>::dimension_changed,
+                        game_mode_changed: <Export as s::__GameEventsGuest>::game_mode_changed,
+                        mob_killed: <Export as s::__GameEventsGuest>::mob_killed,
+                        weather_changed: <Export as s::__GameEventsGuest>::weather_changed,
+                    }),
+                    rich_events: Some(n::RichEventsVt {
+                        hurt_player: <Export as s::__RichEventsGuest>::hurt_player,
+                        breaking_block: <Export as s::__RichEventsGuest>::breaking_block,
+                        picking_up_item: <Export as s::__RichEventsGuest>::picking_up_item,
+                        dropped_items: <Export as s::__RichEventsGuest>::dropped_items,
+                        mobs_spawned: <Export as s::__RichEventsGuest>::mobs_spawned,
+                    }),
+                    config_events: Some(n::ConfigEventsVt {
+                        changed: <Export as s::__ConfigGuest>::changed,
+                    }),
+                    inter_mod_events: Some(n::InterModEventsVt {
+                        message: <Export as s::__InterModGuest>::message,
+                    }),
+                }
+            }
+        }
+        #[cfg(not(feature = "wit"))]
+        pub use __native_export::__native_mod;
     };
 }

@@ -11,6 +11,7 @@ use crate::{
     BlockPos, Clock, Corner, GameMode, Mods, Output, Panel, Player, Runs, ServerPlayer, Snapshot,
     Status,
 };
+use horizon_mod_sdk::native::NativeVtable;
 use serde::Deserialize;
 use std::{
     path::{Path, PathBuf},
@@ -22,6 +23,9 @@ pub struct TestGame {
     mods: Mods,
     dir: PathBuf,
     hmod: PathBuf,
+    /// The mod compiled into the process (spike step 0), if that is how it
+    /// runs: its folder copy and its export vtable, for a `reload`.
+    native: Option<(PathBuf, NativeVtable)>,
     /// What the mod reads with `game-read`; ticks move the clock as the game does.
     pub player: Option<Player>,
     pub clock: Option<Clock>,
@@ -253,6 +257,7 @@ impl TestGame {
         let mut game = TestGame {
             mods: Mods::default(),
             hmod: copy.clone(),
+            native: None,
             dir,
             player: Some(default_player()),
             clock: Some(Clock {
@@ -278,6 +283,59 @@ impl TestGame {
         copy_mod(hmod, &copy)?;
         game.start()?;
         Ok(game)
+    }
+
+    /// Starts the mod whose folder is `dir` with its code compiled into
+    /// the process (spike step 0): the same sandbox as `load`, the exports
+    /// from `vt` (the mod's `__native_mod()`), not a `.hmod`.
+    pub fn load_native(dir: &Path, vt: NativeVtable) -> Result<TestGame, String> {
+        let scratch = scratch_dir();
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
+        let copy = scratch.join(dir.file_name().unwrap_or("mod".as_ref()));
+        copy_tree(dir, &copy)?;
+        let mut game = TestGame {
+            mods: Mods::default(),
+            hmod: copy.clone(),
+            native: Some((copy.clone(), vt)),
+            dir: scratch,
+            player: Some(default_player()),
+            clock: Some(Clock {
+                game_time: 0,
+                day_time: 0,
+            }),
+            players: Vec::new(),
+            names: Vec::new(),
+            tick: 0,
+            world: Default::default(),
+            block_entities: Default::default(),
+            stacks: Default::default(),
+            entities: Vec::new(),
+            displays: Vec::new(),
+            entity_takes_use: Default::default(),
+            entity_next: 1000,
+            entity_died: Vec::new(),
+            entity_removed: Vec::new(),
+            entity_lent: false,
+            redstone_in: Default::default(),
+            picked: Vec::new(),
+        };
+        game.start_native();
+        match &game.mods.entries()[0].status {
+            Status::Failed(reason) => Err(format!("the mod didn't start: {reason}")),
+            _ if !game.mods.is_running() => Err("the mod has no code to run".into()),
+            _ => Ok(game),
+        }
+    }
+
+    /// Starts (or restarts) the native mod this game holds.
+    fn start_native(&mut self) {
+        let Some((dir, vt)) = &self.native else {
+            return;
+        };
+        let recipes = machine_recipes_of(dir);
+        let multiblocks = multiblocks_of(dir);
+        self.mods = Mods::load_native(Runs::Both, dir, *vt, recipes, multiblocks);
     }
 
     fn start(&mut self) -> Result<(), String> {
@@ -315,6 +373,7 @@ impl TestGame {
         let mut game = TestGame {
             mods: Mods::default(),
             hmod: copy_a.clone(),
+            native: None,
             dir,
             player: Some(default_player()),
             clock: Some(Clock {
@@ -357,6 +416,14 @@ impl TestGame {
     /// memory starts over, its `storage` stays.
     pub fn reload(&mut self) -> Result<(), String> {
         self.mods = Mods::default();
+        if self.native.is_some() {
+            self.start_native();
+            return match &self.mods.entries()[0].status {
+                Status::Failed(reason) => Err(format!("the mod didn't start: {reason}")),
+                _ if !self.mods.is_running() => Err("the mod has no code to run".into()),
+                _ => Ok(()),
+            };
+        }
         self.start()
     }
 
@@ -1271,6 +1338,22 @@ fn multiblocks_of(hmod: &Path) -> Option<std::sync::Arc<crate::multiblocks::Temp
     }
     let files = crate::multiblocks::files_in_package(hmod, &m.id);
     Some(std::sync::Arc::new(crate::multiblocks::build(&files)))
+}
+
+/// Copies a mod's folder whole (its `data/` and `assets/` trees too), for
+/// the native loader's scratch copy.
+fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(to).map_err(|e| format!("{}: {e}", from.display()))?;
+    for entry in std::fs::read_dir(from).map_err(|e| format!("{}: {e}", from.display()))? {
+        let entry = entry.map_err(|e| format!("{}: {e}", from.display()))?;
+        let to_child = to.join(entry.file_name());
+        if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            copy_tree(&entry.path(), &to_child)?;
+        } else {
+            std::fs::copy(entry.path(), &to_child).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 /// A `.hmod` file, or a mod folder (`horizon-mod.toml` + `mod.wasm`).

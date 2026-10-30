@@ -7,10 +7,10 @@ publish = false
 description = "Example Horizon server mod with block entities: lodestones become energy cells that charge and share their energy"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]
 
 [dependencies]
-horizon-mod-sdk = { path = "../.." }
+horizon-mod-sdk = { path = "../..", features = ["native"] }
 
 [lints]
 workspace = true

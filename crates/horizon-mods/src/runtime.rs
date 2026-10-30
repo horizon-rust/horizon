@@ -1,7 +1,9 @@
-//! Loading and calling mods with wasmtime's component model.
+//! Loading and calling mods compiled into the process (spike step 0): the
+//! SDK's native bindings replace wasmtime's `bindgen!`; a mod's exports are
+//! a vtable of function pointers and its imports call a thread-local host.
 use crate::manifest::{Manifest, Package, Side};
-use server_bindings::{
-    HorizonServerMod,
+use horizon_mod_sdk::native::{
+    self, NativeError, NativeStore, NativeVtable,
     exports::horizon::mods::server_events::Registration as ServerRegistration,
     horizon::mods::{players, world as mod_world},
 };
@@ -10,107 +12,40 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime},
 };
-use wasmtime::{
-    Config, Engine, Store, StoreLimits, StoreLimitsBuilder, Trap,
-    component::{Component, HasSelf, Linker},
-};
 
-mod bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "horizon-mod",
-    });
-}
-/// The server mods' world: `log` and `storage` are the client world's.
-mod server_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "horizon-server-mod",
-        additional_derives: [PartialEq],
-        with: {
-            "horizon:mods/log": super::bindings::horizon::mods::log,
-            "horizon:mods/storage": super::bindings::horizon::mods::storage,
-        },
-    });
-}
-/// Capability `ui`'s world beyond `horizon-mod` (docs/mods.md): a second
-/// world, so mods built before it (no `ui-events` export) still instantiate
-/// as `horizon-mod` and simply hear nothing of their widgets.
-mod ui_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "ui-host",
-    });
-}
-/// Capability `gui-screens`' world: its own, so client mods built before it
-/// (no `gui-screens-events` export) still load and hear nothing of their
-/// free screens.
-mod gui_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "gui-screens-host",
-    });
-}
-pub use bindings::horizon::mods::{
+pub use native::horizon::mods::{
     game::{Clock, Hit, Player},
     hud::{Corner, Line},
 };
-use bindings::{
-    HorizonMod,
-    exports::horizon::mods::events::Registration,
-    horizon::mods::{chat, command, game, hud, log as mod_log, storage},
+use native::horizon::mods::{
+    chat, command, game, gui_screens, hud, log as mod_log, machine_recipes, saved_data, storage,
 };
+use native::horizon::mods::input;
+use native::horizon::mods::render;
+use native::horizon::mods::recipes;
+use native::horizon::mods::browser;
+use native::horizon::mods::multiblocks;
+use native::horizon::mods::ui;
+use native::{HorizonMod, HorizonServerMod};
+pub use native::exports::horizon::mods::events::Registration;
 /// The free screen a `gui-screens.open` pushed (WIT `interface
 /// gui-screens`), for the game to draw as the mod laid it out.
-pub use gui_bindings::horizon::mods::gui_screens::{
+pub use native::horizon::mods::gui_screens::{
     Background as GuiBackground, ButtonWidget as GuiButton, FreeScreen, ImageWidget as GuiImage,
     ItemWidget as GuiItem, ListWidget as GuiList, Point as GuiPoint, Rect as GuiRect,
     TextWidget as GuiText, Widget as GuiWidget,
 };
-use gui_bindings::{GuiScreensHost, horizon::mods::gui_screens};
-pub use server_bindings::{
-    exports::horizon::mods::server_events::{
-        Argument, ArgumentKind, ArgumentValue, BlockPos, ServerCommand,
-    },
-    horizon::mods::players::{GameMode, Player as ServerPlayer},
-    horizon::mods::world::BlockChange,
+use native::GuiScreensHost;
+pub use native::horizon::mods::players::{GameMode, Player as ServerPlayer};
+pub use native::horizon::mods::world::BlockChange;
+pub use native::exports::horizon::mods::server_events::{
+    Argument, ArgumentKind, ArgumentValue, BlockPos, ServerCommand,
 };
-type ClientEvents = bindings::exports::horizon::mods::events::Guest;
-type ServerEvents = server_bindings::exports::horizon::mods::server_events::Guest;
-/// The widget model a `ui` screen or settings page shows (WIT `interface
-/// ui`), for the game to draw with its menus' own widgets.
-pub use ui_bindings::horizon::mods::ui::{
-    ButtonWidget, ItemWidget, ListWidget, Screen as UiScreen, TextWidget, Widget as UiWidget,
-};
-use ui_bindings::{UiHost, horizon::mods::ui};
-/// Capability `block-entities`' world beyond `horizon-server-mod`: a second
-/// world, so server mods built before it (no `block-entity-events` export)
-/// still instantiate and simply keep no block entities.
-mod block_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "block-entity-host",
-    });
-}
-pub use block_bindings::exports::horizon::mods::block_entity_events::BlockEntity;
-use block_bindings::{
-    BlockEntityHost,
-    horizon::mods::{block_entities, energy, fluids, items as mod_items},
-};
-/// Capability `menus`' world: its own, so server mods built before it (no
-/// `menu-events` export) still load. `players` is the server world's.
-mod menu_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "menu-host",
-        additional_derives: [PartialEq],
-        with: {
-            "horizon:mods/players": super::server_bindings::horizon::mods::players,
-        },
-    });
-}
-pub use menu_bindings::horizon::mods::menus::{MenuItem, MenuSlot, SlotMode};
-
+pub use native::horizon::mods::block_entity_events::BlockEntity;
+pub use native::horizon::mods::block_use_events::UsedBlock;
+use native::horizon::mods::{block_entities, energy, fluids, items as mod_items};
+use native::BlockEntityHost;
+pub use native::horizon::mods::menus::{MenuItem, MenuSlot, SlotMode};
 /// The inventory a menu's bound slots show (`menus.open-inventory`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MenuInventory {
@@ -118,86 +53,24 @@ pub struct MenuInventory {
     pub pos: [i32; 3],
     pub slots: Vec<MenuSlot>,
 }
-/// `block-use-events`' world: its own, so server mods built before it
-/// still load. `players` is the server world's.
-mod use_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "use-host",
-        with: {
-            "horizon:mods/players": super::server_bindings::horizon::mods::players,
-        },
-    });
-}
-use menu_bindings::{MenuHost, horizon::mods::menus};
-use use_bindings::{UseHost, exports::horizon::mods::block_use_events::UsedBlock};
-/// Capability `entities`' world: its own, so server mods built before it (no
-/// `entity-events` export) still load. `players` is the server world's.
-mod entity_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "entity-host",
-        additional_derives: [PartialEq],
-        with: {
-            "horizon:mods/players": super::server_bindings::horizon::mods::players,
-        },
-    });
-}
-/// Capability `config`'s world: its own, so server mods built before it (no
-/// `config-events` export) still load.
-mod config_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "config-host",
-    });
-}
-use config_bindings::{ConfigHost, horizon::mods::config as mod_config};
+use native::horizon::mods::menus;
+use native::{MenuHost, UseHost};
+/// A mob's options at spawn, as the mod gave them.
+pub use native::horizon::mods::entities::SpawnOptions as EntitySpawn;
+use native::horizon::mods::entities;
+use native::{EntityHost, ConfigHost};
+use native::horizon::mods::config as mod_config;
 /// How many ticks pass between two looks at the config files.
 pub const CONFIG_POLL: u64 = 100;
 /// Config files one hook call may write.
 const CONFIG_WRITES_PER_CALL: u32 = 16;
-/// Capability `game-events`' world: its own, so server mods built before it
-/// (no `game-events` export) still load. `players` is the server world's.
-mod game_event_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "game-events-host",
-        with: {
-            "horizon:mods/players": super::server_bindings::horizon::mods::players,
-        },
-    });
-}
-use game_event_bindings::GameEventsHost;
-/// Capability `rich-events`' world: its own, so server mods built before it
-/// (no `rich-events` export) still load. `players` is the server world's.
-mod rich_event_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "rich-events-host",
-        additional_derives: [PartialEq],
-        with: {
-            "horizon:mods/players": super::server_bindings::horizon::mods::players,
-        },
-    });
-}
-use rich_event_bindings::{
-    RichEventsHost,
-    exports::horizon::mods::rich_events::{GroundStack, MobSpawn},
-};
-/// Capability `redstone`'s world: its own, so server mods built before it
-/// (no `redstone-events` export) still load.
-mod redstone_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "redstone-host",
-    });
-}
-use redstone_bindings::{RedstoneHost, horizon::mods::redstone};
+use native::GameEventsHost;
+pub use native::exports::horizon::mods::rich_events::{GroundStack, MobSpawn};
+use native::RichEventsHost;
+use native::horizon::mods::redstone;
+use native::RedstoneHost;
 /// Block entities one `input-changed` pass tells a mod of.
 const REDSTONE_PER_TICK: usize = 256;
-/// A mob's options at spawn, as the mod gave them.
-pub use entity_bindings::horizon::mods::entities::SpawnOptions as EntitySpawn;
-use entity_bindings::{EntityHost, horizon::mods::entities};
 /// Mobs one mod may have, and spawn in one call.
 pub const MAX_ENTITIES: usize = 1024;
 const SPAWNS_PER_CALL: u32 = 32;
@@ -207,11 +80,11 @@ const ENTITIES_PER_TICK: usize = 512;
 /// the ask's damage source and the spawn notes (types only, nothing saved).
 use crate::rich_events::{DamageSource, MobSpawnNote};
 impl DamageSource {
-    fn to_wit(&self) -> rich_event_bindings::exports::horizon::mods::rich_events::DamageSource {
-        rich_event_bindings::exports::horizon::mods::rich_events::DamageSource {
+    fn to_wit(&self) -> native::horizon::mods::rich_events::DamageSource {
+        native::horizon::mods::rich_events::DamageSource {
             kind: self.kind.clone(),
             cause: self.cause.as_ref().map(|c| {
-                rich_event_bindings::exports::horizon::mods::rich_events::EntityWho {
+                native::horizon::mods::rich_events::EntityWho {
                     id: c.id,
                     kind: c.kind.clone(),
                     health: c.health,
@@ -281,40 +154,9 @@ pub struct EntityState {
 }
 /// The state lent for the current calls, shared by every mod's store.
 type EntityStateSlot = Arc<Mutex<Option<EntityState>>>;
-/// Capability `network`'s worlds, one for each side: their own, so mods built
-/// before it (no `network-events` / `network-client-events` export) still
-/// load. The server's takes `players` from the server world, and the
-/// client's the interface `network` from the server's.
-mod net_server_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "net-server-host",
-        with: {
-            "horizon:mods/players": super::server_bindings::horizon::mods::players,
-        },
-    });
-}
-mod net_client_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "net-client-host",
-        with: {
-            "horizon:mods/network": super::net_server_bindings::horizon::mods::network,
-        },
-    });
-}
-/// Capability `inter-mod`'s world: its own, so server mods built before it
-/// (no `inter-mod-events` export) still load. The bus it talks over is
-/// [`crate::inter_mod::InterMod`], lent to every mod's store as one slot.
-mod inter_mod_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "inter-mod-host",
-    });
-}
-use inter_mod_bindings::{InterModHost, horizon::mods::inter_mod};
-use net_client_bindings::NetClientHost;
-use net_server_bindings::{NetServerHost, horizon::mods::network};
+/// Capability `network`'s messages, one per side.
+use native::{NetClientHost, NetServerHost};
+use native::horizon::mods::network;
 /// Messages one hook call may send, and their bytes.
 const NET_MESSAGES_PER_CALL: u32 = 64;
 const NET_BYTES_PER_CALL: usize = 256 * 1024;
@@ -323,45 +165,22 @@ const NET_BYTES_PER_CALL: usize = 256 * 1024;
 /// cloned into each `State`.
 pub type InterModSlot = Arc<Mutex<crate::inter_mod::InterMod>>;
 use crate::inter_mod::{Delivery, Message, Target};
-/// Capability `item-hooks`' world: its own, so server mods built before it
-/// (no `item-events` export) still load. `players` is the server world's.
-mod item_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "item-host",
-        with: {
-            "horizon:mods/players": super::server_bindings::horizon::mods::players,
-        },
-    });
-}
+use native::horizon::mods::inter_mod;
+use native::InterModHost;
 /// The struck entity as `hurt-entity` tells of it.
-pub use item_bindings::exports::horizon::mods::item_events::Entity as ItemEntity;
+pub use native::exports::horizon::mods::item_events::Entity as ItemEntity;
 /// One player's claimed stack in an `inventory-tick` list.
-pub use item_bindings::exports::horizon::mods::item_events::PlayerStack;
+pub use native::exports::horizon::mods::item_events::PlayerStack;
 /// The block under the crosshair in `used-on-block`.
-pub use item_bindings::exports::horizon::mods::item_events::UsedBlock as ItemUsedBlock;
+pub use native::exports::horizon::mods::item_events::UsedBlock as ItemUsedBlock;
 /// A stack as capability `item-hooks` hands it to a mod: the item, its count
 /// and the mod's own bytes on it.
-pub use item_bindings::horizon::mods::item_hooks::HeldStack;
-use item_bindings::{ItemHost, horizon::mods::item_hooks};
-/// Capability `displays`' imports.
-mod display_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "display-host",
-        additional_derives: [PartialEq],
-    });
-}
-use display_bindings::horizon::mods::displays;
-pub use display_bindings::horizon::mods::displays::{Shape as DisplayShape, Transform};
-/// Capability `effects`' imports.
-mod effects_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "effects-host",
-    });
-}
-use effects_bindings::horizon::mods::effects;
+pub use native::horizon::mods::item_hooks::HeldStack;
+use native::horizon::mods::item_hooks;
+use native::ItemHost;
+pub use native::horizon::mods::displays;
+pub use native::horizon::mods::displays::{Shape as DisplayShape, Transform};
+pub use native::horizon::mods::effects;
 /// Particles and sounds one hook call may send.
 const EFFECTS_PER_CALL: u32 = 128;
 /// Particles one `spawn-particle` sends.
@@ -395,7 +214,7 @@ const CLAIMED_BLOCKS: usize = 256;
 /// Items a mod may claim (`item-events.items`).
 const CLAIMED_ITEMS: usize = 256;
 /// Bytes of a mod's own on one stack (`item-hooks.set-data`): a component
-/// on the stack, saved with it.
+/// on the stack, saved with it wherever it goes.
 const STACK_DATA: usize = 4096;
 /// Bytes of components an item display's stack may carry
 /// (`displays.show-item`): its stack is a look, not storage.
@@ -406,78 +225,37 @@ const SET_DATA_PER_CALL: u32 = 32;
 /// Stacks one `inventory-tick` call gets; a longer list comes in turns
 /// (the game walks it round-robin).
 pub const TICK_ITEMS: usize = 512;
-/// Capability `render`'s imports (docs/mods.md): the game draws the shapes.
-mod render_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "render-host",
-    });
-}
-use render_bindings::horizon::mods::input;
-/// Capability `input`'s records (WIT `interface input`).
-pub use render_bindings::horizon::mods::input::{Event as InputEvent, HeldItem, ItemUse};
+/// Capability `render`'s records: the game draws the shapes.
+pub use native::horizon::mods::input::{Event as InputEvent, HeldItem, ItemUse};
 /// What capability `render` asks the game to draw (WIT `interface render`).
-pub use render_bindings::horizon::mods::render::{
+pub use native::horizon::mods::render::{
     Corner as RenderCorner, FarTerrain as ModFarTerrain, FillShape, FrameRate, ItemShape,
     Minimap as ModMinimap, Point as RenderPoint, QuadShape, Rect as RenderRect, Shape, SpriteShape,
     TextShape, Zoom as ModZoom,
 };
-use render_bindings::{RenderHost, horizon::mods::render};
-/// Capability `recipes`'s imports (docs/mods.md): the game's recipes and items.
-mod recipes_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "recipes-host",
-    });
-}
-/// Capability `ui`'s recipe viewer panel (WIT `interface browser`).
-pub use recipes_bindings::horizon::mods::browser::{
+/// What capability `recipes` reads (WIT `interface recipes`).
+pub use native::horizon::mods::browser::{
     Click as BrowserClick, Event as BrowserEvent, ItemKey as BrowserItemKey,
     Layout as BrowserLayout, RecipeView as BrowserRecipe, SlotClick as BrowserSlotClick,
     Stack as BrowserStack,
 };
-/// What capability `recipes` reads (WIT `interface recipes`).
-pub use recipes_bindings::horizon::mods::recipes::{
+pub use native::horizon::mods::recipes::{
     Item as RecipeItem, Kind as RecipeKind, Recipe, Stack as RecipeStack,
 };
-use recipes_bindings::{RecipesHost, horizon::mods::browser, horizon::mods::recipes};
-/// Capability `machine-recipes`' imports (docs/mods.md): the recipes of the
-/// mods' own machines, a table built before they start.
-mod machine_recipe_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "machine-recipes-host",
-        additional_derives: [PartialEq],
-    });
-}
-use machine_recipe_bindings::horizon::mods::machine_recipes;
-/// Capability `multiblocks`' imports (docs/mods.md): the mods' own
-/// structure templates, a table built before they start.
-mod multiblock_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "multiblock-host",
-        additional_derives: [PartialEq],
-    });
-}
-pub use multiblock_bindings::exports::horizon::mods::multiblock_events::Multiblock;
-pub use multiblock_bindings::horizon::mods::multiblocks::{Cell, Mismatch, Structure};
-use multiblock_bindings::{MultiblockHost, horizon::mods::multiblocks};
-/// Capability `saved-data`' imports (docs/mods.md): bytes each server mod
-/// keeps on the world itself, saved with it.
-mod saved_data_bindings {
-    wasmtime::component::bindgen!({
-        path: "../horizon-mod-sdk/wit",
-        world: "saved-data-host",
-    });
-}
-use saved_data_bindings::horizon::mods::saved_data;
+pub use native::horizon::mods::multiblocks::{Cell, Mismatch, Structure};
+pub use native::exports::horizon::mods::multiblock_events::Multiblock;
+use native::MultiblockHost;
+type ClientEvents = HorizonMod;
+type ServerEvents = native::HorizonServerMod;
+/// The widget model a `ui` screen or settings page shows (WIT `interface
+/// `ui`), for the game to draw with its menus' own widgets.
+pub use native::horizon::mods::ui::{
+    ButtonWidget as UiButtonWidget, ItemWidget as UiItemWidget, ListWidget as UiListWidget,
+    Screen as UiScreen, TextWidget as UiTextWidget, Widget as UiWidget,
+};
+use native::UiHost;
 
-/// A mod's linear memory cap.
-const MEMORY: usize = 64 << 20;
-/// Fuel (about one unit per WebAssembly instruction) per call: a bound on
-/// runaway loops, far above the hooks' time budgets.
-const FUEL_INIT: u64 = 2_000_000_000;
+
 const FUEL_TICK: u64 = 50_000_000;
 const FUEL_FRAME: u64 = 10_000_000;
 const FUEL_EVENT: u64 = 100_000_000;
@@ -887,7 +665,7 @@ impl Entry {
 }
 
 struct Running {
-    store: Store<State>,
+    store: NativeStore<State>,
     /// The mod's `ui-events` export; none for a mod built before `ui`, or a
     /// server mod.
     ui: Option<UiHost>,
@@ -1050,7 +828,6 @@ struct State {
     /// not disk I/O time, so a loop of small-fuel, large-payload `set`s
     /// needs its own budget.
     storage_budget: u64,
-    limits: StoreLimits,
     world: WorldSlot,
     entities: EntitySlot,
     machine_recipes: RecipeSlot,
@@ -1089,7 +866,8 @@ struct State {
 /// the state with none: no engine, and every hook a no-op.
 #[derive(Default)]
 pub struct Mods {
-    engine: Option<(Engine, Linker<State>)>,
+    /// The mods compiled into this process (spike step 0), by mod id.
+    native: Vec<(String, NativeVtable)>,
     entries: Vec<Entry>,
     snapshot: Arc<Snapshot>,
     out: Vec<Output>,
@@ -1533,7 +1311,7 @@ impl Mods {
     /// Tells every running mod with capability `game-events` of an event.
     fn game_event(
         &mut self,
-        call: impl Fn(&GameEventsHost, &mut Store<State>) -> wasmtime::Result<()>,
+        call: impl Fn(&GameEventsHost, &mut NativeStore<State>) -> Result<(), NativeError>,
     ) {
         for i in 0..self.entries.len() {
             if self.entries[i]
@@ -1614,7 +1392,7 @@ impl Mods {
     /// Tells every running mod with capability `rich-events` a notice.
     fn rich_event(
         &mut self,
-        call: impl Fn(&RichEventsHost, &mut Store<State>) -> wasmtime::Result<()>,
+        call: impl Fn(&RichEventsHost, &mut NativeStore<State>) -> Result<(), NativeError>,
     ) {
         for i in 0..self.entries.len() {
             if self.entries[i]
@@ -2281,6 +2059,65 @@ impl Mods {
     ) -> Mods {
         Mods::load_for(Runs::Both, paths, enabled, reserved, None, None)
     }
+    /// Starts the mod whose folder is `dir` with the code compiled into the
+    /// process (spike step 0): the manifest and the content are read as the
+    /// game reads a folder mod's, and the exports come from `vt`, the vtable
+    /// the mod's `__native_mod()` gave the runner.
+    pub fn load_native(
+        runs: Runs,
+        dir: &Path,
+        vt: NativeVtable,
+        recipes: Option<Arc<crate::machine_recipes::MachineRecipes>>,
+        multiblocks: Option<Arc<crate::multiblocks::Templates>>,
+    ) -> Mods {
+        let mut mods = Mods::default();
+        if let Some(recipes) = recipes
+            && let Ok(mut slot) = mods.machine_recipes.lock()
+        {
+            *slot = Some(recipes);
+        }
+        if let Some(multiblocks) = multiblocks
+            && let Ok(mut slot) = mods.multiblocks.lock()
+        {
+            *slot = Some(multiblocks);
+        }
+        let read = Package::read(dir);
+        let mut entry = Entry {
+            path: dir.to_path_buf(),
+            manifest: None,
+            status: Status::Off,
+            cost: Duration::ZERO,
+            run: None,
+            modified: modified(dir),
+        };
+        match &read {
+            Err(e) => entry.status = Status::Failed(e.clone()),
+            Ok(package) => {
+                entry.manifest = Some(package.manifest.clone());
+                if runs.starts(package.manifest.side) {
+                    mods.native.push((package.manifest.id.clone(), vt));
+                    let content = crate::Content::read(dir, &package.manifest);
+                    let started = content.and_then(|_| mods.start(dir, package, &|_| false));
+                    entry.status = match started {
+                        Ok(run) => {
+                            entry.run = run;
+                            Status::Running
+                        }
+                        Err(e) => Status::Failed(e),
+                    };
+                } else {
+                    entry.status = Status::Elsewhere;
+                }
+            }
+        }
+        if let Status::Failed(reason) = &entry.status {
+            let id = entry.manifest.as_ref().map_or("?", |m| m.id.as_str());
+            log::warn!("Horizon: native mod {id} did not start: {reason}");
+        }
+        mods.entries.push(entry);
+        mods.generation += 1;
+        mods
+    }
     /// [`Mods::load`], starting only the mods `runs` says this game runs; the
     /// others that are on are [`Status::Elsewhere`]. `recipes` is capability
     /// `machine-recipes`' table, built by the game before this call so that
@@ -2390,57 +2227,6 @@ impl Mods {
         mods
     }
 
-    fn engine(&mut self) -> Result<&(Engine, Linker<State>), String> {
-        if self.engine.is_none() {
-            let mut config = Config::new();
-            config.wasm_component_model(true).consume_fuel(true);
-            let engine = Engine::new(&config).map_err(|e| e.to_string())?;
-            let mut linker = Linker::new(&engine);
-            HorizonMod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            players::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            mod_world::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            UiHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            GuiScreensHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            RenderHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            RecipesHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            BlockEntityHost::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            menus::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            displays::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            machine_recipes::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            multiblocks::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            saved_data::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            item_hooks::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            network::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            entities::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            redstone::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            mod_config::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            effects::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            inter_mod::add_to_linker::<State, HasSelf<State>>(&mut linker, |s| s)
-                .map_err(|e| e.to_string())?;
-            self.engine = Some((engine, linker));
-        }
-        Ok(self.engine.as_ref().expect("made above"))
-    }
-
     /// Starts a mod's code; `Ok(None)` for a content-only mod, which has
     /// nothing to run (the game reads its content before the world loads).
     /// `path` is the mod's own `.hmod` or folder, for capability `storage`'s
@@ -2452,7 +2238,12 @@ impl Mods {
         reserved: &dyn Fn(&str) -> bool,
     ) -> Result<Option<Running>, String> {
         let m = &package.manifest;
-        let Some(wasm) = &package.wasm else {
+        // A mod compiled into the process (spike step 0): its vtable stands
+        // in for the component. Such a mod imports everything it was built
+        // with, so the manifest's import gate and the API-level check do not
+        // apply to it; a vtable the runner did not register is a content
+        // mod's `None`.
+        let Some(vt) = self.native.iter().find(|(id, _)| id == &m.id).map(|(_, vt)| *vt) else {
             return Ok(None);
         };
         // Two running mods with the same id would share one `data_dir`
@@ -2481,36 +2272,6 @@ impl Mods {
         let player_items = self.player_items.clone();
         let mod_entities = self.mod_entities.clone();
         let inter_bus = self.inter_bus.clone();
-        let (engine, linker) = self.engine()?;
-        let component =
-            Component::new(engine, wasm).map_err(|e| format!("not a component: {e}"))?;
-        let ty = component.component_type();
-        // An interface the component imports with none of its functions —
-        // the shape an exported interface's shared types leave in it
-        // (`item-events` uses `item-hooks`' `held-stack`) — asks for no
-        // capability: a capability is what a mod calls.
-        let imports: Vec<String> = ty
-            .imports(engine)
-            .filter(|(_, item)| match &item.ty {
-                wasmtime::component::types::ComponentItem::ComponentInstance(i) => {
-                    i.exports(engine).any(|(_, e)| {
-                        matches!(
-                            e.ty,
-                            wasmtime::component::types::ComponentItem::ComponentFunc(_)
-                        )
-                    })
-                }
-                _ => true,
-            })
-            .map(|(name, _)| name.to_string())
-            .collect();
-        m.check_imports(imports.iter().map(String::as_str))?;
-        // A function this Horizon doesn't have: say so, not wasmtime's linking error.
-        let functions = crate::api_level::imports(wasm)?;
-        let (level, function) = crate::api_level::needed(functions.iter().map(String::as_str));
-        if let Some(why) = crate::api_level::too_new(level, function) {
-            return Err(why);
-        }
         let config_path = path
             .parent()
             .unwrap_or(Path::new("."))
@@ -2538,10 +2299,6 @@ impl Mods {
             browser: BrowserState::default(),
             data_dir,
             storage_budget: STORAGE_WRITE_BUDGET,
-            limits: StoreLimitsBuilder::new()
-                .memory_size(MEMORY)
-                .instances(16)
-                .build(),
             world,
             entities,
             machine_recipes,
@@ -2567,27 +2324,24 @@ impl Mods {
                 .collect(),
             inter_sent: (0, 0),
         };
-        let mut store = Store::new(engine, state);
-        store.limiter(|s| &mut s.limits);
-        store.set_fuel(FUEL_INIT).map_err(|e| e.to_string())?;
-        let instance = linker
-            .instantiate(&mut store, &component)
-            .map_err(|e| reason(&e))?;
+        let mut store = NativeStore::new(state);
         let (mut hooks, ui, gui) = if server {
-            let exports = HorizonServerMod::new(&mut store, &instance).map_err(|e| reason(&e))?;
+            let exports = native::HorizonServerMod::new(&vt)
+                .ok_or_else(|| "the mod has no server-events export".to_string())?;
             let r = exports
                 .horizon_mods_server_events()
                 .call_init(&mut store)
                 .map_err(|e| reason(&e))??;
             (Hooks::Server(exports, r), None, None)
         } else {
-            let exports = HorizonMod::new(&mut store, &instance).map_err(|e| reason(&e))?;
+            let exports = native::HorizonMod::new(&vt)
+                .ok_or_else(|| "the mod has no events export".to_string())?;
             // `ui-events` is a mod built since `ui`'s; older mods have no export
             // and stay callable through `events` alone.
-            let ui = UiHost::new(&mut store, &instance).ok();
+            let ui = UiHost::new(&vt);
             // `gui-screens-events`: the same, for mods built since
             // `gui-screens`.
-            let gui = GuiScreensHost::new(&mut store, &instance).ok();
+            let gui = GuiScreensHost::new(&vt);
             let r = exports
                 .horizon_mods_events()
                 .call_init(&mut store)
@@ -2622,10 +2376,9 @@ impl Mods {
         let mut blocks = None;
         if server
             && m.capabilities.contains(&crate::Capability::BlockEntities)
-            && let Ok(host) = BlockEntityHost::new(&mut store, &instance)
+            && let Some(host) = BlockEntityHost::new(&vt)
         {
-            store.set_fuel(FUEL_INIT).map_err(|e| e.to_string())?;
-            let mut claimed = host
+                let mut claimed = host
                 .horizon_mods_block_entity_events()
                 .call_blocks(&mut store)
                 .map_err(|e| reason(&e))?;
@@ -2639,9 +2392,8 @@ impl Mods {
         // use of.
         let mut uses = None;
         if let Some((_, claimed)) = &blocks
-            && let Ok(host) = UseHost::new(&mut store, &instance)
+            && let Some(host) = UseHost::new(&vt)
         {
-            store.set_fuel(FUEL_INIT).map_err(|e| e.to_string())?;
             let mut taken = host
                 .horizon_mods_block_use_events()
                 .call_uses(&mut store)
@@ -2652,13 +2404,13 @@ impl Mods {
             }
         }
         let menus = match server && m.capabilities.contains(&crate::Capability::Menus) {
-            true => MenuHost::new(&mut store, &instance).ok(),
+            true => MenuHost::new(&vt),
             false => None,
         };
         // `multiblock-events`: a server mod built before the capability has
         // no export and keeps working, watching nothing.
         let multiblocks = match server && m.capabilities.contains(&crate::Capability::Multiblocks) {
-            true => MultiblockHost::new(&mut store, &instance).ok(),
+            true => MultiblockHost::new(&vt),
             false => None,
         };
         // `item-events` (capability `item-hooks`): a server mod built before
@@ -2666,10 +2418,9 @@ impl Mods {
         let mut items = None;
         if server
             && m.capabilities.contains(&crate::Capability::ItemHooks)
-            && let Ok(host) = ItemHost::new(&mut store, &instance)
+            && let Some(host) = ItemHost::new(&vt)
         {
-            store.set_fuel(FUEL_INIT).map_err(|e| e.to_string())?;
-            let mut claimed = host
+                let mut claimed = host
                 .horizon_mods_item_events()
                 .call_items(&mut store)
                 .map_err(|e| reason(&e))?;
@@ -2683,52 +2434,52 @@ impl Mods {
         // `entity-events`: a server mod built before the capability has no
         // export and keeps working, hearing nothing of its mobs.
         let entity_export = match server && m.capabilities.contains(&crate::Capability::Entities) {
-            true => EntityHost::new(&mut store, &instance).ok(),
+            true => EntityHost::new(&vt),
             false => None,
         };
         // `config-events`: a server mod built before the capability has no
         // export and keeps working, hearing nothing of edits.
         let config_export = match server && m.capabilities.contains(&crate::Capability::Config) {
-            true => ConfigHost::new(&mut store, &instance).ok(),
+            true => ConfigHost::new(&vt),
             false => None,
         };
         // `game-events`: a server mod built before the capability has no
         // export and keeps working, hearing nothing.
         let game_events_export =
             match server && m.capabilities.contains(&crate::Capability::GameEvents) {
-                true => GameEventsHost::new(&mut store, &instance).ok(),
+                true => GameEventsHost::new(&vt),
                 false => None,
             };
         // `rich-events`: a server mod built before the capability has no
         // export and keeps working, hearing nothing it could answer.
         let rich_events_export =
             match server && m.capabilities.contains(&crate::Capability::RichEvents) {
-                true => RichEventsHost::new(&mut store, &instance).ok(),
+                true => RichEventsHost::new(&vt),
                 false => None,
             };
         // `redstone-events`: a server mod built before the capability has no
         // export and keeps working, hearing nothing of its signals.
         let redstone_export = match server && m.capabilities.contains(&crate::Capability::Redstone)
         {
-            true => RedstoneHost::new(&mut store, &instance).ok(),
+            true => RedstoneHost::new(&vt),
             false => None,
         };
         // `network-events` / `network-client-events`: a mod built before the
         // capability has no export and keeps working, hearing nothing.
         let wants_net = m.capabilities.contains(&crate::Capability::Network);
         let net_server = match server && wants_net {
-            true => NetServerHost::new(&mut store, &instance).ok(),
+            true => NetServerHost::new(&vt),
             false => None,
         };
         let net_client = match !server && wants_net {
-            true => NetClientHost::new(&mut store, &instance).ok(),
+            true => NetClientHost::new(&vt),
             false => None,
         };
         // `inter-mod-events`: a server mod built before the capability has
         // no export and keeps working, hearing nothing of other mods.
         let inter_mod_export = match server && m.capabilities.contains(&crate::Capability::InterMod)
         {
-            true => InterModHost::new(&mut store, &instance).ok(),
+            true => InterModHost::new(&vt),
             false => None,
         };
         // The bus learns who hears messages: `send-to` promises the other
@@ -2746,9 +2497,9 @@ impl Mods {
             ui,
             gui,
             hooks,
-            raycasts: functions.iter().any(|f| f == "game.raycast"),
-            reads_recipes: functions.iter().any(|f| f.starts_with("recipes.")),
-            reads_machine_recipes: functions.iter().any(|f| f.starts_with("machine-recipes.")),
+            raycasts: false,
+            reads_recipes: false,
+            reads_machine_recipes: true,
             blocks,
             menus,
             uses,
@@ -2788,7 +2539,7 @@ impl Mods {
         &mut self,
         fuel: u64,
         wants: impl Fn(&Hooks) -> bool,
-        mut f: impl FnMut(&mut Running) -> wasmtime::Result<()>,
+        mut f: impl FnMut(&mut Running) -> Result<(), NativeError>,
     ) {
         for i in 0..self.entries.len() {
             if self.entries[i]
@@ -2805,7 +2556,7 @@ impl Mods {
         &mut self,
         fuel: u64,
         wants: impl Fn(&Registration) -> bool,
-        mut f: impl FnMut(&ClientEvents, &mut Store<State>) -> wasmtime::Result<()>,
+        mut f: impl FnMut(&ClientEvents, &mut NativeStore<State>) -> Result<(), NativeError>,
     ) {
         self.each(
             fuel,
@@ -2821,7 +2572,7 @@ impl Mods {
         &mut self,
         fuel: u64,
         wants: impl Fn(&ServerRegistration) -> bool,
-        mut f: impl FnMut(&ServerEvents, &mut Store<State>) -> wasmtime::Result<()>,
+        mut f: impl FnMut(&ServerEvents, &mut NativeStore<State>) -> Result<(), NativeError>,
     ) {
         self.each(
             fuel,
@@ -2838,7 +2589,7 @@ impl Mods {
         &mut self,
         i: usize,
         fuel: u64,
-        f: impl FnOnce(&mut Running) -> wasmtime::Result<R>,
+        f: impl FnOnce(&mut Running) -> Result<R, NativeError>,
     ) -> Option<R> {
         let entry = &mut self.entries[i];
         let run = entry.run.as_mut()?;
@@ -3372,7 +3123,7 @@ impl Mods {
     fn ui_event(
         &mut self,
         i: usize,
-        f: impl FnOnce(&UiHost, &mut Store<State>) -> wasmtime::Result<()>,
+        f: impl FnOnce(&UiHost, &mut NativeStore<State>) -> Result<(), NativeError>,
     ) {
         let has_ui = self
             .entries
@@ -3390,7 +3141,7 @@ impl Mods {
     fn gui_event(
         &mut self,
         i: usize,
-        f: impl FnOnce(&GuiScreensHost, &mut Store<State>) -> wasmtime::Result<()>,
+        f: impl FnOnce(&GuiScreensHost, &mut NativeStore<State>) -> Result<(), NativeError>,
     ) {
         let has_gui = self
             .entries
@@ -3494,13 +3245,8 @@ fn modified(path: &Path) -> Option<SystemTime> {
 }
 
 /// A trap or error, as the player reads it.
-fn reason(e: &wasmtime::Error) -> String {
-    match e.downcast_ref::<Trap>() {
-        Some(Trap::OutOfFuel) => "it took too long (an endless loop?)".into(),
-        Some(Trap::UnreachableCodeReached) => "it crashed (a panic)".into(),
-        Some(trap) => format!("it crashed: {trap}"),
-        None => format!("{e:#}"),
-    }
+fn reason(e: &NativeError) -> String {
+    format!("{e:#}")
 }
 
 fn clip(text: String) -> String {
