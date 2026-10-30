@@ -1,0 +1,12 @@
+# The crates the Switch build patches (docs/switch.md). Pass it from the repository root:
+#   cargo build --config packaging/switch/cargo-patch.toml --target aarch64-nintendo-horizon.json ...
+# The patches only act on `target_os = "horizon"`, so the copies in third_party/ behave like the
+# originals on every other platform. wgpu-hal is patched for everyone in the root Cargo.toml.
+[patch.crates-io]
+wgpu = { path = "../third_party/wgpu" }
+wgpu-core = { path = "../third_party/wgpu-core" }
+wgpu-core-deps-windows-linux-android = { path = "../third_party/wgpu-core-deps-windows-linux-android" }
+cpal = { path = "../third_party/cpal" }
+getrandom03 = { path = "../third_party/getrandom-0.3", package = "getrandom" }
+winit = { path = "../third_party/winit" }
+raw-window-handle = { path = "../third_party/raw-window-handle" }

@@ -1,0 +1,14 @@
+# Crates patched by bevy-horizon (a checkout beside this repository: build.sh clones it) for
+# Horizon OS: getrandom, memmap2, rustix and ring (libc, with newlib's types, is patched by
+# bevy-horizon's own .cargo/config.toml, which build.sh passes too). Passed to cargo with
+# `--config`, next to cargo-patch.toml (our wgpu, winit and raw-window-handle).
+# Paths are relative to packaging/, the parent of this folder (cargo's rule for config files); in
+# the build container /src/horizon-nx/packaging/../../bevy-horizon is /src/bevy-horizon.
+# A patch replaces only crates.io versions it is semver-compatible with, so Cargo.lock has to lock
+# the patch's version; build.sh checks that every patch below is used.
+[patch.crates-io]
+getrandom = { path = "../../bevy-horizon/patches/getrandom" }
+getrandom02 = { path = "../../bevy-horizon/patches/getrandom-0.2", package = "getrandom" }
+memmap2 = { path = "../../bevy-horizon/patches/memmap2" }
+rustix = { path = "../../bevy-horizon/patches/rustix" }
+ring = { path = "../../bevy-horizon/patches/ring" }

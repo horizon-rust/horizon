@@ -4,3 +4,7 @@ docs/launcher-commands.md text eol=lf
 docs/horizon-ctl-commands.md text eol=lf
 website/src/tokens.css text eol=lf
 docs/api/*-reference.md text eol=lf
+
+# Scripts that run in the Linux container: LF even when Git for Windows would check them out with CRLF.
+packaging/switch/build.sh text eol=lf
+packaging/switch/Containerfile text eol=lf

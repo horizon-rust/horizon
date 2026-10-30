@@ -1,0 +1,37 @@
+# The toolchain image for the Switch build: devkitA64 + libnx + a nightly Rust that builds std for
+# Horizon (-Z build-std). Adapted from bevy-horizon's Containerfile (MIT OR Apache-2.0,
+# https://github.com/JohnUzoka/bevy-horizon). Built by packaging/switch/build.sh.
+FROM docker.io/devkitpro/devkita64:latest
+
+# libnx and the portlibs NVK links against (expat, zstd, zlib come with switch-mesa / switch-sdl2),
+# plus the tools that make the NRO (nacptool, elf2nro).
+RUN dkp-pacman -Syu --noconfirm \
+        switch-mesa \
+        switch-sdl2 \
+        switch-tools \
+        libnx \
+        devkitA64 && \
+    dkp-pacman -Scc --noconfirm
+
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:/opt/devkitpro/devkitA64/bin:/opt/devkitpro/tools/bin:$PATH \
+    DEVKITPRO=/opt/devkitpro \
+    DEVKITARM=/opt/devkitpro/devkitA64
+
+# A dated nightly is renamed to plain "nightly": -Z build-std compiles std from the sysroot, so its
+# path ends up in every binary's debug info, and keeping it makes rebuilds reproducible.
+# --build-arg RUST_NIGHTLY=nightly takes the latest.
+ARG RUST_NIGHTLY=nightly-2026-10-04
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+        --default-toolchain "$RUST_NIGHTLY" --component rust-src,llvm-tools-preview && \
+    if [ "$RUST_NIGHTLY" != nightly ]; then \
+        mv "$RUSTUP_HOME/toolchains/$RUST_NIGHTLY-x86_64-unknown-linux-gnu" \
+           "$RUSTUP_HOME/toolchains/nightly-x86_64-unknown-linux-gnu" && \
+        rm -f "$RUSTUP_HOME/update-hashes/$RUST_NIGHTLY-x86_64-unknown-linux-gnu" && \
+        rustup default nightly; \
+    fi && \
+    rustc -vV
+
+WORKDIR /workspace
+CMD ["/bin/bash"]
