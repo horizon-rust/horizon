@@ -19,6 +19,42 @@ fn hw_uv(v: u32) -> vec2<f32> {
 // first vertex of its solid quads and of its translucent ones, and which geometry is the
 // translucent one (2: none).
 @group(0) @binding(23) var<storage, read> instances: array<vec4<u32>>;
+// The moving geometry (gfx/hw_rays.rs `finish`): the entities' and the view model's vertices, the
+// entity pipeline's `Vertex` (nine words: position, texture coordinate in the shared atlas, layer,
+// colour, light, normal), and the atlas. An instance whose row starts with `DYN_ENTITY` holds
+// quads from the vertex in its second word; one with `DYN_CLOUD` is a cloud tile (opaque, and
+// left out of the bounce rays by their mask: `NO_CLOUDS`).
+@group(0) @binding(34) var<storage, read> dynamics: array<u32>;
+@group(0) @binding(35) var entity_atlas: texture_2d<f32>;
+const DYN_ENTITY: u32 = 0xfffffff0u;
+const NO_CLOUDS: u32 = 0xfbu;
+const NO_QUAD: u32 = 0xffffffffu;
+// Moving vertex `v`'s position, camera-relative as drawn.
+fn dyn_position(v: u32) -> vec3<f32> {
+    return bitcast<vec3<f32>>(vec3(dynamics[v * 9u], dynamics[v * 9u + 1u], dynamics[v * 9u + 2u]));
+}
+// The entity or view model quad candidate hit `c` is on: its first vertex in `dynamics`, or none.
+fn hw_entity_quad(c: RayIntersection) -> u32 {
+    let at = instances[c.instance_custom_data];
+    if at.x != DYN_ENTITY { return NO_QUAD; }
+    return at.y + (c.primitive_index / 2u) * 4u;
+}
+// The texel candidate hit `c` meets on the entity quad from vertex `base`, times the vertex colour
+// (as entity.wgsl draws it, its alpha too).
+fn hw_entity_texel(c: RayIntersection, base: u32) -> vec4<f32> {
+    // The quad's triangles: corners 0, 1, 2 and 0, 2, 3 (gfx.rs `quad_indices`).
+    let second = (c.primitive_index & 1u) == 1u;
+    let b = c.barycentrics;
+    let v1 = base + select(1u, 2u, second);
+    let v2 = base + select(2u, 3u, second);
+    let uv = bitcast<vec2<f32>>(vec2(dynamics[base * 9u + 3u], dynamics[base * 9u + 4u])) * (1.0 - b.x - b.y)
+        + bitcast<vec2<f32>>(vec2(dynamics[v1 * 9u + 3u], dynamics[v1 * 9u + 4u])) * b.x
+        + bitcast<vec2<f32>>(vec2(dynamics[v2 * 9u + 3u], dynamics[v2 * 9u + 4u])) * b.y;
+    let size = vec2<i32>(textureDimensions(entity_atlas));
+    let texel = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2(0), size - 1);
+    let color = unpack4x8unorm(dynamics[base * 9u + 6u]);
+    return textureLoad(entity_atlas, texel, 0) * color;
+}
 // The quad candidate hit `c` is on: its first arena vertex, or none (`u32` max) past the first page.
 fn hw_quad(c: RayIntersection, translucent: bool) -> u32 {
     let at = instances[c.instance_custom_data];
@@ -42,6 +78,9 @@ fn hw_texel(c: RayIntersection, base: u32) -> vec4<f32> {
 // Whether candidate hit `c` (a solid quad) meets an opaque texel. Opaque leaves, quads on later
 // arena pages and sprites past the first array are taken as opaque.
 fn hw_opaque(c: RayIntersection) -> bool {
+    // An entity's texel as entity.wgsl keeps it (it discards what is under a tenth opaque).
+    let entity = hw_entity_quad(c);
+    if entity != NO_QUAD { return hw_entity_texel(c, entity).a >= 0.1; }
     let base = hw_quad(c, false);
     if base == 0xffffffffu { return true; }
     if (arena[base * 6u + 4u] & 0x8000u) != 0u { return true; }
@@ -132,7 +171,7 @@ const WATER_ABSORPTION: vec3<f32> = vec3(0.35, 0.065, 0.025);
 // or sprite array), and what the translucent triangles before it let through.
 fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
     var q: ray_query;
-    rayQueryInitialize(&q, terrain, RayDesc(0x0u, 0xffu, 0.0, reach, pos + rt.hw_offset.xyz, l));
+    rayQueryInitialize(&q, terrain, RayDesc(0x0u, NO_CLOUDS, 0.0, reach, pos + rt.hw_offset.xyz, l));
     var through = vec3(1.0);
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);
@@ -151,7 +190,14 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
     // The triangle's face from the quad's corners (the instances are only moved, not turned).
     var n = -l;
     var albedo = vec3(-1.0);
-    if base != 0xffffffffu {
+    let entity = hw_entity_quad(hit);
+    if entity != NO_QUAD {
+        // An entity or the view model: its quad's face, its texel times its colour in light.
+        let p0 = dyn_position(entity);
+        let f = cross(dyn_position(entity + 1u) - p0, dyn_position(entity + 2u) - p0);
+        if dot(f, f) > 1e-12 { n = normalize(f); }
+        albedo = pow(max(hw_entity_texel(hit, entity).rgb, vec3(0.0)), vec3(2.2));
+    } else if base != 0xffffffffu {
         let p0 = hw_position(base);
         let f = cross(hw_position(base + 1u) - p0, hw_position(base + 2u) - p0);
         if dot(f, f) > 1e-12 { n = normalize(f); }
@@ -189,7 +235,7 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     let ray = normalize(far);
     let reach = select(4096.0, length(far), solid);
     var q: ray_query;
-    rayQueryInitialize(&q, terrain, RayDesc(0x0u, 0xffu, 0.0, reach, rt.hw_offset.xyz, ray));
+    rayQueryInitialize(&q, terrain, RayDesc(0x0u, NO_CLOUDS, 0.0, reach, rt.hw_offset.xyz, ray));
     while rayQueryProceed(&q) {
         let h = rayQueryGetCandidateIntersection(&q);
         if h.geometry_index != instances[h.instance_custom_data].w { continue; }

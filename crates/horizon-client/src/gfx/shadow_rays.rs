@@ -154,6 +154,10 @@ pub struct Hardware<'a> {
     pub sprites: &'a wgpu::TextureView,
     /// Where each instance's quads are (`hw_rays::HwRays::instances`).
     pub instances: &'a wgpu::Buffer,
+    /// The entities' and the view model's vertices (`hw_rays::HwRays::dynamics`) and the shared
+    /// atlas their texels are in, for the alpha test and the hits' colour.
+    pub dynamics: &'a wgpu::Buffer,
+    pub atlas: &'a wgpu::TextureView,
 }
 
 /// The hybrid's part of the shader (`hw_rays`): the sun's and the light sources' shadow rays
@@ -350,6 +354,7 @@ impl ShadowRays {
                             ),
                             entry(16, storage),
                             entry(23, storage),
+                            entry(34, storage),
                             entry(
                                 17,
                                 wgpu::BindingType::Texture {
@@ -357,6 +362,16 @@ impl ShadowRays {
                                         filterable: true,
                                     },
                                     view_dimension: wgpu::TextureViewDimension::D2Array,
+                                    multisampled: false,
+                                },
+                            ),
+                            entry(
+                                35,
+                                wgpu::BindingType::Texture {
+                                    sample_type: wgpu::TextureSampleType::Float {
+                                        filterable: true,
+                                    },
+                                    view_dimension: wgpu::TextureViewDimension::D2,
                                     multisampled: false,
                                 },
                             ),
@@ -748,6 +763,11 @@ impl ShadowRays {
                     binding: 23,
                     resource: hw.instances.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 34,
+                    resource: hw.dynamics.as_entire_binding(),
+                },
+                view(35, hw.atlas),
             ]);
         }
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {

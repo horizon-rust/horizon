@@ -3686,10 +3686,52 @@ impl Renderer {
             camera,
         );
     }
+    /// RT lighting's hybrid: the moving geometry of this frame in the rays (`hw_rays::HwRays::finish`),
+    /// once the entities' vertices are known: the entities, the view model (with Remix's
+    /// perspective correction for its own field of view) and the mesh clouds' tiles.
+    fn hw_finish(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &Frame,
+        solid_quads: u32,
+        clouds: bool,
+    ) {
+        // The view model is drawn in the window's view only.
+        let hand = if self.eye.is_some() { &[] } else { frame.hand };
+        let Some(hw) = self.hw_rays.as_mut() else {
+            return;
+        };
+        let solid = self.entity_batch.combined.len().min(solid_quads as usize * 4);
+        let ratio = (frame.hand_fov_degrees.to_radians() / 2.0).tan()
+            / (frame.fov_degrees.to_radians() / 2.0).tan();
+        let view = crate::camera::view_matrix(frame.yaw, frame.pitch);
+        let hand_to_world = view.inverse()
+            * Mat4::from_scale(Vec3::new(ratio, ratio, 1.0))
+            * frame.bob
+            * view;
+        let tiles = match (&self.rt_cloud_mesh, clouds) {
+            (Some(mesh), true) => mesh.tiles().collect(),
+            _ => Vec::new(),
+        };
+        hw.finish(
+            &self.device,
+            &self.queue,
+            encoder,
+            &hw_rays::Dynamic {
+                entities: &self.entity_batch.combined[..solid],
+                hand,
+                hand_to_world,
+                clouds: tiles,
+            },
+            &self.indices,
+            frame.camera,
+        );
+    }
     /// What the shadow rays read of the hybrid's (`shadow_rays::Hardware`): the top-level
-    /// structure, the arena's first page and the first sprite array.
-    fn hw_bindings(&self) -> Option<(wgpu::Tlas, wgpu::Buffer, wgpu::TextureView, wgpu::Buffer)> {
+    /// structure, the arena's first page, the first sprite array, and the moving geometry's.
+    fn hw_bindings(&self) -> Option<hw_rays::Bindings> {
         let hw = self.hw_rays.as_ref()?;
+        let atlas = self.hud.atlas_texture.as_ref()?.create_view(&Default::default());
         let (_, page) = self.arena.page_buffers().find(|(p, _)| *p == 0)?;
         let sprites = self
             .sprite_textures
@@ -3698,7 +3740,14 @@ impl Renderer {
                 dimension: Some(wgpu::TextureViewDimension::D2Array),
                 ..Default::default()
             });
-        Some((hw.tlas.clone(), page.clone(), sprites, hw.instances.clone()))
+        Some(hw_rays::Bindings {
+            tlas: hw.tlas.clone(),
+            arena: page.clone(),
+            sprites,
+            instances: hw.instances.clone(),
+            dynamics: hw.dynamics.clone(),
+            atlas,
+        })
     }
     /// RT lighting's sun as `size` times its real size across, and the aerial perspective's air
     /// as `aerial` times as dense as real air.
@@ -3791,13 +3840,7 @@ impl Renderer {
             grid,
             lights,
             &self.atmosphere.view,
-            hw.as_ref()
-                .map(|(tlas, arena, sprites, instances)| shadow_rays::Hardware {
-                    tlas,
-                    arena,
-                    sprites,
-                    instances,
-                }),
+            hw.as_ref().map(hw_rays::Bindings::hardware),
         )
     }
     /// The terrain's groups, with `history` (RT lighting's last light for the view drawn, or this
@@ -5479,6 +5522,11 @@ impl Renderer {
         // RT lighting: this frame's rays, from a depth prepass of the solid terrain, before the
         // world draws (the flat draws, Metal's, still read the last frame's, reprojected).
         let rt_now = rt.lighting && world_linear && !flat_frame && self.voxels.views().is_some();
+        if rt.any() {
+            // The entities' vertices are known now: they join the terrain in the rays.
+            let clouds = rt_clouds_on && rt_clouds::mode() == rt_clouds::Mode::Mesh;
+            self.hw_finish(&mut encoder, frame, entity_quads, clouds);
+        }
         if rt_now {
             let [mask, blocks, sun, reflection] = self.rt_prepass(
                 &mut encoder,
@@ -5981,13 +6029,7 @@ impl Renderer {
                     grid,
                     self.voxels.light_buffers().expect("the grid runs"),
                     &self.atmosphere.view,
-                    hw.as_ref()
-                        .map(|(tlas, arena, sprites, instances)| shadow_rays::Hardware {
-                            tlas,
-                            arena,
-                            sprites,
-                            instances,
-                        }),
+                    hw.as_ref().map(hw_rays::Bindings::hardware),
                 )[0]
                 .clone()
             });
@@ -6077,14 +6119,7 @@ impl Renderer {
                     grid,
                     lights,
                     sky: &self.atmosphere.view,
-                    hardware: hw.as_ref().map(|(tlas, arena, sprites, instances)| {
-                        shadow_rays::Hardware {
-                            tlas,
-                            arena,
-                            sprites,
-                            instances,
-                        }
-                    }),
+                    hardware: hw.as_ref().map(hw_rays::Bindings::hardware),
                 },
             );
             self.froxels.camera = saved;
