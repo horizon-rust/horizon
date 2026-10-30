@@ -129,7 +129,9 @@ impl Game<'_> {
             .get(&player)
             .is_some_and(|c| *c >= NET_PER_TICK)
         {
-            return Err(format!("past {NET_PER_TICK} messages to this player this tick"));
+            return Err(format!(
+                "past {NET_PER_TICK} messages to this player this tick"
+            ));
         }
         let id = uuid_string(player);
         let Some(host) = self.lan.as_mut() else {
@@ -184,14 +186,12 @@ impl Game<'_> {
         };
         let bytes = horizon_protocol::mod_net::encode(&message)
             .map_err(|e| format!("the message does not fit the wire: {e}"))?;
-        self.send(
-            horizon_protocol::packets::play::Serverbound::CustomPayload(
-                horizon_protocol::packets::configuration::CustomPayload {
-                    channel: horizon_protocol::mod_net::CHANNEL.into(),
-                    data: bytes,
-                },
-            ),
-        );
+        self.send(horizon_protocol::packets::play::Serverbound::CustomPayload(
+            horizon_protocol::packets::configuration::CustomPayload {
+                channel: horizon_protocol::mod_net::CHANNEL.into(),
+                data: bytes,
+            },
+        ));
         self.mods.net_client_sent += 1;
         Ok(())
     }
@@ -348,11 +348,7 @@ impl Game<'_> {
         let mut canceled = false;
         let player = self.native_acting_player();
         self.native_entity_hurt(player, &entity, &mut amount, &mut canceled);
-        if canceled {
-            0.0
-        } else {
-            amount
-        }
+        if canceled { 0.0 } else { amount }
     }
     pub(in crate::game) fn mod_note_death(&mut self, uuid: Option<u128>, cause: String) {
         let player = match uuid {
@@ -415,13 +411,13 @@ impl Game<'_> {
             &mut amount,
             &mut canceled,
         );
-        if canceled {
-            0.0
-        } else {
-            amount
-        }
+        if canceled { 0.0 } else { amount }
     }
-    pub(in crate::game) fn mod_breaking_block(&mut self, pos: [i32; 3], state: BlockStateId) -> bool {
+    pub(in crate::game) fn mod_breaking_block(
+        &mut self,
+        pos: [i32; 3],
+        state: BlockStateId,
+    ) -> bool {
         let mut canceled = false;
         let player = self.native_acting_player();
         self.native_block_breaking(
@@ -467,18 +463,10 @@ impl Game<'_> {
     pub(super) fn hook_entity_teleport(&mut self, _id: u32, _pos: [f64; 3]) -> Result<(), String> {
         Err("the mobs helper needs the mods feature".into())
     }
-    pub(super) fn hook_entity_push(
-        &mut self,
-        _id: u32,
-        _velocity: [f64; 3],
-    ) -> Result<(), String> {
+    pub(super) fn hook_entity_push(&mut self, _id: u32, _velocity: [f64; 3]) -> Result<(), String> {
         Err("the mobs helper needs the mods feature".into())
     }
-    pub(super) fn hook_entity_set_health(
-        &mut self,
-        _id: u32,
-        _health: f32,
-    ) -> Result<(), String> {
+    pub(super) fn hook_entity_set_health(&mut self, _id: u32, _health: f32) -> Result<(), String> {
         Err("the mobs helper needs the mods feature".into())
     }
     pub(super) fn hook_remove_entity(&mut self, _id: u32) -> Result<(), String> {
@@ -596,12 +584,12 @@ impl Game<'_> {
 #[cfg(feature = "mods")]
 mod run {
     use super::super::Hit;
+    use super::super::native_hooks::{
+        NativeParticle, NativeSpawn, NativeStack, NativeTank, NativeTransform,
+    };
     use super::ModDisplay;
     use super::{
         Game, LanHost, ModEvent, ModMenu, Who, native_entity_of, native_who_of, uuid_string,
-    };
-    use super::super::native_hooks::{
-        NativeParticle, NativeSpawn, NativeStack, NativeTank, NativeTransform,
     };
     use horizon_client::chunk_map::ChunkMap;
     use horizon_client::items::ItemStack;
@@ -3869,9 +3857,15 @@ mod run {
                 .get(&key)
                 .ok_or("no tanks on the block entity there")?;
             let Some(t) = tanks.get(index) else {
-                return Err(format!("tank {tank} is not one of the {} there", tanks.len()));
+                return Err(format!(
+                    "tank {tank} is not one of the {} there",
+                    tanks.len()
+                ));
             };
-            if let Some(want) = fluid && !t.fluid.is_empty() && t.fluid != want {
+            if let Some(want) = fluid
+                && !t.fluid.is_empty()
+                && t.fluid != want
+            {
                 return Ok(0);
             }
             let taken = self

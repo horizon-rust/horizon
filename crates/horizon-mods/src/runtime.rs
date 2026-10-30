@@ -1818,9 +1818,9 @@ impl Mods {
         };
         match self.inter_bus.lock().map(|mut bus| bus.push(message)) {
             Ok(true) => Ok(()),
-            Ok(false) => Err(
-                "a hearing mod's pending is full; the message waits for the next tick".into(),
-            ),
+            Ok(false) => {
+                Err("a hearing mod's pending is full; the message waits for the next tick".into())
+            }
             Err(_) => Err("the bus is busy".into()),
         }
     }

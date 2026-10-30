@@ -403,7 +403,15 @@ impl Game<'_> {
         };
         #[cfg(not(feature = "mod-cells"))]
         let native = Vec::new();
-        let mods = Mods::load_for_native(runs, &paths, native, on, vanilla_command, recipes, multiblocks);
+        let mods = Mods::load_for_native(
+            runs,
+            &paths,
+            native,
+            on,
+            vanilla_command,
+            recipes,
+            multiblocks,
+        );
         self.mods.mods = mods;
         let chosen = &self.settings.mods;
         self.mods.mods.set_bindings(|id| chosen.keys_of(id));

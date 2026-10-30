@@ -817,28 +817,16 @@ impl Game<'_> {
     }
     /// Walks the helper's mob `id` to `pos` (its fall distance resets).
     /// Needs the `mods` feature. API 8.
-    pub(super) fn native_entity_teleport(
-        &mut self,
-        id: u32,
-        pos: [f64; 3],
-    ) -> Result<(), String> {
+    pub(super) fn native_entity_teleport(&mut self, id: u32, pos: [f64; 3]) -> Result<(), String> {
         self.hook_entity_teleport(id, pos)
     }
     /// Adds a velocity to the helper's mob `id`. Needs the `mods` feature.
     /// API 8.
-    pub(super) fn native_entity_push(
-        &mut self,
-        id: u32,
-        velocity: [f64; 3],
-    ) -> Result<(), String> {
+    pub(super) fn native_entity_push(&mut self, id: u32, velocity: [f64; 3]) -> Result<(), String> {
         self.hook_entity_push(id, velocity)
     }
     /// Sets the helper's mob `id`'s health (cut to its most). API 8.
-    pub(super) fn native_entity_set_health(
-        &mut self,
-        id: u32,
-        health: f32,
-    ) -> Result<(), String> {
+    pub(super) fn native_entity_set_health(&mut self, id: u32, health: f32) -> Result<(), String> {
         self.hook_entity_set_health(id, health)
     }
     /// Removes the helper's mob `id`. Needs the `mods` feature. API 8.
@@ -950,11 +938,7 @@ impl Game<'_> {
     /// The fluid tanks on the block entity at `pos` (at most 8, in the
     /// mod's own order): the shared tanks the compiled-in mods keep, saved
     /// with the world. Needs the `mods` feature. API 8.
-    pub(super) fn native_fluid_tanks(
-        &mut self,
-        dimension: &str,
-        pos: [i32; 3],
-    ) -> Vec<NativeTank> {
+    pub(super) fn native_fluid_tanks(&mut self, dimension: &str, pos: [i32; 3]) -> Vec<NativeTank> {
         self.hook_fluid_tanks(dimension, pos)
     }
     /// Puts up to `amount` mB of `fluid` into the tanks at `pos` — those
