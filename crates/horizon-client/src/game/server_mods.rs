@@ -134,7 +134,6 @@ impl Game<'_> {
     ) -> bool {
         false
     }
-    pub(super) fn apply_mod_block_writes(&mut self) {}
     pub(super) fn save_mod_block_entities(&mut self) {}
     pub(super) fn lan_mod_menu_click(
         &mut self,

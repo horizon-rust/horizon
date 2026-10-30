@@ -128,6 +128,7 @@ impl Levels {
     }
     /// The parked levels' chunks, by dimension (server mods with capability
     /// `world` read them).
+    #[cfg_attr(not(feature = "mods"), allow(dead_code))]
     pub(super) fn parked_chunks(
         &mut self,
     ) -> impl Iterator<Item = (Dim, &mut horizon_client::chunk_map::ChunkMap)> {

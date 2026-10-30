@@ -1146,6 +1146,7 @@ impl Game<'_> {
         )
     }
     /// The same id as `UUID.toString()` (server mods' `ServerPlayer.id`).
+    #[cfg_attr(not(feature = "mods"), allow(dead_code))]
     pub(in crate::game) fn player_uuid_string(&self) -> String {
         let h = format!("{:032x}", self.player_uuid());
         format!(
