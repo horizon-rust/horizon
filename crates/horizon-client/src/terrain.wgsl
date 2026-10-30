@@ -578,16 +578,17 @@ struct WaterSurface {
     slope: vec2<f32>,
     curvature: vec3<f32>,
 }
-// `footprint`: the world size of a pixel here, in metres; the ripples finer than two of them
-// fade out (they would only shimmer), the way a distant lake's glitter blurs into a sheen.
 // One plane wave: `d` its direction (x, z), its wavenumber (rad/m) and its slope's amplitude; `w`
 // its angular frequency and its phase. The sixteen below are the law above written out, the
 // directions turning 2.39996 rad (the golden angle) a wave, the wavenumbers 1.3 rad/m growing
-// by 1.25 a wave (4.8 m to 15 cm), the slope min(0.8 / k, 0.035, 0.012 sqrt(k)), the frequency
+// by 1.25 a wave (4.8 m to 15 cm), the slope min(0.8 / k, 0.05 min(1, k / 3)), the frequency
 // sqrt(9.81 k + 7.3e-5 k^3) (gravity and surface tension, blocks being metres), the phase 2.1 a
 // wave. Written out, no shader has to work them out: each costs a sine and a cosine.
 fn water_wave(p: vec2<f32>, t: f32, footprint: f32, d: vec4<f32>, w: vec2<f32>) -> WaterSurface {
-    let slope = d.w * (1.0 - smoothstep(1.0, 2.2, d.z * footprint));
+    // A ripple finer than about a pixel only shimmers: it fades out, and costs nothing then.
+    let fade = 1.0 - smoothstep(1.5, 4.0, d.z * footprint);
+    if fade <= 0.0 { return WaterSurface(0.0, vec2(0.0), vec3(0.0)); }
+    let slope = d.w * fade;
     let phase = d.z * dot(d.xy, p) - w.x * t + w.y;
     let s = sin(phase);
     let dir = d.xy;
@@ -597,21 +598,26 @@ fn water_wave(p: vec2<f32>, t: f32, footprint: f32, d: vec4<f32>, w: vec2<f32>) 
 fn water_sum(a: WaterSurface, b: WaterSurface) -> WaterSurface {
     return WaterSurface(a.height + b.height, a.slope + b.slope, a.curvature + b.curvature);
 }
-fn water_surface(p: vec2<f32>, t: f32, footprint: f32) -> WaterSurface {
+// `footprint`: the world size of a pixel here, in metres; the ripples finer than two of them
+// fade out (they would only shimmer), the way a distant lake's glitter blurs into a sheen.
+fn water_surface(q: vec2<f32>, t: f32, footprint: f32) -> WaterSurface {
     var s = WaterSurface(0.0, vec2(0.0), vec3(0.0));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(0.92106, 0.38942, 1.3000, 0.01368), vec2(3.5712, 0.0)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.94221, 0.33503, 1.6250, 0.01530), vec2(3.9927, 2.1)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(0.46845, -0.88349, 2.0312, 0.01710), vec2(4.4640, 4.2)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(0.25138, 0.96789, 2.5391, 0.01912), vec2(4.9909, 6.3)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.83916, -0.54389, 3.1738, 0.02138), vec2(5.5801, 8.4)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(0.98616, -0.16580, 3.9673, 0.02390), vec2(6.2389, 10.5)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.61516, 0.78840, 4.9591, 0.02672), vec2(6.9755, 12.6)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.07896, -0.99688, 6.1989, 0.02988), vec2(7.7993, 14.7)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(0.73160, 0.68173, 7.7486, 0.03340), vec2(8.7205, 16.8)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.99996, -0.00849, 9.6858, 0.03500), vec2(9.7511, 18.9)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(0.74308, -0.66921, 12.1072, 0.03500), vec2(10.9042, 21.0)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.09587, 0.99539, 15.1340, 0.03500), vec2(12.1950, 23.1)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.60169, -0.79873, 18.9175, 0.03500), vec2(13.6409, 25.2)));
+    // The crests are not straight lines: a slow swirl bends the coordinates every wave is read at
+    // (its own slopes are neglected: the bend is gentle, 20 % at most).
+    let p = q + 0.6 * vec2(sin(0.31 * q.y + 0.23 * t + 1.3), sin(0.27 * q.x - 0.19 * t));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.92106, 0.38942, 1.3000, 0.02167), vec2(3.5712, 0.0)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.94221, 0.33503, 1.6250, 0.02708), vec2(3.9927, 2.1)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.46845, -0.88349, 2.0312, 0.03385), vec2(4.4640, 4.2)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.25138, 0.96789, 2.5391, 0.04232), vec2(4.9909, 6.3)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.83916, -0.54389, 3.1738, 0.05000), vec2(5.5801, 8.4)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.98616, -0.16580, 3.9673, 0.05000), vec2(6.2389, 10.5)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.61516, 0.78840, 4.9591, 0.05000), vec2(6.9755, 12.6)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.07896, -0.99688, 6.1989, 0.05000), vec2(7.7993, 14.7)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.73160, 0.68173, 7.7486, 0.05000), vec2(8.7205, 16.8)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.99996, -0.00849, 9.6858, 0.05000), vec2(9.7511, 18.9)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.74308, -0.66921, 12.1072, 0.05000), vec2(10.9042, 21.0)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.09587, 0.99539, 15.1340, 0.05000), vec2(12.1950, 23.1)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.60169, -0.79873, 18.9175, 0.04229), vec2(13.6409, 25.2)));
     s = water_sum(s, water_wave(p, t, footprint, vec4(0.98320, 0.18252, 23.6469, 0.03383), vec2(15.2624, 27.3)));
     s = water_sum(s, water_wave(p, t, footprint, vec4(-0.84827, 0.52956, 29.5586, 0.02706), vec2(17.0838, 29.4)));
     s = water_sum(s, water_wave(p, t, footprint, vec4(0.26778, -0.96348, 36.9482, 0.02165), vec2(19.1349, 31.5)));
