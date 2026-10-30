@@ -28,6 +28,10 @@
 //! [`ui::open_screen`] and a page in Options > Mods with
 //! [`ui::set_settings`]; what the player does with them comes back as
 //! [`Mod::ui_select`], [`Mod::ui_closed`] and [`Mod::ui_settings_opened`].
+//! A screen the mod lays out itself (capability `gui-screens`):
+//! [`gui_screens::open`] with its own panel, background and widgets in the
+//! panel's coordinates; the player's clicks come back as
+//! [`Mod::gui_clicked`], [`Mod::gui_picked`] and [`Mod::gui_closed`].
 
 wit_bindgen::generate!({
     path: "wit",
@@ -38,10 +42,12 @@ wit_bindgen::generate!({
 });
 
 pub use exports::horizon::mods::events::{Guest as __Guest, Registration};
+pub use exports::horizon::mods::gui_screens_events::Guest as __GuiScreensGuest;
 pub use exports::horizon::mods::network_client_events::Guest as __NetClientGuest;
 pub use exports::horizon::mods::ui_events::Guest as __UiEventsGuest;
 pub use horizon::mods::{
-    browser, chat, command, game, hud, input, log, network, recipes, render, storage, ui,
+    browser, chat, command, game, gui_screens, hud, input, log, network, recipes, render, storage,
+    ui,
 };
 
 /// The game's calls into a mod. Only the hooks [`Registration`] asks for
@@ -69,6 +75,15 @@ pub trait Mod: Sized + 'static {
     /// The player opened the mod's settings page (capability `ui`): call
     /// [`ui::set_settings`] for fresh widgets.
     fn ui_settings_opened(&mut self) {}
+    /// A button of the mod's free screen was clicked (capability
+    /// `gui-screens`): the widget's `id`.
+    fn gui_clicked(&mut self, _id: u32) {}
+    /// A row of one of the mod's free screen's `list` widgets was picked
+    /// (capability `gui-screens`).
+    fn gui_picked(&mut self, _id: u32, _row: u32) {}
+    /// The player left the mod's free screen (Esc; capability
+    /// `gui-screens`).
+    fn gui_closed(&mut self) {}
     /// The server half of the mod (the server mod with the same id) sent
     /// `data` on `channel` (capability `network`).
     fn network_received(&mut self, _channel: &str, _data: &[u8]) {}
@@ -172,6 +187,17 @@ macro_rules! export_mod {
                     with(|m| $crate::Mod::ui_settings_opened(m))
                 }
             }
+            impl $crate::__GuiScreensGuest for Export {
+                fn clicked(id: u32) {
+                    with(|m| $crate::Mod::gui_clicked(m, id))
+                }
+                fn picked(id: u32, row: u32) {
+                    with(|m| $crate::Mod::gui_picked(m, id, row))
+                }
+                fn closed() {
+                    with(|m| $crate::Mod::gui_closed(m))
+                }
+            }
             // Only WebAssembly has the component's exports: a host build (cargo test or
             // clippy on the workspace) checks the mod without them, which macOS
             // couldn't link (its exported-symbols list cuts names at the `#`).
@@ -181,6 +207,7 @@ macro_rules! export_mod {
             let _ = (
                 <Export as $crate::__Guest>::init,
                 <Export as $crate::__UiEventsGuest>::select,
+                <Export as $crate::__GuiScreensGuest>::clicked,
             );
         };
     };

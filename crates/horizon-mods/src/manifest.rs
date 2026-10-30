@@ -158,9 +158,13 @@ pub enum Capability {
     /// Messages to other server mods, and theirs: a library mod's API
     /// shared by the mods that need it (server mods).
     InterMod,
+    /// A screen the mod lays out itself, as tech mods' panels are: its own
+    /// background and pictures, its widgets where it puts them (client
+    /// mods; interface `gui-screens`, calls `gui-screens-events`).
+    GuiScreens,
 }
 impl Capability {
-    pub const ALL: [Capability; 29] = [
+    pub const ALL: [Capability; 30] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -190,6 +194,7 @@ impl Capability {
         Capability::GameEvents,
         Capability::Config,
         Capability::InterMod,
+        Capability::GuiScreens,
     ];
     /// Whether a mod of either side may have it, as a server mod's `storage`
     /// is also a client mod's, and either side's may carry content.
@@ -257,6 +262,7 @@ impl Capability {
             Capability::GameEvents => "game-events",
             Capability::Config => "config",
             Capability::InterMod => "inter-mod",
+            Capability::GuiScreens => "gui-screens",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -285,6 +291,7 @@ impl Capability {
                 | Capability::GameEvents
                 | Capability::Config
                 | Capability::InterMod
+                | Capability::GuiScreens
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -347,6 +354,9 @@ impl Capability {
                 "spawn mobs of its own that it moves, hurts and removes, and hear when they are struck, used and die"
             }
             Capability::InterMod => "send messages to other server mods, and hear theirs",
+            Capability::GuiScreens => {
+                "draw its own screens: its own backgrounds and pictures where it puts them"
+            }
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -405,6 +415,7 @@ impl fmt::Display for Capability {
             Capability::GameEvents => "game-events",
             Capability::Config => "config",
             Capability::InterMod => "inter-mod",
+            Capability::GuiScreens => "gui-screens",
         };
         f.write_str(name)
     }
@@ -923,6 +934,36 @@ side = \"server\"
             "{base}capabilities = [\"hud\"]\nexperimental = [\"hud\"]\n"
         ))
         .unwrap();
+    }
+
+    #[test]
+    fn free_screens_are_a_client_capability_of_their_own() {
+        let base = "id = \"m\"\nname = \"M\"\nversion = \"1\"\n";
+        let m = Manifest::parse(&format!(
+            "{base}api = \"0.1\"\ncapabilities = [\"gui-screens\"]\n\
+             experimental = [\"gui-screens\"]\n"
+        ))
+        .unwrap();
+        assert!(m.capabilities.contains(&Capability::GuiScreens));
+        assert_eq!(Capability::GuiScreens.to_string(), "gui-screens");
+        assert!(Capability::GuiScreens.is_experimental());
+        assert!(!Capability::GuiScreens.on_server());
+        // Without the opt-in, the manifest says what to add.
+        let e = Manifest::parse(&format!(
+            "{base}api = \"0.1\"\ncapabilities = [\"gui-screens\"]\n"
+        ))
+        .unwrap_err();
+        assert!(e.contains("experimental = [\"gui-screens\"]"), "{e}");
+        // A server mod cannot ask for it.
+        let e = Manifest::parse(&format!(
+            "{base}api = \"0.3\"\nside = \"server\"\ncapabilities = [\"players\", \
+             \"gui-screens\"]\nexperimental = [\"gui-screens\"]\n"
+        ))
+        .unwrap_err();
+        assert!(
+            e.contains("capability gui-screens is for client mods"),
+            "{e}"
+        );
     }
 
     #[test]

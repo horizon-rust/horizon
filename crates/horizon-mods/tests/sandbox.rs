@@ -289,8 +289,8 @@ id = "too_new"
 name = "Too New"
 version = "0.1.0"
 api = "0.1"
-capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "render", "input", "recipes", "network"]
-experimental = ["ui", "render", "input", "recipes", "network"]
+capabilities = ["game-read", "chat", "hud", "storage", "command", "ui", "gui-screens", "render", "input", "recipes", "network"]
+experimental = ["ui", "gui-screens", "render", "input", "recipes", "network"]
 "#;
     std::fs::write(dir.join("horizon-mod.toml"), manifest).unwrap();
     std::fs::write(dir.join("mod.wasm"), wasm).unwrap();
@@ -308,9 +308,10 @@ experimental = ["ui", "render", "input", "recipes", "network"]
     // Cells keeps block entities (`block-entities.get`, `.set`); the level
     // below this Horizon's belongs to `inter-mod`'s functions.
     assert_eq!(level("cells.hmod"), 23);
-    // The spin pair talks between mods (`inter-mod.expose`, `publish`...).
-    assert_eq!(level("spin_lib.hmod"), LEVEL);
-    assert_eq!(level("spin_bell.hmod"), LEVEL);
+    // The spin pair talks between mods (`inter-mod.expose`, `publish`...),
+    // the newest functions of level 24.
+    assert_eq!(level("spin_lib.hmod"), 24);
+    assert_eq!(level("spin_bell.hmod"), 24);
     // A server mod built since needs them only when it calls them.
     assert_eq!(level("beacons.hmod"), 4);
 }

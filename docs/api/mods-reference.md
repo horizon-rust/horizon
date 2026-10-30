@@ -36,6 +36,7 @@ The contract between Horizon and its mods: the WIT package `horizon:mods@0.1.0`,
 | `game-events` | [`game-events`](#game-events) | be told when players are hurt, die, respawn or change dimension or game mode, when they kill mobs, and when the weather turns |
 | `config` | [`config`](#config) | keep settings in a file you can edit while the game runs, and read them |
 | `inter-mod` | [`inter-mod`](#inter-mod) | send messages to other server mods, and hear theirs |
+| `gui-screens` | [`gui-screens`](#gui-screens) | draw its own screens: its own backgrounds and pictures where it puts them |
 
 ## World `horizon-mod`
 
@@ -174,8 +175,8 @@ The game's side of capability `inter-mod`: a world of its own, so server mods bu
 
 A mod with widgets (capability `ui`): the SDK builds every mod against this world. Mods built for `horizon-mod` alone (no `ui-events` export) still load and simply hear nothing of their widgets.
 
-- Imports (what the game offers): `ui`, `render`, `input`, `recipes`, `browser`, `network`, `log`, `game`, `chat`, `hud`, `storage`, `command`
-- Exports (what the mod provides): `ui-events`, `network-client-events`, `events`
+- Imports (what the game offers): `ui`, `gui-screens`, `render`, `input`, `recipes`, `browser`, `network`, `log`, `game`, `chat`, `hud`, `storage`, `command`
+- Exports (what the mod provides): `ui-events`, `gui-screens-events`, `network-client-events`, `events`
 
 ## World `ui-host`
 
@@ -183,6 +184,13 @@ The game's side of `horizon-ui-mod` beyond `horizon-mod`.
 
 - Imports (what the game offers): `ui`
 - Exports (what the mod provides): `ui-events`
+
+## World `gui-screens-host`
+
+The game's side of capability `gui-screens`: a world of its own, so client mods built before it (no `gui-screens-events` export) still load.
+
+- Imports (what the game offers): `gui-screens`
+- Exports (what the mod provides): `gui-screens-events`
 
 ## World `render-host`
 
@@ -403,6 +411,129 @@ What the game calls on a mod that shows widgets (capability `ui`): what the play
 | `select` | `func(id: u32, row: u32)` | A row of one of the mod's `list` widgets was picked: the widget's `id` and the row, on the screen or the settings page that showed it. |
 | `closed` | `func()` | The player left the mod's screen (Esc or Done); not for a screen the mod closed itself or one that went away with the mod. |
 | `settings-opened` | `func()` | The player opened the mod's settings page in Options > Mods: call `ui::set-settings` now to fill it with fresh widgets. |
+
+## `gui-screens`
+
+Access: capability `gui-screens`.
+
+Capability `gui-screens`, client mods only (manifest `api = "0.1"`, or "0.2" to carry pictures, experimental): a screen the mod lays out itself, as tech mods' panels are — its own background and pictures, its widgets where it puts them. The game draws it with its own renderer, dims the world behind it and clips everything to the panel; what the player does with the widgets comes back as `gui-screens-events`.
+
+### record `point`
+
+A point in GUI pixels from the panel's top left.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `f32` |  |
+| `y` | `f32` |  |
+
+### record `rect`
+
+A rectangle in GUI pixels: the top left corner and the size.
+
+| Field | Type | |
+| --- | --- | --- |
+| `x` | `f32` |  |
+| `y` | `f32` |  |
+| `w` | `f32` |  |
+| `h` | `f32` |  |
+
+### record `text-widget`
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `u32` | The mod's own name for the widget; events echo it. |
+| `text` | `string` | One line, up to 256 characters. |
+| `at` | `point` |  |
+| `color` | `u32` | 0xRRGGBB; 0 is the menus' white. |
+| `centered` | `bool` | Centred on `at.x` instead of starting there. |
+| `shadow` | `bool` |  |
+
+### record `button-widget`
+
+The game's own button, nine-sliced to `rect`: a click is `gui-screens-events::clicked(id)`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `u32` |  |
+| `label` | `string` |  |
+| `rect` | `rect` |  |
+
+### record `item-widget`
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `u32` |  |
+| `item` | `string` | `minecraft:diamond`, `<mod>:<path>`; an unknown id draws a "?". |
+| `at` | `point` |  |
+| `scale` | `f32` | 1.0 is the hotbar's 16 × 16. |
+
+### record `image-widget`
+
+A picture of the mod's own (or the game's), as `render`'s sprite shapes name them: `widget/button` is the game's, `cells:panel/main` the mod's — `assets/cells/textures/gui/sprites/panel/main.png`, carried by capability `registries`. Nine-sliced by its `gui.scaling` when it has one, else stretched to `rect`. An unknown one draws nothing.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `u32` |  |
+| `sprite` | `string` |  |
+| `rect` | `rect` |  |
+| `color` | `u32` | A tint, 0xAARRGGBB: 0xFFFFFFFF draws it as it is. |
+
+### record `list-widget`
+
+Rows in a box the game scrolls, as `ui`'s list widget: a pick is `gui-screens-events::picked(id, row)`.
+
+| Field | Type | |
+| --- | --- | --- |
+| `id` | `u32` |  |
+| `rect` | `rect` |  |
+| `rows` | `list<string>` | At most 512, each up to 256 characters. |
+| `selected` | `option<u32>` | The row to mark as the current choice, if any. |
+
+### variant `widget`
+
+| Case | Payload | |
+| --- | --- | --- |
+| `text` | `text-widget` |  |
+| `button` | `button-widget` |  |
+| `item` | `item-widget` |  |
+| `image` | `image-widget` |  |
+| `list` | `list-widget` |  |
+
+### record `background`
+
+| Field | Type | |
+| --- | --- | --- |
+| `sprite` | `option<string>` | A sprite for the whole panel, `image-widget`'s rules; none for a plain dark panel. |
+| `color` | `u32` | A fill under it, 0xAARRGGBB. |
+
+### record `free-screen`
+
+A screen the mod owns: a panel `width` × `height` GUI pixels (at most 1024 each, clamped to the screen), centred; the game adds no widgets of its own, and Esc leaves it. Up to 128 widgets, drawn in order.
+
+| Field | Type | |
+| --- | --- | --- |
+| `width` | `f32` |  |
+| `height` | `f32` |  |
+| `background` | `background` |  |
+| `widgets` | `list<widget>` |  |
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `open` | `func(screen: free-screen)` | Shows `screen`, the mod's one screen: a second call while one shows replaces it, and it replaces a screen `ui.open-screen` showed (as a later `ui.open-screen` replaces it: one screen a mod). Only the last call of one hook counts. |
+| `close` | `func()` | Closes the mod's free screen when it is open (the mod hears no `closed` for this: it was its own doing). |
+
+## `gui-screens-events`
+
+Access: exported by the mod: the game calls it.
+
+What the game calls in a client mod with capability `gui-screens`. A mod built before it has no such export and keeps working.
+
+| Function | Signature | What it does |
+| --- | --- | --- |
+| `clicked` | `func(id: u32)` | A button of the mod's free screen was clicked. |
+| `picked` | `func(id: u32, row: u32)` | A row of one of its `list` widgets was picked. |
+| `closed` | `func()` | The player left the mod's free screen (Esc); not for a screen the mod closed itself or one that went away with the mod. |
 
 ## `input`
 
