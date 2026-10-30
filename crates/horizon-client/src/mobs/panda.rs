@@ -252,7 +252,8 @@ pub fn hold(m: &mut Mob, item: &str, count: u32, guaranteed: bool) {
     if guaranteed {
         finalize::set_drop_chance(m, super::gear::MAIN, 2.0);
     }
-    m.extra.main_hand_count = count;
+    m.extra
+        .set_main_hand_stack(Some(crate::items::ItemStack::new(item, count.max(1))));
 }
 /// What its goals look for on the ground, found by the game each tick.
 pub fn set_food(m: &mut Mob, near: bool, at: Option<[f64; 3]>) {

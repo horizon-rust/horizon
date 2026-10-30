@@ -226,7 +226,7 @@ fn gear_index(slot: &str) -> Option<usize> {
 pub fn slot_stack(m: &Mob, slot: &str) -> Option<ItemStack> {
     let e = &m.extra;
     let (item, worn) = match slot {
-        "mainhand" => (e.main_hand.as_ref()?, None),
+        "mainhand" => (e.main_hand.as_ref()?, e.main_hand_stack()),
         "offhand" => (e.off_hand.as_ref()?, None),
         "head" => (e.head.as_ref()?, e.armor[0].as_ref()),
         "chest" => (e.chest.as_ref()?, e.armor[1].as_ref()),
@@ -264,8 +264,7 @@ pub fn set_slot_stack(m: &mut Mob, slot: &str, stack: &ItemStack) {
     let item = Some(stack.item.clone());
     let worn = match slot {
         "mainhand" => {
-            m.extra.main_hand = item;
-            m.extra.main_hand_count = stack.count;
+            m.extra.set_main_hand_stack(Some(stack.clone()));
             None
         }
         "offhand" => {

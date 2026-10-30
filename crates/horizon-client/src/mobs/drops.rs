@@ -270,8 +270,7 @@ pub fn clear_slot(m: &mut Mob, slot: &str) {
     let body = head_is_body(m.species());
     let index = match slot {
         "mainhand" => {
-            m.extra.main_hand = None;
-            m.extra.main_hand_count = 0;
+            m.extra.set_main_hand(None);
             gear::MAIN
         }
         "offhand" => {
