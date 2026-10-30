@@ -488,47 +488,96 @@ fn sky_texel(at: vec2<i32>, top: vec2<i32>) -> vec3<f32> {
 // a corner off the wall it lights.
 const SKY_BUDGET: i32 = 24;
 const SKY_RAYS: i32 = 2;
-// RT lighting's global illumination, one bounce: the light leaving the block a ray from the surface
-// hit at camera-relative `at` (world block `cell`), its map colour times the light reaching the
-// face hit: the sun's (or the moon's) through a shadow ray, the sky's over the face's open half
-// (no ray: the bounce's own sky), and the brightest light source's through a shadow ray.
+// RT lighting's global illumination: the light leaving the surface a ray from the pixel hit at
+// camera-relative `at`, its colour times the light reaching it there: the sun's (or the moon's)
+// through a shadow ray and the rest from the radiance cache (any surface the frames before saw:
+// the light keeps bouncing, a bounce more a frame, as SHaRC's), the last frame's screen, or else
+// a second traced bounce (with hardware rays) or the sky over the face's open half and the
+// brightest light source. Remix path traces up to 4 bounces and ends the paths in its caches.
 const BOUNCE_BUDGET: i32 = 24;
-fn bounced(at: vec3<f32>, cell: vec3<i32>) -> vec3<f32> {
+// A ray's hit: where (its parameter, below 0 none), the face's normal, the surface's colour in
+// light, and what the translucent surfaces on the way let through (the hardware rays'
+// `hw_hit`; the voxel grid's `cast_ray` gives its block instead).
+struct HwHit {
+    t: f32,
+    normal: vec3<f32>,
+    albedo: vec3<f32>,
+    through: vec3<f32>,
+}
+// The map colour of world block `cell`, in light: the voxel grid's colour of a surface (none: -1).
+fn map_albedo(cell: vec3<i32>) -> vec3<f32> {
     let id = textureLoad(albedo_grid, block_slot(cell), 0).r & 63u;
-    if id == 0u || id >= 62u { return vec3(0.0); }
+    if id == 0u || id >= 62u { return vec3(-1.0); }
     let c = MAP_COLORS[id];
-    let albedo = pow(vec3(f32((c >> 16u) & 255u), f32((c >> 8u) & 255u), f32(c & 255u)) / 255.0,
+    return pow(vec3(f32((c >> 16u) & 255u), f32((c >> 8u) & 255u), f32(c & 255u)) / 255.0,
         vec3(2.2));
-    // The face hit: the side of the block the hit point is nearest.
-    let off = at + rt.camera.xyz + rt.fraction.xyz - vec3<f32>(cell) - 0.5;
-    let a = abs(off);
-    var n = vec3(0.0, 0.0, sign(off.z));
-    if a.x >= a.y && a.x >= a.z {
-        n = vec3(sign(off.x), 0.0, 0.0);
-    } else if a.y >= a.z {
-        n = vec3(0.0, sign(off.y), 0.0);
-    }
-    let lifted = at + n * 0.02;
-    var light = vec3(0.0);
+}
+fn bounced(at: vec3<f32>, cell: vec3<i32>) -> vec3<f32> {
+    let albedo = map_albedo(cell);
+    if albedo.x < 0.0 { return vec3(0.0); }
+    return bounce_light(at, hit_normal(at, cell), albedo);
+}
+// The sun's (or the moon's) light reaching a face at camera-relative `lifted` (normal `n`).
+fn sun_on(lifted: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     let facing = dot(n, rt.light.xyz);
-    if facing > 0.0 && rt.light.w > 0.0 {
-        light += rt.sun_light.rgb
-            * (rt.light.w * facing * ray(lifted, rt.light.xyz, BOUNCE_BUDGET, 1e30));
+    if facing <= 0.0 || rt.light.w <= 0.0 { return vec3(0.0); }
+    var through = 0.0;
+    if HW {
+        through = luminance(hw_light(lifted, rt.light.xyz, 4096.0));
+    } else {
+        through = ray(lifted, rt.light.xyz, BOUNCE_BUDGET, 1e30);
     }
-    // The rest of the light reaching the face: what the last frame's rays found there when it was
-    // on screen (its sky, light sources and bounced light: light keeps bouncing, a bounce more a
-    // frame), else the sky over its open half and the brightest light source.
-    // The radiance cache's cell there first (any surface the frames before saw), the last frame's
-    // screen next.
-    var last = cache_light(at, n);
-    if last.a < 0.0 { last = last_light(at); }
+    return rt.sun_light.rgb * (rt.light.w * facing * through);
+}
+// The rest of the light reaching a face at camera-relative `at`: the radiance cache's, else the
+// last frame's screen (w below 0: neither).
+fn cached_on(at: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
+    let cached = cache_light(at, n);
+    if cached.a >= 0.0 { return cached; }
+    return last_light(at);
+}
+// The light leaving a surface at camera-relative `at` (normal `n`, colour `albedo`) toward where
+// the ray came from; a cache miss traces one more bounce with hardware rays.
+fn bounce_light(at: vec3<f32>, n: vec3<f32>, albedo: vec3<f32>) -> vec3<f32> {
+    let lifted = at + n * 0.02;
+    var light = sun_on(lifted, n);
+    let last = cached_on(at, n);
     if last.a >= 0.0 {
         light += last.rgb;
+    } else if HW {
+        light += second_bounce(lifted, n, vec2<i32>(floor(at.xz * 16.0 + at.y * 7.0)));
     } else {
-        light += sky_at(normalize(n + vec3(0.0, 1.0, 0.0))) * (0.25 + 0.25 * n.y);
-        light += block_light(lifted, n, 1, vec2<i32>(floor(at.xz * 16.0)));
+        light += open_light(lifted, n, at);
     }
     return albedo * light;
+}
+// Without a cache cell or a further ray: the sky over the face's open half and the brightest
+// light source.
+fn open_light(lifted: vec3<f32>, n: vec3<f32>, at: vec3<f32>) -> vec3<f32> {
+    return sky_at(normalize(n + vec3(0.0, 1.0, 0.0))) * (0.25 + 0.25 * n.y)
+        + block_light(lifted, n, 1, vec2<i32>(floor(at.xz * 16.0)));
+}
+// The light reaching camera-relative `pos` (normal `n`) along one more cosine-weighted ray: the
+// sky's, or the surface it meets lit by the sun and its cache cell (or the open sky's guess).
+fn second_bounce(pos: vec3<f32>, n: vec3<f32>, salt: vec2<i32>) -> vec3<f32> {
+    let d = cosine_dir(n, random2(salt, 3u));
+    let h = hw_hit(pos, d, 256.0);
+    if h.t < 0.0 { return sky_at(d) * h.through; }
+    let at = pos + d * h.t;
+    let lifted = at + h.normal * 0.02;
+    var light = sun_on(lifted, h.normal);
+    let last = cached_on(at, h.normal);
+    light += select(open_light(lifted, h.normal, at), last.rgb, last.a >= 0.0);
+    return h.through * h.albedo * light;
+}
+// A cosine-weighted direction about `n` from two random numbers.
+fn cosine_dir(n: vec3<f32>, u: vec2<f32>) -> vec3<f32> {
+    let t = normalize(select(cross(n, vec3(0.0, 1.0, 0.0)), cross(n, vec3(1.0, 0.0, 0.0)),
+        abs(n.y) > 0.9));
+    let b = cross(n, t);
+    let r = sqrt(u.x);
+    let a = 6.2831853 * u.y;
+    return normalize((t * cos(a) + b * sin(a)) * r + n * sqrt(max(1.0 - u.x, 0.0)));
 }
 // The diffuse light other than the sun's the last frame's rays found at camera-relative `at`
 // (`last_light_mask`), when the last frame showed that surface; a below 0 when it didn't.
@@ -595,13 +644,16 @@ fn hit_normal(at: vec3<f32>, cell: vec3<i32>) -> vec3<f32> {
 }
 // This frame's sample at camera-relative `pos` (normal `n`), and whether it is the sky's (w 1).
 fn gi_sample(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>) -> GiSample {
-    let t = normalize(select(cross(n, vec3(0.0, 1.0, 0.0)), cross(n, vec3(1.0, 0.0, 0.0)),
-        abs(n.y) > 0.9));
-    let b = cross(n, t);
-    let u = random2(texel, 1u);
-    let r = sqrt(u.x);
-    let a = 6.2831853 * u.y;
-    let d = normalize((t * cos(a) + b * sin(a)) * r + n * sqrt(max(1.0 - u.x, 0.0)));
+    let d = cosine_dir(n, random2(texel, 1u));
+    // The hybrid's exact triangles and their textures where the GPU traces rays, as Remix's.
+    if HW {
+        let h = hw_hit(pos, d, 4096.0);
+        if h.t >= 0.0 {
+            let at = pos + d * h.t;
+            return GiSample(at, h.normal, h.through * bounce_light(at, h.normal, h.albedo));
+        }
+        return GiSample(pos + d * 4096.0, -d, sky_at(d) * h.through);
+    }
     let hit = cast_ray(pos, d, SKY_BUDGET, 1e30);
     if hit.hit {
         let at = pos + d * hit.t;

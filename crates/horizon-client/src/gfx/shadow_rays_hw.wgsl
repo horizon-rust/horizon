@@ -126,3 +126,50 @@ fn water_caustics(p: vec2<f32>, t: f32) -> f32 {
 }
 // Pure water's absorption a block (a metre), red most: deep water turns blue-green.
 const WATER_ABSORPTION: vec3<f32> = vec3(0.35, 0.065, 0.025);
+// The nearest opaque triangle from camera-relative `pos` along `l` (unit) within `reach`, as
+// Remix's bounce rays meet it: its distance (-1 none), its face's normal toward the ray, its
+// texel's colour times the vertex tint in light (the grid's map colour past the first arena page
+// or sprite array), and what the translucent triangles before it let through.
+fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
+    var q: ray_query;
+    rayQueryInitialize(&q, terrain, RayDesc(0x0u, 0xffu, 0.0, reach, pos + rt.hw_offset.xyz, l));
+    var through = vec3(1.0);
+    while rayQueryProceed(&q) {
+        let c = rayQueryGetCandidateIntersection(&q);
+        if c.geometry_index == instances[c.instance_custom_data].w {
+            through *= hw_tint(c, pos, l);
+        } else if hw_opaque(c) {
+            rayQueryConfirmIntersection(&q);
+        }
+    }
+    let hit = rayQueryGetCommittedIntersection(&q);
+    if hit.kind == RAY_QUERY_INTERSECTION_NONE {
+        return HwHit(-1.0, vec3(0.0), vec3(0.0), through);
+    }
+    let at = pos + l * hit.t;
+    let base = hw_quad(hit, false);
+    // The triangle's face from the quad's corners (the instances are only moved, not turned).
+    var n = -l;
+    var albedo = vec3(-1.0);
+    if base != 0xffffffffu {
+        let p0 = hw_position(base);
+        let f = cross(hw_position(base + 1u) - p0, hw_position(base + 2u) - p0);
+        if dot(f, f) > 1e-12 { n = normalize(f); }
+        let texel = hw_texel(hit, base);
+        if texel.a >= 0.0 {
+            let w = arena[base * 6u + 5u];
+            let tint = vec3(f32(w & 255u), f32((w >> 8u) & 255u), f32((w >> 16u) & 255u)) / 255.0;
+            albedo = pow(max(texel.rgb * tint, vec3(0.0)), vec3(2.2));
+        }
+    }
+    if dot(n, l) > 0.0 { n = -n; }
+    if albedo.x < 0.0 {
+        let cell = vec3<i32>(floor(at - n * 0.01 + rt.camera.xyz + rt.fraction.xyz));
+        albedo = max(map_albedo(cell), vec3(0.0));
+    }
+    return HwHit(hit.t, n, albedo, through);
+}
+// Arena vertex `v`'s section-relative position.
+fn hw_position(v: u32) -> vec3<f32> {
+    return bitcast<vec3<f32>>(vec3(arena[v * 6u], arena[v * 6u + 1u], arena[v * 6u + 2u]));
+}

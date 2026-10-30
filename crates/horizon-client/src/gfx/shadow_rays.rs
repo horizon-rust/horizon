@@ -161,6 +161,9 @@ const HARDWARE: &str = include_str!("shadow_rays_hw.wgsl");
 const NO_HARDWARE: &str = "
 const HW: bool = false;
 fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> { return vec3(-1.0); }
+fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
+    return HwHit(-1.0, vec3(0.0), vec3(0.0), vec3(1.0));
+}
 ";
 
 /// The pass's shader, with the hybrid's hardware rays or without (`ShadowRays::new`).
