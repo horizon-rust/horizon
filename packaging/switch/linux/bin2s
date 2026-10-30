@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+# Minimal stand-in for devkitPro's bin2s: bin2s [-a N] [-H header] file... > asm
+import os, re, sys
+args = sys.argv[1:]
+align, header, files = 4, None, []
+i = 0
+while i < len(args):
+    if args[i] == '-a': align = int(args[i + 1]); i += 2
+    elif args[i] == '-H': header = args[i + 1]; i += 2
+    elif args[i].startswith('-'): i += 1
+    else: files.append(args[i]); i += 1
+asm, hdr = ['\t.section .rodata\n'], ['#pragma once\n', '#include <stdint.h>\n', '#ifdef __cplusplus\nextern "C" {\n#endif\n']
+for f in files:
+    name = re.sub(r'[^A-Za-z0-9_]', '_', os.path.basename(f))
+    data = open(f, 'rb').read()
+    asm.append(f'\t.balign {align}\n\t.global {name}\n\t.hidden {name}\n{name}:\n')
+    for k in range(0, len(data), 16):
+        asm.append('\t.byte ' + ','.join(str(b) for b in data[k:k + 16]) + '\n')
+    asm.append(f'\t.global {name}_end\n\t.hidden {name}_end\n{name}_end:\n\t.balign {align}\n')
+    asm.append(f'\t.global {name}_size\n\t.hidden {name}_size\n{name}_size:\n\t.word {len(data)}\n')
+    hdr += [f'extern const uint8_t {name}[];\n', f'extern const uint8_t {name}_end[];\n', f'extern const uint32_t {name}_size;\n']
+hdr.append('#ifdef __cplusplus\n}\n#endif\n')
+sys.stdout.write(''.join(asm))
+if header: open(header, 'w').write(''.join(hdr))
