@@ -168,6 +168,22 @@ mod game_event_bindings {
     });
 }
 use game_event_bindings::GameEventsHost;
+/// Capability `rich-events`' world: its own, so server mods built before it
+/// (no `rich-events` export) still load. `players` is the server world's.
+mod rich_event_bindings {
+    wasmtime::component::bindgen!({
+        path: "../horizon-mod-sdk/wit",
+        world: "rich-events-host",
+        additional_derives: [PartialEq],
+        with: {
+            "horizon:mods/players": super::server_bindings::horizon::mods::players,
+        },
+    });
+}
+use rich_event_bindings::{
+    RichEventsHost,
+    horizon::mods::rich_events::{GroundStack, MobSpawn},
+};
 /// Capability `redstone`'s world: its own, so server mods built before it
 /// (no `redstone-events` export) still load.
 mod redstone_bindings {
@@ -187,6 +203,67 @@ pub const MAX_ENTITIES: usize = 1024;
 const SPAWNS_PER_CALL: u32 = 32;
 /// Mobs one `tick` call is told of.
 const ENTITIES_PER_TICK: usize = 512;
+
+/// A mob or player a blow came from, as `hurt-player` names it (capability
+/// `rich-events`): the entity's id and kind, and its health before the blow.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EntityWho {
+    pub id: u32,
+    /// `minecraft:zombie`, ...; `minecraft:player` for a PvP blow.
+    pub kind: String,
+    pub health: f32,
+}
+/// What hurt a player, as capability `rich-events` tells the mods.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DamageSource {
+    /// The damage type id, `minecraft:mob_attack`, `minecraft:fall`.
+    pub kind: String,
+    /// The mob or player that caused it, when there is one.
+    pub cause: Option<EntityWho>,
+}
+/// One of the mobs the server spawned, for the `mobs-spawned` notice.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MobSpawnNote {
+    /// `minecraft:zombie`, ...
+    pub kind: String,
+    pub dimension: String,
+    pub pos: [f64; 3],
+    /// Natural spawning made it (the dark, a random spawn); false: a
+    /// spawner block, a raid or patrol, a jockey, `/summon`.
+    pub natural: bool,
+}
+impl DamageSource {
+    fn to_wit(&self) -> rich_event_bindings::horizon::mods::rich_events::DamageSource {
+        rich_event_bindings::horizon::mods::rich_events::DamageSource {
+            kind: self.kind.clone(),
+            cause: self.cause.as_ref().map(|c| {
+                rich_event_bindings::horizon::mods::rich_events::EntityWho {
+                    id: c.id,
+                    kind: c.kind.clone(),
+                    health: c.health,
+                }
+            }),
+        }
+    }
+}
+impl MobSpawnNote {
+    fn to_wit(&self) -> MobSpawn {
+        MobSpawn {
+            kind: self.kind.clone(),
+            dimension: self.dimension.clone(),
+            x: self.pos[0],
+            y: self.pos[1],
+            z: self.pos[2],
+            natural: self.natural,
+        }
+    }
+}
+/// Spawns one `mobs-spawned` call is told of; the rest spawn unsaid and are
+/// logged.
+const RICH_SPAWNS_PER_TICK: usize = 64;
+/// Pickup asks one player is asked a tick (capability `rich-events`); past
+/// them vanilla takes the rest.
+pub const RICH_PICKUP_ASKS: usize = 16;
 
 /// One mob of a mod, as the game tells it and the mod reads it.
 #[derive(Clone, Debug, PartialEq)]
@@ -877,6 +954,8 @@ struct Running {
     redstone: Option<RedstoneHost>,
     /// Capability `game-events`: the `game-events` export.
     game_events: Option<GameEventsHost>,
+    /// Capability `rich-events`: the `rich-events` export.
+    rich_events: Option<RichEventsHost>,
     /// Capability `config`: the `config-events` export.
     config: Option<ConfigHost>,
     /// Capability `inter-mod`: the `inter-mod-events` export. A mod with
@@ -1556,6 +1635,158 @@ impl Mods {
             h.horizon_mods_game_events()
                 .call_weather_changed(s, weather)
         });
+    }
+    /// Whether a running mod answers rich events (capability `rich-events`):
+    /// only then does the game ask before an outcome settles.
+    pub fn wants_rich_events(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.run.as_ref().is_some_and(|r| r.rich_events.is_some()))
+    }
+    /// Tells every running mod with capability `rich-events` a notice.
+    fn rich_event(
+        &mut self,
+        call: impl Fn(&RichEventsHost, &mut Store<State>) -> wasmtime::Result<()>,
+    ) {
+        for i in 0..self.entries.len() {
+            if self.entries[i]
+                .run
+                .as_ref()
+                .is_none_or(|r| r.rich_events.is_none())
+            {
+                continue;
+            }
+            self.call(i, FUEL_EVENT, |run| match &run.rich_events {
+                Some(h) => call(h, &mut run.store),
+                None => Ok(()),
+            });
+        }
+    }
+    /// A player is about to take `amount` damage of `source`, before armour
+    /// and the rest of vanilla (capability `rich-events`): the mods answer in
+    /// load order, each the amount the last left; the last answer that came
+    /// back wins, clamped to 0..4x of what vanilla rolled, `amount` when no
+    /// mod answers or one fails.
+    pub fn rich_hurt_player(
+        &mut self,
+        player: &ServerPlayer,
+        source: &DamageSource,
+        amount: f32,
+    ) -> f32 {
+        let wit = source.to_wit();
+        let cap = amount * 4.0;
+        let mut left = amount;
+        for i in 0..self.entries.len() {
+            if self.entries[i]
+                .run
+                .as_ref()
+                .is_none_or(|r| r.rich_events.is_none())
+            {
+                continue;
+            }
+            let answered = self.call(i, FUEL_EVENT, |run| match &run.rich_events {
+                Some(h) => h.horizon_mods_rich_events().call_hurt_player(
+                    &mut run.store,
+                    player,
+                    &wit,
+                    left,
+                ),
+                None => Ok(Ok(None)),
+            });
+            if let Some(Ok(Some(d))) = answered
+                && d.is_finite()
+            {
+                left = d.clamp(0.0, cap);
+            }
+        }
+        left
+    }
+    /// A player's dig finished at `pos`, where `state` stands (capability
+    /// `rich-events`): false when a mod refused — the first to refuse wins
+    /// and the rest are not asked — true when none did or one failed, to
+    /// break as vanilla.
+    pub fn rich_breaking_block(
+        &mut self,
+        player: &ServerPlayer,
+        pos: [i32; 3],
+        state: &str,
+    ) -> bool {
+        for i in 0..self.entries.len() {
+            if self.entries[i]
+                .run
+                .as_ref()
+                .is_none_or(|r| r.rich_events.is_none())
+            {
+                continue;
+            }
+            let answered = self.call(i, FUEL_EVENT, |run| match &run.rich_events {
+                Some(h) => h.horizon_mods_rich_events().call_breaking_block(
+                    &mut run.store,
+                    player,
+                    pos[0],
+                    pos[1],
+                    pos[2],
+                    state,
+                ),
+                None => Ok(Ok(true)),
+            });
+            if answered == Some(Ok(false)) {
+                return false;
+            }
+        }
+        true
+    }
+    /// A dropped stack of `item` x`count` is about to enter `player`'s
+    /// inventory (capability `rich-events`): false when a mod refused — the
+    /// first to refuse wins — true to take it as vanilla.
+    pub fn rich_picking_up_item(&mut self, player: &ServerPlayer, item: &str, count: u32) -> bool {
+        let stack = GroundStack {
+            item: item.to_owned(),
+            count,
+        };
+        for i in 0..self.entries.len() {
+            if self.entries[i]
+                .run
+                .as_ref()
+                .is_none_or(|r| r.rich_events.is_none())
+            {
+                continue;
+            }
+            let answered = self.call(i, FUEL_EVENT, |run| match &run.rich_events {
+                Some(h) => h.horizon_mods_rich_events().call_picking_up_item(
+                    &mut run.store,
+                    player,
+                    &stack,
+                ),
+                None => Ok(Ok(true)),
+            });
+            if answered == Some(Ok(false)) {
+                return false;
+            }
+        }
+        true
+    }
+    /// `player` dropped these stacks of their own will (capability
+    /// `rich-events`): a notice, one call a mod a tick at most.
+    pub fn rich_dropped_items(&mut self, player: &ServerPlayer, stacks: &[(String, u32)]) {
+        let wit: Vec<GroundStack> = stacks
+            .iter()
+            .map(|(item, count)| GroundStack {
+                item: item.clone(),
+                count: *count,
+            })
+            .collect();
+        self.rich_event(|h, s| {
+            h.horizon_mods_rich_events()
+                .call_dropped_items(s, player, &wit)
+        });
+    }
+    /// The server itself spawned these mobs this tick (capability
+    /// `rich-events`): a notice, one call a mod a tick; the caller keeps the
+    /// list at [`RICH_SPAWNS_PER_TICK`], the rest spawning unsaid.
+    pub fn rich_mobs_spawned(&mut self, spawns: &[MobSpawnNote]) {
+        let wit: Vec<MobSpawn> = spawns.iter().map(MobSpawnNote::to_wit).collect();
+        self.rich_event(|h, s| h.horizon_mods_rich_events().call_mobs_spawned(s, &wit));
     }
     /// Whether a running mod has capability `redstone`: only then are the
     /// signals around its blocks worth reading.
@@ -2500,6 +2731,13 @@ impl Mods {
                 true => GameEventsHost::new(&mut store, &instance).ok(),
                 false => None,
             };
+        // `rich-events`: a server mod built before the capability has no
+        // export and keeps working, hearing nothing it could answer.
+        let rich_events_export =
+            match server && m.capabilities.contains(&crate::Capability::RichEvents) {
+                true => RichEventsHost::new(&mut store, &instance).ok(),
+                false => None,
+            };
         // `redstone-events`: a server mod built before the capability has no
         // export and keeps working, hearing nothing of its signals.
         let redstone_export = match server && m.capabilities.contains(&crate::Capability::Redstone)
@@ -2553,6 +2791,7 @@ impl Mods {
             entities: entity_export,
             redstone: redstone_export,
             game_events: game_events_export,
+            rich_events: rich_events_export,
             config: config_export,
             inter_mod: inter_mod_export,
         }))

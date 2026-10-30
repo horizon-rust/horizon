@@ -245,6 +245,9 @@ pub mod server {
     pub use exports::horizon::mods::multiblock_events::{Guest as __MultiblockGuest, Multiblock};
     pub use exports::horizon::mods::network_events::Guest as __NetGuest;
     pub use exports::horizon::mods::redstone_events::Guest as __RedstoneGuest;
+    pub use exports::horizon::mods::rich_events::{
+        DamageSource, EntityWho, GroundStack, Guest as __RichEventsGuest, MobSpawn,
+    };
     pub use exports::horizon::mods::server_events::{
         Argument, ArgumentKind, ArgumentValue, BlockPos, Guest as __Guest, Registration,
         ServerCommand,
@@ -407,6 +410,52 @@ pub mod server {
         /// The weather turned: `clear`, `rain` or `thunder` (capability
         /// `game-events`).
         fn weather_changed(&mut self, _weather: &str) {}
+        /// A player is about to take `amount` damage of `source`, before
+        /// armour and the rest of vanilla (capability `rich-events`): answer
+        /// `Ok(Some(d))` to deal `d` instead (0 cancels; clamped to 0..4x,
+        /// never above what vanilla rolled), `Ok(None)` to leave it. Mods
+        /// hear it in load order, each the amount the last left; an error
+        /// leaves it and is logged.
+        fn player_struck(
+            &mut self,
+            _player: &Player,
+            _source: &DamageSource,
+            _amount: f32,
+        ) -> Result<Option<f32>, String> {
+            Ok(None)
+        }
+        /// A player's dig finished at `pos`, where `state` stands (capability
+        /// `rich-events`): answer `Ok(false)` to cancel — the block stays, no
+        /// drop, no tool wear, no statistic; `Ok(true)` breaks as vanilla.
+        /// The first mod to refuse wins; an error breaks as vanilla.
+        fn breaking_block(
+            &mut self,
+            _player: &Player,
+            _pos: BlockPos,
+            _state: &str,
+        ) -> Result<bool, String> {
+            Ok(true)
+        }
+        /// A dropped stack is about to enter `player`'s inventory
+        /// (capability `rich-events`): answer `Ok(false)` to leave it on the
+        /// ground (it takes a 10-tick pickup delay); `Ok(true)` takes it as
+        /// vanilla. At most 16 asks a player a tick; an error takes it.
+        fn picking_up_item(
+            &mut self,
+            _player: &Player,
+            _stack: &GroundStack,
+        ) -> Result<bool, String> {
+            Ok(true)
+        }
+        /// `player` dropped these stacks of their own will (capability
+        /// `rich-events`): the drop key, a menu's throw, the creative screen.
+        /// A death's scattered inventory is not told.
+        fn dropped_items(&mut self, _player: &Player, _stacks: &[GroundStack]) {}
+        /// The server itself spawned these mobs this tick (capability
+        /// `rich-events`): natural spawning, spawner blocks, raids and
+        /// patrols, `/summon`. Mobs loaded from the world's save, other
+        /// players' mobs and the mod's own are not told.
+        fn mobs_spawned(&mut self, _spawns: &[MobSpawn]) {}
         /// What one of the mod's block entities reads from its faces changed,
         /// was read for the first time, or a neighbouring block changed
         /// (capability `redstone`): `input` is the signal on each face.
@@ -635,6 +684,34 @@ pub mod server {
         /// Seen from any distance.
         pub fn always_show(mut self) -> Self {
             self.always_show = true;
+            self
+        }
+    }
+
+    impl DamageSource {
+        /// Damage of kind `kind` (`minecraft:fall`) no mob or player caused.
+        pub fn new(kind: &str) -> Self {
+            Self {
+                kind: kind.into(),
+                cause: None,
+            }
+        }
+        /// Damage caused by entity `id` of `kind` (`minecraft:zombie`;
+        /// `minecraft:player` for a PvP blow) at `health` hit points before
+        /// the blow.
+        pub fn by(id: u32, kind: &str, health: f32) -> Self {
+            Self {
+                kind: kind.into(),
+                cause: Some(EntityWho {
+                    id,
+                    kind: kind.into(),
+                    health,
+                }),
+            }
+        }
+        /// The damage type id, `minecraft:mob_attack`.
+        pub fn of(mut self, kind: &str) -> Self {
+            self.kind = kind.into();
             self
         }
     }
@@ -1059,6 +1136,42 @@ macro_rules! export_server_mod {
                 }
                 fn weather_changed(weather: String) {
                     with(|m| m.weather_changed(&weather))
+                }
+            }
+            impl $crate::server::__RichEventsGuest for Export {
+                fn hurt_player(
+                    player: Player,
+                    source: $crate::server::DamageSource,
+                    amount: f32,
+                ) -> Result<Option<f32>, String> {
+                    let mut out = Err("The mod is not running".to_string());
+                    with(|m| out = m.player_struck(&player, &source, amount));
+                    out
+                }
+                fn breaking_block(
+                    player: Player,
+                    x: i32,
+                    y: i32,
+                    z: i32,
+                    state: String,
+                ) -> Result<bool, String> {
+                    let mut out = Err("The mod is not running".to_string());
+                    with(|m| out = m.breaking_block(&player, BlockPos { x, y, z }, &state));
+                    out
+                }
+                fn picking_up_item(
+                    player: Player,
+                    stack: $crate::server::GroundStack,
+                ) -> Result<bool, String> {
+                    let mut out = Err("The mod is not running".to_string());
+                    with(|m| out = m.picking_up_item(&player, &stack));
+                    out
+                }
+                fn dropped_items(player: Player, stacks: Vec<$crate::server::GroundStack>) {
+                    with(|m| m.dropped_items(&player, &stacks))
+                }
+                fn mobs_spawned(spawns: Vec<$crate::server::MobSpawn>) {
+                    with(|m| m.mobs_spawned(&spawns))
                 }
             }
             impl $crate::server::__RedstoneGuest for Export {

@@ -162,9 +162,13 @@ pub enum Capability {
     /// background and pictures, its widgets where it puts them (client
     /// mods; interface `gui-screens`, calls `gui-screens-events`).
     GuiScreens,
+    /// Events a mod answers, before vanilla settles the outcome: a player's
+    /// hurts, digs and pickups, and notices of drops and spawns (server
+    /// mods).
+    RichEvents,
 }
 impl Capability {
-    pub const ALL: [Capability; 30] = [
+    pub const ALL: [Capability; 31] = [
         Capability::GameRead,
         Capability::Chat,
         Capability::Hud,
@@ -195,6 +199,7 @@ impl Capability {
         Capability::Config,
         Capability::InterMod,
         Capability::GuiScreens,
+        Capability::RichEvents,
     ];
     /// Whether a mod of either side may have it, as a server mod's `storage`
     /// is also a client mod's, and either side's may carry content.
@@ -228,6 +233,7 @@ impl Capability {
                 | Capability::GameEvents
                 | Capability::Config
                 | Capability::InterMod
+                | Capability::RichEvents
         )
     }
     /// The WIT interface it grants, in `horizon:mods`.
@@ -263,6 +269,7 @@ impl Capability {
             Capability::Config => "config",
             Capability::InterMod => "inter-mod",
             Capability::GuiScreens => "gui-screens",
+            Capability::RichEvents => "rich-events",
         }
     }
     /// May change in any release: a mod uses it only with
@@ -292,6 +299,7 @@ impl Capability {
                 | Capability::Config
                 | Capability::InterMod
                 | Capability::GuiScreens
+                | Capability::RichEvents
         )
     }
     /// What the player reads before turning the mod on: "May <this>".
@@ -357,6 +365,9 @@ impl Capability {
             Capability::GuiScreens => {
                 "draw its own screens: its own backgrounds and pictures where it puts them"
             }
+            Capability::RichEvents => {
+                "change what happens: turn a player's hurts aside, keep blocks from breaking and items from being picked up, and be told of drops and spawns"
+            }
         }
     }
     /// The capability a component import needs, `Ok(None)` for one every
@@ -416,6 +427,7 @@ impl fmt::Display for Capability {
             Capability::Config => "config",
             Capability::InterMod => "inter-mod",
             Capability::GuiScreens => "gui-screens",
+            Capability::RichEvents => "rich-events",
         };
         f.write_str(name)
     }
@@ -962,6 +974,38 @@ side = \"server\"
         .unwrap_err();
         assert!(
             e.contains("capability gui-screens is for client mods"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn rich_events_are_a_server_capability_of_their_own() {
+        let base = "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.3\"\nside = \"server\"\n";
+        let m = Manifest::parse(&format!(
+            "{base}capabilities = [\"players\", \"rich-events\"]\n\
+             experimental = [\"rich-events\"]\n"
+        ))
+        .unwrap();
+        assert!(m.capabilities.contains(&Capability::RichEvents));
+        assert_eq!(Capability::RichEvents.to_string(), "rich-events");
+        assert_eq!(Capability::RichEvents.interface(), "rich-events");
+        assert!(Capability::RichEvents.is_experimental());
+        assert!(Capability::RichEvents.on_server());
+        assert_eq!(Capability::ALL.len(), 31);
+        // Without the opt-in, the manifest says what to add.
+        let e = Manifest::parse(&format!(
+            "{base}capabilities = [\"players\", \"rich-events\"]\n"
+        ))
+        .unwrap_err();
+        assert!(e.contains("experimental = [\"rich-events\"]"), "{e}");
+        // A client mod cannot ask for it.
+        let e = Manifest::parse(
+            "id = \"m\"\nname = \"M\"\nversion = \"1\"\napi = \"0.1\"\n\
+             capabilities = [\"rich-events\"]\nexperimental = [\"rich-events\"]\n",
+        )
+        .unwrap_err();
+        assert!(
+            e.contains("capability rich-events is for server mods"),
             "{e}"
         );
     }
