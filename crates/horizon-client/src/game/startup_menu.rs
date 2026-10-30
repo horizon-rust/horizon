@@ -506,6 +506,13 @@ impl Loading {
             }
             WindowEvent::RedrawRequested => self.draw(),
             WindowEvent::ModifiersChanged(modifiers) => self.menu.modifiers = modifiers.state(),
+            // `PackSelectionScreen.onFilesDrop`: a pack dropped on the window
+            // joins the Create New World screen's data packs.
+            WindowEvent::DroppedFile(path) => {
+                if let Some(title) = &mut self.menu.title {
+                    title.drop_file(path);
+                }
+            }
             WindowEvent::Focused(false) => {
                 self.menu.modifiers = ModifiersState::empty();
                 self.menu.physical_keys.clear();

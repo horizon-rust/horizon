@@ -185,6 +185,59 @@ pub fn temp_folder() -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
+/// `PackSelectionScreen.onFilesDrop`'s `PackDetector`: a zip is a pack; a
+/// folder is one when it holds a `pack.mcmeta`, or exactly one folder that
+/// does (a folder zipped by the system, which adds a wrapper). Copied into
+/// `dir`; false when `path` is no pack.
+pub fn copy_pack(path: &Path, dir: &Path) -> bool {
+    fn copy_dir(from: &Path, at: &Path) {
+        let _ = std::fs::create_dir_all(at);
+        for entry in std::fs::read_dir(from).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let to = at.join(entry.file_name());
+            if path.is_dir() {
+                copy_dir(&path, &to);
+            } else {
+                let _ = std::fs::copy(&path, &to);
+            }
+        }
+    }
+    let name = || {
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    if path.is_file() {
+        return path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+            && {
+                let _ = std::fs::create_dir_all(dir);
+                std::fs::copy(path, dir.join(name())).is_ok()
+            };
+    }
+    if !path.is_dir() {
+        return false;
+    }
+    if path.join("pack.mcmeta").is_file() {
+        copy_dir(path, &dir.join(name()));
+        return true;
+    }
+    let own: Vec<PathBuf> = std::fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && p.join("pack.mcmeta").is_file())
+        .collect();
+    match own.as_slice() {
+        [one] => {
+            copy_dir(one, &dir.join(one.file_name().unwrap_or_default()));
+            true
+        }
+        _ => false,
+    }
+}
 /// What's in a folder of packs, to notice packs added or removed while the
 /// screen shows it (`PackSelectionScreen.Watcher`).
 pub fn folder_stamp(dir: &Path) -> Vec<(String, Option<std::time::SystemTime>)> {

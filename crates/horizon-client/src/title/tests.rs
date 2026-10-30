@@ -903,13 +903,13 @@ fn create_world_tabs_follow_vanilla_and_their_choices_reach_the_action() {
             bonus_chest: true
         }
     );
-    // The More tab: Experiments has no screen yet; Data
+    // The More tab: Game Rules, Experiments and Data Packs all open; Data
     // Packs opens on a new pack folder, and its selection reaches the action.
     f.title.click(54.0 + 248.0 + 10.0, 10.0, size);
     let more = labels(&f);
     assert_eq!(
         more[..3].iter().map(|b| b.3).collect::<Vec<_>>(),
-        [true, false, true]
+        [true, true, true]
     );
     let (action, sound) = f.title.click(more[2].1 + 10.0, more[2].2 + 10.0, size);
     let Action::DataPacks { dir, selected } = action else {

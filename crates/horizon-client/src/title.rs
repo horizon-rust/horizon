@@ -15,6 +15,7 @@ use std::{
 };
 
 mod create_world;
+mod experiments;
 mod flat;
 #[cfg(test)]
 mod tests;
@@ -205,6 +206,8 @@ pub struct Title {
     recent: std::cell::RefCell<Option<(std::time::Instant, Vec<WorldEntry>)>>,
     /// WorldCreationGameRulesScreen, over Create New World while it is open.
     rules: RefCell<Option<RulesScreen>>,
+    /// CreateWorldScreen's Experiments screen, over Create New World.
+    experiments: RefCell<Option<experiments::ExperimentsScreen>>,
 }
 pub(crate) struct Button {
     x: f32,
@@ -345,6 +348,7 @@ impl Title {
             ),
             recent: std::cell::RefCell::new(None),
             rules: RefCell::new(None),
+            experiments: RefCell::new(None),
         }
     }
     /// Vanilla bypasses the selector when there are no saves.
@@ -483,6 +487,23 @@ impl Title {
     }
     /// The Data Packs screen's Done (`applyNewPackConfig`): its selection for
     /// the new world.
+    /// `PackSelectionScreen.onFilesDrop`: a pack dropped on the window joins
+    /// the Create New World screen's data packs (the screen's watcher lists
+    /// it within a second).
+    pub fn drop_file(&mut self, path: std::path::PathBuf) {
+        let Mode::Create { options, .. } = &mut self.mode else {
+            return;
+        };
+        if options.pack_dir.is_none() {
+            options.pack_dir = crate::datapack::temp_folder().ok();
+        }
+        let Some(dir) = options.pack_dir.clone() else {
+            return;
+        };
+        if !crate::datapack::copy_pack(&path, &dir) {
+            log::warn!("Horizon: {} is not a data pack", path.display());
+        }
+    }
     pub fn set_data_packs(&mut self, ids: Vec<String>) {
         if let Mode::Create { options, .. } = &mut self.mode {
             options.data_packs = ids;
@@ -1142,6 +1163,9 @@ impl Title {
         if let Some(rules) = self.rules.borrow_mut().as_mut() {
             return rules.draw(batch, atlas, cursor);
         }
+        if let Some(screen) = self.experiments.borrow().as_ref() {
+            return screen.draw(batch, atlas, cursor);
+        }
         match &self.mode {
             Mode::Main => {
                 // LogoRenderer: the logo's top 44 of 64 rows, then the edition
@@ -1650,7 +1674,7 @@ impl Title {
     pub fn click(&mut self, x: f32, y: f32, size: (f32, f32)) -> (Action, bool) {
         self.remember_direct_address();
         // The game rules take the press in `press_rules`, which has the atlas.
-        if self.rules.get_mut().is_some() {
+        if self.rules.get_mut().is_some() || self.experiments.get_mut().is_some() {
             return (Action::None, false);
         }
         let (w, h) = (size.0.ceil(), size.1.ceil());
@@ -1907,6 +1931,13 @@ impl Title {
                 Some(id),
             ) if !matches!(id, 21 | 22 | 31) => {
                 options.press(id, creative);
+                Action::None
+            }
+            // CreateWorldScreen.openExperimentsScreen: the feature packs the
+            // jar ships, switched on or off.
+            (Mode::Create { options, .. }, Some(30)) => {
+                let flags = experiments::repository_flags(&self.resources, &options.data_packs);
+                *self.experiments.get_mut() = Some(experiments::ExperimentsScreen::new(flags));
                 Action::None
             }
             (Mode::Create { .. }, Some(21)) => self.create_action(),
@@ -2167,6 +2198,40 @@ impl Title {
     /// it lands on a button, for its sound.
     pub fn press_rules(&mut self, atlas: &HudAtlas, cursor: (f32, f32), size: (f32, f32)) -> bool {
         let size = (size.0.ceil(), size.1.ceil());
+        if self.experiments.borrow().is_some() {
+            let click = self
+                .experiments
+                .borrow()
+                .as_ref()
+                .and_then(|s| s.click(atlas, cursor, size));
+            match click {
+                Some(experiments::Click::Switch(i)) => {
+                    let flipped = self
+                        .experiments
+                        .borrow_mut()
+                        .as_mut()
+                        .and_then(|s| s.flags.get_mut(i))
+                        .map(|f| {
+                            f.enabled = !f.enabled;
+                            (f.id.clone(), f.enabled)
+                        });
+                    if let (Some((id, on)), Mode::Create { options, .. }) =
+                        (flipped, &mut self.mode)
+                    {
+                        options.data_packs.retain(|p| p != &id);
+                        if on {
+                            options.data_packs.push(id);
+                        }
+                    }
+                    return true;
+                }
+                Some(experiments::Click::Outcome(_)) => {
+                    *self.experiments.get_mut() = None;
+                    return true;
+                }
+                None => return false,
+            }
+        }
         let Some(rules) = self.rules.get_mut() else {
             return false;
         };
@@ -2188,6 +2253,9 @@ impl Title {
         }
     }
     pub fn escape(&mut self) {
+        if self.experiments.get_mut().take().is_some() {
+            return;
+        }
         if let Some(rules) = self.rules.get_mut() {
             if let Some(exit) = rules.escape() {
                 self.close_rules(exit);
