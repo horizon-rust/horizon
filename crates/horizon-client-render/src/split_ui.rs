@@ -876,11 +876,6 @@ mod tests {
         assert_eq!(ui.selected, None);
     }
 
-    fn centre(ui: &SplitUi, label: &str) -> (f32, f32) {
-        let [x, y, w, h] = rect(ui, label);
-        (x + w / 2.0, y + h / 2.0)
-    }
-
     #[test]
     fn tiles_split_the_window_on_the_map() {
         let ui = screen(2);
