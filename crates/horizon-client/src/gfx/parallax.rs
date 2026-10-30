@@ -247,6 +247,24 @@ fn parallax_march(slot: ParallaxSlot, uv: vec2<f32>, ray: vec3<f32>, strength: f
     }
     return ParallaxHit(uv + d / size * t, normal, texel.b, t / max(deepest, 1e-6));
 }
+// The relief's own shadow (POM self-shadowing): from where the view ray landed (`uv`, `depth`
+// blocks into the map) toward the light `l` (tangent space, z out of the surface), the share of
+// it the height map lets through: none where a texel stands above the ray on its way out, so the
+// sunward wall of a groove the low sun can't reach into stays dark.
+fn parallax_self_shadow(slot: ParallaxSlot, uv: vec2<f32>, depth: f32, l: vec3<f32>,
+    strength: f32) -> f32 {
+    if depth <= 1e-4 || l.z <= 0.0 { return 1.0; }
+    let slope = l.xy / max(l.z, 0.05);
+    var lit = 1.0;
+    for (var i = 1u; i <= 8u; i++) {
+        let up = depth * f32(i) / 8.0;
+        let at = (uv + slope * up) * slot.size;
+        let h = parallax_depth(slot, floor(at)) * strength;
+        // The map stands above the ray there: a soft edge over a sixteenth of the depth.
+        lit = min(lit, smoothstep(-depth / 16.0, 0.0, h - (depth - up)));
+    }
+    return lit;
+}
 fn parallax_unpack(texel: vec4<f32>) -> vec3<f32> {
     let xy = texel.rg * 2.0 - 1.0;
     return vec3(xy, sqrt(max(1.0 - dot(xy, xy), 0.0)));
@@ -301,6 +319,12 @@ fn parallax_surface(in: ParallaxOut, march: bool) -> ParallaxSurface {
     }
     let world = normalize(hit.normal.x * tu + hit.normal.y * tv + hit.normal.z * n);
     let ao = hit.ao * (1.0 - PARALLAX_CAVITY * hit.depth);
+    if strength > 0.001 {
+        let l = horizon_terrain_globals.rt_light.xyz;
+        let deepest = 0.25 * PARALLAX_DEPTH * strength;
+        horizon_terrain_rt_relief_sun = parallax_self_shadow(slot, hit.uv, hit.depth * deepest,
+            vec3(dot(l, tu), dot(l, tv), dot(l, n)), strength);
+    }
     // The sprite where the ray landed, when it moved.
     var landed = texel;
     if strength > 0.001 {

@@ -89,6 +89,9 @@ struct Globals {
 // The traced reflection for the fragment being lit (`rt_reflection`), which `rt_shade` takes in
 // place of the sky's: rgb its light, a 1 when there is one.
 var<private> rt_mirror: vec4<f32>;
+// How much of the sun the surface's own relief lets reach the fragment (gfx/parallax.rs
+// `parallax_self_shadow`; 1 for a face without a height map), which `rt_shade` takes.
+var<private> rt_relief_sun: f32 = 1.0;
 // What the translucent surface at `pixel` (camera-relative `pos`, in front of the solid terrain)
 // reflects, traced (`rt_reflect`); a 0 for a solid fragment or where the rays reached the sky.
 fn rt_reflection(pixel: vec2<f32>, pos: vec3<f32>) -> vec4<f32> {
@@ -420,11 +423,14 @@ fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: 
     let nv = max(dot(n, view), 1e-3);
     let l = globals.rt_light.xyz;
     // The real sun's light through the atmosphere, or the moon's (gfx/atmosphere.rs).
-    let sun = globals.rt_sun_light.rgb * globals.rt_light.w * v.x * tint;
+    let sun = globals.rt_sun_light.rgb * globals.rt_light.w * v.x * tint * rt_relief_sun;
     let diffuse = m.albedo * (1.0 - m.metal);
     // The sun: lit where the face (not only its normal map) turns to it.
     let gate = smoothstep(0.0, 0.15, dot(geo, l));
-    let nl = max(dot(n, l), 0.0);
+    // Micro-shadowing (Chan 2018): a facet of the normal map gets little more light than the face
+    // it is on, its neighbours' ridges shadowing it when the light grazes the face, so a low sun
+    // doesn't pick out each groove's sunward wall as a bright line.
+    let nl = min(max(dot(n, l), 0.0), 1.5 * max(dot(geo, l), 0.0) + 0.05);
     let h = normalize(l + view);
     let nh = max(dot(n, h), 0.0);
     let alpha = m.roughness * m.roughness;
@@ -463,7 +469,12 @@ fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: 
     // Reflected: the sky the way the view bounces off the surface, as much as Fresnel says (the
     // rougher, the less of it).
     let ambient_f = rt_fresnel(m.f0, nv) * (1.0 - m.roughness * 0.7);
-    var reflected = rt_sky(reflect(-view, n)) * seen * m.ao * ambient_f;
+    // The reflection fades as it dips under the face (horizon fading): a normal map's facet
+    // turned away would otherwise reflect the bright horizon from inside the surface, the walls
+    // of a plank's grooves glittering at sunset.
+    let r = reflect(-view, n);
+    let horizon = clamp(1.0 + 1.1 * dot(r, geo), 0.0, 1.0);
+    var reflected = rt_sky(r) * seen * m.ao * ambient_f * (horizon * horizon);
     // Water and glass: what the rays found that way (Remix's primary surface replacement).
     if rt_mirror.a > 0.5 { reflected = rt_mirror.rgb * ambient_f; }
     return sun * (direct + through) + highlight + diffuse * (1.0 - ambient_f) * around + reflected
