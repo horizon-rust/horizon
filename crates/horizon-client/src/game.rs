@@ -1941,6 +1941,9 @@ struct Game<'a> {
     /// KeyboardHandler's debug key state (game/debug_keys.rs), the physical
     /// keys held, and the debug renderers F3+B and F3+G switch on.
     debug_keys: horizon_client::debug_keys::DebugKeys,
+    /// The world generation data the Create World screen waits for
+    /// (`CreateWorldScreen.openCreateWorldScreen`'s load), read on a worker.
+    creation_job: Option<std::thread::JoinHandle<()>>,
     /// The F3 overlay's charts (F3+2, F3+3).
     debug_charts: horizon_client::debug_chart::DebugCharts,
     show_hitboxes: bool,
@@ -11765,7 +11768,49 @@ impl Game<'_> {
         }
         Ok(())
     }
+    /// `CreateWorldScreen.openCreateWorldScreen`: read the world generation
+    /// data the create screen describes, on a worker, then open the screen.
+    fn poll_world_creation(&mut self) {
+        let Some(title) = self.title.as_ref() else {
+            return;
+        };
+        if !title.preparing {
+            return;
+        }
+        if self.creation_job.is_none() {
+            let dir = self.options.resources.join("worldgen");
+            let registry = self.pack.assets.registry;
+            self.creation_job = std::thread::Builder::new()
+                .name("world-creation".into())
+                .spawn(move || {
+                    if let Err(e) = horizon_client::vanillagen::shared_data(
+                        &dir,
+                        registry,
+                        &horizon_world::loot::PackOverlay::NONE,
+                    ) {
+                        log::warn!("Horizon: preparing world creation failed: {e}");
+                    }
+                })
+                .ok();
+            return;
+        }
+        let finished = self
+            .creation_job
+            .as_ref()
+            .is_none_or(std::thread::JoinHandle::is_finished);
+        if !finished {
+            return;
+        }
+        if let Some(job) = self.creation_job.take() {
+            let _ = job.join();
+        }
+        if let Some(title) = self.title.as_mut() {
+            title.preparing = false;
+            title.mode = Title::new_world();
+        }
+    }
     fn render(&mut self) -> Result<bool> {
+        self.poll_world_creation();
         // Minecraft.doWorldLoad: the LevelLoadingScreen while single player's
         // server starts. Its chunk map and progress are the server's, which
         // the window doesn't see yet: the title alone, over the menu background.
@@ -11774,7 +11819,10 @@ impl Game<'_> {
             // `createWorld.preparing` for a new world, the opening line
             // otherwise. (Read before the renderer borrow.)
             let text = if self.creating_world() {
-                horizon_client::lang::get_or("createWorld.preparing", "Preparing for world creation...")
+                horizon_client::lang::get_or(
+                    "createWorld.preparing",
+                    "Preparing for world creation...",
+                )
             } else {
                 horizon_client::lang::get_or("menu.loadingLevel", "Opening world")
             };
@@ -11808,18 +11856,16 @@ impl Game<'_> {
             let text = if loader.cancelled {
                 horizon_client::lang::get_or("menu.loadingLevel", "Cancelling world")
             } else if creates {
-                horizon_client::lang::get_or("createWorld.preparing", "Preparing for world creation...")
+                horizon_client::lang::get_or(
+                    "createWorld.preparing",
+                    "Preparing for world creation...",
+                )
             } else {
                 horizon_client::lang::get_or("menu.loadingLevel", "Opening world")
             };
             if let Some(renderer) = &mut self.renderer {
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
-                horizon_client::level_loading::draw_progress(
-                    &mut hud,
-                    &self.gui.atlas,
-                    &text,
-                    0.0,
-                );
+                horizon_client::level_loading::draw_progress(&mut hud, &self.gui.atlas, &text, 0.0);
                 return renderer.render(&loading_frame(&hud));
             }
             return Ok(false);
@@ -12288,7 +12334,10 @@ impl Game<'_> {
         self.entry_creates
             || matches!(
                 &self.pending_entry,
-                Some(PendingWorldEntry::Local { create: Some(_), .. })
+                Some(PendingWorldEntry::Local {
+                    create: Some(_),
+                    ..
+                })
             )
     }
     fn loading_reason(&self) -> Option<horizon_client::level_loading::Reason> {
@@ -14341,6 +14390,7 @@ impl<'a> Game<'a> {
             command_block_screen: None,
             friends: None,
             debug_keys: Default::default(),
+            creation_job: None,
             debug_charts: Default::default(),
             show_hitboxes: false,
             show_chunk_borders: false,

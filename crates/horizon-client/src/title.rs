@@ -223,6 +223,10 @@ pub enum Action {
 }
 pub struct Title {
     pub mode: Mode,
+    /// `CreateWorldScreen.openCreateWorldScreen`'s `queueLoadScreen`: the
+    /// world generation data the Create World screen needs is being read, so
+    /// the screen shows `createWorld.preparing` until it is done.
+    pub preparing: bool,
     /// Direct Connection's address, synchronized with `options.txt`'s `lastServer`.
     pub last_server: String,
     pub saves: PathBuf,
@@ -356,6 +360,7 @@ impl Title {
         let now = std::time::Instant::now();
         Self {
             mode,
+            preparing: false,
             last_server: String::new(),
             saves,
             resources: resources.to_owned(),
@@ -406,7 +411,7 @@ impl Title {
             }
         };
     }
-    pub(crate) fn new_world() -> Mode {
+    pub fn new_world() -> Mode {
         Mode::Create {
             name: lang::get_or("selectWorld.newWorld", "New World"),
             seed: String::new(),
@@ -1109,6 +1114,19 @@ impl Title {
         hide_splash: bool,
     ) {
         let (w, h) = (batch.width.ceil(), batch.height.ceil());
+        // The world creation data is being read: the screen says so, as
+        // `CreateWorldScreen.openCreateWorldScreen`'s queued loading screen
+        // does, instead of showing a Create World screen it cannot fill yet.
+        if self.preparing {
+            crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
+            crate::level_loading::draw_progress(
+                batch,
+                atlas,
+                &lang::get_or("createWorld.preparing", "Preparing for world creation..."),
+                0.0,
+            );
+            return;
+        }
         if let Some(rules) = self.rules.borrow_mut().as_mut() {
             return rules.draw(batch, atlas, cursor);
         }
@@ -1632,7 +1650,11 @@ impl Title {
             }
             (Mode::Select { .. }, Some(11)) => {
                 self.create_return_to_main = false;
-                self.mode = Self::new_world();
+                // `CreateWorldScreen.openCreateWorldScreen`: the world
+                // generation data is read first, behind a loading screen;
+                // `Game` starts that and opens the create screen after
+                // (`title.preparing`).
+                self.preparing = true;
                 Action::None
             }
             (Mode::Select { worlds, selected }, Some(id @ 13..=15)) => {
