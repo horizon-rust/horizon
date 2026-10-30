@@ -722,6 +722,7 @@ impl Tonemap {
             grading
                 .bloom
                 .down(encoder, &post.chain, scene, &grading.first, false);
+            super::gpu_passes::stamp(encoder, "exposure: meter (downsample)");
             grading.exposure.adapt(
                 device,
                 encoder,
@@ -729,10 +730,12 @@ impl Tonemap {
                 post.chain.meter(),
                 &grading.params,
             );
+            super::gpu_passes::stamp(encoder, "exposure: adapt");
             grading
                 .bloom
                 .down(encoder, &post.glow, scene, &grading.first, true);
             grading.bloom.up(encoder, &post.glow);
+            super::gpu_passes::stamp(encoder, "bloom");
             Self::draw(
                 encoder,
                 "Grading",
@@ -740,6 +743,7 @@ impl Tonemap {
                 &[scene, &post.group],
                 &post.graded,
             );
+            super::gpu_passes::stamp(encoder, "grading (local tone mapping)");
             static SHOULDER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             let shoulder = *SHOULDER
                 .get_or_init(|| std::env::var("HORIZON_TONEMAP").as_deref() == Ok("shoulder"));
@@ -754,6 +758,7 @@ impl Tonemap {
                 &[&post.graded_group],
                 target,
             );
+            super::gpu_passes::stamp(encoder, "tone curve (ACES)");
         } else {
             Self::draw(encoder, "Tone mapping", &self.tonemap, &[scene], target);
         }

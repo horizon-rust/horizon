@@ -757,6 +757,7 @@ impl Froxels {
                 dims[2].div_ceil(4),
             );
         }
+        super::gpu_passes::stamp(encoder, "froxels: inject (lights, shadows)");
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Froxel volumetrics' blend"),
             layout: &self.blend_layout,
@@ -784,6 +785,7 @@ impl Froxels {
                 dims[2].div_ceil(4),
             );
         }
+        super::gpu_passes::stamp(encoder, "froxels: blend (temporal)");
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Froxel volumetrics' integrate"),
             layout: &self.integrate_layout,
@@ -802,6 +804,7 @@ impl Froxels {
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(dims[0].div_ceil(8), dims[1].div_ceil(8), 1);
         }
+        super::gpu_passes::stamp(encoder, "froxels: integrate");
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Froxel volumetrics' composite"),
             layout: &self.apply_layout,

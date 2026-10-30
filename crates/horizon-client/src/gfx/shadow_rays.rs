@@ -44,12 +44,22 @@ impl Foveation {
 
     /// A VR eye looking along `gaze`; `None` for a quad view's inset, sharp all over.
     pub fn eye(gaze: Option<glam::Vec3>) -> Self {
+        // `HORIZON_RT_SHARP` (degrees) moves the sharp zone's edge, to measure what the foveation
+        // saves: 0 traces sparsely everywhere, 180 sharp everywhere.
+        static SHARP: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+        let sharp = *SHARP.get_or_init(|| {
+            std::env::var("HORIZON_RT_SHARP")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|v| (0.0..=180.0).contains(v))
+                .unwrap_or(SHARP_DEGREES)
+        });
         Self {
             scale: 2,
             gaze: gaze.map(|g| {
                 (
                     g.normalize_or(glam::Vec3::NEG_Z).to_array(),
-                    SHARP_DEGREES.to_radians().cos(),
+                    sharp.to_radians().cos(),
                 )
             }),
         }
@@ -810,6 +820,8 @@ impl ShadowRays {
         pass.set_bind_group(0, &group, &[]);
         pass.dispatch_workgroups(mask_size[0].div_ceil(8), mask_size[1].div_ceil(8), 1);
         drop(pass);
+        // One kernel traces the sun, the direct lights, the bounces and the mirrors at once.
+        super::gpu_passes::stamp(encoder, "rays: trace (sun, DI, GI, PSR)");
         if !rays.lighting {
             return [mask, blocks, sun, reflection, refraction];
         }
@@ -823,6 +835,7 @@ impl ShadowRays {
             pass.set_bind_group(0, &self.resolve_group, &[]);
             pass.dispatch_workgroups((CACHE_CELLS as u32).div_ceil(64), 1, 1);
         }
+        super::gpu_passes::stamp(encoder, "rays: radiance cache resolve");
         // RT lighting's denoiser: the sky and bounced light from `blocks` to `light` by way of
         // `scratch`, a pass a tap spacing, the direct light added by the last.
         let passes = [
@@ -855,6 +868,8 @@ impl ShadowRays {
             pass.set_pipeline(&self.denoise);
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(mask_size[0].div_ceil(8), mask_size[1].div_ceil(8), 1);
+            drop(pass);
+            super::gpu_passes::stamp(encoder, "rays: denoiser (4 passes)");
         }
         [mask, light, sun, reflection, refraction]
     }

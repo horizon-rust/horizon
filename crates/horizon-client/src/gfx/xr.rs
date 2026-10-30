@@ -107,7 +107,7 @@ pub(super) struct State {
     origin: Option<Vec3>,
     /// The head's yaw and pitch (vanilla's degrees, yaw relative to the stage's forward) on
     /// the last frame drawn.
-    head: Option<(f32, f32)>,
+    pub(super) head: Option<(f32, f32)>,
     /// The gaze on the last frame drawn: its yaw less the head's, and its pitch (`XrLook`).
     gaze: Option<[f32; 2]>,
     /// The head yaw the game has turned the player by so far (`xr_look`): the eyes draw the
@@ -474,6 +474,7 @@ impl Renderer {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("VR panel"),
                 });
+            super::gpu_passes::begin(&self.device, &mut encoder, "vr panel");
             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("VR panel clear"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -495,7 +496,10 @@ impl Renderer {
                 size,
                 0..frame.hud.vertices.len() as u32,
             );
+            super::gpu_passes::stamp(&mut encoder, "panel: clear and HUD");
+            super::gpu_passes::end(&mut encoder);
             self.queue.submit([encoder.finish()]);
+            super::gpu_passes::submitted();
             xr_frame.quads[PANEL] = Some(self.place_panel(&xr_frame, size));
         }
         self.point(&mut xr, &mut xr_frame, size)?;
@@ -826,6 +830,7 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("VR mirror"),
             });
+        super::gpu_passes::begin(&self.device, &mut encoder, "vr mirror");
         let group = self.world_post.bind(&self.device, &eye);
         self.world_post
             .finish_with(&mut encoder, &screen, format, &group);
@@ -837,7 +842,10 @@ impl Renderer {
             [self.config.width, self.config.height],
             0..frame.hud.vertices.len() as u32,
         );
+        super::gpu_passes::stamp(&mut encoder, "mirror: scale and HUD");
+        super::gpu_passes::end(&mut encoder);
         self.queue.submit([encoder.finish()]);
+        super::gpu_passes::submitted();
         self.queue.present(surface_frame);
         Ok(true)
     }
