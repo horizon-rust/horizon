@@ -106,6 +106,8 @@ pub use froxels::CameraMedium;
 mod shadow_rays;
 mod sky_stars;
 mod stars;
+// Temporal anti-aliasing for RT lighting (gfx/taa.rs).
+mod taa;
 mod timing;
 mod tonemap;
 // Which block textures are thin, for the light through leaves (parallax.rs).
@@ -588,6 +590,8 @@ pub struct Renderer {
     occlusion: occlusion::Occlusion,
     /// Resolution scale and FXAA (Horizon settings).
     world_post: world_post::Post,
+    /// Temporal anti-aliasing of the RT-lit scene: the histories and the resolve (taa.rs).
+    taa: taa::Taa,
     /// Linear Light: the scene targets and the tone mapping (`None`: vanilla's gamma-space frame).
     tonemap: Option<tonemap::Tonemap>,
     /// Ray-traced shadows and ambient occlusion: which run, the voxel grid around the camera and
@@ -2835,6 +2839,7 @@ impl Renderer {
         let depth = Self::depth(&device, &config);
         let world_post =
             world_post::Post::new(&device, world_format, config.format.remove_srgb_suffix());
+        let taa = taa::Taa::new(&device);
         let tonemap =
             linear.then(|| tonemap::Tonemap::new(&device, config.format.remove_srgb_suffix()));
         let uploads = upload::Uploads::new(&device);
@@ -3002,6 +3007,7 @@ impl Renderer {
             block_entity_revision: next_block_entity_revision(),
             occlusion: occlusion::Occlusion::new(crate::chunk::MIN_Y, crate::chunk::HEIGHT / 16),
             world_post,
+            taa,
             tonemap,
             rt_shadows: false,
             rt_ambient: false,
@@ -3706,14 +3712,16 @@ impl Renderer {
         let Some(hw) = self.hw_rays.as_mut() else {
             return;
         };
-        let solid = self.entity_batch.combined.len().min(solid_quads as usize * 4);
+        let solid = self
+            .entity_batch
+            .combined
+            .len()
+            .min(solid_quads as usize * 4);
         let ratio = (frame.hand_fov_degrees.to_radians() / 2.0).tan()
             / (frame.fov_degrees.to_radians() / 2.0).tan();
         let view = crate::camera::view_matrix(frame.yaw, frame.pitch);
-        let hand_to_world = view.inverse()
-            * Mat4::from_scale(Vec3::new(ratio, ratio, 1.0))
-            * frame.bob
-            * view;
+        let hand_to_world =
+            view.inverse() * Mat4::from_scale(Vec3::new(ratio, ratio, 1.0)) * frame.bob * view;
         let tiles = match (&self.rt_cloud_mesh, clouds) {
             (Some(mesh), true) => mesh.tiles().collect(),
             _ => Vec::new(),
@@ -3736,7 +3744,11 @@ impl Renderer {
     /// structure, the arena's first page, the first sprite array, and the moving geometry's.
     fn hw_bindings(&self) -> Option<hw_rays::Bindings> {
         let hw = self.hw_rays.as_ref()?;
-        let atlas = self.hud.atlas_texture.as_ref()?.create_view(&Default::default());
+        let atlas = self
+            .hud
+            .atlas_texture
+            .as_ref()?
+            .create_view(&Default::default());
         let (_, page) = self.arena.page_buffers().find(|(p, _)| *p == 0)?;
         let sprites = self
             .sprite_textures
@@ -4532,6 +4544,26 @@ impl Renderer {
         let world_linear = linear && !(pack_post || native_post);
         // RT lighting: this view's light from the last frame, for the terrain to read.
         let rt_view = self.eye.map_or(0, |e| e.view_index);
+        // Temporal anti-aliasing (taa.rs): the world and the rays' depth prepass are drawn with a
+        // sub-pixel jitter in `view_proj`, which the rays' pass takes as it is (it rebuilds
+        // positions from that depth and reprojects with the last jittered matrix: both consistent),
+        // and the resolve after the world takes the clean one.
+        let taa_now = taa::enabled() && rt.lighting && world_linear;
+        let clean_view_proj = view_proj;
+        let taa_size = {
+            let target = [target_texture.width(), target_texture.height()];
+            let window = [self.config.width, self.config.height];
+            match self.eye {
+                Some(_) => target,
+                None => self.world_post.scaled_size(window, false).unwrap_or(target),
+            }
+        };
+        let view_proj = if taa_now {
+            taa::jittered(view_proj, self.taa.jitter(rt_view), taa_size)
+        } else {
+            self.taa.release();
+            view_proj
+        };
         let rt_history = match self.shadow_rays.history(rt_view) {
             Some(h) if world_linear && rt.lighting => Some((h.view_proj, h.camera, h.mask.clone())),
             _ => None,
@@ -5700,9 +5732,14 @@ impl Renderer {
                     view: world_depth,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0.0),
-                        // Phase 2 of occlusion culling draws over it; a shader pack and the
-                        // ray-traced shadows read it.
-                        store: if cull.is_some() || pack_reads_world || shadows || froxels_now {
+                        // Phase 2 of occlusion culling draws over it; a shader pack, the ray-traced
+                        // shadows and the TAA read it.
+                        store: if cull.is_some()
+                            || pack_reads_world
+                            || shadows
+                            || froxels_now
+                            || taa_now
+                        {
                             wgpu::StoreOp::Store
                         } else {
                             wgpu::StoreOp::Discard
@@ -6143,6 +6180,23 @@ impl Renderer {
                 },
             );
             self.froxels.camera = saved;
+        }
+        // Temporal anti-aliasing (taa.rs): the world and its media resolved against the history,
+        // before the tone mapping's exposure and bloom read them (the hand and the HUD come after).
+        if taa_now {
+            self.taa.resolve(
+                &self.device,
+                &mut self.uploads,
+                &mut encoder,
+                taa::Inputs {
+                    view: rt_view,
+                    color: world_view,
+                    depth: world_depth,
+                    size: world_size,
+                    view_proj: clean_view_proj,
+                    camera: frame.camera,
+                },
+            );
         }
         if let Some((color, depth)) = &scaled
             && pack_post
