@@ -17,10 +17,12 @@ use std::{path::PathBuf, time::Duration};
 #[cfg(feature = "mods")]
 use {
     super::Screen,
+    super::mod_render::{argb, sprite_key},
     super::{execution_role::ExecutionRole, lan::LanHost, server_mods::ModEvent},
     horizon_client::{
         extras::Corner,
         extras_hud,
+        hud::{HudAtlas, rgba},
         items::ItemStack,
         keybinds,
         mod_list::Installed,
@@ -29,8 +31,8 @@ use {
         ui,
     },
     horizon_mods::{
-        Clock, ModKey, Mods, Output, Player, Runs, ServerPlayer, Snapshot, Status, UiScreen,
-        UiWidget,
+        Clock, FreeScreen, GuiRect, GuiWidget, ModKey, Mods, Output, Player, Runs, ServerPlayer,
+        Snapshot, Status, UiScreen, UiWidget,
     },
     std::time::Instant,
     winit::{event::MouseButton, keyboard::KeyCode},
@@ -1052,7 +1054,9 @@ impl Game<'_> {
         self.show_mod_output();
     }
     /// Leaves the mod screen: back to Options for a settings page, to what
-    /// it covered for a mod's own. `tell` is Esc/Done, heard as `closed`.
+    /// it covered for a mod's own. `tell` is Esc/Done, heard as `closed` —
+    /// of the free screen (capability `gui-screens`) while one is open,
+    /// else of the stacked one (capability `ui`).
     pub(super) fn close_mod_screen(&mut self, tell: bool) {
         let Some(ms) = self.mods.screen.take() else {
             return;
@@ -1066,13 +1070,21 @@ impl Game<'_> {
             }
         }
         if tell {
-            self.mods.mods.ui_closed(ms.owner);
+            if self.mods.mods.free_screen(ms.owner).is_some() {
+                self.mods.mods.gui_closed(ms.owner);
+            } else {
+                self.mods.mods.ui_closed(ms.owner);
+            }
             self.show_mod_output();
         }
     }
     /// The mod's screen or settings page: its title over widgets stacked
-    /// down the middle, a Done button, Esc to leave (vanilla's menus).
+    /// down the middle, a Done button, Esc to leave (vanilla's menus); or a
+    /// free screen (capability `gui-screens`): the panel the mod sized,
+    /// centred over the dimmed world, its background and its widgets where
+    /// the mod put them, and no widgets of the game's own.
     pub(super) fn draw_mod_screen(&mut self, batch: &mut HudBatch) {
+        let (sw, sh) = self.gui_size();
         let Some(ms) = self.mods.screen.as_mut() else {
             // The screen was dropped while it was up: back to the world,
             // mouse held again like any return to Playing.
@@ -1082,6 +1094,122 @@ impl Game<'_> {
             }
             return;
         };
+        let free = (!ms.settings)
+            .then(|| self.mods.mods.free_screen(ms.owner))
+            .flatten();
+        if let Some(screen) = free {
+            let (px, py, pw, ph) = free_panel(screen, sw, sh);
+            let atlas = &self.gui.atlas;
+            let cursor = self.cursor;
+            let in_world = self.player.is_some();
+            // The world behind it, dimmed as the menus' own background is.
+            if in_world {
+                batch.fill(atlas, 0.0, 0.0, sw, sh, 0xC010_1010);
+            }
+            batch.fill(atlas, px, py, pw, ph, argb(screen.background.color));
+            if let Some(sprite) = &screen.background.sprite {
+                ui::nine_slice(batch, atlas, &sprite_key(sprite), px, py, pw, ph, u32::MAX);
+            }
+            // Item icons draw in a second pass: `draw_item_model` needs the
+            // game, so `atlas` may not stay borrowed across it.
+            let mut items: Vec<(String, f32, f32, f32)> = Vec::new();
+            let mut list_i = 0usize;
+            for widget in &screen.widgets {
+                match widget {
+                    GuiWidget::Text(t) => {
+                        let at = t.at;
+                        if (0.0..pw).contains(&at.x) && (0.0..ph).contains(&at.y) {
+                            let centre = if t.centered {
+                                (HudBatch::text_width(atlas, &t.text) / 2.0).floor()
+                            } else {
+                                0.0
+                            };
+                            batch.text_styled(
+                                atlas,
+                                &Text::literal(t.text.clone()),
+                                px + at.x - centre,
+                                py + at.y,
+                                rgb(t.color),
+                                t.shadow,
+                            );
+                        }
+                    }
+                    GuiWidget::Button(b) => {
+                        let r = b.rect;
+                        if overlaps(r, pw, ph) {
+                            let hover = ui::hovered(cursor, px + r.x, py + r.y, r.w, r.h);
+                            ui::button(
+                                batch,
+                                atlas,
+                                px + r.x,
+                                py + r.y,
+                                r.w,
+                                r.h,
+                                &Text::literal(b.label.clone()),
+                                true,
+                                hover,
+                            );
+                        }
+                    }
+                    GuiWidget::Item(i) => {
+                        let at = i.at;
+                        if (0.0..pw).contains(&at.x) && (0.0..ph).contains(&at.y) {
+                            if self.res.items().get(&i.item).is_some() {
+                                items.push((i.item.clone(), px + at.x, py + at.y, i.scale));
+                            } else {
+                                batch.text(
+                                    atlas,
+                                    "?",
+                                    px + at.x + 6.0,
+                                    py + at.y + 6.0,
+                                    u32::MAX,
+                                    true,
+                                );
+                            }
+                        }
+                    }
+                    GuiWidget::Image(i) => {
+                        let r = i.rect;
+                        if overlaps(r, pw, ph) {
+                            ui::nine_slice(
+                                batch,
+                                atlas,
+                                &sprite_key(&i.sprite),
+                                px + r.x,
+                                py + r.y,
+                                r.w,
+                                r.h,
+                                argb(i.color),
+                            );
+                        }
+                    }
+                    GuiWidget::List(l) => {
+                        let r = l.rect;
+                        if overlaps(r, pw, ph) {
+                            ms.scrolls.resize_with(list_i + 1, ui::Scroll::default);
+                            let scroll = ms.scrolls[list_i];
+                            draw_list(
+                                batch,
+                                atlas,
+                                cursor,
+                                (px + r.x, py + r.y, r.w, r.h),
+                                &l.rows,
+                                l.selected,
+                                scroll,
+                            );
+                        }
+                        list_i += 1;
+                    }
+                }
+            }
+            for (id, ix, iy, scale) in items {
+                let stack = ItemStack::new(id.as_str(), 1);
+                let start = batch.vertices.len();
+                self.draw_item_model(batch, &stack, ix, iy);
+                batch.scale_since(start, ix, iy, scale, scale);
+            }
+            return;
+        }
         let Some((title, widgets)) = Self::mod_ui_view(&self.mods.mods, ms) else {
             // The mod's surface is gone (it stopped or cleared it): leave
             // the screen like Done did, without `closed` — the mod ended it.
@@ -1145,18 +1273,6 @@ impl Game<'_> {
                     );
                 }
                 UiWidget::Text(t) => {
-                    // The widget's `color` is 0xRRGGBB (docs: `text-widget`); the
-                    // batch's colours are packed ABGR.
-                    let color = if t.color == 0 {
-                        u32::MAX
-                    } else {
-                        horizon_client::hud::rgba(
-                            (t.color >> 16) as u8,
-                            (t.color >> 8) as u8,
-                            t.color as u8,
-                            255,
-                        )
-                    };
                     ui::centered_text(
                         batch,
                         atlas,
@@ -1164,7 +1280,7 @@ impl Game<'_> {
                         x,
                         wy + 1.0,
                         MOD_UI_COLUMN,
-                        color,
+                        rgb(t.color),
                     );
                 }
                 UiWidget::Item(i) => {
@@ -1191,44 +1307,14 @@ impl Game<'_> {
                     ms.scrolls.resize_with(list_i + 1, ui::Scroll::default);
                     let scroll = ms.scrolls[list_i];
                     list_i += 1;
-                    let rows_top = wy + 4.0;
-                    let rows_bottom = wy + wh - 4.0;
-                    batch.fill(atlas, x, wy, MOD_UI_COLUMN, wh, 0x8000_0000);
-                    for (b, yy) in [(x, wy), (x, wy + wh - 1.0)] {
-                        batch.fill(atlas, b, yy, MOD_UI_COLUMN, 1.0, 0xFF50_5050);
-                    }
-                    for (xx, yy) in [(x, wy), (x + MOD_UI_COLUMN - 1.0, wy)] {
-                        batch.fill(atlas, xx, yy, 1.0, wh, 0xFF50_5050);
-                    }
-                    let content = l.rows.len() as f32 * 12.0;
-                    let first = (scroll.amount / 12.0) as usize;
-                    let last = (first + ((rows_bottom - rows_top) / 12.0).ceil() as usize + 1)
-                        .min(l.rows.len());
-                    for (vi, ri) in (first..last).enumerate() {
-                        let ry = rows_top + vi as f32 * 12.0 - (scroll.amount % 12.0);
-                        if ui::hovered(self.cursor, x, ry, MOD_UI_COLUMN - 6.0, 12.0) {
-                            batch.fill(atlas, x + 1.0, ry, MOD_UI_COLUMN - 8.0, 12.0, 0x20FF_FFFF);
-                        }
-                        if l.selected == Some(ri as u32) {
-                            batch.fill(atlas, x + 1.0, ry, 3.0, 12.0, 0xFFFF_FFFF);
-                        }
-                        batch.text_styled(
-                            atlas,
-                            &Text::literal(l.rows[ri].clone()),
-                            x + 6.0,
-                            ry + 2.0,
-                            u32::MAX,
-                            true,
-                        );
-                    }
-                    ui::scrollbar(
+                    draw_list(
                         batch,
                         atlas,
-                        x + MOD_UI_COLUMN - 5.0,
-                        rows_top,
-                        rows_bottom,
-                        content,
-                        scroll.amount,
+                        self.cursor,
+                        (x, wy, MOD_UI_COLUMN, wh),
+                        &l.rows,
+                        l.selected,
+                        scroll,
                     );
                 }
             }
@@ -1250,8 +1336,10 @@ impl Game<'_> {
             self.draw_item(batch, &stack, ix, iy);
         }
     }
-    /// A click on the mod screen: Done leaves it, a `list` row is the mod's
-    /// `ui-events::select`.
+    /// A click on the mod screen: Done leaves a stacked screen, a `list`
+    /// row is the mod's `ui-events::select`; a free screen's buttons are
+    /// `gui-screens-events::clicked` and its list rows `picked`, with no
+    /// Done of the game's own.
     pub(super) fn mod_screen_click(&mut self, button: MouseButton) {
         // Key Binds: a mouse button pressed while waiting binds it.
         if self
@@ -1268,6 +1356,54 @@ impl Game<'_> {
         }
         let (w, h) = self.gui_size();
         let cursor = self.cursor;
+        let Some(ms) = self.mods.screen.as_ref() else {
+            return;
+        };
+        if !ms.settings
+            && let Some(screen) = self.mods.mods.free_screen(ms.owner)
+        {
+            let (px, py, _, _) = free_panel(screen, w, h);
+            // The `gui_*` calls need `&mut`: find the pick first, in the
+            // widgets' order (the last drawn is on top).
+            let mut lists = 0usize;
+            let mut hit = None;
+            for widget in &screen.widgets {
+                match widget {
+                    GuiWidget::Button(b) => {
+                        let r = b.rect;
+                        if ui::hovered(cursor, px + r.x, py + r.y, r.w, r.h) {
+                            hit = Some((b.id, 0, false));
+                            break;
+                        }
+                    }
+                    GuiWidget::List(l) => {
+                        let r = l.rect;
+                        let scroll = ms.scrolls.get(lists).copied().unwrap_or_default();
+                        lists += 1;
+                        let row = ((cursor.1 - (py + r.y + 4.0) + scroll.amount) / 12.0) as i64;
+                        if ui::hovered(cursor, px + r.x + 1.0, py + r.y + 1.0, r.w - 7.0, r.h - 2.0)
+                            && row >= 0
+                            && (row as usize) < l.rows.len()
+                        {
+                            hit = Some((l.id, row as u32, true));
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some((id, row, pick)) = hit {
+                self.audio.play_button_click();
+                let owner = self.mods.screen.as_ref().map_or(0, |ms| ms.owner);
+                if pick {
+                    self.mods.mods.gui_picked(owner, id, row);
+                } else {
+                    self.mods.mods.gui_clicked(owner, id);
+                }
+                self.show_mod_output();
+            }
+            return;
+        }
         if ui::hovered(cursor, (w / 2.0).floor() - 100.0, h - 27.0, 200.0, 20.0) {
             self.audio.play_button_click();
             self.close_mod_screen(true);
@@ -1329,13 +1465,39 @@ impl Game<'_> {
             self.show_mod_output();
         }
     }
-    /// The wheel over a `list` scrolls it.
+    /// The wheel over a `list` scrolls it, of a stacked screen or a free
+    /// one alike.
     pub(super) fn mod_screen_scroll(&mut self, delta: f32) {
         let (w, h) = self.gui_size();
         let cursor = self.cursor;
         let Some(ms) = self.mods.screen.as_mut() else {
             return;
         };
+        if !ms.settings
+            && let Some(screen) = self.mods.mods.free_screen(ms.owner)
+        {
+            let (px, py, _, _) = free_panel(screen, w, h);
+            let mut lists = 0usize;
+            for widget in &screen.widgets {
+                let GuiWidget::List(l) = widget else { continue };
+                let r = l.rect;
+                let over = ui::hovered(cursor, px + r.x, py + r.y, r.w, r.h);
+                ms.scrolls.resize_with(lists + 1, ui::Scroll::default);
+                if over {
+                    let content = l.rows.len() as f32 * 12.0;
+                    ms.scrolls[lists].wheel(
+                        delta,
+                        12.0,
+                        py + r.y + 4.0,
+                        py + r.y + r.h - 4.0,
+                        content,
+                    );
+                    return;
+                }
+                lists += 1;
+            }
+            return;
+        }
         let Some((_, widgets)) = Self::mod_ui_view(&self.mods.mods, ms) else {
             return;
         };
@@ -1365,3 +1527,83 @@ const MOD_UI_COLUMN: f32 = 200.0;
 /// A key row's height with its gap, as the widgets below it space out.
 #[cfg(feature = "mods")]
 const MOD_UI_KEY_ROW: f32 = 26.0;
+
+/// Where a free screen's panel sits (capability `gui-screens`): the size
+/// the mod gave, clamped to the screen, centred — the panel's own top left
+/// corner and its sides.
+#[cfg(feature = "mods")]
+fn free_panel(screen: &FreeScreen, w: f32, h: f32) -> (f32, f32, f32, f32) {
+    let pw = screen.width.min(w).max(1.0);
+    let ph = screen.height.min(h).max(1.0);
+    (((w - pw) / 2.0).floor(), ((h - ph) / 2.0).floor(), pw, ph)
+}
+
+/// Whether a rectangle in the panel's coordinates shows at all: one wholly
+/// outside (or empty) is not drawn, a straddling one is.
+#[cfg(feature = "mods")]
+fn overlaps(r: GuiRect, pw: f32, ph: f32) -> bool {
+    r.x < pw && r.y < ph && r.x + r.w.max(1.0) > 0.0 && r.y + r.h.max(1.0) > 0.0
+}
+
+/// The batch's colour (ABGR) from a text widget's 0xRRGGBB, 0 the menus'
+/// white.
+#[cfg(feature = "mods")]
+fn rgb(color: u32) -> u32 {
+    if color == 0 {
+        u32::MAX
+    } else {
+        rgba((color >> 16) as u8, (color >> 8) as u8, color as u8, 255)
+    }
+}
+
+/// A `list` widget's box wherever it sits (a stacked screen's column row or
+/// a free screen's rect): its border, the rows its scroll shows (the hover
+/// and the chosen row marked) and its scrollbar.
+#[cfg(feature = "mods")]
+fn draw_list(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    cursor: (f32, f32),
+    (x, y, w, h): (f32, f32, f32, f32),
+    rows: &[String],
+    selected: Option<u32>,
+    scroll: ui::Scroll,
+) {
+    let (rows_top, rows_bottom) = (y + 4.0, y + h - 4.0);
+    batch.fill(atlas, x, y, w, h, 0x8000_0000);
+    for (b, yy) in [(x, y), (x, y + h - 1.0)] {
+        batch.fill(atlas, b, yy, w, 1.0, 0xFF50_5050);
+    }
+    for (xx, yy) in [(x, y), (x + w - 1.0, y)] {
+        batch.fill(atlas, xx, yy, 1.0, h, 0xFF50_5050);
+    }
+    let content = rows.len() as f32 * 12.0;
+    let first = (scroll.amount / 12.0) as usize;
+    let last = (first + ((rows_bottom - rows_top) / 12.0).ceil() as usize + 1).min(rows.len());
+    for (vi, ri) in (first..last).enumerate() {
+        let ry = rows_top + vi as f32 * 12.0 - (scroll.amount % 12.0);
+        if ui::hovered(cursor, x, ry, w - 6.0, 12.0) {
+            batch.fill(atlas, x + 1.0, ry, w - 8.0, 12.0, 0x20FF_FFFF);
+        }
+        if selected == Some(ri as u32) {
+            batch.fill(atlas, x + 1.0, ry, 3.0, 12.0, 0xFFFF_FFFF);
+        }
+        batch.text_styled(
+            atlas,
+            &Text::literal(rows[ri].clone()),
+            x + 6.0,
+            ry + 2.0,
+            u32::MAX,
+            true,
+        );
+    }
+    ui::scrollbar(
+        batch,
+        atlas,
+        x + w - 5.0,
+        rows_top,
+        rows_bottom,
+        content,
+        scroll.amount,
+    );
+}

@@ -27,9 +27,23 @@ struct Jolt {
 
 /// The HUD batch's colour (ABGR) from a mod's 0xAARRGGBB.
 #[cfg(feature = "mods")]
-fn argb(color: u32) -> u32 {
+pub(super) fn argb(color: u32) -> u32 {
     let [a, r, g, b] = color.to_be_bytes();
     rgba(r, g, b, a)
+}
+
+/// A sprite's name as the game's atlas packs it: `widget/button` (or
+/// `minecraft:widget/button`) is the game's own under
+/// `assets/minecraft/textures/gui/sprites/`, `cells:panel/main` a content
+/// mod's under `assets/cells/textures/gui/sprites/` (capability
+/// `registries`, as a free screen's pictures name them).
+#[cfg(feature = "mods")]
+pub(super) fn sprite_key(name: &str) -> String {
+    match name.split_once(':') {
+        Some(("minecraft", path)) => format!("gui/sprites/{path}"),
+        Some((ns, path)) => format!("{ns}/gui/sprites/{path}"),
+        None => format!("gui/sprites/{name}"),
+    }
 }
 
 /// The view's turn at full strength, in degrees: yaw, then pitch.
@@ -106,8 +120,7 @@ impl Game<'_> {
                 }
                 Shape::Sprite(s) => {
                     let r = s.rect;
-                    let name = s.sprite.strip_prefix("minecraft:").unwrap_or(&s.sprite);
-                    let name = format!("gui/sprites/{name}");
+                    let name = sprite_key(&s.sprite);
                     batch.sprite_scaled(atlas, &name, ox + r.x, oy + r.y, r.w, r.h, argb(s.color));
                 }
                 Shape::Item(i) => {

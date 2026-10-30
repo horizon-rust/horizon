@@ -3358,7 +3358,7 @@ fn clip_free_screen(screen: FreeScreen) -> FreeScreen {
         p
     };
     let mut background = screen.background;
-    background.sprite = background.sprite.map(|s| clip(s));
+    background.sprite = background.sprite.map(clip);
     FreeScreen {
         width: if screen.width.is_finite() {
             screen.width.clamp(1.0, FREE_SIDE)

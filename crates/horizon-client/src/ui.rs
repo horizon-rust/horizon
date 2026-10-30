@@ -41,19 +41,28 @@ fn parse_nine_slice(v: &serde_json::Value) -> Option<NineSlice> {
         stretch_inner: s["stretch_inner"].as_bool().unwrap_or(false),
     })
 }
-/// Read `gui.scaling` metadata for every GUI sprite under `root`.
+/// Read `gui.scaling` metadata for every GUI sprite under `root`: the
+/// game's own, and a content mod's under its namespace (a free screen's
+/// pictures, capability `gui-screens`), keyed as the atlas packs them.
 pub fn load_metadata(root: &Path) {
     let mut map = HashMap::new();
     let base = root.join("assets/minecraft/textures");
-    let mut stack = vec![base.join("gui/sprites")];
-    while let Some(dir) = stack.pop() {
+    // Each folder to walk, with the prefix its sprites' names strip to and
+    // the namespace they pack under (None for the game's own
+    // `gui/sprites/...`, `Some(ns)` for `<ns>/gui/sprites/...`).
+    let mut stack = vec![(base.join("gui/sprites"), base, None)];
+    for ns in crate::mod_content::namespaces(root) {
+        let dir = root.join(format!("assets/{ns}/textures"));
+        stack.push((dir.join("gui/sprites"), dir, Some(ns)));
+    }
+    while let Some((dir, prefix, ns)) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
         for e in entries.flatten() {
             let p = e.path();
             if p.is_dir() {
-                stack.push(p);
+                stack.push((p, prefix.clone(), ns.clone()));
                 continue;
             }
             let name = p.to_string_lossy().into_owned();
@@ -71,8 +80,12 @@ pub fn load_metadata(root: &Path) {
                 continue;
             };
             let key = Path::new(stripped)
-                .strip_prefix(&base)
+                .strip_prefix(&prefix)
                 .map(|r| r.to_string_lossy().replace('\\', "/"))
+                .map(|rel| match ns.as_deref() {
+                    Some(ns) => format!("{ns}/{rel}"),
+                    None => rel,
+                })
                 .unwrap_or_default();
             map.insert(key, nine_slice);
         }

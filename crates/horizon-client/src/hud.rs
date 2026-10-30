@@ -389,22 +389,47 @@ impl HudAtlas {
         let textures = root.join("assets/minecraft/textures");
         let default_textures =
             (defaults != root).then(|| defaults.join("assets/minecraft/textures"));
-        let mut files = Vec::new();
+        // The files to pack, each under the name it packs as: the game's own
+        // as its path under `textures/`, a content mod's GUI sprites (a free
+        // screen's pictures, capability `gui-screens`) as
+        // `<ns>/gui/sprites/...` from the mod's own namespace.
+        let mut files: Vec<(PathBuf, String)> = Vec::new();
+        let mut own = Vec::new();
         for folder in folders {
-            walk(&textures.join(folder), &mut files);
+            walk(&textures.join(folder), &mut own);
         }
-        files.retain(|p| {
-            let s = p.to_string_lossy();
-            !s.contains("title/background") && !s.contains("realms") && !s.contains("presets")
-        });
-        type Decoded = (PackedImage, Option<TextureFlags>, Option<(u32, u32)>, bool);
-        let decode_one = |path: &PathBuf| -> Option<Decoded> {
-            let name = path
+        files.extend(own.into_iter().filter_map(|p| {
+            let name = p
                 .strip_prefix(&textures)
                 .ok()?
                 .with_extension("")
                 .to_string_lossy()
                 .replace('\\', "/");
+            Some((p, name))
+        }));
+        for ns in crate::mod_content::namespaces(root) {
+            let mut sprites = Vec::new();
+            walk(
+                &root.join(format!("assets/{ns}/textures/gui/sprites")),
+                &mut sprites,
+            );
+            files.extend(sprites.into_iter().filter_map(|p| {
+                let name = p
+                    .strip_prefix(root.join(format!("assets/{ns}/textures")))
+                    .ok()?
+                    .with_extension("")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                Some((p, format!("{ns}/{name}")))
+            }));
+        }
+        files.retain(|(p, _)| {
+            let s = p.to_string_lossy();
+            !s.contains("title/background") && !s.contains("realms") && !s.contains("presets")
+        });
+        type Decoded = (PackedImage, Option<TextureFlags>, Option<(u32, u32)>, bool);
+        let decode_one = |(path, name): &(PathBuf, String)| -> Option<Decoded> {
+            let name = name.clone();
             let (mut w, mut h, pixels) = decode(path).ok()?;
             let mcmeta = fs::read_to_string(path.with_extension("png.mcmeta")).ok();
             let animation = mcmeta
@@ -1686,6 +1711,50 @@ mod tests {
             .unwrap()
             .write_image_data(&pixels)
             .unwrap();
+    }
+    #[test]
+    fn content_mod_gui_sprites_pack_under_their_namespace() {
+        let root = std::env::temp_dir().join(format!("horizon-atlas-mod-{}", std::process::id()));
+        // A content mod's marker (`mod_content::build` writes one naming the
+        // namespaces it owns) and a GUI sprite in its own namespace.
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join(horizon_items::content_namespaces::MARKER),
+            r#"["m"]"#.as_bytes(),
+        )
+        .unwrap();
+        let panel = root.join("assets/m/textures/gui/sprites/panel");
+        fs::create_dir_all(&panel).unwrap();
+        let mut encoder =
+            png::Encoder::new(fs::File::create(panel.join("cell.png")).unwrap(), 16, 16);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&vec![255; 16 * 16 * 4])
+            .unwrap();
+        // A texture the fence keeps out of the atlas: the wrong folder.
+        fs::create_dir_all(root.join("assets/m/textures/block")).unwrap();
+        let mut encoder = png::Encoder::new(
+            fs::File::create(root.join("assets/m/textures/block/cell.png")).unwrap(),
+            16,
+            16,
+        );
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&vec![255; 16 * 16 * 4])
+            .unwrap();
+        let atlas = HudAtlas::build(&root).unwrap();
+        // Named as the game's sprites are named for a mod's: by namespace.
+        let rect = atlas.sprites["m/gui/sprites/panel/cell"];
+        assert_eq!(rect.texels((atlas.width, atlas.height)), (16, 16));
+        assert!(!atlas.sprites.contains_key("m/block/cell"));
+        assert!(!atlas.sprites.contains_key("block/cell"));
+        let _ = fs::remove_dir_all(&root);
     }
     #[test]
     fn a_pack_texture_keeps_the_default_textures_gui_size() {
