@@ -114,6 +114,8 @@ pub(super) struct Split<'a> {
     guests: Vec<Guest<'a>>,
     /// `HORIZON_SPLIT=N`: players still to add once P1 is in a world.
     test_players: usize,
+    /// `HORIZON_SPLIT` is set: splitscreen is on for this run, without touching the saved switch.
+    forced: bool,
     /// While another player is in, the windows players play in, each with its compositor: the
     /// game's first, then the others (else P1 draws on its window).
     surfaces: Vec<Surface>,
@@ -123,6 +125,9 @@ pub(super) struct Split<'a> {
     p1_window: u8,
     /// Seats in the order their views fill a shared window.
     order: Vec<usize>,
+    /// Whether Window 1 is shown (hidden while nobody plays in it): set once per change, since
+    /// Wayland can't say whether a window is visible.
+    window1_shown: bool,
     /// Where each numbered window was when it closed, to open there again (this session).
     window_rects: std::collections::HashMap<u8, (LogicalPosition<f64>, LogicalSize<f64>)>,
     /// The monitors with their names, left to right, and the one Window 1 is on: read once a
@@ -155,11 +160,8 @@ pub(super) struct Split<'a> {
 }
 
 impl<'a> Split<'a> {
-    pub(super) fn new(mut host: Game<'a>) -> Self {
+    pub(super) fn new(host: Game<'a>) -> Self {
         let split = std::env::var("HORIZON_SPLIT").ok();
-        if split.is_some() {
-            host.settings.extras.splitscreen = true;
-        }
         let test_players = split
             .as_ref()
             .and_then(|n| n.parse::<usize>().ok())
@@ -168,6 +170,7 @@ impl<'a> Split<'a> {
             host,
             guests: Vec::new(),
             test_players,
+            forced: split.is_some(),
             surfaces: Vec::new(),
             windows: vec![layout::Window {
                 number: 1,
@@ -175,6 +178,7 @@ impl<'a> Split<'a> {
             }],
             p1_window: 1,
             order: Vec::new(),
+            window1_shown: true,
             window_rects: Default::default(),
             screens: Vec::new(),
             main_screen: None,
@@ -520,6 +524,7 @@ impl<'a> Split<'a> {
             .chain(self.guests.iter().map(|g| &g.game.renderer))
             .collect();
         let vsync = self.host.settings.vsync;
+        let paced = windows::paced_surface(self.window1_shown, self.surfaces.len());
         for (k, surface) in self.surfaces.iter_mut().enumerate() {
             let frames: Vec<_> = renderers
                 .iter()
@@ -527,7 +532,7 @@ impl<'a> Split<'a> {
                 .filter(|(_, v)| v.0 == k)
                 .filter_map(|(r, v)| Some((r.as_ref()?.offscreen_frame()?, v.1)))
                 .collect();
-            surface.compositor.set_vsync(vsync && k == 0);
+            surface.compositor.set_vsync(vsync && k == paced);
             surface.compositor.present(&frames);
         }
         // One player's CPU work overlapped the GPU drawing another's.
@@ -662,7 +667,7 @@ impl ApplicationHandler for Split<'_> {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.refresh_monitors();
-        let on = self.host.settings.extras.splitscreen;
+        let on = self.host.settings.extras.splitscreen || self.forced;
         self.host.ui.options.split_joined = self.guests.iter().any(|g| g.name.is_some());
         // Off, or the last other player gone: P1 draws on its window again.
         if !self.surfaces.is_empty()
@@ -678,7 +683,7 @@ impl ApplicationHandler for Split<'_> {
             }
             // Alone, the controllers watched for someone joining; P1's own drives P1, its
             // output (rumble, triggers) through the split's reader for P1's turn.
-            let pad_joins = self.route_pads();
+            let pad_joins = self.route_pads(true);
             self.turn(0);
             if let Some(id) = self.p1_pad {
                 self.pads.lend_output(&mut self.host.pad, id);
@@ -692,7 +697,7 @@ impl ApplicationHandler for Split<'_> {
             }
             return;
         }
-        let pad_joins = self.route_pads();
+        let pad_joins = self.route_pads(false);
         self.turn(0);
         self.host.about_to_wait(event_loop);
         let mut changed = self.drop_out() | self.admit(event_loop, pad_joins);
@@ -749,7 +754,10 @@ impl ApplicationHandler for Split<'_> {
             .unwrap_or(60);
         let refresh_hz = self
             .surfaces
-            .first()
+            .get(windows::paced_surface(
+                self.window1_shown,
+                self.surfaces.len(),
+            ))
             .and_then(|s| s.window.current_monitor()?.refresh_rate_millihertz())
             .map_or(60, |mhz| mhz.div_ceil(1000) as i32);
         if !(self.host.settings.vsync && limit >= refresh_hz) {
