@@ -362,6 +362,12 @@ fn parallax_rt_lit(in: ParallaxOut, s: ParallaxSurface) -> vec3<f32> {
         in.spherical, in.cylindrical) + parallax_transmission(in, s.geo, tint, intensity);
 }
 @fragment fn parallax_fs_solid(in: ParallaxOut) -> @location(0) vec4<f32> {
+    // Lava: its own look, not the pack's texture (terrain.wgsl `rt_lava`).
+    if horizon_terrain_rt_lava_on(in.layer) {
+        let n = horizon_terrain_face_normal(in.position);
+        return vec4(horizon_terrain_rt_lava(in.position, n, in.clip.xy, in.light, in.spherical,
+            in.cylindrical), 1.0);
+    }
     if parallax_rt(in) {
         let s = parallax_surface(in, true);
         if s.texel.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
@@ -381,6 +387,13 @@ fn parallax_rt_lit(in: ParallaxOut, s: ParallaxSurface) -> vec3<f32> {
 }
 @fragment fn parallax_fs_translucent(in: ParallaxOut) -> @location(0) vec4<f32> {
     if parallax_rt(in) {
+        // Water: its own look, not the pack's texture (terrain.wgsl `rt_water_at`).
+        if horizon_terrain_rt_is_water(in.layer) {
+            let n = horizon_terrain_face_normal(in.position);
+            let w = horizon_terrain_rt_water_at(in.position, in.clip.xy, in.light, in.spherical,
+                in.cylindrical, n, in.tint);
+            return vec4(w.added / w.alpha, w.alpha);
+        }
         let s = parallax_surface(in, false);
         if s.texel.a < 0.01 { discard; }
         return vec4(parallax_rt_lit(in, s), s.texel.a);

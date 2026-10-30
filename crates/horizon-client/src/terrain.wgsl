@@ -46,7 +46,8 @@ struct Globals {
     // ones, at the latitude the sun's path leans by and the real sidereal time.
     rt_stars: vec4<f32>,
     rt_star_frame: mat4x4<f32>,
-    // RT lighting's water: x and y its still and flowing sprite layers, z the time in seconds;
+    // RT lighting's water: x and y its still and flowing sprite layers, z the time in seconds, w
+    // the lava's layers (still + 4096 flowing, -1 none);
     // and the camera's place in the world (xyz, wrapped every 4096 blocks), for its waves.
     rt_water: vec4<f32>,
     rt_camera: vec4<f32>,
@@ -79,6 +80,23 @@ struct Globals {
 // RT lighting: this frame's depth prepass (the solid terrain alone), for the water to know how
 // deep it is at its pixel.
 @group(0) @binding(16) var rt_depth: texture_depth_2d;
+// RT lighting: what the water at the pixel reflects, traced (Remix's primary surface replacement,
+// shadow_rays_hw.wgsl `hw_reflect`): rgb its light, a 1 a surface, 0 the sky (reflected here).
+@group(0) @binding(17) var rt_reflect: texture_2d<f32>;
+// The traced reflection for the fragment being lit (`rt_reflection`), which `rt_shade` takes in
+// place of the sky's: rgb its light, a 1 when there is one.
+var<private> rt_mirror: vec4<f32>;
+// What the translucent surface at `pixel` (camera-relative `pos`, in front of the solid terrain)
+// reflects, traced (`rt_reflect`); a 0 for a solid fragment or where the rays reached the sky.
+fn rt_reflection(pixel: vec2<f32>, pos: vec3<f32>) -> vec4<f32> {
+    if globals.rt_motion.w < 1.5 { return vec4(0.0); }
+    let distance = length(pos);
+    let bottom = rt_bottom(pixel, pos / max(distance, 1e-4));
+    if bottom >= 0.0 && bottom < distance + 0.05 { return vec4(0.0); }
+    let size = vec2<f32>(textureDimensions(rt_reflect));
+    let at = clamp(vec2<i32>(pixel / globals.rt_motion.xy * size), vec2(0), vec2<i32>(size) - 1);
+    return textureLoad(rt_reflect, at, 0);
+}
 // How many sprite arrays hold layers (a pipeline constant): 1 for vanilla,
 // which then samples exactly as before.
 override SPRITE_ARRAYS: u32 = 1u;
@@ -435,7 +453,9 @@ fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: 
     // Reflected: the sky the way the view bounces off the surface, as much as Fresnel says (the
     // rougher, the less of it).
     let ambient_f = rt_fresnel(m.f0, nv) * (1.0 - m.roughness * 0.7);
-    let reflected = rt_sky(reflect(-view, n)) * seen * m.ao * ambient_f;
+    var reflected = rt_sky(reflect(-view, n)) * seen * m.ao * ambient_f;
+    // Water and glass: what the rays found that way (Remix's primary surface replacement).
+    if rt_mirror.a > 0.5 { reflected = rt_mirror.rgb * ambient_f; }
     return sun * (direct + through) + diffuse * (1.0 - ambient_f) * around + reflected
         + m.albedo * m.emission * MATERIAL_EMISSION;
 }
@@ -444,6 +464,7 @@ fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: 
 fn rt_material_lit(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, pixel: vec2<f32>,
     light: vec2<f32>, spherical: f32, cylindrical: f32) -> vec3<f32> {
     let v = rt_visibility(pos, pixel);
+    rt_mirror = rt_reflection(pixel, pos);
     let lit = rt_shade(m, geo, pos, light, v, rt_traced(pixel), rt_sun_colour(pixel, v.x));
     let f = fog_amount(spherical, cylindrical) * globals.fog_color.a;
     let sky = select(pow(clamp(light.x * 16.0 / 15.0, 0.0, 1.0), 2.0), v.z, v.z >= 0.0);
@@ -497,12 +518,91 @@ fn water_caustics(p: vec2<f32>, t: f32) -> f32 {
     return c * c * 0.85;
 }
 // Pure water's absorption a block (a metre), red most: deep water turns blue-green.
-const WATER_ABSORPTION: vec3<f32> = vec3(0.35, 0.065, 0.025);
-// RT lighting's water, its own look: no texture, waves for its normal; the sky and the sun
+// Remix's water medium (its minecraft-logic confs): transmittance 0.6, 0.9, 0.89 over 20 m (a
+// block a metre), so its extinction a block, -ln(T) / 20; the biome's water colour adds to it
+// what that colour lacks (a swamp's murk), and colours the light the water scatters.
+const WATER_ABSORPTION: vec3<f32> = vec3(0.025541, 0.005268, 0.005827);
+const WATER_TINT_ABSORPTION: f32 = 0.06;
+// RT lighting's water, its own look: no texture (only the biome's colour), waves for its normal;
+// the sky and the sun
 // reflected as Fresnel says (a glint where the sun is); what lies under it seen through its
 // depth, the light lost to the water's absorption (red first) and the water's own blue-green
 // glow scattered toward the eye in its place. The depth: from the surface to the solid terrain
 // behind it at this pixel (`rt_depth`). Then the air in front, as for the terrain.
+fn rt_is_lava(layer: u32) -> bool {
+    let packed = globals.rt_water.w;
+    if packed < 0.0 { return false; }
+    let l = f32(layer & 0x7fffu);
+    let flow = floor(packed / 4096.0);
+    return l == packed - flow * 4096.0 || l == flow;
+}
+// RT lighting's lava, its own look (no texture): molten rock flowing under a cooling crust. A
+// heat field of domain-warped noise drifting with the time, bright veins where
+// it cracks; the hot rock glows as a black body (dark red to yellow-white, in paper whites, to
+// bloom), the cooled crust is dark basalt lit as the terrain is.
+// A lattice point's random number, from its integer coordinates (PCG3D, Jarzynski and Olano
+// 2020): exact whatever the compiler does with floats, so neighbouring cells agree.
+fn lava_hash(p: vec3<f32>) -> f32 {
+    var v = bitcast<vec3<u32>>(vec3<i32>(p)) * 1664525u + 1013904223u;
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    v ^= v >> vec3(16u);
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    return f32(v.x >> 8u) / 16777216.0;
+}
+fn lava_noise(p: vec3<f32>) -> f32 {
+    let i = floor(p);
+    let f = p - i;
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = mix(mix(lava_hash(i), lava_hash(i + vec3(1.0, 0.0, 0.0)), u.x),
+        mix(lava_hash(i + vec3(0.0, 1.0, 0.0)), lava_hash(i + vec3(1.0, 1.0, 0.0)), u.x), u.y);
+    let b = mix(mix(lava_hash(i + vec3(0.0, 0.0, 1.0)), lava_hash(i + vec3(1.0, 0.0, 1.0)), u.x),
+        mix(lava_hash(i + vec3(0.0, 1.0, 1.0)), lava_hash(i + vec3(1.0, 1.0, 1.0)), u.x), u.y);
+    return mix(a, b, u.z);
+}
+fn lava_fbm(p: vec3<f32>) -> f32 {
+    var sum = 0.0;
+    var amp = 0.5;
+    var q = p;
+    for (var i = 0; i < 4; i++) {
+        sum += amp * lava_noise(q);
+        q = q * 2.03 + vec3(1.7, 9.2, 4.1);
+        amp *= 0.5;
+    }
+    return sum;
+}
+// The black body's colour from cooler (0) to hotter (1), linear.
+fn lava_blackbody(x: f32) -> vec3<f32> {
+    let deep = vec3(0.45, 0.015, 0.0);
+    let orange = vec3(1.0, 0.22, 0.015);
+    let white = vec3(1.0, 0.72, 0.32);
+    return select(mix(orange, white, (x - 0.6) / 0.4), mix(deep, orange, x / 0.6), x < 0.6);
+}
+const LAVA_GLOW: f32 = 14.0;
+fn rt_lava(pos: vec3<f32>, n: vec3<f32>, pixel: vec2<f32>, light: vec2<f32>, spherical: f32,
+    cylindrical: f32) -> vec3<f32> {
+    let world = pos + globals.rt_camera.xyz;
+    let t = globals.rt_water.z;
+    // A noise of the world's plane (the flowing surface's height changes from block to block:
+    // none of it, no seam), drifting with the time; on the sides it streaks down.
+    let p = vec3(world.x * 0.45, world.z * 0.45, t * 0.04) + vec3(0.0, 0.0, world.y * 0.02);
+    let warp = vec3(lava_fbm(p), lava_fbm(p + vec3(5.2, 1.3, 2.7)), lava_fbm(p + vec3(2.9, 7.1, 4.4)));
+    let q = p + 2.2 * warp;
+    let body = lava_fbm(q);
+    let crack = 1.0 - abs(lava_fbm(q * 2.1 + vec3(3.1, 7.7, 0.0)) * 2.0 - 1.0);
+    let heat = clamp(0.95 * body + 0.7 * pow(crack, 7.0) - 0.15, 0.0, 1.0);
+    let crust = 1.0 - smoothstep(0.28, 0.46, heat);
+    let glow = lava_blackbody(heat) * (0.15 + LAVA_GLOW * heat * heat * heat) * (1.0 - 0.9 * crust);
+    let rock = rt_material_lit(rt_plain(vec3(0.07, 0.06, 0.055), n), n, pos, pixel, light,
+        spherical, cylindrical);
+    return glow + rock * crust;
+}
+fn rt_lava_on(layer: u32) -> bool {
+    return globals.rt_mode.x > 0.5 && linear_on() && rt_is_lava(layer);
+}
 fn rt_is_water(layer: u32) -> bool {
     let l = f32(layer & 0x7fffu);
     return l == globals.rt_water.x || l == globals.rt_water.y;
@@ -527,7 +627,24 @@ struct WaterLight {
     through: vec3<f32>,
     alpha: f32,
 }
+// The fragment `rt_water_at` lights: camera-relative position, pixel, light levels, fog distances.
+struct WaterIn {
+    pos: vec3<f32>,
+    clip: vec2<f32>,
+    light: vec2<f32>,
+    spherical: f32,
+    cylindrical: f32,
+}
 fn rt_water(in: TerrainOut, face: vec3<f32>) -> WaterLight {
+    return rt_water_at(in.pos, in.clip.xy, in.light, in.spherical, in.cylindrical, face, in.tint);
+}
+// The same from a fragment's camera-relative `pos`, its `pixel`, light levels, fog distances, face
+// and biome tint (gamma), for the parallax terrain's water too.
+fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f32,
+    cylindrical: f32, face: vec3<f32>, tint: vec3<f32>) -> WaterLight {
+    let in = WaterIn(pos, pixel, levels, spherical, cylindrical);
+    let colour = pow(clamp(tint, vec3(0.0), vec3(1.0)), vec3(2.2));
+    let absorption = WATER_ABSORPTION + WATER_TINT_ABSORPTION * (1.0 - colour);
     let world = in.pos + globals.rt_camera.xyz;
     var n = face;
     if face.y > 0.5 {
@@ -539,12 +656,21 @@ fn rt_water(in: TerrainOut, face: vec3<f32>) -> WaterLight {
     let view = -ray;
     let nv = max(dot(n, view), 1e-3);
     let fresnel = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
-    let v = rt_visibility(in.pos, in.clip.xy);
+    let v = rt_visibility(in.pos, in.clip);
     let sky_seen = select(pow(clamp(in.light.x * 16.0 / 15.0, 0.0, 1.0), 2.0), max(v.z, 0.0),
         v.z >= 0.0);
     let sun = globals.rt_sun_light.rgb * globals.rt_light.w * v.x;
     // Reflected: the sky that way, and the sun's glint (GGX, a calm surface).
     var reflected = rt_sky(reflect(ray, n)) * max(sky_seen, 0.15 * v.x);
+    if globals.rt_motion.w > 1.5 {
+        let traced = rt_reflection(in.clip, in.pos);
+        if traced.a > 0.5 { reflected = traced.rgb; }
+        // HORIZON_RT_DEBUG=9: the traced reflection alone (magenta: none, the sky's).
+        if globals.rt_mode.y > 2.5 {
+            return WaterLight(select(vec3(1.0, 0.0, 1.0), traced.rgb, traced.a > 0.5), vec3(0.0),
+                1.0);
+        }
+    }
     let l = globals.rt_light.xyz;
     let h = normalize(l + view);
     let nl = max(dot(n, l), 0.0);
@@ -555,11 +681,13 @@ fn rt_water(in: TerrainOut, face: vec3<f32>) -> WaterLight {
     reflected += sun * min(glint, 200.0);
     // Through the depth: what lies behind dims by the water's absorption, the water's own glow
     // (the light it scatters toward the eye) in its place.
-    let bottom = rt_bottom(in.clip.xy, ray);
-    let thickness = select(12.0, max(bottom - distance, 0.0), bottom > 0.0);
-    let through = exp(-WATER_ABSORPTION * thickness);
+    let bottom = rt_bottom(in.clip, ray);
+    let thickness = select(64.0, max(bottom - distance, 0.0), bottom > 0.0);
+    let through = exp(-absorption * thickness);
     let lit = rt_sky(vec3(0.0, 1.0, 0.0)) * sky_seen + sun * max(l.y, 0.0);
-    let glow = lit * vec3(0.012, 0.06, 0.07) * (1.0 - through);
+    // What the water scatters back: Remix's single-scattering albedo (0.206, 0.999, 0.903) in the
+    // biome's colour.
+    let glow = lit * colour * vec3(0.206, 0.999, 0.903) * 0.08 * (1.0 - through);
     var added = fresnel * reflected + (1.0 - fresnel) * glow;
     var shows = (1.0 - fresnel) * through;
     // The air in front, as for the terrain: it dims both and adds the horizon's light.
@@ -585,6 +713,9 @@ fn face_normal(pos: vec3<f32>) -> vec3<f32> {
 }
 @fragment fn fs_solid(in: TerrainOut) -> @location(0) vec4<f32> {
     let n = face_normal(in.pos);
+    if rt_lava_on(in.layer) && !faded_out(in.fade, in.clip.xy) {
+        return vec4(rt_lava(in.pos, n, in.clip.xy, in.light, in.spherical, in.cylindrical), 1.0);
+    }
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
     let texel = sprite(in.uv, in.layer & 0x7fffu);
     let color = texel * in.color;
@@ -593,11 +724,11 @@ fn face_normal(pos: vec3<f32>) -> vec3<f32> {
     // Light-emitting blocks shine by themselves.
     if globals.rt_mode.x > 0.5 && linear_on() && in.emission == 0u {
         // HORIZON_RT_DEBUG=7: the rays' visibility (sun red, light around green).
-        if globals.rt_mode.y > 1.5 {
+        if globals.rt_mode.y > 1.5 && globals.rt_mode.y < 2.5 {
             let t = rt_traced(in.clip.xy);
             return vec4(select(t.rgb, vec3(1.0, 0.0, 1.0), t.a < 0.0), 1.0);
         }
-        if globals.rt_mode.y > 0.5 {
+        if globals.rt_mode.y > 0.5 && globals.rt_mode.y < 1.5 {
             return vec4(max(rt_visibility(in.pos, in.clip.xy), vec3(0.0)), 1.0);
         }
         return vec4(rt_lit(texel.rgb * in.tint, in, n), 1.0);

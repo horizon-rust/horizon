@@ -137,6 +137,8 @@ struct ViewMasks {
     gi: [[wgpu::TextureView; 2]; 2],
     /// RT lighting's fast history (ReLAX's), one a mask.
     fast: [wgpu::TextureView; 2],
+    /// RT lighting's water reflections (Remix's primary surface replacement).
+    reflection: wgpu::TextureView,
     light: [wgpu::TextureView; 2],
     /// The mask the next pass writes.
     next: usize,
@@ -164,6 +166,7 @@ fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> { return vec3
 fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
     return HwHit(-1.0, vec3(0.0), vec3(0.0), vec3(1.0));
 }
+fn hw_reflect(p: vec2<i32>) -> vec4<f32> { return vec4(0.0); }
 ";
 
 /// The pass's shader, with the hybrid's hardware rays or without (`ShadowRays::new`).
@@ -332,6 +335,7 @@ impl ShadowRays {
                 ),
                 entry(31, output),
                 entry(32, last),
+                entry(33, output),
             ]
             .into_iter()
             .chain(
@@ -538,6 +542,7 @@ impl ShadowRays {
                     }),
                     scratch: mask(),
                     fast: [mask(), mask()],
+                    reflection: mask(),
                     light: [mask(), mask()],
                     next: 0,
                     last: None,
@@ -615,7 +620,7 @@ impl ShadowRays {
         lights: [&wgpu::Buffer; 3],
         sky: &wgpu::TextureView,
         hardware: Option<Hardware<'_>>,
-    ) -> (wgpu::TextureView, wgpu::TextureView, wgpu::TextureView) {
+    ) -> [wgpu::TextureView; 4] {
         let scale = foveation.scale;
         let mask_size = size.map(|v| v.div_ceil(scale));
         let masks = self.masks(device, view, mask_size);
@@ -633,6 +638,7 @@ impl ShadowRays {
         let last_gi = masks.gi[1 - masks.next].clone();
         let fast = masks.fast[masks.next].clone();
         let last_fast = masks.fast[1 - masks.next].clone();
+        let reflection = masks.reflection.clone();
         let scratch = masks.scratch.clone();
         let light = masks.light[masks.next].clone();
         let last_light = masks.light[1 - masks.next].clone();
@@ -678,7 +684,7 @@ impl ShadowRays {
         // Without the hybrid's this frame (no section yet), a pipeline that traces hardware rays
         // has nothing to bind: the pass waits.
         if self.hardware && hardware.is_none() {
-            return (mask, blocks, sun);
+            return [mask, blocks, sun, reflection];
         }
         let mut entries = vec![
             wgpu::BindGroupEntry {
@@ -725,6 +731,7 @@ impl ShadowRays {
             view(30, &last_gi[1]),
             view(31, &fast),
             view(32, &last_fast),
+            view(33, &reflection),
         ];
         if let (true, Some(hw)) = (self.hardware, &hardware) {
             entries.extend([
@@ -757,7 +764,7 @@ impl ShadowRays {
         pass.dispatch_workgroups(mask_size[0].div_ceil(8), mask_size[1].div_ceil(8), 1);
         drop(pass);
         if !rays.lighting {
-            return (mask, blocks, sun);
+            return [mask, blocks, sun, reflection];
         }
         // The radiance cache: this pass's sums become its cells' light for the next views.
         {
@@ -802,7 +809,7 @@ impl ShadowRays {
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(mask_size[0].div_ceil(8), mask_size[1].div_ceil(8), 1);
         }
-        (mask, light, sun)
+        [mask, light, sun, reflection]
     }
 }
 

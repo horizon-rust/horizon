@@ -238,7 +238,9 @@ pub fn source(hardware: bool, sprite_split: u32) -> String {
     if !hardware {
         return text.to_string();
     }
-    let begin = text.find("// HARDWARE:BEGIN").expect("the hardware section");
+    let begin = text
+        .find("// HARDWARE:BEGIN")
+        .expect("the hardware section");
     let end = text.find("// HARDWARE:END").expect("the hardware section");
     format!(
         "enable wgpu_ray_query;\nconst SPRITE_SPLIT: u32 = {sprite_split}u;\n{}{}{}",
@@ -705,12 +707,20 @@ impl Froxels {
             });
             pass.set_pipeline(&self.inject);
             pass.set_bind_group(0, &group, &[]);
-            pass.dispatch_workgroups(dims[0].div_ceil(4), dims[1].div_ceil(4), dims[2].div_ceil(4));
+            pass.dispatch_workgroups(
+                dims[0].div_ceil(4),
+                dims[1].div_ceil(4),
+                dims[2].div_ceil(4),
+            );
         }
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Froxel volumetrics' integrate"),
             layout: &self.integrate_layout,
-            entries: &[buffer(0, &self.uniform), view(19, &to), view(14, &integrated)],
+            entries: &[
+                buffer(0, &self.uniform),
+                view(19, &to),
+                view(14, &integrated),
+            ],
         });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -793,7 +803,9 @@ mod tests {
             ..open
         }
         .medium();
-        assert!(mouth.sigma_t.x > Medium::air().sigma_t.x && mouth.sigma_t.x < Medium::cave().sigma_t.x);
+        assert!(
+            mouth.sigma_t.x > Medium::air().sigma_t.x && mouth.sigma_t.x < Medium::cave().sigma_t.x
+        );
         let storm = CameraMedium {
             rain: 1.0,
             thunder: 1.0,

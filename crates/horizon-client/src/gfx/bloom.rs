@@ -154,7 +154,12 @@ impl Bloom {
     /// `2 << spare` pixels on the short side.
     pub fn chain(&self, device: &wgpu::Device, size: [u32; 2], levels: u32, spare: u32) -> Chain {
         let half = [(size[0] / 2).max(1), (size[1] / 2).max(1)];
-        let fit = half[0].min(half[1]).max(1).ilog2().saturating_sub(spare).max(1);
+        let fit = half[0]
+            .min(half[1])
+            .max(1)
+            .ilog2()
+            .saturating_sub(spare)
+            .max(1);
         let count = fit.min(levels);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Horizon bloom"),
@@ -256,7 +261,11 @@ impl Bloom {
         Self::pass(
             encoder,
             "Bloom, first level",
-            if bright { &self.first_bright } else { &self.first },
+            if bright {
+                &self.first_bright
+            } else {
+                &self.first
+            },
             [None, Some(scene), Some(params)],
             &chain.levels[0],
             None,

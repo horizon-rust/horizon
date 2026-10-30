@@ -14171,6 +14171,16 @@ fn build_renderer(
             .get("minecraft:block/water_flow")
             .copied(),
     );
+    renderer.set_lava_layers(
+        assets
+            .sprite_layers
+            .get("minecraft:block/lava_still")
+            .copied(),
+        assets
+            .sprite_layers
+            .get("minecraft:block/lava_flow")
+            .copied(),
+    );
     renderer.hud.fire_animations = atlas
         .fire_animations
         .iter()

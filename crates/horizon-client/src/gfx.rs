@@ -598,6 +598,8 @@ pub struct Renderer {
     rt_lighting: bool,
     /// RT lighting's water's sprite layers (-1: none), for its own look (`set_water_layers`).
     water_layers: [f32; 2],
+    /// RT lighting's lava's sprite layers, packed (`set_lava_layers`; -1: none).
+    lava_layers: f32,
     /// When the renderer was made: the water's waves' clock.
     water_clock: std::time::Instant,
     /// RT lighting's sun's angular radius (the Sun Size setting) and aerial perspective's air
@@ -734,6 +736,7 @@ fn terrain_group(
     sky: &wgpu::TextureView,
     sun: &wgpu::TextureView,
     depth: &wgpu::TextureView,
+    reflection: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     let view = |binding, view| wgpu::BindGroupEntry {
         binding,
@@ -769,6 +772,7 @@ fn terrain_group(
             view(14, sky),
             view(15, sun),
             view(16, depth),
+            view(17, reflection),
         ],
     })
 }
@@ -1443,6 +1447,7 @@ impl Renderer {
                 entry(12, wgpu::ShaderStages::FRAGMENT, rt_texture),
                 entry(13, wgpu::ShaderStages::FRAGMENT, rt_texture),
                 entry(15, wgpu::ShaderStages::FRAGMENT, rt_texture),
+                entry(17, wgpu::ShaderStages::FRAGMENT, rt_texture),
                 entry(
                     16,
                     wgpu::ShaderStages::FRAGMENT,
@@ -1976,6 +1981,7 @@ impl Renderer {
             &atmosphere.view,
             &rt_sun_unused,
             &rt_depth_unused,
+            &rt_history_unused,
         );
         let crosshair_group = terrain_group(
             &device,
@@ -1991,6 +1997,7 @@ impl Renderer {
             &atmosphere.view,
             &rt_sun_unused,
             &rt_depth_unused,
+            &rt_history_unused,
         );
         let index_quads = 1 << 16;
         let indices = Self::quad_indices(&device, index_quads);
@@ -2995,6 +3002,7 @@ impl Renderer {
             rt_ambient: false,
             rt_lighting: false,
             water_layers: [-1.0; 2],
+            lava_layers: -1.0,
             water_clock: std::time::Instant::now(),
             rt_sun_radius: SUN_RADIUS,
             rt_aerial: crate::graphics::DEFAULT_AERIAL_PERSPECTIVE as f32,
@@ -3698,12 +3706,21 @@ impl Renderer {
     pub fn set_water_layers(&mut self, still: Option<u32>, flow: Option<u32>) {
         self.water_layers = [still, flow].map(|l| l.map_or(-1.0, |l| l as f32));
     }
+    /// The lava's still and flowing sprite layers, for RT lighting to draw lava its own way
+    /// (terrain.wgsl `rt_lava`): packed as `still + 4096 flow` in the water's uniform.
+    pub fn set_lava_layers(&mut self, still: Option<u32>, flow: Option<u32>) {
+        self.lava_layers = match (still, flow) {
+            (Some(s), Some(f)) if s < 4096 && f < 4096 => (s + 4096 * f) as f32,
+            (Some(s), None) if s < 4096 => (s + 4096 * s) as f32,
+            _ => -1.0,
+        };
+    }
     pub fn set_rt_sky(&mut self, size: u32, aerial: u32) {
         self.rt_sun_radius = SUN_RADIUS * size.max(1) as f32;
         self.rt_aerial = aerial as f32;
     }
     fn rebuild_terrain_groups(&mut self) {
-        self.terrain_groups_with(None, None, None, None);
+        self.terrain_groups_with(None, None, None, None, None);
     }
     /// RT lighting's rays on this frame: the solid terrain's `draws` into a depth of the world
     /// target's `size`, then the rays' pass on it; returns the mask and the light sources' light
@@ -3717,7 +3734,7 @@ impl Renderer {
         camera: DVec3,
         rt: &shadow_rays::Rays,
         draws: u32,
-    ) -> (wgpu::TextureView, wgpu::TextureView, wgpu::TextureView) {
+    ) -> [wgpu::TextureView; 4] {
         let depth = match self.rt_depths.iter().find(|(s, _)| *s == size) {
             Some((_, d)) => d.clone(),
             None => {
@@ -3791,6 +3808,7 @@ impl Renderer {
         blocks: Option<&wgpu::TextureView>,
         sun: Option<&wgpu::TextureView>,
         depth: Option<&wgpu::TextureView>,
+        reflection: Option<&wgpu::TextureView>,
     ) {
         let views = sprite_views(
             &self.sprite_textures,
@@ -3801,6 +3819,7 @@ impl Renderer {
         let blocks = blocks.unwrap_or(&self.rt_history_unused);
         let sun = sun.unwrap_or(&self.rt_sun_unused);
         let depth = depth.unwrap_or(&self.rt_depth_unused);
+        let reflection = reflection.unwrap_or(&self.rt_history_unused);
         self.group = terrain_group(
             &self.device,
             "Horizon terrain resources",
@@ -3815,6 +3834,7 @@ impl Renderer {
             &self.atmosphere.view,
             sun,
             depth,
+            reflection,
         );
         self.crosshair_group = terrain_group(
             &self.device,
@@ -3830,6 +3850,7 @@ impl Renderer {
             &self.atmosphere.view,
             sun,
             depth,
+            reflection,
         );
     }
     /// This frame's ray-traced shadows: the grid written up to date, the light's direction (the
@@ -3876,7 +3897,7 @@ impl Renderer {
                 self.water_layers[0],
                 self.water_layers[1],
                 self.water_clock.elapsed().as_secs_f32() % 3600.0,
-                0.0,
+                self.lava_layers,
             ],
             // Set after the hybrid's structures are made this frame (`hw_update`).
             hw_offset: [0.0; 4],
@@ -4448,7 +4469,7 @@ impl Renderer {
         };
         if self.rt_lighting {
             let mask = rt_history.as_ref().map(|h| h.2.clone());
-            self.terrain_groups_with(mask.as_ref(), None, None, None);
+            self.terrain_groups_with(mask.as_ref(), None, None, None, None);
         }
         let rt_history = rt_history.map(|(view_proj, camera, _)| (view_proj, camera));
         // RT lighting's real sun and sky: the sky table follows the sun; the light traced toward is
@@ -4539,10 +4560,12 @@ impl Renderer {
             },
             rt_mode: [
                 f32::from(u8::from(self.rt_lighting)),
-                // HORIZON_RT_DEBUG 7: the rays' visibility, 8: the light sources' traced light.
+                // HORIZON_RT_DEBUG 7: the rays' visibility, 8: the light sources' traced light, 9: the
+                // water's traced reflection.
                 match rt_debug() {
                     7 => 1.0,
                     8 => 2.0,
+                    9 => 3.0,
                     _ => 0.0,
                 },
                 // The light the rays trace toward is the moon's.
@@ -4558,7 +4581,7 @@ impl Renderer {
                 self.water_layers[0],
                 self.water_layers[1],
                 self.water_clock.elapsed().as_secs_f32() % 3600.0,
-                0.0,
+                self.lava_layers,
             ],
             rt_camera: {
                 let c = frame.camera.map(|v| v.rem_euclid(4096.0));
@@ -5449,7 +5472,7 @@ impl Renderer {
         // world draws (the flat draws, Metal's, still read the last frame's, reprojected).
         let rt_now = rt.lighting && world_linear && !flat_frame && self.voxels.views().is_some();
         if rt_now {
-            let (mask, blocks, sun) = self.rt_prepass(
+            let [mask, blocks, sun, reflection] = self.rt_prepass(
                 &mut encoder,
                 world_size,
                 view_proj,
@@ -5462,7 +5485,13 @@ impl Renderer {
                 .iter()
                 .find(|(s, _)| *s == world_size)
                 .map(|(_, d)| d.clone());
-            self.terrain_groups_with(Some(&mask), Some(&blocks), Some(&sun), depth.as_ref());
+            self.terrain_groups_with(
+                Some(&mask),
+                Some(&blocks),
+                Some(&sun),
+                depth.as_ref(),
+                Some(&reflection),
+            );
             let motion = [world_size[0] as f32, world_size[1] as f32, 0.0, 2.0];
             self.uploads.buffer(
                 &mut encoder,
@@ -5927,34 +5956,32 @@ impl Renderer {
                     Some(_) => self.world_post.size().unwrap_or(target_size),
                     None => target_size,
                 };
-                self.shadow_rays
-                    .run(
-                        &self.device,
-                        &mut self.uploads,
-                        &mut encoder,
-                        rt_view,
-                        world_depth,
-                        size,
-                        view_proj,
-                        frame.camera,
-                        &rt,
-                        match &self.eye {
-                            Some(eye) => eye.foveation,
-                            None => shadow_rays::Foveation::screen(),
-                        },
-                        grid,
-                        self.voxels.light_buffers().expect("the grid runs"),
-                        &self.atmosphere.view,
-                        hw.as_ref().map(|(tlas, arena, sprites, instances)| {
-                            shadow_rays::Hardware {
-                                tlas,
-                                arena,
-                                sprites,
-                                instances,
-                            }
+                self.shadow_rays.run(
+                    &self.device,
+                    &mut self.uploads,
+                    &mut encoder,
+                    rt_view,
+                    world_depth,
+                    size,
+                    view_proj,
+                    frame.camera,
+                    &rt,
+                    match &self.eye {
+                        Some(eye) => eye.foveation,
+                        None => shadow_rays::Foveation::screen(),
+                    },
+                    grid,
+                    self.voxels.light_buffers().expect("the grid runs"),
+                    &self.atmosphere.view,
+                    hw.as_ref()
+                        .map(|(tlas, arena, sprites, instances)| shadow_rays::Hardware {
+                            tlas,
+                            arena,
+                            sprites,
+                            instances,
                         }),
-                    )
-                    .0
+                )[0]
+                .clone()
             });
         // With RT lighting the terrain lit itself from the mask: the tone mapping leaves it.
         let shadow_mask = shadow_mask.filter(|_| !rt.lighting);

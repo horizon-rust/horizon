@@ -99,6 +99,10 @@ var<private> reservoir_out: vec4<u32>;
 @group(0) @binding(31) var fast: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(32) var last_fast: texture_2d<f32>;
 var<private> fast_out: vec4<f32>;
+// RT lighting's primary surface replacement on water (Remix's PSR, shadow_rays_hw.wgsl
+// `hw_reflect`): the light of what the water at the pixel reflects (rgb), a 1 a surface, 0 the
+// sky or no water (the water's shader then reflects its own sky).
+@group(0) @binding(33) var reflection: texture_storage_2d<rgba16float, write>;
 var<private> gi_out_a: vec4<f32>;
 var<private> gi_out_b: vec4<u32>;
 // RT lighting's radiance cache (SHaRC-like, gfx/radiance_cache.wgsl resolves it): a hash table of
@@ -1150,6 +1154,7 @@ var<workgroup> shared_rays: array<Traced, 4>;
             textureStore(gi_b, texel, gi_out_b);
             textureStore(sun_mask, texel, v.sun);
             textureStore(fast, texel, fast_out);
+            textureStore(reflection, texel, hw_reflect(pixel_of(texel)));
         }
     }
 }

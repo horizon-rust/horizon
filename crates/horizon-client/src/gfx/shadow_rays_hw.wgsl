@@ -173,3 +173,54 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
 fn hw_position(v: u32) -> vec3<f32> {
     return bitcast<vec3<f32>>(vec3(arena[v * 6u], arena[v * 6u + 1u], arena[v * 6u + 2u]));
 }
+// Remix's primary surface replacement on water and glass: the ray from the camera through depth
+// pixel `p` meets the nearest translucent surface in front of the solid terrain (water, stained
+// glass, ice), turns off it (off the waves on water's top) and meets what it reflects,
+// lit by the sun's shadow ray and the radiance cache (or the last frame's screen) there; rgb that
+// light, a 1, or a 0 where the reflection reaches the sky or no water is met.
+fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
+    let size = rt.size.xy;
+    var d = textureLoad(depth, clamp(p, vec2(0), vec2<i32>(size) - 1), 0);
+    let solid = d > 0.0;
+    d = max(d, 1e-7);
+    let ndc = vec2((f32(p.x) + 0.5) / size.x * 2.0 - 1.0, 1.0 - (f32(p.y) + 0.5) / size.y * 2.0);
+    let c = rt.inverse_view_proj * vec4(ndc, d, 1.0);
+    let far = c.xyz / c.w;
+    let ray = normalize(far);
+    let reach = select(4096.0, length(far), solid);
+    var q: ray_query;
+    rayQueryInitialize(&q, terrain, RayDesc(0x0u, 0xffu, 0.0, reach, rt.hw_offset.xyz, ray));
+    while rayQueryProceed(&q) {
+        let h = rayQueryGetCandidateIntersection(&q);
+        if h.geometry_index != instances[h.instance_custom_data].w { continue; }
+        if hw_quad(h, true) == 0xffffffffu { continue; }
+        rayQueryConfirmIntersection(&q);
+    }
+    let hit = rayQueryGetCommittedIntersection(&q);
+    if hit.kind == RAY_QUERY_INTERSECTION_NONE { return vec4(0.0); }
+    let at = ray * hit.t;
+    // The waves on the water's top, as its shader's (terrain.wgsl `rt_water`).
+    var n = vec3(0.0, 1.0, 0.0);
+    let base = hw_quad(hit, true);
+    let p0 = hw_position(base);
+    let f = cross(hw_position(base + 1u) - p0, hw_position(base + 2u) - p0);
+    if dot(f, f) > 1e-12 { n = normalize(f); }
+    if dot(n, ray) > 0.0 { n = -n; }
+    let layer = f32(arena[base * 6u + 4u] & 0x7fffu);
+    if n.y > 0.5 && (layer == rt.water.x || layer == rt.water.y) {
+        let world = at + rt.camera.xyz + rt.fraction.xyz;
+        let w = water_waves(world.xz, rt.water.z);
+        n = normalize(vec3(-w.y, 1.0, -w.z));
+    }
+    var r = reflect(ray, n);
+    if dot(r, n) < 0.0 { r = normalize(r - n * 2.0 * dot(r, n)); }
+    let start = at + n * 0.02;
+    let h = hw_hit(start, r, 512.0);
+    if h.t < 0.0 { return vec4(0.0); }
+    let seen = start + r * h.t;
+    let lifted = seen + h.normal * 0.02;
+    var light = sun_on(lifted, h.normal);
+    let last = cached_on(seen, h.normal);
+    light += select(open_light(lifted, h.normal, seen), last.rgb, last.a >= 0.0);
+    return vec4(h.through * h.albedo * light, 1.0);
+}
