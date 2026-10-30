@@ -475,6 +475,44 @@ impl Game<'_> {
                 ));
             }
         }
+        // looking_at_block_state / looking_at_block_tags: one group.
+        let block_state = if self.debug_entries.draws("looking_at_block_state") {
+            self.debug_looking_at_block(false)
+        } else {
+            Vec::new()
+        };
+        let block_tags = if self.debug_entries.draws("looking_at_block_tags") {
+            self.debug_looking_at_block(true)
+        } else {
+            Vec::new()
+        };
+        if !block_state.is_empty() || !block_tags.is_empty() {
+            d.group(
+                "looking_at_block",
+                block_state.into_iter().chain(block_tags),
+            );
+        }
+        // looking_at_fluid_state / looking_at_fluid_tags.
+        if self.debug_entries.draws("looking_at_fluid_state") {
+            d.group("looking_at_fluid", self.debug_looking_at_fluid(false));
+        }
+        // looking_at_entity.
+        if self.debug_entries.draws("looking_at_entity") {
+            d.group("looking_at_entity", self.debug_looking_at_entity());
+        }
+        // light_levels, biome, local_difficulty, day_count.
+        for (id, lines) in [
+            ("light_levels", self.debug_light_levels()),
+            ("biome", self.debug_biome()),
+            ("local_difficulty", self.debug_local_difficulty()),
+            ("day_count", self.debug_day_count()),
+        ] {
+            if self.debug_entries.draws(id) {
+                for line in lines {
+                    d.line(line);
+                }
+            }
+        }
         let (left, right) = d.columns(&self.debug_chart_lines());
         let atlas = &self.gui.atlas;
         let mut draws = debug_overlay::draw(&atlas.font, [&left, &right], scale, width);

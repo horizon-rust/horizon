@@ -43,6 +43,7 @@ mod creative_hotbar;
 mod creatures;
 mod crossbow;
 pub(crate) mod cushions;
+mod debug_entries;
 mod debug_keys;
 mod debug_options_screen;
 mod debug_stick;

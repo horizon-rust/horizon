@@ -92,11 +92,11 @@ pub const ENTRIES: &[Entry] = &[
     e("memory", Category::Text),
     e("detailed_memory", Category::Text),
     e_lines("system_specs", Category::Text),
-    e("looking_at_block_state", Category::Text),
-    e("looking_at_block_tags", Category::Text),
-    e("looking_at_fluid_state", Category::Text),
+    e_lines("looking_at_block_state", Category::Text),
+    e_lines("looking_at_block_tags", Category::Text),
+    e_lines("looking_at_fluid_state", Category::Text),
     e("looking_at_fluid_tags", Category::Text),
-    e("looking_at_entity", Category::Text),
+    e_lines("looking_at_entity", Category::Text),
     e("looking_at_entity_tags", Category::Text),
     e("chunk_render_stats", Category::Text),
     e("chunk_generation_stats", Category::Text),
@@ -106,11 +106,11 @@ pub const ENTRIES: &[Entry] = &[
     e_lines("player_position", Category::Text),
     e_lines("player_section_position", Category::Text),
     e("player_speed", Category::Text),
-    e("light_levels", Category::Text),
+    e_lines("light_levels", Category::Text),
     e("heightmap", Category::Text),
-    e("biome", Category::Text),
-    e("local_difficulty", Category::Text),
-    e("day_count", Category::Text),
+    e_lines("biome", Category::Text),
+    e_lines("local_difficulty", Category::Text),
+    e_lines("day_count", Category::Text),
     e("entity_spawn_counts", Category::Text),
     e("sound_mood", Category::Text),
     e("sound_cache", Category::Text),
@@ -227,16 +227,34 @@ impl Entries {
         }
         entries
     }
-    /// `DebugScreenProfile`: the default leaves the entries on, the
-    /// performance profile drops everything the profile turns off.
+    /// `DebugScreenEntries.PROFILES`: the statuses a profile sets; every
+    /// entry it does not name stays `ALWAYS_ON`.
     pub fn apply_profile(&mut self, profile: Profile) {
+        let listed: &[(&str, Status)] = match profile {
+            Profile::Default => &[
+                ("3d_crosshair", Status::Overlay),
+                ("game_version", Status::Overlay),
+                ("tps", Status::Overlay),
+                ("fps", Status::Overlay),
+                ("memory", Status::Overlay),
+                ("system_specs", Status::Overlay),
+                ("player_position", Status::Overlay),
+                ("player_section_position", Status::Overlay),
+                ("simple_performance_impactors", Status::Overlay),
+            ],
+            Profile::Performance => &[
+                ("tps", Status::Overlay),
+                ("fps", Status::Always),
+                ("gpu_utilization", Status::Overlay),
+                ("memory", Status::Overlay),
+                ("simple_performance_impactors", Status::Overlay),
+            ],
+        };
         for (i, entry) in ENTRIES.iter().enumerate() {
-            self.status[i] = match (profile, entry.effect) {
-                (Profile::Performance, Some(Effect::Lines)) => Status::Off,
-                (Profile::Performance, Some(_)) => Status::Off,
-                (_, None) => self.status[i],
-                (Profile::Default, Some(_)) => Status::Always,
-            };
+            self.status[i] = listed
+                .iter()
+                .find(|(id, _)| *id == entry.id)
+                .map_or(Status::Always, |(_, status)| *status);
         }
     }
 }
@@ -389,8 +407,16 @@ mod tests {
                 "fps",
                 "tps",
                 "system_specs",
+                "looking_at_block_state",
+                "looking_at_block_tags",
+                "looking_at_fluid_state",
+                "looking_at_entity",
                 "player_position",
                 "player_section_position",
+                "light_levels",
+                "biome",
+                "local_difficulty",
+                "day_count",
                 "entity_hitboxes",
                 "chunk_borders",
                 "3d_crosshair",
@@ -417,15 +443,18 @@ mod tests {
     }
 
     #[test]
-    fn the_performance_profile_turns_the_switches_off() {
+    fn the_profiles_set_what_vanilla_lists() {
         let mut e = Entries::default();
         e.apply_profile(Profile::Performance);
-        assert_eq!(e.status("entity_hitboxes"), Status::Off);
-        assert_eq!(e.status("fps"), Status::Off);
-        // Entries Horizon does not draw keep what they had.
+        // Listed: tps in the overlay, fps always on.
+        assert_eq!(e.status("tps"), Status::Overlay);
+        assert_eq!(e.status("fps"), Status::Always);
+        // Everything the profile does not name stays always on.
+        assert_eq!(e.status("entity_hitboxes"), Status::Always);
         assert_eq!(e.status("biome"), Status::Always);
         e.apply_profile(Profile::Default);
-        assert_eq!(e.status("fps"), Status::Always);
+        assert_eq!(e.status("fps"), Status::Overlay);
+        assert_eq!(e.status("3d_crosshair"), Status::Overlay);
     }
 
     #[test]
