@@ -6483,6 +6483,18 @@ impl Renderer {
                 None
             }
         });
+        // RT lighting: the graded scene's light as it is, beside the PNG, in a Radiance HDR file
+        // (1 = paper white): the PNG holds the frame as an SDR screen shows it, whatever an HDR
+        // screen shows.
+        let hdr_readback = readback.as_ref().and_then(|(path, _)| {
+            let texture = self.tonemap.as_ref()?.graded_texture(target_size)?;
+            let size = [texture.width(), texture.height()];
+            Some((
+                path.with_extension("hdr"),
+                Self::copy_graded(&self.device, &mut encoder, texture, size),
+                size,
+            ))
+        });
         self.uploads.finish(&encoder);
         if has_section_copies {
             self.section_copy_bytes = 0;
@@ -6534,6 +6546,11 @@ impl Renderer {
                 self.write_screenshot(&path, &buffer)
                     .map_err(|e| e.to_string()),
             );
+        }
+        if let Some((path, buffer, size)) = hdr_readback
+            && let Err(e) = self.write_radiance(&path, &buffer, size)
+        {
+            log::warn!("Horizon: HDR screenshot {}: {e}", path.display());
         }
         let present = Instant::now();
         if let Some(surface_frame) = surface_frame {
@@ -6613,6 +6630,85 @@ impl Renderer {
         );
         buffer
     }
+    /// The graded scene's rows (`tonemap::SCENE_FORMAT`, eight bytes a pixel) copied into a
+    /// buffer to read back.
+    fn copy_graded(
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+        size: [u32; 2],
+    ) -> wgpu::Buffer {
+        let row = (size[0] * 8).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Horizon HDR screenshot"),
+            size: u64::from(row) * u64::from(size[1]),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width: size[0],
+                height: size[1],
+                depth_or_array_layers: 1,
+            },
+        );
+        buffer
+    }
+    /// The graded light read back (`copy_graded`) as a Radiance RGBE file, uncompressed.
+    fn write_radiance(
+        &self,
+        path: &std::path::Path,
+        buffer: &wgpu::Buffer,
+        [width, height]: [u32; 2],
+    ) -> Result<()> {
+        use std::io::Write;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        buffer.map_async(wgpu::MapMode::Read, .., move |r| {
+            let _ = sender.send(r);
+        });
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| e.to_string())?;
+        receiver
+            .recv()
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        let row = (width * 8).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) as usize;
+        let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
+        write!(
+            out,
+            "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\nEXPOSURE=1.0\n\n-Y {height} +X {width}\n"
+        )?;
+        {
+            let data = buffer.get_mapped_range(..).map_err(|e| e.to_string())?;
+            let mut line = Vec::with_capacity(width as usize * 4);
+            for y in 0..height as usize {
+                line.clear();
+                for px in data[y * row..y * row + width as usize * 8]
+                    .as_chunks::<8>()
+                    .0
+                {
+                    let channel = |i: usize| {
+                        half_to_f32(u16::from_le_bytes([px[i * 2], px[i * 2 + 1]])).max(0.0)
+                    };
+                    line.extend_from_slice(&rgbe([channel(0), channel(1), channel(2)]));
+                }
+                out.write_all(&line)?;
+            }
+        }
+        buffer.unmap();
+        out.flush()?;
+        Ok(())
+    }
     fn write_screenshot(&self, path: &std::path::Path, buffer: &wgpu::Buffer) -> Result<[u32; 2]> {
         if !self.config.usage.contains(wgpu::TextureUsages::COPY_SRC) {
             return Err("this surface does not support frame readback".into());
@@ -6661,6 +6757,35 @@ impl Renderer {
         encoder.write_header()?.write_image_data(&pixels)?;
         Ok([width, height])
     }
+}
+/// An IEEE half float's value.
+fn half_to_f32(h: u16) -> f32 {
+    let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let exponent = i32::from((h >> 10) & 0x1f);
+    let mantissa = f32::from(h & 0x3ff);
+    match exponent {
+        0 => sign * mantissa * 2f32.powi(-24),
+        31 => {
+            if mantissa == 0.0 {
+                sign * f32::INFINITY
+            } else {
+                f32::NAN
+            }
+        }
+        _ => sign * (1.0 + mantissa / 1024.0) * 2f32.powi(exponent - 15),
+    }
+}
+/// A colour as Radiance's RGBE: three mantissas sharing the largest channel's exponent.
+fn rgbe([r, g, b]: [f32; 3]) -> [u8; 4] {
+    let largest = r.max(g).max(b);
+    if !largest.is_finite() || largest < 1e-32 {
+        return [0; 4];
+    }
+    // largest = m * 2^e with m in [0.5, 1).
+    let e = largest.log2().floor() as i32 + 1;
+    let scale = 256.0 / 2f32.powi(e);
+    let byte = |v: f32| (v * scale).clamp(0.0, 255.0) as u8;
+    [byte(r), byte(g), byte(b), (e + 128).clamp(0, 255) as u8]
 }
 /// Camera-relative clip planes (`Frustum`).
 #[derive(Clone, Copy, Debug)]

@@ -136,6 +136,8 @@ struct Post {
     glow: bloom::Chain,
     /// The grading pass's target, and the curve's source (the tone mapping layout, no mask).
     graded: wgpu::TextureView,
+    /// Its texture, for an F2 screenshot's HDR copy (`graded_texture`).
+    graded_texture: wgpu::Texture,
     graded_group: wgpu::BindGroup,
     /// The glow and the exposure, for the grading pass.
     group: wgpu::BindGroup,
@@ -481,6 +483,15 @@ impl Tonemap {
         t.post.as_ref().map(|p| &p.graded)
     }
 
+    /// The graded light's texture of the scene of `size` (`graded`'s), for a screenshot.
+    pub fn graded_texture(&self, size: [u32; 2]) -> Option<&wgpu::Texture> {
+        if !self.post {
+            return None;
+        }
+        let t = self.scenes.iter().find(|t| t.size == size)?;
+        t.post.as_ref().map(|p| &p.graded_texture)
+    }
+
     /// The grading of the scene at `index` (made on first use).
     fn prepare(&mut self, device: &wgpu::Device, index: usize) {
         let layout = &self.layout;
@@ -491,23 +502,24 @@ impl Tonemap {
             return;
         }
         let size = self.scenes[index].size;
-        let graded = device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("Horizon scene (graded)"),
-                size: wgpu::Extent3d {
-                    width: size[0].max(1),
-                    height: size[1].max(1),
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: SCENE_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            })
-            .create_view(&Default::default());
+        let graded_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Horizon scene (graded)"),
+            size: wgpu::Extent3d {
+                width: size[0].max(1),
+                height: size[1].max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: SCENE_FORMAT,
+            // COPY_SRC: an F2 screenshot keeps the graded light as it is (gfx.rs `copy_graded`).
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let graded = graded_texture.create_view(&Default::default());
         let chain = grading.bloom.chain(device, size, 6, 3);
         let glow = grading.bloom.chain(device, size, BLOOM_STEPS, 1);
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -541,6 +553,7 @@ impl Tonemap {
             chain,
             glow,
             graded,
+            graded_texture,
             graded_group,
             group,
         });
