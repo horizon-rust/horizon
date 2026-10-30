@@ -2455,6 +2455,8 @@ impl OptionsUi {
         }
         if self.page() == Page::SplitSetup {
             self.split_setup.on = s.extras.splitscreen;
+            // The controller picks a tile up between presses: the screen's size from the draw.
+            self.split_setup.size = (batch.width, batch.height);
             self.split_setup.draw(batch, atlas, cursor, self.in_world);
             return;
         }
