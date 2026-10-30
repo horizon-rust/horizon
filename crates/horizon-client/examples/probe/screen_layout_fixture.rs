@@ -1,4 +1,4 @@
-//! Loom and crafter screen drawing for tools/test_screen_layout_parity.py:
+//! Loom/crafter drawing and statistics tab states for the screen parity harnesses:
 //! reads one JSON case per line and prints the `horizon_client::screen_layout`
 //! calls in the format of `VanillaLoomScreenOracle`.
 //!
@@ -68,6 +68,12 @@ pub fn main() -> horizon_client::Result<()> {
     let mut out = String::new();
     for line in input.lines().filter(|l| !l.trim().is_empty()) {
         let c: Value = serde_json::from_str(line)?;
+        if c["screen"] == "stats" {
+            let state = screen_layout::statistics_tab_state(c["entries"].as_u64().unwrap() > 0);
+            out += &json!({"active": state.active, "tooltip": state.tooltip}).to_string();
+            out.push('\n');
+            continue;
+        }
         let int = |k: &str| c[k].as_i64().unwrap_or(0) as i32;
         let draws = if c["screen"] == "loom" {
             let patterns: Vec<Arc<str>> = c["patterns"]

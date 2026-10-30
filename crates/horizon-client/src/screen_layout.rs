@@ -4,8 +4,24 @@
 //! six-layer error) and `CrafterScreen`'s background, disabled slots and
 //! redstone arrow. Computed without drawing so `tools/test_screen_layout_parity.py`
 //! can compare them with the vanilla client; the game paints the same calls.
+//! Statistics tab availability is also shared by the screen and its parity probe.
 use crate::banner::{self, BannerLayer, Banners};
 use std::sync::Arc;
+
+/// The enabled state and tooltip of a statistics tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StatisticsTabState {
+    pub active: bool,
+    pub tooltip: Option<&'static str>,
+}
+
+/// `StatsScreen.setTabActiveStateAndTooltip`: only lists with entries can be selected.
+pub fn statistics_tab_state(has_entries: bool) -> StatisticsTabState {
+    StatisticsTabState {
+        active: has_entries,
+        tooltip: (!has_entries).then_some("gui.stats.none_found"),
+    }
+}
 
 /// One call a screen makes.
 #[derive(Clone, Debug, PartialEq)]

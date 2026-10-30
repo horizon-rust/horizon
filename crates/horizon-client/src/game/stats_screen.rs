@@ -230,6 +230,14 @@ impl Game<'_> {
         }
         mobs
     }
+    /// `StatsScreen.setTabActiveStateAndTooltip`: Items and Mobs use their list entries.
+    fn stats_tab_state(&self, index: usize) -> horizon_client::screen_layout::StatisticsTabState {
+        horizon_client::screen_layout::statistics_tab_state(match index {
+            0 => true,
+            1 => !self.stat_items().is_empty(),
+            _ => !self.stat_mobs().is_empty(),
+        })
+    }
     pub(super) fn draw_stats(&mut self, batch: &mut HudBatch) {
         let (w, h) = (batch.width, batch.height);
         let atlas = &self.gui.atlas;
@@ -238,6 +246,7 @@ impl Game<'_> {
         ui::separators(batch, atlas, top, bottom, true);
         // The tab bar.
         let (x0, tw) = tabs(w);
+        let mut tab_tooltip = None;
         for (i, key) in ["stat.generalButton", "stat.itemsButton", "stat.mobsButton"]
             .into_iter()
             .enumerate()
@@ -245,6 +254,10 @@ impl Game<'_> {
             let x = x0 + tw * i as f32;
             let selected = self.stats_ui.tab == i;
             let hover = ui::hovered(self.cursor, x, 0.0, tw, TAB_H);
+            let state = self.stats_tab_state(i);
+            if hover {
+                tab_tooltip = state.tooltip;
+            }
             let sprite = match (selected, hover) {
                 (true, true) => "gui/sprites/widget/tab_selected_highlighted",
                 (true, false) => "gui/sprites/widget/tab_selected",
@@ -254,7 +267,7 @@ impl Game<'_> {
             ui::nine_slice(batch, atlas, sprite, x, 0.0, tw, TAB_H, u32::MAX);
             let label = Text::translate(key, &[]);
             let lw = atlas.font.width_text(&label);
-            let color = if selected { u32::MAX } else { 0xFFA0_A0A0 };
+            let color = if state.active { u32::MAX } else { 0xFFA0_A0A0 };
             batch.text_styled(
                 atlas,
                 &label,
@@ -433,6 +446,14 @@ impl Game<'_> {
         if let Some((stack, x, y)) = tip {
             self.draw_stack_tooltip(batch, &stack, x, y);
         }
+        if let Some(key) = tab_tooltip {
+            ui::tooltip(
+                batch,
+                &self.gui.atlas,
+                &[Text::translate(key, &[])],
+                self.cursor,
+            );
+        }
     }
     fn draw_stats_footer(&self, batch: &mut HudBatch, w: f32, h: f32) {
         let atlas = &self.gui.atlas;
@@ -461,6 +482,7 @@ impl Game<'_> {
         for i in 0..3 {
             if ui::hovered(self.cursor, x0 + tw * i as f32, 0.0, tw, TAB_H)
                 && self.stats_ui.tab != i
+                && self.stats_tab_state(i).active
             {
                 self.stats_ui.tab = i;
                 self.stats_ui.scroll.amount = 0.0;

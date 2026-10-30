@@ -30,7 +30,7 @@ WorldOptionsScreen.DifficultyButtons.create	inline	crates/horizon-client/src/gam
 WorldOptionsScreen.DifficultyButtons.refresh	port	crates/horizon-client/src/game/lan_screen.rs::WorldOptions::server_difficulty	a server's difficulty and lock update the screen; gap: minor: it also resets the baseline, so Apply no longer sees the change
 WorldOptionsScreen.DifficultyButtons.isDifficultyLocked	inline	crates/horizon-client/src/game/lan_screen.rs::Game::open_world_options	locked when the level is locked or hardcore; the lock button's enabled state is in WorldOptions::active
 StatsScreen.onStatsUpdated	inline	crates/horizon-client/src/game/stats_screen.rs::Game::draw_stats	the lists are rebuilt from the stored values on every draw; the AwardStats arm in remote.rs only stores them
-StatsScreen.setTabActiveStateAndTooltip	missing		player: an empty Items or Mobs tab stays selectable with no 'No statistics found' tooltip
+StatsScreen.setTabActiveStateAndTooltip	port	crates/horizon-client/src/screen_layout.rs::statistics_tab_state	empty Items and Mobs tabs are disabled in stats_click and show the gui.stats.none_found tooltip in draw_stats
 StatsScreen.repositionElements	skip:ui		layout only: tab bar placement and header height
 StatsScreen.keyPressed	missing		minor: no keyboard tab switching on the statistics screen; Escape still closes it
 StatsScreen.extractRenderState	inline	crates/horizon-client/src/game/stats_screen.rs::Game::draw_stats	footer separator is drawn with the tab bar in draw_stats
