@@ -33,3 +33,10 @@ Horizon's own (the last pass, which resamples the sky into Horizon's sky-view ta
 `crates/horizon-client/src/gfx/moon_lroc.png` is NASA's LROC colour map of the Moon from the
 [CGI Moon Kit](https://svs.gsfc.nasa.gov/4720/) (NASA's Scientific Visualization Studio, from the
 Lunar Reconnaissance Orbiter Camera), scaled to 1024x512. NASA's imagery is in the public domain.
+
+## The Milky Way's map
+
+`crates/horizon-client/src/gfx/milky_way_svs.png` is the Milky Way layer of NASA's
+[Deep Star Maps 2020](https://svs.gsfc.nasa.gov/4851/) (NASA's Scientific Visualization Studio,
+from the Hipparcos, Tycho-2 and Gaia catalogues), scaled to 2048x1024. NASA's imagery is in the
+public domain.

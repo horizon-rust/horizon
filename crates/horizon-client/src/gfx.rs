@@ -625,6 +625,8 @@ pub struct Renderer {
     rt_history_unused: wgpu::TextureView,
     /// RT lighting's moon map (`moon_map`).
     moon_map: wgpu::TextureView,
+    /// RT lighting's Milky Way map (`milky_way_map`).
+    milky_way_map: wgpu::TextureView,
     /// Bound in place of RT lighting's sun through tinting glass while there is none: all of it.
     rt_sun_unused: wgpu::TextureView,
     /// Bound in place of RT lighting's depth prepass while there is none.
@@ -759,6 +761,7 @@ fn terrain_group(
     reflection: &wgpu::TextureView,
     refraction: &wgpu::TextureView,
     moon: &wgpu::TextureView,
+    milky_way: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     let view = |binding, view| wgpu::BindGroupEntry {
         binding,
@@ -797,19 +800,33 @@ fn terrain_group(
             view(17, reflection),
             view(18, refraction),
             view(19, moon),
+            view(20, milky_way),
         ],
     })
 }
 /// RT lighting's moon map: NASA's LROC colour map of the Moon (CGI Moon Kit, Scientific
 /// Visualization Studio, public domain), equirectangular, the near side in the middle, sRGB.
 fn moon_map(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
-    let (width, height, rgba) = crate::hud::decode_bytes(include_bytes!("gfx/moon_lroc.png"))
-        .expect("the moon map decodes");
+    sky_map(
+        device,
+        queue,
+        "RT lighting's moon",
+        include_bytes!("gfx/moon_lroc.png"),
+    )
+}
+/// An equirectangular sRGB map of the sky (the moon's face, the Milky Way) as a texture.
+fn sky_map(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    png: &[u8],
+) -> wgpu::TextureView {
+    let (width, height, rgba) = crate::hud::decode_bytes(png).expect("the sky map decodes");
     device
         .create_texture_with_data(
             queue,
             &wgpu::TextureDescriptor {
-                label: Some("RT lighting's moon"),
+                label: Some(label),
                 size: wgpu::Extent3d {
                     width,
                     height,
@@ -827,6 +844,9 @@ fn moon_map(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
         )
         .create_view(&Default::default())
 }
+// RT lighting's Milky Way: NASA's Deep Star Maps 2020 Milky Way layer (Scientific Visualization
+// Studio, public domain; its diffuse light without the stars, in celestial coordinates, centred
+// on right ascension 0h, right ascension increasing to the left), at 2048x1024.
 /// The real sun's angular radius (0.53 degrees across).
 const SUN_RADIUS: f32 = 0.004_63;
 /// The lunar regolith's reflectance by colour, relative to green (red, green, blue): its spectrum
@@ -1515,6 +1535,15 @@ impl Renderer {
                     },
                 ),
                 entry(
+                    20,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(
                     16,
                     wgpu::ShaderStages::FRAGMENT,
                     wgpu::BindingType::Texture {
@@ -2018,6 +2047,12 @@ impl Renderer {
         };
         // Bound in place of RT lighting's last light while there is none.
         let moon_map = moon_map(&device, &queue);
+        let milky_way_map = sky_map(
+            &device,
+            &queue,
+            "RT lighting's Milky Way",
+            include_bytes!("gfx/milky_way_svs.png"),
+        );
         let rt_history_unused = device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("No RT light"),
@@ -2051,6 +2086,7 @@ impl Renderer {
             &rt_history_unused,
             &rt_history_unused,
             &moon_map,
+            &milky_way_map,
         );
         let crosshair_group = terrain_group(
             &device,
@@ -2069,6 +2105,7 @@ impl Renderer {
             &rt_history_unused,
             &rt_history_unused,
             &moon_map,
+            &milky_way_map,
         );
         let index_quads = 1 << 16;
         let indices = Self::quad_indices(&device, index_quads);
@@ -3084,6 +3121,7 @@ impl Renderer {
             rt_aerial: crate::graphics::DEFAULT_AERIAL_PERSPECTIVE as f32,
             rt_history_unused,
             moon_map,
+            milky_way_map,
             rt_sun_unused,
             rt_depth_unused,
             atmosphere,
@@ -3997,6 +4035,7 @@ impl Renderer {
             reflection,
             refraction,
             &self.moon_map,
+            &self.milky_way_map,
         );
         self.crosshair_group = terrain_group(
             &self.device,
@@ -4015,6 +4054,7 @@ impl Renderer {
             reflection,
             refraction,
             &self.moon_map,
+            &self.milky_way_map,
         );
     }
     /// This frame's ray-traced shadows: the grid written up to date, the light's direction (the
@@ -4801,7 +4841,12 @@ impl Renderer {
             rt_sun: [rt_sun.x, rt_sun.y, rt_sun.z, f32::from(u8::from(rt_sky))],
             rt_sun_light,
             // x: the moon's phase (terrain.wgsl `rt_moon_disc`); y, z: the shooting stars' rate.
-            rt_stars: [moon_phase, meteors[0], meteors[1], frame.sky.star_brightness],
+            rt_stars: [
+                moon_phase,
+                meteors[0],
+                meteors[1],
+                frame.sky.star_brightness,
+            ],
             rt_star_frame: sky_stars::frame(frame.sky.sun_angle, frame.sun_path_tilt)
                 .to_cols_array_2d(),
             rt_water: [

@@ -90,6 +90,9 @@ struct Globals {
 @group(0) @binding(18) var rt_refract: texture_2d<f32>;
 // RT lighting: the Moon's map (NASA's LROC colours, equirectangular, the near side in the middle).
 @group(0) @binding(19) var rt_moon_map: texture_2d<f32>;
+// RT lighting: the Milky Way's diffuse light (NASA's Deep Star Maps 2020, celestial coordinates,
+// right ascension 0h in the middle and increasing to the left).
+@group(0) @binding(20) var rt_milky_map: texture_2d<f32>;
 // The traced reflection for the fragment being lit (`rt_reflection`), which `rt_shade` takes in
 // place of the sky's: rgb its light, a 1 when there is one.
 var<private> rt_mirror: vec4<f32>;
@@ -1241,38 +1244,30 @@ fn star_colour(kelvin: f32) -> vec3<f32> {
     }
     return pow(c, vec3(2.2));
 }
-// The Milky Way, where it is: a faint, uneven band along the galactic plane (its north pole at
-// right ascension 192.86 degrees, declination 27.13 degrees), brighter toward its centre in
-// Sagittarius; the sky's light outshines it like the stars.
+// The Milky Way as it is: NASA's map of its diffuse light (its dark rifts, its bulge in
+// Sagittarius, the Magellanic Clouds), turned with the stars (`rt_star_frame`, equatorial to
+// world) and dimmed like them by the air and the sky's own light. Its brightness from its surface
+// brightness: about 20 magnitudes a square arcsecond at the galactic centre (the map's 1), which
+// the stars' scale (a magnitude 0 star 20 paper whites over a couple of pixels, 175 arcseconds
+// across at 3440x1440) puts at 0.015 paper whites. The eye sums an extended light over its area
+// (Piper's law: its threshold falls as the square root of the area, Blackwell 1946), which a
+// screen's pixel does not, and the exposure stops at +1.5: the band is brought up by that summation
+// over a degree (MILKY_SUMMATION, the square root of a degree over a 175 arcsecond pixel), its rifts and colours as the map has them. No light pollution
+// here, so it shows whole under a dark sky.
+const MILKY_SUMMATION: f32 = 20.0;
 fn rt_milky_way(d: vec3<f32>, sky: vec3<f32>) -> vec3<f32> {
     let brightness = globals.rt_stars.w;
     if brightness <= 0.0 || d.y <= 0.0 { return vec3(0.0); }
     let m = globals.rt_star_frame;
-    let e = vec3(dot(d, m[0].xyz), dot(d, m[1].xyz), dot(d, m[2].xyz));
-    let pole = vec3(-0.8676, -0.1981, 0.4560);
-    let centre = vec3(-0.0548, -0.8734, -0.4838);
-    let b = dot(e, pole);
-    let toward = max(dot(e, centre), 0.0);
-    let grain = rt_milky_noise(e * 9.0) * 0.6 + rt_milky_noise(e * 27.0) * 0.4;
-    let band = exp(-b * b / 0.012) * (0.35 + grain) * (1.0 + 2.5 * toward * toward * toward);
+    let e = normalize(vec3(dot(d, m[0].xyz), dot(d, m[1].xyz), dot(d, m[2].xyz)));
+    // Equatorial: z the celestial north pole, x the vernal equinox (right ascension 0).
+    let ra = atan2(e.y, e.x);
+    let dec = asin(clamp(e.z, -1.0, 1.0));
+    let uv = vec2(fract(0.5 - ra / 6.2831853), 0.5 - dec / 3.14159265);
+    let map = textureSampleLevel(rt_milky_map, lightmap_sampler, uv, 0.0).rgb;
     let glare = exp(-dot(sky, vec3(0.2126, 0.7152, 0.0722)) * 60.0);
-    let air = exp(-0.2 / max(d.y + 0.025, 0.03));
-    return vec3(0.8, 0.85, 1.0) * (0.006 * band * brightness * glare * air);
-}
-fn rt_milky_noise(p: vec3<f32>) -> f32 {
-    let i = floor(p);
-    let f = p - i;
-    let u = f * f * (3.0 - 2.0 * f);
-    var v = 0.0;
-    for (var k = 0u; k < 8u; k++) {
-        let o = vec3(f32(k & 1u), f32((k >> 1u) & 1u), f32(k >> 2u));
-        let w = select(1.0 - u, u, o > vec3(0.5));
-        let c = vec3<i32>(i + o);
-        var h = u32(c.x) * 73856093u ^ u32(c.y) * 19349663u ^ u32(c.z) * 83492791u;
-        h = (h ^ (h >> 13u)) * 1274126177u;
-        v += w.x * w.y * w.z * f32(h >> 8u) / 16777216.0;
-    }
-    return v;
+    let air = exp(-vec3(0.12, 0.18, 0.3) * (1.0 / max(d.y + 0.025, 0.03)));
+    return map * (0.015 * MILKY_SUMMATION * brightness * glare) * air;
 }
 // METEOR-BEGIN: the shooting stars' model, the same text in terrain.wgsl (the sky draws them) and in
 // gfx/shadow_rays.wgsl (the Eye of Aldhani mode lights the terrain with them); a test keeps them equal.
