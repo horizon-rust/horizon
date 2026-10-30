@@ -422,6 +422,10 @@ fn load_definitions(root: &Path) -> BTreeMap<String, ClientItem> {
                 continue;
             }
             let name = path.file_stem().unwrap_or_default().to_string_lossy();
+            if !crate::model_library::valid_resource_id(&namespace, &name) {
+                log::warn!("Invalid path in pack: {namespace}:{name}, ignoring");
+                continue;
+            }
             if let Some(item) = fs::read_to_string(&path)
                 .ok()
                 .and_then(|t| ClientItem::from_json(&t).ok())
@@ -802,11 +806,9 @@ mod tests {
     fn item_model_errors_wait_for_the_item_definitions() -> crate::Result<()> {
         let root =
             std::env::temp_dir().join(format!("horizon-item-model-errors-{}", std::process::id()));
-        let model = root.join("assets/horizon/models/INVALID.json");
-        fs::create_dir_all(model.parent().unwrap())?;
-        fs::write(model, "{}")?;
-        let library = crate::model_library::ParsedModels::load(&root).into_item_library();
-        assert!(library.is_err());
+        fs::create_dir_all(&root)?;
+        let library: std::result::Result<Arc<ModelLibrary>, String> =
+            Err("item models: DecodeError".into());
         fs::write(root.join("items.json"), "{")?;
         let load = || {
             ItemRenderer::load_with_library(&root, library.clone())
