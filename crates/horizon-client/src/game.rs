@@ -17804,8 +17804,22 @@ fn load_resources(
     let assets = Arc::new(assets);
     let render = Arc::new(render);
     let biomes = Arc::new(biomes);
-    if let Some(folder) = launch_world {
-        world_loading::preload_launch_world(folder, &root, assets.registry, biomes.clone());
+    // A dedicated server's world, from server.properties (`dedicated::preflight`).
+    let launch = match launch_world {
+        Some(folder) => std::env::current_dir()
+            .ok()
+            .map(|dir| (dir.join("saves").join(folder), None)),
+        None if headless => dedicated::launch_world(),
+        None => None,
+    };
+    if let Some((world_root, preset)) = launch {
+        world_loading::preload_launch_world(
+            world_root,
+            preset,
+            &root,
+            assets.registry,
+            biomes.clone(),
+        );
     }
     let tables = Arc::new(MeshTables::new(&assets, &render, &facts, visibility)?);
     let pack = PackResources::assemble(
