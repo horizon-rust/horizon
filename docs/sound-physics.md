@@ -38,6 +38,10 @@ independent of sound physics (`crates/horizon-client/src/spatial.rs`):
   600 Hz), synthesised once (1.2 s). It plays at the bow hand, right
   of the eyes, and fades out over a buffer on an early release. Vanilla's draw is silent.
 
+- **Soft item pickup** (`soundPhysics.soft_pickup`, off): the item pickup pops lower and
+  softer. Vanilla draws its pitch `((r1 - r2) * 0.7 + 1) * 2`, clamped by the engine to 0.5..2,
+  so half the pops sit at 2, an octave up; with this on it is centred on 1.3 (a fifth lower)
+  with half the spread (0.8 to 1.8), at 0.8 of the volume (`sound_physics::soft_pickup_pitch`).
 - **Sound range** (`soundPhysics.sound_range`: Vanilla 1, 1.5 or 2 on the page, up to 3 in the
   file): how far sounds carry against vanilla's 16 blocks a unit of volume. It stretches the
   mixer's linear range (with the mod's `attenuation_factor`), the air paths' reach (± 16 × 12 ×
@@ -107,6 +111,13 @@ Rust and the EFX parts it drives are rebuilt in the mixer.
      listener's cell (± 16 × 12 × 16 blocks, a sound's usual range) that goes round blocks,
      through open doors and not closed ones (`closes_axes` of the block's shape). Where no air
      path joins them (a closed room), the mod's average of the reflections' directions.
+   - surfaces darken the reverb: each bounce keeps a share of the highs equal to its share of
+     the energy (`reflection`: stone 0.86, wood 0.23, wool 0.06), and bus k, which holds later
+     bounces, takes it k + 1 times (on stone the sends' high-frequency gain goes from 0.86 on
+     the short bus to 0.55 on the long one).
+   - near field: within `NEAR_FIELD` (2.5 blocks) of the listener the sends fall linearly to
+     `NEAR_FLOOR` (0.3) at the ears, so the player's own sounds (an item picked up plays at
+     the eyes) keep their place over the room.
    - underwater: direct high-frequency gain × (1 − `underwater_filter`), sends × 0.4, applied
      last.
    - a cache (`sound_physics::Cache`) keeps which cells the listener sees and the air paths
@@ -164,6 +175,7 @@ takes all of the mod's general settings under their own names and ranges:
 | `doppler_factor` | 1.0 | (Horizon; OpenAL's `AL_DOPPLER_FACTOR`) |
 | `arrow_whoosh`, `bow_creak` | false | (Horizon) |
 | `sound_range` | 1.0 | (Horizon; 1 to 3) |
+| `soft_pickup` | false | (Horizon) |
 
 Not carried over: the per-block reflectivity and occlusion files (the mod's defaults are built
 in, keyed by sound type), the per-sound rate file (its defaults are), `sound_distance_allowance`
@@ -241,6 +253,13 @@ branch, to compare by ear):
 - **Inconsistent weights:** the short bus was the only one not weighted by reflectivity (gone
   with the new reverb), and the direct path counted with weight 1 against 1 / length² for the
   reflections; it is weighted as they are.
+- **Mining in a row in a 1 × 2 stone tunnel was piercing.** The faithful port sent each item
+  pickup pop (played at the eyes, at pitch 2 half the time) 0.84, 1.0, 0.95 and 0.71 into the
+  four buses, high frequencies untouched: the pop rang on for seconds, its ring only 6.6 dB
+  under the pop, in tonal bands around 2.5, 4.5, 6, 8 and 10 kHz (the long buses' modes). With
+  the room reverb, the surfaces' high-frequency absorption and the near field, the ring sits
+  30 dB under the pop, 24 dB less of it in 2 to 8 kHz and 27 dB less above (measured offline on
+  `random/pop.ogg` through the mixer).
 - **A ray that escaped kept bouncing** from its last hit while the path was shorter than
   `reverb_attenuation_distance`, adding the distance to the listener each time; it stops.
 

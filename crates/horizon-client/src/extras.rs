@@ -407,6 +407,7 @@ pub enum Item {
     SoundWhoosh,
     SoundBowCreak,
     SoundRange,
+    SoundSoftPickup,
 }
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -437,6 +438,7 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(SoundWhoosh),
         Ok(SoundBowCreak),
         Ok(SoundRange),
+        Ok(SoundSoftPickup),
     ]
 }
 impl Item {
@@ -466,6 +468,7 @@ impl Item {
             Item::SoundWhoosh => "Arrow whoosh",
             Item::SoundBowCreak => "Bow creak",
             Item::SoundRange => "Sound range",
+            Item::SoundSoftPickup => "Soft item pickup",
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
@@ -477,8 +480,8 @@ impl Item {
             SoundReverb | SoundOcclusion | SoundUnderwater | SoundReflections | SoundReverbGain
             | SoundBlockAbsorption | SoundRays | SoundBounces => SoundPhysics,
             SoundPhysics | SoundHrtf | SoundDoppler | SoundWhoosh | SoundBowCreak | SoundRange
-            | Fullbright | DynamicLights | MouseTweaks | Sort | AutoReconnect | NoAi
-            | AgentControl | DiscordPresence => {
+            | SoundSoftPickup | Fullbright | DynamicLights | MouseTweaks | Sort | AutoReconnect
+            | NoAi | AgentControl | DiscordPresence => {
                 return None;
             }
         })
@@ -538,6 +541,9 @@ impl Item {
                 "The pitch of a sound rises as it comes at you and falls as it goes away."
             }
             Item::SoundBowCreak => "A bow creaks as you draw it, tighter as the string comes back.",
+            Item::SoundSoftPickup => {
+                "Picking up items pops lower and softer, a fifth below vanilla's with less spread: easier on the ears when mining in a row."
+            }
             Item::SoundRange => {
                 "How far you hear sounds: vanilla's 16 blocks, or further. In single player the world sends them that far too; on a server only your own mix changes."
             }
@@ -582,6 +588,7 @@ impl Item {
             Item::SoundDoppler => e.sound_physics.doppler,
             Item::SoundWhoosh => e.sound_physics.arrow_whoosh,
             Item::SoundBowCreak => e.sound_physics.bow_creak,
+            Item::SoundSoftPickup => e.sound_physics.soft_pickup,
             _ => return None,
         })
     }
@@ -629,6 +636,7 @@ impl Item {
             Item::SoundDoppler => e.sound_physics.doppler = !e.sound_physics.doppler,
             Item::SoundWhoosh => e.sound_physics.arrow_whoosh = !e.sound_physics.arrow_whoosh,
             Item::SoundBowCreak => e.sound_physics.bow_creak = !e.sound_physics.bow_creak,
+            Item::SoundSoftPickup => e.sound_physics.soft_pickup = !e.sound_physics.soft_pickup,
             Item::SoundRange => {
                 let s = &mut e.sound_physics;
                 s.sound_range = sp::cycle(&sp::SOUND_RANGES, s.sound_range, back)

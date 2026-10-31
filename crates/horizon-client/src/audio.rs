@@ -941,6 +941,83 @@ pub fn mix_benchmark(
     }
     started.elapsed()
 }
+/// A sound file decoded to mono samples and their rate, for tools
+/// (`examples/sound_capture.rs`).
+#[doc(hidden)]
+pub fn decode_file(path: &Path) -> Option<(Vec<f32>, u32)> {
+    decode(path)
+}
+/// One sound for `render_offline`: its samples, when it starts (seconds),
+/// its volume and pitch as the engine would set them, where it is and the
+/// environment sound physics gave it.
+#[doc(hidden)]
+pub struct OfflineSound {
+    pub samples: Arc<Vec<f32>>,
+    pub rate: u32,
+    pub start: f32,
+    pub volume: f32,
+    pub pitch: f32,
+    pub at: [f64; 3],
+    pub environment: Option<Environment>,
+}
+/// The mixer's output (48 kHz stereo, interleaved) for `sounds` heard at
+/// `listener` facing `yaw`, `pitch`, with sound physics' mixing when
+/// `settings` is given: the game's mix without an output device, for
+/// recordings and listening tests (`examples/sound_capture.rs`).
+#[doc(hidden)]
+pub fn render_offline(
+    sounds: &[OfflineSound],
+    listener: [f64; 3],
+    yaw: f32,
+    pitch: f32,
+    settings: Option<&PhysicsSettings>,
+    seconds: f32,
+) -> Vec<f32> {
+    const RATE: u32 = 48_000;
+    const BUFFER: usize = 480;
+    let mut mixer = Mixer {
+        listener,
+        listener_yaw: yaw,
+        listener_pitch: pitch,
+        physics_settings: settings.filter(|s| s.enabled).cloned(),
+        ..Mixer::default()
+    };
+    if let Some(s) = settings {
+        mixer.spatial = Spatial {
+            hrtf: s.hrtf,
+            doppler: None,
+            whoosh: false,
+            range: (s.sound_range != 1.0).then_some(s.sound_range),
+        };
+    }
+    let buffers = (seconds * RATE as f32) as usize / BUFFER;
+    let mut out = Vec::with_capacity(buffers * BUFFER * 2);
+    let mut buffer = vec![0.0f32; BUFFER * 2];
+    let mut next = 0;
+    for b in 0..buffers {
+        let now = (b * BUFFER) as f32 / RATE as f32;
+        while let Some(s) = sounds.get(next).filter(|s| s.start <= now) {
+            mixer.channels.insert(
+                next as ChannelId,
+                Channel {
+                    samples: Some((s.samples.clone(), s.rate)),
+                    state: State::Playing,
+                    gain: s.volume,
+                    pitch: s.pitch,
+                    linear: Some(16.0 * s.volume.max(1.0)),
+                    at: s.at.map(|v| v as f32),
+                    environment: s.environment,
+                    ..Channel::new()
+                },
+            );
+            next += 1;
+        }
+        mix(&mut mixer, &mut buffer, 2, RATE);
+        out.extend_from_slice(&buffer);
+        mixer.channels.retain(|_, c| c.state != State::Stopped);
+    }
+    out
+}
 /// Why the game should not open an output, if it should not:
 /// `HORIZON_NO_AUDIO`, or a virtual screen (`vscreen`), where agents and
 /// harnesses run the game and must stay off the user's speakers.
@@ -1496,6 +1573,16 @@ impl Audio {
         }
         self.sync_volumes();
         let event = crate::sound_events::normalize(event);
+        let (volume, pitch) = if self.backend.acoustics.settings().soft_pickup
+            && event == "minecraft:entity.item.pickup"
+        {
+            (
+                volume * crate::sound_physics::SOFT_PICKUP_VOLUME,
+                crate::sound_physics::soft_pickup_pitch(pitch),
+            )
+        } else {
+            (volume, pitch)
+        };
         let source = self
             .source_override
             .unwrap_or_else(|| crate::settings::sound_source(&event));

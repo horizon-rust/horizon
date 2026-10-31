@@ -73,6 +73,9 @@ pub struct Settings {
     /// volume): the mixer's linear range, the air paths' reach, and in
     /// single player the integrated server's sending range (`shared_range`).
     pub sound_range: f32,
+    /// Item pickups play lower and softer (`soft_pickup_pitch`): vanilla's
+    /// pop sits an octave up half the time, piercing when mining in a row.
+    pub soft_pickup: bool,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -111,6 +114,7 @@ impl Default for Settings {
             arrow_whoosh: false,
             bow_creak: false,
             sound_range: 1.0,
+            soft_pickup: false,
         }
     }
 }
@@ -122,6 +126,15 @@ pub const BLOCK_ABSORPTIONS: [f32; 5] = [0.5, 1.0, 1.5, 2.0, 4.0];
 pub const RAY_COUNTS: [u32; 4] = [8, 16, 32, 64];
 pub const RAY_BOUNCES: [u32; 4] = [2, 4, 8, 16];
 pub const SOUND_RANGES: [f32; 3] = [1.0, 1.5, 2.0];
+/// The item pickup's pitch with `soft_pickup`: vanilla draws
+/// `((r1 - r2) * 0.7 + 1) * 2`, centred an octave up and clamped by the engine
+/// to 0.5..2 (half the pops at 2); this centres it a fifth lower (1.3) with
+/// half the spread, 0.8 to 1.8.
+pub fn soft_pickup_pitch(vanilla: f32) -> f32 {
+    (1.3 + (vanilla - 2.0) * 0.35).clamp(0.8, 1.8)
+}
+/// How much softer the item pickup plays with `soft_pickup`.
+pub const SOFT_PICKUP_VOLUME: f32 = 0.8;
 /// The player's `sound_range` for the integrated server in this process,
 /// which sends its single player's sounds that much further (`Hub::sound`):
 /// the server has no settings of its own. A dedicated server's stays 1.
@@ -217,6 +230,7 @@ impl Settings {
             "arrow_whoosh" => flag(&mut self.arrow_whoosh),
             "bow_creak" => flag(&mut self.bow_creak),
             "sound_range" => real(&mut self.sound_range, 1.0, 3.0),
+            "soft_pickup" => flag(&mut self.soft_pickup),
             "sound_update_interval" => int(&mut self.sound_update_interval, 1, u32::MAX),
             "max_sound_processing_distance" => {
                 if let Ok(x) = value.parse::<f64>()
@@ -232,7 +246,7 @@ impl Settings {
     /// Every setting as `soundPhysics.<name>:<value>` lines.
     pub fn serialize(&self) -> String {
         let b = |v: bool| if v { "true" } else { "false" };
-        let lines: [(&str, String); 34] = [
+        let lines: [(&str, String); 35] = [
             ("enabled", b(self.enabled).into()),
             ("reverb", b(self.reverb).into()),
             ("occlusion", b(self.occlusion).into()),
@@ -292,6 +306,7 @@ impl Settings {
             ("arrow_whoosh", b(self.arrow_whoosh).into()),
             ("bow_creak", b(self.bow_creak).into()),
             ("sound_range", self.sound_range.to_string()),
+            ("soft_pickup", b(self.soft_pickup).into()),
             (
                 "sound_update_interval",
                 self.sound_update_interval.to_string(),
@@ -864,6 +879,12 @@ impl Cache {
 pub fn reflection(reflectivity: f32) -> f32 {
     (reflectivity * 0.57).clamp(0.03, 0.9)
 }
+/// Within this distance of the listener (blocks) a sound's reverb gives way
+/// to its direct sound, down to `NEAR_FLOOR` at the listener: the player's
+/// own sounds (an item picked up plays at the eyes) stay dry enough to
+/// keep their place, and a short bright sound is not drawn out.
+pub const NEAR_FIELD: f32 = 2.5;
+pub const NEAR_FLOOR: f32 = 0.3;
 /// The four buses' decay times (`reverb::presets`).
 const BUS_DECAYS: [f32; 4] = [0.15, 0.55, 1.68, 4.142];
 /// What the rays found about the space around a sound.
@@ -1042,6 +1063,15 @@ pub fn evaluate<V: Voxels + ?Sized>(
     }
     let direct_gain = direct_cutoff.powf(0.1);
 
+    // Surfaces absorb more of the highs than of the rest: each bounce keeps
+    // a share of them equal to its share of the energy (a hard stone 0.86,
+    // wood 0.23, wool 0.06), and the later buses hold later bounces.
+    if room.hits > 0 {
+        let surface = (room.reflected / f64::from(room.hits)).clamp(0.0, 1.0) as f32;
+        for (k, cutoff) in send_cutoff.iter_mut().enumerate() {
+            *cutoff *= surface.powi(k as i32 + 1);
+        }
+    }
     let mut send_gain = [0.0f32; 4];
     if settings.reverb {
         send_gain = bus_sends(room.decay(), room.level());
@@ -1053,8 +1083,9 @@ pub fn evaluate<V: Voxels + ?Sized>(
         let distance = listener.distance(heard_at) as f32;
         let range = max_distance * settings.sound_range / settings.attenuation_factor;
         let fade = 1.0 - (distance / (range * settings.reverb_distance)).min(1.0);
+        let near = (sound.distance(listener) as f32 / NEAR_FIELD).clamp(NEAR_FLOOR, 1.0);
         for gain in &mut send_gain {
-            *gain *= fade.max(0.0);
+            *gain *= fade.max(0.0) * near;
         }
     }
     Environment {
@@ -1198,6 +1229,15 @@ pub mod tests {
         assert_eq!(cycle(&RAY_COUNTS, 64, false), 8);
         assert_eq!(cycle(&RAY_COUNTS, 8, true), 64);
         assert_eq!(cycle(&REVERB_GAINS, 1.1, false), 1.25);
+    }
+
+    #[test]
+    fn soft_pickups_sit_lower_with_less_spread() {
+        assert_eq!(soft_pickup_pitch(2.0), 1.3);
+        // Vanilla's whole draw, before the engine's clamp.
+        assert_eq!(soft_pickup_pitch(3.4), 1.79);
+        assert!((soft_pickup_pitch(0.6) - 0.81).abs() < 1e-6);
+        assert!(soft_pickup_pitch(0.5) >= 0.8);
     }
 
     #[test]
@@ -1411,9 +1451,9 @@ pub mod tests {
         let s = on();
         let small = Blocks::room([-3, 60, -3], [3, 66, 3], STONE);
         let large = Blocks::room([-20, 50, -20], [20, 80, 20], STONE);
-        let r = request([0.5, 63.5, 0.5], [1.5, 63.5, 0.5]);
+        let r = request([-1.5, 63.5, 0.5], [1.5, 63.5, 0.5]);
         let small = run(&small, &r, &s);
-        let r = request([0.5, 60.5, 0.5], [1.5, 60.5, 0.5]);
+        let r = request([-1.5, 60.5, 0.5], [1.5, 60.5, 0.5]);
         let large = run(&large, &r, &s);
         // A 5-block stone room rings under two seconds, never on the
         // longest bus; a 40-block cave on it.
@@ -1425,7 +1465,7 @@ pub mod tests {
         // A bare floor outdoors barely reverberates, and briefly.
         let mut ground = Blocks::default();
         ground.fill([-30, 59, -30], [30, 59, 30], STONE);
-        let outdoors = run(&ground, &request([0.5, 60.5, 0.5], [1.5, 60.5, 0.5]), &s);
+        let outdoors = run(&ground, &request([-1.5, 60.5, 0.5], [1.5, 60.5, 0.5]), &s);
         assert!(total(&outdoors) < 0.3 * total(&small), "{outdoors:?}");
         assert_eq!(
             outdoors.send_gain[2] + outdoors.send_gain[3],
@@ -1435,7 +1475,7 @@ pub mod tests {
         // Wool walls deaden the same room: quieter and shorter.
         let wool = run(
             &Blocks::room([-3, 60, -3], [3, 66, 3], WOOL),
-            &request([0.5, 63.5, 0.5], [1.5, 63.5, 0.5]),
+            &request([-1.5, 63.5, 0.5], [1.5, 63.5, 0.5]),
             &s,
         );
         assert!(total(&wool) < 0.3 * total(&small), "{wool:?}");
@@ -1443,13 +1483,36 @@ pub mod tests {
         // Reverb off.
         let off = run(
             &Blocks::room([-3, 60, -3], [3, 66, 3], STONE),
-            &request([0.5, 63.5, 0.5], [1.5, 63.5, 0.5]),
+            &request([-1.5, 63.5, 0.5], [1.5, 63.5, 0.5]),
             &Settings {
                 reverb: false,
                 ..on()
             },
         );
         assert_eq!(total(&off), 0.0);
+    }
+
+    #[test]
+    fn near_sounds_stay_dry_and_surfaces_darken_the_reverb() {
+        let s = on();
+        let cave = Blocks::room([-20, 50, -20], [20, 80, 20], STONE);
+        let at = |d: f64| run(&cave, &request([0.5 + d, 60.5, 0.5], [0.5, 60.5, 0.5]), &s);
+        // At the ears (an item picked up), a third of the reverb of a sound
+        // three blocks away; the direct sound is untouched.
+        let (ear, away) = (at(0.0), at(3.0));
+        assert!(
+            (total(&ear) / total(&away) - NEAR_FLOOR).abs() < 0.05,
+            "{ear:?} {away:?}"
+        );
+        assert_eq!(ear.direct_cutoff, away.direct_cutoff);
+        // Later buses are darker; wool far darker than stone.
+        assert!(
+            away.send_cutoff[3] < away.send_cutoff[0] && away.send_cutoff[0] < 0.9,
+            "{away:?}"
+        );
+        let wool = Blocks::room([-20, 50, -20], [20, 80, 20], WOOL);
+        let dark = run(&wool, &request([3.5, 60.5, 0.5], [0.5, 60.5, 0.5]), &s);
+        assert!(dark.send_cutoff[0] < 0.1, "{dark:?}");
     }
 
     #[test]
