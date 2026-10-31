@@ -1403,6 +1403,7 @@ impl Game<'_> {
         let host_entity = self.next_entity as i32;
         let mut hub = Hub::new(lan, sync, encoder, config);
         hub.flat_world = self.world_flat;
+        hub.debug_world = self.world_debug;
         let port = hub.lan.port;
         self.world.block_log = Some(Vec::new());
         self.world.light_log = Some(Default::default());

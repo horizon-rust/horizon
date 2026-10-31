@@ -624,7 +624,30 @@ pub(super) fn make_streaming(
                 shape,
             )
         });
-    let mut streaming = if let Some(inner) = flat {
+    // `DebugLevelSource`: the overworld of the Debug preset.
+    let debug = (dim == Dim::Overworld)
+        .then(|| horizon_client::save::world_gen_settings(world_root))
+        .flatten()
+        .and_then(|s| {
+            horizon_client::debugworld::DebugTerrain::from_settings(
+                &s,
+                pack.assets.registry,
+                res.biomes(),
+                shape,
+            )
+        });
+    let mut streaming = if let Some(inner) = debug {
+        Streaming::new(
+            Arc::new(Persistent {
+                inner: Arc::new(inner),
+                save: save.clone(),
+                registry: pack.assets.clone(),
+                biomes: biomes.clone(),
+            }),
+            pack.context.clone(),
+            res.threads(),
+        )
+    } else if let Some(inner) = flat {
         Streaming::new(
             Arc::new(Persistent {
                 inner: Arc::new(inner),
