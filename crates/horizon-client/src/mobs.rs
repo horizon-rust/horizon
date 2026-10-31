@@ -790,6 +790,8 @@ pub fn anger_left(anger_end: i64, game_time: i64) -> i32 {
 /// Species-specific persistent state (variants, colours, taming, ageing...).
 #[derive(Clone, Debug, Default)]
 pub struct Extra {
+    /// `Rabbit.moreCarrotTicks`: how long it is full of carrots (saved as `MoreCarrotTicks`).
+    pub more_carrot_ticks: i32,
     /// `Ocelot.DATA_TRUSTING`: it no longer runs from players.
     pub trusting: bool,
     /// `Mannequin.DATA_IMMOVABLE`: it neither moves nor falls (`isEffectiveAi` is false).
@@ -1573,6 +1575,15 @@ pub enum MobEvent {
         mob: u32,
         pos: [i32; 3],
         progress: i32,
+    },
+    /// `Rabbit.RaidGardenGoal.tick`: the carrots at `pos` become `state` (`setBlock` with
+    /// flags 2); a crop that only lost an age shows the break particles of the state it had
+    /// (`levelEvent(2001, pos, old)`) and fires `BLOCK_CHANGE` for the rabbit.
+    CropRaided {
+        pos: [i32; 3],
+        state: horizon_world::registry::BlockStateId,
+        old: Option<horizon_world::registry::BlockStateId>,
+        mob: u32,
     },
     /// `Level.levelEvent`: the game plays and sends the event.
     LevelEvent {

@@ -2081,6 +2081,27 @@ impl Game<'_> {
                 // `Level.setBlockAndUpdate`: neighbour and shape updates, so a crop
                 // above trampled farmland breaks and drops.
                 MobEvent::SetBlock { pos, state } => self.level_set(pos, state)?,
+                MobEvent::CropRaided {
+                    pos,
+                    state,
+                    old,
+                    mob,
+                } => {
+                    self.level_set_with_flags(
+                        pos,
+                        state,
+                        horizon_world::level::flags::UPDATE_CLIENTS,
+                    )?;
+                    if let Some(old) = old {
+                        self.post_block_game_event(
+                            "minecraft:block_change",
+                            pos,
+                            Some(Who::Mob(mob)),
+                            None,
+                        );
+                        self.level_event_at(2001, pos, old.0 as i32);
+                    }
+                }
                 MobEvent::CrackTurtleEgg { pos } => {
                     let state = self.world.block(pos[0], pos[1], pos[2]);
                     let eggs = self

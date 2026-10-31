@@ -575,7 +575,10 @@ pub fn mob_to_nbt(
         // Rabbit.addAdditionalSaveData (the legacy id; 99 is the killer bunny).
         "minecraft:rabbit" => {
             map.insert("RabbitType".into(), Tag::Int(i32::from(m.extra.variant)));
-            map.entry("MoreCarrotTicks".into()).or_insert(Tag::Int(0));
+            map.insert(
+                "MoreCarrotTicks".into(),
+                Tag::Int(m.extra.more_carrot_ticks),
+            );
         }
         "minecraft:goat" => {
             map.insert(
@@ -1632,6 +1635,10 @@ pub fn mob_from_nbt(
             m.extra.lost_horns = [horn("HasLeftHorn"), horn("HasRightHorn")];
         }
         _ => {}
+    }
+    // `Rabbit.readAdditionalSaveData`.
+    if m.species() == crate::mobs::Species::Rabbit {
+        m.extra.more_carrot_ticks = number(tag.get("MoreCarrotTicks")).unwrap_or(0) as i32;
     }
     // `Ocelot.readAdditionalSaveData`.
     if m.species() == crate::mobs::Species::Ocelot {
@@ -3517,6 +3524,34 @@ mod sheep_nbt_tests {
             .collect();
         let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
         assert_eq!((back.extra.color, back.extra.sheared), (14, true));
+    }
+
+    /// `Rabbit.addAdditionalSaveData` and `readAdditionalSaveData`: `MoreCarrotTicks`.
+    #[test]
+    fn a_rabbit_keeps_how_full_of_carrots_it_is() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<String, Arc<MobType>> = data
+            .types
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
+        let mut m = Mob::new(
+            1,
+            Arc::new(data.types["minecraft:rabbit"].clone()),
+            Vec3::new(0.0, 4.0, 0.0),
+            0.0,
+        );
+        m.extra.more_carrot_ticks = 33;
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None);
+        assert_eq!(number(tag.get("MoreCarrotTicks")), Some(33));
+        let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+        assert_eq!(back.extra.more_carrot_ticks, 33);
     }
 
     /// `Ocelot.addAdditionalSaveData` and `readAdditionalSaveData`: `Trusting`.
