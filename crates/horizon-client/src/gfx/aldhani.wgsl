@@ -160,13 +160,14 @@ fn aldhani_make(slot: u32, t: f32, period: f32, long: bool) -> AldhaniMeteor {
     let age = t - start;
     let speed = select(35.0 + 35.0 * aldhani_rand(seed + 2u), 55.0 + 17.0 * aldhani_rand(seed + 2u), long);
     let persist = select(0.2 + 0.3 * aldhani_rand(seed + 4u), 0.4 + 0.5 * aldhani_rand(seed + 4u), long);
-    // Two in five of the long ones come from beyond the northern horizon: already burning 1300 to
-    // 1700 km away, past the horizon over the round Earth at their height, large bright ones
-    // skimming level along the top of the air toward the eye, they rise over the horizon as they
-    // come (their radiant is no burst point to them), for 500 to 900 km of their path.
-    let beyond = long && aldhani_rand(seed + 12u) < 0.4;
+    // Half the long ones come from beyond the northern horizon: already burning 800 to 1700 km
+    // away, the farthest past the horizon over the round Earth at their height, large bright ones
+    // skimming level along the top of the air toward the eye; they rise over the horizon as they
+    // come, filling the sky from it up to the radiant and over (their radiant is no burst point to
+    // them), for 400 to 900 km of their path.
+    let beyond = long && aldhani_rand(seed + 12u) < 0.5;
     let path = select(20.0 + 60.0 * aldhani_rand(seed + 3u),
-        min(select(300.0 + 800.0 * aldhani_rand(seed + 3u), 500.0 + 400.0 * aldhani_rand(seed + 3u), beyond),
+        min(select(300.0 + 800.0 * aldhani_rand(seed + 3u), 400.0 + 500.0 * aldhani_rand(seed + 3u), beyond),
             (15.0 - persist) * speed), long);
     let lasts = path / speed;
     if age < 0.0 || age > lasts + persist { return o; }
@@ -187,7 +188,7 @@ fn aldhani_make(slot: u32, t: f32, period: f32, long: bool) -> AldhaniMeteor {
     var origin = reach * a;
     if beyond {
         let az = (aldhani_rand(seed + 13u) - 0.5) * 2.2;
-        let far = 1300.0 + 400.0 * aldhani_rand(seed + 14u);
+        let far = 800.0 + 900.0 * aldhani_rand(seed + 14u);
         origin = vec3(sin(az), 0.0, -cos(az)) * far + vec3(0.0, height - far * far / (2.0 * EARTH_KM), 0.0);
     }
     let w = select(ALDHANI_RADIANT, normalize(vec3(ALDHANI_RADIANT.x, 0.0, ALDHANI_RADIANT.z)), beyond);
