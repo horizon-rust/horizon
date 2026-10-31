@@ -269,13 +269,16 @@ pub fn players(dir: &Path, as_json: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// The players for people: how many of how many, then a line each (name, ping, address, uuid).
+/// The players for people: how many of how many, then a line each (name, ping, address, uuid). The API
+/// answers while the game is down too, with no `max_players`: then nobody is online.
 fn describe_players(reply: &Value) -> String {
-    let list = reply["players"].as_array().map_or(&[][..], Vec::as_slice);
+    let Some(max) = reply["max_players"].as_u64() else {
+        return "The game isn't running: nobody is online\n".to_owned();
+    };
+    let list = reply["online"].as_array().map_or(&[][..], Vec::as_slice);
     let mut out = format!(
-        "{} of {} players{}\n",
+        "{} of {max} players{}\n",
         list.len(),
-        reply["max_players"].as_u64().unwrap_or(0),
         if list.is_empty() { "" } else { ":" }
     );
     for p in list {
@@ -570,9 +573,15 @@ mod players_tests {
 
     #[test]
     fn players_are_listed_with_their_ping() {
-        let nobody = json!({ "players": [], "max_players": 20 });
+        let nobody = json!({ "online": [], "max_players": 20 });
         assert_eq!(describe_players(&nobody), "0 of 20 players\n");
-        let two = json!({ "players": [
+        // The API answers with no `max_players` while the game is down.
+        let down = json!({ "online": [], "max_players": null });
+        assert_eq!(
+            describe_players(&down),
+            "The game isn't running: nobody is online\n"
+        );
+        let two = json!({ "online": [
             { "name": "Alex", "uuid": "u1", "address": "127.0.0.1", "ping_ms": 12 },
             { "name": "Steve", "uuid": "u2", "address": "10.0.0.2", "ping_ms": 140 },
         ], "max_players": 20 });
