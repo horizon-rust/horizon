@@ -94,6 +94,8 @@ pub struct Light {
     pub color: [f32; 3],
     /// Toward the sun (the sky table's azimuth).
     pub sun: Vec3,
+    /// The Earth's curvature the slab bends by: 1 / its diameter, 0 off.
+    pub curvature: f32,
 }
 
 pub struct RtCloudMesh {
@@ -406,7 +408,12 @@ impl RtCloudMesh {
         }
         let uniform = Uniform {
             view_proj: view_proj.to_cols_array_2d(),
-            light: [light.direction.x, light.direction.y, light.direction.z, 0.0],
+            light: [
+                light.direction.x,
+                light.direction.y,
+                light.direction.z,
+                light.curvature,
+            ],
             light_color: [light.color[0], light.color[1], light.color[2], 0.0],
             sun: [light.sun.x, light.sun.y, light.sun.z, 0.0],
             tiles: table,

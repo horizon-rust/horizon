@@ -72,6 +72,22 @@ impl Tile {
     }
 }
 
+/// The Earth's radius the distant terrain bends by (`Renderer::earth_curvature`), in blocks.
+pub(super) const EARTH_RADIUS: f64 = 6_371_000.0;
+
+/// How far a distant tile's point `horizontal` blocks from the eye sinks under the Earth's
+/// curvature counted from `flat_radius` (the loaded chunks', which stay flat): terrain.wgsl
+/// `earth_drop`.
+pub(super) fn earth_drop(horizontal: f64, flat_radius: f64) -> f64 {
+    (horizontal * horizontal - flat_radius * flat_radius).max(0.0) / (2.0 * EARTH_RADIUS)
+}
+
+/// How far under the horizontal the sea's horizon lies seen from `y` (the overworld's sea at 63),
+/// in radians: where the eye's line grazes the curved sea (`earth_drop`), for the sky's own.
+pub(super) fn horizon_dip(y: f64) -> f64 {
+    (2.0 * (y - 63.0).max(0.0) / EARTH_RADIUS).sqrt()
+}
+
 #[derive(Clone, Copy)]
 struct Bounds {
     min: Vec3,
@@ -97,9 +113,21 @@ impl Bounds {
         Some(bounds)
     }
 
-    fn visible(self, origin: DVec3, distance: f32, frustum: &Frustum) -> Option<u64> {
-        let min = origin + self.min.as_dvec3();
+    /// With `curved` (the flat radius of `earth_drop`), the box reaches down as far as its
+    /// farthest corner sinks.
+    fn visible(
+        self,
+        origin: DVec3,
+        distance: f32,
+        frustum: &Frustum,
+        curved: Option<f64>,
+    ) -> Option<u64> {
+        let mut min = origin + self.min.as_dvec3();
         let max = origin + self.max.as_dvec3();
+        if let Some(flat) = curved {
+            let far = min.abs().max(max.abs());
+            min.y -= earth_drop(far.x.hypot(far.z), flat);
+        }
         let nearest = DVec3::ZERO.clamp(min, max);
         if nearest.x * nearest.x + nearest.z * nearest.z > f64::from(distance).powi(2)
             || !frustum.intersects(min.as_vec3(), max.as_vec3())
@@ -130,13 +158,14 @@ impl Tile {
         camera: DVec3,
         distance: f32,
         frustum: &Frustum,
+        curved: Option<f64>,
         now: Instant,
     ) -> Option<Visible> {
         let fade = self.fade(now)?;
         let origin = DVec3::from(key.origin().map(f64::from)) - camera;
         Some(Visible {
             key,
-            distance: self.bounds.visible(origin, distance, frustum)?,
+            distance: self.bounds.visible(origin, distance, frustum, curved)?,
             origin: origin.as_vec3().to_array(),
             fade,
         })
@@ -320,14 +349,58 @@ mod tests {
         // the camera. Negative world origins therefore remain visible.
         assert!(
             bounds
-                .visible(DVec3::new(-1000.0, -80.0, -512.0), 256.0, &view)
+                .visible(DVec3::new(-1000.0, -80.0, -512.0), 256.0, &view, None)
                 .is_some()
         );
         assert!(
             bounds
-                .visible(DVec3::new(-2000.0, -80.0, -512.0), 256.0, &view)
+                .visible(DVec3::new(-2000.0, -80.0, -512.0), 256.0, &view, None)
                 .is_none()
         );
         assert!(Bounds::mesh(&SectionMesh::default()).is_none());
+    }
+
+    #[test]
+    fn earth_drop_is_real_beyond_the_flat_chunks() {
+        // 8 cm a kilometre out, 2 m at 5 km, 21 m at 16 km; nothing within the loaded chunks.
+        assert!((earth_drop(1000.0, 0.0) - 0.0785).abs() < 1e-3);
+        assert!((earth_drop(5000.0, 0.0) - 1.962).abs() < 1e-2);
+        assert!((earth_drop(16384.0, 0.0) - 21.07).abs() < 0.05);
+        assert_eq!(earth_drop(400.0, 512.0), 0.0);
+        assert!(earth_drop(16384.0, 512.0) > 21.0);
+        // The sea's horizon from 1.7 m up: where the eye's line grazes the curved sea.
+        let horizon = (2.0 * 1.7 * EARTH_RADIUS).sqrt();
+        assert!((horizon - 4654.0).abs() < 10.0);
+        // From y = 300 the sea's horizon is 55 km away, half a degree under the horizontal.
+        assert!((horizon_dip(300.0).to_degrees() - 0.494).abs() < 0.005);
+        assert_eq!(horizon_dip(40.0), 0.0);
+    }
+
+    #[test]
+    fn a_tile_sunk_into_view_is_not_culled() {
+        // A flat tile 16 km ahead (yaw 0 looks south), its far edge just over the top of a level
+        // view: sunk 21 m by the curvature it is drawn in view, so its box reaches down with it.
+        let mesh = SectionMesh {
+            solid: vec![
+                TerrainVertex::tiled([0.0, 0.0, 0.0], [0.0; 2], 0, 0, 0),
+                TerrainVertex::tiled([512.0, 0.0, 512.0], [0.0; 2], 0, 0, 0),
+            ],
+            ..Default::default()
+        };
+        let bounds = Bounds::mesh(&mesh).unwrap();
+        let view = Frustum {
+            planes: super::super::frustum(
+                super::super::world_projection(70.0, 16.0 / 9.0, 65536.0)
+                    * crate::camera::view_matrix(0.0, 0.0),
+            ),
+        };
+        let top = 16512.0 * 35f64.to_radians().tan();
+        let origin = DVec3::new(-256.0, top + 10.0, 16000.0);
+        assert!(bounds.visible(origin, 20000.0, &view, None).is_none());
+        assert!(
+            bounds
+                .visible(origin, 20000.0, &view, Some(512.0))
+                .is_some()
+        );
     }
 }

@@ -5,6 +5,7 @@ struct Globals {
     fog_color: vec4<f32>,
     // environmental start/end, render-distance start/end
     fog: vec4<f32>,
+    // w: how far the sea's horizon dips under the horizontal, in radians (`earth_drop`).
     sky_color: vec4<f32>,
     // x: sky darkening, y: game time, z: aspect, w: tan(fov/2)
     misc: vec4<f32>,
@@ -12,7 +13,8 @@ struct Globals {
     sunrise: vec4<f32>,
     // xyz: sun direction, w: star brightness
     sun: vec4<f32>,
-    // x: sky fog end, y: cloud fog end, z: dark disc flag
+    // x: sky fog end, y: cloud fog end, z: dark disc flag, w: the square of the radius the Earth's
+    // curvature starts at (`earth_drop`; below 0 off)
     fog_ends: vec4<f32>,
     // Atlas rects (u0, v0, width, height) of end_sky.png and end_portal.png.
     end_portal_sprites: array<vec4<f32>, 2>,
@@ -198,11 +200,28 @@ fn faded_out(fade: f32, pixel: vec2<f32>) -> bool {
     if fade < 4.0 { return t >= fade; }
     return t < fade - 4.0;
 }
+// The Earth's curvature (gfx.rs `Renderer::earth_curvature`), for the eye alone: the world stays
+// flat for the game, and a distant terrain tile's vertex sinks by its horizontal distance's square
+// over the Earth's diameter, counted from the loaded chunks' radius (fog_ends.w its square) so the
+// tiles meet those flat chunks, which the rays trace, without a step: 2 m 5 km out, 21 m at 16 km,
+// where the foot of an island drops behind the sea seen from 1.7 m up (its horizon 4.7 km away).
+// Every pass draws the terrain through `terrain_vertex`, and positions are relative to the head,
+// so a tile lands at the same place in each pass and in both eyes.
+const EARTH_RADIUS_M: f32 = 6371000.0;
+fn earth_drop(xz: vec2<f32>, flat_radius_sq: f32) -> f32 {
+    return max(dot(xz, xz) - flat_radius_sq, 0.0) / (2.0 * EARTH_RADIUS_M);
+}
+// `pos` as drawn: lowered when its instance's origin.w says a distant tile (`terrain_uv`).
+fn earth_curved(pos: vec3<f32>, w: f32) -> vec3<f32> {
+    let flat_sq = globals.fog_ends.w;
+    if flat_sq < 0.0 || w < 1.0 / 64.0 { return pos; }
+    return vec3(pos.x, pos.y - earth_drop(pos.xz, flat_sq), pos.z);
+}
 @vertex fn vs_terrain(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
     @location(5) origin: vec4<f32>) -> TerrainOut {
-    var out = terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz);
+    var out = terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin);
     out.fade = terrain_fade(origin.w);
     return out;
 }
@@ -217,13 +236,13 @@ fn faded_out(fade: f32, pixel: vec2<f32>) -> bool {
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
 ) -> TerrainOut {
     let origin = slot_origins[block_slots[vertex >> 8u]];
-    var out = terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz);
+    var out = terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin);
     out.fade = terrain_fade(origin.w);
     return out;
 }
 fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
-    light: vec2<u32>, origin: vec3<f32>) -> TerrainOut {
-    let pos = position + origin;
+    light: vec2<u32>, origin: vec4<f32>) -> TerrainOut {
+    let pos = earth_curved(position + origin.xyz, origin.w);
     var out: TerrainOut;
     out.clip = globals.view_proj * vec4(pos, 1.0);
     out.uv = uv;
@@ -339,7 +358,8 @@ fn rt_sky(d: vec3<f32>) -> vec3<f32> {
     let flat = d.xz / max(length(d.xz), 1e-5);
     let sun = globals.rt_sun.xz / max(length(globals.rt_sun.xz), 1e-5);
     let azimuth = acos(clamp(dot(flat, sun), -1.0, 1.0)) / 3.14159265;
-    let e = asin(clamp(d.y, -1.0, 1.0)) / 1.5707963;
+    // The table's horizon is level; the sea's dips under it with the eye's height (sky_color.w).
+    let e = clamp((asin(clamp(d.y, -1.0, 1.0)) + globals.sky_color.w) / 1.5707963, -1.0, 1.0);
     let v = 0.5 + 0.5 * sign(e) * sqrt(abs(e));
     var sky = textureSampleLevel(rt_sky_view, lightmap_sampler, vec2(azimuth, v), 0.0).rgb;
     if globals.rt_camera.w >= 0.0 { sky += aldhani_glow(d, globals.rt_camera.w) + aldhani_burning(d); }

@@ -9,7 +9,8 @@ struct Globals {
     inverse_view: mat4x4<f32>,
     sunrise: vec4<f32>,
     sun: vec4<f32>,
-    // x: sky fog end, y: cloud fog end
+    // x: sky fog end, y: cloud fog end, w: below 0 the Earth's curvature is off (terrain.wgsl
+    // `earth_drop`)
     fog_ends: vec4<f32>,
     // Atlas rects (u0, v0, width, height) of end_sky.png and end_portal.png.
     end_portal_sprites: array<vec4<f32>, 2>,
@@ -152,7 +153,10 @@ struct CloudInfo {
 @group(1) @binding(0) var<uniform> cloud: CloudInfo;
 @vertex fn vs_cloud(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
     @location(2) overlay: u32, @location(3) color: vec4<f32>, @location(4) light: vec4<u32>, @location(5) normal: vec4<f32>) -> Out {
-    return entity_vertex(position + cloud.offset.xyz, uv, overlay, cloud.colors[light.x], light, normal);
+    // The cloud layer bends with the Earth's curvature, from the eye (terrain.wgsl `earth_drop`).
+    var p = position + cloud.offset.xyz;
+    if globals.fog_ends.w >= 0.0 { p.y -= dot(p.xz, p.xz) / (2.0 * 6371000.0); }
+    return entity_vertex(p, uv, overlay, cloud.colors[light.x], light, normal);
 }
 // rendertype_end_portal.fsh: the layer colours.
 const PORTAL_COLORS = array<vec3<f32>, 16>(

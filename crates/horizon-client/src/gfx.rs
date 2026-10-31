@@ -197,12 +197,14 @@ struct Globals {
     view_proj: [[f32; 4]; 4],
     fog_color: [f32; 4],
     fog: [f32; 4],
+    /// w: how far the sea's horizon dips under the horizontal (`lod::horizon_dip`).
     sky_color: [f32; 4],
     misc: [f32; 4],
     inverse_view: [[f32; 4]; 4],
     sunrise: [f32; 4],
     sun: [f32; 4],
-    /// x: sky fog end, y: cloud fog end, z: dark disc (camera below the horizon), w: unused.
+    /// x: sky fog end, y: cloud fog end, z: dark disc (camera below the horizon), w: the square of
+    /// the radius the Earth's curvature starts at (`lod::earth_drop`; -1 off).
     fog_ends: [f32; 4],
     /// Atlas rects (u0, v0, width, height) of end_sky.png and end_portal.png.
     end_portal_sprites: [[f32; 4]; 2],
@@ -700,6 +702,9 @@ pub struct Renderer {
     pub fullbright: bool,
     /// Advance animated block textures (Horizon setting; vanilla always does).
     pub animated_textures: bool,
+    /// The Earth's curvature on the distant terrain, the clouds and the sky's horizon (Horizon
+    /// setting; terrain.wgsl `earth_drop`): drawn only, the world stays flat.
+    pub earth_curvature: bool,
     present_modes: Vec<wgpu::PresentMode>,
 }
 /// Every layer's mip levels, layer major (`first` is the first layer's
@@ -3282,6 +3287,7 @@ impl Renderer {
             gamma: 0.5,
             fullbright: false,
             animated_textures: true,
+            earth_curvature: true,
             present_modes,
         })
     }
@@ -4935,6 +4941,10 @@ impl Renderer {
             [light.x, light.y, light.z, radius]
         };
         rt.sun_light = rt_sun_light;
+        // The Earth's curvature, from the loaded chunks' edge (they stay flat for the rays).
+        let curved = self
+            .earth_curvature
+            .then_some(f64::from(frame.detail_distance));
         let globals = Globals {
             view_proj: view_proj.to_cols_array_2d(),
             fog_color,
@@ -4943,7 +4953,7 @@ impl Renderer {
                 frame.sky.sky_color[0],
                 frame.sky.sky_color[1],
                 frame.sky.sky_color[2],
-                1.0,
+                curved.map_or(0.0, |_| lod::horizon_dip(frame.camera.y) as f32),
             ],
             misc: [
                 1.0 - frame.sky.sky_light_factor,
@@ -4965,7 +4975,7 @@ impl Renderer {
                 frame.fog.map_or(frame.distance.min(512.0), |f| f.sky_end),
                 frame.fog.map_or(2048.0, |f| f.cloud_end),
                 if frame.dark_disc { 1.0 } else { 0.0 },
-                0.0,
+                curved.map_or(-1.0, |r| (r * r) as f32),
             ],
             end_portal_sprites: frame.end_portal_sprites,
             crumbling_sprite: frame.crumbling_sprite,
@@ -5118,11 +5128,9 @@ impl Renderer {
             visible.clear();
         } else if !reuse_visibility {
             let now = Instant::now();
-            visible_lods.extend(
-                self.lods.iter().filter_map(|(&key, tile)| {
-                    tile.visible(key, camera, frame.distance, &view, now)
-                }),
-            );
+            visible_lods.extend(self.lods.iter().filter_map(|(&key, tile)| {
+                tile.visible(key, camera, frame.distance, &view, curved, now)
+            }));
             visible_lods.sort_unstable_by_key(|v| (v.distance, v.key));
         }
         // A shader pack's shadow pass draws the sections in its camera's box, all of them (the
@@ -6471,7 +6479,13 @@ impl Renderer {
             });
         // With RT lighting the terrain lit itself from the mask: the tone mapping leaves it.
         let shadow_mask = shadow_mask.filter(|_| !rt.lighting);
-        // RT lighting's volumetric clouds, over the world's sky before the tone mapping.
+        // RT lighting's volumetric clouds, over the world's sky before the tone mapping, bent by
+        // the Earth's curvature as the distant terrain.
+        let earth_bend = if self.earth_curvature {
+            (0.5 / lod::EARTH_RADIUS) as f32
+        } else {
+            0.0
+        };
         if rt_clouds_on && let Some(input) = &frame.clouds {
             // The light is the sun's, or the moon's (opposite it) once the sun has set.
             let to_light = if rt_sun.y > 0.0 { rt_sun } else { -rt_sun };
@@ -6494,6 +6508,7 @@ impl Renderer {
                         direction: to_light,
                         color: [light[0], light[1], light[2]],
                         sun: rt_sun,
+                        curvature: earth_bend,
                     },
                     &self.atmosphere.view,
                 );
@@ -6525,6 +6540,7 @@ impl Renderer {
                     sun: rt_sun,
                     time: (input.time as f64 + input.partial_tick) / 20.0,
                     thick: 0.0,
+                    curvature: earth_bend,
                 },
                 &self.atmosphere.view,
             );
