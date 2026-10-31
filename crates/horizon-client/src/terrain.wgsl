@@ -1325,6 +1325,17 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
     var added = fresnel * reflected + (1.0 - fresnel) * glow
         + rt_sky(vec3(0.0, 1.0, 0.0)) * sky_seen * (RAIN_SPRAY * spray);
     var shows = (1.0 - fresnel) * through;
+    // Past the rays' reach (no refraction traced: `refracted.a` 0) the floor drawn behind was lit as
+    // if no water stood over it, the rays meeting none on the way to the sun: its light dims here
+    // as the rays dim it near by (shadow_rays_hw.wgsl `hw_tint`), along the sun's path bent down into
+    // the water to the floor's depth and through the surface's Fresnel, in colour (the caustics'
+    // focus averages to 1), so far water shows its floor as the near water does.
+    if refracted.a <= 0.0 && bottom > 0.0 && l.y > 0.02 && face.y > 0.5 {
+        let bent = refract(-l, vec3(0.0, 1.0, 0.0), 1.0 / 1.33);
+        let down = thickness * abs(ray.y);
+        let sun_in = 1.0 - (0.02 + 0.98 * pow(1.0 - l.y, 5.0));
+        shows *= sun_in * exp(-absorption * down / max(-bent.y, 0.1));
+    }
     // The air in front, as for the terrain: it dims both and adds the horizon's light.
     let f = rt_fade(in.spherical, in.cylindrical, in.pos) * globals.fog_color.a;
     let toward = normalize(vec3(in.pos.x, 0.0, in.pos.z) + vec3(0.0, 0.05 * length(in.pos.xz), 0.0));

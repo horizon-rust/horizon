@@ -455,6 +455,10 @@ fn parallax_rt_lit(in: ParallaxOut, s: ParallaxSurface) -> vec3<f32> {
     return out;
 }
 @fragment fn parallax_fs_translucent(in: ParallaxOut) -> @location(0) vec4<f32> {
+    return parallax_translucent(in);
+}
+// The translucent terrain's colour and coverage, for a blend without colour.
+fn parallax_translucent(in: ParallaxOut) -> vec4<f32> {
     if parallax_rt(in) {
         // Water: its own look, not the pack's texture (terrain.wgsl `rt_water_at`).
         if horizon_terrain_rt_is_water(in.layer) {
@@ -481,6 +485,33 @@ fn parallax_rt_lit(in: ParallaxOut, s: ParallaxSurface) -> vec3<f32> {
     if color.a < 0.01 { discard; }
     return horizon_terrain_scene_color(color, horizon_terrain_emission_gain(in.emission),
         in.spherical, in.cylindrical);
+}
+";
+
+/// Where the GPU blends with two sources: the translucent entry that writes what the water adds and,
+/// in colour, what of the frame behind shows through it (as terrain_dual.wgsl's
+/// `fs_translucent_dual`), so water past the rays' refraction tints what lies under it (red absorbed
+/// first) as the refraction does near by, instead of only dimming it. Glass and the rest blend as
+/// before.
+const DUAL_ENTRY: &str = r"
+struct ParallaxDual {
+    @location(0) @blend_src(0) added: vec4<f32>,
+    @location(0) @blend_src(1) through: vec4<f32>,
+}
+@fragment fn parallax_fs_translucent_dual(in: ParallaxOut) -> ParallaxDual {
+    var out: ParallaxDual;
+    if parallax_rt(in) && horizon_terrain_rt_is_water(in.layer) {
+        let n = horizon_terrain_face_normal(in.position);
+        let w = horizon_terrain_rt_water_at(in.position, in.clip.xy, in.light, in.spherical,
+            in.cylindrical, n, in.tint);
+        out.added = vec4(w.added, w.alpha);
+        out.through = vec4(w.through, 1.0 - w.alpha);
+        return out;
+    }
+    let c = parallax_translucent(in);
+    out.added = vec4(c.rgb * c.a, c.a);
+    out.through = vec4(1.0 - c.a);
+    return out;
 }
 ";
 
@@ -527,15 +558,21 @@ fn bindings([normals, speculars, subsurfaces]: [u32; 3]) -> ([u32; 3], u32) {
 }
 
 /// The parallax terrain shader for that many normal, specular and subsurface map arrays.
-fn shader_source(arrays: [u32; 3]) -> String {
+/// The parallax shader over `arrays` map arrays, with the dual-source entry (`DUAL_ENTRY`) if `dual`.
+fn shader_source(arrays: [u32; 3], dual: bool) -> String {
     let terrain = prefixed(
         section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)"),
         PREFIX,
     );
     let ([normal, specular, subsurface], thin) = bindings(arrays);
+    let (enable, dual) = if dual {
+        ("enable dual_source_blending;\n", DUAL_ENTRY)
+    } else {
+        ("", "")
+    };
     format!(
-        "{terrain}{}{}{}\
-         @group({GROUP}) @binding({thin}) var<storage, read> thin_layers: array<u32>;\n{ENTRIES}",
+        "{enable}{terrain}{}{}{}\
+         @group({GROUP}) @binding({thin}) var<storage, read> thin_layers: array<u32>;\n{ENTRIES}{dual}",
         maps("parallax", normal, arrays[0], "PARALLAX_NEUTRAL"),
         maps("specular", specular, arrays[1], "SPECULAR_NEUTRAL"),
         maps("subsurface", subsurface, arrays[2], "SUBSURFACE_NEUTRAL")
@@ -582,7 +619,10 @@ impl Parallax {
                 counts[0], counts[1]
             ));
         }
-        let text = shader_source(counts);
+        let dual = device
+            .features()
+            .contains(wgpu::Features::DUAL_SOURCE_BLENDING);
+        let text = shader_source(counts, dual);
         let module = naga::front::wgsl::parse_str(&text).map_err(|e| e.emit_to_string(&text))?;
         // Each kind's index and arrays from its first binding, then the thin layers.
         let (firsts, thin_binding) = bindings(counts);
@@ -655,6 +695,7 @@ impl Parallax {
             (GROUP, &layout),
             ["parallax_vs", "parallax_vs_flat"],
             ["parallax_fs_solid", "parallax_fs_translucent"],
+            dual.then_some("parallax_fs_translucent_dual"),
         )?;
         Ok(Self { pipelines, group })
     }
@@ -666,15 +707,18 @@ mod tests {
 
     #[test]
     fn the_shader_validates_for_no_one_and_several_arrays() {
-        for arrays in [
+        for (arrays, dual) in [
             [0, 0, 0],
             [1, 0, 0],
             [3, 2, 0],
             [3, 2, 1],
             [1, 1, 4],
             [7, 7, 7],
-        ] {
-            let text = shader_source(arrays);
+        ]
+        .into_iter()
+        .flat_map(|arrays| [(arrays, false), (arrays, true)])
+        {
+            let text = shader_source(arrays, dual);
             let module = naga::front::wgsl::parse_str(&text)
                 .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&text)));
             naga::valid::Validator::new(
@@ -696,6 +740,7 @@ mod tests {
             ] {
                 assert!(entries.contains(&entry), "{entry}");
             }
+            assert_eq!(entries.contains(&"parallax_fs_translucent_dual"), dual);
         }
     }
 
@@ -704,7 +749,7 @@ mod tests {
     #[test]
     fn the_maps_and_the_thin_layers_take_consecutive_bindings() {
         for arrays in [[0, 0, 0], [2, 0, 1], [3, 2, 5]] {
-            let text = shader_source(arrays);
+            let text = shader_source(arrays, false);
             let marker = format!("@group({GROUP}) @binding(");
             let mut found: Vec<u32> = text
                 .match_indices(&marker)

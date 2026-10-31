@@ -151,13 +151,16 @@ impl NativeMaterial {
                 "horizon_material_fs_solid",
                 "horizon_material_fs_translucent",
             ],
+            None,
         )
         .map_err(|e| format!("{}: {e}", stage.file))
     }
 
     /// Terrain pipelines from `module`: `vertex` (instanced, flat) and `fragment` (solid,
     /// translucent) entries, reading the terrain's group 0, the flat draws' group 1 and
-    /// `group` (its index and layout); `constants` are set beside terrain.wgsl's own.
+    /// `group` (its index and layout); `constants` are set beside terrain.wgsl's own. With `dual`,
+    /// the translucent pipelines draw that entry instead, blending with two sources (what it adds,
+    /// and in colour what of the frame shows through: gfx.rs's dual-source translucent terrain).
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         device: &wgpu::Device,
@@ -168,6 +171,7 @@ impl NativeMaterial {
         (group, group_layout): (u32, &wgpu::BindGroupLayout),
         [vs, vs_flat]: [&str; 2],
         [fs_solid, fs_translucent]: [&str; 2],
+        dual: Option<&str>,
     ) -> Result<Self, String> {
         let sprite_names = [
             "horizon_terrain_SPRITE_ARRAYS",
@@ -246,7 +250,20 @@ impl NativeMaterial {
                 cache: None,
             })
         };
-        let blend = Some(wgpu::BlendState::ALPHA_BLENDING);
+        let (fs_translucent, blend) = match dual {
+            Some(entry) => (
+                entry,
+                Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::Src1,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendState::ALPHA_BLENDING.alpha,
+                }),
+            ),
+            None => (fs_translucent, Some(wgpu::BlendState::ALPHA_BLENDING)),
+        };
         let instanced = layout(None);
         let buffers = [Some(vertices.clone()), Some(instances)];
         let solid = pipeline(&instanced, vs, &buffers, fs_solid, None);
