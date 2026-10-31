@@ -1644,15 +1644,26 @@ impl Hub {
             })
             .collect();
         self.encoder.warm(&columns.chunks);
-        let mut encoded: Vec<Vec<u8>> = columns
-            .chunks
-            .iter()
-            .map(|c| {
-                self.encoder.body_with(c, world, &|x, z| {
-                    ctx.streaming.and_then(|s| s.proto_sections(x, z))
-                })
-            })
-            .collect();
+        // The proto neighbours' sections are read up front: the bodies may be
+        // made on other threads, which cannot ask the streaming.
+        let mut protos = crate::fast_hash::FxHashMap::default();
+        if let Some(streaming) = ctx.streaming {
+            for c in &columns.chunks {
+                for dz in -1..=1 {
+                    for dx in -1..=1 {
+                        let key = (c.x + dx, c.z + dz);
+                        if !world.chunks.contains_key(&key)
+                            && let Some(sections) = streaming.proto_sections(key.0, key.1)
+                        {
+                            protos.insert(key, sections);
+                        }
+                    }
+                }
+            }
+        }
+        let mut encoded = crate::lan::chunks::bodies(&self.encoder, &columns.chunks, world, &|x, z| {
+            protos.get(&(x, z)).copied()
+        });
         let uses = &mut columns.uses;
         for (i, taken, far, batch) in batches {
             let g = &mut self.guests[i];
