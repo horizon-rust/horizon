@@ -251,15 +251,14 @@ jobs:
           MACOS_SIGN_IDENTITY: ${{ vars.MACOS_SIGN_IDENTITY }}
         run: |
           rm -rf dist out && mkdir -p out
+          version=${HORIZON_LAUNCHER_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             # Horizon.app, zipped (self-update) and in a .dmg (installer), signed (and notarized with
             # Developer ID): packaging/macos.
             python3 -m venv "$RUNNER_TEMP/dmg" && "$RUNNER_TEMP/dmg/bin/pip" install --quiet dmgbuild==1.6.5
-            version=${HORIZON_LAUNCHER_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}
             DMGBUILD="$RUNNER_TEMP/dmg/bin/dmgbuild" ../packaging/macos/package.sh "$BIN/${{ matrix.binary }}" "$version" out ${{ matrix.mac_arch }}
             rm -rf out/Horizon.app
           else
-            version=${HORIZON_LAUNCHER_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}
             if [[ "$RUNNER_OS" == "Linux" ]]; then
               # The .tar.gz below is what the launcher updates itself from; the AppImage is what a
               # player downloads and double-clicks, and it replaces itself instead

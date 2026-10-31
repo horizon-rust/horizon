@@ -119,13 +119,15 @@ pub const LAUNCHER_ASSET: Option<&str> = match OWN_ASSETS {
     None => None,
 };
 
-/// The launcher as an AppImage (`packaging/linux/appimage.sh`): the program and its libraries in
-/// one file. A launcher running from one updates by replacing that file ([`appimage_path`]), so it
-/// needs this archive rather than the platform's `.tar.gz`.
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub const LAUNCHER_APPIMAGE_ASSET: Option<&str> = Some("horizon-launcher-linux-x86_64.AppImage");
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-pub const LAUNCHER_APPIMAGE_ASSET: Option<&str> = None;
+/// The launcher as an AppImage (`packaging/linux/appimage.sh`), where it has one: the program and
+/// its libraries in one file. A launcher running from one replaces that file ([`appimage_path`]),
+/// so it needs this archive rather than the platform's `.tar.gz`.
+const LAUNCHER_APPIMAGE_ASSET: Option<&str> =
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some("horizon-launcher-linux-x86_64.AppImage")
+    } else {
+        None
+    };
 
 const LAUNCHER_BINARY: &str = if cfg!(windows) {
     "horizon-launcher.exe"
@@ -2627,8 +2629,8 @@ pub fn exe_path() -> &'static Path {
 
 /// The AppImage this launcher runs from, when it does: the runtime sets `$APPIMAGE` to the file it
 /// mounted and `$APPDIR` to the mount, while [`exe_path`] then names a copy inside that read-only
-/// mount, gone with it. Updating and restarting work on this file, and the menu entry, shortcuts and
-/// agent configurations start it.
+/// mount. An update replaces this file, and the menu entry, shortcuts and agent configurations
+/// start it.
 pub fn appimage_path() -> Option<PathBuf> {
     appimage_path_in(
         std::env::var_os("APPIMAGE").as_deref(),
@@ -2637,9 +2639,8 @@ pub fn appimage_path() -> Option<PathBuf> {
     )
 }
 
-/// `$APPIMAGE`, if it names a file still there and this binary runs from inside `$APPDIR`. Both
-/// variables reach every child of an AppImage: a launcher a different AppImage's program started
-/// must never take that program's file for its own (an update would overwrite it).
+/// `$APPIMAGE`, if it is a file still there and this binary runs from inside `$APPDIR`: both
+/// variables reach every child of an AppImage, so a launcher another one started is no AppImage.
 fn appimage_path_in(
     appimage: Option<&std::ffi::OsStr>,
     appdir: Option<&std::ffi::OsStr>,
@@ -2663,14 +2664,9 @@ pub fn update_target() -> PathBuf {
 /// The launcher archive this build installs from: the AppImage's when it runs from one (a `.tar.gz`
 /// binary would be written inside the read-only mount), this platform's otherwise.
 pub fn launcher_asset() -> Option<&'static str> {
-    launcher_asset_running_from(appimage_path().is_some())
-}
-
-fn launcher_asset_running_from(appimage: bool) -> Option<&'static str> {
-    if appimage {
-        LAUNCHER_APPIMAGE_ASSET
-    } else {
-        LAUNCHER_ASSET
+    match appimage_path() {
+        Some(_) => LAUNCHER_APPIMAGE_ASSET,
+        None => LAUNCHER_ASSET,
     }
 }
 
@@ -4107,54 +4103,34 @@ pub fn {f}("
         );
     }
 
-    /// A launcher in an AppImage updates with the AppImage's own file: the `.tar.gz` binary would
-    /// be written inside the AppImage's read-only mount.
+    /// `$APPIMAGE` names the AppImage only when it is a file still there and this binary runs from
+    /// inside `$APPDIR`: a relative path, a file moved since the launcher started, or a variable
+    /// inherited from another AppImage's program all leave the launcher updating its own binary.
     #[test]
-    fn an_appimage_updates_with_the_appimage() {
-        assert_eq!(launcher_asset_running_from(false), LAUNCHER_ASSET);
-        assert_eq!(launcher_asset_running_from(true), LAUNCHER_APPIMAGE_ASSET);
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        assert_eq!(
-            launcher_asset_running_from(true),
-            Some("horizon-launcher-linux-x86_64.AppImage")
-        );
-    }
-
-    /// `$APPIMAGE` names the file the runtime mounted; a path that is not there (moved or deleted
-    /// since the launcher started) is no AppImage, and the launcher updates its own binary again.
-    /// Nor is one inherited from another AppImage's program: the binary has to run from `$APPDIR`.
-    #[test]
-    fn only_an_appimage_file_counts() {
+    fn only_an_appimage_it_runs_from_counts() {
         use std::ffi::OsStr;
-        let mount = OsStr::new("/tmp/.mount_Horizon123");
-        let exe = Path::new("/tmp/.mount_Horizon123/usr/bin/horizon-launcher");
-        assert_eq!(appimage_path_in(None, Some(mount), exe), None);
-        assert_eq!(
-            appimage_path_in(Some(OsStr::new("Horizon.AppImage")), Some(mount), exe),
-            None,
-            "a relative path is no $APPIMAGE"
-        );
-        assert_eq!(
-            appimage_path_in(
-                Some(OsStr::new("/nonexistent/Horizon.AppImage")),
-                Some(mount),
-                exe
-            ),
-            None
-        );
+        let mount = std::env::temp_dir().join(".mount_Horizon123");
+        let exe = mount.join("usr/bin/horizon-launcher");
+        let ours =
+            |appimage: Option<&OsStr>| appimage_path_in(appimage, Some(mount.as_os_str()), &exe);
         let file = std::env::temp_dir().join(format!("horizon-appimage-{}", std::process::id()));
         std::fs::write(&file, b"#!AppImage").unwrap();
+        assert_eq!(ours(Some(file.as_os_str())), Some(file.clone()));
+        assert_eq!(ours(None), None, "no $APPIMAGE");
         assert_eq!(
-            appimage_path_in(Some(file.as_os_str()), Some(mount), exe),
-            Some(file.clone())
+            ours(Some(OsStr::new("Horizon.AppImage"))),
+            None,
+            "a relative path"
         );
-        // Inherited from another AppImage: this launcher is installed elsewhere.
-        let elsewhere = Path::new("/home/a/.local/bin/horizon-launcher");
+        let moved = std::env::temp_dir().join(format!("horizon-gone-{}", std::process::id()));
+        assert_eq!(ours(Some(moved.as_os_str())), None, "not a file");
+        // Inherited from another AppImage's program: this launcher is installed elsewhere.
+        let elsewhere = std::env::temp_dir().join("bin/horizon-launcher");
         assert_eq!(
-            appimage_path_in(Some(file.as_os_str()), Some(mount), elsewhere),
+            appimage_path_in(Some(file.as_os_str()), Some(mount.as_os_str()), &elsewhere),
             None
         );
-        assert_eq!(appimage_path_in(Some(file.as_os_str()), None, exe), None);
+        assert_eq!(appimage_path_in(Some(file.as_os_str()), None, &exe), None);
         let _ = std::fs::remove_file(&file);
     }
 
