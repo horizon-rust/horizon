@@ -724,6 +724,20 @@ def items_and_loot():
         cmd('/clear @s #minecraft:logs'),
         cmd('/clear @s *[minecraft:custom_data]'),
         cmd('/clear @s'),
+        # A chest or hopper minecart's slots (ContainerEntity.getChestVehicleSlot): container.N below its size.
+        *setup('/summon minecraft:chest_minecart 4.5 210 4.5 {NoGravity:1b,Tags:["c"]}',
+               '/summon minecraft:hopper_minecart 6.5 210 4.5 {NoGravity:1b,Tags:["h"]}'),
+        cmd('/item replace entity @e[tag=c,limit=1] container.0 with minecraft:diamond 3'),
+        cmd('/item replace entity @e[tag=c,limit=1] container.26 with minecraft:emerald 2'),
+        cmd('/item replace entity @e[tag=c,limit=1] container.27 with minecraft:emerald 2'),
+        cmd('/item replace entity @e[tag=h,limit=1] container.4 with minecraft:gold_ingot 5'),
+        cmd('/item replace entity @e[tag=h,limit=1] container.5 with minecraft:gold_ingot 5'),
+        cmd('/item modify entity @e[tag=c,limit=1] container.0 {type:"minecraft:set_count",count:2}'),
+        cmd('/item replace entity @s hotbar.0 from entity @e[tag=c,limit=1] container.26'),
+        cmd('/data get entity @e[tag=c,limit=1] Items'),
+        cmd('/execute if items entity @e[tag=h,limit=1] container.* minecraft:gold_ingot'),
+        cmd('/clear @s'),
+        *setup('/kill @e[tag=c]', '/kill @e[tag=h]'),
         *setup('/setblock 3 206 3 minecraft:air', '/setblock 2 205 2 minecraft:air', '/kill @e[type=minecraft:item]', '/gamemode creative'),
     ]
 
