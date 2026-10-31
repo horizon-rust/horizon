@@ -30,6 +30,8 @@ pub(super) struct ThrownTrident {
     piston_pushed_this_tick: bool,
     pub(super) yaw: f32,
     pub(super) pitch: f32,
+    previous_yaw: f32,
+    previous_pitch: f32,
     pub(super) in_ground: bool,
     in_ground_time: u32,
     /// `AbstractArrow.shakeTime`: seven ticks after sticking, no pickup.
@@ -69,6 +71,8 @@ impl ThrownTrident {
             piston_pushed_this_tick: false,
             yaw,
             pitch,
+            previous_yaw: yaw,
+            previous_pitch: pitch,
             in_ground: false,
             in_ground_time: 0,
             shake: 0,
@@ -85,6 +89,8 @@ impl ThrownTrident {
         if !self.piston_pushed_this_tick {
             self.previous = self.position;
         }
+        self.previous_yaw = self.yaw;
+        self.previous_pitch = self.pitch;
         self.piston_pushed_this_tick = false;
     }
     fn release_if_unblocked(&mut self, no_block_collision: bool) {
@@ -162,13 +168,12 @@ impl ThrownTrident {
         }
         self.in_ground_time = 0;
         let m = self.velocity;
-        let (x, z) = if self.no_physics {
-            (-m.x, -m.z)
-        } else {
-            (m.x, m.z)
-        };
-        self.yaw = x.atan2(z).to_degrees() as f32;
-        self.pitch = m.y.atan2(m.x.hypot(m.z)).to_degrees() as f32;
+        horizon_client::projectiles::update_arrow_rotation(
+            &mut self.yaw,
+            &mut self.pitch,
+            m,
+            self.no_physics,
+        );
         let to = self.position.add_vector(m);
         if !self.no_physics
             && let Some((at, _, _)) = w.clip(self.position, to)
@@ -455,6 +460,8 @@ impl Game<'_> {
             piston_pushed_this_tick: false,
             yaw: projectile.yaw,
             pitch: projectile.pitch,
+            previous_yaw: projectile.yaw,
+            previous_pitch: projectile.pitch,
             in_ground: false,
             in_ground_time: 0,
             shake: 0,
@@ -602,6 +609,14 @@ impl Game<'_> {
                         .no_block_collision(Aabb::new(at, at).inflate(Vec3::new(0.06, 0.06, 0.06))),
                 );
             }
+            if !t.in_ground {
+                horizon_client::projectiles::update_arrow_rotation(
+                    &mut t.yaw,
+                    &mut t.pitch,
+                    t.velocity,
+                    t.no_physics,
+                );
+            }
             if t.in_ground {
                 t.in_ground_time += 1;
             } else if t.no_physics {
@@ -729,9 +744,6 @@ impl Game<'_> {
                         t.velocity.y * drag - 0.05,
                         t.velocity.z * drag,
                     );
-                    let h = (t.velocity.x * t.velocity.x + t.velocity.z * t.velocity.z).sqrt();
-                    t.yaw = t.velocity.x.atan2(t.velocity.z).to_degrees() as f32;
-                    t.pitch = t.velocity.y.atan2(h).to_degrees() as f32;
                 }
             }
             // playerTouch: stuck or returning tridents go back to a player.
@@ -796,9 +808,13 @@ impl Game<'_> {
                 t.previous.y + (t.position.y - t.previous.y) * alpha,
                 t.previous.z + (t.position.z - t.previous.z) * alpha,
             ) - camera;
+            let yaw =
+                horizon_client::projectiles::lerp_rotation(t.previous_yaw, t.yaw, alpha as f32);
+            let pitch =
+                horizon_client::projectiles::lerp_rotation(t.previous_pitch, t.pitch, alpha as f32);
             let base = glam::Mat4::from_translation(p.as_vec3())
-                * glam::Mat4::from_rotation_y((t.yaw - 90.0).to_radians())
-                * glam::Mat4::from_rotation_z((t.pitch + 90.0).to_radians());
+                * glam::Mat4::from_rotation_y((yaw - 90.0).to_radians())
+                * glam::Mat4::from_rotation_z((pitch + 90.0).to_radians());
             let l = self.world.light(
                 t.position.x.floor() as i32,
                 t.position.y.floor() as i32,
@@ -889,6 +905,19 @@ mod tests {
         assert_eq!(trident.velocity.y, -0.05);
         trident.remote_tick(&TestWorld { no_collision: true }, None);
         assert!(trident.position.y < 101.0);
+    }
+
+    #[test]
+    fn a_remote_trident_eases_its_rotation_towards_its_flight() {
+        let mut trident = ThrownTrident::remote(1, Vec3::new(0.0, 100.0, 0.0), 0.0, 0.0);
+        trident.velocity = Vec3::new(1.0, -1.0, 0.0);
+
+        trident.remote_tick(&Empty, None);
+
+        assert!((trident.yaw - 18.0).abs() < 1e-5);
+        assert!((trident.pitch - (-9.0)).abs() < 1e-5);
+        assert_eq!(trident.previous_yaw, 0.0);
+        assert_eq!(trident.previous_pitch, 0.0);
     }
 
     struct TestWorld {

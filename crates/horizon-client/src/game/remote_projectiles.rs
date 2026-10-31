@@ -112,7 +112,7 @@ fn projectile_kind(kind: &str) -> Option<ProjectileKind> {
 /// `AbstractArrow.tick` on a client: water drag before the move, air drag
 /// after it, then gravity; a block it reaches holds it (`inGround`).
 fn remote_arrow_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
-    p.previous = p.position;
+    p.begin_tick();
     p.age += 1;
     // AbstractArrow.tick: the shake timer runs down, and `inGroundTime` counts
     // the ticks in a block.
@@ -134,6 +134,7 @@ fn remote_arrow_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
     if let Some(a) = p.arrow.as_mut() {
         a.in_ground_time = if p.stuck { a.in_ground_time + 1 } else { 0 };
     }
+    horizon_client::projectiles::update_arrow_rotation(&mut p.yaw, &mut p.pitch, p.velocity, false);
     let water = w.in_water(p.bounds());
     if water {
         p.velocity = p.velocity.scale(0.6);
@@ -360,6 +361,8 @@ impl Game<'_> {
                 p.velocity = velocity;
                 p.yaw = yaw;
                 p.pitch = pitch;
+                p.previous_yaw = yaw;
+                p.previous_pitch = pitch;
                 self.add_projectile(p);
             }
         }
@@ -577,7 +580,7 @@ impl Game<'_> {
                     ProjectileKind::Arrow { .. } => remote_arrow_tick(p, &world),
                     // ShulkerBullet.tick: only the server steers it.
                     ProjectileKind::ShulkerBullet { .. } => {
-                        p.previous = p.position;
+                        p.begin_tick();
                         p.age += 1;
                         p.position = p.position.add_vector(p.velocity);
                     }
@@ -870,5 +873,22 @@ mod tests {
 
         remote_arrow_tick(&mut p, &TestWorld { no_collision: true });
         assert!(p.position.y < 100.0);
+    }
+
+    #[test]
+    fn a_remote_arrow_eases_its_rotation_towards_its_flight() {
+        let mut p = thrown(ProjectileKind::Arrow {
+            base_damage: 2.0,
+            critical: false,
+            effect: None,
+        });
+        p.velocity = Vec3::new(1.0, -1.0, 0.0);
+
+        remote_arrow_tick(&mut p, &Empty);
+
+        assert!((p.yaw - 18.0).abs() < 1e-5);
+        assert!((p.pitch - (-9.0)).abs() < 1e-5);
+        assert_eq!(p.previous_yaw, 0.0);
+        assert_eq!(p.previous_pitch, 0.0);
     }
 }

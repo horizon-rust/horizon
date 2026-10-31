@@ -116,6 +116,8 @@ pub struct Projectile {
     pub velocity: Vec3,
     pub yaw: f32,
     pub pitch: f32,
+    pub previous_yaw: f32,
+    pub previous_pitch: f32,
     pub age: u32,
     pub stuck: bool,
     /// Whether the projectile has left its owner's box (Projectile.leftOwner).
@@ -168,6 +170,31 @@ pub trait ProjectileWorld {
         false
     }
 }
+/// `Projectile.lerpRotation`, wrapping the shortest way around a full turn.
+pub fn lerp_rotation(old: f32, new: f32, amount: f32) -> f32 {
+    let mut delta = new - old;
+    while delta < -180.0 {
+        delta += 360.0;
+    }
+    while delta >= 180.0 {
+        delta -= 360.0;
+    }
+    old + amount * delta
+}
+
+/// `AbstractArrow.tick`'s flight orientation update.
+pub fn update_arrow_rotation(yaw: &mut f32, pitch: &mut f32, movement: Vec3, no_physics: bool) {
+    let (x, z) = if no_physics {
+        (-movement.x, -movement.z)
+    } else {
+        (movement.x, movement.z)
+    };
+    let y_rot = horizon_core::geometry::trig::atan2_degrees(x, z);
+    let x_rot =
+        horizon_core::geometry::trig::atan2_degrees(movement.y, movement.horizontal_distance());
+    *pitch = lerp_rotation(*pitch, x_rot, 0.2);
+    *yaw = lerp_rotation(*yaw, y_rot, 0.2);
+}
 /// Direction steps by 3D data value: down, up, north, south, west, east.
 pub const STEPS: [[i32; 3]; 6] = [
     [0, -1, 0],
@@ -204,10 +231,12 @@ impl Projectile {
         self.position = self.position.add_vector(movement);
         self.needs_sync = true;
     }
-    pub(crate) fn begin_tick(&mut self) {
+    pub fn begin_tick(&mut self) {
         if !self.piston_pushed_this_tick {
             self.previous = self.position;
         }
+        self.previous_yaw = self.yaw;
+        self.previous_pitch = self.pitch;
         self.piston_pushed_this_tick = false;
     }
     pub fn new(kind: ProjectileKind, position: Vec3, owner: Option<Who>) -> Self {
@@ -231,6 +260,8 @@ impl Projectile {
             velocity: Vec3::ZERO,
             yaw: 0.0,
             pitch: 0.0,
+            previous_yaw: 0.0,
+            previous_pitch: 0.0,
             age: 0,
             stuck: false,
             left_owner: false,
@@ -908,6 +939,11 @@ mod tests {
             true
         }
     }
+    #[test]
+    fn rotation_interpolation_takes_the_short_way_across_a_turn() {
+        assert_eq!(lerp_rotation(179.0, -179.0, 0.5), 180.0);
+    }
+
     #[test]
     fn snowball_falls_with_throwable_gravity_and_drag() {
         let mut p = Projectile::new(ProjectileKind::Snowball, Vec3::new(0.0, 100.0, 0.0), None);

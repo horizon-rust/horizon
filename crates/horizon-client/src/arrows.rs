@@ -477,16 +477,6 @@ pub fn blocks_inside(from: Vec3, to: Vec3) -> Vec<BlockPos> {
     });
     inside
 }
-/// `Projectile.lerpRotation`.
-fn lerp_rotation(mut old: f32, new: f32) -> f32 {
-    while new - old < -180.0 {
-        old -= 360.0;
-    }
-    while new - old >= 180.0 {
-        old += 360.0;
-    }
-    old + 0.2 * (new - old)
-}
 /// `(float)(Mth.atan2(y, x) * 180.0F / (float)Math.PI)`: compiled as one
 /// multiplication by the folded float constant.
 fn degrees(y: f64, x: f64) -> f32 {
@@ -701,8 +691,8 @@ impl Ticker<'_, '_, '_, '_> {
             degrees(-movement.x, -movement.z)
         };
         let x_rot = degrees(movement.y, movement.horizontal_distance());
-        self.p.pitch = lerp_rotation(self.p.pitch, x_rot);
-        self.p.yaw = lerp_rotation(self.p.yaw, y_rot);
+        self.p.pitch = crate::projectiles::lerp_rotation(self.p.pitch, x_rot, 0.2);
+        self.p.yaw = crate::projectiles::lerp_rotation(self.p.yaw, y_rot, 0.2);
         self.check_left_owner(targets);
         let mut hit = Hit::None;
         let end = Vec3::new(
