@@ -44,7 +44,7 @@ pub fn paint(hwnd: isize, semibold: &[u8], mono: &[u8], logs: &[String]) {
                     font.as_ptr().cast(),
                     font.len() as u32,
                     std::ptr::null(),
-                    &mut count,
+                    std::ptr::from_mut(&mut count),
                 );
             }
         }
