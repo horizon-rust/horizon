@@ -388,6 +388,7 @@ impl LodSource for ServerTerrain {
         Box::new(Sampler {
             terrain: self,
             details: Vec::new(),
+            waited: false,
         })
     }
     fn keeps_observed(&self) -> bool {
@@ -398,6 +399,8 @@ impl LodSource for ServerTerrain {
 struct Sampler {
     terrain: Arc<ServerTerrain>,
     details: Vec<LodDetail>,
+    /// A column was left empty for BlueMap's on its way (`waited`).
+    waited: bool,
 }
 
 impl LodSampler for Sampler {
@@ -405,6 +408,7 @@ impl LodSampler for Sampler {
         Some(Box::new(Self {
             terrain: self.terrain.clone(),
             details: Vec::new(),
+            waited: false,
         }))
     }
     /// Stored chunks come back whole, else BlueMap's; the others are known
@@ -433,8 +437,15 @@ impl LodSampler for Sampler {
     fn column(&mut self, x: i32, z: i32) -> Column {
         match self.terrain.chunk_or_map(x >> 4, z >> 4) {
             Found::Ready(c) => c[((z & 15) * 16 + (x & 15)) as usize].clone(),
-            _ => Column::default(),
+            Found::Waiting => {
+                self.waited = true;
+                Column::default()
+            }
+            Found::Absent => Column::default(),
         }
+    }
+    fn waited(&mut self) -> bool {
+        std::mem::take(&mut self.waited)
     }
     /// A cell of `width` blocks from one stored chunk: its own area up to a
     /// chunk, else the stored chunk nearest the cell's middle (the server
@@ -444,21 +455,29 @@ impl LodSampler for Sampler {
     /// there, and the nearest stored chunk only while the map has none.
     fn reduced_column(&mut self, x: i32, z: i32, width: i32) -> Column {
         if width <= 16 {
-            let Found::Ready(chunk) = self.terrain.chunk_or_map(x >> 4, z >> 4) else {
-                return Column::default();
+            let chunk = match self.terrain.chunk_or_map(x >> 4, z >> 4) {
+                Found::Ready(chunk) => chunk,
+                Found::Waiting => {
+                    self.waited = true;
+                    return Column::default();
+                }
+                Found::Absent => return Column::default(),
             };
             let width = width.max(1) as usize;
             let lx = (x & 15) as usize & !(width - 1);
             let lz = (z & 15) as usize & !(width - 1);
             return Column::reduced(&chunk, lx, lz, width);
         }
+        let mut waiting = false;
         if let Some(map) = &self.terrain.blue_map {
             let (mx, mz) = ((x + width / 2) >> 4, (z + width / 2) >> 4);
             if let Some(chunk) = self.terrain.chunk(mx, mz) {
                 return Column::reduced(&chunk, 0, 0, 16);
             }
-            if let Found::Ready(column) = map.reduced_column(x, z, width) {
-                return column;
+            match map.reduced_column(x, z, width) {
+                Found::Ready(column) => return column,
+                Found::Waiting => waiting = true,
+                Found::Absent => {}
             }
         }
         // Only over a cell the server sent most of, as `Column::reduced`
@@ -469,15 +488,16 @@ impl LodSampler for Sampler {
         // Wider cells are never mostly sent, and counting them would open
         // thousands of region files.
         if side > MAX_KEPT_SIDE {
+            self.waited |= waiting;
             return Column::default();
         }
         let (count, nearest) = self.terrain.kept(x >> 4, z >> 4, side);
-        if count * 2 < (side * side) as usize {
-            return Column::default();
-        }
-        nearest
-            .and_then(|(cx, cz)| self.terrain.chunk(cx, cz))
-            .map_or_else(Column::default, |chunk| Column::reduced(&chunk, 0, 0, 16))
+        let column = (count * 2 >= (side * side) as usize)
+            .then(|| nearest.and_then(|(cx, cz)| self.terrain.chunk(cx, cz)))
+            .flatten()
+            .map(|chunk| Column::reduced(&chunk, 0, 0, 16));
+        self.waited |= waiting && column.is_none();
+        column.unwrap_or_default()
     }
 }
 
