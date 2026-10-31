@@ -518,6 +518,7 @@ impl Froxels {
                     },
                 ),
                 entry(12, fragment, sampler),
+                entry(19, fragment, froxels(true)),
                 entry(20, fragment, froxels(true)),
             ],
         });
@@ -1010,6 +1011,7 @@ impl Froxels {
                     binding: 12,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
+                view(19, &to),
                 view(20, &integrated),
             ],
         });
