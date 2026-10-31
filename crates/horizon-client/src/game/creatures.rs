@@ -2966,6 +2966,7 @@ impl Game<'_> {
         let rocket = std::mem::take(&mut self.combat.rocket_hit);
         // ServerPlayer.canHarmPlayer refused another player's projectile.
         if self.creative || self.combat.refuse_player_hit {
+            self.combat.forget_noted(false);
             return false;
         }
         // A projectile entity dealt it: `#is_projectile`, or a firework
@@ -2999,7 +3000,6 @@ impl Game<'_> {
                 }),
         };
         // The causing entity for the death message.
-        let marks = self.pending_marks();
         let owner = self.combat.projectile_owner.take();
         if let Some(a) = attacker.or(owner) {
             self.note_attacker(damage_type, a);
@@ -3067,9 +3067,7 @@ impl Game<'_> {
         // LivingEntity.hurtServer: ENTITY_HURT_PLAYER, unless it returned
         // early (invulnerable, or inside the hurt cooldown).
         // A hit a native mod canceled records no damage (hurtServer never ran).
-        if outcome.canceled {
-            self.drop_pending_since(marks);
-        }
+        self.combat.forget_noted(outcome.canceled);
         if outcome.hurt || outcome.sound {
             let source = attacker
                 .or(owner)
@@ -3152,14 +3150,21 @@ impl Game<'_> {
         self.give_player_effect("minecraft:wither", 40, 0);
     }
     pub(super) fn hurt_player_by(&mut self, damage_type: &str, amount: f32) {
-        if self.creative {
-            return;
-        }
-        if let Some(player) = self.player.as_mut()
+        let mut canceled = false;
+        if !self.creative
+            && let Some(player) = self.player.as_mut()
             && let Some(id) = self.motion.health.damage.id(damage_type)
+            && let Ok(o) = player.hurt_blocking(
+                &self.motion.health,
+                self.world.health_rules,
+                id,
+                amount,
+                None,
+            )
         {
-            let _ = player.hurt(&self.motion.health, self.world.health_rules, id, amount);
+            canceled = o.canceled;
         }
+        self.combat.forget_noted(canceled);
     }
     /// `Player.aiStep` touching arrows in its box grown by (1, 0.5, 1):
     /// `AbstractArrow.playerTouch`, then `Player.take`'s pickup sound at the
