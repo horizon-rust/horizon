@@ -1074,6 +1074,17 @@ impl Audio {
             heard: Default::default(),
             stopped: Default::default(),
             preview: Default::default(),
+            // A shared owner watches the devices through the same backend:
+            // start from what its parent has already seen, so the first tick
+            // doesn't count a change.
+            #[cfg(feature = "audio")]
+            default_seen: self.default_seen.clone(),
+            #[cfg(feature = "audio")]
+            cards_seen: self.cards_seen.clone(),
+            #[cfg(feature = "audio")]
+            devices_seen: self.devices_seen.clone(),
+            #[cfg(feature = "audio")]
+            device_ticks: self.device_ticks,
         }
     }
     /// Sync the volume options, refreshing the categories that changed
