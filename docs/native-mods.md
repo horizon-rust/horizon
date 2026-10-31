@@ -355,6 +355,15 @@ one, stops the build instead of skipping the steps. When a step fails, so does t
 step failed …") and the version folder is removed. It runs on the player's computer like the rest of the mod's code: only the
 launcher runs it, never horizon-mixins.
 
+API 44 adds what a server mod needs for a public server's screens: `native_sidebar(uuid, sidebar)` shows one
+player a sidebar of up to 15 lines (a text, and one where the score would be) that only their client holds (the
+server's scoreboard never sees it; a mod sends it again when they rejoin), or takes it away with `None`;
+`native_tab_list(uuid, header, footer)` sets the lines over and under their Tab list; `native_tick_stats()` reads the
+server's tick rate and average tick time in ms (`/tick query`'s); and `native_sleep_ignored(uuid, ignored)` leaves a
+player out of `players_sleeping_percentage`'s count until they are in bed (players away from the keyboard), outside a
+player's hook only. The players `native_server_players` lists carry where they look (`yaw`, `pitch`). Bundles that
+use them need `"hooks": 44`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page, into the instance picked on the left ("Installs into
