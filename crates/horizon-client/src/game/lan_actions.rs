@@ -147,6 +147,9 @@ pub(super) struct GuestSwap {
     selected: usize,
     mode: horizon_client::command::args::GameMode,
     creative: bool,
+    /// The host's cached interaction ranges, restored after the guest turn.
+    entity_reach: f64,
+    block_reach: f64,
     /// The host's command permission, swapped for the guest's for its turn.
     permission: u8,
     xp: Experience,
@@ -405,6 +408,7 @@ impl Game<'_> {
         std::mem::swap(&mut self.carried, &mut g.carried);
         let selected = std::mem::replace(&mut self.selected, g.selected);
         let (mode, creative) = (self.mode, self.creative);
+        let (entity_reach, block_reach) = (self.entity_reach, self.block_reach);
         self.set_mode_raw(g.game_mode);
         let xp = std::mem::replace(
             &mut self.experience,
@@ -516,6 +520,8 @@ impl Game<'_> {
             self.apply_effect_status();
         }
         self.update_totem_ready();
+        self.entity_reach = self.interaction_range("minecraft:entity_interaction_range", 3.0, 5.0);
+        self.block_reach = self.interaction_range("minecraft:block_interaction_range", 4.5, 5.0);
         Some(GuestSwap {
             conn,
             i,
@@ -527,6 +533,8 @@ impl Game<'_> {
             selected,
             mode,
             creative,
+            entity_reach,
+            block_reach,
             permission,
             xp,
             host_keys,
@@ -599,6 +607,8 @@ impl Game<'_> {
             selected,
             mode,
             creative,
+            entity_reach,
+            block_reach,
             permission,
             xp,
             host_keys,
@@ -795,6 +805,8 @@ impl Game<'_> {
         let new_mode = self.mode_id();
         self.mode = mode;
         self.creative = creative;
+        self.entity_reach = entity_reach;
+        self.block_reach = block_reach;
         g.selected = std::mem::replace(&mut self.selected, selected);
         std::mem::swap(&mut self.inventory, &mut g.inventory);
         std::mem::swap(&mut self.armor, &mut g.armor);
@@ -3363,6 +3375,13 @@ impl Game<'_> {
             if w.climbable().unwrap_or(false) {
                 w.player.fall_distance = 0.0;
             }
+            // ServerGamePacketListenerImpl.handlePlayerPositionChange ends the
+            // impulse context on LivingEntity.hasLandedInLiquid: a move into a
+            // liquid that does not rise, or a wind charge that lands in water
+            // would waive the fall after it.
+            let liquid = w.player.fluids.was_touching_water || w.player.is_in_lava();
+            let delta_y = w.player.velocity.y;
+            w.player.impulse.landed_in_liquid(delta_y, liquid);
             // Entity.applyEffectsFromBlocks along those moves: magma, cactus,
             // lit campfires and grown sweet berry bushes hurt (#1305).
             w.player.shift_key_down = sneaking;
@@ -3807,11 +3826,10 @@ impl Game<'_> {
         if mode == SPECTATOR || self.dropped.is_empty() {
             return;
         }
-        let near: Vec<usize> = self
+        let near: Vec<_> = self
             .dropped
             .iter()
-            .enumerate()
-            .filter(|(_, d)| {
+            .filter(|d| {
                 d.pickup_delay == 0
                     && d.target.is_none_or(|t| t == uuid)
                     && (d.position.x - position[0]).abs() < 1.5
@@ -3819,15 +3837,25 @@ impl Game<'_> {
                     && d.position.y > position[1] - 0.6
                     && d.position.y < position[1] + 2.4
             })
-            .map(|(i, _)| i)
+            .map(|d| d.id)
             .collect();
         let mut taken = Vec::new();
-        for i in near.into_iter().rev() {
-            let (stack, item_id) = (self.dropped[i].stack.clone(), self.dropped[i].id);
-            if self.as_guest(host, conn, |g| g.native_pickup_refused(&stack)) == Some(true) {
+        for item_id in near.into_iter().rev() {
+            let Some(item) = self.dropped.iter().find(|d| d.id == item_id) else {
+                continue;
+            };
+            let stack = item.stack.clone();
+            let refused =
+                self.as_guest(host, conn, |g| g.native_pickup_refused(&stack)) == Some(true);
+            // The hook can remove or change any item entity.
+            let Some(i) = self.dropped.iter().position(|d| d.id == item_id) else {
+                continue;
+            };
+            if refused {
                 self.dropped[i].pickup_delay = 10;
                 continue;
             }
+            let stack = self.dropped[i].stack.clone();
             let before = stack.count;
             let thrower = self.dropped[i].thrower;
             let rest = self.as_guest(host, conn, |g| g.give(stack)).flatten();

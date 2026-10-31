@@ -782,6 +782,29 @@ impl Behaviours {
         {
             return Some(InteractionResult::Pass);
         }
+        // FlowerPotBlock.useItemOn: a plant on an empty flower pot pots it.
+        // If the pot is not empty and a plant is held, CONSUME (nothing happens).
+        // Otherwise, TRY_WITH_EMPTY_HAND (falls through to use_without_item,
+        // which takes the plant out if potted, or CONSUME if empty).
+        if self.data(state).is(Class::FlowerPot) {
+            let is_empty = self
+                .data(state)
+                .link
+                .is_none_or(|c| self.is_air(self.default_of(c)));
+            let potted = item
+                .and_then(|i| self.item_binding(i))
+                .and_then(|b| self.potted_block(b.block));
+            if let Some(potted) = potted {
+                if !is_empty {
+                    return Some(InteractionResult::Consume);
+                }
+                let next = self.default_of(potted);
+                let mut sim = self.sim(level, ticks);
+                sim.set_block_and_update(pos, next);
+                sim.game_event(pos, "minecraft:block_change");
+                return Some(InteractionResult::Success);
+            }
+        }
         // CakeBlock.useItemOn: a candle on an uneaten cake turns it into a candle cake.
         if let Some(candle_cake) = self.cake_candle_state(state, item) {
             let mut sim = self.sim(level, ticks);
@@ -892,6 +915,28 @@ impl Behaviours {
         let candle = item?.strip_suffix("candle")?;
         let id = self.table.block_by_name(&format!("{candle}candle_cake"))?;
         Some(self.default_of(id))
+    }
+
+    /// `FlowerPotBlock.useItemOn`: the potted plant block state that `item`
+    /// turns the empty flower pot `state` into (`POTTED_BY_CONTENT`), if any.
+    pub fn potted_flower_state(
+        &self,
+        state: BlockStateId,
+        item: Option<&str>,
+    ) -> Option<BlockStateId> {
+        if !self.data(state).is(Class::FlowerPot) {
+            return None;
+        }
+        let is_empty = self
+            .data(state)
+            .link
+            .is_none_or(|c| self.is_air(self.default_of(c)));
+        if !is_empty {
+            return None;
+        }
+        let binding = self.item_binding(item?)?;
+        let potted = self.potted_block(binding.block)?;
+        Some(self.default_of(potted))
     }
 
     /// `CopperGolemStatueBlock.useItemOn` (and its weathering subclass's): anything but an axe

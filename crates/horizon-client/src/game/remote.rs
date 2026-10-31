@@ -37,7 +37,8 @@ use horizon_protocol::{
         play::{self, Clientbound as C, Serverbound as S},
     },
     registry::{Builtin, DimensionType, Dynamic, SyncedNames, ceil_log2},
-    secure_chat::Signature,
+    rsa::RsaPublicKey,
+    secure_chat::{self, Signature},
     text::{Language, plain},
 };
 use horizon_world::{
@@ -122,6 +123,8 @@ pub(super) enum ChatTrust {
     Secure,
     Modified(String),
     NotSecure,
+    /// `GuiMessageTag.chatError`: the line `ChatListener.handleChatMessageError` adds.
+    Error,
 }
 impl ChatTrust {
     /// `ChatTrustLevel.createTag`.
@@ -130,6 +133,7 @@ impl ChatTrust {
             Self::Secure => None,
             Self::Modified(original) => Some(horizon_client::chat::Tag::modified(original)),
             Self::NotSecure => Some(horizon_client::chat::Tag::not_secure()),
+            Self::Error => Some(horizon_client::chat::Tag::chat_error()),
         }
     }
 }
@@ -290,6 +294,15 @@ enum Received {
     Chunk(Arc<ChunkFormat>),
 }
 
+/// `Minecraft.services().profileKeySignatureValidator()`: the services' profile-key keys, which a
+/// player's chat key must be signed by. Asked for once per connection to a server, off the game
+/// thread.
+pub(super) enum ServicesKeys {
+    Pending,
+    Ready(Vec<RsaPublicKey>),
+    /// `canValidateProfileKeys()` is false: none could be had.
+    Missing,
+}
 /// The signed-in account's `/minecraft/profile` fetch after joining.
 enum OwnProfile {
     Idle,
@@ -390,6 +403,15 @@ pub(super) struct Remote {
     signatures: horizon_protocol::secure_chat::SignatureCache,
     /// `ChatListener.previousMessageTime`: when a message last showed, if one has.
     chat_previous: Option<Instant>,
+    /// `ClientPacketListener.nextChatIndex`: the global index the next chat packet must carry.
+    next_chat_index: i32,
+    /// `serverEnforcesSecureChat`, from the login packet.
+    enforces_secure_chat: bool,
+    services_keys: Arc<std::sync::Mutex<ServicesKeys>>,
+    /// The `RemoteChatSession.Data` each player's list entry last carried (INITIALIZE_CHAT).
+    chat_sessions: HashMap<u128, Option<(u128, i64, Vec<u8>, Vec<u8>)>>,
+    /// `PlayerInfo.messageValidator` of the players whose chat has been read.
+    chat_validators: HashMap<u128, secure_chat::MessageValidator>,
     /// The tree the chat colours, completes and parses with: the server's
     /// (ClientboundCommandsPacket) once it has sent one, else the game's own,
     /// plus the commands native mods own (`chat::chat_tree_for`). Rebuilt where
@@ -754,6 +776,24 @@ impl Game<'_> {
         // The chat's tree until the server sends its own, or forever when it
         // sends none: the game's own, plus the commands native mods own.
         let chat_tree = self.chat_tree_for(None);
+        // Minecraft.services() has the keys wherever the game is played, single player's own
+        // server included: its guests' chat keys are checked against them.
+        let services_keys = Arc::new(std::sync::Mutex::new(ServicesKeys::Pending));
+        let slot = services_keys.clone();
+        let _ = std::thread::Builder::new()
+            .name("Services keys".into())
+            .spawn(move || {
+                use horizon_server_files::profiles;
+                let keys = profiles::fetch_profile_key_keys(&profiles::discovery_url());
+                *slot.lock().unwrap_or_else(|e| e.into_inner()) = match keys {
+                    Ok(keys) if !keys.is_empty() => ServicesKeys::Ready(keys),
+                    Ok(_) => ServicesKeys::Missing,
+                    Err(why) => {
+                        log::error!("Horizon: {why}");
+                        ServicesKeys::Missing
+                    }
+                };
+            });
         self.remote = Some(Remote {
             session,
             brand: "unknown".into(),
@@ -810,6 +850,11 @@ impl Game<'_> {
             chat_queue: VecDeque::new(),
             signatures: Default::default(),
             chat_previous: None,
+            next_chat_index: 0,
+            enforces_secure_chat: false,
+            services_keys,
+            chat_sessions: HashMap::new(),
+            chat_validators: HashMap::new(),
             chat_tree,
             custom_completions: Default::default(),
             players: HashMap::new(),
@@ -1161,6 +1206,22 @@ impl Game<'_> {
         }
     }
 
+    /// `ChatListener.handleChatMessageError`: a message that fails validation shows as the red,
+    /// italic `chat.validation_error` in its chat type (queued under Chat Delay as any
+    /// message). Vanilla also marks the message's signature as processed but not shown, for the
+    /// acknowledgement the client sends the server (no `LastSeenMessagesTracker` is kept here yet);
+    /// it skips a blocked sender and one restricted to friends (not kept here either) and
+    /// narrates the line.
+    fn handle_chat_message_error(&mut self, chat_type: &play::ChatTypeBound) {
+        let error = serde_json::json!({
+            "translate": "chat.validation_error",
+            "color": "red",
+            "italic": true,
+        });
+        let line = self.format_chat(chat_type, error);
+        self.handle_player_chat(line, None, ChatTrust::Error);
+    }
+
     /// `ChatTrustLevel.evaluate` of a player message, with
     /// `ChatListener.evaluateTrustLevel`: the player's own message on their
     /// own server is secure. `decorated` is the line shown, `unsigned` the
@@ -1506,10 +1567,12 @@ impl Game<'_> {
                 Event::Reconfigured(registries) => {
                     // handleConfigurationStart → clearClientLevel, and the next
                     // ClientPacketListener starts with no players or scoreboard,
-                    // and its new ClientSuggestionProvider with no custom
-                    // chat completions.
+                    // no waypoints (its own ClientWaypointManager: a proxy's next
+                    // server never untracks the last one's), and its new
+                    // ClientSuggestionProvider with no custom chat completions.
                     self.hud_disconnected();
                     self.score.board = Default::default();
+                    self.clear_waypoints();
                     if let Some(r) = self.remote.as_mut() {
                         r.players.clear();
                         r.tab_players.clear();
@@ -1844,10 +1907,21 @@ impl Game<'_> {
             }
             return;
         }
-        let Some(entity) = self.world.block_entities.get(&key) else {
+        let Tag::Compound(fields) = tag else {
             return;
         };
-        let Tag::Compound(fields) = tag else {
+        // A mod block entity's type is named after its block (`mod_content`):
+        // its update tag merges into what the client keeps of it (`handleUpdateTag`).
+        // Nothing is drawn from it yet, so its section stays as it is.
+        let block = self.world.block(pos[0], pos[1], pos[2]);
+        if let Some(BlockEntity::Mod(m)) = self.world.block_entities.get_mut(&key) {
+            if *self.res.facts().get(block).name == *name {
+                m.nbt
+                    .extend(fields.iter().map(|(k, v)| (k.clone(), v.clone())));
+            }
+            return;
+        }
+        let Some(entity) = self.world.block_entities.get(&key) else {
             return;
         };
         if entity.id() != name || fields.is_empty() {
@@ -1946,15 +2020,23 @@ impl Game<'_> {
         }
     }
     /// Keep the renderable block entities (chests, furnaces) in step with blocks.
-    pub(super) fn sync_block_entity(&mut self, pos: (i32, i32, i32), state: BlockStateId) {
+    /// `previous`: the block's state before, when it changed.
+    pub(super) fn sync_block_entity(
+        &mut self,
+        pos: (i32, i32, i32),
+        previous: Option<BlockStateId>,
+        state: BlockStateId,
+    ) {
         let name = self.res.facts().get(state).name.clone();
-        match BlockEntity::for_block(&name) {
+        // LevelChunk.setBlockState: another block's block entity goes, even
+        // one of the same type (a mod's blocks may share one).
+        let other_block = previous.is_some_and(|p| self.res.facts().get(p).name != name);
+        // A mod block's is the mod's own (`native_block_entity`), as on the server.
+        match self.new_block_entity(&name) {
             Some(entity) => {
-                let same = self
-                    .world
-                    .block_entities
-                    .get(&pos)
-                    .is_some_and(|e| e.id() == entity.id());
+                let same = self.world.block_entities.get(&pos).is_some_and(|e| {
+                    e.id() == entity.id() && !(other_block && matches!(e, BlockEntity::Mod(_)))
+                });
                 if !same {
                     self.world.block_entities.insert(pos, entity);
                 }
@@ -2006,7 +2088,7 @@ impl Game<'_> {
         if self.world.loaded(pos[0], pos[2])
             && self.world.set(pos[0], pos[1], pos[2], state).is_ok()
         {
-            self.sync_block_entity((pos[0], pos[1], pos[2]), state);
+            self.sync_block_entity((pos[0], pos[1], pos[2]), Some(previous), state);
             // LevelChunk.setBlockState removes the block entity of a block
             // that changes: the moving piston the client's moveBlocks made
             // stops when the server places what it moved (#3002).
@@ -2553,6 +2635,7 @@ impl Game<'_> {
                     r.carried = Some(0);
                     r.own_invisible = false;
                     r.online_mode = p.online_mode;
+                    r.enforces_secure_chat = p.enforces_secure_chat;
                     r.entity_id = p.player_id;
                     // handleLogin: the new LocalPlayer is the camera.
                     r.camera = None;
@@ -3360,6 +3443,10 @@ impl Game<'_> {
                 if p.event == 21 {
                     self.start_guardian_sound(p.id as u32);
                 }
+                // Witch.handleEntityEvent 15: the magic puffs over its hat.
+                if p.event == 15 {
+                    self.witch_magic_particles(p.id as u32);
+                }
                 // Fox.handleEntityEvent 45: the crumbs of the food in its mouth.
                 if p.event == 45 {
                     self.fox_eat_particles(p.id as u32);
@@ -3863,6 +3950,21 @@ impl Game<'_> {
                 let Some(r) = self.remote.as_mut() else {
                     return Ok(());
                 };
+                // handlePlayerChat: the global index counts every chat packet; one out of
+                // order disconnects.
+                let expected = r.next_chat_index;
+                r.next_chat_index = r.next_chat_index.wrapping_add(1);
+                if p.global_index != expected {
+                    log::error!(
+                        "Missing or out-of-order chat message from server, expected index {expected} but got {}",
+                        p.global_index
+                    );
+                    let reason = horizon_client::text::Text::translate(
+                        "multiplayer.disconnect.bad_chat_index",
+                        &[],
+                    );
+                    return self.leave_server(Some(reason.plain()));
+                }
                 let last_seen: Option<Vec<Signature>> =
                     p.last_seen.iter().map(|s| r.signatures.unpack(s)).collect();
                 let Some(last_seen) = last_seen else {
@@ -3881,6 +3983,38 @@ impl Game<'_> {
                     .as_deref()
                     .and_then(horizon_protocol::secure_chat::signature);
                 r.signatures.push(&last_seen, signature.as_ref());
+                // The sender's PlayerInfo: none is an error line; else their
+                // `SignedMessageValidator` decides (`updateAndValidate`), and a message it
+                // takes without a signature of its own shows as unsigned.
+                if !r.tab_players.contains_key(&p.sender) {
+                    log::error!(
+                        "Received player chat packet for unknown player with ID: {:032x}",
+                        p.sender
+                    );
+                    self.handle_chat_message_error(&p.chat_type);
+                    return Ok(());
+                }
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_millis() as i64);
+                let incoming = secure_chat::Incoming {
+                    sender: p.sender,
+                    index: p.index,
+                    signature: signature.as_ref(),
+                    body: secure_chat::Body {
+                        content: &p.content,
+                        timestamp: p.timestamp,
+                        salt: p.salt,
+                        last_seen: &last_seen,
+                    },
+                    unsigned_content: p.unsigned_content.as_ref(),
+                    filter: &p.filter,
+                };
+                let Some(validated) = r.validate_chat(&incoming, now) else {
+                    self.handle_chat_message_error(&p.chat_type);
+                    return Ok(());
+                };
+                let signature = signature.filter(|_| validated == secure_chat::Validated::Signed);
                 // ChatListener.handlePlayerChatMessage: Only Show Secure Chat
                 // shows the signed content, never the server's replacement.
                 let content = p
@@ -3909,6 +4043,14 @@ impl Game<'_> {
                 if let Some(r) = self.remote.as_mut() {
                     // handlePlayerInfoUpdate: new entries first, then every
                     // action on every known entry.
+                    // INITIALIZE_CHAT: the session (or none) each entry carries; the
+                    // player's validator is made again when their chat is next read.
+                    if p.actions & 2 != 0 {
+                        for e in &p.entries {
+                            r.chat_sessions.insert(e.uuid, e.chat_session.clone());
+                            r.chat_validators.remove(&e.uuid);
+                        }
+                    }
                     if p.actions & 1 != 0 {
                         for e in &p.entries {
                             if let Some(name) = &e.name {
@@ -3972,6 +4114,8 @@ impl Game<'_> {
                     for u in p.uuids {
                         r.players.remove(&u);
                         r.tab_players.remove(&u);
+                        r.chat_sessions.remove(&u);
+                        r.chat_validators.remove(&u);
                         r.skin_textures.remove(&u);
                         r.listed.remove(&u);
                     }
@@ -4994,6 +5138,10 @@ impl Game<'_> {
         self.border.tick();
         self.player_border();
         self.tick_remote_entities(running);
+        // Breeze.tick's block dust: drawn by each client for the breezes it sees.
+        if running {
+            self.tick_breeze_effects();
+        }
         self.tick_remote_guardian_eyes(running);
         // ClientLevel.tickBlockEntities: chest lids, shulker boxes, bells,
         // and the moving pistons a block event's client-side moveBlocks made
@@ -6300,6 +6448,10 @@ impl Game<'_> {
     /// the server, and whether the click ends there is what this client's
     /// copy of the entity answers (`MultiPlayerGameMode.interact`).
     fn remote_use_entity(&mut self, hand: Hand) -> bool {
+        // A menu this use opens (a chest minecart's) is no clicked block's.
+        if let Some(r) = self.remote.as_mut() {
+            r.use_target = None;
+        }
         let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
         // A boat, minecart, item frame, armor stand or painting nearer than
         // any mob: the server uses it (AbstractBoat.interact boards it).
@@ -8006,8 +8158,8 @@ impl Game<'_> {
             .unwrap_or_default();
         let target = self
             .remote
-            .as_ref()
-            .and_then(|r| r.use_target)
+            .as_mut()
+            .and_then(|r| r.use_target.take())
             .map(|t| (t[0], t[1], t[2]));
         if menu == "minecraft:lectern" {
             // LecternScreen: the book and page come in the menu's content and data.
@@ -8106,7 +8258,7 @@ impl Game<'_> {
             let key = target.filter(holds).unwrap_or((i32::MIN, 0, 0));
             self.world.block_entities.insert(key, entity);
             self.container = Some(key);
-            self.open_native_screen(key, target, p.container);
+            self.open_native_screen(key, target, p.container, &menu);
         }
         self.screen = Screen::Inventory;
         self.capture(false);
@@ -8845,6 +8997,62 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
 }
 
 impl Remote {
+    /// `PlayerInfo.getMessageValidator().updateAndValidate(message)` for `message.sender`.
+    fn validate_chat(
+        &mut self,
+        message: &secure_chat::Incoming,
+        now: i64,
+    ) -> Option<secure_chat::Validated> {
+        let sender = message.sender;
+        if let Some(validator) = self.chat_validators.get_mut(&sender) {
+            return validator.update_and_validate(message, now);
+        }
+        let (mut validator, settled) = self.new_chat_validator(sender);
+        let validated = validator.update_and_validate(message, now);
+        // While the services' keys are still on their way the validator is a stopgap, not kept.
+        if settled {
+            self.chat_validators.insert(sender, validator);
+        }
+        validated
+    }
+    /// `ClientPacketListener.initializeChatSession` for `sender`'s entry: a session the services'
+    /// keys vouch for makes a keyed validator, anything else the fallback of
+    /// `enforcesSecureChat()` (`canValidateProfileKeys() && serverEnforcesSecureChat`). `false`
+    /// while the keys are not known yet.
+    fn new_chat_validator(&self, sender: u128) -> (secure_chat::MessageValidator, bool) {
+        let keys = self.services_keys.lock().unwrap_or_else(|e| e.into_inner());
+        let (can_validate, settled) = match &*keys {
+            ServicesKeys::Ready(_) => (true, true),
+            ServicesKeys::Missing => (false, true),
+            ServicesKeys::Pending => (false, false),
+        };
+        let fallback =
+            secure_chat::MessageValidator::fallback(can_validate && self.enforces_secure_chat);
+        let (ServicesKeys::Ready(keys), Some(Some((id, expires_at, key, signature)))) =
+            (&*keys, self.chat_sessions.get(&sender))
+        else {
+            if matches!(&*keys, ServicesKeys::Missing)
+                && self.chat_sessions.get(&sender).is_some_and(Option::is_some)
+            {
+                log::warn!(
+                    "Ignoring chat session from {sender:032x} due to missing Services public key"
+                );
+            }
+            return (fallback, settled);
+        };
+        let profile_key = secure_chat::ProfileKey {
+            expires_at: *expires_at,
+            key: key.clone(),
+            signature: signature.clone(),
+        };
+        match secure_chat::ChatSession::validate(*id, profile_key, keys, sender) {
+            Ok(session) => (secure_chat::MessageValidator::keyed(session), true),
+            Err(why) => {
+                log::error!("Failed to validate profile key for player {sender:032x}: {why}");
+                (fallback, true)
+            }
+        }
+    }
     /// A player entity's profile name: the one it was created with, else its
     /// player-list entry's (an entity the list named after it spawned).
     fn level_player_name(&self, id: i32, uuid: &u128) -> Option<&str> {

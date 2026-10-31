@@ -1,6 +1,6 @@
 //! The launcher's languages: English (the strings in the code), French, Russian, German and
-//! Spanish, the languages Horizon's own game menus have, Simplified Chinese, Ukrainian and
-//! Polish. A table per language (`launcher/lang/<code>.json`) maps each English string to its
+//! Spanish, the languages Horizon's own game menus have, Simplified Chinese, Ukrainian,
+//! Polish, Brazilian Portuguese and Japanese. A table per language (`launcher/lang/<code>.json`) maps each English string to its
 //! translation; a string the table lacks shows in English.
 //!
 //! The language follows the system's unless the player picks one in Settings
@@ -31,10 +31,12 @@ pub enum Language {
     Polish,
     #[serde(rename = "pt-br")]
     PortugueseBrazil,
+    #[serde(rename = "ja")]
+    Japanese,
 }
 
 impl Language {
-    pub const ALL: [Language; 9] = [
+    pub const ALL: [Language; 10] = [
         Self::English,
         Self::French,
         Self::Russian,
@@ -44,6 +46,7 @@ impl Language {
         Self::Ukrainian,
         Self::Polish,
         Self::PortugueseBrazil,
+        Self::Japanese,
     ];
 
     /// Its code in `settings.json` and on the command line.
@@ -58,6 +61,7 @@ impl Language {
             Self::Ukrainian => "uk",
             Self::Polish => "pl",
             Self::PortugueseBrazil => "pt-br",
+            Self::Japanese => "ja",
         }
     }
 
@@ -73,6 +77,7 @@ impl Language {
             Self::Ukrainian => "Українська",
             Self::Polish => "Polski",
             Self::PortugueseBrazil => "Português (Brasil)",
+            Self::Japanese => "日本語",
         }
     }
 
@@ -125,6 +130,7 @@ impl Language {
             Self::Ukrainian => include_str!("../lang/uk.json"),
             Self::Polish => include_str!("../lang/pl.json"),
             Self::PortugueseBrazil => include_str!("../lang/pt-br.json"),
+            Self::Japanese => include_str!("../lang/ja.json"),
         }
     }
 }

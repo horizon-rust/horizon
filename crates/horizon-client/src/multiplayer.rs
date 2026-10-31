@@ -304,8 +304,12 @@ pub fn save_server_icon(saves: &Path, address: &str, png: &[u8]) {
     }
 }
 
-/// Horizon's official survival server: a name and an address like any entry.
-pub const OFFICIAL_SERVER: (&str, &str) = ("Horizon Official", "horizon.bunchy7s.dev");
+/// Horizon's official survival server: a name and an address like any entry. The address is
+/// `horizon_telemetry::server_status::OFFICIAL_ADDRESS`, the one place it is kept.
+pub const OFFICIAL_SERVER: (&str, &str) = (
+    "Horizon Official",
+    horizon_telemetry::server_status::OFFICIAL_ADDRESS,
+);
 /// Beside servers.dat once the official server was offered, so a player who
 /// deletes it never gets it back. The launcher writes the same file.
 const OFFICIAL_MARKER: &str = "horizon_official_server.txt";

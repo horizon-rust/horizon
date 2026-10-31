@@ -341,7 +341,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GUEST_NAME = 'Guest'
 # Match normal single player; --in-frame is deprecated.
 SERVER_THREAD = True
-CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'menu-transfer', 'crafting', 'spawned', 'sign', 'damage', 'mobs', 'hazards', 'pvp',
+CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'menu-transfer', 'crafting', 'spawned', 'sign', 'damage', 'mobs', 'hazards', 'pvp', 'deaths',
           'flow-push', 'bubble-column', 'arrows', 'kills', 'looting', 'leave', 'hurt', 'looks', 'leads', 'respawn', 'containers', 'names', 'feedback', 'titles', 'chat', 'styles',
           'commands', 'recipes', 'machines', 'brewing', 'loom', 'stonecutter', 'grindstone', 'anvil', 'smithing',
           'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
@@ -1447,6 +1447,110 @@ def check_arrows(host, guest, out):
     assert hits['pvp off'][1] >= hits['pvp off'][0], f'pvp off, an arrow still hurts: {hits}'
     return hits
 
+
+def check_deaths(host, guest, out):
+    def other_player(watcher):
+        """The other player's entity id as `watcher` draws it: aiming by an entity, not by
+        coordinates, holds when a just-respawned client's position lags the server's."""
+        for _ in range(20):
+            found = watcher.raw('entities', 6, 'player')['entities']
+            if found:
+                return found[0]['id']
+            watcher.wait(5)
+        raise AssertionError(f'{watcher.name} does not draw the other player')
+
+    def ready():
+        for g in (host, guest):
+            if g('state').get('screen') == 'dead':
+                g.raw('respawn')
+                g.wait(40)
+            back_to_game(g)
+            g('command', command='effect give @s minecraft:instant_health 1 5')
+        host('command', command='execute at @s run fill ~-5 200 ~-5 ~5 200 ~5 minecraft:stone')
+        host('command', command='tp @s ~ 201 ~')
+        host('command', command=f'tp {GUEST_NAME} {host.player}')
+        guest('command', command='tp @s ~3 ~ ~')
+        host.wait(20)
+        host.raw('look-at-entity', other_player(host))
+        guest.raw('look-at-entity', other_player(guest))
+        host.wait(5)
+
+    said = {}
+    try:
+        host('command', command='gamerule pvp true')
+        host('command', command='gamerule natural_health_regeneration false')
+        for g in (host, guest):
+            g('command', command='gamemode survival')
+            g('command', command='clear @s')
+            g('command', command='item replace entity @s armor.chest with minecraft:air')
+        host('command', command='item replace entity @s weapon.mainhand with minecraft:iron_sword')
+        ready()
+        host('command', command=f'damage {GUEST_NAME} 18 minecraft:generic')
+        host.wait(30)
+        host.raw('attack')
+        host.wait(20)
+        said['sword'] = host.raw('messages', 10)['chat']
+        host.shot(out, 'deaths-sword')
+        guest('command', command='item replace entity @s weapon.mainhand with minecraft:iron_sword')
+        ready()
+        host('command', command=f'damage {host.player} 18 minecraft:generic')
+        guest.wait(30)
+        guest.raw('attack')
+        guest.wait(20)
+        said['host_death'] = host.raw('messages', 10)['chat']
+        said['host_death_behind_guest'] = guest.raw('messages', 10)['chat']
+        guest.shot(out, 'deaths-host')
+        host('command', command='item replace entity @s weapon.mainhand with minecraft:bow')
+        host('command', command='give @s minecraft:arrow 16')
+        ready()
+        host('command', command=f'damage {GUEST_NAME} 18 minecraft:generic')
+        host.raw('use-item', '--hold', 1.3)
+        host.wait(20)
+        said['arrow'] = host.raw('messages', 10)['chat']
+        guest('command', command='item replace entity @s weapon.mainhand with minecraft:bow')
+        guest('command', command='give @s minecraft:arrow 16')
+        ready()
+        host('command', command=f'damage {host.player} 18 minecraft:generic')
+        guest.raw('use-item', '--hold', 1.3)
+        guest.wait(20)
+        said['arrow_behind_guest'] = guest.raw('messages', 10)['chat']
+        host('command', command='item replace entity @s weapon.mainhand with minecraft:air')
+        host('command', command='item replace entity @s armor.chest with '
+                                'minecraft:diamond_chestplate[minecraft:enchantments={"minecraft:thorns":255}]')
+        ready()
+        hx, hy, hz = pos_of(host)
+        for _ in range(8):
+            if dead(guest):
+                break
+            guest('command', command='effect give @s minecraft:instant_health 1 5')
+            host('command', command=f'tp @s {hx:.2f} {hy:.2f} {hz:.2f}')
+            host('command', command=f'tp {GUEST_NAME} {host.player}')
+            guest('command', command='tp @s ~3 ~ ~')
+            host('command', command=f'damage {GUEST_NAME} 19 minecraft:generic')
+            guest.wait(30)
+            guest.raw('look-at-entity', other_player(guest))
+            guest.raw('attack')
+            guest.wait(10)
+        said['thorns'] = host.raw('messages', 10)['chat']
+        host.shot(out, 'deaths-thorns')
+    finally:
+        host('command', command='gamerule natural_health_regeneration true')
+        for g in (host, guest):
+            g('command', command='item replace entity @s armor.chest with minecraft:air')
+            g('command', command='clear @s')
+    name = host.player
+    want = {'sword': f'{GUEST_NAME} was slain by {name}',
+            'host_death': f'{name} was slain by {GUEST_NAME}',
+            'host_death_behind_guest': f'{name} was slain by {GUEST_NAME}',
+            'arrow': f'{GUEST_NAME} was shot by {name}',
+            'arrow_behind_guest': f'{name} was shot by {GUEST_NAME}',
+            'thorns': f'{GUEST_NAME} was killed while trying to hurt {name}'}
+    for case, line in want.items():
+        assert line in said[case], f'no "{line}" in the {case} chat: {said[case]}'
+    for case, lines in said.items():
+        assert not any('%1$s' in line or '%2$s' in line for line in lines), \
+            f'a raw template in the {case} chat: {lines}'
+    return said
 
 def dead_players(game, want, ticks=60):
     """The other players `game`'s client draws dead, once that is `want` (empty or not) or after `ticks`."""
@@ -5935,7 +6039,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'sign': check_sign, 'damage': check_damage, 'mobs': check_mobs,
              'flow-push': check_flow_push,
              'bubble-column': check_bubble_column,
-             'hazards': check_hazards, 'pvp': check_pvp, 'respawn': check_respawn,
+             'hazards': check_hazards, 'pvp': check_pvp, 'deaths': check_deaths, 'respawn': check_respawn,
              'containers': check_containers, 'names': check_names, 'feedback': check_feedback, 'titles': check_titles,
              'chat': check_chat, 'styles': check_styles, 'machines': check_machines, 'brewing': check_brewing,
              'loom': check_loom, 'stonecutter': check_stonecutter, 'grindstone': check_grindstone,
