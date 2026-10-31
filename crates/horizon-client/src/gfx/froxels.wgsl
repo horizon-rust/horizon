@@ -57,6 +57,10 @@ struct Fx {
     prev_eye: vec4<f32>,
     // xyz: this frame's offset within a froxel before the froxel's own shift (a 3D R-sequence).
     jitter: vec4<f32>,
+    // The view whose froxels the composite reads, when not this one's (the second VR eye reads the
+    // first's): its world to clip space, and where its rays start (w 1 when it is another view).
+    other_view_proj: mat4x4<f32>,
+    other_eye: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> fx: Fx;
 @group(0) @binding(1) var depth: texture_depth_2d;
@@ -511,7 +515,14 @@ fn froxel_at(uv: vec2<f32>, r: f32) -> vec4<f32> {
 @fragment
 fn fs_scatter(in: Screen) -> @location(0) vec4<f32> {
     let texel = vec2<i32>(in.position.xy);
-    return vec4(froxel_at(in.uv, pixel_distance(texel, in.uv)).rgb, 0.0);
+    let r = pixel_distance(texel, in.uv);
+    if fx.other_eye.w < 0.5 { return vec4(froxel_at(in.uv, r).rgb, 0.0); }
+    // Another view's froxels: the pixel's point, where that view sees it.
+    let p = fx.eye.xyz + ray_dir(in.uv) * r;
+    let c = fx.other_view_proj * vec4(p, 1.0);
+    let ndc = c.xy / max(c.w, 1e-6);
+    let uv = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    return vec4(froxel_at(uv, min(length(p - fx.other_eye.xyz), fx.depth.y)).rgb, 0.0);
 }
 // What the medium lets through of the scene behind it (Beer-Lambert, exact for the homogeneous
 // medium), multiplied into the scene.
