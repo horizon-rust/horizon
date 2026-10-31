@@ -186,6 +186,7 @@ mod music;
 mod names;
 mod narrator;
 mod native_entities;
+mod native_falling;
 mod native_hooks;
 mod native_lifecycle;
 mod native_menus;
