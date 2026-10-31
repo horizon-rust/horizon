@@ -7,7 +7,7 @@ use super::{
     control::MoveKind,
     goals::{
         Avoid, AvoidEntity, BreathAir, Cx, Goal, HurtByTarget, LookAtPlayer, MeleeAttack, Panic,
-        RandomLookAround, Stroll, TryFindWater, goal_clone, reduced,
+        RandomLookAround, Stroll, Tempt, TryFindWater, goal_clone, reduced,
     },
     nav::NavKind,
 };
@@ -121,10 +121,16 @@ pub fn register(m: &mut Mob) {
             super::animal_brain::init(m, i64::from(m.id));
         }
         S::Tadpole => {
-            // TadpoleAi: panic, swim around and look about.
+            // TadpoleAi: panic, follow a slime ball, swim around and look about.
+            // The bitten-into-brain activities become goals in the order the
+            // rest of the water mobs keep them (a threat first, the food after
+            // it, the idle stroll and the looks last).
+            let food = m.kind.food.clone();
             let g = &mut m.ai.goals;
             g.add(0, Panic::new(2.0));
+            g.add(3, Tempt::new(1.0, food, false));
             g.add(4, Stroll::swimming(1.0, 40));
+            g.add(6, LookAtPlayer::new(6.0));
             m.ai.mov.kind = MoveKind::Custom;
             m.ai.nav.kind = NavKind::Water { breach: false };
         }

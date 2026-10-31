@@ -60,7 +60,7 @@ ShootTongue.canStillUse	inline	crates/horizon-client/src/mobs/frog.rs::ShootTong
 ShootTongue.eatEntity	inline	crates/horizon-client/src/mobs/frog.rs::ShootTongue::tick	CatchAnimation arm: frog eat sound at 2.0, then the frog's attack on the target
 ShootTongue.canPathfindToTarget	inline	crates/horizon-client/src/mobs/frog.rs::ShootTongue::can_use	a path to the target that ends within 1.75 blocks
 ShootTongue.addUnreachableTargetToMemory	inline	crates/horizon-client/src/mobs/frog.rs::ShootTongue::can_use	up to 5 ids kept 100 ticks in Frog.State.unreachable
-Tadpole.customServerAiStep	inline	crates/horizon-client/src/mobs/aquatic.rs::register	gap: player: panic and swim-around goals stand in for the brain; tadpoles do not follow a player holding a slimeball and do not look at players
+Tadpole.customServerAiStep	inline	crates/horizon-client/src/mobs/aquatic.rs::register	panic, the slime ball it is tempted by, the swim-around stroll and the look at players stand in for the brain
 Tadpole.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	Age and AgeLocked
 Tadpole.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	Age and AgeLocked
 Tadpole.saveToBucketTag	port	crates/horizon-client/src/entity_nbt.rs::bucket_data	Age and AgeLocked for axolotls and tadpoles
