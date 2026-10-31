@@ -10,12 +10,12 @@
 // them equal.
 // The slots a frame looks back over (one meteor at most each), the sky's tiles a side (a square
 // folded over the upper half of the sky, `aldhani_tile`) and the streaks a tile holds at most.
-const ALDHANI_METEORS: u32 = 32768u;
+const ALDHANI_METEORS: u32 = 327680u;
 const ALDHANI_TILES: u32 = 64u;
-const ALDHANI_TILE_CAP: u32 = 256u;
+const ALDHANI_TILE_CAP: u32 = 1024u;
 // The burning meteors' glow by tile, red, green and blue, in `tiles` after the lists: summed by the
 // field (fixed point, ALDHANI_GLOW_UNIT a paper white), then blurred over the sky (f32).
-const ALDHANI_GLOW_SUM: u32 = 64u * 64u + 64u * 64u * 256u;
+const ALDHANI_GLOW_SUM: u32 = 64u * 64u + 64u * 64u * 1024u;
 const ALDHANI_GLOW_BLUR: u32 = ALDHANI_GLOW_SUM + 3u * 64u * 64u;
 const ALDHANI_GLOW_UNIT: f32 = 1024.0;
 // How far from its line a streak's light reaches at most, in radians (its glow fades to nothing
@@ -117,7 +117,7 @@ fn aldhani_glow(d: vec3<f32>, t: f32) -> vec3<f32> {
 }
 // ALDHANI-END
 struct Params {
-    // x: the seconds since the event began, y: a slot's seconds, z the long ones', w the grazers'.
+    // x: the seconds since the event began, y: a slot's seconds, z the long ones', w the orbiters'.
     time: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> params: Params;
@@ -125,21 +125,18 @@ struct Params {
 // Each tile's count, then its list of meteors (ALDHANI_TILE_CAP a tile).
 @group(0) @binding(2) var<storage, read_write> tiles: array<atomic<u32>>;
 // A meteor's colour (`u` and `v` its own draws): its patch of sky's, warm or cold.
-// A pinch of violet among them, one in forty, anywhere.
+// Among them anywhere, not by patches: gold to orange ones, three in twenty (sodium and iron-rich
+// meteoroids), and a pinch of violet, one in forty.
 fn palette(around: f32, theta: f32, u: f32, v: f32) -> vec3<f32> {
     if v < aldhani_warmth(around) { return aldhani_warm(around, theta); }
     if v > 0.975 { return vec3(0.6, 0.3, 1.0); }
+    if v > 0.825 { return mix(vec3(1.0, 0.78, 0.2), vec3(1.0, 0.45, 0.08), u); }
     return aldhani_cold(around, theta, u);
 }
 // The slots of the long ones, the last ALDHANI_LONG of the field (their own, longer slots, `time.z`):
 // the earthgrazers that cross the whole sky, from behind the observer over them to the eye on
 // the horizon opposite.
-const ALDHANI_LONG: u32 = 4096u;
-// The slots of the slow grazers, the ALDHANI_GRAZE before the long ones (their own half-second
-// slots, `time.w`, covering 256 s): `aldhani_graze`.
-const ALDHANI_GRAZE: u32 = 512u;
-// The pull of the Earth's gravity at the top of the air, km/s^2.
-const GRAVITY_KM: f32 = 0.0098;
+const ALDHANI_LONG: u32 = 40960u;
 // The seconds the stream's front takes to cross the sky, from 1700 km north to 1500 km toward the
 // eye (and its tail after it): the event lasts that much longer (gfx/aldhani.rs `SWEEP`).
 const ALDHANI_SWEEP: f32 = 35.0;
@@ -240,68 +237,89 @@ fn aldhani_make(slot: u32, t: f32, period: f32, long: bool) -> AldhaniMeteor {
     o.light = vec4(lit / dot(lit, vec3(0.2126, 0.7152, 0.0722)), power * curve * fade * air * (160.0 / dist) * (160.0 / dist));
     return o;
 }
-// A slow grazer of slot `slot` (half-second slots from the event's start), `t` seconds into the
-// event: a heavy meteoroid at 12 to 26 km/s whose path only skims the top of the air, as the
-// daylight fireball of 1972 did for a hundred seconds. Its path is a fall under gravity around the
-// round Earth: at its perigee, 75 to 100 km up somewhere from 2200 km north to 800 km south
-// of the observer, it flies level, heading south toward the eye give or take 25 degrees; its
-// velocity's line runs straight but gravity bends it down (half g t squared: 50 km over 100 s)
-// while the ground curves away faster (d^2 / 2R), so it climbs out of the air on either side of
-// its perigee: it comes up over the northern horizon, or into sight already burning, brightens
-// toward its perigee, and fades as it rises out of the air again or sinks beyond the southern
-// horizon. Its light follows the air's density there (a scale height of 9 km) times its speed
-// cubed, as a meteor's does.
-fn aldhani_graze(slot: u32, t: f32, period: f32) -> AldhaniMeteor {
+// The orbiters' slots, the ALDHANI_ORBIT before the long ones (their own slots of a fiftieth of a
+// second, `time.w`, covering 328 s): `aldhani_orbiter`.
+const ALDHANI_ORBIT: u32 = 16384u;
+// The Earth's gravitational parameter, km^3/s^2.
+const EARTH_GM: f32 = 398600.0;
+// The seconds of an orbiter's whole pass, its perigee in the middle.
+const ALDHANI_PASS: f32 = 320.0;
+// Where a body is `tau` seconds from passing `perigee` (from the Earth's centre) at `velocity`
+// (km, km/s): its orbit, integrated in eight leapfrog steps under the Earth's inverse-square pull.
+fn aldhani_orbit(perigee: vec3<f32>, velocity: vec3<f32>, tau: f32) -> vec3<f32> {
+    let dt = tau / 8.0;
+    var p = perigee;
+    var v = velocity;
+    for (var i = 0; i < 8; i++) {
+        v -= p * (EARTH_GM / pow(dot(p, p), 1.5)) * (0.5 * dt);
+        p += v * dt;
+        v -= p * (EARTH_GM / pow(dot(p, p), 1.5)) * (0.5 * dt);
+    }
+    return p;
+}
+// An orbiter of slot `slot` (slots of `period` seconds from the event's start), `t` seconds into
+// the event: on the side the stream comes from, a body on its orbit round the round Earth, bound
+// (8 to 10.5 km/s, against 7.8 for a circular orbit at that height and 11.1 to escape), its
+// perigee 85 to 115 km up, somewhere from 3200 km north of the observer to overhead and 1800 km
+// east or west, where it flies level, heading south within 20 degrees. Its ellipse follows the
+// Earth's curve: it comes up from below the northern horizon as if from round the far side of the
+// planet, skims the top of the air past its perigee and climbs out of it again, over the five
+// minutes of its pass. Its light follows the classical single-body law in the air's density
+// there against its perigee's (a scale height of 7 km, L / Lmax = 9/4 rho (1 - rho/3)^2): it
+// brightens as it comes down into the air and fades as it climbs out; its glow stays behind its
+// head for one to two and a half seconds.
+fn aldhani_orbiter(slot: u32, t: f32, period: f32) -> AldhaniMeteor {
     var o = AldhaniMeteor(vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0));
-    let seed = (slot + 0x20000000u) * 16u + 5u;
+    let seed = (slot + 0x30000000u) * 16u + 5u;
     let start = (f32(slot) + aldhani_rand(seed)) * period;
-    let lasts = 120.0 + 110.0 * aldhani_rand(seed + 2u);
     let age = t - start;
-    if age < 0.0 || age > lasts { return o; }
-    let speed = 12.0 + 14.0 * aldhani_rand(seed + 3u);
-    let perigee_h = 75.0 + 25.0 * aldhani_rand(seed + 4u);
+    if age < 0.0 || age > ALDHANI_PASS { return o; }
     // Its perigee over the ground (x east, z south of the observer, km) and its heading.
-    let ground = vec2((aldhani_rand(seed + 5u) - 0.5) * 1400.0, -2200.0 + 3000.0 * aldhani_rand(seed + 6u));
-    let yaw = (aldhani_rand(seed + 7u) - 0.5) * 0.87;
+    let ground = vec2((aldhani_rand(seed + 5u) - 0.5) * 3600.0, -3200.0 * aldhani_rand(seed + 6u));
     let centre = vec3(0.0, -EARTH_KM, 0.0);
     let up_p = normalize(vec3(ground.x, EARTH_KM, ground.y));
-    let perigee = centre + (EARTH_KM + perigee_h) * up_p;
-    let heading = vec3(sin(yaw), 0.0, cos(yaw));
-    let v = normalize(heading - up_p * dot(heading, up_p));
-    // As many as the stream's density when and where it passes (half the slots at the height).
-    let along = clamp((dot(perigee, ALDHANI_RADIANT) + 1700.0) / 3200.0, 0.0, 1.0);
-    if aldhani_rand(seed + 1u) > aldhani_envelope(start + 0.5 * lasts - along * ALDHANI_SWEEP) * 0.5 {
+    let perigee_h = 85.0 + 30.0 * aldhani_rand(seed + 7u);
+    let perigee = up_p * (EARTH_KM + perigee_h);
+    // As many as the stream's density when and where it passes its perigee.
+    let along = clamp((dot(perigee + centre, ALDHANI_RADIANT) + 1700.0) / 3200.0, 0.0, 1.0);
+    if aldhani_rand(seed + 1u) > aldhani_envelope(start + 0.5 * ALDHANI_PASS - along * ALDHANI_SWEEP) {
         return o;
     }
-    // Where it is `tau` seconds from its perigee: along its velocity, fallen under gravity.
-    let tau = age - 0.5 * lasts;
-    let persist = 0.8 + 0.7 * aldhani_rand(seed + 8u);
-    let head_at = perigee + v * (speed * tau) - up_p * (0.5 * GRAVITY_KM * tau * tau);
-    let tail_tau = tau - persist;
-    let tail_at = perigee + v * (speed * tail_tau) - up_p * (0.5 * GRAVITY_KM * tail_tau * tail_tau);
+    let yaw = (aldhani_rand(seed + 8u) - 0.5) * 0.7;
+    let heading = vec3(sin(yaw), 0.0, cos(yaw));
+    let speed = 8.0 + 2.5 * aldhani_rand(seed + 2u);
+    let velocity = normalize(heading - up_p * dot(heading, up_p)) * speed;
+    // Its head now and its glow's tail behind it, on its orbit.
+    let tau = age - 0.5 * ALDHANI_PASS;
+    let persist = 1.0 + 1.5 * aldhani_rand(seed + 4u);
+    let head_at = aldhani_orbit(perigee, velocity, tau) + centre;
+    let tail_at = aldhani_orbit(perigee, velocity, tau - persist) + centre;
+    // Its light by the air's density against its perigee's.
     let height = length(head_at - centre) - EARTH_KM;
-    // The air's density against its perigee's, faded in and out over its first and last seconds.
-    let dense = exp(-max(height - perigee_h, 0.0) / 9.0)
-        * smoothstep(0.0, 3.0, age) * (1.0 - smoothstep(lasts - 3.0, lasts, age))
+    let rho = exp((perigee_h - height) / 7.0);
+    let curve = 2.25 * rho * (1.0 - rho / 3.0) * (1.0 - rho / 3.0)
+        * smoothstep(0.0, 4.0, age) * (1.0 - smoothstep(ALDHANI_PASS - 4.0, ALDHANI_PASS, age))
         // (gone before the event's clock stops)
         * smoothstep(0.0, 20.0, ALDHANI_EVENT + ALDHANI_SWEEP - t);
-    if dense < 0.002 { return o; }
+    if curve < 0.002 { return o; }
     let head = normalize(head_at);
     let tail = normalize(tail_at);
     let dist = length(head_at);
-    let power = (25.0 + 95.0 * aldhani_rand(seed + 9u)) * dense;
-    let air = exp(-0.15 / max(head.y + 0.025, 0.03)) * smoothstep(-0.01, 0.03, head.y);
+    let power = min(pow(max(aldhani_rand(seed + 9u), 1e-4), -1.17), 120.0);
+    let big = smoothstep(15.0, 80.0, power);
+    let air = exp(-0.15 / max(head.y + 0.025, 0.03)) * smoothstep(-0.01, 0.06, head.y);
     let east = normalize(cross(vec3(0.0, 1.0, 0.0), ALDHANI_RADIANT));
     let lift = cross(ALDHANI_RADIANT, east);
-    let lit_at = normalize(perigee);
+    let lit_at = normalize(perigee + centre);
     let colour = palette(abs(atan2(dot(lit_at, lift), dot(lit_at, east))),
         acos(clamp(dot(lit_at, ALDHANI_RADIANT), -1.0, 1.0)), aldhani_rand(seed + 10u), aldhani_rand(seed + 11u));
-    let shown = pow(power, 0.6) * sqrt(air) * 2.0 * pow(160.0 / dist, 0.9);
-    o.tail = vec4(tail, 0.9 + 0.2 * log2(power + 1.0));
-    o.head = vec4(head, f32((seed & 4095u) + 4096u * u32(smoothstep(15.0, 80.0, power) * 15.0 + 0.5)));
-    o.colour = vec4(colour * (1.6 * shown * 2.5), clamp(power / 30.0 * 2.5, 0.0, 1.5) * air);
+    let shown = pow(power, 0.6) * (0.3 + 0.7 * curve) * curve * air * pow(160.0 / dist, 0.9);
+    o.tail = vec4(tail, 0.8 + 0.2 * log2(power + 1.0));
+    // Its seed (bits 0 to 11) and how big it is (12 to 15).
+    o.head = vec4(head, f32((seed & 4095u) + 4096u * u32(big * 15.0 + 0.5)));
+    o.colour = vec4(colour * (1.6 * shown * 2.0), clamp(power / 30.0 * 2.0, 0.0, 1.5) * curve * air);
     let lit = mix(colour, vec3(0.0, 1.0, 0.6), 0.4);
-    o.light = vec4(lit / dot(lit, vec3(0.2126, 0.7152, 0.0722)), power * air * (160.0 / dist) * (160.0 / dist));
+    o.light = vec4(lit / dot(lit, vec3(0.2126, 0.7152, 0.0722)), power * curve * air * (160.0 / dist) * (160.0 / dist));
     return o;
 }
 // Meteor `k` in tile `tile`, unless `seen` (the `count` tiles it is in already) holds it.
@@ -349,14 +367,14 @@ fn bin(k: u32, m: AldhaniMeteor) {
     var m = AldhaniMeteor(vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0));
     let t = params.time.x;
     let long = k >= ALDHANI_METEORS - ALDHANI_LONG;
-    let graze = !long && k >= ALDHANI_METEORS - ALDHANI_LONG - ALDHANI_GRAZE;
-    let period = select(select(params.time.y, params.time.w, graze), params.time.z, long);
-    let back = select(select(k, k - (ALDHANI_METEORS - ALDHANI_LONG - ALDHANI_GRAZE), graze),
+    let orbiter = !long && k >= ALDHANI_METEORS - ALDHANI_LONG - ALDHANI_ORBIT;
+    let period = select(select(params.time.y, params.time.w, orbiter), params.time.z, long);
+    let back = select(select(k, k - (ALDHANI_METEORS - ALDHANI_LONG - ALDHANI_ORBIT), orbiter),
         k - (ALDHANI_METEORS - ALDHANI_LONG), long);
     let slot = i32(floor(t / period)) - i32(back);
     if t >= 0.0 && period > 0.0 && slot >= 0 {
-        if graze {
-            m = aldhani_graze(u32(slot), t, period);
+        if orbiter {
+            m = aldhani_orbiter(u32(slot), t, period);
         } else {
             m = aldhani_make(u32(slot), t, period, long);
         }

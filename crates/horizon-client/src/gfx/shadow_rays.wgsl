@@ -1292,12 +1292,12 @@ fn moving_gain(light: vec4<f32>, pos: vec3<f32>, n: vec3<f32>, offset: vec3<f32>
 // them equal.
 // The slots a frame looks back over (one meteor at most each), the sky's tiles a side (a square
 // folded over the upper half of the sky, `aldhani_tile`) and the streaks a tile holds at most.
-const ALDHANI_METEORS: u32 = 32768u;
+const ALDHANI_METEORS: u32 = 327680u;
 const ALDHANI_TILES: u32 = 64u;
-const ALDHANI_TILE_CAP: u32 = 256u;
+const ALDHANI_TILE_CAP: u32 = 1024u;
 // The burning meteors' glow by tile, red, green and blue, in `tiles` after the lists: summed by the
 // field (fixed point, ALDHANI_GLOW_UNIT a paper white), then blurred over the sky (f32).
-const ALDHANI_GLOW_SUM: u32 = 64u * 64u + 64u * 64u * 256u;
+const ALDHANI_GLOW_SUM: u32 = 64u * 64u + 64u * 64u * 1024u;
 const ALDHANI_GLOW_BLUR: u32 = ALDHANI_GLOW_SUM + 3u * 64u * 64u;
 const ALDHANI_GLOW_UNIT: f32 = 1024.0;
 // How far from its line a streak's light reaches at most, in radians (its glow fades to nothing

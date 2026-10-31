@@ -14,33 +14,33 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::upload::Uploads;
 
 /// The slots a frame looks back over (aldhani.wgsl `ALDHANI_METEORS`).
-const METEORS: u64 = 32768;
+const METEORS: u64 = 327680;
 /// The sky's tiles a side and the streaks a tile holds at most (`ALDHANI_TILES`, `ALDHANI_TILE_CAP`).
 const TILES: u64 = 64;
-const TILE_CAP: u64 = 256;
+const TILE_CAP: u64 = 1024;
 /// The event's seconds (`ALDHANI_EVENT`), and the seconds its stream's front takes to cross the
 /// sky (`ALDHANI_SWEEP`): the sky by the eye fills and empties that much later.
 pub const EVENT: f32 = 300.0;
 pub const SWEEP: f32 = 35.0;
-/// A slot's seconds: at most one meteor each, so 8000 a second at the storm's height, burning for
-/// one to two seconds each (the slots looked back over, all but the long ones' and the grazers',
-/// cover 3.5 s, past the longest a meteor lasts, 2.8 s).
-const SLOT: f32 = 1.0 / 8000.0;
+/// A slot's seconds: at most one meteor each, so 80000 a second at the storm's height, burning for
+/// one to two seconds each (the slots looked back over, all but the long ones' and the orbiters',
+/// cover 3.4 s, past the longest a meteor lasts, 2.8 s).
+const SLOT: f32 = 1.0 / 80000.0;
 /// The long ones' slots (aldhani.wgsl `ALDHANI_LONG`, the field's last) and their seconds: one in
-/// two holds an earthgrazer, 128 a second, their 4096 slots covering 16 s, past the longest, 15 s.
-const LONG: u64 = 4096;
-const LONG_SLOT: f32 = 1.0 / 256.0;
-/// The slow grazers' slots (aldhani.wgsl `ALDHANI_GRAZE`, before the long ones) and their seconds:
-/// 512 half-second slots, covering 256 s, past the longest a grazer lasts, 230 s.
-const GRAZE: u64 = 512;
-const GRAZE_SLOT: f32 = 0.5;
-const _: () = assert!(
-    GRAZE as f32 * GRAZE_SLOT >= 230.0,
-    "the grazers' slots cover the longest"
-);
+/// two holds an earthgrazer, 1280 a second, their 40960 slots covering 16 s, past the longest, 15 s.
+const LONG: u64 = 40960;
+const LONG_SLOT: f32 = 1.0 / 2560.0;
 const _: () = assert!(
     LONG as f32 * LONG_SLOT >= 15.0,
     "the long slots cover the longest earthgrazer"
+);
+/// The orbiters' slots (aldhani.wgsl `ALDHANI_ORBIT`, before the long ones) and their seconds:
+/// 16384 slots of a fiftieth of a second, covering 328 s, past an orbiter's whole pass, 320 s.
+const ORBIT: u64 = 16384;
+const ORBIT_SLOT: f32 = 0.02;
+const _: () = assert!(
+    ORBIT as f32 * ORBIT_SLOT >= 320.0,
+    "the orbiters' slots cover a whole pass"
 );
 /// The tiles' words: their counts, their lists, then the glow summed and blurred, red, green and
 /// blue (`ALDHANI_GLOW_SUM`, `ALDHANI_GLOW_BLUR`).
@@ -218,7 +218,7 @@ impl Aldhani {
             encoder,
             &self.params,
             0,
-            bytemuck::cast_slice(&[t, SLOT, LONG_SLOT, GRAZE_SLOT]),
+            bytemuck::cast_slice(&[t, SLOT, LONG_SLOT, ORBIT_SLOT]),
         );
         encoder.clear_buffer(&self.tiles, 0, Some(TILES * TILES * 4));
         encoder.clear_buffer(&self.tiles, GLOW_SUM * 4, Some(3 * TILES * TILES * 4));
@@ -317,7 +317,7 @@ mod tests {
             ("ALDHANI_TILES", super::TILES),
             ("ALDHANI_TILE_CAP", super::TILE_CAP),
             ("ALDHANI_LONG", super::LONG),
-            ("ALDHANI_GRAZE", super::GRAZE),
+            ("ALDHANI_ORBIT", super::ORBIT),
         ] {
             assert!(
                 source.contains(&format!("const {name}: u32 = {value}u;")),
