@@ -224,6 +224,11 @@ server for every player: `native_player_died`, `native_mob_spawned`, `native_mob
 `native_item_dropped` (a throw; not the items scattered when a player dies) and `native_item_picked_up` (`canceled` leaves the stack on the ground). They name a player by UUID. Bundles that use them
 need `"hooks": 40`.
 
+API 41 adds the phase before a world loads: `native_world_lifecycle` fires `ServerStarting` once per open, before
+any world is loaded (NeoForge's `ServerStartingEvent`), carrying the epoch of the `WorldOpenReady` or
+`WorldOpenFailed` that follows it, so a mod can register what the world will need before it exists. Bundles
+that use it need `"hooks": 41`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page, into the instance picked on the left ("Installs into

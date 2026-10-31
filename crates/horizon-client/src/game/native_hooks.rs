@@ -13,6 +13,10 @@
 //! `native_mob_spawned`, `native_mob_killed`, `native_item_dropped`,
 //! `native_item_picked_up`.
 //!
+//! API 41 adds the server-starting phase of `native_world_lifecycle`
+//! (`ServerStarting`), fired before any world loads, with the epoch of the
+//! open that follows.
+//!
 //! API 39 adds item behaviour: a held item's hit on a mob
 //! (`native_hurt_enemy`), a carried stack's tick (`native_inventory_tick`) and
 //! an equipment slot taking a different item (`native_on_equip`).
@@ -191,7 +195,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 40;
+pub(crate) const NATIVE_HOOKS_API: u32 = 41;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -650,6 +654,8 @@ impl Game<'_> {
     /// own open-failure text, empty otherwise. Server-side; the deprecated
     /// in-frame path delivers no lifecycle events. A server loop or final
     /// save failure fires `WorldCloseFailed` with the error text.
+    /// `ServerStarting` comes first, before any world loads (NeoForge's
+    /// `ServerStartingEvent`), with the epoch of the open that follows it.
     pub(super) fn native_world_lifecycle(
         &mut self,
         context: &NativeLifecycleContext,

@@ -41,6 +41,10 @@ enum OpenState {
 /// the mixins write); keep them despite the shared prefix.
 #[allow(clippy::enum_variant_names)]
 pub(super) enum WorldPhase {
+    /// The server is starting: it exists and no world has loaded yet
+    /// (NeoForge's `ServerStartingEvent`). Once per open attempt, with the
+    /// same epoch as the `WorldOpenReady` or `WorldOpenFailed` that follows.
+    ServerStarting,
     WorldOpenReady,
     /// The open failed; `error_text` is the engine's own error text.
     WorldOpenFailed,
@@ -108,17 +112,22 @@ impl NativeLifecycle {
                 .is_some_and(|a| a.session == OpenState::Ready && a.context() == *context)
     }
 
-    /// The open starts: a fresh process-wide epoch, never reused.
-    pub(super) fn begin_open(&mut self, authority: NativeAuthority) {
+    /// The open starts: a fresh process-wide epoch, never reused. The
+    /// attempt's context comes back for `ServerStarting`, the phase that
+    /// precedes the world's own load and shares the epoch it opens.
+    pub(super) fn begin_open(&mut self, authority: NativeAuthority) -> NativeLifecycleContext {
         let epoch = NEXT_EPOCH.fetch_add(1, Ordering::Relaxed);
-        self.attempt = Some(OpenAttempt {
+        let attempt = OpenAttempt {
             authority,
             epoch,
             session: OpenState::Opening,
             ticks: 0,
             tick_open: false,
             tick_world_running: false,
-        });
+        };
+        let context = attempt.context();
+        self.attempt = Some(attempt);
+        context
     }
 
     pub(super) fn world_open_ready(&mut self) -> Option<NativeLifecycleContext> {
@@ -226,9 +235,14 @@ impl Game<'_> {
         }
     }
 
+    /// The server start's own event, before any world loads (NeoForge's
+    /// `ServerStartingEvent`): both server paths call this immediately before
+    /// `load_world`, so this is the moment the world does not exist yet.
     pub(super) fn native_lifecycle_open_started(&mut self) {
-        self.native_lifecycle
+        let context = self
+            .native_lifecycle
             .begin_open(self.native_lifecycle_authority());
+        self.native_world_lifecycle(&context, WorldPhase::ServerStarting, "");
     }
 
     pub(super) fn native_lifecycle_world_ready(&mut self) {
@@ -310,6 +324,37 @@ mod tests {
             observed += usize::from(running);
         }
         assert_eq!(observed, 4);
+    }
+
+    /// `ServerStarting` precedes the world's load and shares its epoch: a mod
+    /// pairs the two, and a retry after a failed open is a new start with a new
+    /// epoch rather than a second phase for the same one.
+    #[test]
+    fn server_starting_belongs_to_the_open_that_follows() {
+        let mut life = NativeLifecycle::default();
+        let starting = life.begin_open(NativeAuthority::DedicatedServer);
+        assert_eq!(starting.authority, NativeAuthority::DedicatedServer);
+        assert_eq!(starting.tick, NativeTickId(0));
+        // The world's own phases carry the same epoch, so a mod can pair them.
+        let ready = life.world_open_ready().unwrap();
+        assert_eq!(ready, starting);
+
+        // A failed open retires that epoch; the next start is a fresh one.
+        let mut life = NativeLifecycle::default();
+        let first = life.begin_open(NativeAuthority::IntegratedServer);
+        let failed = life.world_open_failed().unwrap();
+        assert_eq!(failed, first);
+        let second = life.begin_open(NativeAuthority::IntegratedServer);
+        assert_ne!(second.epoch, first.epoch);
+    }
+
+    /// The start is not a read scope: only a server tick's hook body may read
+    /// the level (`native_server_block`), which is what `permits_read` guards.
+    #[test]
+    fn server_starting_is_not_a_read_scope() {
+        let mut life = NativeLifecycle::default();
+        let starting = life.begin_open(NativeAuthority::IntegratedServer);
+        assert!(!life.permits_read(&starting));
     }
 
     /// A lifecycle mid-open on the server thread.
