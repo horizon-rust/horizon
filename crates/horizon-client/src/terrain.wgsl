@@ -569,44 +569,93 @@ fn aldhani_streak(m: AldhaniMeteor, line: vec4<f32>, d: vec3<f32>, pixel: f32) -
     let h2 = dot(d - b, d - b);
     let halo = sigma * 3.0;
     let white = mix(m.colour.rgb, vec3(top), 0.3);
+    // Who it is (`aldhani_make`): its seed, how big it is, and once it has burnt out the seconds
+    // since (-1 before), and its way across the sky at its head (along its great circle).
+    let iw = u32(floor(m.head.w));
+    let seed = iw & 4095u;
+    let big = f32(iw >> 12u) / 15.0;
+    let end_t = select(-1.0, fract(m.head.w) * 1.25 - 0.05, fract(m.head.w) > 0.0);
+    let way = select(select(vec3(0.0), normalize(b - a), span > 1e-6), normalize(cross(line.xyz, b)),
+        any(line.xyz != vec3(0.0)));
+    let aside = cross(b, way);
+    let rel = d - b;
+    let fwd = dot(rel, way);
+    let lat = dot(rel, aside);
+    let hue = m.colour.rgb / max(top, 1e-4);
     // A big one's shock layer: grown large against the air's mean free path (a metre-sized body
     // below about 100 km; the millimetre grains stay free-molecular, no shock), it drives a bow
     // shock a seventh of its radius ahead (0.14 R; 0.78 R rho_air / rho_shock for a sphere) where
-    // the air is compressed, dissociated and ionised and glows itself (N2+, N, O, CN, NO: blue-
-    // white), radiating as the eighth power of the speed (convection only the third), so at a
-    // meteor's 35 to 72 km/s it outshines all else: the glare sits in front of the head, and the
-    // terminal burst (`head.w`'s fraction) blooms there as the body breaks up.
-    let burst = fract(m.head.w);
-    let ahead = select(vec3(0.0), normalize(b - a), span > 1e-6);
-    let bow = normalize(b + ahead * (sigma * (1.5 + 2.0 * burst)));
-    let bow2 = dot(d - bow, d - bow);
-    let glare = sigma * (2.5 + 5.0 * burst);
-    let shock = max(min(m.colour.w, 1.5) - 0.4, 0.0) * 0.5 + burst * 3.0;
-    light += mix(white, vec3(0.75, 0.85, 1.0) * top, 0.5) * (shock * exp(-bow2 / (2.0 * glare * glare)) * fade);
+    // the air is compressed, dissociated and ionised and glows itself (N2+'s violet-blue, N, O,
+    // CN, NO), radiating as the eighth power of the speed (convection only the third), so at a
+    // meteor's 35 to 72 km/s it outshines all else. Seen through an eye or a lens it is a glare,
+    // a Moffat profile (a real optic's, its wings far wider than a Gaussian's): tight ahead where
+    // the shock stands off, drawn out behind where it wraps the body and its wake; white at its
+    // heart, the metals' colour mixed with the ionised air's blue in its wings.
+    let alpha = sigma * 2.2;
+    let k = select(1.8, 0.7, fwd > 0.0);
+    let q = (fwd * fwd) / (alpha * alpha * k * k) + (lat * lat) / (alpha * alpha);
+    let wings = mix(hue, vec3(0.55, 0.7, 1.0), 0.45) * top;
+    let shock = max(min(m.colour.w, 1.5) - 0.4, 0.0) * 0.6;
+    light += (mix(vec3(top), wings, smoothstep(0.0, 2.0, q)) * pow(1.0 + q, -2.5)
+        + wings * (0.12 * pow(1.0 + q / 9.0, -1.5))) * (shock * fade);
     light += white * (m.colour.w * (gain * gain * 1.2 * exp(-h2 / (2.0 * sigma * sigma))
         + 0.25 * exp(-h2 / (2.0 * halo * halo))) * fade * fade);
     // The train of a bright one: faint, green (the oxygen line), wider, drifting a little off its
-    // line as it ages toward the tail, uneven along its length.
+    // line as it ages toward the tail, uneven along its length; none at the tail's very end.
     if m.colour.w > 0.3 {
-        let drift = (aldhani_rand(u32(m.head.w) + 3u) - 0.5) * 6.0 * sigma * behind;
+        let drift = (aldhani_rand(seed + 3u) - 0.5) * 6.0 * sigma * behind;
         let o = off - drift;
         let tw = sigma * (2.0 + 3.0 * behind);
-        let wisp = 0.75 + 0.25 * sin(along * 40.0 + m.head.w);
-        light += mix(vec3(0.25, 1.0, 0.4), m.colour.rgb / max(top, 1e-4), 0.4) * top
+        let wisp = 0.75 + 0.25 * sin(along * 40.0 + f32(seed));
+        light += mix(vec3(0.25, 1.0, 0.4), hue, 0.4) * top
             * ((min(m.colour.w, 1.5) - 0.3) * 0.12 * (gain * sigma / tw) * exp(-o * o / (2.0 * tw * tw))
             * wisp * 4.0 * behind * along);
     }
-    // Sparkles along the short, bright ones.
-    let short = 1.0 - smoothstep(20.0 * pixel, 80.0 * pixel, span);
-    let sparkle = m.colour.w * short;
-    if sparkle > 0.05 && across < sigma * 6.0 {
-        let seed = u32(floor(m.head.w));
-        for (var j = 0u; j < 4u; j++) {
+    // A bright one sheds pieces as it goes (the ablation's fragmentation): each comes off at some
+    // point of the streak, falls behind as the air slows it and drifts a little aside, and glows
+    // in its own slow swell, white-hot near the head, cooling toward sodium's orange behind.
+    let shed = smoothstep(0.3, 1.2, m.colour.w);
+    if shed > 0.02 && across < sigma * 10.0 {
+        for (var j = 0u; j < 5u; j++) {
             let u = aldhani_rand(seed * 8u + j);
-            let p = normalize(mix(a, b, 0.2 + 0.8 * u));
-            let q = dot(d - p, d - p) / (2.0 * sigma * sigma);
-            let beat = 0.5 + 0.5 * sin(globals.rt_water.z * (9.0 + 14.0 * u) + 40.0 * u);
-            light += white * (sparkle * 3.0 * pow(beat, 6.0) * exp(-q * 0.7));
+            let v = aldhani_rand(seed * 8u + j + 40u);
+            let at = 0.35 + 0.6 * u;
+            let p = normalize(normalize(mix(a, b, at)) + aside * ((v - 0.5) * sigma * 5.0 * (1.0 - at)));
+            let pulse = smoothstep(0.5, 1.0, 0.5 + 0.5 * sin(globals.rt_water.z * (1.5 + 2.5 * v) + 6.28 * u));
+            let q2 = dot(d - p, d - p) / (2.4 * sigma * sigma);
+            light += mix(white, vec3(1.0, 0.6, 0.25) * top, 0.6 * (1.0 - at)) * (shed * 1.2 * pulse * exp(-q2));
+        }
+    }
+    // A big one's end: it breaks up. A short swell of light where the body bursts (rising in 20
+    // ms, gone with a tenth of a second), then its fragments fly on with part of its speed,
+    // spread by the break-up and slowed by the air (a drag time of a third of a second), each
+    // smeared along its way while fast, each burning out on its own clock: white-hot, then the
+    // metals' colour, then sodium's orange as it cools.
+    if end_t >= 0.0 && big > 0.05 {
+        let swell = big * 1.6 * (1.0 - exp(-end_t / 0.02)) * exp(-end_t / 0.11);
+        let spread = alpha * alpha * (1.0 + 6.0 * end_t);
+        light += mix(vec3(top), wings, 0.5) * (swell * pow(1.0 + dot(rel, rel) / spread, -2.0));
+        let tau = 0.33;
+        let flown = tau * (1.0 - exp(-end_t / tau));
+        for (var j = 0u; j < 10u; j++) {
+            let u1 = aldhani_rand(seed * 32u + j * 3u + 100u);
+            let u2 = aldhani_rand(seed * 32u + j * 3u + 101u);
+            let u3 = aldhani_rand(seed * 32u + j * 3u + 102u);
+            let life = 0.25 + 0.75 * u3;
+            let glow = big * (0.5 + 0.8 * u3) * exp(-end_t / life) * smoothstep(0.0, 0.04, end_t);
+            if glow < 0.01 { continue; }
+            let v = way * (0.35 + 0.65 * u1) + aside * ((u2 - 0.5) * 1.4);
+            let p = normalize(b + v * (sigma * 55.0 * flown));
+            let dir = normalize(v);
+            let rp = d - p;
+            let fa = dot(rp, dir);
+            let la2 = dot(rp, rp) - fa * fa;
+            let smear = sigma * (0.8 + 6.0 * exp(-end_t / tau) * length(v));
+            let g = exp(-fa * fa / (2.0 * smear * smear) - la2 / (1.4 * sigma * sigma));
+            let cool = clamp(end_t / life, 0.0, 1.0);
+            let c = mix(mix(vec3(1.0), hue, smoothstep(0.0, 0.4, cool)), vec3(1.0, 0.5, 0.15),
+                smoothstep(0.4, 1.0, cool));
+            light += c * (top * glow * 1.5 * g);
         }
     }
     return light;
