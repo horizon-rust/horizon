@@ -1726,11 +1726,19 @@ fn check_despawn(m: &mut Mob, w: &MobWorld) -> bool {
     // removeWhenFarAway: animals, villagers, golems, patrols and raiders,
     // zombie villagers being cured and ridden mobs stay.
     let creature = m.kind.category == "creature";
-    let removable = !(never_removed_when_far(m.species())
-        || creature && m.kind.flags.animal && !m.extra.jockey
-        || super::raider::keeps_alive(m, d)
-        || super::zombie_villager::keeps_alive(m)
-        || super::riders::keeps_alive(m));
+    // `Ocelot.removeWhenFarAway`: a wild ocelot older than 2400 ticks is
+    // removed, which is the exception to `Animal`'s own "animals stay"; a
+    // trusting one stays like any animal.
+    let ocelot = m.species() == Species::Ocelot;
+    let removable = if ocelot {
+        !m.extra.trusting && m.age > 2400
+    } else {
+        !(never_removed_when_far(m.species())
+            || creature && m.kind.flags.animal && !m.extra.jockey
+            || super::raider::keeps_alive(m, d)
+            || super::zombie_villager::keeps_alive(m)
+            || super::riders::keeps_alive(m))
+    };
     // MobCategory.getDespawnDistance / getNoDespawnDistance
     let despawn = if m.kind.category == "water_ambient" {
         64.0
