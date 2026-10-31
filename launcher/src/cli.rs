@@ -732,6 +732,15 @@ enum Cmd {
         /// --server-thread
         #[arg(long = "arg", value_name = "ARG", allow_hyphen_values = true)]
         arg: Vec<String>,
+        /// Play this launch as this account (its name or UUID) or kept offline name, without
+        /// changing the one `account select` picked: several games can play as several
+        /// accounts at once
+        #[arg(long, value_name = "WHO")]
+        account: Option<String>,
+        /// Play this launch offline as NAME (3 to 16 letters, digits or _), for LAN worlds
+        /// and offline-mode servers, beside a signed-in account that owns the game
+        #[arg(long, value_name = "NAME", conflicts_with = "account")]
+        offline_name: Option<String>,
     },
     /// Run a dedicated server here; type commands into its console
     Server {
@@ -1249,16 +1258,24 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
             join,
             server,
             arg,
+            account,
+            offline_name,
         } => {
             let instance = match instance {
                 Some(name) => instances::find(&name)?,
                 None => instances::selected(),
             };
             if instance.java.is_some() {
-                if version.is_some() || world.is_some() || join.is_some() || creative {
+                if version.is_some()
+                    || world.is_some()
+                    || join.is_some()
+                    || creative
+                    || account.is_some()
+                    || offline_name.is_some()
+                {
                     return Err(format!(
-                        "{} plays Minecraft: Java Edition: --version, --world, --creative and \
-                         --join are for Horizon instances.",
+                        "{} plays Minecraft: Java Edition: --version, --world, --creative, \
+                         --join, --account and --offline-name are for Horizon instances.",
                         instance.name
                     ));
                 }
@@ -1282,7 +1299,19 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                 after_exit(&instance, &vars);
                 return played;
             }
-            let mut cmd = backend::client(&instance.resolve_version(version.as_deref())?)?;
+            // Who plays this launch; the accounts below choose it in memory only, for its
+            // `--name` and look.
+            let mut accounts = Accounts::load();
+            let who = match (account, offline_name) {
+                (Some(who), _) => Some(accounts.resolve(&who)?),
+                (None, Some(name)) => Some(account::Player::Offline(name)),
+                (None, None) => None,
+            };
+            if let Some(who) = &who {
+                accounts.play_as(account::store(), who.clone())?;
+            }
+            let mut cmd =
+                backend::client_as(&instance.resolve_version(version.as_deref())?, who.as_ref())?;
             instances::apply(&mut cmd, &instance)?;
             if let Some(code) = join {
                 backend::join_friend(&mut cmd, &code)?;
@@ -1300,7 +1329,6 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
             }
             cmd.args(arg);
             let started = std::time::Instant::now();
-            let accounts = Accounts::load();
             if let Some(name) = accounts.name_arg() {
                 cmd.arg("--name").arg(name);
             }
@@ -1739,18 +1767,10 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
             println!("Signed out {}.", a.name);
         }
         AccountCmd::Select { who } => {
-            let offline = accounts
-                .offline
-                .iter()
-                .find(|n| n.eq_ignore_ascii_case(&who))
-                .cloned();
-            let (player, name) = match (accounts.find(&who).cloned(), offline) {
-                (Some(a), _) => (account::Player::Microsoft(a.uuid), a.name),
-                (None, Some(n)) => (
-                    account::Player::Offline(n.clone()),
-                    format!("{n} (offline)"),
-                ),
-                (None, None) => return Err(find(&accounts, &who).unwrap_err()),
+            let player = accounts.resolve(&who)?;
+            let name = match &player {
+                account::Player::Offline(n) => format!("{n} (offline)"),
+                _ => find(&accounts, &who)?.name,
             };
             accounts.play_as(account::store(), player)?;
             accounts.save()?;
@@ -3416,6 +3436,31 @@ mod tests {
         );
         set_setting(&mut settings, "language", "system").unwrap();
         assert_eq!(settings.language, None);
+    }
+
+    #[test]
+    fn play_takes_an_account_or_an_offline_name_for_one_launch() {
+        let play = |args: &[&str]| {
+            Cli::try_parse_from(["horizon-launcher", "play"].iter().chain(args)).map(|c| c.command)
+        };
+        match play(&["--account", "Alex"]).unwrap() {
+            Some(Cmd::Play {
+                account,
+                offline_name,
+                ..
+            }) => {
+                assert_eq!(account.as_deref(), Some("Alex"));
+                assert_eq!(offline_name, None);
+            }
+            _ => panic!("not play"),
+        }
+        match play(&["--offline-name", "Bot_1"]).unwrap() {
+            Some(Cmd::Play { offline_name, .. }) => {
+                assert_eq!(offline_name.as_deref(), Some("Bot_1"))
+            }
+            _ => panic!("not play"),
+        }
+        assert!(play(&["--account", "Alex", "--offline-name", "Bot_1"]).is_err());
     }
 
     #[test]

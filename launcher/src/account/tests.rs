@@ -893,3 +893,66 @@ fn the_java_edition_plays_as_an_owner_even_offline() {
         NoOwner.to_string()
     );
 }
+
+#[test]
+fn a_launch_as_someone_else_leaves_who_plays_unchanged() {
+    let (_, ep) = mock(|_| {});
+    let store = MemoryStore::default();
+    let mut accounts = signed_in(&store, &secrets("mc-token", true));
+    accounts.add_offline("Steve").unwrap();
+    // Notch is selected; this launch plays as a new offline name, beside Notch who owns it.
+    let pass = launch_as(
+        &ep,
+        Some("test-client"),
+        &store,
+        &mut accounts,
+        &Player::Offline("Bot_1".into()),
+    )
+    .unwrap();
+    assert!(pass.session.is_none(), "an offline name gets no session");
+    assert_eq!(accounts.player(), Player::Microsoft(UUID.into()));
+    assert_eq!(accounts.offline, ["Steve"], "the name isn't kept");
+    // As the selected account itself: its session.
+    let pass = launch_as(
+        &ep,
+        Some("test-client"),
+        &store,
+        &mut accounts,
+        &Player::Microsoft(UUID.into()),
+    )
+    .unwrap();
+    assert_eq!(pass.session.unwrap().0.name, "Notch");
+    // A refused launch changes nothing either.
+    let bad = launch_as(
+        &ep,
+        Some("test-client"),
+        &store,
+        &mut accounts,
+        &Player::Offline("no spaces allowed".into()),
+    );
+    assert!(bad.unwrap_err().contains("an offline name is 3 to 16"));
+    assert_eq!(accounts.player(), Player::Microsoft(UUID.into()));
+}
+
+#[test]
+fn resolve_takes_accounts_then_kept_offline_names() {
+    let store = MemoryStore::default();
+    let mut accounts = signed_in(&store, &secrets("mc-token", true));
+    accounts.add_offline("Steve").unwrap();
+    assert_eq!(
+        accounts.resolve("notch").unwrap(),
+        Player::Microsoft(UUID.into())
+    );
+    assert_eq!(
+        accounts.resolve(UUID).unwrap(),
+        Player::Microsoft(UUID.into())
+    );
+    assert_eq!(
+        accounts.resolve("steve").unwrap(),
+        Player::Offline("Steve".into())
+    );
+    assert!(accounts
+        .resolve("Alex")
+        .unwrap_err()
+        .contains("No signed-in account Alex"));
+}
