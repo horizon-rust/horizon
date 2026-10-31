@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 58 adds nicknames for server mods: `native_set_nickname` shows a name in place of a player's in chat and
+//! the Tab list (the real one on hover), and `native_text_allowed` asks the server's chat filter, in
+//! `native_server.rs`.
+//!
 //! API 57 adds chunks and players coming and going (`native_chunk_load`,
 //! `native_chunk_unload`, `native_player_logged_in`, `native_player_logged_out`).
 //!
@@ -250,7 +254,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 57;
+pub(crate) const NATIVE_HOOKS_API: u32 = 58;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.

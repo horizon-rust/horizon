@@ -411,7 +411,7 @@ impl Game<'_> {
     /// Plain text: the mod checks it (`native_text_allowed`, its length,
     /// other players' names). Only where no player's state is swapped in,
     /// as `native_run_command`; false there and when they aren't on. API
-    /// @API:native-nicknames@.
+    /// 58.
     pub(super) fn native_set_nickname(&mut self, uuid: u128, nickname: Option<&str>) -> bool {
         let Some(host) = &mut self.lan else {
             return false;
@@ -424,7 +424,7 @@ impl Game<'_> {
     }
     /// Whether the server's chat filter (`server.toml` `[chat_filter]`)
     /// lets `text` through: true without a filter, None inside a player's
-    /// hook (where the server is out of reach). API @API:native-nicknames@.
+    /// hook (where the server is out of reach). API 58.
     pub(super) fn native_text_allowed(&self, text: &str) -> Option<bool> {
         let host = self.lan.as_ref()?;
         Some(
