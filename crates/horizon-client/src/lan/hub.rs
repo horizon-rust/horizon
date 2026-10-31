@@ -823,6 +823,15 @@ impl Hub {
         // PlayerList.sendPlayerPermissionLevel, then the recipe book.
         self.send_permission_level(i);
         self.send_initial_recipe_book(i);
+        // PlayerList.placeNewPlayer calls broadcastSystemMessage before it adds the player to the
+        // list: the others read the join line, the newcomer doesn't.
+        self.broadcast_except(
+            conn,
+            &C::SystemChat(play::SystemChat {
+                content: yellow_names("multiplayer.player.joined", vec![display_name(uuid, &name)]),
+                overlay: false,
+            }),
+        );
         self.guests[i].placed = true;
         self.resend_teleport(i, None);
         let g = &self.guests[i];
@@ -866,12 +875,6 @@ impl Hub {
         // ServerPlayer.sendPostEffects and initInventoryMenu.
         self.send_post_effects(i);
         self.send_inventory(i);
-        // PlayerList.placeNewPlayer adds the player to the list, then calls
-        // broadcastSystemMessage: the newcomer reads its own join line too.
-        self.system_message(yellow_names(
-            "multiplayer.player.joined",
-            vec![display_name(uuid, &name)],
-        ));
     }
 
     /// `ServerPlayer.sendPostEffects`: the player's `/posteffect` chains.
