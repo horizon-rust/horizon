@@ -1388,6 +1388,44 @@ fn exploration_maps_skip_the_structures_maps_pointed_at() {
     let _ = fs::remove_dir_all(&scratch);
 }
 
+/// `NoiseBasedChunkGenerator.addDebugScreenInfo`: F3's `Density` line lists
+/// the noise settings' `debug_functions` with three decimals.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn debug_density_line_lists_the_noise_settings_functions() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let terrain = crate::vanillagen::VanillaTerrain::new(
+        &base.join("worldgen"),
+        assets.registry,
+        &biomes,
+        1234,
+    )
+    .unwrap();
+    let line = terrain.density_debug_line([0, 70, 0]).unwrap();
+    let labels: Vec<&str> = line
+        .strip_prefix("Density ")
+        .unwrap()
+        .split(' ')
+        .step_by(2)
+        .collect();
+    assert_eq!(
+        labels,
+        ["N:", "T:", "V:", "C:", "E:", "D:", "W:", "PV:", "PS:"],
+        "{line}"
+    );
+    assert!(
+        line.split(' ')
+            .skip(2)
+            .step_by(2)
+            .all(|v| v.split('.').nth(1).is_some_and(|d| d.len() == 3)),
+        "{line}"
+    );
+}
+
 #[test]
 #[ignore = "full content root: needs prepared vanilla data"]
 fn content_shapes_drive_outline_and_collision() {

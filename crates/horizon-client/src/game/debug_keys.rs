@@ -351,6 +351,20 @@ impl Game<'_> {
                 d.group("position", lines);
             }
             d.group("position", [section]);
+            // chunk_generation: DebugEntryChunkGeneration, where the world is generated here.
+            let terrain = match self.integrated.as_ref() {
+                Some(server) => server.terrain(self.dim.id()),
+                None => self.end.locator(),
+            };
+            if let Some(line) = terrain.and_then(|t| {
+                t.density_debug_line([
+                    p.position.x.floor() as i32,
+                    p.position.y.floor() as i32,
+                    p.position.z.floor() as i32,
+                ])
+            }) {
+                d.group("chunk_generation", [line]);
+            }
         }
         // simple_performance_impactors.
         let s = &self.settings;
