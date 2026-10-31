@@ -914,6 +914,29 @@ fn water_waves(p: vec2<f32>, t: f32, footprint: f32) -> vec3<f32> {
     let w = water_surface(p, t, footprint);
     return vec3(w.height, w.slope);
 }
+// How wide a pixel at camera-relative `pos` lies on water of face `face`, in metres: its width at
+// that distance, stretched along the view by the slant (a far lake seen almost edge on covers tens
+// of metres a pixel that way), so the waves fade out before they alias into shimmer.
+fn water_footprint(pos: vec3<f32>, face: vec3<f32>) -> f32 {
+    let d = length(pos);
+    let slant = abs(dot(pos, face)) / max(d, 1e-4);
+    return d * 1.5 / globals.rt_motion.y / max(slant, 0.03);
+}
+// The slope variance (both axes summed) of the waves `water_surface` fades out at `footprint`: what
+// the pixel still sees of them, as roughness (Toksvig's, a LEAN map's variance), so far water turns
+// into a soft, rough mirror (wider glints, a softer Fresnel) and keeps the light the ripples
+// scattered instead of dropping it. The same wavenumbers and slopes as the sixteen waves.
+fn water_lost_slope(footprint: f32) -> f32 {
+    var lost = 0.0;
+    var k = 1.04;
+    for (var i = 0; i < 16; i++) {
+        let a = min(1.0 / k, 0.06 * min(1.0, k / 2.4));
+        let fade = 1.0 - smoothstep(1.5, 4.0, k * footprint);
+        lost += 0.5 * a * a * (1.0 - fade * fade);
+        k *= 1.25;
+    }
+    return lost;
+}
 // Pure water's absorption a block (a metre), red most: deep water turns blue-green.
 // Remix's water medium (its minecraft-logic confs): transmittance 0.6, 0.9, 0.89 over 20 m (a
 // block a metre), so its extinction a block, -ln(T) / 20; the biome's water colour adds to it
@@ -1077,23 +1100,46 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
     let absorption = WATER_ABSORPTION + WATER_PURE_ABSORPTION + WATER_TINT_ABSORPTION * (1.0 - colour);
     let world = in.pos + globals.rt_camera.xyz;
     var n = face;
+    // The waves finer than the pixel's footprint, as roughness (none on a side, or near by).
+    var rough = 0.0;
     if face.y > 0.5 {
-        let w = water_waves(world.xz, globals.rt_water.z, length(in.pos) * 1.5 / globals.rt_motion.y);
+        let footprint = water_footprint(in.pos, face);
+        let w = water_waves(world.xz, globals.rt_water.z, footprint);
+        rough = water_lost_slope(footprint);
         // The rain's ripples where it falls on this water (`rain_ripples`).
         let r = rt_rain_ripples(in.pos);
-        n = normalize(vec3(-w.y - r.x, 1.0, -w.z - r.y));
+        // On the face as drawn: far off it leans with the Earth's curvature.
+        n = normalize(face / face.y + vec3(-w.y - r.x, 0.0, -w.z - r.y));
     }
     let distance = length(in.pos);
     let ray = in.pos / max(distance, 1e-4);
     let view = -ray;
     let nv = max(dot(n, view), 1e-3);
-    let fresnel = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
+    // Where waves finer than the pixel roughen it, each frame sees the sky and the Eye off one
+    // facet drawn from their slopes (a Gaussian of the variance `rough`), with that facet's
+    // Fresnel: the temporal resolve averages the draws into what the pixel's many facets reflect,
+    // the long glitter a light makes on rough water and the brighter mean reflectance of tilted
+    // facets at a slant, their energy kept. Near by, `rough` is 0: the surface itself.
+    var mirrored = reflect(ray, n);
+    var facing = nv;
+    if rough > 1e-6 {
+        let u = max(rt_dither(in.clip), 1e-4);
+        let turn = 6.2831853 * rt_dither(in.clip + vec2(17.0, 59.0));
+        let g = sqrt(-2.0 * log(u) * 0.5 * rough) * vec2(cos(turn), sin(turn));
+        let facet = normalize(n + vec3(g.x, 0.0, g.y));
+        let off = reflect(ray, facet);
+        // A facet turned from the eye, or reflecting into the water, is hidden by its neighbours.
+        if dot(facet, view) > 0.0 && dot(off, n) > 0.0 {
+            mirrored = off;
+            facing = dot(facet, view);
+        }
+    }
+    let fresnel = 0.02 + 0.98 * pow(1.0 - facing, 5.0);
     let v = rt_visibility(in.pos, in.clip);
     let sky_seen = select(rt_sky_level(in.light.x), max(v.z, 0.0),
         v.z >= 0.0);
     let sun = globals.rt_sun_light.rgb * globals.rt_light.w * v.x;
     // Reflected: the sky that way, and the sun's glint (GGX, a calm surface).
-    let mirrored = reflect(ray, n);
     var reflected = rt_sky(mirrored) * max(sky_seen, 0.15 * v.x);
     // The Eye of Aldhani's streaks in it, blurred by the waves over a few pixels.
     if globals.rt_camera.w >= 0.0 {
@@ -1112,7 +1158,8 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
     let l = globals.rt_light.xyz;
     let h = normalize(l + view);
     let nl = max(dot(n, l), 0.0);
-    let a2 = 0.0004;
+    // A calm surface's, widened by the waves too fine to see (the sun's or moon's path of glitter).
+    let a2 = 0.0004 + rough;
     let nh = max(dot(n, h), 0.0);
     let dd = nh * nh * (a2 - 1.0) + 1.0;
     let glint = a2 / (3.14159265 * dd * dd) * 0.25 / max(nl * nv, 1e-3) * nl * 3.14159265;

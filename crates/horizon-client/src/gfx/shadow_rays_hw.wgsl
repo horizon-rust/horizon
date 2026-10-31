@@ -474,7 +474,9 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     let layer = f32(arena_at(base, 4u) & 0x7fffu);
     if n.y > 0.5 && (layer == rt.water.x || layer == rt.water.y) {
         let world = at + rt.camera.xyz + rt.fraction.xyz;
-        let w = water_waves(world.xz, rt.water.z, hit.t * 1.5 / rt.size.y);
+        // The pixel's footprint stretched by the slant (terrain.wgsl `water_footprint`).
+        let w = water_waves(world.xz, rt.water.z,
+            hit.t * 1.5 / rt.size.y / max(abs(n.y * ray.y), 0.03));
         // And the rain's ripples, as the water's shader has them (terrain.wgsl `rt_rain_ripples`).
         let r = hw_rain_ripples(world, hit.t);
         n = normalize(vec3(-w.y - r.x, 1.0, -w.z - r.y));
@@ -482,7 +484,9 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     // Under the water, looking up at its top: the waves seen from below.
     if n.y < -0.5 && (layer == rt.water.x || layer == rt.water.y) {
         let world = at + rt.camera.xyz + rt.fraction.xyz;
-        let w = water_waves(world.xz, rt.water.z, hit.t * 1.5 / rt.size.y);
+        // The pixel's footprint stretched by the slant (terrain.wgsl `water_footprint`).
+        let w = water_waves(world.xz, rt.water.z,
+            hit.t * 1.5 / rt.size.y / max(abs(n.y * ray.y), 0.03));
         n = -normalize(vec3(-w.y, 1.0, -w.z));
     }
     // Its top (seen from above or below) refracts; its sides blend as before. Glass refracts on
