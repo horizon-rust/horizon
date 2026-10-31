@@ -252,8 +252,8 @@ fn rain_film(p: vec3<f32>) -> bool {
 // The rain's impacts at world `p` (x, z), `t` seconds: rings spreading from where the drops strike,
 // in two offset layers of quarter-block cells, each cell struck once a period (0.5 to 0.9 s) with a
 // chance growing with the rate (`rate` mm/h): about thirty impacts a square metre a second in
-// moderate rain. `spread` is how far a ring runs (blocks): wide on standing water, a small circle
-// on the thin film of a wet surface. `wet` (0 to 1) sharpens them: on a surface that is drying only the
+// moderate rain. `spread` is how far a ring runs (blocks): from 0.15 standing water, a train of
+// rings; under it the thin film of a wet surface, a small circle. `wet` (0 to 1) sharpens them: on a surface that is drying only the
 // strongest show, a soaked one shows all (SEUS's idea, with a procedural field instead of its
 // flipbook). The slope (x, z); a ring finer than a pixel (`footprint` blocks) fades out.
 // RAIN_RING: how steep a ring's front stands at most on standing water (its slope), RAIN_CROWN on
@@ -266,6 +266,10 @@ fn rain_ripples(p: vec2<f32>, t: f32, rate: f32, footprint: f32, spread: f32, we
     let fade = 1.0 - smoothstep(0.25 * spread, 0.6 * spread, footprint);
     if rate <= 0.0 || fade <= 0.0 { return vec2(0.0); }
     let chance = clamp(rate / 6.0, 0.3, 1.0);
+    // Standing water's rings, finer than the film's: where they shrink under a pixel only their
+    // fronts remain (no shimmer).
+    let standing = spread >= 0.15;
+    let fine = 1.0 - smoothstep(0.3, 0.8, footprint / select(0.4 * spread, 0.017, standing));
     var slope = vec2(0.0);
     for (var layer = 0u; layer < 2u; layer++) {
         let q = p / 0.25 + f32(layer) * vec2(0.5, 0.37);
@@ -282,9 +286,18 @@ fn rain_ripples(p: vec2<f32>, t: f32, rate: f32, footprint: f32, spread: f32, we
             let d = (q - centre) * 0.25;
             let r = length(d);
             let x = r - sqrt(age) * spread;
-            let width = spread * (0.08 + 0.12 * age);
+            // On a film one ring; on standing water the drop's momentum goes into the surface as
+            // a train of capillary rings about 1.7 cm apart, spreading behind the front and
+            // crossing its neighbours'.
+            var width = spread * (0.08 + 0.12 * age);
+            var wavelength = 2.0 * width;
+            if standing {
+                width = spread * (0.15 + 0.35 * age);
+                wavelength = 0.017 + 0.01 * age;
+            }
             let envelope = exp(-x * x / (width * width)) * (1.0 - age) * (1.0 - age);
-            slope += 0.5 * cos(x * 3.14159 / width) * envelope * d / max(r, 1e-4);
+            let wave = mix(1.0, cos(x * 6.2832 / wavelength), fine);
+            slope += 0.5 * wave * envelope * d / max(r, 1e-4);
         }
     }
     let sharp = 2.0 - 1.2 * wet * wet * wet;
