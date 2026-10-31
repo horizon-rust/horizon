@@ -109,6 +109,10 @@ it (edited on every push, never repeated): talk to its author in the thread befo
 
 - **Small.** One change per pull request, under about 500 lines of code where you can; split bigger work into
   pieces that each make sense alone. Small pull requests get reviewed and merged the same day.
+- **Conventional commit titles**: `<type>(<scope>): <description>` for commits and pull requests, with `type` one
+  of `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore` or `revert`. Pull request titles
+  become the release notes (without the prefix), so write the description for players:
+  `fix(mobs): stop zombies walking through doors`, not `fix(mobs): update pathfinding`.
 - **Fill in the template**: what and why, the vanilla reference, the pr_ready block, screenshots for anything you
   can see.
 - **Tick "Allow edits by maintainers".** When something small is left (a lint, a rebase, a nit) we push the fixup

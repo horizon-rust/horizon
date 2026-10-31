@@ -180,6 +180,12 @@ class ReleaseTrainTests(unittest.TestCase):
                        {**drew, "player": None}, {}):
             self.assertEqual(train.smoke_problem(broken), "the smoke run did not draw a world", broken)
 
+    def test_bullet_drops_a_conventional_commit_prefix(self):
+        self.assertEqual(train.bullet(pr(7, "fix(mobs): stop zombies walking through doors")),
+                         "- Stop zombies walking through doors (#7)")
+        self.assertEqual(train.bullet(pr(8, "feat!: a new title screen", issues=[3])), "- A new title screen (#8, fixes #3)")
+        self.assertEqual(train.bullet(pr(9, "Fix a thing")), "- Fix a thing (#9)")
+
     def test_notes_never_call_a_release_alpha_or_beta(self):
         _, body = train.notes("game", "v0.2.12", [pr(1)], [])
         self.assertNotIn("alpha", body.lower())

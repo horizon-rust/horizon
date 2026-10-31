@@ -345,6 +345,9 @@ def summary(new, fixed, limit=72):
 def bullet(pr):
     """A pull request as a line of notes: its title (written for people), its number and the issues it closes."""
     title = re.sub(r"\s*\((?:fixes|closes) #\d+\)|,? stacked on #\d+", "", pr["title"]).strip().rstrip(".")
+    # A conventional-commit title (`fix(mobs): ...`) loses its prefix: players read the description.
+    title = re.sub(r"^(?:feat|fix|perf|refactor|docs|test|build|ci|chore|revert)(?:\([^)]*\))?!?:\s*", "", title)
+    title = title[:1].upper() + title[1:]
     issues = "".join(f", fixes #{issue}" for issue in pr["issues"])
     return f"- {title} (#{pr['number']}{issues})"
 
