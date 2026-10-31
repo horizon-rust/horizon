@@ -9,8 +9,7 @@ struct Globals {
     inverse_view: mat4x4<f32>,
     sunrise: vec4<f32>,
     sun: vec4<f32>,
-    // x: sky fog end, y: cloud fog end, w: below 0 the Earth's curvature is off (terrain.wgsl
-    // `earth_drop`)
+    // x: sky fog end, y: cloud fog end
     fog_ends: vec4<f32>,
     // Atlas rects (u0, v0, width, height) of end_sky.png and end_portal.png.
     end_portal_sprites: array<vec4<f32>, 2>,
@@ -50,6 +49,8 @@ struct Globals {
     rt_camera: vec4<f32>,
     // RT lighting's moon: toward it (xyz) and its angular radius (w); its phase in rt_stars.x.
     rt_moon: vec4<f32>,
+    // The Earth's curvature (terrain.wgsl `earth_drop`): x below 0 off.
+    earth: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas: texture_2d<f32>;
@@ -155,7 +156,7 @@ struct CloudInfo {
     @location(2) overlay: u32, @location(3) color: vec4<f32>, @location(4) light: vec4<u32>, @location(5) normal: vec4<f32>) -> Out {
     // The cloud layer bends with the Earth's curvature, from the eye (terrain.wgsl `earth_drop`).
     var p = position + cloud.offset.xyz;
-    if globals.fog_ends.w >= 0.0 { p.y -= dot(p.xz, p.xz) / (2.0 * 6371000.0); }
+    if globals.earth.x >= 0.0 { p.y -= dot(p.xz, p.xz) / (2.0 * 6371000.0); }
     return entity_vertex(p, uv, overlay, cloud.colors[light.x], light, normal);
 }
 // rendertype_end_portal.fsh: the layer colours.

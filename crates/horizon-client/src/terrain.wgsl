@@ -5,7 +5,6 @@ struct Globals {
     fog_color: vec4<f32>,
     // environmental start/end, render-distance start/end
     fog: vec4<f32>,
-    // w: how far the sea's horizon dips under the horizontal, in radians (`earth_drop`).
     sky_color: vec4<f32>,
     // x: sky darkening, y: game time, z: aspect, w: tan(fov/2)
     misc: vec4<f32>,
@@ -13,8 +12,7 @@ struct Globals {
     sunrise: vec4<f32>,
     // xyz: sun direction, w: star brightness
     sun: vec4<f32>,
-    // x: sky fog end, y: cloud fog end, z: dark disc flag, w: the square of the radius the Earth's
-    // curvature starts at (`earth_drop`; below 0 off)
+    // x: sky fog end, y: cloud fog end, z: dark disc flag
     fog_ends: vec4<f32>,
     // Atlas rects (u0, v0, width, height) of end_sky.png and end_portal.png.
     end_portal_sprites: array<vec4<f32>, 2>,
@@ -55,6 +53,9 @@ struct Globals {
     rt_camera: vec4<f32>,
     // RT lighting's moon: toward it (xyz) and its angular radius (w); its phase in rt_stars.x.
     rt_moon: vec4<f32>,
+    // The Earth's curvature (`earth_drop`): x the square of the radius it starts at (below 0 off),
+    // y how far the sea's horizon dips under the horizontal, in radians.
+    earth: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var sprites: texture_2d_array<f32>;
@@ -202,7 +203,7 @@ fn faded_out(fade: f32, pixel: vec2<f32>) -> bool {
 }
 // The Earth's curvature (gfx.rs `Renderer::earth_curvature`), for the eye alone: the world stays
 // flat for the game, and a distant terrain tile's vertex sinks by its horizontal distance's square
-// over the Earth's diameter, counted from the loaded chunks' radius (fog_ends.w its square) so the
+// over the Earth's diameter, counted from the loaded chunks' radius (earth.x its square) so the
 // tiles meet those flat chunks, which the rays trace, without a step: 2 m 5 km out, 21 m at 16 km,
 // where the foot of an island drops behind the sea seen from 1.7 m up (its horizon 4.7 km away).
 // Every pass draws the terrain through `terrain_vertex`, and positions are relative to the head,
@@ -213,7 +214,7 @@ fn earth_drop(xz: vec2<f32>, flat_radius_sq: f32) -> f32 {
 }
 // `pos` as drawn: lowered when its instance's origin.w says a distant tile (`terrain_uv`).
 fn earth_curved(pos: vec3<f32>, w: f32) -> vec3<f32> {
-    let flat_sq = globals.fog_ends.w;
+    let flat_sq = globals.earth.x;
     if flat_sq < 0.0 || w < 1.0 / 64.0 { return pos; }
     return vec3(pos.x, pos.y - earth_drop(pos.xz, flat_sq), pos.z);
 }
@@ -358,8 +359,8 @@ fn rt_sky(d: vec3<f32>) -> vec3<f32> {
     let flat = d.xz / max(length(d.xz), 1e-5);
     let sun = globals.rt_sun.xz / max(length(globals.rt_sun.xz), 1e-5);
     let azimuth = acos(clamp(dot(flat, sun), -1.0, 1.0)) / 3.14159265;
-    // The table's horizon is level; the sea's dips under it with the eye's height (sky_color.w).
-    let e = clamp((asin(clamp(d.y, -1.0, 1.0)) + globals.sky_color.w) / 1.5707963, -1.0, 1.0);
+    // The table's horizon is level; the sea's dips under it with the eye's height (earth.y).
+    let e = clamp((asin(clamp(d.y, -1.0, 1.0)) + globals.earth.y) / 1.5707963, -1.0, 1.0);
     let v = 0.5 + 0.5 * sign(e) * sqrt(abs(e));
     var sky = textureSampleLevel(rt_sky_view, lightmap_sampler, vec2(azimuth, v), 0.0).rgb;
     if globals.rt_camera.w >= 0.0 { sky += aldhani_glow(d, globals.rt_camera.w) + aldhani_burning(d); }

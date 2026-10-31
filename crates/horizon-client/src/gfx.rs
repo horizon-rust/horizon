@@ -197,14 +197,12 @@ struct Globals {
     view_proj: [[f32; 4]; 4],
     fog_color: [f32; 4],
     fog: [f32; 4],
-    /// w: how far the sea's horizon dips under the horizontal (`lod::horizon_dip`).
     sky_color: [f32; 4],
     misc: [f32; 4],
     inverse_view: [[f32; 4]; 4],
     sunrise: [f32; 4],
     sun: [f32; 4],
-    /// x: sky fog end, y: cloud fog end, z: dark disc (camera below the horizon), w: the square of
-    /// the radius the Earth's curvature starts at (`lod::earth_drop`; -1 off).
+    /// x: sky fog end, y: cloud fog end, z: dark disc (camera below the horizon), w: unused.
     fog_ends: [f32; 4],
     /// Atlas rects (u0, v0, width, height) of end_sky.png and end_portal.png.
     end_portal_sprites: [[f32; 4]; 2],
@@ -239,6 +237,9 @@ struct Globals {
     rt_camera: [f32; 4],
     /// RT lighting's moon (terrain.wgsl `rt_moon_disc`): toward it, and its angular radius.
     rt_moon: [f32; 4],
+    /// The Earth's curvature (`Renderer::earth_curvature`): x the square of the radius it starts
+    /// at (`lod::earth_drop`; -1 off), y how far the sea's horizon dips (`lod::horizon_dip`).
+    earth: [f32; 4],
 }
 pub type SectionKey = (i32, i32, i32);
 struct SectionGpu {
@@ -4953,7 +4954,7 @@ impl Renderer {
                 frame.sky.sky_color[0],
                 frame.sky.sky_color[1],
                 frame.sky.sky_color[2],
-                curved.map_or(0.0, |_| lod::horizon_dip(frame.camera.y) as f32),
+                1.0,
             ],
             misc: [
                 1.0 - frame.sky.sky_light_factor,
@@ -4975,7 +4976,7 @@ impl Renderer {
                 frame.fog.map_or(frame.distance.min(512.0), |f| f.sky_end),
                 frame.fog.map_or(2048.0, |f| f.cloud_end),
                 if frame.dark_disc { 1.0 } else { 0.0 },
-                curved.map_or(-1.0, |r| (r * r) as f32),
+                0.0,
             ],
             end_portal_sprites: frame.end_portal_sprites,
             crumbling_sprite: frame.crumbling_sprite,
@@ -5041,6 +5042,15 @@ impl Renderer {
             rt_moon: {
                 let m = -rt_sun;
                 [m.x, m.y, m.z, self.rt_moon_radius]
+            },
+            earth: match curved {
+                Some(r) => [
+                    (r * r) as f32,
+                    lod::horizon_dip(frame.camera.y) as f32,
+                    0.0,
+                    0.0,
+                ],
+                None => [-1.0, 0.0, 0.0, 0.0],
             },
         };
         self.uploads
