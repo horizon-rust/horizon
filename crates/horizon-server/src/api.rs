@@ -47,7 +47,7 @@ pub struct Route {
 }
 
 /// Every endpoint `start` and [`route`] answer; a test checks the two agree.
-pub const ROUTES: [Route; 11] = [
+pub const ROUTES: [Route; 12] = [
     Route {
         method: "GET",
         path: "/api/v1/status",
@@ -61,6 +61,13 @@ pub const ROUTES: [Route; 11] = [
         takes: "`?since=T` (seconds since 1970)",
         answers: "`{\"samples\": [...]}`: one a second, the last 10 minutes",
         what: "The samples taken after T, for graphs",
+    },
+    Route {
+        method: "GET",
+        path: "/api/v1/players",
+        takes: "",
+        answers: "`{\"players\": [{\"name\", \"uuid\", \"address\", \"ping_ms\"}], \"max_players\": N}`",
+        what: "Who is online, from the game's last status (409 while the game isn't running)",
     },
     Route {
         method: "GET",
@@ -384,6 +391,21 @@ fn status(shared: &Shared) -> Value {
     })
 }
 
+/// `GET /api/v1/players`: who is online, from the game's last `server-status` (the sampler asks the game
+/// for it every second). 409 while the game isn't running or hasn't answered yet, as `command` does.
+fn players(shared: &Shared) -> Response {
+    let state = shared.state.lock().unwrap();
+    let game = &state.sample["game"];
+    if state.phase != Phase::Running || game.is_null() {
+        return Response::error(409, "the game isn't running right now");
+    }
+    let players = game["players"].as_array().cloned().unwrap_or_default();
+    Response::json(
+        200,
+        &json!({ "players": players, "max_players": game["max_players"].as_u64().unwrap_or(0) }),
+    )
+}
+
 fn updates(shared: &Shared) -> Value {
     let Some(install) = &shared.install else {
         return Value::Null;
@@ -501,6 +523,7 @@ pub fn route(shared: &Arc<Shared>, request: &Request) -> Response {
                 .collect();
             Response::json(200, &json!({ "samples": samples }))
         }
+        ("GET", "/api/v1/players") => players(shared),
         ("GET", "/api/v1/logs") => {
             let since = request
                 .param("since")
@@ -708,6 +731,48 @@ mod tests {
         }
         drop(_endpoint);
         assert!(!dir.join(ENDPOINT).exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn players_come_from_the_games_last_status() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-server-players-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shared = Shared::new(&dir);
+        // Starting: the game hasn't answered yet.
+        assert_eq!(players(&shared).status, 409);
+        {
+            let mut state = shared.state.lock().unwrap();
+            state.phase = Phase::Running;
+            state.sample = json!({ "game": {
+                "players": [{
+                    "name": "Alex",
+                    "uuid": "00000000-0000-0000-0000-000000000001",
+                    "address": "127.0.0.1",
+                    "ping_ms": 12,
+                }],
+                "max_players": 20,
+            } });
+        }
+        let reply = players(&shared);
+        assert_eq!(reply.status, 200);
+        let body: Value = serde_json::from_str(&reply.body).unwrap();
+        assert_eq!(body["max_players"], 20);
+        assert_eq!(body["players"][0]["name"], "Alex");
+        assert_eq!(body["players"][0]["ping_ms"], 12);
+        // The game is up but its status hasn't come yet, or nobody is online.
+        shared.state.lock().unwrap().sample = Value::Null;
+        assert_eq!(players(&shared).status, 409);
+        shared.state.lock().unwrap().sample = json!({ "game": { "max_players": 5 } });
+        let empty: Value = serde_json::from_str(&players(&shared).body).unwrap();
+        assert_eq!(
+            (
+                empty["players"].as_array().map(Vec::len),
+                empty["max_players"].as_u64()
+            ),
+            (Some(0), Some(5))
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

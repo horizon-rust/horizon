@@ -216,6 +216,7 @@ horizon-server init                      first run
 horizon-server run                       in the foreground, with the console; Ctrl-C stops it
 horizon-server start | stop | restart    in the background (its output goes to logs/supervisor.log)
 horizon-server status [--json]           up or not, TPS, MSPT, players, chunks, RAM, CPU
+horizon-server players [--json]          who is online, with their ping
 horizon-server cmd COMMAND...            one console command, and what it answers
 horizon-server logs [-f] [-n N]          the log; -f follows it
 horizon-server report [SECONDS]          record a performance report (below)

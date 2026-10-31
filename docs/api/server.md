@@ -11,9 +11,9 @@ token. The web panel uses that API.
 
 | | Count |
 | --- | --- |
-| Commands | 22 (`init`, `run`, `start`, `stop`, `restart`, `status`, `cmd`, `logs`, `backup`, `backups`, `restore`, `service`, `panel`, `update`, `rollback`, `config`, `config set`, `import`, `op`, `deop`, `whitelist`, `version`) |
+| Commands | 23 (`init`, `run`, `start`, `stop`, `restart`, `status`, `players`, `cmd`, `logs`, `backup`, `backups`, `restore`, `service`, `panel`, `update`, `rollback`, `config`, `config set`, `import`, `op`, `deop`, `whitelist`, `version`) |
 | `server.toml` keys | 22 in 6 sections, plus `[properties]` for any other vanilla key |
-| Control API endpoints | 11 under `/api/v1` |
+| Control API endpoints | 12 under `/api/v1` |
 
 ## Guide
 
@@ -42,8 +42,8 @@ addition; a change to one starts `/api/v2`, served beside `/api/v1`.
 
 ## Not there yet
 
-- **Players**: list with ping and position, kick, ban and pardon, op and deop, the whitelist, as endpoints (today only
-  through `cmd` and the files).
+- **Players**: each player's position, then kick, ban and pardon, op and deop, the whitelist, as endpoints (the list
+  with ping is `GET /api/v1/players`; the rest goes through `cmd` and the files today).
 - **Console stream**: the log as a stream (server-sent events) rather than `logs?since=N` polling; chat, joins, leaves,
   deaths and crashes as typed events.
 - **Metrics**: a plain-text metrics endpoint any monitoring tool can scrape (TPS, MSPT percentiles, players, chunks,

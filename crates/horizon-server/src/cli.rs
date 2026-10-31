@@ -258,6 +258,38 @@ pub fn status(dir: &Path, as_json: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// `players [--json]`: who is online, with their ping.
+pub fn players(dir: &Path, as_json: bool) -> Result<(), String> {
+    let reply = running(dir)?.call("GET", "/api/v1/players", None)?;
+    if as_json {
+        println!("{reply}");
+    } else {
+        print!("{}", describe_players(&reply));
+    }
+    Ok(())
+}
+
+/// The players for people: how many of how many, then a line each (name, ping, address, uuid).
+fn describe_players(reply: &Value) -> String {
+    let list = reply["players"].as_array().map_or(&[][..], Vec::as_slice);
+    let mut out = format!(
+        "{} of {} players{}\n",
+        list.len(),
+        reply["max_players"].as_u64().unwrap_or(0),
+        if list.is_empty() { "" } else { ":" }
+    );
+    for p in list {
+        out += &format!(
+            "  {:<16} {:>4} ms  {}  {}\n",
+            p["name"].as_str().unwrap_or("?"),
+            p["ping_ms"].as_u64().unwrap_or(0),
+            p["address"].as_str().unwrap_or("?"),
+            p["uuid"].as_str().unwrap_or("?")
+        );
+    }
+    out
+}
+
 /// The status for people: three short lines.
 fn describe(status: &Value) -> String {
     let mut out = String::new();
@@ -529,5 +561,32 @@ mod tests {
             ),
             "Restarting\nUpdating: Starting the game on v2\n"
         );
+    }
+}
+
+#[cfg(test)]
+mod players_tests {
+    use super::*;
+
+    #[test]
+    fn players_are_listed_with_their_ping() {
+        let nobody = json!({ "players": [], "max_players": 20 });
+        assert_eq!(describe_players(&nobody), "0 of 20 players\n");
+        let two = json!({ "players": [
+            { "name": "Alex", "uuid": "u1", "address": "127.0.0.1", "ping_ms": 12 },
+            { "name": "Steve", "uuid": "u2", "address": "10.0.0.2", "ping_ms": 140 },
+        ], "max_players": 20 });
+        let text = describe_players(&two);
+        let mut lines = text.lines();
+        assert_eq!(lines.next(), Some("2 of 20 players:"));
+        fn words(line: Option<&str>) -> Vec<&str> {
+            line.unwrap().split_whitespace().collect()
+        }
+        assert_eq!(words(lines.next()), ["Alex", "12", "ms", "127.0.0.1", "u1"]);
+        assert_eq!(
+            words(lines.next()),
+            ["Steve", "140", "ms", "10.0.0.2", "u2"]
+        );
+        assert_eq!(lines.next(), None);
     }
 }

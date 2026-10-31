@@ -42,6 +42,8 @@ Usage: horizon-server [--dir DIR] <command>
   stop, restart
   status [--json]
               Up or not, TPS, MSPT, players, RAM and CPU
+  players [--json]
+              Who is online, with their ping and address
   cmd COMMAND...
               Run a console command on the running server and print what it answers
   report [SECONDS]
@@ -108,6 +110,7 @@ fn main() -> ExitCode {
         Some("stop") => cli::stop(&dir, false),
         Some("restart") => cli::stop(&dir, true),
         Some("status") => cli::status(&dir, args[1..].iter().any(|a| a == "--json")),
+        Some("players") => cli::players(&dir, args[1..].iter().any(|a| a == "--json")),
         Some("cmd") => cli::command(&dir, &args[1..]),
         Some("report") => cli::report(&dir, &args[1..]),
         Some("logs") => logs(&dir, &args[1..]),

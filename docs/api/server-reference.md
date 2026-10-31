@@ -21,6 +21,8 @@ Usage: horizon-server [--dir DIR] <command>
   stop, restart
   status [--json]
               Up or not, TPS, MSPT, players, RAM and CPU
+  players [--json]
+              Who is online, with their ping and address
   cmd COMMAND...
               Run a console command on the running server and print what it answers
   report [SECONDS]
@@ -130,6 +132,7 @@ HTTP and JSON on 127.0.0.1. A running server writes its address and a random tok
 | --- | --- | --- | --- | --- |
 | `GET` | `/api/v1/status` | nothing | `phase`, `version`, `pid`, `uptime_seconds`, `engine_pid`, `engine_uptime_seconds`, `crashes`, `last_crash`, `sample` (TPS, MSPT, players, RAM, CPU), `update` | How the server does |
 | `GET` | `/api/v1/metrics` | `?since=T` (seconds since 1970) | `{"samples": [...]}`: one a second, the last 10 minutes | The samples taken after T, for graphs |
+| `GET` | `/api/v1/players` | nothing | `{"players": [{"name", "uuid", "address", "ping_ms"}], "max_players": N}` | Who is online, from the game's last status (409 while the game isn't running) |
 | `GET` | `/api/v1/logs` | `?since=N` | `{"next": N, "lines": [...]}` | The log lines after the Nth (the last 2000 are kept) |
 | `POST` | `/api/v1/command` | `{"line": "<one command>"}` | the lines the command logged | Run a console command on the running game |
 | `POST` | `/api/v1/stop` | nothing | `{"ok": true}` | Stop the game and the supervisor |
