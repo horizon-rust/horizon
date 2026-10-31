@@ -443,6 +443,13 @@ impl Game<'_> {
     pub(super) fn raiding_nearby(&self, at: [i32; 3]) -> Option<i32> {
         self.raiding.raids.nearby(at).map(|(id, _)| id)
     }
+    /// `Raid.getLeader(wave) != null`: the raid's wave has a captain.
+    pub(super) fn raid_has_leader(&self, id: i32, wave: i32) -> bool {
+        self.raiding
+            .raids
+            .get(id)
+            .is_some_and(|r| r.leader(wave).is_some())
+    }
     pub(super) fn raid_started(&self, id: i32) -> bool {
         self.raiding.raids.get(id).is_some_and(|r| r.started)
     }

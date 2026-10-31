@@ -74,8 +74,6 @@ pub struct State {
     /// first within 8.
     pub food_near: bool,
     pub food_at: Option<[f64; 3]>,
-    /// The size of the stack in its mouth (the mob holds one item id).
-    pub held_count: u32,
     /// What a window draws of the last bite and sneeze, taken by `effects`.
     crumbs: Option<Crumbs>,
     sneezed: Option<([f64; 3], [f64; 3])>,
@@ -255,17 +253,14 @@ pub fn hold(m: &mut Mob, item: &str, count: u32, guaranteed: bool) {
     if guaranteed {
         finalize::set_drop_chance(m, super::gear::MAIN, 2.0);
     }
-    st(m).held_count = count;
+    m.extra
+        .set_main_hand_stack(Some(crate::items::ItemStack::new(item, count.max(1))));
 }
 /// What its goals look for on the ground, found by the game each tick.
 pub fn set_food(m: &mut Mob, near: bool, at: Option<[f64; 3]>) {
     let s = st(m);
     s.food_near = near;
     s.food_at = at;
-}
-/// The size of the stack in its mouth, for what it drops.
-pub fn held_count(m: &Mob) -> u32 {
-    get(m).map_or(1, |s| s.held_count.max(1))
 }
 
 // ---- synched data ---------------------------------------------------------
@@ -862,9 +857,10 @@ impl Goal for PandaSit {
         }
         self.cooldown = 0;
     }
+    /// `Panda.PandaSitGoal.stop`.
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
         if let Some(item) = m.extra.main_hand.clone() {
-            let count = held_count(m);
+            let count = m.main_hand_count();
             cx.events.push(MobEvent::DropItem {
                 item,
                 count,

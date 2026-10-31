@@ -1703,11 +1703,13 @@ fn check_despawn(m: &mut Mob, w: &MobWorld) -> bool {
     };
     let d = m.distance_sqr(p);
     let persistent = m.persistent || requires_custom_persistence(m);
-    // removeWhenFarAway: animals, villagers, golems, patrols and raiders,
-    // zombie villagers being cured and ridden mobs stay.
+    // removeWhenFarAway: animals (an ocelot only while it is wild and past
+    // 2400 ticks), villagers, golems, patrols and raiders, zombie villagers
+    // being cured and ridden mobs stay.
     let creature = m.kind.category == "creature";
+    let wild_ocelot = m.species() == Species::Ocelot && super::tame::remove_when_far_away(m);
     let removable = !(never_removed_when_far(m.species())
-        || creature && m.kind.flags.animal && !m.extra.jockey
+        || creature && m.kind.flags.animal && !m.extra.jockey && !wild_ocelot
         || super::raider::keeps_alive(m, d)
         || super::zombie_villager::keeps_alive(m)
         || super::riders::keeps_alive(m));
@@ -1855,12 +1857,14 @@ pub fn takes_food(m: &Mob) -> bool {
     (m.extra.age == 0 && m.extra.in_love <= 0) || (m.extra.age < 0 && !m.extra.age_locked)
 }
 /// `Animal.mobInteract` with its food in hand: an adult that can fall in
-/// love does, a baby grows up by a tenth, and either plays its eating sound
+/// love does (`Animal.setInLove` remembers `cause`, the feeding player), a
+/// baby grows up by a tenth, and either plays its eating sound
 /// (`Strider.mobInteract` plays its own afterwards). `None` when the animal
 /// does not take the food; otherwise the sound to play, if any.
 pub fn feed_animal(
     m: &mut Mob,
     level: &mut impl RandomSource,
+    cause: [i32; 4],
 ) -> Option<Option<(&'static str, f32, f32)>> {
     // Armadillo.mobInteract: a ball takes no food.
     if super::armadillo::scared(m) {
@@ -1871,7 +1875,7 @@ pub fn feed_animal(
     }
     if m.extra.age == 0 {
         m.extra.in_love = 600;
-        m.extra.love_player = true;
+        m.extra.love_cause = Some(cause);
     } else {
         // AgeableMob.ageUp(getSpeedUpSecondsWhenFeeding(-age), true): a tenth.
         let secs = ((-m.extra.age / 20) as f32 * 0.1) as i32;
@@ -2853,7 +2857,10 @@ mod feed_tests {
             m.extra.tame = true;
             m.extra.age = -24000;
             assert!(takes_food(&m), "{id}: a tamed baby takes its food");
-            assert!(feed_animal(&mut m, &mut level).is_some(), "{id}");
+            assert!(
+                feed_animal(&mut m, &mut level, [0, 0, 0, 1]).is_some(),
+                "{id}"
+            );
             // getSpeedUpSecondsWhenFeeding(24000): a tenth of 1200 seconds.
             assert_eq!(m.extra.age, -24000 + 120 * 20, "{id}: grew a tenth");
             assert_eq!(m.extra.in_love, 0, "{id}: a baby does not fall in love");

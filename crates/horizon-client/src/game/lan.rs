@@ -531,6 +531,27 @@ fn mob_meta(
                 meta.push((19, serializer::BYTE, Value::Byte(flags)));
             }
             defaults.push((19, serializer::BYTE, Value::Byte(0)));
+            // Fox.DATA_TRUSTED_ID_0 and DATA_TRUSTED_ID_1: the trusted
+            // players, after the type and the flags.
+            for (slot, trusted) in e.trusted.iter().enumerate() {
+                let index = 20 + slot as u8;
+                if let Some(uuid) = trusted {
+                    let value = Value::OptUuid(Some(playerdata::ints_uuid(*uuid)));
+                    meta.push((index, serializer::OPTIONAL_LIVING_ENTITY_REFERENCE, value));
+                }
+                defaults.push((
+                    index,
+                    serializer::OPTIONAL_LIVING_ENTITY_REFERENCE,
+                    Value::OptUuid(None),
+                ));
+            }
+        }
+        // Ocelot.DATA_TRUSTING (after AgeableMob's two).
+        "minecraft:ocelot" => {
+            if e.trusting {
+                meta.push((18, serializer::BOOLEAN, Value::Bool(true)));
+            }
+            defaults.push((18, serializer::BOOLEAN, Value::Bool(false)));
         }
         "minecraft:parrot" => {
             // TamableAnimal.DATA_FLAGS_ID: sitting 1, tame 4.
@@ -1035,7 +1056,8 @@ fn mob_equipment(
             // its colour.
             let stack = worn.cloned().unwrap_or_else(|| ItemStack {
                 item: item.clone(),
-                count: 1,
+                // The main hand shows the whole stack a mob picked up.
+                count: if slot == 0 { m.main_hand_count() } else { 1 },
                 // A wolf's armor shows its cracks.
                 damage: if slot == 6 && m.species() == horizon_client::mobs::Species::Wolf {
                     e.body_damage.max(0) as u32

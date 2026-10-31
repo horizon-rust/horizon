@@ -66,6 +66,7 @@ impl Game<'_> {
     /// `Panda.mobInteract` for a click with `item`; whether the click is taken.
     pub(super) fn interact_panda(&mut self, index: usize, item: &str) -> bool {
         let creative = self.creative;
+        let cause = self.acting_player_uuid();
         let m = &mut self.mobs[index];
         if panda::scared(m) {
             return false;
@@ -96,7 +97,7 @@ impl Game<'_> {
             horizon_client::mobs::ai::age_up(m, seconds, true);
         } else if m.extra.age == 0 && m.extra.in_love <= 0 {
             m.extra.in_love = 600;
-            m.extra.love_player = true;
+            m.extra.love_cause = Some(cause);
             loved = true;
         } else {
             if panda::is_sitting(m) || m.fluids.in_water {
@@ -108,7 +109,7 @@ impl Game<'_> {
             if let Some(held) = m.extra.main_hand.clone()
                 && !creative
             {
-                dropped = Some(ItemStack::new(&held, panda::held_count(m)));
+                dropped = Some(ItemStack::new(&held, m.main_hand_count()));
             }
             panda::hold(m, item, 1, false);
         }

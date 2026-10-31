@@ -1167,6 +1167,7 @@ pub fn main() -> horizon_client::Result<()> {
                     player: player.clone(),
                     nearest_player: player.as_ref().filter(|p| !p.spectator).map(|p| p.position),
                     others: $snapshot,
+                    dropped: &[],
                     leash_boats: &[],
                     others_grid: $grid,
                     others_index: None,
@@ -1308,9 +1309,11 @@ pub fn main() -> horizon_client::Result<()> {
                     );
                     continue;
                 }
-                if let Some(Some((name, volume, pitch))) =
-                    horizon_client::mobs::ai::feed_animal(&mut mobs[i], &mut level_random)
-                {
+                if let Some(Some((name, volume, pitch))) = horizon_client::mobs::ai::feed_animal(
+                    &mut mobs[i],
+                    &mut level_random,
+                    [0, 0, 0, 1],
+                ) {
                     events.push(MobEvent::Sound(name, [0.0; 3], volume, pitch));
                 }
             }

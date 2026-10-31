@@ -556,6 +556,7 @@ impl Game<'_> {
             nearest_player: player.as_ref().filter(|p| !p.spectator).map(|p| p.position),
             player,
             others,
+            dropped: &self.dropped,
             leash_boats: &self.leash_boats,
             others_grid: None,
             others_index: None,
@@ -892,6 +893,7 @@ impl Game<'_> {
         self.tick_fangs();
         self.tick_allays();
         self.tick_pandas();
+        self.tick_mob_pickups();
         self.tick_breeze_effects();
         self.tick_sniffer_effects();
         self.piglin_pickups();
@@ -1807,6 +1809,19 @@ impl Game<'_> {
                     dispenser::new_item_motion(),
                     10,
                 ),
+                MobEvent::ThrowItem {
+                    stack,
+                    at,
+                    velocity,
+                    pickup_delay,
+                    thrower,
+                } => {
+                    self.spawn_item(stack, at, velocity, pickup_delay);
+                    let uuid = self.mob_uuid(thrower);
+                    if let Some(thrown) = self.dropped.last_mut() {
+                        thrown.thrower = Some(uuid);
+                    }
+                }
                 MobEvent::DropGift { table, at } => {
                     let stacks =
                         self.res
@@ -2580,6 +2595,14 @@ impl Game<'_> {
             }
             if let Some(variant) = mooshroom {
                 child.extra.variant = variant;
+            }
+            // Fox.FoxBreedGoal.breed: the baby trusts whoever fed its parents.
+            if p.species() == Species::Fox {
+                horizon_client::mobs::fox::trust_breeders(
+                    child,
+                    p.extra.love_cause,
+                    q.as_ref().and_then(|q| q.extra.love_cause),
+                );
             }
             // Sheep.getBreedOffspring: the lamb's wool mixes both parents' dyes.
             if p.species() == Species::Sheep {
@@ -4376,6 +4399,7 @@ impl Game<'_> {
             .get("minecraft:parrot_poisonous_food")
             .is_some_and(|t| t.contains(&*item));
         let player_at = self.eye_position();
+        let player_feet = self.player.as_ref().map(|p| p.position);
         let acting = self.acting_player_uuid();
         let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft)
             || self.keys.contains(&winit::keyboard::KeyCode::ShiftRight);
@@ -4691,6 +4715,26 @@ impl Game<'_> {
                     m.position.z.floor() as i32 >> 4,
                 ));
             }
+            // Ocelot.mobInteract: fish from a player within three blocks, while
+            // the ocelot is being tempted, may win a wild ocelot's trust; any
+            // other click is Animal.mobInteract (love, growing up).
+            Species::Ocelot
+                if is_food
+                    && !m.extra.trusting
+                    && m.ai.goals.is_running("OcelotTemptGoal")
+                    && player_feet.is_some_and(|p| m.distance_sqr(p) < 9.0) =>
+            {
+                consume = true;
+                let trusted = horizon_client::mobs::tame::try_trusting(m);
+                self.mob_event_particles(self.mobs[index].id, if trusted { 41 } else { 40 });
+                if trusted {
+                    let m = &self.mobs[index];
+                    self.world.modified.insert((
+                        m.position.x.floor() as i32 >> 4,
+                        m.position.z.floor() as i32 >> 4,
+                    ));
+                }
+            }
             // IronGolem.mobInteract: an iron ingot repairs 25 health.
             Species::IronGolem
                 if item == "minecraft:iron_ingot" && m.health < m.attrs.max_health =>
@@ -4807,7 +4851,7 @@ impl Game<'_> {
             {
                 // Animal.mobInteract: breed adults, speed up babies, then
                 // playEatingSound (silent unless the species overrides it).
-                match feed_animal(m, &mut self.world.random) {
+                match feed_animal(m, &mut self.world.random, acting) {
                     Some(sound) => {
                         consume = true;
                         eat = sound;
@@ -5070,11 +5114,15 @@ impl Game<'_> {
         let (species, variant, color) =
             (parent.species(), parent.extra.variant, parent.extra.color);
         let target = self.mob_entity(&self.mobs[index]);
+        let spawner = self.acting_player_uuid();
         let Some(id) = self.spawn_mob_spawned(&kind, at) else {
             return false;
         };
         if let Some(child) = self.mobs.iter_mut().find(|m| m.id == id) {
             horizon_client::mobs::finalize::spawn_egg_offspring(child, species, variant, color);
+            if species == Species::Fox {
+                horizon_client::mobs::fox::on_offspring_spawned_from_egg(child, spawner);
+            }
         }
         self.trigger_item_entity("minecraft:player_interacted_with_entity", &stack, &target);
         self.consume_held();
@@ -6028,6 +6076,7 @@ mod pearl_tests {
             nearest_player: None,
             others: &[],
             leash_boats: &[],
+            dropped: &[],
             others_grid: None,
             others_index: None,
             daylight: true,

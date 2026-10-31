@@ -160,6 +160,7 @@ mod maps;
 mod minecarts;
 mod mob_blocks;
 mod mob_gear;
+mod mob_pickup;
 mod mob_sounds;
 mod mods;
 mod mount_menu;

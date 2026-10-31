@@ -51,6 +51,7 @@ pub mod keyframes;
 pub mod leash;
 pub mod living;
 pub mod llama;
+pub mod loot;
 pub mod monster_brain;
 pub mod nautilus;
 pub mod nav;
@@ -792,7 +793,10 @@ pub struct Extra {
     /// AgeableMob.forcedAgeTimer: ticks of happy villager particles left.
     pub forced_age_timer: i32,
     pub in_love: i32,
-    pub love_player: bool,
+    /// `Animal.loveCause`: the UUID of the last player who fed it into love
+    /// (`setInLove`), which `LoveCause` keeps in the save. Kept after the love
+    /// ends, as vanilla does.
+    pub love_cause: Option<[i32; 4]>,
     /// Texture/model variant index (cat type, horse colour, rabbit type...).
     pub variant: u8,
     /// Secondary variant (horse markings, tropical fish pattern colours, panda hidden gene).
@@ -826,6 +830,12 @@ pub struct Extra {
     pub party_jukebox: Option<[i32; 3]>,
     /// The owner's UUID (tamed animals).
     pub owner: Option<[i32; 4]>,
+    /// `Fox.DATA_TRUSTED_ID_0` and `DATA_TRUSTED_ID_1`: the UUIDs of the
+    /// players a fox trusts (`Fox.getTrustedEntities`).
+    pub trusted: [Option<[i32; 4]>; 2],
+    /// `Ocelot.DATA_TRUSTING`: it trusts players, so it no longer runs from
+    /// them (`Trusting` in the save).
+    pub trusting: bool,
     /// Slime/magma cube size (0 = not sized).
     pub size: i32,
     /// Sheep eat-grass / iron golem attack / ravager animation ticks.
@@ -1420,6 +1430,15 @@ pub enum MobEvent {
         item: Arc<str>,
         count: u32,
         at: [f64; 3],
+    },
+    /// A mob throws a stack (`Dolphin.ItemGoal.drop`): an item entity at `at`
+    /// with its own motion and pickup delay, thrown by the mob.
+    ThrowItem {
+        stack: crate::items::ItemStack,
+        at: [f64; 3],
+        velocity: [f64; 3],
+        pickup_delay: u32,
+        thrower: u32,
     },
     /// `Mob.dropFromGiftLootTable`: a gift loot table's items dropped at `at`.
     DropGift {
@@ -2172,6 +2191,9 @@ pub struct MobWorld<'a> {
     /// player in the level stands, alive or not (the despawn distance).
     pub nearest_player: Option<Vec3>,
     pub others: &'a [Seen],
+    /// The dropped item entities of the level, for the goals that look for
+    /// items (`Level.getEntitiesOfClass(ItemEntity.class, ..)`).
+    pub dropped: &'a [crate::entities::ItemEntity],
     /// The boats and rafts a lead can hang on (`Holder::Boat`): id and state.
     pub leash_boats: &'a [(u32, leash::HolderState)],
     /// `others` by position, when the caller keeps one (the mob ticks).
@@ -2337,6 +2359,18 @@ impl Mob {
             Species::Allay => self.extra.main_hand.is_some() && self.extra.ints[3] <= 0,
             Species::SulfurCube => !sulfur_cube::has_body(self),
             _ => self.extra.pick_up_loot,
+        }
+    }
+    /// The size of the stack in the main hand (`getItemBySlot(MAINHAND)
+    /// .getCount()`): 0 when it is empty, else the stack the mob picked up (1
+    /// for what it spawned with).
+    pub fn main_hand_count(&self) -> u32 {
+        if self.extra.main_hand.is_none() {
+            0
+        } else {
+            self.extra
+                .main_hand_stack()
+                .map_or(1, |stack| stack.count.max(1))
         }
     }
     pub fn bounds(&self) -> Aabb {

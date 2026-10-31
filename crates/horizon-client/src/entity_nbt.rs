@@ -424,9 +424,14 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
             map.insert("ForcedAge".into(), Tag::Int(m.extra.forced_age));
         }
     }
-    // Animal.addAdditionalSaveData: the love ticks left, whatever the save had.
+    // Animal.addAdditionalSaveData: the love ticks left, whatever the save had,
+    // and the player who fed it into love.
     if is_animal(id) {
         map.insert("InLove".into(), Tag::Int(m.extra.in_love.max(0)));
+        match m.extra.love_cause {
+            Some(cause) => map.insert("LoveCause".into(), Tag::IntArray(cause.to_vec())),
+            None => map.remove(&"LoveCause".into()),
+        };
     }
     let species = m.species();
     if let Some((_, variant)) =
@@ -447,12 +452,20 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
         );
     }
     match id {
-        // Fox.addAdditionalSaveData; Horizon models only the type, the
-        // flags and no trusted players yet.
+        // Fox.addAdditionalSaveData; Horizon models the type, the
+        // flags and the trusted.
         "minecraft:fox" => {
             let kind = if m.extra.variant == 1 { "snow" } else { "red" };
             map.insert("Type".into(), string(kind));
-            map.entry("Trusted".into()).or_insert(Tag::List(Vec::new()));
+            // The trusted UUIDs (`TRUSTED_LIST_CODEC`: a list of int arrays).
+            map.insert(
+                "Trusted".into(),
+                Tag::List(
+                    crate::mobs::fox::trusted_entities(m)
+                        .map(|uuid| Tag::IntArray(uuid.to_vec()))
+                        .collect(),
+                ),
+            );
             for (key, bit) in [
                 ("Sleeping", crate::mobs::fox::SLEEPING),
                 ("Sitting", crate::mobs::fox::SITTING),
@@ -463,6 +476,10 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
                     Tag::Byte(i8::from(crate::mobs::fox::flag(m, bit))),
                 );
             }
+        }
+        // Ocelot.addAdditionalSaveData.
+        "minecraft:ocelot" => {
+            map.insert("Trusting".into(), Tag::Byte(i8::from(m.extra.trusting)));
         }
         // MushroomCow.addAdditionalSaveData: the Variant codec's name (stew
         // effects are not modelled).
@@ -1293,6 +1310,7 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
     }
     if is_animal(&m.kind.id) {
         m.extra.in_love = number(tag.get("InLove")).unwrap_or(0) as i32;
+        m.extra.love_cause = uuid_from_tag(tag.get("LoveCause"));
     }
     m.name_visible = flag(tag, "CustomNameVisible");
     m.no_ai = flag(tag, "NoAI");
@@ -1417,6 +1435,14 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
     match m.species() {
         crate::mobs::Species::Fox => {
             m.extra.variant = u8::from(text(tag.get("Type")).as_deref() == Some("snow"));
+            // Fox.readAdditionalSaveData: clearTrusted, then addTrustedEntity
+            // for each of "Trusted".
+            crate::mobs::fox::clear_trusted(&mut m);
+            if let Some(Tag::List(trusted)) = tag.get("Trusted") {
+                for uuid in trusted.iter().filter_map(|t| uuid_from_tag(Some(t))) {
+                    crate::mobs::fox::add_trusted_entity(&mut m, uuid);
+                }
+            }
             // Fox.readAdditionalSaveData: the sleeping, sitting and crouching flags.
             for (key, bit) in [
                 ("Sleeping", crate::mobs::fox::SLEEPING),
@@ -1453,6 +1479,10 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
         m.extra.sitting = flag(tag, "Sitting");
         m.extra.color =
             number(tag.get("CollarColor")).map_or(crate::mobs::tame::RED, |c| (c as u8) & 15);
+    }
+    if m.species() == crate::mobs::Species::Ocelot {
+        // Ocelot.readAdditionalSaveData.
+        crate::mobs::tame::set_trusting(&mut m, flag(tag, "Trusting"));
     }
     if m.species() == crate::mobs::Species::Panda {
         let gene = |key| text(tag.get(key)).map_or(0, |n| crate::mobs::panda::gene_from_name(&n));
