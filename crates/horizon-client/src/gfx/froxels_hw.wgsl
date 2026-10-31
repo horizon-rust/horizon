@@ -73,12 +73,44 @@ fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>) -> vec3<f32> {
         let fresnel = 0.02 + 0.98 * pow(1.0 - l.y, 5.0);
         return focus * (1.0 - fresnel) * exp(-absorption * depth / max(-bent.y, 0.1));
     }
+    // Glass: each face it crosses is a wall, as shadow_rays_hw.wgsl's `hw_tint` has it.
+    let p0 = hw_position(base);
+    let f = cross(hw_position(base + 1u) - p0, hw_position(base + 2u) - p0);
+    if dot(f, f) < 1e-12 { return vec3(1.0); }
+    return glass_wall(hw_glass(c, base), abs(dot(normalize(f), l)));
+}
+// Arena vertex `v`'s section-relative position.
+fn hw_position(v: u32) -> vec3<f32> {
+    return bitcast<vec3<f32>>(vec3(arena[v * 6u], arena[v * 6u + 1u], arena[v * 6u + 2u]));
+}
+// RT lighting's glass (shadow_rays_hw.wgsl's, the froxels' copy; the plain glass's layers in
+// `fx.depth.w`).
+const GLASS_INDEX: f32 = 1.52;
+const GLASS_TRANSMITTANCE: f32 = 0.97;
+const GLASS_DISTANCE: f32 = 0.35;
+const GLASS_WALL: f32 = 0.175;
+fn glass_fresnel(cosine: f32) -> f32 {
+    return 0.0426 + 0.9574 * pow(1.0 - clamp(cosine, 0.0, 1.0), 5.0);
+}
+fn glass_wall(g: vec4<f32>, cosine: f32) -> vec3<f32> {
+    let c = clamp(cosine, 0.0, 1.0);
+    let slant = sqrt(1.0 - (1.0 - c * c) / (GLASS_INDEX * GLASS_INDEX));
+    return (1.0 - glass_fresnel(c)) * (1.0 - g.a) * exp(-g.rgb * GLASS_WALL / slant);
+}
+fn hw_glass(c: RayIntersection, base: u32) -> vec4<f32> {
+    let clear = vec3(-log(GLASS_TRANSMITTANCE) / GLASS_DISTANCE);
     let texel = hw_texel(c, base);
-    if texel.a < 0.0 { return vec3(1.0); }
+    if texel.a < 0.0 { return vec4(clear, 0.0); }
+    let layer = f32(arena[base * 6u + 4u] & 0x7fffu);
+    let packed = fx.depth.w;
+    let pane = floor(packed / 4096.0);
+    if packed >= 0.0 && (layer == packed - pane * 4096.0 || layer == pane) {
+        return vec4(clear, clamp(texel.a, 0.0, 1.0));
+    }
     let w = arena[base * 6u + 5u];
     let tint = vec3(f32(w & 255u), f32((w >> 8u) & 255u), f32((w >> 16u) & 255u)) / 255.0;
     let colour = pow(max(texel.rgb * tint, vec3(0.0)), vec3(2.2));
-    return mix(vec3(1.0), colour, clamp(texel.a * 1.5, 0.0, 1.0));
+    return vec4(-log(max(colour * GLASS_TRANSMITTANCE, vec3(1e-3))) / GLASS_DISTANCE, 0.0);
 }
 // The light the drawn terrain lets through from camera-relative `pos` along `l` (unit) for
 // `reach`: none once a triangle's opaque texel is met, otherwise what the translucent ones it

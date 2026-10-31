@@ -701,7 +701,7 @@ impl Froxels {
                 dims[2] as f32,
                 (frame % 65536) as f32,
             ],
-            depth: [NEAR, FAR, (FAR / NEAR).ln(), 0.0],
+            depth: [NEAR, FAR, (FAR / NEAR).ln(), rays.glass],
             sigma_t: [
                 medium.sigma_t.x,
                 medium.sigma_t.y,

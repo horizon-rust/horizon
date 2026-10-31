@@ -14189,6 +14189,13 @@ fn build_renderer(
             .get("minecraft:block/lava_flow")
             .copied(),
     );
+    renderer.set_glass_layers(
+        assets.sprite_layers.get("minecraft:block/glass").copied(),
+        assets
+            .sprite_layers
+            .get("minecraft:block/glass_pane_top")
+            .copied(),
+    );
     renderer.hud.fire_animations = atlas
         .fire_animations
         .iter()

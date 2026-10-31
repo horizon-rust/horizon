@@ -451,9 +451,19 @@ fn parallax_rt_lit(in: ParallaxOut, s: ParallaxSurface) -> vec3<f32> {
                 in.cylindrical, n, in.tint);
             return vec4(w.added / w.alpha, w.alpha);
         }
+        // Glass: the pack's normal map and roughness drive its bending, its reflections and its
+        // blur (terrain.wgsl `rt_glass_at`); without a map, drawn glass's waviness.
         let s = parallax_surface(in, false);
         if s.texel.a < 0.01 { discard; }
-        return vec4(parallax_rt_lit(in, s), s.texel.a);
+        let layer = in.layer & 0x7fffu;
+        let specular = specular_at(layer, s.uv, s.footprint);
+        let normal = select(horizon_terrain_rt_glass_wave(in.position, s.geo), s.normal, s.mapped);
+        let roughness = select(0.0, (1.0 - specular.r) * (1.0 - specular.r),
+            specular_slot(layer).array != 0xffffu);
+        let g = horizon_terrain_rt_glass_at(horizon_terrain_GlassIn(in.position, in.clip.xy,
+            in.light, in.spherical, in.cylindrical, s.geo, normal,
+            horizon_terrain_decode_gamma(s.texel.rgb * in.tint), s.texel.a, roughness, in.layer));
+        return vec4(g.added / g.alpha, g.alpha);
     }
     let color = parallax_color(in, false);
     if color.a < 0.01 { discard; }

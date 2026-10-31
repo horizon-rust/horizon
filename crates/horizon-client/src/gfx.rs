@@ -202,7 +202,8 @@ struct Globals {
     inverse_view: [[f32; 4]; 4],
     sunrise: [f32; 4],
     sun: [f32; 4],
-    /// x: sky fog end, y: cloud fog end, z: dark disc (camera below the horizon), w: unused.
+    /// x: sky fog end, y: cloud fog end, z: dark disc (camera below the horizon), w: RT
+    /// lighting's plain glass sprite layers, packed (`set_glass_layers`).
     fog_ends: [f32; 4],
     /// Atlas rects (u0, v0, width, height) of end_sky.png and end_portal.png.
     end_portal_sprites: [[f32; 4]; 2],
@@ -620,6 +621,8 @@ pub struct Renderer {
     water_layers: [f32; 2],
     /// RT lighting's lava's sprite layers, packed (`set_lava_layers`; -1: none).
     lava_layers: f32,
+    /// RT lighting's plain glass sprite layers, packed (`set_glass_layers`; -1: none).
+    glass_layers: f32,
     /// When the renderer was made: the water's waves' clock.
     water_clock: std::time::Instant,
     /// RT lighting's sun's angular radius (the Sun Size setting) and aerial perspective's air
@@ -1219,10 +1222,25 @@ fn device_features(adapter: &wgpu::Adapter) -> wgpu::Features {
                 | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
                 | wgpu::Features::RG11B10UFLOAT_RENDERABLE))
 }
+/// RT lighting's hybrid (`hw_rays`): the hardware ray queries asked of a Vulkan device, none with
+/// HORIZON_HW_RT=0.
+fn hw_rt_features() -> wgpu::Features {
+    if std::env::var("HORIZON_HW_RT").is_ok_and(|v| v == "0") {
+        wgpu::Features::empty()
+    } else {
+        wgpu::Features::EXPERIMENTAL_RAY_QUERY
+    }
+}
 /// EXPERIMENTAL VR: the device through the OpenXR runtime (`xr`), with a surface for the
 /// window on the same instance. `None` when the runtime, the headset or the surface is missing.
 fn open_xr_device(window: &Arc<Window>, offscreen: bool, layers: u32) -> Option<Opened> {
-    let xr = xr::open(|adapter| (device_features(adapter), adapter.limits()))?;
+    // RT lighting's hardware rays in the headset as on the screen, where the adapter has them.
+    let xr = xr::open(|adapter| {
+        (
+            device_features(adapter) | (adapter.features() & hw_rt_features()),
+            adapter.limits(),
+        )
+    })?;
     describe_adapter(&xr.adapter);
     if let Err(e) = check_layers(&xr.adapter.limits(), layers) {
         log::warn!("Horizon VR: {e}; starting without VR");
@@ -1326,10 +1344,8 @@ async fn open_device(
         // RT lighting's hybrid (`hw_rays`): hardware rays where Vulkan offers them, unless
         // HORIZON_HW_RT=0.
         let hw_rt = info.backend == wgpu::Backend::Vulkan
-            && adapter
-                .features()
-                .contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
-            && std::env::var("HORIZON_HW_RT").map_or(true, |v| v != "0");
+            && adapter.features().contains(hw_rt_features())
+            && !hw_rt_features().is_empty();
         let desc = wgpu::DeviceDescriptor {
             label: Some("Horizon device"),
             required_features: if hw_rt {
@@ -3243,6 +3259,7 @@ impl Renderer {
             rt_lighting: false,
             water_layers: [-1.0; 2],
             lava_layers: -1.0,
+            glass_layers: -1.0,
             water_clock: std::time::Instant::now(),
             rt_sun_radius: SUN_RADIUS,
             rt_moon_radius: MOON_RADIUS,
@@ -4034,6 +4051,16 @@ impl Renderer {
             _ => -1.0,
         };
     }
+    /// The plain glass's sprite layers (its block's and its pane's edge), which RT lighting draws
+    /// with Remix's diffuse layer over a clear dielectric where every other translucent texture
+    /// is the glass's colour (terrain.wgsl `rt_glass_at`): packed as the lava's.
+    pub fn set_glass_layers(&mut self, glass: Option<u32>, pane: Option<u32>) {
+        self.glass_layers = match (glass, pane) {
+            (Some(g), Some(p)) if g < 4096 && p < 4096 => (g + 4096 * p) as f32,
+            (Some(g), None) if g < 4096 => (g + 4096 * g) as f32,
+            _ => -1.0,
+        };
+    }
     /// RT lighting's night vision (the Night Vision setting, gfx/tonemap.wgsl `night_vision`).
     pub fn set_night_vision(&mut self, on: bool) {
         if let Some(t) = &mut self.tonemap {
@@ -4241,6 +4268,7 @@ impl Renderer {
                 self.water_clock.elapsed().as_secs_f32() % 3600.0,
                 self.lava_layers,
             ],
+            glass: self.glass_layers,
             // Set after the hybrid's structures are made this frame (`hw_update`).
             hw_offset: [0.0; 4],
             moving: {
@@ -4976,7 +5004,7 @@ impl Renderer {
                 frame.fog.map_or(frame.distance.min(512.0), |f| f.sky_end),
                 frame.fog.map_or(2048.0, |f| f.cloud_end),
                 if frame.dark_disc { 1.0 } else { 0.0 },
-                0.0,
+                self.glass_layers,
             ],
             end_portal_sprites: frame.end_portal_sprites,
             crumbling_sprite: frame.crumbling_sprite,

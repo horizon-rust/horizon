@@ -1,7 +1,8 @@
 
 // RT lighting's translucent terrain with dual-source blending (gfx.rs, where the GPU has it): the
 // light a fragment adds, and what of the frame behind shows through it in colour, so water tints
-// what lies under it (red absorbed first) instead of only dimming it. Appended to terrain.wgsl
+// what lies under it (red absorbed first) and glass what lies behind it, instead of only dimming
+// it. Appended to terrain.wgsl
 // after `enable dual_source_blending;`.
 struct DualOut {
     @location(0) @blend_src(0) added: vec4<f32>,
@@ -19,10 +20,14 @@ struct DualOut {
         out.through = vec4(w.through, 1.0 - w.alpha);
         return out;
     }
-    var c = scene_color(color, emission_gain(in.emission), in.spherical, in.cylindrical);
+    // Glass: what lies behind through its colour, where no ray traced it (`rt_glass`).
     if globals.rt_mode.x > 0.5 && linear_on() && in.emission == 0u {
-        c = vec4(rt_lit(texel.rgb * in.tint, in, n), color.a);
+        let g = rt_glass(in, n, texel);
+        out.added = vec4(g.added, g.alpha);
+        out.through = vec4(g.through, 1.0 - g.alpha);
+        return out;
     }
+    let c = scene_color(color, emission_gain(in.emission), in.spherical, in.cylindrical);
     out.added = vec4(c.rgb * c.a, c.a);
     out.through = vec4(1.0 - c.a);
     return out;

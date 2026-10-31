@@ -12,7 +12,8 @@ struct Globals {
     sunrise: vec4<f32>,
     // xyz: sun direction, w: star brightness
     sun: vec4<f32>,
-    // x: sky fog end, y: cloud fog end, z: dark disc flag
+    // x: sky fog end, y: cloud fog end, z: dark disc flag, w: RT lighting's plain glass's sprite
+    // layers (`rt_glass_plain`)
     fog_ends: vec4<f32>,
     // Atlas rects (u0, v0, width, height) of end_sky.png and end_portal.png.
     end_portal_sprites: array<vec4<f32>, 2>,
@@ -1232,19 +1233,205 @@ fn rt_dither(pixel: vec2<f32>) -> f32 {
     let color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
     if (color.a < 0.5 && (in.layer & 0x8000u) == 0u) || faded_out(in.fade, in.clip.xy) { discard; }
 }
+// RT lighting's glass (shadow_rays_hw.wgsl `hw_glass`: Remix's translucent material as RTX Remix
+// for Minecraft gives the block atlas): stained glass, panes, plain glass and every translucent
+// block but water. A dielectric of index 1.52, its normal the pack's map (or, without one, drawn
+// glass's faint waviness, `rt_glass_wave`), smooth or as rough as the pack's specular map says.
+// Fresnel weighs what it reflects (what the rays met that way, or the sky, and the sun's glint)
+// against what the rays met through it (`rt_refract`, shadow_rays_psr.wgsl `hw_refract_glass`:
+// bent by its faces as built, dimmed by Beer-Lambert over the length run inside, deeper in colour
+// where the ray slants through). The map's slopes bend the view further, here: the traced picture
+// is read where the tilted facet sends the ray, which a flat back face turns by about (n - 1)
+// times the tilt, over the distance to what lies behind; a rough face spreads it over the angle
+// its roughness gives. Plain glass lays its texel over all of it as a diffuse layer as opaque as
+// its alpha (Remix's `useDiffuseLayer`). Without traced refraction (no hardware rays) what lies
+// behind shows through the glass's colour over its measurement distance along the bent ray.
+const GLASS_INDEX: f32 = 1.52;
+const GLASS_TRANSMITTANCE: f32 = 0.97;
+// The glass a fragment shows (`rt_glass_at`): its camera-relative position, pixel, light levels
+// and fog distances; its face's normal toward the camera and its surface's (the map's, or the
+// waviness); its texel times the face's tint (linear) and the texel's alpha; its roughness (GGX
+// alpha's square root); its sprite layer.
+struct GlassIn {
+    pos: vec3<f32>,
+    clip: vec2<f32>,
+    light: vec2<f32>,
+    spherical: f32,
+    cylindrical: f32,
+    face: vec3<f32>,
+    normal: vec3<f32>,
+    albedo: vec3<f32>,
+    alpha: f32,
+    roughness: f32,
+    layer: u32,
+}
+// Whether sprite `layer` is the plain glass's (its block's or its pane's edge: gfx.rs
+// `set_glass_layers`, packed as the lava's).
+fn rt_glass_plain(layer: u32) -> bool {
+    let packed = globals.fog_ends.w;
+    if packed < 0.0 { return false; }
+    let l = f32(layer & 0x7fffu);
+    let pane = floor(packed / 4096.0);
+    return l == packed - pane * 4096.0 || l == pane;
+}
+// A dielectric's reflectance at index 1.52 (Schlick's, F0 = ((n - 1) / (n + 1))^2), the cosine on
+// the air's side.
+fn rt_glass_fresnel(cosine: f32) -> f32 {
+    return 0.0426 + 0.9574 * pow(1.0 - clamp(cosine, 0.0, 1.0), 5.0);
+}
+// Drawn glass's faint waviness, for glass without a normal map: the slopes of a world-fixed noise
+// a block or so across, a few hundredths, so a window bends what is behind it a little and its
+// reflections ripple.
+fn rt_glass_wave(pos: vec3<f32>, face: vec3<f32>) -> vec3<f32> {
+    let p = (pos + globals.rt_camera.xyz) * 1.3;
+    let e = 0.15;
+    let h = lava_noise(p);
+    let g = vec3(lava_noise(p + vec3(e, 0.0, 0.0)), lava_noise(p + vec3(0.0, e, 0.0)),
+        lava_noise(p + vec3(0.0, 0.0, e))) - h;
+    let slope = (g - face * dot(g, face)) / e;
+    return normalize(face - slope * 0.035);
+}
+// Where camera-relative `p` lands in the world target, in pixels (z: whether it is in front).
+fn rt_screen(p: vec3<f32>) -> vec3<f32> {
+    let c = globals.view_proj * vec4(p, 1.0);
+    let ndc = c.xy / max(c.w, 1e-4);
+    return vec3(vec2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y) * globals.rt_motion.xy,
+        select(0.0, 1.0, c.w > 1e-4));
+}
+// How far on the screen (pixels, at most 48) the point `d` along `bent` from `pos` lies from the
+// one `d` along `straight`.
+fn rt_shift(pos: vec3<f32>, bent: vec3<f32>, straight: vec3<f32>, d: f32) -> vec2<f32> {
+    let a = rt_screen(pos + bent * d);
+    let b = rt_screen(pos + straight * d);
+    if a.z < 0.5 || b.z < 0.5 { return vec2(0.0); }
+    let s = a.xy - b.xy;
+    return s * min(1.0, 48.0 / max(length(s), 1e-4));
+}
+// What the rays met through the translucent surface at `pixel` (`rt_refract`).
+fn rt_refracted(pixel: vec2<f32>) -> vec4<f32> {
+    let size = vec2<f32>(textureDimensions(rt_refract));
+    let at = clamp(vec2<i32>(pixel / globals.rt_motion.xy * size), vec2(0), vec2<i32>(size) - 1);
+    return textureLoad(rt_refract, at, 0);
+}
+fn rt_glass_at(g: GlassIn) -> WaterLight {
+    let distance = length(g.pos);
+    let ray = g.pos / max(distance, 1e-4);
+    let view = -ray;
+    let plain = rt_glass_plain(g.layer);
+    // A map's facet turned from the eye is seen edge on: kept just inside the side it can see.
+    var n = g.normal;
+    let facing = dot(n, view);
+    if facing < 0.02 { n = normalize(n + view * (0.02 - facing)); }
+    let nv = max(dot(n, view), 1e-3);
+    let fresnel = rt_glass_fresnel(nv);
+    let v = rt_visibility(g.pos, g.clip);
+    let sky_seen = select(pow(clamp(g.light.x * 16.0 / 15.0, 0.0, 1.0), 2.0), max(v.z, 0.0),
+        v.z >= 0.0);
+    let sun = globals.rt_sun_light.rgb * globals.rt_light.w * v.x;
+    // Reflected: the sky that way, faded as it dips under the face, or what the rays met off the
+    // face, read where the facet's normal sends the reflection instead (as far off as a few
+    // blocks away would be).
+    let mirrored = reflect(ray, n);
+    let horizon_fade = clamp(1.0 + 1.1 * dot(mirrored, g.face), 0.0, 1.0);
+    var reflected = rt_sky(mirrored) * max(sky_seen, 0.15 * v.x) * horizon_fade * horizon_fade;
+    if globals.rt_motion.w > 1.5 {
+        let shift = rt_shift(g.pos, mirrored, reflect(ray, g.face), 4.0);
+        var traced = rt_reflection(g.clip + shift, g.pos);
+        if traced.a < 0.5 { traced = rt_reflection(g.clip, g.pos); }
+        if traced.a > 0.5 { reflected = traced.rgb; }
+    }
+    // The sun's glint (GGX, the glass's roughness, a smooth face's at least 0.02).
+    let l = globals.rt_light.xyz;
+    let h = normalize(l + view);
+    let nl = max(dot(n, l), 0.0);
+    let alpha = max(g.roughness * g.roughness, 0.02);
+    let a2 = alpha * alpha;
+    let nh = max(dot(n, h), 0.0);
+    let dd = nh * nh * (a2 - 1.0) + 1.0;
+    let glint = a2 / (RT_PI * dd * dd) * 0.25 / max(nl * nv, 1e-3) * nl * RT_PI;
+    reflected += sun * min(glint * smoothstep(0.0, 0.15, dot(g.face, l)), 200.0);
+    // Through it: in bent by the facet, out through a flat face parallel to this one.
+    let inward = refract(ray, n, 1.0 / GLASS_INDEX);
+    var outward = refract(inward, g.face, GLASS_INDEX);
+    if dot(outward, outward) < 1e-6 { outward = ray; }
+    let bottom = rt_bottom(g.clip, ray);
+    let behind = clamp(select(8.0, bottom - distance, bottom > 0.0), 0.05, 6.0);
+    var refracted = vec4(0.0);
+    if globals.rt_motion.w > 1.5 {
+        let centre = rt_refracted(g.clip);
+        if centre.a > 0.0 {
+            let at = g.clip + rt_shift(g.pos, outward, ray, behind);
+            // A rough face spreads what it lets through over about its GGX alpha: four taps
+            // around that point, turned by the pixel's noise (the temporal resolve smooths them).
+            let spread = alpha * behind * 0.5;
+            let far = g.pos + outward * behind;
+            let t1 = normalize(cross(g.face, select(vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0),
+                abs(g.face.y) > 0.9)));
+            let t2 = cross(g.face, t1);
+            let base = rt_screen(far);
+            let u = (rt_screen(far + t1 * spread).xy - base.xy) * base.z;
+            let w = (rt_screen(far + t2 * spread).xy - base.xy) * base.z;
+            var sum = vec4(0.0);
+            let taps = select(1, 4, g.roughness > 0.1 && length(u) + length(w) > 1.0);
+            let turn = rt_dither(g.clip) * 6.2831853;
+            for (var i = 0; i < taps; i++) {
+                let a = turn + f32(i) * 1.5707963;
+                let r = select(0.0, 0.7, taps > 1);
+                let s = rt_refracted(at + (u * cos(a) + w * sin(a)) * r);
+                if s.a > 0.0 { sum += vec4(s.rgb, 1.0); }
+            }
+            refracted = select(vec4(centre.rgb, 1.0), vec4(sum.rgb / max(sum.a, 1.0), 1.0),
+                sum.a > 0.0);
+        }
+    }
+    var added = fresnel * reflected;
+    var shows = vec3(1.0 - fresnel);
+    if refracted.a <= 0.0 {
+        // Untraced: the glass's colour over its measurement distance along the bent ray.
+        let colour = select(clamp(g.albedo, vec3(0.0), vec3(1.0)), vec3(1.0), plain)
+            * GLASS_TRANSMITTANCE;
+        let slant = max(dot(inward, -g.face), 0.2);
+        shows *= pow(max(colour, vec3(1e-3)), vec3(1.0 / slant));
+    }
+    // The air in front, as for the terrain: it dims both and adds the horizon's light.
+    let f = rt_fade(g.spherical, g.cylindrical, g.pos) * globals.fog_color.a;
+    let toward = normalize(vec3(g.pos.x, 0.0, g.pos.z) + vec3(0.0, 0.05 * length(g.pos.xz), 0.0));
+    let horizon = rt_sky(toward) * sky_seen;
+    let air = vec3(5.802e-3 + 4.44e-3, 13.558e-3 + 4.44e-3, 33.1e-3 + 4.44e-3);
+    let air_through = exp(-air * (distance * 0.001 * globals.rt_mode.w)) * (1.0 - f);
+    added = added * air_through + horizon * (1.0 - air_through);
+    shows *= air_through;
+    // Plain glass's diffuse layer, lit (and fogged) as the terrain is.
+    if plain && g.alpha > 0.0 {
+        let layer = rt_material_lit(RtMaterial(g.albedo, n, 1.0, 1.0, vec3(0.04), 0.0, 0.0, 0.0),
+            g.face, g.pos, g.clip, g.light, g.spherical, g.cylindrical);
+        added = mix(added, layer, g.alpha);
+        shows *= 1.0 - g.alpha;
+    }
+    if refracted.a > 0.0 {
+        return WaterLight(added + shows * refracted.rgb, vec3(0.0), 1.0);
+    }
+    let opacity = clamp(1.0 - dot(shows, vec3(0.2126, 0.7152, 0.0722)), 0.02, 1.0);
+    return WaterLight(added, shows, opacity);
+}
+// The plain terrain's glass: its texel, the face's tint, and the waviness for a normal.
+fn rt_glass(in: TerrainOut, face: vec3<f32>, texel: vec4<f32>) -> WaterLight {
+    return rt_glass_at(GlassIn(in.pos, in.clip.xy, in.light, in.spherical, in.cylindrical, face,
+        rt_glass_wave(in.pos, face), decode_gamma(texel.rgb * in.tint), texel.a, 0.0, in.layer));
+}
 @fragment fn fs_translucent(in: TerrainOut) -> @location(0) vec4<f32> {
     let n = face_normal(in.pos);
     let texel = sprite(in.uv, in.layer & 0x7fffu);
     let color = texel * in.color;
     if color.a < 0.01 || faded_out(in.fade, in.clip.xy) { discard; }
-    // RT lighting: water its own way (`rt_water`), glass by the same model as the terrain (the rays
-    // saw what is behind it or the surface).
+    // RT lighting: water its own way (`rt_water`), glass its own (`rt_glass`).
     if globals.rt_mode.x > 0.5 && linear_on() && in.emission == 0u {
         if rt_is_water(in.layer) {
             let w = rt_water(in, n);
             return vec4(w.added / w.alpha, w.alpha);
         }
-        return vec4(rt_lit(texel.rgb * in.tint, in, n), color.a);
+        let g = rt_glass(in, n, texel);
+        return vec4(g.added / g.alpha, g.alpha);
     }
     return scene_color(color, emission_gain(in.emission), in.spherical, in.cylindrical);
 }

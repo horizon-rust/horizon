@@ -112,6 +112,8 @@ pub struct Rays {
     pub sun_light: [f32; 4],
     /// The water's sprite layers and the time, for the caustics.
     pub water: [f32; 4],
+    /// The plain glass's sprite layers, packed (`Renderer::set_glass_layers`; -1 none).
+    pub glass: f32,
     /// The camera's offset from the hardware rays' instances' anchor (`HwRays::offset`).
     pub hw_offset: [f32; 4],
     /// RT lighting's moving lights (a held torch, a burning mob, a dropped lantern: Remix's held
@@ -732,7 +734,7 @@ impl ShadowRays {
                 None => [0.0; 4],
             },
             sun: rays.sun,
-            frame: [(self.frame % 65536) as f32, 0.0, 0.0, 0.0],
+            frame: [(self.frame % 65536) as f32, rays.glass, 0.0, 0.0],
             sun_light: rays.sun_light,
             water: rays.water,
             hw_offset: rays.hw_offset,
