@@ -241,6 +241,7 @@ mod spear;
 mod spectator;
 mod spill;
 mod splash_water;
+mod split;
 mod startup_menu;
 mod station_control;
 mod stations;
@@ -368,6 +369,11 @@ struct Options {
     creative: bool,
     test_terrain: bool,
     frames: Option<u64>,
+    /// A splitscreen player: the split window paces every player's frames, not each its own.
+    paced_by_split: bool,
+    /// A splitscreen player other than P1: its windows are the split's (P1 alone decides
+    /// fullscreen; this game neither asks for it nor adopts it into its options).
+    split_guest: bool,
     /// `--world-frames N`: exit after N frames drawn in the world (smoke runs; the world may load slowly).
     world_frames: Option<u64>,
     screenshot_after: Option<u64>,
@@ -515,6 +521,8 @@ impl Options {
             creative: false,
             test_terrain: false,
             frames: None,
+            paced_by_split: false,
+            split_guest: false,
             world_frames: None,
             screenshot_after: None,
             timeout: Duration::from_secs(120),
@@ -10580,6 +10588,8 @@ impl Game<'_> {
     /// What the title screen asked for, from a click or Enter.
     fn title_action(&mut self, event_loop: &ActiveEventLoop, action: Action) -> Result<()> {
         match action {
+            // A splitscreen player's title never ends the process (P1's does).
+            Action::Quit if self.options.split_guest => {}
             Action::Quit => event_loop.exit(),
             Action::Options => self.open_options(true),
             Action::Accessibility => {
@@ -10817,6 +10827,7 @@ impl Game<'_> {
         book.recipes.retain(|r| index.contains(r));
         book.to_be_displayed.retain(|r| index.contains(r));
         self.dim = dim;
+        self.audio.set_world(dim.id());
         // LevelStorageAccess.getIconFile: this save's icon.png is what the
         // Select World list shows.
         self.world_icon = Some(WorldIcon {
@@ -10952,6 +10963,7 @@ impl Game<'_> {
         self.world = world;
         self.save = save;
         self.dim = target;
+        self.audio.set_world(target.id());
         self.level.dimension = target.id().to_owned();
         self.block_ticks = Ticks::new(self.level.seed as i32);
         self.tick_chunks.clear();
@@ -11093,6 +11105,10 @@ impl Game<'_> {
     /// Keeps this play session's performance summary for the launcher to send, if the player
     /// allows performance statistics (`horizon_client::telemetry`), and starts the next one.
     pub(super) fn finish_perf(&mut self) {
+        // One session per computer: P1's (a splitscreen player's would count it again).
+        if self.options.split_guest {
+            return;
+        }
         let s = &self.settings;
         let settings = horizon_telemetry::payload::Settings {
             render_distance: s.render_distance.clamp(0, 255) as u8,
@@ -15058,7 +15074,7 @@ impl ApplicationHandler for Game<'_> {
                 WindowEvent::RedrawRequested => {
                     if let Err(error) = self.render_closing_save() {
                         self.error = Some(error);
-                        event_loop.exit();
+                        self.exit_on_error(event_loop);
                     }
                 }
                 _ => {}
@@ -15961,7 +15977,7 @@ impl ApplicationHandler for Game<'_> {
         })();
         if let Err(e) = result {
             self.error = Some(e);
-            event_loop.exit();
+            self.exit_on_error(event_loop);
         }
     }
     fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
@@ -15979,7 +15995,9 @@ impl ApplicationHandler for Game<'_> {
         }
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // A splitscreen player's game has nothing to save: P1's shuts the process down.
         if horizon_threads::stop_requests() > 0
+            && !self.options.split_guest
             && self.pending_save.as_ref().is_none_or(|save| !save.quit)
         {
             // SIGTERM, SIGINT or SIGHUP: the shutdown hook's server halt, as a window close.
@@ -16003,14 +16021,14 @@ impl ApplicationHandler for Game<'_> {
                 }
                 Err(error) => {
                     self.error = Some(error);
-                    event_loop.exit();
+                    self.exit_on_error(event_loop);
                 }
             }
             return;
         }
         if let Err(error) = self.resume_world_entry() {
             self.error = Some(error);
-            event_loop.exit();
+            self.exit_on_error(event_loop);
             return;
         }
         // The world a backup made before its upgrade opens (EditWorldScreen's callback).
@@ -17854,7 +17872,9 @@ fn leave_fullscreen_after(
 }
 
 fn run_event_loop(mut game: Game<'_>) -> Result<()> {
-    let result = EventLoop::new()?.run_app(&mut game);
+    let mut split = split::Split::new(game);
+    let result = EventLoop::new()?.run_app(&mut split);
+    game = split.host;
     leave_fullscreen_after(&result, &mut game.settings);
     result?;
     horizon_client::discord_presence::stop();
@@ -18080,7 +18100,7 @@ impl Loading {
             );
         }
     }
-    fn finish(&mut self, loaded: Loaded) -> Result<Option<Game<'static>>> {
+    fn finish(&mut self, loaded: Loaded) -> Result<Option<split::Split<'static>>> {
         let handoff_at = Instant::now();
         let mut options = self.options.take().ok_or("loading already finished")?;
         options.resources = loaded.root.clone();
@@ -18150,7 +18170,7 @@ impl Loading {
             renderer_ms,
             game_ms
         );
-        Ok(Some(game))
+        Ok(Some(split::Split::new(game)))
     }
 }
 
@@ -18158,7 +18178,7 @@ impl Loading {
 /// the game itself, on the same event loop and window.
 enum App {
     Loading(Box<Loading>),
-    Ready(Box<Game<'static>>),
+    Ready(Box<split::Split<'static>>),
 }
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -18181,7 +18201,7 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         enum Step {
             Waiting,
-            Ready(Box<Game<'static>>),
+            Ready(Box<split::Split<'static>>),
             Done,
             Failed(Box<dyn std::error::Error>),
         }
@@ -18286,15 +18306,16 @@ fn run_loading(
     let mut app = App::Loading(Box::new(loading));
     let result = EventLoop::new()?.run_app(&mut app);
     match &mut app {
-        App::Ready(game) => leave_fullscreen_after(&result, &mut game.settings),
+        // Ready: splitscreen around P1's game.
+        App::Ready(split) => leave_fullscreen_after(&result, &mut split.host.settings),
         App::Loading(loading) => leave_fullscreen_after(&result, &mut loading.settings),
     }
     result?;
     horizon_client::discord_presence::stop();
     match app {
-        App::Ready(mut game) => {
-            write_report(&game)?;
-            if let Some(e) = game.error.take() {
+        App::Ready(mut split) => {
+            write_report(&split.host)?;
+            if let Some(e) = split.host.error.take() {
                 return Err(e);
             }
         }

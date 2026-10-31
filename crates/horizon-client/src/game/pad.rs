@@ -25,6 +25,8 @@ pub(super) const HELP: &[&str] = &[
 /// The controllers and the state the game last acted on.
 #[derive(Default)]
 pub(super) struct Pads {
+    /// Splitscreen: this player's pad, given by the split, instead of the pads.
+    pub(super) feed: Option<PadState>,
     /// The real controllers and the DualSense's output.
     #[cfg(feature = "controllers")]
     devices: hardware::Devices,
@@ -103,7 +105,10 @@ impl Game<'_> {
             }
             return;
         }
-        let hardware = self.pad.read();
+        let hardware = match self.pad.feed {
+            Some(state) => state,
+            None => self.pad.read(),
+        };
         self.ui.options.pad_style = self.settings.controller.glyphs.resolve(self.pad.style);
         let state = hardware.merge(&self.pad.injected);
         self.pad.virtual_input = self.pad.injected != PadState::default();
