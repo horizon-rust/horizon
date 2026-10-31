@@ -122,7 +122,7 @@ struct EyeChain {
 pub struct Xr {
     // Field order is drop order: the session goes before the device it renders with.
     eyes: Vec<EyeChain>,
-    /// The eyes' shading rate images (`HORIZON_XR_VRS=1`), before the device.
+    /// The eyes' shading rate images (on in stereo, `HORIZON_XR_VRS=0` turns it off), before the device.
     rates: Option<foveation::Rates>,
     quads: [Option<EyeChain>; QUADS],
     actions: Option<controls::Actions>,
@@ -153,7 +153,7 @@ pub struct Xr {
     /// The gaze's pitch is turned the other way (`HORIZON_XR_GAZE_INVERT_PITCH=1`): KRVR's
     /// SteamVR driver gives it upside down.
     pub invert_gaze_pitch: bool,
-    /// The fragment shading rate is on (`HORIZON_XR_VRS=1`): its attachment's texel size.
+    /// The fragment shading rate is on (stereo, unless `HORIZON_XR_VRS=0`): its attachment's texel size.
     shading_rate: Option<[u32; 2]>,
     running: bool,
     /// The runtime ended the session (headset off, SteamVR closed).
@@ -272,11 +272,11 @@ impl Xr {
         };
         let size = *sizes.first().ok_or_else(|| Error("no views".into()))?;
         let inset_size = sizes.get(2).copied().filter(|_| quad);
-        // Variable rate shading steered by the gaze (`foveation.rs`), when asked, in stereo
-        // (the quad views foveate already) and on Vulkan 1.2 or newer (`vkCreateRenderPass2`).
+        // Variable rate shading steered by the gaze (`foveation.rs`), unless `HORIZON_XR_VRS=0`:
+        // in stereo (the quad views foveate already), on Vulkan 1.2 or newer (`vkCreateRenderPass2`).
         let vrs = inset_size.is_none()
             && api >= vk::make_api_version(0, 1, 2, 0)
-            && std::env::var_os("HORIZON_XR_VRS").is_some_and(|v| v == "1");
+            && std::env::var_os("HORIZON_XR_VRS").is_none_or(|v| v != "0");
 
         // SAFETY: every handle is created below, from one Vulkan entry, with the extensions and
         // features wgpu-hal asks for: what `from_raw` and `device_from_raw` require.
@@ -364,7 +364,7 @@ impl Xr {
                 .ok();
             if self.rates.is_some() {
                 log::info!(
-                    "Horizon VR: variable rate shading, {}x{} pixels a rate texel, sharp near the gaze (HORIZON_XR_VRS=1)",
+                    "Horizon VR: variable rate shading, {}x{} pixels a rate texel, sharp near the gaze (HORIZON_XR_VRS=0 turns it off)",
                     texel[0],
                     texel[1]
                 );
@@ -373,7 +373,7 @@ impl Xr {
         Ok(())
     }
 
-    /// The eyes are shaded coarser away from where the eyes look (`HORIZON_XR_VRS=1`).
+    /// The eyes are shaded coarser away from where the eyes look (`HORIZON_XR_VRS=0` turns it off).
     pub fn variable_rate_shading(&self) -> bool {
         self.rates.is_some()
     }
