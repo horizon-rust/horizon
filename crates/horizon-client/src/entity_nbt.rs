@@ -3089,6 +3089,46 @@ pub fn bucket_components(m: &Mob) -> crate::item_data::StackData {
     }
     data
 }
+/// The saved-entity fields an item's component puts on the mob it spawns:
+/// `minecraft:bucket_entity_data` (a bucket's contents) and
+/// `minecraft:entity_data` (`EntityType.updateCustomEntityTag`, a spawn egg's
+/// configured entity) are both this compound, so they load alike.
+fn apply_entity_config(m: &mut Mob, data: &horizon_world::nbt::Tag) {
+    if let Some(v) = number(data.get("Age")) {
+        m.extra.age = v as i32;
+    }
+    if let Some(v) = number(data.get("AgeLocked")) {
+        m.extra.age_locked = v != 0;
+    }
+    // Keep old Horizon buckets readable; the modern component below takes precedence.
+    if let Some(v) = number(data.get("Variant")) {
+        m.extra.variant = v as u8;
+    }
+    if let Some(v) = float(data.get("Health")) {
+        m.health = v as f32;
+    }
+    for (key, flag) in [
+        ("NoAI", &mut m.no_ai),
+        ("Silent", &mut m.silent),
+        ("NoGravity", &mut m.no_gravity),
+        ("Glowing", &mut m.glowing),
+        ("Invulnerable", &mut m.invulnerable_flag),
+    ] {
+        if let Some(v) = number(data.get(key)) {
+            *flag = v != 0;
+        }
+    }
+    if let Some(name) = custom_name(data) {
+        m.custom_name = Some(name);
+    }
+    m.persistent |= flag(data, "PersistenceRequired");
+    if m.species() == crate::mobs::Species::Axolotl {
+        crate::mobs::animal_brain::set_hunting_cooldown(
+            m,
+            number(data.get("HuntingCooldown")).unwrap_or(0),
+        );
+    }
+}
 /// `Entity.applyComponentsFromItemStack` → the spawned mob's
 /// `applyImplicitComponents`: a bucket's contents (`MobBucketItem.spawn`) and
 /// a spawn egg (`PostSpawnProcessor.apply`) both land here. Vanilla applies
@@ -3101,37 +3141,13 @@ pub fn apply_item_components(m: &mut Mob, stack: &crate::items::ItemStack) {
         m.custom_name = Some(name);
     }
     if let Some(data) = components.other("minecraft:bucket_entity_data") {
-        if let Some(v) = number(data.get("Age")) {
-            m.extra.age = v as i32;
-        }
-        if let Some(v) = number(data.get("AgeLocked")) {
-            m.extra.age_locked = v != 0;
-        }
-        // Keep old Horizon buckets readable; the modern component below takes precedence.
-        if let Some(v) = number(data.get("Variant")) {
-            m.extra.variant = v as u8;
-        }
-        if let Some(v) = float(data.get("Health")) {
-            m.health = v as f32;
-        }
-        for (key, flag) in [
-            ("NoAI", &mut m.no_ai),
-            ("Silent", &mut m.silent),
-            ("NoGravity", &mut m.no_gravity),
-            ("Glowing", &mut m.glowing),
-            ("Invulnerable", &mut m.invulnerable_flag),
-        ] {
-            if let Some(v) = number(data.get(key)) {
-                *flag = v != 0;
-            }
-        }
-        m.persistent |= flag(data, "PersistenceRequired");
-        if m.species() == crate::mobs::Species::Axolotl {
-            crate::mobs::animal_brain::set_hunting_cooldown(
-                m,
-                number(data.get("HuntingCooldown")).unwrap_or(0),
-            );
-        }
+        apply_entity_config(m, data);
+    }
+    // `EntityType.updateCustomEntityTag`: the entity a spawn egg or an item is
+    // configured to make (`/give @s pig_spawn_egg[minecraft:entity_data={…}]`)
+    // loads its saved fields, so the stack's own data wins over the bucket's.
+    if let Some(data) = components.other("minecraft:entity_data") {
+        apply_entity_config(m, data);
     }
     if m.species() == crate::mobs::Species::Axolotl
         && let Some(name) = text(components.other("minecraft:axolotl/variant"))
@@ -3951,5 +3967,63 @@ mod held_item_name_tests {
                 .custom_name()
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod entity_data_component_tests {
+    use super::*;
+    /// `EntityType.updateCustomEntityTag`: the `minecraft:entity_data` a spawn
+    /// egg carries (`/give @s pig_spawn_egg[minecraft:entity_data={…}]`) loads
+    /// on the entity it spawns, and it wins over a bucket's older copy.
+    #[test]
+    fn a_spawn_eggs_entity_data_component_reaches_the_mob() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let kind = Arc::new(data.types.get("minecraft:pig").unwrap().clone());
+        let mut m = Mob::new(1, kind, Vec3::new(0.0, 4.0, 0.0), 0.0);
+        let mut egg = crate::items::ItemStack::new("minecraft:pig_spawn_egg", 1);
+        let component = Tag::compound([
+            ("NoAI", Tag::Byte(1)),
+            ("Silent", Tag::Byte(1)),
+            ("PersistenceRequired", Tag::Byte(1)),
+            ("Health", Tag::Float(5.0f32.to_bits())),
+            ("CustomName", string("Eggbert")),
+        ]);
+        egg.data_mut()
+            .set_other("minecraft:entity_data", Some(component));
+        apply_item_components(&mut m, &egg);
+        assert!(m.no_ai, "NoAI from the egg's entity_data");
+        assert!(m.silent, "Silent from the egg's entity_data");
+        assert!(
+            m.persistent,
+            "PersistenceRequired from the egg's entity_data"
+        );
+        assert_eq!(m.health, 5.0);
+        assert_eq!(m.custom_name.as_deref(), Some("Eggbert"));
+
+        // The configured entity wins over a bucket's saved copy.
+        let mut both = crate::items::ItemStack::new("minecraft:pig_spawn_egg", 1);
+        both.data_mut().set_other(
+            "minecraft:bucket_entity_data",
+            Some(Tag::compound([("Health", Tag::Float(9.0f32.to_bits()))])),
+        );
+        both.data_mut().set_other(
+            "minecraft:entity_data",
+            Some(Tag::compound([("Health", Tag::Float(3.0f32.to_bits()))])),
+        );
+        let mut m = Mob::new(
+            2,
+            Arc::new(data.types.get("minecraft:pig").unwrap().clone()),
+            Vec3::new(0.0, 4.0, 0.0),
+            0.0,
+        );
+        apply_item_components(&mut m, &both);
+        assert_eq!(m.health, 3.0, "entity_data is applied last");
     }
 }
