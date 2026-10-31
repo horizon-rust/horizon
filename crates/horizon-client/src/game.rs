@@ -54,6 +54,7 @@ mod advancements_screen;
 mod agent;
 mod agent_settings;
 mod allays;
+mod api_mods;
 mod armor_stands;
 mod atlas_slots;
 mod banners;
@@ -184,6 +185,7 @@ mod mounts;
 mod moving_pistons;
 mod music;
 mod names;
+pub use api_mods::set_api_mods;
 mod narrator;
 mod native_entities;
 mod native_hooks;
@@ -5079,6 +5081,7 @@ impl Game<'_> {
         // the block, and a guest's acknowledgement puts it back in its world.
         let mut canceled = false;
         self.native_destroy_block(pos, state, &mut canceled);
+        self.api_destroy_block(pos, state, &mut canceled);
         if canceled {
             return Ok(());
         }
@@ -5376,6 +5379,7 @@ impl Game<'_> {
         if let Some(hit) = block_hit {
             let mut canceled = false;
             self.native_right_click_block(hit.pos, hit.face, &mut canceled);
+            self.api_right_click_block(hit.pos, hit.face, &mut canceled);
             if canceled {
                 // Nothing was used, so nothing consumed the action.
                 self.use_failed = true;
@@ -5581,9 +5585,11 @@ impl Game<'_> {
         let mut claimed = false;
         if let Some(hit) = block_hit {
             self.native_use_item_on(&stack, hit.pos, hit.face, &mut claimed);
+            self.api_use_item_on(&stack, hit.pos, hit.face, &mut claimed);
         }
         if !claimed && !on_block {
             self.native_use_item(&stack, &mut claimed);
+            self.api_use_item(&stack, &mut claimed);
         }
         if claimed {
             self.swing_arm();
@@ -5824,6 +5830,7 @@ impl Game<'_> {
         self.stats.add("used", &stack.item, 1);
         self.trigger_block("minecraft:placed_block", target, &stack);
         self.native_place_block(&stack, target, state);
+        self.api_place_block(&stack, target, state);
         self.check_wither_spawn(target)?;
         self.check_golem_spawn(target)?;
         self.consume_held();
