@@ -6092,7 +6092,8 @@ impl Renderer {
             scaled: scaled.is_some(),
             grab_icon: true,
         };
-        let readback = self.draw_overlay(&mut encoder, frame, &view_target, &target_texture, &overlay);
+        let readback =
+            self.draw_overlay(&mut encoder, frame, &view_target, &target_texture, &overlay);
         if culling && let Some(cull) = &mut self.cull {
             cull.end(&self.device, &mut encoder);
         }
@@ -6297,12 +6298,8 @@ impl Renderer {
             }
         }
         // GameRenderer.render: LevelRenderer.blitEntityOutline after the level and the hand.
-        self.entity_outline.draw(
-            encoder,
-            view_target,
-            &self.entity_group,
-            &self.indices,
-        );
+        self.entity_outline
+            .draw(encoder, view_target, &self.entity_group, &self.indices);
         // The world icon grabs here: after the level and the hand, before
         // the effects and the HUD draw over them (`tryTakeScreenshotIfNeeded`
         // runs right after `renderLevel`).

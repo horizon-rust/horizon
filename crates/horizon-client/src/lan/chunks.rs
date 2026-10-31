@@ -1675,7 +1675,10 @@ mod tests {
         assert!(chunks.len() * SECTIONS >= WARM_MIN);
         warmed.warm(&chunks);
         assert_eq!(bodies(&warmed), expected);
-        assert_eq!(super::bodies(&warmed, &chunks, &world, &|_, _| None), expected);
+        assert_eq!(
+            super::bodies(&warmed, &chunks, &world, &|_, _| None),
+            expected
+        );
         // Run on this thread alone, the job makes every column's heightmaps
         // (once for the column there twice) and sections.
         let mut cold = ChunkEncoder::new(states, &builtin, &[], &[]);

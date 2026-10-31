@@ -2094,10 +2094,11 @@ impl Launcher {
                     (None, None) => tr("No version installed").to_string(),
                 };
                 // Java instances have nothing of Horizon's to prepare: no state square.
-                let state = instance
-                    .java
-                    .is_none()
-                    .then_some(if prepared { t.success } else { t.warn });
+                let state =
+                    instance
+                        .java
+                        .is_none()
+                        .then_some(if prepared { t.success } else { t.warn });
                 let icon = self.instance_icon(&instance, 36.);
                 vec![
                     shell::row("side-instance-current", self.page == Page::Builds, &t)

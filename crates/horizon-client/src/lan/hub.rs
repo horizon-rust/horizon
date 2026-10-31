@@ -1661,9 +1661,10 @@ impl Hub {
                 }
             }
         }
-        let mut encoded = crate::lan::chunks::bodies(&self.encoder, &columns.chunks, world, &|x, z| {
-            protos.get(&(x, z)).copied()
-        });
+        let mut encoded =
+            crate::lan::chunks::bodies(&self.encoder, &columns.chunks, world, &|x, z| {
+                protos.get(&(x, z)).copied()
+            });
         let uses = &mut columns.uses;
         for (i, taken, far, batch) in batches {
             let g = &mut self.guests[i];
