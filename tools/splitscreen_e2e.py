@@ -62,10 +62,10 @@ def check(name, got, want):
 class Game:
     """One splitscreen session: P1 launched with `players` (HORIZON_SPLIT), each on its socket."""
 
-    def __init__(self, players):
+    def __init__(self, players, **env):
         self.home = Path(tempfile.mkdtemp(prefix='horizon-split-e2e-'))
         self.sockets = Path(tempfile.mkdtemp(prefix='hzse-'))  # short: Unix socket paths
-        self.env = lab.game_env(HORIZON_HOME=self.home, HORIZON_SPLIT=str(players))
+        self.env = lab.game_env(HORIZON_HOME=self.home, HORIZON_SPLIT=str(players), **env)
         try:
             self.ctl(1, 'launch', '--wait', '--world', 'Split', '--creative',
                      '--resources', str(RESOURCES), '--width', str(WIDTH), '--height', str(HEIGHT),
@@ -176,10 +176,26 @@ def scenario_alone():
         g.quit()
 
 
+def scenario_windows():
+    print('windows: P3 in a window of its own, then it leaves and the window closes')
+    g = Game(3, HORIZON_SPLIT_WINDOWS='1,1,2')
+    try:
+        halves = g.sizes([1, 2])
+        check('P1 and P2 share Window 1 in halves', halves[0] == halves[1], True)
+        own = g.size(3)
+        check('P3 has Window 2 to itself (not a half of Window 1)', own != halves[0], True)
+        g.ctl(3, 'quit')
+        g.wait(lambda: not g.alive(3), 'P3 gone after its quit', seconds=15)
+        check('P1 and P2 still share Window 1', g.settle([1, 2], halves), halves)
+    finally:
+        g.quit()
+
+
 SCENARIOS = {
     'alone': scenario_alone,
     'join': scenario_join,
     'four': scenario_four,
+    'windows': scenario_windows,
 }
 
 

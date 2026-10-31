@@ -35,7 +35,7 @@ impl Split<'_> {
         };
         // The first other player: P1 moves to the compositor now (back with nobody joined, if
         // this one can't: `about_to_wait`).
-        if self.compositor.is_none() {
+        if self.surfaces.is_empty() {
             self.enable()?;
         }
         let pipe = self
@@ -66,14 +66,17 @@ impl Split<'_> {
             // The press that joined it doesn't act in its game.
             self.fresh.push(pad);
         }
+        let i = self.guests.len() + 1;
         self.guests.push(Guest {
             game,
             name,
             seat,
             options,
             pad,
+            window: 1,
             widgets: Default::default(),
         });
+        self.planned_window(i, seat);
         Ok(())
     }
 
