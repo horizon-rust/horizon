@@ -165,7 +165,19 @@ def scenario_four():
         g.quit()
 
 
+def scenario_alone():
+    print('alone: watching the controllers, nobody joins, P1 plays as without splitscreen')
+    g = Game(1)
+    try:
+        w, h = g.size(1)
+        check('P1 has its whole window', (w, h), (2 * WIDTH, 2 * HEIGHT) if w > WIDTH else (WIDTH, HEIGHT))
+        check('P1 plays', g.ctl(1, 'state').get('player') is not None, True)
+    finally:
+        g.quit()
+
+
 SCENARIOS = {
+    'alone': scenario_alone,
     'join': scenario_join,
     'four': scenario_four,
 }

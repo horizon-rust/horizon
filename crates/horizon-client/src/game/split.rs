@@ -9,8 +9,14 @@
 //! data (`Resources`, the packs), one audio output and P1's server. Not one game process per
 //! player: that needs GPU textures, input and audio shared across processes.
 //!
-//! `HORIZON_SPLIT=N` (testing, the only way in so far): N-1 players join once P1 is in its
-//! world, as P2, P3... The player in seat N takes `horizon-ctl` on P1's socket path + "N".
+//! Controllers: P1's is the first used in a menu (or alone). In P1's world another controller
+//! pressing a button is offered to join, on every view (A joins, B says no); a controller that
+//! disconnects leaves its player waiting, its view dimmed, until it comes back or another takes
+//! over (`pads`).
+//!
+//! `HORIZON_SPLIT=N` (testing, the only way in so far): splitscreen watches the controllers, and
+//! N-1 players without one join once P1 is in its world, as P2, P3... (`HORIZON_SPLIT=1`: only
+//! the controllers). The player in seat N takes `horizon-ctl` on P1's socket path + "N".
 
 use super::{
     Game, UiResources, build_renderer,
@@ -23,7 +29,7 @@ use std::{
     cell::RefCell,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 use winit::{
     application::ApplicationHandler,
@@ -33,8 +39,12 @@ use winit::{
     window::WindowId,
 };
 
+mod hud;
 mod pads;
 mod players;
+
+pub(super) use hud::Hud;
+use hud::*;
 
 thread_local! {
     /// The options file of the player whose turn it is (none for P1, whose is the game's own):
@@ -73,6 +83,8 @@ struct Guest<'a> {
 pub(super) struct Split<'a> {
     pub(super) host: Game<'a>,
     guests: Vec<Guest<'a>>,
+    /// `HORIZON_SPLIT`: splitscreen watches the controllers for players joining.
+    watching: bool,
     /// `HORIZON_SPLIT=N`: players still to add once P1 is in a world.
     test_players: usize,
     /// P1's window's compositor, while another player is in (else P1 draws on its window).
@@ -95,17 +107,23 @@ pub(super) struct Split<'a> {
     p1_pad: Option<PadId>,
     /// Pads whose buttons still count as the press that gave them: released first.
     fresh: Vec<PadId>,
+    /// Controllers offered to join, each since when: several may join at once.
+    offers: Vec<(PadId, Instant)>,
+    /// Players whose controller disconnected, longest waiting first.
+    lost: Vec<pads::Lost<PadId>>,
 }
 
 impl<'a> Split<'a> {
     pub(super) fn new(host: Game<'a>) -> Self {
-        let test_players = std::env::var("HORIZON_SPLIT")
-            .ok()
+        let split = std::env::var("HORIZON_SPLIT").ok();
+        let test_players = split
+            .as_ref()
             .and_then(|n| n.parse::<usize>().ok())
             .map_or(0, |n| n.clamp(1, MAX_PLAYERS) - 1);
         Self {
             host,
             guests: Vec::new(),
+            watching: split.is_some(),
             test_players,
             compositor: None,
             size: PhysicalSize::new(1, 1),
@@ -120,6 +138,8 @@ impl<'a> Split<'a> {
             pads: Default::default(),
             p1_pad: None,
             fresh: Vec::new(),
+            offers: Vec::new(),
+            lost: Vec::new(),
         }
     }
 
@@ -314,7 +334,6 @@ impl<'a> Split<'a> {
         for k in (0..self.guests.len()).rev() {
             self.remove_guest(k);
         }
-        self.stop_routing();
         self.applied.clear();
         let Some(compositor) = self.compositor.take() else {
             return Ok(());
@@ -359,26 +378,34 @@ impl<'a> Split<'a> {
         Ok(())
     }
 
-    /// The testing players (`HORIZON_SPLIT`) join, one a frame, once P1 is in its own world:
-    /// whether one did.
-    fn admit(&mut self, event_loop: &ActiveEventLoop) -> bool {
-        let in_world = self.host.title.is_none()
-            && self.host.player.is_some()
-            && self.host.integrated.is_some();
-        if !in_world || self.test_players == 0 {
-            return false;
-        }
-        match self.join() {
-            Ok(()) => {
-                self.test_players -= 1;
-                true
-            }
-            Err(e) => {
-                self.host.error = Some(e);
-                event_loop.exit();
-                false
+    /// P1 is playing in its own world, which others can join.
+    fn in_world(&self) -> bool {
+        self.host.title.is_none() && self.host.player.is_some() && self.host.integrated.is_some()
+    }
+
+    /// The pads' players who accepted, and the testing players (`HORIZON_SPLIT`, one a frame),
+    /// join: whether anyone did.
+    fn admit(&mut self, event_loop: &ActiveEventLoop, pad_joins: Vec<PadId>) -> bool {
+        let mut changed = false;
+        for pad in pad_joins {
+            match self.join(Some(pad)) {
+                Ok(()) => changed = true,
+                Err(e) => log::warn!("Horizon: splitscreen: a player could not join: {e}"),
             }
         }
+        if self.in_world() && self.test_players > 0 {
+            match self.join(None) {
+                Ok(()) => {
+                    self.test_players -= 1;
+                    changed = true;
+                }
+                Err(e) => {
+                    self.host.error = Some(e);
+                    event_loop.exit();
+                }
+            }
+        }
+        changed
     }
 
     /// Each player's frame into its view, then the GPU wait, once, for all of them.
@@ -473,6 +500,7 @@ impl ApplicationHandler for Split<'_> {
                     && !holding
                 {
                     self.handoff(clicked);
+                    self.tag(clicked, "Keyboard and mouse");
                     let position = self.cursor_in_focus();
                     if let Some((player, id)) = self.player(clicked) {
                         player.window_event(
@@ -518,18 +546,36 @@ impl ApplicationHandler for Split<'_> {
             log::warn!("Horizon: splitscreen could not switch back: {e}");
         }
         if self.compositor.is_none() {
+            if !self.watching {
+                return self.host.about_to_wait(event_loop);
+            }
+            // Alone, the controllers watched for someone joining; P1's own drives P1, its
+            // output (rumble, triggers) through the split's reader for P1's turn.
+            let pad_joins = self.route_pads(true);
+            self.turn(0);
+            if let Some(id) = self.p1_pad {
+                self.pads.lend_output(&mut self.host.pad, id);
+            }
             self.host.about_to_wait(event_loop);
-            if self.admit(event_loop) {
+            if self.p1_pad.is_some() {
+                self.pads.reclaim_output(&mut self.host.pad);
+            }
+            if self.admit(event_loop, pad_joins) {
                 self.relayout(event_loop);
             }
             return;
         }
-        self.route_pads();
+        let pad_joins = self.route_pads(false);
         self.turn(0);
         self.host.about_to_wait(event_loop);
-        let changed = self.drop_out() | self.admit(event_loop);
+        let changed = self.drop_out() | self.admit(event_loop, pad_joins);
         if changed || self.views() != self.applied {
             self.relayout(event_loop);
+        }
+        // Each player's badge: who it is, shown a moment when something changes for it.
+        self.host.split_hud.badge = Some("P1".into());
+        for g in &mut self.guests {
+            g.game.split_hud.badge = Some(g.name.clone());
         }
         let master = self.host.audio.master;
         for i in 0..self.guests.len() {

@@ -62,10 +62,11 @@ pub(super) use hardware::{PadId, PadRouter};
 /// What a controller did since the last frame.
 #[cfg_attr(not(feature = "controllers"), allow(dead_code))]
 pub(in crate::game) enum PadEvent {
-    /// A button pressed.
-    Press(PadId),
+    Press(PadId, Button),
     /// Disconnected (out of battery, unplugged, out of range).
     Gone(PadId),
+    /// Connected again under the same id (Windows keeps it; macOS gives a new one).
+    Back(PadId),
 }
 
 /// A build without the `controllers` feature (the server build, which must not need libudev): no
@@ -90,11 +91,19 @@ mod hardware {
         pub(in crate::game) fn events(&mut self) -> Vec<super::PadEvent> {
             Vec::new()
         }
+        pub(in crate::game) fn lend_output(&mut self, _: &mut Pads, _: PadId) {}
+        pub(in crate::game) fn reclaim_output(&mut self, _: &mut Pads) {}
         pub(in crate::game) fn connected(&self, _: PadId) -> bool {
             false
         }
+        pub(in crate::game) fn uuid(&self, _: PadId) -> [u8; 16] {
+            [0; 16]
+        }
         pub(in crate::game) fn state(&self, _: PadId) -> PadState {
             PadState::default()
+        }
+        pub(in crate::game) fn name(&self, _: PadId) -> String {
+            String::new()
         }
         pub(in crate::game) fn style(&self, _: PadId) -> horizon_client::gamepad::GlyphStyle {
             horizon_client::gamepad::GlyphStyle::Auto

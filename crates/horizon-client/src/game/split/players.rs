@@ -21,7 +21,7 @@ impl Split<'_> {
 
     /// A player joins P1's world as `P<seat>`, with its own options in the game folder's
     /// `splitscreen/profiles/P<seat>/` (P1's, the first time).
-    pub(super) fn join(&mut self) -> Result<()> {
+    pub(super) fn join(&mut self, pad: Option<PadId>) -> Result<()> {
         let seat = self.free_seat().ok_or("every seat is taken")?;
         let name = format!("P{seat}");
         let profile = std::env::current_dir()?.join(format!("splitscreen/profiles/{name}"));
@@ -62,12 +62,16 @@ impl Split<'_> {
                 return Err(e);
             }
         };
+        if let Some(pad) = pad {
+            // The press that joined it doesn't act in its game.
+            self.fresh.push(pad);
+        }
         self.guests.push(Guest {
             game,
             name,
             seat,
             options,
-            pad: None,
+            pad,
             widgets: Default::default(),
         });
         Ok(())

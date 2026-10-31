@@ -204,6 +204,31 @@ pub(in crate::game) struct PadRouter {
 }
 
 impl PadRouter {
+    /// Solo play uses this reader's device IDs for feedback too: another pad cannot steal
+    /// the active output while its input is being offered to join. Reclaimed after P1's turn.
+    pub(in crate::game) fn lend_output(&mut self, pads: &mut Pads, id: PadId) {
+        if pads.devices.gilrs.is_some() {
+            pads.release_hardware();
+        }
+        if pads.devices.active != Some(id) {
+            pads.devices.rumbles.clear();
+            pads.devices.output = None;
+            pads.devices.shown = None;
+        }
+        pads.devices.dualsense = self
+            .gilrs
+            .as_ref()
+            .and_then(|g| g.connected_gamepad(id))
+            .is_some_and(|p| is_dualsense(&p));
+        pads.devices.active = Some(id);
+        pads.devices.started = true;
+        pads.devices.gilrs = self.gilrs.take();
+    }
+
+    pub(in crate::game) fn reclaim_output(&mut self, pads: &mut Pads) {
+        self.gilrs = pads.devices.gilrs.take();
+    }
+
     /// The buttons pressed and the controllers gone or back since the last call, in order.
     pub(in crate::game) fn events(&mut self) -> Vec<PadEvent> {
         if !self.started {
@@ -217,14 +242,18 @@ impl PadRouter {
         while let Some(gilrs::Event { id, event, .. }) = gilrs.next_event() {
             match event {
                 gilrs::EventType::ButtonPressed(pressed, _) => {
-                    if Button::ALL.into_iter().any(|b| gilrs_button(b) == pressed) {
-                        events.push(PadEvent::Press(id));
+                    if let Some(button) = Button::ALL
+                        .into_iter()
+                        .find(|&b| gilrs_button(b) == pressed)
+                    {
+                        events.push(PadEvent::Press(id, button));
                     }
                 }
                 gilrs::EventType::Disconnected => {
                     log::info!("Controller disconnected: {}", gilrs.gamepad(id).name());
                     events.push(PadEvent::Gone(id));
                 }
+                gilrs::EventType::Connected => events.push(PadEvent::Back(id)),
                 _ => {}
             }
         }
@@ -235,6 +264,14 @@ impl PadRouter {
         self.gilrs
             .as_ref()
             .is_some_and(|g| g.connected_gamepad(id).is_some())
+    }
+
+    /// The kind of controller (its maker, model and bus; two of one model share it), to know it
+    /// back when it reconnects under a new id; zero when the system doesn't say.
+    pub(in crate::game) fn uuid(&self, id: PadId) -> [u8; 16] {
+        self.gilrs
+            .as_ref()
+            .map_or([0; 16], |g| g.gamepad(id).uuid())
     }
 
     /// The pad's state now (released when it is gone).
@@ -253,6 +290,13 @@ impl PadRouter {
             .map_or(GlyphStyle::Auto, |pad| {
                 GlyphStyle::of_vendor(pad.vendor_id())
             })
+    }
+
+    pub(in crate::game) fn name(&self, id: PadId) -> String {
+        self.gilrs
+            .as_ref()
+            .and_then(|g| g.connected_gamepad(id))
+            .map_or_else(|| "A controller".into(), |pad| pad.name().to_owned())
     }
 }
 
