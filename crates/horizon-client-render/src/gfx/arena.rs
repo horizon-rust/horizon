@@ -78,6 +78,17 @@ struct Page {
     free: FreeList,
 }
 
+impl Page {
+    /// Vertices in the page's free ranges.
+    fn free_vertices(&self) -> u64 {
+        self.free.0.values().sum()
+    }
+}
+
+/// An arena with this many bytes in free ranges, at least half of its pages,
+/// has a page worth emptying (`Arena::sparsest`).
+const COMPACT_MIN_FREE: u64 = 128 << 20;
+
 /// Terrain vertices in pages of at most `page_limit` vertices (devices cap
 /// buffer sizes): a section's vertices sit in one page.
 pub struct Arena {
@@ -86,6 +97,8 @@ pub struct Arena {
     page_limit: u64,
     initial_capacity: u64,
     usage: wgpu::BufferUsages,
+    /// A page being emptied (`Arena::close`): nothing is placed in it.
+    closing: Option<u32>,
     /// A page had to go to system memory (logged once).
     spilled: bool,
     /// Tests: GPU-local pages fail as if video memory were full.
@@ -129,6 +142,7 @@ impl Arena {
             page_limit,
             initial_capacity: capacity,
             usage,
+            closing: None,
             spilled: false,
             #[cfg(test)]
             video_memory_full: false,
@@ -207,16 +221,13 @@ impl Arena {
         vertices: u64,
     ) -> Option<(u32, u64)> {
         let len = Self::span(vertices).min(self.page_limit);
-        for (i, page) in self.pages.iter_mut().enumerate() {
-            if let Some(page) = page
-                && let Some(start) = page.free.take(len)
-            {
-                return Some((i as u32, start));
-            }
+        if let Some(found) = self.alloc_existing(len) {
+            return Some(found);
         }
         let last = self.pages.len().saturating_sub(1);
         if let Some(page) = self.pages.last().and_then(Option::as_ref)
             && page.capacity < self.page_limit
+            && self.closing != Some(last as u32)
         {
             let current = page.capacity;
             let grown = (current * 2).max(current + len).min(self.page_limit);
@@ -257,6 +268,78 @@ impl Arena {
             });
         self.pages[index] = Some(page);
         Some((index as u32, start))
+    }
+    /// A range of `vertices` in a page that exists already and is not being
+    /// emptied: never grows the arena.
+    pub fn alloc_existing(&mut self, vertices: u64) -> Option<(u32, u64)> {
+        let len = Self::span(vertices).min(self.page_limit);
+        let closing = self.closing;
+        self.pages
+            .iter_mut()
+            .enumerate()
+            .filter(|(i, _)| closing != Some(*i as u32))
+            .find_map(|(i, page)| Some((i as u32, page.as_mut()?.free.take(len)?)))
+    }
+    /// The page to empty when much of the arena is free ranges (video memory
+    /// that fragmentation keeps: a page goes back only once all of it is free):
+    /// the one with the fewest vertices in use that the other pages' free
+    /// ranges can take. `None` when the arena is dense enough or already
+    /// emptying a page.
+    pub fn sparsest(&self) -> Option<u32> {
+        self.sparsest_from(COMPACT_MIN_FREE)
+    }
+    /// `sparsest` for an arena with at least `min_free` bytes in free ranges.
+    fn sparsest_from(&self, min_free: u64) -> Option<u32> {
+        if self.closing.is_some() {
+            return None;
+        }
+        let pages = || {
+            self.pages
+                .iter()
+                .enumerate()
+                .filter_map(|(i, p)| Some((i, p.as_ref()?)))
+        };
+        let free: u64 = pages().map(|(_, p)| p.free_vertices()).sum();
+        let capacity: u64 = pages().map(|(_, p)| p.capacity).sum();
+        if free * self.stride < min_free || free * 2 < capacity {
+            return None;
+        }
+        pages()
+            .filter_map(|(i, p)| {
+                let used = p.capacity - p.free_vertices();
+                // The room elsewhere, less a quarter for first fit's gaps.
+                let elsewhere = (free - p.free_vertices()) / 4 * 3;
+                (used > 0 && used <= elsewhere).then_some((used, i as u32))
+            })
+            .min()
+            .map(|(_, i)| i)
+    }
+    /// Stops placing vertices in `page` until `reopen`.
+    pub fn close(&mut self, page: u32) {
+        self.closing = Some(page);
+    }
+    pub fn reopen(&mut self) {
+        self.closing = None;
+    }
+    pub fn closing(&self) -> Option<u32> {
+        self.closing
+    }
+    /// Records the copy of `vertices` from one range to another of other pages.
+    pub fn copy(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        from: (u32, u64),
+        to: (u32, u64),
+        vertices: u64,
+    ) {
+        debug_assert_ne!(from.0, to.0);
+        encoder.copy_buffer_to_buffer(
+            self.buffer(from.0),
+            from.1 * self.stride,
+            self.buffer(to.0),
+            to.1 * self.stride,
+            vertices * self.stride,
+        );
     }
     pub fn release(&mut self, page: u32, start: u64, vertices: u64) {
         let len = Self::span(vertices).min(self.page_limit);
@@ -318,6 +401,9 @@ impl Arena {
                 *page = None;
             }
         }
+        if self.closing.is_some_and(|page| !self.has_page(page)) {
+            self.closing = None;
+        }
         // Keep live page indices stable; later allocations reuse interior holes.
         while self.pages.last().is_some_and(Option::is_none) {
             self.pages.pop();
@@ -325,6 +411,7 @@ impl Arena {
     }
     pub fn clear(&mut self) {
         self.pages.clear();
+        self.closing = None;
     }
 }
 
@@ -405,6 +492,71 @@ mod tests {
         queue.submit([encoder.finish()]);
         assert_eq!(read(&device, &queue, arena.buffer(page), start * 4), 7);
         assert_eq!(read(&device, &queue, arena.buffer(page), next * 4), 9);
+    }
+
+    #[test]
+    fn a_sparse_page_empties_into_the_others_and_is_reclaimed() {
+        let Some((device, queue)) = device() else {
+            eprintln!("no GPU adapter: skipped");
+            return;
+        };
+        let mut arena = Arena::new(&device, 4, GRAIN, false);
+        arena.page_limit = 4 * GRAIN;
+        // Eight ranges fill two pages, each holding its own number.
+        let ranges: Vec<(u32, u64)> = (0..8)
+            .map(|i| {
+                let range = alloc(&mut arena, &device, &queue, GRAIN).unwrap();
+                queue.write_buffer(
+                    arena.buffer(range.0),
+                    range.1 * 4,
+                    &(100 + i as u32).to_le_bytes(),
+                );
+                range
+            })
+            .collect();
+        assert_eq!(arena.pages.iter().flatten().count(), 2);
+        let (first, second) = (ranges[0].0, ranges[7].0);
+        assert_ne!(first, second);
+        // Fragmented: one range live in the first page, two in the second.
+        for (i, &(page, start)) in ranges.iter().enumerate() {
+            if ![0, 6, 7].contains(&i) {
+                arena.release(page, start, GRAIN);
+            }
+        }
+        // Dense enough arenas, and ones without room elsewhere, are left alone.
+        assert_eq!(arena.sparsest_from(u64::MAX), None);
+        assert_eq!(arena.sparsest_from(0), Some(first));
+        arena.close(first);
+        assert_eq!(
+            arena.sparsest_from(0),
+            None,
+            "one page is emptied at a time"
+        );
+        // New ranges avoid the closing page though it has room.
+        let (page, extra) = alloc(&mut arena, &device, &queue, GRAIN).unwrap();
+        assert_eq!(page, second);
+        arena.release(page, extra, GRAIN);
+        // Its live range moves, data included, and the page goes back.
+        let (page, start) = ranges[0];
+        let to = arena.alloc_existing(GRAIN).unwrap();
+        assert_eq!(to.0, second);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        arena.copy(&mut encoder, (page, start), to, GRAIN);
+        queue.submit([encoder.finish()]);
+        arena.release(page, start, GRAIN);
+        assert_eq!(read(&device, &queue, arena.buffer(to.0), to.1 * 4), 100);
+        let before = arena.bytes();
+        arena.trim();
+        assert_eq!(arena.bytes(), before - 4 * GRAIN * 4);
+        assert_eq!(arena.closing(), None);
+        // The others kept their ranges.
+        for i in [6, 7] {
+            let (page, start) = ranges[i];
+            assert_eq!(
+                read(&device, &queue, arena.buffer(page), start * 4),
+                100 + i as u32
+            );
+        }
     }
 
     #[test]

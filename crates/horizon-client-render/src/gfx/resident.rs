@@ -67,6 +67,9 @@ impl<T> Resident<T> {
         let slot = *self.slots.get(&key)?;
         Some(self.get_mut(slot))
     }
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.items.iter_mut().map(|(_, v)| v)
+    }
     /// The section in `slot` (`Visible::slot`).
     pub fn get(&self, slot: u32) -> &T {
         &self.items[slot as usize].1

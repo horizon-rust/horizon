@@ -3408,6 +3408,69 @@ impl Renderer {
         self.arena
             .release(s.page, s.start, u64::from(s.solid + s.translucent) * 4);
     }
+    /// Video memory the arena keeps because fragmentation holds its pages
+    /// partly used (a render distance that went down, far tiles that were
+    /// replaced): moves the meshes off the sparsest page, a few MiB a frame,
+    /// and `Arena::trim` returns the page once it is empty. Frames with the
+    /// arena in system memory (video memory full) are slow, so this is what
+    /// keeps the terrain in video memory.
+    fn compact_arena(&mut self) {
+        // Copied per frame: a page empties over a few frames, with no hitch.
+        const BUDGET: u64 = 32 << 20;
+        if self.arena.closing().is_none()
+            && let Some(page) = self.arena.sparsest()
+        {
+            self.arena.close(page);
+        }
+        let Some(page) = self.arena.closing() else {
+            return;
+        };
+        let stride = std::mem::size_of::<TerrainVertex>() as u64;
+        let mut budget = BUDGET;
+        let mut left = false;
+        let encoder = self.section_copies.get_or_insert_with(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Section uploads"),
+                })
+        });
+        let meshes = self
+            .sections
+            .values_mut()
+            .chain(self.lods.values_mut().map(|tile| &mut tile.mesh));
+        for s in meshes.filter(|s| s.page == page) {
+            let vertices = u64::from(s.solid + s.translucent) * 4;
+            if vertices * stride > budget {
+                left = true;
+                break;
+            }
+            let Some(to) = self.arena.alloc_existing(vertices) else {
+                // The other pages have no room after all.
+                self.arena.reopen();
+                return;
+            };
+            self.arena.copy(encoder, (s.page, s.start), to, vertices);
+            self.arena.release(s.page, s.start, vertices);
+            if let (Some(flat), Some(id)) = (&mut self.flat, s.flat_id) {
+                flat.remove(id);
+                s.flat_id = Some(flat.add(
+                    &self.device,
+                    encoder,
+                    &mut self.section_uploads,
+                    to.0,
+                    to.1,
+                    vertices,
+                ));
+            }
+            (s.page, s.start) = to;
+            budget -= vertices * stride;
+        }
+        // Nothing left in it that could not be moved: `trim` returns the page
+        // (or, if it was never used, the next call chooses another).
+        if !left {
+            self.arena.reopen();
+        }
+    }
     /// Block-entity blocks of every meshed section (see `SectionMesh::block_entities`).
     pub fn block_entities(&self) -> impl Iterator<Item = &([i32; 3], u32)> {
         self.block_entities.values().flatten()
@@ -4050,6 +4113,7 @@ impl Renderer {
     }
     fn draw_frame(&mut self, frame: &Frame) -> Result<bool> {
         self.arena.trim();
+        self.compact_arena();
         self.sorted_indices.trim();
         if let Some(flat) = &mut self.flat {
             flat.trim(|page| self.arena.has_page(page));
