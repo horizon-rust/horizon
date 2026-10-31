@@ -852,6 +852,12 @@ pub const EMISSION_BITS: u32 = 0x0F00_0000;
 /// ambient occlusion, 0..15 (`Mesher::rt_lighting`).
 pub const SHADE_BITS: u32 = 0xF000_0000;
 /// `color` marked as emitting light `level` (0 to 15).
+/// A water vertex `color` with its biome's exposure (0 to 15, `BiomeInfo::sea`) in the alpha's high
+/// nibble, where other faces keep RT lighting's shade (`Mesher::rt_lighting`): the waves and the
+/// surf read it (terrain.wgsl `TerrainOut::sea`), water keeping its shade in its colour.
+pub fn with_sea(color: u32, sea: u32) -> u32 {
+    color & !SHADE_BITS | (sea & 15) << 28
+}
 pub fn emitting(color: u32, level: u8) -> u32 {
     color & !EMISSION_BITS | u32::from(15 - level.min(15)) << 24
 }
@@ -864,12 +870,14 @@ enum Resolver {
     Foliage,
     Dry,
     Water,
+    /// The water's exposure (`BiomeInfo::sea`) in each channel, blended as the colours are.
+    Sea,
 }
 /// Biome tints of one block layer: the zoomed biome of every block of the
 /// layer plus the blend radius around it, and the blended colours per column.
 struct Layer {
     zoomed: Vec<u16>,
-    colors: [[u32; 256]; 4],
+    colors: [[u32; 256]; 5],
 }
 /// `ClientLevel.calculateBlockTint` behind a per-layer `BlockTintCache`: each
 /// block averages the colours of the biomes `BiomeManager.getBiome` picks (the
@@ -910,7 +918,7 @@ impl<'a> Tints<'a> {
         let layer = self.layers[y as usize].get_or_insert_with(|| {
             Box::new(Layer {
                 zoomed: vec![NO_BIOME; dim * dim],
-                colors: [[UNSET; 256]; 4],
+                colors: [[UNSET; 256]; 5],
             })
         });
         let slot = (z * 16 + x) as usize;
@@ -949,6 +957,7 @@ impl<'a> Tints<'a> {
                     Resolver::Foliage => self.biomes.get(biome).foliage,
                     Resolver::Dry => self.biomes.get(biome).dry_foliage,
                     Resolver::Water => self.biomes.get(biome).water,
+                    Resolver::Sea => u32::from(self.biomes.get(biome).sea) * 0x01_0101,
                 };
                 red += c >> 16 & 255;
                 green += c >> 8 & 255;
@@ -1040,7 +1049,10 @@ impl Mesher<'_> {
                         continue;
                     }
                     if state.fluid.kind() != FluidKind::Empty {
-                        let water = tints.get(Resolver::Water, x, y, z);
+                        // The biome's water colour, and in the top byte how open it lies
+                        // (`with_sea`).
+                        let sea = tints.get(Resolver::Sea, x, y, z) & 255;
+                        let water = tints.get(Resolver::Water, x, y, z) | sea.min(15) << 24;
                         let nether = self.nether_shading;
                         if self.smooth_fluids {
                             let lattice = lattice.get_or_insert_with(fluid_surface::Lattice::new);

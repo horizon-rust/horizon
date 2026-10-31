@@ -187,10 +187,15 @@ impl Mesher {
                         Tint::Constant(color) => color,
                     };
                     let channel = |shift: u32| (((rgb >> shift) & 255u32) as f32 * shade) as u32;
+                    let color = channel(16) | channel(8) << 8 | channel(0) << 16 | 0xff000000;
                     Paint {
                         layer: face.layer,
                         light: span.light,
-                        color: channel(16) | channel(8) << 8 | channel(0) << 16 | 0xff000000,
+                        // Water carries how open it lies, as the sections' (mesher.rs `with_sea`).
+                        color: match face.tint {
+                            Tint::Water => crate::mesher::with_sea(color, u32::from(biome.sea)),
+                            _ => color,
+                        },
                         translucent: face.translucent,
                     }
                 })

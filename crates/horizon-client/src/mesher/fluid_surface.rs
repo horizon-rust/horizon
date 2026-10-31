@@ -248,7 +248,12 @@ pub(super) fn tesselate(
     let emission = if water { 0 } else { 15 };
     let color = |by: f32| {
         let rgb = [16, 8, 0].map(|shift| lighting::scale((tint >> shift & 255) as i32, by) as u32);
-        crate::mesher::emitting(pack_rgb(rgb), emission)
+        let color = crate::mesher::emitting(pack_rgb(rgb), emission);
+        if water {
+            crate::mesher::with_sea(color, water_color >> 24)
+        } else {
+            color
+        }
     };
     // Corners as lattice points: NW (x, z), NE (x+1, z), SW (x, z+1), SE (x+1, z+1).
     let (mut nw, mut ne, mut sw, mut se) = (

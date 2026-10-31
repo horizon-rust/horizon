@@ -132,7 +132,9 @@ fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>) -> vec3<f32> {
         let bent = refract(-l, vec3(0.0, 1.0, 0.0), 1.0 / WATER_INDEX);
         let floor_at = pos + rt.camera.xyz + rt.fraction.xyz;
         let footprint = length(pos) * 1.5 / rt.size.y;
-        let focus = water_caustics(floor_at.xz, depth, l, rt.water.z, footprint);
+        // How open the water lies, in its colour's alpha (mesher.rs `with_sea`).
+        let focus = water_caustics(floor_at.xz, depth, l, rt.water.z, footprint,
+            f32(w >> 28u) / 15.0);
         let fresnel = 0.02 + 0.98 * pow(1.0 - l.y, 5.0);
         return focus * (1.0 - fresnel) * exp(-absorption * depth / max(-bent.y, 0.1));
     }
@@ -265,15 +267,19 @@ fn water_noise(p: vec2<f32>) -> f32 {
     return mix(mix(water_hash(c), water_hash(c + vec2(1, 0)), u.x),
         mix(water_hash(c + vec2(0, 1)), water_hash(c + vec2(1, 1)), u.x), u.y);
 }
-fn water_sea(q: vec2<f32>, t: f32) -> vec3<f32> {
+// `sea` is how open the water lies (terrain.wgsl `TerrainOut::sea`: 0 a swamp's still water, 0.6 a
+// lake's, 1 the open sea's): the swell and the wind sea grow with it, still water hardly moves.
+fn water_sea(q: vec2<f32>, t: f32, sea: f32) -> vec3<f32> {
+    let still = mix(vec3(0.1, 0.25, 0.4), vec3(1.0), smoothstep(0.0, 0.6, sea));
+    let open = mix(vec3(1.0), vec3(1.8, 1.3, 1.1), smoothstep(0.6, 1.0, sea));
     let swell = water_noise(q / 233.0 + vec2(0.003, 0.001) * t);
     let wind = water_noise(q / 71.0 + vec2(17.3, 5.1) + vec2(0.006, -0.004) * t);
     let gusts = water_noise(q / 23.0 + vec2(-3.7, 11.9) + vec2(0.045, 0.02) * t);
     // The wind's gains contrast more than the swell's: calm slicks beside rippled patches.
     let patches = smoothstep(vec2(0.15), vec2(0.85), vec2(wind, gusts));
-    return vec3(0.4 + 1.2 * swell, 0.15 + 1.7 * patches);
+    return vec3(0.4 + 1.2 * swell, 0.15 + 1.7 * patches) * still * open;
 }
-fn water_surface(q: vec2<f32>, t: f32, footprint: f32) -> WaterSurface {
+fn water_surface(q: vec2<f32>, t: f32, footprint: f32, sea: f32) -> WaterSurface {
     var s = WaterSurface(0.0, vec2(0.0), vec3(0.0));
     // The crests are not straight lines: a slow swirl bends the coordinates every wave is read at,
     // and a noise over a hundred metres and thirty turns their lines on the scale of a lake, so
@@ -285,7 +291,7 @@ fn water_surface(q: vec2<f32>, t: f32, footprint: f32) -> WaterSurface {
         water_noise(q / 29.0 + vec2(40.6, 2.9))) - 0.5);
     let p = q + swirl + bend;
     // The sea state there: the swell's, the wind sea's and the ripples' gains (`water_sea`).
-    let g = water_sea(q, t);
+    let g = water_sea(q, t, sea);
     s = water_sum(s, water_wave(p, t, footprint, vec4(0.92106, 0.38942, 1.0400, 0.02600 * g.x), vec2(1.9165, 0.0)));
     s = water_sum(s, water_wave(p, t, footprint, vec4(-0.94221, 0.33503, 1.3000, 0.03250 * g.x), vec2(2.1427, 2.1)));
     s = water_sum(s, water_wave(p, t, footprint, vec4(0.46845, -0.88349, 1.6250, 0.04063 * g.x), vec2(2.3956, 4.2)));
@@ -305,8 +311,8 @@ fn water_surface(q: vec2<f32>, t: f32, footprint: f32) -> WaterSurface {
     return s;
 }
 // The height and the slopes along x and z, for the shaders that only look at the surface.
-fn water_waves(p: vec2<f32>, t: f32, footprint: f32) -> vec3<f32> {
-    let w = water_surface(p, t, footprint);
+fn water_waves(p: vec2<f32>, t: f32, footprint: f32, sea: f32) -> vec3<f32> {
+    let w = water_surface(p, t, footprint, sea);
     return vec3(w.height, w.slope);
 }
 // Water's index of refraction at red (656 nm), green (550 nm) and blue (450 nm): the shorter the
@@ -360,11 +366,12 @@ fn water_mean(d: f32) -> f32 {
 // pile up part by a fraction of their width, red's on the outside: the rainbow edge of a real
 // caustic. The sun's disc and the water's scattering wash it out with depth, and far from the
 // eye it blurs to its mean, rather than shimmer.
-fn water_caustics(p: vec2<f32>, depth: f32, l: vec3<f32>, t: f32, footprint: f32) -> vec3<f32> {
+fn water_caustics(p: vec2<f32>, depth: f32, l: vec3<f32>, t: f32, footprint: f32, sea: f32)
+    -> vec3<f32> {
     // Deep down the network is washed out and finer than a pixel: nothing to compute.
     if depth > 14.0 { return vec3(1.0); }
     let x = p - depth * water_bent(vec2(0.0), l, WATER_INDEX_RGB.y);
-    let w = water_surface(x, t, footprint);
+    let w = water_surface(x, t, footprint, sea);
     let det = vec3(water_area(w.slope, w.curvature, depth, l, WATER_INDEX_RGB.x),
         water_area(w.slope, w.curvature, depth, l, WATER_INDEX_RGB.y),
         water_area(w.slope, w.curvature, depth, l, WATER_INDEX_RGB.z));
@@ -511,7 +518,7 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
         let world = at + rt.camera.xyz + rt.fraction.xyz;
         // The pixel's footprint stretched by the slant (terrain.wgsl `water_footprint`).
         let w = water_waves(world.xz, rt.water.z,
-            hit.t * 1.5 / rt.size.y / max(abs(n.y * ray.y), 0.03));
+            hit.t * 1.5 / rt.size.y / max(abs(n.y * ray.y), 0.03), f32(arena_at(base, 5u) >> 28u) / 15.0);
         // And the rain's ripples, as the water's shader has them (terrain.wgsl `rt_rain_ripples`).
         let r = hw_rain_ripples(world, hit.t);
         n = normalize(vec3(-w.y - r.x, 1.0, -w.z - r.y));
@@ -521,7 +528,7 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
         let world = at + rt.camera.xyz + rt.fraction.xyz;
         // The pixel's footprint stretched by the slant (terrain.wgsl `water_footprint`).
         let w = water_waves(world.xz, rt.water.z,
-            hit.t * 1.5 / rt.size.y / max(abs(n.y * ray.y), 0.03));
+            hit.t * 1.5 / rt.size.y / max(abs(n.y * ray.y), 0.03), f32(arena_at(base, 5u) >> 28u) / 15.0);
         n = -normalize(vec3(-w.y, 1.0, -w.z));
     }
     // Its top (seen from above or below) refracts; its sides blend as before. Glass refracts on

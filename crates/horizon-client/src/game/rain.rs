@@ -72,17 +72,16 @@ impl Game<'_> {
             self.rain.map.clear();
             self.rain.dim = Some(self.dim);
         }
-        if rain.rate > 0.0 || self.rain.wetness.any() {
-            let (x, z) = (camera.x.floor() as i32, camera.z.floor() as i32);
-            let mut map = std::mem::take(&mut self.rain.map);
-            map.update(
-                x,
-                z,
-                |x, z| self.rain_height(x, z),
-                |x, z, h| self.rain_column(x, z, h),
-            );
-            self.rain.map = map;
-        }
+        // Kept in the sun too: the shore's wet sand reads it (terrain.wgsl `rt_shore`), rain or not.
+        let (x, z) = (camera.x.floor() as i32, camera.z.floor() as i32);
+        let mut map = std::mem::take(&mut self.rain.map);
+        map.update(
+            x,
+            z,
+            |x, z| self.rain_height(x, z),
+            |x, z, h| self.rain_column(x, z, h),
+        );
+        self.rain.map = map;
         let cells = self
             .rain
             .map

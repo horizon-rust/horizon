@@ -77,12 +77,14 @@ struct ParallaxOut {
     @location(7) light: vec2<f32>,
     // For RT lighting: the face's tint.
     @location(8) tint: vec3<f32>,
+    // For RT lighting's water: how open it lies (terrain.wgsl `TerrainOut::sea`).
+    @location(9) sea: f32,
 }
 fn parallax_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
     light: vec2<u32>, origin: vec4<f32>) -> ParallaxOut {
     let t = horizon_terrain_terrain_vertex(position, uv, layer, color, light, origin);
     return ParallaxOut(t.clip, t.uv, t.layer, t.color, t.spherical, t.cylindrical, t.emission,
-        t.pos, t.light, t.tint);
+        t.pos, t.light, t.tint, t.sea);
 }
 @vertex fn parallax_vs(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
@@ -464,7 +466,7 @@ fn parallax_translucent(in: ParallaxOut) -> vec4<f32> {
         if horizon_terrain_rt_is_water(in.layer) {
             let n = horizon_terrain_face_normal(in.position);
             let w = horizon_terrain_rt_water_at(in.position, in.clip.xy, in.light, in.spherical,
-                in.cylindrical, n, in.tint);
+                in.cylindrical, n, in.tint, in.sea);
             return vec4(w.added / w.alpha, w.alpha);
         }
         // Glass: the pack's normal map and roughness drive its bending, its reflections and its
@@ -503,7 +505,7 @@ struct ParallaxDual {
     if parallax_rt(in) && horizon_terrain_rt_is_water(in.layer) {
         let n = horizon_terrain_face_normal(in.position);
         let w = horizon_terrain_rt_water_at(in.position, in.clip.xy, in.light, in.spherical,
-            in.cylindrical, n, in.tint);
+            in.cylindrical, n, in.tint, in.sea);
         out.added = vec4(w.added, w.alpha);
         out.through = vec4(w.through, 1.0 - w.alpha);
         return out;

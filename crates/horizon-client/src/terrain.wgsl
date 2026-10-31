@@ -226,6 +226,10 @@ struct TerrainOut {
     @location(9) pos: vec3<f32>,
     // For RT lighting: the face's tint (its albedo with the sprite's texel).
     @location(8) tint: vec3<f32>,
+    // For RT lighting's water: how open it lies to the wind, 0 a swamp's still water, 0.6 a
+    // lake's, 1 the open sea's (its colour's alpha's high nibble, mesher.rs `with_sea`), blended
+    // across the biomes as their colours are.
+    @location(10) sea: f32,
 }
 // Horizon Extras' dynamic lights (dynamic_light.rs): the block light, in the vertex's units
 // (16 per level), a vertex at camera-relative `pos` gets from the frame's light sources, one
@@ -324,6 +328,7 @@ fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f3
         shade = (f32(u32(round(color.a * 255.0)) >> 4u) * 16.0 + 8.0) / 255.0;
     }
     out.tint = color.rgb;
+    out.sea = f32(u32(round(color.a * 255.0)) >> 4u) / 15.0;
     out.pos = pos;
     out.color = vec4(color.rgb * shade, 1.0) * sample_lightmap(f32(light.x) / 16.0, block / 16.0);
     out.light = vec2(f32(light.x), block) / 16.0;
@@ -993,15 +998,19 @@ fn water_noise(p: vec2<f32>) -> f32 {
     return mix(mix(water_hash(c), water_hash(c + vec2(1, 0)), u.x),
         mix(water_hash(c + vec2(0, 1)), water_hash(c + vec2(1, 1)), u.x), u.y);
 }
-fn water_sea(q: vec2<f32>, t: f32) -> vec3<f32> {
+// `sea` is how open the water lies (terrain.wgsl `TerrainOut::sea`: 0 a swamp's still water, 0.6 a
+// lake's, 1 the open sea's): the swell and the wind sea grow with it, still water hardly moves.
+fn water_sea(q: vec2<f32>, t: f32, sea: f32) -> vec3<f32> {
+    let still = mix(vec3(0.1, 0.25, 0.4), vec3(1.0), smoothstep(0.0, 0.6, sea));
+    let open = mix(vec3(1.0), vec3(1.8, 1.3, 1.1), smoothstep(0.6, 1.0, sea));
     let swell = water_noise(q / 233.0 + vec2(0.003, 0.001) * t);
     let wind = water_noise(q / 71.0 + vec2(17.3, 5.1) + vec2(0.006, -0.004) * t);
     let gusts = water_noise(q / 23.0 + vec2(-3.7, 11.9) + vec2(0.045, 0.02) * t);
     // The wind's gains contrast more than the swell's: calm slicks beside rippled patches.
     let patches = smoothstep(vec2(0.15), vec2(0.85), vec2(wind, gusts));
-    return vec3(0.4 + 1.2 * swell, 0.15 + 1.7 * patches);
+    return vec3(0.4 + 1.2 * swell, 0.15 + 1.7 * patches) * still * open;
 }
-fn water_surface(q: vec2<f32>, t: f32, footprint: f32) -> WaterSurface {
+fn water_surface(q: vec2<f32>, t: f32, footprint: f32, sea: f32) -> WaterSurface {
     var s = WaterSurface(0.0, vec2(0.0), vec3(0.0));
     // The crests are not straight lines: a slow swirl bends the coordinates every wave is read at,
     // and a noise over a hundred metres and thirty turns their lines on the scale of a lake, so
@@ -1013,7 +1022,7 @@ fn water_surface(q: vec2<f32>, t: f32, footprint: f32) -> WaterSurface {
         water_noise(q / 29.0 + vec2(40.6, 2.9))) - 0.5);
     let p = q + swirl + bend;
     // The sea state there: the swell's, the wind sea's and the ripples' gains (`water_sea`).
-    let g = water_sea(q, t);
+    let g = water_sea(q, t, sea);
     s = water_sum(s, water_wave(p, t, footprint, vec4(0.92106, 0.38942, 1.0400, 0.02600 * g.x), vec2(1.9165, 0.0)));
     s = water_sum(s, water_wave(p, t, footprint, vec4(-0.94221, 0.33503, 1.3000, 0.03250 * g.x), vec2(2.1427, 2.1)));
     s = water_sum(s, water_wave(p, t, footprint, vec4(0.46845, -0.88349, 1.6250, 0.04063 * g.x), vec2(2.3956, 4.2)));
@@ -1033,8 +1042,8 @@ fn water_surface(q: vec2<f32>, t: f32, footprint: f32) -> WaterSurface {
     return s;
 }
 // The height and the slopes along x and z, for the shaders that only look at the surface.
-fn water_waves(p: vec2<f32>, t: f32, footprint: f32) -> vec3<f32> {
-    let w = water_surface(p, t, footprint);
+fn water_waves(p: vec2<f32>, t: f32, footprint: f32, sea: f32) -> vec3<f32> {
+    let w = water_surface(p, t, footprint, sea);
     return vec3(w.height, w.slope);
 }
 // How wide a pixel at camera-relative `pos` lies on water of face `face`, in metres: its width at
@@ -1214,12 +1223,14 @@ struct WaterIn {
     cylindrical: f32,
 }
 fn rt_water(in: TerrainOut, face: vec3<f32>) -> WaterLight {
-    return rt_water_at(in.pos, in.clip.xy, in.light, in.spherical, in.cylindrical, face, in.tint);
+    return rt_water_at(in.pos, in.clip.xy, in.light, in.spherical, in.cylindrical, face, in.tint,
+        in.sea);
 }
-// The same from a fragment's camera-relative `pos`, its `pixel`, light levels, fog distances, face
-// and biome tint (gamma), for the parallax terrain's water too.
+// The same from a fragment's camera-relative `pos`, its `pixel`, light levels, fog distances, face,
+// biome tint (gamma) and how open the water lies (`TerrainOut::sea`), for the parallax terrain's
+// water too.
 fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f32,
-    cylindrical: f32, face: vec3<f32>, tint: vec3<f32>) -> WaterLight {
+    cylindrical: f32, face: vec3<f32>, tint: vec3<f32>, sea: f32) -> WaterLight {
     let in = WaterIn(pos, pixel, levels, spherical, cylindrical);
     let colour = pow(clamp(tint, vec3(0.0), vec3(1.0)), vec3(2.2));
     let absorption = WATER_ABSORPTION + WATER_PURE_ABSORPTION + WATER_TINT_ABSORPTION * (1.0 - colour);
@@ -1231,8 +1242,8 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
     var spray = 0.0;
     if face.y > 0.5 {
         let footprint = water_footprint(in.pos, face);
-        let w = water_waves(world.xz, globals.rt_water.z, footprint);
-        rough = water_lost_slope(footprint, water_sea(world.xz, globals.rt_water.z));
+        let w = water_waves(world.xz, globals.rt_water.z, footprint, sea);
+        rough = water_lost_slope(footprint, water_sea(world.xz, globals.rt_water.z, sea));
         // The rain's ripples where it falls on this water (`rain_ripples`).
         let r = rt_rain_ripples(in.pos);
         // On the face as drawn: far off it leans with the Earth's curvature.
@@ -1335,6 +1346,31 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
         let down = thickness * abs(ray.y);
         let sun_in = 1.0 - (0.02 + 0.98 * pow(1.0 - l.y, 5.0));
         shows *= sun_in * exp(-absorption * down / max(-bent.y, 0.1));
+    }
+    // The surf: where the open sea (`sea` near 1) runs shallow over a beach, the floor within two
+    // metres, white water breaks in bands rolling in to the shore (a crest every nine seconds,
+    // reaching the shallows later), a line of it at the very edge, torn into lace by the wind: a
+    // white diffuse layer on the water, lit by the sky and the sun, hiding what lies under it.
+    if sea > 0.75 && bottom > 0.0 && face.y > 0.5 {
+        let floor_depth = max(bottom - distance, 0.0) * abs(ray.y);
+        let band = (1.0 - smoothstep(0.1, 2.0, floor_depth)) * smoothstep(0.75, 0.95, sea);
+        if band > 0.0 {
+            let t = globals.rt_water.z;
+            let roll = 0.5 + 0.5 * sin(0.7 * t + 4.0 * floor_depth + 0.05 * (world.x - world.z));
+            let crest = smoothstep(0.35, 0.9, roll);
+            let edge = 1.0 - smoothstep(0.05, 0.6, floor_depth);
+            let lace = 0.45 * water_noise(world.xz * 0.9 + vec2(0.2, 0.1) * t)
+                + 0.35 * water_noise(world.xz * 3.1 - vec2(0.3, 0.05) * t)
+                + 0.2 * water_noise(world.xz * 9.7 + vec2(0.1, -0.4) * t);
+            let foam = band * smoothstep(0.38, 0.55, lace + 0.25 * crest)
+                * max(max(crest, edge), 0.4);
+            // Lit on the surface, in the open: the sun unshadowed by the water the floor's
+            // visibility (`v`) was traced through.
+            let white = 0.85 * (rt_sky(vec3(0.0, 1.0, 0.0)) * max(sky_seen, 0.5)
+                + globals.rt_sun_light.rgb * globals.rt_light.w * max(l.y, 0.0) / 3.14159265);
+            added = mix(added, white, foam);
+            shows *= 1.0 - foam;
+        }
     }
     // The air in front, as for the terrain: it dims both and adds the horizon's light.
     let f = rt_fade(in.spherical, in.cylindrical, in.pos) * globals.fog_color.a;
@@ -1610,6 +1646,16 @@ fn rt_wet(material: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, pixel: vec2<f32>
     var m = material;
     rt_puddle = 0.0;
     rt_spray = 0.0;
+    // The shore's water first (`rt_shore`), whatever the weather: in the pores and as a film, as
+    // the rain's.
+    let shore = rt_shore(rain_world(pos), geo, pos);
+    if shore > 0.0 {
+        let s = rain_surface(rain_cell(vec2<i32>(floor(rain_world(pos).xz))));
+        let p = select(rain_porosity(s), clamp(porosity, 0.0, 1.0), porosity >= 0.0);
+        m.albedo *= mix(1.0, mix(0.6, 0.25, p), shore);
+        let film = min(m.roughness, mix(0.08, 0.45, p));
+        m.roughness = mix(m.roughness, film, shore * (1.0 - 0.5 * rain_absorbs(s)));
+    }
     let shade = globals.rain;
     let sunny = globals.rain_sun;
     if max(max(shade.y, shade.z), max(sunny.x, sunny.y)) <= 0.0 { return m; }
@@ -1672,6 +1718,35 @@ fn rt_wet(material: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, pixel: vec2<f32>
         m.emission = 0.25;
     }
     return m;
+}
+// RT lighting's wet shore: a sand, soil or stone top at the water's edge (a water column of the rain
+// map one or two blocks off, the top a block above that water at most) holds what the swash
+// and the spray leave, soaked up to the waterline, the wet line running up and back over a few
+// seconds. 0 dry to 1 soaked; none past 64 blocks or out of the map. Eight look-ups of the map at
+// most, on those tops alone.
+fn rt_shore(world: vec3<f32>, geo: vec3<f32>, pos: vec3<f32>) -> f32 {
+    if geo.y < 0.5 || dot(pos, pos) > 4096.0 { return 0.0; }
+    let c = vec2<i32>(floor(world.xz));
+    let own = rain_cell(c);
+    let s = rain_surface(own);
+    if own == 0u || (s != 1u && s != 3u && s != 4u) { return 0.0; }
+    let top = rain_top(own);
+    if world.y < top - 0.05 { return 0.0; }
+    let swash = 0.5 + 0.5 * sin(0.7 * globals.rt_water.z + 0.13 * world.x + 0.11 * world.z);
+    let dirs = array<vec2<i32>, 4>(vec2(1, 0), vec2(-1, 0), vec2(0, 1), vec2(0, -1));
+    var wet = 0.0;
+    for (var i = 0; i < 4; i++) {
+        for (var d = 1; d <= 2; d++) {
+            let n = rain_cell(c + dirs[i] * d);
+            if n != 0u && rain_surface(n) == 10u {
+                let rise = top - rain_height(n);
+                let near = select(1.0, 0.55, d == 2);
+                wet = max(wet, near * (1.0 - smoothstep(0.75 + 0.3 * swash, 1.35 + 0.3 * swash, rise)));
+                break;
+            }
+        }
+    }
+    return wet;
 }
 // RT lighting: a fragment without maps, its albedo (`albedo`, gamma) lit and fogged, wet as the
 // rain left it.
