@@ -5,7 +5,10 @@
 //! `item_display` showing an item model from the mod's assets. They act where
 //! the world is simulated, in the level in place, which each names by its
 //! `dimension` (`minecraft:overworld`) as `native_set_block` does.
-use super::{Game, commands::Target};
+use super::{
+    Game,
+    commands::{Target, place_summoned},
+};
 use horizon_core::geometry::Vec3;
 use horizon_world::nbt::{Compound, Tag};
 
@@ -134,14 +137,19 @@ impl Game<'_> {
         }
         let mut tag = nbt;
         tag.insert("id".into(), Tag::String(kind.into()));
-        tag.insert(
-            "Pos".into(),
-            Tag::List(pos.map(|v| Tag::Double(v.to_bits())).to_vec()),
-        );
+        // As `/summon` does: every entity of the stack, passengers included,
+        // stands at `pos`.
+        let mut tag = Tag::Compound(tag);
+        place_summoned(&mut tag, pos);
         let from = self.mobs.len();
-        let target = self.spawn_entity_from_nbt(Tag::Compound(tag));
+        let first = self.next_entity + 1;
+        let target = self.spawn_entity_from_nbt(tag);
         self.native_mobs_joined(from, false);
-        target.and_then(target_id)
+        // The root is the first entity spawned, also for kinds no command
+        // target stands for (experience orbs).
+        target
+            .and_then(target_id)
+            .or((self.next_entity >= first).then_some(first))
     }
     /// Moves entity `id`, one Horizon keeps without simulating (a display, a
     /// marker, an interaction), to `pos` facing `yaw` and `pitch` in degrees;
@@ -279,6 +287,31 @@ mod tests {
             }
             .valid()
         );
+    }
+
+    #[test]
+    fn a_passenger_without_a_position_stands_where_the_stack_is_summoned() {
+        let mut rider = Compound::new();
+        rider.insert("id".into(), Tag::String("minecraft:pig".into()));
+        let mut root = Compound::new();
+        root.insert("id".into(), Tag::String("minecraft:pig".into()));
+        root.insert("Passengers".into(), Tag::List(vec![Tag::Compound(rider)]));
+        let mut tag = Tag::Compound(root);
+        place_summoned(&mut tag, [1.5, 70.0, -2.5]);
+        let pos = Tag::List(
+            [1.5, 70.0, -2.5]
+                .map(|v: f64| Tag::Double(v.to_bits()))
+                .to_vec(),
+        );
+        let Tag::Compound(root) = &tag else { panic!() };
+        assert_eq!(root.get(&"Pos".into()), Some(&pos));
+        let Some(Tag::List(riders)) = root.get(&"Passengers".into()) else {
+            panic!("no passengers");
+        };
+        let Tag::Compound(rider) = &riders[0] else {
+            panic!()
+        };
+        assert_eq!(rider.get(&"Pos".into()), Some(&pos));
     }
 
     #[test]
