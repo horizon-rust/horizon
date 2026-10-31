@@ -6,6 +6,15 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 61 adds mods' own sound events in `native_play_sound`: another
+//! namespace's event is sent by name, as vanilla sends an unregistered sound.
+//!
+//! API 60 adds the small bar under an item (`native_item_bar`): `GuiGraphicsExtractor.itemDecorations`
+//! hands it vanilla's choice (the damage bar, or a bundle's fullness already applied), to replace or hide.
+//!
+//! API 59 adds entities for server mods (`native_summon`, `native_move_entity`,
+//! `native_set_display`, `native_remove_entity`, in `native_entities.rs`).
+//!
 //! API 58 adds the renderer's hook points, in `horizon-client-render`'s
 //! `gfx/native_render.rs`: `native_world_drawn` (draw with the world's colour,
 //! depth, matrices and entity geometry before the hand and the HUD) and
@@ -255,7 +264,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 58;
+pub(crate) const NATIVE_HOOKS_API: u32 = 61;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -1114,7 +1123,7 @@ impl Game<'_> {
     /// item, wherever the game shows one: `bar` arrives holding vanilla's value
     /// (the damage bar, or a bundle's fullness already applied) and may be
     /// replaced (width `0..=13`, colour `rgb`) or set to `None` to hide it.
-    /// Asked each frame a stack is drawn. Client-side. @API:item_bar@.
+    /// Asked each frame a stack is drawn. Client-side. 60.
     pub(super) fn native_item_bar(&self, stack: &ItemStack, bar: &mut Option<(i32, u32)>) {
         let _ = (stack, bar);
     }
@@ -1544,7 +1553,7 @@ impl GameLevel<'_> {
     /// mod's, `mymod:machine_hum`) is sent by name, as vanilla sends a sound
     /// that isn't in its registry (`Holder.direct`, a variable range): players
     /// hear it if their resources define it (`assets/mymod/sounds.json`, a
-    /// content mod's). API @API:mod_sounds@.
+    /// content mod's). API 61.
     pub(super) fn native_play_sound(
         &mut self,
         sound: &str,

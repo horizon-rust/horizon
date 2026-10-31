@@ -117,7 +117,7 @@ impl Game<'_> {
     /// client's copy of the world, for another dimension, a position outside
     /// `/summon`'s bounds, a chunk that isn't loaded, a kind Horizon can't
     /// load, or one a mod kept out (`native_entity_join_level`). API
-    /// @API:native_entities@.
+    /// 59.
     pub(super) fn native_summon(
         &mut self,
         dimension: &str,
@@ -147,7 +147,7 @@ impl Game<'_> {
     /// marker, an interaction), to `pos` facing `yaw` and `pitch` in degrees;
     /// a display eases there over its `teleport` ticks. False for no such
     /// entity, another dimension or a position outside `/summon`'s bounds.
-    /// Mobs move with `native_teleport_mob`. API @API:native_entities@.
+    /// Mobs move with `native_teleport_mob`. API 59.
     pub(super) fn native_move_entity(
         &mut self,
         dimension: &str,
@@ -175,7 +175,7 @@ impl Game<'_> {
     /// `block_display`, `item_display` or `text_display`): players see it
     /// ease from what it showed over `interpolation` ticks. False for no such
     /// display, another dimension, or a value that isn't finite, a zero
-    /// quaternion, or a duration out of range. API @API:native_entities@.
+    /// quaternion, or a duration out of range. API 59.
     pub(super) fn native_set_display(
         &mut self,
         dimension: &str,
@@ -209,7 +209,7 @@ impl Game<'_> {
     /// Removes entity `id`, one Horizon keeps without simulating, as `/kill`
     /// does (it drops nothing and isn't saved). False for no such entity or
     /// another dimension. Mobs go with `native_remove_mob`. API
-    /// @API:native_entities@.
+    /// 59.
     pub(super) fn native_remove_entity(&mut self, dimension: &str, id: u32) -> bool {
         if !self.native_entity_level(dimension) || !self.others.iter().any(|o| o.id == id) {
             return false;
