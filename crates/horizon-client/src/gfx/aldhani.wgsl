@@ -23,9 +23,10 @@ const ALDHANI_GLOW_UNIT: f32 = 1024.0;
 const ALDHANI_REACH: f32 = 0.012;
 // The event's seconds: the storm builds over a minute, holds, and dies out over the last minute.
 const ALDHANI_EVENT: f32 = 300.0;
-// Where the meteors come from: a fixed direction of the world, due south eight degrees under the
-// horizon, far behind it, so the streaks rise out of the haze beyond the mountains and fan out
-// upward and outward over the whole sky.
+// Where the meteors go (the eye): a fixed direction of the world, due south eight degrees under
+// the horizon, far beyond it. They fly away from the observer toward it, their streaks converging
+// on it as they shrink into the haze beyond the mountains (their radiant, the opposite point, is
+// eight degrees over the northern horizon, behind the observer facing the eye).
 const ALDHANI_RADIANT: vec3<f32> = vec3<f32>(0.0, -0.1392, 0.99027);
 // The light the field gives a face turned to it at the storm's height, in full moons (the moon's
 // light overhead, `rt.held.z`), and the glow of the sky around the radiant at its brightest, in
@@ -131,22 +132,24 @@ fn palette(around: f32, theta: f32, u: f32, v: f32) -> vec3<f32> {
     return aldhani_cold(around, theta, u);
 }
 // The slots of the long ones, the last ALDHANI_LONG of the field (their own, longer slots, `time.z`):
-// the earthgrazers that cross the whole sky, from near the radiant over the observer to the
-// horizon opposite.
+// the earthgrazers that cross the whole sky, from behind the observer over them to the eye on
+// the horizon opposite.
 const ALDHANI_LONG: u32 = 4096u;
 const EARTH_KM: f32 = 6371.0;
 // The meteor of slot `slot` (slots of `period` seconds from the event's start), `t` seconds into
-// the event. A meteoroid falls along a straight line away from the radiant, as a shower's do (the
-// perspective of parallel lines makes the fan: short near the radiant, long overhead), lit high,
+// the event. A meteoroid falls along a straight line toward the eye, away from its radiant, as a
+// shower's do (the perspective of parallel lines makes the fan: short near the eye, long
+// overhead, all converging on the eye), lit high,
 // at 130 to 160 km (the Eye's are fast, large ones), its speed 35 to 70 km/s, its path 20 to 80 km; it lights up where it is, its glow
 // stays behind its head for a fifth to a half second (its streak), and its light follows the
 // classical single-body curve along the path (a rise to a peak late on, an abrupt end), its
-// brightness a population index's (many faint, a few bright). Many start near the radiant (the
-// eye), more than a thousand km away along the horizon: short, foreshortened, dimmed by the
+// brightness a population index's (many faint, a few bright). Many burn near the eye, more than a
+// thousand km away along the horizon: short, foreshortened, dimmed by the
 // distance and the air's long path, the lowest lost in the haze over the horizon; overhead they
 // are near, long and bright.
-// A long one (`long`) is an earthgrazer: lit lower toward the radiant, it skims the top of the air
-// for 300 to 1100 km at 55 to 72 km/s, its streak crossing the sky to the far horizon in 4 to 15 s.
+// A long one (`long`) is an earthgrazer: lit overhead or behind the observer, it skims the top of
+// the air for 300 to 1100 km at 55 to 72 km/s, its streak crossing the sky to the eye on the far
+// horizon in 4 to 15 s.
 fn aldhani_make(slot: u32, t: f32, period: f32, long: bool) -> AldhaniMeteor {
     var o = AldhaniMeteor(vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0));
     let seed = (slot + select(0u, 0x10000000u, long)) * 16u + 5u;
@@ -161,10 +164,11 @@ fn aldhani_make(slot: u32, t: f32, period: f32, long: bool) -> AldhaniMeteor {
         min(300.0 + 800.0 * aldhani_rand(seed + 3u), (15.0 - persist) * speed), long);
     let lasts = path / speed;
     if age < 0.0 || age > lasts + persist { return o; }
-    // Where it lights up: its angle from the radiant, most near it but many out to the east and
-    // west horizons and past the zenith (the storm fills the sky), and its side, above the horizon.
-    let theta = select(radians(8.5 + 121.5 * pow(aldhani_rand(seed + 5u), 1.7)),
-        radians(10.0 + 50.0 * aldhani_rand(seed + 5u)), long);
+    // Where it lights up: its angle from the eye, most near it but many out to the east and
+    // west horizons, past the zenith and down to the radiant behind (the storm fills the sky), and
+    // its side, above the horizon.
+    let theta = select(radians(12.0 + 166.0 * pow(aldhani_rand(seed + 5u), 1.5)),
+        radians(60.0 + 105.0 * aldhani_rand(seed + 5u)), long);
     let around = 3.14159265 * aldhani_rand(seed + 6u);
     let east = normalize(cross(vec3(0.0, 1.0, 0.0), ALDHANI_RADIANT));
     let lift = cross(ALDHANI_RADIANT, east);
@@ -174,7 +178,7 @@ fn aldhani_make(slot: u32, t: f32, period: f32, long: bool) -> AldhaniMeteor {
     let height = 130.0 + 30.0 * aldhani_rand(seed + 7u);
     let r = EARTH_KM + height;
     let reach = sqrt(r * r - EARTH_KM * EARTH_KM * (1.0 - a.y * a.y)) - EARTH_KM * a.y;
-    let w = -ALDHANI_RADIANT;
+    let w = ALDHANI_RADIANT;
     // Its head (where it burns now, or where it ended) and its glow's tail behind it.
     let head_t = min(age, lasts);
     let tail_t = clamp(age - persist, 0.0, head_t);

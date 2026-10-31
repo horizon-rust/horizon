@@ -363,9 +363,10 @@ const ALDHANI_GLOW_UNIT: f32 = 1024.0;
 const ALDHANI_REACH: f32 = 0.012;
 // The event's seconds: the storm builds over a minute, holds, and dies out over the last minute.
 const ALDHANI_EVENT: f32 = 300.0;
-// Where the meteors come from: a fixed direction of the world, due south eight degrees under the
-// horizon, far behind it, so the streaks rise out of the haze beyond the mountains and fan out
-// upward and outward over the whole sky.
+// Where the meteors go (the eye): a fixed direction of the world, due south eight degrees under
+// the horizon, far beyond it. They fly away from the observer toward it, their streaks converging
+// on it as they shrink into the haze beyond the mountains (their radiant, the opposite point, is
+// eight degrees over the northern horizon, behind the observer facing the eye).
 const ALDHANI_RADIANT: vec3<f32> = vec3<f32>(0.0, -0.1392, 0.99027);
 // The light the field gives a face turned to it at the storm's height, in full moons (the moon's
 // light overhead, `rt.held.z`), and the glow of the sky around the radiant at its brightest, in
