@@ -779,7 +779,8 @@ impl Renderer {
     }
 
     /// The window in VR: the left eye scaled onto it, and the HUD, instead of drawing the
-    /// world a third time.
+    /// world a third time (a whole RT frame at the window's size, more than both eyes'
+    /// rays: docs/raytracing.md, "GPU budget for Vision Pro"), with HDR output on or off.
     pub(super) fn present_mirror(
         &mut self,
         frame: &Frame,
@@ -819,12 +820,17 @@ impl Renderer {
                     ..Default::default()
                 })
         };
-        let screen = surface_frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor {
-                format: Some(format),
-                ..Default::default()
-            });
+        // With HDR output the eye goes into HDR's 8-bit frame, which one pass writes to the
+        // swapchain at paper white: the eye is already tone mapped for the headset.
+        let window = [self.config.width, self.config.height];
+        let screen = match &mut self.hdr {
+            Some(hdr) => hdr.frame(&self.device, window),
+            None => surface_frame.texture.clone(),
+        }
+        .create_view(&wgpu::TextureViewDescriptor {
+            format: Some(format),
+            ..Default::default()
+        });
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -839,9 +845,12 @@ impl Renderer {
             &screen,
             &self.depth,
             frame.hud,
-            [self.config.width, self.config.height],
+            window,
             0..frame.hud.vertices.len() as u32,
         );
+        if let Some(hdr) = &self.hdr {
+            hdr.present(&self.queue, &mut encoder, &surface_frame.texture, false);
+        }
         super::gpu_passes::stamp(&mut encoder, "mirror: scale and HUD");
         super::gpu_passes::end(&mut encoder);
         self.queue.submit([encoder.finish()]);

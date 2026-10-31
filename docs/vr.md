@@ -156,8 +156,8 @@ that a 12-degree jump never leaves the eyes on the wide view's edge; if it does,
 
 ## Foveated rendering without more views (variable rate shading)
 
-`HORIZON_XR_VRS=1` (off by default, stereo only): each eye keeps its one view at the headset's size, and the
-GPU shades it coarser away from where the eyes look (`VK_KHR_fragment_shading_rate`,
+On by default in stereo (`HORIZON_XR_VRS=0` turns it off): each eye keeps its one view at the
+headset's size, and the GPU shades it coarser away from where the eyes look (`VK_KHR_fragment_shading_rate`,
 `crates/horizon-xr/src/foveation.rs`). A small `R8_UINT` image per eye, one texel for 16x16 pixels, says the
 rate: every pixel within 25 degrees of the gaze (a 12-degree step on each side stays sharp), one fragment for
 2x2 pixels to 40 degrees, one for 4x4 beyond. Without a gaze it is centred ahead (fixed foveation). It is
@@ -180,6 +180,12 @@ the last five timing lines: GPU 1.84-1.93 ms a frame with it against 1.88-2.08 w
 CPU the same. Small, because the GPU waits for the CPU here and pixels are cheap; it grows with what each pixel
 costs. A capture shows the 4x4 blocks at the eye's edge and the centre identical to stereo. Not checked against
 the Vulkan validation layers (not installed here), nor in a headset.
+
+With RT lighting, the RTX-Remix-Materials pack and its parallax (31 October 2026, 1648x1328 an eye, the same
+run switching it every 20 seconds on a shared GPU), the world raster takes 2.17 and 2.09 ms an eye with it against
+2.82 and 2.77 without: 1.3 ms of the two eyes (the eyes' whole frame 1.7 ms less, median of the 60-frame windows).
+The pack's parallax makes each fragment dear, so shading fewer of them pays here, and it is on by default since.
+Captures: the sharp zone identical, the periphery beyond 40 degrees in 4x4 blocks.
 
 ## Testing without a headset
 

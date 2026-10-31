@@ -223,6 +223,8 @@ struct Uniform {
     steam_drift: [f32; 4],
     steam_drift_f: [f32; 4],
     far: [f32; 4],
+    other_view_proj: [[f32; 4]; 4],
+    other_eye: [f32; 4],
 }
 
 /// A drift in blocks, split into whole blocks and the fraction (the shader's noise lattice is
@@ -272,6 +274,8 @@ struct ViewFroxels {
     /// The medium the history was made in, and the frames of settling left.
     medium: Option<Medium>,
     settling: u32,
+    /// The `Froxels::frame` it last ran in.
+    drawn: u32,
 }
 
 fn texture_entry(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
@@ -366,6 +370,10 @@ pub struct Inputs<'a> {
     pub lights: [&'a wgpu::Buffer; 3],
     pub sky: &'a wgpu::TextureView,
     pub hardware: Option<Hardware<'a>>,
+    /// The view whose froxels this one reads instead of making its own, when it drew them this
+    /// frame at the same size (the second VR eye reads the first's: the medium seen from 6 cm away
+    /// is the same, and its inject is the volumetrics' cost).
+    pub share: Option<usize>,
 }
 
 impl Froxels {
@@ -727,13 +735,15 @@ impl Froxels {
             last: None,
             medium: None,
             settling: SETTLING_FRAMES,
+            drawn: 0,
         });
         self.views.len() - 1
     }
 
     /// One view's froxels this frame, inject, integrate and composite, onto `inputs.color` (the
     /// world drawn, `inputs.depth` its depth). Call once per view (the window, each VR eye) after
-    /// the world pass and before the tone mapping.
+    /// the world pass and before the tone mapping; a view that `Inputs::share`s reads another's
+    /// froxels and only composites.
     pub fn run(
         &mut self,
         device: &wgpu::Device,
@@ -750,7 +760,16 @@ impl Froxels {
         self.frame = self.frame.wrapping_add(1);
         let frame = self.frame;
         let index = self.view_froxels(device, inputs.view, inputs.size);
+        // The froxels another view made just before this one, the same size: its integrated
+        // froxels and its view.
+        let shared = inputs.share.and_then(|view| {
+            let s = self.views.iter().find(|s| s.view == view)?;
+            let (view_proj, _) = s.last?;
+            (s.dims == self.views[index].dims && s.drawn == frame.wrapping_sub(1))
+                .then(|| (s.integrated.clone(), view_proj))
+        });
         let state = &mut self.views[index];
+        state.drawn = frame;
         let dims = state.dims;
         if state.medium.is_some_and(|m| m.differs(&medium)) {
             state.settling = SETTLING_FRAMES;
@@ -768,6 +787,10 @@ impl Froxels {
         state.next = 1 - state.next;
         let fresh = state.fresh.clone();
         let integrated = state.integrated.clone();
+        if shared.is_some() {
+            // No history of its own: should it make its froxels again, it starts afresh.
+            state.last = None;
+        }
         let rays = inputs.rays;
         let eye = eye_of(inputs.view_proj);
         let prev_eye = last.map_or(eye, |l| eye_of(l.0));
@@ -848,106 +871,116 @@ impl Froxels {
                 FAR_SLICES as f32,
                 f32::from(u8::from(fog_on)),
             ],
+            other_view_proj: shared
+                .as_ref()
+                .map_or([[0.0; 4]; 4], |s| s.1.to_cols_array_2d()),
+            other_eye: shared.as_ref().map_or([0.0; 4], |s| {
+                let e = eye_of(s.1);
+                [e.x, e.y, e.z, 1.0]
+            }),
         };
         uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));
         let (view, buffer) = (texture_entry, buffer_entry);
-        let mut entries = vec![
-            buffer(0, &self.uniform),
-            buffer(24, &self.map),
-            view(2, inputs.grid[0]),
-            view(3, inputs.grid[1]),
-            view(4, inputs.grid[2]),
-            view(5, inputs.grid[3]),
-            buffer(7, inputs.lights[0]),
-            buffer(8, inputs.lights[1]),
-            view(10, inputs.sky),
-            view(22, &fresh),
-        ];
-        if let (true, Some(hw)) = (self.hardware, &inputs.hardware) {
-            entries.extend([
-                wgpu::BindGroupEntry {
-                    binding: 15,
-                    resource: wgpu::BindingResource::AccelerationStructure(hw.tlas),
-                },
-                buffer(16, &hw.arena[0]),
-                view(17, hw.sprites),
-                buffer(23, hw.instances),
-            ]);
-            entries.extend(
-                super::hw_rays::ARENA_BINDINGS
-                    .iter()
-                    .zip(&hw.arena[1..])
-                    .map(|(&binding, page)| buffer(binding, page)),
-            );
-        }
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Froxel volumetrics' inject"),
-            layout: &self.inject_layout,
-            entries: &entries,
-        });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Froxel volumetrics' inject"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.inject);
-            pass.set_bind_group(0, &group, &[]);
-            pass.dispatch_workgroups(
-                dims[0].div_ceil(4),
-                dims[1].div_ceil(4),
-                dims[2].div_ceil(4),
-            );
-        }
-        super::gpu_passes::stamp(encoder, "froxels: inject (lights, shadows)");
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Froxel volumetrics' blend"),
-            layout: &self.blend_layout,
-            entries: &[
+        if shared.is_none() {
+            let mut entries = vec![
                 buffer(0, &self.uniform),
-                view(11, &from),
-                wgpu::BindGroupEntry {
-                    binding: 12,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                view(13, &to),
-                view(21, &fresh),
-            ],
-        });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Froxel volumetrics' blend"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&self.blend);
-            pass.set_bind_group(0, &group, &[]);
-            pass.dispatch_workgroups(
-                dims[0].div_ceil(4),
-                dims[1].div_ceil(4),
-                dims[2].div_ceil(4),
-            );
-        }
-        super::gpu_passes::stamp(encoder, "froxels: blend (temporal)");
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Froxel volumetrics' integrate"),
-            layout: &self.integrate_layout,
-            entries: &[
-                buffer(0, &self.uniform),
-                view(19, &to),
-                view(14, &integrated),
-                view(10, inputs.sky),
                 buffer(24, &self.map),
-            ],
-        });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Froxel volumetrics' integrate"),
-                timestamp_writes: None,
+                view(2, inputs.grid[0]),
+                view(3, inputs.grid[1]),
+                view(4, inputs.grid[2]),
+                view(5, inputs.grid[3]),
+                buffer(7, inputs.lights[0]),
+                buffer(8, inputs.lights[1]),
+                view(10, inputs.sky),
+                view(22, &fresh),
+            ];
+            if let (true, Some(hw)) = (self.hardware, &inputs.hardware) {
+                entries.extend([
+                    wgpu::BindGroupEntry {
+                        binding: 15,
+                        resource: wgpu::BindingResource::AccelerationStructure(hw.tlas),
+                    },
+                    buffer(16, &hw.arena[0]),
+                    view(17, hw.sprites),
+                    buffer(23, hw.instances),
+                ]);
+                entries.extend(
+                    super::hw_rays::ARENA_BINDINGS
+                        .iter()
+                        .zip(&hw.arena[1..])
+                        .map(|(&binding, page)| buffer(binding, page)),
+                );
+            }
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Froxel volumetrics' inject"),
+                layout: &self.inject_layout,
+                entries: &entries,
             });
-            pass.set_pipeline(&self.integrate);
-            pass.set_bind_group(0, &group, &[]);
-            pass.dispatch_workgroups(dims[0].div_ceil(8), dims[1].div_ceil(8), 1);
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Froxel volumetrics' inject"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.inject);
+                pass.set_bind_group(0, &group, &[]);
+                pass.dispatch_workgroups(
+                    dims[0].div_ceil(4),
+                    dims[1].div_ceil(4),
+                    dims[2].div_ceil(4),
+                );
+            }
+            super::gpu_passes::stamp(encoder, "froxels: inject (lights, shadows)");
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Froxel volumetrics' blend"),
+                layout: &self.blend_layout,
+                entries: &[
+                    buffer(0, &self.uniform),
+                    view(11, &from),
+                    wgpu::BindGroupEntry {
+                        binding: 12,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    view(13, &to),
+                    view(21, &fresh),
+                ],
+            });
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Froxel volumetrics' blend"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.blend);
+                pass.set_bind_group(0, &group, &[]);
+                pass.dispatch_workgroups(
+                    dims[0].div_ceil(4),
+                    dims[1].div_ceil(4),
+                    dims[2].div_ceil(4),
+                );
+            }
+            super::gpu_passes::stamp(encoder, "froxels: blend (temporal)");
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Froxel volumetrics' integrate"),
+                layout: &self.integrate_layout,
+                entries: &[
+                    buffer(0, &self.uniform),
+                    view(19, &to),
+                    view(14, &integrated),
+                    view(10, inputs.sky),
+                    buffer(24, &self.map),
+                ],
+            });
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Froxel volumetrics' integrate"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.integrate);
+                pass.set_bind_group(0, &group, &[]);
+                pass.dispatch_workgroups(dims[0].div_ceil(8), dims[1].div_ceil(8), 1);
+            }
+            super::gpu_passes::stamp(encoder, "froxels: integrate");
         }
-        super::gpu_passes::stamp(encoder, "froxels: integrate");
+        let integrated = shared.map_or(integrated, |s| s.0);
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Froxel volumetrics' composite"),
             layout: &self.apply_layout,

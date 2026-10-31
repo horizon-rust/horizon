@@ -78,6 +78,10 @@ struct Fx {
     // The far slices past `depth.y`, the fogs' only: x the last one's far end, y log(x / depth.y),
     // z how many, w 1 when the fogs are on.
     far: vec4<f32>,
+    // The view whose froxels the composite reads, when not this one's (the second VR eye reads the
+    // first's): its world to clip space, and where its rays start (w 1 when it is another view).
+    other_view_proj: mat4x4<f32>,
+    other_eye: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> fx: Fx;
 @group(0) @binding(1) var depth: texture_depth_2d;
@@ -820,13 +824,24 @@ fn froxel_at(uv: vec2<f32>, r: f32, dither: f32) -> vec4<f32> {
     if t < 1.0 / n { v = mix(vec4(0.0, 0.0, 0.0, 1.0), v, t * n); }
     return v;
 }
+// The integrated froxels for this view's screen `uv` at distance `r`: its own, or another view's
+// (the second VR eye reads the first's) where that view sees the same point.
+fn view_froxel_at(uv: vec2<f32>, r: f32, dither: f32) -> vec4<f32> {
+    if fx.other_eye.w < 0.5 { return froxel_at(uv, r, dither); }
+    let p = fx.eye.xyz + ray_dir(uv) * r;
+    let c = fx.other_view_proj * vec4(p, 1.0);
+    let ndc = c.xy / max(c.w, 1e-6);
+    let end = select(fx.depth.y, fx.far.x, fog_on());
+    let other = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    return froxel_at(other, min(length(p - fx.other_eye.xyz), end), dither);
+}
 // The light the medium adds in front of the pixel, added to the scene.
 @fragment
 fn fs_scatter(in: Screen) -> @location(0) vec4<f32> {
     let texel = vec2<i32>(in.position.xy);
     let r = pixel_distance(texel, in.uv);
     let dither = pixel_dither(in.position.xy);
-    let here = froxel_at(in.uv, r, dither);
+    let here = view_froxel_at(in.uv, r, dither);
     var light = here.rgb;
     // The steam fog's reflection in the water under it: the mirrored ray crosses the same thin
     // layer again, so the water reflects (Fresnel's share) the light the layer scattered along the
@@ -837,7 +852,7 @@ fn fs_scatter(in: Screen) -> @location(0) vec4<f32> {
         let m = fog_map_at(pos.xz);
         let y = fx.camera.y + fx.fraction.y + pos.y;
         if dir.y < -0.01 && m.climate.y > 0.5 && abs(y - m.shape.y) < 0.4 {
-            let before = froxel_at(in.uv, max(r - STEAM_TOP / -dir.y, 0.0), dither);
+            let before = view_froxel_at(in.uv, max(r - STEAM_TOP / -dir.y, 0.0), dither);
             let layer = max(here.rgb - before.rgb, vec3(0.0)) / max(before.a, 0.05);
             let fresnel = 0.02 + 0.98 * pow(1.0 + dir.y, 5.0);
             light += layer * fresnel * here.a;
@@ -853,6 +868,6 @@ fn fs_transmit(in: Screen) -> @location(0) vec4<f32> {
     let texel = vec2<i32>(in.position.xy);
     let r = pixel_distance(texel, in.uv);
     var t = exp(-fx.sigma_t.rgb * min(r, fx.depth.y));
-    if fog_on() { t *= froxel_at(in.uv, r, pixel_dither(in.position.xy)).a; }
+    if fog_on() { t *= view_froxel_at(in.uv, r, pixel_dither(in.position.xy)).a; }
     return vec4(t, 1.0);
 }

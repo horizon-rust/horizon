@@ -4736,7 +4736,7 @@ impl Renderer {
             None => None,
         };
         let rendered = match &xr_frame {
-            Some(xr_frame) if self.hdr.is_none() => {
+            Some(xr_frame) => {
                 crate::spans::time("vr_mirror", || self.present_mirror(frame, xr_frame))
             }
             _ => self.draw_frame(frame),
@@ -6683,6 +6683,8 @@ impl Renderer {
                     lights,
                     sky: &self.atmosphere.view,
                     hardware: hw.as_ref().map(hw_rays::Bindings::hardware),
+                    // The second eye reads the first's froxels.
+                    share: (rt_view == 2).then_some(1),
                 },
             );
             self.froxels.camera = saved;

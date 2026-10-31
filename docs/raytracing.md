@@ -442,7 +442,7 @@ is small (0.84 ms an eye): GI 51 %, the rest 34 %, a floor of 14 % (the accumula
 2. **Foveation of the rays already pays** at 1648x1328: sharp all over the trace is 3.0 ms an eye, at 25 degrees 0.84, sparse
    all over 0.54. Little is left to take there. At 3660x3200 it did not hold: the foveated trace (8.6 ms an eye, 3.7 to 9.2
    from window to window) was slower than sharp all over (5.0), so the sparse blocks (one thread of sixteen traces) are not
-   free there; not explained yet.
+   free there: every warp still traced (explained and fixed under the levers, 5).
 3. **The raster is now the biggest stage in the headset**: 4.5 of the 9.6 ms of the eyes at 1648x1328, and it grows with the
    pixels (x4 for x5.3 the pixels). The pack's parallax makes the fragments heavy, and nothing is foveated in it.
 4. The structure builds are nothing (0.001 ms in VR: the scene was static), the denoiser runs on the 2x2 mask (0.2 ms an eye)
@@ -450,21 +450,33 @@ is small (0.84 ms an eye): GI 51 %, the rest 34 %, a floor of 14 % (the accumula
 
 ### The levers, ranked (ms of a two-eye frame at 1648x1328 unless said)
 
-| # | Lever | Saving | Basis |
+| # | Lever | Saving, estimated | Done (31 October 2026), measured |
 |---|---|---|---|
-| 1 | Do not draw the window's own frame in VR with HDR on (mirror the eye, or one HDR blit, as with HDR off) | 4.2 (more on a big window) | measured: 13.80 to 9.54 ms |
-| 2 | Per-eye resolution | about 3 for each million pixels an eye gains (1648x1328 to 2560x2048: 9.2 of the eyes; 3660x3200 is 46 ms, out of reach at 90 Hz) | measured at three sizes |
-| 3 | Foveated raster (a rate image from the gaze, as `HORIZON_XR_VRS`; the pack's parallax cut off the periphery) | 1.5 to 2.2 | estimated: 30-50 % of the raster's 4.5 |
-| 4 | Reuse between the eyes: one froxel volume (0.5), the depth prepass once or at the mask's size (0.8), the trace and denoiser once for a view between the eyes then reprojected (0.9) | 1.5 to 2.2 | estimated from the second eye's own stage times |
-| 5 | Fewer ray samples: GI on a checkerboard of the mask texels over two frames (half of 51 % of the trace), the sparse zone's rays compacted | 0.3 to 0.6 | measured by `HORIZON_RT_SKIP=2` (GI is 0.43 ms an eye) |
+| 1 | Do not draw the window's own frame in VR with HDR on (mirror the eye, or one HDR blit, as with HDR off) | 4.2 (more on a big window) | **Done** (`present_mirror`, the eye into HDR's 8-bit frame, then its pass): the window's frame 12.2 ms under the shared GPU (4.2 idle, 13.80 to 9.54 ms) becomes the mirror's 0.02; at 3440x1440, 66 ms shared (about 16 idle, the desktop frame) for 0.02 |
+| 2 | Per-eye resolution | about 3 for each million pixels an eye gains (1648x1328 to 2560x2048: 9.2 of the eyes; 3660x3200 is 46 ms, out of reach at 90 Hz) | not a lever to apply: the headset's choice |
+| 3 | Foveated raster (a rate image from the gaze, as `HORIZON_XR_VRS`; the pack's parallax cut off the periphery) | 1.5 to 2.2 | **Done**: variable rate shading on by default in stereo (`HORIZON_XR_VRS=0` turns it off, [vr.md](vr.md)): the raster 2.17 and 2.09 ms an eye against 2.82 and 2.77, **1.3** (the eyes' frame 1.7 less); the periphery beyond 40 degrees in 4x4 blocks, the sharp zone identical |
+| 4 | Reuse between the eyes: one froxel volume (0.5), the depth prepass once or at the mask's size (0.8), the trace and denoiser once for a view between the eyes then reprojected (0.9) | 1.5 to 2.2 | **One froxel volume done** (`froxels::Inputs::share`: the second eye composites the first's): **0.5** (the eyes' frame 8.62 to 8.10 ms), the captures' difference the runs' own noise. The prepass and the trace not done: the prepass is the solid terrain's geometry (half the pixels would save little of it), and a trace shared between the eyes is a reprojection with its own disocclusions, to try against the headset's eyes |
+| 5 | Fewer ray samples: GI on a checkerboard of the mask texels over two frames (half of 51 % of the trace), the sparse zone's rays compacted | 0.3 to 0.6 | **Compaction done** (`cs_sparse`, a pass of its own, a thread a 4x4 block): the trace 0.78 and 0.79 ms an eye against 1.00 and 1.36, **0.4 to 0.8** (the eyes' frame 1.0 less). The GI checkerboard not done: it halves the GI's samples where the eyes look, twice the time for its noise to settle, for 0.2 to 0.3 now that the sparse zone is cheap |
 | - | Already in: ray foveation (sharp all over would add 4.3), the denoiser at the 2x2 mask, one TLAS for both eyes | | measured |
 | - | Not worth it: fewer denoiser passes (0.1), exposure and bloom once for both eyes (0.1) | < 0.2 | measured stage times |
 
-With 1 alone the headset is at 9.6 ms at 1648x1328 (1.5 ms of margin, the worst look 11.6 when sweeping the head); with
-1, 3 and 4 about 5.5 to 6.5 ms, which buys an eye of about 2000x1650 inside the 11.1 ms.
+**How the levers were measured.** The GPU was shared with up to four other games the whole time (the eyes took 8 to 30
+ms by the minute), so each lever was timed A/B within one run: a temporary switch read every frame from a file the
+runner created and deleted every 20 seconds, the 60-frame reports tagged by it (`HORIZON_GPU_PASSES=1`), the same pose
+held (`head 0 -15`), and the medians of each side's reports compared. The savings are the stages' own differences,
+which hold under the sharing; the absolute times are high.
 
-**To do first:** lever 1; then measure a window at 3440x1440 in VR (the fake runtime's window is 1280x720), 3 on the
-Vision Pro's real gaze, and the whole table again on an idle GPU.
+The sparse zone's cost (finding 2): its block's ray was traced by the block's corner thread, one lane in sixteen, two
+in every warp, so every warp of the sparse zone traced as long as for thirty-two rays. Moving the workgroup's rays to
+its first warp was slower still (the idle warps keep their registers until the barrier); a pass of their own, a
+thread a block, is what pays.
+
+With 1, 3, 4 (froxels) and 5 (compaction) the eyes at 1648x1328 take 2.2 to 2.6 ms less by the stages' savings (3.2
+by the eyes' frames), and the window's 4.2 is gone: from the study's 13.8 ms about 7.0 to 7.4 ms of eyes, room inside
+the 11.1 ms for an eye of about 2050x1650 (at about 3 ms a million pixels, lever 2), to confirm on an idle GPU.
+
+**Still to do:** the whole table again on an idle GPU; 3 on the Vision Pro's real gaze (fixed foveation without it:
+the periphery's blocks show when the eyes turn); the depth prepass and the shared trace of 4.
 
 ## What exists: the spike (`origin/feat/raytracing-spike`, 42c752d6b)
 
