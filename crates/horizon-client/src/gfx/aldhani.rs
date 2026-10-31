@@ -23,13 +23,21 @@ const TILE_CAP: u64 = 256;
 pub const EVENT: f32 = 300.0;
 pub const SWEEP: f32 = 35.0;
 /// A slot's seconds: at most one meteor each, so 8000 a second at the storm's height, burning for
-/// one to two seconds each (the slots looked back over, all but the long ones', cover 3.6 s, past
-/// the longest a meteor lasts, 2.8 s).
+/// one to two seconds each (the slots looked back over, all but the long ones' and the grazers',
+/// cover 3.5 s, past the longest a meteor lasts, 2.8 s).
 const SLOT: f32 = 1.0 / 8000.0;
 /// The long ones' slots (aldhani.wgsl `ALDHANI_LONG`, the field's last) and their seconds: one in
 /// two holds an earthgrazer, 128 a second, their 4096 slots covering 16 s, past the longest, 15 s.
 const LONG: u64 = 4096;
 const LONG_SLOT: f32 = 1.0 / 256.0;
+/// The slow grazers' slots (aldhani.wgsl `ALDHANI_GRAZE`, before the long ones) and their seconds:
+/// 512 half-second slots, covering 256 s, past the longest a grazer lasts, 230 s.
+const GRAZE: u64 = 512;
+const GRAZE_SLOT: f32 = 0.5;
+const _: () = assert!(
+    GRAZE as f32 * GRAZE_SLOT >= 230.0,
+    "the grazers' slots cover the longest"
+);
 const _: () = assert!(
     LONG as f32 * LONG_SLOT >= 15.0,
     "the long slots cover the longest earthgrazer"
@@ -210,7 +218,7 @@ impl Aldhani {
             encoder,
             &self.params,
             0,
-            bytemuck::cast_slice(&[t, SLOT, LONG_SLOT, 0.0]),
+            bytemuck::cast_slice(&[t, SLOT, LONG_SLOT, GRAZE_SLOT]),
         );
         encoder.clear_buffer(&self.tiles, 0, Some(TILES * TILES * 4));
         encoder.clear_buffer(&self.tiles, GLOW_SUM * 4, Some(3 * TILES * TILES * 4));
@@ -309,6 +317,7 @@ mod tests {
             ("ALDHANI_TILES", super::TILES),
             ("ALDHANI_TILE_CAP", super::TILE_CAP),
             ("ALDHANI_LONG", super::LONG),
+            ("ALDHANI_GRAZE", super::GRAZE),
         ] {
             assert!(
                 source.contains(&format!("const {name}: u32 = {value}u;")),
