@@ -350,8 +350,11 @@ impl Gpu {
 
     /// An offscreen target of `size` physical pixels, for tests and previews.
     pub fn offscreen(size: (u32, u32), scale: f32, assets: &Assets) -> Result<Self> {
-        let instance =
-            wgpu::Instance::new(crate::gfx::instance_descriptor(wgpu::Backends::PRIMARY, None, false));
+        let instance = wgpu::Instance::new(crate::gfx::instance_descriptor(
+            wgpu::Backends::PRIMARY,
+            None,
+            false,
+        ));
         let adapter = pollster::block_on(instance.request_adapter(&Default::default()))?;
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))?;

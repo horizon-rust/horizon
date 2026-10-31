@@ -319,6 +319,15 @@ impl Native {
     pub fn compile(classes: &[ClassFile]) -> Result<Native, String> {
         let mut flags = settings::builder();
         flags.set("opt_level", "speed").map_err(|e| e.to_string())?;
+        // Stack probes for large frames: Windows needs each page of a frame
+        // touched in order (its guard page); elsewhere a deep recursion then
+        // stops at the guard page instead of past it.
+        flags
+            .set("enable_probestack", "true")
+            .map_err(|e| e.to_string())?;
+        flags
+            .set("probestack_strategy", "inline")
+            .map_err(|e| e.to_string())?;
         // The verifier checks the compiler, not the program: debug builds only.
         if !cfg!(debug_assertions) {
             flags
@@ -2386,6 +2395,23 @@ impl World<'_> {
         None
     }
     /// The class that declares static field `name`, from `owner` up.
+    /// Whether field `name` of `owner` (or of a superclass, where it is
+    /// declared) is `volatile`.
+    fn is_volatile(&self, owner: &str, name: &str) -> bool {
+        const VOLATILE: u16 = 0x0040;
+        let mut x = Some(owner);
+        while let Some(c) = x {
+            let Some(cf) = self.by_name.get(c) else {
+                return false;
+            };
+            if let Some(f) = cf.fields.iter().find(|f| f.name == name) {
+                return f.access & VOLATILE != 0;
+            }
+            x = cf.super_name().ok().flatten();
+        }
+        false
+    }
+
     fn static_field(&self, owner: &str, name: &str) -> Option<(String, i32, Type)> {
         let mut x = Some(owner.to_owned());
         while let Some(c) = x {
@@ -3915,6 +3941,49 @@ impl<'a, 'b, 'f> MethodGen<'a, 'b, 'f> {
     }
 
     /// Code the prototype does not compile: a stop (a trap), counted by why.
+    /// A field's value at `base + at`. A `volatile` field's is an atomic
+    /// load (Java orders it against other threads' writes; ARM64 needs it).
+    fn load_field(&mut self, t: Type, base: Value, at: i32, volatile: bool) -> Value {
+        if !volatile {
+            return self.b.ins().load(t, MemFlagsData::trusted(), base, at);
+        }
+        let addr = self.b.ins().iadd_imm_s(base, i64::from(at));
+        let bits = if t == types::F32 {
+            types::I32
+        } else if t == types::F64 {
+            types::I64
+        } else {
+            t
+        };
+        let v = self
+            .b
+            .ins()
+            .atomic_load(bits, MemFlagsData::trusted(), addr);
+        if bits == t {
+            v
+        } else {
+            self.b.ins().bitcast(t, MemFlagsData::new(), v)
+        }
+    }
+
+    /// Stores a field's value; a `volatile` field's atomically.
+    fn store_field(&mut self, v: Value, base: Value, at: i32, volatile: bool) {
+        if !volatile {
+            self.b.ins().store(MemFlagsData::trusted(), v, base, at);
+            return;
+        }
+        let addr = self.b.ins().iadd_imm_s(base, i64::from(at));
+        let t = self.b.func.dfg.value_type(v);
+        let v = if t == types::F32 {
+            self.b.ins().bitcast(types::I32, MemFlagsData::new(), v)
+        } else if t == types::F64 {
+            self.b.ins().bitcast(types::I64, MemFlagsData::new(), v)
+        } else {
+            v
+        };
+        self.b.ins().atomic_store(MemFlagsData::trusted(), v, addr);
+    }
+
     fn stop(&mut self, why: String) {
         *self.w.stops.borrow_mut().entry(why.clone()).or_default() += 1;
         self.trap_with(why);
@@ -4381,16 +4450,17 @@ impl<'a, 'b, 'f> MethodGen<'a, 'b, 'f> {
                     return Ok(true);
                 };
                 self.init(&declaring);
+                let volatile = self.w.is_volatile(&declaring, name);
                 let addr = self
                     .b
                     .ins()
                     .iconst(i64t, self.w.statics_base + i64::from(at));
                 if op == 0xB2 {
-                    let v = self.b.ins().load(t, MemFlagsData::trusted(), addr, 0);
+                    let v = self.load_field(t, addr, 0, volatile);
                     self.set(d, t, v);
                 } else {
                     let v = self.get(d - 1, t);
-                    self.b.ins().store(MemFlagsData::trusted(), v, addr, 0);
+                    self.store_field(v, addr, 0, volatile);
                 }
             }
             0xB4 | 0xB5 => {
@@ -4415,16 +4485,17 @@ impl<'a, 'b, 'f> MethodGen<'a, 'b, 'f> {
                     }
                     return Ok(false);
                 }
+                let volatile = self.w.is_volatile(owner, name);
                 if op == 0xB4 {
                     let obj = self.get(d - 1, i64t);
                     self.null_check(obj);
-                    let v = self.b.ins().load(t, MemFlagsData::trusted(), obj, at);
+                    let v = self.load_field(t, obj, at, volatile);
                     self.set(d - 1, t, v);
                 } else {
                     let v = self.get(d - 1, t);
                     let obj = self.get(d - 2, i64t);
                     self.null_check(obj);
-                    self.b.ins().store(MemFlagsData::trusted(), v, obj, at);
+                    self.store_field(v, obj, at, volatile);
                 }
             }
             0xB6..=0xB9 => return self.invoke(insn, f, i),

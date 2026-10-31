@@ -12,7 +12,7 @@ default = ["runtime"]
 runtime = ["dep:wasmtime"]
 # The native backend (docs/java-compat/compiler.md, step 6): Cranelift
 # straight to machine code, with its own object model.
-native = ["dep:libc", "dep:cranelift-codegen", "dep:cranelift-frontend", "dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-native"]
+native = ["dep:libc", "dep:windows-sys", "dep:cranelift-codegen", "dep:cranelift-frontend", "dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-native"]
 
 [dependencies]
 cranelift-codegen = { version = "0.135.7", optional = true }
@@ -23,6 +23,10 @@ cranelift-native = { version = "0.135.7", optional = true }
 libc = { version = "0.2", optional = true }
 wasm-encoder = "0.254"
 wasmtime = { version = "48.0.7", default-features = false, features = ["runtime", "cranelift", "std", "gc-drc", "gc-copying"], optional = true }
+
+# The native heap's address space on Windows (heap.rs).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Memory"], optional = true }
 
 [dev-dependencies]
 zip = { version = "2", default-features = false, features = ["deflate"] }

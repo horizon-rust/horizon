@@ -1591,6 +1591,7 @@ dependencies = [
  "wasm-encoder 0.254.2",
  "wasmtime",
  "wat",
+ "windows-sys 0.61.2",
  "zip",
 ]
 

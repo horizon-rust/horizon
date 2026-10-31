@@ -264,6 +264,10 @@ extern "C" fn task_cancel(_t: u64, _interrupt: i32) -> i32 {
 
 extern "C" fn pool_shutdown(p: u64) {
     let state = pool(p);
+    // Under the queue's lock: a worker checks the flag and starts waiting
+    // with the lock held, so it either sees the flag or gets the wakeup
+    // (without the lock, one between the two missed both and never ended).
+    let _queue = state.queue.lock().unwrap();
     state.shutdown.store(true, Ordering::Release);
     state.work.notify_all();
 }

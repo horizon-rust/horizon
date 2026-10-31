@@ -96,6 +96,10 @@ impl Heap {
             // Leave it past the end: every later take fails too.
             return None;
         }
+        // (Windows commits reserved memory before its first use.)
+        if !self._memory.commit(self.base, start + want) {
+            return None;
+        }
         Some((start, start + want))
     }
 
@@ -150,13 +154,20 @@ pub extern "C" fn refill(ctx: *mut Context, size: u64) -> u64 {
 
 /// Reserved address space, released on drop.
 struct Memory {
-    #[cfg(unix)]
-    at: *mut libc::c_void,
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
+    at: *mut core::ffi::c_void,
+    #[cfg(any(unix, windows))]
     size: usize,
-    #[cfg(not(unix))]
+    /// Windows: how much of the reservation is committed, from its start.
+    #[cfg(windows)]
+    committed: Mutex<u64>,
+    #[cfg(not(any(unix, windows)))]
     _bytes: Vec<u8>,
 }
+
+/// Windows commits the reservation in steps of this many bytes.
+#[cfg(windows)]
+const COMMIT_STEP: u64 = 64 << 20;
 
 // SAFETY: the mapping is plain memory; who writes where is the heap's
 // business (buffers never overlap).
@@ -191,11 +202,65 @@ impl Memory {
         (Memory { at, size: len }, at as u64, false)
     }
 
-    #[cfg(not(unix))]
+    /// Address space only: [`Memory::commit`] makes it usable, in steps.
+    #[cfg(windows)]
+    fn reserve(size: u64) -> (Memory, u64, bool) {
+        use windows_sys::Win32::System::Memory::{MEM_RESERVE, PAGE_READWRITE, VirtualAlloc};
+        let len = size as usize;
+        let memory = |at: *mut core::ffi::c_void| Memory {
+            at,
+            size: len,
+            committed: Mutex::new(0),
+        };
+        // SAFETY: a reservation at BASE if it is free, else anywhere.
+        let at = unsafe { VirtualAlloc(BASE as *const _, len, MEM_RESERVE, PAGE_READWRITE) };
+        if !at.is_null() {
+            return (memory(at), at as u64, at as u64 == BASE);
+        }
+        // SAFETY: as above, anywhere.
+        let at = unsafe { VirtualAlloc(core::ptr::null(), len, MEM_RESERVE, PAGE_READWRITE) };
+        assert!(!at.is_null(), "no address space for the heap");
+        (memory(at), at as u64, false)
+    }
+
+    #[cfg(not(any(unix, windows)))]
     fn reserve(size: u64) -> (Memory, u64, bool) {
         let bytes = vec![0u8; size as usize];
         let base = bytes.as_ptr() as u64;
         (Memory { _bytes: bytes }, base, false)
+    }
+
+    /// Makes the memory from `base` to `end` usable: Windows commits its
+    /// reservation in steps; elsewhere the system does it on first use.
+    #[cfg(windows)]
+    fn commit(&self, base: u64, end: u64) -> bool {
+        use windows_sys::Win32::System::Memory::{MEM_COMMIT, PAGE_READWRITE, VirtualAlloc};
+        let mut committed = self.committed.lock().unwrap_or_else(|e| e.into_inner());
+        let want = end - base;
+        if want <= *committed {
+            return true;
+        }
+        let to = want.next_multiple_of(COMMIT_STEP).min(self.size as u64);
+        let from = *committed;
+        // SAFETY: a range inside the reservation `reserve` made.
+        let at = unsafe {
+            VirtualAlloc(
+                (self.at as u64 + from) as *const _,
+                (to - from) as usize,
+                MEM_COMMIT,
+                PAGE_READWRITE,
+            )
+        };
+        if at.is_null() {
+            return false;
+        }
+        *committed = to;
+        true
+    }
+
+    #[cfg(not(windows))]
+    fn commit(&self, _base: u64, _end: u64) -> bool {
+        true
     }
 }
 
@@ -210,6 +275,15 @@ fn leave_out_of_core_dumps(at: *mut libc::c_void, len: usize) {
     }
     #[cfg(not(target_os = "linux"))]
     let _ = (at, len);
+}
+
+#[cfg(windows)]
+impl Drop for Memory {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Memory::{MEM_RELEASE, VirtualFree};
+        // SAFETY: the reservation `reserve` made; nothing uses it any more.
+        unsafe { VirtualFree(self.at, 0, MEM_RELEASE) };
+    }
 }
 
 #[cfg(unix)]
