@@ -80,6 +80,9 @@ impl Game<'_> {
         }
     }
     pub(super) fn options_path() -> std::path::PathBuf {
+        if let Some(path) = super::split::options_path() {
+            return path;
+        }
         std::env::current_dir()
             .unwrap_or_default()
             .join("options.txt")
@@ -383,6 +386,10 @@ impl Game<'_> {
     /// window to change, so applying settings never undoes a fullscreen
     /// the compositor set up.
     fn apply_fullscreen(&mut self) {
+        // A splitscreen guest draws in a window it shares: its option never changes the window.
+        if self.options.split_guest {
+            return;
+        }
         if let Some(w) = self.window.clone() {
             let monitor = w.current_monitor().or_else(|| w.primary_monitor());
             if let Some(modes) = self
@@ -437,7 +444,10 @@ impl Game<'_> {
         }
         let mut volumes = s.volumes;
         volumes[0] = 1.0;
-        horizon_client::settings::set_source_volumes(volumes);
+        // Splitscreen: the speakers are P1's, and so are their volumes.
+        if !self.options.split_guest {
+            horizon_client::settings::set_source_volumes(volumes);
+        }
         let chat = s.chat_options();
         let rescale = {
             let o = &self.ui.chat.options;
@@ -464,6 +474,9 @@ impl Game<'_> {
             return;
         }
         let Some(w) = &self.window else { return };
+        if self.options.split_guest {
+            return;
+        }
         if let Some(now) = self.fullscreen.observe(w.fullscreen().is_some())
             && self.settings.fullscreen != now
         {
@@ -473,6 +486,10 @@ impl Game<'_> {
     }
     /// F11 (key.fullscreen): Window.toggleFullScreen, remembered in options.txt.
     pub(super) fn toggle_fullscreen(&mut self) {
+        // Splitscreen: the window is P1's; another player's F11 leaves it alone.
+        if self.options.split_guest {
+            return;
+        }
         self.settings.fullscreen = !self.settings.fullscreen;
         self.settings.save(&Self::options_path());
         self.apply_ui_settings();
@@ -511,7 +528,7 @@ impl Game<'_> {
     /// below 260 frames per second, sleeping then spin-waiting until the
     /// frame's slot ends (not in scripted frame-count runs).
     pub(super) fn limit_frame(&mut self) {
-        if self.options.frames.is_some() {
+        if self.options.frames.is_some() || self.options.paced_by_split {
             return;
         }
         let limit = self.framerate_limit();
