@@ -159,6 +159,7 @@ The frame, as `frame` in every stage. Positions and directions are in world axes
 | `water_plane` | `f32` | 512 | The y of the horizontal water plane `reflection` mirrors the world about, in world blocks, while `has_reflection` is 1. |
 | `has_reflection` | `u32` | 516 | 1 while the material stage's `reflection` holds this frame's water mirror, else 0. |
 | `reflection_resolution` | `vec2<f32>` | 520 | The size of `reflection`, in pixels: half the world's picture. |
+| `mods` | `array<vec4<f32>, 8>` | 528 | Eight values a native mod hands its own pack each frame (`native_shader_params`, docs/native-mods.md): what they mean is that mod's, such as where and when something happened in the world. All 0 when no mod sets them. |
 
 ## Options
 

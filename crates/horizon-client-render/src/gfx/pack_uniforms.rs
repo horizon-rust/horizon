@@ -35,6 +35,8 @@ pub struct PackInputs {
     /// `heldItemId`, `heldItemId2` (item.properties, 5.3) and `heldBlockLightValue(2)`.
     pub held_items: [i32; 2],
     pub held_light: [i32; 2],
+    /// The values native mods hand their packs (`frame.mods`, `native_shader_params`).
+    pub mod_params: [[f32; 4]; 8],
 }
 
 /// One uniform's value: up to 16 floats or 3 integers.

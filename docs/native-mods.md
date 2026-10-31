@@ -738,6 +738,15 @@ Helpers for a server mod, by the rules hoppers follow: a furnace's sides, a doub
 
 During a machine's own tick its block entity is out of the world, so these answer as if no container were there: it has its slots in hand, in the `items` it's given. A composter takes one item a call, and these don't empty it: a hopper does. Container entities (minecarts, chest boats) aren't reached yet.
 
+### Values for a mod's shader pack
+
+`native_shader_params(partial, params)` (client) asks every frame, while a Horizon shader pack is on, for eight
+`[f32; 4]` that every stage of the pack reads as `frame.mods` (`array<vec4<f32>, 8>`, docs/api/shaders-reference.md). What
+they mean is the mod's own: a mod that bundles its pack as `native-<mod id>` writes the slots that pack reads, such as an
+explosion's centre (camera-relative, from `frame.camera_position`) and its age in seconds, for a cloud or a shock wave
+ray marched in a post pass against `scene_depth`. A value that isn't finite reads as 0, and all are 0 when no mod sets
+them. The mod's server half can send what happened to each client half with mod messages (API 40).
+
 ### Mod messages
 
 API 40, `crates/horizon-client/src/game/native_net.rs`: bytes between a mod's server half and its client half, on the

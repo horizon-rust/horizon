@@ -840,6 +840,16 @@ impl Game<'_> {
     pub(super) fn native_zoom(&self, zoom: &mut Option<NativeZoom>) {
         let _ = zoom;
     }
+    /// The values native mods hand their shader packs in this frame,
+    /// `partial` ticks past the last tick (0 to 1): a pack's WGSL reads
+    /// them as `frame.mods` (eight `vec4<f32>`). Write the slots your own
+    /// pack reads; a mod that bundles its pack as `native-<mod id>` is the
+    /// one that pack is for. Asked once a frame while a pack is on; a value
+    /// that isn't finite reads as 0 (`native_shader_params_now`). API
+    /// @API:native_shader_params@.
+    pub(super) fn native_shader_params(&self, partial: f32, params: &mut [[f32; 4]; 8]) {
+        let _ = (partial, params);
+    }
     /// The minimap a native mod shows: set `minimap` when it is none yet.
     pub(super) fn native_minimap(&self, minimap: &mut Option<NativeMinimap>) {
         let _ = minimap;
@@ -2980,6 +2990,13 @@ impl Game<'_> {
             },
         })
     }
+    /// What native mods hand shader packs in this frame (`native_shader_params`),
+    /// with values that aren't finite as 0.
+    pub(super) fn native_shader_params_now(&self, partial: f32) -> [[f32; 4]; 8] {
+        let mut params = [[0.0; 4]; 8];
+        self.native_shader_params(partial, &mut params);
+        finite_params(params)
+    }
     /// The minimap a native mod shows.
     pub(super) fn native_minimap_now(&self) -> Option<NativeMinimap> {
         let mut minimap = None;
@@ -3047,6 +3064,12 @@ fn config_dir(options: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// `params` with each value that isn't finite as 0, so a mod's mistake can't
+/// put a NaN in every pixel of a pack's picture.
+fn finite_params(params: [[f32; 4]; 8]) -> [[f32; 4]; 8] {
+    params.map(|v| v.map(|x| if x.is_finite() { x } else { 0.0 }))
+}
+
 /// `v` within `lo..=hi`; `lo` when it is not a number.
 fn finite(v: f32, lo: f32, hi: f32) -> f32 {
     if v.is_finite() { v.clamp(lo, hi) } else { lo }
@@ -3079,6 +3102,16 @@ fn box_meets(b: &horizon_core::geometry::Aabb, min: [f64; 3], max: [f64; 3]) -> 
 
 #[cfg(test)]
 mod tests {
+
+    /// A mod's shader values that aren't finite read as 0.
+    #[test]
+    fn shader_params_that_arent_finite_read_as_zero() {
+        let mut params = [[1.0; 4]; 8];
+        params[0] = [f32::NAN, 2.0, f32::INFINITY, -3.0];
+        let out = super::finite_params(params);
+        assert_eq!(out[0], [0.0, 2.0, 0.0, -3.0]);
+        assert_eq!(out[7], [1.0; 4]);
+    }
 
     /// A mod's property write: none for a key or value the block lacks, the
     /// state itself when it already has the value, else the new state.

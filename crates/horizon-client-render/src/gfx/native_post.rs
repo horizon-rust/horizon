@@ -748,6 +748,7 @@ pub fn frame_inputs(frame: &Frame, size: [u32; 2], seconds: f32, index: u32) -> 
         water_plane: frame.water_plane.unwrap_or(0.0),
         has_reflection: u32::from(frame.water_plane.is_some()),
         reflection_resolution: reflection_size(size).map(|s| s as f32),
+        mods: pack.mod_params,
     }
 }
 

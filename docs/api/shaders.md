@@ -103,6 +103,8 @@ stages.
 
 ## Changelog
 
+- 2026-10-31: API 0.1 (additions): `Frame.mods`, eight `vec4<f32>` a native mod hands the pack it bundles each
+  frame (`native_shader_params` in docs/native-mods.md), all 0 when no mod sets them.
 - 2026-10-30: API 0.1 (additions): the manifest's `[reflection] option`, which draws the water
   mirror only while that option is on, and the mirror's own eye in facing culling.
 - 2026-10-30: API 0.1 (additions): the material stage's `reflection` and

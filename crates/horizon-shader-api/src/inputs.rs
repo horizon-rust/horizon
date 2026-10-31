@@ -51,6 +51,7 @@ wgsl_types! {
     [f32; 3] => "vec3<f32>",
     [f32; 4] => "vec4<f32>",
     [[f32; 4]; 4] => "mat4x4<f32>",
+    [[f32; 4]; 8] => "array<vec4<f32>, 8>",
 }
 
 /// A uniform struct: the Rust type the renderer uploads, and its WGSL.
@@ -175,6 +176,10 @@ uniform! {
         has_reflection: u32,
         /// The size of `reflection`, in pixels: half the world's picture.
         reflection_resolution: [f32; 2],
+        /// Eight values a native mod hands its own pack each frame (`native_shader_params`,
+        /// docs/native-mods.md): what they mean is that mod's, such as where and when
+        /// something happened in the world. All 0 when no mod sets them.
+        mods: [[f32; 4]; 8],
     }
 }
 
@@ -246,9 +251,9 @@ mod tests {
     #[test]
     fn frame_fields_carry_their_docs() {
         let wgsl = Frame::WGSL;
-        assert_eq!(wgsl.fields.len(), 41);
+        assert_eq!(wgsl.fields.len(), 42);
         assert!(wgsl.fields.iter().all(|f| !f.doc.trim().is_empty()));
-        assert_eq!(std::mem::size_of::<Frame>(), 5 * 64 + 13 * 16);
+        assert_eq!(std::mem::size_of::<Frame>(), 5 * 64 + 13 * 16 + 8 * 16);
         assert!(
             wgsl.wgsl()
                 .contains("    camera_position: vec3<f32>,\n    time: f32,\n")
