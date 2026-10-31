@@ -128,6 +128,13 @@ impl ServerTerrain {
         })
     }
 
+    /// BlueMap's coarser levels at block (x, z) (a void there is `Ready`).
+    fn coarser(&self, x: i32, z: i32) -> Found<Column> {
+        self.blue_map
+            .as_ref()
+            .map_or(Found::Absent, |map| map.coarser_column(x, z))
+    }
+
     /// A chunk's columns: stored, else BlueMap's (`Waiting`: on its way).
     fn chunk_or_map(&self, x: i32, z: i32) -> Found<Columns> {
         if let Some(columns) = self.chunk(x, z) {
@@ -396,10 +403,28 @@ impl LodSource for ServerTerrain {
     }
 }
 
+impl Sampler {
+    /// For a column whose chunk of the map is on its way: its coarser
+    /// levels' meanwhile, as they come first (a void there is drawn as
+    /// one). None there either is a hole (`waited`: the sample isn't drawn);
+    /// either way the column is sampled again when its tile arrives
+    /// (`Lod::refresh`).
+    fn coarser(&mut self, x: i32, z: i32) -> Column {
+        match self.terrain.coarser(x, z) {
+            Found::Ready(column) => column,
+            Found::Waiting | Found::Absent => {
+                self.waited = true;
+                Column::default()
+            }
+        }
+    }
+}
+
 struct Sampler {
     terrain: Arc<ServerTerrain>,
     details: Vec<LodDetail>,
-    /// A column was left empty for BlueMap's on its way (`waited`).
+    /// A column was left empty for BlueMap's on its way, with no coarser
+    /// level to stand in (`waited`).
     waited: bool,
 }
 
@@ -411,8 +436,9 @@ impl LodSampler for Sampler {
             waited: false,
         }))
     }
-    /// Stored chunks come back whole, else BlueMap's; the others are known
-    /// empty. One BlueMap is still downloading is asked again later.
+    /// Stored chunks come back whole, else BlueMap's (its coarser levels'
+    /// where the finest is out of reach); the others are known empty. One
+    /// whose BlueMap tile is still downloading is asked again later.
     fn request_detail(&mut self, chunks: &[(i32, i32)], _center: [i32; 2]) {
         for &(x, z) in chunks {
             let columns = match self.terrain.chunk_or_map(x, z) {
@@ -437,10 +463,7 @@ impl LodSampler for Sampler {
     fn column(&mut self, x: i32, z: i32) -> Column {
         match self.terrain.chunk_or_map(x >> 4, z >> 4) {
             Found::Ready(c) => c[((z & 15) * 16 + (x & 15)) as usize].clone(),
-            Found::Waiting => {
-                self.waited = true;
-                Column::default()
-            }
+            Found::Waiting => self.coarser(x, z),
             Found::Absent => Column::default(),
         }
     }
@@ -457,10 +480,7 @@ impl LodSampler for Sampler {
         if width <= 16 {
             let chunk = match self.terrain.chunk_or_map(x >> 4, z >> 4) {
                 Found::Ready(chunk) => chunk,
-                Found::Waiting => {
-                    self.waited = true;
-                    return Column::default();
-                }
+                Found::Waiting => return self.coarser(x, z),
                 Found::Absent => return Column::default(),
             };
             let width = width.max(1) as usize;
