@@ -809,20 +809,61 @@ fn pixel_dither(pixel: vec2<f32>) -> f32 {
 }
 // The integrated froxels at screen `uv` and distance `r`: the in-scatter and the luminance of the
 // transmittance (slice `z` holds the value at its far end: coordinate `(z + 0.5) / n`, the near
-// end of the first slice being nothing and clear), read `dither` slices off (the pixel's noise:
-// read in between, the slices' ends show as arcs around the eye where the fog changes within
-// them; dithered, the anti-aliasing's history smooths them out).
+// end of the first slice being nothing and clear).
+//
+// Within the slice holding `r`, read between its two ends by how much of the slice's optical depth
+// lies before `r` along the pixel's own ray (the fogs marched there in six steps, offset by the
+// pixel's `dither`). A linear read assumes the slice evenly filled; the valley fog is a layer a few
+// blocks thick on the ground, about a slice's depth, so a surface early in its slice was read too
+// clear and one late too foggy (counting the fog behind it), a sawtooth of the slices' period
+// that showed as rings around the eye.
 fn froxel_at(uv: vec2<f32>, r: f32, dither: f32) -> vec4<f32> {
     let n = fx.dims.z;
     // The integrated grid holds the froxels' slices, then the far ones past `depth.y`.
     let total = n + fx.far.z;
-    let t = slice_t(r);
-    var slice = t * n;
-    if r > fx.depth.y { slice = n + far_t(r) * fx.far.z; }
-    let w = clamp(slice - 0.5 + dither, 0.5, total - 0.5) / total;
-    var v = integrated_cubic(uv, w);
-    if t < 1.0 / n { v = mix(vec4(0.0, 0.0, 0.0, 1.0), v, t * n); }
-    return v;
+    // The slice holding `r` (its index in the grid) and its ends' distances.
+    var k: f32;
+    var r0: f32;
+    var r1: f32;
+    if r <= fx.depth.y {
+        k = min(floor(slice_t(r) * n), n - 1.0);
+        r0 = select(slice_r(k / n), 0.0, k < 0.5);
+        r1 = slice_r((k + 1.0) / n);
+    } else {
+        let z = min(floor(far_t(r) * fx.far.z), fx.far.z - 1.0);
+        k = n + z;
+        r0 = far_r(z / fx.far.z);
+        r1 = far_r((z + 1.0) / fx.far.z);
+    }
+    var a = vec4(0.0, 0.0, 0.0, 1.0);
+    if k > 0.5 { a = integrated_cubic(uv, (k - 0.5) / total); }
+    let b = integrated_cubic(uv, (k + 0.5) / total);
+    let linear = clamp((r - r0) / max(r1 - r0, 1e-4), 0.0, 1.0);
+    // No fog in the slice: the air alone, even.
+    if !fog_on() || a.a - b.a < 1e-4 { return mix(a, b, linear); }
+    let dir = ray_dir(uv);
+    let step = (r1 - r0) / 6.0;
+    // The air's extinction, in the froxels only (the far slices carry the fogs alone).
+    let air = select(0.0, luminance(fx.sigma_t.rgb), r <= fx.depth.y);
+    var fog_all = 0.0;
+    var fog_part = 0.0;
+    var part = 0.0;
+    for (var i = 0; i < 6; i++) {
+        let f = fog_at(fx.eye.xyz + dir * (r0 + step * (f32(i) + 0.5 + dither)), step);
+        let d = (f.valley + f.steam) * step;
+        let share = clamp((r - r0) / step - f32(i), 0.0, 1.0);
+        fog_all += d;
+        fog_part += d * share;
+        part += (d + air * step) * share;
+    }
+    let all = fog_all + air * (r1 - r0);
+    // The in-scatter grows as the light is taken out (the source being even over the slice), the
+    // fogs' transmittance by their share of the slice's optical depth.
+    var f = linear;
+    if all > 1e-4 { f = (1.0 - exp(-part)) / (1.0 - exp(-all)); }
+    var through = mix(a.a, b.a, linear);
+    if fog_all > 1e-5 { through = a.a * pow(max(b.a, 1e-6) / max(a.a, 1e-6), fog_part / fog_all); }
+    return vec4(mix(a.rgb, b.rgb, f), through);
 }
 // The integrated froxels for this view's screen `uv` at distance `r`: its own, or another view's
 // (the second VR eye reads the first's) where that view sees the same point.
