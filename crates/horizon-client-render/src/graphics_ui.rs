@@ -2,7 +2,9 @@
 //! they show, in what groups, with what description and cost, and their
 //! input. How they look comes from `graphics_style`.
 use crate::{
-    graphics::{FarDetail, GraphicsApi, Overlay, Pacing, PresentMode, Preset, Upscaling},
+    graphics::{
+        FarDetail, FrameGeneration, GraphicsApi, Overlay, Pacing, PresentMode, Preset, Upscaling,
+    },
     graphics_style::{Cost, STYLE},
     hud::{HudAtlas, HudBatch},
     lang,
@@ -40,6 +42,7 @@ pub enum H {
     ResolutionScale,
     Antialiasing,
     Upscaling,
+    FrameGeneration,
     Hdr,
     /// Opens `Level::Hdr`.
     HdrSettings,
@@ -273,6 +276,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 "Renders the world smaller and rebuilds it with TAA. Faster, softer.",
             ),
             h(
+                H::FrameGeneration,
+                Medium,
+                "Shows a made-up frame between each two real ones: smoother, a little more lag.",
+            ),
+            h(
                 H::HdrSettings,
                 None,
                 "HDR output on an HDR display: lava, fire and sunlight shine brighter.",
@@ -487,6 +495,7 @@ impl H {
                 },
             ),
             H::Upscaling => labelled("Upscaling", g.upscaling.label()),
+            H::FrameGeneration => labelled("Frame Generation", g.frame_generation.label()),
             H::Hdr => labelled("HDR", on_off(g.hdr)),
             H::HdrSettings => Text::literal(lang::get("HDR Settings...")),
             H::HdrPaperWhite => match g.hdr_paper_white {
@@ -596,6 +605,9 @@ impl H {
                 if g.upscaling != Upscaling::Native {
                     (g.fxaa, g.taa) = (false, true);
                 }
+            }
+            H::FrameGeneration => {
+                g.frame_generation = step(&FrameGeneration::ALL, g.frame_generation, back)
             }
             H::Hdr => g.hdr = !g.hdr,
             H::BatteryMode => g.battery = !g.battery,
@@ -717,6 +729,7 @@ impl Item {
                     | H::Pacing
                     | H::PresentMode
                     | H::Workers
+                    | H::FrameGeneration
                     | H::BatteryMode
                     | H::ShadowCache
                     | H::GraphicsApi
