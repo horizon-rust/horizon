@@ -10326,6 +10326,7 @@ impl Game<'_> {
             spread,
             speed: 0.0,
             count: 0,
+            randomization: 0,
         });
     }
     /// `Player.attack`'s sounds when a vehicle takes the hit (it always does,
@@ -10552,6 +10553,7 @@ impl Game<'_> {
                     spread: [0.1, 0.0, 0.1],
                     speed: 0.2,
                     count: (actual * 0.5) as u32 as i32,
+                    randomization: 0,
                 });
             }
             self.last_hurt_by_player
@@ -12010,6 +12012,9 @@ impl Game<'_> {
             self.process_level_events()?;
             if !emptied {
                 return Ok(UseResult::Fail);
+            }
+            if self.dim == Dim::Nether && content.is_water() {
+                self.evaporation_smoke(target);
             }
             // `BucketItem.emptyContents` uses `playSound(player, …)`: the
             // actor's client already played the empty / evaporate sound from

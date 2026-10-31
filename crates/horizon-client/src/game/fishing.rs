@@ -484,6 +484,7 @@ impl Game<'_> {
             spread,
             speed,
             count: count as i32,
+            randomization: 0,
         });
     }
     /// `FishingHook.tick`.

@@ -1549,6 +1549,7 @@ impl GameLevel<'_> {
                 spread,
                 speed,
                 count,
+                randomization: 0,
             });
         true
     }
