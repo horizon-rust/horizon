@@ -1671,9 +1671,10 @@ impl Renderer {
                         multisampled: false,
                     },
                 ),
-                // The Eye of Aldhani's field and its streaks by tile of the sky.
+                // The Eye of Aldhani's field and its streaks and glow by tile of the sky (the stars read the
+                // glow where they are, through rt_sky).
                 entry(21, wgpu::ShaderStages::FRAGMENT, aldhani_storage),
-                entry(22, wgpu::ShaderStages::FRAGMENT, aldhani_storage),
+                entry(22, wgpu::ShaderStages::VERTEX_FRAGMENT, aldhani_storage),
                 // The sky table: the stars read it where they are (vs_rt_star).
                 entry(
                     14,
