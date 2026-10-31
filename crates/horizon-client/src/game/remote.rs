@@ -1771,6 +1771,7 @@ impl Game<'_> {
                 }
                 Event::Disconnected {
                     reason,
+                    key,
                     from_server,
                 } => {
                     log::info!("Horizon: disconnected: {reason}");
@@ -1788,7 +1789,7 @@ impl Game<'_> {
                         self.connect_server_with_cookies(&address, &name, Some(cookies))?;
                         return Ok(());
                     }
-                    let retry = self.reconnect_after(&reason, from_server);
+                    let retry = self.reconnect_after(&reason, key.as_deref(), from_server);
                     self.leave_server(Some(reason))?;
                     self.offer_reconnect(retry);
                     return Ok(());
