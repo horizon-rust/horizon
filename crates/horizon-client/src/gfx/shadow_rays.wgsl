@@ -342,6 +342,10 @@ var<private> fast_out: vec4<f32>;
 // none), for `hw_refract`.
 var<private> water_at: vec4<f32>;
 var<private> gi_out_a: vec4<f32>;
+// Whether what this pixel's ray met lies behind water or glass whose refraction replaces it
+// (`hw_refract` traced something there: Remix's primary surface replacement), so its own light is
+// never seen (`trace` rests its bounced light).
+var<private> behind_psr: bool;
 var<private> gi_out_b: vec4<u32>;
 // RT lighting's radiance cache (SHaRC-like, gfx/radiance_cache.wgsl resolves it): a hash table of
 // world-space surface cells, half a block across near the camera and twice as large each doubling
@@ -1514,14 +1518,28 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         // the reservoirs the last frame left where this surface was.
         let back = restir_last(pos);
         var sky = vec4(0.0, 0.0, 0.0, 1.0);
-        if (SKIP & 2u) == 0u { sky = restir_gi(lifted, n, texel, back.xy, back.z == 1); }
+        // Behind water or glass the refraction replaced (`behind_psr`), this surface's bounced
+        // light never shows: what does is what the bent ray met, lit by the radiance cache. It is
+        // traced one frame in four (in 8x8 tiles, a workgroup's, turning: a wave of threads skips it
+        // whole or not at all); the frames between keep the last frame's light, reservoir and sky,
+        // without a ray, and feed the cache with that.
+        let rest = behind_psr && back.z == 1
+            && (((texel.x >> 3) & 1) + 2 * ((texel.y >> 3) & 1)) != i32(u32(rt.frame.x) & 3u);
+        if rest {
+            sky = vec4(textureLoad(last_blocks, back.xy, 0).rgb, textureLoad(last_mask, back.xy, 0).b);
+            gi_out_a = textureLoad(last_gi_a, back.xy, 0);
+            gi_out_b = textureLoad(last_gi_b, back.xy, 0);
+        } else if (SKIP & 2u) == 0u {
+            sky = restir_gi(lifted, n, texel, back.xy, back.z == 1);
+        }
         let blocks = vec4(sky.rgb, select(edge, -1.0, edge < 0.5));
         var direct = vec4(0.0, 0.0, 0.0, face_of(n));
         if (SKIP & 4u) == 0u {
             direct = vec4(restir_light(lifted, n, texel, back.xy, back.z == 1).rgb
                 + moving_light(lifted, n, texel) + aldhani_light(lifted, n, texel), face_of(n));
         }
-        // What this pixel found, into the radiance cache for the bounce rays of the frames after.
+        // What this pixel found, into the radiance cache for the bounce rays of the frames after
+        // (a resting one what it kept, so that the cache the refraction reads stays as full).
         cache_add(pos, n, sky.rgb + direct.rgb);
         // The sun mask's alpha: the indirect and direct light's luminance squared, its second
         // moment once accumulated, for the denoiser's variance (denoise.wgsl).
@@ -1674,6 +1692,17 @@ fn blocks_across() -> i32 {
     let fine = sharp(corner + 2);
     var v = Traced(vec4(1.0), vec4(0.0, 0.0, 0.0, -1.0), vec4(0.0, 0.0, 0.0, -1.0), vec4(1.0),
         vec4(0u));
+    // The mirrors and the refraction first: where the refraction replaces what lies behind, the
+    // ray there rests its bounced light (`behind_psr`).
+    let inside = all(vec2<u32>(texel) < textureDimensions(mask));
+    var reflected = vec4(0.0);
+    var refracted = vec4(0.0);
+    behind_psr = false;
+    if inside && rt.mode.x > 0.5 && (SKIP & 8u) == 0u {
+        reflected = finite4(hw_reflect(pixel_of(texel)));
+        refracted = finite4(hw_refract(pixel_of(texel)));
+        behind_psr = refracted.a > 0.0;
+    }
     if fine {
         v = trace(pixel_of(texel), texel);
     } else {
@@ -1702,13 +1731,8 @@ fn blocks_across() -> i32 {
             textureStore(gi_b, texel, gi_out_b);
             textureStore(sun_mask, texel, v.sun);
             textureStore(fast, texel, fast_out);
-            if (SKIP & 8u) == 0u {
-                textureStore(reflection, texel, finite4(hw_reflect(pixel_of(texel))));
-                textureStore(refraction, texel, finite4(hw_refract(pixel_of(texel))));
-            } else {
-                textureStore(reflection, texel, vec4(0.0));
-                textureStore(refraction, texel, vec4(0.0));
-            }
+            textureStore(reflection, texel, reflected);
+            textureStore(refraction, texel, refracted);
         }
     }
 }
