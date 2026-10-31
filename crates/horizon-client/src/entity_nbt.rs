@@ -511,6 +511,10 @@ pub fn mob_to_nbt(
     // Animal.addAdditionalSaveData: the love ticks left, whatever the save had.
     if is_animal(id) {
         map.insert("InLove".into(), Tag::Int(m.extra.in_love.max(0)));
+        // Animal.addAdditionalSaveData: the player who fed it.
+        if let Some(cause) = m.extra.love_cause {
+            map.insert("LoveCause".into(), Tag::IntArray(cause.to_vec()));
+        }
     }
     let species = m.species();
     // MushroomCow saves its variant under `Type` (below), not `variant`.
@@ -538,7 +542,15 @@ pub fn mob_to_nbt(
         "minecraft:fox" => {
             let kind = if m.extra.variant == 1 { "snow" } else { "red" };
             map.insert("Type".into(), string(kind));
-            map.entry("Trusted".into()).or_insert(Tag::List(Vec::new()));
+            // The trusted UUIDs (`Fox.TRUSTED_LIST_CODEC`: a list of int arrays).
+            map.insert(
+                "Trusted".into(),
+                Tag::List(
+                    crate::mobs::fox::trusted_entities(m)
+                        .map(|uuid| Tag::IntArray(uuid.to_vec()))
+                        .collect(),
+                ),
+            );
             for (key, bit) in [
                 ("Sleeping", crate::mobs::fox::SLEEPING),
                 ("Sitting", crate::mobs::fox::SITTING),
@@ -1463,6 +1475,8 @@ pub fn mob_from_nbt(
     }
     if is_animal(&m.kind.id) {
         m.extra.in_love = number(tag.get("InLove")).unwrap_or(0) as i32;
+        // Animal.readAdditionalSaveData: the player who fed it into love.
+        m.extra.love_cause = crate::save::uuid_from_tag(tag.get("LoveCause"));
     }
     m.name_visible = flag(tag, "CustomNameVisible");
     m.no_ai = flag(tag, "NoAI");
@@ -1592,6 +1606,17 @@ pub fn mob_from_nbt(
     match m.species() {
         crate::mobs::Species::Fox => {
             m.extra.variant = u8::from(text(tag.get("Type")).as_deref() == Some("snow"));
+            // Fox.readAdditionalSaveData: clearTrusted, then addTrustedEntity for
+            // each of "Trusted".
+            crate::mobs::fox::clear_trusted(&mut m);
+            if let Some(Tag::List(trusted)) = tag.get("Trusted") {
+                for uuid in trusted
+                    .iter()
+                    .filter_map(|t| crate::save::uuid_from_tag(Some(t)))
+                {
+                    crate::mobs::fox::add_trusted_entity(&mut m, uuid);
+                }
+            }
             // Fox.readAdditionalSaveData: the sleeping, sitting and crouching flags.
             for (key, bit) in [
                 ("Sleeping", crate::mobs::fox::SLEEPING),
