@@ -312,7 +312,7 @@ pub struct Graphics {
     /// game. On by default: vanilla has no distant terrain to bend.
     pub earth_curvature: bool,
     /// RT lighting's natural fogs (`gfx/natural_fog.rs`): a morning's valley fog in the hollows
-    /// and steam fog over cold water. 0 off, 1 light, 2 normal (the default).
+    /// and steam fog over cold water. 0 off (the default for now), 1 light, 2 normal.
     pub natural_fog: u32,
     /// Continuous water and lava surfaces (`mesher/fluid_surface.rs`): shared corner
     /// heights, smooth light and shading, world-anchored textures. Off by default: it
@@ -367,7 +367,7 @@ impl Default for Graphics {
             shooting_stars: 1,
             aerial_perspective: DEFAULT_AERIAL_PERSPECTIVE,
             earth_curvature: true,
-            natural_fog: 2,
+            natural_fog: 0,
             smooth_fluids: false,
             hdr: false,
             hdr_paper_white: 200,
@@ -624,7 +624,7 @@ mod tests {
             shooting_stars: 1,
             aerial_perspective: 32,
             earth_curvature: false,
-            natural_fog: 1,
+            natural_fog: 0,
             smooth_fluids: true,
             hdr: true,
             hdr_paper_white: 240,

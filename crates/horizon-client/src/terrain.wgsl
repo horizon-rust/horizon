@@ -569,6 +569,20 @@ fn aldhani_streak(m: AldhaniMeteor, line: vec4<f32>, d: vec3<f32>, pixel: f32) -
     let h2 = dot(d - b, d - b);
     let halo = sigma * 3.0;
     let white = mix(m.colour.rgb, vec3(top), 0.3);
+    // A big one's shock layer: grown large against the air's mean free path (a metre-sized body
+    // below about 100 km; the millimetre grains stay free-molecular, no shock), it drives a bow
+    // shock a seventh of its radius ahead (0.14 R; 0.78 R rho_air / rho_shock for a sphere) where
+    // the air is compressed, dissociated and ionised and glows itself (N2+, N, O, CN, NO: blue-
+    // white), radiating as the eighth power of the speed (convection only the third), so at a
+    // meteor's 35 to 72 km/s it outshines all else: the glare sits in front of the head, and the
+    // terminal burst (`head.w`'s fraction) blooms there as the body breaks up.
+    let burst = fract(m.head.w);
+    let ahead = select(vec3(0.0), normalize(b - a), span > 1e-6);
+    let bow = normalize(b + ahead * (sigma * (1.5 + 2.0 * burst)));
+    let bow2 = dot(d - bow, d - bow);
+    let glare = sigma * (2.5 + 5.0 * burst);
+    let shock = max(min(m.colour.w, 1.5) - 0.4, 0.0) * 0.5 + burst * 3.0;
+    light += mix(white, vec3(0.75, 0.85, 1.0) * top, 0.5) * (shock * exp(-bow2 / (2.0 * glare * glare)) * fade);
     light += white * (m.colour.w * (gain * gain * 1.2 * exp(-h2 / (2.0 * sigma * sigma))
         + 0.25 * exp(-h2 / (2.0 * halo * halo))) * fade * fade);
     // The train of a bright one: faint, green (the oxygen line), wider, drifting a little off its
@@ -579,13 +593,14 @@ fn aldhani_streak(m: AldhaniMeteor, line: vec4<f32>, d: vec3<f32>, pixel: f32) -
         let tw = sigma * (2.0 + 3.0 * behind);
         let wisp = 0.75 + 0.25 * sin(along * 40.0 + m.head.w);
         light += mix(vec3(0.25, 1.0, 0.4), m.colour.rgb / max(top, 1e-4), 0.4) * top
-            * ((m.colour.w - 0.3) * 0.12 * (gain * sigma / tw) * exp(-o * o / (2.0 * tw * tw)) * wisp * behind);
+            * ((min(m.colour.w, 1.5) - 0.3) * 0.12 * (gain * sigma / tw) * exp(-o * o / (2.0 * tw * tw))
+            * wisp * 4.0 * behind * along);
     }
     // Sparkles along the short, bright ones.
     let short = 1.0 - smoothstep(20.0 * pixel, 80.0 * pixel, span);
     let sparkle = m.colour.w * short;
     if sparkle > 0.05 && across < sigma * 6.0 {
-        let seed = u32(m.head.w);
+        let seed = u32(floor(m.head.w));
         for (var j = 0u; j < 4u; j++) {
             let u = aldhani_rand(seed * 8u + j);
             let p = normalize(mix(a, b, 0.2 + 0.8 * u));
@@ -2382,12 +2397,20 @@ fn meteor_streak(m: Meteor, d: vec3<f32>, pixel: f32) -> vec3<f32> {
     let head = gain * gain * mix(0.7, 2.5, bold) * exp(-r2 / s2)
         + bold * (0.03 + 0.01 * big) * exp(-r2 / (2.0 * halo_sigma * halo_sigma));
     var light = mix(meteor_colour(m, x_h), vec3(1.0), 0.5) * (m.power * meteor_curve(m, x_h) * head);
-    // A bright one ends as a fireball does: a terminal flash where it bursts, then its trail
-    // lingers where it glowed, widening and fading all along at once, rather than shrinking to
-    // its end.
-    let after = max(m.time - m.span / m.speed, 0.0);
-    let flash = bold * 3.0 * exp(-pow((m.time - m.span / m.speed) / 0.07, 2.0));
-    light += mix(meteor_colour(m, 1.0), vec3(1.0), 0.6) * (m.power * flash * head);
+    // A fireball's shock layer (the Eye's `aldhani_streak` says why): only a big one has it (a
+    // metre-sized body below about 100 km; small grains stay free-molecular), its air ionised a
+    // seventh of the body's radius ahead of it, glowing blue-white as the eighth power of the
+    // speed: the glare in front of the head, where the terminal burst blooms as it breaks up.
+    let fireball = smoothstep(4.0, 7.0, m.bright);
+    let shock = fireball * clamp(pow(m.speed / 45.0, 8.0), 0.03, 4.0);
+    let burst = fireball * exp(-pow((m.time - m.span / m.speed) / 0.1, 2.0));
+    let to_next = m.reach * m.a + (along_h + 1.0) * m.w;
+    let ahead = normalize(to_next / length(to_next) - dh);
+    let bow = normalize(dh + ahead * (sigma * (1.5 + 2.0 * burst)));
+    let bow2 = dot(d - bow, d - bow);
+    let glare_sigma = halo_sigma * (1.0 + 2.5 * burst);
+    light += mix(meteor_colour(m, x_h), vec3(0.75, 0.85, 1.0), 0.5) * (m.power
+        * (shock * 0.05 * meteor_curve(m, x_h) + burst * 0.4) * exp(-bow2 / (2.0 * glare_sigma * glare_sigma)));
     // The trail: the glow the head left along the path, fading behind it.
     let phi = atan2(dot(d, e), dot(d, m.a));
     let theta = atan2(we, wa);
@@ -2402,8 +2425,7 @@ fn meteor_streak(m: Meteor, d: vec3<f32>, pixel: f32) -> vec3<f32> {
             let glow = 0.07 + 0.03 * min(m.bright, 6.0);
             // Its end at the head, smoothed over a pixel (no stair-step at the tip).
             let tip = smoothstep(0.0, pixel * dist / m.speed, age);
-            let linger = glow * (1.0 + 4.0 * bold);
-            let wake = exp(-(age - after) / glow) * exp(-after / linger) * tip;
+            let wake = exp(-age / glow) * tip;
             // Its colour: the composition's at the head, green just behind a fast one (the oxygen
             // and magnesium lines), then the ember of sodium and the air's nitrogen.
             let hot = clamp((m.speed - 18.0) / 45.0, 0.0, 1.0);
@@ -2416,8 +2438,7 @@ fn meteor_streak(m: Meteor, d: vec3<f32>, pixel: f32) -> vec3<f32> {
             // head, widest at its brightest; widening a little as the wake diffuses. A bright one
             // in a soft halo.
             let lit = sqrt(clamp(curve * wake, 0.0, 1.0));
-            let st = sigma * (0.4 + 0.8 * lit) * (1.0 + 0.2 * min(age / glow, 2.0))
-                * (1.0 + 1.2 * bold * min(after / linger, 1.0));
+            let st = sigma * (0.4 + 0.8 * lit) * (1.0 + 0.2 * min(age / glow, 2.0));
             let line = (0.62 * pixel / sigma) * exp(-a2 / (2.0 * st * st))
                 + 0.03 * clamp(m.bright / 4.0, 0.0, 1.0) * exp(-a2 / (32.0 * sigma * sigma));
             light += colour * (m.power * curve * wake * line);

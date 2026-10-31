@@ -203,8 +203,7 @@ fn aldhani_make(slot: u32, t: f32, period: f32, long: bool) -> AldhaniMeteor {
     }
     // Its head (where it burns now, or where it ended) and its glow's tail behind it.
     let head_t = min(age, lasts);
-    // Once burnt out it does not shrink to its end: its trail stays where it glowed, fading.
-    let tail_t = clamp(head_t - persist, 0.0, head_t);
+    let tail_t = clamp(age - persist, 0.0, head_t);
     let head = normalize(origin + (speed * head_t) * w);
     let tail = normalize(origin + (speed * tail_t) * w);
     let dist = length(origin + (speed * head_t) * w);
@@ -216,14 +215,13 @@ fn aldhani_make(slot: u32, t: f32, period: f32, long: bool) -> AldhaniMeteor {
     let curve = select(rise, fall, x > peak);
     // Its brightness from the population index 2.2 (times the faintest), at most a fireball's.
     let power = min(pow(max(aldhani_rand(seed + 9u), 1e-4), -1.17), 120.0) * select(1.0, 8.0, beyond);
-    // A big one ends as a fireball does: a terminal flash as the meteoroid bursts, then its train
-    // lingers where it burnt, widening as it diffuses and fading all along at once.
-    let big = smoothstep(15.0, 80.0, power);
+    // Once burnt out its glow runs on into its end and fades, softly to the last.
     let after = max(age - lasts, 0.0);
-    let linger = persist * (1.0 + 1.5 * big);
-    if after > linger { return o; }
-    let fade = exp(-after / (0.3 * linger)) * (1.0 - smoothstep(0.7 * linger, linger, after));
-    let flash = big * 2.5 * exp(-pow((age - lasts) / 0.09, 2.0));
+    if after > persist { return o; }
+    let fade = exp(-after / (0.4 * persist)) * (1.0 - smoothstep(0.6 * persist, persist, after));
+    // A big one ends as a fireball does: a terminal burst as the meteoroid breaks up, at its head.
+    let big = smoothstep(15.0, 80.0, power);
+    let burst = big * exp(-pow((age - lasts) / 0.12, 2.0));
     // Through the air toward it (grey: the show's colours stay): a low one is dimmed by its
     // airmass, and the haze over the horizon swallows the lowest streaks.
     let air = exp(-0.15 / max(head.y + 0.025, 0.03)) * smoothstep(-0.01, 0.06, head.y);
@@ -237,14 +235,14 @@ fn aldhani_make(slot: u32, t: f32, period: f32, long: bool) -> AldhaniMeteor {
     let seen = select(air, sqrt(air) * 6.0 * smoothstep(-0.01, 0.03, head.y), beyond);
     let shown = pow(power, 0.6) * (0.3 + 0.7 * curve) * fade * seen * pow(160.0 / dist, 0.9);
     // Its width: wider when bright, thinner when short (a smaller meteoroid, less matter burning).
-    o.tail = vec4(tail, (0.8 + 0.2 * log2(power + 1.0)) * mix(0.55, 1.0, smoothstep(20.0, 80.0, path))
-        * (1.0 + 1.5 * big * after / linger));
-    o.head = vec4(head, f32(seed & 65535u));
+    o.tail = vec4(tail, (0.8 + 0.2 * log2(power + 1.0)) * mix(0.55, 1.0, smoothstep(20.0, 80.0, path)));
+    // Its seed (the sparkles) and its terminal burst (the fraction, 0 to 1).
+    o.head = vec4(head, f32(seed & 65535u) + min(burst, 0.999));
     // The long ones, the earthgrazers, are the storm's giants: their streaks reach well into HDR's
     // highlights, their heads glare.
     let giant = select(1.0, 2.5, long);
     o.colour = vec4(colour * (1.6 * shown * giant),
-        (clamp(power / 30.0 * giant, 0.0, 1.5) * curve * fade + flash) * air);
+        clamp(power / 30.0 * giant, 0.0, 1.5) * curve * fade * air);
     // Its light on the terrain: by its power and the inverse square of its distance; its colour
     // half the sky's teal (thousands of them light the ground together, the teal ones the most).
     let lit = mix(colour, vec3(0.0, 1.0, 0.6), 0.4);
