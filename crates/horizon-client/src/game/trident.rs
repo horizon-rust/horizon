@@ -26,6 +26,8 @@ pub(super) struct ThrownTrident {
     pub(super) position: Vec3,
     pub(super) previous: Vec3,
     pub(super) velocity: Vec3,
+    pub(super) needs_sync: bool,
+    piston_pushed_this_tick: bool,
     pub(super) yaw: f32,
     pub(super) pitch: f32,
     pub(super) in_ground: bool,
@@ -63,6 +65,8 @@ impl ThrownTrident {
             position,
             previous: position,
             velocity: Vec3::ZERO,
+            needs_sync: false,
+            piston_pushed_this_tick: false,
             yaw,
             pitch,
             in_ground: false,
@@ -76,6 +80,40 @@ impl ThrownTrident {
             owner: 0,
             guest: None,
         }
+    }
+    fn begin_tick(&mut self) {
+        if !self.piston_pushed_this_tick {
+            self.previous = self.position;
+        }
+        self.piston_pushed_this_tick = false;
+    }
+    fn release_if_unblocked(&mut self, no_block_collision: bool) {
+        if self.in_ground && !self.no_physics && no_block_collision {
+            self.in_ground = false;
+            self.in_ground_time = 0;
+        }
+    }
+    pub(super) fn move_by_piston(&mut self, movement: Vec3) {
+        if !self.piston_pushed_this_tick {
+            self.previous = self.position;
+            self.piston_pushed_this_tick = true;
+        }
+        self.position = self.position.add_vector(movement);
+        self.needs_sync = true;
+    }
+    pub(super) fn bounds(&self) -> Aabb {
+        Aabb::new(
+            Vec3::new(
+                self.position.x - HALF,
+                self.position.y,
+                self.position.z - HALF,
+            ),
+            Vec3::new(
+                self.position.x + HALF,
+                self.position.y + 2.0 * HALF,
+                self.position.z + HALF,
+            ),
+        )
     }
     /// `ThrownTrident.tick`'s Loyalty return: pulled up and towards the
     /// owner's eye.
@@ -99,7 +137,7 @@ impl ThrownTrident {
     /// a block holds it), and Loyalty pulls it back to its owner; only the
     /// server decides what it hits.
     pub(super) fn remote_tick(&mut self, w: &impl ProjectileWorld, owner_eye: Option<Vec3>) {
-        self.previous = self.position;
+        self.begin_tick();
         self.shake = self.shake.saturating_sub(1);
         if self.in_ground_time > 4 {
             self.dealt_damage = true;
@@ -112,6 +150,12 @@ impl ThrownTrident {
             self.in_ground = false;
             self.loyalty_pull(eye);
         }
+        let at = self.position;
+        self.release_if_unblocked(
+            self.in_ground
+                && !self.no_physics
+                && w.no_block_collision(Aabb::new(at, at).inflate(Vec3::new(0.06, 0.06, 0.06))),
+        );
         if self.in_ground && !self.no_physics {
             self.in_ground_time += 1;
             return;
@@ -235,6 +279,7 @@ impl Game<'_> {
             p.auto_spin_attack_dmg = 0.0;
         }
     }
+
     /// The `summon_entity` and `play_sound` effects of `channeling.json`: in a
     /// thunderstorm (`weather_check`) a spot that sees the sky (`can_see_sky`)
     /// gets a lightning bolt and the thunder sound.
@@ -406,6 +451,8 @@ impl Game<'_> {
             position: start,
             previous: start,
             velocity: projectile.velocity,
+            needs_sync: false,
+            piston_pushed_this_tick: false,
             yaw: projectile.yaw,
             pitch: projectile.pitch,
             in_ground: false,
@@ -522,7 +569,7 @@ impl Game<'_> {
         let mut i = 0;
         while i < self.tridents.len() {
             let mut t = self.tridents.remove(i);
-            t.previous = t.position;
+            t.begin_tick();
             // AbstractArrow.tick: `if (shakeTime > 0) --shakeTime;`.
             t.shake = t.shake.saturating_sub(1);
             if t.in_ground_time > 4 {
@@ -546,6 +593,14 @@ impl Game<'_> {
                     );
                 }
                 t.returning += 1;
+            }
+            if t.in_ground && !t.no_physics {
+                let at = t.position;
+                let world = self.mob_world_base(&[]);
+                t.release_if_unblocked(
+                    world
+                        .no_block_collision(Aabb::new(at, at).inflate(Vec3::new(0.06, 0.06, 0.06))),
+                );
             }
             if t.in_ground {
                 t.in_ground_time += 1;
@@ -761,6 +816,96 @@ impl Game<'_> {
                 0,
                 out,
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Empty;
+    impl ProjectileWorld for Empty {
+        fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+            None
+        }
+        fn in_water(&self, _: Aabb) -> bool {
+            false
+        }
+        fn targets(&self) -> &[(Who, Aabb)] {
+            &[]
+        }
+        fn no_block_collision(&self, _: Aabb) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn piston_push_preserves_trident_interpolation() {
+        let start = Vec3::new(0.0, 100.0, 0.0);
+        let mut trident = ThrownTrident::remote(1, start, 0.0, 0.0);
+        trident.move_by_piston(Vec3::new(0.5, 0.0, 0.0));
+        trident.remote_tick(&Empty, None);
+        assert_eq!(trident.previous, start);
+        assert_eq!(trident.position, Vec3::new(0.5, 100.0, 0.0));
+        assert!(trident.needs_sync);
+    }
+
+    #[test]
+    fn a_stuck_trident_resumes_falling_when_its_block_is_removed() {
+        let mut trident = ThrownTrident::remote(1, Vec3::new(0.0, 100.0, 0.0), 0.0, 0.0);
+        trident.in_ground = true;
+
+        trident.remote_tick(
+            &TestWorld {
+                no_collision: false,
+            },
+            None,
+        );
+        assert!(trident.in_ground);
+        assert_eq!(trident.velocity, Vec3::ZERO);
+
+        trident.remote_tick(&TestWorld { no_collision: true }, None);
+        assert!(!trident.in_ground);
+        assert_eq!(trident.velocity.y, -0.05);
+        assert_eq!(trident.position, Vec3::new(0.0, 100.0, 0.0));
+
+        trident.remote_tick(&TestWorld { no_collision: true }, None);
+        assert!(trident.position.y < 100.0);
+    }
+
+    #[test]
+    fn a_piston_push_releases_a_stuck_trident_into_gravity() {
+        let start = Vec3::new(0.0, 100.0, 0.0);
+        let mut trident = ThrownTrident::remote(1, start, 0.0, 0.0);
+        trident.in_ground = true;
+        trident.move_by_piston(Vec3::new(0.0, 1.0, 0.0));
+
+        trident.remote_tick(&TestWorld { no_collision: true }, None);
+
+        assert!(!trident.in_ground);
+        assert_eq!(trident.previous, start);
+        assert_eq!(trident.position, Vec3::new(0.0, 101.0, 0.0));
+        assert_eq!(trident.velocity.y, -0.05);
+        trident.remote_tick(&TestWorld { no_collision: true }, None);
+        assert!(trident.position.y < 101.0);
+    }
+
+    struct TestWorld {
+        no_collision: bool,
+    }
+    impl ProjectileWorld for TestWorld {
+        fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+            None
+        }
+        fn in_water(&self, _: Aabb) -> bool {
+            false
+        }
+        fn targets(&self) -> &[(Who, Aabb)] {
+            &[]
+        }
+        fn no_block_collision(&self, _: Aabb) -> bool {
+            self.no_collision
         }
     }
 }

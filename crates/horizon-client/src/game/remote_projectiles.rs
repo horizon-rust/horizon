@@ -118,10 +118,21 @@ fn remote_arrow_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
     // the ticks in a block.
     if let Some(a) = p.arrow.as_mut() {
         a.shake = (a.shake - 1).max(0);
-        a.in_ground_time = if p.stuck { a.in_ground_time + 1 } else { 0 };
     }
     if p.stuck {
-        return;
+        let at = p.position;
+        if !w.no_block_collision(
+            horizon_core::geometry::Aabb::new(at, at).inflate(Vec3::new(0.06, 0.06, 0.06)),
+        ) {
+            if let Some(a) = p.arrow.as_mut() {
+                a.in_ground_time += 1;
+            }
+            return;
+        }
+        p.stuck = false;
+    }
+    if let Some(a) = p.arrow.as_mut() {
+        a.in_ground_time = if p.stuck { a.in_ground_time + 1 } else { 0 };
     }
     let water = w.in_water(p.bounds());
     if water {
@@ -766,6 +777,27 @@ mod tests {
         fn targets(&self) -> &[(Who, Aabb)] {
             &[]
         }
+        fn no_block_collision(&self, _: horizon_core::geometry::Aabb) -> bool {
+            true
+        }
+    }
+
+    struct TestWorld {
+        no_collision: bool,
+    }
+    impl ProjectileWorld for TestWorld {
+        fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+            None
+        }
+        fn in_water(&self, _: Aabb) -> bool {
+            false
+        }
+        fn targets(&self) -> &[(Who, Aabb)] {
+            &[]
+        }
+        fn no_block_collision(&self, _: Aabb) -> bool {
+            self.no_collision
+        }
     }
 
     /// A thrown item, as a server's client tracks it: the spawn position and
@@ -809,5 +841,34 @@ mod tests {
         remote_projectile_tick(&mut p, &Empty);
         assert!((p.velocity.x - 1.5).abs() < 1e-9, "{p:?}");
         assert!((p.velocity.y - 0.0).abs() < 1e-9, "{p:?}");
+    }
+
+    #[test]
+    fn a_stuck_remote_arrow_resumes_falling_when_its_block_is_removed() {
+        let mut p = Projectile::new(
+            ProjectileKind::Arrow {
+                base_damage: 2.0,
+                critical: false,
+                effect: None,
+            },
+            Vec3::new(0.0, 100.0, 0.0),
+            None,
+        );
+        p.stuck = true;
+
+        remote_arrow_tick(
+            &mut p,
+            &TestWorld {
+                no_collision: false,
+            },
+        );
+        assert!(p.stuck);
+
+        remote_arrow_tick(&mut p, &TestWorld { no_collision: true });
+        assert!(!p.stuck);
+        assert_eq!(p.velocity.y, -0.05);
+
+        remote_arrow_tick(&mut p, &TestWorld { no_collision: true });
+        assert!(p.position.y < 100.0);
     }
 }

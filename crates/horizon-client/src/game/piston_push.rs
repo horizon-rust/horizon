@@ -29,6 +29,7 @@ enum Target {
     Mob(usize),
     Item(usize),
     Projectile(usize),
+    Trident(usize),
     Boat(usize),
     Cart(usize),
     ArmorStand(usize),
@@ -247,6 +248,7 @@ impl Game<'_> {
         targets.extend((0..self.mobs.len()).map(Target::Mob));
         targets.extend((0..self.dropped.len()).map(Target::Item));
         targets.extend((0..self.creatures.projectiles.len()).map(Target::Projectile));
+        targets.extend((0..self.tridents.len()).map(Target::Trident));
         targets.extend((0..self.boats.len()).map(Target::Boat));
         targets.extend((0..self.carts.len()).map(Target::Cart));
         targets.extend((0..self.armor_stands.len()).map(Target::ArmorStand));
@@ -318,6 +320,16 @@ impl Game<'_> {
             }
             Target::Projectile(i) => {
                 let entity = &self.creatures.projectiles[i];
+                Some(Body {
+                    bounds: entity.bounds(),
+                    position: entity.position,
+                    on_ground: false,
+                    step_height: 0.0,
+                    supported: false,
+                })
+            }
+            Target::Trident(i) => {
+                let entity = &self.tridents[i];
                 Some(Body {
                     bounds: entity.bounds(),
                     position: entity.position,
@@ -475,10 +487,9 @@ impl Game<'_> {
                 }
             }
             Target::Projectile(i) => {
-                let projectile = &mut self.creatures.projectiles[i];
-                projectile.position = projectile.position.add_vector(movement);
-                projectile.needs_sync = true;
+                self.creatures.projectiles[i].move_by_piston(movement);
             }
+            Target::Trident(i) => self.tridents[i].move_by_piston(movement),
             Target::Boat(i) => self.boats[i].position = self.boats[i].position.add_vector(movement),
             Target::Cart(i) => self.carts[i].position = self.carts[i].position.add_vector(movement),
             Target::ArmorStand(i) => {
@@ -511,8 +522,11 @@ impl Game<'_> {
             Target::Item(i) => self.dropped[i].piston_slime_bounce(movement),
             Target::Projectile(i) => {
                 let projectile = &mut self.creatures.projectiles[i];
-                projectile.velocity =
-                    piston_push::bounce_velocity(movement, projectile.velocity);
+                projectile.velocity = piston_push::bounce_velocity(movement, projectile.velocity);
+            }
+            Target::Trident(i) => {
+                let trident = &mut self.tridents[i];
+                trident.velocity = piston_push::bounce_velocity(movement, trident.velocity);
             }
             Target::Boat(i) => {
                 self.boats[i].velocity =

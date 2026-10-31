@@ -129,6 +129,7 @@ pub struct Projectile {
     /// `Entity.needsSync`: a server tells its clients about the change this
     /// tick instead of at the next update interval.
     pub needs_sync: bool,
+    piston_pushed_this_tick: bool,
     /// `Entity.wasTouchingWater`: what the last tick's
     /// `updateFluidInteraction` found around the box after the move, read by
     /// the next tick's inertia (false until the first tick has moved it).
@@ -156,6 +157,8 @@ pub trait ProjectileWorld {
     /// block's surface reaches the bottom of the box (deflated by 0.001).
     fn in_water(&self, bounds: Aabb) -> bool;
     fn targets(&self) -> &[(Who, Aabb)];
+    /// `CollisionGetter.noCollision(null, bounds)` over blocks.
+    fn no_block_collision(&self, bounds: Aabb) -> bool;
     /// `Level.isEmptyBlock`.
     fn empty(&self, _p: [i32; 3]) -> bool {
         true
@@ -191,6 +194,22 @@ impl Projectile {
             Vec3::new(p.x + half, p.y + height, p.z + half),
         )
     }
+    /// Move with a moving piston, preserving the position from before the
+    /// push as the start of this tick's render interpolation.
+    pub fn move_by_piston(&mut self, movement: Vec3) {
+        if !self.piston_pushed_this_tick {
+            self.previous = self.position;
+            self.piston_pushed_this_tick = true;
+        }
+        self.position = self.position.add_vector(movement);
+        self.needs_sync = true;
+    }
+    pub(crate) fn begin_tick(&mut self) {
+        if !self.piston_pushed_this_tick {
+            self.previous = self.position;
+        }
+        self.piston_pushed_this_tick = false;
+    }
     pub fn new(kind: ProjectileKind, position: Vec3, owner: Option<Who>) -> Self {
         let kind_is_arrow = matches!(kind, ProjectileKind::Arrow { .. } | ProjectileKind::Trident);
         // `AbstractWindCharge`'s constructors set it to 0.
@@ -218,6 +237,7 @@ impl Projectile {
             bonus: Default::default(),
             acceleration,
             needs_sync: false,
+            piston_pushed_this_tick: false,
             touching_water: false,
             arrow: kind_is_arrow.then(|| {
                 // Entity.random: seeded unpredictably, the position stands in.
@@ -690,7 +710,7 @@ impl Projectile {
 
     /// One tick: returns whether to keep the projectile and what it hit.
     pub fn tick(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
-        self.previous = self.position;
+        self.begin_tick();
         self.age += 1;
         if matches!(self.kind, ProjectileKind::ShulkerBullet { .. }) {
             return self.tick_bullet(w);
@@ -884,6 +904,9 @@ mod tests {
         fn targets(&self) -> &[(Who, Aabb)] {
             &self.0
         }
+        fn no_block_collision(&self, _: Aabb) -> bool {
+            true
+        }
     }
     #[test]
     fn snowball_falls_with_throwable_gravity_and_drag() {
@@ -894,6 +917,17 @@ mod tests {
         // ThrowableProjectile: gravity before inertia, then move.
         assert!((p.velocity.y - (-0.03 * 0.99)).abs() < 1e-9);
         assert!((p.position.x - 0.99).abs() < 1e-9);
+    }
+    #[test]
+    fn piston_push_preserves_projectile_interpolation() {
+        let start = Vec3::new(0.0, 100.0, 0.0);
+        let mut p = Projectile::new(ProjectileKind::WindCharge, start, None);
+        p.move_by_piston(Vec3::new(0.5, 0.0, 0.0));
+        let w = Empty(vec![]);
+        p.tick(&w);
+        assert_eq!(p.previous, start);
+        assert_eq!(p.position, Vec3::new(0.5, 100.0, 0.0));
+        assert!(p.needs_sync);
     }
     #[test]
     fn llama_spit_moves_first_then_drags_and_falls() {
