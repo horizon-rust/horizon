@@ -65,6 +65,8 @@ oo7 = { version = "0.5", default-features = false, features = ["async-std", "nat
 futures-lite = "2"
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
+# Decode Keychain OSStatus errors without matching localized error strings (account.rs).
+security-framework = "3"
 # Painting the window's title bar dark or light (titlebar::apply_appearance), and the system's
 # reduced motion (sky::moves): crates already in the lockfile through gpui and wgpu.
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAccessibility", "NSAppearance", "NSView", "NSWindow", "NSWorkspace"] }
