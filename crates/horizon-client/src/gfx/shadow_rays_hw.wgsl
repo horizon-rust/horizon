@@ -4,15 +4,38 @@
 // Appended to shadow_rays.wgsl when the GPU traces rays (`enable wgpu_ray_query;` before it).
 const HW: bool = true;
 @group(0) @binding(15) var terrain: acceleration_structure;
-// The vertex arena's first page (gfx/arena.rs): `TerrainVertex` six words each, position, then
-// the texture coordinate (two halves, `UV_STEPS` a unit), then the layer and the light.
+// The vertex arena's pages (gfx/arena.rs), the first `ARENA_PAGES` (the missing ones bound to the
+// first): `TerrainVertex` six words each, position, then the texture coordinate (two halves,
+// `UV_STEPS` a unit), then the layer and the light.
 @group(0) @binding(16) var<storage, read> arena: array<u32>;
+@group(0) @binding(40) var<storage, read> arena1: array<u32>;
+@group(0) @binding(41) var<storage, read> arena2: array<u32>;
+@group(0) @binding(42) var<storage, read> arena3: array<u32>;
+@group(0) @binding(43) var<storage, read> arena4: array<u32>;
+@group(0) @binding(44) var<storage, read> arena5: array<u32>;
+@group(0) @binding(45) var<storage, read> arena6: array<u32>;
+@group(0) @binding(46) var<storage, read> arena7: array<u32>;
+const ARENA_PAGES: u32 = 8u;
+// Word `k` of arena vertex `v`: its page in bits 28 to 30 (`hw_quad`), its vertex in that page below.
+fn arena_at(v: u32, k: u32) -> u32 {
+    let i = (v & 0x0fffffffu) * 6u + k;
+    switch v >> 28u {
+        case 0u: { return arena[i]; }
+        case 1u: { return arena1[i]; }
+        case 2u: { return arena2[i]; }
+        case 3u: { return arena3[i]; }
+        case 4u: { return arena4[i]; }
+        case 5u: { return arena5[i]; }
+        case 6u: { return arena6[i]; }
+        default: { return arena7[i]; }
+    }
+}
 // The first sprite array, for the alpha test.
 @group(0) @binding(17) var sprites: texture_2d_array<f32>;
 const UV_STEPS: f32 = 32768.0;
 // Arena vertex `v`'s texture coordinate.
 fn hw_uv(v: u32) -> vec2<f32> {
-    let w = arena[v * 6u + 3u];
+    let w = arena_at(v, 3u);
     return vec2(f32(w & 0xffffu), f32(w >> 16u)) / UV_STEPS;
 }
 // Where each instance's quads are (gfx/hw_rays.rs, by `instance_custom_data`): the arena page, the
@@ -55,16 +78,17 @@ fn hw_entity_texel(c: RayIntersection, base: u32) -> vec4<f32> {
     let color = unpack4x8unorm(dynamics[base * 9u + 6u]);
     return textureLoad(entity_atlas, texel, 0) * color;
 }
-// The quad candidate hit `c` is on: its first arena vertex, or none (`u32` max) past the first page.
+// The quad candidate hit `c` is on: its first arena vertex (`arena_at`), or none (`u32` max) on a
+// page past those bound or on none (moving geometry, a structure whose vertices went).
 fn hw_quad(c: RayIntersection, translucent: bool) -> u32 {
     let at = instances[c.instance_custom_data];
-    if at.x != 0u { return 0xffffffffu; }
-    return select(at.y, at.z, translucent) + (c.primitive_index / 2u) * 4u;
+    if at.x >= ARENA_PAGES { return 0xffffffffu; }
+    return at.x << 28u | (select(at.y, at.z, translucent) + (c.primitive_index / 2u) * 4u);
 }
 // The texel candidate hit `c` meets on the quad from arena vertex `base`, and its sprite layer
 // (past the first array: none, -1).
 fn hw_texel(c: RayIntersection, base: u32) -> vec4<f32> {
-    let layer = arena[base * 6u + 4u] & 0x7fffu;
+    let layer = arena_at(base, 4u) & 0x7fffu;
     if layer >= SPRITE_SPLIT { return vec4(-1.0); }
     // The quad's triangles: corners 0, 1, 2 and 0, 2, 3 (gfx.rs `quad_indices`).
     let second = (c.primitive_index & 1u) == 1u;
@@ -75,15 +99,15 @@ fn hw_texel(c: RayIntersection, base: u32) -> vec4<f32> {
     let texel = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2(0), size - 1);
     return textureLoad(sprites, texel, i32(layer), 0);
 }
-// Whether candidate hit `c` (a solid quad) meets an opaque texel. Opaque leaves, quads on later
-// arena pages and sprites past the first array are taken as opaque.
+// Whether candidate hit `c` (a solid quad) meets an opaque texel. Opaque leaves, quads on arena
+// pages past those bound and sprites past the first array are taken as opaque.
 fn hw_opaque(c: RayIntersection) -> bool {
     // An entity's texel as entity.wgsl keeps it (it discards what is under a tenth opaque).
     let entity = hw_entity_quad(c);
     if entity != NO_QUAD { return hw_entity_texel(c, entity).a >= 0.1; }
     let base = hw_quad(c, false);
     if base == 0xffffffffu { return true; }
-    if (arena[base * 6u + 4u] & 0x8000u) != 0u { return true; }
+    if (arena_at(base, 4u) & 0x8000u) != 0u { return true; }
     let texel = hw_texel(c, base);
     return texel.a < 0.0 || texel.a >= 0.5;
 }
@@ -98,9 +122,9 @@ fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>) -> vec3<f32> {
     // those waves focus on it, a network continuous across blocks), the light lost on the way
     // along that longer path in Remix's medium (and the biome's colour), and what the surface
     // reflected of it (Fresnel). A ray that grazes the surface or goes down gets no caustics.
-    let layer = f32(arena[base * 6u + 4u] & 0x7fffu);
+    let layer = f32(arena_at(base, 4u) & 0x7fffu);
     if layer == rt.water.x || layer == rt.water.y {
-        let w = arena[base * 6u + 5u];
+        let w = arena_at(base, 5u);
         let tint = vec3(f32(w & 255u), f32((w >> 8u) & 255u), f32((w >> 16u) & 255u)) / 255.0;
         let absorption = WATER_ABSORPTION + WATER_PURE_ABSORPTION + WATER_TINT_ABSORPTION * (1.0 - pow(tint, vec3(2.2)));
         if l.y < 0.02 { return exp(-absorption * c.t); }
@@ -159,10 +183,10 @@ fn hw_glass(c: RayIntersection, base: u32) -> vec4<f32> {
     let clear = vec3(-log(GLASS_TRANSMITTANCE) / GLASS_DISTANCE);
     let texel = hw_texel(c, base);
     if texel.a < 0.0 { return vec4(clear, 0.0); }
-    if hw_glass_plain(f32(arena[base * 6u + 4u] & 0x7fffu)) {
+    if hw_glass_plain(f32(arena_at(base, 4u) & 0x7fffu)) {
         return vec4(clear, clamp(texel.a, 0.0, 1.0));
     }
-    let w = arena[base * 6u + 5u];
+    let w = arena_at(base, 5u);
     let tint = vec3(f32(w & 255u), f32((w >> 8u) & 255u), f32((w >> 16u) & 255u)) / 255.0;
     let colour = pow(max(texel.rgb * tint, vec3(0.0)), vec3(2.2));
     return vec4(-log(max(colour * GLASS_TRANSMITTANCE, vec3(1e-3))) / GLASS_DISTANCE, 0.0);
@@ -358,7 +382,7 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
         if dot(f, f) > 1e-12 { n = normalize(f); }
         let texel = hw_texel(hit, base);
         if texel.a >= 0.0 {
-            let w = arena[base * 6u + 5u];
+            let w = arena_at(base, 5u);
             let tint = vec3(f32(w & 255u), f32((w >> 8u) & 255u), f32((w >> 16u) & 255u)) / 255.0;
             albedo = pow(max(texel.rgb * tint, vec3(0.0)), vec3(2.2));
         }
@@ -372,7 +396,7 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
 }
 // Arena vertex `v`'s section-relative position.
 fn hw_position(v: u32) -> vec3<f32> {
-    return bitcast<vec3<f32>>(vec3(arena[v * 6u], arena[v * 6u + 1u], arena[v * 6u + 2u]));
+    return bitcast<vec3<f32>>(vec3(arena_at(v, 0u), arena_at(v, 1u), arena_at(v, 2u)));
 }
 // Remix's primary surface replacement on water and glass: the ray from the camera through depth
 // pixel `p` meets the nearest translucent surface in front of the solid terrain (water, stained
@@ -409,7 +433,7 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     let f = cross(hw_position(base + 1u) - p0, hw_position(base + 2u) - p0);
     if dot(f, f) > 1e-12 { n = normalize(f); }
     if dot(n, ray) > 0.0 { n = -n; }
-    let layer = f32(arena[base * 6u + 4u] & 0x7fffu);
+    let layer = f32(arena_at(base, 4u) & 0x7fffu);
     if n.y > 0.5 && (layer == rt.water.x || layer == rt.water.y) {
         let world = at + rt.camera.xyz + rt.fraction.xyz;
         let w = water_waves(world.xz, rt.water.z, hit.t * 1.5 / rt.size.y);

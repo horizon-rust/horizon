@@ -173,10 +173,11 @@ struct ViewMasks {
 }
 
 /// RT lighting's hybrid's (`hw_rays`) for the shadow rays: the terrain's top-level structure,
-/// the vertex arena's first page and the first sprite array, for their alpha test.
+/// the vertex arena's first pages (`hw_rays::ARENA_PAGES`) and the first sprite array, for their
+/// alpha test.
 pub struct Hardware<'a> {
     pub tlas: &'a wgpu::Tlas,
-    pub arena: &'a wgpu::Buffer,
+    pub arena: &'a [wgpu::Buffer; super::hw_rays::ARENA_PAGES],
     pub sprites: &'a wgpu::TextureView,
     /// Where each instance's quads are (`hw_rays::HwRays::instances`).
     pub instances: &'a wgpu::Buffer,
@@ -411,6 +412,12 @@ impl ShadowRays {
                                 },
                             ),
                         ]
+                        .into_iter()
+                        .chain(
+                            super::hw_rays::ARENA_BINDINGS
+                                .iter()
+                                .map(|&binding| entry(binding, storage)),
+                        )
                     })
                     .into_iter()
                     .flatten(),
@@ -820,7 +827,7 @@ impl ShadowRays {
                 },
                 wgpu::BindGroupEntry {
                     binding: 16,
-                    resource: hw.arena.as_entire_binding(),
+                    resource: hw.arena[0].as_entire_binding(),
                 },
                 view(17, hw.sprites),
                 wgpu::BindGroupEntry {
@@ -833,6 +840,15 @@ impl ShadowRays {
                 },
                 view(37, hw.atlas),
             ]);
+            entries.extend(
+                super::hw_rays::ARENA_BINDINGS
+                    .iter()
+                    .zip(&hw.arena[1..])
+                    .map(|(&binding, page)| wgpu::BindGroupEntry {
+                        binding,
+                        resource: page.as_entire_binding(),
+                    }),
+            );
         }
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Ray-traced shadows"),

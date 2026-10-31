@@ -4011,7 +4011,7 @@ impl Renderer {
         );
     }
     /// What the shadow rays read of the hybrid's (`shadow_rays::Hardware`): the top-level
-    /// structure, the arena's first page, the first sprite array, and the moving geometry's.
+    /// structure, the arena's first pages, the first sprite array, and the moving geometry's.
     fn hw_bindings(&self) -> Option<hw_rays::Bindings> {
         let hw = self.hw_rays.as_ref()?;
         let atlas = self
@@ -4019,7 +4019,11 @@ impl Renderer {
             .atlas_texture
             .as_ref()?
             .create_view(&Default::default());
-        let (_, page) = self.arena.page_buffers().find(|(p, _)| *p == 0)?;
+        let (_, first) = self.arena.page_buffers().find(|(p, _)| *p == 0)?;
+        let arena = std::array::from_fn(|i| {
+            let page = self.arena.page_buffers().find(|&(p, _)| p as usize == i);
+            page.map_or(first, |(_, b)| b).clone()
+        });
         let sprites = self
             .sprite_textures
             .first()?
@@ -4029,7 +4033,7 @@ impl Renderer {
             });
         Some(hw_rays::Bindings {
             tlas: hw.tlas.clone(),
-            arena: page.clone(),
+            arena,
             sprites,
             instances: hw.instances.clone(),
             dynamics: hw.dynamics.clone(),

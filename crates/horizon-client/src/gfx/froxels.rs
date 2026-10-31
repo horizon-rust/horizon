@@ -405,6 +405,11 @@ impl Froxels {
                     },
                 ),
             ]);
+            inject_entries.extend(
+                super::hw_rays::ARENA_BINDINGS
+                    .iter()
+                    .map(|&binding| entry(binding, compute, storage)),
+            );
         }
         let inject_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Froxel volumetrics' inject"),
@@ -734,10 +739,16 @@ impl Froxels {
                     binding: 15,
                     resource: wgpu::BindingResource::AccelerationStructure(hw.tlas),
                 },
-                buffer(16, hw.arena),
+                buffer(16, &hw.arena[0]),
                 view(17, hw.sprites),
                 buffer(23, hw.instances),
             ]);
+            entries.extend(
+                super::hw_rays::ARENA_BINDINGS
+                    .iter()
+                    .zip(&hw.arena[1..])
+                    .map(|(&binding, page)| buffer(binding, page)),
+            );
         }
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Froxel volumetrics' inject"),
