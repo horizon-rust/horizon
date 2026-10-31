@@ -168,15 +168,45 @@ impl Ticks {
     }
     /// `Level.getBlockRandomPos`.
     pub fn block_random_pos(&mut self, x: i32, y: i32, z: i32, y_mask: i32) -> BlockPos {
-        self.random_tick_value = self
-            .random_tick_value
-            .wrapping_mul(3)
-            .wrapping_add(1_013_904_223);
-        let value = self.random_tick_value >> 2;
-        BlockPos::new(
-            x + (value & 15),
-            y + ((value >> 16) & y_mask),
-            z + ((value >> 8) & 15),
-        )
+        self.random_tick_value = next_random_tick_value(self.random_tick_value);
+        random_pos(self.random_tick_value, x, y, z, y_mask)
+    }
+    /// The positions `block_random_pos` gives next, without drawing them.
+    pub fn upcoming_random_pos(&self) -> impl FnMut(i32, i32, i32, i32) -> BlockPos + use<> {
+        let mut value = self.random_tick_value;
+        move |x, y, z, y_mask| {
+            value = next_random_tick_value(value);
+            random_pos(value, x, y, z, y_mask)
+        }
+    }
+}
+fn next_random_tick_value(value: i32) -> i32 {
+    value.wrapping_mul(3).wrapping_add(1_013_904_223)
+}
+fn random_pos(value: i32, x: i32, y: i32, z: i32, y_mask: i32) -> BlockPos {
+    let value = value >> 2;
+    BlockPos::new(
+        x + (value & 15),
+        y + ((value >> 16) & y_mask),
+        z + ((value >> 8) & 15),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upcoming_random_positions_are_the_ones_drawn_next() {
+        let mut ticks = Ticks::new(-123_456_789);
+        ticks.block_random_pos(0, 0, 0, 15);
+        let mut upcoming = ticks.upcoming_random_pos();
+        let ahead: Vec<_> = (0..6)
+            .map(|i| upcoming(16 * i, -64 + 16 * i, -16 * i, 15))
+            .collect();
+        let drawn: Vec<_> = (0..6)
+            .map(|i| ticks.block_random_pos(16 * i, -64 + 16 * i, -16 * i, 15))
+            .collect();
+        assert_eq!(ahead, drawn);
     }
 }

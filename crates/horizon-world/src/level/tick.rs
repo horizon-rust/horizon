@@ -1766,6 +1766,19 @@ impl Behaviours {
                 }
             }
         }
+        // The blocks the ticks below read first, read here all together: each
+        // section's is a cache miss, waited for one after the other between
+        // the ticks, at once here. The positions are those the ticks draw
+        // next, the sequence read without being advanced, so nothing changes;
+        // a tick that changes which sections tick only wastes a read here.
+        let mut upcoming = ticks.upcoming_random_pos();
+        let mut from = level.min_y();
+        while let Some(min_y) = next_ticking(level, from).filter(|&y| y < level.max_y()) {
+            for _ in 0..speed {
+                std::hint::black_box(level.block_state(upcoming(min_x, min_y, min_z, 15)));
+            }
+            from = min_y + 16;
+        }
         let mut from = level.min_y();
         while let Some(min_y) = next_ticking(level, from).filter(|&y| y < level.max_y()) {
             for _ in 0..speed {
