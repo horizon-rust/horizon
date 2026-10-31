@@ -5,7 +5,8 @@
 //! (streams on a worker thread) and OpenAL Soft's stereo panning. With sound
 //! physics on (`sound_physics`, a Horizon extra), each positional channel
 //! also gets EFX-style filters and reverb sends (`reverb`), worked out off
-//! this thread (`acoustics`).
+//! this thread (`acoustics`). Binaural panning and the Doppler effect
+//! (`spatial`) are extras of their own.
 use crate::Result;
 use crate::acoustics::{Acoustics, Sink};
 use crate::reverb::{self, Bus, Crossover, Split};
@@ -15,6 +16,7 @@ use crate::sound_engine::{
 };
 use crate::sound_events::{Sound, SoundRegistry};
 use crate::sound_physics::{Environment, Request, Settings as PhysicsSettings};
+use crate::spatial::{self, Binaural, Ear, Motion};
 #[cfg(feature = "audio")]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use horizon_core::random::{LegacyRandom, RandomSource};
@@ -54,6 +56,102 @@ struct Channel {
     hold: Option<Instant>,
     /// The sound event and `SoundSource` it plays, for re-evaluation.
     tag: Option<(Arc<str>, usize)>,
+    /// The tick it was last traced at.
+    traced: u64,
+    /// Its velocity, for the Doppler effect.
+    motion: Motion,
+    /// Its ears' state, for binaural panning.
+    binaural: Option<Box<Binaural>>,
+    /// How it was mixed in the last buffer: the next one ramps from there.
+    last: Option<Voice>,
+    /// The share of its sound sent to the reverb buses (1 but for the arrow
+    /// whoosh).
+    reverb_share: f32,
+}
+impl Channel {
+    fn new() -> Self {
+        Channel {
+            samples: None,
+            position: 0.0,
+            state: State::Initial,
+            gain: 1.0,
+            pitch: 1.0,
+            linear: None,
+            looping: false,
+            at: [0.0; 3],
+            relative: false,
+            environment: None,
+            split: Split::default(),
+            hold: None,
+            tag: None,
+            traced: 0,
+            motion: Motion::default(),
+            binaural: None,
+            last: None,
+            reverb_share: 1.0,
+        }
+    }
+    /// Seconds of sound left (looping sounds never end).
+    fn remaining(&self) -> f32 {
+        match &self.samples {
+            _ if self.looping => f32::INFINITY,
+            Some((s, rate)) => {
+                ((s.len() as f64 - self.position)
+                    / f64::from(*rate)
+                    / f64::from(self.pitch.max(0.01))) as f32
+            }
+            None => f32::INFINITY,
+        }
+    }
+}
+/// Horizon's spatial extras the mixer applies (`spatial`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Spatial {
+    hrtf: bool,
+    doppler: Option<f32>,
+    whoosh: bool,
+    /// `sound_range` when not 1.
+    range: Option<f32>,
+}
+/// How a voice is mixed for one buffer: its pan gains, its gain on a mono
+/// output, its filters and sends, and its ears when binaural.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Voice {
+    pan: [f32; 2],
+    mono: f32,
+    wet: Option<Wet>,
+    ears: Option<[Ear; 2]>,
+}
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+impl Voice {
+    /// The gains `t` of the way from `self` to `to` (the ears ramp in
+    /// `Binaural::process`).
+    fn toward(&self, to: &Voice, t: f32) -> Voice {
+        let wet = match (self.wet, to.wet) {
+            (Some(a), Some(b)) => Some(Wet {
+                direct_gain: lerp(a.direct_gain, b.direct_gain, t),
+                direct_hf: lerp(a.direct_hf, b.direct_hf, t),
+                sends: std::array::from_fn(|k| {
+                    (
+                        lerp(a.sends[k].0, b.sends[k].0, t),
+                        lerp(a.sends[k].1, b.sends[k].1, t),
+                    )
+                }),
+            }),
+            (_, wet) => wet,
+        };
+        Voice {
+            pan: [
+                lerp(self.pan[0], to.pan[0], t),
+                lerp(self.pan[1], to.pan[1], t),
+            ],
+            mono: lerp(self.mono, to.mono, t),
+            wet,
+            ears: to.ears,
+        }
+    }
 }
 #[derive(Default)]
 struct Mixer {
@@ -66,6 +164,9 @@ struct Mixer {
     physics_settings: Option<PhysicsSettings>,
     /// The reverb buses and their buffers, built at the output's rate.
     physics: Option<Box<MixPhysics>>,
+    spatial: Spatial,
+    /// The listener's velocity, for the Doppler effect.
+    listener_motion: Motion,
 }
 /// The mixer's sound physics state.
 struct MixPhysics {
@@ -130,6 +231,15 @@ pub struct MixerBackend {
     listener_underwater: bool,
     /// Client ticks, for re-evaluating moving sounds.
     ticks: u64,
+    /// The block the listener was in at the last tick.
+    listener_cell: Option<[i32; 3]>,
+    /// The whooshing arrows' channels, by the arrow's key.
+    whooshes: HashMap<u32, ChannelId>,
+    whoosh_samples: Option<Arc<Vec<f32>>>,
+    /// The bow creak playing, and the one fading out after a release.
+    creak: Option<ChannelId>,
+    creak_fading: Option<ChannelId>,
+    creak_samples: Option<Arc<Vec<f32>>>,
 }
 /// Decoded samples and their rate (`None`: the file did not load).
 type Samples = Option<(Arc<Vec<f32>>, u32)>;
@@ -203,8 +313,22 @@ fn attach(mixer: &Mutex<Mixer>, channel: ChannelId, samples: Samples, looping: b
 type Stream = cpal::Stream;
 #[cfg(not(feature = "audio"))]
 type Stream = std::convert::Infallible;
+/// The output device in use, and what tells the game to move to another:
+/// a thread reading the system's default output once a second, and the
+/// stream's error callback (the device went away).
+#[derive(Default)]
+struct OutputWatch {
+    default: Mutex<Option<String>>,
+    failed: std::sync::atomic::AtomicBool,
+}
 pub struct Audio {
-    _stream: Option<Stream>,
+    stream: Option<Stream>,
+    /// The device `stream` plays on.
+    device: Option<String>,
+    /// None on the dedicated server and where output is turned off.
+    watch: Option<Arc<OutputWatch>>,
+    /// When opening another device was last tried (once a second at most).
+    reopened: Option<Instant>,
     pub engine: SoundEngine,
     backend: MixerBackend,
     /// Record `Heard` sounds (the subtitle overlay is listening).
@@ -269,28 +393,61 @@ fn decode(path: &Path) -> Option<(Vec<f32>, u32)> {
     Some((mono, rate))
 }
 impl MixerBackend {
-    /// `update_moving_sounds`: every `sound_update_interval` ticks, playing
-    /// positional sounds are traced again where they are (the mod's
-    /// `tickInGameSound` hook). Music discs only then get sound physics.
+    /// Traces playing sounds again: every `sound_update_interval` ticks with
+    /// `update_moving_sounds` (the mod's `tickInGameSound` hook; music discs
+    /// only then get sound physics), and with `update_on_listener_move` the
+    /// ones still playing for a while when the listener enters another
+    /// block, at most `MOVE_BATCH` a tick.
     fn reevaluate(&mut self) {
+        const MOVE_BATCH: usize = 24;
         let settings = self.acoustics.settings();
-        if !settings.enabled || !settings.update_moving_sounds || !self.live {
+        if !settings.enabled || !self.live {
             return;
         }
+        let (moving, on_move) = (
+            settings.update_moving_sounds,
+            settings.update_on_listener_move,
+        );
         let interval = u64::from(settings.sound_update_interval.max(1));
-        let Ok(m) = self.mixer.lock() else {
+        let Ok(mut m) = self.mixer.lock() else {
             return;
         };
-        let due: Vec<(ChannelId, Request, f32)> = m
+        let cell = m.listener.map(|v| v.floor() as i32);
+        let moved = on_move && self.listener_cell.is_some_and(|c| c != cell);
+        self.listener_cell = Some(cell);
+        if !moving && !moved {
+            return;
+        }
+        let ticks = self.ticks;
+        let mut moved_left = MOVE_BATCH;
+        let due: Vec<ChannelId> = m
             .channels
             .iter()
+            .filter(|(_, c)| c.state == State::Playing && c.hold.is_none() && c.tag.is_some())
             .filter(|(id, c)| {
-                c.state == State::Playing && (self.ticks + **id).is_multiple_of(interval)
+                if moving && (ticks + **id).is_multiple_of(interval) {
+                    return true;
+                }
+                if moved && moved_left > 0 && ticks >= c.traced + 2 && c.remaining() > 0.4 {
+                    moved_left -= 1;
+                    return true;
+                }
+                false
             })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &due {
+            if let Some(c) = m.channels.get_mut(id) {
+                c.traced = ticks;
+            }
+        }
+        let due: Vec<(ChannelId, Request, f32)> = due
+            .into_iter()
+            .filter_map(|id| Some((id, m.channels.get(&id)?)))
             .filter_map(|(id, c)| {
                 let (event, source) = c.tag.as_ref()?;
                 Some((
-                    *id,
+                    id,
                     Request {
                         at: c.at.map(f64::from),
                         listener: m.listener,
@@ -319,24 +476,7 @@ impl Backend for MixerBackend {
     fn create(&mut self, _streaming: bool) -> Option<ChannelId> {
         self.next += 1;
         let id = self.next;
-        self.mixer.lock().ok()?.channels.insert(
-            id,
-            Channel {
-                samples: None,
-                position: 0.0,
-                state: State::Initial,
-                gain: 1.0,
-                pitch: 1.0,
-                linear: None,
-                looping: false,
-                at: [0.0; 3],
-                relative: false,
-                environment: None,
-                split: Split::default(),
-                hold: None,
-                tag: None,
-            },
-        );
+        self.mixer.lock().ok()?.channels.insert(id, Channel::new());
         Some(id)
     }
     fn destroy(&mut self, channel: ChannelId) {
@@ -357,7 +497,9 @@ impl Backend for MixerBackend {
         self.with(channel, |c| c.looping = looping);
     }
     fn set_position(&mut self, channel: ChannelId, p: [f64; 3]) {
+        let now = Instant::now();
         self.with(channel, |c| {
+            c.motion.update(p, now);
             let at = [p[0] as f32, p[1] as f32, p[2] as f32];
             // A sound that moved is heard from where it is until re-evaluated.
             if c.at != at
@@ -390,6 +532,7 @@ impl Backend for MixerBackend {
             return;
         };
         c.tag = Some((event.into(), source));
+        c.traced = self.ticks;
         c.hold = Some(Instant::now() + crate::acoustics::HOLD);
         let request = Request {
             at: c.at.map(f64::from),
@@ -510,6 +653,7 @@ fn stereo_gains(right: f32, up: f32, forward: f32) -> [f32; 2] {
 /// A channel's filters and sends for one buffer: the direct path's EFX
 /// low-pass, then each send's (gain, high-frequency gain), with distance and
 /// air absorption applied.
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Wet {
     direct_gain: f32,
     direct_hf: f32,
@@ -573,8 +717,13 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
         }
     }
     let now = Instant::now();
-    // Gains and pans per source for this buffer.
-    let mut voices: Vec<(ChannelId, [f32; 3], f64, Option<Wet>)> = Vec::new();
+    let spatial = mixer.spatial;
+    // Gains ramp over the buffer while anything of Horizon's can change them
+    // between buffers; vanilla's mix jumps, as OpenAL's gains do.
+    let ramp = physics.is_some() || spatial != Spatial::default();
+    let listener_velocity = mixer.listener_motion.velocity(now);
+    // How each source is mixed in this buffer, and its step.
+    let mut voices: Vec<(ChannelId, Voice, f64)> = Vec::new();
     for (id, c) in &mixer.channels {
         let Some((_, source_rate)) = &c.samples else {
             continue;
@@ -596,11 +745,14 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
             ]
         };
         let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() as f32;
-        // The mod's attenuation factor stretches the linear range.
-        let linear = match (&physics, c.linear) {
-            (Some(p), Some(max)) => Some(max / p.settings.attenuation_factor),
-            (_, linear) => linear,
-        };
+        // The mod's attenuation factor and Horizon's sound range stretch
+        // the linear range.
+        let linear = c.linear.map(|max| {
+            let factor = physics
+                .as_ref()
+                .map_or(1.0, |p| p.settings.attenuation_factor);
+            max * spatial.range.unwrap_or(1.0) / factor
+        });
         let gain = c.gain.clamp(0.0, 1.0) * distance_gain(linear, distance);
         let wet = match (environment, &physics) {
             (Some(e), Some(p)) if !c.relative => {
@@ -615,7 +767,7 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
                             p.buses[k].params().room_rolloff,
                         );
                         (
-                            c.gain.clamp(0.0, 1.0) * room * e.send_gain[k],
+                            c.gain.clamp(0.0, 1.0) * room * e.send_gain[k] * c.reverb_share,
                             e.send_cutoff[k] * air,
                         )
                     }),
@@ -624,23 +776,63 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
             _ => None,
         };
         // Relative sources are already in OpenAL's listener space (-Z ahead).
-        let [left, right] = if c.relative {
-            stereo_gains(d[0] as f32, d[1] as f32, -d[2] as f32)
+        let local = if c.relative {
+            [d[0] as f32, d[1] as f32, -d[2] as f32]
         } else {
-            stereo_gains(dot(d, right), dot(d, up), dot(d, forward))
+            [dot(d, right), dot(d, up), dot(d, forward)]
+        };
+        // Binaural for positional sources: their ears replace the panning.
+        let ears = (spatial.hrtf && !c.relative && channels >= 2)
+            .then(|| spatial::ears(local[0], local[1], local[2], rate));
+        let pan = if ears.is_some() {
+            [gain * spatial::BINAURAL_GAIN; 2]
+        } else {
+            stereo_gains(local[0], local[1], local[2]).map(|pan| gain * pan)
+        };
+        let mut pitch = c.pitch.max(0.0);
+        if let Some(factor) = spatial.doppler.filter(|_| !c.relative) {
+            let real = c.at.map(f64::from);
+            let to_source = [
+                (real[0] - listener[0]) as f32,
+                (real[1] - listener[1]) as f32,
+                (real[2] - listener[2]) as f32,
+            ];
+            pitch *= spatial::doppler(to_source, c.motion.velocity(now), listener_velocity, factor);
         }
-        .map(|pan| gain * pan);
-        let step = f64::from(*source_rate) / f64::from(rate) * f64::from(c.pitch.max(0.0));
-        voices.push((*id, [left, right, gain], step, wet));
+        let step = f64::from(*source_rate) / f64::from(rate) * f64::from(pitch);
+        let voice = Voice {
+            pan,
+            mono: gain,
+            wet,
+            ears,
+        };
+        voices.push((*id, voice, step));
     }
-    for (id, [left, right, gain], step, wet) in voices {
+    let frames = (data.len() / channels.max(1)).max(1) as f32;
+    for (id, voice, step) in voices {
         let Some(c) = mixer.channels.get_mut(&id) else {
             continue;
         };
         let Some((samples, _)) = c.samples.clone() else {
             continue;
         };
+        let from = if ramp {
+            c.last
+                .filter(|l| l.ears.is_some() == voice.ears.is_some())
+                .unwrap_or(voice)
+        } else {
+            voice
+        };
+        c.last = ramp.then_some(voice);
+        let still = from == voice;
+        let (from_ears, to_ears) = (from.ears, voice.ears);
+        if to_ears.is_some() && c.binaural.is_none() {
+            c.binaural = Some(Box::default());
+        }
         for (f, frame) in data.chunks_mut(channels).enumerate() {
+            let t = (f + 1) as f32 / frames;
+            let v = if still { voice } else { from.toward(&voice, t) };
+            let (left, right, gain, wet) = (v.pan[0], v.pan[1], v.mono, v.wet);
             let mut i = c.position as usize;
             if i + 1 >= samples.len() {
                 if c.looping && samples.len() > 1 {
@@ -662,7 +854,11 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
                 }
                 s = reverb::lowpass(parts, w.direct_gain, w.direct_hf);
             }
-            if channels >= 2 {
+            if let (Some(to), Some(b)) = (&to_ears, &mut c.binaural) {
+                let [l, r] = b.process(s, from_ears.as_ref().unwrap_or(to), to, t, rate);
+                frame[0] += l * left;
+                frame[1] += r * right;
+            } else if channels >= 2 {
                 frame[0] += s * left;
                 frame[1] += s * right;
             } else {
@@ -696,9 +892,15 @@ fn mix(mixer: &mut Mixer, data: &mut [f32], channels: usize, rate: u32) {
 }
 /// The mixer's cost, for `examples/sound_physics_bench.rs`: `voices` looping
 /// positional channels mixed to 48 kHz stereo in 10 ms buffers for
-/// `seconds`, each with a reverb environment when `physics` is on.
+/// `seconds`, each with a reverb environment when `physics` is on, binaural
+/// with `hrtf`.
 #[doc(hidden)]
-pub fn mix_benchmark(voices: usize, physics: bool, seconds: f32) -> std::time::Duration {
+pub fn mix_benchmark(
+    voices: usize,
+    physics: bool,
+    hrtf: bool,
+    seconds: f32,
+) -> std::time::Duration {
     let mut mixer = Mixer::default();
     let mut random = LegacyRandom::new(1);
     let noise: Arc<Vec<f32>> = Arc::new((0..48_000).map(|_| random.next_float() - 0.5).collect());
@@ -723,9 +925,7 @@ pub fn mix_benchmark(voices: usize, physics: bool, seconds: f32) -> std::time::D
                     send_cutoff: [0.8; 4],
                     redirect: None,
                 }),
-                split: Split::default(),
-                hold: None,
-                tag: None,
+                ..Channel::new()
             },
         );
     }
@@ -733,12 +933,90 @@ pub fn mix_benchmark(voices: usize, physics: bool, seconds: f32) -> std::time::D
         enabled: true,
         ..PhysicsSettings::default()
     });
+    mixer.spatial.hrtf = hrtf;
     let mut out = vec![0.0f32; 480 * 2];
     let started = Instant::now();
     for _ in 0..(seconds * 100.0) as usize {
         mix(&mut mixer, &mut out, 2, 48_000);
     }
     started.elapsed()
+}
+/// A sound file decoded to mono samples and their rate, for tools
+/// (`examples/sound_capture.rs`).
+#[doc(hidden)]
+pub fn decode_file(path: &Path) -> Option<(Vec<f32>, u32)> {
+    decode(path)
+}
+/// One sound for `render_offline`: its samples, when it starts (seconds),
+/// its volume and pitch as the engine would set them, where it is and the
+/// environment sound physics gave it.
+#[doc(hidden)]
+pub struct OfflineSound {
+    pub samples: Arc<Vec<f32>>,
+    pub rate: u32,
+    pub start: f32,
+    pub volume: f32,
+    pub pitch: f32,
+    pub at: [f64; 3],
+    pub environment: Option<Environment>,
+}
+/// The mixer's output (48 kHz stereo, interleaved) for `sounds` heard at
+/// `listener` facing `yaw`, `pitch`, with sound physics' mixing when
+/// `settings` is given: the game's mix without an output device, for
+/// recordings and listening tests (`examples/sound_capture.rs`).
+#[doc(hidden)]
+pub fn render_offline(
+    sounds: &[OfflineSound],
+    listener: [f64; 3],
+    yaw: f32,
+    pitch: f32,
+    settings: Option<&PhysicsSettings>,
+    seconds: f32,
+) -> Vec<f32> {
+    const RATE: u32 = 48_000;
+    const BUFFER: usize = 480;
+    let mut mixer = Mixer {
+        listener,
+        listener_yaw: yaw,
+        listener_pitch: pitch,
+        physics_settings: settings.filter(|s| s.enabled).cloned(),
+        ..Mixer::default()
+    };
+    if let Some(s) = settings {
+        mixer.spatial = Spatial {
+            hrtf: s.hrtf,
+            doppler: None,
+            whoosh: false,
+            range: (s.sound_range != 1.0).then_some(s.sound_range),
+        };
+    }
+    let buffers = (seconds * RATE as f32) as usize / BUFFER;
+    let mut out = Vec::with_capacity(buffers * BUFFER * 2);
+    let mut buffer = vec![0.0f32; BUFFER * 2];
+    let mut next = 0;
+    for b in 0..buffers {
+        let now = (b * BUFFER) as f32 / RATE as f32;
+        while let Some(s) = sounds.get(next).filter(|s| s.start <= now) {
+            mixer.channels.insert(
+                next as ChannelId,
+                Channel {
+                    samples: Some((s.samples.clone(), s.rate)),
+                    state: State::Playing,
+                    gain: s.volume,
+                    pitch: s.pitch,
+                    linear: Some(16.0 * s.volume.max(1.0)),
+                    at: s.at.map(|v| v as f32),
+                    environment: s.environment,
+                    ..Channel::new()
+                },
+            );
+            next += 1;
+        }
+        mix(&mut mixer, &mut buffer, 2, RATE);
+        out.extend_from_slice(&buffer);
+        mixer.channels.retain(|_, c| c.state != State::Stopped);
+    }
+    out
 }
 /// Why the game should not open an output, if it should not:
 /// `HORIZON_NO_AUDIO`, or a virtual screen (`vscreen`), where agents and
@@ -764,18 +1042,20 @@ fn output_disabled(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<S
 fn open_device(
     device: &cpal::Device,
     mixer: Arc<Mutex<Mixer>>,
+    watch: &Arc<OutputWatch>,
 ) -> Result<(cpal::Stream, cpal::SupportedStreamConfig)> {
     use cpal::SampleFormat as F;
     let config = device.default_output_config()?;
+    let w = watch.clone();
     let stream = match config.sample_format() {
-        F::F32 => build_stream::<f32>(device, &config, mixer),
-        F::F64 => build_stream::<f64>(device, &config, mixer),
-        F::I16 => build_stream::<i16>(device, &config, mixer),
-        F::I32 => build_stream::<i32>(device, &config, mixer),
-        F::I8 => build_stream::<i8>(device, &config, mixer),
-        F::U16 => build_stream::<u16>(device, &config, mixer),
-        F::U32 => build_stream::<u32>(device, &config, mixer),
-        F::U8 => build_stream::<u8>(device, &config, mixer),
+        F::F32 => build_stream::<f32>(device, &config, mixer, w),
+        F::F64 => build_stream::<f64>(device, &config, mixer, w),
+        F::I16 => build_stream::<i16>(device, &config, mixer, w),
+        F::I32 => build_stream::<i32>(device, &config, mixer, w),
+        F::I8 => build_stream::<i8>(device, &config, mixer, w),
+        F::U16 => build_stream::<u16>(device, &config, mixer, w),
+        F::U32 => build_stream::<u32>(device, &config, mixer, w),
+        F::U8 => build_stream::<u8>(device, &config, mixer, w),
         other => Err(format!("unsupported sample format {other}").into()),
     }?;
     stream.play()?;
@@ -786,6 +1066,7 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
     mixer: Arc<Mutex<Mixer>>,
+    watch: Arc<OutputWatch>,
 ) -> Result<cpal::Stream> {
     let rate = config.sample_rate().0;
     let channels = config.channels() as usize;
@@ -803,7 +1084,12 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
                 *out = T::from_sample(*s);
             }
         },
-        |e| log::warn!("Horizon: audio stream error: {e}"),
+        move |e| {
+            log::warn!("Horizon: audio stream error: {e}");
+            watch
+                .failed
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        },
         None,
     )?;
     Ok(stream)
@@ -828,24 +1114,32 @@ impl Audio {
             );
         }
         let mixer = Arc::new(Mutex::new(Mixer::default()));
-        let opened = if output {
-            Self::open(mixer.clone())
-        } else {
-            Err("no output on a dedicated server".into())
+        let watch = (output && Self::watched()).then(|| Arc::new(OutputWatch::default()));
+        let opened = match &watch {
+            Some(w) => Self::open(mixer.clone(), w),
+            None if output => Self::open(mixer.clone(), &Arc::default()),
+            None => Err("no output on a dedicated server".into()),
         };
-        let (stream, live) = match opened {
-            Ok(v) => (Some(v), true),
+        let (stream, device, live) = match opened {
+            Ok((stream, device)) => (Some(stream), Some(device), true),
             Err(e) => {
                 if output {
                     log::warn!("Horizon: no sound: {e}");
                 }
-                (None, false)
+                (None, None, false)
             }
         };
+        if let Some(w) = &watch {
+            *w.default.lock().unwrap_or_else(|p| p.into_inner()) = device.clone();
+            Self::watch_default(w.clone());
+        }
         let mut engine = SoundEngine::new(registry);
         engine.loaded = live;
         Self {
-            _stream: stream,
+            stream,
+            device,
+            watch,
+            reopened: None,
             engine,
             backend: MixerBackend {
                 mixer,
@@ -857,6 +1151,12 @@ impl Audio {
                 acoustics: Acoustics::default(),
                 listener_underwater: false,
                 ticks: 0,
+                listener_cell: None,
+                whooshes: HashMap::new(),
+                whoosh_samples: None,
+                creak: None,
+                creak_fading: None,
+                creak_samples: None,
             },
             record_heard: false,
             listener: [0.0; 3],
@@ -869,12 +1169,85 @@ impl Audio {
             stopped: Default::default(),
         }
     }
+    /// Whether this output follows the system's default device: a real
+    /// output (the `audio` feature, not turned off).
+    #[cfg(feature = "audio")]
+    fn watched() -> bool {
+        output_disabled(|name| std::env::var_os(name)).is_none()
+    }
     #[cfg(not(feature = "audio"))]
-    fn open(_: Arc<Mutex<Mixer>>) -> Result<Stream> {
+    fn watched() -> bool {
+        false
+    }
+    /// The thread that reads the system's default output device once a
+    /// second (asking costs the device enumeration, too much for a tick).
+    #[cfg(feature = "audio")]
+    fn watch_default(watch: Arc<OutputWatch>) {
+        let _ = std::thread::Builder::new()
+            .name("audio device watch".into())
+            .spawn(move || {
+                // Ends with the game: only this thread holds the last `Arc`.
+                while Arc::strong_count(&watch) > 1 {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    let name = cpal::default_host()
+                        .default_output_device()
+                        .and_then(|d| d.name().ok());
+                    if let Ok(mut d) = watch.default.lock() {
+                        *d = name;
+                    }
+                }
+            });
+    }
+    #[cfg(not(feature = "audio"))]
+    fn watch_default(_: Arc<OutputWatch>) {}
+    /// Once a tick: when the system's default output changed (headphones
+    /// plugged in or out) or the stream failed, move to the new default,
+    /// keeping every sound playing (the mixer stays).
+    fn follow_output(&mut self) {
+        let Some(watch) = self.watch.clone() else {
+            return;
+        };
+        let failed = watch.failed.load(std::sync::atomic::Ordering::Relaxed);
+        let default = watch.default.lock().ok().and_then(|d| d.clone());
+        let moved = default.is_some() && default != self.device;
+        if !failed && !moved {
+            return;
+        }
+        if self
+            .reopened
+            .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1))
+        {
+            return;
+        }
+        self.reopened = Some(Instant::now());
+        watch
+            .failed
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        // Close the old stream first: some devices take one client only.
+        self.stream = None;
+        match Self::open(self.backend.mixer.clone(), &watch) {
+            Ok((stream, device)) => {
+                log::info!("Horizon: audio moved to {device}");
+                self.stream = Some(stream);
+                self.device = Some(device);
+                if !self.backend.live {
+                    // Started without a device: sounds can play from now on.
+                    self.backend.live = true;
+                    self.engine.loaded = true;
+                }
+            }
+            Err(e) => {
+                log::warn!("Horizon: no sound: {e}");
+                self.device = None;
+            }
+        }
+    }
+    #[cfg(not(feature = "audio"))]
+    fn open(_: Arc<Mutex<Mixer>>, _: &Arc<OutputWatch>) -> Result<(Stream, String)> {
         Err("this build has no sound output (built without the `audio` feature)".into())
     }
     #[cfg(feature = "audio")]
-    fn open(mixer: Arc<Mutex<Mixer>>) -> Result<Stream> {
+    fn open(mixer: Arc<Mutex<Mixer>>, watch: &Arc<OutputWatch>) -> Result<(Stream, String)> {
         if let Some(reason) = output_disabled(|name| std::env::var_os(name)) {
             return Err(reason.into());
         }
@@ -892,7 +1265,7 @@ impl Audio {
                 continue;
             }
             tried.push(name.clone());
-            match open_device(&device, mixer.clone()) {
+            match open_device(&device, mixer.clone(), watch) {
                 Ok((stream, config)) => {
                     log::info!(
                         "Horizon: audio output {name} ({} Hz, {} channels, {})",
@@ -900,7 +1273,7 @@ impl Audio {
                         config.channels(),
                         config.sample_format()
                     );
-                    return Ok(stream);
+                    return Ok((stream, name));
                 }
                 Err(e) => errors.push(format!("{name}: {e}")),
             }
@@ -925,6 +1298,7 @@ impl Audio {
             m.listener = position;
             m.listener_yaw = yaw;
             m.listener_pitch = pitch;
+            m.listener_motion.update(position, Instant::now());
         }
     }
     /// Sync the volume options, refreshing the categories that changed
@@ -945,6 +1319,7 @@ impl Audio {
     }
     /// `SoundManager.tick(paused)`, once per client tick.
     pub fn tick(&mut self, paused: bool, ctx: &TickContext) {
+        self.follow_output();
         self.sync_volumes();
         self.engine.tick(paused, ctx, &mut self.backend);
         self.backend.ticks += 1;
@@ -956,6 +1331,15 @@ impl Audio {
     pub fn set_sound_physics(&mut self, settings: &PhysicsSettings) {
         if self.backend.acoustics.settings() == settings {
             return;
+        }
+        if let Ok(mut m) = self.backend.mixer.lock() {
+            m.spatial = Spatial {
+                hrtf: settings.hrtf,
+                doppler: settings.doppler.then_some(settings.doppler_factor),
+                whoosh: settings.arrow_whoosh,
+                range: (settings.sound_range != 1.0).then_some(settings.sound_range),
+            };
+            crate::sound_physics::set_shared_range(settings.sound_range);
         }
         self.backend.acoustics.set_settings(settings);
         if settings.enabled && self.backend.live {
@@ -971,6 +1355,123 @@ impl Audio {
                     c.hold = None;
                 }
             }
+        }
+    }
+    /// Once a tick: the arrows in flight (a key of their own, position,
+    /// speed in blocks a second), each whooshing on a channel of its own
+    /// while `arrow_whoosh` is on, on the players' volume.
+    pub fn set_whooshes(&mut self, flying: &[(u32, [f64; 3], f32)]) {
+        const EVENT: &str = "horizon:entity.arrow.whoosh";
+        let on = self.backend.acoustics.settings().arrow_whoosh && self.backend.live;
+        let volume = self.engine.source_volumes[crate::sound_engine::MASTER]
+            * self.engine.source_volumes[crate::sound_engine::PLAYERS];
+        let gone: Vec<u32> = self
+            .backend
+            .whooshes
+            .keys()
+            .filter(|k| !on || !flying.iter().any(|f| f.0 == **k))
+            .copied()
+            .collect();
+        for key in gone {
+            if let Some(channel) = self.backend.whooshes.remove(&key) {
+                self.backend.destroy(channel);
+            }
+        }
+        if !on {
+            return;
+        }
+        let samples = self
+            .backend
+            .whoosh_samples
+            .get_or_insert_with(|| Arc::new(crate::spatial::whoosh_samples()))
+            .clone();
+        for &(key, at, speed) in flying {
+            let (gain, pitch) = crate::spatial::whoosh(speed);
+            let channel = match self.backend.whooshes.get(&key) {
+                Some(&c) => c,
+                None => {
+                    if gain <= 0.0 {
+                        continue;
+                    }
+                    let Some(c) = self.backend.create(false) else {
+                        continue;
+                    };
+                    let start = f64::from(key % 97) / 97.0 * samples.len() as f64;
+                    self.backend.with(c, |ch| {
+                        ch.samples = Some((samples.clone(), crate::spatial::WHOOSH_RATE));
+                        ch.position = start;
+                        ch.looping = true;
+                        ch.linear = Some(16.0);
+                        ch.state = State::Playing;
+                        ch.tag = Some((EVENT.into(), crate::sound_engine::PLAYERS));
+                        ch.reverb_share = crate::spatial::WHOOSH_REVERB;
+                    });
+                    self.backend.whooshes.insert(key, c);
+                    self.backend.set_position(c, at);
+                    let request = Request {
+                        at,
+                        listener: self.listener,
+                        listener_underwater: self.backend.listener_underwater,
+                        source: crate::sound_engine::PLAYERS,
+                        event: EVENT.into(),
+                    };
+                    self.backend.acoustics.evaluate(c, request, 16.0);
+                    c
+                }
+            };
+            self.backend.set_position(channel, at);
+            self.backend.set_volume(channel, gain * volume);
+            self.backend.set_pitch(channel, pitch);
+        }
+    }
+    /// Once a tick: whether the player is drawing a bow, and where the bow
+    /// is. A draw starts the creak there; a release fades it out over a
+    /// buffer (the mixer ramps gains while a Horizon sound extra is on).
+    pub fn set_bow_draw(&mut self, drawing: Option<[f64; 3]>) {
+        const EVENT: &str = "horizon:item.bow.creak";
+        if let Some(c) = self.backend.creak_fading.take() {
+            self.backend.destroy(c);
+        }
+        let on = self.backend.acoustics.settings().bow_creak && self.backend.live;
+        let drawing = drawing.filter(|_| on);
+        match (drawing, self.backend.creak) {
+            (Some(at), Some(c)) => self.backend.set_position(c, at),
+            (Some(at), None) => {
+                let samples = self
+                    .backend
+                    .creak_samples
+                    .get_or_insert_with(|| Arc::new(crate::spatial::creak_samples()))
+                    .clone();
+                let Some(c) = self.backend.create(false) else {
+                    return;
+                };
+                let volume = self.engine.source_volumes[crate::sound_engine::MASTER]
+                    * self.engine.source_volumes[crate::sound_engine::PLAYERS];
+                self.backend.with(c, |ch| {
+                    ch.samples = Some((samples, crate::spatial::WHOOSH_RATE));
+                    ch.linear = Some(16.0);
+                    ch.gain = 0.6 * volume;
+                    ch.state = State::Playing;
+                    ch.tag = Some((EVENT.into(), crate::sound_engine::PLAYERS));
+                    ch.reverb_share = 0.6;
+                });
+                self.backend.set_position(c, at);
+                let request = Request {
+                    at,
+                    listener: self.listener,
+                    listener_underwater: self.backend.listener_underwater,
+                    source: crate::sound_engine::PLAYERS,
+                    event: EVENT.into(),
+                };
+                self.backend.acoustics.evaluate(c, request, 16.0);
+                self.backend.creak = Some(c);
+            }
+            (None, Some(c)) => {
+                self.backend.creak = None;
+                self.backend.set_volume(c, 0.0);
+                self.backend.creak_fading = Some(c);
+            }
+            (None, None) => {}
         }
     }
     pub fn sound_physics_enabled(&self) -> bool {
@@ -1067,6 +1568,16 @@ impl Audio {
         }
         self.sync_volumes();
         let event = crate::sound_events::normalize(event);
+        let (volume, pitch) = if self.backend.acoustics.settings().soft_pickup
+            && event == "minecraft:entity.item.pickup"
+        {
+            (
+                volume * crate::sound_physics::SOFT_PICKUP_VOLUME,
+                crate::sound_physics::soft_pickup_pitch(pitch),
+            )
+        } else {
+            (volume, pitch)
+        };
         let source = self
             .source_override
             .unwrap_or_else(|| crate::settings::sound_source(&event));
@@ -1134,6 +1645,31 @@ impl Audio {
         }
         if self.backend.acoustics.enabled() {
             census["soundPhysics"] = self.backend.acoustics.stats().json();
+        }
+        // The playing voices as the mixer last mixed them, while a Horizon
+        // sound extra is on (`last` is kept only then).
+        if let Ok(m) = self.backend.mixer.lock() {
+            let voices: Vec<serde_json::Value> = m
+                .channels
+                .values()
+                .filter(|c| c.state == State::Playing && c.last.is_some())
+                .map(|c| {
+                    let v = c.last.expect("filtered");
+                    serde_json::json!({
+                        "event": c.tag.as_ref().map(|(e, _)| e.to_string()),
+                        "at": c.at,
+                        "volume": c.gain,
+                        "gain": v.mono,
+                        "direct": v.wet.map(|w| [w.direct_gain, w.direct_hf]),
+                        "sends": v.wet.map(|w| w.sends.map(|s| s.0)),
+                        "held": c.hold.is_some(),
+                        "speed": c.motion.velocity(Instant::now()).iter().map(|x| x * x).sum::<f32>().sqrt(),
+                    })
+                })
+                .collect();
+            if !voices.is_empty() {
+                census["voices"] = voices.into();
+            }
         }
         census
     }
@@ -1239,10 +1775,7 @@ mod tests {
             looping,
             at,
             relative: false,
-            environment: None,
-            split: Split::default(),
-            hold: None,
-            tag: None,
+            ..Channel::new()
         }
     }
 
@@ -1326,6 +1859,123 @@ mod tests {
         m.channels.get_mut(&1).unwrap().samples = Some((Arc::new(noise(4800)), 48_000));
         render(&mut m, 4800);
         assert_eq!(energy(&render(&mut m, 9600)), 0.0);
+    }
+
+    #[test]
+    fn binaural_and_doppler_are_extras_of_their_own() {
+        let side = |m: &mut Mixer| {
+            let out = render(m, 4096);
+            let energy = |k: usize| out.chunks(2).map(|f| f[k] * f[k]).sum::<f32>();
+            (energy(0), energy(1))
+        };
+        // A source on the right (yaw 0 faces +z; right is -x).
+        let mut m = Mixer::default();
+        m.channels.insert(
+            1,
+            channel(noise(48_000), Some(16.0), [-4.0, 0.0, 0.0], false),
+        );
+        let vanilla = side(&mut m);
+        let mut m = Mixer::default();
+        m.channels.insert(
+            1,
+            channel(noise(48_000), Some(16.0), [-4.0, 0.0, 0.0], false),
+        );
+        m.spatial.hrtf = true;
+        let (l, r) = side(&mut m);
+        assert!(r > 4.0 * l, "{l} {r}");
+        assert_ne!((l, r), vanilla);
+        // Off again: vanilla's mix.
+        let mut m = Mixer::default();
+        m.channels.insert(
+            1,
+            channel(noise(48_000), Some(16.0), [-4.0, 0.0, 0.0], false),
+        );
+        m.spatial = Spatial::default();
+        assert_eq!(side(&mut m), vanilla);
+
+        // Doppler: a source coming at the listener plays faster.
+        let advance = |doppler: Option<f32>| {
+            let mut m = Mixer::default();
+            let mut c = channel(noise(48_000), Some(64.0), [0.0, 0.0, 30.0], true);
+            let t0 = Instant::now();
+            c.motion
+                .update([0.0, 0.0, 32.0], t0 - std::time::Duration::from_millis(100));
+            c.motion
+                .update([0.0, 0.0, 30.0], t0 - std::time::Duration::from_millis(50));
+            m.channels.insert(1, c);
+            m.spatial.doppler = doppler;
+            render(&mut m, 4800);
+            m.channels[&1].position
+        };
+        let still = advance(None);
+        let coming = advance(Some(1.0));
+        assert!(coming > still * 1.05, "{still} {coming}");
+    }
+
+    #[test]
+    fn moving_on_traces_long_sounds_again() {
+        let mut b = MixerBackend {
+            mixer: Arc::new(Mutex::new(Mixer::default())),
+            root: PathBuf::new(),
+            cache: Arc::default(),
+            decoder: None,
+            next: 0,
+            live: true,
+            acoustics: Acoustics::default(),
+            listener_underwater: false,
+            ticks: 10,
+            listener_cell: None,
+            whooshes: HashMap::new(),
+            whoosh_samples: None,
+            creak: None,
+            creak_fading: None,
+            creak_samples: None,
+        };
+        let (send, receive) = std::sync::mpsc::channel();
+        struct Count(Mutex<std::sync::mpsc::Sender<ChannelId>>);
+        impl Sink for Count {
+            fn environment(&self, channel: ChannelId, _: Environment) {
+                let _ = self.0.lock().unwrap().send(channel);
+            }
+        }
+        b.acoustics.set_settings(&PhysicsSettings {
+            enabled: true,
+            ..PhysicsSettings::default()
+        });
+        b.acoustics.start(Count(Mutex::new(send)));
+        b.acoustics.set_states(vec![crate::acoustics::BlockState {
+            block: "minecraft:air".into(),
+            break_sound: "".into(),
+            step_sound: "".into(),
+            fluid: crate::sound_physics::FluidKind::None,
+            collides: false,
+            sturdy: 0,
+            closes: 0,
+        }]);
+        {
+            let mut m = b.mixer.lock().unwrap();
+            for (id, looping) in [(1, true), (2, false)] {
+                let mut c = channel(noise(4_800), Some(16.0), [0.0, 64.0, 4.0], looping);
+                c.tag = Some(("minecraft:block.note_block.harp".into(), 4));
+                m.channels.insert(id, c);
+            }
+            m.listener = [0.5, 64.5, 0.5];
+        }
+        b.reevaluate();
+        assert!(receive.try_recv().is_err(), "nothing on the first tick");
+        b.ticks += 3;
+        b.mixer.lock().unwrap().listener = [1.5, 64.5, 0.5];
+        b.reevaluate();
+        // The loop is traced again; the 0.1 s sound is about to end.
+        let traced = receive
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(traced, 1);
+        assert!(
+            receive
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err()
+        );
     }
 
     #[test]

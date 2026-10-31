@@ -70,7 +70,23 @@ impl Hub {
         except: Option<u32>,
     ) {
         let packet = self.sound_packet(name, at, volume, pitch, source, self.ticks as i64);
-        self.broadcast_near(at, f64::from(volume.max(1.0)) * 16.0, &packet, except);
+        // Horizon's sound range reaches further for a single player alone
+        // on their integrated server, never for others.
+        let alone = self.guests.len() == 1
+            && self
+                .singleplayer_owner
+                .is_some_and(|owner| self.guests[0].uuid == owner);
+        let stretch = if alone {
+            f64::from(crate::sound_physics::shared_range())
+        } else {
+            1.0
+        };
+        self.broadcast_near(
+            at,
+            f64::from(volume.max(1.0)) * 16.0 * stretch,
+            &packet,
+            except,
+        );
     }
 
     /// ClientboundLevelEventPacket (block break particles and sounds ...).
