@@ -217,13 +217,13 @@ impl Launcher {
                 "https://github.com/owner/repo",
             ))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                window.focus(&this.github.focus);
+                window.focus(&this.github.focus, cx);
                 cx.notify();
             }))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 match line_edit::handle(&mut this.github.text, ev, cx) {
                     Key::Enter => this.github_add(),
-                    Key::Escape => window.blur(),
+                    Key::Escape => window.blur(cx),
                     Key::Pass => return,
                     _ => {}
                 }

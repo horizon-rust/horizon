@@ -43,7 +43,7 @@ impl Cull {
         keep: impl Fn(usize) -> bool,
         mut row: impl FnMut(usize) -> E,
     ) -> Div {
-        let max = handle.max_offset().height;
+        let max = handle.max_offset().y;
         if max > px(0.)
             && handle.offset().y <= -max + px(0.5)
             && self.0.borrow().heights.len() == rows
@@ -340,7 +340,7 @@ mod desktop_tests {
                             }
                             drop(measured);
                             let offset = if step == 0 {
-                                -view.scroll.max_offset().height
+                                -view.scroll.max_offset().y
                             } else {
                                 px(0.)
                             };

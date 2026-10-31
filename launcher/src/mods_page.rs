@@ -829,13 +829,13 @@ impl Launcher {
                 "Search, then Enter",
             ))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                window.focus(&this.mods.focus);
+                window.focus(&this.mods.focus, cx);
                 cx.notify();
             }))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 match line_edit::handle(&mut this.mods.text, ev, cx) {
                     Key::Enter => this.mods_search(0),
-                    Key::Escape => window.blur(),
+                    Key::Escape => window.blur(cx),
                     Key::Pass => return,
                     _ => {}
                 }
