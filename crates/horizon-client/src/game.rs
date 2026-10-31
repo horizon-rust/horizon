@@ -16230,8 +16230,8 @@ impl Game<'_> {
         }
         if let (Some(map), Some(p), Some(lod)) = (&self.lod_blue_map, &self.player, &mut self.lod) {
             map.set_center(p.position.x.floor() as i32, p.position.z.floor() as i32);
-            for area in map.take_changed() {
-                lod.refresh(area);
+            for change in map.take_changed() {
+                lod.refresh(change.area, change.widths);
             }
         }
         if let Some(p) = &self.player {

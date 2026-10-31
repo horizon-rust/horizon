@@ -42,6 +42,12 @@ const MAX_TILE_BYTES: usize = 192 << 20;
 const MAX_TILES: usize = 2048;
 const MAX_CHUNKS: usize = 4096;
 const MAX_QUEUE: usize = 4096;
+/// Arrived data is handed to far terrain at most this often (`take_changed`),
+/// so a burst of tiles is sampled again once.
+const CHANGE_GAP: Duration = Duration::from_millis(250);
+/// How far a column reaches under its lowest neighbour's top: its sides meet
+/// theirs, and the edge of the map's data shows no wall down to the void.
+const SKIRT: i32 = 8;
 
 /// Where the player names the servers' maps (`Settings::servers`), beside
 /// `horizon-graphics.txt`: kept out of the graphics settings, which shared
@@ -246,6 +252,20 @@ impl Lowres {
             .rev()
             .find(|&l| self.scale(l) <= width)
             .unwrap_or(1)
+    }
+    /// The far-terrain cell widths drawn from `level`'s pixels, `(min, max)`:
+    /// up to a chunk from level 1 (`BlueMap::chunk`), wider from `level_for`.
+    pub fn widths(&self, level: u8) -> (i32, i32) {
+        let next = if level >= self.levels {
+            i32::MAX
+        } else {
+            self.scale(level + 1) - 1
+        };
+        if level <= 1 {
+            (1, next.max(16))
+        } else {
+            (self.scale(level).max(17), next)
+        }
     }
     /// The tile of `level` holding block coordinate `block` on one axis, and
     /// its pixel. Each level packs `factor` tiles of the one below into one,
@@ -524,9 +544,9 @@ impl Palette {
             biomes.id("minecraft:plains"),
         )
     }
-    fn nearest(&self, color: u32) -> Option<Candidate> {
+    /// `matches`: `self.matches`, locked once by the caller for many pixels.
+    fn nearest(&self, matches: &mut FxHashMap<u32, usize>, color: u32) -> Option<Candidate> {
         let key = color & 0xFF_FFFF;
-        let mut matches = self.matches.lock().unwrap();
         if matches.len() > 1 << 16 {
             matches.clear();
         }
@@ -546,15 +566,30 @@ impl Palette {
         self.candidates.get(index).copied()
     }
     /// A pixel as a far-terrain column: its top block at its height, a few
-    /// blocks under it, then stone; water over sand.
-    pub fn column(&self, pixel: Pixel) -> Column {
+    /// blocks under it, then stone; water over sand. `low`: the lowest top
+    /// of it and its neighbours; the stone ends `SKIRT` under it, not at the
+    /// bottom of the world (a wall where the map's data ends).
+    pub fn column(&self, pixel: Pixel, low: i32) -> Column {
+        self.column_in(&mut self.matches.lock().unwrap(), pixel, low)
+    }
+    /// Columns of many pixels, `(pixel, low)` each, matched under one lock.
+    fn columns<const N: usize>(&self, pixels: [Option<(Pixel, i32)>; N]) -> [Column; N] {
+        let mut matches = self.matches.lock().unwrap();
+        pixels.map(|p| {
+            p.map_or_else(Column::default, |(p, low)| {
+                self.column_in(&mut matches, p, low)
+            })
+        })
+    }
+    fn column_in(&self, matches: &mut FxHashMap<u32, usize>, pixel: Pixel, low: i32) -> Column {
         if pixel.color >> 24 == 0 {
             return Column::default();
         }
-        let Some(c) = self.nearest(pixel.color) else {
+        let Some(c) = self.nearest(matches, pixel.color) else {
             return Column::default();
         };
         let top = i32::from(pixel.height) + 1;
+        let bottom = low.min(top) - SKIRT;
         let light = 240 | u16::from(pixel.block_light.min(15)) << 12;
         let mut column = Column::default();
         let mut push = |min: i32, max: i32, state: BlockStateId| {
@@ -571,7 +606,7 @@ impl Palette {
         };
         if c.water {
             let floor = top - 3;
-            push(MIN_Y, floor - 3, self.deep);
+            push(bottom.min(floor - 4), floor - 3, self.deep);
             push(floor - 3, floor, self.under);
             push(floor, top, c.top);
             column.surface = Some(crate::lod::Surface {
@@ -582,7 +617,7 @@ impl Palette {
             });
         } else {
             let under = c.under.unwrap_or(c.top);
-            push(MIN_Y, top - 4, self.deep);
+            push(bottom.min(top - 5), top - 4, self.deep);
             push(top - 4, top - 1, under);
             push(top - 1, top, c.top);
             column.surface = Some(crate::lod::Surface {
@@ -605,26 +640,49 @@ struct MapInfo {
     root: String,
     lowres: Lowres,
 }
+impl Slot {
+    fn found(&self) -> Found<Arc<Tile>> {
+        match self {
+            Slot::Ready(tile) => Found::Ready(tile.clone()),
+            Slot::Missing | Slot::Unreached => Found::Absent,
+            Slot::Waiting => Found::Waiting,
+        }
+    }
+}
 enum Slot {
     Ready(Arc<Tile>),
     Missing,
     Waiting,
+    /// Not cached, and out of reach or the server down when looked up:
+    /// wanted when that changes (`State::reach`), drawn without meanwhile.
+    Unreached,
 }
 /// What the map knows of the server, and what it wants from it.
 #[derive(Default)]
 struct State {
-    map: Option<MapInfo>,
+    map: Option<Arc<MapInfo>>,
     tiles: FxHashMap<Key, Slot>,
     chunks: FxHashMap<(i32, i32), Columns>,
     queue: FxHashSet<Key>,
     center: Option<[i32; 2]>,
-    /// Where `center` was when the area in reach was last announced.
+    /// Where `center` was when the tiles come into reach were last wanted.
     anchor: Option<[i32; 2]>,
     /// The server failed the last request: nothing waits for it until then.
     offline_until: Option<Instant>,
-    /// Block areas `[x0, z0, x1, z1)` whose data arrived (`take_changed`).
-    changed: Vec<[i32; 4]>,
+    /// What arrived (`take_changed`).
+    changed: Vec<Change>,
+    /// When `take_changed` last handed something over.
+    taken_at: Option<Instant>,
+    /// Bumped when a tile arrives or the map changes: a chunk built from
+    /// what was there before isn't kept (`BlueMap::chunk`).
     generation: u64,
+}
+/// Data arrived for the blocks `area` `[x0, z0, x1, z1)`, drawn in far-terrain
+/// cells `widths` `(min, max)` blocks wide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Change {
+    pub area: [i32; 4],
+    pub widths: (i32, i32),
 }
 struct Inner {
     /// The map's web address; unset while it is looked for at `probes`.
@@ -714,7 +772,7 @@ impl BlueMap {
             wake: Condvar::new(),
         });
         let map = inner.map_info(|_, name| std::fs::read(inner.dir.join(name)).ok());
-        inner.state.lock().unwrap().map = map;
+        inner.state.lock().unwrap().map = map.map(Arc::new);
         Self { inner }
     }
     /// Downloads what lookups want, on a thread that ends with the map.
@@ -727,7 +785,9 @@ impl BlueMap {
             log::warn!("Horizon: BlueMap worker: {e}");
         }
     }
-    /// The player's block position: tiles are downloaded around it.
+    /// The player's block position: tiles are downloaded around it. Called
+    /// every frame: it only wants the tiles come into reach, once the player
+    /// has moved a step, and changes no far terrain (their data will).
     pub fn set_center(&self, x: i32, z: i32) {
         let mut state = self.inner.state.lock().unwrap();
         state.center = Some([x, z]);
@@ -735,63 +795,72 @@ impl BlueMap {
         let moved = state
             .anchor
             .is_none_or(|[ax, az]| (x - ax).abs() >= step || (z - az).abs() >= step);
-        if !moved {
-            return;
-        }
-        let r = self.inner.radius;
-        // What came into reach: the new square less the old one.
-        match state.anchor.replace([x, z]) {
-            Some([ax, az]) => {
-                if x > ax {
-                    state.announce([ax + r, z - r, x + r, z + r]);
-                } else if x < ax {
-                    state.announce([x - r, z - r, ax - r, z + r]);
-                }
-                if z > az {
-                    state.announce([x - r, az + r, x + r, z + r]);
-                } else if z < az {
-                    state.announce([x - r, z - r, x + r, az - r]);
-                }
-            }
-            None => state.announce([x - r, z - r, x + r, z + r]),
+        if moved {
+            state.anchor = Some([x, z]);
+            state.reach(self.inner.radius, &self.inner.wake);
         }
     }
-    /// Block areas whose data came since the last call: far terrain samples
-    /// them again.
-    pub fn take_changed(&self) -> Vec<[i32; 4]> {
-        std::mem::take(&mut self.inner.state.lock().unwrap().changed)
-    }
-    /// Bumped whenever a lookup may find something new.
-    pub fn generation(&self) -> u64 {
-        self.inner.state.lock().unwrap().generation
+    /// What arrived since the last call, at most every `CHANGE_GAP`: far
+    /// terrain samples it again.
+    pub fn take_changed(&self) -> Vec<Change> {
+        let mut state = self.inner.state.lock().unwrap();
+        if state.changed.is_empty() || state.taken_at.is_some_and(|t| t.elapsed() < CHANGE_GAP) {
+            return Vec::new();
+        }
+        state.taken_at = Some(Instant::now());
+        std::mem::take(&mut state.changed)
     }
     /// A chunk's columns from the finest level.
     pub fn chunk(&self, cx: i32, cz: i32) -> Found<Columns> {
-        if let Some(columns) = self.inner.state.lock().unwrap().chunks.get(&(cx, cz)) {
-            return Found::Ready(columns.clone());
-        }
-        let mut columns: [Column; 256] = std::array::from_fn(|_| Column::default());
+        let (map, generation) = {
+            let state = self.inner.state.lock().unwrap();
+            if let Some(columns) = state.chunks.get(&(cx, cz)) {
+                return Found::Ready(columns.clone());
+            }
+            let Some(map) = state.map.clone() else {
+                return Found::Absent;
+            };
+            (map, state.generation)
+        };
+        // The chunk's pixels and a ring around (their tops bound its depth).
         let mut last = None;
-        let (mut any, mut waiting) = (false, false);
-        for (i, column) in columns.iter_mut().enumerate() {
-            let (x, z) = (cx * 16 + (i % 16) as i32, cz * 16 + (i / 16) as i32);
-            match self.inner.pixel(&mut last, 1, x, z) {
-                Found::Ready(pixel) => {
-                    *column = self.inner.palette.column(pixel);
-                    any = true;
-                }
-                Found::Waiting => waiting = true,
-                Found::Absent => {}
+        let mut ring = [None; 18 * 18];
+        for (i, slot) in ring.iter_mut().enumerate() {
+            let (dx, dz) = ((i % 18) as i32 - 1, (i / 18) as i32 - 1);
+            let inside = (0..16).contains(&dx) && (0..16).contains(&dz);
+            match self
+                .inner
+                .pixel(&map, &mut last, 1, cx * 16 + dx, cz * 16 + dz)
+            {
+                Found::Ready(pixel) => *slot = Some(pixel).filter(|p| p.color >> 24 != 0),
+                // A neighbour on its way only bounds the depth when here.
+                Found::Waiting if inside => return Found::Waiting,
+                _ => {}
             }
         }
-        if waiting {
-            return Found::Waiting;
-        }
-        if !any {
+        if !ring
+            .iter()
+            .enumerate()
+            .any(|(i, p)| p.is_some() && (1..17).contains(&(i % 18)) && (1..17).contains(&(i / 18)))
+        {
             return Found::Absent;
         }
-        let columns = Arc::new(columns);
+        let top = |i: usize| ring[i].map(|p| i32::from(p.height) + 1);
+        let pixels: [_; 256] = std::array::from_fn(|i| {
+            let at = (i / 16 + 1) * 18 + i % 16 + 1;
+            let pixel = ring[at]?;
+            let low = [at - 1, at + 1, at - 18, at + 18]
+                .into_iter()
+                .filter_map(top)
+                .fold(i32::from(pixel.height) + 1, i32::min);
+            Some((pixel, low))
+        });
+        let columns = Arc::new(self.inner.palette.columns(pixels));
         let mut state = self.inner.state.lock().unwrap();
+        // Built from tiles since replaced: drawn this once, not kept.
+        if state.generation != generation {
+            return Found::Ready(columns);
+        }
         if state.chunks.len() >= MAX_CHUNKS {
             state.chunks.clear();
         }
@@ -805,12 +874,24 @@ impl BlueMap {
             return Found::Absent;
         };
         let level = map.lowres.level_for(width);
-        let half = width / 2;
-        match self.inner.pixel(&mut None, level, x + half, z + half) {
-            Found::Ready(pixel) => Found::Ready(self.inner.palette.column(pixel)),
-            Found::Waiting => Found::Waiting,
-            Found::Absent => Found::Absent,
-        }
+        let (x, z) = (x + width / 2, z + width / 2);
+        let mut last = None;
+        let pixel = match self.inner.pixel(&map, &mut last, level, x, z) {
+            Found::Ready(pixel) => pixel,
+            Found::Waiting => return Found::Waiting,
+            Found::Absent => return Found::Absent,
+        };
+        // The neighbouring cells' middles bound its depth.
+        let low = [(-width, 0), (width, 0), (0, -width), (0, width)]
+            .into_iter()
+            .filter_map(
+                |(dx, dz)| match self.inner.pixel(&map, &mut last, level, x + dx, z + dz) {
+                    Found::Ready(p) if p.color >> 24 != 0 => Some(i32::from(p.height) + 1),
+                    _ => None,
+                },
+            )
+            .fold(i32::from(pixel.height) + 1, i32::min);
+        Found::Ready(self.inner.palette.column(pixel, low))
     }
 }
 
@@ -818,26 +899,32 @@ impl BlueMap {
 type Last = Option<(Key, Option<Arc<Tile>>)>;
 
 impl State {
-    fn announce(&mut self, area: [i32; 4]) {
+    fn announce(&mut self, change: Change) {
         if self.changed.len() >= 256 {
-            let all = self.changed.drain(..).fold(area, |a, b| {
-                [
-                    a[0].min(b[0]),
-                    a[1].min(b[1]),
-                    a[2].max(b[2]),
-                    a[3].max(b[3]),
-                ]
+            let all = self.changed.drain(..).fold(change, |a, b| Change {
+                area: [
+                    a.area[0].min(b.area[0]),
+                    a.area[1].min(b.area[1]),
+                    a.area[2].max(b.area[2]),
+                    a.area[3].max(b.area[3]),
+                ],
+                widths: (a.widths.0.min(b.widths.0), a.widths.1.max(b.widths.1)),
             });
             self.changed.push(all);
         } else {
-            self.changed.push(area);
+            self.changed.push(change);
         }
-        self.generation += 1;
     }
-    fn announce_reach(&mut self, radius: i32) {
-        if let Some([x, z]) = self.center {
-            self.announce([x - radius, z - radius, x + radius, z + radius]);
-        }
+    /// Past the world border (30 million blocks), with room to spare.
+    const WORLD: i32 = 1 << 26;
+    /// Everything may differ (a new map, none): far terrain samples again
+    /// all it drew from the map, cached tiles reach past the download radius.
+    fn announce_all(&mut self) {
+        self.announce(Change {
+            // The world's width, with room for `Lod::refresh` to widen it.
+            area: [-Self::WORLD, -Self::WORLD, Self::WORLD, Self::WORLD],
+            widths: (1, i32::MAX),
+        });
     }
     /// How far a tile is from the player, squared, if in reach.
     fn near(&self, lowres: &Lowres, key: Key, radius: i32) -> Option<i64> {
@@ -848,9 +935,43 @@ impl State {
         let dz = (z0 - z).max(z - z1).max(0);
         (dx.max(dz) <= radius).then(|| i64::from(dx).pow(2) + i64::from(dz).pow(2))
     }
-    fn want(&mut self, key: Key, wake: &Condvar) {
-        if self.queue.len() < MAX_QUEUE && self.queue.insert(key) {
+    fn online(&self) -> bool {
+        self.offline_until.is_none_or(|t| t <= Instant::now())
+    }
+    /// Wants `key` from the server, if it can: else it is `Unreached`.
+    fn want(&mut self, key: Key, wake: &Condvar) -> bool {
+        let queued = self.queue.len() < MAX_QUEUE || self.queue.contains(&key);
+        if queued {
+            self.queue.insert(key);
             wake.notify_one();
+        }
+        self.tiles.insert(
+            key,
+            if queued {
+                Slot::Waiting
+            } else {
+                Slot::Unreached
+            },
+        );
+        queued
+    }
+    /// Wants the `Unreached` tiles now in reach, the server answering.
+    fn reach(&mut self, radius: i32, wake: &Condvar) {
+        let Some(map) = self.map.clone().filter(|_| self.online()) else {
+            return;
+        };
+        let reached: Vec<Key> = self
+            .tiles
+            .iter()
+            .filter(|(key, slot)| {
+                matches!(slot, Slot::Unreached) && self.near(&map.lowres, **key, radius).is_some()
+            })
+            .map(|(key, _)| *key)
+            .collect();
+        for key in reached {
+            if !self.want(key, wake) {
+                break;
+            }
         }
     }
 }
@@ -878,10 +999,7 @@ impl Inner {
             .join(level.to_string())
             .join(format!("{x}_{z}"))
     }
-    fn pixel(&self, last: &mut Last, level: u8, x: i32, z: i32) -> Found<Pixel> {
-        let Some(map) = self.state.lock().unwrap().map.clone() else {
-            return Found::Absent;
-        };
+    fn pixel(&self, map: &MapInfo, last: &mut Last, level: u8, x: i32, z: i32) -> Found<Pixel> {
         let level = level.min(map.lowres.levels);
         let (tx, px) = map.lowres.locate(0, level, x);
         let (tz, pz) = map.lowres.locate(1, level, z);
@@ -889,7 +1007,7 @@ impl Inner {
         let tile = match last {
             Some((k, tile)) if *k == key => tile.clone(),
             _ => {
-                let tile = match self.tile(&map, key) {
+                let tile = match self.tile(map, key) {
                     Found::Ready(tile) => Some(tile),
                     Found::Waiting => return Found::Waiting,
                     Found::Absent => None,
@@ -903,40 +1021,61 @@ impl Inner {
     /// A tile from memory, else the disk cache, else wanted from the server
     /// when it is in reach.
     fn tile(&self, map: &MapInfo, key: Key) -> Found<Arc<Tile>> {
-        match self.state.lock().unwrap().tiles.get(&key) {
-            Some(Slot::Ready(tile)) => return Found::Ready(tile.clone()),
-            Some(Slot::Missing) => return Found::Absent,
-            Some(Slot::Waiting) => return Found::Waiting,
-            None => {}
+        // Tiles are of the map in `state`: a lookup of an older one (new
+        // settings came meanwhile) would read them with the wrong layout.
+        let current = |state: &State| {
+            state
+                .map
+                .as_deref()
+                .is_some_and(|now| std::ptr::eq(now, map))
+        };
+        {
+            let state = self.state.lock().unwrap();
+            if !current(&state) {
+                return Found::Absent;
+            }
+            if let Some(slot) = state.tiles.get(&key) {
+                return slot.found();
+            }
         }
         let cached = read_cached(&self.tile_file(map, key), &map.lowres);
         let mut state = self.state.lock().unwrap();
+        if !current(&state) {
+            return Found::Absent;
+        }
+        // Another thread, or the download, put it in meanwhile: theirs.
+        if let Some(slot) = state.tiles.get(&key) {
+            return slot.found();
+        }
         let ready = state
             .tiles
             .values()
             .filter(|slot| matches!(slot, Slot::Ready(_)))
             .count();
         if state.tiles.len() >= MAX_TILES || ready >= map.lowres.tiles_in_memory() {
-            state.tiles.retain(|_, slot| matches!(slot, Slot::Waiting));
+            state
+                .tiles
+                .retain(|_, slot| matches!(slot, Slot::Waiting | Slot::Unreached));
+            if state.tiles.len() >= MAX_TILES {
+                state.tiles.retain(|_, slot| matches!(slot, Slot::Waiting));
+            }
         }
-        let reachable = state.near(&map.lowres, key, self.radius).is_some()
-            && state.offline_until.is_none_or(|t| t <= Instant::now());
+        let reachable = state.near(&map.lowres, key, self.radius).is_some() && state.online();
         match cached {
             Some((tile, fresh)) => {
-                if !fresh && reachable {
-                    state.want(key, &self.wake);
+                if !fresh && reachable && state.queue.len() < MAX_QUEUE && state.queue.insert(key) {
+                    self.wake.notify_one();
                 }
                 let tile = tile.map(Arc::new);
                 let slot = tile.clone().map_or(Slot::Missing, Slot::Ready);
                 state.tiles.insert(key, slot);
                 tile.map_or(Found::Absent, Found::Ready)
             }
-            None if reachable => {
-                state.want(key, &self.wake);
-                state.tiles.insert(key, Slot::Waiting);
-                Found::Waiting
+            None if reachable && state.want(key, &self.wake) => Found::Waiting,
+            None => {
+                state.tiles.insert(key, Slot::Unreached);
+                Found::Absent
             }
-            None => Found::Absent,
         }
     }
 }
@@ -1032,26 +1171,33 @@ impl Worker {
     fn failed(&mut self, inner: &Inner) {
         let mut state = inner.state.lock().unwrap();
         state.offline_until = Some(Instant::now() + self.backoff);
-        // What waited for the server won't come: it is drawn without.
-        state.tiles.retain(|_, slot| !matches!(slot, Slot::Waiting));
+        // What waited for the server won't come: it is drawn without, and
+        // wanted again once the server is given another try (`step`).
+        for slot in state.tiles.values_mut() {
+            if matches!(slot, Slot::Waiting) {
+                *slot = Slot::Unreached;
+            }
+        }
         state.queue.clear();
-        state.generation += 1;
         let base = inner.base.get().map_or("", String::as_str);
         log::debug!("Horizon: BlueMap at {base} isn't answering");
         self.backoff = (self.backoff * 2).min(MAX_BACKOFF);
     }
-    fn answered(&mut self, inner: &Inner) {
-        if self.backoff > BACKOFF {
-            // Lookups made while it was down find something now.
-            inner.state.lock().unwrap().announce_reach(inner.radius);
-        }
+    fn answered(&mut self) {
         self.backoff = BACKOFF;
     }
     /// One request, or a wait for one; how long to pause after it.
     fn step(&mut self, inner: &Inner) -> Duration {
-        let offline = inner.state.lock().unwrap().offline_until;
-        if let Some(wait) = offline.and_then(|t| t.checked_duration_since(Instant::now())) {
-            return wait.min(Duration::from_secs(1));
+        {
+            let mut state = inner.state.lock().unwrap();
+            if let Some(until) = state.offline_until {
+                if let Some(wait) = until.checked_duration_since(Instant::now()) {
+                    return wait.min(Duration::from_secs(1));
+                }
+                // Another try: what lookups found missing meanwhile is wanted.
+                state.offline_until = None;
+                state.reach(inner.radius, &inner.wake);
+            }
         }
         if inner.base.get().is_none() {
             return self.look(inner);
@@ -1060,41 +1206,60 @@ impl Worker {
         // The settings, once a visit: the cached ones serve until then.
         if !self.settings {
             let mut files = Vec::new();
+            let mut unanswered = false;
             let map = inner.map_info(|path, name| {
-                let body = self.get(inner, path).ok().flatten()?;
+                let body = self.get(inner, path).unwrap_or_else(|()| {
+                    unanswered = true;
+                    None
+                })?;
                 files.push((name.to_owned(), body.clone()));
                 Some(body)
             });
             let Some(map) = map else {
                 // The server answered, with no map of this level: nothing to
                 // wait for on this visit.
-                if !files.is_empty() {
-                    self.answered(inner);
+                if !unanswered {
+                    self.answered();
                     return self.found_nothing(inner);
                 }
                 self.failed(inner);
                 return Duration::ZERO;
             };
+            let (changed, stale) = {
+                let state = inner.state.lock().unwrap();
+                let old = state.map.as_deref();
+                (
+                    old != Some(&map),
+                    old.is_some_and(|old| old != &map && old.id == map.id),
+                )
+            };
+            // Tiles cut for other lowres settings would be read wrong: gone
+            // before the new settings are kept, or they'd pass for theirs.
+            let tiles = inner
+                .dir
+                .join(crate::server_terrain::server_folder(&map.id));
+            self.settings = true;
+            self.answered();
+            // Not gone (a file held open): no map this visit, not the wrong one.
+            if stale && std::fs::remove_dir_all(&tiles).is_err() && tiles.exists() {
+                return self.found_nothing(inner);
+            }
             for (name, body) in files {
                 let _ = std::fs::create_dir_all(&inner.dir);
-                let _ = write_whole(&inner.dir.join(name), &body);
-            }
-            self.settings = true;
-            self.answered(inner);
-            let mut state = inner.state.lock().unwrap();
-            if state.map.as_ref() != Some(&map) {
-                // Tiles cut for other lowres settings would be read wrong.
-                if state.map.as_ref().is_some_and(|old| old.id == map.id) {
-                    let _ = std::fs::remove_dir_all(
-                        inner
-                            .dir
-                            .join(crate::server_terrain::server_folder(&map.id)),
-                    );
+                // Not kept (a file held open): none cached rather than the
+                // old, which would read the new tiles wrong next time.
+                if write_whole(&inner.dir.join(&name), &body).is_err() {
+                    let _ = std::fs::remove_file(inner.dir.join(name));
                 }
-                state.map = Some(map);
+            }
+            let mut state = inner.state.lock().unwrap();
+            if changed {
+                state.map = Some(Arc::new(map));
                 state.tiles.clear();
                 state.chunks.clear();
-                state.announce_reach(inner.radius);
+                state.queue.clear();
+                state.generation += 1;
+                state.announce_all();
             }
             return REQUEST_GAP;
         }
@@ -1113,8 +1278,8 @@ impl Worker {
                 // Out of reach since: forgotten, wanted again if it comes back.
                 for key in far {
                     state.queue.remove(&key);
-                    if matches!(state.tiles.get(&key), Some(Slot::Waiting)) {
-                        state.tiles.remove(&key);
+                    if let Some(slot @ Slot::Waiting) = state.tiles.get_mut(&key) {
+                        *slot = Slot::Unreached;
                     }
                 }
                 let (_, key) = best?;
@@ -1143,53 +1308,66 @@ impl Worker {
                 return Duration::ZERO;
             }
         };
-        self.answered(inner);
+        self.answered();
         let tile = body.as_deref().and_then(|b| decode_tile(b, &map.lowres));
         let file = inner.tile_file(&map, key);
         let _ = std::fs::create_dir_all(file.parent().unwrap_or(&inner.dir));
         let (png, none) = (file.with_extension("png"), file.with_extension("none"));
-        let written = match (&tile, &body) {
+        // Whether what is cached (and drawn) stays as it was, and the bytes
+        // written (`None` also when a write failed: the new tile is still
+        // drawn this visit).
+        let (unchanged, written) = match (&tile, &body) {
             (Some(_), Some(body)) if std::fs::read(&png).is_ok_and(|old| old == *body) => {
                 // Unchanged: fresh for another `MAX_AGE`.
                 let _ = std::fs::File::options()
                     .append(true)
                     .open(&png)
                     .and_then(|f| f.set_modified(SystemTime::now()));
-                None
+                (true, None)
             }
             (Some(_), Some(body)) => {
                 let _ = std::fs::remove_file(&none);
-                write_whole(&png, body).ok().map(|()| body.len() as u64)
+                (
+                    false,
+                    write_whole(&png, body).ok().map(|()| body.len() as u64),
+                )
             }
             // Not a tile (an error page): a cached one is kept.
-            (None, Some(_)) if png.exists() => None,
+            (None, Some(_)) if png.exists() => (true, None),
             _ => {
                 let _ = std::fs::remove_file(&png);
-                write_whole(&none, &[]).ok().map(|()| 0)
+                (false, write_whole(&none, &[]).ok().map(|()| 0))
             }
         };
-        let mut state = inner.state.lock().unwrap();
-        match written {
-            Some(bytes) => {
-                let disk = self.disk.get_or_insert_with(|| folder_size(&inner.dir));
-                *disk += bytes;
-                if *disk > DISK_CAP {
-                    *disk = prune(&inner.dir, DISK_CAP * 3 / 4);
-                }
-                let slot = tile.map_or(Slot::Missing, |t| Slot::Ready(Arc::new(t)));
-                state.tiles.insert(key, slot);
-                state.chunks.clear();
-                let (x0, x1) = map.lowres.span(0, level, x);
-                let (z0, z1) = map.lowres.span(1, level, z);
-                state.announce([x0, z0, x1, z1]);
-            }
-            // Nothing new, or not kept: a later lookup reads the disk again.
-            None => {
-                if matches!(state.tiles.get(&key), Some(Slot::Waiting)) {
-                    state.tiles.remove(&key);
-                }
+        // The disk walks outside the lock: lookups and the frame wait on it.
+        if let Some(bytes) = written {
+            let disk = self.disk.get_or_insert_with(|| folder_size(&inner.dir));
+            *disk += bytes;
+            if *disk > DISK_CAP {
+                *disk = prune(&inner.dir, DISK_CAP * 3 / 4);
             }
         }
+        let mut state = inner.state.lock().unwrap();
+        let waited = matches!(state.tiles.get(&key), Some(Slot::Waiting));
+        // Unchanged and drawn already: nothing to tell.
+        if unchanged && !waited {
+            return REQUEST_GAP.saturating_sub(started.elapsed());
+        }
+        let slot = tile.map_or(Slot::Missing, |t| Slot::Ready(Arc::new(t)));
+        state.tiles.insert(key, slot);
+        let (x0, x1) = map.lowres.span(0, level, x);
+        let (z0, z1) = map.lowres.span(1, level, z);
+        // Only level 1 makes chunks; their depth reads a pixel around.
+        state.generation += 1;
+        if level == 1 {
+            state.chunks.retain(|&(cx, cz), _| {
+                cx * 16 > x1 || (cx + 1) * 16 < x0 || cz * 16 > z1 || (cz + 1) * 16 < z0
+            });
+        }
+        state.announce(Change {
+            area: [x0, z0, x1, z1],
+            widths: map.lowres.widths(level),
+        });
         REQUEST_GAP.saturating_sub(started.elapsed())
     }
 }
@@ -1241,7 +1419,8 @@ impl Worker {
         if state.map.take().is_some() {
             state.tiles.clear();
             state.chunks.clear();
-            state.announce_reach(inner.radius);
+            state.generation += 1;
+            state.announce_all();
         }
         self.claim = None;
         self.done = true;
@@ -1514,11 +1693,12 @@ mod tests {
     fn colours_become_the_nearest_block() {
         let palette = palette();
         let at = |color: u32, height: i16| {
-            palette.column(Pixel {
+            let pixel = Pixel {
                 color: 0xFF00_0000 | color,
                 height,
                 block_light: 0,
-            })
+            };
+            palette.column(pixel, i32::from(height) + 1)
         };
         let grass = at(0x577133, 70);
         let surface = grass.surface.unwrap();
@@ -1532,6 +1712,17 @@ mod tests {
             BlockStateId(2),
             "dirt under grass"
         );
+        // As deep as its neighbours need, not down to the void.
+        assert_eq!(grass.spans[0].min, 71 - SKIRT as i16);
+        let cliff = palette.column(
+            Pixel {
+                color: 0xFF57_7133,
+                height: 70,
+                block_light: 0,
+            },
+            40,
+        );
+        assert_eq!(cliff.spans[0].min, 40 - SKIRT as i16);
         // A savanna-ish green picks that biome's tint.
         assert_eq!(at(0x736E33, 70).surface.unwrap().biome, 1);
         let sea = at(0x2C52A0, 62).surface.unwrap();
@@ -1541,11 +1732,14 @@ mod tests {
         assert_eq!(at(0x7A7A7A, -10).surface.unwrap().state, BlockStateId(1));
         // Nothing rendered there: no column.
         assert_eq!(
-            palette.column(Pixel {
-                color: 0x00FF_FFFF,
-                height: 64,
-                block_light: 0
-            }),
+            palette.column(
+                Pixel {
+                    color: 0x00FF_FFFF,
+                    height: 64,
+                    block_light: 0
+                },
+                65
+            ),
             Column::default()
         );
     }
@@ -1594,19 +1788,28 @@ mod tests {
         );
         // No player yet: nothing is near, nothing waited for.
         assert_eq!(map.chunk(40, 40), Found::Absent);
+        let queued = |key| map.inner.state.lock().unwrap().queue.contains(&key);
+        // The player comes: what was looked up in reach is wanted, and far
+        // terrain has nothing to sample again until it arrives.
         map.set_center(40 * 16, 40 * 16);
-        assert_eq!(map.take_changed(), [[384, 384, 896, 896]]);
+        assert!(map.take_changed().is_empty());
         assert_eq!(map.chunk(40, 40), Found::Waiting);
-        assert_eq!(map.inner.state.lock().unwrap().queue.len(), 1);
+        assert!(queued((1, 20, 20)));
         assert_eq!(map.chunk(-400, 0), Found::Absent, "past the radius");
         // A wide cell reads the coarsest level, here not cached either.
         assert_eq!(map.reduced_column(40 * 16, 40 * 16, 1024), Found::Waiting);
-        assert!(map.inner.state.lock().unwrap().queue.contains(&(3, 1, 1)));
-        // Moving a little announces nothing; far enough, the new strip.
+        assert!(queued((3, 1, 1)));
+        // Out of reach, not looked up on disk again; wanted once in reach.
+        assert_eq!(map.chunk(60, 40), Found::Absent);
+        assert!(matches!(
+            map.inner.state.lock().unwrap().tiles.get(&(1, 30, 20)),
+            Some(Slot::Unreached)
+        ));
         map.set_center(40 * 16 + 10, 40 * 16);
-        assert!(map.take_changed().is_empty());
+        assert!(!queued((1, 30, 20)), "moving a little wants nothing");
         map.set_center(40 * 16 + 100, 40 * 16);
-        assert_eq!(map.take_changed(), [[896, 384, 996, 896]]);
+        assert!(queued((1, 30, 20)));
+        assert!(map.take_changed().is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1666,6 +1869,76 @@ mod tests {
         assert_eq!(details[0].1, columns);
         assert_eq!(details[1].1[0].surface.map(|s| s.height), Some(71));
         assert_eq!(details[2].1[0], Column::default());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn arrivals_name_the_cells_they_change_and_come_in_bursts() {
+        // Cells up to a chunk read level 1, wider ones level 3 (level 2's
+        // 5-block pixels suit no power-of-two cell).
+        assert_eq!(LOWRES.widths(1), (1, 16));
+        assert_eq!(LOWRES.widths(2), (17, 24));
+        assert_eq!(LOWRES.widths(3), (25, i32::MAX));
+        let map = BlueMap::new(
+            "http://map.example.net",
+            "minecraft:overworld",
+            Vec::new(),
+            scratch("bursts"),
+            256,
+            palette(),
+        );
+        let change = |x| Change {
+            area: [x, 0, x + 32, 32],
+            widths: LOWRES.widths(1),
+        };
+        let announce = |x| map.inner.state.lock().unwrap().announce(change(x));
+        announce(0);
+        assert_eq!(map.take_changed(), [change(0)]);
+        announce(32);
+        announce(64);
+        assert!(map.take_changed().is_empty(), "within CHANGE_GAP");
+        map.inner.state.lock().unwrap().taken_at = Some(Instant::now() - CHANGE_GAP);
+        assert_eq!(map.take_changed(), [change(32), change(64)]);
+    }
+
+    /// A chunk's columns reach under their neighbours' tops, the ones
+    /// beside the map's edge no further than their own.
+    #[test]
+    fn chunks_are_as_deep_as_their_neighbours() {
+        let dir = scratch("depth");
+        std::fs::create_dir_all(dir.join("world/1")).unwrap();
+        std::fs::write(dir.join("settings.json"), br#"{"maps":["world"]}"#).unwrap();
+        std::fs::write(dir.join("world.json"), br#"{"lowres":{}}"#).unwrap();
+        // A step down at x = 8, and nothing rendered from x = 24.
+        let step = |x: usize, _: usize| Pixel {
+            color: if x >= 24 { 0 } else { 0xFF57_7133 },
+            height: if x < 8 { 90 } else { 70 },
+            block_light: 0,
+        };
+        std::fs::write(dir.join("world/1/0_0.png"), tile_png(&LOWRES, step)).unwrap();
+        let map = BlueMap::new(
+            "http://map.example.net",
+            "minecraft:overworld",
+            Vec::new(),
+            dir.clone(),
+            256,
+            palette(),
+        );
+        let Found::Ready(left) = map.chunk(0, 0) else {
+            panic!("cached tile")
+        };
+        let Found::Ready(right) = map.chunk(1, 0) else {
+            panic!("cached tile")
+        };
+        let bottom = |c: &Column| c.spans[0].min;
+        assert_eq!(bottom(&left[16 + 7]), 71 - SKIRT as i16, "the cliff's top");
+        assert_eq!(bottom(&left[16 + 3]), 91 - SKIRT as i16);
+        assert_eq!(
+            bottom(&right[16 + 7]),
+            71 - SKIRT as i16,
+            "by the map's edge"
+        );
+        assert_eq!(right[16 + 8], Column::default());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
