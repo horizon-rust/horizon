@@ -234,6 +234,13 @@ pub const COMMANDS: &[Cmd] = &[
         "Relative paths are taken from horizon-ctl's directory. Over MCP the image is returned directly.",
         ["horizon-ctl screenshot view.png"], &[], mcp: true, local: false),
     // Observe
+    cmd!("gpu-passes", Observe, "gpu-passes [on|off|report]", "time each stage of the GPU's frame in the running game, and read the times",
+        "on starts timing (no relaunch, the same stages as HORIZON_GPU_PASSES=1), off stops it; every reply holds, per view (desktop, eye1, eye2...), each stage's median and 95th percentile in ms over the last 60 frames timed, and the frame's. Give it a second or two after on.",
+        ["horizon-ctl gpu-passes on", "horizon-ctl gpu-passes", "horizon-ctl gpu-passes off"],
+        &[opt("action", Ty::Enum(&["on", "off", "report"]), "start, stop or just read (default)")], mcp: true, local: false),
+    cmd!("rt-skip", Observe, "rt-skip MASK", "leave parts of RT lighting's kernel out, to time each alone",
+        "A mask: 1 the sun's ray, 2 the sky and bounced light (ReSTIR GI), 4 the light sources (ReSTIR DI), 8 the mirrors and water (PSR); 0 traces everything again. With gpu-passes, the cost of a part is the frame's rays: trace with it minus without it. The picture is wrong while a part is out.",
+        ["horizon-ctl rt-skip 8", "horizon-ctl rt-skip 0"], &[p("mask", Ty::Int, "the parts left out")], mcp: true, local: false),
     cmd!("state", Observe, "state", "player, world, screen and crosshair target in one reply",
         "position, block_pos, eye, yaw, pitch, velocity, on_ground, health, food, saturation, xp, effects, gamemode, dimension, time, weather, the screen or title menu, the held item, what the crosshair points at and whether an action is running.",
         ["horizon-ctl state"], &[], mcp: true, local: false),

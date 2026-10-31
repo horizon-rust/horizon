@@ -245,6 +245,12 @@ pub struct ShadowRays {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
     sparse_pipeline: wgpu::ComputePipeline,
+    /// What `pipeline` and `sparse_pipeline` are made of, to make them again with another
+    /// `SKIP` (`set_skip`).
+    shader: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
+    /// What the kernel leaves out (shadow_rays.wgsl `SKIP`).
+    skip: u32,
     /// The sparse zone's rays (`cs_sparse`), one a 4x4 block of mask texels, for the largest
     /// mask yet.
     sparse: wgpu::Buffer,
@@ -258,7 +264,58 @@ pub struct ShadowRays {
     frame: u32,
 }
 
+/// The kernel's `entry` (`cs_shadow`, `cs_sparse`) leaving out what `skip` says
+/// (shadow_rays.wgsl `SKIP`), with `HORIZON_RT_DEBUG`'s view of the rays.
+fn kernel(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    shader: &wgpu::ShaderModule,
+    entry: &str,
+    skip: u32,
+) -> wgpu::ComputePipeline {
+    let debug = std::env::var("HORIZON_RT_DEBUG")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|v| *v >= 3)
+        .map_or(0.0, f64::from);
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("Ray-traced shadows"),
+        layout: Some(layout),
+        module: shader,
+        entry_point: Some(entry),
+        compilation_options: wgpu::PipelineCompilationOptions {
+            constants: &[("DEBUG", debug), ("SKIP", f64::from(skip))],
+            ..Default::default()
+        },
+        cache: None,
+    })
+}
+
 impl ShadowRays {
+    /// Makes the kernel again leaving out what `skip` says (shadow_rays.wgsl `SKIP`: 1 the sun's
+    /// ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR), in a running game, to time each part alone
+    /// (`horizon-ctl rt-skip`); 0 traces it all again.
+    pub fn set_skip(&mut self, device: &wgpu::Device, skip: u32) {
+        if skip == self.skip {
+            return;
+        }
+        self.skip = skip;
+        self.pipeline = kernel(
+            device,
+            &self.pipeline_layout,
+            &self.shader,
+            "cs_shadow",
+            skip,
+        );
+        self.sparse_pipeline = kernel(
+            device,
+            &self.pipeline_layout,
+            &self.shader,
+            "cs_sparse",
+            skip,
+        );
+    }
+
     /// The pass, with the hybrid's hardware rays when `hardware` (sprite layers past `split` go to
     /// the next arrays, which the alpha test takes as opaque); `aldhani` the Eye of Aldhani's field.
     pub fn new(
@@ -451,38 +508,13 @@ impl ShadowRays {
             bind_group_layouts: &[Some(&layout)],
             ..Default::default()
         });
-        let make = |entry: &str| {
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("Ray-traced shadows"),
-                layout: Some(&pipeline_layout),
-                module: &shader,
-                entry_point: Some(entry),
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &[
-                        (
-                            "DEBUG",
-                            std::env::var("HORIZON_RT_DEBUG")
-                                .ok()
-                                .and_then(|v| v.parse::<u32>().ok())
-                                .filter(|v| *v >= 3)
-                                .map_or(0.0, f64::from),
-                        ),
-                        (
-                            "SKIP",
-                            std::env::var("HORIZON_RT_SKIP")
-                                .ok()
-                                .and_then(|v| v.parse::<u32>().ok())
-                                .map_or(0.0, f64::from),
-                        ),
-                    ],
-                    ..Default::default()
-                },
-                cache: None,
-            })
-        };
-        let pipeline = make("cs_shadow");
+        let skip = std::env::var("HORIZON_RT_SKIP")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
+        let pipeline = kernel(device, &pipeline_layout, &shader, "cs_shadow", skip);
         // The sparse zone's rays, a thread a block, before `pipeline`.
-        let sparse_pipeline = make("cs_sparse");
+        let sparse_pipeline = kernel(device, &pipeline_layout, &shader, "cs_sparse", skip);
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Ray-traced shadows"),
             size: std::mem::size_of::<Uniform>() as u64,
@@ -593,6 +625,9 @@ impl ShadowRays {
             layout,
             pipeline,
             sparse_pipeline,
+            shader,
+            pipeline_layout,
+            skip,
             sparse: Self::sparse_rays(device, 1),
             uniform,
             aldhani: aldhani.clone(),

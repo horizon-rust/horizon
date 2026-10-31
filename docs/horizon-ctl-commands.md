@@ -26,6 +26,8 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | Command | MCP tool | What it does | Arguments |
 | --- | --- | --- | --- |
 | `events [--since SEQ]` | `events` | What happened since SEQ, oldest first: screens, chat, deaths, respawns, items gained or lost, dimensions, worlds | `--since` (integer): only events after this seq |
+| `gpu-passes [on\|off\|report]` | `gpu_passes` | Time each stage of the GPU's frame in the running game, and read the times | `action` (on, off, report): start, stop or just read (default) |
+| `rt-skip MASK` | `rt_skip` | Leave parts of RT lighting's kernel out, to time each alone | `mask` (integer, required): the parts left out |
 | `state` | `state` | Player, world, screen and crosshair target in one reply | none |
 | `looking-at` | `looking_at` | The block or entity under the crosshair | none |
 | `entities [RADIUS] [TYPE]` | `entities` | Mobs, dropped items and experience orbs near the player, nearest first | `radius` (number): search radius in blocks (default 32)<br>`type` (string): entity type filter |

@@ -11,6 +11,10 @@
 //! Frames are timed whenever a readback slot is free, and read back a few frames later, so the
 //! CPU never waits for them. The device needs timestamps inside encoders (Vulkan and D3D12 have
 //! them; on Metal the variable only logs that it cannot time).
+//!
+//! The control socket turns it on and off in a running game and reads the medians back
+//! (`horizon-ctl gpu-passes`, game/control.rs): the profiler is made at start either way, off
+//! unless the variable is set, so finding where a player's frame goes needs no relaunch.
 
 use std::collections::VecDeque;
 use std::sync::{
@@ -65,21 +69,22 @@ struct Profiler {
     dropped: u32,
 }
 
-/// Whether `HORIZON_GPU_PASSES` asks for the stage times.
+/// Whether the stage times are taken (`HORIZON_GPU_PASSES`, or `set_enabled`).
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// Makes the profiler when the variable is set; the device must time inside encoders.
+/// Makes the profiler where the device times inside encoders (a few kilobytes of queries and
+/// buffers), timing at once when the variable is set.
 pub fn init(device: &wgpu::Device, queue: &wgpu::Queue) {
-    if std::env::var_os("HORIZON_GPU_PASSES").is_none() {
-        return;
-    }
+    let asked = std::env::var_os("HORIZON_GPU_PASSES").is_some();
     if !device
         .features()
         .contains(wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
     {
-        log::warn!("Horizon: HORIZON_GPU_PASSES needs timestamps inside encoders; not timing");
+        if asked {
+            log::warn!("Horizon: HORIZON_GPU_PASSES needs timestamps inside encoders; not timing");
+        }
         return;
     }
     let slots = (0..SLOTS)
@@ -118,9 +123,65 @@ pub fn init(device: &wgpu::Device, queue: &wgpu::Queue) {
             read: 0,
             dropped: 0,
         });
-        ENABLED.store(true, Ordering::Relaxed);
-        log::info!("Horizon: timing the GPU's stages (HORIZON_GPU_PASSES)");
+        if asked {
+            ENABLED.store(true, Ordering::Relaxed);
+            log::info!("Horizon: timing the GPU's stages (HORIZON_GPU_PASSES)");
+        }
     }
+}
+
+/// Starts (`true`) or stops timing in a running game, the windows begun afresh; false where the
+/// device cannot time.
+pub fn set_enabled(on: bool) -> bool {
+    let Ok(mut state) = STATE.lock() else {
+        return false;
+    };
+    let Some(p) = state.as_mut() else {
+        return false;
+    };
+    if on && !enabled() {
+        p.views.clear();
+        p.current = None;
+    }
+    ENABLED.store(on, Ordering::Relaxed);
+    true
+}
+
+/// The stages' times now, per view: each stage's median and 95th percentile in milliseconds over
+/// the last frames timed (up to `WINDOW`), in the order they ran, then the frame's; None where
+/// the device cannot time.
+pub fn snapshot() -> Option<serde_json::Value> {
+    let state = STATE.lock().ok()?;
+    let p = state.as_ref()?;
+    let views: Vec<serde_json::Value> = p
+        .views
+        .iter()
+        .map(|(view, h)| {
+            let stages: Vec<serde_json::Value> = h
+                .stages
+                .iter()
+                .map(|(name, w)| {
+                    serde_json::json!({
+                        "stage": name,
+                        "median_ms": quantile(w, 0.5),
+                        "p95_ms": quantile(w, 0.95),
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "view": view,
+                "frames": h.totals.len(),
+                "frame_median_ms": quantile(&h.totals, 0.5),
+                "frame_p95_ms": quantile(&h.totals, 0.95),
+                "stages": stages,
+            })
+        })
+        .collect();
+    Some(serde_json::json!({
+        "timing": enabled(),
+        "note": p.note,
+        "views": views,
+    }))
 }
 
 /// Says what the frames show (`head 90 0`): the medians are taken over frames with the same note,

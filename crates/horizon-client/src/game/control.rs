@@ -608,6 +608,30 @@ impl Game<'_> {
                     .map_err(|e| e.to_string())?;
                 ok()
             }
+            "rt-skip" => {
+                let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
+                let skip = arg(1)?
+                    .parse::<u32>()
+                    .map_err(|_| "rt-skip MASK (1 sun, 2 GI, 4 DI, 8 PSR; 0 all)")?;
+                renderer.set_rt_skip(skip & 15);
+                Ok(Some(json!({ "ok": true, "skip": skip & 15 })))
+            }
+            "gpu-passes" => {
+                let on = match line.split_whitespace().nth(1) {
+                    None | Some("report") => None,
+                    Some("on") => Some(true),
+                    Some("off") => Some(false),
+                    Some(_) => return Err("gpu-passes [on|off|report]".into()),
+                };
+                if let Some(on) = on
+                    && !horizon_client::gfx::gpu_passes::set_enabled(on)
+                {
+                    return Err("this GPU cannot time inside encoders".into());
+                }
+                let report = horizon_client::gfx::gpu_passes::snapshot()
+                    .ok_or("this GPU cannot time inside encoders")?;
+                Ok(Some(json!({ "ok": true, "gpu": report })))
+            }
             "aldhani" => {
                 let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
                 let seconds = match arg(1)? {

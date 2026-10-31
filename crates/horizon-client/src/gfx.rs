@@ -106,7 +106,7 @@ mod rt_cloud_mesh;
 mod rt_clouds;
 // Froxel volumetrics (gfx/froxels.rs).
 mod froxels;
-mod gpu_passes;
+pub mod gpu_passes;
 pub use froxels::CameraMedium;
 // The natural fogs in the froxels (gfx/natural_fog.rs).
 pub mod natural_fog;
@@ -4408,6 +4408,11 @@ impl Renderer {
     }
     /// Runs the Eye of Aldhani from `seconds` into it, or stops it (`None`); refused unless
     /// `HORIZON_METEORS=aldhani` armed it.
+    /// What RT lighting's kernel leaves out, to time its parts alone in a running game
+    /// (`shadow_rays::ShadowRays::set_skip`, `horizon-ctl rt-skip`).
+    pub fn set_rt_skip(&mut self, skip: u32) {
+        self.shadow_rays.set_skip(&self.device, skip);
+    }
     pub fn set_aldhani(&mut self, seconds: Option<f32>) -> std::result::Result<(), &'static str> {
         let now = self.water_clock.elapsed().as_secs_f32();
         self.aldhani.set(now, seconds)
