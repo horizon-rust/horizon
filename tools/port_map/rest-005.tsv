@@ -39,40 +39,40 @@ IntegratedServer.reportChunkSaveFailure	missing		player: no low-disk-space toast
 LanServerDetection.LanServerDetector.run	port	crates/horizon-client/src/lan/discovery.rs::listen	receive loop for LAN announcements
 LanServerDetection.LanServerList.takeDirtyServers	skip:java		dirty flag; Scanner::games returns a copy on each call
 LanServerPinger.run	port	crates/horizon-client/src/lan/discovery.rs::Pinger::start	announce loop on a thread until dropped
-ChannelAccess.createHandle	port	crates/horizon-client-render/src/audio.rs::MixerBackend::create	gap: minor: the streaming flag is ignored
-ChannelAccess.executeOnChannels	skip:other		sound executor thread; the mixer is shared under a lock
+ChannelAccess.createHandle	port	crates/horizon-client-render/src/audio.rs::MixerBackend::create	channel bookkeeping; streaming buffers attach when decoding starts
+ChannelAccess.executeOnChannels	port	crates/horizon-client-render/src/audio/output.rs::run	output thread snapshots channel updates and polls native sources
 ChannelAccess.ChannelHandle.execute	port	crates/horizon-client-render/src/audio.rs::MixerBackend::with	runs the action on the channel when it exists
 ChunkedSampleByteBuf.accept	skip:java		16-bit PCM buffer; Horizon mixes f32 samples
 ChunkedSampleByteBuf.get	skip:java		16-bit PCM buffer; Horizon mixes f32 samples
-FloatSampleSource.read	inline	crates/horizon-client-render/src/audio.rs::decode	decoded buffer; decode reads the whole file
+FloatSampleSource.read	inline	crates/horizon-client-render/src/audio/decoder.rs::Decoder::next_chunk	bounded Ogg PCM blocks
 FloatSampleSource.readAll	inline	crates/horizon-client-render/src/audio.rs::decode	decoded buffer; decode reads the whole file
-JOrbisAudioStream.<init>	port	crates/horizon-client-render/src/audio.rs::decode	Ogg decoded by symphonia, not JOrbis
-JOrbisAudioStream.readToBuffer	inline	crates/horizon-client-render/src/audio.rs::decode	Ogg reading folded into decode
-JOrbisAudioStream.readPage	inline	crates/horizon-client-render/src/audio.rs::decode	Ogg reading folded into decode
-JOrbisAudioStream.readIdentificationPacket	inline	crates/horizon-client-render/src/audio.rs::decode	Ogg reading folded into decode
-JOrbisAudioStream.readPacket	inline	crates/horizon-client-render/src/audio.rs::decode	Ogg reading folded into decode
-JOrbisAudioStream.getSamplesToWrite	inline	crates/horizon-client-render/src/audio.rs::decode	Ogg reading folded into decode
-JOrbisAudioStream.readChunk	inline	crates/horizon-client-render/src/audio.rs::decode	Ogg reading folded into decode
-JOrbisAudioStream.copyAnyChannels	inline	crates/horizon-client-render/src/audio.rs::decode	Ogg reading folded into decode
-JOrbisAudioStream.copyMono	inline	crates/horizon-client-render/src/audio.rs::decode	Ogg reading folded into decode
-JOrbisAudioStream.copyStereo	inline	crates/horizon-client-render/src/audio.rs::decode	Ogg reading folded into decode
-LoopingAudioStream.read	port	crates/horizon-client-render/src/audio.rs::attach	gap: minor: the looping flag is set on the channel; the buffer loops, no stream is reopened
+JOrbisAudioStream.<init>	port	crates/horizon-client-render/src/audio/decoder.rs::Decoder::open	Ogg/Vorbis decoding through symphonia
+JOrbisAudioStream.readToBuffer	inline	crates/horizon-client-render/src/audio/decoder.rs::Decoder::next_chunk	bounded Ogg reading and downmix through symphonia
+JOrbisAudioStream.readPage	inline	crates/horizon-client-render/src/audio/decoder.rs::Decoder::next_chunk	bounded Ogg reading and downmix through symphonia
+JOrbisAudioStream.readIdentificationPacket	inline	crates/horizon-client-render/src/audio/decoder.rs::Decoder::next_chunk	bounded Ogg reading and downmix through symphonia
+JOrbisAudioStream.readPacket	inline	crates/horizon-client-render/src/audio/decoder.rs::Decoder::next_chunk	bounded Ogg reading and downmix through symphonia
+JOrbisAudioStream.getSamplesToWrite	inline	crates/horizon-client-render/src/audio/decoder.rs::Decoder::next_chunk	bounded Ogg reading and downmix through symphonia
+JOrbisAudioStream.readChunk	inline	crates/horizon-client-render/src/audio/decoder.rs::Decoder::next_chunk	bounded Ogg reading and downmix through symphonia
+JOrbisAudioStream.copyAnyChannels	inline	crates/horizon-client-render/src/audio/decoder.rs::Decoder::next_chunk	bounded Ogg reading and downmix through symphonia
+JOrbisAudioStream.copyMono	inline	crates/horizon-client-render/src/audio/decoder.rs::Decoder::next_chunk	bounded Ogg reading and downmix through symphonia
+JOrbisAudioStream.copyStereo	inline	crates/horizon-client-render/src/audio/decoder.rs::Decoder::next_chunk	bounded Ogg reading and downmix through symphonia
+LoopingAudioStream.read	port	crates/horizon-client-render/src/audio/output.rs::Output::stream	reopens the decoder at EOF; bounded blocks feed the OpenAL queue
 MusicManager.canReplace	inline	crates/horizon-client/src/music.rs::MusicManager::tick	replace only when the new track differs from the playing one
 MusicManager.getCurrentMusicTranslationKey	port	crates/horizon-client/src/music.rs::MusicManager::current	gap: minor: returns the sound id; the short translation key is not built
 SoundBufferLibrary.getCompleteBuffer	port	crates/horizon-client-render/src/audio.rs::decode	cached in SoundCache
-SoundBufferLibrary.getStream	inline	crates/horizon-client-render/src/audio.rs::decode	gap: minor: the whole file is decoded; no stream
+SoundBufferLibrary.getStream	port	crates/horizon-client-render/src/audio/output.rs::Output::stream	decoder thread and bounded queue, no complete music buffer
 SoundBufferLibrary.clear	inline	crates/horizon-client-render/src/audio.rs::Audio::reload	the cache is emptied on reload
 SoundBufferLibrary.preload	skip:java		sounds decode on demand
 SoundBufferLibrary.enumerate	port	crates/horizon-client-render/src/audio.rs::Audio::census	sound buffer census for debug output
 SoundBufferLibrary.DebugOutput.Counter.accountBuffer	inline	crates/horizon-client-render/src/audio.rs::Audio::census	counts buffers and sizes
 SoundEngine.reload	port	crates/horizon-client-render/src/audio.rs::Audio::reload	stops sounds and reads the new resource root
 SoundEngine.loadLibrary	port	crates/horizon-client-render/src/audio.rs::Audio::with_output	opens the output device
-SoundEngine.shouldChangeDevice	missing		player: when the output device is lost or the system default changes, vanilla reopens sound output; Horizon's Audio has no device watch
+SoundEngine.shouldChangeDevice	port	crates/horizon-client-render/src/audio.rs::Audio::should_change_device	watches disconnection, the default endpoint and available devices
 SoundEngine.notifyListeners	port	crates/horizon-client-render/src/sound_engine.rs::SoundEngine::notify	subtitle and listener notification with range
 SoundEngine.updateSource	port	crates/horizon-client-render/src/audio.rs::Audio::set_listener	listener position and orientation
-SoundEngineExecutor.createThread	skip:other		sound thread creation; Horizon updates OpenAL sources on the client thread
-SoundEngineExecutor.run	skip:other		sound thread loop; Horizon updates OpenAL sources on the client thread
-SoundEngineExecutor.shutDown	skip:other		sound thread shutdown; Horizon updates OpenAL sources on the client thread
+SoundEngineExecutor.createThread	port	crates/horizon-client-render/src/audio/output.rs::Output::open	creates the sound output thread and its OpenAL context
+SoundEngineExecutor.run	port	crates/horizon-client-render/src/audio/output.rs::run	channel updates, streaming queue pumping and native state polling
+SoundEngineExecutor.shutDown	port	crates/horizon-client-render/src/audio/output.rs::Output::drop	signals shutdown and joins the output thread
 SoundManager.prepare	port	crates/horizon-client-render/src/sound_events.rs::SoundRegistry::load	reads sounds.json per namespace
 SoundManager.apply	port	crates/horizon-client-render/src/audio.rs::Audio::reload	applies the registry and reloads the engine
 SoundManager.validateSoundResource	inline	crates/horizon-client-render/src/sound_events.rs::SoundRegistry::add_file	file existence check through the exists closure

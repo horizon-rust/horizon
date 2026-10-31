@@ -1,5 +1,5 @@
-//! OpenAL Soft output. Native handles and the callback's lifetime stay here;
-//! the game supplies a safe f32 renderer without a second output queue.
+//! OpenAL Soft sources, shared static buffers and bounded streaming queues.
+//! Native handles and the haptics callback's lifetime stay in this crate.
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use libloading::Library;
@@ -10,11 +10,15 @@ use std::{
     path::{Path, PathBuf},
     ptr,
     sync::{
-        Mutex, OnceLock,
+        Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, Ordering},
     },
 };
 
+const ALC_CONNECTED: i32 = 0x313;
+const ALC_DEFAULT_ALL_DEVICES_SPECIFIER: i32 = 0x1012;
+const AL_BUFFERS_PROCESSED: i32 = 0x1016;
+const STREAM_BUFFERS: usize = 3;
 const ALC_FREQUENCY: i32 = 0x1007;
 const ALC_DEVICE_SPECIFIER: i32 = 0x1005;
 const ALC_ALL_DEVICES_SPECIFIER: i32 = 0x1013;
@@ -95,6 +99,8 @@ api! {
     proc_address: unsafe extern "C" fn(*const c_char) -> *mut c_void = "alGetProcAddress",
     gen_buffers: unsafe extern "C" fn(i32, *mut u32) = "alGenBuffers",
     delete_buffers: unsafe extern "C" fn(i32, *const u32) = "alDeleteBuffers",
+    queue_buffers: unsafe extern "C" fn(u32, i32, *const u32) = "alSourceQueueBuffers",
+    unqueue_buffers: unsafe extern "C" fn(u32, i32, *mut u32) = "alSourceUnqueueBuffers",
     gen_sources: unsafe extern "C" fn(i32, *mut u32) = "alGenSources",
     delete_sources: unsafe extern "C" fn(i32, *const u32) = "alDeleteSources",
     source_integer: unsafe extern "C" fn(u32, i32, i32) = "alSourcei",
@@ -106,6 +112,7 @@ api! {
     buffer_data: unsafe extern "C" fn(u32, i32, *const c_void, i32, i32) = "alBufferData",
     enable: unsafe extern "C" fn(i32) = "alEnable",
     play: unsafe extern "C" fn(u32) = "alSourcePlay",
+    rewind: unsafe extern "C" fn(u32) = "alSourceRewind",
     pause: unsafe extern "C" fn(u32) = "alSourcePause",
     stop: unsafe extern "C" fn(u32) = "alSourceStop",
     error: unsafe extern "C" fn() -> i32 = "alGetError",
@@ -437,7 +444,7 @@ pub enum VoiceState {
 /// Parameters applied to one source. The caller retains decoded samples;
 /// OpenAL copies them into its buffer on first attachment.
 pub struct VoiceSettings<'a> {
-    pub samples: Option<(&'a [f32], u32)>,
+    pub samples: Option<(&'a Arc<Vec<f32>>, u32)>,
     pub state: VoiceState,
     pub gain: f32,
     pub pitch: f32,
@@ -447,10 +454,30 @@ pub struct VoiceSettings<'a> {
     pub relative: bool,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+struct Parameters {
+    gain: f32,
+    pitch: f32,
+    max_distance: Option<f32>,
+    looping: bool,
+    position: [f32; 3],
+    relative: bool,
+}
+struct CachedBuffer {
+    buffer: u32,
+    samples: Weak<Vec<f32>>,
+}
+struct StreamBuffers {
+    buffers: [u32; STREAM_BUFFERS],
+    free: Vec<u32>,
+    finished: bool,
+}
 struct Voice {
     source: u32,
     buffer: u32,
-    attached: bool,
+    stream: Option<StreamBuffers>,
+    applied: Option<Parameters>,
+    started: bool,
 }
 
 /// One OpenAL device and context with an independent AL source per sound.
@@ -459,6 +486,7 @@ pub struct NativeOutput {
     device: *mut c_void,
     context: *mut c_void,
     voices: HashMap<u64, Voice>,
+    buffers: HashMap<(usize, u32), CachedBuffer>,
     name: String,
 }
 
@@ -484,6 +512,7 @@ impl NativeOutput {
             device,
             context: ptr::null_mut(),
             voices: HashMap::new(),
+            buffers: HashMap::new(),
             name: device_name.into(),
         };
         // SAFETY: this output owns the device and context; Drop handles partial initialization.
@@ -519,7 +548,15 @@ impl NativeOutput {
             }
             (api.enable)(AL_SOURCE_DISTANCE_MODEL_EXT);
             api.check("configuring distance model")?;
-            let actual = (api.device_string)(device, ALC_DEVICE_SPECIFIER);
+            let all = (api.device_extension)(device, c"ALC_ENUMERATE_ALL_EXT".as_ptr()) != 0;
+            let actual = (api.device_string)(
+                device,
+                if all {
+                    ALC_ALL_DEVICES_SPECIFIER
+                } else {
+                    ALC_DEVICE_SPECIFIER
+                },
+            );
             if !actual.is_null() {
                 output.name = CStr::from_ptr(actual).to_string_lossy().into_owned();
             }
@@ -532,87 +569,218 @@ impl NativeOutput {
         &self.name
     }
 
+    fn ensure_voice(&mut self, id: u64) -> Result<(), String> {
+        if let std::collections::hash_map::Entry::Vacant(entry) = self.voices.entry(id) {
+            let mut source = 0;
+            // SAFETY: the caller holds this output's current context.
+            unsafe { (self.api.gen_sources)(1, &mut source) };
+            if let Err(error) = self.api.check("creating source") {
+                if source != 0 {
+                    // SAFETY: the source belongs to this context.
+                    unsafe { (self.api.delete_sources)(1, &source) };
+                }
+                return Err(error);
+            }
+            entry.insert(Voice {
+                source,
+                buffer: 0,
+                stream: None,
+                applied: None,
+                started: false,
+            });
+        }
+        Ok(())
+    }
+
+    /// Recycle consumed streaming buffers. Queueing and uploads stay on the audio thread.
+    pub fn stream_space(&mut self, id: u64) -> Result<usize, String> {
+        let _current = CurrentContext::enter(self.api, self.context)?;
+        let Some(voice) = self.voices.get_mut(&id) else {
+            return Ok(STREAM_BUFFERS);
+        };
+        let Some(stream) = &mut voice.stream else {
+            return Ok(STREAM_BUFFERS);
+        };
+        let mut processed = 0;
+        // SAFETY: this source and all queued buffers belong to this current context.
+        unsafe {
+            (self.api.source_state)(voice.source, AL_BUFFERS_PROCESSED, &mut processed);
+            for _ in 0..processed {
+                let mut buffer = 0;
+                (self.api.unqueue_buffers)(voice.source, 1, &mut buffer);
+                stream.free.push(buffer);
+            }
+        }
+        self.api.check("recycling stream buffers")?;
+        Ok(stream.free.len())
+    }
+
+    /// Queue one bounded PCM block. Returns false when the three-buffer queue is full.
+    pub fn queue_stream(&mut self, id: u64, samples: &[f32], rate: u32) -> Result<bool, String> {
+        let api = self.api;
+        let _current = CurrentContext::enter(api, self.context)?;
+        self.ensure_voice(id)?;
+        self.stream_space(id)?;
+        let voice = self.voices.get_mut(&id).expect("voice inserted");
+        if voice.stream.is_none() {
+            let mut buffers = [0; STREAM_BUFFERS];
+            // SAFETY: the output array is valid and this context owns the new buffers.
+            unsafe { (api.gen_buffers)(STREAM_BUFFERS as i32, buffers.as_mut_ptr()) };
+            if let Err(error) = api.check("creating stream buffers") {
+                for buffer in buffers.into_iter().filter(|b| *b != 0) {
+                    // SAFETY: no source refers to these partially created buffers.
+                    unsafe { (api.delete_buffers)(1, &buffer) };
+                }
+                return Err(error);
+            }
+            voice.stream = Some(StreamBuffers {
+                free: buffers.to_vec(),
+                buffers,
+                finished: false,
+            });
+        }
+        let stream = voice.stream.as_mut().expect("stream inserted");
+        let Some(buffer) = stream.free.last().copied() else {
+            return Ok(false);
+        };
+        if stream.free.len() == STREAM_BUFFERS {
+            let mut state = 0;
+            // SAFETY: the queue is empty. Rewind only resets a stopped source's
+            // state; otherwise OpenAL would mark newly queued blocks processed.
+            unsafe {
+                (api.source_state)(voice.source, AL_SOURCE_STATE, &mut state);
+                if state == AL_STOPPED {
+                    (api.rewind)(voice.source);
+                }
+            }
+        }
+        let bytes = i32::try_from(std::mem::size_of_val(samples))
+            .map_err(|_| "OpenAL stream block is too large")?;
+        let rate = i32::try_from(rate).map_err(|_| "OpenAL sample rate is too large")?;
+        // SAFETY: OpenAL copies this live slice before returning; this free buffer is not queued.
+        unsafe {
+            (api.buffer_data)(
+                buffer,
+                AL_FORMAT_MONO_FLOAT32,
+                samples.as_ptr().cast(),
+                bytes,
+                rate,
+            );
+            (api.queue_buffers)(voice.source, 1, &buffer);
+        }
+        api.check("queueing stream block")?;
+        stream.free.pop();
+        Ok(true)
+    }
+
+    pub fn finish_stream(&mut self, id: u64) {
+        if let Some(stream) = self.voices.get_mut(&id).and_then(|v| v.stream.as_mut()) {
+            stream.finished = true;
+        }
+    }
+
     /// Returns true when the native source has reached the end of its sound.
     pub fn sync_voice(&mut self, id: u64, settings: VoiceSettings<'_>) -> Result<bool, String> {
         let api = self.api;
         let _current = CurrentContext::enter(api, self.context)?;
-        // SAFETY: this context is current and owns every source and buffer below.
+        self.ensure_voice(id)?;
+        self.stream_space(id)?;
+        let voice = self.voices.get_mut(&id).expect("voice inserted");
+        // SAFETY: this context owns every source and buffer below.
         unsafe {
-            if let std::collections::hash_map::Entry::Vacant(entry) = self.voices.entry(id) {
-                let mut source = 0;
-                let mut buffer = 0;
-                (api.gen_sources)(1, &mut source);
-                (api.gen_buffers)(1, &mut buffer);
-                if let Err(error) = api.check("creating source") {
-                    if source != 0 {
-                        (api.delete_sources)(1, &source);
-                    }
-                    if buffer != 0 {
-                        (api.delete_buffers)(1, &buffer);
-                    }
-                    return Err(error);
-                }
-                entry.insert(Voice {
-                    source,
-                    buffer,
-                    attached: false,
-                });
-            }
-            let voice = &mut self.voices.get_mut(&id).expect("voice inserted");
-            if !voice.attached
+            if voice.buffer == 0
+                && voice.stream.is_none()
                 && let Some((samples, rate)) = settings.samples
                 && !samples.is_empty()
             {
-                let bytes = samples
-                    .len()
-                    .checked_mul(size_of::<f32>())
-                    .and_then(|n| i32::try_from(n).ok())
-                    .ok_or("OpenAL sound buffer is too large")?;
-                let rate = i32::try_from(rate).map_err(|_| "OpenAL sample rate is too large")?;
-                (api.buffer_data)(
-                    voice.buffer,
-                    AL_FORMAT_MONO_FLOAT32,
-                    samples.as_ptr().cast(),
-                    bytes,
-                    rate,
+                let key = (Arc::as_ptr(samples) as usize, rate);
+                let cached = self.buffers.entry(key).or_insert_with(|| CachedBuffer {
+                    buffer: 0,
+                    samples: Arc::downgrade(samples),
+                });
+                // A freed Arc's allocation can be reused at the same address.
+                if cached.buffer != 0 && cached.samples.upgrade().is_none() {
+                    (api.delete_buffers)(1, &cached.buffer);
+                    cached.buffer = 0;
+                    cached.samples = Arc::downgrade(samples);
+                }
+                if cached.buffer == 0 {
+                    let bytes = i32::try_from(std::mem::size_of_val(samples.as_slice()))
+                        .map_err(|_| "OpenAL sound buffer is too large")?;
+                    let rate =
+                        i32::try_from(rate).map_err(|_| "OpenAL sample rate is too large")?;
+                    (api.gen_buffers)(1, &mut cached.buffer);
+                    (api.buffer_data)(
+                        cached.buffer,
+                        AL_FORMAT_MONO_FLOAT32,
+                        samples.as_ptr().cast(),
+                        bytes,
+                        rate,
+                    );
+                    api.check("uploading shared sound buffer")?;
+                }
+                (api.source_integer)(voice.source, AL_BUFFER, cached.buffer as i32);
+                api.check("attaching shared sound buffer")?;
+                voice.buffer = cached.buffer;
+            }
+            let parameters = Parameters {
+                gain: settings.gain,
+                pitch: settings.pitch,
+                max_distance: settings.max_distance,
+                looping: settings.looping && voice.stream.is_none(),
+                position: settings.position,
+                relative: settings.relative,
+            };
+            if voice.applied != Some(parameters) {
+                (api.source_float)(voice.source, AL_GAIN, settings.gain);
+                (api.source_float)(voice.source, AL_PITCH, settings.pitch);
+                (api.source_position)(
+                    voice.source,
+                    AL_POSITION,
+                    settings.position[0],
+                    settings.position[1],
+                    settings.position[2],
                 );
-                (api.source_integer)(voice.source, AL_BUFFER, voice.buffer as i32);
-                api.check("attaching sound buffer")?;
-                voice.attached = true;
+                (api.source_integer)(
+                    voice.source,
+                    AL_SOURCE_RELATIVE,
+                    i32::from(settings.relative),
+                );
+                (api.source_integer)(voice.source, AL_LOOPING, i32::from(parameters.looping));
+                if let Some(max) = settings.max_distance {
+                    (api.source_integer)(
+                        voice.source,
+                        AL_SOURCE_DISTANCE_MODEL,
+                        AL_LINEAR_DISTANCE,
+                    );
+                    (api.source_float)(voice.source, AL_MAX_DISTANCE, max);
+                    (api.source_float)(voice.source, AL_ROLLOFF_FACTOR, 1.0);
+                    (api.source_float)(voice.source, AL_REFERENCE_DISTANCE, 0.0);
+                } else {
+                    (api.source_integer)(voice.source, AL_SOURCE_DISTANCE_MODEL, 0);
+                }
+                api.check("setting source parameters")?;
+                voice.applied = Some(parameters);
             }
-            (api.source_float)(voice.source, AL_GAIN, settings.gain);
-            (api.source_float)(voice.source, AL_PITCH, settings.pitch);
-            (api.source_position)(
-                voice.source,
-                AL_POSITION,
-                settings.position[0],
-                settings.position[1],
-                settings.position[2],
-            );
-            (api.source_integer)(
-                voice.source,
-                AL_SOURCE_RELATIVE,
-                i32::from(settings.relative),
-            );
-            (api.source_integer)(voice.source, AL_LOOPING, i32::from(settings.looping));
-            if let Some(max) = settings.max_distance {
-                (api.source_integer)(voice.source, AL_SOURCE_DISTANCE_MODEL, AL_LINEAR_DISTANCE);
-                (api.source_float)(voice.source, AL_MAX_DISTANCE, max);
-                (api.source_float)(voice.source, AL_ROLLOFF_FACTOR, 1.0);
-                (api.source_float)(voice.source, AL_REFERENCE_DISTANCE, 0.0);
-            } else {
-                (api.source_integer)(voice.source, AL_SOURCE_DISTANCE_MODEL, 0);
-            }
-            api.check("setting source parameters")?;
             let mut native_state = 0;
             (api.source_state)(voice.source, AL_SOURCE_STATE, &mut native_state);
-            if settings.state == VoiceState::Playing && voice.attached && native_state == AL_STOPPED
-            {
+            let ready = voice
+                .stream
+                .as_ref()
+                .map_or(voice.buffer != 0, |s| s.free.len() < STREAM_BUFFERS);
+            let finished = voice
+                .stream
+                .as_ref()
+                .map_or(voice.started && native_state == AL_STOPPED, |s| {
+                    s.finished && !ready
+                });
+            if settings.state == VoiceState::Playing && finished {
                 return Ok(true);
             }
             match settings.state {
-                VoiceState::Playing if voice.attached && native_state != AL_PLAYING => {
-                    (api.play)(voice.source)
+                VoiceState::Playing if ready && native_state != AL_PLAYING => {
+                    (api.play)(voice.source);
+                    voice.started = true;
                 }
                 VoiceState::Paused if native_state == AL_PLAYING => (api.pause)(voice.source),
                 VoiceState::Stopped if native_state != AL_STOPPED => (api.stop)(voice.source),
@@ -628,12 +796,39 @@ impl NativeOutput {
             return;
         };
         if let Ok(_current) = CurrentContext::enter(self.api, self.context) {
-            // SAFETY: this context owns the source and buffer, and no callback references them.
+            // SAFETY: deleting the source detaches its buffers before their deletion.
             unsafe {
                 (self.api.stop)(voice.source);
                 (self.api.delete_sources)(1, &voice.source);
-                (self.api.delete_buffers)(1, &voice.buffer);
+                if let Some(stream) = voice.stream {
+                    (self.api.delete_buffers)(STREAM_BUFFERS as i32, stream.buffers.as_ptr());
+                }
             }
+            self.prune_buffers();
+        }
+    }
+
+    fn prune_buffers(&mut self) {
+        self.buffers.retain(|_, cached| {
+            let keep = cached.samples.strong_count() != 0
+                || self.voices.values().any(|v| v.buffer == cached.buffer);
+            if !keep && cached.buffer != 0 {
+                // SAFETY: no source refers to this buffer and its decoded data was evicted.
+                unsafe { (self.api.delete_buffers)(1, &cached.buffer) };
+            }
+            keep
+        });
+    }
+
+    pub fn connected(&self) -> bool {
+        // SAFETY: this output owns a live device. ALC device queries need no current context.
+        unsafe {
+            if (self.api.device_extension)(self.device, c"ALC_EXT_disconnect".as_ptr()) == 0 {
+                return true;
+            }
+            let mut connected = 1;
+            (self.api.device_integer)(self.device, ALC_CONNECTED, 1, &mut connected);
+            connected != 0
         }
     }
 
@@ -664,6 +859,13 @@ impl Drop for NativeOutput {
         for id in self.voices.keys().copied().collect::<Vec<_>>() {
             self.remove_voice(id);
         }
+        // SAFETY: sources have been removed, so the remaining cached buffers are detached.
+        if let Ok(_current) = CurrentContext::enter(self.api, self.context) {
+            for cached in self.buffers.values() {
+                // SAFETY: this current context owns these detached buffers.
+                unsafe { (self.api.delete_buffers)(1, &cached.buffer) };
+            }
+        }
         // SAFETY: all native sources and buffers have been deleted.
         unsafe {
             if !self.context.is_null() {
@@ -678,6 +880,24 @@ impl Drop for NativeOutput {
                 (self.api.close_device)(self.device);
             }
         }
+    }
+}
+
+/// The system default endpoint, in the same naming scheme as `output_devices`.
+pub fn default_output_device() -> Option<String> {
+    let api = Api::load().ok()?;
+    // SAFETY: copy the library-owned string immediately, without retaining its pointer.
+    unsafe {
+        let all = (api.device_extension)(ptr::null_mut(), c"ALC_ENUMERATE_ALL_EXT".as_ptr()) != 0;
+        let name = (api.device_string)(
+            ptr::null_mut(),
+            if all {
+                ALC_DEFAULT_ALL_DEVICES_SPECIFIER
+            } else {
+                0x1004
+            },
+        );
+        (!name.is_null()).then(|| CStr::from_ptr(name).to_string_lossy().into_owned())
     }
 }
 
@@ -787,7 +1007,7 @@ mod tests {
     fn quad_callback_keeps_the_actuator_channels_separate() {
         let state = Box::new(CallbackState {
             render: Mutex::new(Box::new(|data, _| {
-                for frame in data.chunks_exact_mut(4) {
+                for frame in data.as_chunks_mut::<4>().0 {
                     frame.copy_from_slice(&[0.0, 0.0, 0.25, -0.5]);
                 }
             })),
@@ -836,7 +1056,7 @@ mod tests {
         output
             .set_listener([0.0; 3], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
             .unwrap();
-        let samples = vec![0.0_f32; 2_400];
+        let samples = Arc::new(vec![0.0_f32; 2_400]);
         let settings = || VoiceSettings {
             samples: Some((&samples, 48_000)),
             state: VoiceState::Playing,
@@ -874,6 +1094,91 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         output.remove_voice(1);
+    }
+
+    fn playing(samples: Option<(&Arc<Vec<f32>>, u32)>) -> VoiceSettings<'_> {
+        VoiceSettings {
+            samples,
+            state: VoiceState::Playing,
+            gain: 1.0,
+            pitch: 1.0,
+            max_distance: None,
+            looping: false,
+            position: [0.0; 3],
+            relative: true,
+        }
+    }
+
+    #[test]
+    #[ignore = "requires OpenAL Soft; run with ALSOFT_DRIVERS=null"]
+    fn repeated_sounds_share_one_native_buffer_until_evicted() {
+        let mut output = NativeOutput::open("").unwrap();
+        let samples = Arc::new(vec![0.0; 4_800]);
+        output
+            .sync_voice(1, playing(Some((&samples, 48_000))))
+            .unwrap();
+        output
+            .sync_voice(2, playing(Some((&samples, 48_000))))
+            .unwrap();
+        assert_eq!(output.buffers.len(), 1);
+        assert_eq!(output.voices[&1].buffer, output.voices[&2].buffer);
+        output.remove_voice(1);
+        assert_eq!(output.buffers.len(), 1);
+        drop(samples);
+        output.remove_voice(2);
+        assert!(output.buffers.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires OpenAL Soft; run with ALSOFT_DRIVERS=null"]
+    fn streaming_recycles_a_bounded_queue_and_finishes_once() {
+        let mut output = NativeOutput::open("").unwrap();
+        let block = vec![0.0; 2_400];
+        for _ in 0..STREAM_BUFFERS {
+            assert!(output.queue_stream(1, &block, 48_000).unwrap());
+        }
+        assert!(!output.queue_stream(1, &block, 48_000).unwrap());
+        output.finish_stream(1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !output.sync_voice(1, playing(None)).unwrap() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(output.stream_space(1).unwrap(), STREAM_BUFFERS);
+        assert!(
+            output.sync_voice(1, playing(None)).unwrap(),
+            "finished streams never restart"
+        );
+        assert!(
+            output.buffers.is_empty(),
+            "streamed PCM never enters the static cache"
+        );
+        output.remove_voice(1);
+    }
+
+    #[test]
+    #[ignore = "requires OpenAL Soft; run with ALSOFT_DRIVERS=null"]
+    fn streaming_recovers_from_an_underrun_without_replaying_consumed_blocks() {
+        let mut output = NativeOutput::open("").unwrap();
+        let block = vec![0.0; 480];
+        output.queue_stream(1, &block, 48_000).unwrap();
+        output.sync_voice(1, playing(None)).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while output.stream_space(1).unwrap() != STREAM_BUFFERS {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            !output.sync_voice(1, playing(None)).unwrap(),
+            "decoder has not reached EOF"
+        );
+        output.queue_stream(1, &block, 48_000).unwrap();
+        output.finish_stream(1);
+        assert!(!output.sync_voice(1, playing(None)).unwrap());
+        while !output.sync_voice(1, playing(None)).unwrap() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     #[test]

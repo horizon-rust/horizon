@@ -81,9 +81,10 @@ impl Haptics {
 /// two-channel headset output shares, which the four channels rule out; ALSA names the card
 /// "Controller".
 fn is_dualsense_name(name: &str) -> bool {
-    name.contains("DualSense")
-        || name.contains("Wireless Controller")
-        || name.contains("CARD=Controller")
+    let name = name.to_ascii_lowercase();
+    name.contains("dualsense")
+        || name.contains("wireless controller")
+        || name.contains("card=controller")
 }
 
 /// The samples of a vibration: the heavy and light tones at each step's levels, with short
@@ -122,6 +123,13 @@ mod tests {
             "Speakers (2- DualSense Wireless Controller)"
         ));
         assert!(is_dualsense_name("plughw:CARD=Controller,DEV=0"));
+        assert!(is_dualsense_name(
+            "OpenAL Soft on Speakers (Wireless Controller)"
+        ));
+        assert!(is_dualsense_name(
+            "Sony Interactive Entertainment Wireless Controller Analog Surround 4.0"
+        ));
+        assert!(is_dualsense_name("dualsense wireless controller"));
         assert!(!is_dualsense_name("MacBook Pro Speakers"));
         assert!(!is_dualsense_name("hw:CARD=PCH,DEV=0"));
     }

@@ -11,10 +11,12 @@ use crate::sound_engine::{
 use crate::sound_events::{Sound, SoundRegistry};
 use horizon_core::random::{LegacyRandom, RandomSource};
 #[cfg(feature = "audio")]
-use horizon_openal::{NativeOutput, VoiceSettings, VoiceState};
+use output::Output;
+mod decoder;
+#[cfg(feature = "audio")]
+mod output;
 use std::{
     collections::HashMap,
-    fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -28,7 +30,9 @@ enum State {
     Stopped,
 }
 /// An OpenAL source.
+#[derive(Clone)]
 struct Channel {
+    dirty: bool,
     samples: Option<(Arc<Vec<f32>>, u32)>,
     state: State,
     gain: f32,
@@ -43,6 +47,12 @@ struct Channel {
 struct Mixer {
     channels: HashMap<ChannelId, Channel>,
     listener_pitch: f32,
+    /// The output device the stream was opened on (`Library.currentDeviceName`).
+    #[cfg(feature = "audio")]
+    device_name: String,
+    /// The stream reported its device gone (`Library.isCurrentDeviceDisconnected`).
+    #[cfg(feature = "audio")]
+    device_lost: bool,
 }
 /// A sound the player could have heard (`SoundEventListener.onPlaySound`):
 /// what the subtitle overlay needs.
@@ -129,13 +139,14 @@ fn attach(mixer: &Mutex<Mixer>, channel: ChannelId, samples: Samples, looping: b
         && c.state == State::Initial
     {
         c.samples = Some(samples);
+        c.dirty = true;
         c.state = State::Playing;
         c.looping |= looping;
     }
 }
 /// The OpenAL device. A server build never opens one.
 #[cfg(feature = "audio")]
-type Stream = NativeOutput;
+type Stream = Output;
 #[cfg(not(feature = "audio"))]
 type Stream = std::convert::Infallible;
 pub struct Audio {
@@ -162,48 +173,27 @@ pub struct Audio {
     pub stopped: std::collections::BTreeMap<String, u32>,
     /// The volume sliders' `SoundPreviewHandler`.
     preview: crate::sound_preview::SoundPreview,
+    /// `SoundEngine.lastSeenDevices`: the system default output last seen.
+    #[cfg(feature = "audio")]
+    default_seen: Option<String>,
+    /// The other half of `lastSeenDevices`: every output device last seen.
+    #[cfg(feature = "audio")]
+    devices_seen: Vec<String>,
+    /// Ticks since the output devices were last looked at (`DeviceTracker.tick`).
+    #[cfg(feature = "audio")]
+    device_ticks: u32,
 }
 fn decode(path: &Path) -> Option<(Vec<f32>, u32)> {
-    use symphonia::core::{
-        audio::SampleBuffer, codecs::DecoderOptions, formats::FormatOptions, io::MediaSourceStream,
-        meta::MetadataOptions, probe::Hint,
-    };
-    let file = fs::File::open(path).ok()?;
-    let stream = MediaSourceStream::new(Box::new(file), Default::default());
-    let mut hint = Hint::new();
-    hint.with_extension("ogg");
-    let probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            stream,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .ok()?;
-    let mut format = probed.format;
-    let track = format.default_track()?;
-    let id = track.id;
-    let rate = track.codec_params.sample_rate?;
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
-        .ok()?;
-    let mut mono = Vec::new();
-    while let Ok(packet) = format.next_packet() {
-        if packet.track_id() != id {
-            continue;
+    let mut decoder = decoder::Decoder::open(path)?;
+    let mut samples = Vec::new();
+    loop {
+        let chunk = decoder.next_chunk().ok()?;
+        if chunk.is_empty() {
+            break;
         }
-        let Ok(buffer) = decoder.decode(&packet) else {
-            continue;
-        };
-        let spec = *buffer.spec();
-        let channels = spec.channels.count().max(1);
-        let mut samples = SampleBuffer::<f32>::new(buffer.capacity() as u64, spec);
-        samples.copy_interleaved_ref(buffer);
-        for frame in samples.samples().chunks(channels) {
-            mono.push(frame.iter().sum::<f32>() / channels as f32);
-        }
+        samples.extend(chunk);
     }
-    Some((mono, rate))
+    Some((samples, decoder.rate))
 }
 impl MixerBackend {
     fn with(&mut self, channel: ChannelId, f: impl FnOnce(&mut Channel)) {
@@ -211,62 +201,15 @@ impl MixerBackend {
             && let Some(c) = m.channels.get_mut(&channel)
         {
             f(c);
+            c.dirty = true;
         }
         self.sync_channel(channel);
     }
 
-    fn sync_channel(&mut self, channel: ChannelId) {
+    fn sync_channel(&mut self, _: ChannelId) {
         #[cfg(feature = "audio")]
-        if let Some(native) = &mut self.native
-            && let Ok(mut mixer) = self.mixer.lock()
-            && let Some(c) = mixer.channels.get_mut(&channel)
-        {
-            let state = match c.state {
-                State::Initial => VoiceState::Initial,
-                State::Playing => VoiceState::Playing,
-                State::Paused => VoiceState::Paused,
-                State::Stopped => VoiceState::Stopped,
-            };
-            let settings = VoiceSettings {
-                samples: c
-                    .samples
-                    .as_ref()
-                    .map(|(samples, rate)| (samples.as_slice(), *rate)),
-                state,
-                gain: c.gain,
-                pitch: c.pitch,
-                max_distance: c.linear,
-                looping: c.looping,
-                position: c.at,
-                relative: c.relative,
-            };
-            match native.sync_voice(channel, settings) {
-                Ok(true) => c.state = State::Stopped,
-                Err(error) => {
-                    log::warn!("Horizon: OpenAL source {channel}: {error}");
-                    c.state = State::Stopped;
-                }
-                Ok(false) => {}
-            }
-        }
-        #[cfg(not(feature = "audio"))]
-        let _ = channel;
-    }
-
-    fn sync_native(&mut self) {
-        #[cfg(feature = "audio")]
-        {
-            if self.native.is_none() {
-                return;
-            }
-            let channels = self
-                .mixer
-                .lock()
-                .map(|m| m.channels.keys().copied().collect::<Vec<_>>())
-                .unwrap_or_default();
-            for channel in channels {
-                self.sync_channel(channel);
-            }
+        if let Some(native) = &self.native {
+            native.notify().wake();
         }
     }
 }
@@ -277,6 +220,7 @@ impl Backend for MixerBackend {
         self.mixer.lock().ok()?.channels.insert(
             id,
             Channel {
+                dirty: true,
                 samples: None,
                 state: State::Initial,
                 gain: 1.0,
@@ -298,10 +242,7 @@ impl Backend for MixerBackend {
         if let Ok(mut m) = self.mixer.lock() {
             m.channels.remove(&channel);
         }
-        #[cfg(feature = "audio")]
-        if let Some(native) = &mut self.native {
-            native.remove_voice(channel);
-        }
+        self.sync_channel(channel);
     }
     fn set_pitch(&mut self, channel: ChannelId, pitch: f32) {
         self.with(channel, |c| c.pitch = pitch);
@@ -322,22 +263,22 @@ impl Backend for MixerBackend {
         self.with(channel, |c| c.relative = relative);
     }
     /// `getCompleteBuffer` (cached, else decoded on the decoder thread) or
-    /// `getStream` (decoded on a thread of its own), then attach and play
-    /// at the next client tick. A sound that cannot load leaves its source initial,
+    /// `getStream` (decoded in bounded blocks on a thread of its own), then
+    /// attach and play as soon as the buffer is ready. A sound that cannot load leaves its source initial,
     /// as a failed buffer future does in vanilla.
     fn start(&mut self, channel: ChannelId, sound: &Sound, looping: bool) {
+        #[cfg(not(feature = "audio"))]
+        let _ = looping;
         if !self.live {
             return;
         }
         let (namespace, path) = sound.path();
         let file = self.root.join("assets").join(namespace).join(&path);
         if sound.stream {
-            // A streamed sound loops by restarting its stream.
-            let mixer = self.mixer.clone();
-            std::thread::spawn(move || {
-                let samples = decode(&file).map(|(s, r)| (Arc::new(s), r));
-                attach(&mixer, channel, samples, looping);
-            });
+            #[cfg(feature = "audio")]
+            if let Some(native) = &self.native {
+                native.stream(channel, file, looping);
+            }
             return;
         }
         let key = format!("{namespace}:{path}");
@@ -350,6 +291,8 @@ impl Backend for MixerBackend {
         let decoder = self.decoder.get_or_insert_with(|| {
             let (send, receive) = std::sync::mpsc::channel::<Decode>();
             let (mixer, cache) = (self.mixer.clone(), self.cache.clone());
+            #[cfg(feature = "audio")]
+            let notify = self.native.as_ref().map(Output::notify);
             std::thread::Builder::new()
                 .name("sound decoder".into())
                 .spawn(move || {
@@ -364,6 +307,10 @@ impl Backend for MixerBackend {
                             samples
                         });
                         attach(&mixer, job.channel, samples, false);
+                        #[cfg(feature = "audio")]
+                        if let Some(notify) = &notify {
+                            notify.wake();
+                        }
                     }
                 })
                 .expect("sound decoder thread");
@@ -422,13 +369,12 @@ fn output_disabled(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<S
 }
 /// OpenAL Soft owns the output device, listener and each sound's native source.
 #[cfg(feature = "audio")]
-fn open_device(target: &str) -> Result<Stream> {
-    let stream = NativeOutput::open(target)?;
-    log::info!(
-        "Horizon: audio output OpenAL Soft: {} (native sources)",
-        stream.device_name()
-    );
-    Ok(stream)
+fn open_device(target: &str, mixer: Arc<Mutex<Mixer>>) -> Result<Stream> {
+    Ok(Output::open(target, mixer)?)
+}
+#[cfg(feature = "audio")]
+fn default_output_name() -> Option<String> {
+    horizon_openal::default_output_device()
 }
 /// Available audio output device names.
 #[cfg(feature = "audio")]
@@ -473,7 +419,7 @@ impl Audio {
         }
         let mixer = Arc::new(Mutex::new(Mixer::default()));
         let opened = if output {
-            Self::open_named(target_device)
+            Self::open_named(target_device, mixer.clone())
         } else {
             Err("no output on a dedicated server".into())
         };
@@ -486,10 +432,17 @@ impl Audio {
                 (None, false)
             }
         };
+        #[cfg(feature = "audio")]
+        let selected_device = stream
+            .as_ref()
+            .map_or(target_device, |s| s.selection.as_str())
+            .to_owned();
+        #[cfg(not(feature = "audio"))]
+        let selected_device = target_device.to_owned();
         let mut engine = SoundEngine::new(registry);
         engine.loaded = live;
         Self {
-            device_name: target_device.to_owned(),
+            device_name: selected_device,
             engine,
             backend: MixerBackend {
                 mixer,
@@ -510,26 +463,32 @@ impl Audio {
             heard: Default::default(),
             stopped: Default::default(),
             preview: Default::default(),
+            #[cfg(feature = "audio")]
+            default_seen: if live { default_output_name() } else { None },
+            #[cfg(feature = "audio")]
+            devices_seen: if live { output_devices() } else { Vec::new() },
+            #[cfg(feature = "audio")]
+            device_ticks: 0,
         }
     }
     #[cfg(not(feature = "audio"))]
-    fn open_named(_: &str) -> Result<Stream> {
+    fn open_named(_: &str, _: Arc<Mutex<Mixer>>) -> Result<Stream> {
         Err("this build has no sound output (built without the `audio` feature)".into())
     }
     #[cfg(feature = "audio")]
-    fn open_named(target: &str) -> Result<Stream> {
+    fn open_named(target: &str, mixer: Arc<Mutex<Mixer>>) -> Result<Stream> {
         if let Some(reason) = output_disabled(|name| std::env::var_os(name)) {
             return Err(reason.into());
         }
         if !target.is_empty() {
-            match open_device(target) {
+            match open_device(target, mixer.clone()) {
                 Ok(stream) => return Ok(stream),
                 Err(e) => log::warn!(
                     "Horizon: could not open OpenAL device '{target}': {e}; falling back to default"
                 ),
             }
         }
-        Self::open()
+        Self::open(mixer)
     }
     #[cfg(feature = "audio")]
     pub fn set_device(&mut self, name: &str) -> Result<()> {
@@ -537,11 +496,20 @@ impl Audio {
             self.device_name = name.to_owned();
             return Ok(());
         }
-        self.backend.native = Some(Self::open_named(name)?);
+        // Open on fresh bookkeeping first. A failed switch leaves the old output intact.
+        let mixer = Arc::new(Mutex::new(Mixer::default()));
+        let output = Self::open_named(name, mixer.clone())?;
+        self.stop_all();
+        self.backend.native = None; // join the old worker before replacing its channel table
+        self.backend.decoder = None;
         let pitch = self.backend.mixer.lock().map_or(0.0, |m| m.listener_pitch);
+        self.device_name = output.selection.clone();
+        self.backend.mixer = mixer;
+        self.backend.native = Some(output);
         self.set_listener(self.listener, self.listener_yaw, pitch);
-        self.backend.sync_native();
-        self.device_name = name.to_owned();
+        self.default_seen = default_output_name();
+        self.devices_seen = output_devices();
+        self.device_ticks = 0;
         self.backend.live = true;
         self.engine.loaded = true;
         Ok(())
@@ -552,10 +520,10 @@ impl Audio {
         Ok(())
     }
     #[cfg(feature = "audio")]
-    fn open() -> Result<Stream> {
+    fn open(mixer: Arc<Mutex<Mixer>>) -> Result<Stream> {
         let mut errors = Vec::new();
         for name in std::iter::once(String::new()).chain(output_devices()) {
-            match open_device(&name) {
+            match open_device(&name, mixer.clone()) {
                 Ok(stream) => return Ok(stream),
                 Err(e) => errors.push(e.to_string()),
             }
@@ -590,9 +558,7 @@ impl Audio {
                 pitch.cos(),
                 yaw.cos() * pitch.sin(),
             ];
-            if let Err(error) = native.set_listener(position, forward, up) {
-                log::warn!("Horizon: OpenAL listener: {error}");
-            }
+            native.listener(position, forward, up);
         }
     }
     /// Sync the volume options, refreshing the categories that changed
@@ -611,9 +577,60 @@ impl Audio {
         }
         self.engine.listening = self.record_heard;
     }
+    /// `SoundEngine.shouldChangeDevice`: the open device was lost, the system
+    /// default changed (with no device chosen in the options), or the chosen
+    /// device came back; the output is then opened again. The devices are looked
+    /// at once a second.
+    #[cfg(feature = "audio")]
+    fn should_change_device(&mut self) -> bool {
+        let (current, lost) = match self.backend.mixer.lock() {
+            Ok(mut m) => (m.device_name.clone(), std::mem::take(&mut m.device_lost)),
+            Err(_) => return false,
+        };
+        if lost {
+            log::info!("Horizon: audio device was lost");
+            self.default_seen = default_output_name();
+            self.devices_seen = output_devices();
+            return true;
+        }
+        self.device_ticks += 1;
+        if self.backend.native.is_none() || self.device_ticks < 20 {
+            return false;
+        }
+        self.device_ticks = 0;
+        let default = default_output_name();
+        let devices = output_devices();
+        // Only a change in the device lists is looked at, as in vanilla: a
+        // preferred device that is listed but cannot open is not retried.
+        if default == self.default_seen && devices == self.devices_seen {
+            return false;
+        }
+        self.default_seen = default.clone();
+        let wanted = self.device_name.clone();
+        let available = devices.contains(&wanted);
+        self.devices_seen = devices;
+        if wanted.is_empty() {
+            let changed = default.as_deref().is_some_and(|d| d != current);
+            if changed {
+                log::info!("Horizon: system default audio device has changed");
+            }
+            return changed;
+        }
+        let changed = current != wanted && available;
+        if changed {
+            log::info!("Horizon: preferred audio device has become available");
+        }
+        changed
+    }
     /// `SoundManager.tick(paused)`, once per client tick.
     pub fn tick(&mut self, paused: bool, ctx: &TickContext) {
-        self.backend.sync_native();
+        #[cfg(feature = "audio")]
+        if self.should_change_device() {
+            let device = self.device_name.clone();
+            if let Err(e) = self.set_device(&device) {
+                log::warn!("Horizon: could not reopen audio output: {e}");
+            }
+        }
         self.sync_volumes();
         self.engine.tick(paused, ctx, &mut self.backend);
     }
@@ -638,9 +655,9 @@ impl Audio {
         self.stop_all();
         self.engine.registry = SoundRegistry::load(root);
         self.backend.root = root.to_owned();
-        let mut cache = self.backend.cache.lock().unwrap();
-        cache.entries.clear();
-        cache.bytes = 0;
+        // A decoder still finishing an old job keeps only the previous cache.
+        self.backend.decoder = None;
+        self.backend.cache = Arc::default();
     }
     /// Play a sound event at a world position, as `ClientLevel.playLocalSound`
     /// (a `SimpleSoundInstance` seeded from the level random), or relative to
@@ -648,6 +665,37 @@ impl Audio {
     pub fn play(&mut self, event: &str, at: Option<[f64; 3]>, volume: f32, pitch: f32) {
         let seed = self.random.next_long();
         self.play_seeded(event, at, volume, pitch, seed);
+    }
+    /// `ClientLevel.playLocalSound` with `distanceDelay`: a sound more than 10
+    /// blocks from the camera starts `sqrt(distance) / 40` seconds later.
+    pub fn play_distance_delayed(
+        &mut self,
+        event: &str,
+        at: [f64; 3],
+        volume: f32,
+        pitch: f32,
+        camera: [f64; 3],
+    ) {
+        let distance_sqr: f64 = (0..3).map(|i| (at[i] - camera[i]).powi(2)).sum();
+        if distance_sqr <= 100.0 {
+            self.play(event, Some(at), volume, pitch);
+            return;
+        }
+        let seed = self.random.next_long();
+        if let Some(capture) = self.capture.as_mut() {
+            capture.push((event.to_owned(), at, volume, pitch));
+        }
+        *self.heard.entry(event.to_owned()).or_default() += 1;
+        self.sync_volumes();
+        let event = crate::sound_events::normalize(event);
+        let source = self
+            .source_override
+            .unwrap_or_else(|| crate::settings::sound_source(&event));
+        let instance =
+            SoundInstance::at(&event, source, volume, pitch, LegacyRandom::new(seed), at);
+        let id = self.engine.add(instance, false);
+        self.engine
+            .play_delayed(id, (distance_sqr.sqrt() / 40.0 * 20.0) as i32);
     }
     /// `play` for this client only: a sound a packet's handler plays
     /// (`playLocalSound`), which the guests play from that packet themselves.
@@ -817,6 +865,57 @@ impl Sounds for Audio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "audio")]
+    #[test]
+    #[ignore = "requires OpenAL Soft; run with ALSOFT_DRIVERS=null and audio enabled"]
+    fn changing_device_stops_pending_and_playing_sounds_and_clears_stale_names() {
+        let mut audio = Audio::with_device(
+            Path::new("/nonexistent/horizon-test-assets"),
+            "old CPAL device name",
+        );
+        assert!(audio.engine.loaded);
+        assert_eq!(audio.device(), "");
+        audio.engine.registry.add_file(
+            "minecraft",
+            br#"{"ui.button.click":{"sounds":["gui/button"]}}"#,
+            &|_, _| true,
+        );
+        for _ in 0..3 {
+            audio.play_button_click();
+        }
+        attach(
+            &audio.backend.mixer,
+            1,
+            Some((Arc::new(vec![0.0; 480_000]), 48_000)),
+            false,
+        );
+        attach(
+            &audio.backend.mixer,
+            2,
+            Some((Arc::new(vec![0.0; 480]), 48_000)),
+            false,
+        );
+        audio.backend.sync_channel(1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while audio.backend.mixer.lock().unwrap().channels[&2].state != State::Stopped {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        {
+            let mixer = audio.backend.mixer.lock().unwrap();
+            assert_eq!(mixer.channels[&1].state, State::Playing);
+            assert_eq!(mixer.channels[&3].state, State::Initial);
+        }
+        audio.set_device("another old CPAL device name").unwrap();
+        assert_eq!(audio.device(), "");
+        assert!(audio.backend.mixer.lock().unwrap().channels.is_empty());
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        assert!(
+            audio.backend.mixer.lock().unwrap().channels.is_empty(),
+            "old decoder jobs cannot resurrect channels"
+        );
+    }
 
     #[test]
     fn button_click_uses_vanilla_ui_parameters_without_advancing_world_random() {

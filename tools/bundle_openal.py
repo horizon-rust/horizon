@@ -31,15 +31,17 @@ def unpack(archive, destination):
         source.extractall(destination, members=members)
 
 
-def bundle(out, work, jobs):
+def bundle(out, work, jobs, target=None):
+    if shutil.which("cmake") is None:
+        raise RuntimeError("CMake is required to build OpenAL Soft; install cmake on this runner and add it to PATH")
     name = LIBRARIES[sys.platform]
     work.mkdir(parents=True, exist_ok=True)
     archive = work / f"openal-soft-{VERSION}.tar.bz2"
     if not archive.exists():
         request = urllib.request.Request(URL, headers={"User-Agent": "Horizon-OpenAL-build"})
         temporary = archive.with_suffix(".download")
-        with urllib.request.urlopen(request, timeout=60) as response, temporary.open("wb") as target:
-            shutil.copyfileobj(response, target)
+        with urllib.request.urlopen(request, timeout=60) as response, temporary.open("wb") as archive_out:
+            shutil.copyfileobj(response, archive_out)
         temporary.replace(archive)
     # Verify even a cached download before using any of its files.
     unpack(archive, work)
@@ -51,6 +53,9 @@ def bundle(out, work, jobs):
                     "-DALSOFT_REQUIRE_WASAPI=ON"]
     elif sys.platform == "darwin":
         options += ["-DALSOFT_OSX_FRAMEWORK=OFF", "-DALSOFT_REQUIRE_COREAUDIO=ON"]
+        if target:
+            architecture = {"x86_64-apple-darwin": "x86_64", "aarch64-apple-darwin": "arm64"}[target]
+            options += [f"-DCMAKE_OSX_ARCHITECTURES={architecture}"]
     else:
         # Match the game's portable binary: do not require the build host's C++ runtime.
         options += ["-DCMAKE_SHARED_LINKER_FLAGS=-static-libstdc++ -static-libgcc -Wl,--as-needed"]
@@ -79,8 +84,9 @@ def main():
     parser.add_argument("--out", type=Path, default=Path("target/release/native"))
     parser.add_argument("--work", type=Path, default=Path(".local/openal-soft"))
     parser.add_argument("--jobs", type=int, default=int(os.environ.get("CARGO_BUILD_JOBS", "4")))
+    parser.add_argument("--target", choices=["x86_64-apple-darwin", "aarch64-apple-darwin"])
     args = parser.parse_args()
-    bundle(args.out.resolve(), args.work.resolve(), args.jobs)
+    bundle(args.out.resolve(), args.work.resolve(), args.jobs, args.target)
 
 
 if __name__ == "__main__":
