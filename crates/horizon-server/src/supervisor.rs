@@ -139,6 +139,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
     }
     sample(shared.clone());
     crate::events::poll_game(shared.clone());
+    crate::discord::start(shared.clone(), config.discord.clone());
     schedule_backups(shared.clone());
     check_updates(shared.clone());
     let console = console_lines();

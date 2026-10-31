@@ -1,14 +1,15 @@
 //! The server side of a WebSocket (RFC 6455) on a std `TcpStream`, for vanilla's management protocol
-//! (`management.rs`): the handshake's accept key, and text frames in and out. Messages are aggregated up to
-//! 64 KiB, as vanilla's `WebSocketFrameAggregator(65536)`; pings get their pong; binary frames are dropped,
-//! as vanilla's pipeline only decodes text.
+//! (`management.rs`): the handshake's accept key, and text frames in and out, over plain TCP or TLS (`Link`).
+//! Messages are aggregated up to 64 KiB, as vanilla's `WebSocketFrameAggregator(65536)`; pings get their pong;
+//! binary frames are dropped, as vanilla's pipeline only decodes text.
 
 use base64::Engine;
 use sha1::{Digest, Sha1};
 use std::{
     io::{self, Read, Write},
     net::TcpStream,
-    sync::Mutex,
+    sync::{Arc, Mutex},
+    time::Duration,
 };
 
 /// What `Sec-WebSocket-Accept` answers for a `Sec-WebSocket-Key`.
@@ -26,24 +27,164 @@ const TEXT: u8 = 1;
 const CLOSE: u8 = 8;
 const PING: u8 = 9;
 
+/// A connection, plain or TLS, that one thread reads while any thread writes: TLS records are decrypted and
+/// encrypted under a short lock, never held while waiting on the network, so a reply or a notification can go
+/// out while the reader waits for the next message.
+pub enum Link {
+    Plain {
+        input: Mutex<TcpStream>,
+        output: Mutex<TcpStream>,
+    },
+    Tls(Box<Tls>),
+}
+
+pub struct Tls {
+    connection: Mutex<rustls::ServerConnection>,
+    /// The socket's reading side and the bytes read from it that the TLS session hasn't taken yet.
+    input: Mutex<(TcpStream, Vec<u8>)>,
+    output: Mutex<TcpStream>,
+}
+
+impl Link {
+    pub fn plain(stream: &TcpStream) -> io::Result<Self> {
+        Ok(Self::Plain {
+            input: Mutex::new(stream.try_clone()?),
+            output: Mutex::new(stream.try_clone()?),
+        })
+    }
+
+    /// The server's side of a TLS session on `stream`; the handshake happens on the first read.
+    pub fn tls(stream: &TcpStream, config: Arc<rustls::ServerConfig>) -> io::Result<Self> {
+        let connection = rustls::ServerConnection::new(config).map_err(io::Error::other)?;
+        Ok(Self::Tls(Box::new(Tls {
+            connection: Mutex::new(connection),
+            input: Mutex::new((stream.try_clone()?, Vec::new())),
+            output: Mutex::new(stream.try_clone()?),
+        })))
+    }
+
+    pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        match self {
+            Self::Plain { input, .. } => input.lock().unwrap().set_read_timeout(timeout),
+            Self::Tls(tls) => tls.input.lock().unwrap().0.set_read_timeout(timeout),
+        }
+    }
+
+    /// Plain bytes, as `Read::read`; 0 once the client closed the connection.
+    pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
+        let tls = match self {
+            Self::Plain { input, .. } => return input.lock().unwrap().read(buf),
+            Self::Tls(tls) => tls,
+        };
+        let mut input = tls.input.lock().unwrap();
+        let (stream, pending) = &mut *input;
+        loop {
+            {
+                let mut connection = tls.connection.lock().unwrap();
+                match connection.reader().read(buf) {
+                    Ok(n) => return Ok(n),
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(e) => return Err(e),
+                }
+                if !pending.is_empty() {
+                    let mut rest = &pending[..];
+                    let read = connection.read_tls(&mut rest);
+                    let taken = pending.len() - rest.len();
+                    pending.drain(..taken);
+                    read?;
+                    let processed = connection.process_new_packets();
+                    // The handshake's answers, or the alert that says why it failed.
+                    tls.send(&mut connection)?;
+                    processed.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                    continue;
+                }
+            }
+            let mut raw = [0u8; 16 * 1024];
+            let n = stream.read(&mut raw)?;
+            if n == 0 {
+                return Ok(0);
+            }
+            pending.extend_from_slice(&raw[..n]);
+        }
+    }
+
+    pub fn write_all(&self, data: &[u8]) -> io::Result<()> {
+        match self {
+            Self::Plain { output, .. } => {
+                let mut output = output.lock().unwrap();
+                output.write_all(data)?;
+                output.flush()
+            }
+            Self::Tls(tls) => {
+                let mut connection = tls.connection.lock().unwrap();
+                connection.writer().write_all(data)?;
+                tls.send(&mut connection)
+            }
+        }
+    }
+
+    /// Ends the connection (with TLS's close_notify first).
+    pub fn shutdown(&self) {
+        let output = match self {
+            Self::Plain { output, .. } => output,
+            Self::Tls(tls) => {
+                let mut connection = tls.connection.lock().unwrap();
+                connection.send_close_notify();
+                let _ = tls.send(&mut connection);
+                &tls.output
+            }
+        };
+        let _ = output.lock().unwrap().shutdown(std::net::Shutdown::Both);
+    }
+}
+
+impl Tls {
+    /// Writes out the records the session has ready.
+    fn send(&self, connection: &mut rustls::ServerConnection) -> io::Result<()> {
+        let mut output = self.output.lock().unwrap();
+        while connection.wants_write() {
+            connection.write_tls(&mut *output)?;
+        }
+        output.flush()
+    }
+}
+
+impl Read for &Link {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        Link::read(self, buf)
+    }
+}
+
+impl Write for &Link {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        Link::write_all(self, buf)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// One open WebSocket. Reads come from one thread; any thread may send.
 pub struct Socket {
-    reader: Mutex<TcpStream>,
-    writer: Mutex<TcpStream>,
+    link: Link,
+    reading: Mutex<()>,
 }
 
 impl Socket {
-    pub fn new(stream: &TcpStream) -> io::Result<Self> {
-        stream.set_read_timeout(None)?;
+    pub fn new(link: Link) -> io::Result<Self> {
+        link.set_read_timeout(None)?;
         Ok(Self {
-            reader: Mutex::new(stream.try_clone()?),
-            writer: Mutex::new(stream.try_clone()?),
+            link,
+            reading: Mutex::new(()),
         })
     }
 
     /// The next text message, or `None` once the client closed the socket.
     pub fn read_text(&self) -> io::Result<Option<String>> {
-        let mut stream = self.reader.lock().unwrap();
+        let _reading = self.reading.lock().unwrap();
+        let mut stream = &self.link;
         let mut message = Vec::new();
         let mut text = false;
         loop {
@@ -116,11 +257,7 @@ impl Socket {
     /// Closes with a status code (1000: normal).
     pub fn close(&self, code: u16) {
         let _ = self.send(CLOSE, &code.to_be_bytes());
-        let _ = self
-            .writer
-            .lock()
-            .unwrap()
-            .shutdown(std::net::Shutdown::Both);
+        self.link.shutdown();
     }
 
     fn send(&self, opcode: u8, payload: &[u8]) -> io::Result<()> {
@@ -137,9 +274,7 @@ impl Socket {
             }
         }
         frame.extend_from_slice(payload);
-        let mut stream = self.writer.lock().unwrap();
-        stream.write_all(&frame)?;
-        stream.flush()
+        self.link.write_all(&frame)
     }
 }
 
@@ -179,7 +314,7 @@ mod tests {
     fn messages_come_whole_and_pings_get_pongs() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        let socket = Socket::new(&listener.accept().unwrap().0).unwrap();
+        let socket = Socket::new(Link::plain(&listener.accept().unwrap().0).unwrap()).unwrap();
         let long = "x".repeat(300);
         let mut sent = frame(false, TEXT, b"{\"a\":");
         sent.extend(frame(true, PING, b"hi"));
@@ -206,7 +341,7 @@ mod tests {
     fn unmasked_and_oversized_frames_are_refused() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        let socket = Socket::new(&listener.accept().unwrap().0).unwrap();
+        let socket = Socket::new(Link::plain(&listener.accept().unwrap().0).unwrap()).unwrap();
         client.write_all(&[0x81, 2, b'h', b'i']).unwrap();
         assert!(socket.read_text().is_err());
         let mut big = vec![0x81, 0x80 | 127];

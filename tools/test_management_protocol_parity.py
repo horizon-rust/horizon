@@ -4,8 +4,8 @@
 The pinned vanilla server (`net.minecraft.server.Main nogui`) and Horizon's (`horizon-server run`, which
 serves the protocol beside the game it supervises) start in folders with the same lists (ops.json,
 whitelist.json, banned-players.json, banned-ips.json) and the same `management-server-*` settings (a fixed
-secret, TLS off, one allowed origin). Each is then sent the same things, and every answer is compared
-exactly:
+secret, one allowed origin, and TLS, vanilla's default, with a PKCS12 keystore `keytool` makes). Each is then
+sent the same things over TLS, and every answer is compared exactly:
 
 - HTTP requests without the secret, with a wrong one, and with it in the WebSocket subprotocol from an
   origin that isn't allowed: the status and the JSON body;
@@ -14,7 +14,9 @@ exactly:
   unparsable method names, a bad request id, wrong parameters, a notification (no answer), a batch, an
   answer to nothing, `rpc.discover` (its document must also equal `reports/json-rpc-api-schema.json` from
   vanilla's data generator), `server/status`, the four lists, `players`, kicking nobody, `server/save` and
-  `server/system_message` with no one online, and `server/stop`.
+  `server/system_message` with no one online, the four lists changed (`add`, `remove`, `set`,
+  `clear`; with no profile service, players named resolve to offline players on both), and `server/stop`;
+- the TLS version each server agrees on.
 
 A parse error's `data` is Gson's message in vanilla and serde's in Horizon: left out. The notifications vanilla
 sends meanwhile (`server/started`, `server/saving`...) are set aside: Horizon doesn't send them yet.
@@ -25,6 +27,7 @@ import os
 from pathlib import Path
 import shutil
 import socket
+import ssl
 import struct
 import subprocess
 import sys
@@ -55,6 +58,10 @@ LISTS = {
     'banned-ips.json': [{'ip': '203.0.113.7', 'created': '2026-10-31 14:00:00 +0000', 'source': 'Server',
                          'expires': 'forever', 'reason': 'Banned by an operator.'}],
 }
+KEYSTORE_PASSWORD = 'harness-keystore-password'
+# Nothing listens there: neither server finds a profile service, so names resolve to offline players on both,
+# whatever the network answers.
+NO_SERVICES = 'http://127.0.0.1:9'
 # What both servers are sent over the socket, in order; None marks what must get no answer.
 MESSAGES = [
     '{nope',
@@ -88,18 +95,68 @@ MESSAGES = [
     '"params":[{"message":{"translatable":"chat.type.announcement","translatableParams":["a","b"]},'
     '"overlay":true,"receivingPlayers":[]}]}',
     '{"jsonrpc":"2.0","id":22,"method":"minecraft:server/system_message","params":[{"message":{},"overlay":false}]}',
+    # The lists changed: players found by name (offline players here) or by an id the user cache knows.
+    '{"jsonrpc":"2.0","id":23,"method":"minecraft:allowlist/add","params":[[{"name":"Kim0"}]]}',
+    '{"jsonrpc":"2.0","id":24,"method":"minecraft:allowlist/remove","params":{"players":[{"name":"Lou0"}]}}',
+    '{"jsonrpc":"2.0","id":25,"method":"minecraft:allowlist/set","params":[[{"name":"Ann0"},'
+    '{"id":"93e029a5-04a0-349d-90b2-f7e145b2644f"}]]}',
+    '{"jsonrpc":"2.0","id":26,"method":"minecraft:allowlist/clear"}',
+    '{"jsonrpc":"2.0","id":27,"method":"minecraft:bans/add","params":[[{"player":{"name":"Kim0"},"reason":"spam",'
+    '"expires":"2027-01-01T00:00:00Z"},{"player":{"name":"Ann0"}}]]}',
+    '{"jsonrpc":"2.0","id":28,"method":"minecraft:bans/remove","params":[[{"name":"Lou0"}]]}',
+    '{"jsonrpc":"2.0","id":29,"method":"minecraft:bans/set","params":[[{"player":{"name":"Kim0"},"reason":"spam",'
+    '"expires":"2027-01-01T00:00:00Z"},{"player":{"name":"Ann0"},"source":"Moderator"}]]}',
+    '{"jsonrpc":"2.0","id":30,"method":"minecraft:bans"}',
+    '{"jsonrpc":"2.0","id":31,"method":"minecraft:bans/clear"}',
+    '{"jsonrpc":"2.0","id":32,"method":"minecraft:ip_bans/add","params":[[{"ip":"198.51.100.4","reason":"proxy",'
+    '"expires":"2027-01-01T00:00:00Z"},{"ip":"not an address"},{"player":{"name":"Nobody"}}]]}',
+    '{"jsonrpc":"2.0","id":33,"method":"minecraft:ip_bans/remove","params":[["203.0.113.7"]]}',
+    '{"jsonrpc":"2.0","id":34,"method":"minecraft:ip_bans/set","params":[[{"ip":"198.51.100.4","reason":"proxy",'
+    '"expires":"2027-01-01T00:00:00Z"},{"ip":"2001:db8::1","source":"Bot"},{"ip":"bad"}]]}',
+    '{"jsonrpc":"2.0","id":35,"method":"minecraft:ip_bans/clear"}',
+    '{"jsonrpc":"2.0","id":36,"method":"minecraft:operators/add","params":[[{"player":{"name":"Lou0"},'
+    '"permissionLevel":2},{"player":{"name":"Ann0"}}]]}',
+    '{"jsonrpc":"2.0","id":37,"method":"minecraft:operators/set","params":[[{"player":{"name":"Lou0"},'
+    '"permissionLevel":2,"bypassesPlayerLimit":false},{"player":{"name":"Ann0"},"bypassesPlayerLimit":true},'
+    '{"player":{"id":"93e029a5-04a0-349d-90b2-f7e145b2644f"}}]]}',
+    '{"jsonrpc":"2.0","id":38,"method":"minecraft:operators/remove","params":[[{"name":"Lou0"}]]}',
+    '{"jsonrpc":"2.0","id":39,"method":"minecraft:operators/clear"}',
 ]
 
 
-def management_properties(port):
+def management_properties(port, keystore):
     return {
         'management-server-enabled': 'true',
         'management-server-host': '127.0.0.1',
         'management-server-port': str(port),
         'management-server-secret': SECRET,
-        'management-server-tls-enabled': 'false',
+        'management-server-tls-enabled': 'true',
+        'management-server-tls-keystore': str(keystore),
+        'management-server-tls-keystore-password': KEYSTORE_PASSWORD,
         'management-server-allowed-origins': ORIGIN,
     }
+
+
+def make_keystore(work):
+    """A PKCS12 keystore with a self-signed certificate for 127.0.0.1, made with the JDK's keytool, and a TLS
+    client context that trusts it."""
+    keytool = Path(shutil.which('java')).resolve().parent / f'keytool{EXE}'
+    keystore, certificate = work / 'management.p12', work / 'management.pem'
+    common = ['-storetype', 'PKCS12', '-keystore', str(keystore), '-storepass', KEYSTORE_PASSWORD]
+    subprocess.run([keytool, '-genkeypair', '-alias', 'management', '-keyalg', 'RSA', '-keysize', '2048',
+                    '-dname', 'CN=localhost', '-ext', 'SAN=dns:localhost,ip:127.0.0.1', '-validity', '2',
+                    '-keypass', KEYSTORE_PASSWORD, *common], check=True, capture_output=True)
+    subprocess.run([keytool, '-exportcert', '-rfc', '-alias', 'management', '-file', str(certificate), *common],
+                   check=True, capture_output=True)
+    context = ssl.create_default_context(cafile=str(certificate))
+    # A refused request's connection may end without TLS's close_notify.
+    context.options |= getattr(ssl, 'OP_IGNORE_UNEXPECTED_EOF', 0)
+    return keystore, context
+
+
+def connect(port, context):
+    sock = socket.create_connection(('127.0.0.1', port), timeout=60)
+    return context.wrap_socket(sock, server_hostname='127.0.0.1')
 
 
 def write_lists(folder):
@@ -111,8 +168,8 @@ def write_lists(folder):
 class Socket:
     """A WebSocket client: the handshake, masked text frames out, text frames in."""
 
-    def __init__(self, port, headers):
-        self.sock = socket.create_connection(('127.0.0.1', port), timeout=60)
+    def __init__(self, port, context, headers):
+        self.sock = connect(port, context)
         key = base64.b64encode(os.urandom(16)).decode()
         lines = [f'GET / HTTP/1.1', f'Host: 127.0.0.1:{port}', 'Upgrade: websocket', 'Connection: Upgrade',
                  f'Sec-WebSocket-Key: {key}', 'Sec-WebSocket-Version: 13', *headers]
@@ -170,9 +227,9 @@ class Socket:
         return payload.decode()
 
 
-def http_status(port, headers):
+def http_status(port, context, headers):
     """The status line and body of a request the server must refuse."""
-    with socket.create_connection(('127.0.0.1', port), timeout=60) as sock:
+    with connect(port, context) as sock:
         lines = ['GET / HTTP/1.1', f'Host: 127.0.0.1:{port}', 'Upgrade: websocket', 'Connection: Upgrade',
                  'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Version: 13', *headers]
         sock.sendall(('\r\n'.join(lines) + '\r\n\r\n').encode())
@@ -202,19 +259,20 @@ def normal(text):
     return value
 
 
-def session(port, log):
+def session(port, context, log):
     """Everything one server answers."""
     seen = {}
     for label, headers in [('no secret', []), ('wrong secret', ['Authorization: Bearer nope']),
                            ('origin not allowed', [f'Sec-WebSocket-Protocol: minecraft-v1,{SECRET}',
                                                    'Origin: http://evil.example'])]:
-        seen[label] = http_status(port, headers)
-    browser = Socket(port, [f'Sec-WebSocket-Protocol: minecraft-v1, {SECRET}', f'Origin: {ORIGIN}'])
+        seen[label] = http_status(port, context, headers)
+    browser = Socket(port, context, [f'Sec-WebSocket-Protocol: minecraft-v1, {SECRET}', f'Origin: {ORIGIN}'])
     seen['subprotocol'] = (browser.head[0].split(' ')[1], browser.header('Sec-WebSocket-Protocol'))
     browser.sock.close()
-    ws = Socket(port, [f'Authorization: Bearer {SECRET}'])
+    ws = Socket(port, context, [f'Authorization: Bearer {SECRET}'])
     if ws.head[0].split(' ')[1] != '101':
         raise AssertionError(f'the handshake failed: {ws.head}')
+    seen['tls'] = ws.sock.version()
     notifications = []
 
     def answer(message):
@@ -244,7 +302,9 @@ def main():
                    '-p', 'horizon-server', '--bin', 'horizon-server'], build, 'compile-rust')
     target = lab.cargo_target() / 'fast'
     work = Path(tempfile.mkdtemp(prefix='hz-management-'))
+    os.environ['HORIZON_API_DISCOVERY'] = NO_SERVICES
     try:
+        keystore, context = make_keystore(work)
         sides = {}
         for side in ('vanilla', 'horizon'):
             folder = work / side
@@ -253,10 +313,11 @@ def main():
             port, management = lab.free_port(), lab.free_port()
             props = {'server-port': str(port), 'online-mode': 'false', 'level-type': 'minecraft:flat',
                      'generate-structures': 'false', 'view-distance': '3', 'simulation-distance': '3',
-                     **management_properties(management)}
+                     **management_properties(management, keystore)}
             if side == 'vanilla':
                 (folder / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
-                command = ['java', '-Xmx2g', '-Duser.timezone=UTC', '-cp',
+                command = ['java', '-Xmx2g', '-Duser.timezone=UTC', f'-Dminecraft.api.discovery.host={NO_SERVICES}',
+                           '-cp',
                            os.pathsep.join(map(str, [jars['server'], *libraries])), 'net.minecraft.server.Main',
                            'nogui']
             else:
@@ -273,13 +334,13 @@ def main():
             try:
                 server.wait_for(DONE, 600)
                 with (build / f'{side}-session.log').open('w') as log:
-                    sides[side] = session(management, log)
+                    sides[side] = session(management, context, log)
                 server.process.wait(timeout=180)
             finally:
                 server.stop()
         vanilla, horizon = sides['vanilla'], sides['horizon']
         failures = []
-        for key in ('no secret', 'wrong secret', 'origin not allowed', 'subprotocol', 'stop'):
+        for key in ('no secret', 'wrong secret', 'origin not allowed', 'subprotocol', 'tls', 'stop'):
             if vanilla[key] != horizon[key]:
                 failures.append(f'{key}: vanilla {vanilla[key]!r}, Horizon {horizon[key]!r}')
         for message, v, h in zip(MESSAGES, vanilla['answers'], horizon['answers']):
@@ -294,7 +355,8 @@ def main():
             sys.exit(f'{NAME}: {len(failures)} differences (logs in {build}):\n' + '\n'.join(failures))
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    print(f'{NAME}: {len(MESSAGES) + 5} exchanges answered as vanilla answers them; rpc.discover matches the report')
+    print(f'{NAME}: {len(MESSAGES) + 6} exchanges over TLS answered as vanilla answers them; rpc.discover matches '
+          'the report')
 
 
 if __name__ == '__main__':

@@ -100,6 +100,7 @@ impl Default for ScreenNarrator {
 }
 
 /// The context `updateNarrationState` reads: the frame, the mouse, focus.
+#[derive(Clone, Copy)]
 struct Ctx<'a> {
     frame: &'a Narration,
     info: &'a ScreenInfo,
@@ -110,6 +111,9 @@ struct Ctx<'a> {
     input: InputType,
     /// `init`'s narration runs before the screen renders: nothing is hovered.
     init: bool,
+    /// The frame's tooltip is the hovered widget's (HINT). Not inside a
+    /// group, whose tooltips (a recipe's item) aren't its widgets'.
+    tooltips: bool,
     tr: Translate<'a>,
 }
 
@@ -154,8 +158,15 @@ impl Ctx<'_> {
                 _ => n.hovered.unwrap_or_else(|| contains(n.rect, self.cursor)),
             }
     }
-    /// `narrationPriority`.
+    /// `narrationPriority`. A group's is HOVERED while it is visible.
     fn priority(&self, n: &Narratable) -> Priority {
+        if let What::Group { visible } = n.what {
+            return if visible {
+                Priority::Hovered
+            } else {
+                Priority::None
+            };
+        }
         if self.focused(n) {
             Priority::Focused
         } else if self.hovered(n) {
@@ -333,7 +344,7 @@ fn narrate(
                 out.add(ElementType::Usage, ctx.tr(key, &[]));
             }
         }
-        What::EditBox { message, value } => {
+        What::EditBox { message, value, .. } => {
             out.add(
                 ElementType::Title,
                 ctx.tr("gui.narrate.editBox", &[message, value]),
@@ -390,6 +401,25 @@ fn narrate(
             }
             return;
         }
+        What::Group { .. } => {
+            // RecipeBookComponent.updateNarration: its active widgets'
+            // pick (no last one: a focused widget is always it), one in.
+            let group = n.identity();
+            let children: Vec<&Narratable> =
+                ctx.children(group).filter(|c| c.is_active()).collect();
+            let entries: Vec<(u64, Priority)> = children
+                .iter()
+                .map(|c| (c.identity(), ctx.priority(c)))
+                .collect();
+            if let Some((i, _)) = find_narratable(&entries, None) {
+                let ctx = Ctx {
+                    tooltips: false,
+                    ..*ctx
+                };
+                narrate(&mut out.nest(), children[i], &ctx, row_last);
+            }
+            return;
+        }
         What::ContainerList { rows, hovered_row } => {
             // ContainerObjectSelectionList.updateWidgetNarration: the row
             // under the mouse for the mouse and the system, else the focused
@@ -419,11 +449,12 @@ fn narrate(
             return;
         }
     }
-    let hint = n
-        .hint
-        .clone()
-        .or_else(|| ctx.hovered(n).then(|| ctx.frame.tooltip.clone()).flatten());
-    if let Some(hint) = hint {
+    let hint = n.hint.clone().or_else(|| {
+        (ctx.tooltips && ctx.hovered(n))
+            .then(|| ctx.frame.tooltip.clone())
+            .flatten()
+    });
+    if let Some(hint) = hint.filter(|h| !h.is_empty()) {
         out.add(ElementType::Hint, hint);
     }
 }
@@ -674,6 +705,7 @@ impl ScreenNarrator {
             pad_focus,
             input: self.input,
             init,
+            tooltips: true,
             tr,
         };
         let Some(open) = &mut self.open else {
@@ -1291,6 +1323,91 @@ mod tests {
                 "Generate Structures. gui.narrate.button(: ON). Villages. Villages. \
                  narration.cycle_button.usage.hovered(OFF)"
             ]
+        );
+    }
+
+    #[test]
+    fn the_recipe_book_narrates_its_hovered_widget_one_level_in() {
+        let mut h = Harness::new();
+        let screen = ScreenInfo::new("container", "Crafting");
+        let book = widgets::key_of(&"recipe_book");
+        let in_book = |n: Narratable, i: usize| n.key(widgets::key_of(&(book, i))).in_group(book);
+        let items = |visible: bool, search_focused: bool| {
+            vec![
+                Narratable::button("", [10.0, 100.0, 20.0, 18.0], true),
+                Narratable::group(visible, [40.0, 40.0, 147.0, 166.0]).key(book),
+                in_book(
+                    Narratable::recipe("Oak Planks", false, [51.0, 71.0, 25.0, 25.0]),
+                    0,
+                ),
+                in_book(
+                    Narratable::recipe("Torch", true, [76.0, 71.0, 25.0, 25.0]),
+                    1,
+                ),
+                in_book(
+                    Narratable::edit_box("Search Items", "to", [65.0, 53.0, 81.0, 14.0])
+                        .focused(search_focused),
+                    2,
+                ),
+                in_book(
+                    Narratable::cycle(
+                        ": Showing All",
+                        ": Showing Craftable",
+                        [150.0, 52.0, 26.0, 16.0],
+                        true,
+                    )
+                    .hint("Showing All"),
+                    3,
+                ),
+                in_book(Narratable::button("", [10.0, 43.0, 35.0, 27.0], true), 4),
+            ]
+        };
+        // Visible, it is narrated at once, though nothing in it is hovered.
+        h.cursor = (80.0, 80.0);
+        assert_eq!(
+            h.draw(0, &screen, &items(true, false)),
+            ["Crafting. narrator.position.screen(2, 2)"]
+        );
+        // A hovered recipe: its result and usage, no tooltip, no position.
+        h.at(3000).mouse_moved();
+        assert_eq!(
+            h.draw_with(3751, &screen, &items(true, false), Some("Torch")),
+            [
+                "narration.recipe(Torch). narration.button.usage.hovered. narration.recipe.usage.more"
+            ]
+        );
+        // The filter reads its tooltip.
+        h.cursor = (160.0, 60.0);
+        h.at(4000).mouse_moved();
+        assert_eq!(
+            h.draw(4751, &screen, &items(true, false)),
+            [
+                "gui.narrate.button(: Showing All). Showing All. narration.cycle_button.usage.hovered(: Showing Craftable)"
+            ]
+        );
+        // The focused search box wins over what the mouse is on.
+        h.at(5000).mouse_moved();
+        assert_eq!(
+            h.draw(5751, &screen, &items(true, true)),
+            ["gui.narrate.editBox(Search Items, to)"]
+        );
+        // The toggle button before it wins among the hovered.
+        h.cursor = (15.0, 105.0);
+        h.at(6000).mouse_moved();
+        assert_eq!(
+            h.draw(6751, &screen, &items(true, false)),
+            [
+                "gui.narrate.button(). narrator.position.screen(1, 2). narration.button.usage.hovered"
+            ]
+        );
+        // Hidden: never narrated, though still counted.
+        h.cursor = (80.0, 80.0);
+        h.at(7000).mouse_moved();
+        let hidden = &items(false, false)[..2];
+        assert_eq!(h.draw(7751, &screen, hidden), ["narrator.screen.usage"]);
+        assert_eq!(
+            h.draw(8000, &ScreenInfo::new("container/2", "Crafting"), hidden),
+            ["Crafting. narrator.screen.usage"]
         );
     }
 

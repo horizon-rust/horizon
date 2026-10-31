@@ -751,9 +751,7 @@ impl Game<'_> {
             self.flush_native_net(&mut host);
             // PlayerList.removeAll: the owner and every guest leave the game.
             host.award_leave_game_to_all();
-            for g in &host.hub.guests {
-                self.save_guest(&host, g);
-            }
+            self.save_leaving_guests(&mut host);
             let conns: Vec<u32> = host.hub.guests.iter().map(|g| g.conn).collect();
             for conn in conns {
                 host.hub.kick(

@@ -12,6 +12,7 @@ use horizon_client::{
     hud::{HudBatch, rgba},
     text::{Text, named_color},
     ui::{self, EditBox},
+    widgets::{self, Narratable, join_for_narration},
 };
 use horizon_protocol::packets::play::{self, Serverbound as S};
 use winit::{event::KeyEvent, keyboard::PhysicalKey};
@@ -255,6 +256,96 @@ impl WorldOptions {
             ),
             Button::Apply => Text::translate("menu.multiplayerOptions.applyChanges", &[]),
             Button::Cancel => Text::translate("gui.cancel", &[]),
+        }
+    }
+    /// What button `b` narrates: the switches are `CycleButton`s ("<name>:
+    /// <value> button" and the value a click moves to), the lock a
+    /// `LockIconButton` (its message, then whether it is locked).
+    fn narration(&self, b: Button, rect: [f32; 4], tr: super::screen_info::Tr<'_>) -> Narratable {
+        let active = self.active(b);
+        let mode = |m: i32| {
+            tr(
+                &format!("selectWorld.gameMode.{}", MODES[m as usize & 3]),
+                &[],
+            )
+        };
+        let on_off = |on: bool| tr(if on { "options.on" } else { "options.off" }, &[]);
+        let labelled =
+            |key: &str, value: String| tr("options.generic_value", &[&tr(key, &[]), &value]);
+        let difficulty = |d: u8| {
+            let name = DIFFICULTIES[usize::from(d) & 3];
+            labelled(
+                "options.difficulty",
+                tr(&format!("options.difficulty.{name}"), &[]),
+            )
+        };
+        let cycle = |message: String, next: String| Narratable::cycle(message, next, rect, active);
+        let shown_access = self.guest_commands && self.lan && self.cheats;
+        let shown_force = self.force || !self.lan || self.hardcore;
+        match b {
+            Button::DefaultMode => {
+                let key = "options.worldOptions.game_mode";
+                cycle(
+                    labelled(key, mode(self.default_mode)),
+                    labelled(key, mode(self.default_mode + 1)),
+                )
+            }
+            Button::PersonalMode => {
+                let key = "options.worldOptions.personal_game_mode";
+                cycle(
+                    labelled(key, mode(self.personal_mode)),
+                    labelled(key, mode(self.personal_mode + 1)),
+                )
+            }
+            Button::Cheats => {
+                let key = "selectWorld.allowCommands";
+                cycle(
+                    labelled(key, on_off(self.cheats)),
+                    labelled(key, on_off(!self.cheats)),
+                )
+            }
+            Button::Difficulty => cycle(
+                difficulty(self.difficulty),
+                difficulty(self.difficulty.wrapping_add(1)),
+            ),
+            Button::Lan => {
+                let key = "menu.multiplayerOptions.lan";
+                cycle(
+                    labelled(key, on_off(self.lan)),
+                    labelled(key, on_off(!self.lan)),
+                )
+            }
+            Button::CommandAccess => {
+                let key = "options.worldOptions.guest.command_access";
+                cycle(
+                    labelled(key, on_off(shown_access)),
+                    labelled(key, on_off(!shown_access)),
+                )
+            }
+            Button::Force => {
+                let key = "options.worldOptions.guest.force_game_mode";
+                cycle(
+                    labelled(key, on_off(shown_force)),
+                    labelled(key, on_off(!shown_force)),
+                )
+            }
+            Button::Lock => {
+                let message = tr(
+                    "gui.narrate.button",
+                    &[&tr("narrator.button.difficulty_lock", &[])],
+                );
+                let state = if self.locked {
+                    "narrator.button.difficulty_lock.locked"
+                } else {
+                    "narrator.button.difficulty_lock.unlocked"
+                };
+                Narratable::named(
+                    join_for_narration(&[&message, &tr(state, &[])]),
+                    rect,
+                    active,
+                )
+            }
+            _ => Narratable::button(self.label(b).plain(), rect, active),
         }
     }
     /// WorldOptionsScreen.updateButton and the update*Button methods.
@@ -757,11 +848,31 @@ impl Game<'_> {
             batch.text_styled(atlas, &t, tx, top + y + 4.0, u32::MAX, true);
         }
         let inside = cursor.1 >= HEADER && cursor.1 < h - FOOTER;
+        let tr = &super::screen_info::tr;
+        // The categories' FocusableTextWidgets, each before its grid.
+        let header = |key: &str| {
+            let t = Text::translate(key, &[]).underlined().bold();
+            let tw = atlas.font.width_text(&t);
+            let y = if key == "options.worldOptions.general.title" {
+                GENERAL_TOP
+            } else {
+                MULTIPLAYER_TOP
+            };
+            let tx = x + ((308.0 - (tw + 8.0)) / 2.0).trunc();
+            let rect = [tx, top + y, tw + 8.0, 17.0];
+            widgets::narratable(|| Narratable::text(t.plain(), rect));
+        };
+        header("options.worldOptions.general.title");
+        let mut port_at = None;
         for (b, bx, by, bw) in o.visible_buttons(w) {
             let active = o.active(b);
             let is_focused = o.focused_button == Some(b);
             let hover = active && ((inside && ui::hovered(cursor, bx, by, bw, 20.0)) || is_focused);
+            if b == Button::Lan {
+                header("options.worldOptions.multiplayer.title");
+            }
             if b == Button::Lock {
+                widgets::narratable(|| o.narration(b, [bx, by, 20.0, 20.0], tr).hovered(hover));
                 let lock = if o.locked { "locked" } else { "unlocked" };
                 let state = match (active, hover) {
                     (false, _) => "_disabled",
@@ -772,7 +883,22 @@ impl Game<'_> {
                 batch.sprite_scaled(atlas, &sprite, bx, by, 20.0, 20.0, u32::MAX);
                 continue;
             }
-            ui::button(batch, atlas, bx, by, bw, 20.0, &o.label(b), active, hover);
+            ui::button_as(
+                batch,
+                atlas,
+                bx,
+                by,
+                bw,
+                20.0,
+                &o.label(b),
+                active,
+                hover,
+                |rect| o.narration(b, rect, tr),
+            );
+            if b == Button::Lan {
+                // The port box is added after it.
+                port_at = Some(widgets::narratables_mark());
+            }
         }
         // The port box beside the LAN button: editable only with LAN on,
         // its hint the port to use (setPortError colours the text).
@@ -787,7 +913,18 @@ impl Game<'_> {
             } else {
                 rgba(0xDF, 0x50, 0x50, 255)
             };
+            let mark = widgets::narratables_mark();
             o.port.draw(batch, atlas, None);
+            // updatePortControlsState: the box is active with LAN only.
+            let lan = o.lan;
+            widgets::last_narratable(|n| {
+                if let horizon_client::widgets::What::EditBox { active, .. } = &mut n.what {
+                    *active = lan;
+                }
+            });
+            if let Some(at) = port_at {
+                widgets::move_narratables(mark, at);
+            }
             if o.port.value.is_empty() && !o.port.focused {
                 let hint = if o.lan {
                     Text::literal(o.hint.to_string())
@@ -1474,6 +1611,63 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn keys(key: &str, args: &[&str]) -> String {
+        if args.is_empty() {
+            key.to_owned()
+        } else {
+            format!("{key}({})", args.join(", "))
+        }
+    }
+
+    #[test]
+    fn the_switches_narrate_as_cycle_buttons_and_the_lock_as_a_lock() {
+        use horizon_client::widgets::What;
+        let o = options(true, false);
+        let what = |b| o.narration(b, [0.0; 4], &keys).what;
+        let generic = |name: &str, value: &str| format!("options.generic_value({name}, {value})");
+        assert_eq!(
+            what(Button::Difficulty),
+            What::Cycle {
+                message: generic("options.difficulty", "options.difficulty.normal"),
+                next: generic("options.difficulty", "options.difficulty.hard"),
+                active: true,
+            }
+        );
+        assert_eq!(
+            what(Button::DefaultMode),
+            What::Cycle {
+                message: generic(
+                    "options.worldOptions.game_mode",
+                    "selectWorld.gameMode.creative"
+                ),
+                next: generic(
+                    "options.worldOptions.game_mode",
+                    "selectWorld.gameMode.adventure"
+                ),
+                active: true,
+            }
+        );
+        assert_eq!(
+            what(Button::Lock),
+            What::Named {
+                title: "gui.narrate.button(narrator.button.difficulty_lock). narrator.button.difficulty_lock.unlocked"
+                    .into(),
+                active: true,
+            }
+        );
+        let mut locked = options(true, true);
+        locked.locked = true;
+        assert_eq!(
+            locked.narration(Button::Lock, [0.0; 4], &keys).what,
+            What::Named {
+                title: "gui.narrate.button(narrator.button.difficulty_lock). narrator.button.difficulty_lock.locked"
+                    .into(),
+                active: false,
+            }
+        );
+        assert!(matches!(what(Button::Apply), What::Button { .. }));
+    }
 
     fn options(cheats: bool, hardcore: bool) -> WorldOptions {
         let mut o = WorldOptions {

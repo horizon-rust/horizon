@@ -1,0 +1,5 @@
+{
+  "hooks": [],
+  "rust_summary": "mods' own sound events in `native_play_sound`: another\nnamespace's event is sent by name, as vanilla sends an unregistered sound.",
+  "doc_summary": "mods' own sound events in `native_play_sound`: an event of another namespace than `minecraft` (`mymod:machine_hum`) is sent to players by\nname, as vanilla sends a sound that isn't in its registry, and they hear it when their resources define it (a content mod's `assets/mymod/sounds.json`\nand its `.ogg` files). `minecraft:` events must still be registered. Bundles that play their own sounds need `\"hooks\": @API:mod_sounds@`."
+}

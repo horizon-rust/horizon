@@ -354,10 +354,28 @@ pub fn button(
     active: bool,
     hover: bool,
 ) {
-    crate::widgets::record(&label.plain(), [x, y, w, h], active);
-    crate::widgets::narratable(|| {
-        crate::widgets::Narratable::button(label.plain(), [x, y, w, h], active).hovered(hover)
+    button_as(batch, atlas, x, y, w, h, label, active, hover, |rect| {
+        crate::widgets::Narratable::button(label.plain(), rect, active)
     });
+}
+/// A [`button`] that vanilla narrates as another widget (a `CycleButton`, a
+/// `LockIconButton`): `narration` builds what it records from its rectangle,
+/// and only while the narrator records.
+#[allow(clippy::too_many_arguments)]
+pub fn button_as(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    label: &Text,
+    active: bool,
+    hover: bool,
+    narration: impl FnOnce([f32; 4]) -> crate::widgets::Narratable,
+) {
+    crate::widgets::record(&label.plain(), [x, y, w, h], active);
+    crate::widgets::narratable(|| narration([x, y, w, h]).hovered(hover));
     crate::widgets::widget_cursor(hover, active);
     let sprite = if !active {
         "gui/sprites/widget/button_disabled"
@@ -704,7 +722,6 @@ pub fn tooltip(batch: &mut HudBatch, atlas: &HudAtlas, lines: &[Text], cursor: (
     if y + h + 3.0 > batch.height {
         y = batch.height - h - 3.0;
     }
-    y = y.max(4.0);
     nine_slice(
         batch,
         atlas,

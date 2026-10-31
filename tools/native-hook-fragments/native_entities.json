@@ -1,0 +1,8 @@
+{
+  "hooks": [],
+  "rust_summary": "entities for server mods (`native_summon`, `native_move_entity`,\n`native_set_display`, `native_remove_entity`, in `native_entities.rs`).",
+  "doc_summary": "[entities](#entities) for server mods: `native_summon(dimension, kind, pos, nbt)` spawns any entity from its compound\nas `/summon` does, and `native_move_entity`, `native_set_display` (a display's transformation, eased over ticks) and\n`native_remove_entity` move, pose and remove displays, markers and interactions: models that move, from a mod's own\nitem models. Bundles that use them need `\"hooks\": @API:native_entities@`.",
+  "comments": [
+    "crates/horizon-client/src/game/native_entities.rs"
+  ]
+}

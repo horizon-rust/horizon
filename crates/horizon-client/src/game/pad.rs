@@ -109,6 +109,8 @@ impl Game<'_> {
                     self.pad_edge(event_loop, button, down);
                 }
             }
+            // The keyboard's menu focus follows its widget all the same.
+            self.pad_menu_frame(event_loop);
             return;
         }
         let hardware = self.pad.read();

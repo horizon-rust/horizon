@@ -357,7 +357,14 @@ impl Game<'_> {
             .get(&conn)
             .and_then(|p| p.station.as_ref())
             .is_some_and(|s| s.kind == StationKind::Anvil);
-        if anvil {
+        if anvil
+            && self.chat_filter_text(
+                host,
+                conn,
+                &[name],
+                horizon_client::lan::hub::chat_filter::Place::Anvil,
+            )
+        {
             self.lan_station_op(host, conn, None, |menu, env| {
                 menu.rename(env, name);
             });

@@ -2659,6 +2659,11 @@ impl Game<'_> {
             );
             return;
         }
+        // The chat filter's `/unmute` (game/chat_filter.rs), on servers that filter.
+        if words[0] == "unmute" && host.hub.chat_filter_on() {
+            self.guest_unmute(host, conn, &words);
+            return;
+        }
         // A native mod's command, for every player its level allows,
         // whether the world allows commands or not (game/native_server.rs).
         let integrated = host.hub.config.integrated;
@@ -2775,8 +2780,10 @@ impl Game<'_> {
         let host_op = source.is_some()
             && !host.hub.config.dedicated
             && (self.allow_commands() || host.hub.config.guest_commands);
+        // server.toml's `admin_feedback_to_ops` off: the console's log only.
+        let to_ops = host.hub.admin_feedback_to_ops;
         for (line, ops, console) in std::mem::take(&mut self.admin_feedback) {
-            if ops {
+            if ops && to_ops {
                 let content = horizon_client::lan::data::component_nbt(&line.component());
                 for g in host
                     .hub

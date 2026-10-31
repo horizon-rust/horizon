@@ -320,6 +320,8 @@ impl Game<'_> {
                     return ok();
                 }
                 self.require_world()?;
+                // KeyboardHandler.keyPress: the open screen's narration hears it.
+                super::narrator::narrate_key(&mut self.narration, key, arg(2)? != "up");
                 // The sign editor takes raw presses (Enter, arrows, Backspace, Escape).
                 if self.sign_edit.is_some() {
                     if arg(2)? != "up" {
@@ -670,6 +672,8 @@ impl Game<'_> {
                     return ok();
                 }
                 self.require_world()?;
+                // Typed keys: the open screen's narration hears them.
+                self.narration.keyboard_action();
                 if self.book.is_some() {
                     self.book_type(text);
                     return ok();

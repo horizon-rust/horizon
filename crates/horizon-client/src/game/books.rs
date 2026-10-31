@@ -324,6 +324,16 @@ impl Game<'_> {
         if !((0..9).contains(&p.slot) || p.slot == super::shield::OFFHAND_SLOT as i32) {
             return;
         }
+        if let Some(title) = &p.title
+            && !self.chat_filter_text(
+                host,
+                conn,
+                &[title],
+                horizon_client::lan::hub::chat_filter::Place::Book,
+            )
+        {
+            return;
+        }
         self.as_guest(host, conn, |g| {
             g.write_book(p.slot as usize, p.pages, p.title)
         });

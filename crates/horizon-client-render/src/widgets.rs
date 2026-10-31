@@ -361,8 +361,13 @@ pub enum What {
         selected: bool,
         active: bool,
     },
-    /// `EditBox`: "<message> edit box: <value>".
-    EditBox { message: String, value: String },
+    /// `EditBox`: "<message> edit box: <value>"; an inactive one (a box
+    /// that can't be edited now) isn't narrated.
+    EditBox {
+        message: String,
+        value: String,
+        active: bool,
+    },
     /// A text widget that narrates its message and nothing else
     /// (`FittingMultiLineTextWidget`, a list's `FocusableTextWidget` header).
     Text { message: String },
@@ -383,6 +388,12 @@ pub enum What {
     },
     /// `RecipeButton`: "Recipe for <item>".
     Recipe { item: String, more: bool },
+    /// `RecipeBookComponent`: one narratable, HOVERED whenever `visible`
+    /// (whatever the mouse and the focus), that narrates the widget
+    /// `findNarratableWidget` picks among its own one level in, with no
+    /// position of its own. Its widgets are the narratables recorded with it
+    /// as their parent (row 0).
+    Group { visible: bool },
 }
 
 /// A `NarratableEntry` as drawn this frame.
@@ -399,8 +410,8 @@ pub struct Narratable {
     /// `isFocused` (a text field with the caret, a focused list).
     pub focused: bool,
     pub what: What,
-    /// Its tooltip's narration (HINT). Without one, the tooltip drawn this
-    /// frame is the hovered widget's.
+    /// Its tooltip's narration (HINT); empty for none. Without one, the
+    /// tooltip drawn this frame is the hovered widget's.
     pub hint: Option<String>,
     /// A row widget of a `ContainerList`: that list's key and the row.
     pub parent: Option<(u64, usize)>,
@@ -445,6 +456,7 @@ impl Narratable {
             What::EditBox {
                 message: message.into(),
                 value: value.into(),
+                active: true,
             },
             rect,
         )
@@ -520,6 +532,22 @@ impl Narratable {
     pub fn container_list(rows: usize, hovered_row: Option<usize>, rect: [f32; 4]) -> Self {
         Self::new(What::ContainerList { rows, hovered_row }, rect)
     }
+    /// A `RecipeBookComponent`-like group over `rect`, narrated while
+    /// `visible`; its widgets are recorded with [`Self::in_group`].
+    pub fn group(visible: bool, rect: [f32; 4]) -> Self {
+        Self::new(What::Group { visible }, rect)
+    }
+    /// `RecipeButton`: the recipe's result `item`, and whether it has more
+    /// recipes than one.
+    pub fn recipe(item: impl Into<String>, more: bool, rect: [f32; 4]) -> Self {
+        Self::new(
+            What::Recipe {
+                item: item.into(),
+                more,
+            },
+            rect,
+        )
+    }
     pub fn key(mut self, key: u64) -> Self {
         self.key = key;
         self
@@ -536,10 +564,19 @@ impl Narratable {
         self.hint = Some(hint.into());
         self
     }
+    /// No HINT, whatever tooltip the frame draws: the tooltip isn't the
+    /// widget's (a list's row tooltip, drawn by the list).
+    pub fn without_tooltip(self) -> Self {
+        self.hint("")
+    }
     /// A widget of row `row` of the `ContainerList` keyed `list`.
     pub fn child_of(mut self, list: u64, row: usize) -> Self {
         self.parent = Some((list, row));
         self
+    }
+    /// A widget of the [`What::Group`] keyed `group`.
+    pub fn in_group(self, group: u64) -> Self {
+        self.child_of(group, 0)
     }
     pub fn order(mut self, order: i32) -> Self {
         self.order = order;
@@ -554,12 +591,13 @@ impl Narratable {
             | What::Slider { active, .. }
             | What::Cycle { active, .. }
             | What::NamedCycle { active, .. }
-            | What::Checkbox { active, .. } => *active,
-            What::EditBox { .. }
-            | What::Text { .. }
+            | What::Checkbox { active, .. }
+            | What::EditBox { active, .. } => *active,
+            What::Text { .. }
             | What::List { .. }
             | What::ContainerList { .. }
-            | What::Recipe { .. } => true,
+            | What::Recipe { .. }
+            | What::Group { .. } => true,
         }
     }
     /// `key`, or one from the widget's kind and place (never 0).
@@ -702,6 +740,28 @@ pub fn last_narratable_at(index: usize, f: impl FnOnce(&mut Narratable)) {
     }
 }
 
+/// How many narratables the frame has so far, for [`move_narratables`].
+pub fn narratables_mark() -> usize {
+    if !NARRATING.get() {
+        return 0;
+    }
+    NARRATION.with_borrow(|(current, _)| current.items.len())
+}
+
+/// Moves the narratables recorded since `mark` to `index`, in their order:
+/// widgets a screen adds before others it draws first.
+pub fn move_narratables(mark: usize, index: usize) {
+    if NARRATING.get() {
+        NARRATION.with_borrow_mut(|(current, _)| {
+            let items = &mut current.items;
+            let mark = mark.min(items.len());
+            let index = index.min(mark);
+            let moved = items.len() - mark;
+            items[index..].rotate_right(moved);
+        });
+    }
+}
+
 /// Names the edit box recorded last, which a shared drawer recorded without
 /// its `getMessage`.
 pub fn name_last_edit_box(name: impl FnOnce() -> String) {
@@ -818,12 +878,37 @@ mod narration_tests {
             last.items[0].what,
             What::EditBox {
                 message: "Search for worlds".into(),
-                value: "abc".into()
+                value: "abc".into(),
+                active: true,
             }
         );
         assert_eq!(last.items[0].order, -1);
         set_narrating(false);
         last_narratable(|_| unreachable!("nothing recorded while off"));
+    }
+
+    #[test]
+    fn widgets_drawn_late_can_be_moved_to_where_they_were_added() {
+        set_narrating(true);
+        let _ = frame(4000);
+        begin_screen(|| ScreenInfo::new("command_block", ""));
+        narratable(|| Narratable::button("Done", [0.0; 4], true));
+        narratable(|| Narratable::button("Cancel", [0.0; 4], true));
+        let mark = narratables_mark();
+        narratable(|| Narratable::edit_box("Command", "", [0.0; 4]));
+        narratable(|| Narratable::button("Late", [0.0; 4], true));
+        move_narratables(mark, 0);
+        let order: Vec<String> = frame(4001)
+            .items
+            .iter()
+            .map(|n| match &n.what {
+                What::Button { message, .. } | What::EditBox { message, .. } => message.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(order, ["Command", "Late", "Done", "Cancel"]);
+        set_narrating(false);
+        assert_eq!(narratables_mark(), 0);
     }
 
     #[test]
@@ -842,6 +927,14 @@ mod narration_tests {
         assert!(a.is_active());
         assert!(!Narratable::button("B", a.rect, false).is_active());
         assert!(Narratable::edit_box("Search", "", a.rect).is_active());
+        let mut port = Narratable::edit_box("Port", "", a.rect);
+        if let What::EditBox { active, .. } = &mut port.what {
+            *active = false;
+        }
+        assert!(!port.is_active());
+        assert!(Narratable::group(false, a.rect).is_active());
+        let recipe = Narratable::recipe("Torch", true, a.rect).in_group(9);
+        assert_eq!(recipe.parent, Some((9, 0)));
         assert_eq!(join_for_narration(&["Title", "Message"]), "Title. Message");
     }
 }

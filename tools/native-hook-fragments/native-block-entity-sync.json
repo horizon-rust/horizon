@@ -1,5 +1,0 @@
-{
-  "hooks": [],
-  "rust_summary": "`native_block_entity_sync`: a mod block entity's block and update tag\nsent to clients again (`Level.sendBlockUpdated`).",
-  "doc_summary": "`native_block_entity_sync(pos)`, which sends the block and its update tag to clients again\n(`Level.sendBlockUpdated`): with the level's block changes, to the players who see its chunk, once per position\nhowever often it is called in a tick. A change made in a block entity's tick reaches clients at the start of the\nnext tick, as in vanilla. Call it when what clients show changes, not for every tick's progress: a menu's data slots\ncarry that. Bundles that use it need `\"hooks\": @API:native-block-entity-sync@`."
-}

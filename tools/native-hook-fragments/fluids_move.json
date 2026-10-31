@@ -1,8 +1,0 @@
-{
-  "hooks": [],
-  "rust_summary": "moving a block's fluids to another block (`native_move_fluids`, in\n`machines/native_fluids.rs`: what the target refuses goes back into the\nsource, whole thirds kept).",
-  "doc_summary": "moving a block's fluids to another block. `native_move_fluids(dimension, from, from_face, to, to_face, max)`\nmoves up to `max` millibuckets between two blocks, one fluid, and what the target won't take goes back into the\nsource, past the fill sides' leave: the source's tanks just gave the fluid up, so they have the room, and a\ncauldron levels back up by the thirds it gave, which a drain hands out whole. None where `native_fluid_tanks`\nis none at the source, where nothing drainable is, where the target holds no fluids, and within one block.\nBundles that use it need \"hooks\": @API:fluids_move@.",
-  "comments": [
-    "crates/horizon-client/src/game/machines/native_fluids.rs"
-  ]
-}

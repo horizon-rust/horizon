@@ -23,7 +23,7 @@ enum Source {
 }
 impl DataPack {
     /// Every file path under `prefix` (relative to the pack root).
-    fn list(&self, prefix: &str) -> Vec<String> {
+    pub fn list(&self, prefix: &str) -> Vec<String> {
         match &self.source {
             Source::Zip(z) => z
                 .names()
@@ -58,12 +58,13 @@ impl DataPack {
         }
         out
     }
-    fn read(&self, path: &str) -> Option<Vec<u8>> {
+    pub fn read(&self, path: &str) -> Option<Vec<u8>> {
         match &self.source {
             Source::Zip(z) => z.read(path).ok(),
             Source::Dir(root) => std::fs::read(root.join(path)).ok(),
         }
     }
+
     /// The `description` of `pack.mcmeta`, as text.
     pub fn description(&self) -> String {
         let Some(bytes) = self.read("pack.mcmeta") else {

@@ -407,6 +407,24 @@ impl Game<'_> {
             return;
         }
         let key = (p.pos[0], p.pos[1], p.pos[2]);
+        let lines = p.lines.join(" ");
+        if !self.chat_filter_text(
+            host,
+            conn,
+            &[&lines],
+            horizon_client::lan::hub::chat_filter::Place::Sign,
+        ) {
+            // The sign stays as it was: the editor closes, as after a sign the server refused.
+            if let Some(play) = host.play.get_mut(&conn) {
+                play.sign_editing = None;
+            }
+            // The player's client shows the text it sent: the sign as it is, again.
+            self.mark_block_entity_updated(key);
+            return;
+        }
+        let Some(play) = host.play.get_mut(&conn) else {
+            return;
+        };
         let Some(BlockEntity::Sign(sign)) = self.world.block_entities.get_mut(&key) else {
             return;
         };

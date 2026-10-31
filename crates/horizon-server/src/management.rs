@@ -2,21 +2,22 @@
 //! `management-server-*` in server.properties (`[properties]` in server.toml) turns on, as vanilla 26.3's
 //! `net.minecraft.server.jsonrpc` serves it: the same authentication (`AuthenticationHandler`), the same
 //! errors and parameter checks (`Connection`, `IncomingRpcMethod`, `JsonRPCErrors`). The supervisor serves it,
-//! so it answers while the game restarts. What `rpc.discover` lists is in `management_schema.rs`, the methods
-//! that answer in `management_methods.rs`.
+//! so it answers while the game restarts. TLS, on by default as in vanilla, is `management_tls.rs`. What
+//! `rpc.discover` lists is in `management_schema.rs`, the methods that answer in `management_methods.rs`.
 
 use crate::{
     api::{Phase, Shared},
     http::{self, Request, Response},
-    management_schema as schema,
-    websocket::Socket,
+    management_schema as schema, management_tls,
+    websocket::{Link, Socket},
 };
 use horizon_server_files::properties::{ServerProperties, SystemEntropy, generate_secret_key};
 use serde_json::{Value, json};
 use std::{
-    net::{SocketAddr, TcpListener, ToSocketAddrs},
+    net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
     path::Path,
     sync::Arc,
+    time::Duration,
 };
 
 /// The management server's settings, read from server.properties as vanilla's `JsonRpc.create` reads them.
@@ -25,6 +26,8 @@ struct Settings {
     port: i32,
     secret: String,
     allowed_origins: Vec<String>,
+    /// TLS, unless `management-server-tls-enabled=false`.
+    tls: Option<management_tls::Tls>,
 }
 
 /// `SecurityConfig.isValid`: 40 letters and digits.
@@ -60,15 +63,38 @@ fn settings(dir: &Path) -> Result<Option<Settings>, String> {
     if !valid_secret(&secret) {
         return Err("Invalid management server secret, must be 40 alphanumeric characters".into());
     }
-    if p.management_server_tls_enabled {
-        return Err(if p.management_server_tls_keystore.is_empty() {
-            "Failed to configure TLS for the server management protocol: TLS is enabled but keystore is not \
-             configured (or set management-server-tls-enabled=false)"
+    let tls = if p.management_server_tls_enabled {
+        let (keystore, password) = if p.management_server_tls_keystore.is_empty() {
+            // Where vanilla stops, Horizon makes a keystore and writes where it is, as it writes the secret.
+            let password = management_tls::generate(dir, &p.management_server_host)?;
+            let key = |name: &str, value: &str| {
+                (
+                    "properties".into(),
+                    name.into(),
+                    toml::Value::String(value.into()),
+                )
+            };
+            crate::config::update_all(
+                dir,
+                &[
+                    key("management-server-tls-keystore", management_tls::GENERATED),
+                    key("management-server-tls-keystore-password", &password),
+                ],
+            )?;
+            (management_tls::GENERATED.to_owned(), password)
         } else {
-            "Horizon can't serve the management protocol over TLS yet: set management-server-tls-enabled=false"
-        }
-        .into());
-    }
+            (
+                p.management_server_tls_keystore,
+                management_tls::password(&p.management_server_tls_keystore_password),
+            )
+        };
+        Some(
+            management_tls::load(dir, &keystore, &password)
+                .map_err(|e| format!("{TLS_FAILED}: {e}"))?,
+        )
+    } else {
+        None
+    };
     Ok(Some(Settings {
         host: p.management_server_host,
         port: p.management_server_port,
@@ -78,15 +104,34 @@ fn settings(dir: &Path) -> Result<Option<Settings>, String> {
             .split(',')
             .map(str::to_owned)
             .collect(),
+        tls,
     }))
 }
+
+const TLS_FAILED: &str = "Failed to configure TLS for the server management protocol";
 
 /// Starts the management server if server.properties turns it on. A wrong secret or TLS setting stops the
 /// server from starting, as it stops vanilla's.
 pub fn start(shared: Arc<Shared>) -> Result<Option<SocketAddr>, String> {
-    let Some(settings) = settings(&shared.dir)? else {
-        return Ok(None);
+    let note = |line: &str| crate::supervisor::note(&shared, "INFO", line);
+    let settings = match settings(&shared.dir) {
+        Ok(Some(settings)) => settings,
+        Ok(None) => return Ok(None),
+        Err(e) => {
+            if e.starts_with(TLS_FAILED) {
+                management_tls::INSTRUCTIONS
+                    .iter()
+                    .for_each(|line| note(line));
+            }
+            return Err(e);
+        }
     };
+    if let Some(tls) = &settings.tls {
+        note(&format!(
+            "Management server TLS certificate SHA-256: {}",
+            tls.fingerprint
+        ));
+    }
     let address = (settings.host.as_str(), settings.port as u16)
         .to_socket_addrs()
         .ok()
@@ -95,12 +140,70 @@ pub fn start(shared: Arc<Shared>) -> Result<Option<SocketAddr>, String> {
     let listener = TcpListener::bind(address)
         .map_err(|e| format!("the management server can't listen on {address}: {e}"))?;
     let address = listener.local_addr().map_err(|e| e.to_string())?;
-    let settings = Arc::new(settings);
-    http::serve(listener, move |request| {
-        handshake(&shared, &settings, request)
-    })
-    .map_err(|e| e.to_string())?;
+    serve(shared, Arc::new(settings), listener).map_err(|e| e.to_string())?;
     Ok(Some(address))
+}
+
+/// A thread per connection: the HTTP upgrade (over TLS when it's on), then the WebSocket's messages.
+fn serve(
+    shared: Arc<Shared>,
+    settings: Arc<Settings>,
+    listener: TcpListener,
+) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("management".into())
+        .spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let (shared, settings) = (shared.clone(), settings.clone());
+                let _ = std::thread::Builder::new()
+                    .name("management-client".into())
+                    .spawn(move || connection(&shared, &settings, &stream));
+            }
+        })?;
+    Ok(())
+}
+
+static CONNECTIONS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn connection(shared: &Arc<Shared>, settings: &Settings, stream: &TcpStream) {
+    let link = match &settings.tls {
+        Some(tls) => Link::tls(stream, tls.config.clone()),
+        None => Link::plain(stream),
+    };
+    let Ok(link) = link else {
+        return;
+    };
+    // The upgrade request (and the TLS handshake before it) must come within 10 s.
+    if link
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .is_err()
+    {
+        return;
+    }
+    let response = http::read_request(&link).and_then(|request| handshake(settings, &request));
+    let upgraded = response.is_ok();
+    let response = response.unwrap_or_else(|refused| refused);
+    if http::write_head(&link, &response).is_err() || !upgraded {
+        link.shutdown();
+        return;
+    }
+    let Ok(socket) = Socket::new(link) else {
+        return;
+    };
+    // `Connection`'s `ClientInfo`: the connections are numbered from 1, as the log lines show them.
+    let client = CONNECTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    while let Ok(Some(text)) = socket.read_text() {
+        match receive(shared, client, &text) {
+            Some(Ok(reply)) => {
+                if socket.send_text(&reply.to_string()).is_err() {
+                    return;
+                }
+            }
+            Some(Err(())) => break,
+            None => {}
+        }
+    }
+    socket.close(1000);
 }
 
 /// `AuthenticationHandler.performSecurityChecks`: the secret as a bearer token, or in the WebSocket
@@ -134,22 +237,26 @@ fn authenticate(settings: &Settings, request: &Request) -> Result<bool, &'static
     }
 }
 
-fn handshake(shared: &Arc<Shared>, settings: &Settings, request: &Request) -> Response {
+/// The upgrade's 101, or the answer that refuses it.
+fn handshake(settings: &Settings, request: &Request) -> Result<Response, Response> {
     let in_protocol = match authenticate(settings, request) {
         Ok(in_protocol) => in_protocol,
         Err(reason) => {
             let body = format!("{{\"error\":\"Unauthorized\",\"message\":\"{reason}\"}}");
-            return Response::text(401, "application/json", body);
+            return Err(Response::text(401, "application/json", body));
         }
     };
     if request.path != "/" {
-        return Response::error(404, "the management protocol is served on /");
+        return Err(Response::error(
+            404,
+            "the management protocol is served on /",
+        ));
     }
     let upgrade = request
         .header("upgrade")
         .is_some_and(|u| u.eq_ignore_ascii_case("websocket"));
     let (true, Some(key)) = (upgrade, request.header("sec-websocket-key")) else {
-        return Response::error(400, "not a WebSocket upgrade");
+        return Err(Response::error(400, "not a WebSocket upgrade"));
     };
     let mut response = Response::text(101, "", "")
         .with("Upgrade", "websocket")
@@ -158,25 +265,7 @@ fn handshake(shared: &Arc<Shared>, settings: &Settings, request: &Request) -> Re
     if in_protocol {
         response = response.with("Sec-WebSocket-Protocol", "minecraft-v1");
     }
-    let shared = shared.clone();
-    response.stream = Some(Box::new(move |stream| {
-        let Ok(socket) = Socket::new(stream) else {
-            return;
-        };
-        while let Ok(Some(text)) = socket.read_text() {
-            match receive(&shared, &text) {
-                Some(Ok(reply)) => {
-                    if socket.send_text(&reply.to_string()).is_err() {
-                        return;
-                    }
-                }
-                Some(Err(())) => break,
-                None => {}
-            }
-        }
-        socket.close(1000);
-    }));
-    response
+    Ok(response)
 }
 
 const PARSE_ERROR: i32 = -32700;
@@ -203,20 +292,20 @@ fn error(id: Value, code: i32, data: Option<&str>) -> Value {
 
 /// `Connection.channelRead0`: the reply to one message, if any. `Err` closes the connection, as vanilla's
 /// does when a batch holds something other than an object.
-pub fn receive(shared: &Shared, text: &str) -> Option<Result<Value, ()>> {
+pub fn receive(shared: &Shared, client: u32, text: &str) -> Option<Result<Value, ()>> {
     let message: Value = match serde_json::from_str(text) {
         Ok(message) => message,
         Err(e) => return Some(Ok(error(Value::Null, PARSE_ERROR, Some(&e.to_string())))),
     };
     Some(Ok(match message {
-        Value::Object(object) => return handle(shared, &object).map(Ok),
+        Value::Object(object) => return handle(shared, client, &object).map(Ok),
         Value::Array(batch) => {
             let mut replies = Vec::new();
             for request in batch {
                 let Value::Object(object) = request else {
                     return Some(Err(()));
                 };
-                replies.extend(handle(shared, &object));
+                replies.extend(handle(shared, client, &object));
             }
             Value::Array(replies)
         }
@@ -227,7 +316,7 @@ pub fn receive(shared: &Shared, text: &str) -> Option<Result<Value, ()>> {
 type Object = serde_json::Map<String, Value>;
 
 /// `Connection.handleJsonObject`.
-fn handle(shared: &Shared, object: &Object) -> Option<Value> {
+fn handle(shared: &Shared, client: u32, object: &Object) -> Option<Value> {
     let id = object.get("id");
     let method = match object.get("method") {
         None | Some(Value::Null) => None,
@@ -246,7 +335,7 @@ fn handle(shared: &Shared, object: &Object) -> Option<Value> {
                 let data = "Invalid request id - only String, Number and NULL supported";
                 return Some(error(Value::Null, INVALID_REQUEST, Some(data)));
             }
-            let reply = dispatch(shared, &method, object.get("params"));
+            let reply = dispatch(shared, client, &method, object.get("params"));
             let id = id?.clone();
             Some(match reply {
                 Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
@@ -282,7 +371,12 @@ fn identifier(name: &str) -> Option<String> {
 }
 
 /// `Connection.dispatchIncomingRequest` and `IncomingRpcMethod.apply`.
-fn dispatch(shared: &Shared, method: &str, params: Option<&Value>) -> Result<Value, Failure> {
+fn dispatch(
+    shared: &Shared,
+    client: u32,
+    method: &str,
+    params: Option<&Value>,
+) -> Result<Value, Failure> {
     let Some(name) = identifier(method) else {
         return Err((
             INVALID_REQUEST,
@@ -338,13 +432,13 @@ fn dispatch(shared: &Shared, method: &str, params: Option<&Value>) -> Result<Val
     if short == "rpc.discover" {
         return Ok(schema::discover());
     }
-    crate::management_methods::call(shared, short, &argument)
+    crate::management_methods::call(shared, client, short, &argument)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{BufRead, BufReader, Read, Write};
+    use std::io::{Read, Write};
 
     const SECRET: &str = "abcdefghijABCDEFGHIJ0123456789abcdefghij";
 
@@ -354,6 +448,7 @@ mod tests {
             port: 0,
             secret: SECRET.into(),
             allowed_origins: vec!["http://localhost:3000".into()],
+            tls: None,
         }
     }
 
@@ -438,7 +533,7 @@ mod tests {
     #[test]
     fn requests_fail_as_vanillas_connection_says() {
         let shared = shared();
-        let reply = |text: &str| receive(&shared, text);
+        let reply = |text: &str| receive(&shared, 1, text);
         let error = |text: &str| reply(text).unwrap().unwrap()["error"].clone();
         assert_eq!(error("{nope")["code"], PARSE_ERROR);
         assert_eq!(
@@ -494,13 +589,71 @@ mod tests {
         f
     }
 
-    #[test]
-    fn a_websocket_client_discovers_the_methods() {
-        let shared = shared();
-        let settings = Arc::new(settings());
+    /// The upgrade, then `rpc.discover`, over `stream`: the reply's head and the discovered document.
+    fn discover(mut stream: impl Read + Write) -> (Vec<String>, Value) {
+        write!(
+            stream,
+            "GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\
+             Authorization: Bearer {SECRET}\r\n\r\n"
+        )
+        .unwrap();
+        stream.flush().unwrap();
+        let mut head = Vec::new();
+        let mut line = Vec::new();
+        while head.last().is_none_or(|l: &String| !l.is_empty()) {
+            let mut b = [0u8];
+            stream.read_exact(&mut b).unwrap();
+            if b[0] == b'\n' {
+                head.push(
+                    String::from_utf8(std::mem::take(&mut line))
+                        .unwrap()
+                        .trim_end()
+                        .to_owned(),
+                );
+            } else {
+                line.push(b[0]);
+            }
+        }
+        stream
+            .write_all(&frame(
+                r#"{"jsonrpc":"2.0","id":1,"method":"rpc.discover"}"#,
+            ))
+            .unwrap();
+        stream.flush().unwrap();
+        let mut b = [0u8; 2];
+        stream.read_exact(&mut b).unwrap();
+        assert_eq!(b[0], 0x81);
+        let length = match b[1] {
+            126 => {
+                let mut l = [0u8; 2];
+                stream.read_exact(&mut l).unwrap();
+                u16::from_be_bytes(l) as usize
+            }
+            127 => {
+                let mut l = [0u8; 8];
+                stream.read_exact(&mut l).unwrap();
+                u64::from_be_bytes(l) as usize
+            }
+            n => n as usize,
+        };
+        let mut payload = vec![0u8; length];
+        stream.read_exact(&mut payload).unwrap();
+        let reply: Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(reply["id"], 1);
+        (head, reply["result"].clone())
+    }
+
+    fn listen(settings: Settings) -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
-        http::serve(listener, move |r| handshake(&shared, &settings, r)).unwrap();
+        serve(shared(), Arc::new(settings), listener).unwrap();
+        address
+    }
+
+    #[test]
+    fn a_websocket_client_discovers_the_methods() {
+        let address = listen(settings());
         let mut refused = std::net::TcpStream::connect(address).unwrap();
         write!(
             refused,
@@ -513,52 +666,60 @@ mod tests {
         assert!(
             text.ends_with("\r\n\r\n{\"error\":\"Unauthorized\",\"message\":\"Invalid API key\"}")
         );
-
-        let mut stream = std::net::TcpStream::connect(address).unwrap();
-        write!(
-            stream,
-            "GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
-             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\
-             Authorization: Bearer {SECRET}\r\n\r\n"
-        )
-        .unwrap();
-        let mut reader = BufReader::new(stream.try_clone().unwrap());
-        let mut head = Vec::new();
-        loop {
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            if line == "\r\n" {
-                break;
-            }
-            head.push(line.trim_end().to_owned());
-        }
+        let (head, discovered) = discover(std::net::TcpStream::connect(address).unwrap());
         assert_eq!(head[0], "HTTP/1.1 101 Switching Protocols");
         assert!(head.contains(&"Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=".to_owned()));
-        stream
-            .write_all(&frame(
-                r#"{"jsonrpc":"2.0","id":1,"method":"rpc.discover"}"#,
-            ))
+        assert_eq!(discovered, schema::discover());
+    }
+
+    #[test]
+    fn over_tls_with_a_generated_keystore() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-management-wss-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let password = management_tls::generate(&dir, "").unwrap();
+        let tls = management_tls::load(&dir, management_tls::GENERATED, &password).unwrap();
+        // The client trusts the generated certificate, as one pins it from the fingerprint the log shows.
+        let store = p12_keystore::KeyStore::from_pkcs12(
+            &std::fs::read(dir.join(management_tls::GENERATED)).unwrap(),
+            &password,
+        )
+        .unwrap();
+        let certificate = store.private_key_chain().unwrap().1.chain()[0]
+            .as_der()
+            .to_vec();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(certificate.into()).unwrap();
+        let client = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        let address = listen(Settings {
+            tls: Some(tls),
+            ..settings()
+        });
+        let connection =
+            rustls::ClientConnection::new(Arc::new(client), "localhost".try_into().unwrap())
+                .unwrap();
+        let stream = rustls::StreamOwned::new(connection, TcpStream::connect(address).unwrap());
+        let (head, discovered) = discover(stream);
+        assert_eq!(head[0], "HTTP/1.1 101 Switching Protocols");
+        assert_eq!(discovered, schema::discover());
+        // Plain text to the TLS port gets no answer.
+        let mut plain = TcpStream::connect(address).unwrap();
+        plain
+            .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
-        let mut b = [0u8; 2];
-        reader.read_exact(&mut b).unwrap();
-        assert_eq!(b[0], 0x81);
-        let length = match b[1] {
-            126 => {
-                let mut l = [0u8; 2];
-                reader.read_exact(&mut l).unwrap();
-                u16::from_be_bytes(l) as usize
-            }
-            127 => {
-                let mut l = [0u8; 8];
-                reader.read_exact(&mut l).unwrap();
-                u64::from_be_bytes(l) as usize
-            }
-            n => n as usize,
-        };
-        let mut payload = vec![0u8; length];
-        reader.read_exact(&mut payload).unwrap();
-        let reply: Value = serde_json::from_slice(&payload).unwrap();
-        assert_eq!(reply["id"], 1);
-        assert_eq!(reply["result"], schema::discover());
+        let _ = write!(
+            plain,
+            "GET / HTTP/1.1\r\nAuthorization: Bearer {SECRET}\r\n\r\n"
+        );
+        let mut text = Vec::new();
+        let _ = plain.read_to_end(&mut text);
+        assert!(!text.starts_with(b"HTTP"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -120,17 +120,9 @@ pub(super) fn narrate_input(
 ) {
     match event {
         WindowEvent::KeyboardInput { event, .. } => {
-            match event.physical_key {
-                PhysicalKey::Code(KeyCode::Tab) => narration.set_input(InputType::KeyboardTab),
-                PhysicalKey::Code(
-                    KeyCode::ArrowUp
-                    | KeyCode::ArrowDown
-                    | KeyCode::ArrowLeft
-                    | KeyCode::ArrowRight,
-                ) => narration.set_input(InputType::KeyboardArrow),
-                _ => {}
-            }
-            if event.state == ElementState::Pressed {
+            if let PhysicalKey::Code(key) = event.physical_key {
+                narrate_key(narration, key, event.state == ElementState::Pressed);
+            } else if event.state == ElementState::Pressed {
                 narration.keyboard_action();
             }
         }
@@ -143,6 +135,22 @@ pub(super) fn narrate_input(
         WindowEvent::MouseWheel { .. } => narration.mouse_action(),
         WindowEvent::CursorMoved { .. } => narration.mouse_moved(),
         _ => {}
+    }
+}
+
+/// `KeyboardHandler.keyPress` for the narration: Tab and the arrows set the
+/// input type, a press is `afterKeyboardAction`. The window's keys and the
+/// control socket's `key` both come here.
+pub(super) fn narrate_key(narration: &mut ScreenNarrator, key: KeyCode, pressed: bool) {
+    match key {
+        KeyCode::Tab => narration.set_input(InputType::KeyboardTab),
+        KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::ArrowLeft | KeyCode::ArrowRight => {
+            narration.set_input(InputType::KeyboardArrow)
+        }
+        _ => {}
+    }
+    if pressed {
+        narration.keyboard_action();
     }
 }
 
@@ -244,7 +252,7 @@ impl Game<'_> {
     /// book (no `EditBox`), the recipe book (its component has the focus) and
     /// the creative search (focused as a widget, not as the screen's focus)
     /// do not.
-    fn edit_box_focused(&mut self) -> bool {
+    pub(super) fn edit_box_focused(&mut self) -> bool {
         if self.dialog_open() {
             return self.dialog_typing();
         }

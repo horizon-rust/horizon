@@ -1,6 +1,8 @@
 //! The methods of vanilla's management protocol (`management.rs`), as vanilla 26.3's `methods/*Service` answer
-//! them: the players, the server's state, and the lists. What changes the game goes through its console, so
-//! it logs and saves as an operator's command would.
+//! them: the players, the server's state, and the lists. Kicks, saves and messages go through the game's
+//! console, so they log and save as an operator's command would; the lists change through the game's
+//! `management` request (game/dedicated/management.rs), which finds the players and sends the shut-out away as
+//! vanilla's services do.
 
 use crate::{
     api::{Phase, Shared},
@@ -11,8 +13,9 @@ use serde_json::{Value, json};
 use std::{path::Path, sync::atomic::Ordering};
 
 /// A method's result (`short`: its name without `minecraft:`).
-pub fn call(shared: &Shared, short: &str, argument: &Value) -> Result<Value, Failure> {
+pub fn call(shared: &Shared, client: u32, short: &str, argument: &Value) -> Result<Value, Failure> {
     let (game, lists) = (Game { shared }, Lists(&shared.dir));
+    let edit = |entries: Vec<Value>| game.edit(client, short, entries);
     match short {
         "players" => Ok(Value::Array(game.online()?)),
         "players/kick" => game.kick(argument),
@@ -33,6 +36,60 @@ pub fn call(shared: &Shared, short: &str, argument: &Value) -> Result<Value, Fai
         "bans" => Ok(lists.bans()),
         "ip_bans" => Ok(lists.ip_bans()),
         "operators" => Ok(lists.operators()),
+        "allowlist/add" | "allowlist/remove" | "allowlist/set" => {
+            edit(players(argument)?)?;
+            Ok(lists.allowlist())
+        }
+        "allowlist/clear" => {
+            edit(Vec::new())?;
+            Ok(lists.allowlist())
+        }
+        "bans/add" | "bans/set" => {
+            let bans = list(argument)?
+                .iter()
+                .map(user_ban)
+                .collect::<Result<_, _>>()?;
+            edit(bans)?;
+            Ok(lists.bans())
+        }
+        "bans/remove" => {
+            edit(players(argument)?)?;
+            Ok(lists.bans())
+        }
+        "bans/clear" => {
+            edit(Vec::new())?;
+            Ok(lists.bans())
+        }
+        "ip_bans/add" | "ip_bans/remove" | "ip_bans/set" | "ip_bans/clear" => {
+            let entries = list_or_none(argument)?;
+            edit(match short {
+                "ip_bans/add" => entries
+                    .iter()
+                    .map(incoming_ip_ban)
+                    .collect::<Result<_, _>>()?,
+                "ip_bans/remove" => entries.iter().map(ip).collect::<Result<_, _>>()?,
+                "ip_bans/set" => entries.iter().map(ip_ban).collect::<Result<_, _>>()?,
+                _ => Vec::new(),
+            })?;
+            Ok(lists.ip_bans())
+        }
+        "operators/add" | "operators/set" => {
+            edit(
+                list(argument)?
+                    .iter()
+                    .map(operator)
+                    .collect::<Result<_, _>>()?,
+            )?;
+            Ok(lists.operators())
+        }
+        "operators/remove" => {
+            edit(players(argument)?)?;
+            Ok(lists.operators())
+        }
+        "operators/clear" => {
+            edit(Vec::new())?;
+            Ok(lists.operators())
+        }
         _ => Err((
             INTERNAL_ERROR,
             Some(format!("minecraft:{short} isn't in Horizon yet")),
@@ -77,6 +134,115 @@ fn player_dto(value: &Value) -> Result<(Option<u128>, Option<String>), Failure> 
     Ok((id, name))
 }
 
+fn list(argument: &Value) -> Result<&Vec<Value>, Failure> {
+    argument
+        .as_array()
+        .ok_or_else(|| invalid_params("Not a list"))
+}
+
+/// `PlayerDto`s, as the game takes them: the id in 32 hex digits.
+fn players(argument: &Value) -> Result<Vec<Value>, Failure> {
+    list(argument)?.iter().map(player).collect()
+}
+
+fn player(value: &Value) -> Result<Value, Failure> {
+    let (id, name) = player_dto(value)?;
+    Ok(json!({ "id": id.map(|id| format!("{id:032x}")), "name": name }))
+}
+
+/// The list a method takes, or none for a `clear`.
+fn list_or_none(argument: &Value) -> Result<Vec<Value>, Failure> {
+    match argument {
+        Value::Null => Ok(Vec::new()),
+        _ => list(argument).cloned(),
+    }
+}
+
+/// An optional string field.
+fn text(value: &Value, key: &str) -> Result<Option<String>, Failure> {
+    match value.get(key) {
+        None => Ok(None),
+        Some(v) => v
+            .as_str()
+            .map(|s| Some(s.to_owned()))
+            .ok_or_else(|| invalid_params(format!("Not a string: {v}"))),
+    }
+}
+
+/// What a ban DTO may give: the reason, the source and the end (an ISO-8601 instant, sent in milliseconds).
+fn ban_terms(value: &Value) -> Result<Value, Failure> {
+    let expires = match text(value, "expires")? {
+        None => None,
+        Some(at) => Some(
+            chrono::DateTime::parse_from_rfc3339(&at)
+                .map_err(|e| invalid_params(format!("Failed to parse instant {at}: {e}")))?
+                .timestamp_millis(),
+        ),
+    };
+    Ok(
+        json!({ "reason": text(value, "reason")?, "source": text(value, "source")?, "expires": expires }),
+    )
+}
+
+/// A `UserBanDto`: the player and the ban's terms.
+fn user_ban(value: &Value) -> Result<Value, Failure> {
+    let Some(dto) = value.get("player") else {
+        return Err(invalid_params("No key player"));
+    };
+    let mut ban = ban_terms(value)?;
+    ban["player"] = player(dto)?;
+    Ok(ban)
+}
+
+/// An `IncomingIpBanDto`: an address or a player (whose address is banned if online), and the terms.
+fn incoming_ip_ban(value: &Value) -> Result<Value, Failure> {
+    let mut ban = ban_terms(value)?;
+    ban["ip"] = json!(text(value, "ip")?);
+    if let Some(dto) = value.get("player") {
+        ban["player"] = player(dto)?;
+    }
+    Ok(ban)
+}
+
+/// An `IpBanDto`: the address and the terms.
+fn ip_ban(value: &Value) -> Result<Value, Failure> {
+    let mut ban = ban_terms(value)?;
+    ban["ip"] = ip(value.get("ip").ok_or_else(|| invalid_params("No key ip"))?)?["ip"].take();
+    Ok(ban)
+}
+
+/// An address to unban, as `ip_bans/remove` takes them.
+fn ip(value: &Value) -> Result<Value, Failure> {
+    let ip = value
+        .as_str()
+        .ok_or_else(|| invalid_params(format!("Not a string: {value}")))?;
+    Ok(json!({ "ip": ip }))
+}
+
+/// An `OperatorDto`: the player, and the permission level (0 to 4) and bypass when given.
+fn operator(value: &Value) -> Result<Value, Failure> {
+    let Some(dto) = value.get("player") else {
+        return Err(invalid_params("No key player"));
+    };
+    let level = match value.get("permissionLevel") {
+        None => None,
+        Some(level) => Some(
+            level
+                .as_i64()
+                .filter(|l| (0..=4).contains(l))
+                .ok_or_else(|| invalid_params(format!("Not a valid permission level: {level}")))?,
+        ),
+    };
+    let bypass = match value.get("bypassesPlayerLimit") {
+        None => None,
+        Some(b) => Some(
+            b.as_bool()
+                .ok_or_else(|| invalid_params(format!("Not a boolean: {b}")))?,
+        ),
+    };
+    Ok(json!({ "player": player(dto)?, "permissionLevel": level, "bypassesPlayerLimit": bypass }))
+}
+
 /// `Message.asComponent` as a JSON text component; `None` when it has neither text nor key.
 fn component(message: &Value) -> Option<Value> {
     if let Some(key) = message["translatable"].as_str() {
@@ -109,6 +275,16 @@ impl Game<'_> {
 
     fn console(&self, line: &str) -> Result<Value, Failure> {
         self.ask(&format!("console {line}"))
+    }
+
+    /// A list edit, which the game makes as vanilla's services make it.
+    fn edit(&self, client: u32, method: &str, entries: Vec<Value>) -> Result<(), Failure> {
+        let request = json!({ "method": method, "entries": entries });
+        let reply = self.ask(&format!("management {client} {request}"))?;
+        match reply["error"].as_str() {
+            Some(error) => Err((INTERNAL_ERROR, Some(error.to_owned()))),
+            None => Ok(()),
+        }
     }
 
     /// `PlayerService.get`: the players online, as `PlayerDto`s.
@@ -326,10 +502,41 @@ mod tests {
     }
 
     #[test]
+    fn list_edits_reach_the_game_checked_and_normalized() {
+        let kim = json!({ "id": "93e029a5-04a0-349d-90b2-f7e145b2644f" });
+        assert_eq!(
+            user_ban(&json!({ "player": kim, "expires": "2027-01-01T00:00:00Z" })).unwrap(),
+            json!({ "player": { "id": "93e029a504a0349d90b2f7e145b2644f", "name": null },
+                    "reason": null, "source": null, "expires": 1798761600000i64 })
+        );
+        assert!(user_ban(&json!({ "reason": "x" })).is_err());
+        assert!(user_ban(&json!({ "player": kim, "expires": "tomorrow" })).is_err());
+        assert_eq!(
+            ip_ban(&json!({ "ip": "203.0.113.7", "source": "Bot" })).unwrap(),
+            json!({ "ip": "203.0.113.7", "reason": null, "source": "Bot", "expires": null })
+        );
+        assert!(ip_ban(&json!({ "reason": "x" })).is_err());
+        assert_eq!(
+            incoming_ip_ban(&json!({ "player": { "name": "Kim0" } })).unwrap()["player"]["name"],
+            "Kim0"
+        );
+        assert_eq!(
+            operator(&json!({ "player": { "name": "Kim0" }, "permissionLevel": 2 })).unwrap(),
+            json!({ "player": { "id": null, "name": "Kim0" }, "permissionLevel": 2, "bypassesPlayerLimit": null })
+        );
+        assert!(operator(&json!({ "player": { "name": "Kim0" }, "permissionLevel": 5 })).is_err());
+        assert!(
+            operator(&json!({ "player": { "name": "Kim0" }, "bypassesPlayerLimit": 1 })).is_err()
+        );
+        assert_eq!(list_or_none(&Value::Null).unwrap(), Vec::<Value>::new());
+    }
+
+    #[test]
     fn the_status_says_when_the_game_isnt_up() {
         let shared = shared();
         let reply = crate::management::receive(
             &shared,
+            1,
             r#"{"jsonrpc":"2.0","id":null,"method":"server/status"}"#,
         );
         assert_eq!(

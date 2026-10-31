@@ -112,6 +112,28 @@ fn narration(r: &Rule) -> String {
     }
 }
 
+/// BooleanRuleEntry's CycleButton (`displayOnlyValue`, its own narration):
+/// "<name>: <value> button", the rule's description and default, and the
+/// value a click moves to.
+fn bool_narration(r: &Rule, value: bool, rect: [f32; 4]) -> crate::widgets::Narratable {
+    let tr = crate::screen_narrator::translate;
+    let on_off = |on: bool| tr(if on { "options.on" } else { "options.off" }, &[]);
+    let full = tr(
+        "options.generic_value",
+        &[&lang::get(&name_key(r)), &on_off(value)],
+    );
+    let title = format!("{}\n{}", tr("gui.narrate.button", &[&full]), narration(r));
+    crate::widgets::Narratable::new(
+        crate::widgets::What::NamedCycle {
+            title,
+            next: on_off(!value),
+            active: true,
+        },
+        rect,
+    )
+    .without_tooltip()
+}
+
 /// ConfirmScreen "Game Rule Changes".
 fn confirm(font: &Font, size: (f32, f32)) -> Confirm {
     let title = Text::translate("editGamerule.inGame.discardChanges.title", &[]);
@@ -436,6 +458,17 @@ impl RulesScreen {
         let first = batch.vertices.len();
         let hovered = self.hovered(rows.len(), cursor, (w, h));
         let (left, x) = (row_left(w), control_x(w));
+        // RuleList, a ContainerObjectSelectionList: its rows' widgets are
+        // narrated with their row's place.
+        let list = crate::widgets::key_of(&"game_rules/list");
+        crate::widgets::narratable(|| {
+            crate::widgets::Narratable::container_list(
+                rows.len(),
+                hovered,
+                [0.0, HEADER, w, h - FOOTER - HEADER],
+            )
+            .key(list)
+        });
         for (i, row) in rows.iter().enumerate() {
             let top = self.row_top(i);
             if top + ROW < HEADER || top > h - FOOTER {
@@ -453,6 +486,16 @@ impl RulesScreen {
                     let mid = cx + (ROW_WIDTH - 4.0) / 2.0;
                     let lx = mid - (lw / 2.0).trunc();
                     batch.text_styled(atlas, &label, lx, cy + 10.0 - 8.0 + 4.0, u32::MAX, true);
+                    // CategoryRuleEntry's FocusableTextWidget: its label.
+                    crate::widgets::narratable(|| {
+                        crate::widgets::Narratable::text(
+                            label.plain(),
+                            [lx - 4.0, cy, lw + 8.0, 17.0],
+                        )
+                        .key(crate::widgets::key_of(&("game_rules/category", c)))
+                        .child_of(list, i)
+                        .without_tooltip()
+                    });
                 }
                 Row::Rule(r) => {
                     let name = lines(&atlas.font, &Text::translate(&name_key(r), &[]), 170.0);
@@ -475,7 +518,23 @@ impl RulesScreen {
                                 "options.off"
                             };
                             let label = Text::translate(key, &[]);
-                            ui::button(batch, atlas, x, cy, 44.0, 20.0, &label, true, hover);
+                            let value = self.values.bool(r.name);
+                            ui::button_as(
+                                batch,
+                                atlas,
+                                x,
+                                cy,
+                                44.0,
+                                20.0,
+                                &label,
+                                true,
+                                hover,
+                                |rect| {
+                                    bool_narration(r, value, rect)
+                                        .key(crate::widgets::key_of(&("game_rules", r.name)))
+                                        .child_of(list, i)
+                                },
+                            );
                         }
                         Value::Int(_) => {
                             if let Some(b) = self.number(r.name) {
@@ -488,6 +547,13 @@ impl RulesScreen {
                                         format!("{}\n{}\n", lang::get(&name_key(r)), narration(r));
                                 }
                                 b.draw(batch, atlas, None);
+                                crate::widgets::last_narratable(|n| {
+                                    *n = n
+                                        .clone()
+                                        .key(crate::widgets::key_of(&("game_rules", r.name)))
+                                        .child_of(list, i)
+                                        .without_tooltip();
+                                });
                             }
                         }
                     }
@@ -522,6 +588,8 @@ impl RulesScreen {
         self.search.x = sx;
         self.search.y = sy;
         self.search.draw(batch, atlas, None);
+        // The header's search box is added before the list.
+        crate::widgets::last_narratable_at(0, |_| {});
         if self.search.value.is_empty() && !self.search.focused {
             // EditBox.SEARCH_HINT_STYLE: gray and italic.
             let hint = Text::translate("gui.game_rule.search", &[]).with_style(&Style {
@@ -568,6 +636,37 @@ impl RulesScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_switch_narrates_its_name_value_description_and_next_value() {
+        use crate::screen_narrator::translate as tr;
+        use crate::widgets::What;
+        let r = RULES
+            .iter()
+            .find(|r| matches!(r.default, Value::Bool(_)))
+            .unwrap();
+        let n = bool_narration(r, true, [0.0; 4]);
+        let What::NamedCycle {
+            title,
+            next,
+            active,
+        } = &n.what
+        else {
+            panic!("a CycleButton: {:?}", n.what);
+        };
+        let full = tr(
+            "options.generic_value",
+            &[&lang::get(&name_key(r)), &tr("options.on", &[])],
+        );
+        assert_eq!(
+            *title,
+            format!("{}\n{}", tr("gui.narrate.button", &[&full]), narration(r))
+        );
+        assert_eq!(*next, tr("options.off", &[]));
+        assert!(*active);
+        // The list draws the rule's tooltip, not the button.
+        assert_eq!(n.hint.as_deref(), Some(""));
+    }
 
     #[test]
     fn box_colours_are_vanillas() {
