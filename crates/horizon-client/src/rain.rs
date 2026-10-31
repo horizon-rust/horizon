@@ -18,9 +18,9 @@
 
 /// The rain map's side, in columns (blocks), around the camera.
 pub const MAP: i32 = 256;
-/// The rate the rain's level 1 stands for (moderate rain), and the thunder's (a downpour), mm/h.
-pub const RAIN_MM_H: f32 = 5.0;
-pub const THUNDER_MM_H: f32 = 30.0;
+/// The rate the rain's level 1 stands for (a heavy shower), and the thunder's (a downpour), mm/h.
+pub const RAIN_MM_H: f32 = 8.0;
+pub const THUNDER_MM_H: f32 = 35.0;
 /// Marshall-Palmer's intercept, drops a cubic metre a millimetre of diameter.
 pub const MARSHALL_PALMER_N0: f32 = 8000.0;
 
@@ -411,7 +411,7 @@ mod tests {
         assert_eq!(rate_mm_h(0.0, 0.0), 0.0);
         assert_eq!(rate_mm_h(1.0, 0.0), RAIN_MM_H);
         assert_eq!(rate_mm_h(1.0, 1.0), THUNDER_MM_H);
-        assert!((rate_mm_h(0.5, 0.0) - 2.5).abs() < 1e-6);
+        assert!((rate_mm_h(0.5, 0.0) - RAIN_MM_H / 2.0).abs() < 1e-6);
     }
 
     #[test]
