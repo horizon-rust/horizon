@@ -1,5 +1,5 @@
 //! `PistonMovingBlockEntity.moveCollidedEntities` and `moveStuckEntities` for
-//! the entities the game moves itself: the players and the mobs.
+//! the entities the game moves itself.
 //!
 //! The geometry is in [`horizon_world::piston_push`]; this file supplies the
 //! bodies and applies the movement the way `Entity.move(MoverType.PISTON, …)`
@@ -28,6 +28,7 @@ enum Target {
     Guest(u32),
     Mob(usize),
     Item(usize),
+    Projectile(usize),
     Boat(usize),
     Cart(usize),
     ArmorStand(usize),
@@ -245,6 +246,7 @@ impl Game<'_> {
         }
         targets.extend((0..self.mobs.len()).map(Target::Mob));
         targets.extend((0..self.dropped.len()).map(Target::Item));
+        targets.extend((0..self.creatures.projectiles.len()).map(Target::Projectile));
         targets.extend((0..self.boats.len()).map(Target::Boat));
         targets.extend((0..self.carts.len()).map(Target::Cart));
         targets.extend((0..self.armor_stands.len()).map(Target::ArmorStand));
@@ -310,6 +312,16 @@ impl Game<'_> {
                     bounds: entity.bounds(),
                     position: entity.position,
                     on_ground: entity.on_ground,
+                    step_height: 0.0,
+                    supported: false,
+                })
+            }
+            Target::Projectile(i) => {
+                let entity = &self.creatures.projectiles[i];
+                Some(Body {
+                    bounds: entity.bounds(),
+                    position: entity.position,
+                    on_ground: false,
                     step_height: 0.0,
                     supported: false,
                 })
@@ -462,6 +474,11 @@ impl Game<'_> {
                     item.on_ground = movement.y < 0.0;
                 }
             }
+            Target::Projectile(i) => {
+                let projectile = &mut self.creatures.projectiles[i];
+                projectile.position = projectile.position.add_vector(movement);
+                projectile.needs_sync = true;
+            }
             Target::Boat(i) => self.boats[i].position = self.boats[i].position.add_vector(movement),
             Target::Cart(i) => self.carts[i].position = self.carts[i].position.add_vector(movement),
             Target::ArmorStand(i) => {
@@ -492,6 +509,11 @@ impl Game<'_> {
                 }
             }
             Target::Item(i) => self.dropped[i].piston_slime_bounce(movement),
+            Target::Projectile(i) => {
+                let projectile = &mut self.creatures.projectiles[i];
+                projectile.velocity =
+                    piston_push::bounce_velocity(movement, projectile.velocity);
+            }
             Target::Boat(i) => {
                 self.boats[i].velocity =
                     piston_push::bounce_velocity(movement, self.boats[i].velocity)
