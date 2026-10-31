@@ -214,6 +214,10 @@ const PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
 /// quarter more memory than with the system heap; without it a few percent,
 /// and generation keeps most of its speed-up.
 pub fn configure_allocator() {
+    // MIMALLOC_PURGE_DELAY, when set, wins (mimalloc read it as it started).
+    if std::env::var_os("MIMALLOC_PURGE_DELAY").is_some() {
+        return;
+    }
     // SAFETY: sets one integer option, which mimalloc reads at each purge.
     unsafe {
         libmimalloc_sys::mi_option_set(PURGE_DELAY, 0);
