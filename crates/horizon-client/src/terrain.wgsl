@@ -735,8 +735,14 @@ fn rt_labpbr(albedo: vec3<f32>, n: vec3<f32>, ao: f32, s: vec4<f32>) -> RtMateri
 fn rt_fresnel(f0: vec3<f32>, cosine: f32) -> vec3<f32> {
     return f0 + (1.0 - f0) * pow(1.0 - clamp(cosine, 0.0, 1.0), 5.0);
 }
+// The sky light reaching a face by its sky light level (`light.x`, 0 to 15 as the vertex gives it:
+// `terrain_vertex`, vanilla's lightmap coordinates over 16), where no ray says how much of the
+// sky it sees: the level's share of full daylight, squared.
+fn rt_sky_level(level: f32) -> f32 {
+    return pow(clamp(level / 15.0, 0.0, 1.0), 2.0);
+}
 // The material `m` (on a face of normal `geo`, camera-relative `pos`) lit, before the fog; `light`
-// its sky and block light levels (0..1), `v` the rays' visibility, `traced` the light sources'.
+// its sky and block light levels (0 to 15), `v` the rays' visibility, `traced` the light sources'.
 const FIREFLY_LUMINANCE: f32 = 5.0;
 fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: vec3<f32>,
     traced: vec4<f32>, tint: vec3<f32>) -> vec3<f32> {
@@ -780,11 +786,11 @@ fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: 
     // direction, accumulated), or past the grid from the light levels: the sky from where the face
     // sees most of it, between its normal and the zenith, as much as its sky light level says,
     // the light sources by the inverse square of the distance the block light level stands for.
-    let sky_level = pow(clamp(light.x * 16.0 / 15.0, 0.0, 1.0), 2.0);
+    let sky_level = rt_sky_level(light.x);
     let dome = select(mix(0.6, 1.0, n.y), mix(0.6, 0.25, -n.y), n.y < 0.0);
     let seen = select(sky_level * dome, v.z, v.z >= 0.0);
     let open = v.y * m.ao;
-    let steps = max(15.0 - light.y * 16.0, 0.0);
+    let steps = max(15.0 - light.y, 0.0);
     let level = select(vec3(0.0), BLOCK_LIGHT / ((1.0 + steps) * (1.0 + steps)), light.y > 0.0);
     let by_level = (rt_sky(normalize(n + vec3(0.0, 1.0, 0.0))) * sky_level * dome + level) * open;
     let around = mix(by_level, traced.rgb * m.ao, clamp(traced.a, 0.0, 1.0));
@@ -810,7 +816,7 @@ fn rt_material_lit(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, pixel: vec2<f3
     rt_mirror = rt_reflection(pixel, pos);
     let lit = rt_shade(m, geo, pos, light, v, rt_traced(pixel), rt_sun_colour(pixel, v.x));
     let f = rt_fade(spherical, cylindrical, pos) * globals.fog_color.a;
-    let sky = select(pow(clamp(light.x * 16.0 / 15.0, 0.0, 1.0), 2.0), v.z, v.z >= 0.0);
+    let sky = select(rt_sky_level(light.x), v.z, v.z >= 0.0);
     // Aerial perspective: the air between the eye and the surface takes some of its light away
     // (blue the most, Rayleigh's) and scatters the sky's toward the eye, so far terrain fades into
     // the horizon's colour that way and loses its contrast. The air's extinction near the ground
@@ -1059,7 +1065,7 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
     let nv = max(dot(n, view), 1e-3);
     let fresnel = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
     let v = rt_visibility(in.pos, in.clip);
-    let sky_seen = select(pow(clamp(in.light.x * 16.0 / 15.0, 0.0, 1.0), 2.0), max(v.z, 0.0),
+    let sky_seen = select(rt_sky_level(in.light.x), max(v.z, 0.0),
         v.z >= 0.0);
     let sun = globals.rt_sun_light.rgb * globals.rt_light.w * v.x;
     // Reflected: the sky that way, and the sun's glint (GGX, a calm surface).
@@ -1326,7 +1332,7 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
     let nv = max(dot(n, view), 1e-3);
     let fresnel = rt_glass_fresnel(nv);
     let v = rt_visibility(g.pos, g.clip);
-    let sky_seen = select(pow(clamp(g.light.x * 16.0 / 15.0, 0.0, 1.0), 2.0), max(v.z, 0.0),
+    let sky_seen = select(rt_sky_level(g.light.x), max(v.z, 0.0),
         v.z >= 0.0);
     let sun = globals.rt_sun_light.rgb * globals.rt_light.w * v.x;
     // Reflected: the sky that way, faded as it dips under the face, or what the rays met off the
