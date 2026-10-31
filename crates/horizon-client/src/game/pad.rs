@@ -30,6 +30,8 @@ pub(super) struct Pads {
     devices: hardware::Devices,
     /// The virtual pad of `horizon-ctl pad`.
     injected: PadState,
+    /// The touch controls (Android): the move stick, the look drag and the buttons.
+    pub(super) touch: horizon_client::touch::TouchPad,
     /// The virtual pad was in use at the last poll.
     virtual_input: bool,
     /// Buttons a `pad ... tap` releases at the next poll.
@@ -105,7 +107,9 @@ impl Game<'_> {
         }
         let hardware = self.pad.read();
         self.ui.options.pad_style = self.settings.controller.glyphs.resolve(self.pad.style);
-        let state = hardware.merge(&self.pad.injected);
+        let state = hardware
+            .merge(&self.pad.injected)
+            .merge(&self.pad.touch.state());
         self.pad.virtual_input = self.pad.injected != PadState::default();
         for button in std::mem::take(&mut self.pad.taps) {
             self.pad.injected.set(button, false);

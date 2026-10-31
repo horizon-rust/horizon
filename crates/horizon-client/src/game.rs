@@ -257,6 +257,7 @@ mod text_displays;
 mod titles;
 mod tnt;
 mod totem;
+mod touch;
 mod trading;
 mod transient_blocks;
 mod trial_spawner;
@@ -7126,6 +7127,7 @@ impl Game<'_> {
         // the action bar sit above it.
         let mut bar_height = 39;
         if show_hud {
+            self.draw_touch_controls(&mut batch);
             self.draw_spyglass(&mut batch);
             // Hud.extractCrosshair / extractItemHotbar / extractPlayerHealth /
             // extractVehicleHealth and the experience bar, laid out by hud_layout.
@@ -14363,6 +14365,14 @@ impl ApplicationHandler for Game<'_> {
             return;
         }
         follow_keymap(&mut event);
+        // A touch drives the on-screen controls in the world and the pointer in menus.
+        if let WindowEvent::Touch(touch) = &event {
+            let touch = *touch;
+            match self.touch_event(event_loop, id, touch) {
+                Some(replacement) => event = replacement,
+                None => return,
+            }
+        }
         // MacosUtil.setCtrlClickEmulatesRightClick: Control + left click is a right click.
         if let WindowEvent::MouseInput { state, button, .. } = &mut event
             && *button == MouseButton::Left
@@ -17086,8 +17096,23 @@ fn leave_fullscreen_after(
     }
 }
 
+/// The window system's event loop; on Android it needs the activity `android_main` was given.
+fn new_event_loop() -> std::result::Result<EventLoop<()>, EventLoopError> {
+    #[cfg(target_os = "android")]
+    {
+        use winit::platform::android::EventLoopBuilderExtAndroid;
+        let app =
+            crate::android_app().expect("android_main keeps the activity before the game starts");
+        EventLoop::builder().with_android_app(app).build()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        EventLoop::new()
+    }
+}
+
 fn run_event_loop(mut game: Game<'_>) -> Result<()> {
-    let result = EventLoop::new()?.run_app(&mut game);
+    let result = new_event_loop()?.run_app(&mut game);
     leave_fullscreen_after(&result, &mut game.settings);
     result?;
     horizon_client::discord_presence::stop();
@@ -17477,7 +17502,7 @@ fn run_loading(
         error: None,
     };
     let mut app = App::Loading(Box::new(loading));
-    let result = EventLoop::new()?.run_app(&mut app);
+    let result = new_event_loop()?.run_app(&mut app);
     match &mut app {
         App::Ready(game) => leave_fullscreen_after(&result, &mut game.settings),
         App::Loading(loading) => leave_fullscreen_after(&result, &mut loading.settings),

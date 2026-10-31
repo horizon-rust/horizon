@@ -1,6 +1,38 @@
 //! Horizon: native Rust client for Minecraft Java Edition 26.3 gameplay.
-#![forbid(unsafe_code)]
+// The Android entry point below is the one `unsafe` item: a symbol the activity looks up by name.
+#![cfg_attr(not(target_os = "android"), forbid(unsafe_code))]
+#![cfg_attr(target_os = "android", deny(unsafe_code))]
 mod game;
+
+/// The activity the game runs in, kept for the event loop (`game::new_event_loop`).
+#[cfg(target_os = "android")]
+static ANDROID_APP: std::sync::OnceLock<winit::platform::android::activity::AndroidApp> =
+    std::sync::OnceLock::new();
+
+#[cfg(target_os = "android")]
+pub(crate) fn android_app() -> Option<winit::platform::android::activity::AndroidApp> {
+    ANDROID_APP.get().cloned()
+}
+
+/// Where Android starts the game (docs/android.md). The game folder is the app's own folder on
+/// shared storage, `Android/data/<package>/files`, so the player can put the prepared resources
+/// in `.local/horizon-client/` and read `logs/` there; the app's private folder is the fallback.
+#[cfg(target_os = "android")]
+#[allow(unsafe_code)]
+#[unsafe(no_mangle)]
+fn android_main(app: winit::platform::android::activity::AndroidApp) {
+    if let Some(dir) = app
+        .external_data_path()
+        .or_else(|| app.internal_data_path())
+    {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::env::set_current_dir(&dir);
+        // Nothing else is running yet to read the environment.
+        unsafe { std::env::set_var("HORIZON_HOME", &dir) };
+    }
+    let _ = ANDROID_APP.set(app);
+    main();
+}
 
 use horizon_client::{crash, logging};
 

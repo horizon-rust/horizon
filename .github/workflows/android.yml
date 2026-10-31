@@ -1,0 +1,57 @@
+name: android
+# Builds an APK of the game (docs/android.md): start it by hand from the Actions tab ("Run workflow"),
+# then download `horizon-android-apk` from the finished run. It holds no secrets: the APK is signed with a
+# throwaway key made here, so it installs on a phone but is not a release.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: The branch, tag or commit to build (default: the one this run starts from)
+        type: string
+        default: ''
+permissions:
+  contents: read
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Rust and the Android target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-linux-android
+      - name: cargo-apk
+        run: cargo install cargo-apk --version 0.10.0 --locked
+      - name: Point the C compiler at the NDK
+        # Crates with C code (ring, for the Minecraft services' TLS) build with the NDK's clang.
+        run: |
+          : "${ANDROID_NDK_ROOT:=${ANDROID_NDK_LATEST_HOME}}"
+          bin="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          {
+            echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
+            echo "ANDROID_NDK_HOME=$ANDROID_NDK_ROOT"
+            echo "CC_aarch64_linux_android=$bin/aarch64-linux-android28-clang"
+            echo "AR_aarch64_linux_android=$bin/llvm-ar"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$bin/aarch64-linux-android28-clang"
+          } >> "$GITHUB_ENV"
+      - name: Signing key for this build
+        run: |
+          keytool -genkeypair -v -keystore "$RUNNER_TEMP/horizon.keystore" -alias horizon \
+            -keyalg RSA -keysize 2048 -validity 10000 -storepass horizon-android -keypass horizon-android \
+            -dname "CN=Horizon test build"
+          {
+            echo "CARGO_APK_RELEASE_KEYSTORE=$RUNNER_TEMP/horizon.keystore"
+            echo "CARGO_APK_RELEASE_KEYSTORE_PASSWORD=horizon-android"
+          } >> "$GITHUB_ENV"
+      - name: Build the APK
+        # No audio and no controllers yet: neither builds for Android (docs/android.md).
+        run: cargo apk build --release -p horizon-client --bin horizon-client --no-default-features
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horizon-android-apk
+          path: target/release/apk/*.apk
+          if-no-files-found: error
