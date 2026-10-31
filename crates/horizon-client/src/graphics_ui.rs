@@ -272,7 +272,7 @@ pub fn rows(level: Level) -> Vec<Row> {
             h(
                 H::ShootingStars,
                 None,
-                "RT Lighting's shooting stars: none, a few a night, or frequent.",
+                "RT Lighting's shooting stars: none, the real sky's showers, or frequent.",
             ),
             h(
                 H::AerialPerspective,
