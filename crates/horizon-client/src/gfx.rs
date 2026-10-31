@@ -2386,6 +2386,16 @@ impl Renderer {
                     vf,
                     wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 ),
+                // RT lighting's sky (entity.wgsl `rt_entity_light`).
+                entry(
+                    5,
+                    vf,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
             ],
         });
         let weather =
@@ -2418,6 +2428,10 @@ impl Renderer {
                     binding: 4,
                     resource: wgpu::BindingResource::Sampler(&lightmap_sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&atmosphere.view),
+                },
             ],
         });
         let hand_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2443,6 +2457,10 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::Sampler(&lightmap_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&atmosphere.view),
                 },
             ],
         });

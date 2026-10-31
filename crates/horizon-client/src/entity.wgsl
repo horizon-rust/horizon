@@ -60,6 +60,9 @@ struct Globals {
 @group(0) @binding(2) var atlas_sampler: sampler;
 @group(0) @binding(3) var lightmap: texture_2d<f32>;
 @group(0) @binding(4) var lightmap_sampler: sampler;
+// RT lighting's sky (gfx/atmosphere.rs, terrain.wgsl's `rt_sky_view`): its radiance by azimuth
+// from the sun (0..pi) and elevation, in paper whites.
+@group(0) @binding(5) var rt_sky_view: texture_2d<f32>;
 struct Out {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -77,6 +80,10 @@ struct Out {
     // entity.vsh's lightMapColor, multiplied in after the overlay.
     @location(9) light_color: vec4<f32>,
     @location(10) @interpolate(flat) weather_rect: vec4<f32>,
+    // RT lighting: the sky and block light levels (0 to 15) and the face's normal (zero: none),
+    // for `rt_entity_light`.
+    @location(11) levels: vec2<f32>,
+    @location(12) normal: vec3<f32>,
 }
 // Shipped light.glsl; normals are already transformed and RGBA8_SNORM packed.
 fn entity_light(normal: vec3<f32>, nether: bool) -> f32 {
@@ -119,13 +126,16 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     let unlit = overlay == 2u || overlay == 4u || overlay == 6u || overlay == 9u || overlay == 10u
         || overlay == 11u || overlay == 12u;
     out.light_color = select(lm, vec4(1.0), unlit);
+    out.levels = select(vec2(l.y, l.x) / 16.0, vec2(-1.0), unlit);
+    out.normal = select(vec3(0.0), normal.xyz, normal.w != 0.0);
     // Overlay 6 (beacon beams): the light bytes carry the sprite's v range; 11 and 12
     // (cracks): the destroy stage sprite's origin.
     out.wrap = vec2(f32(light.x | (light.y << 8u)), f32(light.z | (light.w << 8u))) / 65535.0;
     // minecraft_mix_light: the vertex colour times the cardinal light only.
     var c = color;
     var back = c;
-    if normal.w != 0.0 {
+    // With RT lighting the light comes from `rt_entity_light`, which turns to it itself.
+    if normal.w != 0.0 && !rt_entities() {
         c = vec4(c.rgb * entity_light(normal.xyz, globals.time.y != 0.0), c.a);
         back = select(c, vec4(back.rgb * entity_light(-normal.xyz, globals.time.y != 0.0), back.a), normal.w < 0.0);
     }
@@ -204,6 +214,39 @@ fn linear_fog(d: f32, start: f32, end: f32) -> f32 {
 }
 // Linear Light, as in terrain.wgsl: vanilla's gamma-space colour decoded on the way out.
 fn linear_on() -> bool { return globals.time.w > 0.5; }
+// RT lighting lights entities physically too (`rt_entity_light`), not through vanilla's lightmap:
+// at night a sheep is as dark as the grass it stands on.
+fn rt_entities() -> bool { return globals.rt_mode.x > 0.5 && linear_on(); }
+const RT_BLOCK_LIGHT: vec3<f32> = vec3(3.0, 1.9, 0.9);
+// RT lighting's sky that way (terrain.wgsl `rt_sky`, without the Eye of Aldhani's glow).
+fn rt_entity_sky(d: vec3<f32>) -> vec3<f32> {
+    let flat = d.xz / max(length(d.xz), 1e-5);
+    let sun = globals.rt_sun.xz / max(length(globals.rt_sun.xz), 1e-5);
+    let azimuth = acos(clamp(dot(flat, sun), -1.0, 1.0)) / 3.14159265;
+    let e = clamp(asin(clamp(d.y, -1.0, 1.0)) / 1.5707963, -1.0, 1.0);
+    let v = 0.5 + 0.5 * sign(e) * sqrt(abs(e));
+    return textureSampleLevel(rt_sky_view, lightmap_sampler, vec2(azimuth, v), 0.0).rgb;
+}
+// The light on an entity's face of normal `n` (zero: none, lit from all around) with sky and
+// block light levels `levels` (0 to 15), as the terrain's model lights a face where its rays
+// don't reach (terrain.wgsl `rt_shade`): the sun's (or the moon's) on the face, as much as the
+// sky light level says it sees the sky (an entity has no shadow ray of its own); the sky's from
+// where the face sees most of it, the level's share squared; the light sources' by the inverse
+// square of the steps the block light level stands for.
+fn rt_entity_light(n: vec3<f32>, levels: vec2<f32>) -> vec3<f32> {
+    let lit = dot(n, n) > 1e-6;
+    let facing = select(0.5, max(dot(normalize(n), globals.rt_light.xyz), 0.0), lit);
+    let up = select(0.6, n.y / max(length(n), 1e-6), lit);
+    let sky_level = pow(clamp(levels.x / 15.0, 0.0, 1.0), 2.0);
+    let sun = globals.rt_sun_light.rgb * globals.rt_light.w * facing * sky_level;
+    let dome = select(mix(0.6, 1.0, up), mix(0.6, 0.25, -up), up < 0.0);
+    let toward = select(vec3(0.0, 1.0, 0.0), normalize(normalize(n) + vec3(0.0, 1.0, 0.0)),
+        lit && n.y > -0.99);
+    let sky = rt_entity_sky(toward) * sky_level * dome;
+    let steps = max(15.0 - levels.y, 0.0);
+    let block = select(vec3(0.0), RT_BLOCK_LIGHT / ((1.0 + steps) * (1.0 + steps)), levels.y > 0.0);
+    return sun + sky + block;
+}
 fn decode_gamma(rgb: vec3<f32>) -> vec3<f32> { return pow(max(rgb, vec3(0.0)), vec3(2.2)); }
 fn scene_rgb(rgb: vec3<f32>) -> vec3<f32> {
     if linear_on() { return decode_gamma(rgb); }
@@ -251,6 +294,23 @@ fn crumbling_uv(uv: vec2<f32>, packed_origin: vec2<f32>, sprite_size: vec2<f32>,
     // entity.fsh calculateFinalColor: the overlay (hurt red, TNT white) over the
     // lit texture, then the lightmap, then the glint and fog.
     color = vec4(mix(in.overlay_color.rgb, color.rgb, in.overlay_color.a), color.a);
+    // RT lighting: the texel in light under the model's light, fogged in light (the glint, a
+    // sheen of its own, stays on top).
+    if rt_entities() && in.levels.x >= 0.0 {
+        let n = select(in.normal, -in.normal, !front && dot(in.normal, in.normal) > 0.0);
+        var lit = decode_gamma(color.rgb) * rt_entity_light(n, in.levels);
+        if in.overlay == 7u || in.overlay == 8u || in.overlay == 33u {
+            let px = in.uv * vec2<f32>(textureDimensions(atlas));
+            let t = globals.misc.y * 0.05;
+            let band = sin((px.x + px.y) * 0.9 - t * 6.0) * 0.5 + 0.5;
+            let band2 = sin((px.x - px.y) * 0.6 + t * 4.0) * 0.5 + 0.5;
+            let shimmer = pow(band * 0.6 + band2 * 0.4, 2.0);
+            lit += decode_gamma(vec3(0.50, 0.25, 0.80) * (0.25 + 0.75 * shimmer)) * 0.6;
+        }
+        let f = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
+            linear_fog(in.cylindrical, globals.fog.z, globals.fog.w)) * globals.fog_color.a;
+        return vec4(mix(lit, decode_gamma(globals.fog_color.rgb), f), color.a);
+    }
     color *= in.light_color;
     if in.overlay == 7u || in.overlay == 8u || in.overlay == 33u {
         // Enchantment glint (overlay 7, 8 with the hurt tint): the purple
