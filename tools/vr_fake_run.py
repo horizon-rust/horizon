@@ -74,6 +74,7 @@ def main() -> int:
     ap.add_argument("--out", default="vr-fake-run", help="report and captures")
     ap.add_argument("--world-frames", type=int, default=900, help="frames in the world before the game exits")
     ap.add_argument("--size", default="1600x1600", help="each eye's image")
+    ap.add_argument("--window", help="the game window's size, e.g. 3440x1440 (default the game's 1280x720)")
     ap.add_argument("--hz", type=float, default=90.0, help="the fake headset's rate (1000: unpaced)")
     ap.add_argument("--script", help="head and controller script (crates/horizon-xr-fake docs)")
     ap.add_argument("--capture-every", type=int, default=180, help="capture the eyes and panel every N frames")
@@ -161,6 +162,9 @@ def main() -> int:
         else:
             cmd = [str(game / f"horizon-client{EXE}"), "--world", "VR fake test", "--seed", args.seed,
                    "--world-frames", str(args.world_frames)]
+        if args.window:
+            width, height = args.window.split("x")
+            cmd += ["--width", width, "--height", height]
         # The game gives up a frame-limited run after its own timeout (120 s by default).
         cmd += ["--timeout-seconds", str(int(args.timeout))]
         socket = game / "control.json"
