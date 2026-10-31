@@ -1427,25 +1427,48 @@ fn sharp(texel: vec2<i32>) -> bool {
     let c = rt.inverse_view_proj * vec4(ndc, 1.0, 1.0);
     return dot(normalize(c.xyz / c.w), rt.fovea.xyz) >= rt.fovea.w;
 }
-// Away from the sharp zone a 4x4 block of mask texels shares one ray, traced by its first thread.
-var<workgroup> shared_rays: array<Traced, 4>;
-@compute @workgroup_size(8, 8) fn cs_shadow(
-    @builtin(global_invocation_id) id: vec3<u32>,
-    @builtin(local_invocation_id) local: vec3<u32>,
-) {
+// Away from the sharp zone a 4x4 block of mask texels shares one ray, its corner's, traced
+// beforehand by `cs_sparse`, a thread a block: traced here by the corner's own thread (one lane in
+// sixteen), every warp took as long as for thirty-two rays.
+struct SparseRay {
+    rays: vec4<f32>,
+    blocks: vec4<f32>,
+    direct: vec4<f32>,
+    sun: vec4<f32>,
+    reservoir: vec4<u32>,
+    gi_a: vec4<f32>,
+    gi_b: vec4<u32>,
+}
+// The sparse blocks' rays, row by row of blocks.
+@group(0) @binding(40) var<storage, read_write> sparse: array<SparseRay>;
+fn blocks_across() -> i32 {
+    return (i32(textureDimensions(mask).x) + 3) / 4;
+}
+@compute @workgroup_size(8, 8) fn cs_sparse(@builtin(global_invocation_id) id: vec3<u32>) {
+    let block = vec2<i32>(id.xy);
+    let corner = block * 4;
+    if any(corner >= vec2<i32>(textureDimensions(mask))) || sharp(corner + 2) { return; }
+    let v = trace(pixel_of(corner + 2), corner);
+    sparse[block.y * blocks_across() + block.x] = SparseRay(v.rays, v.blocks, v.direct, v.sun,
+        v.reservoir, gi_out_a, gi_out_b);
+}
+@compute @workgroup_size(8, 8) fn cs_shadow(@builtin(global_invocation_id) id: vec3<u32>) {
     let texel = vec2<i32>(id.xy);
     let corner = (texel / 4) * 4;
-    let block = (local.y / 4u) * 2u + local.x / 4u;
     let fine = sharp(corner + 2);
     var v = Traced(vec4(1.0), vec4(0.0, 0.0, 0.0, -1.0), vec4(0.0, 0.0, 0.0, -1.0), vec4(1.0),
         vec4(0u));
     if fine {
         v = trace(pixel_of(texel), texel);
-    } else if all(local.xy % vec2(4u) == vec2(0u)) {
-        shared_rays[block] = trace(pixel_of(corner + 2), corner);
+    } else {
+        let s = sparse[(corner.y / 4) * blocks_across() + corner.x / 4];
+        v = Traced(s.rays, s.blocks, s.direct, s.sun, s.reservoir);
+        // The block's GI reservoir is its corner's; the other texels keep none.
+        if all(texel == corner) {
+            gi_out_a = s.gi_a;
+            gi_out_b = s.gi_b;
+        }
     }
-    workgroupBarrier();
-    if !fine { v = shared_rays[block]; }
     if rt.mode.x > 0.5 { v = accumulate(texel, v); }
     if DEBUG == 3u { v.rays = vec4(textureLoad(depth, pixel_of(texel), 0) * 20.0 + 0.25); }
     if all(vec2<u32>(texel) < textureDimensions(mask)) {

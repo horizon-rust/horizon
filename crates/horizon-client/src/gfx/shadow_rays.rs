@@ -11,6 +11,8 @@ use glam::{DVec3, Mat4};
 
 /// The views kept at once: the window (0), two eyes, two quad-view insets.
 const KEPT: usize = 5;
+/// A sparse ray's bytes (shadow_rays.wgsl `SparseRay`: seven vectors of four).
+const SPARSE_RAY_BYTES: u64 = 7 * 16;
 
 /// Where the rays go, a view's choice: on the screen one a pixel (quality first); in VR one for
 /// 2x2 pixels where the eyes look, about the density KRVR streams to the headset, and one for 8x8
@@ -233,6 +235,10 @@ pub struct ShadowRays {
     hardware: bool,
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
+    sparse_pipeline: wgpu::ComputePipeline,
+    /// The sparse zone's rays (`cs_sparse`), one a 4x4 block of mask texels, for the largest
+    /// mask yet.
+    sparse: wgpu::Buffer,
     uniform: wgpu::Buffer,
     /// The Eye of Aldhani's field (`aldhani::Aldhani::field`), its meteors the rays light with.
     aldhani: wgpu::Buffer,
@@ -373,6 +379,7 @@ impl ShadowRays {
                 entry(34, output),
                 entry(38, cache_binding),
                 entry(39, storage),
+                entry(40, cache_binding),
             ]
             .into_iter()
             .chain(
@@ -420,33 +427,38 @@ impl ShadowRays {
             bind_group_layouts: &[Some(&layout)],
             ..Default::default()
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Ray-traced shadows"),
-            layout: Some(&pipeline_layout),
-            module: &shader,
-            entry_point: Some("cs_shadow"),
-            compilation_options: wgpu::PipelineCompilationOptions {
-                constants: &[
-                    (
-                        "DEBUG",
-                        std::env::var("HORIZON_RT_DEBUG")
-                            .ok()
-                            .and_then(|v| v.parse::<u32>().ok())
-                            .filter(|v| *v >= 3)
-                            .map_or(0.0, f64::from),
-                    ),
-                    (
-                        "SKIP",
-                        std::env::var("HORIZON_RT_SKIP")
-                            .ok()
-                            .and_then(|v| v.parse::<u32>().ok())
-                            .map_or(0.0, f64::from),
-                    ),
-                ],
-                ..Default::default()
-            },
-            cache: None,
-        });
+        let make = |entry: &str| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Ray-traced shadows"),
+                layout: Some(&pipeline_layout),
+                module: &shader,
+                entry_point: Some(entry),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[
+                        (
+                            "DEBUG",
+                            std::env::var("HORIZON_RT_DEBUG")
+                                .ok()
+                                .and_then(|v| v.parse::<u32>().ok())
+                                .filter(|v| *v >= 3)
+                                .map_or(0.0, f64::from),
+                        ),
+                        (
+                            "SKIP",
+                            std::env::var("HORIZON_RT_SKIP")
+                                .ok()
+                                .and_then(|v| v.parse::<u32>().ok())
+                                .map_or(0.0, f64::from),
+                        ),
+                    ],
+                    ..Default::default()
+                },
+                cache: None,
+            })
+        };
+        let pipeline = make("cs_shadow");
+        // The sparse zone's rays, a thread a block, before `pipeline`.
+        let sparse_pipeline = make("cs_sparse");
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Ray-traced shadows"),
             size: std::mem::size_of::<Uniform>() as u64,
@@ -556,6 +568,8 @@ impl ShadowRays {
             hardware,
             layout,
             pipeline,
+            sparse_pipeline,
+            sparse: Self::sparse_rays(device, 1),
             uniform,
             aldhani: aldhani.clone(),
             views: Vec::new(),
@@ -610,6 +624,16 @@ impl ShadowRays {
             }
         };
         &mut self.views[i]
+    }
+
+    /// Room for the sparse zone's rays (`cs_sparse`) in `bytes`.
+    fn sparse_rays(device: &wgpu::Device, bytes: u64) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("RT lighting's sparse rays"),
+            size: bytes.max(SPARSE_RAY_BYTES),
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        })
     }
 
     fn reservoir(device: &wgpu::Device, size: [u32; 2]) -> wgpu::TextureView {
@@ -754,6 +778,11 @@ impl ShadowRays {
         if self.hardware && hardware.is_none() {
             return [mask, blocks, sun, reflection, refraction];
         }
+        let block_count = mask_size.map(|v| v.div_ceil(4));
+        let needed = u64::from(block_count[0] * block_count[1]) * SPARSE_RAY_BYTES;
+        if self.sparse.size() < needed {
+            self.sparse = Self::sparse_rays(device, needed);
+        }
         let mut entries = vec![
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -809,6 +838,10 @@ impl ShadowRays {
                 binding: 39,
                 resource: self.aldhani.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: 40,
+                resource: self.sparse.as_entire_binding(),
+            },
         ];
         if let (true, Some(hw)) = (self.hardware, &hardware) {
             entries.extend([
@@ -837,6 +870,16 @@ impl ShadowRays {
             layout: &self.layout,
             entries: &entries,
         });
+        // Foveated, the sparse zone's rays first, a thread a block (shadow_rays.wgsl `cs_sparse`).
+        if foveation.gaze.is_some() {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("RT lighting's sparse rays"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.sparse_pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(block_count[0].div_ceil(8), block_count[1].div_ceil(8), 1);
+        }
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Ray-traced shadows"),
             timestamp_writes: None,
