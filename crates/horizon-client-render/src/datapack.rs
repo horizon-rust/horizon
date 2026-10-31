@@ -344,10 +344,11 @@ pub fn install(dir: &Path, world: &Path, selected: &[String]) -> Result<(), Stri
 /// its `datapacks` (`CreateWorldScreen.createTempDataPackDirFromExistingWorld`; `None` when the
 /// world has none), and the selection its `datapacks.json` makes, lowest
 /// priority first (`WorldOpenFlows.recreateWorldData` keeps the world's `DataConfiguration`).
-/// The built-in pack is selected unless the world turned it off.
-pub fn for_recreate(world: &Path) -> (Option<PathBuf>, Vec<String>) {
+/// The built-in pack is selected unless the world turned it off, and the
+/// feature packs of `resources` it had on stay on (the Experiments).
+pub fn for_recreate(world: &Path, resources: &Path) -> (Option<PathBuf>, Vec<String>) {
     let packs = discover(world);
-    let mut selected = enabled_ids(world, &packs);
+    let mut selected = enabled_ids(world, &discover_with_features(world, resources));
     let vanilla_off = std::fs::read(world.join("datapacks.json"))
         .ok()
         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())

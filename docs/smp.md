@@ -1,6 +1,6 @@
 # Survival multiplayer (SMP): the official server's mod
 
-The official Horizon server (horizon.bunchy7s.dev) wants an organised survival game: a currency players earn in
+The official Horizon server (play.playhorizon.dev) wants an organised survival game: a currency players earn in
 game, a server market, safe player-to-player trades, small games of chance with that currency, and spawn, homes,
 teleport requests, warps, land claims and rules.
 

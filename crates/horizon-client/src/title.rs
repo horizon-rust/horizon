@@ -821,6 +821,16 @@ impl Title {
     pub fn preparing(&self) -> bool {
         self.preparing
     }
+    /// The Create screen's chosen packs: the temp folder and the selected
+    /// ids, for the worldgen data the preparing read loads.
+    pub fn creation_packs(&self) -> Option<(Option<std::path::PathBuf>, Vec<String>)> {
+        match &self.mode {
+            Mode::Create { options, .. } => {
+                Some((options.pack_dir.clone(), options.data_packs.clone()))
+            }
+            _ => None,
+        }
+    }
     /// The read finished: the flag goes, and the create screen opens — a
     /// fresh one entering from the world list, the one the player already
     /// filled in after the data packs changed (`openCreateWorldScreen`).
@@ -830,8 +840,6 @@ impl Title {
             self.mode = Self::new_world();
         }
     }
-    /// The Data Packs screen's Done (`applyNewPackConfig`): its selection for
-    /// the new world.
     /// `PackSelectionScreen.onFilesDrop`: a pack dropped on the window joins
     /// the Create New World screen's data packs (the screen's watcher lists
     /// it within a second).
@@ -883,6 +891,21 @@ impl Title {
     /// Whether the confirm screen declined: the Data Packs screen reopens.
     pub fn take_reopen_data_packs(&mut self) -> bool {
         std::mem::take(&mut self.reopen_data_packs)
+    }
+    /// `onAbort`: the Data Packs screen reopens with the selection and the
+    /// folder it had (`take_reopen_data_packs` said it wants to).
+    pub fn reopen_data_packs_action(&mut self) -> Option<Action> {
+        if !self.take_reopen_data_packs() {
+            return None;
+        }
+        let (dir, selected) = match &self.mode {
+            Mode::Create { options, .. } => (
+                options.pack_dir.clone().unwrap_or_default(),
+                options.data_packs.clone(),
+            ),
+            _ => (Default::default(), Vec::new()),
+        };
+        Some(Action::DataPacks { dir, selected })
     }
     pub fn set_data_packs(&mut self, ids: Vec<String>) {
         if let Mode::Create { options, .. } = &mut self.mode {
@@ -1935,6 +1958,18 @@ impl Title {
         cursor: (f32, f32),
         hide_splash: bool,
     ) {
+        self.draw_with_items(atlas, None, batch, cursor, hide_splash);
+    }
+    /// [`Title::draw`] with the item models, which draw the item icons of the
+    /// Superflat screens the way `GuiGraphics.renderItem` does.
+    pub fn draw_with_items(
+        &self,
+        atlas: &HudAtlas,
+        items: Option<&crate::item_render::ItemRenderer>,
+        batch: &mut HudBatch,
+        cursor: (f32, f32),
+        hide_splash: bool,
+    ) {
         let (w, h) = (batch.width.ceil(), batch.height.ceil());
         if let Some(rules) = self.rules.borrow_mut().as_mut() {
             return rules.draw(batch, atlas, cursor);
@@ -2174,7 +2209,7 @@ impl Title {
                 options,
                 ..
             } => self.draw_create(atlas, batch, cursor, name, seed, *focus, options),
-            Mode::CreateFlat { flat, .. } => flat::draw(self, atlas, batch, cursor, flat),
+            Mode::CreateFlat { flat, .. } => flat::draw(self, atlas, items, batch, cursor, flat),
             Mode::Edit { name, focused, .. } => {
                 crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
                 centered(
@@ -2963,6 +2998,7 @@ impl Title {
                             &level,
                             world.commands,
                             &self.saves.join(&world.folder),
+                            &self.resources,
                         );
                         self.mode = Mode::Create {
                             name: level.name,
@@ -3190,6 +3226,10 @@ impl Title {
     }
     /// EditBox.charTyped / insertText at the cursor.
     pub fn type_text(&mut self, text: &str) {
+        // `GenericMessageScreen`: no field takes input during the read.
+        if self.preparing {
+            return;
+        }
         self.edit_field(|edit| edit.insert_text(text));
     }
     pub fn backspace(&mut self) {
@@ -3197,6 +3237,9 @@ impl Title {
     }
     /// EditBox.keyPressed: moving and deleting in the focused field.
     pub fn field_key(&mut self, key: winit::keyboard::KeyCode, ctrl: bool, shift: bool) -> bool {
+        if self.preparing {
+            return false;
+        }
         let mut handled = false;
         self.edit_field(|edit| handled = edit.key(key, ctrl, shift));
         handled
@@ -3446,27 +3489,39 @@ impl Title {
                 .as_ref()
                 .and_then(|s| s.click(atlas, cursor, size));
             match click {
+                // ExperimentsScreen: a switch only flips the screen's own
+                // list; the selection is written back when Done is pressed.
                 Some(experiments::Click::Switch(i)) => {
-                    let flipped = self
+                    if let Some(f) = self
                         .experiments
                         .borrow_mut()
                         .as_mut()
                         .and_then(|s| s.flags.get_mut(i))
-                        .map(|f| {
-                            f.enabled = !f.enabled;
-                            (f.id.clone(), f.enabled)
-                        });
-                    if let (Some((id, on)), Mode::Create { options, .. }) =
-                        (flipped, &mut self.mode)
                     {
-                        options.data_packs.retain(|p| p != &id);
-                        if on {
-                            options.data_packs.push(id);
-                        }
+                        f.enabled = !f.enabled;
                     }
                     return true;
                 }
                 Some(experiments::Click::Outcome(outcome)) => {
+                    // ExperimentsScreen.onDone: the other packs keep their
+                    // order, the selected features are appended in reverse
+                    // screen order. Cancel drops the switches.
+                    if outcome == experiments::Outcome::Done
+                        && let Mode::Create { options, .. } = &mut self.mode
+                        && let Some(flags) = self.experiments.borrow().as_ref().map(|s| {
+                            s.flags
+                                .iter()
+                                .map(|f| (f.id.clone(), f.enabled))
+                                .collect::<Vec<_>>()
+                        })
+                    {
+                        for (id, _) in &flags {
+                            options.data_packs.retain(|p| p != id);
+                        }
+                        for (id, _) in flags.iter().rev().filter(|(_, e)| *e) {
+                            options.data_packs.push(id.clone());
+                        }
+                    }
                     *self.experiments.get_mut() = None;
                     // `applyNewPackConfig`'s load screen: the data is read
                     // again for the packs the screen picked (Done only).
@@ -3546,6 +3601,11 @@ impl Title {
         }
     }
     pub fn escape(&mut self) {
+        // GenericMessageScreen.shouldCloseOnEsc is false: the preparing
+        // read takes no input, the player's options survive it.
+        if self.preparing {
+            return;
+        }
         if self.confirm_experiments.get_mut().take().is_some() {
             self.reopen_data_packs = true;
             return;

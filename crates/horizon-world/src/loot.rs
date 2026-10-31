@@ -44,11 +44,11 @@ impl PackOverlay<'_> {
     /// tag id `<ns>:<path>` the game's own tags are keyed by
     /// (`TagLoader`'s ids).
     pub fn tag_kind(&self, registry: &str) -> impl Iterator<Item = (String, &Vec<Vec<u8>>)> {
-        let tail = format!(":{registry}/");
+        let prefix = format!("{registry}/");
         self.files.iter().filter_map(move |(key, files)| {
             let rest = key.strip_prefix("tags/")?;
             let (ns, path) = rest.split_once(':')?;
-            let path = path.strip_prefix(&tail)?;
+            let path = path.strip_prefix(&prefix)?;
             Some((format!("{ns}:{path}"), files))
         })
     }
@@ -1811,6 +1811,59 @@ mod namespace_tests {
             seen.into_iter().collect::<Vec<_>>(),
             ["minecraft:ponder_goat_horn", "minecraft:sing_goat_horn"]
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // `content_id`'s tag key shape (`tags/<ns>:<registry>/<path>`) through
+    // `tag_kind`: the id loses the registry segment, keeps the namespace.
+    #[test]
+    fn tag_kind_yields_tag_loader_ids_for_content_id_keys() {
+        let overlay = PackOverlay {
+            files: &[
+                (
+                    "tags/minecraft:item/food".to_owned(),
+                    vec![br#"{"values": ["minecraft:bread"]}"#.to_vec()],
+                ),
+                (
+                    "tags/minecraft:enchantment/trades/desert_common".to_owned(),
+                    vec![br#"{"values": ["minecraft:infinity"]}"#.to_vec()],
+                ),
+            ],
+        };
+        let item: Vec<_> = overlay.tag_kind("item").map(|(id, _)| id).collect();
+        assert_eq!(item, ["minecraft:food"]);
+        let enchantment: Vec<_> = overlay.tag_kind("enchantment").map(|(id, _)| id).collect();
+        assert_eq!(enchantment, ["minecraft:trades/desert_common"]);
+        // Another registry's files stay out.
+        assert_eq!(overlay.tag_kind("instrument").count(), 0);
+    }
+
+    /// A pack's tag file joins the game's own in `TagLoader` order, and its
+    /// `replace` drops what the lower sources put in.
+    #[test]
+    fn pack_tags_join_and_replace_the_game_own() {
+        let root = std::env::temp_dir().join(format!("horizon-loot-tag-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("data/minecraft/tags/item")).unwrap();
+        fs::write(root.join("items.json"), "{}").unwrap();
+        fs::write(
+            root.join("data/minecraft/tags/item/food.json"),
+            r#"{"values": ["minecraft:bread", "minecraft:cookie"]}"#,
+        )
+        .unwrap();
+        let overlay = PackOverlay {
+            files: &[(
+                "tags/minecraft:item/food".to_owned(),
+                vec![
+                    br#"{"values": ["minecraft:kelp"]}"#.to_vec(),
+                    br#"{"replace": true, "values": ["minecraft:apple"]}"#.to_vec(),
+                ],
+            )],
+        };
+        let data = LootData::load(&root, &overlay).unwrap();
+        assert!(data.in_tag("item", "minecraft:food", "minecraft:apple"));
+        assert!(!data.in_tag("item", "minecraft:food", "minecraft:bread"));
+        assert!(!data.in_tag("item", "minecraft:food", "minecraft:kelp"));
         let _ = fs::remove_dir_all(&root);
     }
 }

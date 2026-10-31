@@ -2075,6 +2075,8 @@ impl Game<'_> {
                 .names
                 .display_get(&key)
                 .unwrap_or_else(|| self.pack.names.display_item(&stack.item))
+        } else if let Some(head) = horizon_client::item_tooltip::player_head_name(stack) {
+            head.title(&|key| self.pack.names.display_get(key))
         } else {
             self.pack.names.display_item(&stack.item)
         }

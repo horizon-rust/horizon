@@ -67,9 +67,10 @@ impl WorldOptions {
         level: &crate::save::Level,
         commands: bool,
         dir: &std::path::Path,
+        resources: &std::path::Path,
     ) -> Self {
         let generation = crate::save::WorldGen::read(dir).unwrap_or_default();
-        let (pack_dir, data_packs) = crate::datapack::for_recreate(dir);
+        let (pack_dir, data_packs) = crate::datapack::for_recreate(dir, resources);
         Self {
             hardcore: level.hardcore,
             difficulty: DIFFICULTIES
