@@ -1998,6 +1998,29 @@ impl Game<'_> {
     pub(super) fn native_window(&self) -> bool {
         self.options.execution_role == ExecutionRole::Client
     }
+    /// Plays sound event `sound` (`minecraft:entity.generic.explode`, or a
+    /// mod's own from its `assets/<id>/sounds.json`) at `at` for this
+    /// player only, `delay` ticks from now (0 to 1200, a minute): a client
+    /// mod's sound that waits, as thunder heard after the flash or a blast
+    /// heard when its shock wave arrives. `volume` past 1 carries farther,
+    /// as vanilla's attenuation does (16 blocks times the volume). False, with
+    /// nothing played, on a server or for a value out of range; an event the
+    /// resources don't have plays nothing, as vanilla's. API
+    /// @API:native_local_sound@.
+    pub(super) fn native_play_local_sound(
+        &mut self,
+        sound: &str,
+        at: [f64; 3],
+        volume: f32,
+        pitch: f32,
+        delay: i32,
+    ) -> bool {
+        if !self.native_window() || !local_sound_ok(sound, at, volume, pitch, delay) {
+            return false;
+        }
+        self.audio.play_after(sound, at, volume, pitch, delay);
+        true
+    }
     /// Whether a box in `corner` shows: F3's debug screen takes both top
     /// corners (its left and right columns), and a bottom corner while one
     /// of its charts is drawn there.
@@ -3122,6 +3145,19 @@ fn config_dir(options: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// Whether `native_play_local_sound` takes these values: a sound event's id
+/// (`sound_id`, as `native_play_sound` takes), a finite position, a volume
+/// and pitch at or above 0, and a delay of a minute at most.
+fn local_sound_ok(sound: &str, at: [f64; 3], volume: f32, pitch: f32, delay: i32) -> bool {
+    sound_id(sound)
+        && at.iter().all(|v| v.is_finite() && v.abs() <= 30_000_000.0)
+        && volume.is_finite()
+        && volume >= 0.0
+        && pitch.is_finite()
+        && pitch >= 0.0
+        && (0..=1200).contains(&delay)
+}
+
 /// `v` within `lo..=hi`; `lo` when it is not a number.
 fn finite(v: f32, lo: f32, hi: f32) -> f32 {
     if v.is_finite() { v.clamp(lo, hi) } else { lo }
@@ -3154,6 +3190,35 @@ fn box_meets(b: &horizon_core::geometry::Aabb, min: [f64; 3], max: [f64; 3]) -> 
 
 #[cfg(test)]
 mod tests {
+
+    /// A client mod's sound needs a namespaced event, finite values and a
+    /// delay of a minute at most.
+    #[test]
+    fn a_local_sound_is_checked() {
+        use super::local_sound_ok;
+        let at = [0.5, 64.0, 0.5];
+        assert!(local_sound_ok("ironfall:boom_far", at, 8.0, 1.0, 140));
+        assert!(local_sound_ok(
+            "minecraft:entity.generic.explode",
+            at,
+            1.0,
+            1.0,
+            0
+        ));
+        assert!(!local_sound_ok("boom", at, 1.0, 1.0, 0));
+        assert!(!local_sound_ok("ironfall:", at, 1.0, 1.0, 0));
+        assert!(!local_sound_ok("Ironfall:Boom", at, 1.0, 1.0, 0));
+        assert!(!local_sound_ok(
+            "ironfall:boom",
+            [f64::NAN, 0.0, 0.0],
+            1.0,
+            1.0,
+            0
+        ));
+        assert!(!local_sound_ok("ironfall:boom", at, -1.0, 1.0, 0));
+        assert!(!local_sound_ok("ironfall:boom", at, 1.0, 1.0, 1201));
+        assert!(!local_sound_ok("ironfall:boom", at, 1.0, 1.0, -1));
+    }
 
     /// `native_play_sound` takes vanilla's and mods' sound ids, nothing else.
     #[test]

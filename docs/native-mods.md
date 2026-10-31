@@ -873,6 +873,16 @@ A model that moves (a turning gun barrel, a thrown projectile) is an `item_displ
 the mod's `.hmod` assets: summon it once, then move and pose it from a tick hook. Easing between ticks happens on each
 client, so a call a tick looks smooth.
 
+### Sounds a client mod plays
+
+`native_play_local_sound(sound, at, volume, pitch, delay)` (client) plays sound event `sound` at `at` for this player only,
+`delay` ticks from now (0 to 1200). The event is vanilla's (`minecraft:entity.generic.explode`) or the mod's own: a content
+mod's `assets/<id>/sounds.json` and `assets/<id>/sounds/*.ogg` load with the rest of its assets. A volume past 1 carries
+farther, as vanilla's attenuation does. A client half that hears from its server half (mod messages, API 40) where
+something happened can time the sound to the distance, such as a blast heard when its shock wave reaches the player:
+`delay = distance / speed`. It answers false on a server and for a value out of range; an event the resources lack
+plays nothing.
+
 ### Mod messages
 
 API 40, `crates/horizon-client/src/game/native_net.rs`: bytes between a mod's server half and its client half, on the
