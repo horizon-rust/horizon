@@ -1,5 +1,8 @@
 {
   "Home": "Головна",
+  "Builds": "Екземпляри",
+  "New build": "Новий екземпляр",
+  "Every build in one list: the version it plays, and whether that version is ready.": "Кожен екземпляр в одному списку: версія, яку він запускає, і чи вона готова.",
   "Mods": "Моди",
   "Servers": "Сервери",
   "Versions": "Версії",

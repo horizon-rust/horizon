@@ -1,5 +1,8 @@
 {
   "Home": "主页",
+  "Builds": "实例",
+  "New build": "新建实例",
+  "Every build in one list: the version it plays, and whether that version is ready.": "每个实例一行：它运行的版本以及该版本是否准备好。",
   "Mods": "模组",
   "Servers": "服务器",
   "Versions": "版本",

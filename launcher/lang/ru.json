@@ -1,5 +1,9 @@
 {
   "Home": "Главная",
+  "{version} is not installed": "{version} не установлена",
+  "Builds": "Сборки",
+  "New build": "Новая сборка",
+  "Every build in one list: the version it plays, and whether that version is ready.": "Каждая сборка в одном списке: какую версию она запускает и готова ли та.",
   "Mods": "Моды",
   "Servers": "Серверы",
   "Versions": "Версии",
@@ -122,7 +126,6 @@
   "Website": "Сайт",
   "Ready": "Готово",
   "Needs preparing": "Нужна подготовка",
-  "{version} is not installed": "{version} не установлена",
   "No version installed": "Версия не установлена",
   "Modpack": "Сборка модов",
   "From Horizon's registry": "Из каталога Horizon",

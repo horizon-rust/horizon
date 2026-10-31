@@ -1,5 +1,8 @@
 {
   "Home": "Inicio",
+  "Builds": "Instancias",
+  "New build": "Nueva instancia",
+  "Every build in one list: the version it plays, and whether that version is ready.": "Cada instancia en una lista: la versión que ejecuta y si ya está lista.",
   "Mods": "Mods",
   "Servers": "Servidores",
   "Versions": "Versiones",

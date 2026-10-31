@@ -176,79 +176,6 @@ impl Launcher {
         blocks::slot(None, &instance.name, size, &t).into_any_element()
     }
 
-    /// The sidebar's instances: those without a group, then each group under its name.
-    pub(super) fn instance_items(
-        &mut self,
-        heading: impl Fn(String) -> Div,
-        cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
-        let t = self.theme;
-        let selected = self.selected_instance().map(|i| i.id.clone());
-        let on_packs = self.page == Page::Mods && self.mods.on_modpacks();
-        let mut out = Vec::new();
-        let mut group = None;
-        for i in self.instances.list.clone() {
-            if i.group != group {
-                group = i.group.clone();
-                if let Some(g) = &group {
-                    out.push(heading(g.to_uppercase()).into_any_element());
-                }
-            }
-            let tag = self.version_of(&i).cloned();
-            let prepared = tag.as_deref().is_some_and(backend::is_prepared);
-            let (open, sub) = match i.kind {
-                InstanceKind::Default | InstanceKind::Own => (
-                    self.page == Page::Play && selected.as_ref() == Some(&i.id),
-                    match (&i.java, &tag, &i.version) {
-                        (Some(java), _, _) => java_line(java),
-                        (None, None, Some(own)) => {
-                            trf("{version} is not installed", &[("version", own)])
-                        }
-                        (None, None, None) => tr("No version installed").into(),
-                        (None, Some(_), _) if !prepared => tr("Needs preparing").into(),
-                        (None, Some(tag), Some(_)) => format!("{} · {tag}", tr("Ready")),
-                        (None, Some(_), None) => tr("Ready").into(),
-                    },
-                ),
-                InstanceKind::Port => {
-                    let slug = &i.id["port:".len()..];
-                    let summary = self.packs.iter().find(|p| p.slug == slug);
-                    (
-                        on_packs && self.pack_open.as_deref() == Some(slug),
-                        summary.map_or_else(|| tr("Modpack").into(), |p| p.summary()),
-                    )
-                }
-                InstanceKind::Pack => (false, tr("From Horizon's registry").into()),
-            };
-            // Java instances have nothing of Horizon's to prepare: no state square.
-            let state = (matches!(i.kind, InstanceKind::Default | InstanceKind::Own)
-                && i.java.is_none())
-            .then_some(if prepared { t.success } else { t.warn });
-            let icon = self.instance_icon(&i, 36.);
-            let clicked = i.clone();
-            out.push(
-                shell::row(format!("side-instance-{}", i.id), open, &t)
-                    .child(div().relative().child(icon))
-                    .child(shell::row_text(i.name.clone(), sub, state, &t))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        match clicked.kind {
-                            InstanceKind::Default | InstanceKind::Own => {
-                                this.select_instance(&clicked);
-                                this.go(Page::Play);
-                            }
-                            InstanceKind::Port => {
-                                this.show_modpack(Some(clicked.id["port:".len()..].into()))
-                            }
-                            InstanceKind::Pack => this.show_modpack(None),
-                        }
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-            );
-        }
-        out
-    }
-
     /// Opens the dialog for a new instance, or for changing `editing`.
     pub(super) fn open_instance_dialog(&mut self, editing: Option<Instance>) {
         let (name, group) = editing
@@ -864,7 +791,7 @@ pub(super) fn played_line(instance: &Instance) -> String {
 }
 
 /// A Java instance's line in the sidebar: "Java 1.21.4", and its loader ("· Fabric 0.16.9").
-fn java_line(j: &instances::JavaGame) -> String {
+pub(super) fn java_line(j: &instances::JavaGame) -> String {
     match &j.loader {
         Some(l) => format!("Java {} · {} {}", j.minecraft, l.kind.name(), l.version),
         None => format!("Java {}", j.minecraft),

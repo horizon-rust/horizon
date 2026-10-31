@@ -6,6 +6,7 @@
 mod agents_page;
 mod art;
 mod blocks;
+mod builds_page;
 mod cli;
 mod cli_tools;
 mod collection;
@@ -79,6 +80,8 @@ use theme::Theme;
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
     Play,
+    /// Every build in one list (the instances), where the sidebar used to list them.
+    Builds,
     Versions,
     /// Mods, resource packs and modpacks (imported ones and the browser's).
     Mods,
@@ -100,14 +103,16 @@ impl Page {
             Ok("versions") => Page::Versions,
             Ok("notes") => Page::Notes,
             Ok("settings") => Page::Settings,
+            Ok("builds" | "instances") => Page::Builds,
             _ => Page::Play,
         }
     }
 
     /// Every page, with its name and icon: the top bar shows all but Settings, which has its
     /// own button.
-    const ALL: [(Page, &'static str, &'static str); 6] = [
+    const ALL: [(Page, &'static str, &'static str); 7] = [
         (Page::Play, "Home", "home"),
+        (Page::Builds, "Builds", "box"),
         (Page::Mods, "Mods", "package"),
         (Page::Servers, "Servers", "server"),
         (Page::Versions, "Versions", "archive"),
@@ -2083,7 +2088,38 @@ impl Launcher {
                 cx.notify();
             },
         ));
-        let items = self.instance_items(heading, cx);
+        // One row, the build in use: the rest are on the Builds page, in one readable list.
+        let items: Vec<AnyElement> = match self.selected_instance().cloned() {
+            Some(instance) => {
+                let tag = self.version_of(&instance).cloned();
+                let prepared = tag.as_deref().is_some_and(backend::is_prepared);
+                let line = match (&tag, &instance.java) {
+                    (_, Some(java)) => instances_page::java_line(java),
+                    (Some(tag), None) => format!(
+                        "{tag} · {}",
+                        tr(if prepared { "Ready" } else { "Needs preparing" })
+                    ),
+                    (None, None) => tr("No version installed").to_string(),
+                };
+                // Java instances have nothing of Horizon's to prepare: no state square.
+                let state = instance
+                    .java
+                    .is_none()
+                    .then_some(if prepared { t.success } else { t.warn });
+                let icon = self.instance_icon(&instance, 36.);
+                vec![
+                    shell::row("side-instance-current", self.page == Page::Builds, &t)
+                        .child(div().relative().child(icon))
+                        .child(shell::row_text(instance.name.clone(), line, state, &t))
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.go(Page::Builds);
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                ]
+            }
+            None => Vec::new(),
+        };
         let mut rows = items.len();
         let list = div()
             .flex()
@@ -3949,6 +3985,7 @@ impl Render for Launcher {
         let size = window.viewport_size();
         let content = match self.page {
             Page::Play => self.play_page(cx),
+            Page::Builds => self.builds_page(cx),
             Page::Versions => self.versions_page(cx),
             Page::Mods => self.mods_page(cx),
             Page::Servers => self.servers_page(cx),

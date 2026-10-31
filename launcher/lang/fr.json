@@ -1,5 +1,9 @@
 {
   "Home": "Accueil",
+  "{version} is not installed": "{version} n’est pas installé",
+  "Builds": "Instances",
+  "New build": "Nouvelle instance",
+  "Every build in one list: the version it plays, and whether that version is ready.": "Une ligne par instance : la version qu'elle lance, et si elle est prête.",
   "Mods": "Mods",
   "Servers": "Serveurs",
   "Versions": "Versions",
@@ -122,7 +126,6 @@
   "Website": "Site web",
   "Ready": "Prêt",
   "Needs preparing": "À préparer",
-  "{version} is not installed": "{version} n'est pas installée",
   "No version installed": "Aucune version installée",
   "Modpack": "Modpack",
   "From Horizon's registry": "Du registre d'Horizon",
