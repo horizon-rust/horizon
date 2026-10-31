@@ -853,7 +853,13 @@ impl Game<'_> {
             bindings.retain(|id, _| live.contains(id));
             host.mob_players = bindings;
         }
-        self.mobs.append(&mut mobs);
+        // The ticked list goes back whole: appended to an empty list, a
+        // server's thousands of mobs were copied into a new buffer each tick.
+        if self.mobs.is_empty() {
+            self.mobs = mobs;
+        } else {
+            self.mobs.append(&mut mobs);
+        }
         self.died = died;
         // ... and entity event 60 goes out as it is: the poof.
         for (id, at, width, height) in gone {
