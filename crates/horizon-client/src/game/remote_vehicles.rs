@@ -395,9 +395,15 @@ impl Game<'_> {
 
 /// Whether a player's client moves `m`, the mount it rides
 /// (`isLocalInstanceAuthoritative`): a saddled horse, donkey, mule or camel
-/// it is the first passenger of (`AbstractHorse.getControllingPassenger`).
+/// it is the first passenger of (`AbstractHorse.getControllingPassenger`), or
+/// a harnessed adult happy ghast (`HappyGhast.getControllingPassenger`).
 fn client_moves(m: &Mob, first_passenger: bool) -> bool {
-    first_passenger && equine::moved_by_rider(m.species()) && m.extra.saddled && m.alive()
+    let steered = if m.species() == horizon_client::mobs::Species::HappyGhast {
+        m.extra.head.is_some() && !m.is_baby()
+    } else {
+        equine::moved_by_rider(m.species()) && m.extra.saddled
+    };
+    first_passenger && steered && m.alive()
 }
 
 /// `LocalPlayer.sendRidingJump`: START_RIDING_JUMP with
