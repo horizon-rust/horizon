@@ -324,12 +324,23 @@ def scenarios():
                                        f'mob minecraft:dolphin {dx} -63 0.5 0 {seed} persistent'], 'difficulty=0')
     add('dolphin_boat_far', 160, ['fill -40 -64 -40 40 -61 40 minecraft:water', 'player -20.5 -61 0.5 boat=0.1,0',
                                   'mob minecraft:dolphin 20.5 -63 0.5 0 203 persistent'], 'difficulty=0')
+    # FollowMobGoal: a parrot flies after a mob of another kind within 7 blocks and keeps about 3 away.
+    for i, (cx, seed) in enumerate([(5.5, 190), (3.5, 191), (-6.5, 192)]):
+        add(f'parrot_cow_{i}', 300, [f'mob minecraft:parrot 0.5 -59 0.5 0 {seed} persistent',
+                                      f'mob minecraft:cow {cx} -60 0.5 0 {seed + 10} persistent noai'], 'difficulty=0')
+    add('parrot_cow_far', 200, ['mob minecraft:parrot 0.5 -59 0.5 0 195 persistent',
+                                'mob minecraft:cow 12.5 -60 0.5 0 196 persistent noai'], 'difficulty=0')
     add('parrot_tree', 400, TREE + ['mob minecraft:parrot 0.5 -60 0.5 0 183 persistent'], 'difficulty=0')
     add('parrot_falling', 100, ['mob minecraft:parrot 0.5 -50 0.5 0 184 persistent'], 'difficulty=0')
     # A wolf the player hits (#3185, #2820): any wolf with a target is angry (the angry texture):
     # NeutralMob.updatePersistentAnger in Wolf.aiStep restarts the 20-39 s timer, one random draw,
     # every tick it has one, not once when hurt.
     add('wolf_hurt', 200, ['player 5.5 -60 0.5', 'mob minecraft:wolf 0.5 -60 0.5 0 181 persistent', 'hurt 20 0'])
+    # A tamed wolf its owner hits (#4119): TamableAnimal.canAttack never lets it target its owner,
+    # so HurtByTargetGoal doesn't start and the wolf stays calm; a second wolf of the same owner
+    # isn't called either.
+    add('wolf_owner_hurt', 120, ['player 5.5 -60 0.5', 'mob minecraft:wolf 0.5 -60 0.5 0 185 persistent owned',
+                                 'mob minecraft:wolf 0.5 -60 3.5 0 186 persistent owned', 'hurt 20 0'])
     # A wet wolf (#2885): Wolf.aiStep starts the shake of a wet wolf standing still on the ground,
     # Wolf.tick plays its sound (two draws) the same tick and cancels it again in water or rain.
     add('wolf_shake', 200, ['fill 0 -61 0 0 -61 0 minecraft:water', 'mob minecraft:wolf 0.5 -61 0.5 0 183 persistent'])

@@ -1506,13 +1506,7 @@ impl Game<'_> {
                 let Some(stack) = self.item_from_network(host, &p.item) else {
                     return;
                 };
-                if stack.count
-                    > self
-                        .res
-                        .items()
-                        .get(&stack.item)
-                        .map_or(64, |i| i.max_stack)
-                {
+                if !self.creative_stack_valid(host, gi, &stack) {
                     return;
                 }
                 let play = host.play.entry(conn).or_default();
@@ -1527,11 +1521,18 @@ impl Game<'_> {
                 self.as_guest(host, conn, |g| g.player_drop(stack));
             }
             S::SetCreativeModeSlot(p) => {
+                // Slot 0 is the crafting result: not a slot to set.
                 let g = &mut host.hub.guests[gi];
-                if !g.creative() || !(0..46).contains(&p.slot) {
+                if !g.creative() || !(1..46).contains(&p.slot) {
                     return;
                 }
                 let item = self.item_from_network(host, &p.item);
+                if item
+                    .as_ref()
+                    .is_some_and(|s| !self.creative_stack_valid(host, gi, s))
+                {
+                    return;
+                }
                 let slot = p.slot as usize;
                 let g = &mut host.hub.guests[gi];
                 let old = g.menu_slot(slot);
@@ -1708,6 +1709,7 @@ impl Game<'_> {
             // handleTeleportToEntityPacket: a spectator goes to the player,
             // in whichever level they are.
             S::TeleportToEntity(p) if spectator => self.guest_spectate_teleport(host, gi, p.uuid),
+            S::SpectatorAction(p) => self.guest_spectator_action(host, gi, p.target),
             S::ChangeGameMode(p) if host.hub.guests[gi].permission >= 2 => {
                 if let Some(mode) = usize::try_from(p.mode)
                     .ok()
@@ -1872,6 +1874,23 @@ impl Game<'_> {
                 }),
             );
         }
+    }
+
+    /// What ServerboundSetCreativeModeSlotPacket asks of a stack. Its codec
+    /// (`ItemStack.validatedStreamCodec`) encodes the stack with `ItemStack.CODEC`, whose count is
+    /// 1 to 99: more fails the packet and disconnects the player, as vanilla's decoder error does.
+    /// handleSetCreativeModeSlot's `validData` then ignores a stack beyond its own stack size.
+    fn creative_stack_valid(&self, host: &mut LanHost, gi: usize, s: &ItemStack) -> bool {
+        if s.count > 99 {
+            let g = &host.hub.guests[gi];
+            let conn = g.conn;
+            let reason = format!("Invalid packet: count {} is not in 1..99", s.count);
+            eprintln!("{} sent an invalid creative stack: {reason}", g.name);
+            host.hub
+                .kick(conn, horizon_protocol::text::literal(&reason));
+            return false;
+        }
+        s.count <= self.stack_max_size(s)
     }
 
     fn item_from_network(
@@ -2073,7 +2092,7 @@ impl Game<'_> {
     /// interaction: the host, another player, a mob, a vehicle or object, a
     /// dragon part or crystal, a projectile. None for an id the level doesn't
     /// have (the handlers then find nothing either).
-    fn guest_target_box(&self, host: &LanHost, gi: usize, id: i32) -> Option<Aabb> {
+    pub(super) fn guest_target_box(&self, host: &LanHost, gi: usize, id: i32) -> Option<Aabb> {
         let conn = host.hub.guests[gi].conn;
         if id == host.host_entity {
             return self.player.as_ref().map(|p| p.bounds());
@@ -2500,7 +2519,9 @@ impl Game<'_> {
             return;
         }
         let g = &mut host.hub.guests[i];
+        // restartClientLoadTimerAfterRespawn.
         g.dead = false;
+        g.load_timeout = horizon_client::lan::guest::CLIENT_LOADED_TIMEOUT;
         g.death_time = 0;
         g.health = 20.0;
         g.food = 20;
@@ -2577,6 +2598,7 @@ impl Game<'_> {
 
     /// Per tick, for every guest: dig, use items, pick up drops, die.
     pub(super) fn tick_guests(&mut self, host: &mut LanHost) {
+        self.tick_guest_cameras(host);
         self.lan_merchant_tick(host);
         self.lan_stations_tick(host);
         self.lan_tables_tick(host);
@@ -3802,6 +3824,7 @@ impl Game<'_> {
             self.combat.stuck.tick();
         }
         for g in &mut host.hub.guests {
+            g.shoulders = super::shoulders::shoulder_variants(g.saved.as_ref());
             g.stuck = match self.guest_combat.get_mut(&g.conn) {
                 Some(combat) => {
                     if !paused {
