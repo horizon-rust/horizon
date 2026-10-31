@@ -60,8 +60,13 @@ const JOINS: &[(u32, u32, Join)] = &[
 /// Letters that have joined forms and the code point of the isolated one; the
 /// final, initial and medial forms follow it (a right-joining letter has the
 /// isolated and final only). The lam-alef ligatures are their own letters.
-/// ICU leaves the extended letters (پ چ ژ ک گ ی and the rest of U+0679 to
-/// U+06D3) unchanged, so they are in `JOINS` but not here.
+/// The extended letters (پ چ ژ ک گ ی and the rest of U+0679 to U+06D3) are
+/// shaped too, as ICU's shaper does: `u_shapeArabic` and `ArabicShaping` share
+/// one table, and it turns پ into U+FB58, گ into U+FB95, چ into U+FB7D and ژ
+/// into U+FB8B. The extended letters that table has no presentation form for
+/// (U+0671, U+067F to U+0680, U+0683 to U+0684, U+0687, U+06A4, U+06A6,
+/// U+06AD, U+06B1, U+06B3 and the rest of the block) ICU leaves unchanged, so
+/// they stay out of this table and are left unchanged here too.
 #[rustfmt::skip]
 const FORMS: &[(u32, u32)] = &[
     (0x0622, 0xFE81), (0x0623, 0xFE83), (0x0624, 0xFE85), (0x0625, 0xFE87), (0x0626, 0xFE89),
@@ -71,6 +76,12 @@ const FORMS: &[(u32, u32)] = &[
     (0x0636, 0xFEBD), (0x0637, 0xFEC1), (0x0638, 0xFEC5), (0x0639, 0xFEC9), (0x063A, 0xFECD),
     (0x0641, 0xFED1), (0x0642, 0xFED5), (0x0643, 0xFED9), (0x0644, 0xFEDD), (0x0645, 0xFEE1),
     (0x0646, 0xFEE5), (0x0647, 0xFEE9), (0x0648, 0xFEED), (0x0649, 0xFEEF), (0x064A, 0xFEF1),
+    (0x0679, 0xFB66), (0x067A, 0xFB5E), (0x067B, 0xFB52), (0x067E, 0xFB56), (0x0686, 0xFB7A),
+    (0x0688, 0xFB88), (0x068C, 0xFB84), (0x068D, 0xFB82), (0x068E, 0xFB86), (0x0691, 0xFB8C),
+    (0x0698, 0xFB8A), (0x06A9, 0xFB8E), (0x06AF, 0xFB92), (0x06BA, 0xFB9E), (0x06BB, 0xFBA0),
+    (0x06BE, 0xFBAA), (0x06C0, 0xFBA4), (0x06C1, 0xFBA6), (0x06C5, 0xFBE0), (0x06C6, 0xFBD9),
+    (0x06C7, 0xFBD7), (0x06C8, 0xFBDB), (0x06C9, 0xFBE2), (0x06CB, 0xFBDE), (0x06CC, 0xFBFC),
+    (0x06D0, 0xFBE4), (0x06D2, 0xFBAE), (0x06D3, 0xFBB0),
     (0xFEF5, 0xFEF5), (0xFEF7, 0xFEF7), (0xFEF9, 0xFEF9), (0xFEFB, 0xFEFB),
 ];
 
@@ -299,4 +310,93 @@ pub fn visual_str(s: &str) -> Cow<'_, str> {
             .map(|(c, _)| c)
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What `shape` makes of `s`.
+    fn shaped(s: &str) -> String {
+        let chars: Vec<char> = s.chars().collect();
+        shape(&chars).into_iter().collect()
+    }
+
+    /// `s` in visual order, for a left-to-right language.
+    fn visual(s: &str) -> String {
+        let chars: Vec<char> = s.chars().collect();
+        reorder(&chars, false).into_iter().map(|(c, _)| c).collect()
+    }
+
+    // The expected forms are ICU's: `u_shapeArabic(text, U_SHAPE_LETTERS_SHAPE)`
+    // on ICU 79.1 returns exactly these code points for these strings, so a
+    // missing or wrong row in `FORMS` fails here instead of in a chat window.
+
+    #[test]
+    fn persian_letters_take_their_joined_forms() {
+        // پ گ چ ژ: initial, medial, medial, final.
+        assert_eq!(
+            shaped("\u{067E}\u{06AF}\u{0686}\u{0698}"),
+            "\u{FB58}\u{FB95}\u{FB7D}\u{FB8B}"
+        );
+        // کتاب: ک initial, ت medial, ا final, ب isolated.
+        assert_eq!(
+            shaped("\u{06A9}\u{062A}\u{0627}\u{0628}"),
+            "\u{FB90}\u{FE98}\u{FE8E}\u{FE8F}"
+        );
+        // یک: ی initial, ک final.
+        assert_eq!(shaped("\u{06CC}\u{06A9}"), "\u{FBFE}\u{FB8F}");
+    }
+
+    #[test]
+    fn right_joining_letters_take_no_initial_or_medial_form() {
+        // ژ joins the letter before it only: it takes the final form and the ب
+        // after it stays isolated, as ICU shapes the pair.
+        assert_eq!(
+            shaped("\u{0628}\u{0698}\u{0628}"),
+            "\u{FE91}\u{FB8B}\u{FE8F}"
+        );
+    }
+
+    #[test]
+    fn base_arabic_keeps_the_forms_it_had() {
+        // ب ب ب: initial, medial, final, the control for the rows above.
+        assert_eq!(
+            shaped("\u{0628}\u{0628}\u{0628}"),
+            "\u{FE91}\u{FE92}\u{FE90}"
+        );
+    }
+
+    #[test]
+    fn lam_followed_by_an_alef_is_one_ligature() {
+        assert_eq!(shaped("\u{0644}\u{0627}"), "\u{FEFB}");
+        assert_eq!(shaped("\u{0644}\u{0622}"), "\u{FEF5}");
+    }
+
+    #[test]
+    fn left_to_right_text_keeps_its_order() {
+        assert_eq!(visual("Hello, world!"), "Hello, world!");
+        // "MC " stays left to right; the Persian run after it is shaped and
+        // reversed, so پ U+FB58 ends up rightmost.
+        assert_eq!(
+            visual("MC \u{067E}\u{06AF}\u{0686}\u{0698}"),
+            "MC \u{FB8B}\u{FB7D}\u{FB95}\u{FB58}"
+        );
+    }
+
+    #[test]
+    fn the_forms_table_is_sorted_and_every_row_joins() {
+        // `shape` binary-searches `FORMS`, so it has to be sorted by letter.
+        for pair in FORMS.windows(2) {
+            assert!(pair[0].0 < pair[1].0, "FORMS is unsorted at {pair:?}");
+        }
+        // A letter `JOINS` calls `Join::None` never reaches its row.
+        for &(letter, _) in FORMS {
+            let letter = char::from_u32(letter).expect("a letter is a char");
+            assert!(
+                !matches!(join(letter), Join::None),
+                "{letter} does not join"
+            );
+        }
+    }
 }
