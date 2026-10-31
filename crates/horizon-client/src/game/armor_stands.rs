@@ -722,6 +722,8 @@ impl Game<'_> {
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
         for (i, a) in self.armor_stands.iter_mut().enumerate() {
+            a.previous = a.position;
+            a.previous_yaw = a.yaw;
             if !ticking(a.position.x.floor() as i32, a.position.z.floor() as i32) {
                 continue;
             }
@@ -785,11 +787,10 @@ impl Game<'_> {
             let dragon = a.equipment[5]
                 .as_ref()
                 .is_some_and(|i| &*i.item == "minecraft:dragon_head");
-            let position = super::entity_culling::at(a.position);
             if !self.standing_entity_in_view(
                 camera,
-                position,
-                position,
+                super::entity_culling::at(a.previous),
+                super::entity_culling::at(a.position),
                 alpha,
                 width,
                 height,
@@ -798,7 +799,9 @@ impl Game<'_> {
             ) {
                 continue;
             }
-            let p = glam::DVec3::new(a.position.x, a.position.y, a.position.z) - camera;
+            // EntityRenderer: drawn between last tick's position and this one's.
+            let at = a.render_position(alpha);
+            let p = super::entity_culling::at(at) - camera;
             // setupRotations: 180 - body yaw, plus the wobble for 5 ticks after a hit.
             let wiggle = (self.world.game_time - a.last_hit) as f32 + alpha as f32;
             let wobble = if wiggle < 5.0 {
@@ -807,13 +810,15 @@ impl Game<'_> {
                 0.0
             };
             let base = glam::Mat4::from_translation(p.as_vec3())
-                * glam::Mat4::from_rotation_y((180.0 - a.yaw + wobble).to_radians())
+                * glam::Mat4::from_rotation_y(
+                    (180.0 - a.render_yaw(alpha as f32) + wobble).to_radians(),
+                )
                 * glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0))
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, -1.501, 0.0));
             let light = self.world.light(
-                a.position.x.floor() as i32,
-                (a.position.y + 0.5).floor() as i32,
-                a.position.z.floor() as i32,
+                at.x.floor() as i32,
+                (at.y + 0.5).floor() as i32,
+                at.z.floor() as i32,
             );
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             self.armor_stand_vertices(a, base, packed, out);

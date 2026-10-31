@@ -300,15 +300,10 @@ impl Game<'_> {
                 b.yaw = yaw;
             }
             b.on_ground = on_ground;
-        } else if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
-            if let Some(yaw) = yaw {
-                c.yaw = yaw;
-            }
-        } else if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) {
-            if let Some(yaw) = yaw {
-                a.yaw = yaw;
-            }
-            a.on_ground = on_ground;
+        } else if let Some(c) = self.carts.iter_mut().find(|c| c.id == id)
+            && let Some(yaw) = yaw
+        {
+            c.yaw = yaw;
         }
     }
 
@@ -347,9 +342,6 @@ impl Game<'_> {
             b.previous = b.position;
             b.previous_yaw = b.yaw;
             b.position = step(b.id, b.position);
-        }
-        for a in &mut self.armor_stands {
-            a.position = step(a.id, a.position);
         }
     }
 

@@ -947,9 +947,15 @@ pub struct ArmorStand {
     pub health: f32,
     pub id: u32,
     pub position: Vec3,
+    /// `Entity.xo`, `yo`, `zo`: the position at the start of the tick, which
+    /// the renderer blends toward `position` by the partial tick.
+    pub previous: Vec3,
     pub velocity: Vec3,
     pub on_ground: bool,
+    /// `yRot`, which the body follows (`ArmorStand.tickHeadTurn`: `yBodyRot`).
     pub yaw: f32,
+    /// `yBodyRotO`: the body's yaw at the start of the tick.
+    pub previous_yaw: f32,
     /// mainhand, offhand, feet, legs, chest, head (EquipmentSlot order).
     pub equipment: [Option<crate::items::ItemStack>; 6],
     pub small: bool,
@@ -985,15 +991,48 @@ impl ArmorStand {
         [-1.0, 0.0, -1.0],
         [1.0, 0.0, 1.0],
     ];
+    /// Where the renderer draws the stand `alpha` of the way through the tick
+    /// (`EntityRenderer`'s `Mth.lerp(partialTick, xo, x)` and so on).
+    pub fn render_position(&self, alpha: f64) -> Vec3 {
+        self.previous.lerp(self.position, alpha)
+    }
+    /// The body's yaw `alpha` of the way through the tick
+    /// (`LivingEntityRenderer.solveBodyRot`: `Mth.rotLerp(partialTick,
+    /// yBodyRotO, yBodyRot)`).
+    pub fn render_yaw(&self, alpha: f32) -> f32 {
+        self.previous_yaw + alpha * crate::camera::wrap_degrees(self.yaw - self.previous_yaw)
+    }
+    /// A server's stand on its client (`ClientLevel.tickNonPassenger`):
+    /// `setOldPosAndRot`, then the step of its `SteppedInterpolationHandler`
+    /// (`step`: the position and yaw it is put at, when one is due). The yaw
+    /// turns the short way and stays continuous, so a frame between ticks
+    /// never spins it.
+    pub fn interpolate(&mut self, step: Option<(Vec3, f32)>) {
+        self.previous = self.position;
+        self.previous_yaw = self.yaw;
+        if let Some((at, yaw)) = step {
+            self.position = at;
+            self.yaw += crate::camera::wrap_degrees(yaw - self.yaw);
+        }
+    }
+    /// `Entity.snapTo`: put there at once, with nothing to blend from.
+    pub fn snap(&mut self, at: Vec3, yaw: f32) {
+        self.position = at;
+        self.previous = at;
+        self.yaw = yaw;
+        self.previous_yaw = yaw;
+    }
     pub fn new(id: u32, position: Vec3, yaw: f32) -> Self {
         Self {
             fire_ticks: 0,
             health: 20.0,
             id,
             position,
+            previous: position,
             velocity: Vec3::ZERO,
             on_ground: true,
             yaw,
+            previous_yaw: yaw,
             equipment: Default::default(),
             small: false,
             show_arms: false,
@@ -1293,6 +1332,53 @@ mod fire_environment_tests {
             assert!(stand.environment_tick(&world, &facts, assets.registry));
         }
         assert_eq!(stand.health, 20.0, "lava does not hurt armor stands");
+    }
+}
+#[cfg(test)]
+mod armor_stand_render_tests {
+    use super::*;
+
+    /// A falling stand is drawn between last tick's position and this one's,
+    /// so it slides down every frame instead of jumping once a tick (#4416).
+    #[test]
+    fn a_falling_stand_is_drawn_between_its_ticks() {
+        let mut stand = ArmorStand::new(1, Vec3::new(0.5, 70.0, 0.5), 0.0);
+        // A new stand has no move behind it.
+        assert_eq!(stand.render_position(0.5), stand.position);
+        let fall = |s: &ArmorStand| Some((Vec3::new(0.5, s.position.y - 1.0, 0.5), 0.0));
+        stand.interpolate(fall(&stand));
+        assert_eq!(stand.render_position(0.0).y, 70.0);
+        assert_eq!(stand.render_position(0.25).y, 69.75);
+        assert_eq!(stand.render_position(1.0).y, 69.0);
+        stand.interpolate(fall(&stand));
+        assert_eq!(stand.render_position(0.5).y, 68.5);
+        // Landed: no step is due, so it stays put, and so does every frame.
+        stand.interpolate(None);
+        assert_eq!(stand.render_position(0.5).y, 68.0);
+    }
+
+    /// A turning stand's body turns between ticks too, the short way round.
+    #[test]
+    fn a_turning_stand_is_drawn_between_its_ticks() {
+        let mut stand = ArmorStand::new(1, Vec3::ZERO, 170.0);
+        assert_eq!(stand.render_yaw(0.5), 170.0);
+        // To -170 is 20 degrees on through 180, not 340 back through 0.
+        stand.interpolate(Some((Vec3::ZERO, -170.0)));
+        assert_eq!(stand.render_yaw(0.0), 170.0);
+        assert_eq!(stand.render_yaw(0.5), 180.0);
+        assert_eq!(stand.render_yaw(1.0), 190.0);
+        stand.interpolate(None);
+        assert_eq!(stand.render_yaw(0.5), 190.0);
+    }
+
+    /// A snap (a move too far to interpolate) leaves nothing to blend from.
+    #[test]
+    fn a_snapped_stand_is_drawn_where_it_landed() {
+        let mut stand = ArmorStand::new(1, Vec3::new(0.5, 70.0, 0.5), 0.0);
+        stand.interpolate(Some((Vec3::new(0.5, 69.0, 0.5), 0.0)));
+        stand.snap(Vec3::new(200.5, 64.0, 0.5), 90.0);
+        assert_eq!(stand.render_position(0.5), Vec3::new(200.5, 64.0, 0.5));
+        assert_eq!(stand.render_yaw(0.5), 90.0);
     }
 }
 #[cfg(test)]

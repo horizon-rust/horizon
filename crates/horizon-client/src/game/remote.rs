@@ -343,6 +343,63 @@ fn place_interpolated(m: &mut Mob, at: PosRot) {
     m.head_pitch = (at.pitch % 360.0).clamp(-90.0, 90.0);
 }
 
+/// The packet a living entity's move came in.
+#[derive(Clone, Copy, PartialEq)]
+enum MovePacket {
+    /// `handleMoveEntity`: always interpolated.
+    Move,
+    /// `handleEntityPositionSync`.
+    PositionSync,
+    /// `handleTeleportEntity` (`setValuesFromPositionPacket`).
+    Teleport,
+}
+
+impl MovePacket {
+    /// `tooBigToInterpolate`: a move to `to` of more than 64 blocks snaps.
+    /// A position sync measures it from where the entity is, a teleport from
+    /// where it is headed (`PositionMoveRotation.of`'s
+    /// `getClientPositionAndRotation`).
+    fn snaps(self, handler: &SteppedInterpolation, entity: PosRot, to: [f64; 3]) -> bool {
+        let from = match self {
+            MovePacket::Move => return false,
+            MovePacket::PositionSync => entity.position,
+            MovePacket::Teleport => handler.heading(entity).position,
+        };
+        let d = [0, 1, 2].map(|i| to[i] - from[i]);
+        d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 4096.0
+    }
+}
+
+/// A move `packet` to `to` for a living entity at `entity`, through its
+/// handler (`interpolateTo`): where it is put at once, if anywhere. A move
+/// too big to interpolate is a `snapTo`; vanilla leaves the handler running
+/// and its next step shifts what is left by the jump
+/// (`adjustInterpolationTargetFromDeltas`), which this handler doesn't port,
+/// so the steps are dropped instead. That is the same for an entity that
+/// wasn't moving, as a teleported one usually isn't.
+fn stepped_move(
+    handler: &mut SteppedInterpolation,
+    packet: MovePacket,
+    entity: PosRot,
+    to: [f64; 3],
+    path: Option<Path>,
+    rotation: Option<(f32, f32)>,
+) -> Option<PosRot> {
+    if packet.snaps(handler, entity, to) {
+        handler.cancel();
+        let (yaw, pitch) = rotation.unwrap_or((entity.yaw, entity.pitch));
+        return Some(PosRot {
+            position: to,
+            yaw,
+            pitch,
+        });
+    }
+    match handler.interpolate_to(entity, path, rotation) {
+        Start::Snap(at) => Some(at),
+        Start::Interpolating | Start::Unchanged => None,
+    }
+}
+
 /// What the network thread delivered, in order: an event, or a chunk packet
 /// handed to the decoder (with the format it decodes with), whose column
 /// comes back from `ChunkDecoder::next`.
@@ -2314,11 +2371,11 @@ impl Game<'_> {
             mob.persistent = true;
             self.mobs.retain(|m| m.id != id as u32);
             self.mobs.push(mob);
-            if let Some(r) = self.remote.as_mut() {
-                r.stepped.remove(&id);
-            }
         }
         if let Some(r) = self.remote.as_mut() {
+            // A new entity has a new interpolation handler (a mob's or an
+            // armor stand's), even under an id the server used before.
+            r.stepped.remove(&id);
             if kind == "minecraft:item" {
                 r.pending_items.insert(id, (position, Vec3::ZERO));
             }
@@ -2332,16 +2389,16 @@ impl Game<'_> {
         }
     }
     /// A move packet for entity `id`: to the end of `path` (None: a
-    /// rotation alone), turned to `rotation` if it has one. `far_snaps`:
-    /// an `EntityPositionSync`, which puts an entity more than 64 blocks
-    /// away there at once.
+    /// rotation alone), turned to `rotation` if it has one. `packet` says
+    /// whether a living entity more than 64 blocks away is put there at once
+    /// (`MovePacket::snaps`).
     fn move_entity(
         &mut self,
         id: i32,
         path: Option<Path>,
         rotation: Option<(f32, f32)>,
         on_ground: bool,
-        far_snaps: bool,
+        packet: MovePacket,
     ) {
         // The dragon is drawn from its own state (game/dragon.rs), which
         // tick_remote_dragon eases to the server's moves through `lerps`. Its
@@ -2387,33 +2444,40 @@ impl Game<'_> {
                     yaw: m.yaw,
                     pitch: m.head_pitch,
                 };
-                let far = far_snaps && {
-                    let d = [0, 1, 2].map(|i| position[i] - entity.position[i]);
-                    d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 4096.0
-                };
                 let handler = r.stepped.entry(id).or_insert_with(|| {
                     let interval = horizon_client::lan::tracking::settings(&m.kind.id).1;
                     SteppedInterpolation::new(interval as i32)
                 });
-                let snap = if far {
-                    handler.cancel();
-                    let (yaw, pitch) = rotation.unwrap_or((m.yaw, m.head_pitch));
-                    Some(PosRot {
-                        position,
-                        yaw,
-                        pitch,
-                    })
-                } else {
-                    match handler.interpolate_to(entity, path, rotation) {
-                        Start::Snap(at) => Some(at),
-                        Start::Interpolating | Start::Unchanged => None,
-                    }
-                };
-                if let Some(at) = snap {
+                if let Some(at) = stepped_move(handler, packet, entity, position, path, rotation) {
+                    // snapTo: setOldPosAndRot too.
                     place_interpolated(m, at);
                     m.previous = m.position;
+                    m.previous_yaw = m.yaw;
+                    m.previous_head_pitch = m.head_pitch;
                 }
                 m.on_ground = on_ground;
+                return;
+            }
+            // An armor stand is a living entity too: the same handler, over
+            // its type's update interval, stepped in `tick_remote_entities`.
+            if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id as u32) {
+                let entity = PosRot {
+                    position: [a.position.x, a.position.y, a.position.z],
+                    yaw: a.yaw,
+                    pitch: 0.0,
+                };
+                let handler = r.stepped.entry(id).or_insert_with(|| {
+                    let interval =
+                        horizon_client::lan::tracking::settings("minecraft:armor_stand").1;
+                    SteppedInterpolation::new(interval as i32)
+                });
+                if let Some(at) = stepped_move(handler, packet, entity, position, path, rotation) {
+                    a.snap(
+                        Vec3::new(at.position[0], at.position[1], at.position[2]),
+                        at.yaw,
+                    );
+                }
+                a.on_ground = on_ground;
                 return;
             }
             // Interaction extends Entity and keeps its NO_OP interpolation
@@ -3090,14 +3154,20 @@ impl Game<'_> {
                         horizon_protocol::buf::unpack_degrees(x),
                     )
                 });
-                self.move_entity(m.id, path, rotation, m.on_ground, false);
+                self.move_entity(m.id, path, rotation, m.on_ground, MovePacket::Move);
             }
             C::EntityPositionSync(p) => {
                 let path = match p.path {
                     play::PositionPath::Linear(at) => Path::Linear(at),
                     play::PositionPath::Stepped(steps) => Path::Stepped(steps),
                 };
-                self.move_entity(p.id, Some(path), Some((p.yaw, p.pitch)), p.on_ground, true)
+                self.move_entity(
+                    p.id,
+                    Some(path),
+                    Some((p.yaw, p.pitch)),
+                    p.on_ground,
+                    MovePacket::PositionSync,
+                )
             }
             C::TeleportEntity(p) => {
                 let base = self
@@ -3117,12 +3187,13 @@ impl Game<'_> {
                     rel(play::relative::Y, 1),
                     rel(play::relative::Z, 2),
                 ];
+                // setValuesFromPositionPacket: interpolated, unless too far.
                 self.move_entity(
                     p.id,
                     Some(Path::Linear(position)),
                     Some((p.yaw, p.pitch)),
                     p.on_ground,
-                    false,
+                    MovePacket::Teleport,
                 );
                 // handleTeleportEntity: the mount this client moves is put
                 // there at once.
@@ -6182,8 +6253,22 @@ impl Game<'_> {
                     (l.target, l.rotation.map(|r| r.0), steps)
                 });
             self.tick_remote_dragon(dragon_lerp);
-            // Boats, minecarts, armor stands, projectiles and the rest
-            // interpolate like mobs.
+            // Armor stands: ClientLevel.tickNonPassenger's setOldPosAndRot,
+            // then their SteppedInterpolationHandler's step, as the mobs'.
+            if let Some(r) = self.remote.as_mut() {
+                for a in &mut self.armor_stands {
+                    let step = r
+                        .stepped
+                        .get_mut(&(a.id as i32))
+                        .and_then(|h| h.interpolate());
+                    a.interpolate(step.map(|at| {
+                        let p = at.position;
+                        (Vec3::new(p[0], p[1], p[2]), at.yaw)
+                    }));
+                }
+            }
+            // Boats, minecarts, projectiles and the rest ease toward the
+            // server's position over three ticks (`lerps`).
             let mut step = |id: u32, at: Vec3| match lerps.get_mut(&(id as i32)) {
                 Some(l) if l.steps > 0 => {
                     let n = f64::from(l.steps);
@@ -9428,6 +9513,70 @@ mod tests {
         assert_eq!(synced_local_use(None, 3, 4, |_| true), Some((off, 0)));
         // LivingEntity.startUsingItem needs an item in the hand.
         assert_eq!(synced_local_use(None, 1, 4, |_| false), None);
+    }
+
+    /// tooBigToInterpolate: a position sync measures from where the entity
+    /// is, a teleport from where its interpolation is headed.
+    #[test]
+    fn a_far_move_snaps_by_the_packets_own_measure() {
+        use super::{MovePacket, Path, PosRot, SteppedInterpolation};
+        let at = |x: f64| PosRot {
+            position: [x, 0.0, 0.0],
+            yaw: 0.0,
+            pitch: 0.0,
+        };
+        let mut handler = SteppedInterpolation::new(3);
+        // At x 0, headed for x 50.
+        handler.interpolate_to(at(0.0), Some(Path::Linear([50.0, 0.0, 0.0])), None);
+        let to = [100.0, 0.0, 0.0];
+        assert!(MovePacket::PositionSync.snaps(&handler, at(0.0), to));
+        assert!(!MovePacket::Teleport.snaps(&handler, at(0.0), to));
+        assert!(!MovePacket::Move.snaps(&handler, at(0.0), to));
+        // With nothing in flight, both measure from the entity.
+        let idle = SteppedInterpolation::new(3);
+        assert!(MovePacket::Teleport.snaps(&idle, at(0.0), to));
+        assert!(!MovePacket::Teleport.snaps(&idle, at(0.0), [60.0, 0.0, 0.0]));
+    }
+
+    /// A far sync puts the entity there with nothing left to walk; a
+    /// rotation alone keeps the position it is headed for and turns there
+    /// over the update interval.
+    #[test]
+    fn a_living_entitys_move_snaps_or_steps() {
+        use super::{MovePacket, Path, PosRot, SteppedInterpolation, stepped_move};
+        let at = |x: f64, yaw: f32| PosRot {
+            position: [x, 0.0, 0.0],
+            yaw,
+            pitch: 0.0,
+        };
+        let mut handler = SteppedInterpolation::new(3);
+        let far = [100.0, 0.0, 0.0];
+        let snap = stepped_move(
+            &mut handler,
+            MovePacket::PositionSync,
+            at(0.0, 0.0),
+            far,
+            Some(Path::Linear(far)),
+            Some((90.0, 0.0)),
+        );
+        assert_eq!(snap, Some(at(100.0, 90.0)));
+        assert!(!handler.active());
+        // A rotation-only move packet.
+        let turn = stepped_move(
+            &mut handler,
+            MovePacket::Move,
+            at(100.0, 90.0),
+            far,
+            None,
+            Some((180.0, 0.0)),
+        );
+        assert_eq!(turn, None);
+        let steps: Vec<_> = std::iter::from_fn(|| handler.interpolate()).collect();
+        assert_eq!(
+            steps.iter().map(|s| s.yaw).collect::<Vec<_>>(),
+            [120.0, 150.0, 180.0]
+        );
+        assert!(steps.iter().all(|s| s.position == far));
     }
 
     #[test]

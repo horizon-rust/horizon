@@ -177,27 +177,36 @@ impl Game<'_> {
         // hologram): seated like the displays above, so the name follows its
         // vehicle instead of staying where the stand spawned. The stand's own
         // vehicle attachment is the default 0, so its feet sit on the seat.
+        // The seat at the start of the tick too (`commonTick` runs before
+        // `rideTick`), so the stand is drawn between the two even while the
+        // level is frozen and its vehicle is not.
+        let own_seat_before = self.player.as_ref().map(|p| {
+            self.previous_position
+                .add_vector(Vec3::new(0.0, f64::from(p.dimensions.height), 0.0))
+        });
         for i in 0..self.armor_stands.len() {
             let Some(vehicle) = self.armor_stands[i].vehicle else {
                 continue;
             };
-            let at = if Some(vehicle) == me {
-                let Some(at) = own_seat else { continue };
-                at
+            let (at, before) = if Some(vehicle) == me {
+                let (Some(at), Some(before)) = (own_seat, own_seat_before) else {
+                    continue;
+                };
+                (at, before)
             } else {
                 let Some(&j) = index.get(&vehicle) else {
                     continue;
                 };
                 let vehicle = &self.mobs[j];
-                riders::seat(
-                    riders::passenger_attachment(vehicle),
-                    0.0,
-                    vehicle.position,
-                    vehicle.yaw,
+                let attach = riders::passenger_attachment(vehicle);
+                (
+                    riders::seat(attach, 0.0, vehicle.position, vehicle.yaw),
+                    riders::seat(attach, 0.0, vehicle.previous, vehicle.previous_yaw),
                 )
             };
             let stand = &mut self.armor_stands[i];
             stand.position = at;
+            stand.previous = before;
             stand.velocity = Vec3::ZERO;
         }
     }
