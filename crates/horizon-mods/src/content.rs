@@ -523,7 +523,7 @@ impl Content {
     }
 }
 
-/// Vanilla component types only, removals as `{}`, and none of `fields`,
+/// Namespaced component types, removals as `{}`, and none of `fields`,
 /// which the file sets with its own keys.
 fn check_components(
     components: &BTreeMap<String, serde_json::Value>,
@@ -534,10 +534,8 @@ fn check_components(
             Some(kind) => (true, kind),
             None => (false, key.as_str()),
         };
-        if !vanilla_id(kind) {
-            return Err(format!(
-                "component {key:?} is not a vanilla type (minecraft:...)"
-            ));
+        if !kind.contains(':') {
+            return Err(format!("component {key:?} must be namespaced"));
         }
         if let Some(own) = kind
             .strip_prefix("minecraft:")
@@ -961,14 +959,9 @@ capabilities = ["registries"]
         );
         for (case, components, why) in [
             (
-                "modded-component",
-                r#"{"ruby:mana": 3}"#,
-                "not a vanilla type",
-            ),
-            (
                 "bare-component",
                 r#"{"max_damage": 3}"#,
-                "not a vanilla type",
+                "must be namespaced",
             ),
             (
                 "own-key",
@@ -1008,11 +1001,6 @@ capabilities = ["registries"]
             assert!(e.contains("crafting_remainder"), "{case}: {e}");
         }
         for (case, block, why) in [
-            (
-                "block-modded-component",
-                r#"{"template": "minecraft:stone", "components": {"ruby:mana": 3}}"#,
-                "not a vanilla type",
-            ),
             (
                 "block-removal-value",
                 r#"{"template": "minecraft:stone", "components": {"!minecraft:lore": []}}"#,

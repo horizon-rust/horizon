@@ -116,6 +116,13 @@ gets its own damage and durability, or a tool its mining speed:
     "!minecraft:repairable": {} } }
 ```
 
+Native mods can register component types before content loads. A content item
+can set a registered type with a JSON value, such as `"sample:charge": {"charge": 42}`.
+JSON values become NBT values. Values must fit the network NBT limits and
+round-trip through saved NBT; negative zero is not supported. A key such as
+`"!sample:charge": {}` removes the template's default. Unknown types fail when Horizon builds the content root;
+`cargo horizon-mod check` cannot check native registrations.
+
 A block's item takes the same `components`, over the components of its
 template block's item; a block with `"item": false` can't have them. Block files
 have no `max_stack_size` or `rarity` keys, so those two go in `components` here

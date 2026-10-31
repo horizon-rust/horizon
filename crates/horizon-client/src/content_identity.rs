@@ -76,6 +76,22 @@ pub fn identity(root: &Path) -> Result<[u8; 32], IdentityError> {
         .collect();
     if !components.is_empty() {
         hash = hash_entries(hash, "horizon:nbt_components/v1", &components);
+        // Defaults are not sent in a stack patch. Both peers must therefore
+        // agree on their values as well as the registered wire IDs.
+        let bytes = std::fs::read(root.join("items.json")).map_err(IdentityError::Read)?;
+        let items: BTreeMap<String, BTreeMap<String, serde_json::Value>> =
+            serde_json::from_slice(&bytes).map_err(IdentityError::Json)?;
+        let mut defaults = Vec::new();
+        for (item, components) in items {
+            for (name, value) in components {
+                if horizon_protocol::item::custom::id(&name).is_some() {
+                    defaults.push((defaults.len() as u64, format!("{item}\0{name}\0{value}")));
+                }
+            }
+        }
+        if !defaults.is_empty() {
+            hash = hash_entries(hash, "horizon:nbt_component_defaults/v1", &defaults);
+        }
     }
     identities.insert(root.to_owned(), hash);
     Ok(hash)

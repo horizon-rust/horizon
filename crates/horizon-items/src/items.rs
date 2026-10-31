@@ -139,6 +139,8 @@ pub struct ItemInfo {
     pub bundle: bool,
     /// The ids of the item's default components (its prototype's keys).
     pub components: Vec<String>,
+    /// Opaque native component defaults, keyed by their registered name.
+    pub custom_components: std::collections::BTreeMap<String, horizon_world::nbt::Tag>,
 }
 /// `Item.Properties.craftRemainder` (not a data component, so not in the
 /// default-component report): what an item leaves in the grid when crafted with.
@@ -786,6 +788,18 @@ impl Items {
                         .as_object()
                         .map(|c| c.keys().cloned().collect())
                         .unwrap_or_default(),
+                    custom_components: c
+                        .as_object()
+                        .into_iter()
+                        .flatten()
+                        .filter(|(name, _)| !name.starts_with("minecraft:"))
+                        .map(|(name, value)| {
+                            (
+                                name.clone(),
+                                horizon_client_core::scoreboard::json_to_tag(value),
+                            )
+                        })
+                        .collect(),
                     crafting_remainder: CRAFT_REMAINDERS
                         .iter()
                         .find(|(item, _)| *item == name)

@@ -471,8 +471,8 @@ fn patch_components(
 ) -> std::result::Result<(), String> {
     for (key, value) in patch {
         let kind = key.strip_prefix('!').unwrap_or(key);
-        if !known.contains(kind) {
-            return Err(format!("{kind} is no component a vanilla item has"));
+        if !known.contains(kind) && horizon_protocol::item::custom::id(kind).is_none() {
+            return Err(format!("{kind} is not a known component type"));
         }
         if kind == key {
             entry.set(key, value.clone());
@@ -488,11 +488,20 @@ fn component_patch(
     id: &str,
     components: &BTreeMap<String, serde_json::Value>,
 ) -> Result<Vec<(String, J)>> {
-    Ok(components
+    components
         .iter()
-        .map(|(k, v)| Ok((k.clone(), serde_json::from_value(v.clone())?)))
-        .collect::<std::result::Result<_, serde_json::Error>>()
-        .map_err(|e| format!("{id}: {e}"))?)
+        .map(|(key, value)| {
+            if !key.starts_with('!') && horizon_protocol::item::custom::id(key).is_some() {
+                let tag = horizon_client_core::scoreboard::json_to_tag(value);
+                horizon_protocol::item::custom::validate(&tag)
+                    .map_err(|error| format!("{id}: component {key}: {error}"))?;
+            }
+            Ok((
+                key.clone(),
+                serde_json::from_value(value.clone()).map_err(|error| format!("{id}: {error}"))?,
+            ))
+        })
+        .collect()
 }
 
 fn read_json(path: &Path) -> Result<J> {

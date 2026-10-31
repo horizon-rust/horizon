@@ -63,7 +63,7 @@ fn item_components_patch_the_template_entry() {
     );
     for typo in [r#"{"minecraft:fod": {}}"#, r#"{"!minecraft:fod": {}}"#] {
         let e = patch_components(&mut entry, &patch(typo), &known).unwrap_err();
-        assert_eq!(e, "minecraft:fod is no component a vanilla item has");
+        assert_eq!(e, "minecraft:fod is not a known component type");
     }
 }
 
@@ -170,7 +170,7 @@ fn block_items_patch_their_template_item() {
         .unwrap_err();
     assert_eq!(
         e.to_string(),
-        "ruby:ruby_block: minecraft:fod is no component a vanilla item has"
+        "ruby:ruby_block: minecraft:fod is not a known component type"
     );
     fs::remove_dir_all(scratch).unwrap();
 }

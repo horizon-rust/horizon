@@ -889,6 +889,10 @@ impl Game<'_> {
     pub(super) fn native_minimap(&self, minimap: &mut Option<NativeMinimap>) {
         let _ = minimap;
     }
+    /// Register namespaced NBT component types before content loads.
+    pub(super) fn native_component_types(types: &mut Vec<String>) {
+        let _ = types;
+    }
     /// Options > Mods lists the native mods: push yours.
     pub(super) fn native_mods(&mut self, mods: &mut Vec<NativeMod>) {
         let _ = mods;

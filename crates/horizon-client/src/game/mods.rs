@@ -16,6 +16,22 @@ pub(super) struct ModsState {
     stopped: Vec<String>,
 }
 
+/// Freeze native component IDs before reading content or opening a connection.
+pub(super) fn register_components(root: &std::path::Path) -> horizon_client::Result<()> {
+    let path =
+        horizon_protocol::registry::Builtin::find(root).ok_or("registries.json not found")?;
+    let builtin = horizon_protocol::registry::Builtin::load(&path)?;
+    let types = builtin
+        .get("minecraft:data_component_type")
+        .ok_or("missing data component registry")?;
+    let first = i32::try_from(types.names.len())?;
+    let mut names = Vec::new();
+    Game::native_component_types(&mut names);
+    horizon_protocol::item::custom::install(first, names)
+        .map_err(|error| format!("invalid native component registration: {error}"))?;
+    Ok(())
+}
+
 /// `root` with the content mods that are on layered over it
 /// (docs/modpacks.md): their blocks, items, data and assets. Read once at
 /// start, before the resources load; a mod whose content is refused is left

@@ -185,6 +185,7 @@ mod moving_pistons;
 mod music;
 mod names;
 mod narrator;
+mod native_components;
 mod native_entities;
 mod native_hooks;
 mod native_lifecycle;
@@ -18931,6 +18932,7 @@ pub fn run() -> Result<()> {
             log::warn!("could not add the official server to servers.dat: {e}");
         }
     }
+    mods::register_components(&vanilla_root)?;
     let early_settings = Settings::load(&std::env::current_dir()?.join("options.txt"));
     // Minecraft's constructor opens the narrator; a server has none.
     if options.execution_role.is_client() {
