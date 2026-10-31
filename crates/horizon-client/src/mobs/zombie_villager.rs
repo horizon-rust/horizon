@@ -205,6 +205,7 @@ mod tests {
             nearest_player: None,
             others: &[],
             dropped: &[],
+            leash_boats: &[],
             others_grid: None,
             others_index: None,
             daylight: true,
