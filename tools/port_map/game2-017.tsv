@@ -83,8 +83,8 @@ JukeboxBlockEntity.notifyItemChangedInJukebox	port	crates/horizon-client/src/gam
 JukeboxBlockEntity.getComparatorOutput	port	crates/horizon-client/src/game/jukebox.rs::jukebox_signals	comparator value of the song
 JukeboxBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_block_entity	RecordItem and ticks
 JukeboxBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	RecordItem and ticks
-JukeboxBlockEntity.setTheItem	inline	crates/horizon-client/src/game/jukebox.rs::Game::use_jukebox	gap: player: hoppers and other containers cannot insert a disc
-JukeboxBlockEntity.canPlaceItem	port	crates/horizon-client/src/game/jukebox.rs::Game::use_jukebox	gap: player: hopper insertion of discs is missing
+JukeboxBlockEntity.setTheItem	port	crates/horizon-client/src/game/jukebox.rs::Game::jukebox_inserted	a disc a hopper or dropper feeds into the slot starts the song, with the block state, the level event and the neighbour and comparator updates
+JukeboxBlockEntity.canPlaceItem	port	crates/horizon-client/src/game/machines.rs::Containers::can_place	a playable disc into the empty single slot (`Jukebox.items`, which `BlockEntity.slots` now exposes), so a hopper reaches a jukebox
 JukeboxBlockEntity.setSongItemWithoutPlaying	skip:other		@VisibleForTesting setter; no player behaviour
 JukeboxBlockEntity.tryForcePlaySong	skip:other		@VisibleForTesting hook; no player behaviour
 LecternBlockEntity.hasBook	inline	crates/horizon-client/src/game/books.rs::Game::use_lectern	book-present check before a book is placed
