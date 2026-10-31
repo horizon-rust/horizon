@@ -1617,11 +1617,11 @@ struct DebugLineOut {
     let d = view_ray(in.ndc);
     let sky = rt_sky(d);
     let pixel = length(fwidth(d));
-    // What lies beyond the Moon (the Milky Way, the meteors far behind it in the Eye's storm too,
-    // their streaks drawn over the whole sky) it hides, even new and dark; the air before it not.
-    let beyond = (rt_milky_way(d, sky, pixel) + rt_meteor(d, sky, pixel) + aldhani_streaks(d, pixel))
-        * rt_moon_hides(d, pixel);
-    return vec4(sky + rt_sun_disc(d) + rt_moon_disc(d) + rt_glare(d) + beyond, 1.0);
+    // What lies beyond the Moon (the Milky Way) it hides, even new and dark; the air before it
+    // not, nor the meteors burning in it, a hundred kilometres up, in front of the Moon.
+    let beyond = rt_milky_way(d, sky, pixel) * rt_moon_hides(d, pixel);
+    return vec4(sky + rt_sun_disc(d) + rt_moon_disc(d) + rt_glare(d) + beyond
+        + rt_meteor(d, sky, pixel) + aldhani_streaks(d, pixel), 1.0);
 }
 // 0 toward the Moon's disc (above the horizon), 1 off it, over a pixel at its edge.
 fn rt_moon_hides(d: vec3<f32>, pixel: f32) -> f32 {

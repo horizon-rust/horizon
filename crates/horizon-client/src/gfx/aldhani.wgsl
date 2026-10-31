@@ -160,8 +160,14 @@ fn aldhani_make(slot: u32, t: f32, period: f32, long: bool) -> AldhaniMeteor {
     let age = t - start;
     let speed = select(35.0 + 35.0 * aldhani_rand(seed + 2u), 55.0 + 17.0 * aldhani_rand(seed + 2u), long);
     let persist = select(0.2 + 0.3 * aldhani_rand(seed + 4u), 0.4 + 0.5 * aldhani_rand(seed + 4u), long);
+    // Two in five of the long ones come from beyond the northern horizon: already burning 1300 to
+    // 1700 km away, past the horizon over the round Earth at their height, large bright ones
+    // skimming level along the top of the air toward the eye, they rise over the horizon as they
+    // come (their radiant is no burst point to them), for 500 to 900 km of their path.
+    let beyond = long && aldhani_rand(seed + 12u) < 0.4;
     let path = select(20.0 + 60.0 * aldhani_rand(seed + 3u),
-        min(300.0 + 800.0 * aldhani_rand(seed + 3u), (15.0 - persist) * speed), long);
+        min(select(300.0 + 800.0 * aldhani_rand(seed + 3u), 500.0 + 400.0 * aldhani_rand(seed + 3u), beyond),
+            (15.0 - persist) * speed), long);
     let lasts = path / speed;
     if age < 0.0 || age > lasts + persist { return o; }
     // Where it lights up: its angle from the eye, most near it but many out to the east and
@@ -173,17 +179,24 @@ fn aldhani_make(slot: u32, t: f32, period: f32, long: bool) -> AldhaniMeteor {
     let east = normalize(cross(vec3(0.0, 1.0, 0.0), ALDHANI_RADIANT));
     let lift = cross(ALDHANI_RADIANT, east);
     let a = normalize(cos(theta) * ALDHANI_RADIANT + sin(theta) * (cos(around) * east + sin(around) * lift));
-    if a.y < 0.01 { return o; }
+    if a.y < 0.01 && !beyond { return o; }
     // Its distance to the height it lights up at, over the round Earth.
     let height = 130.0 + 30.0 * aldhani_rand(seed + 7u);
     let r = EARTH_KM + height;
     let reach = sqrt(r * r - EARTH_KM * EARTH_KM * (1.0 - a.y * a.y)) - EARTH_KM * a.y;
-    let w = ALDHANI_RADIANT;
+    var origin = reach * a;
+    if beyond {
+        let az = (aldhani_rand(seed + 13u) - 0.5) * 2.2;
+        let far = 1300.0 + 400.0 * aldhani_rand(seed + 14u);
+        origin = vec3(sin(az), 0.0, -cos(az)) * far + vec3(0.0, height - far * far / (2.0 * EARTH_KM), 0.0);
+    }
+    let w = select(ALDHANI_RADIANT, normalize(vec3(ALDHANI_RADIANT.x, 0.0, ALDHANI_RADIANT.z)), beyond);
     // Its head (where it burns now, or where it ended) and its glow's tail behind it.
     let head_t = min(age, lasts);
     let tail_t = clamp(age - persist, 0.0, head_t);
-    let head = normalize(reach * a + (speed * head_t) * w);
-    let tail = normalize(reach * a + (speed * tail_t) * w);
+    let head = normalize(origin + (speed * head_t) * w);
+    let tail = normalize(origin + (speed * tail_t) * w);
+    let dist = length(origin + (speed * head_t) * w);
     // Its light along its path, and its glow fading once it has burnt out.
     let x = head_t / lasts;
     let peak = 0.55 + 0.3 * aldhani_rand(seed + 8u);
@@ -192,13 +205,19 @@ fn aldhani_make(slot: u32, t: f32, period: f32, long: bool) -> AldhaniMeteor {
     let curve = select(rise, fall, x > peak);
     let fade = exp(-max(age - lasts, 0.0) / (0.3 * persist));
     // Its brightness from the population index 2.2 (times the faintest), at most a fireball's.
-    let power = min(pow(max(aldhani_rand(seed + 9u), 1e-4), -1.17), 120.0);
+    let power = min(pow(max(aldhani_rand(seed + 9u), 1e-4), -1.17), 120.0) * select(1.0, 8.0, beyond);
     // Through the air toward it (grey: the show's colours stay): a low one is dimmed by its
     // airmass, and the haze over the horizon swallows the lowest streaks.
     let air = exp(-0.15 / max(head.y + 0.025, 0.03)) * smoothstep(-0.01, 0.06, head.y);
-    let colour = palette(around, theta, aldhani_rand(seed + 10u), aldhani_rand(seed + 11u));
+    // Its colour by where it lit up (its patch of sky).
+    let lit_at = normalize(origin);
+    let colour = palette(abs(atan2(dot(lit_at, lift), dot(lit_at, east))),
+        acos(clamp(dot(lit_at, ALDHANI_RADIANT), -1.0, 1.0)), aldhani_rand(seed + 10u), aldhani_rand(seed + 11u));
     // The sky's streak: faint ones still seen (the light compressed), dimmer far away.
-    let shown = pow(power, 0.6) * (0.3 + 0.7 * curve) * fade * air * pow(160.0 / reach, 0.9);
+    // Those from beyond the horizon are the storm's grazing giants: seen bright through the long
+    // air near the horizon all the same, as the show has them.
+    let seen = select(air, sqrt(air) * 6.0 * smoothstep(-0.01, 0.03, head.y), beyond);
+    let shown = pow(power, 0.6) * (0.3 + 0.7 * curve) * fade * seen * pow(160.0 / dist, 0.9);
     // Its width: wider when bright, thinner when short (a smaller meteoroid, less matter burning).
     o.tail = vec4(tail, (0.8 + 0.2 * log2(power + 1.0)) * mix(0.55, 1.0, smoothstep(20.0, 80.0, path)));
     o.head = vec4(head, f32(seed & 65535u));
@@ -206,7 +225,7 @@ fn aldhani_make(slot: u32, t: f32, period: f32, long: bool) -> AldhaniMeteor {
     // Its light on the terrain: by its power and the inverse square of its distance; its colour
     // half the sky's teal (thousands of them light the ground together, the teal ones the most).
     let lit = mix(colour, vec3(0.0, 1.0, 0.6), 0.4);
-    o.light = vec4(lit / dot(lit, vec3(0.2126, 0.7152, 0.0722)), power * curve * fade * air * (160.0 / reach) * (160.0 / reach));
+    o.light = vec4(lit / dot(lit, vec3(0.2126, 0.7152, 0.0722)), power * curve * fade * air * (160.0 / dist) * (160.0 / dist));
     return o;
 }
 // Meteor `k` in tile `tile`, unless `seen` (the `count` tiles it is in already) holds it.
