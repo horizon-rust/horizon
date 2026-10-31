@@ -1,0 +1,6 @@
+{
+  "hooks": [],
+  "rust_summary": "nicknames for server mods: `native_set_nickname` shows a name in place of a player's in chat and\nthe Tab list (the real one on hover), and `native_text_allowed` asks the server's chat filter, in\n`native_server.rs`.",
+  "doc_summary": "nicknames for server mods: `native_set_nickname(uuid, Option<&str>)` shows a name in place of a player's in chat (their messages, `/me`, `/msg`) and the Tab list, the real name on hover and everywhere else; `native_text_allowed(text)` asks the server's chat filter. Both outside a player's hook. Bundles need \"hooks\": @API:native-nicknames@.",
+  "comments": ["crates/horizon-client/src/game/native_server.rs"]
+}
