@@ -23,6 +23,9 @@ use horizon_protocol::{
 use horizon_world::registry::BlockStateId;
 use std::{collections::HashMap, time::Instant};
 
+mod server;
+pub use server::{Delivery, Job, Service, Verdict};
+
 /// The custom payload channel, both ways.
 pub const CHANNEL: &str = "horizon:lod";
 /// The server.properties key (Horizon's own): the farthest a player's far
