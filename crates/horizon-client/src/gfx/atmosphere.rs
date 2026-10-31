@@ -18,7 +18,7 @@
 //! sun overhead comes out at about 1.1 paper white, and the sky drawn and the light it gives
 //! agree.
 
-use glam::Vec3;
+use glam::{Vec3, Vec4};
 use wgpu::util::DeviceExt;
 
 /// The sky-view table: azimuth from the sun (0..pi), elevation (-pi/2..pi/2, finer at the horizon).
@@ -100,8 +100,8 @@ pub struct Atmosphere {
     convert: Pass,
     /// The transmittance table is made.
     lut_made: bool,
-    /// The sun's direction the sky-view table holds.
-    made_for: Option<(Vec3, f32)>,
+    /// The sun's direction, the moon's lit fraction and the rain's cover the sky-view table holds.
+    made_for: Option<(Vec3, f32, Vec4)>,
 }
 
 /// A compute pass: its pipeline, its bindings and the workgroups it runs.
@@ -319,15 +319,24 @@ impl Atmosphere {
     /// Makes the sky-view table again when the sun (toward `sun`, unit, y up) has moved since by
     /// more than a tenth of a degree, or the moon's lit fraction `moon_lit` (0 new, 1 full) has
     /// changed: Remix's passes on the GPU, in a command buffer of their own, ahead of the frame's.
-    pub fn update(&mut self, queue: &wgpu::Queue, sun: Vec3, moon_lit: f32) {
-        if self
-            .made_for
-            .is_some_and(|(last, lit)| last.dot(sun) > 0.999_998 && (lit - moon_lit).abs() < 1e-3)
-        {
+    /// `overcast` is the rain's cloud cover ([`overcast`]): the zenith's light (xyz) and how much of
+    /// the sky it covers (w); when only it changed, only the last pass runs again.
+    pub fn update(&mut self, queue: &wgpu::Queue, sun: Vec3, moon_lit: f32, overcast: Vec4) {
+        let same_sun = self.made_for.is_some_and(|(last, lit, _)| {
+            last.dot(sun) > 0.999_998 && (lit - moon_lit).abs() < 1e-3
+        });
+        let same_cover = self.made_for.is_some_and(|(_, _, last)| {
+            (last.w - overcast.w).abs() < 2e-3
+                && (last.truncate() - overcast.truncate()).length()
+                    <= 0.01 * overcast.truncate().length()
+        });
+        if same_sun && same_cover {
             return;
         }
-        self.made_for = Some((sun, moon_lit));
-        let sky = Sky::for_sun(sun, moon_lit);
+        self.made_for = Some((sun, moon_lit, overcast));
+        let mut sky = Sky::for_sun(sun, moon_lit);
+        sky.moon_radiance_value[3] = overcast.w;
+        sky.atmosphere_parameters[1..].copy_from_slice(&overcast.truncate().to_array());
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&sky));
         let mut encoder = self
             .device
@@ -337,8 +346,8 @@ impl Atmosphere {
         let lut = std::mem::replace(&mut self.lut_made, true);
         let passes = [
             (!lut).then_some(&self.lut),
-            Some(&self.single),
-            Some(&self.reduce),
+            (!same_sun).then_some(&self.single),
+            (!same_sun).then_some(&self.reduce),
             Some(&self.convert),
         ];
         for pass in passes.into_iter().flatten() {
@@ -352,6 +361,32 @@ impl Atmosphere {
         }
         queue.submit([encoder.finish()]);
     }
+}
+
+/// The rain's cloud cover over the sky table (`Atmosphere::update`): a CIE overcast sky (the
+/// zenith three times as bright as the horizon, the same all round) over as much of the sky as the
+/// rain level `rain` says (all of it from two thirds), letting through `through` of the light the
+/// clear day gives a level surface (`level_light`, paper whites: the sun's or the moon's on it and
+/// the clear sky's): a raining stratus deck about a third, a storm's cumulonimbus about a tenth. The zenith's light
+/// (xyz, slightly blue grey) is such that a level surface under it gets that, and w the cover.
+pub fn overcast(rain: f32, storm: f32, level_light: f32) -> Vec4 {
+    let cover = (rain * 1.5).clamp(0.0, 1.0);
+    let through = overcast_through(storm);
+    // A CIE overcast sky lights a level surface with 7/9 of its zenith's radiance times pi (the
+    // pi is in the table's units).
+    let zenith = through * level_light / (7.0 / 9.0);
+    (Vec3::new(0.93, 0.98, 1.06) * zenith).extend(cover)
+}
+
+/// The share of a clear day's light the rain's clouds let through (`overcast`).
+fn overcast_through(storm: f32) -> f32 {
+    0.35 + (0.12 - 0.35) * storm.clamp(0.0, 1.0)
+}
+
+/// The stops the rain's cloud cover takes off the light (`overcast`): the exposure's top under
+/// Remix's rain and thunder (set for a light it does not dim) is raised by as much.
+pub fn overcast_stops(rain: f32, storm: f32) -> f32 {
+    -overcast_through(storm).log2() * (rain * 1.5).clamp(0.0, 1.0)
 }
 
 impl Sky {
@@ -395,7 +430,7 @@ mod tests {
     /// The sky table the GPU makes for `sun`, as f32 texels.
     fn gpu_sky(device: &wgpu::Device, queue: &wgpu::Queue, sun: Vec3) -> Vec<[f32; 4]> {
         let mut atmosphere = Atmosphere::new(device);
-        atmosphere.update(queue, sun, 1.0);
+        atmosphere.update(queue, sun, 1.0, Vec4::ZERO);
         let row = SIZE[0] * 8;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sky readback"),

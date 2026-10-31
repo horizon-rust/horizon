@@ -45,6 +45,10 @@ struct Rt {
     // RT lighting's moving lights (a held torch, a burning mob: Remix's held light): camera-relative
     // position and light level (`moving_light`).
     moving: array<vec4<f32>, 8>,
+    // RT lighting's rain (terrain.wgsl's `Globals::rain`, `rain_sun`): x the rate (mm/h), z the
+    // shade's puddles; y the sun's puddles.
+    rain: vec4<f32>,
+    rain_sun: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> rt: Rt;
 @group(0) @binding(1) var depth: texture_depth_2d;
@@ -76,6 +80,207 @@ struct Seen {
 @group(0) @binding(38) var<storage, read_write> visibility: array<Seen>;
 // The Eye of Aldhani's field this frame (gfx/aldhani.wgsl): its meteors' light and its running sum.
 @group(0) @binding(39) var<storage, read> aldhani_field: AldhaniField;
+// RT lighting's rain map (gfx/rain.rs): where the puddles are, for the reflections.
+@group(0) @binding(40) var<storage, read> rain_map: array<u32>;
+// RAIN-BEGIN: physical rain and the wet world it leaves (rain.rs, gfx/rain.rs), the same text in
+// terrain.wgsl (the drops, the wet surfaces, the puddles) and gfx/shadow_rays.wgsl (what the
+// puddles reflect); a test keeps them equal. `rain_map` is the rain map (rain.rs `RainMap`).
+const RAIN_MAP: i32 = 256;
+// A world column's word in the rain map (`c` in any wrap of 4096 blocks), 0 where the map doesn't
+// hold it: outside its window (the texel holds another column) or not loaded.
+fn rain_cell(c: vec2<i32>) -> u32 {
+    let w = rain_map[u32((c.y & (RAIN_MAP - 1)) * RAIN_MAP + (c.x & (RAIN_MAP - 1)))];
+    let key = u32((c.x >> 8u) & 15) | (u32((c.y >> 8u) & 15) << 4u);
+    if (w >> 24u) != key || ((w >> 12u) & 15u) == 0u { return 0u; }
+    return w;
+}
+// A column's rain height (one above its top block), its surface (rain.rs `Surface`), whether it
+// rains there, how many of its neighbours stand higher, the block light above it.
+fn rain_height(w: u32) -> f32 { return f32(i32(w & 4095u) - 2048); }
+fn rain_surface(w: u32) -> u32 { return (w >> 12u) & 15u; }
+fn rain_falls(w: u32) -> bool { return ((w >> 20u) & 1u) == 1u; }
+fn rain_higher(w: u32) -> f32 { return f32((w >> 21u) & 7u); }
+fn rain_light(w: u32) -> f32 { return f32((w >> 16u) & 15u); }
+// How far under the rain height a surface's top is (paths and farmland: a sixteenth).
+fn rain_top(w: u32) -> f32 {
+    return rain_height(w) - select(0.0, 0.0625, rain_surface(w) == 11u);
+}
+// How porous a surface is where the pack says nothing (0 the water runs off, 1 it drinks it all;
+// Lagarde 2013's porosity): stone, wood, soil, sand, wool, metal and glass, leaves, partial
+// blocks, grass.
+fn rain_porosity(s: u32) -> f32 {
+    switch s {
+        case 1u: { return 0.35; }
+        case 2u: { return 0.5; }
+        case 3u, 11u: { return 0.7; }
+        case 4u: { return 0.9; }
+        case 5u: { return 1.0; }
+        case 6u: { return 0.0; }
+        case 7u: { return 0.1; }
+        case 9u: { return 0.6; }
+        default: { return 0.4; }
+    }
+}
+// How much of the water a surface drinks rather than holding as a film (sand and wool stay matte,
+// grass half: its blades hold drops, not a film).
+fn rain_absorbs(s: u32) -> f32 {
+    switch s {
+        case 4u: { return 0.7; }
+        case 5u: { return 1.0; }
+        case 9u: { return 0.5; }
+        default: { return 0.0; }
+    }
+}
+// How readily puddles sit on a surface, added to the puddle field; below -1 never (leaves, metal
+// and glass, partial blocks, water, the dry ones).
+fn rain_puddle_bias(s: u32) -> f32 {
+    switch s {
+        case 1u, 2u: { return 0.0; }
+        case 3u, 11u: { return 0.1; }
+        case 9u: { return -0.45; }
+        case 4u: { return -0.4; }
+        default: { return -9.0; }
+    }
+}
+// A cell's random number (PCG2D, Jarzynski and Olano 2020: exact on integers, so neighbouring
+// pixels and both eyes agree), and a seed's.
+fn rain_seed(c: vec2<i32>, k: u32) -> u32 {
+    var v = bitcast<vec2<u32>>(c) * 1664525u + 1013904223u;
+    v.x += v.y * 1664525u + k * 2654435761u;
+    v.y += v.x * 1664525u;
+    v ^= v >> vec2(16u);
+    v.x += v.y * 1664525u;
+    v.y += v.x * 1664525u;
+    return v.x ^ (v.y >> 16u);
+}
+fn rain_rand(n: u32) -> f32 {
+    let state = n * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return f32(((word >> 22u) ^ word) >> 8u) / 16777216.0;
+}
+// Smooth value noise over the world's plane, 0 to 1, a feature a unit across.
+fn rain_noise(p: vec2<f32>) -> f32 {
+    let i = vec2<i32>(floor(p));
+    let f = p - floor(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = rain_rand(rain_seed(i, 7u));
+    let b = rain_rand(rain_seed(i + vec2(1, 0), 7u));
+    let c = rain_rand(rain_seed(i + vec2(0, 1), 7u));
+    let d = rain_rand(rain_seed(i + vec2(1, 1), 7u));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+// How much rain reaches a surface at world `p` facing `n` (0 to 1; -1 where the map knows
+// nothing): the columns around the point the face looks onto let the rain down to their height,
+// blended over a block between their centres so a roof's edge leaves no staircase on the ground,
+// read a little off where a noise says so that the dry line under an awning is not ruled.
+fn rain_exposure(p: vec3<f32>, n: vec3<f32>) -> f32 {
+    if n.y < -0.5 { return 0.0; }
+    let jitter = vec2(rain_noise(p.xz * 1.3), rain_noise(p.zx * 1.3 + 19.0)) - 0.5;
+    let q = p.xz + n.xz * 0.5 + jitter * 0.5 - 0.5;
+    let base = vec2<i32>(floor(q));
+    let f = q - floor(q);
+    var sum = 0.0;
+    var known = 0.0;
+    for (var i = 0; i < 4; i++) {
+        let o = vec2(i & 1, i >> 1u);
+        let weight = mix(1.0 - f.x, f.x, f32(o.x)) * mix(1.0 - f.y, f.y, f32(o.y));
+        let w = rain_cell(base + o);
+        if w == 0u { continue; }
+        known += weight;
+        let top = rain_top(w);
+        sum += weight * smoothstep(top - 0.6, top - 0.05, p.y) * select(0.0, 1.0, rain_falls(w));
+    }
+    if known < 0.5 { return -1.0; }
+    return sum / known;
+}
+// How deep a puddle is at world `p` on a top face (0 none, 1 a full water surface). Puddles sit on
+// the tops of the columns that hold them, where a field rises above the level the rain has filled
+// them to (`level`, 0 to 1): a world-space noise a few blocks across, plus the hollows (neighbours
+// standing higher, blended between column centres), plus the pack's relief (`relief`: 0 the top,
+// 1 its deepest, 0.5 unknown), minus near an edge over lower ground or a block that holds none, so
+// their shores are organic and run on across blocks at the same height.
+fn rain_puddle(p: vec3<f32>, level: f32, relief: f32) -> f32 {
+    if level <= 0.0 { return 0.0; }
+    let c = vec2<i32>(floor(p.xz));
+    let w = rain_cell(c);
+    if w == 0u || !rain_falls(w) { return 0.0; }
+    let bias = rain_puddle_bias(rain_surface(w));
+    if bias < -1.0 { return 0.0; }
+    let top = rain_top(w);
+    if abs(p.y - top) > 0.02 { return 0.0; }
+    let f = p.xz - floor(p.xz);
+    // Toward a neighbour lower or holding none, the shore keeps back from the edge.
+    var edge = 1.0;
+    for (var i = 0; i < 4; i++) {
+        let side = select(vec2<i32>(select(-1, 1, i == 1), 0), vec2<i32>(0, select(-1, 1, i == 3)),
+            i >= 2);
+        let distance = select(select(f.x, 1.0 - f.x, i == 1), select(f.y, 1.0 - f.y, i == 3), i >= 2);
+        let n = rain_cell(c + side);
+        let higher = n != 0u && rain_top(n) > top + 0.5;
+        let level_with = n != 0u && abs(rain_top(n) - top) < 0.01
+            && rain_puddle_bias(rain_surface(n)) > -1.0;
+        if !(higher || level_with) { edge = min(edge, smoothstep(0.05, 0.45, distance)); }
+    }
+    // The hollows, blended between the centres of the columns level with this one.
+    let q = p.xz - 0.5;
+    let b = vec2<i32>(floor(q));
+    let g = q - floor(q);
+    var hollow = 0.0;
+    for (var i = 0; i < 4; i++) {
+        let o = vec2(i & 1, i >> 1u);
+        let weight = mix(1.0 - g.x, g.x, f32(o.x)) * mix(1.0 - g.y, g.y, f32(o.y));
+        let n = rain_cell(b + o);
+        let k = select(rain_higher(w), rain_higher(n), n != 0u && abs(rain_top(n) - top) < 0.01);
+        hollow += weight * k;
+    }
+    let noise = 0.55 * rain_noise(p.xz * 0.22) + 0.3 * rain_noise(p.xz * 0.57 + 7.0)
+        + 0.15 * rain_noise(p.xz * 1.9 + 3.0);
+    let field = noise + 0.08 * hollow + bias + 0.3 * (relief - 0.5) - 0.7 * (1.0 - edge);
+    let threshold = 1.02 - 0.52 * level;
+    return smoothstep(threshold, threshold + 0.05, field);
+}
+// Whether world `p` is on the top of its column under the rain with a film of water on it that
+// mirrors (not a surface that drinks it, not grass, whose blades break the film, not a dry one):
+// the rays trace its reflection.
+fn rain_film(p: vec3<f32>) -> bool {
+    let w = rain_cell(vec2<i32>(floor(p.xz)));
+    if w == 0u || !rain_falls(w) { return false; }
+    let s = rain_surface(w);
+    return abs(p.y - rain_top(w)) < 0.02 && rain_absorbs(s) == 0.0 && s != 9u && s != 10u
+        && s != 12u;
+}
+// The rain's ripples on still water at world `p` (x, z), `t` seconds: rings spreading from the
+// drops' impacts, in two offset layers of 0.4-block cells, each cell struck once a period (0.6 to
+// 1.1 s) with a chance growing with the rate (`rate` mm/h); the surface's slope (x, z). A ring
+// finer than a pixel (`footprint` blocks) fades out.
+fn rain_ripples(p: vec2<f32>, t: f32, rate: f32, footprint: f32) -> vec2<f32> {
+    let fade = 1.0 - smoothstep(0.03, 0.09, footprint);
+    if rate <= 0.0 || fade <= 0.0 { return vec2(0.0); }
+    let chance = clamp(rate / 12.0, 0.2, 1.0);
+    var slope = vec2(0.0);
+    for (var layer = 0u; layer < 2u; layer++) {
+        let q = p / 0.4 + f32(layer) * vec2(0.5, 0.37);
+        let base = vec2<i32>(floor(q));
+        for (var i = 0; i < 9; i++) {
+            let cell = base + vec2(i % 3 - 1, i / 3 - 1);
+            let seed = rain_seed(cell, 11u + layer);
+            let period = 0.6 + 0.5 * rain_rand(seed);
+            let phase = t / period + rain_rand(seed + 1u);
+            let age = fract(phase);
+            let strike = seed ^ (u32(i32(floor(phase))) * 2654435761u);
+            if rain_rand(strike) > chance { continue; }
+            let centre = vec2<f32>(cell) + vec2(rain_rand(strike + 2u), rain_rand(strike + 3u));
+            let d = (q - centre) * 0.4;
+            let r = length(d);
+            let x = r - age * 0.32;
+            let width = 0.02 + 0.03 * age;
+            let envelope = exp(-x * x / (width * width)) * (1.0 - age) * (1.0 - age);
+            slope += 0.35 * cos(x * 125.66) * envelope * d / max(r, 1e-4);
+        }
+    }
+    return slope * fade;
+}
+// RAIN-END
 // RT lighting's light from the light sources reaching the pixel (rgb, linear, the faces' facing
 // in); a below 0 past the grid, where the terrain falls back on the block light level.
 @group(0) @binding(9) var block_mask: texture_storage_2d<rgba16float, write>;

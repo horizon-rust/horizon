@@ -351,7 +351,11 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     }
     let hit = rayQueryGetCommittedIntersection(&q);
     water_at = vec4(0.0, 0.0, 0.0, -1.0);
-    if hit.kind == RAY_QUERY_INTERSECTION_NONE { return vec4(0.0); }
+    if hit.kind == RAY_QUERY_INTERSECTION_NONE {
+        // No water or glass in front: maybe a puddle on the solid terrain.
+        if solid { return hw_puddle(far, ray); }
+        return vec4(0.0);
+    }
     let at = ray * hit.t;
     // The waves on the water's top, as its shader's (terrain.wgsl `rt_water`).
     var n = vec3(0.0, 1.0, 0.0);
@@ -364,7 +368,9 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     if n.y > 0.5 && (layer == rt.water.x || layer == rt.water.y) {
         let world = at + rt.camera.xyz + rt.fraction.xyz;
         let w = water_waves(world.xz, rt.water.z, hit.t * 1.5 / rt.size.y);
-        n = normalize(vec3(-w.y, 1.0, -w.z));
+        // And the rain's ripples, as the water's shader has them (terrain.wgsl `rt_rain_ripples`).
+        let r = hw_rain_ripples(world, hit.t);
+        n = normalize(vec3(-w.y - r.x, 1.0, -w.z - r.y));
     }
     // Under the water, looking up at its top: the waves seen from below.
     if n.y < -0.5 && (layer == rt.water.x || layer == rt.water.y) {
@@ -376,7 +382,11 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     if abs(n.y) > 0.5 && (layer == rt.water.x || layer == rt.water.y) { water_at = vec4(n, hit.t); }
     var r = reflect(ray, n);
     if dot(r, n) < 0.0 { r = normalize(r - n * 2.0 * dot(r, n)); }
-    let start = at + n * 0.02;
+    return hw_mirror(at + n * 0.02, r);
+}
+// What a mirror at camera-relative `start` reflects along `r`: the surface met, lit by the sun's
+// shadow ray and the radiance cache (or the last frame's screen) there; a 0 at the sky.
+fn hw_mirror(start: vec3<f32>, r: vec3<f32>) -> vec4<f32> {
     let h = hw_hit(start, r, 512.0);
     if h.t < 0.0 { return vec4(0.0); }
     let seen = start + r * h.t;
@@ -385,4 +395,33 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     let last = cached_on(seen, h.normal);
     light += select(open_light(lifted, h.normal, seen), last.rgb, last.a >= 0.0);
     return vec4(h.through * h.albedo * light, 1.0);
+}
+// The rain's ripples (slopes) on the water's top at world `world`, `t` blocks from the camera,
+// where the rain falls on it (terrain.wgsl `rt_rain_ripples`).
+fn hw_rain_ripples(world: vec3<f32>, t: f32) -> vec2<f32> {
+    if rt.rain.x <= 0.0 { return vec2(0.0); }
+    let w = rain_cell(vec2<i32>(floor(world.xz)));
+    if w == 0u || !rain_falls(w) || rain_surface(w) != 10u || world.y < rain_height(w) - 1.2 {
+        return vec2(0.0);
+    }
+    return rain_ripples(world.xz, rt.water.z, rt.rain.x, t * 1.5 / rt.size.y);
+}
+// A puddle or a wet film on the solid terrain at camera-relative `at` (terrain.wgsl `rt_wet`; a
+// puddle as deep as it can be there: the pack's relief unknown, the sunlit puddles' level or the
+// shade's): its flat water, a puddle's rippled while it rains, reflects what the ray off it meets;
+// a 0 where there is neither or the reflection reaches the sky.
+fn hw_puddle(at: vec3<f32>, ray: vec3<f32>) -> vec4<f32> {
+    let level = max(rt.rain.z, rt.rain_sun.y);
+    if level <= 0.0 && max(rt.rain.y, rt.rain_sun.x) <= 0.2 { return vec4(0.0); }
+    let world = at + rt.camera.xyz + rt.fraction.xyz;
+    var slope = vec2(0.0);
+    if rain_puddle(world, level, 0.8) > 0.0 {
+        slope = rain_ripples(world.xz, rt.water.z, rt.rain.x, length(at) * 1.5 / rt.size.y);
+    } else if max(rt.rain.y, rt.rain_sun.x) <= 0.2 || !rain_film(world) {
+        return vec4(0.0);
+    }
+    let n = normalize(vec3(-slope.x, 1.0, -slope.y));
+    var r = reflect(ray, n);
+    r.y = abs(r.y);
+    return hw_mirror(at + vec3(0.0, 0.02, 0.0), r);
 }

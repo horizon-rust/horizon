@@ -36,6 +36,7 @@ fn entity_shader() -> String {
 mod crumbling_tests;
 mod entity_batch;
 mod entity_outline;
+mod rain;
 mod weather;
 use entity_batch::EntityBatch;
 pub use entity_batch::{
@@ -237,6 +238,10 @@ struct Globals {
     rt_camera: [f32; 4],
     /// RT lighting's moon (terrain.wgsl `rt_moon_disc`): toward it, and its angular radius.
     rt_moon: [f32; 4],
+    /// RT lighting's rain (`rain`): its rate, the shade's wetness and puddles, its cloud cover
+    /// (`atmosphere::overcast`); the sun's wetness and puddles, and the wind.
+    rain: [f32; 4],
+    rain_sun: [f32; 4],
 }
 pub type SectionKey = (i32, i32, i32);
 struct SectionGpu {
@@ -320,6 +325,11 @@ pub struct Frame<'a> {
     pub entity_spans: &'a [pack_draw::EntitySpan],
     pub weather: &'a [crate::weather::Vertex],
     pub weather_time: crate::weather::Time,
+    /// RT lighting's physical rain (`rain`): the rain this frame (none when vanilla's draws), how
+    /// wet the world is, and the rain map's cells when they changed (to upload).
+    pub rain: crate::rain::Rain,
+    pub wetness: crate::rain::Wetness,
+    pub rain_map: Option<&'a [u32]>,
     /// Horizon Extras' dynamic lights, nearest first (`dynamic_light::select`); empty when off.
     pub dynamic_lights: &'a [[f32; 4]],
     /// Cloud mesh inputs; geometry and GPU storage are retained by the renderer.
@@ -634,6 +644,8 @@ pub struct Renderer {
     milky_way_map: wgpu::TextureView,
     /// RT lighting's Eye of Aldhani (`aldhani`): its field and the event's clock.
     aldhani: aldhani::Aldhani,
+    /// RT lighting's physical rain: its map and its drops (`rain`).
+    rain: rain::Rain,
     /// Bound in place of RT lighting's sun through tinting glass while there is none: all of it.
     rt_sun_unused: wgpu::TextureView,
     /// Bound in place of RT lighting's depth prepass while there is none.
@@ -770,6 +782,7 @@ fn terrain_group(
     moon: &wgpu::TextureView,
     milky_way: &wgpu::TextureView,
     aldhani: &aldhani::Aldhani,
+    rain: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     let view = |binding, view| wgpu::BindGroupEntry {
         binding,
@@ -816,6 +829,10 @@ fn terrain_group(
             wgpu::BindGroupEntry {
                 binding: 22,
                 resource: aldhani.tiles().as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 23,
+                resource: rain.as_entire_binding(),
             },
         ],
     })
@@ -1674,6 +1691,8 @@ impl Renderer {
                 // The Eye of Aldhani's field and its streaks by tile of the sky.
                 entry(21, wgpu::ShaderStages::FRAGMENT, aldhani_storage),
                 entry(22, wgpu::ShaderStages::FRAGMENT, aldhani_storage),
+                // RT lighting's rain map (`rain`): the drops, the wet surfaces and the puddles.
+                entry(23, vf, aldhani_storage),
                 // The sky table: the stars read it where they are (vs_rt_star).
                 entry(
                     14,
@@ -2168,6 +2187,7 @@ impl Renderer {
                 .create_view(&Default::default())
         };
         let aldhani = aldhani::Aldhani::new(&device);
+        let rain = rain::Rain::new(&device, world_format, &layout, &shader);
         // Bound in place of RT lighting's last light while there is none.
         let moon_map = moon_map(&device, &queue);
         let milky_way_map = milky_way_map(&device, &queue);
@@ -2206,6 +2226,7 @@ impl Renderer {
             &moon_map,
             &milky_way_map,
             &aldhani,
+            rain.map(),
         );
         let crosshair_group = terrain_group(
             &device,
@@ -2226,6 +2247,7 @@ impl Renderer {
             &moon_map,
             &milky_way_map,
             &aldhani,
+            rain.map(),
         );
         let index_quads = 1 << 16;
         let indices = Self::quad_indices(&device, index_quads);
@@ -3075,7 +3097,7 @@ impl Renderer {
             panorama::Panorama::new(&device, &queue, world_format, linear, panorama_faces);
         let hw = hw_rays::HwRays::supported(&device);
         let shadow_rays =
-            shadow_rays::ShadowRays::new(&device, hw, sprite_split(), aldhani.field());
+            shadow_rays::ShadowRays::new(&device, hw, sprite_split(), aldhani.field(), rain.map());
         // Froxel volumetrics: hook 3.
         let froxels = froxels::Froxels::new(&device, hw, sprite_split());
         let hw_rays = hw.then(|| hw_rays::HwRays::new(&device));
@@ -3245,6 +3267,7 @@ impl Renderer {
             moon_map,
             milky_way_map,
             aldhani,
+            rain,
             rt_sun_unused,
             rt_depth_unused,
             atmosphere,
@@ -4165,6 +4188,7 @@ impl Renderer {
             &self.moon_map,
             &self.milky_way_map,
             &self.aldhani,
+            self.rain.map(),
         );
         self.crosshair_group = terrain_group(
             &self.device,
@@ -4185,6 +4209,7 @@ impl Renderer {
             &self.moon_map,
             &self.milky_way_map,
             &self.aldhani,
+            self.rain.map(),
         );
     }
     /// This frame's ray-traced shadows: the grid written up to date, the light's direction (the
@@ -4245,6 +4270,9 @@ impl Renderer {
             moving_count: frame.dynamic_lights.len().min(shadow_rays::MOVING_LIGHTS),
             // Set when the Eye of Aldhani's field is made this frame (`draw_frame`).
             aldhani: [-1.0, 0.0],
+            // Set with the globals (`draw_frame`).
+            rain: [0.0; 4],
+            rain_sun: [0.0; 4],
         }
     }
     /// Runs the Eye of Aldhani from `seconds` into it, or stops it (`None`); refused unless
@@ -4890,16 +4918,51 @@ impl Renderer {
         let angle = moon_phase.min(8.0 - moon_phase) * 45.0;
         let moon_lit = 10f32.powf(-0.4 * (0.026 * angle + 4e-9 * angle.powi(4)));
         let rt_sky = self.rt_lighting && world_linear && !(frame.title || frame.end_sky);
+        // The weather's levels (`set_volumetrics`, or a shader pack's).
+        let rain_level = self.froxels.camera.rain.max(frame.pack.rain);
+        let thunder_level = self.froxels.camera.thunder.max(frame.pack.thunder);
+        // RT lighting's cloud cover under the rain (`atmosphere::overcast`), whether or not the
+        // clouds are drawn: the sky table turns overcast, the sun and the moon dim behind it. What
+        // gets through is a share of what a clear day gives a level surface: the sun's (or the
+        // moon's) on it and the clear sky's, about a fifth of the sun's again.
+        let overcast = if rt_sky && rain_level > 0.0 && !frame.nether_lighting {
+            let level = if rt_sun.y > 0.0 {
+                self.atmosphere.sunlight(rt_sun) * rt_sun.y
+            } else {
+                self.atmosphere.sunlight(-rt_sun) * (atmosphere::MOONLIGHT * moon_lit * (-rt_sun.y))
+            };
+            let level =
+                level.dot(Vec3::new(0.2126, 0.7152, 0.0722)) * 1.2 * atmosphere::PAPER_WHITE;
+            let storm = (thunder_level / rain_level).clamp(0.0, 1.0);
+            atmosphere::overcast(rain_level, storm, level)
+        } else {
+            glam::Vec4::ZERO
+        };
         if rt_sky {
-            self.atmosphere.update(&self.queue, rt_sun, moon_lit);
+            self.atmosphere
+                .update(&self.queue, rt_sun, moon_lit, overcast);
         }
         // Remix's per-situation post-processing (its minecraft-logic confs): storms first, then
         // the sun's height.
         if let Some(t) = self.tonemap.as_mut().filter(|_| self.rt_lighting) {
-            t.set_params(if frame.pack.thunder > 0.5 {
-                tonemap::PostParams::THUNDER
-            } else if frame.pack.rain > 0.5 {
-                tonemap::PostParams::RAIN
+            // Remix's rain and thunder cap the exposure for a light they do not dim: under the
+            // overcast (`atmosphere::overcast`) the cap rises by the stops the clouds take off.
+            let storm = (thunder_level / rain_level.max(1e-3)).clamp(0.0, 1.0);
+            let clouds = if overcast.w > 0.0 {
+                atmosphere::overcast_stops(rain_level, storm)
+            } else {
+                0.0
+            };
+            t.set_params(if thunder_level > 0.5 {
+                tonemap::PostParams {
+                    ev_max: tonemap::PostParams::THUNDER.ev_max + clouds,
+                    ..tonemap::PostParams::THUNDER
+                }
+            } else if rain_level > 0.5 {
+                tonemap::PostParams {
+                    ev_max: tonemap::PostParams::RAIN.ev_max + clouds,
+                    ..tonemap::PostParams::RAIN
+                }
             } else if rt_sun.y < -0.05 {
                 tonemap::PostParams::NIGHT
             } else if rt_sun.y < 0.2 {
@@ -4930,10 +4993,13 @@ impl Renderer {
                     self.rt_moon_radius,
                 )
             };
-            let light = light * atmosphere::PAPER_WHITE;
+            // Behind the rain's clouds: about 3 % of the direct light gets through.
+            let light = light * atmosphere::PAPER_WHITE * (1.0 - 0.97 * overcast.w);
             [light.x, light.y, light.z, radius]
         };
         rt.sun_light = rt_sun_light;
+        // RT lighting's physical rain draws its drops (the wet surfaces need only the wetness).
+        let rain_drops = frame.rain.rate > 0.0 && self.rt_lighting && world_linear && !frame.title;
         let globals = Globals {
             view_proj: view_proj.to_cols_array_2d(),
             fog_color,
@@ -4999,6 +5065,9 @@ impl Renderer {
                     7 => 1.0,
                     8 => 2.0,
                     9 => 3.0,
+                    // 10: the rain's reach and puddles (terrain.wgsl `rt_wet`).
+                    10 => 4.0,
+                    11 => 5.0,
                     _ => 0.0,
                 },
                 // The light the rays trace toward is the moon's.
@@ -5012,7 +5081,8 @@ impl Renderer {
                 moon_phase,
                 meteors[0],
                 meteors[1],
-                frame.sky.star_brightness,
+                // Hidden behind the rain's clouds.
+                frame.sky.star_brightness * (1.0 - overcast.w),
             ],
             rt_star_frame: sky_stars::frame(frame.sky.sun_angle, frame.sun_path_tilt)
                 .to_cols_array_2d(),
@@ -5031,9 +5101,23 @@ impl Renderer {
                 let m = -rt_sun;
                 [m.x, m.y, m.z, self.rt_moon_radius]
             },
+            rain: [
+                frame.rain.rate,
+                frame.wetness.wet,
+                frame.wetness.puddles,
+                overcast.w,
+            ],
+            rain_sun: [
+                frame.wetness.wet_sun,
+                frame.wetness.puddles_sun,
+                frame.rain.wind[0],
+                frame.rain.wind[1],
+            ],
         };
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));
+        rt.rain = globals.rain;
+        rt.rain_sun = globals.rain_sun;
         // GameRenderer.render3dHud: the hand's projection at hudFov, with the
         // bob in its pose rather than the projection (same product).
         let hand_projection = Mat4::from_cols_array(&crate::camera::hand_projection(
@@ -5524,6 +5608,8 @@ impl Renderer {
                 bytemuck::cast_slice(&all),
             );
         }
+        self.rain
+            .prepare(&mut encoder, &mut self.uploads, frame.rain_map);
         self.weather.prepare(
             &self.device,
             &mut encoder,
@@ -6579,6 +6665,53 @@ impl Renderer {
                 },
             );
             gpu_passes::stamp(&mut encoder, "taa");
+        }
+        // RT lighting's physical rain (`rain`): the drops over the resolved scene, depth tested
+        // against the world's. Before the resolve the TAA's history (a sixteenth new a frame) would
+        // wash out thin streaks that move every frame; they take the still matrix, as the rays do.
+        if rain_drops && !pack_draws_weather {
+            let view_proj_offset = std::mem::offset_of!(Globals, view_proj) as u64;
+            if taa_now {
+                self.uploads.buffer(
+                    &mut encoder,
+                    &self.globals,
+                    view_proj_offset,
+                    bytemuck::cast_slice(&clean_view_proj.to_cols_array()),
+                );
+            }
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Rain drops"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: world_view,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: world_depth,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    ..Default::default()
+                });
+                self.rain.draw(&mut pass, &self.group);
+            }
+            if taa_now {
+                self.uploads.buffer(
+                    &mut encoder,
+                    &self.globals,
+                    view_proj_offset,
+                    bytemuck::cast_slice(&view_proj.to_cols_array()),
+                );
+            }
+            gpu_passes::stamp(&mut encoder, "rain drops");
         }
         // Heat haze above the flames in view (haze.rs), on the resolved scene; nothing is recorded
         // with no flame in range.

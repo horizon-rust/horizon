@@ -140,6 +140,7 @@ mod potions;
 mod powder_snow;
 mod pumpkin;
 mod raids;
+mod rain;
 mod recipe_book;
 mod remote;
 mod remote_chunks;
@@ -1310,6 +1311,8 @@ struct Game<'a> {
     fog: horizon_client::fog::FogState,
     screen_fx: horizon_client::screen_effects::ScreenEffects,
     weather_parameters: horizon_client::weather::ParameterCache,
+    /// Physical rain with RT lighting (`game/rain.rs`).
+    rain: rain::RainState,
     panorama_rotation: horizon_client::gfx::panorama::Rotation,
     world: World,
     streaming: Streaming,
@@ -10437,6 +10440,7 @@ impl Game<'_> {
             camera.y.floor() as i32,
             camera.z.floor() as i32,
         );
+        let physical = self.physical_rain();
         // The 32x32 direction table supports at most a 15-block radius.
         let radius = self.settings.weather_radius.clamp(0, 15);
         let eye = camera.to_array();
@@ -10454,6 +10458,10 @@ impl Game<'_> {
                 let Some(snow) = self.precipitation(x, cy, z) else {
                     continue;
                 };
+                // The renderer draws physical rain instead (game/rain.rs); snow stays vanilla's.
+                if !snow && physical {
+                    continue;
+                }
                 let parameters = self.weather_parameters.get(x, z);
                 let light = self.world.light(x, top.max(cy), z);
                 let coords = i32::from(light & 15) << 4 | i32::from(light >> 4) << 20;
@@ -11404,7 +11412,19 @@ impl Game<'_> {
         hud.patches.append(&mut self.map_patches);
         let entity_spans = std::mem::take(self.entity_spans.get_mut());
         let glowing = std::mem::take(self.glowing_vertices.get_mut());
+        let rain = if title {
+            None
+        } else {
+            let sun = horizon_client::celestial::direction(
+                sky.sun_angle,
+                self.settings.horizon.sun_path_tilt as f32,
+            );
+            Some(self.rain_frame(camera, alpha as f32, sun.y))
+        };
         let frame = Frame {
+            rain: rain.as_ref().map_or(Default::default(), |r| r.rain),
+            wetness: rain.as_ref().map_or(Default::default(), |r| r.wetness),
+            rain_map: rain.as_ref().and_then(|r| r.cells.as_deref()),
             weather: &weather,
             weather_time: horizon_client::weather::Time::new(self.world.game_time, alpha as f32),
             nether_lighting: self.dim == Dim::Nether,
@@ -11524,13 +11544,20 @@ impl Game<'_> {
                 // RT lighting's froxels, on as Remix's: the camera's medium from its block's sky
                 // light (a cave below 3), the water and the weather from `frame`.
                 let at = camera.floor().as_ivec3();
+                // The weather's levels even without a shader pack (`frame.pack` has them only with
+                // one): the rain's medium, its cloud cover and Remix's rain post-processing.
+                let (rain, thunder) = if self.dim == Dim::Overworld {
+                    self.world.weather.levels(alpha as f32)
+                } else {
+                    (0.0, 0.0)
+                };
                 renderer.set_volumetrics(
                     true,
                     horizon_client::gfx::CameraMedium {
                         in_water: false,
                         sky_light: f32::from(self.world.light(at.x, at.y, at.z) >> 4),
-                        rain: frame.pack.rain,
-                        thunder: frame.pack.thunder,
+                        rain: frame.pack.rain.max(rain),
+                        thunder: frame.pack.thunder.max(thunder),
                     },
                 );
                 horizon_client::spans::time("renderer", || renderer.render(&frame))
@@ -13194,6 +13221,7 @@ impl<'a> Game<'a> {
             fog: Default::default(),
             screen_fx: Default::default(),
             weather_parameters: Default::default(),
+            rain: Default::default(),
             panorama_rotation: Default::default(),
             world,
             streaming,
@@ -14256,6 +14284,9 @@ fn loading_renderer(
 /// A title-shaped frame: black clear and panorama, only the HUD is drawn.
 fn loading_frame(hud: &HudBatch) -> Frame<'_> {
     Frame {
+        rain: Default::default(),
+        wetness: Default::default(),
+        rain_map: None,
         weather: &[],
         weather_time: horizon_client::weather::Time::new(0, 0.0),
         camera: glam::DVec3::new(0.5, 100.0, 0.5),

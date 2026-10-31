@@ -49,6 +49,8 @@ struct Globals {
     rt_camera: vec4<f32>,
     // RT lighting's moon: toward it (xyz) and its angular radius (w); its phase in rt_stars.x.
     rt_moon: vec4<f32>,
+    rain: vec4<f32>,
+    rain_sun: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas: texture_2d<f32>;

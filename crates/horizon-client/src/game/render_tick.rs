@@ -289,8 +289,9 @@ impl Game<'_> {
                 e[2].floor() as i32,
             ];
             animate_tick(self.res.animate(), &mut self.particles, &ctx, block);
-            // The Horizon Weather option off means no rain visuals at all.
-            if rain > 0.0 && self.settings.horizon.weather {
+            // The Horizon Weather option off means no rain visuals at all; physical rain makes its
+            // own splashes (game/rain.rs).
+            if rain > 0.0 && self.settings.horizon.weather && !self.physical_rain() {
                 // ClientLevel.tickWeatherEffects: rain splashes within the weather radius.
                 let mut random = LegacyRandom::new(self.world.game_time.wrapping_mul(312_987_231));
                 let radius = self.settings.weather_radius;
