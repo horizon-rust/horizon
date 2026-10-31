@@ -1074,6 +1074,16 @@ impl Audio {
             heard: Default::default(),
             stopped: Default::default(),
             preview: Default::default(),
+            // A shared output has no stream of its own: the owner's engine
+            // tracks the devices.
+            #[cfg(feature = "audio")]
+            default_seen: None,
+            #[cfg(feature = "audio")]
+            cards_seen: None,
+            #[cfg(feature = "audio")]
+            devices_seen: Vec::new(),
+            #[cfg(feature = "audio")]
+            device_ticks: 0,
         }
     }
     /// Sync the volume options, refreshing the categories that changed
