@@ -112,12 +112,60 @@ fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>) -> vec3<f32> {
         let fresnel = 0.02 + 0.98 * pow(1.0 - l.y, 5.0);
         return focus * (1.0 - fresnel) * exp(-absorption * depth / max(-bent.y, 0.1));
     }
+    // Glass, and every other translucent block: each face it crosses is a wall (`glass_wall`).
+    let p0 = hw_position(base);
+    let f = cross(hw_position(base + 1u) - p0, hw_position(base + 2u) - p0);
+    if dot(f, f) < 1e-12 { return vec3(1.0); }
+    return glass_wall(hw_glass(c, base), abs(dot(normalize(f), l)));
+}
+// RT lighting's glass, Remix's translucent material as RTX Remix for Minecraft gives the block
+// atlas (its `BlockTextureManager`): a dielectric of index 1.52 whose transmittance is 0.97 over
+// 0.35 block (`transmittanceMeasurementDistance`), times the texel's colour for stained glass,
+// panes and the other translucent blocks (the atlas is their transmittance texture); the plain
+// glass (`rt.frame.y`, its block's and its pane edge's sprites packed as the lava's) keeps the grey
+// 0.97 under a diffuse layer of its texel, as opaque as the texel's alpha (`useDiffuseLayer`).
+// Over a whole block that colour would leave red glass black (3 % of red light through), so the
+// glass is thin-walled (Remix's `thinWalled`), the measurement distance shared between its two
+// walls: a block or a pane seen square on shows its texture's colour, deeper and darker as the ray
+// slants through the walls. The same in the glass's shader (terrain.wgsl `rt_glass_at`) and the
+// froxels' rays.
+const GLASS_INDEX: f32 = 1.52;
+const GLASS_TRANSMITTANCE: f32 = 0.97;
+const GLASS_DISTANCE: f32 = 0.35;
+const GLASS_WALL: f32 = 0.175;
+// What a wall of glass `g` (`hw_glass`) lets through of a ray meeting it at `cosine` to its
+// normal: what Fresnel does not reflect, Beer-Lambert over the wall's thickness along the ray bent
+// inside it (Snell's law), less what the diffuse layer stops.
+fn glass_wall(g: vec4<f32>, cosine: f32) -> vec3<f32> {
+    let c = clamp(cosine, 0.0, 1.0);
+    let slant = sqrt(1.0 - (1.0 - c * c) / (GLASS_INDEX * GLASS_INDEX));
+    return (1.0 - glass_fresnel(c)) * (1.0 - g.a) * exp(-g.rgb * GLASS_WALL / slant);
+}
+// A dielectric's reflectance at index 1.52 (Schlick's, from F0 = ((n - 1) / (n + 1))^2), the
+// cosine of the angle on the air's side.
+fn glass_fresnel(cosine: f32) -> f32 {
+    return 0.0426 + 0.9574 * pow(1.0 - clamp(cosine, 0.0, 1.0), 5.0);
+}
+fn hw_glass_plain(layer: f32) -> bool {
+    let packed = rt.frame.y;
+    if packed < 0.0 { return false; }
+    let pane = floor(packed / 4096.0);
+    return layer == packed - pane * 4096.0 || layer == pane;
+}
+// The glass of the translucent quad from arena vertex `base` that hit `c` meets: its attenuation
+// coefficient a block (rgb, -ln of its transmittance over the measurement distance) and its
+// diffuse layer's opacity (a).
+fn hw_glass(c: RayIntersection, base: u32) -> vec4<f32> {
+    let clear = vec3(-log(GLASS_TRANSMITTANCE) / GLASS_DISTANCE);
     let texel = hw_texel(c, base);
-    if texel.a < 0.0 { return vec3(1.0); }
+    if texel.a < 0.0 { return vec4(clear, 0.0); }
+    if hw_glass_plain(f32(arena[base * 6u + 4u] & 0x7fffu)) {
+        return vec4(clear, clamp(texel.a, 0.0, 1.0));
+    }
     let w = arena[base * 6u + 5u];
     let tint = vec3(f32(w & 255u), f32((w >> 8u) & 255u), f32((w >> 16u) & 255u)) / 255.0;
     let colour = pow(max(texel.rgb * tint, vec3(0.0)), vec3(2.2));
-    return mix(vec3(1.0), colour, clamp(texel.a * 1.5, 0.0, 1.0));
+    return vec4(-log(max(colour * GLASS_TRANSMITTANCE, vec3(1e-3))) / GLASS_DISTANCE, 0.0);
 }
 // The light the drawn terrain lets through from camera-relative `pos` along `l` (unit) for
 // `reach`: none once a triangle's opaque texel is met, otherwise what the translucent ones it
@@ -351,6 +399,7 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     }
     let hit = rayQueryGetCommittedIntersection(&q);
     water_at = vec4(0.0, 0.0, 0.0, -1.0);
+    glass_at = vec4(0.0, 0.0, 0.0, -1.0);
     if hit.kind == RAY_QUERY_INTERSECTION_NONE { return vec4(0.0); }
     let at = ray * hit.t;
     // The waves on the water's top, as its shader's (terrain.wgsl `rt_water`).
@@ -372,8 +421,13 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
         let w = water_waves(world.xz, rt.water.z, hit.t * 1.5 / rt.size.y);
         n = -normalize(vec3(-w.y, 1.0, -w.z));
     }
-    // Its top (seen from above or below) refracts; its sides blend as before.
+    // Its top (seen from above or below) refracts; its sides blend as before. Glass refracts on
+    // every face (shadow_rays_psr.wgsl `hw_refract_glass`).
     if abs(n.y) > 0.5 && (layer == rt.water.x || layer == rt.water.y) { water_at = vec4(n, hit.t); }
+    if layer != rt.water.x && layer != rt.water.y {
+        glass_at = vec4(n, hit.t);
+        glass_sigma = hw_glass(hit, base).rgb;
+    }
     var r = reflect(ray, n);
     if dot(r, n) < 0.0 { r = normalize(r - n * 2.0 * dot(r, n)); }
     let start = at + n * 0.02;

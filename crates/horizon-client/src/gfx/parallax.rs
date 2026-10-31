@@ -78,17 +78,17 @@ struct ParallaxOut {
     @location(8) tint: vec3<f32>,
 }
 fn parallax_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
-    light: vec2<u32>, origin: vec3<f32>) -> ParallaxOut {
+    light: vec2<u32>, origin: vec4<f32>) -> ParallaxOut {
     let t = horizon_terrain_terrain_vertex(position, uv, layer, color, light, origin);
     return ParallaxOut(t.clip, t.uv, t.layer, t.color, t.spherical, t.cylindrical, t.emission,
-        position + origin, t.light, t.tint);
+        t.pos, t.light, t.tint);
 }
 @vertex fn parallax_vs(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
     @location(5) origin: vec4<f32>) -> ParallaxOut {
     return parallax_vertex(position, horizon_terrain_terrain_uv(uv, origin.w), layer, color,
-        light, origin.xyz);
+        light, origin);
 }
 @vertex fn parallax_vs_flat(
     @builtin(vertex_index) vertex: u32,
@@ -97,7 +97,7 @@ fn parallax_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f
 ) -> ParallaxOut {
     let origin = horizon_terrain_slot_origins[horizon_terrain_block_slots[vertex >> 8u]];
     return parallax_vertex(position, horizon_terrain_terrain_uv(uv, origin.w), layer, color,
-        light, origin.xyz);
+        light, origin);
 }
 
 // The sprite at `uv` with the surface's own derivatives (the march moves `uv` per fragment).
@@ -451,9 +451,19 @@ fn parallax_rt_lit(in: ParallaxOut, s: ParallaxSurface) -> vec3<f32> {
                 in.cylindrical, n, in.tint);
             return vec4(w.added / w.alpha, w.alpha);
         }
+        // Glass: the pack's normal map and roughness drive its bending, its reflections and its
+        // blur (terrain.wgsl `rt_glass_at`); without a map, drawn glass's waviness.
         let s = parallax_surface(in, false);
         if s.texel.a < 0.01 { discard; }
-        return vec4(parallax_rt_lit(in, s), s.texel.a);
+        let layer = in.layer & 0x7fffu;
+        let specular = specular_at(layer, s.uv, s.footprint);
+        let normal = select(horizon_terrain_rt_glass_wave(in.position, s.geo), s.normal, s.mapped);
+        let roughness = select(0.0, (1.0 - specular.r) * (1.0 - specular.r),
+            specular_slot(layer).array != 0xffffu);
+        let g = horizon_terrain_rt_glass_at(horizon_terrain_GlassIn(in.position, in.clip.xy,
+            in.light, in.spherical, in.cylindrical, s.geo, normal,
+            horizon_terrain_decode_gamma(s.texel.rgb * in.tint), s.texel.a, roughness, in.layer));
+        return vec4(g.added / g.alpha, g.alpha);
     }
     let color = parallax_color(in, false);
     if color.a < 0.01 { discard; }

@@ -40,7 +40,8 @@ struct Fx {
     motion: vec4<f32>,
     // The grid's size (x, y, z), w this frame's number.
     dims: vec4<f32>,
-    // x: the first slice's far end in metres, y: the last slice's, z: log(y / x), w: unused.
+    // x: the first slice's far end in metres, y: the last slice's, z: log(y / x), w: the plain
+    // glass's sprite layers, packed (froxels_hw.wgsl `hw_glass`).
     depth: vec4<f32>,
     // rgb: the medium's extinction a metre (-ln(transmittance) / distance), w: the phase's
     // anisotropy (Henyey-Greenstein g).

@@ -49,6 +49,8 @@ struct Globals {
     rt_camera: vec4<f32>,
     // RT lighting's moon: toward it (xyz) and its angular radius (w); its phase in rt_stars.x.
     rt_moon: vec4<f32>,
+    // The Earth's curvature (terrain.wgsl `earth_drop`): x below 0 off.
+    earth: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas: texture_2d<f32>;
@@ -152,7 +154,10 @@ struct CloudInfo {
 @group(1) @binding(0) var<uniform> cloud: CloudInfo;
 @vertex fn vs_cloud(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
     @location(2) overlay: u32, @location(3) color: vec4<f32>, @location(4) light: vec4<u32>, @location(5) normal: vec4<f32>) -> Out {
-    return entity_vertex(position + cloud.offset.xyz, uv, overlay, cloud.colors[light.x], light, normal);
+    // The cloud layer bends with the Earth's curvature, from the eye (terrain.wgsl `earth_drop`).
+    var p = position + cloud.offset.xyz;
+    if globals.earth.x >= 0.0 { p.y -= dot(p.xz, p.xz) / (2.0 * 6371000.0); }
+    return entity_vertex(p, uv, overlay, cloud.colors[light.x], light, normal);
 }
 // rendertype_end_portal.fsh: the layer colours.
 const PORTAL_COLORS = array<vec3<f32>, 16>(

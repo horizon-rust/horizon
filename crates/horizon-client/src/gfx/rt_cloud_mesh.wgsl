@@ -12,8 +12,8 @@ const GONE_TO: f32 = 9500.0;
 
 struct Draw {
     view_proj: mat4x4<f32>,
-    // xyz toward the light (the sun's, or the moon's), rgb its colour in paper whites, xyz toward
-    // the sun (for the sky table).
+    // xyz toward the light (the sun's, or the moon's) and w the Earth's curvature (1 / its
+    // diameter; 0 off), rgb its colour in paper whites, xyz toward the sun (for the sky table).
     light: vec4<f32>,
     light_color: vec4<f32>,
     sun: vec4<f32>,
@@ -32,7 +32,9 @@ struct Out {
 @vertex fn vs_cloud(@builtin(instance_index) tile: u32, @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>) -> Out {
     var out: Out;
-    let rel = draw.tiles[min(tile, TILES - 1u)].xyz + position;
+    var rel = draw.tiles[min(tile, TILES - 1u)].xyz + position;
+    // The slab bends with the Earth from the eye, as the distant terrain (terrain.wgsl `earth_drop`).
+    rel.y -= dot(rel.xz, rel.xz) * draw.light.w;
     out.clip = draw.view_proj * vec4(rel, 1.0);
     out.rel = rel;
     out.normal = normal;

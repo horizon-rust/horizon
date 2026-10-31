@@ -203,7 +203,8 @@ struct Globals {
     inverse_view: [[f32; 4]; 4],
     sunrise: [f32; 4],
     sun: [f32; 4],
-    /// x: sky fog end, y: cloud fog end, z: dark disc (camera below the horizon), w: unused.
+    /// x: sky fog end, y: cloud fog end, z: dark disc (camera below the horizon), w: RT
+    /// lighting's plain glass sprite layers, packed (`set_glass_layers`).
     fog_ends: [f32; 4],
     /// Atlas rects (u0, v0, width, height) of end_sky.png and end_portal.png.
     end_portal_sprites: [[f32; 4]; 2],
@@ -238,6 +239,9 @@ struct Globals {
     rt_camera: [f32; 4],
     /// RT lighting's moon (terrain.wgsl `rt_moon_disc`): toward it, and its angular radius.
     rt_moon: [f32; 4],
+    /// The Earth's curvature (`Renderer::earth_curvature`): x the square of the radius it starts
+    /// at (`lod::earth_drop`; -1 off), y how far the sea's horizon dips (`lod::horizon_dip`).
+    earth: [f32; 4],
 }
 pub type SectionKey = (i32, i32, i32);
 struct SectionGpu {
@@ -623,6 +627,8 @@ pub struct Renderer {
     water_layers: [f32; 2],
     /// RT lighting's lava's sprite layers, packed (`set_lava_layers`; -1: none).
     lava_layers: f32,
+    /// RT lighting's plain glass sprite layers, packed (`set_glass_layers`; -1: none).
+    glass_layers: f32,
     /// When the renderer was made: the water's waves' clock.
     water_clock: std::time::Instant,
     /// RT lighting's sun's angular radius (the Sun Size setting) and aerial perspective's air
@@ -706,6 +712,9 @@ pub struct Renderer {
     pub fullbright: bool,
     /// Advance animated block textures (Horizon setting; vanilla always does).
     pub animated_textures: bool,
+    /// The Earth's curvature on the distant terrain, the clouds and the sky's horizon (Horizon
+    /// setting; terrain.wgsl `earth_drop`): drawn only, the world stays flat.
+    pub earth_curvature: bool,
     present_modes: Vec<wgpu::PresentMode>,
 }
 /// Every layer's mip levels, layer major (`first` is the first layer's
@@ -1219,10 +1228,25 @@ fn device_features(adapter: &wgpu::Adapter) -> wgpu::Features {
                 | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
                 | wgpu::Features::RG11B10UFLOAT_RENDERABLE))
 }
+/// RT lighting's hybrid (`hw_rays`): the hardware ray queries asked of a Vulkan device, none with
+/// HORIZON_HW_RT=0.
+fn hw_rt_features() -> wgpu::Features {
+    if std::env::var("HORIZON_HW_RT").is_ok_and(|v| v == "0") {
+        wgpu::Features::empty()
+    } else {
+        wgpu::Features::EXPERIMENTAL_RAY_QUERY
+    }
+}
 /// EXPERIMENTAL VR: the device through the OpenXR runtime (`xr`), with a surface for the
 /// window on the same instance. `None` when the runtime, the headset or the surface is missing.
 fn open_xr_device(window: &Arc<Window>, offscreen: bool, layers: u32) -> Option<Opened> {
-    let xr = xr::open(|adapter| (device_features(adapter), adapter.limits()))?;
+    // RT lighting's hardware rays in the headset as on the screen, where the adapter has them.
+    let xr = xr::open(|adapter| {
+        (
+            device_features(adapter) | (adapter.features() & hw_rt_features()),
+            adapter.limits(),
+        )
+    })?;
     describe_adapter(&xr.adapter);
     if let Err(e) = check_layers(&xr.adapter.limits(), layers) {
         log::warn!("Horizon VR: {e}; starting without VR");
@@ -1326,10 +1350,8 @@ async fn open_device(
         // RT lighting's hybrid (`hw_rays`): hardware rays where Vulkan offers them, unless
         // HORIZON_HW_RT=0.
         let hw_rt = info.backend == wgpu::Backend::Vulkan
-            && adapter
-                .features()
-                .contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
-            && std::env::var("HORIZON_HW_RT").map_or(true, |v| v != "0");
+            && adapter.features().contains(hw_rt_features())
+            && !hw_rt_features().is_empty();
         let desc = wgpu::DeviceDescriptor {
             label: Some("Horizon device"),
             required_features: if hw_rt {
@@ -3270,6 +3292,7 @@ impl Renderer {
             rt_lighting: false,
             water_layers: [-1.0; 2],
             lava_layers: -1.0,
+            glass_layers: -1.0,
             water_clock: std::time::Instant::now(),
             rt_sun_radius: SUN_RADIUS,
             rt_moon_radius: MOON_RADIUS,
@@ -3315,6 +3338,7 @@ impl Renderer {
             gamma: 0.5,
             fullbright: false,
             animated_textures: true,
+            earth_curvature: true,
             present_modes,
         })
     }
@@ -4060,6 +4084,16 @@ impl Renderer {
             _ => -1.0,
         };
     }
+    /// The plain glass's sprite layers (its block's and its pane's edge), which RT lighting draws
+    /// with Remix's diffuse layer over a clear dielectric where every other translucent texture
+    /// is the glass's colour (terrain.wgsl `rt_glass_at`): packed as the lava's.
+    pub fn set_glass_layers(&mut self, glass: Option<u32>, pane: Option<u32>) {
+        self.glass_layers = match (glass, pane) {
+            (Some(g), Some(p)) if g < 4096 && p < 4096 => (g + 4096 * p) as f32,
+            (Some(g), None) if g < 4096 => (g + 4096 * g) as f32,
+            _ => -1.0,
+        };
+    }
     /// RT lighting's night vision (the Night Vision setting, gfx/tonemap.wgsl `night_vision`).
     pub fn set_night_vision(&mut self, on: bool) {
         if let Some(t) = &mut self.tonemap {
@@ -4267,6 +4301,7 @@ impl Renderer {
                 self.water_clock.elapsed().as_secs_f32() % 3600.0,
                 self.lava_layers,
             ],
+            glass: self.glass_layers,
             // Set after the hybrid's structures are made this frame (`hw_update`).
             hw_offset: [0.0; 4],
             moving: {
@@ -4968,6 +5003,10 @@ impl Renderer {
             [light.x, light.y, light.z, radius]
         };
         rt.sun_light = rt_sun_light;
+        // The Earth's curvature, from the loaded chunks' edge (they stay flat for the rays).
+        let curved = self
+            .earth_curvature
+            .then_some(f64::from(frame.detail_distance));
         let globals = Globals {
             view_proj: view_proj.to_cols_array_2d(),
             fog_color,
@@ -4998,7 +5037,7 @@ impl Renderer {
                 frame.fog.map_or(frame.distance.min(512.0), |f| f.sky_end),
                 frame.fog.map_or(2048.0, |f| f.cloud_end),
                 if frame.dark_disc { 1.0 } else { 0.0 },
-                0.0,
+                self.glass_layers,
             ],
             end_portal_sprites: frame.end_portal_sprites,
             crumbling_sprite: frame.crumbling_sprite,
@@ -5064,6 +5103,15 @@ impl Renderer {
             rt_moon: {
                 let m = -rt_sun;
                 [m.x, m.y, m.z, self.rt_moon_radius]
+            },
+            earth: match curved {
+                Some(r) => [
+                    (r * r) as f32,
+                    lod::horizon_dip(frame.camera.y) as f32,
+                    0.0,
+                    0.0,
+                ],
+                None => [-1.0, 0.0, 0.0, 0.0],
             },
         };
         self.uploads
@@ -5167,11 +5215,9 @@ impl Renderer {
             visible.clear();
         } else if !reuse_visibility {
             let now = Instant::now();
-            visible_lods.extend(
-                self.lods.iter().filter_map(|(&key, tile)| {
-                    tile.visible(key, camera, frame.distance, &view, now)
-                }),
-            );
+            visible_lods.extend(self.lods.iter().filter_map(|(&key, tile)| {
+                tile.visible(key, camera, frame.distance, &view, curved, now)
+            }));
             visible_lods.sort_unstable_by_key(|v| (v.distance, v.key));
         }
         // A shader pack's shadow pass draws the sections in its camera's box, all of them (the
@@ -6523,7 +6569,13 @@ impl Renderer {
             });
         // With RT lighting the terrain lit itself from the mask: the tone mapping leaves it.
         let shadow_mask = shadow_mask.filter(|_| !rt.lighting);
-        // RT lighting's volumetric clouds, over the world's sky before the tone mapping.
+        // RT lighting's volumetric clouds, over the world's sky before the tone mapping, bent by
+        // the Earth's curvature as the distant terrain.
+        let earth_bend = if self.earth_curvature {
+            (0.5 / lod::EARTH_RADIUS) as f32
+        } else {
+            0.0
+        };
         if rt_clouds_on && let Some(input) = &frame.clouds {
             // The light is the sun's, or the moon's (opposite it) once the sun has set.
             let to_light = if rt_sun.y > 0.0 { rt_sun } else { -rt_sun };
@@ -6546,6 +6598,7 @@ impl Renderer {
                         direction: to_light,
                         color: [light[0], light[1], light[2]],
                         sun: rt_sun,
+                        curvature: earth_bend,
                     },
                     &self.atmosphere.view,
                 );
@@ -6577,6 +6630,7 @@ impl Renderer {
                     sun: rt_sun,
                     time: (input.time as f64 + input.partial_tick) / 20.0,
                     thick: 0.0,
+                    curvature: earth_bend,
                 },
                 &self.atmosphere.view,
             );

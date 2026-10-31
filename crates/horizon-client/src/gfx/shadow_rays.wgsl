@@ -29,7 +29,8 @@ struct Rt {
     motion: vec4<f32>,
     // xyz toward the real sun (the sky table's frame), w 1 when the sky table holds its sky.
     sun: vec4<f32>,
-    // x: this frame's number (the rays' directions change with it).
+    // x: this frame's number (the rays' directions change with it), y: the plain glass's sprite
+    // layers, packed (shadow_rays_hw.wgsl `hw_glass`).
     frame: vec4<f32>,
     // rgb: the light the rays trace toward (the sun's through the atmosphere, or the moon's), in
     // paper whites, for the light bouncing off what the rays hit; w its disc's angular radius.

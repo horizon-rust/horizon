@@ -29,7 +29,8 @@ const AMBIENT_GAIN: f32 = 1.2;
 struct Clouds {
     inverse_view_proj: mat4x4<f32>,
     prev_view_proj: mat4x4<f32>,
-    // xyz toward the light (the sun's, or the moon's once it has set), w unused.
+    // xyz toward the light (the sun's, or the moon's once it has set), w the Earth's curvature
+    // (1 / its diameter; 0 off).
     light: vec4<f32>,
     // rgb the light's colour in paper whites (Globals.rt_sun_light).
     light_color: vec4<f32>,
@@ -150,9 +151,35 @@ fn gradient_noise(pixel: vec2<f32>, frame: f32) -> f32 {
     return fract(52.9829189 * fract(dot(q, vec2(0.06711056, 0.00583715))));
 }
 
+// Where a ray rising `slope` a metre and `bend` a square metre (the Earth's curvature) has risen
+// `rise`: the two distances (x > y: never).
+fn rise_at(rise: f32, slope: f32, bend: f32) -> vec2<f32> {
+    let disc = slope * slope + 4.0 * bend * rise;
+    if disc < 0.0 { return vec2(1e30, -1e30); }
+    let q = -0.5 * (slope + select(-1.0, 1.0, slope >= 0.0) * sqrt(disc));
+    if abs(q) < 1e-20 { return vec2(-1.0, 1.0) * sqrt(max(rise / bend, 0.0)); }
+    let a = q / bend;
+    let b = -rise / q;
+    return vec2(min(a, b), max(a, b));
+}
+
 // Light through the slab along the ray from the camera at `origin_y` toward `d`: its start and
-// end distances (end < start: none).
+// end distances (end < start: none). Under the Earth's curvature (`clouds.light.w`) the slab
+// bends down away from the eye, as the ray rises from it by its distance's square: the first
+// stretch of the ray between its heights.
 fn slab(origin_y: f32, d: vec3<f32>) -> vec2<f32> {
+    let bend = clouds.light.w * dot(d.xz, d.xz);
+    if bend > 1e-12 {
+        let below_top = rise_at(TOP - origin_y, d.y, bend);
+        if below_top.x > below_top.y { return vec2(1.0, 0.0); }
+        // Under the base inside below_top: the ray is in the slab before or after it.
+        let under = rise_at(BASE - origin_y, d.y, bend);
+        var range = below_top;
+        if under.x <= under.y {
+            range = select(vec2(under.y, below_top.y), vec2(below_top.x, under.x), under.x > 0.0);
+        }
+        return vec2(max(range.x, 0.0), min(range.y, MAX_DISTANCE));
+    }
     var near = 0.0;
     var far = MAX_DISTANCE;
     if abs(d.y) < 1e-5 {
@@ -183,9 +210,11 @@ fn march(origin: vec3<f32>, d: vec3<f32>, noise: f32) -> vec4<f32> {
     var weighted = 0.0;
     var weight = 0.0;
     var optical = 0.0;
+    let bend = clouds.light.w * dot(d.xz, d.xz);
     for (var i = 0; i < STEPS; i++) {
         let t = range.x + (f32(i) + noise) * step_length;
-        let q = start + d * t;
+        // The point's height over the curved Earth: the ray's, plus how far it bends away under.
+        let q = start + d * t + vec3(0.0, bend * t * t, 0.0);
         let h = (q.y - BASE) / (TOP - BASE);
         let cover = coverage_at(q.xz);
         if cover.x <= 0.0 { continue; }

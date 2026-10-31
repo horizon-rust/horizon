@@ -1,7 +1,8 @@
 //! Horizon's own graphics settings, beyond vanilla's options: kept in
 //! `horizon-graphics.txt` next to `options.txt` so that file stays exactly
 //! vanilla's. Every default reproduces vanilla's rendering, but the Sun Path
-//! Tilt (`sun_path_tilt`); only choices the player makes here depart from it.
+//! Tilt (`sun_path_tilt`) and the Earth's curvature on the distant terrain
+//! (`earth_curvature`); only choices the player makes here depart from it.
 use std::{fs, path::Path};
 
 pub const FILE: &str = "horizon-graphics.txt";
@@ -305,6 +306,11 @@ pub struct Graphics {
     /// thousand chunks (16 km) it shows as it does on real landscapes; denser air brings it
     /// nearer for short view distances.
     pub aerial_perspective: u32,
+    /// The Earth's curvature (gfx.rs `Renderer::earth_curvature`): the distant terrain beyond the
+    /// loaded chunks, the clouds and the sea's horizon drawn on an Earth of its real radius, so
+    /// far islands sink behind the sea (21 m at 16 km). Drawn only: the world stays flat for the
+    /// game. On by default: vanilla has no distant terrain to bend.
+    pub earth_curvature: bool,
     /// Continuous water and lava surfaces (`mesher/fluid_surface.rs`): shared corner
     /// heights, smooth light and shading, world-anchored textures. Off by default: it
     /// changes vanilla's look.
@@ -357,6 +363,7 @@ impl Default for Graphics {
             night_vision: true,
             shooting_stars: 1,
             aerial_perspective: DEFAULT_AERIAL_PERSPECTIVE,
+            earth_curvature: true,
             smooth_fluids: false,
             hdr: false,
             hdr_paper_white: 200,
@@ -425,6 +432,7 @@ impl Graphics {
                 "nightVision" => g.night_vision = flag(g.night_vision),
                 "shootingStars" => g.shooting_stars = number(g.shooting_stars).min(2),
                 "aerialPerspective" => g.aerial_perspective = number(g.aerial_perspective).min(64),
+                "earthCurvature" => g.earth_curvature = flag(g.earth_curvature),
                 "smoothFluids" => g.smooth_fluids = flag(g.smooth_fluids),
                 "hdr" => g.hdr = flag(g.hdr),
                 "hdrPaperWhite" => g.hdr_paper_white = number(g.hdr_paper_white).clamp(80, 480),
@@ -446,7 +454,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nsunSize:{}\nmoonSize:{}\nnightVision:{}\nshootingStars:{}\naerialPerspective:{}\nsmoothFluids:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nsunSize:{}\nmoonSize:{}\nnightVision:{}\nshootingStars:{}\naerialPerspective:{}\nearthCurvature:{}\nsmoothFluids:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -482,6 +490,7 @@ impl Graphics {
             bool_text(self.night_vision),
             self.shooting_stars,
             self.aerial_perspective,
+            bool_text(self.earth_curvature),
             bool_text(self.smooth_fluids),
             bool_text(self.hdr),
             self.hdr_paper_white,
@@ -608,6 +617,7 @@ mod tests {
             night_vision: false,
             shooting_stars: 1,
             aerial_perspective: 32,
+            earth_curvature: false,
             smooth_fluids: true,
             hdr: true,
             hdr_paper_white: 240,
