@@ -42,7 +42,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering},
-        mpsc::{Receiver, Sender, channel},
+        mpsc::{Receiver, channel},
     },
     thread::JoinHandle,
     time::Duration,
@@ -317,11 +317,54 @@ impl SecureChat {
     }
 }
 
+/// What the connection threads report to the game, in the order they
+/// reported it. A list behind a lock rather than a channel: the game takes
+/// it whole once a tick and never waits for a connection thread (a
+/// channel's receiver spins while a sender it raced is between claiming a
+/// slot and filling it, which a busy machine stretches to a time slice).
+#[derive(Default)]
+pub struct Events {
+    list: Mutex<Vec<NetEvent>>,
+    /// The game stopped taking events: a send fails, as a channel's does
+    /// once its receiver is gone.
+    closed: AtomicBool,
+}
+impl Events {
+    /// Report an event; `Err` once the game no longer takes them.
+    pub fn send(&self, event: NetEvent) -> Result<(), NetEvent> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(event);
+        }
+        self.list
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(event);
+        Ok(())
+    }
+    /// The game takes no more: what waits is dropped, as a channel's
+    /// receiver drops its messages, and later sends fail.
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        drop(std::mem::take(
+            &mut *self.list.lock().unwrap_or_else(|e| e.into_inner()),
+        ));
+    }
+    /// Everything reported so far, or nothing while a connection thread
+    /// holds the list (it comes with the next call).
+    fn take(&self) -> Vec<NetEvent> {
+        match self.list.try_lock() {
+            Ok(mut list) => std::mem::take(&mut *list),
+            Err(std::sync::TryLockError::Poisoned(e)) => std::mem::take(&mut *e.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => Vec::new(),
+        }
+    }
+}
+
 /// State shared with the connection threads.
 pub struct Shared {
     /// What the next login is sent; `PlayerList.reloadResources` swaps it.
     sync: Mutex<Arc<data::SyncData>>,
-    pub events: Sender<NetEvent>,
+    pub events: Events,
     pub config: NetConfig,
     motd: Mutex<String>,
     max_players: AtomicUsize,
@@ -500,7 +543,6 @@ pub fn base64(data: &[u8]) -> String {
 /// A running LAN server.
 pub struct Lan {
     pub shared: Arc<Shared>,
-    events: Receiver<NetEvent>,
     pub port: u16,
     listener: Option<JoinHandle<()>>,
     /// Stops the accept loop alone: local connections stay.
@@ -520,11 +562,10 @@ impl Lan {
     }
     /// ServerConnectionListener.startTcpServerListener with a configuration.
     pub fn start_with(sync: Arc<data::SyncData>, config: NetConfig) -> io::Result<Self> {
-        let (tx, events) = channel();
         let (listen, port, announce) = (config.listen, config.port, config.announce);
         let shared = Arc::new(Shared {
             sync: Mutex::new(sync),
-            events: tx,
+            events: Events::default(),
             motd: Mutex::new(config.motd.clone()),
             max_players: AtomicUsize::new(config.max_players),
             online: Mutex::new(Vec::new()),
@@ -536,7 +577,6 @@ impl Lan {
         });
         let mut lan = Self {
             shared,
-            events,
             port: 0,
             listener: None,
             listener_stop: Arc::new(AtomicBool::new(false)),
@@ -624,7 +664,7 @@ impl Lan {
     }
     /// Everything the connection threads reported since the last call.
     pub fn poll(&self) -> Vec<NetEvent> {
-        self.events.try_iter().collect()
+        self.shared.events.take()
     }
     /// Reserve a uuid for the host so a guest cannot take the name.
     pub fn reserve(&self, uuid: u128) {
@@ -637,6 +677,7 @@ impl Lan {
 }
 impl Drop for Lan {
     fn drop(&mut self) {
+        self.shared.events.close();
         self.stop();
     }
 }
