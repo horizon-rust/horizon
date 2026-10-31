@@ -135,6 +135,9 @@ fn palette(around: f32, theta: f32, u: f32, v: f32) -> vec3<f32> {
 // the earthgrazers that cross the whole sky, from behind the observer over them to the eye on
 // the horizon opposite.
 const ALDHANI_LONG: u32 = 4096u;
+// The seconds the stream's front takes to cross the sky, from 1700 km north to 1500 km toward the
+// eye (and its tail after it): the event lasts that much longer (gfx/aldhani.rs `SWEEP`).
+const ALDHANI_SWEEP: f32 = 35.0;
 const EARTH_KM: f32 = 6371.0;
 // The meteor of slot `slot` (slots of `period` seconds from the event's start), `t` seconds into
 // the event. A meteoroid falls along a straight line toward the eye, away from its radiant, as a
@@ -154,9 +157,6 @@ fn aldhani_make(slot: u32, t: f32, period: f32, long: bool) -> AldhaniMeteor {
     var o = AldhaniMeteor(vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0));
     let seed = (slot + select(0u, 0x10000000u, long)) * 16u + 5u;
     let start = (f32(slot) + aldhani_rand(seed)) * period;
-    // As many as the storm's strength at the meteor's own start says (a long one's slot holds one
-    // in two).
-    if aldhani_rand(seed + 1u) > aldhani_envelope(start) * select(1.0, 0.5, long) { return o; }
     let age = t - start;
     let speed = select(35.0 + 35.0 * aldhani_rand(seed + 2u), 55.0 + 17.0 * aldhani_rand(seed + 2u), long);
     let persist = select(0.2 + 0.3 * aldhani_rand(seed + 4u), 0.4 + 0.5 * aldhani_rand(seed + 4u), long);
@@ -192,6 +192,14 @@ fn aldhani_make(slot: u32, t: f32, period: f32, long: bool) -> AldhaniMeteor {
         origin = vec3(sin(az), 0.0, -cos(az)) * far + vec3(0.0, height - far * far / (2.0 * EARTH_KM), 0.0);
     }
     let w = select(ALDHANI_RADIANT, normalize(vec3(ALDHANI_RADIANT.x, 0.0, ALDHANI_RADIANT.z)), beyond);
+    // The storm is a stream of meteoroids flying toward the eye: its front reaches the far north
+    // first, beyond the horizon, and the sky by the eye last, ALDHANI_SWEEP seconds later; its tail
+    // leaves in the same order, the last meteors burning toward the eye. As many as the stream's
+    // density where and when this one lit up says (a long one's slot holds one in two).
+    let along = clamp((dot(origin, w) + 1700.0) / 3200.0, 0.0, 1.0);
+    if aldhani_rand(seed + 1u) > aldhani_envelope(start - along * ALDHANI_SWEEP) * select(1.0, 0.5, long) {
+        return o;
+    }
     // Its head (where it burns now, or where it ended) and its glow's tail behind it.
     let head_t = min(age, lasts);
     let tail_t = clamp(age - persist, 0.0, head_t);
