@@ -51,6 +51,9 @@ struct Globals {
     rt_moon: vec4<f32>,
     // The Earth's curvature (terrain.wgsl `earth_drop`): x below 0 off.
     earth: vec4<f32>,
+    // The shooting stars' shower (terrain.wgsl `meteor_make`).
+    rt_shower: vec4<f32>,
+    rt_stream: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas: texture_2d<f32>;

@@ -30,7 +30,10 @@ const SLOT: f32 = 1.0 / 8000.0;
 /// two holds an earthgrazer, 128 a second, their 4096 slots covering 16 s, past the longest, 15 s.
 const LONG: u64 = 4096;
 const LONG_SLOT: f32 = 1.0 / 256.0;
-const _: () = assert!(LONG as f32 * LONG_SLOT >= 15.0, "the long slots cover the longest earthgrazer");
+const _: () = assert!(
+    LONG as f32 * LONG_SLOT >= 15.0,
+    "the long slots cover the longest earthgrazer"
+);
 /// The tiles' words: their counts, their lists, then the glow summed and blurred, red, green and
 /// blue (`ALDHANI_GLOW_SUM`, `ALDHANI_GLOW_BLUR`).
 const GLOW_SUM: u64 = TILES * TILES + TILES * TILES * TILE_CAP;
@@ -76,11 +79,7 @@ impl Aldhani {
         });
         let tiles = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Eye of Aldhani's tiles"),
-            size: if armed {
-                TILE_WORDS * 4
-            } else {
-                16
-            },
+            size: if armed { TILE_WORDS * 4 } else { 16 },
             usage: storage,
             mapped_at_creation: false,
         });

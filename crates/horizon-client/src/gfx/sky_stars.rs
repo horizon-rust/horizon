@@ -19,11 +19,20 @@ pub const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
     attributes: &wgpu::vertex_attr_array![0 => Sint16x4],
 };
 
-/// The shooting stars' rate (terrain.wgsl `rt_meteor`): the seconds of a slot that holds a meteor
-/// with the given chance, by the Shooting Stars setting (`setting`: 0 none, 1 rare, a few a night,
-/// a night lasting about eight minutes; 2 frequent, one every couple of seconds). The environment's
+/// The shooting stars (terrain.wgsl `rt_meteor`) on a date: the seconds of a slot, the chance a
+/// slot holds one, and the active shower (its radiant and rates, `Shower`). The Shooting Stars
+/// setting (`setting`): 0 none; 1 the real sky, the sporadic meteors and the year's showers on
+/// their dates at their real rates; 2 frequent, a hundred times as many. The environment's
 /// `HORIZON_METEORS` (`off`, `rare`, `frequent`) overrides it.
-pub fn meteors(setting: u32) -> [f32; 2] {
+pub struct Meteors {
+    pub slot: f32,
+    pub chance: f32,
+    /// The shower's radiant (equatorial, J2000; xyz) and its zenithal hourly rate now (w).
+    pub radiant: [f32; 4],
+    /// Its meteors' speed (km/s, x) and population index (y), the sporadic hourly rate (z).
+    pub stream: [f32; 4],
+}
+pub fn meteors(setting: u32, days: f64) -> Meteors {
     static FORCED: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
     let forced = *FORCED.get_or_init(|| match std::env::var("HORIZON_METEORS").as_deref() {
         Ok("off" | "0") => Some(0),
@@ -31,11 +40,132 @@ pub fn meteors(setting: u32) -> [f32; 2] {
         Ok("frequent") => Some(2),
         _ => None,
     });
-    match forced.unwrap_or(setting) {
-        0 => [0.0, 0.0],
-        1 => [30.0, 0.2],
-        _ => [2.5, 1.0],
+    let gain = match forced.unwrap_or(setting) {
+        0 => {
+            return Meteors {
+                slot: 0.0,
+                chance: 0.0,
+                radiant: [0.0; 4],
+                stream: [0.0; 4],
+            };
+        }
+        1 => 1.0,
+        _ => 100.0,
+    };
+    let (shower, zhr) = shower(days);
+    let sporadic = SPORADIC * gain;
+    let zhr = zhr * gain;
+    // A slot a meteor at most: short enough for the busiest hour, and no shorter than the sky
+    // pass can look back over (a storm's thousands an hour are slots of a third of a second).
+    let rate = sporadic + zhr;
+    let slot = (3600.0 / (rate * 1.25)).clamp(0.3, 60.0) as f32;
+    let (ra, dec) = (shower.ra.to_radians(), shower.dec.to_radians());
+    Meteors {
+        slot,
+        chance: ((rate * f64::from(slot)) / 3600.0).min(1.0) as f32,
+        radiant: [
+            (dec.cos() * ra.cos()) as f32,
+            (dec.cos() * ra.sin()) as f32,
+            dec.sin() as f32,
+            zhr as f32,
+        ],
+        stream: [shower.speed, shower.index, sporadic as f32, 0.0],
     }
+}
+
+/// The sporadic meteors' hourly rate a dark sky shows the naked eye (to magnitude 6.5), about ten.
+const SPORADIC: f64 = 10.0;
+
+/// An annual meteor shower (the International Meteor Organization's working list): its peak's day
+/// of the year, its zenithal hourly rate there (a perfect sky, the radiant overhead), the days its
+/// activity falls to a half each side, its radiant (J2000, degrees), its meteors' speed (km/s) and
+/// population index, and whether it is known for outbursts and storms.
+struct Shower {
+    peak: f64,
+    zhr: f64,
+    half: f64,
+    ra: f64,
+    dec: f64,
+    speed: f32,
+    index: f32,
+    storms: bool,
+}
+const fn shower_of(
+    peak: f64,
+    zhr: f64,
+    half: f64,
+    ra: f64,
+    dec: f64,
+    speed: f32,
+    index: f32,
+    storms: bool,
+) -> Shower {
+    Shower {
+        peak,
+        zhr,
+        half,
+        ra,
+        dec,
+        speed,
+        index,
+        storms,
+    }
+}
+const SHOWERS: [Shower; 10] = [
+    shower_of(3.0, 110.0, 0.4, 230.0, 49.0, 41.0, 2.1, false), // Quadrantids
+    shower_of(112.0, 18.0, 0.8, 271.0, 34.0, 49.0, 2.1, false), // Lyrids
+    shower_of(126.0, 50.0, 3.0, 338.0, -1.0, 66.0, 2.4, false), // eta Aquariids
+    shower_of(211.0, 25.0, 4.0, 340.0, -16.0, 41.0, 2.5, false), // Southern delta Aquariids
+    shower_of(224.5, 100.0, 1.5, 48.0, 58.0, 59.0, 2.2, false), // Perseids
+    shower_of(281.0, 10.0, 0.3, 262.0, 54.0, 20.0, 2.6, true), // Draconids
+    shower_of(294.0, 20.0, 2.5, 95.0, 16.0, 66.0, 2.5, false), // Orionids
+    shower_of(321.0, 15.0, 1.0, 152.0, 22.0, 71.0, 2.5, true), // Leonids
+    shower_of(348.0, 150.0, 1.0, 112.0, 33.0, 35.0, 2.6, false), // Geminids
+    shower_of(356.0, 10.0, 0.5, 217.0, 76.0, 33.0, 3.0, false), // Ursids
+];
+
+/// The strongest shower `days` since J2000 and its zenithal hourly rate: each one's rate falls off
+/// from its peak (a half `half` days each side, exponentially, as the IMO's profiles do), and its
+/// year may bring an outburst (one year in ten, five times its rate) or, for the Leonids and the
+/// Draconids, a storm (one year in thirty, a hundred times: thousands an hour, as in 1966 and 2001).
+fn shower(days: f64) -> (&'static Shower, f64) {
+    let mut year = 2000 + (days / 365.2425).floor() as i64;
+    let mut start = days_of(&format!("{year}-01-01")).unwrap_or(0.0);
+    if days < start {
+        year -= 1;
+        start = days_of(&format!("{year}-01-01")).unwrap_or(0.0);
+    }
+    let day = days - start + 1.0;
+    let mut best = (&SHOWERS[0], 0.0);
+    for (i, shower) in SHOWERS.iter().enumerate() {
+        // The distance to its peak around the year's turn too (the Quadrantids, the Ursids).
+        let off = (day - shower.peak + 182.6).rem_euclid(365.2425) - 182.6;
+        let mut zhr = shower.zhr * 0.5f64.powf(off.abs() / shower.half);
+        let luck = year_hash(year, i);
+        if shower.storms && luck < 1.0 / 30.0 {
+            zhr *= 100.0;
+        } else if luck < 0.1 {
+            zhr *= 5.0;
+        }
+        if zhr > best.1 {
+            best = (shower, zhr);
+        }
+    }
+    // Below a sporadic meteor or two an hour a shower is not one.
+    if best.1 < 1.0 {
+        best.1 = 0.0;
+    }
+    best
+}
+
+/// A draw in [0, 1) for shower `i` in `year`.
+fn year_hash(year: i64, i: usize) -> f64 {
+    let mut h = (year as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ (i as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h ^= h >> 31;
+    h = h.wrapping_mul(0x94D0_49BB_1331_11EB);
+    h ^= h >> 29;
+    (h >> 11) as f64 / (1u64 << 53) as f64
 }
 pub fn buffer(device: &wgpu::Device) -> wgpu::Buffer {
     use wgpu::util::DeviceExt;
@@ -124,6 +254,33 @@ fn sky_turn(days: f64, local_hours: f64, latitude: f32) -> Mat4 {
 
 #[cfg(test)]
 mod tests {
+    /// The Perseids peak on 12 August at about a hundred an hour, and are gone in March; the
+    /// Geminids lead in mid-December.
+    #[test]
+    fn the_showers_come_on_their_dates() {
+        let (perseids, zhr) = super::shower(super::days_of("2026-08-12").unwrap());
+        assert_eq!(perseids.ra, 48.0);
+        assert!((60.0..=600.0).contains(&zhr), "{zhr}");
+        let (_, march) = super::shower(super::days_of("2026-03-10").unwrap());
+        assert!(march < 1.0, "{march}");
+        let (geminids, _) = super::shower(super::days_of("2025-12-14").unwrap());
+        assert_eq!(geminids.ra, 112.0);
+        let (quadrantids, _) = super::shower(super::days_of("2027-01-03").unwrap());
+        assert_eq!(quadrantids.ra, 230.0);
+    }
+
+    /// A slot holds one meteor at most, even in a storm, and none when the setting is off.
+    #[test]
+    fn the_slots_hold_one_meteor_at_most() {
+        for setting in 0..3 {
+            for day in (0..800).map(|d| f64::from(d) * 0.5 + 9000.0) {
+                let m = super::meteors(setting, day);
+                assert!((0.0..=1.0).contains(&m.chance));
+                assert!(setting == 0 || m.slot >= 0.3);
+            }
+        }
+    }
+
     use super::*;
     use glam::Vec3;
 

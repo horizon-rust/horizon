@@ -244,6 +244,10 @@ struct Globals {
     /// The Earth's curvature (`Renderer::earth_curvature`): x the square of the radius it starts
     /// at (`lod::earth_drop`; -1 off), y how far the sea's horizon dips (`lod::horizon_dip`).
     earth: [f32; 4],
+    /// The shooting stars' shower (terrain.wgsl `meteor_make`, `sky_stars::Meteors`): its radiant
+    /// and zenithal hourly rate; its meteors' speed and population index, and the sporadic rate.
+    rt_shower: [f32; 4],
+    rt_stream: [f32; 4],
 }
 pub type SectionKey = (i32, i32, i32);
 struct SectionGpu {
@@ -5001,7 +5005,7 @@ impl Renderer {
             && frame.clouds.is_some()
             && !frame.underwater
             && rt_clouds::mode() != rt_clouds::Mode::Off;
-        let meteors = sky_stars::meteors(self.shooting_stars);
+        let meteors = sky_stars::meteors(self.shooting_stars, sky_stars::days());
         let rt_sun_light = {
             // By night the rays trace toward the moon: its light by its phase, its own disc for
             // the shadows' penumbra (the Moon Size setting).
@@ -5102,8 +5106,8 @@ impl Renderer {
             // x: the moon's phase (terrain.wgsl `rt_moon_disc`); y, z: the shooting stars' rate.
             rt_stars: [
                 moon_phase,
-                meteors[0],
-                meteors[1],
+                meteors.slot,
+                meteors.chance,
                 frame.sky.star_brightness,
             ],
             rt_star_frame: sky_stars::frame(frame.sky.sun_angle, frame.sun_path_tilt)
@@ -5132,6 +5136,8 @@ impl Renderer {
                 ],
                 None => [-1.0, 0.0, 0.0, 0.0],
             },
+            rt_shower: meteors.radiant,
+            rt_stream: meteors.stream,
         };
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));
