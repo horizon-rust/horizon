@@ -530,8 +530,12 @@ impl Game<'_> {
             }
             "lod-distance" => {
                 let n: u32 = arg(1)?.parse()?;
-                if n > 1024 {
-                    return Err("LOD distance must be 0..1024".into());
+                if n > horizon_client::lod::MAX_CHUNKS {
+                    return Err(format!(
+                        "LOD distance must be 0..{}",
+                        horizon_client::lod::MAX_CHUNKS
+                    )
+                    .into());
                 }
                 self.settings.horizon.lod_distance = n;
                 self.apply_settings();
@@ -1032,6 +1036,7 @@ impl Game<'_> {
             "cached_tiles": self.lod.as_ref().map_or(0, |lod| lod.stats().1),
             "far_detail": self.settings.horizon.far_detail.name(),
             "resident_quads": self.renderer.as_ref().map_or(0, |r| r.lod_quads()),
+            "levels": self.renderer.as_ref().map_or_else(Vec::new, |r| r.lod_levels()),
             "pending_observations": self.lod_observe.len(),
             "refined_samples": self.lod.as_ref().map_or(0, |lod| lod.refined_samples()),
         });

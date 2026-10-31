@@ -339,6 +339,28 @@ pub fn rows(level: Level) -> Vec<Row> {
 }
 
 const UPLOAD_STEPS: [u32; 8] = [0, 256, 512, 1024, 2048, 4096, 8192, 16384];
+/// What the LOD Distance slider stops at, in chunks: off, then each doubling
+/// up to the whole world.
+const LOD_STEPS: [u32; 18] = [
+    0,
+    64,
+    128,
+    256,
+    512,
+    1024,
+    2048,
+    4096,
+    8192,
+    16384,
+    32768,
+    65536,
+    131072,
+    262144,
+    524288,
+    1048576,
+    2097152,
+    crate::lod::MAX_CHUNKS,
+];
 
 /// Horizon's graphics screens supplement the vanilla options on Video Settings.
 /// Upscaling is only there while TAA is, which does it.
@@ -383,6 +405,13 @@ impl H {
                     .position(|&b| b >= g.upload_budget_kib)
                     .unwrap_or(UPLOAD_STEPS.len() - 1);
                 Some(i as f32 / (UPLOAD_STEPS.len() - 1) as f32)
+            }
+            H::LodDistance => {
+                let i = LOD_STEPS
+                    .iter()
+                    .position(|&d| d >= g.lod_distance)
+                    .unwrap_or(LOD_STEPS.len() - 1);
+                Some(i as f32 / (LOD_STEPS.len() - 1) as f32)
             }
             H::Workers => Some(g.workers as f32 / max_workers() as f32),
             H::ResolutionScale => Some((g.resolution_scale as f32 - 50.0) / 150.0),
@@ -499,6 +528,9 @@ impl H {
                 g.upload_budget_kib =
                     UPLOAD_STEPS[(v * (UPLOAD_STEPS.len() - 1) as f32).round() as usize]
             }
+            H::LodDistance => {
+                g.lod_distance = LOD_STEPS[(v * (LOD_STEPS.len() - 1) as f32).round() as usize]
+            }
             H::Workers => g.workers = (v * max_workers() as f32).round() as u32,
             H::ResolutionScale => g.resolution_scale = (50.0 + (v * 30.0).round() * 5.0) as u32,
             H::HdrPaperWhite => {
@@ -532,9 +564,6 @@ impl H {
         }
         let g = &mut s.horizon;
         match self {
-            H::LodDistance => {
-                g.lod_distance = step(&[0, 64, 128, 256, 512, 1024], g.lod_distance, back)
-            }
             H::FarDetail => {
                 g.far_detail = step(&[FarDetail::Full, FarDetail::Reduced], g.far_detail, back)
             }
@@ -1270,11 +1299,12 @@ mod tests {
     }
 
     #[test]
-    fn lod_distance_cycles_in_both_levels_without_changing_near_distance() {
+    fn lod_distance_slides_in_both_levels_without_changing_near_distance() {
         let mut s = Settings::default();
         let item = Item::Horizon(H::LodDistance);
         let near = s.render_distance;
         assert_eq!(item.label(&s).plain(), "LOD Distance: Off");
+        assert_eq!(item.slider(&s), Some(0.0));
         for level in [Level::Simple, Level::Advanced] {
             let items: Vec<_> = rows(level)
                 .into_iter()
@@ -1289,14 +1319,29 @@ mod tests {
                 .unwrap();
             assert_eq!(items[render + 1], item);
         }
-        for distance in [64, 128, 256, 512, 1024, 0] {
-            item.cycle(&mut s, false, [854, 480]);
+        // Every stop is reachable and reads back as the same position.
+        for (i, &distance) in LOD_STEPS.iter().enumerate() {
+            let at = i as f32 / (LOD_STEPS.len() - 1) as f32;
+            item.set_slider(&mut s, at);
             assert_eq!(s.horizon.lod_distance, distance);
+            assert_eq!(item.slider(&s), Some(at));
             assert_eq!(s.render_distance, near);
         }
-        item.cycle(&mut s, true, [854, 480]);
+        // The ends are off and the whole world, which the far terrain plans.
+        item.set_slider(&mut s, 0.0);
+        assert_eq!(s.horizon.lod_distance, 0);
+        item.set_slider(&mut s, 1.0);
+        assert_eq!(s.horizon.lod_distance, crate::lod::MAX_CHUNKS);
+        assert_eq!(
+            item.label(&s).plain(),
+            format!("LOD Distance: {} chunks", crate::lod::MAX_CHUNKS)
+        );
+        item.set_slider(&mut s, 5.0 / 17.0);
         assert_eq!(s.horizon.lod_distance, 1024);
         assert_eq!(item.label(&s).plain(), "LOD Distance: 1024 chunks");
+        // A distance between stops (from the file) sits on the next one.
+        s.horizon.lod_distance = 3000;
+        assert_eq!(item.slider(&s), Some(7.0 / 17.0));
         assert_eq!(
             Item::Vanilla(Opt::RenderDistance).label(&s).plain(),
             format!("Full Detail Distance: {near} chunks")
