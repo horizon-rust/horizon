@@ -172,10 +172,11 @@ fn aldhani_make(slot: u32, t: f32, period: f32, long: bool) -> AldhaniMeteor {
     if age < 0.0 || age > lasts + 2.5 * persist { return o; }
     // Where it lights up: its angle from the eye, most near it but many out to the east and
     // west horizons, past the zenith and down to the radiant behind (the storm fills the sky), and
-    // its side, above the horizon.
+    // its side all the way round (below the radiant too, between it and the northern horizon),
+    // above the horizon.
     let theta = select(radians(12.0 + 166.0 * pow(aldhani_rand(seed + 5u), 1.5)),
         radians(60.0 + 105.0 * aldhani_rand(seed + 5u)), long);
-    let around = 3.14159265 * aldhani_rand(seed + 6u);
+    let around = 6.2831853 * aldhani_rand(seed + 6u);
     let east = normalize(cross(vec3(0.0, 1.0, 0.0), ALDHANI_RADIANT));
     let lift = cross(ALDHANI_RADIANT, east);
     let a = normalize(cos(theta) * ALDHANI_RADIANT + sin(theta) * (cos(around) * east + sin(around) * lift));
