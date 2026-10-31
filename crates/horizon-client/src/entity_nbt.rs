@@ -602,6 +602,10 @@ pub fn mob_to_nbt(
             map.insert("Sitting".into(), Tag::Byte(i8::from(m.extra.sitting)));
             map.insert("CollarColor".into(), Tag::Byte(m.extra.color as i8));
         }
+        // Ocelot.addAdditionalSaveData.
+        "minecraft:ocelot" => {
+            map.insert("Trusting".into(), Tag::Byte(i8::from(m.extra.trusting)));
+        }
         "minecraft:wolf" => {
             if let Some(owner) = m.extra.owner {
                 map.insert("Owner".into(), Tag::IntArray(owner.to_vec()));
@@ -1628,6 +1632,10 @@ pub fn mob_from_nbt(
             m.extra.lost_horns = [horn("HasLeftHorn"), horn("HasRightHorn")];
         }
         _ => {}
+    }
+    if m.species() == crate::mobs::Species::Ocelot {
+        // Ocelot.readAdditionalSaveData: `Trusting`.
+        crate::mobs::tame::set_trusting(&mut m, flag(tag, "Trusting"));
     }
     if m.species() == crate::mobs::Species::Cat {
         m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));

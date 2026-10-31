@@ -274,7 +274,7 @@ impl Goal for TamePanic {
         m.fire_ticks > 0 && self.0.can_use(m, cx)
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        self.0.can_continue(m, cx)
+        !m.extra.trusting && self.0.can_continue(m, cx)
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         self.0.start(m, cx)
@@ -939,10 +939,10 @@ pub fn register_cat(m: &mut Mob) {
         NearestTarget::new(Prey::Filter(baby_turtle_on_land), false).gate(|m, _| !m.extra.tame),
     );
 }
-/// `Ocelot.registerGoals`, then `reassessTrustingGoals` adds the player
-/// avoidance last. Trust (`Ocelot.mobInteract`, the `Trusting` tag) is not
-/// ported yet, so every ocelot is wild: it flees players and can be scared
-/// off while tempted.
+/// `Ocelot.registerGoals`, then `Ocelot.reassessTrustingGoals` adds the player
+/// avoidance last. Vanilla removes that goal from a trusting ocelot and adds
+/// it back otherwise; here it stays registered and `OcelotAvoid` refuses a
+/// trusting ocelot, which has the same effect.
 pub fn register_ocelot(m: &mut Mob) {
     let food = m.kind.food.clone();
     let mut stroll = Stroll::avoiding_water(0.8);
@@ -962,6 +962,33 @@ pub fn register_ocelot(m: &mut Mob) {
         1,
         NearestTarget::new(Prey::Filter(baby_turtle_on_land), false),
     );
+}
+/// `Ocelot.setTrusting`: sets `DATA_TRUSTING`, which the avoid goal and the
+/// despawn rule read.
+pub fn set_trusting(m: &mut Mob, trusting: bool) {
+    m.extra.trusting = trusting;
+}
+/// `Ocelot.mobInteract`'s roll for a wild ocelot that took the fish: one time
+/// in three (`random.nextInt(3) == 0`) it starts to trust players. Either way
+/// vanilla runs `Ocelot.spawnTrustingParticles`, which sends nothing from the
+/// server but draws from the ocelot's random, so the draws happen here too.
+/// Whether it trusts now.
+pub fn try_trusting(m: &mut Mob) -> bool {
+    let trusting = m.random.next_int_bound(3).unwrap_or(1) == 0;
+    if trusting {
+        set_trusting(m, true);
+    }
+    let feet = [m.position.x, m.position.y, m.position.z];
+    let (width, height) = (f64::from(m.width()), f64::from(m.height()));
+    crate::particles::around_self(
+        &mut m.random,
+        feet,
+        width,
+        height,
+        crate::particles::Burst::TAMING,
+        |_, _| {},
+    );
+    trusting
 }
 /// `Ocelot.OcelotTemptGoal(ocelot, 0.6, ocelot food, true)`.
 #[derive(Clone, Debug)]
@@ -1014,8 +1041,9 @@ impl Goal for OcelotAvoid {
     fn flags(&self) -> u8 {
         self.0.flags()
     }
+    /// `Ocelot.reassessTrustingGoals` takes the goal off a trusting ocelot.
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
-        self.0.can_use(m, cx)
+        !m.extra.trusting && self.0.can_use(m, cx)
     }
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.0.can_continue(m, cx)
@@ -1911,5 +1939,46 @@ mod universal_anger_tests {
                 );
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod trusting_tests {
+    use super::*;
+    use crate::mobs::sensor_scan_tests::kind;
+
+    fn ocelot_with(id: u32) -> Mob {
+        let mut kind = kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:ocelot".into();
+        k.species = Species::Ocelot;
+        // Each id seeds the mob's own random differently.
+        Mob::new(id, kind, Vec3::new(f64::from(id), 0.0, 0.0), 0.0)
+    }
+
+    /// `Ocelot.setTrusting` and `Ocelot.mobInteract`'s roll: a fresh ocelot
+    /// trusts nobody, and the roll is one in three — the particles it draws
+    /// for leave the mob's random advanced either way.
+    #[test]
+    fn an_ocelot_starts_untrusting_and_the_roll_is_one_in_three() {
+        let mut o = ocelot_with(1);
+        assert!(!o.extra.trusting, "a wild ocelot does not trust");
+        set_trusting(&mut o, true);
+        assert!(o.extra.trusting);
+        set_trusting(&mut o, false);
+        assert!(!o.extra.trusting);
+        // Over many rolls roughly a third trust, and none of them draw
+        // differently from the others.
+        let mut trusted = 0;
+        for id in 1..=600 {
+            let mut o = ocelot_with(id);
+            let roll_trusted = try_trusting(&mut o);
+            assert_eq!(o.extra.trusting, roll_trusted, "the flag follows the roll");
+            trusted += i32::from(roll_trusted);
+        }
+        assert!(
+            (140..260).contains(&trusted),
+            "about a third of 600 rolls trust: {trusted}"
+        );
     }
 }

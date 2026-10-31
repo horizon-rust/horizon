@@ -5064,6 +5064,27 @@ impl Game<'_> {
                     m.position.z.floor() as i32 >> 4,
                 ));
             }
+            // Ocelot.mobInteract: fish from a player within three blocks, while
+            // the ocelot is being tempted, may win a wild ocelot's trust; any
+            // other click is Animal.mobInteract (love, growing up).
+            Species::Ocelot
+                if is_food
+                    && !m.extra.trusting
+                    && m.ai.goals.is_running("OcelotTemptGoal")
+                    && self
+                        .player
+                        .as_ref()
+                        .is_some_and(|p| m.distance_sqr(p.position) < 9.0) =>
+            {
+                consume = true;
+                let trusted = horizon_client::mobs::tame::try_trusting(m);
+                self.mob_event_particles(self.mobs[index].id, if trusted { 41 } else { 40 });
+                let m = &self.mobs[index];
+                self.world.modified.insert((
+                    m.position.x.floor() as i32 >> 4,
+                    m.position.z.floor() as i32 >> 4,
+                ));
+            }
             // IronGolem.mobInteract: an iron ingot repairs 25 health.
             Species::IronGolem
                 if item == "minecraft:iron_ingot" && m.health < m.attrs.max_health =>

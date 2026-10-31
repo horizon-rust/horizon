@@ -833,6 +833,9 @@ pub struct Extra {
     pub stew_effects: Option<Vec<(Arc<str>, i32)>>,
     /// Dye colour id (sheep wool, collars).
     pub color: u8,
+    /// `Ocelot.DATA_TRUSTING`: a wild ocelot that took a player's fish may
+    /// trust players, after which it stops fleeing them.
+    pub trusting: bool,
     pub sheared: bool,
     /// `Mob.canPickUpLoot` (also lets dispensers equip it).
     pub pick_up_loot: bool,

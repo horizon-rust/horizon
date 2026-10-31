@@ -107,9 +107,9 @@ Ocelot.registerGoals	missing		player: an ocelot only panics, wanders and looks a
 Ocelot.customServerAiStep	port	crates/horizon-client/src/mobs/tame.rs::cat_anim	crouch and sprint pose from the move speed, shared with cats; nothing sets those speeds for an ocelot yet
 Ocelot.removeWhenFarAway	missing		minor: ocelots never despawn for distance (vanilla: not trusting and older than 2400 ticks)
 Ocelot.createAttributes	skip:data		attributes come from entity-types.json
-Ocelot.mobInteract	missing		player: raw fish never makes a wild ocelot trust the player (no one in three roll, no hearts or smoke); it only puts the ocelot in love mode
+Ocelot.mobInteract	port	crates/horizon-client/src/game/creatures.rs::Game::interact_mob	fish from a player within three blocks while the ocelot is tempted rolls one in three for trust (`tame::try_trusting`), with entity events 41 and 40 for the hearts and the smoke
 Ocelot.handleEntityEvent	port	crates/horizon-client-render/src/particles.rs::entity_event_burst	events 41 and 40: hearts and smoke; nothing sends them without the trust roll
-Ocelot.reassessTrustingGoals	missing		player: no player avoidance goal, so wild ocelots never run from the player
+Ocelot.reassessTrustingGoals	inline	crates/horizon-client/src/mobs/tame.rs::register_ocelot	the avoidance stays registered and refuses a trusting ocelot, which is what removing and re-adding it amounts to
 Ocelot.checkSpawnObstruction	port	crates/horizon-client/src/mobs/spawn_selection.rs::spawn_obstruction	unobstructed, no liquid, at or above sea level on grass or leaves
 Ocelot.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	baby chance 1.0 for a group
 Ocelot.getLeashOffset	missing		minor: the lead ties at full eye height instead of half of it (leash::leash_offset only special-cases llamas)
