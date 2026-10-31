@@ -4648,7 +4648,7 @@ impl Renderer {
             None => None,
         };
         let rendered = match &xr_frame {
-            Some(xr_frame) if self.hdr.is_none() => {
+            Some(xr_frame) => {
                 crate::spans::time("vr_mirror", || self.present_mirror(frame, xr_frame))
             }
             _ => self.draw_frame(frame),
