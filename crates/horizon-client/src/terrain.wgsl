@@ -649,7 +649,8 @@ fn aldhani_streak(m: AldhaniMeteor, line: vec4<f32>, d: vec3<f32>, pixel: f32) -
     let k = select(1.8, 0.7, fwd > 0.0);
     let q = (fwd * fwd) / (alpha * alpha * k * k) + (lat * lat) / (alpha * alpha);
     let wings = mix(hue, vec3(0.55, 0.7, 1.0), 0.45) * top;
-    let shock = max(min(m.colour.w, 1.5) - 0.4, 0.0) * 0.6;
+    // It shields the body while it flies (by its light now: none once it has burnt out).
+    let shock = smoothstep(0.15, 1.2, m.colour.w) * 0.9;
     light += (mix(vec3(top), wings, smoothstep(0.0, 2.0, q)) * pow(1.0 + q, -2.5)
         + wings * (0.12 * pow(1.0 + q / 9.0, -1.5))) * (shock * fade);
     light += white * (m.colour.w * (gain * gain * 1.2 * exp(-h2 / (2.0 * sigma * sigma))
@@ -680,23 +681,22 @@ fn aldhani_streak(m: AldhaniMeteor, line: vec4<f32>, d: vec3<f32>, pixel: f32) -
             light += mix(white, vec3(1.0, 0.6, 0.25) * top, 0.6 * (1.0 - at)) * (shed * 1.2 * pulse * exp(-q2));
         }
     }
-    // A big one's end: it breaks up. A short swell of light where the body bursts (rising in 20
-    // ms, gone with a tenth of a second), then its fragments fly on with part of its speed,
-    // spread by the break-up and slowed by the air (a drag time of a third of a second), each
-    // smeared along its way while fast, each burning out on its own clock: white-hot, then the
-    // metals' colour, then sodium's orange as it cools.
+    // A big one's end: it breaks up, quietly: a brief brightening of the body as it bursts (no
+    // glare: its shock is gone with its speed), then its fragments fly on with part of its
+    // speed, spread by the break-up and slowed by the air (a drag time of a third of a second),
+    // each smeared along its way while fast, each burning out on its own clock: white-hot, then
+    // the metals' colour, then sodium's orange as it cools.
     if end_t >= 0.0 && big > 0.05 {
-        let swell = big * 1.6 * (1.0 - exp(-end_t / 0.02)) * exp(-end_t / 0.11);
-        let spread = alpha * alpha * (1.0 + 6.0 * end_t);
-        light += mix(vec3(top), wings, 0.5) * (swell * pow(1.0 + dot(rel, rel) / spread, -2.0));
+        let swell = big * 0.5 * (1.0 - exp(-end_t / 0.02)) * exp(-end_t / 0.08);
+        light += vec3(top) * (swell * exp(-h2 / (2.0 * sigma * sigma)));
         let tau = 0.33;
         let flown = tau * (1.0 - exp(-end_t / tau));
-        for (var j = 0u; j < 10u; j++) {
+        for (var j = 0u; j < 7u; j++) {
             let u1 = aldhani_rand(seed * 32u + j * 3u + 100u);
             let u2 = aldhani_rand(seed * 32u + j * 3u + 101u);
             let u3 = aldhani_rand(seed * 32u + j * 3u + 102u);
             let life = 0.25 + 0.75 * u3;
-            let glow = big * (0.5 + 0.8 * u3) * exp(-end_t / life) * smoothstep(0.0, 0.04, end_t);
+            let glow = big * (0.2 + 0.4 * u3) * exp(-end_t / life) * smoothstep(0.0, 0.04, end_t);
             if glow < 0.01 { continue; }
             let v = way * (0.35 + 0.65 * u1) + aside * ((u2 - 0.5) * 1.4);
             let p = normalize(b + v * (sigma * 55.0 * flown));
@@ -709,7 +709,7 @@ fn aldhani_streak(m: AldhaniMeteor, line: vec4<f32>, d: vec3<f32>, pixel: f32) -
             let cool = clamp(end_t / life, 0.0, 1.0);
             let c = mix(mix(vec3(1.0), hue, smoothstep(0.0, 0.4, cool)), vec3(1.0, 0.5, 0.15),
                 smoothstep(0.4, 1.0, cool));
-            light += c * (top * glow * 1.5 * g);
+            light += c * (top * glow * g);
         }
     }
     return light;
