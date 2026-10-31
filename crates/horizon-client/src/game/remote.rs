@@ -268,6 +268,8 @@ pub(super) struct Remote {
     pub quiet_commands: bool,
     /// The server announced it carries mod messages.
     pub mod_net: bool,
+    /// The server samples far terrain for us, this far at most (`lod_net`).
+    pub far_terrain: Option<horizon_client::lod_net::Offer>,
     pub(super) builtin: Arc<Builtin>,
     lang: Arc<Language>,
     pub(super) registries: Arc<Dynamic>,
@@ -693,6 +695,7 @@ impl Game<'_> {
             brand: "unknown".into(),
             quiet_commands: false,
             mod_net: false,
+            far_terrain: None,
             builtin: Arc::new(builtin),
             lang,
             registries: Arc::new(Dynamic::default()),
@@ -1415,11 +1418,22 @@ impl Game<'_> {
                         remote.mod_net = true;
                     }
                 }
+                Event::FarTerrain(offer) => {
+                    if let Some(remote) = &mut self.remote {
+                        remote.far_terrain = Some(offer);
+                    }
+                }
                 Event::Reconfiguring => {
                     // handleConfigurationStart: the held-back chat shows, then
                     // clearClientLevel opens ServerReconfigScreen over no level.
                     self.flush_chat_queue();
                     self.close_dialogs();
+                    // The server configuring us now (a proxy's next one)
+                    // offers its own far terrain, or none.
+                    if let Some(remote) = &mut self.remote {
+                        remote.far_terrain = None;
+                    }
+                    self.clear_lod();
                     self.player = None;
                     self.screen = Screen::Playing;
                     self.capture(false);
@@ -4782,6 +4796,10 @@ impl Game<'_> {
         self.native_net.to_server = 0;
         self.native_tick();
         self.tell_native_now();
+        // Far tiles the samplers asked for (`lod_net`).
+        if let Some(r) = &self.remote {
+            r.session.send_far_terrain();
+        }
         // Minecraft.tick sends this even when the player cannot tick yet,
         // including while waiting for chunks. Keep it outside early returns.
         if self.remote.as_ref().is_some_and(|r| r.joined) {
