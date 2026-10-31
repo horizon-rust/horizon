@@ -14152,7 +14152,7 @@ impl Game<'_> {
         if let Some(source) = source {
             self.lod = Some(horizon_client::lod::Lod::new(
                 source,
-                self.pack.context.clone(),
+                self.pack.context_with(self.res.biomes()),
             ));
             self.lod_observe.extend(self.world.chunks.keys().copied());
         }
@@ -16299,7 +16299,8 @@ impl Game<'_> {
         // PlayerList.reloadResources: the tags and recipes go to the players
         // and their advancements reload.
         if self.lan.is_some() {
-            match lan::sync_data(&self.options.resources, &self.pack_files()) {
+            let biomes = self.res.biomes();
+            match lan::sync_data(&self.options.resources, &self.pack_files(), Some(&biomes)) {
                 Ok(sync) => {
                     if let Some(host) = self.lan.as_mut() {
                         host.hub.reload_resources(sync);

@@ -625,7 +625,7 @@ impl Game<'_> {
         let player_type = super::perspective::player_type(&root);
         let mut streaming = Streaming::new(
             Arc::new(NoTerrain),
-            self.pack.context.clone(),
+            self.pack.context_with(self.res.biomes()),
             self.res.threads(),
         );
         streaming.remote = true;
@@ -835,7 +835,8 @@ impl Game<'_> {
         self.adv = Default::default();
         self.stats = Default::default();
         self.score.board = Default::default();
-        self.streaming = Streaming::new(Arc::new(NoTerrain), self.pack.context.clone(), 1);
+        let context = self.pack.context_with(self.res.biomes());
+        self.streaming = Streaming::new(Arc::new(NoTerrain), context, 1);
         self.streaming.paused = true;
         self.world = World::new(self.res.facts().air, 0);
         self.player = None;
@@ -1632,7 +1633,7 @@ impl Game<'_> {
             self.stop_sounds_for_new_level();
             let mut streaming = Streaming::new(
                 Arc::new(NoTerrain),
-                self.pack.context.clone(),
+                self.pack.context_with(self.res.biomes()),
                 self.res.threads(),
             );
             streaming.remote = true;

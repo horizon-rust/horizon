@@ -49,6 +49,7 @@ pub const SYNCHRONIZED: &[&str] = &[
     "minecraft:block_transformer",
     "minecraft:worldgen/block_state_provider",
 ];
+pub const BIOME_REGISTRY: &str = "minecraft:worldgen/biome";
 /// KnownPack.vanilla("core") for this version.
 pub const CORE_PACK: (&str, &str, &str) = ("minecraft", "core", horizon_protocol::GAME_VERSION);
 
@@ -56,6 +57,9 @@ pub const CORE_PACK: (&str, &str, &str) = ("minecraft", "core", horizon_protocol
 struct Entries {
     names: Vec<String>,
     json: Vec<Value>,
+    /// Entries a data pack gave: sent in full even to clients that know the
+    /// vanilla pack.
+    pack: HashSet<String>,
 }
 
 pub struct SyncData {
@@ -149,6 +153,15 @@ impl SyncData {
         resources: &Path,
         overlay: &horizon_world::loot::PackOverlay,
     ) -> Result<Self, String> {
+        Self::load_with(resources, overlay, None)
+    }
+    /// `load` with the open world's biomes: its data packs' biomes join the
+    /// biome registry, in the order the chunk encoder numbers them.
+    pub fn load_with(
+        resources: &Path,
+        overlay: &horizon_world::loot::PackOverlay,
+        biomes: Option<&crate::biome::Biomes>,
+    ) -> Result<Self, String> {
         let builtin = Builtin::find(resources)
             .and_then(|p| Builtin::load(&p).ok())
             .ok_or("registries.json not found next to the resources")?;
@@ -159,15 +172,31 @@ impl SyncData {
             let path = key.trim_start_matches("minecraft:");
             let mut found = BTreeMap::new();
             walk(&root.join(path), "", &mut found);
-            let (names, json): (Vec<_>, Vec<_>) = found
-                .into_iter()
-                .map(|(n, v)| (format!("minecraft:{n}"), v))
-                .unzip();
+            let biomes = biomes.filter(|b| *key == BIOME_REGISTRY && b.has_packs());
+            let (names, json): (Vec<_>, Vec<_>) = match biomes {
+                Some(b) => b
+                    .registry_order()
+                    .into_iter()
+                    .filter_map(|n| {
+                        let file = b.pack_file(n).cloned();
+                        let file = file.or_else(|| found.remove(n.strip_prefix("minecraft:")?))?;
+                        Some((n.to_owned(), file))
+                    })
+                    .unzip(),
+                None => found
+                    .into_iter()
+                    .map(|(n, v)| (format!("minecraft:{n}"), v))
+                    .unzip(),
+            };
+            let pack = biomes.map_or_else(HashSet::new, |b| {
+                let given = names.iter().filter(|n| b.pack_file(n).is_some());
+                given.cloned().collect()
+            });
             dynamic.registries.insert(
                 (*key).to_owned(),
                 names.iter().map(|n| (n.clone(), None)).collect(),
             );
-            registries.push(((*key).to_owned(), Entries { names, json }));
+            registries.push(((*key).to_owned(), Entries { names, json, pack }));
         }
         let tags = Self::load_tags(&root, &builtin, &dynamic);
         let content_identity = if resources.join(crate::content_identity::MARKER).exists() {
@@ -225,7 +254,7 @@ impl SyncData {
                             id: name.clone(),
                             data: match changed {
                                 Some(json) => Some(json_to_nbt(&json)),
-                                None if known_pack => None,
+                                None if known_pack && !e.pack.contains(name) => None,
                                 None => Some(json_to_nbt(json)),
                             },
                         }
@@ -353,6 +382,49 @@ fn changed_dimension_type(name: &str, json: &Value, levels: &LevelShapes) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A data-pack biome is in the synchronized registry, sent in full, at
+    /// the id the chunk encoder and the client's table give it.
+    #[test]
+    fn a_pack_biome_is_synchronized_with_the_id_the_encoder_uses() {
+        let root = std::env::temp_dir().join(format!("horizon-sync-biomes-{}", std::process::id()));
+        let maps = root.join("assets/minecraft/textures/colormap");
+        let biome_dir = root.join("data/minecraft/worldgen/biome");
+        std::fs::create_dir_all(&maps).unwrap();
+        std::fs::create_dir_all(&biome_dir).unwrap();
+        std::fs::write(root.join("registries.json"), "{}").unwrap();
+        for name in ["grass", "foliage", "dry_foliage"] {
+            let file = std::fs::File::create(maps.join(format!("{name}.png"))).unwrap();
+            let mut png = png::Encoder::new(file, 1, 1);
+            png.set_color(png::ColorType::Rgb);
+            png.set_depth(png::BitDepth::Eight);
+            let mut writer = png.write_header().unwrap();
+            writer.write_image_data(&[1, 2, 3]).unwrap();
+        }
+        for name in ["plains", "river"] {
+            std::fs::write(biome_dir.join(format!("{name}.json")), "{}").unwrap();
+        }
+        let base = crate::biome::Biomes::load(&root).unwrap();
+        let pack: Value =
+            serde_json::from_str(r##"{"effects":{"grass_color":"#123456"}}"##).unwrap();
+        let world = base.with_packs([("minecraft:meadow", &pack)]);
+        let sync =
+            SyncData::load_with(&root, &horizon_world::loot::PackOverlay::NONE, Some(&world))
+                .unwrap();
+        let registry = &sync.dynamic.registries["minecraft:worldgen/biome"];
+        let names: Vec<_> = registry.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            ["minecraft:meadow", "minecraft:plains", "minecraft:river"]
+        );
+        // The encoder numbers a biome by its place here: none may be missing.
+        assert!(world.list.iter().all(|b| names.contains(&b.name.as_str())));
+        let sent = sync.registry_packets(true, &LevelShapes::VANILLA);
+        let biomes = sent.iter().find(|r| r.registry == BIOME_REGISTRY).unwrap();
+        assert!(biomes.entries[0].data.is_some(), "the pack's biome is sent");
+        assert!(biomes.entries[1].data.is_none(), "a known one is not");
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn json_becomes_nbt() {

@@ -294,7 +294,7 @@ impl Game<'_> {
         self.random_tick_sections.clear();
         self.portals.sections.clear();
         self.options.resources = root.clone();
-        let context = pack.context.clone();
+        let context = pack.context_with(self.res.biomes());
         self.pack = pack;
         self.gui = gui;
         // The new atlas's skin and map slots are blank: players and maps

@@ -298,12 +298,9 @@ pub(super) fn preload_world_data(
                     }
                     // The preload is the game's own data; the world's packs'
                     // tables are built when it opens (finish_open_world).
-                    let _ = horizon_client::structure_blocks::loot_data(
-                        &resources,
-                        &horizon_world::loot::PackOverlay::NONE,
-                    );
-                    let _ =
-                        super::lan::sync_data(&resources, &horizon_world::loot::PackOverlay::NONE);
+                    let none = &horizon_world::loot::PackOverlay::NONE;
+                    let _ = horizon_client::structure_blocks::loot_data(&resources, none);
+                    let _ = super::lan::sync_data(&resources, none, None);
                 });
             match spawned {
                 Ok(thread) => *preload = Preload::Started { thread, left: None },
@@ -385,21 +382,16 @@ pub(super) fn set_world_biomes(world_root: &std::path::Path, res: &Resources) {
         .filter_map(|id| packs.iter().find(|p| &p.id == id))
         .collect();
     let (overrides, _) = horizon_client::datapack::worldgen_overrides(&enabled, |_| true);
-    let files: Vec<(String, serde_json::Value)> = overrides
-        .entries("biomes")
-        .filter_map(
-            |(id, json)| match serde_json::from_str::<serde_json::Value>(json) {
-                Ok(v) if v.is_object() => Some((id.to_owned(), v)),
-                _ => {
-                    log::warn!("Horizon: data pack biome {id} is not a biome file; left out");
-                    None
-                }
-            },
-        )
-        .collect();
+    let mut files = Vec::new();
+    for (id, json) in overrides.entries("biomes") {
+        match serde_json::from_str::<serde_json::Value>(json) {
+            Ok(v) if v.is_object() => files.push((id, v)),
+            _ => log::warn!("Horizon: data pack biome {id} is not a biome file; left out"),
+        }
+    }
     let biomes = res
         .biomes()
-        .with_packs(files.iter().map(|(id, v)| (id.as_str(), v)));
+        .with_packs(files.iter().map(|(id, v)| (*id, v)));
     if biomes.has_packs() {
         log::info!(
             "Horizon: the world's data packs give {} biome files; {} biomes in all",

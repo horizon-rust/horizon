@@ -9,7 +9,7 @@ use horizon_client::{
     lan::{
         self, Lan, MAX_PLAYERS, NetConfig,
         chunks::ChunkEncoder,
-        data::SyncData,
+        data::{BIOME_REGISTRY, SyncData},
         entity::{EntityState, States},
         hub::{BodyFlags, HostEvent, HostState, Hub, HubConfig, TickCtx},
         playerdata,
@@ -37,9 +37,19 @@ static SYNC: Mutex<Option<std::result::Result<Arc<SyncData>, String>>> = Mutex::
 pub(super) fn sync_data(
     root: &std::path::Path,
     overlay: &horizon_world::loot::PackOverlay,
+    biomes: Option<&horizon_client::biome::Biomes>,
 ) -> std::result::Result<Arc<SyncData>, String> {
     let mut sync = SYNC.lock().unwrap_or_else(|e| e.into_inner());
-    sync.get_or_insert_with(|| SyncData::load(root, overlay).map(Arc::new))
+    // The preload's registries are not those of a world with biome packs.
+    if let (Some(Ok(s)), Some(b)) = (&*sync, biomes)
+        && !s.dynamic.registries[BIOME_REGISTRY]
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .eq(b.registry_order())
+    {
+        *sync = None;
+    }
+    sync.get_or_insert_with(|| SyncData::load_with(root, overlay, biomes).map(Arc::new))
         .clone()
 }
 
@@ -1222,14 +1232,9 @@ impl Game<'_> {
         config: HubConfig,
         host: Option<u128>,
     ) -> Result<()> {
-        let sync = sync_data(&self.options.resources, &self.pack_files())?;
-        let biome_names: Vec<String> = self
-            .res
-            .biomes()
-            .list
-            .iter()
-            .map(|b| b.name.clone())
-            .collect();
+        let biomes = self.res.biomes();
+        let sync = sync_data(&self.options.resources, &self.pack_files(), Some(&biomes))?;
+        let biome_names: Vec<String> = biomes.list.iter().map(|b| b.name.clone()).collect();
         let registry: Vec<String> = sync
             .dynamic
             .registries
