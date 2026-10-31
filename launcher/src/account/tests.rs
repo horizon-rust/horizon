@@ -514,70 +514,32 @@ fn any_owner_opens_the_gate_and_the_one_who_plays_brings_the_session() {
 }
 
 #[test]
-fn offline_names_play_only_beside_an_owner() {
-    let store = MemoryStore::default();
-    let mut accounts = Accounts::default();
-    let refused = accounts.play_as(&store, Player::Offline("Builder_1".into()));
-    assert_eq!(refused.unwrap_err(), OFFLINE_NEEDS_OWNER);
-    assert!(accounts.offline.is_empty());
-    let mut accounts = signed_in(&store, &secrets("mc-token", true));
-    accounts
-        .play_as(&store, Player::Offline("Builder_1".into()))
-        .unwrap();
-    // Signing the last owner out keeps the name, which no longer plays.
-    accounts.remove(&store, UUID).unwrap();
-    assert_eq!(accounts.offline, ["Builder_1"]);
-    assert_eq!(accounts.player(), Player::Offline("Builder_1".into()));
-    assert!(!accounts.has_owner(&store));
-    let (_, ep) = mock(|_| {});
-    assert!(launch(&ep, Some("test-client"), &store, &mut accounts).is_err());
-    assert!(accounts
-        .play_as(&store, Player::Offline("Builder_2".into()))
-        .is_err());
-}
-
-#[test]
-fn the_developer_option_off_is_the_owner_gate() {
-    let store = MemoryStore::default();
-    let mut accounts = Accounts::default();
-    let refused = accounts.play_as_with(&store, Player::Offline("Builder_1".into()), false);
-    assert_eq!(refused.unwrap_err(), OFFLINE_NEEDS_OWNER);
-    assert_eq!(accounts, Accounts::default());
-    let (_, ep) = mock(|m| m.owns_game = false);
-    let refused = launch_for_game(&ep, Some("test-client"), &store, &mut accounts, false);
-    assert_eq!(refused.unwrap_err(), NoOwner);
-    let mut accounts = signed_in(&store, &secrets("mc-token", true));
-    let refused = launch_for_game(&ep, Some("test-client"), &store, &mut accounts, false);
-    assert_eq!(refused.unwrap_err(), NoOwner);
-}
-
-#[test]
-fn the_developer_option_plays_offline_names_without_an_owner() {
+fn offline_names_and_the_native_game_do_not_need_an_owner() {
     let store = MemoryStore::default();
     let mut accounts = Accounts::default();
     accounts
-        .play_as_with(&store, Player::Offline("Builder_1".into()), true)
+        .play_as(Player::Offline("Builder_1".into()))
         .unwrap();
     assert_eq!(accounts.player(), Player::Offline("Builder_1".into()));
     assert_eq!(accounts.name_arg(), Some("Builder_1"));
     // The game starts offline: no request, no session, and no owner to download the game for.
     let (m, ep) = mock(|_| {});
-    let pass = launch_for_game(&ep, Some("test-client"), &store, &mut accounts, true).unwrap();
+    let pass = launch_for_game(&ep, Some("test-client"), &store, &mut accounts).unwrap();
     assert!(pass.session.is_none() && pass.owner.is_none() && pass.offline.is_none());
     assert!(m.lock().unwrap().log.is_empty());
     // Beside an account the services say doesn't own the game: the same, still no owner.
     let (_, ep) = mock(|m| m.owns_game = false);
     let mut accounts = signed_in(&store, &secrets("mc-token", true));
     accounts
-        .play_as_with(&store, Player::Offline("Builder_1".into()), true)
+        .play_as(Player::Offline("Builder_1".into()))
         .unwrap();
-    let pass = launch_for_game(&ep, Some("test-client"), &store, &mut accounts, true).unwrap();
+    let pass = launch_for_game(&ep, Some("test-client"), &store, &mut accounts).unwrap();
     assert!(pass.session.is_none() && pass.owner.is_none());
     assert!(!accounts.has_owner(&store));
     // A real owner is still found and brings what it brings without the option.
     let (_, ep) = mock(|_| {});
     let mut accounts = signed_in(&store, &secrets("mc-token", true));
-    let pass = launch_for_game(&ep, Some("test-client"), &store, &mut accounts, true).unwrap();
+    let pass = launch_for_game(&ep, Some("test-client"), &store, &mut accounts).unwrap();
     assert_eq!(pass.owner.unwrap().0.name, "Notch");
 }
 
@@ -956,23 +918,20 @@ fn offline_names_switch_with_accounts() {
     };
     assert_eq!(a.player(), Player::Microsoft("abc".into()));
     assert_eq!(a.name_arg(), None);
-    a.play_as(&store, Player::Offline("Builder_1".into()))
-        .unwrap();
+    a.play_as(Player::Offline("Builder_1".into())).unwrap();
     assert_eq!(a.player(), Player::Offline("Builder_1".into()));
     assert_eq!(a.name_arg(), Some("Builder_1"));
     // Kept once, as first written, whatever the case.
-    a.play_as(&store, Player::Offline("builder_1".into()))
-        .unwrap();
+    a.play_as(Player::Offline("builder_1".into())).unwrap();
     assert_eq!(a.offline, ["Builder_1"]);
     assert_eq!(a.name_arg(), Some("Builder_1"));
     assert!(a.add_offline("no spaces").is_err());
     assert!(a.add_offline("ab").is_err());
     assert!(a.add_offline("seventeen_letters").is_err());
-    a.play_as(&store, Player::Microsoft("abc".into())).unwrap();
+    a.play_as(Player::Microsoft("abc".into())).unwrap();
     assert_eq!(a.name_arg(), None, "an account plays with its own name");
-    assert!(a.play_as(&store, Player::Microsoft("zzz".into())).is_err());
-    a.play_as(&store, Player::Offline("Builder_1".into()))
-        .unwrap();
+    assert!(a.play_as(Player::Microsoft("zzz".into())).is_err());
+    a.play_as(Player::Offline("Builder_1".into())).unwrap();
     // Forgetting drops the look and the name's skin and cape files too.
     let dir = std::env::temp_dir().join(format!("horizon-accounts-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

@@ -200,7 +200,7 @@ impl Session {
                     "plays_as": accounts.selected().map(|a| a.name.clone()),
                     "sign_in_configured": account::client_id().is_some(),
                     "keychain": account::store().persistent(),
-                    // Play needs an account that owns the game (the owner gate).
+                    // Downloads and online-mode play use this; native offline play does not.
                     "owner": accounts.has_owner(account::store()),
                     "sign_in": sign_in,
                 }))
