@@ -98,8 +98,8 @@ fn aldhani_warmth(around: f32) -> f32 {
 }
 // The sky's own light toward `d` during the event (`t` seconds in), in paper whites, beside the
 // glow its meteors make as they burn (terrain.wgsl `aldhani_burning`, from the field): the haze
-// they light, pale and the same everywhere, thicker toward the radiant, and the eye itself, a
-// bright glow on the horizon around the radiant, white-hot in its middle.
+// they light, pale and the same everywhere, thicker toward the eye and the radiant, and the eye
+// itself, a bright glow on the horizon around it, white-hot in its middle.
 fn aldhani_glow(d: vec3<f32>, t: f32) -> vec3<f32> {
     let strength = aldhani_envelope(t);
     if strength <= 0.0 { return vec3(0.0); }
@@ -107,7 +107,7 @@ fn aldhani_glow(d: vec3<f32>, t: f32) -> vec3<f32> {
     let theta = acos(c);
     let up = max(d.y, 0.0);
     let pale = vec3(0.72, 0.9, 0.9);
-    let sky = pale * (1.2 * (0.35 + 0.65 * (0.5 + 0.5 * c)) * (0.55 + 0.45 * exp(-up * 2.0)));
+    let sky = pale * (1.2 * (0.35 + 0.65 * abs(c)) * (0.55 + 0.45 * exp(-up * 2.0)));
     let core = exp(-theta * theta / (2.0 * 0.08 * 0.08));
     let wide = exp(-theta / 0.25) * (0.4 + 0.6 * exp(-up / 0.15));
     let eye = pale * (8.0 * wide) + mix(pale, vec3(1.0), 0.6) * (60.0 * core);
@@ -171,7 +171,11 @@ fn aldhani_make(slot: u32, t: f32, period: f32, long: bool) -> AldhaniMeteor {
     // west horizons, past the zenith and down to the radiant behind (the storm fills the sky), and
     // its side all the way round (below the radiant too, between it and the northern horizon),
     // above the horizon.
-    let theta = select(radians(12.0 + 166.0 * pow(aldhani_rand(seed + 5u), 1.5)),
+    // A quarter of the short ones light up within 30 degrees of the radiant, evenly over that
+    // cap (seen nearly head-on there: short streaks and points, as a shower's are near its radiant).
+    let near_radiant = !long && aldhani_rand(seed + 13u) < 0.25;
+    let theta = select(select(radians(12.0 + 166.0 * pow(aldhani_rand(seed + 5u), 1.5)),
+        radians(180.0) - acos(1.0 - (1.0 - cos(radians(30.0))) * aldhani_rand(seed + 5u)), near_radiant),
         radians(60.0 + 105.0 * aldhani_rand(seed + 5u)), long);
     let around = 6.2831853 * aldhani_rand(seed + 6u);
     let east = normalize(cross(vec3(0.0, 1.0, 0.0), ALDHANI_RADIANT));

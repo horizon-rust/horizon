@@ -527,8 +527,8 @@ fn aldhani_warmth(around: f32) -> f32 {
 }
 // The sky's own light toward `d` during the event (`t` seconds in), in paper whites, beside the
 // glow its meteors make as they burn (terrain.wgsl `aldhani_burning`, from the field): the haze
-// they light, pale and the same everywhere, thicker toward the radiant, and the eye itself, a
-// bright glow on the horizon around the radiant, white-hot in its middle.
+// they light, pale and the same everywhere, thicker toward the eye and the radiant, and the eye
+// itself, a bright glow on the horizon around it, white-hot in its middle.
 fn aldhani_glow(d: vec3<f32>, t: f32) -> vec3<f32> {
     let strength = aldhani_envelope(t);
     if strength <= 0.0 { return vec3(0.0); }
@@ -536,7 +536,7 @@ fn aldhani_glow(d: vec3<f32>, t: f32) -> vec3<f32> {
     let theta = acos(c);
     let up = max(d.y, 0.0);
     let pale = vec3(0.72, 0.9, 0.9);
-    let sky = pale * (1.2 * (0.35 + 0.65 * (0.5 + 0.5 * c)) * (0.55 + 0.45 * exp(-up * 2.0)));
+    let sky = pale * (1.2 * (0.35 + 0.65 * abs(c)) * (0.55 + 0.45 * exp(-up * 2.0)));
     let core = exp(-theta * theta / (2.0 * 0.08 * 0.08));
     let wide = exp(-theta / 0.25) * (0.4 + 0.6 * exp(-up / 0.15));
     let eye = pale * (8.0 * wide) + mix(pale, vec3(1.0), 0.6) * (60.0 * core);
