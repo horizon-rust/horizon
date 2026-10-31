@@ -1890,7 +1890,10 @@ fn meteor_make(seed: u32, since: f32, period: f32, chance: f32, frame: mat4x4<f3
     o.breaks = meteor_rand(seed + 11u) < 0.25;
     o.flare_at = 0.3 + 0.6 * meteor_rand(seed + 12u);
     o.flare = 0.8 + 2.0 * meteor_rand(seed + 13u);
-    o.power = min(50.0 * pow(10.0, -0.4 * magnitude), 300.0);
+    // A long one (a grazer, its radiant low) burns the longest and brightest: up to three times
+    // the light, into HDR's highlights.
+    let long = smoothstep(60.0, 200.0, o.span);
+    o.power = min(50.0 * pow(10.0, -0.4 * magnitude), 300.0) * (1.0 + 2.0 * long);
     o.comp = vec4(meteor_rand(seed + 14u), meteor_rand(seed + 15u), meteor_rand(seed + 16u), 0.7 * meteor_rand(seed + 17u));
     o.on = true;
     return o;
@@ -2013,6 +2016,12 @@ fn meteor_streak(m: Meteor, d: vec3<f32>, pixel: f32) -> vec3<f32> {
     let head = gain * gain * mix(0.7, 2.5, bold) * exp(-r2 / s2)
         + bold * (0.03 + 0.01 * big) * exp(-r2 / (2.0 * halo_sigma * halo_sigma));
     var light = mix(meteor_colour(m, x_h), vec3(1.0), 0.5) * (m.power * meteor_curve(m, x_h) * head);
+    // A bright one ends as a fireball does: a terminal flash where it bursts, then its trail
+    // lingers where it glowed, widening and fading all along at once, rather than shrinking to
+    // its end.
+    let after = max(m.time - m.span / m.speed, 0.0);
+    let flash = bold * 3.0 * exp(-pow((m.time - m.span / m.speed) / 0.07, 2.0));
+    light += mix(meteor_colour(m, 1.0), vec3(1.0), 0.6) * (m.power * flash * head);
     // The trail: the glow the head left along the path, fading behind it.
     let phi = atan2(dot(d, e), dot(d, m.a));
     let theta = atan2(we, wa);
@@ -2027,7 +2036,8 @@ fn meteor_streak(m: Meteor, d: vec3<f32>, pixel: f32) -> vec3<f32> {
             let glow = 0.07 + 0.03 * min(m.bright, 6.0);
             // Its end at the head, smoothed over a pixel (no stair-step at the tip).
             let tip = smoothstep(0.0, pixel * dist / m.speed, age);
-            let wake = exp(-age / glow) * tip;
+            let linger = glow * (1.0 + 4.0 * bold);
+            let wake = exp(-(age - after) / glow) * exp(-after / linger) * tip;
             // Its colour: the composition's at the head, green just behind a fast one (the oxygen
             // and magnesium lines), then the ember of sodium and the air's nitrogen.
             let hot = clamp((m.speed - 18.0) / 45.0, 0.0, 1.0);
@@ -2040,7 +2050,8 @@ fn meteor_streak(m: Meteor, d: vec3<f32>, pixel: f32) -> vec3<f32> {
             // head, widest at its brightest; widening a little as the wake diffuses. A bright one
             // in a soft halo.
             let lit = sqrt(clamp(curve * wake, 0.0, 1.0));
-            let st = sigma * (0.4 + 0.8 * lit) * (1.0 + 0.2 * min(age / glow, 2.0));
+            let st = sigma * (0.4 + 0.8 * lit) * (1.0 + 0.2 * min(age / glow, 2.0))
+                * (1.0 + 1.2 * bold * min(after / linger, 1.0));
             let line = (0.62 * pixel / sigma) * exp(-a2 / (2.0 * st * st))
                 + 0.03 * clamp(m.bright / 4.0, 0.0, 1.0) * exp(-a2 / (32.0 * sigma * sigma));
             light += colour * (m.power * curve * wake * line);
