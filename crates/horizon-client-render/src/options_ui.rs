@@ -3692,15 +3692,7 @@ impl OptionsUi {
         }
         events
     }
-    /// The mouse wheel at the cursor. Over a cycle button it takes the step
-    /// (`CycleButton.mouseScrolled`: up goes back) and the list stays put;
-    /// over a slider it nudges the slider up or down.
-    ///
-    /// **Horizon improvement (diverges from Vanilla 26.3):** when a slider or
-    /// cycle button is keyboard-focused (highlighted), the wheel steps or
-    /// cycles that widget regardless of where the cursor is. Vanilla 26.3
-    /// does not intercept the wheel for sliders at all; this makes keyboard
-    /// navigation far more usable.
+    /// The mouse wheel at the cursor.
     pub fn wheel(
         &mut self,
         s: &mut Settings,
@@ -3750,67 +3742,72 @@ impl OptionsUi {
             self.scroll_at(s, size, cursor, amount);
             return Vec::new();
         }
-        // Horizon improvement: a keyboard-focused slider or cycle button
-        // intercepts the wheel before hover detection (see doc-comment above).
-        if amount != 0.0 {
-            let (widgets, _, _, _) = self.layout(s, size.0, size.1);
-            match &self.focus {
-                Some(FocusId::Slider(opt)) => {
-                    let opt = *opt;
-                    let width = widgets
-                        .iter()
-                        .find(|wd| matches!(&wd.kind, WKind::Slider { opt: o, .. } if *o == opt))
-                        .map_or(150.0, |wd| wd.w);
-                    return self.step_slider_option(s, opt, amount > 0.0, width);
+        if s.extras.wheel_cycles_settings {
+            if amount != 0.0 {
+                let (widgets, _, _, _) = self.layout(s, size.0, size.1);
+                match &self.focus {
+                    Some(FocusId::Slider(opt)) => {
+                        let opt = *opt;
+                        let width = widgets
+                            .iter()
+                            .find(
+                                |wd| matches!(&wd.kind, WKind::Slider { opt: o, .. } if *o == opt),
+                            )
+                            .map_or(150.0, |wd| wd.w);
+                        return self.step_slider_option(s, opt, amount > 0.0, width);
+                    }
+                    Some(FocusId::Cycle(opt)) => {
+                        let opt = *opt;
+                        let mut events = vec![Event::ButtonClick];
+                        events.extend(self.cycle_option(s, opt, amount > 0.0, framebuffer));
+                        return events;
+                    }
+                    _ => {}
                 }
-                Some(FocusId::Cycle(opt)) => {
-                    let opt = *opt;
-                    let mut events = vec![Event::ButtonClick];
-                    events.extend(self.cycle_option(s, opt, amount > 0.0, framebuffer));
-                    return events;
+            }
+            enum HoveredControl {
+                Cycle(Opt),
+                Extra(crate::extras::Item),
+            }
+            let (widgets, top, bottom, _) = self.layout(s, size.0, size.1);
+            let hovered = widgets.iter().find_map(|wd| match &wd.kind {
+                WKind::Button {
+                    active: true,
+                    act: Act::Cycle(opt),
+                    ..
+                } if ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
+                    && !(wd.list && (cursor.1 < top || cursor.1 >= bottom)) =>
+                {
+                    Some(HoveredControl::Cycle(*opt))
                 }
-                _ => {}
+                WKind::Button {
+                    active: true,
+                    act: Act::Extra(item),
+                    ..
+                } if ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
+                    && !(wd.list && (cursor.1 < top || cursor.1 >= bottom)) =>
+                {
+                    Some(HoveredControl::Extra(*item))
+                }
+                _ => None,
+            });
+            match hovered {
+                Some(HoveredControl::Cycle(opt)) if amount != 0.0 => {
+                    self.cycle_option(s, opt, amount > 0.0, framebuffer)
+                }
+                Some(HoveredControl::Extra(item)) if amount != 0.0 => {
+                    item.cycle(&mut s.extras, amount > 0.0);
+                    vec![Event::Changed]
+                }
+                Some(_) => Vec::new(),
+                None => {
+                    self.scroll_at(s, size, cursor, amount);
+                    Vec::new()
+                }
             }
-        }
-        enum HoveredControl {
-            Cycle(Opt),
-            Extra(crate::extras::Item),
-        }
-        let (widgets, top, bottom, _) = self.layout(s, size.0, size.1);
-        let hovered = widgets.iter().find_map(|wd| match &wd.kind {
-            WKind::Button {
-                active: true,
-                act: Act::Cycle(opt),
-                ..
-            } if ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
-                && !(wd.list && (cursor.1 < top || cursor.1 >= bottom)) =>
-            {
-                Some(HoveredControl::Cycle(*opt))
-            }
-            WKind::Button {
-                active: true,
-                act: Act::Extra(item),
-                ..
-            } if ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
-                && !(wd.list && (cursor.1 < top || cursor.1 >= bottom)) =>
-            {
-                Some(HoveredControl::Extra(*item))
-            }
-            _ => None,
-        });
-        match hovered {
-            Some(HoveredControl::Cycle(opt)) if amount != 0.0 => {
-                self.cycle_option(s, opt, amount > 0.0, framebuffer)
-            }
-            Some(HoveredControl::Extra(item)) if amount != 0.0 => {
-                item.cycle(&mut s.extras, amount > 0.0);
-                vec![Event::Changed]
-            }
-            Some(_) => Vec::new(),
-            None => {
-                self.scroll_at(s, size, cursor, amount);
-                Vec::new()
-            }
+        } else {
+            self.scroll_at(s, size, cursor, amount);
+            Vec::new()
         }
     }
     /// The mouse wheel at the cursor.
@@ -4521,6 +4518,35 @@ impl OptionsUi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wheel_cycles_settings_respects_extra() {
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        ui.show(Page::Video);
+        let size = (480.0, 360.0);
+        let (widgets, _, _, _) = ui.layout(&s, size.0, size.1);
+        let cycle_wd = widgets
+            .iter()
+            .find(|wd| {
+                matches!(
+                    wd.kind,
+                    WKind::Button {
+                        act: Act::Cycle(_),
+                        ..
+                    }
+                )
+            })
+            .expect("video settings has cycle buttons");
+        let cursor = (cycle_wd.x + 5.0, cycle_wd.y + 5.0);
+
+        let events = ui.wheel(&mut s, size, cursor, [854, 480], 1.0);
+        assert!(!events.is_empty());
+
+        s.extras.wheel_cycles_settings = false;
+        let events = ui.wheel(&mut s, size, cursor, [854, 480], 1.0);
+        assert!(events.is_empty());
+    }
 
     #[test]
     fn accessibility_sliders_and_toggles_survive_options_round_trip() {
