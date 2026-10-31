@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: The branch, tag or commit to build (default: the one this run starts from)
+        description: 'The branch, tag or commit to build (empty: the one this run starts from)'
         type: string
         default: ''
 permissions:
