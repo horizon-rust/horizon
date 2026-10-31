@@ -435,6 +435,15 @@ struct NewBlock<'a> {
     /// the block's states are its template's states times these.
     combos: Vec<Vec<(String, String)>>,
 }
+impl NewBlock<'_> {
+    /// Template states and declared combinations in registry order.
+    fn state_combinations(&self) -> impl Iterator<Item = (u32, &[(String, String)])> {
+        self.rename
+            .states
+            .clone()
+            .flat_map(|id| self.combos.iter().map(move |combo| (id, combo.as_slice())))
+    }
+}
 /// An item being added (declared, or a block's).
 struct NewItem {
     rename: Rename,
@@ -807,56 +816,51 @@ impl<'a> Plan<'a> {
             let renames = self.renames(b);
             // One row per template state per combination the block declares,
             // so its states stay one run in registry order.
-            let mut next = b.rename.first;
-            for (t, id) in b.rename.states.clone().enumerate() {
-                for combo in &b.combos {
-                    let mut row = list[id as usize].clone();
-                    for r in &renames {
-                        row.rename(r, ids);
-                    }
-                    if !combo.is_empty() {
-                        set_state_properties(&mut row, combo);
-                    }
-                    if gameplay {
-                        row.set("id", J::Num(next.into()));
-                        if !b.decl.item {
-                            row.set("item", J::Str("minecraft:air".into()));
-                        }
-                        self.override_gameplay(b, &mut row);
-                        if let Some(shapes) = &b.shapes {
-                            let shape = &shapes[t];
-                            let boxes = shape
-                                .boxes()
-                                .iter()
-                                .map(|b| {
-                                    J::Arr(
-                                        [
-                                            b.min(Axis::X),
-                                            b.min(Axis::Y),
-                                            b.min(Axis::Z),
-                                            b.max(Axis::X),
-                                            b.max(Axis::Y),
-                                            b.max(Axis::Z),
-                                        ]
-                                        .into_iter()
-                                        .map(J::f64)
-                                        .collect(),
-                                    )
-                                })
-                                .collect();
-                            row.set("outline", J::Arr(boxes));
-                            row.set("outline_edges", J::Arr(shape_edges(shape)));
-                            row.set(
-                                "full_collision",
-                                J::Bool(
-                                    !shape.join_is_not_empty(&VoxelShape::block(), ShapeOp::XOR)?,
-                                ),
-                            );
-                        }
-                    }
-                    list.push(row);
-                    next += 1;
+            for (next, (id, combo)) in (b.rename.first..).zip(b.state_combinations()) {
+                let t = (id - b.rename.states.start) as usize;
+                let mut row = list[id as usize].clone();
+                for r in &renames {
+                    row.rename(r, ids);
                 }
+                if !combo.is_empty() {
+                    set_state_properties(&mut row, combo);
+                }
+                if gameplay {
+                    row.set("id", J::Num(next.into()));
+                    if !b.decl.item {
+                        row.set("item", J::Str("minecraft:air".into()));
+                    }
+                    self.override_gameplay(b, &mut row);
+                    if let Some(shapes) = &b.shapes {
+                        let shape = &shapes[t];
+                        let boxes = shape
+                            .boxes()
+                            .iter()
+                            .map(|b| {
+                                J::Arr(
+                                    [
+                                        b.min(Axis::X),
+                                        b.min(Axis::Y),
+                                        b.min(Axis::Z),
+                                        b.max(Axis::X),
+                                        b.max(Axis::Y),
+                                        b.max(Axis::Z),
+                                    ]
+                                    .into_iter()
+                                    .map(J::f64)
+                                    .collect(),
+                                )
+                            })
+                            .collect();
+                        row.set("outline", J::Arr(boxes));
+                        row.set("outline_edges", J::Arr(shape_edges(shape)));
+                        row.set(
+                            "full_collision",
+                            J::Bool(!shape.join_is_not_empty(&VoxelShape::block(), ShapeOp::XOR)?),
+                        );
+                    }
+                }
+                list.push(row);
             }
         }
         Ok(())
@@ -1002,10 +1006,54 @@ impl<'a> Plan<'a> {
                     }
                 }
             }
-            "model-states.json"
-            | "landing-definitions.json"
-            | "worldgen/blocks/survival-rules.json" => self.names(doc, false),
-            "render-definitions.json" => self.names(doc, true),
+            "model-states.json" | "render-definitions.json" => {
+                let model = name == "model-states.json";
+                self.names(doc, !model);
+                for b in &self.blocks {
+                    let Some(entry) = doc.get_mut(&b.decl.id) else {
+                        continue;
+                    };
+                    if model && let Some(schema) = entry.get_mut("schema") {
+                        for (property_name, property) in &b.decl.state_properties {
+                            schema.set(
+                                property_name,
+                                J::Obj(vec![(
+                                    "named".into(),
+                                    J::Arr(
+                                        property
+                                            .values()
+                                            .into_iter()
+                                            .map(|v| J::Str(v.into()))
+                                            .collect(),
+                                    ),
+                                )]),
+                            );
+                        }
+                    }
+                    if let Some(J::Arr(states)) = entry.get_mut("states") {
+                        let template = states.clone();
+                        let mut expanded = Vec::new();
+                        for (index, (id, combo)) in b.state_combinations().enumerate() {
+                            if model {
+                                let mut state = template
+                                    .get((id - b.rename.states.start) as usize)
+                                    .ok_or("model states do not match the template")?
+                                    .clone();
+                                for (name, value) in combo {
+                                    state.set(name, J::Str(value.clone()));
+                                }
+                                expanded.push(state);
+                            } else {
+                                expanded.push(J::Num((b.rename.first + index as u32).into()));
+                            }
+                        }
+                        *states = expanded;
+                    }
+                }
+            }
+            "landing-definitions.json" | "worldgen/blocks/survival-rules.json" => {
+                self.names(doc, false)
+            }
             "worldgen/blocks/survival-extra-definitions.json" => {
                 if let Some(map) = doc.at("ignition_odds") {
                     self.names(map, false);
@@ -1211,15 +1259,13 @@ impl<'a> Plan<'a> {
                         // order `states` numbers them in (`Rename::id`): a
                         // template state's combinations are one run, and the
                         // first of the run is where the template state maps.
-                        for id in b.rename.states.clone() {
-                            for combo in &b.combos {
-                                let mut state = list[id as usize].clone();
-                                if let Some(slot) = state.get_mut("id") {
-                                    *slot = Tag::String(b.decl.id.as_str().into());
-                                }
-                                set_nbt_properties(&mut state, combo);
-                                list.push(state);
+                        for (id, combo) in b.state_combinations() {
+                            let mut state = list[id as usize].clone();
+                            if let Some(slot) = state.get_mut("id") {
+                                *slot = Tag::String(b.decl.id.as_str().into());
                             }
+                            set_nbt_properties(&mut state, combo);
+                            list.push(state);
                         }
                     }
                 }

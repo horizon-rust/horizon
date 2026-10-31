@@ -2325,6 +2325,64 @@ fn a_declared_property_defaults_on_a_template_with_none() {
     fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
 }
 
+#[test]
+fn named_definitions_follow_the_block_state_fanout() {
+    let declaration = r#"{"template":"minecraft:test","item":false,
+      "state_properties":{"lit":{"type":"boolean"}},
+      "default_state":{"lit":"true"}}"#;
+    let (base, mods) = block_base("named-state-fanout", &[declaration]);
+    let plan = Plan::new(&base, &mods).unwrap();
+    let mut models: J = serde_json::from_str(
+        r#"{"minecraft:test":{
+        "schema":{"axis":{"named":["x","y"]}},
+        "states":[{"axis":"x"},{"axis":"y"}]}}"#,
+    )
+    .unwrap();
+    plan.json("model-states.json", &mut models).unwrap();
+    let added = models.get("testmod:test").unwrap();
+    let expected: J = serde_json::from_str(
+        r#"{"axis":{"named":["x","y"]},
+        "lit":{"named":["false","true"]}}"#,
+    )
+    .unwrap();
+    assert_eq!(added.get("schema"), Some(&expected));
+    let expected: J = serde_json::from_str(
+        r#"[
+        {"axis":"x","lit":"true"},{"axis":"x","lit":"false"},
+        {"axis":"y","lit":"true"},{"axis":"y","lit":"false"}]"#,
+    )
+    .unwrap();
+    assert_eq!(added.get("states"), Some(&expected));
+
+    let mut render: J = serde_json::from_str(
+        r#"{"minecraft:test":{
+        "default":0,"can_occlude":true,"bars_tag":false,"rule":"never",
+        "states":[0,1]}}"#,
+    )
+    .unwrap();
+    plan.json("render-definitions.json", &mut render).unwrap();
+    let added = render.get("testmod:test").unwrap();
+    let expected: J = serde_json::from_str("[2,3,4,5]").unwrap();
+    assert_eq!(added.get("states"), Some(&expected));
+    assert_eq!(added.get("default"), Some(&J::Num(2.into())));
+
+    for (file, json) in [
+        (
+            "landing-definitions.json",
+            r#"{"minecraft:test":{"fall":"Block","bounce":false}}"#,
+        ),
+        (
+            "worldgen/blocks/survival-rules.json",
+            r#"{"minecraft:test":"Always"}"#,
+        ),
+    ] {
+        let mut doc: J = serde_json::from_str(json).unwrap();
+        plan.json(file, &mut doc).unwrap();
+        assert_eq!(doc.get("testmod:test"), doc.get("minecraft:test"), "{file}");
+    }
+    fs::remove_dir_all(base.parent().unwrap()).unwrap();
+}
+
 /// An NBT state row for the two-state `minecraft:test` template, the shape
 /// `BlockState::to_nbt` writes.
 fn test_state_row(axis: &str) -> Tag {
