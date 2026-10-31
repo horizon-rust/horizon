@@ -7225,6 +7225,10 @@ impl Game<'_> {
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
         let mut batch = HudBatch::new(size);
+        // GlobalSettingsUniform's GameTime, for a resource pack's text shader.
+        batch.game_time = ((self.world.game_time.rem_euclid(24000)) as f32
+            + self.clock.fraction() as f32)
+            / 24000.0;
         let (w, h) = (batch.width, batch.height);
         if self.screen == Screen::Win {
             self.draw_win_screen(&mut batch);
@@ -17119,6 +17123,9 @@ fn build_renderer(
         .iter()
         .map(|(rect, animation)| (*rect, animation.clone(), (usize::MAX, 0, 0)))
         .collect();
+    renderer
+        .hud
+        .set_text_shader(&renderer.device, atlas.text_shader.as_deref());
     Ok(renderer)
 }
 
