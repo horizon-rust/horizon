@@ -1987,22 +1987,34 @@ impl PendingPushes {
         self.by_mob.entry(id).or_default().push(v);
     }
 }
-/// Adds the pending pushes aimed at `m` to its velocity, in push order.
 /// `ServerLevel.sendBlockUpdated`: for each write that changed a block's collision
 /// shape, a mob whose path runs near it re-paths (`PathNavigation.shouldRecomputePath`).
-pub fn blocks_changed(m: &mut Mob, w: &MobWorld, writes: &[((i32, i32, i32), u32, u32)]) {
+/// The writes whose shape changed are found once per tick ([`collision_changes`]).
+pub fn blocks_changed(m: &mut Mob, changed: &[[i32; 3]]) {
     if m.ai.nav.is_done() {
         return;
     }
-    for &((x, y, z), old, new) in writes {
-        let at = [x, y, z];
-        let shape = |state| w.collision_bounds_of(horizon_world::registry::BlockStateId(state), at);
-        if shape(old) != shape(new) && m.should_recompute_path(at) {
+    for &at in changed {
+        if m.should_recompute_path(at) {
             m.queue_path_recompute();
             return;
         }
     }
 }
+/// The writes of `writes` that changed the block's collision shape, in order:
+/// `sendBlockUpdated` compares the two shapes once per write, not per mob.
+pub fn collision_changes(w: &MobWorld, writes: &[((i32, i32, i32), u32, u32)]) -> Vec<[i32; 3]> {
+    writes
+        .iter()
+        .filter_map(|&((x, y, z), old, new)| {
+            let at = [x, y, z];
+            let shape =
+                |state| w.collision_bounds_of(horizon_world::registry::BlockStateId(state), at);
+            (shape(old) != shape(new)).then_some(at)
+        })
+        .collect()
+}
+/// Adds the pending pushes aimed at `m` to its velocity, in push order.
 pub fn apply_mob_pushes(m: &mut Mob, pending: &mut PendingPushes) {
     // Entity.push(x, y, z) sets needsSync.
     let mut add = |v: Vec3| {

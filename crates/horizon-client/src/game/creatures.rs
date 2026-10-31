@@ -723,6 +723,7 @@ impl Game<'_> {
                 .map(super::boat_leads::boat_state)
                 .collect();
             let base = self.mob_world_base(&[]);
+            let path_changes = horizon_client::mobs::collision_changes(&base, &path_writes);
             // Each mob keeps its snapshot slot all tick; the first slot of an
             // id answers, as a scan would.
             let mut index = horizon_client::fast_hash::FxHashMap::<u32, u32>::default();
@@ -783,7 +784,7 @@ impl Game<'_> {
                     continue;
                 }
                 horizon_client::mobs::apply_mob_pushes(m, &mut pushes);
-                horizon_client::mobs::blocks_changed(m, &w, &path_writes);
+                horizon_client::mobs::blocks_changed(m, &path_changes);
                 let from = events.len();
                 let kept = m.tick(&w, &mut scratch, &mut events);
                 // A killed mob's body is removed: its effects that act on
@@ -853,7 +854,13 @@ impl Game<'_> {
             bindings.retain(|id, _| live.contains(id));
             host.mob_players = bindings;
         }
-        self.mobs.append(&mut mobs);
+        // The ticked list goes back whole: appended to an empty list, a
+        // server's thousands of mobs were copied into a new buffer each tick.
+        if self.mobs.is_empty() {
+            self.mobs = mobs;
+        } else {
+            self.mobs.append(&mut mobs);
+        }
         self.died = died;
         // ... and entity event 60 goes out as it is: the poof.
         for (id, at, width, height) in gone {

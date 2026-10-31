@@ -1104,7 +1104,7 @@ fn wait_alive<T>(
 
 fn play(c: Connection, shared: &Arc<Shared>, parts: Parts, address: std::net::SocketAddr) {
     let conn_id = shared.next_id();
-    let events = shared.events.clone();
+    let events = &shared.events;
     let _ = c.reader.set_read_timeout(Some(READ_TIMEOUT));
     let (mut reader, writer) = c.split();
     let (tx, rx) = channel();
@@ -1152,7 +1152,7 @@ fn play(c: Connection, shared: &Arc<Shared>, parts: Parts, address: std::net::So
         match read_loop(
             &mut reader,
             conn_id,
-            &events,
+            events,
             &alive,
             required_pack,
             shared.config.rate_limit,
@@ -1237,7 +1237,7 @@ enum Ended {
 fn read_loop(
     reader: &mut ConnReader,
     conn: u32,
-    events: &Sender<NetEvent>,
+    events: &super::Events,
     alive: &AtomicI64,
     required_pack: bool,
     rate_limit: i32,
