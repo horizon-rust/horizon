@@ -54,6 +54,8 @@ struct Globals {
     // The shooting stars' shower (terrain.wgsl `meteor_make`).
     rt_shower: vec4<f32>,
     rt_stream: vec4<f32>,
+    rain: vec4<f32>,
+    rain_sun: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas: texture_2d<f32>;

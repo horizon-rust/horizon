@@ -32,7 +32,8 @@ struct Sky {
     // The sun's radiance, xyz; the atmosphere's scale, w.
     sun_radiance_and_atmosphere_scale: vec4<f32>,
     moon_radiance_value: vec4<f32>,
-    // The Mie anisotropy, x.
+    // The moon's radiance, xyz; the rain's cloud cover, w (atmosphere.rs `overcast`).
+    // The Mie anisotropy, x; the overcast zenith's light, yzw.
     atmosphere_parameters: vec4<f32>,
 }
 
@@ -388,5 +389,10 @@ fn convert(@builtin(global_invocation_id) id: vec3<u32>) {
     let flat_direction = vec2<f32>(toward.x, toward.y) * cos(azimuth)
         + vec2<f32>(toward.y, -toward.x) * sin(azimuth);
     let d = vec3<f32>(flat_direction.x * cos(elevation), sin(elevation), flat_direction.y * cos(elevation));
-    textureStore(sky_view_image, pixel, vec4<f32>(final_sky_toward(d), 1.0));
+    // The rain's cloud cover (atmosphere.rs `overcast`): a CIE overcast sky, under the horizon
+    // the ground's light from it.
+    let zenith = sky.atmosphere_parameters.yzw;
+    let cie = select(zenith * (1.0 + 2.0 * d.y) / 3.0, zenith * 0.2, d.y < 0.0);
+    let clear = final_sky_toward(d);
+    textureStore(sky_view_image, pixel, vec4<f32>(mix(clear, cie, sky.moon_radiance_value.w), 1.0));
 }

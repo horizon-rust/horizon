@@ -88,6 +88,8 @@ struct Uniform {
     hw_offset: [f32; 4],
     held: [f32; 4],
     moving: [[f32; 4]; MOVING_LIGHTS],
+    rain: [f32; 4],
+    rain_sun: [f32; 4],
 }
 
 /// The moving lights the rays light the terrain with at most (`Rays::moving`).
@@ -126,6 +128,10 @@ pub struct Rays {
     /// The Eye of Aldhani (`aldhani`): the seconds into it (below 0 none) and a full moon's light
     /// overhead, its meteors' light's unit.
     pub aldhani: [f32; 2],
+    /// RT lighting's rain (terrain.wgsl's `Globals::rain` and `rain_sun`), for the puddles the
+    /// reflections turn off.
+    pub rain: [f32; 4],
+    pub rain_sun: [f32; 4],
 }
 
 impl Rays {
@@ -245,6 +251,8 @@ pub struct ShadowRays {
     uniform: wgpu::Buffer,
     /// The Eye of Aldhani's field (`aldhani::Aldhani::field`), its meteors the rays light with.
     aldhani: wgpu::Buffer,
+    /// The rain map (`rain::Rain::map`), where the puddles are.
+    rain: wgpu::Buffer,
     views: Vec<ViewMasks>,
     /// Passes run, for the rays' directions to change.
     frame: u32,
@@ -253,7 +261,13 @@ pub struct ShadowRays {
 impl ShadowRays {
     /// The pass, with the hybrid's hardware rays when `hardware` (sprite layers past `split` go to
     /// the next arrays, which the alpha test takes as opaque); `aldhani` the Eye of Aldhani's field.
-    pub fn new(device: &wgpu::Device, hardware: bool, split: u32, aldhani: &wgpu::Buffer) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        hardware: bool,
+        split: u32,
+        aldhani: &wgpu::Buffer,
+        rain: &wgpu::Buffer,
+    ) -> Self {
         let source = source(hardware, split);
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Ray-traced shadows"),
@@ -383,6 +397,7 @@ impl ShadowRays {
                 entry(38, cache_binding),
                 entry(39, storage),
                 entry(47, cache_binding),
+                entry(48, storage),
             ]
             .into_iter()
             .chain(
@@ -581,6 +596,7 @@ impl ShadowRays {
             sparse: Self::sparse_rays(device, 1),
             uniform,
             aldhani: aldhani.clone(),
+            rain: rain.clone(),
             views: Vec::new(),
             frame: 0,
         }
@@ -776,6 +792,8 @@ impl ShadowRays {
                 0.0,
             ],
             moving: rays.moving,
+            rain: rays.rain,
+            rain_sun: rays.rain_sun,
         };
         uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));
         let view = |binding, view| wgpu::BindGroupEntry {
@@ -850,6 +868,10 @@ impl ShadowRays {
             wgpu::BindGroupEntry {
                 binding: 47,
                 resource: self.sparse.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 48,
+                resource: self.rain.as_entire_binding(),
             },
         ];
         if let (true, Some(hw)) = (self.hardware, &hardware) {

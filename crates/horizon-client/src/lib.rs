@@ -154,6 +154,7 @@ pub mod pose;
 pub mod pregen;
 pub mod projectiles;
 pub mod raid;
+pub mod rain;
 pub mod random_sequences;
 pub mod random_tick_sections;
 pub mod recipe_book;

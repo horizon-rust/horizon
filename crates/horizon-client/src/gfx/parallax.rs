@@ -281,6 +281,9 @@ struct ParallaxSurface {
     uv: vec2<f32>,
     footprint: f32,
     mapped: bool,
+    // How deep the relief is where the view landed (0 its top, 1 its deepest; 0.5 without a
+    // map), where the rain's puddles gather first (terrain.wgsl `rain_puddle`).
+    relief: f32,
 }
 fn parallax_surface(in: ParallaxOut, march: bool) -> ParallaxSurface {
     // Derivatives first, in uniform control flow.
@@ -304,7 +307,7 @@ fn parallax_surface(in: ParallaxOut, march: bool) -> ParallaxSurface {
     let texel = parallax_sprite(in.uv, layer, dx, dy);
     let footprint = max(length(dx), length(dy));
     if slot.array == 0xffffu {
-        return ParallaxSurface(texel, n, n, 1.0, in.uv, footprint, false);
+        return ParallaxSurface(texel, n, n, 1.0, in.uv, footprint, false, 0.5);
     }
     // log2 of the map's texels per pixel: 0 where a texel covers one pixel.
     let lod = log2(max(max(length(dx), length(dy)) * slot.size, 1e-6));
@@ -313,13 +316,16 @@ fn parallax_surface(in: ParallaxOut, march: bool) -> ParallaxSurface {
     let strength = select(0.0, near * (1.0 - smoothstep(-0.5, 0.5, lod)), march);
     let view = in.position / max(distance, 1e-6);
     var hit: ParallaxHit;
+    var relief: f32;
     if strength > 0.001 {
         hit = parallax_march(slot, in.uv, vec3(dot(view, tu), dot(view, tv), dot(view, n)),
             strength);
+        relief = hit.depth;
     } else {
         let level = clamp(i32(round(lod)), 0, i32(log2(slot.size)));
         let texel = parallax_texel(slot, floor(in.uv * slot.size / exp2(f32(level))), level);
         hit = ParallaxHit(in.uv, parallax_unpack(texel), texel.b, 0.0);
+        relief = 1.0 - texel.a;
     }
     let world = normalize(hit.normal.x * tu + hit.normal.y * tv + hit.normal.z * n);
     let ao = hit.ao * (1.0 - PARALLAX_CAVITY * hit.depth);
@@ -334,7 +340,7 @@ fn parallax_surface(in: ParallaxOut, march: bool) -> ParallaxSurface {
     if strength > 0.001 {
         landed = parallax_sprite(hit.uv, layer, dx, dy);
     }
-    return ParallaxSurface(landed, n, world, ao, hit.uv, footprint, true);
+    return ParallaxSurface(landed, n, world, ao, hit.uv, footprint, true, relief);
 }
 // Vanilla's light: the surface's texel shaded for the map's normal, times its occlusion.
 fn parallax_color(in: ParallaxOut, march: bool) -> vec4<f32> {
@@ -376,6 +382,11 @@ fn parallax_rt_lit(in: ParallaxOut, s: ParallaxSurface) -> vec3<f32> {
     let albedo = horizon_terrain_decode_gamma(s.texel.rgb * in.tint);
     let specular = specular_at(layer, s.uv, s.footprint);
     var m = horizon_terrain_rt_labpbr(albedo, s.normal, s.ao, specular);
+    // Wet from the rain (terrain.wgsl `rt_wet`), as porous as LabPBR's blue says (up to 64) where
+    // the pack says it.
+    let porous = round(specular.b * 255.0);
+    let porosity = select(-1.0, porous / 64.0, porous >= 1.0 && porous <= 64.0);
+    m = horizon_terrain_rt_wet(m, s.geo, in.position, in.clip.xy, in.light.x, porosity, s.relief);
     // The map's word on the subsurface scattering wins; where it has none, thin blocks scatter
     // and thick ones do not.
     let thin = (thin_layers[layer] & 1u) != 0u;

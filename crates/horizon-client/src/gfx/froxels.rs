@@ -108,6 +108,26 @@ impl Medium {
         Self::measured(Vec3::splat(0.97), 10.0, Vec3::splat(0.8), 0.3)
     }
 
+    /// The open air with rain of `rate` mm/h falling through it: the air's medium plus the drops'
+    /// own extinction (`rain::extinction`, Marshall-Palmer sizes; Remix's rain, 0.996 over 10 m,
+    /// is about 1.5 mm/h of it and its thunder, 0.97, about 25 mm/h), scattering as the rain's
+    /// medium does, a downpour's a little darker as Remix's thunder.
+    pub fn falling(rate: f32) -> Self {
+        let air = Self::air();
+        let drops = crate::rain::extinction(rate);
+        if drops <= 0.0 {
+            return air;
+        }
+        let storm = (rate / crate::rain::THUNDER_MM_H).clamp(0.0, 1.0);
+        let rain = Self::rain().mix(Self::thunder(), storm);
+        let share = drops / (drops + air.sigma_t.x);
+        Self {
+            sigma_t: air.sigma_t + Vec3::splat(drops),
+            albedo: air.albedo.lerp(rain.albedo, share),
+            anisotropy: air.anisotropy + (rain.anisotropy - air.anisotropy) * share,
+        }
+    }
+
     /// The open air by day, a thin default (Remix's is the runtime's, its own atmosphere being off):
     /// 0.95 of the light through 100 m (about 88 % over the 256 m the grid reaches), no
     /// absorption, scattering forward (g 0.7) so the sun's shafts show past shadows and toward it
@@ -177,14 +197,12 @@ impl Default for CameraMedium {
 impl CameraMedium {
     /// The medium for the camera's place: water in water; else the cave's where the sky light is
     /// low (all of it at level 3 and below, none from 9 up, a smooth change between); else the open
-    /// air, going to the rain's and to the thunder's as they rise.
+    /// air, with the rain's drops in it as it falls harder (`Medium::falling`).
     pub fn medium(&self) -> Medium {
         if self.in_water {
             return Medium::water();
         }
-        let weather = Medium::air()
-            .mix(Medium::rain(), self.rain.clamp(0.0, 1.0))
-            .mix(Medium::thunder(), self.thunder.clamp(0.0, 1.0));
+        let weather = Medium::falling(crate::rain::rate_mm_h(self.rain, self.thunder));
         let open = ((self.sky_light - 3.0) / 6.0).clamp(0.0, 1.0);
         let open = open * open * (3.0 - 2.0 * open);
         Medium::cave().mix(weather, open)
@@ -1062,9 +1080,11 @@ mod tests {
             thunder: 1.0,
             ..open
         };
-        assert_eq!(storm.medium(), Medium::thunder());
         let rain = CameraMedium { rain: 1.0, ..open };
-        assert_eq!(rain.medium(), Medium::rain());
+        let air = Medium::air().sigma_t.x;
+        // The drops' extinction over the air's, a storm's beyond Remix's thunder.
+        assert!(rain.medium().sigma_t.x > air + Medium::rain().sigma_t.x);
+        assert!(storm.medium().sigma_t.x > air + Medium::thunder().sigma_t.x);
     }
 
     #[test]
