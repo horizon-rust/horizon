@@ -3778,8 +3778,8 @@ mod item_component_tests {
             else {
                 return m;
             };
-            let tag = crate::data_cmd::merged(&mob_to_nbt(&m, [1, 2, 3, 4], None), data);
-            mob_from_nbt(&tag, &types, 2).unwrap()
+            let tag = crate::data_cmd::merged(&mob_to_nbt(&m, [1, 2, 3, 4], None, None), data);
+            mob_from_nbt(&tag, &types, 2, None).unwrap()
         };
         // `entity_data={NoAI:1b}`: no id, so the egg's own type holds the data.
         assert!(spawn(&egg(Some(Tag::compound([("NoAI", Tag::Byte(1))])))).no_ai);

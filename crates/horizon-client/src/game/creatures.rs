@@ -4912,7 +4912,15 @@ impl Game<'_> {
             // ALTERNATIVE_WITH_SPEED with a per-axis maximum speed.
             self.particles
                 .send_particles(&options, at, spread, 0.2, count);
-            self.lan_send_particles(&options, at, spread, 0.2, count);
+            self.lan_send_particles(super::lan_particles::QueuedParticle {
+                dimension: self.dim.id(),
+                options,
+                state: None,
+                at,
+                spread,
+                speed: 0.2,
+                count: count as i32,
+            });
         }
         // PlayerInteractTrigger: the item used on the mob, once the interaction took.
         if let Some(stack) = &held {
