@@ -1292,6 +1292,102 @@ fn a_replacing_mod_tag_reaches_the_root() {
     let _ = fs::remove_dir_all(&scratch);
 }
 
+/// `StructureCheck.onStructureLoad`: the references a chunk saved for its start
+/// count, so a map skips a start a vanilla map already pointed at.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn exploration_maps_skip_the_starts_a_chunk_saved_as_referenced() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let terrain = crate::vanillagen::VanillaTerrain::new(
+        &base.join("worldgen"),
+        assets.registry,
+        &biomes,
+        1234,
+    )
+    .unwrap();
+    let names = ["minecraft:buried_treasure".to_owned()];
+    let first = terrain
+        .locate_for_map(&names, [0, 64, 0], 50, true)
+        .unwrap();
+    // Another terrain, on the same seed, whose chunks saved one reference for it.
+    let fresh = crate::vanillagen::VanillaTerrain::new(
+        &base.join("worldgen"),
+        assets.registry,
+        &biomes,
+        1234,
+    )
+    .unwrap();
+    let (name, at) = (first.0.clone(), (first.1[0] >> 4, first.1[2] >> 4));
+    fresh.set_saved_references(std::sync::Arc::new(move |n, x, z| {
+        i32::from(n == name && (x, z) == at)
+    }));
+    let next = fresh.locate_for_map(&names, [0, 64, 0], 50, true).unwrap();
+    assert_ne!(next.1, first.1, "the saved reference is skipped");
+    assert_eq!(
+        fresh.locate_for_map(&names, [0, 64, 0], 50, false).unwrap(),
+        first,
+        "a map that does not skip still finds it"
+    );
+}
+
+/// `ChunkGenerator.findNearestMapStructure` with `createReference`: an
+/// exploration map that skips known structures points at a start no map
+/// pointed at before, and a reopened world remembers which.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn exploration_maps_skip_the_structures_maps_pointed_at() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-map-refs-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let open = || {
+        let terrain = crate::vanillagen::VanillaTerrain::new(
+            &base.join("worldgen"),
+            assets.registry,
+            &biomes,
+            1234,
+        )
+        .unwrap();
+        terrain.set_reference_file(scratch.join("refs.json"));
+        terrain
+    };
+    let names = ["minecraft:buried_treasure".to_owned()];
+    let terrain = open();
+    let first = terrain
+        .locate_for_map(&names, [0, 64, 0], 50, true)
+        .unwrap();
+    assert_eq!(
+        terrain.locate(&names, [0, 64, 0], 50).unwrap(),
+        first,
+        "/locate still finds the nearest"
+    );
+    let second = terrain
+        .locate_for_map(&names, [0, 64, 0], 50, true)
+        .unwrap();
+    assert_ne!(second.1, first.1, "the second map points elsewhere");
+    let again = terrain
+        .locate_for_map(&names, [0, 64, 0], 50, false)
+        .unwrap();
+    assert_eq!(
+        again, first,
+        "without skipping the nearest is still the first"
+    );
+    drop(terrain);
+    let third = open().locate_for_map(&names, [0, 64, 0], 50, true).unwrap();
+    assert!(
+        third.1 != first.1 && third.1 != second.1,
+        "a reopened world remembers {first:?} and {second:?}, found {third:?}"
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}
+
 #[test]
 #[ignore = "full content root: needs prepared vanilla data"]
 fn content_shapes_drive_outline_and_collision() {

@@ -923,7 +923,9 @@ impl Game<'_> {
             .end
             .locator()
             .filter(|_| !names.is_empty())
-            .and_then(|t| t.locate(&names, from, map.search_radius));
+            .and_then(|t| {
+                t.locate_for_map(&names, from, map.search_radius, map.skip_existing_chunks)
+            });
         let Some((_, at)) = found else {
             return false;
         };

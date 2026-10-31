@@ -83,7 +83,9 @@ impl merchant::MapMaker for GameMaps<'_> {
             origin[1].floor() as i32,
             origin[2].floor() as i32,
         ];
-        let Some((_, at)) = terrain.locate(&names, from, map.search_radius) else {
+        let Some((_, at)) =
+            terrain.locate_for_map(&names, from, map.search_radius, map.skip_existing_chunks)
+        else {
             return stack;
         };
         let id = self.next_id.get();

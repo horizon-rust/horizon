@@ -2348,6 +2348,24 @@ impl SaveDir {
     fn region_path(&self, folder: &str, rx: i32, rz: i32) -> PathBuf {
         region_path(&self.root, folder, rx, rz)
     }
+    /// The references a saved chunk keeps for its structure start `name`
+    /// (`StructureStart.getReferences`, saved as `references`): 0 for a chunk
+    /// not saved yet, a start it does not have or one without the field.
+    pub fn start_references(&self, x: i32, z: i32, name: &str) -> i32 {
+        let Some(root) = self.read_record("region", x, z) else {
+            return 0;
+        };
+        match root
+            .tag
+            .get("structures")
+            .and_then(|s| s.get("starts"))
+            .and_then(|s| s.get(name))
+            .and_then(|s| s.get("references"))
+        {
+            Some(Tag::Int(n)) => *n,
+            _ => 0,
+        }
+    }
     fn read_record(&self, folder: &str, x: i32, z: i32) -> Option<NamedTag> {
         let pending = self
             .pending

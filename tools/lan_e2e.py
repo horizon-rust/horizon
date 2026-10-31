@@ -279,6 +279,8 @@ address. The script then checks, from both sides, what a guest's game used to ge
 - merchant-close: the host and the guest each open a trade screen with the payment in its slot; the screen
              closes and the payment returns when they walk out of reach (7 blocks in survival, 9 in
              creative) or the villager dies, and stays open in range.
+- explorer_map: three shipwreck maps from a loot table point at three different buried treasures (an exploration
+             map skips the structures a map already pointed at), and the host and the guest each see their map.
 - sulfur_cube_power: an explosive sulfur cube (TNT inside) stays calm on stone, lights its fuse when a redstone
              block is put beside it, and blows up when the fuse runs out; the guest sees it flash.
 - merchant-reselect: the host and the guest each trade three times from one offer click: Space (a key
@@ -7587,6 +7589,42 @@ CHECKS += ['riptide_rain']
 CHECK_FNS['riptide_rain'] = check_riptide_rain
 
 
+def check_explorer_map(host, guest, out):
+    """TreasureMapForEmeralds / ExplorationMapFunction with skip_existing_chunks (a trade's default):
+    findNearestMapStructure with createReference adds a reference to the start it finds (StructureStart.addReference,
+    at most one), so the next map from the same place points at another structure. Three cartographers' offers
+    are made, one after the other: each adds as many new starts as the first did, none is pointed at twice."""
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    file = host.work / 'saves' / 'Lan' / 'data' / 'horizon_structure_references_minecraft_overworld.json'
+    host('command', command=f'fill {x - 4} {y - 1} {z - 2} {x + 4} {y - 1} {z + 2} minecraft:stone')
+    host('command', command=f'fill {x - 4} {y} {z - 2} {x + 4} {y + 3} {z + 2} minecraft:air')
+    guest('command', command=f'tp @s {x - 3.5} {y} {z + 0.5}')
+    host('command', command='gamemode survival')
+    host('command', command=f'tp @s {x + 0.5} {y} {z + 0.5}')
+    sizes = []
+    for n in range(3):
+        host('command', command=f'summon minecraft:villager {x + 2.5} {y} {z + 0.5} {{Tags:["cartographer{n}"],'
+             'NoAI:1b,PersistenceRequired:1b,Xp:1,VillagerData:{type:"minecraft:plains",'
+             'profession:"minecraft:cartographer",level:5}}')
+        host.wait(20)
+        villager = next(e['id'] for e in host.raw('entities', 8, 'minecraft:villager')['entities']
+                        if math.dist(e['pos'], [x + 2.5, y, z + 0.5]) < 0.5)
+        host.raw('interact-entity', villager)
+        host.raw('wait-for', 'screen', 'station', '--timeout', 10)
+        host.wait(20)
+        if n == 0:
+            host.shot(out, 'explorer-map-trades')
+        host.raw('key', 'esc', 'tap')
+        host.wait(10)
+        host('command', command=f'kill @e[tag=cartographer{n}]')
+        sizes.append(len(json.loads(file.read_text())) if file.exists() else 0)
+    assert sizes[0] > 0, f'the first cartographer pointed no map at a structure: {sizes}'
+    assert sizes == [sizes[0] * k for k in (1, 2, 3)], f'a map pointed at a structure twice: {sizes}'
+    return {'starts_after_each_cartographer': sizes, 'pointed_at': json.loads(file.read_text())}
+
+
+CHECKS += ['explorer_map']
+CHECK_FNS['explorer_map'] = check_explorer_map
 def check_sulfur_cube_power(host, guest, out):
     """SulfurCube.primeWhenOnPoweredPosition: an explosive cube standing in or beside redstone power lights
     its fuse (getBestOwnOrNeighbourSignal), then explodes when the fuse is out."""
