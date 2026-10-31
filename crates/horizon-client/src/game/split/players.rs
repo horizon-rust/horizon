@@ -67,6 +67,7 @@ impl Split<'_> {
             name,
             seat,
             options,
+            pad: None,
             widgets: Default::default(),
         });
         Ok(())
@@ -142,8 +143,7 @@ impl Split<'_> {
         guest.world_renderer_ready = true;
         guest.keyboard_mouse = false;
         guest.apply_settings();
-        // Its pad comes from the split (released, until controllers are routed): it never opens
-        // the controllers itself.
+        // Its pad comes from the split (`route_pads`): it never opens the controllers itself.
         guest.pad.feed = Some(PadState::default());
         Ok(guest)
     }

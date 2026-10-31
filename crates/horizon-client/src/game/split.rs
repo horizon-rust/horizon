@@ -12,7 +12,11 @@
 //! `HORIZON_SPLIT=N` (testing, the only way in so far): N-1 players join once P1 is in its
 //! world, as P2, P3... The player in seat N takes `horizon-ctl` on P1's socket path + "N".
 
-use super::{Game, UiResources, build_renderer, start_game};
+use super::{
+    Game, UiResources, build_renderer,
+    pad::{PadId, PadRouter},
+    start_game,
+};
 use horizon_client::split_layout::{self as layout, MAX_PLAYERS, View};
 use horizon_client::{Result, gfx::compositor::Compositor, widgets};
 use std::{
@@ -29,6 +33,7 @@ use winit::{
     window::WindowId,
 };
 
+mod pads;
 mod players;
 
 thread_local! {
@@ -59,6 +64,8 @@ struct Guest<'a> {
     /// Its seat (2 to `MAX_PLAYERS`): its number (P2...), its control socket, its sounds.
     seat: usize,
     options: PathBuf,
+    /// The controller it plays with.
+    pad: Option<PadId>,
     /// Its buttons and focus targets while another player's game runs.
     widgets: widgets::Saved,
 }
@@ -83,6 +90,11 @@ pub(super) struct Split<'a> {
     /// Whose game runs now (0 = P1), and P1's buttons while another's does.
     turn: usize,
     host_widgets: widgets::Saved,
+    /// The controllers while several play (`pads`), and P1's.
+    pads: PadRouter,
+    p1_pad: Option<PadId>,
+    /// Pads whose buttons still count as the press that gave them: released first.
+    fresh: Vec<PadId>,
 }
 
 impl<'a> Split<'a> {
@@ -105,6 +117,9 @@ impl<'a> Split<'a> {
             res: None,
             turn: 0,
             host_widgets: Default::default(),
+            pads: Default::default(),
+            p1_pad: None,
+            fresh: Vec::new(),
         }
     }
 
@@ -299,6 +314,7 @@ impl<'a> Split<'a> {
         for k in (0..self.guests.len()).rev() {
             self.remove_guest(k);
         }
+        self.stop_routing();
         self.applied.clear();
         let Some(compositor) = self.compositor.take() else {
             return Ok(());
@@ -508,6 +524,7 @@ impl ApplicationHandler for Split<'_> {
             }
             return;
         }
+        self.route_pads();
         self.turn(0);
         self.host.about_to_wait(event_loop);
         let changed = self.drop_out() | self.admit(event_loop);

@@ -25,7 +25,7 @@ pub(super) const HELP: &[&str] = &[
 /// The controllers and the state the game last acted on.
 #[derive(Default)]
 pub(super) struct Pads {
-    /// Splitscreen: this player's pad, given by the split, instead of the pads.
+    /// Splitscreen: this player's pad, read by `PadRouter` for every game, instead of the pads.
     pub(super) feed: Option<PadState>,
     /// The real controllers and the DualSense's output.
     #[cfg(feature = "controllers")]
@@ -57,6 +57,16 @@ pub(super) struct Pads {
 
 #[cfg(feature = "controllers")]
 mod hardware;
+pub(super) use hardware::{PadId, PadRouter};
+
+/// What a controller did since the last frame.
+#[cfg_attr(not(feature = "controllers"), allow(dead_code))]
+pub(in crate::game) enum PadEvent {
+    /// A button pressed.
+    Press(PadId),
+    /// Disconnected (out of battery, unplugged, out of range).
+    Gone(PadId),
+}
 
 /// A build without the `controllers` feature (the server build, which must not need libudev): no
 /// hardware pads, only `horizon-ctl pad`'s virtual one.
@@ -69,6 +79,25 @@ mod hardware {
     impl Pads {
         pub(super) fn read(&mut self) -> PadState {
             PadState::default()
+        }
+        pub(in crate::game) fn release_hardware(&mut self) {}
+    }
+
+    pub(in crate::game) type PadId = usize;
+    #[derive(Default)]
+    pub(in crate::game) struct PadRouter {}
+    impl PadRouter {
+        pub(in crate::game) fn events(&mut self) -> Vec<super::PadEvent> {
+            Vec::new()
+        }
+        pub(in crate::game) fn connected(&self, _: PadId) -> bool {
+            false
+        }
+        pub(in crate::game) fn state(&self, _: PadId) -> PadState {
+            PadState::default()
+        }
+        pub(in crate::game) fn style(&self, _: PadId) -> horizon_client::gamepad::GlyphStyle {
+            horizon_client::gamepad::GlyphStyle::Auto
         }
     }
 
