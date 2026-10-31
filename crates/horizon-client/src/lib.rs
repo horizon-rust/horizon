@@ -1,6 +1,8 @@
 //! Horizon native client: resources, world streaming, rendering and the
 //! bindings between the validated simulation pieces and the game loop.
-#![forbid(unsafe_code)]
+// `deny`, not `forbid`: `save::estimate_disk_space`'s one FFI call
+// (`GetDiskFreeSpaceExW`, Windows) opts out with a scoped allow.
+#![deny(unsafe_code)]
 pub mod advancements;
 pub mod ambience;
 pub mod animate_tick;

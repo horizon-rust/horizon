@@ -277,6 +277,8 @@ pub fn estimate_disk_space(dir: &Path) -> u64 {
         }
     }
     #[cfg(windows)]
+    // The only FFI the crate needs; it forbids unsafe code everywhere else.
+    #[allow(unsafe_code)]
     {
         use std::os::windows::ffi::OsStrExt;
         unsafe extern "system" {
