@@ -135,6 +135,9 @@ class PerfBenchStatsTests(unittest.TestCase):
             root = Path(tmp)
             reports = root / "benchmarks" / "perf"
             reports.mkdir(parents=True)
+            # The conditions `table` requires to match before it compares runs.
+            conditions = {"render_distance": 8, "scenario": "default", "seed": 1, "simulation_distance": 8,
+                          "window": [1280, 720], "vsync": False, "offscreen": True}
             for label, metrics in (
                 ("missing", {}),
                 ("zero", {"chunks.village.load_ms": {"mean": 0}}),
@@ -142,7 +145,7 @@ class PerfBenchStatsTests(unittest.TestCase):
                               "chunks.forest.load_ms": {"mean": 3000}}),
             ):
                 (reports / f"{label}-rd8.json").write_text(
-                    json.dumps({"conditions": {"render_distance": 8}, "metrics": metrics}), encoding="utf-8")
+                    json.dumps({"conditions": conditions, "metrics": metrics}), encoding="utf-8")
             output = io.StringIO()
             with mock.patch.object(pb, "ROOT", root), contextlib.redirect_stdout(output):
                 pb.table(["missing", "zero", "measured"])
