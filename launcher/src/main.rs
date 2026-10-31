@@ -40,6 +40,7 @@ mod packs_page;
 mod partner;
 mod perf;
 mod plate;
+mod profile_heads;
 mod screenshots_page;
 mod scrollbar;
 mod servers_page;
@@ -70,7 +71,7 @@ use horizon_launcher::native_status;
 use horizon_launcher::telemetry;
 use scrollbar::Scrollbar;
 use std::borrow::Cow;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Mutex;
@@ -252,6 +253,14 @@ struct Launcher {
     root_focus: FocusHandle,
     /// Microsoft accounts (accounts.json), the sign-in under way and what it last showed.
     accounts: Accounts,
+    auth_status: HashMap<String, account::session::Status>,
+    auth_progress: HashMap<String, account::session::Phase>,
+    profile_heads: profile_heads::Heads,
+    /// When page switches last checked every account's sign-in.
+    auth_checked: Option<Instant>,
+    sign_in_target: Option<account::Account>,
+    auth_busy: HashMap<String, u64>,
+    auth_next: u64,
     sign_in: Option<SignIn>,
     sign_in_state: Option<SignInState>,
     /// What to say when the keychain doesn't keep sign-ins ([`account::no_keychain`]).
@@ -500,6 +509,13 @@ impl Launcher {
             internet: internet::Internet::new(),
             root_focus: cx.focus_handle(),
             accounts: Accounts::load(),
+            auth_status: HashMap::new(),
+            auth_progress: HashMap::new(),
+            profile_heads: profile_heads::Heads::default(),
+            auth_checked: None,
+            sign_in_target: None,
+            auth_busy: HashMap::new(),
+            auth_next: 0,
             sign_in: None,
             sign_in_state: None,
             keychain: None,
@@ -581,6 +597,8 @@ impl Launcher {
                 let _ = tx.send(Msg::Reused(reused));
             }
         });
+        this.load_profile_heads();
+        this.load_auth_statuses(true);
         this.fetch_startup_releases();
         this.fetch_links();
         if home::getting_ready_preview() {
@@ -607,6 +625,16 @@ impl Launcher {
         // changed the accounts: read them again (small files, once a switch).
         self.offline_name = offline_name();
         self.accounts = Accounts::load();
+        // Each check reads the keychain (a prompt on macOS): page switches check every account
+        // at most once a minute, and an account added meanwhile at once.
+        if self
+            .auth_checked
+            .is_none_or(|t| t.elapsed() >= Duration::from_secs(60))
+            || (self.accounts.accounts.iter()).any(|a| !self.auth_status.contains_key(&a.uuid))
+        {
+            self.load_auth_statuses(false);
+        }
+        self.load_profile_heads();
         if page != self.page {
             self.page = page;
             self.switches += 1;
@@ -799,6 +827,48 @@ impl Launcher {
                 Msg::Reused(_) => self.installed = backend::installed(),
                 Msg::Keychain(said) => self.keychain = said,
                 Msg::Owner(owns) => self.owner = Some(owns),
+                Msg::AccountHead(uuid, url, face, failed) => {
+                    self.profile_heads.loaded(&uuid, &url, face, failed)
+                }
+                Msg::AccountProgress(uuid, generation, phase) => {
+                    if self.auth_busy.get(&uuid) == Some(&generation) {
+                        self.auth_progress.insert(uuid, phase);
+                    }
+                }
+                Msg::AccountStatus(uuid, generation, status) => {
+                    if self.auth_busy.get(&uuid) != Some(&generation) {
+                        continue;
+                    }
+                    self.auth_busy.remove(&uuid);
+                    self.auth_progress.remove(&uuid);
+                    if self.accounts.find(&uuid).is_some() {
+                        if status.state == account::session::State::Ready {
+                            self.owner = Some(true);
+                        }
+                        self.auth_status.insert(uuid, status);
+                        // A refresh may have saved a new name or skin: show it now.
+                        let saved = Accounts::load();
+                        if saved != self.accounts {
+                            self.accounts = saved;
+                            self.load_profile_heads();
+                        }
+                    }
+                }
+                Msg::AccountRemoved(uuid, generation, result) => {
+                    if self.auth_busy.get(&uuid) != Some(&generation) {
+                        continue;
+                    }
+                    self.auth_busy.remove(&uuid);
+                    self.auth_progress.remove(&uuid);
+                    match result {
+                        Ok(owns) => {
+                            self.accounts = Accounts::load();
+                            self.auth_status.remove(&uuid);
+                            self.owner = Some(owns);
+                        }
+                        Err(e) => self.sign_in_state = Some(SignInState::Done(Err(e))),
+                    }
+                }
                 Msg::Playing(playing) => self.playing = playing,
                 Msg::OfficialPlayers(players) => self.official_players = players,
                 Msg::JavaGame(id, home, cmd) => {
@@ -825,6 +895,7 @@ impl Launcher {
                     }
                 }
                 Msg::Session(session) => {
+                    self.load_auth_statuses(false);
                     if let Some(tag) = self.starting_client.take() {
                         let mut cmd = backend::client_command(&tag);
                         let (file, offline) = match session {
@@ -1122,11 +1193,13 @@ impl Launcher {
         changed |= self.mods_tick();
         changed |= self.github_tick();
         if let Some(sign_in) = &self.sign_in {
-            let state = sign_in.state();
-            let changed_state = format!("{state:?}") != format!("{:?}", self.sign_in_state);
-            if changed_state {
-                if let SignInState::Done(Ok(_)) = state {
+            if let Some(state) = sign_in_change(&mut self.sign_in_state, sign_in.state()) {
+                if let SignInState::Done(Ok(ref account)) = state {
+                    self.auth_busy.remove(&account.uuid);
+                    self.sign_in_target = None;
                     self.accounts = Accounts::load();
+                    self.load_profile_heads();
+                    self.load_auth_statuses(false);
                     // Sign-in refuses accounts that don't own the game.
                     self.owner = Some(true);
                     self.owner_screen_open = false;
@@ -1136,7 +1209,6 @@ impl Launcher {
                         self.settings.save();
                     }
                 }
-                self.sign_in_state = Some(state);
                 changed = true;
             }
         }
@@ -1379,12 +1451,110 @@ impl Launcher {
         });
     }
 
-    /// Starts the Microsoft sign-in; Settings and the owner gate's screen show its code.
+    fn load_profile_heads(&mut self) {
+        let resources = self
+            .selected()
+            .or_else(|| self.installed.first())
+            .map(|tag| backend::resources(tag))
+            .unwrap_or_default();
+        self.profile_heads
+            .request(&self.accounts.accounts, resources, &self.tx);
+    }
+
+    fn begin_auth_job(&mut self, uuid: &str) -> Option<u64> {
+        if self.auth_busy.contains_key(uuid) {
+            return None;
+        }
+        self.auth_next += 1;
+        self.auth_busy.insert(uuid.into(), self.auth_next);
+        self.auth_progress
+            .insert(uuid.into(), account::session::Phase::Queued);
+        Some(self.auth_next)
+    }
+
+    /// Only workers read the keychain or contact authentication services. Cached public status
+    /// keeps drawing independent of keychain prompts, network timeouts and refresh operations.
+    fn load_auth_statuses(&mut self, renew_due: bool) {
+        self.auth_checked = Some(Instant::now());
+        for account in self.accounts.accounts.clone() {
+            let Some(generation) = self.begin_auth_job(&account.uuid) else {
+                continue;
+            };
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let progress = |phase| {
+                    let _ = tx.send(Msg::AccountProgress(
+                        account.uuid.clone(),
+                        generation,
+                        phase,
+                    ));
+                };
+                progress(account::session::Phase::Keychain);
+                let store = account::store();
+                let mut status =
+                    account::session::status_with_progress(store, &account.uuid, &progress);
+                if renew_due && status.state == account::session::State::NeedsRefresh {
+                    if let Ok(renewed) =
+                        account::session::refresh_with_progress(&account.uuid, &progress)
+                    {
+                        status = renewed;
+                    }
+                }
+                let _ = tx.send(Msg::AccountStatus(account.uuid, generation, status));
+            });
+        }
+    }
+
+    fn refresh_account(&mut self, uuid: String) {
+        let Some(generation) = self.begin_auth_job(&uuid) else {
+            return;
+        };
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let progress = |phase| {
+                let _ = tx.send(Msg::AccountProgress(uuid.clone(), generation, phase));
+            };
+            progress(account::session::Phase::Keychain);
+            if let Ok(status) = account::session::refresh_with_progress(&uuid, &progress) {
+                let _ = tx.send(Msg::AccountStatus(uuid, generation, status));
+            } else {
+                // It may have been removed through the CLI while this window was open.
+                let _ = tx.send(Msg::AccountRemoved(
+                    uuid,
+                    generation,
+                    Ok(Accounts::load().has_owner(account::store())),
+                ));
+            }
+        });
+    }
+
+    /// Generic Add account and targeted re-sign-in share the launcher-owned device-code flow.
     fn start_sign_in(&mut self) {
-        if let Some(old) = self.sign_in.replace(SignIn::start()) {
+        self.begin_sign_in(None);
+    }
+
+    fn re_sign_in(&mut self, uuid: &str) {
+        if let Some(account) = self.accounts.find(uuid).cloned() {
+            self.begin_sign_in(Some(account));
+        }
+    }
+
+    fn begin_sign_in(&mut self, target: Option<account::Account>) {
+        self.cancel_sign_in();
+        self.sign_in = Some(match &target {
+            Some(account) => SignIn::start_for(account.clone()),
+            None => SignIn::start(),
+        });
+        self.sign_in_target = target;
+        self.sign_in_state = Some(SignInState::Starting);
+    }
+
+    fn cancel_sign_in(&mut self) {
+        if let Some(old) = self.sign_in.take() {
             old.cancel();
         }
-        self.sign_in_state = Some(SignInState::Starting);
+        self.sign_in_state = None;
+        self.sign_in_target = None;
     }
 
     fn choose_folder(&mut self, cx: &mut Context<Self>) {
@@ -1809,6 +1979,49 @@ enum PlayPress {
     Nothing,
 }
 
+/// Account state uses the same semantic colors as the launcher's other notices. Keep a
+/// distinct icon and the full label so color is never the only way to recognize a state.
+fn account_status_line(
+    status: Option<&account::session::Status>,
+    progress: Option<&str>,
+    t: &Theme,
+) -> Div {
+    use account::session::State;
+    let (icon, color, label) = if let Some(progress) = progress {
+        ("clock", t.muted, progress)
+    } else {
+        let (icon, color) = match status.map(|s| s.state) {
+            Some(State::Ready) => ("check", t.success),
+            Some(State::NeedsRefresh | State::Retry) => ("reload", t.warn),
+            Some(State::SignInRequired) => ("user", t.danger),
+            Some(State::OwnershipRequired) => ("info-box", t.danger),
+            None => ("info-box", t.muted),
+        };
+        (
+            icon,
+            color,
+            status.map_or("Sign-in not checked", |s| s.label()),
+        )
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .text_color(color)
+        .child(blocks::icon(icon, 14., color))
+        .child(tr(label).to_owned())
+}
+
+/// Polling must handle each sign-in transition once. Replaying a completed sign-in
+/// restarts every account's status worker and leaves the UI perpetually checking.
+fn sign_in_change(shown: &mut Option<SignInState>, next: SignInState) -> Option<SignInState> {
+    if shown.as_ref() == Some(&next) {
+        return None;
+    }
+    *shown = Some(next.clone());
+    Some(next)
+}
+
 /// `owner`: whether an account here owns the game, by the keychain (`Launcher::owner`).
 fn play_press(prepared: bool, owner: Option<bool>, busy: bool) -> PlayPress {
     match (prepared, owner) {
@@ -2040,14 +2253,16 @@ impl Launcher {
             );
         }
         // Only a signed-in account says "Microsoft account"; otherwise an offline name, or the
-        // one the game made up. A signed-in one shows its face (its UUID's default skin).
+        // one the game made up. A signed-in one shows its face (its skin, else its UUID's default).
         let (name, how) = self.who_plays();
         let face = match self.accounts.player() {
             account::Player::Microsoft(_) => self.accounts.selected().map(|a| a.uuid.clone()),
             _ => None,
         };
         let picture = match face {
-            Some(uuid) => self.head(&uuid, 28.).into_any_element(),
+            Some(uuid) => (self.profile_heads)
+                .draw(Some(&uuid), 28., self.scale, &t)
+                .into_any_element(),
             None => div()
                 .flex()
                 .items_center()
@@ -2089,6 +2304,7 @@ impl Launcher {
                 if this.account_menu {
                     // Who can play may have changed elsewhere since the window opened.
                     this.accounts = Accounts::load();
+                    this.load_profile_heads();
                 }
                 cx.notify();
             }));
@@ -3439,33 +3655,89 @@ impl Launcher {
                     ),
                 );
             }
-            actions = actions.child(
-                button(format!("sign-out-{i}"), "Sign out", Kind::Ghost, &t).on_click(cx.listener(
-                    move |this, _: &ClickEvent, _, cx| {
+            let sign_in_progress = self
+                .sign_in_target
+                .as_ref()
+                .filter(|a| a.uuid == uuid)
+                .and_then(|_| match self.sign_in_state.as_ref() {
+                    Some(SignInState::Starting) => Some("Asking Microsoft…"),
+                    Some(SignInState::Code(_)) => Some("Waiting for browser sign-in…"),
+                    Some(SignInState::Working(phase)) => Some(phase.label()),
+                    _ => None,
+                });
+            let progress = sign_in_progress
+                .or_else(|| self.auth_progress.get(&uuid).map(|phase| phase.label()));
+            let busy = self.auth_busy.contains_key(&uuid) || sign_in_progress.is_some();
+            let status = self.auth_status.get(&uuid);
+            let needs_sign_in =
+                status.is_some_and(|s| s.state == account::session::State::SignInRequired);
+            let refresh_id = uuid.clone();
+            let refresh = button(
+                format!("refresh-{i}"),
+                if busy {
+                    "Checking…"
+                } else if needs_sign_in {
+                    "Sign in again"
+                } else {
+                    "Refresh"
+                },
+                Kind::Ghost,
+                &t,
+            );
+            actions = actions.child(if busy {
+                disabled(refresh)
+            } else {
+                refresh.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    if needs_sign_in {
+                        this.re_sign_in(&refresh_id);
+                    } else {
+                        this.refresh_account(refresh_id.clone());
+                    }
+                    cx.notify();
+                }))
+            });
+            let sign_out = button(format!("sign-out-{i}"), "Sign out", Kind::Ghost, &t);
+            actions = actions.child(if busy {
+                disabled(sign_out)
+            } else {
+                sign_out.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    let Some(generation) = this.begin_auth_job(&uuid) else {
+                        return;
+                    };
+                    let (tx, uuid) = (this.tx.clone(), uuid.clone());
+                    std::thread::spawn(move || {
                         let mut accounts = Accounts::load();
-                        match accounts
+                        let _ = tx.send(Msg::AccountProgress(
+                            uuid.clone(),
+                            generation,
+                            account::session::Phase::SigningOut,
+                        ));
+                        let result = accounts
                             .remove(account::store(), &uuid)
                             .and_then(|()| accounts.save())
-                        {
-                            Ok(()) => this.accounts = accounts,
-                            Err(e) => this.sign_in_state = Some(SignInState::Done(Err(e))),
-                        }
-                        this.owner = Some(this.accounts.has_owner(account::store()));
-                        cx.notify();
-                    },
-                )),
-            );
+                            .map(|()| accounts.has_owner(account::store()));
+                        let _ = tx.send(Msg::AccountRemoved(uuid, generation, result));
+                    });
+                    cx.notify();
+                }))
+            });
             n += 1;
-            rows = rows.child(index_row(
-                n,
+            rows = rows.child(slot_row(
+                Some(self.profile_heads.draw(Some(&a.uuid), 32., self.scale, &t)),
                 a.name.clone(),
                 Some(
                     div()
                         .child(tr(if plays {
                             "Microsoft account · plays"
                         } else {
-                            "Microsoft account · signed in"
+                            "Microsoft account"
                         }))
+                        .child(account_status_line(status, progress, &t))
+                        .when(!busy, |row| {
+                            row.when_some(status.filter(|s| s.message != s.label()), |row, s| {
+                                row.child(div().child(tr(&s.message).to_string()))
+                            })
+                        })
                         .into_any_element(),
                 ),
                 Some(actions.into_any_element()),
@@ -3475,11 +3747,12 @@ impl Launcher {
         let configured = account::client_id().is_some();
         let busy = matches!(
             self.sign_in_state,
-            Some(SignInState::Starting | SignInState::Code(_))
+            Some(SignInState::Starting | SignInState::Code(_) | SignInState::Working(_))
         );
         let detail = match &self.sign_in_state {
             _ if !configured => div().child(tr(account::NOT_CONFIGURED)),
             Some(SignInState::Starting) => div().child(tr("Asking Microsoft…")),
+            Some(SignInState::Working(phase)) => div().child(tr(phase.label())),
             Some(SignInState::Code(code)) => div()
                 .flex()
                 .flex_col()
@@ -3500,6 +3773,19 @@ impl Launcher {
                 "Horizon needs a Microsoft account that owns Minecraft: Java Edition, like other launchers. It also plays online servers with your name and skin.",
             )),
             None => div().child(tr("Add another account.")),
+        };
+        let detail = if let Some(target) = &self.sign_in_target {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(trf(
+                    "Use the Microsoft account for {name}.",
+                    &[("name", &target.name)],
+                ))
+                .child(detail)
+        } else {
+            detail
         };
         let detail = match self.keychain.clone() {
             Some(said) if !self.accounts.accounts.is_empty() => div()
@@ -3535,10 +3821,7 @@ impl Launcher {
                     .child(
                         button("sign-in-cancel", "Cancel", Kind::Ghost, &t).on_click(cx.listener(
                             |this, _: &ClickEvent, _, cx| {
-                                if let Some(s) = this.sign_in.take() {
-                                    s.cancel();
-                                }
-                                this.sign_in_state = None;
+                                this.cancel_sign_in();
                                 cx.notify();
                             },
                         )),
@@ -3546,26 +3829,54 @@ impl Launcher {
                     .into_any_element(),
             )
         } else if busy {
-            None
-        } else {
             Some(
-                microsoft::sign_in_button("sign-in", &t)
+                button("sign-in-cancel-working", "Cancel", Kind::Ghost, &t)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.start_sign_in();
+                        this.cancel_sign_in();
                         cx.notify();
                     }))
                     .into_any_element(),
             )
+        } else {
+            let target = self.sign_in_target.as_ref().map(|a| a.uuid.clone());
+            let targeted = target.is_some();
+            // Re-signing one account names it; adding one is Microsoft's own button.
+            let sign_in = if targeted {
+                button("sign-in", "Sign in again", Kind::Secondary, &t)
+            } else {
+                microsoft::sign_in_button("sign-in", &t)
+            };
+            let mut actions = div().flex().gap(px(4.)).child(sign_in.on_click(cx.listener(
+                move |this, _: &ClickEvent, _, cx| {
+                    if let Some(uuid) = &target {
+                        this.re_sign_in(uuid);
+                    } else {
+                        this.start_sign_in();
+                    }
+                    cx.notify();
+                },
+            )));
+            if targeted {
+                actions = actions.child(
+                    button("sign-in-cancel-target", "Cancel", Kind::Ghost, &t).on_click(
+                        cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.cancel_sign_in();
+                            cx.notify();
+                        }),
+                    ),
+                );
+            }
+            Some(actions.into_any_element())
         };
         n += 1;
-        let title = if self.accounts.accounts.is_empty() {
-            "Microsoft account"
-        } else {
-            "Another account"
+        let title = match &self.sign_in_target {
+            Some(target) => trf("Sign in again as {name}", &[("name", &target.name)]),
+            None if self.accounts.accounts.is_empty() => tr("Microsoft account").to_owned(),
+            None => tr("Another account").to_owned(),
         };
         rows = rows.child(index_row(
             n,
-            tr(title),
+            title,
             Some(detail.into_any_element()),
             action,
             &t,
@@ -4484,6 +4795,36 @@ mod tests {
         assert!(!starts_now(true, true, false), "prepared again under way");
         assert!(!starts_now(false, false, false), "not prepared");
         assert!(!starts_now(true, false, true), "already running");
+    }
+
+    #[test]
+    fn a_completed_sign_in_is_handled_once_across_ui_polls() {
+        use super::{sign_in_change, SignInState};
+        let mut shown = None;
+        let completed = SignInState::Done(Ok(horizon_launcher::account::Account {
+            uuid: "11111111111111111111111111111111".into(),
+            name: "TestAccount".into(),
+            skin: None,
+            cape: None,
+        }));
+        assert!(sign_in_change(&mut shown, SignInState::Starting).is_some());
+        assert!(sign_in_change(&mut shown, SignInState::Starting).is_none());
+        let mut account_reloads = 0;
+        for _ in 0..100 {
+            if matches!(
+                sign_in_change(&mut shown, completed.clone()),
+                Some(SignInState::Done(Ok(_)))
+            ) {
+                account_reloads += 1;
+            }
+        }
+        assert_eq!(
+            account_reloads, 1,
+            "completed sign-in must not restart account checks every frame"
+        );
+        let failed = SignInState::Done(Err("Sign-in cancelled".into()));
+        assert!(sign_in_change(&mut shown, failed.clone()).is_some());
+        assert!(sign_in_change(&mut shown, failed).is_none());
     }
 
     #[test]
