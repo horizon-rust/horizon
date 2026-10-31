@@ -3597,8 +3597,7 @@ impl Level {
             _ => Vec::new(),
         };
         // ServerPlayer.saveParentVehicle: the vehicle the player rides, by
-        // UUID. Horizon keeps the vehicle in the world, so the file names it
-        // instead of holding a second copy of it.
+        // UUID (`Attach`); a player who left holds it whole under `Entity`.
         self.root_vehicle = p
             .get("RootVehicle")
             .and_then(|r| uuid_from_tag(r.get("Attach")));
@@ -3817,8 +3816,9 @@ impl Level {
             }
         }
         // ServerPlayer.saveParentVehicle: the vehicle the player rides, by
-        // UUID. Horizon keeps the vehicle in the world, so the file names it
-        // instead of holding a second copy of it.
+        // UUID. While the player is in the game the vehicle stays in the
+        // world; a player who left took it along (`unload_guest_vehicle`) and
+        // its file already holds `RootVehicle` with the whole `Entity`.
         if let Some(vehicle) = self.root_vehicle
             && p.get("RootVehicle").is_none()
         {

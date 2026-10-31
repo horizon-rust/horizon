@@ -671,7 +671,8 @@ impl Game<'_> {
             .map(|(id, _)| id)?;
         let there = self.mobs.iter().any(|m| m.id == id && m.alive())
             || self.boats.iter().any(|b| b.id == id)
-            || self.carts.iter().any(|c| c.id == id);
+            || self.carts.iter().any(|c| c.id == id)
+            || self.cushions.iter().any(|c| c.id == id);
         there.then_some(id)
     }
     /// A vehicle already in the world that was restored from the player's file
@@ -698,6 +699,7 @@ impl Game<'_> {
         if !self.res.mob_types().contains_key(&kind)
             && super::boats::any_boat_wood(&kind).is_none()
             && super::minecarts::CartKind::from_id(&kind).is_none()
+            && kind != "minecraft:cushion"
         {
             return None;
         }
@@ -713,6 +715,108 @@ impl Game<'_> {
         }
         self.persist.restored.insert(uuid);
         self.vehicle_by_uuid(uuid)
+    }
+    /// `Entity.getRootVehicle` of the vehicle `id`: the mob at the bottom of
+    /// a stack of riders, or the boat it sits in.
+    pub(super) fn vehicle_root(&self, id: u32) -> u32 {
+        let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
+            return id;
+        };
+        let root = &self.mobs[self.mob_root(i)];
+        match root.extra.mount {
+            Some(v) if self.boats.iter().any(|b| b.id == v) => v,
+            _ => root.id,
+        }
+    }
+    /// `Entity.getPassengersAndSelf` of a root vehicle: the root and every mob
+    /// whose root vehicle it is.
+    pub(super) fn vehicle_tree(&self, root: u32) -> HashSet<u32> {
+        let mut tree: HashSet<u32> = self
+            .mobs
+            .iter()
+            .filter(|m| m.alive() && self.vehicle_root(m.id) == root)
+            .map(|m| m.id)
+            .collect();
+        tree.insert(root);
+        tree
+    }
+    /// A boat's entity tag with the mobs riding it and its lead.
+    fn boat_tree_nbt(&mut self, i: usize) -> Tag {
+        let b = &self.boats[i];
+        let id = b.id;
+        let uuid = self
+            .persist
+            .uuids
+            .get(&id)
+            .copied()
+            .unwrap_or_else(random_uuid);
+        let mut tag = entity_nbt::boat_to_nbt(
+            &b.entity_type(),
+            b.position,
+            b.velocity,
+            b.yaw,
+            uuid,
+            self.persist.raw.get(&id),
+            b.chest.then_some(&b.items[..]),
+        );
+        self.put_mob_passengers(&mut tag, id);
+        // AbstractBoat.addAdditionalSaveData: the lead's holder.
+        self.write_boat_leash(&mut tag, i);
+        tag
+    }
+    /// `Entity.save` of a root vehicle with its passengers, as
+    /// `ServerPlayer.saveParentVehicle` puts it under `RootVehicle.Entity`.
+    pub(super) fn vehicle_tree_nbt(&mut self, root: u32) -> Option<Tag> {
+        if let Some(c) = self.cushions.iter().find(|c| c.id == root).cloned() {
+            let uuid = self.uuid_for(root);
+            return Some(entity_nbt::cushion_to_nbt(
+                &c,
+                uuid,
+                self.persist.raw.get(&root),
+            ));
+        }
+        if let Some(i) = self.boats.iter().position(|b| b.id == root) {
+            self.uuid_for(root);
+            return Some(self.boat_tree_nbt(i));
+        }
+        if let Some(i) = self.carts.iter().position(|c| c.id == root) {
+            let uuid = self.uuid_for(root);
+            return Some(self.carts[i].to_nbt(uuid, self.persist.raw.get(&root)));
+        }
+        let i = self.mobs.iter().position(|m| m.id == root && m.alive())?;
+        Some(self.mob_tree_nbt(i))
+    }
+    /// `setRemoved(UNLOADED_WITH_PLAYER)` on every entity of a vehicle tree:
+    /// out of the world without drops, its copy kept in the player's file.
+    pub(super) fn unload_vehicle_tree(&mut self, tree: &HashSet<u32>) {
+        self.boats.retain(|b| !tree.contains(&b.id));
+        self.carts.retain(|c| !tree.contains(&c.id));
+        self.cushions.retain(|c| !tree.contains(&c.id));
+        self.mobs.retain(|m| !tree.contains(&m.id));
+        for &id in tree {
+            self.forget_entity(id);
+        }
+    }
+    /// `loadAndSpawnParentVehicle` when the player could not ride again: the
+    /// root vehicle spawned from `RootVehicle.Entity` and its passengers are
+    /// discarded. False when the file's vehicle was never spawned (a type
+    /// Horizon does not simulate), which keeps waiting in the file.
+    pub(super) fn discard_unattached_vehicle(&mut self, raw: &Tag) -> bool {
+        let Some(root) = raw
+            .get("RootVehicle")
+            .and_then(|r| r.get("Entity"))
+            .and_then(entity_nbt::uuid)
+        else {
+            return false;
+        };
+        if !self.persist.restored.contains(&root) {
+            return false;
+        }
+        if let Some(id) = self.vehicle_by_uuid(root) {
+            let tree = self.vehicle_tree(self.vehicle_root(id));
+            self.unload_vehicle_tree(&tree);
+        }
+        true
     }
     /// `ServerPlayer.loadAndSpawnParentVehicle`: the ride the player's file
     /// names, once the vehicle is in the world.
@@ -975,26 +1079,8 @@ impl Game<'_> {
             .filter(|&i| keys.contains(&chunk_of(self.boats[i].position)))
             .collect();
         for i in boats {
-            let b = &self.boats[i];
-            let (id, at) = (b.id, b.position);
-            let uuid = self
-                .persist
-                .uuids
-                .get(&id)
-                .copied()
-                .unwrap_or_else(random_uuid);
-            let mut tag = entity_nbt::boat_to_nbt(
-                &b.entity_type(),
-                b.position,
-                b.velocity,
-                b.yaw,
-                uuid,
-                self.persist.raw.get(&id),
-                b.chest.then_some(&b.items[..]),
-            );
-            self.put_mob_passengers(&mut tag, id);
-            // AbstractBoat.addAdditionalSaveData: the lead's holder.
-            self.write_boat_leash(&mut tag, i);
+            let at = self.boats[i].position;
+            let tag = self.boat_tree_nbt(i);
             out.entry(chunk_of(at)).or_default().push(tag);
         }
         if let Some(d) = &self.dragon

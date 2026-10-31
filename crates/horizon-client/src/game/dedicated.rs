@@ -1631,18 +1631,11 @@ impl Game<'_> {
         self.native_lifecycle.begin_close();
         log("INFO", "Stopping server");
         log("INFO", "Saving players");
-        if let Some(host) = self.lan.take() {
-            for g in &host.hub.guests {
-                // The vehicle the guest rides, for the file that names it.
-                let vehicle = self.root_vehicle_uuid(g.vehicle);
-                horizon_client::lan::playerdata::save(g, &self.world_root, vehicle);
-            }
+        if let Some(mut host) = self.lan.take() {
+            // PlayerList.removeAll: each guest is saved, a ride only one of
+            // them sits on leaving with them (save_guest writes the records).
+            self.save_leaving_guests(&mut host);
             self.lan = Some(host);
-        }
-        if let Some(h) = self.lan.as_ref() {
-            for g in &h.hub.guests {
-                self.save_guest_records(h, g);
-            }
         }
         if let Some(h) = self.lan.as_mut() {
             let conns: Vec<u32> = h.hub.guests.iter().map(|g| g.conn).collect();

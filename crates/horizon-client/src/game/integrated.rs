@@ -676,9 +676,7 @@ impl Game<'_> {
         if let Some(mut host) = self.lan.take() {
             // PlayerList.removeAll: the owner and every guest leave the game.
             host.award_leave_game_to_all();
-            for g in &host.hub.guests {
-                self.save_guest(&host, g);
-            }
+            self.save_leaving_guests(&mut host);
             let conns: Vec<u32> = host.hub.guests.iter().map(|g| g.conn).collect();
             for conn in conns {
                 host.hub.kick(

@@ -23,6 +23,7 @@ use horizon_protocol::{
     entity_data::{Value, serializer},
     packets::play::{self, Clientbound as C},
 };
+use horizon_world::nbt::Tag;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -1314,9 +1315,7 @@ impl Game<'_> {
             return;
         };
         host.award_leave_game_to_all();
-        for g in &host.hub.guests {
-            self.save_guest(&host, g);
-        }
+        self.save_leaving_guests(&mut host);
         host.hub.disconnect_all();
         // Give the writer threads a moment to flush the disconnect packets.
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1350,6 +1349,81 @@ impl Game<'_> {
         }
         self.save_guest_records(host, guest);
     }
+    /// `PlayerList.remove` for a guest's ride, before the guest is saved: a
+    /// root vehicle with exactly one player passenger goes with the player
+    /// (`setRemoved(UNLOADED_WITH_PLAYER)`) and is kept whole under
+    /// `RootVehicle.Entity` (`ServerPlayer.saveParentVehicle`), so nobody can
+    /// break it while its rider is away. A vehicle other players ride stays,
+    /// and the file names none (`unRide`).
+    pub(super) fn unload_guest_vehicle(
+        &mut self,
+        host: &mut LanHost,
+        guest: &mut horizon_client::lan::guest::Guest,
+    ) {
+        let Some(vehicle) = guest.vehicle else {
+            return;
+        };
+        if !guest.placed {
+            return;
+        }
+        // In the level the guest is in.
+        let back = self.dim;
+        let theirs = super::Dim::from_id(&guest.dimension);
+        if theirs != back && self.enter_level(Some(host), theirs).is_err() {
+            return;
+        }
+        let root = self.vehicle_root(vehicle);
+        let tree = self.vehicle_tree(root);
+        // Entity.hasExactlyOnePlayerPassenger.
+        let others = host
+            .hub
+            .guests
+            .iter()
+            .any(|g| g.conn != guest.conn && g.vehicle.is_some_and(|v| tree.contains(&v)))
+            || (self.player.is_some() && self.riding.is_some_and(|v| tree.contains(&v)));
+        if let Some(Tag::Compound(p)) = &mut guest.saved {
+            p.remove(&"RootVehicle".into());
+        }
+        guest.saved_vehicle = None;
+        if !others {
+            // `RootVehicle.Attach` names the immediate mount, `Entity` the root.
+            let attach = self.uuid_for(vehicle);
+            if let Some(entity) = self.vehicle_tree_nbt(root) {
+                let saved = guest
+                    .saved
+                    .get_or_insert_with(|| Tag::Compound(Default::default()));
+                if let Tag::Compound(p) = saved {
+                    p.insert(
+                        "RootVehicle".into(),
+                        Tag::compound([
+                            ("Attach", Tag::IntArray(attach.to_vec())),
+                            ("Entity", entity),
+                        ]),
+                    );
+                    guest.saved_vehicle = Some(attach);
+                }
+                self.unload_vehicle_tree(&tree);
+            }
+        }
+        // ServerPlayer.unRide.
+        (guest.vehicle, guest.vehicle_good) = (None, None);
+        if theirs != back
+            && let Err(e) = self.enter_level(Some(host), back)
+        {
+            log::error!("could not reopen {}: {e}", back.id());
+        }
+    }
+    /// `PlayerList.removeAll`: every guest leaves in turn, so the last rider
+    /// of a shared vehicle takes it with them.
+    pub(super) fn save_leaving_guests(&mut self, host: &mut LanHost) {
+        for i in 0..host.hub.guests.len() {
+            let mut g = host.hub.guests.remove(i);
+            self.unload_guest_vehicle(host, &mut g);
+            host.hub.guests.insert(i, g);
+            let host = &*host;
+            self.save_guest(host, &host.hub.guests[i]);
+        }
+    }
     /// `ServerPlayer.loadAndSpawnParentVehicle`: a guest whose file names the
     /// vehicle it rode rides it again, once the vehicle is in the world.
     fn restore_guest_vehicles(&mut self, host: &mut LanHost) {
@@ -1374,6 +1448,19 @@ impl Game<'_> {
         for (i, uuid) in waiting {
             let raw = host.hub.guests[i].saved.clone();
             let Some(id) = self.restore_saved_vehicle(uuid, raw.as_ref()) else {
+                // "Couldn't reattach entity to player": the vehicle the file
+                // held whole was spawned, but not the one to ride.
+                if raw
+                    .as_ref()
+                    .is_some_and(|r| self.discard_unattached_vehicle(r))
+                {
+                    log::warn!("Couldn't reattach entity to player");
+                    let g = &mut host.hub.guests[i];
+                    if let Some(Tag::Compound(p)) = &mut g.saved {
+                        p.remove(&"RootVehicle".into());
+                    }
+                    g.saved_vehicle = None;
+                }
                 continue;
             };
             let g = &mut host.hub.guests[i];
@@ -1838,6 +1925,7 @@ impl Game<'_> {
                         if guest.placed {
                             host.award_leave_game(guest.conn);
                         }
+                        self.unload_guest_vehicle(&mut host, &mut guest);
                         self.save_guest(&host, &guest);
                         host.models.remove(&guest.conn);
                         host.play.remove(&guest.conn);
