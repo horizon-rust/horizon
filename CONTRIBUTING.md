@@ -91,16 +91,15 @@ including examples. The dependency scope includes optional, platform, build and 
 Tests run library, binary, integration and doc tests without building unrelated example executables. Shared Cargo
 configuration and toolchain changes select the whole workspace; CI also keeps its workspace-wide checks.
 
-## Claim before you start
+## Claiming an issue
 
-Work is tracked in GitHub issues, and an issue that is assigned is taken (so is one with the `in progress` label:
-claimed on Discord with Kira's `/claim`): pick another, or ask its holder in the thread. Before you start, comment
-**`/claim`** on the issue; you are assigned at once, no role needed. No issue for your work yet? Open one (a line is
-enough), then claim it. `/unclaim` gives it back.
+A pull request needs no issue and no claim. An issue that is assigned is taken, though (so is one with the
+`in progress` label: claimed on Discord with Kira's `/claim`): pick another, or ask its holder in the thread.
 
-A claim with no open pull request linking the issue (`Fixes #123` in the description, or a draft) is released after
-5 days, with a comment: open a draft early. You can hold 8 open issues at a time, not counting the ones your
-pull requests already fix. Agents claim the same way.
+To reserve an issue for longer work, comment **`/claim`** on it; you are assigned at once, no role needed, and
+`/unclaim` gives it back. A claim with no open pull request linking the issue (`Fixes #123` in the description, or a
+draft) is released after 5 days. You can hold 8 open issues at a time, not counting the ones your pull requests
+already fix.
 
 When your pull request changes the same functions as another open one, or closes the same issue, a bot comment names
 it (edited on every push, never repeated): talk to its author in the thread before you both finish the same work.
@@ -141,4 +140,4 @@ new pushes, we add it again.
 ## Talk to us
 
 [Discord](https://discord.gg/HcTeMZxe5E) for questions and ideas, [issues](https://github.com/horizon-rust/horizon/issues)
-for bugs. To take something on, `/claim` its issue ([above](#claim-before-you-start)).
+for bugs. To reserve something, `/claim` its issue ([above](#claiming-an-issue)).

@@ -32,9 +32,7 @@ For the most-changed areas, feature → files → harness: [docs/architecture.md
   change), none for a fix. `release-now` is the maintainer's call alone. Merges ship in batches of 5, or after
   6 hours ([docs/release-flow.md](docs/release-flow.md)).
 - **Contributors first**: `gh pr list --state open --search <area>` before you start, and build on their open work.
-- **Claim before you start**: a comment whose first line is `/claim` on the issue (no issue yet: open one, then
-  claim it). An assigned issue is taken: pick another. `/unclaim` when you stop; a claim with no open PR linking
-  it is released after 5 days.
+  An issue assigned to someone else is theirs: pick another.
 
 ## Crates
 
