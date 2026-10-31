@@ -1745,7 +1745,8 @@ fn rt_sky_point(vertex: u32, d: vec3<f32>, magnitude: f32, colour: vec3<f32>) ->
 fn rt_scintillation(id: u32, airmass: f32) -> vec3<f32> {
     let t = globals.rt_water.z;
     let seed = f32(id);
-    let spread = clamp(0.06 * pow(airmass, 1.75), 0.05, 0.75);
+    // Overhead the flicker is plain to see still (the eye catches a star's tenth), low down wild.
+    let spread = clamp(0.16 + 0.05 * pow(airmass, 1.75), 0.16, 0.75);
     // The beams' parting, as time apart through the same moving cells: none overhead, a tenth of
     // a second toward the horizon (several of the flickers' periods).
     let lag = 0.1 * clamp((airmass - 1.5) / 8.0, 0.0, 1.0);

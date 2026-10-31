@@ -21,8 +21,9 @@ pub const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
 
 /// The shooting stars (terrain.wgsl `rt_meteor`) on a date: the seconds of a slot, the chance a
 /// slot holds one, and the active shower (its radiant and rates, `Shower`). The Shooting Stars
-/// setting (`setting`): 0 none; 1 the real sky, the sporadic meteors and the year's showers on
-/// their dates at their real rates; 2 frequent, a hundred times as many. The environment's
+/// setting (`setting`): 0 none; 1 the real sky's, the sporadic meteors and the year's showers on
+/// their dates, eight times their real rates (a game's night is a few minutes, an observer's
+/// hours); 2 frequent, a hundred times as many. The environment's
 /// `HORIZON_METEORS` (`off`, `rare`, `frequent`) overrides it.
 pub struct Meteors {
     pub slot: f32,
@@ -49,7 +50,7 @@ pub fn meteors(setting: u32, days: f64) -> Meteors {
                 stream: [0.0; 4],
             };
         }
-        1 => 1.0,
+        1 => 8.0,
         _ => 100.0,
     };
     let (shower, zhr) = shower(days);
