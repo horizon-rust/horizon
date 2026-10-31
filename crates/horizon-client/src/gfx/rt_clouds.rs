@@ -93,6 +93,8 @@ pub struct Params {
     pub time: f64,
     /// 0 for fair weather, 1 for the thickest overcast.
     pub thick: f32,
+    /// The Earth's curvature the slab bends by: 1 / its diameter, 0 off.
+    pub curvature: f32,
 }
 
 /// A view's textures: this frame's march, and the history, written in turn.
@@ -418,7 +420,12 @@ impl RtClouds {
         let uniform = Uniform {
             inverse_view_proj: view_proj.inverse().to_cols_array_2d(),
             prev_view_proj: last.map_or([[0.0; 4]; 4], |l| l.0.to_cols_array_2d()),
-            light: [params.light.x, params.light.y, params.light.z, 0.0],
+            light: [
+                params.light.x,
+                params.light.y,
+                params.light.z,
+                params.curvature,
+            ],
             light_color: [
                 params.light_color[0],
                 params.light_color[1],

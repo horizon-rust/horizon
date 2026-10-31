@@ -349,6 +349,47 @@ mod tests {
         (b - a) as f32 / rate as f32 * 3.0
     }
 
+    /// How tonal a bus rings: its impulse response's 2-8 kHz spectrum, the
+    /// loudest bin against the mean of 1/3-octave-smoothed ones, in dB.
+    fn peakiness(params: Params) -> f32 {
+        let rate = 48_000;
+        let mut bus = Bus::new(params, rate);
+        let len = 32_768;
+        let mut input = vec![0.0; len];
+        input[0] = 1.0;
+        let mut out = vec![0.0; len * 2];
+        bus.process(&input, &mut out, 2);
+        let mono: Vec<f64> = out.chunks(2).map(|f| f64::from(f[0] + f[1])).collect();
+        // A plain DFT of the band, bin by bin (no FFT dependency).
+        let bins: Vec<f64> = (0..300)
+            .map(|k| {
+                let freq = 2000.0 + 6000.0 * k as f64 / 300.0;
+                let w = std::f64::consts::TAU * freq / f64::from(rate);
+                let (mut re, mut im) = (0.0, 0.0);
+                for (n, x) in mono.iter().enumerate() {
+                    re += x * (w * n as f64).cos();
+                    im -= x * (w * n as f64).sin();
+                }
+                re * re + im * im
+            })
+            .collect();
+        let mean = bins.iter().sum::<f64>() / bins.len() as f64;
+        let max = bins.iter().cloned().fold(0.0, f64::max);
+        (10.0 * (max / mean).log10()) as f32
+    }
+
+    #[test]
+    #[ignore = "a measurement; run with --ignored --nocapture"]
+    fn reverb_tonality() {
+        for p in presets(&Settings::default()) {
+            println!(
+                "decay {:.2}: peakiness {:.1} dB",
+                p.decay_time,
+                peakiness(p)
+            );
+        }
+    }
+
     #[test]
     fn lowpass_keeps_lows_and_scales_highs() {
         let rate = 48_000;

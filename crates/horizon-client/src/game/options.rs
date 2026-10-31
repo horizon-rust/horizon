@@ -268,6 +268,7 @@ impl Game<'_> {
             r.fullbright = s.extras.fullbright;
             r.set_present_mode(s.vsync, s.horizon.present_mode);
             r.animated_textures = s.horizon.animated_textures;
+            r.earth_curvature = s.horizon.earth_curvature;
             r.set_mipmap_levels(s.mipmap_levels.max(0) as u32);
             r.set_world_post(s.horizon.resolution_scale as f32 / 100.0, s.horizon.fxaa);
             r.set_parallax(s.horizon.parallax);

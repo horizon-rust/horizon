@@ -1135,6 +1135,15 @@ unsafe fn open_vulkan(
                 label: Some("Horizon XR device"),
                 required_features: features,
                 required_limits: limits,
+                // Ray queries (RT lighting's hardware rays) are wgpu's experimental API: asked for
+                // only when the client asks for them.
+                // The API may change between wgpu versions, not misbehave.
+                experimental_features: if features.contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
+                {
+                    wgpu::ExperimentalFeatures::enabled()
+                } else {
+                    wgpu::ExperimentalFeatures::disabled()
+                },
                 ..Default::default()
             },
         )

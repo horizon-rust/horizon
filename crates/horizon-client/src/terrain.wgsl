@@ -12,7 +12,8 @@ struct Globals {
     sunrise: vec4<f32>,
     // xyz: sun direction, w: star brightness
     sun: vec4<f32>,
-    // x: sky fog end, y: cloud fog end, z: dark disc flag
+    // x: sky fog end, y: cloud fog end, z: dark disc flag, w: RT lighting's plain glass's sprite
+    // layers (`rt_glass_plain`)
     fog_ends: vec4<f32>,
     // Atlas rects (u0, v0, width, height) of end_sky.png and end_portal.png.
     end_portal_sprites: array<vec4<f32>, 2>,
@@ -53,6 +54,9 @@ struct Globals {
     rt_camera: vec4<f32>,
     // RT lighting's moon: toward it (xyz) and its angular radius (w); its phase in rt_stars.x.
     rt_moon: vec4<f32>,
+    // The Earth's curvature (`earth_drop`): x the square of the radius it starts at (below 0 off),
+    // y how far the sea's horizon dips under the horizontal, in radians.
+    earth: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var sprites: texture_2d_array<f32>;
@@ -198,11 +202,28 @@ fn faded_out(fade: f32, pixel: vec2<f32>) -> bool {
     if fade < 4.0 { return t >= fade; }
     return t < fade - 4.0;
 }
+// The Earth's curvature (gfx.rs `Renderer::earth_curvature`), for the eye alone: the world stays
+// flat for the game, and a distant terrain tile's vertex sinks by its horizontal distance's square
+// over the Earth's diameter, counted from the loaded chunks' radius (earth.x its square) so the
+// tiles meet those flat chunks, which the rays trace, without a step: 2 m 5 km out, 21 m at 16 km,
+// where the foot of an island drops behind the sea seen from 1.7 m up (its horizon 4.7 km away).
+// Every pass draws the terrain through `terrain_vertex`, and positions are relative to the head,
+// so a tile lands at the same place in each pass and in both eyes.
+const EARTH_RADIUS_M: f32 = 6371000.0;
+fn earth_drop(xz: vec2<f32>, flat_radius_sq: f32) -> f32 {
+    return max(dot(xz, xz) - flat_radius_sq, 0.0) / (2.0 * EARTH_RADIUS_M);
+}
+// `pos` as drawn: lowered when its instance's origin.w says a distant tile (`terrain_uv`).
+fn earth_curved(pos: vec3<f32>, w: f32) -> vec3<f32> {
+    let flat_sq = globals.earth.x;
+    if flat_sq < 0.0 || w < 1.0 / 64.0 { return pos; }
+    return vec3(pos.x, pos.y - earth_drop(pos.xz, flat_sq), pos.z);
+}
 @vertex fn vs_terrain(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>,
     @location(5) origin: vec4<f32>) -> TerrainOut {
-    var out = terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz);
+    var out = terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin);
     out.fade = terrain_fade(origin.w);
     return out;
 }
@@ -217,13 +238,13 @@ fn faded_out(fade: f32, pixel: vec2<f32>) -> bool {
     @location(2) layer: u32, @location(3) color: vec4<f32>, @location(4) light: vec2<u32>
 ) -> TerrainOut {
     let origin = slot_origins[block_slots[vertex >> 8u]];
-    var out = terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin.xyz);
+    var out = terrain_vertex(position, terrain_uv(uv, origin.w), layer, color, light, origin);
     out.fade = terrain_fade(origin.w);
     return out;
 }
 fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
-    light: vec2<u32>, origin: vec3<f32>) -> TerrainOut {
-    let pos = position + origin;
+    light: vec2<u32>, origin: vec4<f32>) -> TerrainOut {
+    let pos = earth_curved(position + origin.xyz, origin.w);
     var out: TerrainOut;
     out.clip = globals.view_proj * vec4(pos, 1.0);
     out.uv = uv;
@@ -339,10 +360,11 @@ fn rt_sky(d: vec3<f32>) -> vec3<f32> {
     let flat = d.xz / max(length(d.xz), 1e-5);
     let sun = globals.rt_sun.xz / max(length(globals.rt_sun.xz), 1e-5);
     let azimuth = acos(clamp(dot(flat, sun), -1.0, 1.0)) / 3.14159265;
-    let e = asin(clamp(d.y, -1.0, 1.0)) / 1.5707963;
+    // The table's horizon is level; the sea's dips under it with the eye's height (earth.y).
+    let e = clamp((asin(clamp(d.y, -1.0, 1.0)) + globals.earth.y) / 1.5707963, -1.0, 1.0);
     let v = 0.5 + 0.5 * sign(e) * sqrt(abs(e));
     var sky = textureSampleLevel(rt_sky_view, lightmap_sampler, vec2(azimuth, v), 0.0).rgb;
-    if globals.rt_camera.w >= 0.0 { sky += aldhani_glow(d, globals.rt_camera.w); }
+    if globals.rt_camera.w >= 0.0 { sky += aldhani_glow(d, globals.rt_camera.w) + aldhani_burning(d); }
     return sky;
 }
 // ALDHANI-BEGIN: the Eye of Aldhani's field, the same text in gfx/aldhani.wgsl (which makes it),
@@ -353,14 +375,20 @@ fn rt_sky(d: vec3<f32>) -> vec3<f32> {
 const ALDHANI_METEORS: u32 = 32768u;
 const ALDHANI_TILES: u32 = 64u;
 const ALDHANI_TILE_CAP: u32 = 256u;
+// The burning meteors' glow by tile, red, green and blue, in `tiles` after the lists: summed by the
+// field (fixed point, ALDHANI_GLOW_UNIT a paper white), then blurred over the sky (f32).
+const ALDHANI_GLOW_SUM: u32 = 64u * 64u + 64u * 64u * 256u;
+const ALDHANI_GLOW_BLUR: u32 = ALDHANI_GLOW_SUM + 3u * 64u * 64u;
+const ALDHANI_GLOW_UNIT: f32 = 1024.0;
 // How far from its line a streak's light reaches at most, in radians (its glow fades to nothing
 // there): a streak is binned into every tile within it.
 const ALDHANI_REACH: f32 = 0.012;
 // The event's seconds: the storm builds over a minute, holds, and dies out over the last minute.
 const ALDHANI_EVENT: f32 = 300.0;
-// Where the meteors come from: a fixed direction of the world, due south eight degrees under the
-// horizon, far behind it, so the streaks rise out of the haze beyond the mountains and fan out
-// upward and outward over the whole sky.
+// Where the meteors go (the eye): a fixed direction of the world, due south eight degrees under
+// the horizon, far beyond it. They fly away from the observer toward it, their streaks converging
+// on it as they shrink into the haze beyond the mountains (their radiant, the opposite point, is
+// eight degrees over the northern horizon, behind the observer facing the eye).
 const ALDHANI_RADIANT: vec3<f32> = vec3<f32>(0.0, -0.1392, 0.99027);
 // The light the field gives a face turned to it at the storm's height, in full moons (the moon's
 // light overhead, `rt.held.z`), and the glow of the sky around the radiant at its brightest, in
@@ -399,58 +427,52 @@ fn aldhani_envelope(t: f32) -> f32 {
 // The sky tile direction `d` falls in: the upper half of the sky folded flat (an octahedron's top,
 // turned to a square), ALDHANI_TILES a side, the horizon on the square's edges.
 fn aldhani_tile(d: vec3<f32>) -> u32 {
+    let c = min(vec2<u32>(aldhani_square(d) * f32(ALDHANI_TILES)), vec2(ALDHANI_TILES - 1u));
+    return c.y * ALDHANI_TILES + c.x;
+}
+// Where direction `d` falls on that square, 0 to 1 a side.
+fn aldhani_square(d: vec3<f32>) -> vec2<f32> {
     let up = vec3(d.x, max(d.y, 0.0), d.z);
     let p = up.xz / (abs(up.x) + up.y + abs(up.z) + 1e-6);
-    let q = vec2(p.x + p.y, p.x - p.y) * 0.5 + 0.5;
-    let c = min(vec2<u32>(max(q, vec2(0.0)) * f32(ALDHANI_TILES)), vec2(ALDHANI_TILES - 1u));
-    return c.y * ALDHANI_TILES + c.x;
+    return clamp(vec2(p.x + p.y, p.x - p.y) * 0.5 + 0.5, vec2(0.0), vec2(1.0));
 }
 // The colours of the show's frame, in light (ALDHANI_PALETTE), by patches of sky rather than
 // meteor by meteor (neighbours there differ by some 10 degrees of hue), richer than the frame.
 // `around` and `theta` are where a meteor lights up about the radiant (0 east, pi west). The cold
-// ones there, from green through turquoise and cyan to blue and violet, drifting slowly across the
-// sky (`u` a meteor's own draw, 0.5 the patch's own colour):
+// ones there, nine in ten of all, from turquoise to cyan, drifting slowly across the sky, and in
+// the sky's bluest patches blue (`u` a meteor's own draw, 0.5 the patch's own colour):
 fn aldhani_cold(around: f32, theta: f32, u: f32) -> vec3<f32> {
     let drift = 0.5 + 0.35 * sin(1.9 * around + 4.0 * theta + 1.0) + 0.25 * sin(3.7 * around - 6.0 * theta);
     let h = clamp(drift + 0.2 * (u - 0.5), 0.0, 1.0);
-    var cold = mix(vec3(0.25, 1.0, 0.3), vec3(0.0, 1.0, 0.6), smoothstep(0.0, 0.3, h));
-    cold = mix(cold, vec3(0.0, 0.75, 1.0), smoothstep(0.35, 0.65, h));
-    cold = mix(cold, vec3(0.25, 0.4, 1.0), smoothstep(0.62, 0.78, h));
-    return mix(cold, vec3(0.62, 0.25, 1.0), smoothstep(0.8, 0.95, h));
+    let cold = mix(vec3(0.0, 1.0, 0.6), vec3(0.0, 0.78, 1.0), smoothstep(0.2, 0.8, h));
+    return mix(cold, vec3(0.25, 0.45, 1.0), smoothstep(0.88, 0.98, h));
 }
-// The warm ones there, gold, orange and rose:
+// The warm ones there, gold and red:
 fn aldhani_warm(around: f32, theta: f32) -> vec3<f32> {
-    let warm = 0.5 + 0.5 * sin(6.0 * theta + 2.0 * around);
-    let gold = mix(vec3(1.0, 0.72, 0.12), vec3(1.0, 0.35, 0.1), smoothstep(0.0, 0.5, warm));
-    return mix(gold, vec3(1.0, 0.25, 0.6), smoothstep(0.5, 1.0, warm));
+    let red = smoothstep(0.55, 0.85, 0.5 + 0.5 * sin(6.0 * theta + 2.0 * around));
+    return mix(vec3(1.0, 0.7, 0.12), vec3(1.0, 0.22, 0.12), red);
 }
-// And their share there: a few everywhere and many on the west (the right, facing the radiant).
+// And their share there: none on the east, a fifth on the far west (the right, facing the
+// radiant), one in twenty of all.
 fn aldhani_warmth(around: f32) -> f32 {
-    let west = smoothstep(0.2, 1.0, -cos(around));
-    return 0.08 + 0.5 * west * west;
+    let west = smoothstep(0.1, 1.0, -cos(around));
+    return 0.2 * west * west;
 }
-// The sky's own light toward `d` during the event (`t` seconds in), in paper whites: the glow the
-// thousands of meteors too far and faint to tell apart make, brightest toward the radiant, in the
-// colours of the streaks of its patch of sky (their mix: the patch's cold colour and its share of
-// warm ones), a little paler (so many of them blend), and the eye itself, a bright glow on the
-// horizon around the radiant, white-hot in its middle.
+// The sky's own light toward `d` during the event (`t` seconds in), in paper whites, beside the
+// glow its meteors make as they burn (terrain.wgsl `aldhani_burning`, from the field): the haze
+// they light, pale and the same everywhere, thicker toward the radiant, and the eye itself, a
+// bright glow on the horizon around the radiant, white-hot in its middle.
 fn aldhani_glow(d: vec3<f32>, t: f32) -> vec3<f32> {
     let strength = aldhani_envelope(t);
     if strength <= 0.0 { return vec3(0.0); }
     let c = clamp(dot(d, ALDHANI_RADIANT), -1.0, 1.0);
     let theta = acos(c);
     let up = max(d.y, 0.0);
-    let east = normalize(cross(vec3(0.0, 1.0, 0.0), ALDHANI_RADIANT));
-    let around = abs(atan2(dot(d, cross(ALDHANI_RADIANT, east)), dot(d, east)));
-    let mixed = mix(aldhani_cold(around, theta, 0.5), aldhani_warm(around, theta), aldhani_warmth(around));
-    let pale = mix(mixed, vec3(dot(mixed, vec3(0.2126, 0.7152, 0.0722))), 0.25);
-    let tint = pale * (0.8 / dot(pale, vec3(0.2126, 0.7152, 0.0722)));
-    // The sky: the faint meteors everywhere, thicker toward the radiant's half of the sky.
-    let sky = tint * (3.5 * (0.35 + 0.65 * (0.5 + 0.5 * c)) * (0.55 + 0.45 * exp(-up * 2.0)));
-    // The eye: a few degrees of white-hot core in a wide glow.
+    let pale = vec3(0.72, 0.9, 0.9);
+    let sky = pale * (1.2 * (0.35 + 0.65 * (0.5 + 0.5 * c)) * (0.55 + 0.45 * exp(-up * 2.0)));
     let core = exp(-theta * theta / (2.0 * 0.08 * 0.08));
     let wide = exp(-theta / 0.25) * (0.4 + 0.6 * exp(-up / 0.15));
-    let eye = tint * (8.0 * wide) + mix(tint, vec3(1.0), 0.6) * (60.0 * core);
+    let eye = pale * (8.0 * wide) + mix(pale, vec3(1.0), 0.6) * (60.0 * core);
     // Under the horizon the ground hides it (the rays see the ground there).
     let above = smoothstep(-0.06, 0.0, d.y);
     return (sky + eye) * (ALDHANI_GLOW * strength * above);
@@ -472,42 +494,88 @@ fn aldhani_streaks(d: vec3<f32>, pixel: f32) -> vec3<f32> {
     }
     return sum;
 }
-// One streak's light toward `d`. The short bright ones (a fireball breaking up near the radiant)
-// sparkle: a few points along it flare and fade, each in its own rhythm.
+// The glow the Eye's burning meteors make toward `d` (the field's blurred grid, aldhani.wgsl
+// `cs_aldhani_glow`): it comes and goes with them, in their colours where they burn.
+const ALDHANI_BURNING: f32 = 0.08;
+fn aldhani_burning(d: vec3<f32>) -> vec3<f32> {
+    if d.y < -0.05 { return vec3(0.0); }
+    let q = aldhani_square(d) * f32(ALDHANI_TILES) - 0.5;
+    let base = vec2<i32>(floor(q));
+    let f = q - floor(q);
+    var glow = vec3(0.0);
+    for (var i = 0; i < 4; i++) {
+        let o = vec2(i & 1, i >> 1u);
+        let c = clamp(base + o, vec2(0), vec2(i32(ALDHANI_TILES) - 1));
+        let tile = u32(c.y) * ALDHANI_TILES + u32(c.x);
+        let w = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1);
+        glow += w * vec3(bitcast<f32>(aldhani_tiles[ALDHANI_GLOW_BLUR + tile]),
+            bitcast<f32>(aldhani_tiles[ALDHANI_GLOW_BLUR + 4096u + tile]),
+            bitcast<f32>(aldhani_tiles[ALDHANI_GLOW_BLUR + 8192u + tile]));
+    }
+    return glow * (ALDHANI_BURNING * smoothstep(-0.05, 0.0, d.y));
+}
+// One streak's light toward `d`, drawn as the shooting stars are (`meteor_streak`): Gaussian lines
+// a pixel wide at least that keep their light, a sharp head brighter than its trail in a soft halo,
+// the trail fading and widening behind it, whiter just behind the head and its colour turning to
+// the ember of sodium further back, a bright one's faint green train drifting off its line, and
+// the short bright ones (a fireball breaking up near the radiant) sparkling: a few points along it
+// flare and fade, each in its own rhythm.
 fn aldhani_streak(m: AldhaniMeteor, line: vec4<f32>, d: vec3<f32>, pixel: f32) -> vec3<f32> {
     let a = m.tail.xyz;
     let b = m.head.xyz;
     let span = line.w;
     var across = length(d - b);
+    var off = across;
     var along = 1.0;
     if any(line.xyz != vec3(0.0)) {
         let phi = atan2(dot(d, cross(line.xyz, a)), dot(d, a));
         along = clamp(phi / span, 0.0, 1.0);
-        across = select(min(length(d - a), length(d - b)), abs(dot(d, line.xyz)),
-            phi >= 0.0 && phi <= span);
+        off = dot(d, line.xyz);
+        across = select(min(length(d - a), length(d - b)), abs(off), phi >= 0.0 && phi <= span);
     }
-    let width = pixel * m.tail.w;
-    let r2 = across * across / (width * width);
-    if r2 > 150.0 || across > ALDHANI_REACH { return vec3(0.0); }
+    if across > ALDHANI_REACH { return vec3(0.0); }
+    // The width (a Gaussian's sigma): a pixel's at least, the eye's blur where pixels are smaller.
+    let wide = m.tail.w;
+    let sigma = max(pixel * 0.62 * wide, 0.00025 * wide);
+    if across > sigma * 14.0 + 0.004 { return vec3(0.0); }
+    let gain = 0.62 * pixel * wide / sigma;
     // Its light fades to nothing ALDHANI_REACH away (the tiles it is binned into).
     let fade = 1.0 - across / ALDHANI_REACH;
     let top = max(m.colour.r, max(m.colour.g, m.colour.b));
-    let core = m.colour.rgb * exp(-r2 * 1.4)
-        + m.colour.rgb * (0.03 * exp(-r2 * 0.15) * fade * fade);
-    var light = core * (0.15 + 0.85 * along * along);
-    // The head's glow, white-hot in its middle.
+    // The trail: widening as it diffuses toward the tail, whiter just behind the head, the ember
+    // further back.
+    let behind = 1.0 - along;
+    let st = sigma * (1.0 + 0.6 * behind);
+    var colour = mix(m.colour.rgb, vec3(top), 0.25 * smoothstep(0.8, 1.0, along));
+    colour = mix(colour, vec3(1.0, 0.42, 0.18) * top, 0.3 * smoothstep(0.4, 1.0, behind));
+    let trail = (gain * sigma / st) * exp(-across * across / (2.0 * st * st))
+        + 0.03 * exp(-across * across / (32.0 * sigma * sigma)) * fade * fade;
+    var light = colour * (trail * (0.15 + 0.85 * along * along));
+    // The head: a point brighter than the trail in a halo of a few pixels.
+    let h2 = dot(d - b, d - b);
+    let halo = sigma * 3.0;
     let white = mix(m.colour.rgb, vec3(top), 0.3);
-    let h2 = dot(d - b, d - b) / (width * width);
-    light += white * (m.colour.w * 0.8 * exp(-h2 * 0.6) * fade * fade);
+    light += white * (m.colour.w * (gain * gain * 1.2 * exp(-h2 / (2.0 * sigma * sigma))
+        + 0.25 * exp(-h2 / (2.0 * halo * halo))) * fade * fade);
+    // The train of a bright one: faint, green (the oxygen line), wider, drifting a little off its
+    // line as it ages toward the tail, uneven along its length.
+    if m.colour.w > 0.3 {
+        let drift = (aldhani_rand(u32(m.head.w) + 3u) - 0.5) * 6.0 * sigma * behind;
+        let o = off - drift;
+        let tw = sigma * (2.0 + 3.0 * behind);
+        let wisp = 0.75 + 0.25 * sin(along * 40.0 + m.head.w);
+        light += mix(vec3(0.25, 1.0, 0.4), m.colour.rgb / max(top, 1e-4), 0.4) * top
+            * ((m.colour.w - 0.3) * 0.12 * (gain * sigma / tw) * exp(-o * o / (2.0 * tw * tw)) * wisp * behind);
+    }
     // Sparkles along the short, bright ones.
     let short = 1.0 - smoothstep(20.0 * pixel, 80.0 * pixel, span);
     let sparkle = m.colour.w * short;
-    if sparkle > 0.05 && across < width * 4.0 {
+    if sparkle > 0.05 && across < sigma * 6.0 {
         let seed = u32(m.head.w);
         for (var j = 0u; j < 4u; j++) {
             let u = aldhani_rand(seed * 8u + j);
             let p = normalize(mix(a, b, 0.2 + 0.8 * u));
-            let q = dot(d - p, d - p) / (width * width);
+            let q = dot(d - p, d - p) / (2.0 * sigma * sigma);
             let beat = 0.5 + 0.5 * sin(globals.rt_water.z * (9.0 + 14.0 * u) + 40.0 * u);
             light += white * (sparkle * 3.0 * pow(beat, 6.0) * exp(-q * 0.7));
         }
@@ -1166,19 +1234,227 @@ fn rt_dither(pixel: vec2<f32>) -> f32 {
     let color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
     if (color.a < 0.5 && (in.layer & 0x8000u) == 0u) || faded_out(in.fade, in.clip.xy) { discard; }
 }
+// RT lighting's glass (shadow_rays_hw.wgsl `hw_glass`: Remix's translucent material as RTX Remix
+// for Minecraft gives the block atlas): stained glass, panes, plain glass and every translucent
+// block but water. A dielectric of index 1.52, its normal the pack's map (or, without one, drawn
+// glass's faint waviness, `rt_glass_wave`), smooth or as rough as the pack's specular map says.
+// Fresnel weighs what it reflects (what the rays met that way, or the sky, and the sun's glint)
+// against what the rays met through it (`rt_refract`, shadow_rays_psr.wgsl `hw_refract_glass`:
+// bent by its faces as built, dimmed by Beer-Lambert over the length run inside, deeper in colour
+// where the ray slants through). The map's slopes bend the view further, here: the traced picture
+// is read where the tilted facet sends the ray, which a flat back face turns by about (n - 1)
+// times the tilt, over the distance to what lies behind; a rough face spreads it over the angle
+// its roughness gives. Plain glass lays its texel over all of it as a diffuse layer as opaque as
+// its alpha (Remix's `useDiffuseLayer`). Without traced refraction (no hardware rays) what lies
+// behind shows through the glass's colour over its measurement distance along the bent ray.
+const GLASS_INDEX: f32 = 1.52;
+const GLASS_TRANSMITTANCE: f32 = 0.97;
+// The glass a fragment shows (`rt_glass_at`): its camera-relative position, pixel, light levels
+// and fog distances; its face's normal toward the camera and its surface's (the map's, or the
+// waviness); its texel times the face's tint (linear) and the texel's alpha; its roughness (GGX
+// alpha's square root); its sprite layer.
+struct GlassIn {
+    pos: vec3<f32>,
+    clip: vec2<f32>,
+    light: vec2<f32>,
+    spherical: f32,
+    cylindrical: f32,
+    face: vec3<f32>,
+    normal: vec3<f32>,
+    albedo: vec3<f32>,
+    alpha: f32,
+    roughness: f32,
+    layer: u32,
+}
+// Whether sprite `layer` is the plain glass's (its block's or its pane's edge: gfx.rs
+// `set_glass_layers`, packed as the lava's).
+fn rt_glass_plain(layer: u32) -> bool {
+    let packed = globals.fog_ends.w;
+    if packed < 0.0 { return false; }
+    let l = f32(layer & 0x7fffu);
+    let pane = floor(packed / 4096.0);
+    return l == packed - pane * 4096.0 || l == pane;
+}
+// A dielectric's reflectance at index 1.52 (Schlick's, F0 = ((n - 1) / (n + 1))^2), the cosine on
+// the air's side.
+fn rt_glass_fresnel(cosine: f32) -> f32 {
+    return 0.0426 + 0.9574 * pow(1.0 - clamp(cosine, 0.0, 1.0), 5.0);
+}
+// Drawn glass's faint waviness, for glass without a normal map: the slopes of a world-fixed noise
+// a block or so across, a few hundredths, so a window bends what is behind it a little and its
+// reflections ripple.
+fn rt_glass_wave(pos: vec3<f32>, face: vec3<f32>) -> vec3<f32> {
+    let p = (pos + globals.rt_camera.xyz) * 1.3;
+    let e = 0.15;
+    let h = lava_noise(p);
+    let g = vec3(lava_noise(p + vec3(e, 0.0, 0.0)), lava_noise(p + vec3(0.0, e, 0.0)),
+        lava_noise(p + vec3(0.0, 0.0, e))) - h;
+    let slope = (g - face * dot(g, face)) / e;
+    return normalize(face - slope * 0.035);
+}
+// Where camera-relative `p` lands in the world target, in pixels (z: whether it is in front).
+fn rt_screen(p: vec3<f32>) -> vec3<f32> {
+    let c = globals.view_proj * vec4(p, 1.0);
+    let ndc = c.xy / max(c.w, 1e-4);
+    return vec3(vec2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y) * globals.rt_motion.xy,
+        select(0.0, 1.0, c.w > 1e-4));
+}
+// How far on the screen (pixels, at most 48) the point `d` along `bent` from `pos` lies from the
+// one `d` along `straight`.
+fn rt_shift(pos: vec3<f32>, bent: vec3<f32>, straight: vec3<f32>, d: f32) -> vec2<f32> {
+    let a = rt_screen(pos + bent * d);
+    let b = rt_screen(pos + straight * d);
+    if a.z < 0.5 || b.z < 0.5 { return vec2(0.0); }
+    let s = a.xy - b.xy;
+    return s * min(1.0, 48.0 / max(length(s), 1e-4));
+}
+// What the rays met through the translucent surface at `pixel` (`rt_refract`).
+fn rt_refracted(pixel: vec2<f32>) -> vec4<f32> {
+    let size = vec2<f32>(textureDimensions(rt_refract));
+    let at = clamp(vec2<i32>(pixel / globals.rt_motion.xy * size), vec2(0), vec2<i32>(size) - 1);
+    return textureLoad(rt_refract, at, 0);
+}
+fn rt_glass_at(g: GlassIn) -> WaterLight {
+    let distance = length(g.pos);
+    let ray = g.pos / max(distance, 1e-4);
+    let view = -ray;
+    let plain = rt_glass_plain(g.layer);
+    // A map's facet turned from the eye is seen edge on: kept just inside the side it can see.
+    var n = g.normal;
+    let facing = dot(n, view);
+    if facing < 0.02 { n = normalize(n + view * (0.02 - facing)); }
+    let nv = max(dot(n, view), 1e-3);
+    let fresnel = rt_glass_fresnel(nv);
+    let v = rt_visibility(g.pos, g.clip);
+    let sky_seen = select(pow(clamp(g.light.x * 16.0 / 15.0, 0.0, 1.0), 2.0), max(v.z, 0.0),
+        v.z >= 0.0);
+    let sun = globals.rt_sun_light.rgb * globals.rt_light.w * v.x;
+    // Reflected: the sky that way, faded as it dips under the face, or what the rays met off the
+    // face, read where the facet's normal sends the reflection instead (as far off as a few
+    // blocks away would be).
+    let mirrored = reflect(ray, n);
+    let horizon_fade = clamp(1.0 + 1.1 * dot(mirrored, g.face), 0.0, 1.0);
+    var reflected = rt_sky(mirrored) * max(sky_seen, 0.15 * v.x) * horizon_fade * horizon_fade;
+    if globals.rt_motion.w > 1.5 {
+        let shift = rt_shift(g.pos, mirrored, reflect(ray, g.face), 4.0);
+        var traced = rt_reflection(g.clip + shift, g.pos);
+        if traced.a < 0.5 { traced = rt_reflection(g.clip, g.pos); }
+        if traced.a > 0.5 { reflected = traced.rgb; }
+    }
+    // The sun's glint (GGX, the glass's roughness, a smooth face's at least 0.02).
+    let l = globals.rt_light.xyz;
+    let h = normalize(l + view);
+    let nl = max(dot(n, l), 0.0);
+    let alpha = max(g.roughness * g.roughness, 0.02);
+    let a2 = alpha * alpha;
+    let nh = max(dot(n, h), 0.0);
+    let dd = nh * nh * (a2 - 1.0) + 1.0;
+    let glint = a2 / (RT_PI * dd * dd) * 0.25 / max(nl * nv, 1e-3) * nl * RT_PI;
+    reflected += sun * min(glint * smoothstep(0.0, 0.15, dot(g.face, l)), 200.0);
+    // Through it: in bent by the facet, out through a flat face parallel to this one.
+    let inward = refract(ray, n, 1.0 / GLASS_INDEX);
+    var outward = refract(inward, g.face, GLASS_INDEX);
+    if dot(outward, outward) < 1e-6 { outward = ray; }
+    let bottom = rt_bottom(g.clip, ray);
+    let behind = clamp(select(8.0, bottom - distance, bottom > 0.0), 0.05, 6.0);
+    var refracted = vec4(0.0);
+    var beam = 0.0;
+    if globals.rt_motion.w > 1.5 {
+        let centre = rt_refracted(g.clip);
+        beam = max(centre.a - 1.0, 0.0);
+        if centre.a > 0.0 {
+            let at = g.clip + rt_shift(g.pos, outward, ray, behind);
+            // A rough face spreads what it lets through over about its GGX alpha: four taps
+            // around that point, turned by the pixel's noise (the temporal resolve smooths them).
+            let spread = alpha * behind * 0.5;
+            let far = g.pos + outward * behind;
+            let t1 = normalize(cross(g.face, select(vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0),
+                abs(g.face.y) > 0.9)));
+            let t2 = cross(g.face, t1);
+            let base = rt_screen(far);
+            let u = (rt_screen(far + t1 * spread).xy - base.xy) * base.z;
+            let w = (rt_screen(far + t2 * spread).xy - base.xy) * base.z;
+            var sum = vec4(0.0);
+            let taps = select(1, 4, g.roughness > 0.1 && length(u) + length(w) > 1.0);
+            let turn = rt_dither(g.clip) * 6.2831853;
+            for (var i = 0; i < taps; i++) {
+                let a = turn + f32(i) * 1.5707963;
+                let r = select(0.0, 0.7, taps > 1);
+                let s = rt_refracted(at + (u * cos(a) + w * sin(a)) * r);
+                if s.a > 0.0 { sum += vec4(s.rgb, 1.0); }
+            }
+            refracted = select(vec4(centre.rgb, 1.0), vec4(sum.rgb / max(sum.a, 1.0), 1.0),
+                sum.a > 0.0);
+        }
+    }
+    var added = fresnel * reflected;
+    var shows = vec3(1.0 - fresnel);
+    if refracted.a <= 0.0 {
+        // Untraced: the glass's colour over its measurement distance along the bent ray.
+        let colour = select(clamp(g.albedo, vec3(0.0), vec3(1.0)), vec3(1.0), plain)
+            * GLASS_TRANSMITTANCE;
+        let slant = max(dot(inward, -g.face), 0.2);
+        shows *= pow(max(colour, vec3(1e-3)), vec3(1.0 / slant));
+    }
+    // The air in front, as for the terrain: it dims both and adds the horizon's light.
+    let f = rt_fade(g.spherical, g.cylindrical, g.pos) * globals.fog_color.a;
+    let toward = normalize(vec3(g.pos.x, 0.0, g.pos.z) + vec3(0.0, 0.05 * length(g.pos.xz), 0.0));
+    let horizon = rt_sky(toward) * sky_seen;
+    let air = vec3(5.802e-3 + 4.44e-3, 13.558e-3 + 4.44e-3, 33.1e-3 + 4.44e-3);
+    let air_through = exp(-air * (distance * 0.001 * globals.rt_mode.w)) * (1.0 - f);
+    added = added * air_through + horizon * (1.0 - air_through);
+    shows *= air_through;
+    // Plain glass's diffuse layer, lit (and fogged) as the terrain is.
+    if plain && g.alpha > 0.0 {
+        let layer = rt_material_lit(RtMaterial(g.albedo, n, 1.0, 1.0, vec3(0.04), 0.0, 0.0, 0.0),
+            g.face, g.pos, g.clip, g.light, g.spherical, g.cylindrical);
+        added = mix(added, layer, g.alpha);
+        shows *= 1.0 - g.alpha;
+    }
+    if refracted.a > 0.0 {
+        // The sun behind the glass: its beam through both walls (their colour along the bent ray,
+        // the far face's Fresnel and the second diffuse layer; the near face's are in `shows`),
+        // spread over the lobe the faces' roughness gives it (GGX, each face turning the light by
+        // (1 - 1/n) of its facets' tilt). Nothing is added: the glass reflects what Fresnel says,
+        // lets through what its colour does and absorbs the rest, and this lobe is that let-through
+        // sunlight seen from its direction (it sums to what the floor behind receives): a sharp sun
+        // through clear glass, a wide glow through frosted glass.
+        if beam > 0.0 {
+            let colour = select(clamp(g.albedo, vec3(0.0), vec3(1.0)), vec3(1.0 - g.alpha), plain)
+                * GLASS_TRANSMITTANCE;
+            let slant = max(dot(inward, -g.face), 0.2);
+            let walls = pow(max(colour, vec3(1e-3)), vec3(1.0 / slant)) * (1.0 - rt_glass_fresnel(nv));
+            let spread = max(alpha * 2.0 * (1.0 - 1.0 / GLASS_INDEX), 0.01);
+            let s2 = spread * spread;
+            let c = max(dot(ray, l), 0.0);
+            let d = c * c * (s2 - 1.0) + 1.0;
+            let lobe = min(s2 / (d * d), 200.0);
+            refracted = vec4(refracted.rgb
+                + globals.rt_sun_light.rgb * globals.rt_light.w * beam * walls * lobe, 1.0);
+        }
+        return WaterLight(added + shows * refracted.rgb, vec3(0.0), 1.0);
+    }
+    let opacity = clamp(1.0 - dot(shows, vec3(0.2126, 0.7152, 0.0722)), 0.02, 1.0);
+    return WaterLight(added, shows, opacity);
+}
+// The plain terrain's glass: its texel, the face's tint, and the waviness for a normal.
+fn rt_glass(in: TerrainOut, face: vec3<f32>, texel: vec4<f32>) -> WaterLight {
+    return rt_glass_at(GlassIn(in.pos, in.clip.xy, in.light, in.spherical, in.cylindrical, face,
+        rt_glass_wave(in.pos, face), decode_gamma(texel.rgb * in.tint), texel.a, 0.0, in.layer));
+}
 @fragment fn fs_translucent(in: TerrainOut) -> @location(0) vec4<f32> {
     let n = face_normal(in.pos);
     let texel = sprite(in.uv, in.layer & 0x7fffu);
     let color = texel * in.color;
     if color.a < 0.01 || faded_out(in.fade, in.clip.xy) { discard; }
-    // RT lighting: water its own way (`rt_water`), glass by the same model as the terrain (the rays
-    // saw what is behind it or the surface).
+    // RT lighting: water its own way (`rt_water`), glass its own (`rt_glass`).
     if globals.rt_mode.x > 0.5 && linear_on() && in.emission == 0u {
         if rt_is_water(in.layer) {
             let w = rt_water(in, n);
             return vec4(w.added / w.alpha, w.alpha);
         }
-        return vec4(rt_lit(texel.rgb * in.tint, in, n), color.a);
+        let g = rt_glass(in, n, texel);
+        return vec4(g.added / g.alpha, g.alpha);
     }
     return scene_color(color, emission_gain(in.emission), in.spherical, in.cylindrical);
 }
@@ -1363,8 +1639,18 @@ struct DebugLineOut {
     let d = view_ray(in.ndc);
     let sky = rt_sky(d);
     let pixel = length(fwidth(d));
-    return vec4(sky + rt_sun_disc(d) + rt_moon_disc(d) + rt_glare(d) + rt_milky_way(d, sky, pixel)
+    // What lies beyond the Moon (the Milky Way) it hides, even new and dark; the air before it
+    // not, nor the meteors burning in it, a hundred kilometres up, in front of the Moon.
+    let beyond = rt_milky_way(d, sky, pixel) * rt_moon_hides(d, pixel);
+    return vec4(sky + rt_sun_disc(d) + rt_moon_disc(d) + rt_glare(d) + beyond
         + rt_meteor(d, sky, pixel) + aldhani_streaks(d, pixel), 1.0);
+}
+// 0 toward the Moon's disc (above the horizon), 1 off it, over a pixel at its edge.
+fn rt_moon_hides(d: vec3<f32>, pixel: f32) -> f32 {
+    let m = normalize(globals.rt_moon.xyz);
+    if m.y < -0.01 { return 1.0; }
+    let off = acos(clamp(dot(d, m), -1.0, 1.0)) - globals.rt_moon.w;
+    return smoothstep(-0.5 * pixel, 0.5 * pixel, off);
 }
 // RT lighting's real stars (gfx/sky_stars.rs): the Yale Bright Star Catalogue's 9096 stars down
 // to magnitude 6.5 at their equatorial places, turned to the sky above the latitude the sun's
@@ -1385,18 +1671,44 @@ struct StarOut {
     let magnitude = f32(packed & 255u) / 25.0 - 2.0;
     let kelvin = f32(packed >> 8u) * 100.0;
     let d = normalize((globals.rt_star_frame * vec4(vec3<f32>(star.xyz) / 32767.0, 0.0)).xyz);
+    if globals.rt_stars.w <= 0.0 || d.y <= 0.0 { return out; }
+    let airmass = 1.0 / max(d.y + 0.025, 0.03);
+    return rt_sky_point(vertex, d, magnitude, star_colour(kelvin) * rt_scintillation(id, airmass));
+}
+// RT lighting's planets (gfx/sky_planets.rs): Mercury to Uranus where their orbits put them on
+// the sky's date, turned with the stars, drawn like them by their magnitude, coloured by the
+// sunlight their surfaces give back. They hardly twinkle: a planet's disc, a few to tens of
+// arcseconds, spans many of the air's cells, whose flickers average out; only through the thick
+// air near the horizon does a little of the star's flicker show.
+@vertex fn vs_rt_planet(@builtin(vertex_index) vertex: u32, @builtin(instance_index) id: u32,
+    @location(0) planet: vec4<f32>, @location(1) colour: vec4<f32>) -> StarOut {
+    var out: StarOut;
+    out.clip = vec4(0.0, 0.0, 2.0, 1.0);
+    let d = normalize((globals.rt_star_frame * vec4(planet.xyz, 0.0)).xyz);
+    if globals.rt_stars.w <= 0.0 || d.y <= 0.0 { return out; }
+    let airmass = 1.0 / max(d.y + 0.025, 0.03);
+    let low = 0.12 * smoothstep(10.0, 30.0, airmass);
+    let twinkle = mix(vec3(1.0), rt_scintillation(id + 20011u, airmass), low);
+    return rt_sky_point(vertex, d, planet.w, colour.rgb * twinkle);
+}
+// A point of light on the night sky (a star's, a planet's) toward `d` (above the horizon), of
+// magnitude `magnitude` and colour `colour` (its flicker in it): its quad's corner `vertex`.
+fn rt_sky_point(vertex: u32, d: vec3<f32>, magnitude: f32, colour: vec3<f32>) -> StarOut {
+    var out: StarOut;
+    out.clip = vec4(0.0, 0.0, 2.0, 1.0);
     let brightness = globals.rt_stars.w;
-    if brightness <= 0.0 || d.y <= 0.0 { return out; }
+    // The Moon passes in front of the stars and planets (an occultation), dark when new.
+    let moon = normalize(globals.rt_moon.xyz);
+    if moon.y > -0.01 && dot(d, moon) > cos(globals.rt_moon.w) { return out; }
     let sky = rt_sky(d);
     let glare = exp(-dot(sky, vec3(0.2126, 0.7152, 0.0722)) * 60.0);
     // Through the air: airmass over the zenith's, more of the blue lost (the stars redden low).
     let airmass = 1.0 / max(d.y + 0.025, 0.03);
     let air = exp(-vec3(0.12, 0.18, 0.3) * airmass);
-    let twinkle = rt_scintillation(id, airmass);
     // Paper whites at the quad's middle: a magnitude 0 star 20 (the eye adapted to the night),
     // each magnitude 2.5 times dimmer.
     let flux = 20.0 * pow(10.0, -0.4 * magnitude);
-    out.light = star_colour(kelvin) * (flux * brightness * glare * twinkle) * air;
+    out.light = colour * (flux * brightness * glare) * air;
     if max(out.light.r, max(out.light.g, out.light.b)) < 0.004 { return out; }
     let corners = array<vec2<f32>, 6>(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0),
         vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
@@ -1648,7 +1960,9 @@ fn meteor_streak(m: Meteor, d: vec3<f32>, pixel: f32) -> vec3<f32> {
     if abs(across) > pixel * (14.0 + 2.5 * big) + 0.004 { return vec3(0.0); }
     // The width (a Gaussian's sigma): a pixel's at least, the eye's blur where pixels are smaller,
     // wider when bright; `gain` keeps the light as a whole where the width is not a pixel's.
-    let sigma = max(pixel * (0.62 + 0.04 * big), 0.00025 * (1.0 + 0.1 * big));
+    // A short one is a smaller meteoroid, less matter burning: a thinner line.
+    let thin = mix(0.55, 1.0, smoothstep(10.0, 60.0, m.span));
+    let sigma = max(pixel * (0.62 + 0.04 * big), 0.00025 * (1.0 + 0.1 * big)) * thin;
     let gain = 0.62 * pixel / sigma;
     let s2 = 2.0 * sigma * sigma;
     let a2 = across * across;

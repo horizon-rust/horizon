@@ -114,6 +114,8 @@ pub struct Rays {
     pub sun_light: [f32; 4],
     /// The water's sprite layers and the time, for the caustics.
     pub water: [f32; 4],
+    /// The plain glass's sprite layers, packed (`Renderer::set_glass_layers`; -1 none).
+    pub glass: f32,
     /// The camera's offset from the hardware rays' instances' anchor (`HwRays::offset`).
     pub hw_offset: [f32; 4],
     /// RT lighting's moving lights (a held torch, a burning mob, a dropped lantern: Remix's held
@@ -173,10 +175,11 @@ struct ViewMasks {
 }
 
 /// RT lighting's hybrid's (`hw_rays`) for the shadow rays: the terrain's top-level structure,
-/// the vertex arena's first page and the first sprite array, for their alpha test.
+/// the vertex arena's first pages (`hw_rays::ARENA_PAGES`) and the first sprite array, for their
+/// alpha test.
 pub struct Hardware<'a> {
     pub tlas: &'a wgpu::Tlas,
-    pub arena: &'a wgpu::Buffer,
+    pub arena: &'a [wgpu::Buffer; super::hw_rays::ARENA_PAGES],
     pub sprites: &'a wgpu::TextureView,
     /// Where each instance's quads are (`hw_rays::HwRays::instances`).
     pub instances: &'a wgpu::Buffer,
@@ -379,7 +382,7 @@ impl ShadowRays {
                 entry(34, output),
                 entry(38, cache_binding),
                 entry(39, storage),
-                entry(40, cache_binding),
+                entry(47, cache_binding),
             ]
             .into_iter()
             .chain(
@@ -416,6 +419,12 @@ impl ShadowRays {
                                 },
                             ),
                         ]
+                        .into_iter()
+                        .chain(
+                            super::hw_rays::ARENA_BINDINGS
+                                .iter()
+                                .map(|&binding| entry(binding, storage)),
+                        )
                     })
                     .into_iter()
                     .flatten(),
@@ -756,7 +765,7 @@ impl ShadowRays {
                 None => [0.0; 4],
             },
             sun: rays.sun,
-            frame: [(self.frame % 65536) as f32, 0.0, 0.0, 0.0],
+            frame: [(self.frame % 65536) as f32, rays.glass, 0.0, 0.0],
             sun_light: rays.sun_light,
             water: rays.water,
             hw_offset: rays.hw_offset,
@@ -839,7 +848,7 @@ impl ShadowRays {
                 resource: self.aldhani.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
-                binding: 40,
+                binding: 47,
                 resource: self.sparse.as_entire_binding(),
             },
         ];
@@ -851,7 +860,7 @@ impl ShadowRays {
                 },
                 wgpu::BindGroupEntry {
                     binding: 16,
-                    resource: hw.arena.as_entire_binding(),
+                    resource: hw.arena[0].as_entire_binding(),
                 },
                 view(17, hw.sprites),
                 wgpu::BindGroupEntry {
@@ -864,6 +873,15 @@ impl ShadowRays {
                 },
                 view(37, hw.atlas),
             ]);
+            entries.extend(
+                super::hw_rays::ARENA_BINDINGS
+                    .iter()
+                    .zip(&hw.arena[1..])
+                    .map(|(&binding, page)| wgpu::BindGroupEntry {
+                        binding,
+                        resource: page.as_entire_binding(),
+                    }),
+            );
         }
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Ray-traced shadows"),

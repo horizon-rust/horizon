@@ -840,6 +840,11 @@ impl Lod {
     /// resident chunks (`game.raycast`); water is passed, as the view's ray
     /// passes it.
     pub fn ground(&self, x: i32, z: i32) -> Option<(i32, BlockStateId)> {
+        self.surface(x, z).map(|s| (s.height, s.state))
+    }
+    /// The surface at block column (x, z), its water included, from the finest tile sampled
+    /// there (`None` where none is).
+    pub fn surface(&self, x: i32, z: i32) -> Option<Surface> {
         (0..=MAX_LEVEL).find_map(|level| {
             let size = 16 << level;
             let key = TileKey {
@@ -851,8 +856,7 @@ impl Lod {
             let columns = self.ready.get(&key).filter(|c| c.len() == cells * cells)?;
             let cell = key.stride();
             let (cx, cz) = ((x - key.x * size) / cell, (z - key.z * size) / cell);
-            let surface = columns[cz as usize * cells + cx as usize].surface?;
-            Some((surface.height, surface.state))
+            columns[cz as usize * cells + cx as usize].surface
         })
     }
     pub fn stats(&self) -> (usize, usize) {

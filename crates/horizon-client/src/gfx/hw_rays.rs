@@ -27,6 +27,11 @@ use std::collections::HashMap;
 /// Sections within this many chunks of the camera's have a structure: the voxel grid's reach,
 /// where the rays run.
 pub const RADIUS: i32 = super::voxels::RADIUS;
+/// The vertex arena's pages the rays read (shadow_rays_hw.wgsl `ARENA_PAGES`, bound at 16 and 40
+/// on): quads on a later page are taken as opaque, without their texels.
+pub const ARENA_PAGES: usize = 8;
+/// The bindings of the arena's pages after the first (16).
+pub const ARENA_BINDINGS: [u32; ARENA_PAGES - 1] = [40, 41, 42, 43, 44, 45, 46];
 /// Instances the top-level structure holds at most (a 17x17-chunk square is about 7000 sections).
 const MAX_INSTANCES: u32 = 16384;
 /// Of them, those kept for the moving geometry: the entities, the view model and the cloud tiles
@@ -117,7 +122,8 @@ pub struct Dynamic<'a> {
 /// What the rays bind of the hybrid, owned (`Renderer::hw_bindings`).
 pub struct Bindings {
     pub tlas: wgpu::Tlas,
-    pub arena: wgpu::Buffer,
+    /// The arena's first `ARENA_PAGES` pages, the missing ones the first again.
+    pub arena: [wgpu::Buffer; ARENA_PAGES],
     pub sprites: wgpu::TextureView,
     pub instances: wgpu::Buffer,
     pub dynamics: wgpu::Buffer,
@@ -670,5 +676,31 @@ impl HwRays {
             );
         }
         encoder.build_acceleration_structures(entries.iter(), [&self.tlas]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_shaders_read_as_many_arena_pages_as_are_bound() {
+        for text in [
+            include_str!("shadow_rays_hw.wgsl"),
+            include_str!("froxels_hw.wgsl"),
+        ] {
+            assert!(text.contains(&format!("const ARENA_PAGES: u32 = {ARENA_PAGES}u;")));
+            assert!(text.contains("@group(0) @binding(16) var<storage, read> arena: array<u32>;"));
+            for (page, binding) in ARENA_BINDINGS.iter().enumerate() {
+                let page = page + 1;
+                assert!(text.contains(&format!(
+                    "@group(0) @binding({binding}) var<storage, read> arena{page}: array<u32>;"
+                )));
+                assert!(
+                    text.contains(&format!("case {page}u: {{ return arena{page}[i]; }}"))
+                        || page == ARENA_PAGES - 1
+                );
+            }
+        }
     }
 }

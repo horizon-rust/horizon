@@ -107,7 +107,10 @@ mod rt_clouds;
 mod froxels;
 mod gpu_passes;
 pub use froxels::CameraMedium;
+// The natural fogs in the froxels (gfx/natural_fog.rs).
+pub mod natural_fog;
 mod shadow_rays;
+mod sky_planets;
 mod sky_stars;
 mod stars;
 // Temporal anti-aliasing for RT lighting (gfx/taa.rs).
@@ -202,7 +205,8 @@ struct Globals {
     inverse_view: [[f32; 4]; 4],
     sunrise: [f32; 4],
     sun: [f32; 4],
-    /// x: sky fog end, y: cloud fog end, z: dark disc (camera below the horizon), w: unused.
+    /// x: sky fog end, y: cloud fog end, z: dark disc (camera below the horizon), w: RT
+    /// lighting's plain glass sprite layers, packed (`set_glass_layers`).
     fog_ends: [f32; 4],
     /// Atlas rects (u0, v0, width, height) of end_sky.png and end_portal.png.
     end_portal_sprites: [[f32; 4]; 2],
@@ -237,6 +241,9 @@ struct Globals {
     rt_camera: [f32; 4],
     /// RT lighting's moon (terrain.wgsl `rt_moon_disc`): toward it, and its angular radius.
     rt_moon: [f32; 4],
+    /// The Earth's curvature (`Renderer::earth_curvature`): x the square of the radius it starts
+    /// at (`lod::earth_drop`; -1 off), y how far the sea's horizon dips (`lod::horizon_dip`).
+    earth: [f32; 4],
 }
 pub type SectionKey = (i32, i32, i32);
 struct SectionGpu {
@@ -453,6 +460,11 @@ pub struct Renderer {
     /// RT lighting's real stars (`sky_stars`): their pipeline and the catalogue's buffer.
     rt_star_pipeline: wgpu::RenderPipeline,
     rt_star_buffer: wgpu::Buffer,
+    /// RT lighting's planets (`sky_planets`): their pipeline, their places' buffer and the day
+    /// (since J2000) it holds them on, recomputed as the date turns.
+    rt_planet_pipeline: wgpu::RenderPipeline,
+    rt_planet_buffer: wgpu::Buffer,
+    rt_planet_day: i64,
     dark_disc: wgpu::RenderPipeline,
     lines: wgpu::RenderPipeline,
     lines_secondary: wgpu::RenderPipeline,
@@ -617,6 +629,8 @@ pub struct Renderer {
     water_layers: [f32; 2],
     /// RT lighting's lava's sprite layers, packed (`set_lava_layers`; -1: none).
     lava_layers: f32,
+    /// RT lighting's plain glass sprite layers, packed (`set_glass_layers`; -1: none).
+    glass_layers: f32,
     /// When the renderer was made: the water's waves' clock.
     water_clock: std::time::Instant,
     /// RT lighting's sun's angular radius (the Sun Size setting) and aerial perspective's air
@@ -700,6 +714,9 @@ pub struct Renderer {
     pub fullbright: bool,
     /// Advance animated block textures (Horizon setting; vanilla always does).
     pub animated_textures: bool,
+    /// The Earth's curvature on the distant terrain, the clouds and the sky's horizon (Horizon
+    /// setting; terrain.wgsl `earth_drop`): drawn only, the world stays flat.
+    pub earth_curvature: bool,
     present_modes: Vec<wgpu::PresentMode>,
 }
 /// Every layer's mip levels, layer major (`first` is the first layer's
@@ -1213,10 +1230,25 @@ fn device_features(adapter: &wgpu::Adapter) -> wgpu::Features {
                 | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
                 | wgpu::Features::RG11B10UFLOAT_RENDERABLE))
 }
+/// RT lighting's hybrid (`hw_rays`): the hardware ray queries asked of a Vulkan device, none with
+/// HORIZON_HW_RT=0.
+fn hw_rt_features() -> wgpu::Features {
+    if std::env::var("HORIZON_HW_RT").is_ok_and(|v| v == "0") {
+        wgpu::Features::empty()
+    } else {
+        wgpu::Features::EXPERIMENTAL_RAY_QUERY
+    }
+}
 /// EXPERIMENTAL VR: the device through the OpenXR runtime (`xr`), with a surface for the
 /// window on the same instance. `None` when the runtime, the headset or the surface is missing.
 fn open_xr_device(window: &Arc<Window>, offscreen: bool, layers: u32) -> Option<Opened> {
-    let xr = xr::open(|adapter| (device_features(adapter), adapter.limits()))?;
+    // RT lighting's hardware rays in the headset as on the screen, where the adapter has them.
+    let xr = xr::open(|adapter| {
+        (
+            device_features(adapter) | (adapter.features() & hw_rt_features()),
+            adapter.limits(),
+        )
+    })?;
     describe_adapter(&xr.adapter);
     if let Err(e) = check_layers(&xr.adapter.limits(), layers) {
         log::warn!("Horizon VR: {e}; starting without VR");
@@ -1320,10 +1352,8 @@ async fn open_device(
         // RT lighting's hybrid (`hw_rays`): hardware rays where Vulkan offers them, unless
         // HORIZON_HW_RT=0.
         let hw_rt = info.backend == wgpu::Backend::Vulkan
-            && adapter
-                .features()
-                .contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
-            && std::env::var("HORIZON_HW_RT").map_or(true, |v| v != "0");
+            && adapter.features().contains(hw_rt_features())
+            && !hw_rt_features().is_empty();
         let desc = wgpu::DeviceDescriptor {
             label: Some("Horizon device"),
             required_features: if hw_rt {
@@ -1671,9 +1701,10 @@ impl Renderer {
                         multisampled: false,
                     },
                 ),
-                // The Eye of Aldhani's field and its streaks by tile of the sky.
+                // The Eye of Aldhani's field and its streaks and glow by tile of the sky (the stars read the
+                // glow where they are, through rt_sky).
                 entry(21, wgpu::ShaderStages::FRAGMENT, aldhani_storage),
-                entry(22, wgpu::ShaderStages::FRAGMENT, aldhani_storage),
+                entry(22, wgpu::ShaderStages::VERTEX_FRAGMENT, aldhani_storage),
                 // The sky table: the stars read it where they are (vs_rt_star).
                 entry(
                     14,
@@ -1949,6 +1980,30 @@ impl Renderer {
             }),
         );
         let rt_star_buffer = sky_stars::buffer(&device);
+        // The planets (`sky_planets`): the stars' quads and light, their own instances.
+        let rt_planet_pipeline = pipeline(
+            "RT lighting's planets",
+            "vs_rt_planet",
+            "fs_rt_star",
+            &[Some(sky_planets::LAYOUT)],
+            tri,
+            None,
+            false,
+            false,
+            Some(wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::One,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Zero,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            }),
+        );
+        let rt_planet_buffer = sky_planets::buffer(&device);
         let dark_disc = pipeline(
             "Dark disc",
             "vs_sky",
@@ -3124,6 +3179,9 @@ impl Renderer {
             rt_sky,
             rt_star_pipeline,
             rt_star_buffer,
+            rt_planet_pipeline,
+            rt_planet_buffer,
+            rt_planet_day: i64::MIN,
             dark_disc,
             lines,
             lines_secondary,
@@ -3236,6 +3294,7 @@ impl Renderer {
             rt_lighting: false,
             water_layers: [-1.0; 2],
             lava_layers: -1.0,
+            glass_layers: -1.0,
             water_clock: std::time::Instant::now(),
             rt_sun_radius: SUN_RADIUS,
             rt_moon_radius: MOON_RADIUS,
@@ -3281,6 +3340,7 @@ impl Renderer {
             gamma: 0.5,
             fullbright: false,
             animated_textures: true,
+            earth_curvature: true,
             present_modes,
         })
     }
@@ -3905,6 +3965,19 @@ impl Renderer {
         };
         self.froxels.camera = camera;
     }
+    /// The natural fogs in the froxels (natural_fog.rs): the setting, the time, the air (a real
+    /// weather can set its own humidity and temperatures). Call each frame.
+    pub fn set_natural_fog(&mut self, fog: natural_fog::NaturalFog) {
+        self.froxels.set_fog(fog);
+    }
+    /// A layer of the natural fogs' relief map (`natural_fog::FogMaps::step`), for the GPU.
+    pub fn queue_fog_layer(&mut self, layer: natural_fog::FogLayer) {
+        self.froxels.queue_fog_layer(layer);
+    }
+    /// Forget the natural fogs' relief map (another world).
+    pub fn clear_fog_map(&mut self) {
+        self.froxels.clear_fog_map();
+    }
     /// RT lighting's hybrid: structures for the sections near `camera` that lack one (a frame's
     /// budget of them), and the frame's top-level structure.
     fn hw_update(&mut self, encoder: &mut wgpu::CommandEncoder, camera: DVec3) {
@@ -3986,7 +4059,7 @@ impl Renderer {
         );
     }
     /// What the shadow rays read of the hybrid's (`shadow_rays::Hardware`): the top-level
-    /// structure, the arena's first page, the first sprite array, and the moving geometry's.
+    /// structure, the arena's first pages, the first sprite array, and the moving geometry's.
     fn hw_bindings(&self) -> Option<hw_rays::Bindings> {
         let hw = self.hw_rays.as_ref()?;
         let atlas = self
@@ -3994,7 +4067,11 @@ impl Renderer {
             .atlas_texture
             .as_ref()?
             .create_view(&Default::default());
-        let (_, page) = self.arena.page_buffers().find(|(p, _)| *p == 0)?;
+        let (_, first) = self.arena.page_buffers().find(|(p, _)| *p == 0)?;
+        let arena = std::array::from_fn(|i| {
+            let page = self.arena.page_buffers().find(|&(p, _)| p as usize == i);
+            page.map_or(first, |(_, b)| b).clone()
+        });
         let sprites = self
             .sprite_textures
             .first()?
@@ -4004,7 +4081,7 @@ impl Renderer {
             });
         Some(hw_rays::Bindings {
             tlas: hw.tlas.clone(),
-            arena: page.clone(),
+            arena,
             sprites,
             instances: hw.instances.clone(),
             dynamics: hw.dynamics.clone(),
@@ -4023,6 +4100,16 @@ impl Renderer {
         self.lava_layers = match (still, flow) {
             (Some(s), Some(f)) if s < 4096 && f < 4096 => (s + 4096 * f) as f32,
             (Some(s), None) if s < 4096 => (s + 4096 * s) as f32,
+            _ => -1.0,
+        };
+    }
+    /// The plain glass's sprite layers (its block's and its pane's edge), which RT lighting draws
+    /// with Remix's diffuse layer over a clear dielectric where every other translucent texture
+    /// is the glass's colour (terrain.wgsl `rt_glass_at`): packed as the lava's.
+    pub fn set_glass_layers(&mut self, glass: Option<u32>, pane: Option<u32>) {
+        self.glass_layers = match (glass, pane) {
+            (Some(g), Some(p)) if g < 4096 && p < 4096 => (g + 4096 * p) as f32,
+            (Some(g), None) if g < 4096 => (g + 4096 * g) as f32,
             _ => -1.0,
         };
     }
@@ -4233,6 +4320,7 @@ impl Renderer {
                 self.water_clock.elapsed().as_secs_f32() % 3600.0,
                 self.lava_layers,
             ],
+            glass: self.glass_layers,
             // Set after the hybrid's structures are made this frame (`hw_update`).
             hw_offset: [0.0; 4],
             moving: {
@@ -4934,6 +5022,10 @@ impl Renderer {
             [light.x, light.y, light.z, radius]
         };
         rt.sun_light = rt_sun_light;
+        // The Earth's curvature, from the loaded chunks' edge (they stay flat for the rays).
+        let curved = self
+            .earth_curvature
+            .then_some(f64::from(frame.detail_distance));
         let globals = Globals {
             view_proj: view_proj.to_cols_array_2d(),
             fog_color,
@@ -4964,7 +5056,7 @@ impl Renderer {
                 frame.fog.map_or(frame.distance.min(512.0), |f| f.sky_end),
                 frame.fog.map_or(2048.0, |f| f.cloud_end),
                 if frame.dark_disc { 1.0 } else { 0.0 },
-                0.0,
+                self.glass_layers,
             ],
             end_portal_sprites: frame.end_portal_sprites,
             crumbling_sprite: frame.crumbling_sprite,
@@ -5031,9 +5123,34 @@ impl Renderer {
                 let m = -rt_sun;
                 [m.x, m.y, m.z, self.rt_moon_radius]
             },
+            earth: match curved {
+                Some(r) => [
+                    (r * r) as f32,
+                    lod::horizon_dip(frame.camera.y) as f32,
+                    0.0,
+                    0.0,
+                ],
+                None => [-1.0, 0.0, 0.0, 0.0],
+            },
         };
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));
+        // The planets move against the stars by up to a degree or two a day (Mercury, Venus):
+        // their places once a day.
+        if rt_sky {
+            let days = sky_stars::days();
+            let day = days.floor() as i64;
+            if day != self.rt_planet_day {
+                self.rt_planet_day = day;
+                let planets = sky_planets::instances(days);
+                self.uploads.buffer(
+                    &mut encoder,
+                    &self.rt_planet_buffer,
+                    0,
+                    bytemuck::cast_slice(&planets),
+                );
+            }
+        }
         // GameRenderer.render3dHud: the hand's projection at hudFov, with the
         // bob in its pose rather than the projection (same product).
         let hand_projection = Mat4::from_cols_array(&crate::camera::hand_projection(
@@ -5117,11 +5234,9 @@ impl Renderer {
             visible.clear();
         } else if !reuse_visibility {
             let now = Instant::now();
-            visible_lods.extend(
-                self.lods.iter().filter_map(|(&key, tile)| {
-                    tile.visible(key, camera, frame.distance, &view, now)
-                }),
-            );
+            visible_lods.extend(self.lods.iter().filter_map(|(&key, tile)| {
+                tile.visible(key, camera, frame.distance, &view, curved, now)
+            }));
             visible_lods.sort_unstable_by_key(|v| (v.distance, v.key));
         }
         // A shader pack's shadow pass draws the sections in its camera's box, all of them (the
@@ -6136,6 +6251,9 @@ impl Renderer {
                                 pass.set_pipeline(&self.rt_star_pipeline);
                                 pass.set_vertex_buffer(0, self.rt_star_buffer.slice(..));
                                 pass.draw(0..6, 0..sky_stars::COUNT);
+                                pass.set_pipeline(&self.rt_planet_pipeline);
+                                pass.set_vertex_buffer(0, self.rt_planet_buffer.slice(..));
+                                pass.draw(0..6, 0..sky_planets::COUNT);
                             }
                         }
                     }
@@ -6470,7 +6588,13 @@ impl Renderer {
             });
         // With RT lighting the terrain lit itself from the mask: the tone mapping leaves it.
         let shadow_mask = shadow_mask.filter(|_| !rt.lighting);
-        // RT lighting's volumetric clouds, over the world's sky before the tone mapping.
+        // RT lighting's volumetric clouds, over the world's sky before the tone mapping, bent by
+        // the Earth's curvature as the distant terrain.
+        let earth_bend = if self.earth_curvature {
+            (0.5 / lod::EARTH_RADIUS) as f32
+        } else {
+            0.0
+        };
         if rt_clouds_on && let Some(input) = &frame.clouds {
             // The light is the sun's, or the moon's (opposite it) once the sun has set.
             let to_light = if rt_sun.y > 0.0 { rt_sun } else { -rt_sun };
@@ -6493,6 +6617,7 @@ impl Renderer {
                         direction: to_light,
                         color: [light[0], light[1], light[2]],
                         sun: rt_sun,
+                        curvature: earth_bend,
                     },
                     &self.atmosphere.view,
                 );
@@ -6524,6 +6649,7 @@ impl Renderer {
                     sun: rt_sun,
                     time: (input.time as f64 + input.partial_tick) / 20.0,
                     thick: 0.0,
+                    curvature: earth_bend,
                 },
                 &self.atmosphere.view,
             );

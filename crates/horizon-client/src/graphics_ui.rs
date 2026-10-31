@@ -48,6 +48,8 @@ pub enum H {
     NightVision,
     ShootingStars,
     AerialPerspective,
+    EarthCurvature,
+    NaturalFog,
     SmoothFluids,
     Hdr,
     HdrPaperWhite,
@@ -278,6 +280,16 @@ pub fn rows(level: Level) -> Vec<Row> {
                 "RT Lighting: far blocks fade blue into the haze, times real air's.",
             ),
             h(
+                H::EarthCurvature,
+                None,
+                "Distant terrain and clouds curve away with the Earth: islands sink.",
+            ),
+            h(
+                H::NaturalFog,
+                None,
+                "RT Lighting: valley fog at sunrise, mist over cold water.",
+            ),
+            h(
                 H::SmoothFluids,
                 Low,
                 "Water and lava surfaces in one piece: no steps or seams between blocks.",
@@ -465,6 +477,14 @@ impl H {
                     _ => "Frequent",
                 },
             ),
+            H::NaturalFog => labelled(
+                "Natural Fog",
+                match g.natural_fog {
+                    0 => "Off",
+                    1 => "Light",
+                    _ => "Normal",
+                },
+            ),
             H::MoonSize => match g.moon_size {
                 1 => labelled("Moon Size", "1x (Real)"),
                 n => labelled("Moon Size", format!("{n}x")),
@@ -495,6 +515,7 @@ impl H {
             H::RayTracedShadows => labelled("Ray-Traced Shadows", on_off(g.ray_traced_shadows)),
             H::RayTracedAo => labelled("Ray-Traced AO", on_off(g.ray_traced_ao)),
             H::RtLighting => labelled("RT Lighting", on_off(g.rt_lighting)),
+            H::EarthCurvature => labelled("Earth Curvature", on_off(g.earth_curvature)),
             H::SmoothFluids => labelled("Smooth Fluids", on_off(g.smooth_fluids)),
             H::Hdr => labelled("HDR", on_off(g.hdr)),
             H::HdrPaperWhite => labelled("Paper White", format!("{} nits", g.hdr_paper_white)),
@@ -572,6 +593,8 @@ impl H {
             H::ShootingStars => {
                 g.shooting_stars = (g.shooting_stars + if back { 2 } else { 1 }) % 3
             }
+            H::EarthCurvature => g.earth_curvature = !g.earth_curvature,
+            H::NaturalFog => g.natural_fog = (g.natural_fog + if back { 2 } else { 1 }) % 3,
             H::SmoothFluids => g.smooth_fluids = !g.smooth_fluids,
             H::Hdr => g.hdr = !g.hdr,
             H::BatteryMode => g.battery = !g.battery,
@@ -619,6 +642,7 @@ impl Item {
             Item::Horizon(H::RayTracedAo) => g.ray_traced_ao,
             Item::Horizon(H::RtLighting) => g.rt_lighting,
             Item::Horizon(H::NightVision) => g.night_vision,
+            Item::Horizon(H::EarthCurvature) => g.earth_curvature,
             Item::Horizon(H::SmoothFluids) => g.smooth_fluids,
             Item::Horizon(H::Hdr) => g.hdr,
             Item::Horizon(H::BatteryMode) => g.battery,
