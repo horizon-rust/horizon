@@ -112,8 +112,11 @@ fn hw_opaque(c: RayIntersection) -> bool {
     return texel.a < 0.0 || texel.a >= 0.5;
 }
 // What candidate hit `c` (a translucent quad: stained glass, water, ice) lets through: the light
-// filtered by its colour (its texel times its tint, in light), as much as it is opaque.
-fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>) -> vec3<f32> {
+// filtered by its colour (its texel times its tint, in light), as much as it is opaque. Through
+// water the sun's shadow ray (`focus`) takes the waves' caustics too; the other rays (the bounces,
+// the mirrors' and the refraction's, `hw_hit`) only its absorption and Fresnel: their light is the
+// caustics' mean, and a ray may cross many water quads, each a sum of sixteen waves.
+fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>, focus: bool) -> vec3<f32> {
     let base = hw_quad(c, true);
     if base == 0xffffffffu { return vec3(1.0); }
     // Water: the ray starts under it (`c.t` is the length crossed to reach its surface, so the
@@ -131,12 +134,13 @@ fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>) -> vec3<f32> {
         let depth = c.t * l.y;
         let bent = refract(-l, vec3(0.0, 1.0, 0.0), 1.0 / WATER_INDEX);
         let floor_at = pos + rt.camera.xyz + rt.fraction.xyz;
+        let fresnel = 0.02 + 0.98 * pow(1.0 - l.y, 5.0);
+        let dimmed = (1.0 - fresnel) * exp(-absorption * depth / max(-bent.y, 0.1));
+        if !focus { return dimmed; }
         let footprint = length(pos) * 1.5 / rt.size.y;
         // How open the water lies, in its colour's alpha (mesher.rs `with_sea`).
-        let focus = water_caustics(floor_at.xz, depth, l, rt.water.z, footprint,
+        return dimmed * water_caustics(floor_at.xz, depth, l, rt.water.z, footprint,
             f32(w >> 28u) / 15.0);
-        let fresnel = 0.02 + 0.98 * pow(1.0 - l.y, 5.0);
-        return focus * (1.0 - fresnel) * exp(-absorption * depth / max(-bent.y, 0.1));
     }
     // Glass, and every other translucent block: each face it crosses is a wall (`glass_wall`).
     let p0 = hw_position(base);
@@ -204,7 +208,7 @@ fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);
         if c.geometry_index == instances[c.instance_custom_data].w {
-            through *= hw_tint(c, pos, l);
+            through *= hw_tint(c, pos, l, true);
         } else if hw_opaque(c) {
             rayQueryConfirmIntersection(&q);
             // A shadow ray needs no nearer hit.
@@ -399,7 +403,7 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);
         if c.geometry_index == instances[c.instance_custom_data].w {
-            through *= hw_tint(c, pos, l);
+            through *= hw_tint(c, pos, l, false);
         } else if hw_opaque(c) {
             rayQueryConfirmIntersection(&q);
         }
