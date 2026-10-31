@@ -300,6 +300,53 @@ pub fn instrument_line(
     Some(translate(&key).unwrap_or(key))
 }
 
+/// `MapId.addToTooltip`: a map whose data is not known (`map` is `None`, else
+/// its `locked` flag and `scale`) reads "Unknown Map"; a known one gives its
+/// id (unless it has a custom name or is to be locked or scaled), "Locked"
+/// when it is or is being locked, and with advanced tooltips its scale (a
+/// copy being scaled one up, at most 4) and level.
+pub fn map_id_lines(
+    stack: &ItemStack,
+    display: &TooltipDisplay,
+    advanced: bool,
+    map: Option<(bool, u8)>,
+    translate: &dyn Fn(&str) -> Option<String>,
+) -> Vec<String> {
+    let Some(id) = stack.data().and_then(|d| d.map_id) else {
+        return Vec::new();
+    };
+    if !display.shows("minecraft:map_id") {
+        return Vec::new();
+    }
+    let text = |key: &str, fallback: &str| translate(key).unwrap_or_else(|| fallback.to_owned());
+    let Some((locked, scale)) = map else {
+        return vec![text("filled_map.unknown", "Unknown Map")];
+    };
+    // MapPostProcessing: 0 lock, 1 scale.
+    let post = stack.data().and_then(|d| d.map_post_processing);
+    let mut lines = Vec::new();
+    if stack.custom_name().is_none() && post.is_none() {
+        lines.push(text("filled_map.id", "ID #%s").replacen("%s", &id.to_string(), 1));
+    }
+    if locked || post == Some(0) {
+        lines.push(text("filled_map.locked", "Locked"));
+    }
+    if advanced {
+        let scale = (scale + u8::from(post == Some(1))).min(4);
+        lines.push(text("filled_map.scale", "Scaling at 1:%s").replacen(
+            "%s",
+            &(1u32 << scale).to_string(),
+            1,
+        ));
+        lines.push(
+            text("filled_map.level", "(Level %s/%s)")
+                .replacen("%s", &scale.to_string(), 1)
+                .replacen("%s", "4", 1),
+        );
+    }
+    lines
+}
+
 /// `Bees.addToTooltip`: how many bees a hive item holds (a hive item without
 /// the component has the item's default, none).
 pub fn bees_line(
