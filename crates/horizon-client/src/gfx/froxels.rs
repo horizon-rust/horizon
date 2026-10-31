@@ -24,7 +24,14 @@
 //!
 //! What the main session fills: `CameraMedium` (where the camera is) through `Renderer::
 //! set_volumetrics`; `CameraMedium::medium` turns it into the medium.
+//!
+//! Into that medium go the natural fogs (natural_fog.rs: a morning's valley fog, the steam fog over
+//! cold water), which are not homogeneous: the inject lights them (the sun through the fog toward
+//! it, by their own phase), the integration steps their density through each slice (made in the
+//! shader from the relief map and a drifting noise, the same for every view and every frame's
+//! history), and `FAR_SLICES` more slices carry them past the froxels out to the far terrain.
 
+use super::natural_fog::{self, FogLayer, NaturalFog};
 use super::shadow_rays::{Hardware, Rays};
 use super::upload::Uploads;
 use glam::{DVec3, Mat4, Vec3};
@@ -41,6 +48,10 @@ pub const FAR: f32 = 256.0;
 pub const MAX_ACCUMULATION: f32 = 128.0;
 pub const SETTLING_ACCUMULATION: f32 = 8.0;
 pub const SETTLING_FRAMES: u32 = 8;
+/// The natural fogs' slices past the froxels, exponential from `FAR` to `FAR_END` blocks (the far
+/// terrain's 1024 chunks): the fogs only, lit without rays.
+pub const FAR_SLICES: u32 = 32;
+pub const FAR_END: f32 = 16384.0;
 
 /// A medium: how much light it absorbs and scatters, and where it scatters it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -203,6 +214,26 @@ struct Uniform {
     eye: [f32; 4],
     prev_eye: [f32; 4],
     jitter: [f32; 4],
+    map: [f32; 4],
+    map_scale: [f32; 4],
+    fog: [f32; 4],
+    fog2: [f32; 4],
+    valley_drift: [f32; 4],
+    valley_drift_f: [f32; 4],
+    steam_drift: [f32; 4],
+    steam_drift_f: [f32; 4],
+    far: [f32; 4],
+}
+
+/// A drift in blocks, split into whole blocks and the fraction (the shader's noise lattice is
+/// exact for whole blocks at any distance).
+fn split(v: DVec3) -> ([f32; 4], [f32; 4]) {
+    let whole = v.floor();
+    let f = v - whole;
+    (
+        [whole.x as f32, whole.y as f32, whole.z as f32, 0.0],
+        [f.x as f32, f.y as f32, f.z as f32, 0.0],
+    )
 }
 
 /// Where a view's rays start, camera-relative: the point whose clip x, y and w are all 0 (the view
@@ -302,6 +333,17 @@ pub struct Froxels {
     uniform: wgpu::Buffer,
     views: Vec<ViewFroxels>,
     frame: u32,
+    /// The natural fogs this frame (`Renderer::set_natural_fog`), their noise's drifts (whole
+    /// blocks and fraction, the valley fog's then the steam fog's: one per frame, the same for
+    /// both eyes), the relief map (`natural_fog::MAP_LAYERS` layers) with where its two levels
+    /// lie, and the layers waiting to go to it.
+    pub fog: NaturalFog,
+    drifts: [([f32; 4], [f32; 4]); 2],
+    drift_at: Option<std::time::Instant>,
+    drift: [DVec3; 2],
+    map: wgpu::Buffer,
+    map_origins: [Option<[i32; 2]>; 2],
+    map_pending: Vec<FogLayer>,
 }
 
 /// What `Froxels::run` draws from, for one view.
@@ -365,7 +407,15 @@ impl Froxels {
             view_dimension: wgpu::TextureViewDimension::D3,
         };
         let sampler = wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering);
+        let sky_texture = wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        };
+        let fragment = wgpu::ShaderStages::FRAGMENT;
+        let fog_map = entry(24, compute | fragment, storage);
         let mut inject_entries = vec![
+            fog_map,
             entry(0, compute, uniform),
             entry(2, compute, grid),
             entry(3, compute, grid),
@@ -373,15 +423,7 @@ impl Froxels {
             entry(5, compute, grid),
             entry(7, compute, storage),
             entry(8, compute, storage),
-            entry(
-                10,
-                compute,
-                wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-            ),
+            entry(10, compute, sky_texture),
             entry(22, compute, output),
         ];
         if hardware {
@@ -431,12 +473,14 @@ impl Froxels {
                 entry(0, compute, uniform),
                 entry(19, compute, froxels(false)),
                 entry(14, compute, output),
+                entry(10, compute, sky_texture),
+                fog_map,
             ],
         });
-        let fragment = wgpu::ShaderStages::FRAGMENT;
         let apply_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Froxel volumetrics' composite"),
             entries: &[
+                fog_map,
                 entry(0, fragment, uniform),
                 entry(
                     1,
@@ -508,7 +552,52 @@ impl Froxels {
             }),
             views: Vec::new(),
             frame: 0,
+            fog: NaturalFog {
+                setting: 0,
+                ..NaturalFog::default()
+            },
+            drifts: [([0.0; 4], [0.0; 4]); 2],
+            drift_at: None,
+            drift: [DVec3::ZERO; 2],
+            map: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Natural fogs' relief map"),
+                size: (natural_fog::MAP_LAYERS * natural_fog::MAP_SIZE * natural_fog::MAP_SIZE * 16)
+                    as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            map_origins: [None; 2],
+            map_pending: Vec::new(),
         }
+    }
+
+    /// The natural fogs this frame: their state, and the noise's drift moved on by the time since
+    /// the last frame (the wind; the steam rising off the water). Call once a frame, before the
+    /// views.
+    pub fn set_fog(&mut self, fog: NaturalFog) {
+        let now = std::time::Instant::now();
+        let dt = self
+            .drift_at
+            .map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(0.25));
+        self.drift_at = Some(now);
+        let wind = DVec3::new(f64::from(fog.wind[0]), 0.0, f64::from(fog.wind[1]));
+        // The noise read at `p + drift`: its features move by minus the drift.
+        self.drift[0] -= wind * 0.6 * dt;
+        self.drift[1] -= (wind + DVec3::new(0.0, 0.45, 0.0)) * dt;
+        self.drifts = self.drift.map(split);
+        self.fog = fog;
+    }
+
+    /// A layer of the relief map, to upload with the next view.
+    pub fn queue_fog_layer(&mut self, layer: FogLayer) {
+        self.map_pending.retain(|l| l.layer != layer.layer);
+        self.map_pending.push(layer);
+    }
+
+    /// Forget the relief map (another world).
+    pub fn clear_fog_map(&mut self) {
+        self.map_origins = [None; 2];
+        self.map_pending.clear();
     }
 
     /// The medium this frame: the forced one, else the camera's place.
@@ -606,14 +695,14 @@ impl Froxels {
         if self.views.len() >= KEPT {
             self.views.remove(0);
         }
-        let texture = |label| {
+        let texture = |label, depth| {
             device
                 .create_texture(&wgpu::TextureDescriptor {
                     label: Some(label),
                     size: wgpu::Extent3d {
                         width: dims[0],
                         height: dims[1],
-                        depth_or_array_layers: dims[2],
+                        depth_or_array_layers: depth,
                     },
                     mip_level_count: 1,
                     sample_count: 1,
@@ -629,11 +718,11 @@ impl Froxels {
             view,
             dims,
             source: [
-                texture("Froxel volumetrics' source"),
-                texture("Froxel volumetrics' source"),
+                texture("Froxel volumetrics' source", dims[2]),
+                texture("Froxel volumetrics' source", dims[2]),
             ],
-            fresh: texture("Froxel volumetrics' samples"),
-            integrated: texture("Froxel volumetrics' integral"),
+            fresh: texture("Froxel volumetrics' samples", dims[2]),
+            integrated: texture("Froxel volumetrics' integral", dims[2] + FAR_SLICES),
             next: 0,
             last: None,
             medium: None,
@@ -682,6 +771,27 @@ impl Froxels {
         let rays = inputs.rays;
         let eye = eye_of(inputs.view_proj);
         let prev_eye = last.map_or(eye, |l| eye_of(l.0));
+        for layer in self.map_pending.drain(..) {
+            let texels = natural_fog::MAP_SIZE * natural_fog::MAP_SIZE;
+            uploads.buffer(
+                encoder,
+                &self.map,
+                (layer.layer * 2 * texels * 16) as u64,
+                bytemuck::cast_slice(&layer.texels),
+            );
+            self.map_origins[layer.layer] = Some(layer.origin);
+        }
+        // The relief map's levels relative to the camera's block; the fogs on once one is made.
+        let block = [rays.camera[0] as i32, rays.camera[2] as i32];
+        let offset = |l: usize| {
+            self.map_origins[l].map_or([0.0; 2], |o| {
+                [(block[0] - o[0]) as f32, (block[1] - o[1]) as f32]
+            })
+        };
+        let (near, far) = (offset(0), offset(1));
+        let made = self.map_origins.map(|o| f32::from(u8::from(o.is_some())));
+        let fog_on = self.fog.active() && self.map_origins.iter().any(Option::is_some);
+        let fog = self.fog.uniform();
         let uniform = Uniform {
             inverse_view_proj: inputs.view_proj.inverse().to_cols_array_2d(),
             prev_view_proj: last.map_or([[0.0; 4]; 4], |l| l.0.to_cols_array_2d()),
@@ -719,11 +829,31 @@ impl Froxels {
             eye: [eye.x, eye.y, eye.z, 0.0],
             prev_eye: [prev_eye.x, prev_eye.y, prev_eye.z, 0.0],
             jitter: jitter(frame),
+            map: [near[0], near[1], far[0], far[1]],
+            map_scale: [
+                1.0 / natural_fog::TEXEL[0] as f32,
+                1.0 / natural_fog::TEXEL[1] as f32,
+                made[0],
+                made[1],
+            ],
+            fog: fog.fog,
+            fog2: fog.fog2,
+            valley_drift: self.drifts[0].0,
+            valley_drift_f: self.drifts[0].1,
+            steam_drift: self.drifts[1].0,
+            steam_drift_f: self.drifts[1].1,
+            far: [
+                FAR_END,
+                (FAR_END / FAR).ln(),
+                FAR_SLICES as f32,
+                f32::from(u8::from(fog_on)),
+            ],
         };
         uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));
         let (view, buffer) = (texture_entry, buffer_entry);
         let mut entries = vec![
             buffer(0, &self.uniform),
+            buffer(24, &self.map),
             view(2, inputs.grid[0]),
             view(3, inputs.grid[1]),
             view(4, inputs.grid[2]),
@@ -804,6 +934,8 @@ impl Froxels {
                 buffer(0, &self.uniform),
                 view(19, &to),
                 view(14, &integrated),
+                view(10, inputs.sky),
+                buffer(24, &self.map),
             ],
         });
         {
@@ -821,6 +953,7 @@ impl Froxels {
             layout: &self.apply_layout,
             entries: &[
                 buffer(0, &self.uniform),
+                buffer(24, &self.map),
                 view(1, inputs.depth),
                 wgpu::BindGroupEntry {
                     binding: 12,

@@ -107,6 +107,8 @@ mod rt_clouds;
 mod froxels;
 mod gpu_passes;
 pub use froxels::CameraMedium;
+// The natural fogs in the froxels (gfx/natural_fog.rs).
+pub mod natural_fog;
 mod shadow_rays;
 mod sky_planets;
 mod sky_stars;
@@ -3962,6 +3964,19 @@ impl Renderer {
             Err(_) => on,
         };
         self.froxels.camera = camera;
+    }
+    /// The natural fogs in the froxels (natural_fog.rs): the setting, the time, the air (a real
+    /// weather can set its own humidity and temperatures). Call each frame.
+    pub fn set_natural_fog(&mut self, fog: natural_fog::NaturalFog) {
+        self.froxels.set_fog(fog);
+    }
+    /// A layer of the natural fogs' relief map (`natural_fog::FogMaps::step`), for the GPU.
+    pub fn queue_fog_layer(&mut self, layer: natural_fog::FogLayer) {
+        self.froxels.queue_fog_layer(layer);
+    }
+    /// Forget the natural fogs' relief map (another world).
+    pub fn clear_fog_map(&mut self) {
+        self.froxels.clear_fog_map();
     }
     /// RT lighting's hybrid: structures for the sections near `camera` that lack one (a frame's
     /// budget of them), and the frame's top-level structure.

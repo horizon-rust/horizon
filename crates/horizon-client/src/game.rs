@@ -118,6 +118,7 @@ mod moving_pistons;
 mod music;
 mod names;
 mod native_shaders;
+mod natural_fog;
 mod natural_spawning;
 mod nautili;
 mod net_harness;
@@ -1318,6 +1319,10 @@ struct Game<'a> {
     lod_observe: horizon_client::fast_hash::FxHashSet<(i32, i32)>,
     /// The detail revision, centre and radius `Lod::update` last had covered for.
     lod_covered_at: Option<(u64, (i32, i32), i32)>,
+    /// RT lighting's natural fogs (game/natural_fog.rs): the relief map being sampled, and the
+    /// rain of the last day and a half (a wet morning fogs more).
+    fog_maps: horizon_client::gfx::natural_fog::FogMaps,
+    fog_wetness: f32,
     options: Options,
     player: Option<PlayerMotion>,
     spawn: Option<Vec3>,
@@ -11404,6 +11409,9 @@ impl Game<'_> {
         hud.patches.append(&mut self.map_patches);
         let entity_spans = std::mem::take(self.entity_spans.get_mut());
         let glowing = std::mem::take(self.glowing_vertices.get_mut());
+        if !title {
+            self.natural_fog(camera, sky.sun_angle);
+        }
         let frame = Frame {
             weather: &weather,
             weather_time: horizon_client::weather::Time::new(self.world.game_time, alpha as f32),
@@ -11906,7 +11914,9 @@ impl Game<'_> {
         self.lod_source_attempted = false;
         self.lod_observe.clear();
         self.lod_covered_at = None;
+        self.fog_maps.clear();
         if let Some(renderer) = &mut self.renderer {
+            renderer.clear_fog_map();
             renderer.clear_lods();
         }
     }
@@ -13201,6 +13211,8 @@ impl<'a> Game<'a> {
             lod_source_attempted: false,
             lod_observe: Default::default(),
             lod_covered_at: None,
+            fog_maps: Default::default(),
+            fog_wetness: 0.0,
             options,
             player: None,
             spawn: None,

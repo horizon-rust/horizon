@@ -58,6 +58,26 @@ struct Fx {
     prev_eye: vec4<f32>,
     // xyz: this frame's offset within a froxel before the froxel's own shift (a 3D R-sequence).
     jitter: vec4<f32>,
+    // The natural fogs (gfx/natural_fog.rs). The relief map's layers: xy the camera's block less
+    // the near layer's origin (x, z), zw the far layer's; and x, y their texels' sizes' inverse,
+    // z, w whether each is made.
+    map: vec4<f32>,
+    map_scale: vec4<f32>,
+    // x: the valley fog's density scale (0: none), y: the steam fog's, z: the air's humidity, w: how
+    // far the valley fog has lifted (0..1).
+    fog: vec4<f32>,
+    // x: how far it has formed (0..1), y: the water's temperature less the air's, z: the sun's
+    // warmth (0..1).
+    fog2: vec4<f32>,
+    // How far the valley fog's noise and the steam fog's have drifted (the wind, the steam's
+    // rising): whole blocks (xyz), and the fraction of a block.
+    valley_drift: vec4<f32>,
+    valley_drift_f: vec4<f32>,
+    steam_drift: vec4<f32>,
+    steam_drift_f: vec4<f32>,
+    // The far slices past `depth.y`, the fogs' only: x the last one's far end, y log(x / depth.y),
+    // z how many, w 1 when the fogs are on.
+    far: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> fx: Fx;
 @group(0) @binding(1) var depth: texture_depth_2d;
@@ -89,6 +109,10 @@ struct Light {
 @group(0) @binding(22) var fresh_out: texture_storage_3d<rgba16float, write>;
 @group(0) @binding(19) var source_in: texture_3d<f32>;
 @group(0) @binding(20) var integrated: texture_3d<f32>;
+// The natural fogs' relief map (gfx/natural_fog.rs `finish`): four layers of 256 x 256 texels, the
+// near layer's shape (ground, surface, the pool's top, the valley floor) and climate (humid, calm
+// water's share, the air's cold in degrees, 0), then the far layer's.
+@group(0) @binding(24) var<storage, read> fog_map: array<vec4<f32>>;
 
 const PI: f32 = 3.14159265;
 // Light sources' brightness and the rays' budget for them, as shadow_rays.wgsl's.
@@ -295,8 +319,187 @@ fn light_to(index: u32, local: vec3<f32>) -> LightTo {
         vec4(to / max(d, 1e-4), d));
 }
 
-// The sun's light scattered toward the view looking along `dir`, at camera-relative `pos`.
-fn sun_scatter(pos: vec3<f32>, dir: vec3<f32>, rnd: vec3<f32>) -> vec3<f32> {
+// ---- The natural fogs (gfx/natural_fog.rs) ----
+const MAP_SIZE: i32 = 256;
+// The valley fog's densest extinction a block (a fog some 80 blocks deep in sight), the steam
+// fog's, their scattering albedo, and the steam fog's most height above the water.
+const VALLEY_DENSITY: f32 = 0.025;
+const STEAM_DENSITY: f32 = 0.3;
+const FOG_ALBEDO: f32 = 0.98;
+const STEAM_TOP: f32 = 5.0;
+
+fn fog_on() -> bool {
+    return fx.far.w > 0.5;
+}
+fn map_texel(layer: i32, t: vec2<i32>) -> vec4<f32> {
+    let c = clamp(t, vec2(0), vec2(MAP_SIZE - 1));
+    return fog_map[(layer * MAP_SIZE + c.y) * MAP_SIZE + c.x];
+}
+// A layer's shape and climate at texel coordinate `p` (texel centres at .5), bilinear.
+struct FogTexel {
+    shape: vec4<f32>,
+    climate: vec4<f32>,
+}
+fn map_bilinear(l: i32, b: vec2<i32>, f: vec2<f32>) -> vec4<f32> {
+    return mix(mix(map_texel(l, b), map_texel(l, b + vec2(1, 0)), f.x),
+        mix(map_texel(l, b + vec2(0, 1)), map_texel(l, b + vec2(1, 1)), f.x), f.y);
+}
+fn map_layer(layer: i32, p_in: vec2<f32>) -> FogTexel {
+    let p = p_in - 0.5;
+    let b = vec2<i32>(floor(p));
+    let f = p - floor(p);
+    return FogTexel(map_bilinear(layer * 2, b, f), map_bilinear(layer * 2 + 1, b, f));
+}
+// The relief map at camera-relative `xz`: the near layer within it, faded into the far one over
+// its last 24 texels.
+fn fog_map_at(xz: vec2<f32>) -> FogTexel {
+    let rel = xz + fx.fraction.xz;
+    let near = (fx.map.xy + rel) * fx.map_scale.x;
+    let edge = min(min(near.x, near.y), f32(MAP_SIZE) - max(near.x, near.y));
+    let w = clamp((edge - 4.0) / 24.0, 0.0, 1.0) * fx.map_scale.z;
+    if w >= 1.0 { return map_layer(0, near); }
+    let far = map_layer(1, (fx.map.zw + rel) * fx.map_scale.y);
+    if w <= 0.0 { return far; }
+    let n = map_layer(0, near);
+    return FogTexel(mix(far.shape, n.shape, w), mix(far.climate, n.climate, w));
+}
+// A number 0..1 a lattice point (PCG3D's first output).
+fn hash_cell(c: vec3<i32>) -> f32 {
+    var v = bitcast<vec3<u32>>(c) * 1664525u + 1013904223u;
+    v.x += v.y * v.z;
+    v.y += v.z * v.x;
+    v.z += v.x * v.y;
+    v ^= v >> vec3(16u);
+    v.x += v.y * v.z;
+    return f32(v.x >> 8u) / 16777216.0;
+}
+// Value noise 0..1 on a lattice 2^k blocks wide, at the world point `base + off` (`base` whole
+// blocks; `off` blocks): the lattice cell and the place within it come from the whole blocks'
+// bits, so nothing loses precision far from the world's origin.
+fn noise_at(base: vec3<i32>, off: vec3<f32>, k: u32) -> f32 {
+    let fo = floor(off);
+    let block = base + vec3<i32>(fo);
+    let size = f32(1u << k);
+    let mask = vec3((1 << k) - 1);
+    let f = (vec3<f32>(block & mask) + off - fo) / size;
+    let cell = block >> vec3(k);
+    let s = f * f * (3.0 - 2.0 * f);
+    let a = mix(hash_cell(cell), hash_cell(cell + vec3(1, 0, 0)), s.x);
+    let b = mix(hash_cell(cell + vec3(0, 1, 0)), hash_cell(cell + vec3(1, 1, 0)), s.x);
+    let c = mix(hash_cell(cell + vec3(0, 0, 1)), hash_cell(cell + vec3(1, 0, 1)), s.x);
+    let d = mix(hash_cell(cell + vec3(0, 1, 1)), hash_cell(cell + vec3(1, 1, 1)), s.x);
+    return mix(mix(a, b, s.y), mix(c, d, s.y), s.z);
+}
+// The noise's lattice turned about the vertical (an axis-aligned lattice shows its rows as a grid,
+// a pattern repeating across the fog): xz times the integer matrix [[a, b], [-b, a]], exact on the
+// whole blocks, so its cells are 2^k / sqrt(a² + b²) blocks wide in the world.
+fn turn(i: u32) -> vec2<i32> {
+    if i == 0u { return vec2(3, 4); }
+    if i == 1u { return vec2(4, -3); }
+    return vec2(5, 12);
+}
+// That noise as seen by samples `spacing` blocks apart: faded to its mean as the samples grow
+// sparser than half its cells (sampled sparser, it would alias into a moiré far away), and not
+// computed once gone.
+fn noise_lod(base: vec3<i32>, off: vec3<f32>, k: u32, t: u32, spacing: f32) -> f32 {
+    let m = turn(t);
+    let size = f32(1u << k) / length(vec2<f32>(m));
+    let w = 1.0 - smoothstep(0.25 * size, 0.6 * size, spacing);
+    if w <= 0.0 { return 0.5; }
+    let b = vec3(m.x * base.x + m.y * base.z, base.y, m.x * base.z - m.y * base.x);
+    let o = vec3(f32(m.x) * off.x + f32(m.y) * off.z, off.y, f32(m.x) * off.z - f32(m.y) * off.x);
+    return mix(0.5, noise_at(b, o, k), w);
+}
+// The fogs at a camera-relative point, sampled `spacing` blocks apart (the noise's finer octaves
+// faded out where they would alias): the valley fog's and the steam fog's extinctions, and the
+// valley pool's top there (world y).
+struct FogAt {
+    valley: f32,
+    steam: f32,
+    top: f32,
+}
+fn fog_at(pos: vec3<f32>, spacing: f32) -> FogAt {
+    var out = FogAt(0.0, 0.0, -1e4);
+    let m = fog_map_at(pos.xz);
+    let y = fx.camera.y + fx.fraction.y + pos.y;
+    let ground = m.shape.x;
+    // Nothing under the ground (a cave beneath a valley stays clear).
+    if y < ground - 1.5 { return out; }
+    let local = pos + fx.fraction.xyz;
+    let camera = vec3<i32>(fx.camera.xyz);
+    if fx.fog.x > 0.0 {
+        // The pool: from the valley floor, as deep as it has formed, its top rippled by the noise.
+        let top = m.shape.w + (m.shape.z - m.shape.w) * (0.35 + 0.65 * fx.fog2.x);
+        out.top = top;
+        let humid = smoothstep(0.6, 0.95, fx.fog.z + 0.3 * (m.climate.x - 0.5));
+        if humid > 0.0 && y < top + 4.0 {
+            let base = camera + vec3<i32>(fx.valley_drift.xyz);
+            let off = local + fx.valley_drift_f.xyz;
+            // Cells about 26 and 6 blocks wide, the patches about 315.
+            let n = 0.6 * noise_lod(base, off, 7u, 0u, spacing) + 0.4 * noise_lod(base, off, 5u, 1u, spacing);
+            let patches = noise_lod(base, off, 12u, 2u, spacing);
+            let top_n = top + (n - 0.5) * 6.0;
+            // Lifting: its bottom rises toward its top as the sun warms the ground.
+            let bottom = mix(ground - 2.0, top, fx.fog.w * 0.85);
+            // A shallow pool (ground fog over a plain) fades out over most of its depth, a deep
+            // one has a sharp top.
+            let edge = clamp(0.6 * (top - m.shape.w), 3.0, 8.0);
+            let body = smoothstep(top_n, top_n - edge, y)
+                * smoothstep(bottom, bottom + max(3.0, (top - bottom) * 0.4), y);
+            // Tearing: the noise's low parts clear first.
+            let threshold = mix(0.3, 0.7, fx.fog.w);
+            let tear = clamp((mix(n, patches, 0.45) - threshold) * 3.0, 0.0, 1.0);
+            out.valley = fx.fog.x * VALLEY_DENSITY * humid * body * tear;
+        }
+    }
+    let water = m.climate.y;
+    let h = y - m.shape.y;
+    if fx.fog.y > 0.0 && water > 0.05 && h > -0.5 && h < STEAM_TOP {
+        // Colder air over warmer water (a cold biome's air colder still), the sun's warmth
+        // burning it off.
+        let cold = smoothstep(2.0, 9.0, fx.fog2.y - 0.5 * m.climate.z) * (1.0 - 0.7 * fx.fog2.z);
+        if cold > 0.0 {
+            let base = camera + vec3<i32>(fx.steam_drift.xyz);
+            var off = local + fx.steam_drift_f.xyz;
+            // Wisps: the noise's lattice bent by a coarser noise, rising and drifting.
+            // Cells about 6, 3 and 2.5 blocks wide.
+            let warp = noise_lod(base, off, 5u, 0u, spacing) - 0.5;
+            off += vec3(warp * 3.0, 0.0, -warp * 3.0);
+            let n = 0.6 * noise_lod(base, off, 4u, 1u, spacing) + 0.4 * noise_lod(base, off, 5u, 2u, spacing);
+            let profile = exp(-max(h, 0.0) / 1.3) * smoothstep(-0.5, 0.1, h);
+            let wisp = clamp(n * 2.0 - 0.6 + 0.35 * exp(-max(h, 0.0)), 0.0, 1.0);
+            out.steam = fx.fog.y * STEAM_DENSITY * water * cold * profile * wisp;
+        }
+    }
+    return out;
+}
+// The fogs' phase: water droplets scatter mostly forward (the sun's glow through them), a little
+// back.
+fn fog_phase(c: f32) -> f32 {
+    return mix(hg(c, 0.8), hg(c, -0.2), 0.2);
+}
+// The sun's light a fog scatters toward the view (`c` the cosine to the sun), `sun_t` of it
+// reaching the point through the fog: the single scattering by the droplets' phase, and the
+// multiple scattering of a thick fog (dimmed far less with depth, its phase broadened: the octaves
+// of Wrenninge's approximation, folded into one).
+fn fog_sun(c: f32, sun_t: f32) -> f32 {
+    return fog_phase(c) * sun_t + 0.6 * hg(c, 0.3) * pow(sun_t, 0.2);
+}
+// The fogs' optical depth from `pos` toward `l` until above the pool's top (`top`, world y) or
+// `reach` blocks, in four steps (jittered by `rnd`).
+fn fog_depth_toward(pos: vec3<f32>, l: vec3<f32>, top: f32, reach: f32, rnd: f32) -> f32 {
+    let y = fx.camera.y + fx.fraction.y + pos.y;
+    let up = max(top + 3.0 - y, STEAM_TOP);
+    let len = min(up / max(l.y, 0.06), reach);
+    var tau = 0.0;
+    for (var i = 0; i < 4; i++) {
+        let f = fog_at(pos + l * (len * (f32(i) + rnd) / 4.0), len / 4.0);
+        tau += (f.valley + f.steam) * len / 4.0;
+    }
+    return tau;
+}
+// The sun's light from it reaching camera-relative `pos`, before the phase (`pi * E * seen`).
+fn sun_scatter(pos: vec3<f32>, rnd: vec3<f32>) -> vec3<f32> {
     let l = fx.light.xyz;
     if fx.light.w <= 0.0 { return vec3(0.0); }
     // A point of the disc: the shafts' edges soften as the sun's own shadows do.
@@ -307,7 +510,7 @@ fn sun_scatter(pos: vec3<f32>, dir: vec3<f32>, rnd: vec3<f32>) -> vec3<f32> {
     let a = 2.0 * PI * rnd.y;
     let d = normalize(l + (t * cos(a) + b * sin(a)) * r);
     let seen = visibility(pos, d, 4096.0);
-    return PI * hg(dot(dir, l), fx.sigma_t.w) * fx.sun_light.rgb * seen;
+    return PI * fx.sun_light.rgb * seen;
 }
 // The sky's light in the medium, reached from above: a cosine-weighted ray toward the sky.
 fn ambient_scatter(pos: vec3<f32>, rnd: vec2<f32>) -> vec3<f32> {
@@ -358,9 +561,37 @@ fn cs_inject(@builtin(global_invocation_id) id: vec3<u32>) {
     let at = (vec3<f32>(id) + fract(fx.jitter.xyz + shift)) / size;
     let dir = ray_dir(at.xy);
     let pos = fx.eye.xyz + dir * slice_r(at.z);
-    var fresh = sun_scatter(pos, dir, rnd2);
-    fresh += ambient_scatter(pos, rnd.zx);
-    fresh += lights_scatter(pos, dir, rnd2.zxy);
+    let c = dot(dir, fx.light.xyz);
+    let sun = sun_scatter(pos, rnd2);
+    let ambient = ambient_scatter(pos, rnd.zx);
+    let lamps = lights_scatter(pos, dir, rnd2.zxy);
+    var fresh = sun * hg(c, fx.sigma_t.w) + ambient + lamps;
+    if fog_on() {
+        // In the fogs: the sun's light dimmed by the fog toward it (their top lit, their depths in
+        // their own shade), with a share of multiple scattering (dimmed less, scattered evenly);
+        // the sky's dimmed by the fog above. The air and the fog each scatter by their own phase,
+        // mixed by the fog's mean over the froxel's slice along its centre ray, the very fog the
+        // integration dims it by (at the point drawn alone, a froxel across the fog's edge would
+        // light its fog as clear air, or the reverse, and show the slices as bands).
+        let centre = (vec3<f32>(id) + 0.5) / size;
+        let r_c = slice_r(centre.z);
+        let width = r_c * length(ray_dir((vec2<f32>(id.xy) + vec2(1.5, 0.5)) / size.xy) - ray_dir(centre.xy));
+        let f = fog_at(fx.eye.xyz + ray_dir(centre.xy) * r_c, width);
+        let mean = fog_slice(ray_dir(centre.xy), slice_r(f32(id.z) / size.z), slice_r((f32(id.z) + 1.0) / size.z));
+        var sun_t = 1.0;
+        var up_t = 1.0;
+        if mean > 0.0 || fx.camera.y + fx.fraction.y + pos.y < f.top + 3.0 {
+            if fx.light.w > 0.0 {
+                sun_t = exp(-fog_depth_toward(pos, fx.light.xyz, f.top, 400.0, rnd.y));
+            }
+            up_t = exp(-fog_depth_toward(pos, vec3(0.0, 1.0, 0.0), f.top, 64.0, rnd.z));
+        }
+        let air = sun * hg(c, fx.sigma_t.w) * sun_t + ambient * sqrt(up_t) + lamps;
+        let fog = sun * fog_sun(c, sun_t) + ambient * (0.7 + 0.3 * sqrt(up_t)) + lamps;
+        let sa = luminance(fx.sigma_t.rgb * fx.albedo.rgb);
+        let sf = mean * FOG_ALBEDO;
+        fresh = (air * sa + fog * sf) / max(sa + sf, 1e-8);
+    }
     textureStore(fresh_out, vec3<i32>(id), vec4(fresh, 1.0));
 }
 
@@ -432,25 +663,94 @@ fn cs_blend(@builtin(global_invocation_id) id: vec3<u32>) {
     textureStore(source_out, here_id, vec4(out, n));
 }
 
+// The fogs' mean extinction over the slice from `near` to `far` along `dir`: a point every two
+// blocks or so (2 to 6), so a thin layer seen edge-on doesn't band with the slices.
+fn fog_slice(dir: vec3<f32>, near: f32, far: f32) -> f32 {
+    let n = clamp(i32(ceil((far - near) * 0.5)), 2, 6);
+    var sum = 0.0;
+    for (var i = 0; i < n; i++) {
+        let f = fog_at(fx.eye.xyz + dir * mix(near, far, (f32(i) + 0.5) / f32(n)), (far - near) / f32(n));
+        sum += f.valley + f.steam;
+    }
+    return sum / f32(n);
+}
+// The far slices' distance at coordinate `t` (0..1) past `depth.y`, and back.
+fn far_r(t: f32) -> f32 {
+    return fx.depth.y * exp(t * fx.far.y);
+}
+fn far_t(r: f32) -> f32 {
+    return clamp(log(max(r, fx.depth.y) / fx.depth.y) / fx.far.y, 0.0, 1.0);
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn cs_integrate(@builtin(global_invocation_id) id: vec3<u32>) {
     let dims = vec3<u32>(fx.dims.xyz);
     if any(id.xy >= dims.xy) { return; }
     let st = max(fx.sigma_t.rgb, vec3(1e-6));
     let ss = st * fx.albedo.rgb;
+    let fogs = fog_on();
+    let dir = ray_dir((vec2<f32>(id.xy) + 0.5) / fx.dims.xy);
     var scattered = vec3(0.0);
     var through = vec3(1.0);
+    // What the fogs alone let through (grey): the composite multiplies it into the scene beside
+    // the medium's closed form.
+    var fog_through = 1.0;
     var last = 0.0;
     for (var z = 0u; z < dims.z; z++) {
         let r = slice_r(f32(z + 1u) / fx.dims.z);
         let dz = r - last;
+        var fog = 0.0;
+        if fogs { fog = fog_slice(dir, last, r); }
         last = r;
         let j = textureLoad(source_in, vec3<i32>(vec3(id.xy, z)), 0).rgb;
-        let step_t = exp(-st * dz);
+        let t = st + fog;
+        let step_t = exp(-t * dz);
         // The source is constant over the slice: its in-scatter to the slice's near end, exactly.
-        scattered += through * j * ss * (1.0 - step_t) / st;
+        scattered += through * j * (ss + fog * FOG_ALBEDO) * (1.0 - step_t) / t;
         through *= step_t;
-        textureStore(integrated_out, vec3<i32>(vec3(id.xy, z)), vec4(scattered, luminance(through)));
+        fog_through *= exp(-fog * dz);
+        textureStore(integrated_out, vec3<i32>(vec3(id.xy, z)), vec4(scattered, fog_through));
+    }
+    // Past the froxels, the fogs alone out to the far terrain, lit without rays: the sun through
+    // the fog up to the pool's top, and the sky.
+    let far = u32(fx.far.z);
+    let c = dot(dir, fx.light.xyz);
+    // The angle between this column's ray and the next one's (a far sample's width per block away).
+    let spread = length(ray_dir((vec2<f32>(id.xy) + vec2(1.5, 0.5)) / fx.dims.xy) - dir);
+    var sky = vec3(0.0);
+    if fogs { sky = sky_mean() * fx.albedo.w * 0.9; }
+    for (var z = 0u; z < far; z++) {
+        if fogs {
+            let r = far_r(f32(z + 1u) / fx.far.z);
+            let dz = r - last;
+            var fog = 0.0;
+            var j = vec3(0.0);
+            for (var i = 0; i < 4; i++) {
+                let pos = fx.eye.xyz + dir * mix(last, r, (f32(i) + 0.5) / 4.0);
+                let f = fog_at(pos, max(dz / 4.0, r * spread));
+                let d = f.valley + f.steam;
+                if d > 0.0 {
+                    let y = fx.camera.y + fx.fraction.y + pos.y;
+                    let sun_t = exp(-d * clamp((f.top + 2.0 - y) / max(fx.light.y, 0.06), 0.0, 400.0));
+                    var sun = vec3(0.0);
+                    if fx.light.w > 0.0 {
+                        sun = PI * fx.sun_light.rgb * fog_sun(c, sun_t);
+                    }
+                    j += d * (sun + sky);
+                    fog += d;
+                }
+            }
+            last = r;
+            if fog > 0.0 {
+                j /= fog;
+                fog *= 0.25;
+                let step_t = exp(-fog * dz);
+                scattered += through * j * FOG_ALBEDO * (1.0 - step_t);
+                through *= step_t;
+                fog_through *= step_t;
+            }
+        }
+        textureStore(integrated_out, vec3<i32>(vec3(id.xy, dims.z + z)), vec4(scattered, fog_through));
     }
 }
 
@@ -466,11 +766,12 @@ fn vs_apply(@builtin(vertex_index) i: u32) -> Screen {
 // The distance along the ray (from the eye) of the pixel at `texel` of the depth (the far end for
 // the sky).
 fn pixel_distance(texel: vec2<i32>, uv: vec2<f32>) -> f32 {
+    let end = select(fx.depth.y, fx.far.x, fog_on());
     let d = textureLoad(depth, texel, 0);
-    if d <= 0.0 { return fx.depth.y; }
+    if d <= 0.0 { return end; }
     let ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     let c = fx.inverse_view_proj * vec4(ndc, d, 1.0);
-    return min(length(c.xyz / c.w - fx.eye.xyz), fx.depth.y);
+    return min(length(c.xyz / c.w - fx.eye.xyz), end);
 }
 // The integrated froxels at screen `uv` and slice coordinate `w`, read through a cubic B-spline
 // across the screen (each axis' four taps folded into two bilinear fetches, whose weights come from
@@ -497,13 +798,24 @@ fn integrated_cubic(uv: vec2<f32>, w: f32) -> vec4<f32> {
     let d = textureSampleLevel(integrated, linear_sampler, vec3(h1.x, h1.y, w), 0.0);
     return g0.y * (g0.x * a + g1.x * b) + g1.y * (g0.x * c + g1.x * d);
 }
+// A noise by pixel and frame (interleaved gradient noise), -0.5..0.5.
+fn pixel_dither(pixel: vec2<f32>) -> f32 {
+    let q = pixel + 5.588238 * (fx.dims.w % 64.0);
+    return fract(52.9829189 * fract(dot(q, vec2(0.06711056, 0.00583715)))) - 0.5;
+}
 // The integrated froxels at screen `uv` and distance `r`: the in-scatter and the luminance of the
 // transmittance (slice `z` holds the value at its far end: coordinate `(z + 0.5) / n`, the near
-// end of the first slice being nothing and clear).
-fn froxel_at(uv: vec2<f32>, r: f32) -> vec4<f32> {
+// end of the first slice being nothing and clear), read `dither` slices off (the pixel's noise:
+// read in between, the slices' ends show as arcs around the eye where the fog changes within
+// them; dithered, the anti-aliasing's history smooths them out).
+fn froxel_at(uv: vec2<f32>, r: f32, dither: f32) -> vec4<f32> {
     let n = fx.dims.z;
+    // The integrated grid holds the froxels' slices, then the far ones past `depth.y`.
+    let total = n + fx.far.z;
     let t = slice_t(r);
-    let w = clamp(t - 0.5 / n, 0.5 / n, 1.0 - 0.5 / n);
+    var slice = t * n;
+    if r > fx.depth.y { slice = n + far_t(r) * fx.far.z; }
+    let w = clamp(slice - 0.5 + dither, 0.5, total - 0.5) / total;
     var v = integrated_cubic(uv, w);
     if t < 1.0 / n { v = mix(vec4(0.0, 0.0, 0.0, 1.0), v, t * n); }
     return v;
@@ -512,13 +824,35 @@ fn froxel_at(uv: vec2<f32>, r: f32) -> vec4<f32> {
 @fragment
 fn fs_scatter(in: Screen) -> @location(0) vec4<f32> {
     let texel = vec2<i32>(in.position.xy);
-    return vec4(froxel_at(in.uv, pixel_distance(texel, in.uv)).rgb, 0.0);
+    let r = pixel_distance(texel, in.uv);
+    let dither = pixel_dither(in.position.xy);
+    let here = froxel_at(in.uv, r, dither);
+    var light = here.rgb;
+    // The steam fog's reflection in the water under it: the mirrored ray crosses the same thin
+    // layer again, so the water reflects (Fresnel's share) the light the layer scattered along the
+    // view's last stretch through it.
+    if fog_on() && fx.fog.y > 0.0 && r < fx.depth.y {
+        let dir = ray_dir(in.uv);
+        let pos = fx.eye.xyz + dir * r;
+        let m = fog_map_at(pos.xz);
+        let y = fx.camera.y + fx.fraction.y + pos.y;
+        if dir.y < -0.01 && m.climate.y > 0.5 && abs(y - m.shape.y) < 0.4 {
+            let before = froxel_at(in.uv, max(r - STEAM_TOP / -dir.y, 0.0), dither);
+            let layer = max(here.rgb - before.rgb, vec3(0.0)) / max(before.a, 0.05);
+            let fresnel = 0.02 + 0.98 * pow(1.0 + dir.y, 5.0);
+            light += layer * fresnel * here.a;
+        }
+    }
+    return vec4(light, 0.0);
 }
 // What the medium lets through of the scene behind it (Beer-Lambert, exact for the homogeneous
-// medium), multiplied into the scene.
+// medium, out to the froxels' reach), times what the fogs let through (integrated), multiplied
+// into the scene.
 @fragment
 fn fs_transmit(in: Screen) -> @location(0) vec4<f32> {
     let texel = vec2<i32>(in.position.xy);
     let r = pixel_distance(texel, in.uv);
-    return vec4(exp(-fx.sigma_t.rgb * r), 1.0);
+    var t = exp(-fx.sigma_t.rgb * min(r, fx.depth.y));
+    if fog_on() { t *= froxel_at(in.uv, r, pixel_dither(in.position.xy)).a; }
+    return vec4(t, 1.0);
 }
