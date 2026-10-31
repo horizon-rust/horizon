@@ -1487,14 +1487,19 @@ impl Streaming {
                 w.0 = self.decoration_order.rank_or_append(w.2, w.3);
             }
             wanted.sort_unstable();
+            // Whether a chunk waits, asked once per pass: neighbouring wanted
+            // chunks share most of their 5x5 squares. Only a chunk marked
+            // decorated below changes its answer.
+            let mut waiting: FxHashMap<(i32, i32), bool> = FxHashMap::default();
             for (_, _, x, z) in wanted {
                 if self.decorating >= workers * 2 {
                     break;
                 }
-                if self
-                    .decoration_order
-                    .blocked(x, z, |nx, nz| waits_for(self, nx, nz))
-                {
+                if self.decoration_order.blocked(x, z, |nx, nz| {
+                    *waiting
+                        .entry((nx, nz))
+                        .or_insert_with(|| waits_for(self, nx, nz))
+                }) {
                     continue;
                 }
                 let keys: Vec<(i32, i32)> =
@@ -1514,6 +1519,7 @@ impl Streaming {
                     .collect();
                 if !finals.is_empty() && !self.saves_beside_final {
                     self.decorated.insert((x, z));
+                    waiting.remove(&(x, z));
                     continue;
                 }
                 if !keys.iter().enumerate().all(|(i, k)| {

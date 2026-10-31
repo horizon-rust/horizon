@@ -28,7 +28,7 @@ pub mod dynamic_light;
 pub mod effects;
 pub mod environment;
 pub mod extras;
-pub mod fast_hash;
+pub use horizon_core::fast_hash;
 pub mod fog;
 pub mod font;
 pub mod gfx;

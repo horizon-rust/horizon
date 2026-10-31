@@ -29,11 +29,13 @@
 //! overlap), so a chunk may be decorated as soon as no lower-ranked chunk
 //! within two of it is still waiting: [`DecorationOrder::blocked`]. Chunks
 //! further apart still decorate in parallel.
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
+
+use horizon_core::fast_hash::FxHashMap;
 
 #[derive(Default)]
 pub struct DecorationOrder {
-    rank: HashMap<(i32, i32), u64>,
+    rank: FxHashMap<(i32, i32), u64>,
     next: u64,
 }
 
@@ -74,7 +76,7 @@ impl DecorationOrder {
 
     /// Whether a lower-ranked chunk within two of `(x, z)` still has to be
     /// decorated (`pending`) first.
-    pub fn blocked(&self, x: i32, z: i32, pending: impl Fn(i32, i32) -> bool) -> bool {
+    pub fn blocked(&self, x: i32, z: i32, mut pending: impl FnMut(i32, i32) -> bool) -> bool {
         let Some(own) = self.rank(x, z) else {
             return false;
         };
@@ -256,7 +258,7 @@ mod tests {
     /// The hash map version this module had before its dense grids.
     fn hashed_order(center: (i32, i32), radius: i32) -> Vec<(i32, i32)> {
         use std::cmp::Reverse;
-        use std::collections::{BinaryHeap, HashSet, VecDeque};
+        use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
         let mut tickets: Vec<(i32, i32)> = (-radius..=radius)
             .flat_map(|dx| (-radius..=radius).map(move |dz| (center.0 + dx, center.1 + dz)))
             .collect();
