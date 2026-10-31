@@ -1,0 +1,6 @@
+{
+  "hooks": [],
+  "rust_summary": "tag lookups from any server hook; removes the tick context argument from `native_block_in_tag` and `native_item_in_tag`.",
+  "doc_summary": "tag lookups from any server hook. The `native_block_in_tag` and `native_item_in_tag` helpers no longer take a tick context; existing calls must remove it. Bundles using the new signatures need \"hooks\": @API:server_tag_reads@.",
+  "comments": ["docs/native-mods.md"]
+}

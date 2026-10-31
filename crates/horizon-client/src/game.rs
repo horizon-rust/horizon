@@ -10952,12 +10952,13 @@ impl Game<'_> {
             "World",
             format!("{} ({})", level.name, save_root.display()),
         );
-        self.session_lock = Some(session_lock);
         self.end.set_locator(locator);
         self.share_spawn_conditions();
         self.score = Default::default();
         self.fns = Default::default();
         self.world_tables = self.build_world_tables();
+        // Native tag reads use the lock to tell that the tag tables are ready.
+        self.session_lock = Some(session_lock);
         // The registries a preload or an earlier world read are not this
         // world's packs': a world with packs sends its own (their dialogs,
         // recipes and advancements). For a world without packs, `sync_data`
