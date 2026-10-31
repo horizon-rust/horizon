@@ -4098,25 +4098,27 @@ impl Game<'_> {
         self.process_level_events()?;
         self.tick_scheduled()?;
         self.with_level(|b, level, ticks| {
-            for (x, z) in ticking {
-                // The sections are read again only after a block changed.
-                let mut read = None;
-                let mut sections = Default::default();
-                let pos = horizon_core::position::ChunkPos::new(x, z);
-                b.tick_chunk_random(level, ticks, pos, |level, from| {
-                    if read != Some(level.world.revision) {
-                        read = Some(level.world.revision);
-                        sections = level
-                            .world
-                            .chunks
-                            .get(&(x, z))
-                            .map_or_else(Default::default, |chunk| {
-                                level.random_tick_sections.get((x, z), chunk, level.facts)
-                            });
-                    }
-                    sections.from(from)
-                });
-            }
+            horizon_client::spans::time("random_ticks", || {
+                for (x, z) in ticking {
+                    // The sections are read again only after a block changed.
+                    let mut read = None;
+                    let mut sections = Default::default();
+                    let pos = horizon_core::position::ChunkPos::new(x, z);
+                    b.tick_chunk_random(level, ticks, pos, |level, from| {
+                        if read != Some(level.world.revision) {
+                            read = Some(level.world.revision);
+                            sections = level
+                                .world
+                                .chunks
+                                .get(&(x, z))
+                                .map_or_else(Default::default, |chunk| {
+                                    level.random_tick_sections.get((x, z), chunk, level.facts)
+                                });
+                        }
+                        sections.from(from)
+                    });
+                }
+            });
             b.run_block_events(level, ticks);
             b.tick_block_entities(level, ticks);
         });
