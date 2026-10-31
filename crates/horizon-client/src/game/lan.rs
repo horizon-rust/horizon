@@ -1800,6 +1800,9 @@ impl Game<'_> {
                 event @ (HostEvent::Chat { .. } | HostEvent::Warn(_) | HostEvent::Error(_)) => {
                     self.lan_log_event(event);
                 }
+                HostEvent::Ban { uuid, name, reason } => {
+                    self.anticheat_ban(&mut host.hub, uuid, &name, &reason);
+                }
                 HostEvent::PlayerChat { sender, text } => {
                     if let Some(g) = host.hub.guests.iter().find(|g| g.uuid == sender) {
                         if self.options.dedicated.is_some() {

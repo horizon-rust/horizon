@@ -62,8 +62,9 @@ bind = ""                    # the control API: "" a free port on 127.0.0.1; or 
 token = ""                   # its token (16 characters or more); "" a new random one at every start
 allow_public = false         # true lets bind be any address; the token is then all that guards the server
 
-# Horizon's anticheat (docs/anticheat.md) is on: `combat` drops and kicks attacks no vanilla client sends;
-# timer, ground and prediction only write logs/anticheat.log until they're trusted. To change it:
+# Horizon's anticheat (docs/anticheat.md) is on: `combat` drops attacks no vanilla client sends, kicks,
+# and bans at the second kick; timer, ground and prediction only write logs/anticheat.log until they're
+# trusted. To change it:
 # [anticheat]
 # enabled = true             # false: the server checks only what vanilla's checks
 # alerts = true              # tell online operators (alert_level = 2) in their chat; the console always is
@@ -74,6 +75,7 @@ allow_public = false         # true lets bind be any address; the token is then 
 # alert = 5
 # kick = 20
 # decay = 0.02               # violation level lost each second
+# ban_after = 0              # the kick (counting this check's earlier ones) that bans instead; 0: never
 "##;
 
 /// Each typed setting: its section, its name, and the vanilla key it writes.

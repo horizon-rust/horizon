@@ -2,7 +2,7 @@
 
 Horizon's dedicated server checks what players send beyond what vanilla checks. It is **on** by default,
 every check with it, but only the checks a vanilla client can't trip act on their own: `combat` drops the
-attacks of a kill aura and kicks it. `timer`, `ground` and `prediction` only write `logs/anticheat.log`
+attacks of a kill aura, kicks it, and bans it when it comes back and does it again. `timer`, `ground` and `prediction` only write `logs/anticheat.log`
 (their `setback`, `alert` and `kick` are 0) until they have shown no false positive with real players;
 then they act by default too. An owner changes it in `server.toml`:
 
@@ -12,6 +12,7 @@ enabled = true             # false: vanilla's checks only ("moved too quickly", 
 alerts = true              # tell online operators (alert_level, default 2) in their chat
 alert_level = 2
 log = "logs/anticheat.log" # every flag, one line each; "" writes none
+strikes = "anticheat-strikes.json" # each player's kicks by check, kept across restarts
 
 [anticheat.timer]          # each check has a table like this one; every key is optional
 enabled = true             # false turns this check off
@@ -19,11 +20,12 @@ setback = 2                # the thresholds once trusted (0, log only, by defaul
 alert = 5
 kick = 20
 decay = 0.02
+ban_after = 0              # the kick (counting this check's earlier ones) that bans instead; 0: never
 ```
 
 | Check | Acts by default | Thresholds once trusted (`setback`, `alert`, `kick`) |
 |---|---|---|
-| `combat` | yes: 2, 5, 20 | |
+| `combat` | yes: 2, 5, 20, and `ban_after = 2` (the first kick warns, the second bans) | |
 | `timer` | no, logs only | 2, 5, 20 |
 | `ground` | no, logs only (a false claim stands) | 5, 15, 60 |
 | `prediction` | no, logs only | 5, 15, 60 |
@@ -42,13 +44,25 @@ A check that fails **flags** the player: the check's violation level (VL) rises 
 falls back by `decay` every second. From `setback` on, the move or action is cancelled and the player is
 put back where the server last had them; from `alert` on, the console, the log and the online operators
 are told (at most once a second per player and check); from `kick` on, the player is disconnected with
-"Kicked by the server's anticheat". A threshold at 0 turns that action off. Nothing bans: the owner reads
-the log and decides.
+"Kicked by the server's anticheat". A threshold at 0 turns that action off.
+
+A check's kicks are counted for each player, across sessions and restarts (`strikes`,
+`anticheat-strikes.json`). The kick that reaches the check's `ban_after` bans instead: the player goes
+into `banned-players.json` as `/ban` puts them, with "Horizon anticheat" as the source and "Horizon
+anticheat: <check>" as the reason, and is sent away with vanilla's ban message. A ban starts the count
+again, so a player an operator pardons (`/pardon`) is kicked once more before another ban. Only checks
+no legit client trips ban by default (`combat`); `ban_after = 0` turns a check's bans off.
+
+A kick or a ban is always told: the log line (with what the check saw), a warning in the console, and
+a line in the chat of the online operators (`alert_level`), so an operator can pardon a ban that was
+wrong.
 
 Every flag goes to `log`, with the time, the player, the check, its level, what it saw and what was done:
 
 ```
 [2026-10-30 17:29:55] Steve failed timer (VL 5.9): 301 ms ahead, sent back
+[2026-10-31 18:02:11] Alex failed combat (VL 20.0): attacked without swinging (1 more attacks than swings in a tick), kicked (1 of 2 before a ban)
+[2026-10-31 18:09:40] Alex failed combat (VL 20.0): attacked entities 41 and 57 in one tick, banned
 ```
 
 ## Checks
