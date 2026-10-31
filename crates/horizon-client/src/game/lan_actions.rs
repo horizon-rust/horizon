@@ -382,6 +382,8 @@ impl Game<'_> {
         // FireworkRocketItem.use boosts only a gliding player.
         motion.fall_flying = g.fall_flying;
         motion.invulnerable = motion.may_fly;
+        // `ServerPlayer.isInvulnerableTo`'s connection term, as of now.
+        motion.client_loaded = g.client_loaded();
         let _ = motion.set_health(g.health, false);
         motion.health.food.food = g.food;
         motion.health.food.saturation = g.saturation;

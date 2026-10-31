@@ -1227,3 +1227,62 @@ fn the_prediction_records_each_client_tick_and_the_server_ticks_it_had_seen() {
     let record = s.hub.guests[0].anticheat.record.as_deref().unwrap();
     assert_eq!(record.seen(), Some(pinged));
 }
+
+/// #4301: the damage-immunity term `ServerPlayer.isInvulnerableTo` takes from
+/// its connection (`!hasClientLoaded`) is cleared by a respawn, kept through a
+/// level change, and comes back with ServerboundPlayerLoadedPacket: a respawned
+/// guest cannot be hurt at the spot it died in before its client is back.
+#[test]
+fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
+    let Some(resources) = resources() else {
+        return;
+    };
+    let mut s = server(&resources);
+    let port = s.hub.lan.port;
+    let _bot = run(&mut s, move || connect(port, "Respawned", true));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while s.hub.guests.is_empty() {
+        s.tick(&[]);
+        assert!(Instant::now() < deadline, "guest did not join");
+        thread::yield_now();
+    }
+    s.hub.guests[0].load_timeout = 0;
+    assert!(s.hub.guests[0].client_loaded());
+    let border = horizon_client::worldborder::WorldBorder::default();
+    let at = [8.5, f64::from(MIN_Y + 5), 8.5];
+    let ctx = TickCtx {
+        world: &mut s.world,
+        host: None,
+        entities: &[],
+        next_entity: &mut s.next_entity,
+        spawn: at,
+        difficulty: 2,
+        difficulty_locked: false,
+        clock_rate: 1.0,
+        tick_rate: 20.0,
+        tick_frozen: false,
+        tick_steps: (0, 0),
+        collision: None,
+        border: &border,
+        streaming: None,
+    };
+    s.hub.respawn(0, at, &ctx);
+    assert!(
+        !s.hub.guests[0].client_loaded(),
+        "a respawn unloads the client"
+    );
+    // A level change does not clear it: vanilla resets the loaded state on death and respawn
+    // only, and covers a portal with its separate `isChangingDimension` term.
+    s.hub.change_level(0, at, 0.0, None, false, 0, &ctx);
+    assert!(
+        !s.hub.guests[0].client_loaded(),
+        "a level change keeps the cleared state from the respawn"
+    );
+    // The client's ServerboundPlayerLoadedPacket once the new level is in.
+    s.hub.guests[0].inbox.push_back((S::PlayerLoaded(Empty), 0));
+    s.tick(&[]);
+    assert!(
+        s.hub.guests[0].client_loaded(),
+        "the packet marks it loaded"
+    );
+}
