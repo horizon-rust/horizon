@@ -385,11 +385,14 @@ fn join_friend(code: &str, lang: &Language, send: &Sender<Event>) -> Result<(Str
     .map_err(|e| e.to_string())?;
     status(
         send,
-        if tunnel.direct {
-            "Connected straight to your friend..."
-        } else {
-            "Connected to your friend through the relay..."
-        },
+        &tr(
+            lang,
+            if tunnel.direct {
+                "horizon.multiplayer.connected_direct"
+            } else {
+                "horizon.multiplayer.connected_relay"
+            },
+        ),
     );
     let (port, _) = tunnel.serve_loopback().map_err(|e| e.to_string())?;
     Ok(("127.0.0.1".to_owned(), port))
