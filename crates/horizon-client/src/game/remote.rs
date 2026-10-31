@@ -6442,7 +6442,8 @@ impl Game<'_> {
             // skips the player's own client), the server's copy tells the others.
             "minecraft:goat_horn" => {
                 self.remote_use_instrument(held);
-                return;
+                // FAIL without an instrument or on cooldown: no use started.
+                return self.using.is_some();
             }
             // EnderEyeItem.use: startUsingItem unless an End portal frame is
             // aimed at, with or without a stronghold to throw the eye at.
