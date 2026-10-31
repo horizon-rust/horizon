@@ -3950,6 +3950,9 @@ impl OptionsUi {
     /// cycles that widget regardless of where the cursor is. Vanilla 26.3
     /// does not intercept the wheel for sliders at all; this makes keyboard
     /// navigation far more usable.
+    ///
+    /// With the `wheel_cycles_settings` extra off (on by default), the wheel
+    /// only scrolls the list.
     pub fn wheel(
         &mut self,
         s: &mut Settings,
@@ -3995,7 +3998,8 @@ impl OptionsUi {
         }
         let plain = self.resource_error.is_none()
             && !(self.pack_screen.is_some() && self.stack.last() == Some(&Page::Packs));
-        if !plain {
+        // With the "Scroll wheel cycles settings" extra off, the wheel only scrolls.
+        if !plain || !s.extras.wheel_cycles_settings {
             self.scroll_at(s, size, cursor, amount);
             return Vec::new();
         }
@@ -4770,6 +4774,35 @@ impl OptionsUi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wheel_cycles_settings_respects_extra() {
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        ui.show(Page::Video);
+        let size = (480.0, 360.0);
+        let (widgets, _, _, _) = ui.layout(&s, size.0, size.1);
+        let cycle_wd = widgets
+            .iter()
+            .find(|wd| {
+                matches!(
+                    wd.kind,
+                    WKind::Button {
+                        act: Act::Cycle(_),
+                        ..
+                    }
+                )
+            })
+            .expect("video settings has cycle buttons");
+        let cursor = (cycle_wd.x + 5.0, cycle_wd.y + 5.0);
+
+        let events = ui.wheel(&mut s, size, cursor, [854, 480], 1.0);
+        assert!(!events.is_empty());
+
+        s.extras.wheel_cycles_settings = false;
+        let events = ui.wheel(&mut s, size, cursor, [854, 480], 1.0);
+        assert!(events.is_empty());
+    }
 
     #[test]
     fn accessibility_sliders_and_toggles_survive_options_round_trip() {
