@@ -498,5 +498,19 @@
   "Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts.": "Дополнительные параметры запуска игры, передаются как есть (кавычки объединяют слова с пробелами). Применяется при следующем запуске игры.",
   "For example --server-thread": "Например --server-thread",
   "Unsigned": "Без подписи",
-  "Verified": "Проверено"
+  "Verified": "Проверено",
+  "Couldn't load patch notes. {error}": "Не удалось загрузить список изменений. {error}",
+  "Couldn't load releases. {error}": "Не удалось загрузить сборки. {error}",
+  "Got it": "Понятно",
+  "Launcher updated to {version}": "Лаунчер обновлён до {version}",
+  "Launcher {version}": "Лаунчер {version}",
+  "Launcher {version}  {percent}%": "Лаунчер {version}  {percent}%",
+  "Manage versions": "Управление версиями",
+  "No build for this platform": "Нет сборки для этой платформы",
+  "No notes for this release.": "Для этой сборки нет списка изменений.",
+  "No version": "Нет версии",
+  "Signed in as {name}.": "Вы вошли как {name}.",
+  "follows updates": "следует за обновлениями",
+  "{count} playing now": "Сейчас играют: {count}",
+  "Search, then Enter": "Поиск, затем Enter"
 }

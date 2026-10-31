@@ -44,7 +44,10 @@ impl Launcher {
         // The exact count, a link to the page with its history and peaks.
         let ink = c(n.ink);
         let playing = self.playing.map(|count| {
-            let label = format!("· {} playing now", thousands(count));
+            let label = format!(
+                "· {}",
+                trf("{count} playing now", &[("count", &thousands(count))])
+            );
             match telemetry::stats_url(&self.links.website) {
                 Some(url) => div()
                     .id("playing-now")
@@ -119,7 +122,10 @@ impl Launcher {
                 .items_center()
                 .gap(px(8.))
                 .child(div().size(px(6.)).bg(c(n.accent_hi)))
-                .child(format!("{} available", update_name(release)));
+                .child(trf(
+                    "{version} available",
+                    &[("version", update_name(release))],
+                ));
             hero = hero.child(match installing {
                 Some((_, p)) => line
                     .child(
@@ -173,7 +179,7 @@ impl Launcher {
                             .font_weight(FontWeight::SEMIBOLD)
                             .cursor_pointer()
                             .hover(|s| s.opacity(0.8))
-                            .child("Got it")
+                            .child(tr("Got it"))
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.settings.ping_notice_seen = true;
                                 this.settings.save();

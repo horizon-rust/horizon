@@ -498,5 +498,19 @@
   "Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts.": "游戏的额外启动参数，按原样透传（引号用于包含空格的词组）。将在游戏下次启动时生效。",
   "For example --server-thread": "例如 --server-thread",
   "Unsigned": "未签名",
-  "Verified": "已验证"
+  "Verified": "已验证",
+  "Couldn't load patch notes. {error}": "Couldn't load patch notes. {error}",
+  "Couldn't load releases. {error}": "Couldn't load releases. {error}",
+  "Got it": "Got it",
+  "Launcher updated to {version}": "Launcher updated to {version}",
+  "Launcher {version}": "Launcher {version}",
+  "Launcher {version}  {percent}%": "Launcher {version}  {percent}%",
+  "Manage versions": "Manage versions",
+  "No build for this platform": "No build for this platform",
+  "No notes for this release.": "No notes for this release.",
+  "No version": "No version",
+  "Signed in as {name}.": "Signed in as {name}.",
+  "follows updates": "follows updates",
+  "{count} playing now": "{count} playing now",
+  "Search, then Enter": "Search, then Enter"
 }
