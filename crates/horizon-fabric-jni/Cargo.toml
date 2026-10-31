@@ -1,0 +1,19 @@
+[package]
+name = "horizon-fabric-jni"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Minimal JNI bridge for Fabric mod execution"
+
+[dependencies]
+jni = { version = "0.21", default-features = false, features = ["invocation"] }
+horizon-fabric-jvm = { path = "../horizon-fabric-jvm" }
+horizon-fabric-mapping = { path = "../horizon-fabric-mapping" }
+horizon-core = { path = "../horizon-core" }
+thiserror = "1.0"
+parking_lot = "0.12"
+once_cell = "1.19"
+
+[features]
+default = []

@@ -1,0 +1,20 @@
+[package]
+name = "horizon-fabric-jvm"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Embedded JVM for Fabric mod execution"
+
+[dependencies]
+jni = { version = "0.21", default-features = false, features = ["invocation"] }
+horizon-core = { path = "../horizon-core" }
+thiserror = "1.0"
+tracing = "0.1"
+parking_lot = "0.12"
+once_cell = "1.19"
+libloading = "0.8"
+serde = { version = "1", features = ["derive"] }
+
+[features]
+default = []
