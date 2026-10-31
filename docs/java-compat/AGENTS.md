@@ -36,7 +36,7 @@ folder.
 2. Do not publish a compiled or ported mod.
 3. Compile JDK classes only from the player's own Java runtime. Do not
    distribute them.
-4. Compare each runtime library method with the JVM (section 6.3).
+4. Compare each runtime library method with the JVM (procedure 6.2).
 5. Do not push to upstream without the owner's approval.
 
 What you can read:
@@ -108,7 +108,17 @@ Mixins of the mods then apply to the code that they were written for.
 
 Rendering of mods uses one render-intent IR ([rendering.md](rendering.md)).
 
-## 4. Tools
+## 4. Requirements
+
+The system packages and the platform status are in
+[status.md](status.md), section 2. In short: on Linux, install ALSA
+(`libasound2-dev` or `alsa-lib-devel`), udev and the X11 keyboard library
+for the game; install a JDK (21 or later) for `jimage` and `javac`.
+
+CAUTION: Run the native tests on each platform that you change platform code
+for. The heap code is different on Linux, macOS and Windows (`heap.rs`).
+
+## 5. Tools
 
 | Tool | Use |
 |---|---|
@@ -136,9 +146,9 @@ Environment variables of the native backend:
 | `HORIZON_BENCH_UNCOMPILED=<file>` | Each method that did not compile, and why |
 | `HORIZON_RUN_SECONDS=<n>` | How long `--run-main` waits for the program's threads (120) |
 
-## 5. Procedures
+## 6. Procedures
 
-### 5.1 Make the coverage check of a modpack
+### 6.1 Make the coverage check of a modpack
 
 CAUTION: The check uses up to 7 GB of memory. Close large programs first.
 
@@ -153,7 +163,7 @@ CAUTION: The check uses up to 7 GB of memory. Close large programs first.
 Use NeoForm's `client-<version>-srg.jar` from Prism's libraries. The plain
 `minecraft-1.21.1-client.jar` is obfuscated: no mod finds its classes there.
 
-### 5.2 Fill a gap in the runtime library
+### 6.2 Fill a gap in the runtime library
 
 1. Find the member in the stop list (for example `call to java/util/Objects.hash`).
 2. Read the JDK's public API documentation of the member.
@@ -168,15 +178,15 @@ Prefer level 3 (the player's JDK classes, `--jdk`) for large classes. Write a
 Rust version only for classes that most mods use, or that level 3 cannot
 compile.
 
-### 5.3 Run vanilla's server natively
+### 6.3 Run vanilla's server natively
 
 1. Make a new empty folder. Go into it.
 2. Run `jar_bench --jdk <work>/jdk-classes --run-main <Minecraft srg jar> <libraries> -- net/minecraft/server/Main --nogui`.
 3. Do not give the logging jars (slf4j, log4j, Mojang's `logging`). The runtime library has its own logging.
 4. Read the last line. It names the method and the call that stopped.
-5. Fill that gap (5.2). Then do the run again.
+5. Fill that gap (6.2). Then do the run again.
 
-### 5.4 Port a content mod (the data tier)
+### 6.4 Port a content mod (the data tier)
 
 1. Put the jar in the `mods` folder of the Prism instance.
 2. Start the instance from Prism. The wrapper imports and ports the mods.
@@ -184,23 +194,23 @@ compile.
 4. Run the oracle and the harness on the mod (see [docs/modpacks.md](../modpacks.md), step 6).
 5. Write the result in the coverage list.
 
-## 6. Pitfalls
+## 7. Pitfalls
 
 | Problem | Cause | What to do |
 |---|---|---|
 | A crash report popup, a stuck run | A stop traps with SIGILL. A core dump of the 64 GiB heap starts. | Run `ulimit -c 0` before each run. |
 | The session reaper stops a run | Low memory on the computer. | Run under `systemd-run --user --scope -p MemoryMax=14G`. Close large programs. Do not start the run again without the owner's approval. |
 | A rebuild breaks a running check | Cargo writes the binary that the check uses. | Copy `jar_bench` to another file before a long run. |
-| All of Minecraft is "outside the program" | The obfuscated Minecraft jar. | Use NeoForm's `-srg.jar` (5.1). |
+| All of Minecraft is "outside the program" | The obfuscated Minecraft jar. | Use NeoForm's `-srg.jar` (6.1). |
 | Cranelift panics in a release build | The verifier is off. Bad code (for example a wrong argument count) reaches the backend. | The method becomes a stand-in. `HORIZON_BENCH_UNCOMPILED` names it and gives the verifier's reason. |
-| A runtime test fails on the JVM too | The expected value in the Java test is wrong. | Always run the Java test on the JVM first (5.2, step 6). |
+| A runtime test fails on the JVM too | The expected value in the Java test is wrong. | Always run the Java test on the JVM first (6.2, step 6). |
 | `pkill` kills the shell | The pattern is in the command line itself. | Use a pattern like `[j]ar_bench`. |
 
-## 7. What is missing
+## 8. What is missing
 
 | # | Work | Why it is needed | Where to start |
 |---|---|---|---|
-| 1 | JDK gaps of the server start (`BigInteger`, files, regular expressions) | Vanilla 1.21.1's server must start natively. | Procedure 5.3 |
+| 1 | JDK gaps of the server start (`BigInteger`, files, regular expressions) | Vanilla 1.21.1's server must start natively. | Procedure 6.3 |
 | 2 | Collector | A run uses all of its heap. | [compiler.md](compiler.md) 4.3: escape analysis, value types, tick regions |
 | 3 | Mixins at install | Sable changes 131 vanilla classes, Create 54. | [compiler.md](compiler.md) 4.1: compile the real Mixin library |
 | 4 | NeoForge compiled from its jars | Events, registries, capabilities, networking. | [compiler.md](compiler.md) 4.1 |
@@ -210,7 +220,7 @@ compile.
 | 8 | Shader pipeline and Veil | The mods' effects. | [rendering.md](rendering.md) 3.3 |
 | 9 | Speed | A virtual call has one load more since the dispatch table. | Point the object header at the class's table row. |
 
-## 8. Terms
+## 9. Terms
 
 | Term | Meaning |
 |---|---|

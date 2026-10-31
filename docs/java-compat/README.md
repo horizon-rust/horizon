@@ -11,9 +11,13 @@ The current status (what works, the numbers, the next steps) is in
 
 This system lets Horizon use mods that people wrote for NeoForge 1.21.1. You do
 not port the mods by hand. The system compiles each original mod file (`.jar`)
-into a Horizon WASM mod. The compiled mod uses a compatibility layer. The
-compatibility layer gives the mod the Minecraft and NeoForge classes that it
-expects.
+to machine code (the native backend). What a mod registers (blocks, items)
+becomes a Horizon content mod. The compiled code uses a compatibility layer.
+The compatibility layer gives the mod the Minecraft and NeoForge classes that
+it expects.
+
+The first backend made WASM modules. Horizon no longer runs WASM code mods,
+so the native backend is the way forward (status: [status.md](status.md)).
 
 ## 2. The parts
 

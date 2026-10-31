@@ -13,19 +13,42 @@ A native compiler turns Java bytecode into machine code with Cranelift. It
 compiles Create, Sable, NeoForge and Minecraft 1.21.1 together in 3 minutes.
 It runs vanilla code with the same results as the JVM.
 
-## 2. What works
+## 2. Requirements and platforms
+
+| Need | Linux (Debian, Ubuntu) | Linux (Fedora) | Windows | macOS |
+|---|---|---|---|---|
+| Sound (ALSA) | `libasound2-dev` | `alsa-lib-devel` | built in | built in |
+| Controllers (udev) | `libudev-dev` | `systemd-devel` | built in | built in |
+| The game window (X11 keyboard) | `libxkbcommon-x11-dev` | `libxkbcommon-x11-devel` | built in | built in |
+| A Java runtime (JDK classes, level 3) | JDK 21 or later, with `jimage` | the same | the same | the same |
+| `javac` (the native tests only) | a JDK | a JDK | a JDK | a JDK |
+
+A build without sound and controllers (`--no-default-features`) does not need
+ALSA or udev.
+
+| Part | Linux x86-64 | Windows x86-64 | macOS (Apple silicon) |
+|---|---|---|---|
+| Modpack import, port, content mods | Tested | Builds (plain Rust and data) | Builds (plain Rust and data) |
+| Native compiler (`horizon-java`, feature `native`) | Tested (18 tests) | Builds: `cargo check --target x86_64-pc-windows-msvc` | Builds: `cargo check --target aarch64-apple-darwin --no-default-features --features native` |
+
+The native compiler has the platform parts for each system: the heap
+reservation (`mmap` on Linux and macOS, `VirtualAlloc` with commits in steps
+on Windows), stack probes, atomic `volatile` fields for ARM64, and Cranelift's
+code arena. Its tests have not run on Windows and macOS yet.
+
+## 3. What works
 
 | Part | Status | Proof |
 |---|---|---|
 | Prism launch | Prism starts Horizon with the player's account. The first setup takes about 144 s. A cached start takes about 0 s. | `/mnt/shared/Horizon/fresh-test/horizon-fresh-test.sh` (local wrapper) |
 | Mod jars | Horizon reads the jars from the `mods` folder of the Prism instance. | `launcher modpack import`, `modpack port` |
-| Seven content mods | Their blocks and items are in the game and in creative search. | Section 3 |
+| Seven content mods | Their blocks and items are in the game and in creative search. | Section 4 |
 | Setup progress | The splash shows each step and the mod count ("Mod code 3/7"). | `crates/horizon-client/src/game/setup_splash.rs` |
 | Native compiler | It compiles vanilla Minecraft, NeoForge and mods to machine code. | `cargo test --release -p horizon-java --features native --test native` (18 tests) |
 | Runtime library | Rust versions of the JDK classes that mods use most. | Each test compares its result with the JVM. |
-| JDK classes | The compiler compiles the other JDK classes from the player's own Java runtime. | `jar_bench --jdk` (section 4) |
+| JDK classes | The compiler compiles the other JDK classes from the player's own Java runtime. | `jar_bench --jdk` (section 5) |
 
-## 3. The seven content mods
+## 4. The seven content mods
 
 These mods are "partial": the port carries their data. The comparison with
 NeoForge (the harness) is not run for them yet. Their logic does not run.
@@ -45,7 +68,7 @@ Four of these mods need Farmer's Delight. Farmer's Delight is not ported yet.
 The port writes `coverage.md` in the pack's port folder. Ports stay on the
 player's computer. Do not publish ported mods.
 
-## 4. The native compiler
+## 5. The native compiler
 
 | Data | Value |
 |---|---|
@@ -67,7 +90,7 @@ The compiler has these parts:
 | Runtime library | Rust versions of `String`, the boxes, collections, streams, threads, `Class` reflection, `PrintStream` and more. |
 | Level 3 | `jar_bench --jdk <dir>` adds the JDK classes that the program needs from the player's Java runtime. |
 
-### 4.1 Procedure: compile the program and see what stops
+### 5.1 Procedure: compile the program and see what stops
 
 1. Extract `java.base` from the local Java runtime:
    `jimage extract --dir <work>/jdk-classes --include 'regex:/java.base/.*' $JAVA_HOME/lib/modules`.
@@ -81,7 +104,7 @@ The compiler has these parts:
 CAUTION: The check uses up to 7 GB of memory. Close large programs before you
 start it.
 
-### 4.2 Procedure: start vanilla 1.21.1's server natively
+### 5.2 Procedure: start vanilla 1.21.1's server natively
 
 1. Make a new empty folder. Go into it.
 2. Run `jar_bench --jdk <work>/jdk-classes --run-main <Minecraft jar> <libraries> -- net/minecraft/server/Main --nogui`.
@@ -94,7 +117,7 @@ Prism's libraries). Do not give the logging jars (slf4j, log4j, Mojang's
 Status: the server starts `main` and stops in `java.time.Duration`, at
 `BigInteger.valueOf`.
 
-## 5. Decisions
+## 6. Decisions
 
 | Date | Decision | Document |
 |---|---|---|
@@ -104,7 +127,7 @@ Status: the server starts `main` and stops in `java.time.Duration`, at
 | 2026-10-31 | Modpack mode: a pack runs on the vanilla of its own version, compiled natively. | [compiler.md](compiler.md) 4.5 |
 | 2026-10-31 | Rendering: one render-intent IR with thin adapters. | [rendering.md](rendering.md) |
 
-## 6. Limits
+## 7. Limits
 
 1. The behavior code of mods does not run in the game. Machines, entities and
    custom block logic do not work.
@@ -113,8 +136,10 @@ Status: the server starts `main` and stops in `java.time.Duration`, at
 3. There is no garbage collector yet. A long run uses all of its heap.
 4. Mixins do not apply yet.
 5. Mod rendering (Flywheel, Veil, block entity renderers) is a plan only.
+6. The native tests run on Linux only. On Windows and macOS the native
+   compiler builds, but its tests have not run yet.
 
-## 7. Next steps
+## 8. Next steps
 
 | # | Step | Result |
 |---|---|---|
