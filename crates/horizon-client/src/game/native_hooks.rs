@@ -1283,9 +1283,10 @@ impl GameLevel<'_> {
     /// `flags::UPDATE_ALL` does both. Horizon sends every write to players
     /// whatever the flags: `UPDATE_CLIENTS`, `UPDATE_INVISIBLE` and
     /// `UPDATE_IMMEDIATE` change nothing yet. Any loaded position, not only
-    /// the hook's; false off an authoritative server, when the block has no
-    /// such property or value, or `pos` is not loaded; true without a write
-    /// when the property already has `value`. Elsewhere,
+    /// the hook's; true when the block changed, false off an authoritative
+    /// server, when the block has no such property or value, `pos` is not
+    /// loaded, or the property already has `value` (no write, as
+    /// `Level.setBlock` returns false for an unchanged state). Elsewhere,
     /// `Game::native_set_block_property_with` does the same. API 33.
     pub(super) fn native_set_block_property(
         &mut self,
@@ -1300,12 +1301,9 @@ impl GameLevel<'_> {
         }
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         let state = self.block_state(at);
-        let Some(id) = with_property(self.registry, state, key, value) else {
+        let Some(id) = property_change(self.registry, state, key, value) else {
             return false;
         };
-        if id == state {
-            return true;
-        }
         let b = self.behaviours;
         b.set_block(self, ticks, at, id, flags)
     }
@@ -1492,8 +1490,10 @@ impl Game<'_> {
     }
     /// Sets property `key` of the block at `pos` to `value`, as a furnace's
     /// tick sets its `lit` (`Level.setBlock` with `UPDATE_ALL`: neighbours
-    /// and clients are told); false when the block has no such property or
-    /// value. The block entity stays. API 18.
+    /// and clients are told); true when the block changed, false when the
+    /// block has no such property or value, or the property already has
+    /// `value` (as `Level.setBlock` for an unchanged state). The block
+    /// entity stays. API 18.
     pub(super) fn native_set_block_property(
         &mut self,
         pos: [i32; 3],
@@ -1505,7 +1505,8 @@ impl Game<'_> {
     /// `native_set_block_property` with `Level.setBlock`'s `flags`, as a
     /// brewing stand's tick sets its bottles with `flags::UPDATE_CLIENTS`.
     /// Players get the write whatever the flags (`flags`); false when this
-    /// window isn't a server. API 33.
+    /// window isn't a server, and in each case `native_set_block_property`
+    /// returns false. API 33.
     pub(super) fn native_set_block_property_with(
         &mut self,
         pos: [i32; 3],
@@ -1518,12 +1519,9 @@ impl Game<'_> {
             return false;
         }
         let state = self.world.block(pos[0], pos[1], pos[2]);
-        let Some(id) = with_property(self.pack.assets.registry, state, key, value) else {
+        let Some(id) = property_change(self.pack.assets.registry, state, key, value) else {
             return false;
         };
-        if id == state {
-            return true;
-        }
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         self.with_level(|b, level, ticks| b.set_block(level, ticks, at, id, flags))
     }
@@ -2508,6 +2506,18 @@ fn with_property(
     registry.resolve(&s).ok()
 }
 
+/// The state a mod's property write changes `state` to; none when the block
+/// has no such property or value, or already has it: `LevelChunk.setBlockState`
+/// returns null for the same state, so `Level.setBlock` returns false.
+fn property_change(
+    registry: &BlockRegistry,
+    state: BlockStateId,
+    key: &str,
+    value: &str,
+) -> Option<BlockStateId> {
+    with_property(registry, state, key, value).filter(|&id| id != state)
+}
+
 /// `config/` beside `options`, made when missing.
 fn config_dir(options: &Path) -> Result<PathBuf, String> {
     let dir = options.with_file_name("config");
@@ -2570,6 +2580,31 @@ mod tests {
         );
         assert_eq!(super::with_property(&registry, age0, "age", "9"), None);
         assert_eq!(super::with_property(&registry, age0, "lit", "true"), None);
+        // What both property setters write: nothing (false) when the
+        // property already has the value, as `Level.setBlock`.
+        assert_eq!(super::property_change(&registry, age0, "age", "0"), None);
+        assert_eq!(
+            super::property_change(&registry, age0, "age", "1"),
+            Some(age1)
+        );
+        assert_eq!(super::property_change(&registry, age0, "age", "9"), None);
+        assert_eq!(super::property_change(&registry, age0, "lit", "true"), None);
+    }
+    /// Both property setters return false for a write that changes nothing:
+    /// each goes through `property_change`, none returns true on its own.
+    #[test]
+    fn property_setters_refuse_no_change() {
+        let source = include_str!("native_hooks.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap_or_default();
+        for head in [
+            "    pub(super) fn native_set_block_property(\n        &mut self,\n        ticks:",
+            "    pub(super) fn native_set_block_property_with(",
+        ] {
+            let body = code.split(head).nth(1).expect(head);
+            let body = &body[..body.find("\n    }\n").expect(head)];
+            assert!(body.contains("property_change("), "{head}");
+            assert!(!body.contains("return true"), "{head}");
+        }
     }
     /// horizon-mixins refuses targets whose body has a `cfg` or a macro:
     /// the hook points and helpers must stay free of both. The launcher

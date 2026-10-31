@@ -6550,12 +6550,37 @@ impl Game<'_> {
                 return true;
             }
             if held_block {
+                let consumable = held
+                    .as_ref()
+                    .and_then(|stack| self.items().get(&stack.item).cloned())
+                    .filter(|info| info.consumable.is_some());
+                // ItemStack.useOn passes in adventure mode unless the item may
+                // be placed on this block: useItem eats it (a block item without
+                // a consumable keeps ending the click here).
+                if !reacts
+                    && consumable.is_some()
+                    && !self.may_build()
+                    && !self.with_hand(hand, |g| g.can_place_on_in_adventure(hit.pos))
+                {
+                    return false;
+                }
                 let placed = if reacts {
                     None
                 } else {
                     held.as_ref()
                         .and_then(|stack| self.remote_can_place(&hit, stack))
                 };
+                // BlockItem.useOn: a consumable that could not be placed is used
+                // (Item.use), which the server does for this same packet. CONSUME
+                // does not swing, and a full player's FAIL still ends the click.
+                // Adventure's can_place_on leaves the placing to the server.
+                if !reacts
+                    && placed.is_none()
+                    && self.may_build()
+                    && let Some(info) = &consumable
+                {
+                    self.with_hand(hand, |g| g.start_eating(info));
+                }
                 if let Some(placed) = &placed {
                     self.predict_place(placed, seq);
                     self.with_hand(hand, Game::consume_held);

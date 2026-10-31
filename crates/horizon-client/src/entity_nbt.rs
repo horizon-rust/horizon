@@ -418,11 +418,15 @@ pub fn mob_to_nbt(
             .iter()
             .map(|&(effect, duration, amplifier)| {
                 let shown = !m.extra.hidden_effects.contains(&effect);
+                let ambient = m.extra.ambient_effects.contains(&effect);
                 let mut e = vec![
                     ("id", string(crate::brewing::namespaced(effect))),
                     ("amplifier", Tag::Byte(amplifier.clamp(0, 255) as u8 as i8)),
                     ("duration", Tag::Int(duration)),
                 ];
+                if ambient {
+                    e.push(("ambient", Tag::Byte(1)));
+                }
                 if !shown {
                     e.push(("show_particles", Tag::Byte(0)));
                 }
@@ -1413,6 +1417,11 @@ pub fn mob_from_nbt(
             m.extra.hidden_effects.retain(|h| *h != effect);
             if number(e.get("show_particles")) == Some(0) {
                 m.extra.hidden_effects.push(effect);
+            }
+            // Details.CODEC: `ambient` defaults to false.
+            m.extra.ambient_effects.retain(|h| *h != effect);
+            if number(e.get("ambient")).is_some_and(|a| a != 0) {
+                m.extra.ambient_effects.push(effect);
             }
         }
     }
