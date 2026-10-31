@@ -399,6 +399,10 @@ pub struct Graphics {
     /// or behind other windows, and half the worker threads. Off by default;
     /// it changes when frames are drawn, never what they show or the ticks.
     pub battery: bool,
+    /// Reuse the shader pack's last shadow map when sun, view, scene revision and
+    /// pack uniforms still match. Off by default: vanilla loaders redraw every frame
+    /// (or every `shadowInterval`), and a hit with a stale key shows old shadows.
+    pub shadow_cache: bool,
     /// The graphics API (Windows only; see `GraphicsApi`).
     pub api: GraphicsApi,
     /// The shader pack picked in `shaderpacks/` (`shader_pack_list`); empty: none. Its key is
@@ -435,6 +439,7 @@ impl Default for Graphics {
             hdr_ui_brightness: 100,
             hdr_key: "key.keyboard.unknown".into(),
             battery: false,
+            shadow_cache: false,
             api: GraphicsApi::Auto,
             shader_pack: String::new(),
         }
@@ -516,6 +521,7 @@ impl Graphics {
                 }
                 "hdrKey" if value.starts_with("key.") => g.hdr_key = value.to_owned(),
                 "batteryMode" => g.battery = flag(g.battery),
+                "shadowCache" => g.shadow_cache = flag(g.shadow_cache),
                 "graphicsApi" => g.api = GraphicsApi::from_name(value).unwrap_or_default(),
                 "pickedShaderPack" => g.shader_pack = value.to_owned(),
                 "overlay" => {
@@ -532,7 +538,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -566,6 +572,7 @@ impl Graphics {
             self.hdr_ui_brightness,
             self.hdr_key,
             bool_text(self.battery),
+            bool_text(self.shadow_cache),
             self.api.name(),
             self.shader_pack,
         )
@@ -710,6 +717,7 @@ mod tests {
             hdr_ui_brightness: 60,
             hdr_key: "key.keyboard.h".into(),
             battery: true,
+            shadow_cache: true,
             api: GraphicsApi::Dx12,
             shader_pack: "Golden Hour".into(),
         };

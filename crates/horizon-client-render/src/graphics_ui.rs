@@ -50,6 +50,7 @@ pub enum H {
     HdrPaperWhite,
     HdrUiBrightness,
     BatteryMode,
+    ShadowCache,
     GraphicsApi,
 }
 
@@ -307,6 +308,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 "60 FPS cap (30 in menus or unfocused), half the workers: less power.",
             ),
             h(
+                H::ShadowCache,
+                Saves,
+                "Reuses the pack shadow map when sun, view and world match. Off by default.",
+            ),
+            h(
                 H::Workers,
                 None,
                 "Threads that generate, light and mesh chunks. Next start.",
@@ -509,6 +515,7 @@ impl H {
                 Text::literal("Shortcut: ").append(crate::keybinds::display_name(&g.hdr_key))
             }
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
+            H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
             H::Overlay => labelled(
                 "Performance Overlay",
@@ -592,6 +599,7 @@ impl H {
             }
             H::Hdr => g.hdr = !g.hdr,
             H::BatteryMode => g.battery = !g.battery,
+            H::ShadowCache => g.shadow_cache = !g.shadow_cache,
             H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
             H::Pacing => {
                 g.pacing = match g.pacing {
@@ -650,6 +658,7 @@ impl Item {
             Item::Horizon(H::AnimatedTextures) => g.animated_textures,
             Item::Horizon(H::Hdr) => g.hdr,
             Item::Horizon(H::BatteryMode) => g.battery,
+            Item::Horizon(H::ShadowCache) => g.shadow_cache,
             Item::Vanilla(Opt::ViewBobbing) => s.view_bobbing,
             Item::Vanilla(Opt::Vsync) => s.vsync,
             Item::Vanilla(Opt::Fullscreen) => s.fullscreen,
@@ -709,6 +718,7 @@ impl Item {
                     | H::PresentMode
                     | H::Workers
                     | H::BatteryMode
+                    | H::ShadowCache
                     | H::GraphicsApi
             ) | Item::Vanilla(
                 Opt::GuiScale

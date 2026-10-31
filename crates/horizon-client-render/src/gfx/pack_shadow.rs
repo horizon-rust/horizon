@@ -41,9 +41,9 @@ pub(super) struct ShadowTargets {
     pub main: u16,
     /// Nothing cleared yet this frame: the first pass into the shadow buffers clears them as it
     /// begins (`clear_ops`), which saves a pass that loads and stores them all on tiled GPUs.
-    fresh: bool,
+    pub(super) fresh: bool,
     /// Bit n set: shadowcolor n was cleared that way.
-    cleared: u8,
+    pub(super) cleared: u8,
     /// Depth comparison for `sampler2DShadow` (hardware filtering): linear, as GL filters it.
     pub comparison: wgpu::Sampler,
 }

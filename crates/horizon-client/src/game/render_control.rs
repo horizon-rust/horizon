@@ -14,6 +14,7 @@ pub const HELP: &[&str] = &[
     "section-draws [flat|indirect]  how terrain sections are drawn (A/B checks); replies the mode",
     "section-cull [on|off]          occlusion culling of solid sections (A/B checks); replies the mode",
     "section-sides [on|off]         leave out solid quads facing away from the eye (A/B checks); replies the mode",
+    "pass-timing                    shader pack GPU time per pass (medians in ms); requires F3 open or HORIZON_SHADER_PACK_TIMING=1",
 ];
 
 impl Game<'_> {
@@ -29,6 +30,11 @@ impl Game<'_> {
                 .parse::<i32>()?)
         };
         match words[0] {
+            "pass-timing" => {
+                let r = self.renderer.as_mut().ok_or("no renderer")?;
+                let times = r.shader_pass_times();
+                Ok(Some(json!({ "passes": times })))
+            }
             "setblock" => {
                 let state = self.parse_state(words.get(4).ok_or("missing state")?)?;
                 self.world.set(int(1)?, int(2)?, int(3)?, state)?;

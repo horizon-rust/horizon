@@ -208,7 +208,9 @@ impl Game<'_> {
                 .chain(super::saves_control::HELP)
                 .chain(super::pad::HELP)
                 .collect::<Vec<_>>() }))),
-            "setblock" | "fill" | "particle" | "signedit" => self.render_command(&words),
+            "setblock" | "fill" | "particle" | "signedit" | "pass-timing" => {
+                self.render_command(&words)
+            }
             "section-draws" => {
                 let r = self.renderer.as_mut().ok_or("no renderer")?;
                 match words.get(1).copied() {
