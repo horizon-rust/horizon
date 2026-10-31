@@ -347,8 +347,10 @@ impl Game<'_> {
             let lines = &sidebar.lines[..sidebar.lines.len().min(15)];
             for (i, (left, right)) in lines.iter().enumerate() {
                 packets.push(C::SetScore(play::SetScore {
-                    // Highest first; the owners never show.
-                    owner: format!("#line{i:02}"),
+                    // Highest first. The display name shows, not the owner;
+                    // an owner starting with '#' is hidden from the sidebar
+                    // (ScoreHolder's isHidden), and ':' is in no player's name.
+                    owner: format!("horizon:line{i:02}"),
                     objective: objective.clone(),
                     score: (lines.len() - i) as i32,
                     display: Some(component_nbt(&left.component())),
