@@ -305,6 +305,9 @@ pub struct Graphics {
     /// thousand chunks (16 km) it shows as it does on real landscapes; denser air brings it
     /// nearer for short view distances.
     pub aerial_perspective: u32,
+    /// RT lighting's natural fogs (`gfx/natural_fog.rs`): a morning's valley fog in the hollows
+    /// and steam fog over cold water. 0 off, 1 light, 2 normal (the default).
+    pub natural_fog: u32,
     /// Continuous water and lava surfaces (`mesher/fluid_surface.rs`): shared corner
     /// heights, smooth light and shading, world-anchored textures. Off by default: it
     /// changes vanilla's look.
@@ -357,6 +360,7 @@ impl Default for Graphics {
             night_vision: true,
             shooting_stars: 1,
             aerial_perspective: DEFAULT_AERIAL_PERSPECTIVE,
+            natural_fog: 2,
             smooth_fluids: false,
             hdr: false,
             hdr_paper_white: 200,
@@ -425,6 +429,7 @@ impl Graphics {
                 "nightVision" => g.night_vision = flag(g.night_vision),
                 "shootingStars" => g.shooting_stars = number(g.shooting_stars).min(2),
                 "aerialPerspective" => g.aerial_perspective = number(g.aerial_perspective).min(64),
+                "naturalFog" => g.natural_fog = number(g.natural_fog).min(2),
                 "smoothFluids" => g.smooth_fluids = flag(g.smooth_fluids),
                 "hdr" => g.hdr = flag(g.hdr),
                 "hdrPaperWhite" => g.hdr_paper_white = number(g.hdr_paper_white).clamp(80, 480),
@@ -446,7 +451,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nsunSize:{}\nmoonSize:{}\nnightVision:{}\nshootingStars:{}\naerialPerspective:{}\nsmoothFluids:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nsunSize:{}\nmoonSize:{}\nnightVision:{}\nshootingStars:{}\naerialPerspective:{}\nnaturalFog:{}\nsmoothFluids:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -482,6 +487,7 @@ impl Graphics {
             bool_text(self.night_vision),
             self.shooting_stars,
             self.aerial_perspective,
+            self.natural_fog,
             bool_text(self.smooth_fluids),
             bool_text(self.hdr),
             self.hdr_paper_white,
@@ -608,6 +614,7 @@ mod tests {
             night_vision: false,
             shooting_stars: 1,
             aerial_perspective: 32,
+            natural_fog: 1,
             smooth_fluids: true,
             hdr: true,
             hdr_paper_white: 240,

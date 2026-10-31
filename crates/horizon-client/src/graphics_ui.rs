@@ -48,6 +48,7 @@ pub enum H {
     NightVision,
     ShootingStars,
     AerialPerspective,
+    NaturalFog,
     SmoothFluids,
     Hdr,
     HdrPaperWhite,
@@ -278,6 +279,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 "RT Lighting: far blocks fade blue into the haze, times real air's.",
             ),
             h(
+                H::NaturalFog,
+                None,
+                "RT Lighting: valley fog at sunrise, mist over cold water.",
+            ),
+            h(
                 H::SmoothFluids,
                 Low,
                 "Water and lava surfaces in one piece: no steps or seams between blocks.",
@@ -465,6 +471,14 @@ impl H {
                     _ => "Frequent",
                 },
             ),
+            H::NaturalFog => labelled(
+                "Natural Fog",
+                match g.natural_fog {
+                    0 => "Off",
+                    1 => "Light",
+                    _ => "Normal",
+                },
+            ),
             H::MoonSize => match g.moon_size {
                 1 => labelled("Moon Size", "1x (Real)"),
                 n => labelled("Moon Size", format!("{n}x")),
@@ -572,6 +586,7 @@ impl H {
             H::ShootingStars => {
                 g.shooting_stars = (g.shooting_stars + if back { 2 } else { 1 }) % 3
             }
+            H::NaturalFog => g.natural_fog = (g.natural_fog + if back { 2 } else { 1 }) % 3,
             H::SmoothFluids => g.smooth_fluids = !g.smooth_fluids,
             H::Hdr => g.hdr = !g.hdr,
             H::BatteryMode => g.battery = !g.battery,
