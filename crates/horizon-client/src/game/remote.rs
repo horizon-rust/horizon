@@ -8939,7 +8939,7 @@ mod tests {
         let items = Items::catalog(&root, none).unwrap();
         let recipes = Recipes::load(&root, &items, none).unwrap();
         let brewing = Brewing::load(&root, &items, none);
-        let banners = Banners::load(&root);
+        let banners = Banners::load(&root, none);
         let station_recipes = StationRecipes::load(&root, &items, none);
         let enchantments = Enchantments::default();
         let names = Names::default();

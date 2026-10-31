@@ -5,6 +5,7 @@
 //! and the loot-condition subset that enchantment requirements use).
 use crate::items::{ItemStack, Items};
 use horizon_core::random::{LegacyRandom, RandomSource};
+use horizon_world::loot::PackOverlay;
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -145,9 +146,10 @@ pub fn level_name(level: u32) -> String {
 }
 
 impl Enchantments {
-    pub fn load(root: &Path) -> Self {
+    pub fn load(root: &Path, overlay: &PackOverlay) -> Self {
         let data = root.join("data/minecraft");
-        let raw_tags = read_tag_dir(&data.join("tags/enchantment"));
+        let mut raw_tags = read_tag_dir(&data.join("tags/enchantment"));
+        overlay.tag_entries("enchantment", &mut raw_tags);
         let tags: HashMap<String, Vec<Arc<str>>> = raw_tags
             .keys()
             .map(|k| {
@@ -168,9 +170,14 @@ impl Enchantments {
                 })
                 .collect()
         };
-        let entity_tags = unordered(read_tag_dir(&data.join("tags/entity_type")));
-        let damage_tags = unordered(read_tag_dir(&data.join("tags/damage_type")));
-        // The registry lists entries sorted by id, like the data-pack loader.
+        let mut entity_raw = read_tag_dir(&data.join("tags/entity_type"));
+        overlay.tag_entries("entity_type", &mut entity_raw);
+        let entity_tags = unordered(entity_raw);
+        let mut damage_raw = read_tag_dir(&data.join("tags/damage_type"));
+        overlay.tag_entries("damage_type", &mut damage_raw);
+        let damage_tags = unordered(damage_raw);
+        // The registry lists entries sorted by id, like the data-pack loader;
+        // the packs' files replace the game's for the same id.
         let mut files: BTreeMap<String, Value> = BTreeMap::new();
         if let Ok(entries) = fs::read_dir(data.join("enchantment")) {
             for e in entries.flatten() {
@@ -181,6 +188,11 @@ impl Enchantments {
                 {
                     files.insert(format!("minecraft:{stem}"), v);
                 }
+            }
+        }
+        for (id, entries) in overlay.kind("enchantment") {
+            if let Ok(v) = serde_json::from_slice::<Value>(PackOverlay::top(entries)) {
+                files.insert(id.to_owned(), v);
             }
         }
         let lang: HashMap<String, String> = fs::read(root.join("assets/minecraft/lang/en_us.json"))

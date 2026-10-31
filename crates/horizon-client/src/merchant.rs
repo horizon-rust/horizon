@@ -8,6 +8,7 @@ use crate::{
     items::{ItemStack, Items},
 };
 use horizon_core::random::{RandomSource, XoroshiroRandom, mix_stafford13, seed_from_hash};
+use horizon_world::loot::PackOverlay;
 use serde_json::Value;
 use std::{collections::HashMap, fs, path::Path, sync::Arc};
 
@@ -471,7 +472,7 @@ fn walk(dir: &Path, base: &Path, out: &mut HashMap<String, Value>) {
     }
 }
 impl Trades {
-    pub fn load(root: &Path) -> Self {
+    pub fn load(root: &Path, overlay: &PackOverlay) -> Self {
         let data = root.join("data/minecraft");
         let (mut trades, mut raw_tags, mut sets) = (HashMap::new(), HashMap::new(), HashMap::new());
         walk(
@@ -491,6 +492,18 @@ impl Trades {
             &data.join("tags/potion"),
             &mut raw_potions,
         );
+        // The world's packs over the game's own: the top pack's file for
+        // each id replaces the rest (`SimpleJsonResourceReloadListener`).
+        let overlay_values =
+            |overlay: &PackOverlay, kind: &str, out: &mut HashMap<String, Value>| {
+                for (id, files) in overlay.kind(kind) {
+                    if let Ok(v) = serde_json::from_slice::<Value>(PackOverlay::top(files)) {
+                        out.insert(id.to_owned(), v);
+                    }
+                }
+            };
+        overlay_values(overlay, "villager_trade", &mut trades);
+        overlay_values(overlay, "trade_set", &mut sets);
         let values = |v: Value| -> Vec<String> {
             v["values"]
                 .as_array()
@@ -499,11 +512,12 @@ impl Trades {
                 .filter_map(|e| e.as_str().map(str::to_owned))
                 .collect()
         };
-        let raw_potions: HashMap<String, Vec<String>> = raw_potions
+        let mut raw_potions: HashMap<String, Vec<String>> = raw_potions
             .into_iter()
             .map(|(k, v)| (k, values(v)))
             .collect();
-        let raw: HashMap<String, Vec<String>> = raw_tags
+        overlay.tag_entries("potion", &mut raw_potions);
+        let mut raw: HashMap<String, Vec<String>> = raw_tags
             .into_iter()
             .map(|(k, v)| {
                 (
@@ -517,6 +531,7 @@ impl Trades {
                 )
             })
             .collect();
+        overlay.tag_entries("villager_trade", &mut raw);
         fn expand(
             name: &str,
             raw: &HashMap<String, Vec<String>>,

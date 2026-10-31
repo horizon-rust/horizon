@@ -102,7 +102,7 @@ fn main() -> Result<()> {
     let items = Items::load(&root, registry, &facts, &PackOverlay::NONE).map_err(step("items"))?;
     let recipes = Recipes::load(&root, &items, &PackOverlay::NONE).map_err(step("recipes"))?;
     let stations = StationRecipes::load(&root, &items, &PackOverlay::NONE);
-    let enchantments = Enchantments::load(&root);
+    let enchantments = Enchantments::load(&root, &PackOverlay::NONE);
     let collisions =
         horizon_client::collisions::load(&root, registry).map_err(step("collisions"))?;
     let loaded = began.elapsed().as_secs_f64() - built;

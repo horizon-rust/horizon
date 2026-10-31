@@ -51,7 +51,7 @@ fn load(root: &std::path::Path) -> Option<Data> {
         )
         .unwrap_or_default(),
         registries: SpawnRegistries::load(root),
-        enchantments: Enchantments::load(root),
+        enchantments: Enchantments::load(root, &horizon_world::loot::PackOverlay::NONE),
         items: Items::tags_only(root, &horizon_world::loot::PackOverlay::NONE).ok()?,
         camel_husk,
     })
