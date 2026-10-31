@@ -12104,6 +12104,7 @@ impl Game<'_> {
                     )
                 });
                 renderer.queue_lods(meshes, lod.removed(), lod.take_cutout());
+                renderer.set_far_terrain(lod);
                 // A finished job can hold hundreds of tiles: spread them
                 // over frames rather than stall one.
                 horizon_client::spans::time("lod_upload", || {

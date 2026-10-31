@@ -43,6 +43,9 @@ struct Rt {
     // x: how many of `moving` are set, y: the seconds into the Eye of Aldhani (below 0 none), z: a
     // full moon's light overhead (paper whites), its meteors' light's unit.
     held: vec4<f32>,
+    // The far field (gfx/far_heights.rs): its window's first texel (x, z), 1 once built (z), the
+    // highest top in it (w, a world Y).
+    far: vec4<f32>,
     // RT lighting's moving lights (a held torch, a burning mob: Remix's held light): camera-relative
     // position and light level (`moving_light`).
     moving: array<vec4<f32>, 8>,
@@ -287,12 +290,12 @@ const MAP_COLORS: array<u32, 62> = array<u32, 62>(
     4993571u, 5001770u, 9321518u, 2430480u, 12398641u, 9715553u, 6035741u, 1474182u,
     3837580u, 5647422u, 1356933u, 6579300u, 14200723u, 8365974u,
 );
-// `HORIZON_RT_DEBUG` 3, 4 or 5 (with tonemap.wgsl's 1 showing the mask): the depth, the facing, the
-// ray alone.
+// `HORIZON_RT_DEBUG` 3, 4, 5 or 7 (with tonemap.wgsl's 1 showing the mask): the depth, the facing,
+// the ray alone, the far field's light toward the sun.
 override DEBUG: u32 = 0u;
 // `HORIZON_RT_SKIP`, a mask of what the kernel leaves out, to time each part alone (the GPU budget,
 // docs/raytracing.md): 1 the sun's ray, 2 the sky and bounced light (ReSTIR GI), 4 the light
-// sources' (ReSTIR DI), 8 the mirrors and water (PSR).
+// sources' (ReSTIR DI), 8 the mirrors and water (PSR), 16 the far field (`far_light`, `far_sky`).
 override SKIP: u32 = 0u;
 
 // Ray-traced shadows (gfx/voxels.rs, docs/raytracing.md): whether world block `v` is in the grid.
@@ -1228,6 +1231,90 @@ fn aldhani_light(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>) -> vec3<f32> {
     let field = rt.held.z * ALDHANI_MOONS * aldhani_envelope(t);
     return m.light.rgb * through * (field * sum * 0.5);
 }
+// The far field (gfx/far_heights.rs, far_field.wgsl): over the terrain's heights around the camera
+// (a texel 2x2 blocks, `FAR_SIZE` a side, toroidal), worked out once for every view, the height
+// under which each texel's column is in the terrain's shadow toward the sun (or the moon) and
+// the caster's distance (`far_light_map`), and how much sky its top sees toward eight directions
+// (`far_sky_map`, `far_sky_map2`). Past the voxel grid the distant terrain's mountains cast
+// their shadows by it and its valleys see less of the sky; within the grid, what lies beyond it
+// still shades the rays that leave it.
+@group(0) @binding(48) var far_light_map: texture_2d<f32>;
+@group(0) @binding(49) var far_sky_map: texture_2d<f32>;
+@group(0) @binding(50) var far_sky_map2: texture_2d<f32>;
+const FAR_SIZE: i32 = 1024;
+// The least distance a ray toward the light goes before the far field takes over (blocks).
+const FAR_START: f32 = 3.0;
+// The far field's four texels around block-relative `o` (x, z: the camera's block's corner is
+// 0), bilinear: their slots and weights; `inside` false off the window.
+struct FarTaps {
+    slots: array<vec2<i32>, 4>,
+    weights: vec4<f32>,
+    inside: bool,
+}
+fn far_taps(o: vec2<f32>) -> FarTaps {
+    let first = vec2<i32>(rt.far.xy);
+    let rel = (vec2<f32>(vec2<i32>(rt.camera.xz) - 2 * first) + o) * 0.5 - 0.5;
+    let base = vec2<i32>(floor(rel));
+    let f = rel - floor(rel);
+    var taps: FarTaps;
+    taps.inside = all(base >= vec2(0)) && all(base + 1 < vec2(FAR_SIZE));
+    for (var i = 0; i < 4; i++) {
+        taps.slots[i] = (first + base + vec2(i & 1, i >> 1u)) & vec2(FAR_SIZE - 1);
+    }
+    taps.weights = vec4((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
+    return taps;
+}
+// The light the distant terrain lets reach camera-relative `pos` from the sun (or the moon),
+// `extra` blocks (horizontally) nearer the light than the point the ray started from: lit above
+// its texel's shadow height (bilinear), the penumbra as wide as the light's disc makes it at the
+// caster's distance (a heightfield's soft shadow).
+fn far_light(pos: vec3<f32>, extra: f32) -> f32 {
+    let l = rt.light.xyz;
+    if rt.far.z < 0.5 || l.y <= 0.0 { return 1.0; }
+    let o = pos + rt.fraction.xyz;
+    let taps = far_taps(o.xz);
+    if !taps.inside { return 1.0; }
+    var shade = vec2(0.0);
+    for (var i = 0; i < 4; i++) {
+        shade += textureLoad(far_light_map, taps.slots[i], 0).rg * taps.weights[i];
+    }
+    // A height under the shadow's at the caster's distance, as an angle (cos^2 of the light's
+    // elevation: the height across the ray), in the disc's radii.
+    let radius = max(rt.sun_light.w, 0.002);
+    let below = (rt.camera.y + o.y - shade.x) * dot(l.xz, l.xz);
+    return smoothstep(-1.0, 1.0, below / ((shade.y + extra) * radius));
+}
+// Where a ray from camera-relative `pos` along `l` leaves the square the grid's rays reach
+// (`reach` blocks each side of the camera).
+fn grid_leave(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> f32 {
+    let along = select(l.xz, vec2(1e-6), abs(l.xz) < vec2(1e-6));
+    let side = select(vec2(-reach), vec2(reach), along > vec2(0.0));
+    let leave = (side - pos.xz) / along;
+    return max(min(leave.x, leave.y), FAR_START);
+}
+// How much of the sky a face of normal `n` at camera-relative `pos` sees over the distant terrain,
+// cosine-weighted as the traced sky rays count it (the mask's `b`): each of the eight directions'
+// share of the sky (bilinear) weighted by how much the face turns to it, and a face sees
+// (1 + n.y) / 2 of the sky's cosine lobe at most (a wall half of it).
+fn far_sky(pos: vec3<f32>, n: vec3<f32>) -> f32 {
+    let taps = far_taps(pos.xz + rt.fraction.xz);
+    if !taps.inside { return -1.0; }
+    var a = vec4(0.0);
+    var b = vec4(0.0);
+    for (var i = 0; i < 4; i++) {
+        a += textureLoad(far_sky_map, taps.slots[i], 0) * taps.weights[i];
+        b += textureLoad(far_sky_map2, taps.slots[i], 0) * taps.weights[i];
+    }
+    var open = 0.0;
+    var weights = 0.0;
+    for (var k = 0; k < 8; k++) {
+        let angle = (f32(k) + 0.5) * 6.2831853 / 8.0;
+        let facing = 1.0 + dot(vec2(cos(angle), sin(angle)), n.xz);
+        open += facing * select(b[k & 3], a[k & 3], k < 4);
+        weights += facing;
+    }
+    return 0.5 * (1.0 + n.y) * open / max(weights, 1e-4);
+}
 // What the rays give the surface depth pixel `p` shows.
 struct Traced {
     // The sun's light reaching it and the light around (r, g), and with RT lighting the sky seen
@@ -1267,16 +1354,42 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
     let reach = 0.5 * rt.grid.z;
     let far = max(abs(pos.x), abs(pos.z));
     let edge = 1.0 - smoothstep(0.75 * reach, reach, far);
-    if edge <= 0.0 {
-        return Traced(select(none.rays, vec4(1.0, 1.0, -1.0, length(pos)), lit_mode), none.blocks, none.direct, none.sun, none.reservoir);
-    }
     // Off the surface by more as the depth's precision falls with distance.
     let lifted = pos + n * (0.02 + 0.002 * length(pos));
+    // The far field: past the grid the heights alone, from the surface (`far_sun`); within it,
+    // what lies beyond the grid, from where the ray leaves it (`beyond`); the band between blends
+    // one into the other as the traced rays fade out.
+    let shadows = rt.mode.y > 0.5 && rt.light.w > 0.0;
+    var far_sun = 1.0;
+    var beyond = 1.0;
+    if shadows && (SKIP & 16u) == 0u {
+        if edge < 1.0 { far_sun = far_light(lifted, 0.0); }
+        if edge > 0.0 {
+            let t = grid_leave(lifted, rt.light.xyz, reach);
+            beyond = far_light(lifted + rt.light.xyz * t, t * length(rt.light.xz));
+        }
+    }
+    var far_seen = -1.0;
+    if lit_mode && edge < 1.0 && rt.far.z > 0.5 && (SKIP & 16u) == 0u { far_seen = far_sky(lifted, n); }
+    if DEBUG == 7u {
+        return Traced(vec4(far_sun * beyond, max(far_seen, 0.0), 0.0, 1.0), none.blocks, none.direct,
+            none.sun, none.reservoir);
+    }
+    let facing = dot(n, rt.light.xyz);
+    let far_facing = select(0.0, far_sun * smoothstep(0.0, 0.15, facing), facing > 0.0);
+    if edge <= 0.0 {
+        if lit_mode {
+            return Traced(vec4(far_sun, 1.0, far_seen, length(pos)), none.blocks, none.direct,
+                vec4(vec3(far_sun), 0.0), none.reservoir);
+        }
+        return Traced(vec4(select(1.0, mix(1.0, far_facing, rt.light.w), shadows), 1.0, 0.0, 1.0),
+            none.blocks, none.direct, none.sun, none.reservoir);
+    }
     var sun = 1.0;
-    if rt.mode.y > 0.5 && rt.light.w > 0.0 {
+    if shadows {
         let v = sun_visibility(lifted, n);
         if DEBUG == 5u { return Traced(vec4(v), none.blocks, none.direct, none.sun, none.reservoir); }
-        sun = mix(1.0, v, rt.light.w * edge);
+        sun = mix(1.0, mix(far_facing, v * beyond, edge), rt.light.w);
     }
     // The ambient occlusion's six short rays, but for RT lighting: its sky and bounced light's rays
     // are the occlusion itself.
@@ -1290,7 +1403,8 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         // distance to recognise the surface by.
         var sun_through = vec3(1.0);
         if rt.mode.y > 0.5 && rt.light.w > 0.0 && (SKIP & 1u) == 0u {
-            sun_through = mix(vec3(1.0), sun_disc_ray(lifted, random2(texel, 2u)), edge);
+            sun_through = mix(vec3(far_sun), sun_disc_ray(lifted, random2(texel, 2u)) * beyond,
+                edge);
         }
         let v = max(sun_through.r, max(sun_through.g, sun_through.b));
         // The sky's and the light sources' light; it fades out toward the grid's edge into the
@@ -1311,7 +1425,9 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         // The sun mask's alpha: the indirect and direct light's luminance squared, its second
         // moment once accumulated, for the denoiser's variance (denoise.wgsl).
         let moment = luminance(sky.rgb + direct.rgb) * luminance(sky.rgb + direct.rgb);
-        return Traced(vec4(v, open, sky.a, length(pos)), blocks, direct, vec4(sun_through, moment),
+        // The sky seen: the traced rays', toward the far field's horizon across the band.
+        let seen = select(sky.a, mix(far_seen, sky.a, edge), far_seen >= 0.0);
+        return Traced(vec4(v, open, seen, length(pos)), blocks, direct, vec4(sun_through, moment),
             reservoir_out);
     }
     return Traced(vec4(sun, open, 0.0, 1.0), none.blocks, none.direct, none.sun, none.reservoir);

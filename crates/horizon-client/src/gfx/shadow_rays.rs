@@ -87,6 +87,7 @@ struct Uniform {
     water: [f32; 4],
     hw_offset: [f32; 4],
     held: [f32; 4],
+    far: [f32; 4],
     moving: [[f32; 4]; MOVING_LIGHTS],
 }
 
@@ -126,6 +127,9 @@ pub struct Rays {
     /// The Eye of Aldhani (`aldhani`): the seconds into it (below 0 none) and a full moon's light
     /// overhead, its meteors' light's unit.
     pub aldhani: [f32; 2],
+    /// The far field (`far_heights::FarHeights::update`): the window's first texel, 1 once built,
+    /// the highest top.
+    pub far: [f32; 4],
 }
 
 impl Rays {
@@ -248,6 +252,8 @@ pub struct ShadowRays {
     views: Vec<ViewMasks>,
     /// Passes run, for the rays' directions to change.
     frame: u32,
+    /// The far field's stand-ins until it is built (`Rays::far` z 0).
+    no_far: [wgpu::TextureView; 3],
 }
 
 impl ShadowRays {
@@ -383,6 +389,9 @@ impl ShadowRays {
                 entry(38, cache_binding),
                 entry(39, storage),
                 entry(47, cache_binding),
+                entry(48, last),
+                entry(49, last),
+                entry(50, last),
             ]
             .into_iter()
             .chain(
@@ -583,6 +592,29 @@ impl ShadowRays {
             aldhani: aldhani.clone(),
             views: Vec::new(),
             frame: 0,
+            no_far: [
+                wgpu::TextureFormat::Rg32Float,
+                wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::TextureFormat::Rgba8Unorm,
+            ]
+            .map(|format| {
+                device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("No far field"),
+                        size: wgpu::Extent3d {
+                            width: 1,
+                            height: 1,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    })
+                    .create_view(&Default::default())
+            }),
         }
     }
 
@@ -712,6 +744,7 @@ impl ShadowRays {
         lights: [&wgpu::Buffer; 3],
         visibility: &wgpu::Buffer,
         sky: &wgpu::TextureView,
+        far: Option<[&wgpu::TextureView; 3]>,
         hardware: Option<Hardware<'_>>,
     ) -> [wgpu::TextureView; 5] {
         let scale = foveation.scale;
@@ -775,6 +808,7 @@ impl ShadowRays {
                 rays.aldhani[1],
                 0.0,
             ],
+            far: rays.far,
             moving: rays.moving,
         };
         uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));
@@ -851,6 +885,9 @@ impl ShadowRays {
                 binding: 47,
                 resource: self.sparse.as_entire_binding(),
             },
+            view(48, far.map_or(&self.no_far[0], |f| f[0])),
+            view(49, far.map_or(&self.no_far[1], |f| f[1])),
+            view(50, far.map_or(&self.no_far[2], |f| f[2])),
         ];
         if let (true, Some(hw)) = (self.hardware, &hardware) {
             entries.extend([

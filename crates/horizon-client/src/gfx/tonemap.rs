@@ -182,14 +182,17 @@ pub struct Tonemap {
     grading: Option<Grading>,
 }
 
-/// `HORIZON_RT_DEBUG=1` or `2` (tonemap.wgsl `DEBUG`), for developing ray-traced shadows.
+/// `HORIZON_RT_DEBUG=1` or `2` (tonemap.wgsl `DEBUG`), for developing ray-traced shadows; the
+/// rays' own views (3, 4, 5, 7: shadow_rays.wgsl) show as the mask (1).
 fn debug_constant() -> (&'static str, f64) {
     (
         "DEBUG",
         std::env::var("HORIZON_RT_DEBUG")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
-            .map_or(0.0, |v| f64::from(if (3..=5).contains(&v) { 1 } else { v })),
+            .map_or(0.0, |v| {
+                f64::from(if (3..=5).contains(&v) || v == 7 { 1 } else { v })
+            }),
     )
 }
 

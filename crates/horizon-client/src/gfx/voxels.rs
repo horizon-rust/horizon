@@ -130,6 +130,37 @@ impl Voxels {
         }
     }
 
+    /// The top of each of chunk column (x, z)'s 256 block columns (index `z * 16 + x`), from its
+    /// sections' blocks: above its highest solid or cutout block (a world Y), `MIN_Y` where none.
+    pub fn column_tops(&self, x: i32, z: i32) -> [i16; 256] {
+        let mut tops = [crate::chunk::MIN_Y as i16; 256];
+        let mut found = [false; 256];
+        let mut left = 256;
+        for sy in (0..SECTIONS as i32).rev() {
+            let Some(occupancy) = self.sections.get(&(x, sy, z)) else {
+                continue;
+            };
+            let base = crate::chunk::MIN_Y + sy * 16;
+            for (i, top) in tops.iter_mut().enumerate() {
+                if found[i] {
+                    continue;
+                }
+                if let Some(y) = (0..16)
+                    .rev()
+                    .find(|&y| occupancy.get(i & 15, y, i >> 4) != crate::occupancy::EMPTY)
+                {
+                    *top = (base + y as i32 + 1) as i16;
+                    found[i] = true;
+                    left -= 1;
+                }
+            }
+            if left == 0 {
+                break;
+            }
+        }
+        tops
+    }
+
     pub fn remove_column(&mut self, x: i32, z: i32) {
         for sy in 0..SECTIONS as i32 {
             let key = (x, sy, z);

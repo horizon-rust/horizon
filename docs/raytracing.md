@@ -186,6 +186,44 @@ counts the blocks right beside a surface.
    Measured on the RTX 4090 at 3440x1440 in the test scene: 4.06 ms GPU with RT lighting, 3.88 ms with the
    shadows alone (RT lighting off). Not yet measured in a headset.
 6. RT AO (done, from the albedo once 1 lands) and MSAA, if its cost on the float scene allows (VR first).
+12. The far field (done): the distant terrain's shadows and sky past the voxel grid. Before it, the traced
+   light faded out from 96 to 128 blocks and the terrain beyond lit itself from the light levels: no
+   shadow, the sky from a dome, a mountain range seen from above as flat as a map. RTX Remix has no far
+   terrain (its rays reach whatever the game draws), so this is the adaptation: what Remix's rays would
+   find there, from the terrain's heights.
+   - `gfx/far_heights.rs`: a height map around the camera, a texel 2x2 blocks (the top of the highest),
+     1024 texels a side (2048 blocks, as far as `lodDistance` 64 chunks), addressed toroidally as the
+     grid is, R16 with a pyramid of maxima in its mip levels (2.8 MB). The resident chunks' tops come
+     from their sections' occupancy (`Voxels::column_tops`), beyond them the drawn distant tiles' cells
+     (`Lod::drawn_columns`). A section meshed again with the same tops writes nothing; one whose tops
+     changed rewrites its 8x8 texels and their maxima up the levels; new distant tiles, a chunk leaving
+     or the camera 128 blocks from the centre rebuild it all (3.3 ms on the CPU), at most twice a second.
+   - `gfx/far_field.wgsl`, once a frame at most and for every view (the screen, each VR eye, foveated or
+     not, read the same textures): for each texel the height under which the terrain shades its column
+     from the sun or the moon and the caster's distance (the highest top along the light's way, each
+     lowered by the light's rise to it: a hierarchical march over the maxima, Tevs et al. 2008), and the
+     sky its top sees toward eight directions (the horizon's steepest rise over twelve distances from 4
+     to 345 blocks, horizon-based occlusion as HBAO and GTAO find it in a depth buffer). The light part
+     runs when the light moves, the sky part when the heights change.
+   - The rays' pass (`shadow_rays.wgsl` `trace`) reads it bilinearly: past the grid a point is lit above
+     its texel's shadow height, the penumbra as wide as the light's disc makes it at the caster's distance;
+     within the grid, the ray toward the light is traced to the grid's edge and the far field takes it on
+     from where it leaves (the far mountains' shadows reach the near terrain at sunset); across the
+     96-128 band the two blend as the traced rays fade, so the grid's square no longer shows. The sky seen
+     (the mask's `b`) is the eight directions' share weighted by how much the face turns to each, which
+     takes the place of the light level's dome in `terrain.wgsl` `rt_shade`.
+   - Measured on the RTX 4090, at sunset (11700 ticks), y = 700 above mountains (seed 1234, near 620, 820),
+     NVIDIA's RTX-Remix-Materials and `parallax:true`, the fogs off, the far field turned on and off every
+     20 seconds in one run (the GPU shared with another game): at 3440x1440 the trace kernel 0.263 ms off,
+     0.269 on looking north-east at 45 degrees, 1.24 off and 1.07 on looking straight down (within the
+     noise); the far field's pass 0.29 ms when it runs whole (light and sky, after the heights changed),
+     0.185 ms a frame while the time of day runs (the light part alone). Fake VR, two eyes of 1648x1328,
+     the same view (head 45 degrees down), in the stretches the GPU wasn't shared: the trace kernel 0.303 to 0.304 ms an eye off, 0.306 to 0.338 on, the frame 2.8 to 3.1 ms an eye either way; the far field's pass about 0.30 ms once for both eyes (the eyes' foveated rays read it as the screen's do). A per-pixel march over the heights (the first try)
+     cost 4.8 ms of trace at 3440x1440 under the same sharing (the sun 1.7, the sky's eight directions 3).
+   - Captures: `docs/media/rt-far-field-down.jpg` (straight down: before, the traced shadow stops at the
+     grid's square; after, the peaks' shadows run on across it) and `docs/media/rt-far-field-ne.jpg`.
+     `HORIZON_RT_SKIP=16` leaves the far field out, `HORIZON_RT_DEBUG=7` shows its light toward the sun
+     (with RT lighting off).
 
 **Next**: that RT lighting mode; soft shadows (a jittered cone and temporal
 accumulation, careful in VR); plants and entities; cascades past the grid; comparing with approach B.
@@ -403,7 +441,7 @@ RTX 4090, with the copy of NVIDIA's RTX Demo world (the player at its spawn), NV
 **How it was timed.** `HORIZON_GPU_PASSES=1` (`gfx/gpu_passes.rs`) writes a GPU timestamp between the frame's
 stages and logs each stage's median every 60 frames, per view (`desktop`, `eye1`, `eye2`); `tools/gpu_passes_report.py
 game.log` sums the reports (`--by-look` one a head pose, `--best 0.25` the shortest-framed ones, for a run that
-shares the GPU). `HORIZON_RT_SKIP` (a mask: 1 the sun's ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR) leaves parts of the
+shares the GPU). `HORIZON_RT_SKIP` (a mask: 1 the sun's ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR, 16 the far field) leaves parts of the
 trace kernel out to time each alone, `HORIZON_RT_SHARP` (degrees) moves the foveation's sharp zone (0: sparse all over,
 180: sharp all over). The head's sweep is `tools/vr_fake_scripts/gpu_budget.txt`.
 
@@ -514,8 +552,8 @@ the `horizon-client-rt.exe` of a player install). Its report is `docs/raytracing
 
 | Effect | Near | Far / fallback | Rays per ray pixel |
 |---|---|---|---|
-| Sun and moon shadows | rays, 1 a pixel or fewer, temporal denoise for the penumbra (a cone of the 0.5° disc) | cascaded shadow maps from the LOD tiles; a heightmap march for the farthest LOD terrain | 1 |
-| Ambient occlusion | short rays (1-2 m) at half resolution, accumulated, multiplied over vanilla's vertex AO | vanilla vertex AO | 2 on a quarter of the pixels = 0.5 |
+| Sun and moon shadows | rays, 1 a pixel or fewer, temporal denoise for the penumbra (a cone of the 0.5° disc) | the far field (done, step 3 item 12): a height map of the resident and LOD terrain to 1024 blocks, its shadow heights worked out once a frame for every view | 1 |
+| Ambient occlusion | short rays (1-2 m) at half resolution, accumulated, multiplied over vanilla's vertex AO | the far field's horizon toward eight directions (done, the sky seen past the grid) | 2 on a quarter of the pixels = 0.5 |
 | Reflections | smooth surfaces only (water, glass, metals, LabPBR smoothness above a threshold): screen space first, a ray when it misses | sky or probe colour | 1 on 10-20 % of pixels = 0.1-0.2 |
 | Global illumination | last: a probe cache (a grid around the camera, rays from probes, a few thousand probes a frame) | vanilla sky and block light | per probe, not per pixel: about 0.3 |
 | Classic | emissive sources (block light, dynamic lights; shadows only for the sun and a few near sources), refraction and caustics, sky, volumetric fog, clouds | | 0 |

@@ -694,9 +694,10 @@ fn rt_traced(pixel: vec2<f32>) -> vec4<f32> {
 // - The sun (by night the moon): its colour where the rays reach, on the material's normal, as
 //   diffuse light and a GGX specular highlight (Fresnel, Smith visibility); through leaves and
 //   plants by their subsurface scattering.
-// - The sky: its colour as much as the face sees of it, by the rays fanned toward it (z of `v`);
-//   where none got there, the sky light level squared from a dome (all of it on tops, 60 % on
-//   sides, a quarter beneath); diffuse, and reflected as much as Fresnel says.
+// - The sky: its colour as much as the face sees of it, by the rays fanned toward it (z of `v`),
+//   past the grid by the terrain's horizon around (shadow_rays.wgsl `far_sky`); where neither
+//   got there, the sky light level squared from a dome (all of it on tops, 60 % on sides, a
+//   quarter beneath); diffuse, and reflected as much as Fresnel says.
 // - Light sources (torches, lava, glowstone): traced, each its colour falling off as the inverse
 //   square of the distance with a shadow ray toward it (`traced`, shadow_rays.wgsl `block_light`);
 //   past the grid or on a frame without this frame's rays, warm light from the block light level
@@ -797,7 +798,7 @@ fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: 
     let open = v.y * m.ao;
     let steps = max(15.0 - light.y, 0.0);
     let level = select(vec3(0.0), BLOCK_LIGHT / ((1.0 + steps) * (1.0 + steps)), light.y > 0.0);
-    let by_level = (rt_sky(normalize(n + vec3(0.0, 1.0, 0.0))) * sky_level * dome + level) * open;
+    let by_level = (rt_sky(normalize(n + vec3(0.0, 1.0, 0.0))) * seen + level) * open;
     let around = mix(by_level, traced.rgb * m.ao, clamp(traced.a, 0.0, 1.0));
     // Reflected: the sky the way the view bounces off the surface, as much as Fresnel says (the
     // rougher, the less of it).
