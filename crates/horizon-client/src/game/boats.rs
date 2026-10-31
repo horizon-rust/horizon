@@ -14,6 +14,7 @@ use horizon_client::{
         leash::{Holder, Pending},
         riders,
     },
+    motion::PassengerFluidBox,
 };
 use horizon_core::{
     geometry::{Aabb, ShapeOp, Vec3, VoxelShape},
@@ -664,6 +665,19 @@ impl Game<'_> {
             }
         }
         false
+    }
+    /// `AbstractBoat.modifyPassengerFluidInteractionBox`: the ridden boat's box
+    /// and whether it is underwater, for `Entity.getFluidInteractionBox`. A boat
+    /// keeps only the part of the passenger's box above its own top, so a boat
+    /// bobbing on water never sinks the passenger's eyes or body.
+    pub(super) fn riding_boat_fluid_box(&self) -> Option<PassengerFluidBox> {
+        self.boats
+            .iter()
+            .find(|b| Some(b.id) == self.riding)
+            .map(|b| PassengerFluidBox {
+                under_water: b.under_water(),
+                bounds: b.bounds(),
+            })
     }
     /// The player's tick while riding: steer, tick the boat, sit in it.
     pub(super) fn tick_riding(&mut self, keys: Keys) -> horizon_client::Result<()> {

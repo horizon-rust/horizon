@@ -46,8 +46,8 @@ use std::{
 pub(crate) mod environment;
 mod fluids;
 pub use fluids::{
-    BubbleColumn, FluidResources, FluidTags, LAVA, PlayerFluids, WATER, bubble_column_at,
-    bubble_column_push,
+    BubbleColumn, FluidResources, FluidTags, LAVA, PassengerFluidBox, PlayerFluids, WATER,
+    bubble_column_at, bubble_column_push,
 };
 
 pub struct MotionResources {
