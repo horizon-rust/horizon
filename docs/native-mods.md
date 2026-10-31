@@ -873,6 +873,20 @@ A model that moves (a turning gun barrel, a thrown projectile) is an `item_displ
 the mod's `.hmod` assets: summon it once, then move and pose it from a tick hook. Easing between ticks happens on each
 client, so a call a tick looks smooth.
 
+### Explosions
+
+`crates/horizon-client/src/game/native_explosions.rs`: a helper for server mods, for the level in place, on a server only. It
+names the level it means by its `dimension` (`minecraft:overworld`), as `native_set_block` does, and is refused when another
+level is in place.
+
+- `native_explode(dimension, center, radius, fire, blast)` sets off an explosion as `Level.explode` with no source entity
+  does: blocks break (`native_explosion_detonate` sees them first and can spare some), entities are hurt and pushed, `fire`
+  lights a third of the air above solid blocks, and nearby players hear and see it. `blast` is `NativeBlast::Keep` (no
+  block breaks), `Block` (drops by `block_explosion_drop_decay`) or `Tnt` (by `tnt_explosion_drop_decay`). It answers false,
+  doing nothing, on a client, for another dimension, a chunk that isn't loaded, or a radius outside `0 < radius <= 32`
+  (TNT is 4, vanilla's largest is 7).
+- A blast set off inside `native_explosion_detonate` runs that hook again, so a mod that chains blasts keeps its own guard.
+
 ### Mod messages
 
 API 40, `crates/horizon-client/src/game/native_net.rs`: bytes between a mod's server half and its client half, on the
