@@ -39,7 +39,7 @@ use glam::{DVec3, Mat4, Vec3};
 /// Pixels a froxel spans on each side (Remix's `froxelGridResolutionScale` is 16).
 pub const TILE: u32 = 16;
 /// Slices along the rays.
-pub const SLICES: u32 = 64;
+pub const SLICES: u32 = 96;
 /// Where the first slice ends and the last slice ends, in blocks (`froxelMaxDistanceMeters` 256).
 pub const NEAR: f32 = 0.5;
 pub const FAR: f32 = 256.0;
