@@ -113,6 +113,9 @@ pub struct Extras {
     pub agent_control: bool,
     /// "Playing Horizon" on the player's Discord profile (`discord_presence`; on by default).
     pub discord_presence: bool,
+    /// The startup splash (fork `NeuHorizon`, `splash`): `full`, `still`
+    /// (no motion: the pool, the stage line and the bar) or `off`.
+    pub startup_splash: String,
 }
 impl Default for Extras {
     fn default() -> Self {
@@ -146,6 +149,7 @@ impl Default for Extras {
             no_ai: false,
             agent_control: false,
             discord_presence: true,
+            startup_splash: "full".into(),
         }
     }
 }
@@ -221,6 +225,9 @@ impl Extras {
                 horizon_core::no_ai::KEY => e.no_ai = flag(e.no_ai),
                 "agentControl" => e.agent_control = flag(e.agent_control),
                 "discordPresence" => e.discord_presence = flag(e.discord_presence),
+                "startupSplash" if ["full", "still", "off"].contains(&value) => {
+                    e.startup_splash = value.to_owned()
+                }
                 _ => {}
             }
         }
@@ -228,7 +235,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\n",
+            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\nstartupSplash:{}\n",
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
             bool_text(self.zoom),
@@ -263,6 +270,7 @@ impl Extras {
             bool_text(self.no_ai),
             bool_text(self.agent_control),
             bool_text(self.discord_presence),
+            self.startup_splash,
         )
     }
     /// Binds the extra key `name` (`SORT_KEY`); false for

@@ -55,10 +55,13 @@ fn read(work: &Path) -> Option<Installed> {
     Some(pack)
 }
 
-/// Whether `work` is a registry pack's folder.
+/// Whether `work` is a registry pack's folder: one of `packs_dir()` with
+/// its record. (A pack ported from another launcher keeps a `pack.json` of
+/// its own, under `ports/`: it is not one.)
 pub fn is_pack(work: &Path) -> bool {
-    // Imported Java packs also have pack.json, with a different record format.
-    read(work).is_some()
+    // Imported Java packs also have a pack.json, with a different record
+    // format: a registry pack is in `packs_dir()` and has its record.
+    work.parent() == Some(packs_dir().as_path()) && read(work).is_some()
 }
 
 /// The profile's game folder.
@@ -186,6 +189,15 @@ pub fn remove(work: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_ported_packs_own_record_is_not_a_registry_pack() {
+        let work = std::env::temp_dir().join(format!("horizon-port-{}", std::process::id()));
+        fs::create_dir_all(&work).unwrap();
+        fs::write(work.join(RECORD), "{}").unwrap();
+        assert!(!is_pack(&work), "a port's pack.json outside horizon-packs/");
+        fs::remove_dir_all(&work).unwrap();
+    }
     use std::io::Write;
 
     /// A local registry: the mod and a pack of it, as `file://` files.

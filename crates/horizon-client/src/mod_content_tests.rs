@@ -319,7 +319,10 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
 fn prepared() -> Option<PathBuf> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     [
-        manifest.join("../../.local/horizon-client/26.3"),
+        manifest.join(format!(
+            "../../.local/horizon-client/{}",
+            horizon_core::VANILLA_VERSION
+        )),
         manifest.join("../../../../.local/horizon-client/26.3"),
     ]
     .into_iter()

@@ -2257,10 +2257,19 @@ pub fn need_prepared(tag: &str) -> Result<(), String> {
 
 /// The client's command, once the owner gate lets it start and its resources are prepared. Past
 /// the gate, a sign-in that can't be renewed (no network, expired) still lets the game start,
-/// offline.
+/// offline. A session another launcher hands over (`HORIZON_SESSION_FILE`) passes the gate.
 pub fn client(tag: &str) -> Result<Command, String> {
-    let (session, offline) = account::session_for_game(&game_home(), false)
-        .map_err(|refused| format!("{refused} Sign in with `horizon-launcher account sign-in`."))?;
+    // A launcher that started us with its own signed-in account
+    // (HORIZON_SESSION_FILE, which the game reads): that account plays.
+    let handed_over = std::env::var_os("HORIZON_SESSION_FILE")
+        .is_some_and(|f| std::path::Path::new(&f).is_file());
+    let (session, offline) = if handed_over {
+        (None, None)
+    } else {
+        account::session_for_game(&game_home(), false).map_err(|refused| {
+            format!("{refused} Sign in with `horizon-launcher account sign-in`.")
+        })?
+    };
     need_prepared(tag)?;
     complete_assets(tag);
     crate::browser::horizon::before_play(&game_home());
@@ -3381,9 +3390,10 @@ pub fn {f}("
             .get_envs()
             .find(|(k, _)| *k == "PIPEWIRE_PROPS")
             .and_then(|(_, v)| v);
-        assert!(props.is_some_and(|v| v
-            .to_string_lossy()
-            .contains("application.name = \"Horizon\"")));
+        assert!(props.is_some_and(|v| {
+            v.to_string_lossy()
+                .contains("application.name = \"Horizon\"")
+        }));
     }
 
     #[test]

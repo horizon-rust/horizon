@@ -816,6 +816,9 @@ mod tests {
             shown: false,
             menu: StartupMenu::default(),
             error: None,
+            splash: None,
+            splash_tried: true,
+            open_at: None,
         }
     }
 

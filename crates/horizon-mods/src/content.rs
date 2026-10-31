@@ -96,7 +96,100 @@ struct BlockFile {
     item: bool,
     #[serde(default)]
     components: BTreeMap<String, serde_json::Value>,
+    /// Its own states (fork `NeuHorizon`), in place of the template's.
+    #[serde(default)]
+    states: Option<BlockStates>,
 }
+
+/// A block's own states (fork `NeuHorizon`), in place of its template's:
+/// the template then gives each state's other facts (behaviour, sounds,
+/// hardness...), from its default state. States go as Minecraft's
+/// `StateDefinition` makes them: properties by name, the last one changing
+/// fastest, values in their listed order.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BlockStates {
+    pub properties: BTreeMap<String, PropertyValues>,
+    /// The default state's values; a property not named has its first.
+    #[serde(default)]
+    pub default: BTreeMap<String, String>,
+    /// The shapes, in sixteenths of a block: a state takes the first rule
+    /// whose `when` it matches; a state no rule matches has the template's.
+    #[serde(default)]
+    pub shapes: Vec<ShapeRule>,
+    /// Light emitted by state (`lightLevel`): the first rule that matches;
+    /// otherwise `properties.light` or the template's.
+    #[serde(default)]
+    pub light: Vec<LightRule>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LightRule {
+    #[serde(default)]
+    pub when: BTreeMap<String, OneOrMore>,
+    pub light: u8,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum PropertyValues {
+    Named(Vec<String>),
+    /// `{"integer": [min, max]}`.
+    Integer {
+        integer: [u32; 2],
+    },
+}
+
+impl PropertyValues {
+    pub fn values(&self) -> Vec<String> {
+        match self {
+            PropertyValues::Named(v) => v.clone(),
+            PropertyValues::Integer { integer: [a, b] } => {
+                (*a..=*b).map(|v| v.to_string()).collect()
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum OneOrMore {
+    One(String),
+    More(Vec<String>),
+}
+
+impl OneOrMore {
+    pub fn contains(&self, v: &str) -> bool {
+        match self {
+            OneOrMore::One(x) => x == v,
+            OneOrMore::More(xs) => xs.iter().any(|x| x == v),
+        }
+    }
+}
+
+/// A box: `[x1, y1, z1, x2, y2, z2]` in sixteenths (`Block.box`).
+pub type Box16 = [f64; 6];
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ShapeRule {
+    /// The states it is for: each property named has one of these values.
+    #[serde(default)]
+    pub when: BTreeMap<String, OneOrMore>,
+    /// The outline (what the cursor shows and picks).
+    pub outline: Vec<Box16>,
+    /// What entities collide with; the outline if not given.
+    #[serde(default)]
+    pub collision: Option<Vec<Box16>>,
+    /// Whether it hides the faces of blocks it touches and blocks light;
+    /// by default only a full cube does.
+    #[serde(default)]
+    pub occludes: Option<bool>,
+}
+
+/// The most states one block declares.
+pub const MAX_BLOCK_STATES: usize = 4096;
 fn yes() -> bool {
     true
 }
@@ -117,6 +210,8 @@ pub struct Block {
     pub item: bool,
     /// Its item's component patch, as an [`Item`]'s.
     pub components: BTreeMap<String, serde_json::Value>,
+    /// Its own states, in place of the template's.
+    pub states: Option<BlockStates>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -137,6 +232,9 @@ struct ItemFile {
     #[serde(default)]
     components: BTreeMap<String, serde_json::Value>,
     crafting_remainder: Option<String>,
+    /// The block it places (a `BlockItem` of another id: seeds).
+    #[serde(default)]
+    places: Option<String>,
 }
 
 /// An item the mod adds: a vanilla template item's components under a new
@@ -153,6 +251,8 @@ pub struct Item {
     /// What it leaves in the crafting grid (`Item.Properties.craftRemainder`):
     /// a vanilla item or one of the mod's own.
     pub crafting_remainder: Option<String>,
+    /// The block it places, if it places one.
+    pub places: Option<String>,
 }
 
 /// `MobEffectCategory`.
@@ -385,6 +485,7 @@ impl Content {
                 default_state: file.default_state,
                 item: file.item,
                 components: file.components,
+                states: file.states,
             });
         }
         let mut remainders = Vec::new();
@@ -415,6 +516,7 @@ impl Content {
                 rarity: file.rarity,
                 components: file.components,
                 crafting_remainder: file.crafting_remainder,
+                places: file.places,
             });
         }
         for (effect, name) in effects {
@@ -530,6 +632,84 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
     {
         return Err("component \"minecraft:rarity\" is common, uncommon, rare or epic".into());
     }
+    if let Some(states) = &file.states {
+        check_states(states)?;
+    }
+    Ok(())
+}
+
+fn check_states(states: &BlockStates) -> Result<(), String> {
+    let name_ok = |n: &str| {
+        !n.is_empty()
+            && n.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    };
+    let mut count = 1usize;
+    for (name, values) in &states.properties {
+        if !name_ok(name) {
+            return Err(format!("states: property {name:?} is not a-z, 0-9 and _"));
+        }
+        let values = values.values();
+        if values.is_empty() || values.iter().any(|v| !name_ok(v)) {
+            return Err(format!("states: {name} needs values of a-z, 0-9 and _"));
+        }
+        if values.iter().collect::<BTreeSet<_>>().len() != values.len() {
+            return Err(format!("states: {name} has a value twice"));
+        }
+        count = count.saturating_mul(values.len());
+    }
+    if count > MAX_BLOCK_STATES {
+        return Err(format!(
+            "states: {count} states, more than {MAX_BLOCK_STATES}"
+        ));
+    }
+    let has = |p: &str, v: &str| {
+        states
+            .properties
+            .get(p)
+            .is_some_and(|vs| vs.values().iter().any(|x| x == v))
+    };
+    for (p, v) in &states.default {
+        if !has(p, v) {
+            return Err(format!("states: default {p}={v} is not a value"));
+        }
+    }
+    for rule in &states.shapes {
+        for (p, v) in &rule.when {
+            let values = match v {
+                OneOrMore::One(x) => vec![x.clone()],
+                OneOrMore::More(xs) => xs.clone(),
+            };
+            if let Some(bad) = values.iter().find(|x| !has(p, x)) {
+                return Err(format!("states: shape for {p}={bad}, not a value"));
+            }
+        }
+        for b in rule.outline.iter().chain(rule.collision.iter().flatten()) {
+            let ok = b
+                .iter()
+                .all(|v| v.is_finite() && (-16.0..=32.0).contains(v))
+                && b[0] < b[3]
+                && b[1] < b[4]
+                && b[2] < b[5];
+            if !ok {
+                return Err(format!("states: box {b:?} is not min < max within -16..32"));
+            }
+        }
+    }
+    for rule in &states.light {
+        if rule.light > 15 {
+            return Err("states: light is 0 to 15".into());
+        }
+        for (p, v) in &rule.when {
+            let values = match v {
+                OneOrMore::One(x) => vec![x.clone()],
+                OneOrMore::More(xs) => xs.clone(),
+            };
+            if let Some(bad) = values.iter().find(|x| !has(p, x)) {
+                return Err(format!("states: light for {p}={bad}, not a value"));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -565,7 +745,7 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, u64)>) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::Package;
+    use crate::manifest::{Manifest, Package};
 
     const MANIFEST_TEXT: &str = r#"
 id = "ruby"
@@ -623,6 +803,7 @@ capabilities = ["registries"]
                 },
                 item: true,
                 components: BTreeMap::new(),
+                states: None,
             }]
         );
         assert_eq!(content.items[0].id, "ruby:ruby");

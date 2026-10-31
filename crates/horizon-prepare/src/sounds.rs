@@ -325,7 +325,7 @@ fn copy_indexed(
         }
     }
     let mut total: u64 = 0;
-    let mut copies = Vec::with_capacity(wanted.len());
+    let mut jobs = Vec::with_capacity(wanted.len());
     for (name, info) in &wanted {
         let hash = info
             .get("hash")
@@ -340,30 +340,49 @@ fn copy_indexed(
             .ok_or_else(|| format!("Unsafe asset name {name:?} in the asset index"))?;
         let source = object_path(&assets.store, hash)?;
         let destination = assets.target.join("assets").join(relative);
-        let import = crate::files::Import::stage(
-            &source,
-            &destination,
-            hash,
-            "sha1",
-            assets.verified.contains(&destination),
-        )
-        .map_err(|error| {
-            if !source.is_file() {
-                format!(
-                    "Missing asset object {}. Play the pinned version once in your launcher.",
-                    source.display()
-                )
-            } else if error.contains(" is not the pinned file:") {
-                format!(
-                    "Corrupt asset object {}; let the launcher repair it: {error}",
-                    source.display()
-                )
-            } else {
-                error
-            }
-        })?;
-        copies.push((import, destination));
+        let verified = assets.verified.contains(&destination);
+        jobs.push((hash, source, destination, verified));
         total += size;
+    }
+    // Copied and checked on every core: one after another, the sounds alone
+    // (377 MB) took seconds on one.
+    let stage = |(hash, source, destination, verified): &(&str, PathBuf, PathBuf, bool)| {
+        crate::files::Import::stage(source, destination, hash, "sha1", *verified)
+            .map(|import| (import, destination.clone()))
+            .map_err(|error| {
+                if !source.is_file() {
+                    format!(
+                        "Missing asset object {}. Play the pinned version once in your launcher.",
+                        source.display()
+                    )
+                } else if error.contains(" is not the pinned file:") {
+                    format!(
+                        "Corrupt asset object {}; let the launcher repair it: {error}",
+                        source.display()
+                    )
+                } else {
+                    error
+                }
+            })
+    };
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let chunk = jobs.len().div_ceil(threads).max(1);
+    let staged: Vec<Result<Vec<_>, String>> = std::thread::scope(|s| {
+        let parts: Vec<_> = jobs
+            .chunks(chunk)
+            .map(|part| s.spawn(move || part.iter().map(stage).collect()))
+            .collect();
+        parts
+            .into_iter()
+            .map(|p| {
+                p.join()
+                    .unwrap_or_else(|_| Err("an asset copy stopped unexpectedly".into()))
+            })
+            .collect()
+    });
+    let mut copies = Vec::with_capacity(jobs.len());
+    for part in staged {
+        copies.extend(part?);
     }
     // Check the entire set before replacing any placeholders: a missing late face
     // must not leave a mixture of real textures and gray faces in either entry point.

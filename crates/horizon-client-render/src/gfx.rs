@@ -905,7 +905,7 @@ fn mip_chain(
 /// conformance version: Mesa's hasvk, which drives Ivy Bridge and Haswell,
 /// reports 0.0.0.0 while it works. `open_device` asks for them only on a second
 /// try at a backend that had no adapter at all.
-fn instance_descriptor(
+pub fn instance_descriptor(
     backends: wgpu::Backends,
     window: Option<&Arc<Window>>,
     allow_nonconformant: bool,
