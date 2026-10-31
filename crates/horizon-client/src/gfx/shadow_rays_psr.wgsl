@@ -79,15 +79,10 @@ fn hw_face(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwFace {
 // the walls it crossed (shadow_rays_hw.wgsl `glass_wall`: each one's colour over its thickness
 // along the bent ray, deeper where the ray slants; the far face's Fresnel, the near face's being
 // the glass's shader's): a window shifts what is behind it by its thickness. Where the glass lies
-// against a solid block the ray meets that block inside it. Added to it, what the glass itself
-// scatters toward the eye of the sun on the face the sun lights (`GLASS_SCATTER` of what its
-// colour takes out, through that colour): stained glass glows in its colour with the sun on it or
-// behind it, clear glass hardly at all, black glass not at all. rgb that
-// light, a the length run inside; 0 where the ray stays caught in the glass or meets no face
-// within 32 blocks (the glass's shader then blends what was drawn behind it).
-// How much of the light its pigment takes out of the light crossing glass that it scatters
-// instead: Horizon's own, where Remix's translucent material has none.
-const GLASS_SCATTER: f32 = 0.25;
+// against a solid block the ray meets that block inside it. rgb that light; a 1 plus how much of
+// the sun's beam reaches the far face (0 to 1, for the glass's shader to spread the sun's light
+// through it over its roughness: terrain.wgsl `rt_glass_at`), or 0 where the ray stays caught in
+// the glass or meets no face within 32 blocks (the shader then blends what was drawn behind it).
 fn hw_refract_glass(ray: vec3<f32>) -> vec4<f32> {
     let n = glass_at.xyz;
     let g = vec4(glass_sigma, 0.0);
@@ -96,12 +91,10 @@ fn hw_refract_glass(ray: vec3<f32>) -> vec4<f32> {
     var dir = refract(ray, n, 1.0 / GLASS_INDEX);
     // The near wall (its Fresnel is the shader's): its colour over its thickness along the bent ray.
     var absorbed = exp(-g.rgb * GLASS_WALL / max(-dot(dir, n), 0.05));
-    var inside = 0.0;
     var out = false;
     for (var i = 0u; i < 4u; i++) {
         let f = hw_face(pos, dir, 32.0);
         if f.t < 0.0 { break; }
-        inside += f.t;
         if f.solid {
             pos += dir * max(f.t - 0.01, 0.0);
             out = true;
@@ -126,24 +119,19 @@ fn hw_refract_glass(ray: vec3<f32>) -> vec4<f32> {
         break;
     }
     if !out { return vec4(0.0); }
-    // The sun on the near face, or on the far one (the glass lying against no block there); clear
-    // glass, which scatters next to nothing, spares the ray.
-    let taken = 1.0 - dot(absorbed, vec3(0.2126, 0.7152, 0.0722));
-    var lit = vec3(0.0);
-    if taken >= 0.1 && rt.light.w > 0.0 {
-        if dot(n, rt.light.xyz) > 0.0 {
-            lit = sun_on(entry + n * 0.02, n);
-        } else if dot(pos - entry, n) < 0.0 {
-            lit = sun_on(pos - n * 0.02, -n);
-        }
+    // The sun's beam on the far face, where the sun is behind the glass on the side the eye looks
+    // (its light through the glass reaches the eye only near the sun's direction).
+    var beam = 0.0;
+    let l = rt.light.xyz;
+    if rt.light.w > 0.0 && dot(n, l) < 0.0 && dot(ray, l) > 0.3 && dot(pos - entry, n) < 0.0 {
+        beam = luminance(hw_light(pos, l, 4096.0));
     }
-    let glow = lit * absorbed * GLASS_SCATTER * taken;
     let h = hw_hit(pos, dir, 256.0);
-    if h.t < 0.0 { return vec4(sky_at(dir) * h.through * absorbed + glow, max(inside, 0.01)); }
+    if h.t < 0.0 { return vec4(sky_at(dir) * h.through * absorbed, 1.0 + beam); }
     let seen = pos + dir * h.t;
     let lifted = seen + h.normal * 0.02;
     var light = sun_on(lifted, h.normal);
     let last = cached_on(seen, h.normal);
     light += select(open_light(lifted, h.normal, seen), last.rgb, last.a >= 0.0);
-    return vec4(absorbed * h.through * h.albedo * light + glow, max(inside, 0.01));
+    return vec4(absorbed * h.through * h.albedo * light, 1.0 + beam);
 }

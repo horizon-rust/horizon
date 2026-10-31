@@ -1357,8 +1357,10 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
     let bottom = rt_bottom(g.clip, ray);
     let behind = clamp(select(8.0, bottom - distance, bottom > 0.0), 0.05, 6.0);
     var refracted = vec4(0.0);
+    var beam = 0.0;
     if globals.rt_motion.w > 1.5 {
         let centre = rt_refracted(g.clip);
+        beam = max(centre.a - 1.0, 0.0);
         if centre.a > 0.0 {
             let at = g.clip + rt_shift(g.pos, outward, ray, behind);
             // A rough face spreads what it lets through over about its GGX alpha: four taps
@@ -1409,6 +1411,26 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
         shows *= 1.0 - g.alpha;
     }
     if refracted.a > 0.0 {
+        // The sun behind the glass: its beam through both walls (their colour along the bent ray,
+        // the far face's Fresnel and the second diffuse layer; the near face's are in `shows`),
+        // spread over the lobe the faces' roughness gives it (GGX, each face turning the light by
+        // (1 - 1/n) of its facets' tilt). Nothing is added: the glass reflects what Fresnel says,
+        // lets through what its colour does and absorbs the rest, and this lobe is that let-through
+        // sunlight seen from its direction (it sums to what the floor behind receives): a sharp sun
+        // through clear glass, a wide glow through frosted glass.
+        if beam > 0.0 {
+            let colour = select(clamp(g.albedo, vec3(0.0), vec3(1.0)), vec3(1.0 - g.alpha), plain)
+                * GLASS_TRANSMITTANCE;
+            let slant = max(dot(inward, -g.face), 0.2);
+            let walls = pow(max(colour, vec3(1e-3)), vec3(1.0 / slant)) * (1.0 - rt_glass_fresnel(nv));
+            let spread = max(alpha * 2.0 * (1.0 - 1.0 / GLASS_INDEX), 0.01);
+            let s2 = spread * spread;
+            let c = max(dot(ray, l), 0.0);
+            let d = c * c * (s2 - 1.0) + 1.0;
+            let lobe = min(s2 / (d * d), 200.0);
+            refracted = vec4(refracted.rgb
+                + globals.rt_sun_light.rgb * globals.rt_light.w * beam * walls * lobe, 1.0);
+        }
         return WaterLight(added + shows * refracted.rgb, vec3(0.0), 1.0);
     }
     let opacity = clamp(1.0 - dot(shows, vec3(0.2126, 0.7152, 0.0722)), 0.02, 1.0);
