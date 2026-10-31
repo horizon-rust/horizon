@@ -146,8 +146,8 @@ pub struct FogUniform {
     /// x: the valley fog's density scale (0: none), y: the steam fog's, z: the humidity, w: how
     /// far the valley fog has lifted (0..1).
     pub fog: [f32; 4],
-    /// x: how far it has formed (its pool's depth, 0..1), y: the water's temperature less the
-    /// air's, z: the sun's warmth (0..1), w: unused.
+    /// x: how far it has formed (its pool's depth, 0..1), y: the air's temperature in a temperate
+    /// biome, z: the sun's warmth (0..1), w: a temperate lake's water's (degrees Celsius).
     pub fog2: [f32; 4],
 }
 
@@ -167,32 +167,70 @@ impl NaturalFog {
         let sun = self.sun_height.clamp(0.0, 1.0).sqrt();
         FogUniform {
             fog: [scale * amount, scale, w.humidity, dissipated],
-            fog2: [formed, w.water_temperature - w.air_temperature, sun, 0.0],
+            fog2: [formed, w.air_temperature, sun, w.water_temperature],
         }
     }
 }
 
-/// A biome's climate for the fogs: how humid (its downfall, wetter for rivers and swamps), how
-/// calm its water (a lake, a river: 1; the open sea: 0.5) and how much colder than a temperate
-/// biome its air is (degrees Celsius; vanilla's temperature 0.8 the plains', 0 the snowy ones).
-pub fn biome_climate(name: &str, downfall: f32, temperature: f32) -> (f32, f32, f32) {
+/// A biome's climate for the fogs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BiomeClimate {
+    /// How humid: its downfall, wetter for rivers and swamps.
+    pub humid: f32,
+    /// How calm its water: a lake, a river 1; the open sea 0.5.
+    pub calm: f32,
+    /// How much warmer than a temperate biome's its air is (degrees Celsius).
+    pub air: f32,
+    /// How much warmer than `FogWeather::water_temperature` (a temperate lake's) its water is.
+    pub water: f32,
+}
+
+/// A biome's climate for the fogs, from its name and vanilla's downfall and temperature (0.8 the
+/// plains', 0 the snowy ones). The steam fog needs air far colder than the water under it, so:
+/// a lake or a river is warmer than the morning air (its water keeps the days' warmth, half its
+/// biome's offset); the seas each have their own water and the air over them, and their wind
+/// mixes the cold air away (the sea's water counts 6 degrees cooler): a warm or temperate sea
+/// hardly steams, a polar one under arctic air does (sea smoke).
+pub fn biome_climate(name: &str, downfall: f32, temperature: f32) -> BiomeClimate {
     let name = name.rsplit(':').next().unwrap_or(name);
     let wet = if name.contains("swamp") || name.contains("river") {
         0.35
     } else {
         0.0
     };
-    let calm = if name.contains("ocean") || name.contains("beach") {
-        0.5
+    let humid = (downfall * 1.1 + wet).clamp(0.0, 1.4);
+    const WIND: f32 = -6.0;
+    let (calm, air, water) = if name.contains("ocean") {
+        let (air, water) = if name.contains("warm_ocean") && !name.contains("lukewarm") {
+            (18.0, 14.0)
+        } else if name.contains("lukewarm") {
+            (10.0, 6.0)
+        } else if name.contains("cold") {
+            (-6.0, -6.0)
+        } else if name.contains("frozen") {
+            (-20.0, -11.0)
+        } else {
+            (0.0, 0.0)
+        };
+        (0.5, air, water + WIND)
     } else {
-        1.0
+        let air = biome_temperature_offset(temperature);
+        if name.contains("beach") {
+            (0.5, air, 0.5 * air + WIND)
+        } else {
+            (1.0, air, 0.5 * air)
+        }
     };
-    (
-        (downfall * 1.1 + wet).clamp(0.0, 1.4),
+    BiomeClimate {
+        humid,
         calm,
-        biome_temperature_offset(temperature),
-    )
+        air,
+        water,
+    }
 }
+
+/// How much warmer water lying on a block that heats it (magma) is than its biome's.
+pub const HEATED_WATER: f32 = 30.0;
 
 /// The air's temperature in a biome of vanilla's `temperature`, relative to a temperate one.
 pub fn biome_temperature_offset(temperature: f32) -> f32 {
@@ -210,6 +248,9 @@ pub struct FogColumn {
     pub humid: f32,
     pub calm: f32,
     pub cold: f32,
+    /// Its water's warmth over a temperate lake's (`BiomeClimate::water`, `HEATED_WATER` more over
+    /// magma).
+    pub warmth: f32,
 }
 
 /// A layer finished: where it lies, and its texels (shape then climate, `MAP_SIZE` squared each).
@@ -451,6 +492,7 @@ pub fn finish(columns: &[Option<FogColumn>], texel: f32) -> Vec<[f32; 4]> {
         humid: 0.0,
         calm: 0.0,
         cold: 0.0,
+        warmth: 0.0,
     };
     let known: Vec<FogColumn> = known.into_iter().map(|c| c.unwrap_or(plain)).collect();
     let surface: Vec<f32> = known.iter().map(|c| c.surface).collect();
@@ -465,11 +507,14 @@ pub fn finish(columns: &[Option<FogColumn>], texel: f32) -> Vec<[f32; 4]> {
     let top = blur(&top, radius);
     let mut texels = Vec::with_capacity(2 * n * n);
     texels.extend((0..n * n).map(|i| [known[i].ground, surface[i], top[i], floor[i]]));
-    texels.extend(
-        known
-            .iter()
-            .map(|c| [c.humid, if c.water { c.calm } else { 0.0 }, c.cold, 0.0]),
-    );
+    texels.extend(known.iter().map(|c| {
+        [
+            c.humid,
+            if c.water { c.calm } else { 0.0 },
+            c.cold,
+            if c.water { c.warmth } else { 0.0 },
+        ]
+    }));
     texels
 }
 
@@ -537,12 +582,35 @@ mod tests {
 
     #[test]
     fn deserts_are_dry_and_snow_is_cold() {
-        let (desert, _, warm) = biome_climate("minecraft:desert", 0.0, 2.0);
-        let (swamp, _, _) = biome_climate("minecraft:swamp", 0.9, 0.8);
-        let (_, sea, cold) = biome_climate("minecraft:frozen_ocean", 0.5, 0.0);
-        assert!(desert < 0.1 && swamp > 1.0);
-        assert!(warm > 0.0 && cold < -10.0);
-        assert_eq!(sea, 0.5);
+        let desert = biome_climate("minecraft:desert", 0.0, 2.0);
+        let swamp = biome_climate("minecraft:swamp", 0.9, 0.8);
+        let polar = biome_climate("minecraft:frozen_ocean", 0.5, 0.0);
+        assert!(desert.humid < 0.1 && swamp.humid > 1.0);
+        assert!(desert.air > 0.0 && polar.air < -10.0);
+        assert_eq!(polar.calm, 0.5);
+    }
+
+    #[test]
+    fn lakes_and_polar_seas_steam_at_dawn_warm_and_temperate_seas_hardly() {
+        // The water less the air at dawn (the shader's), the steam fog showing from about 2 and
+        // thick from 9.
+        let dawn = FogWeather::natural(0, 6.0, 0.0);
+        let excess = |name: &str, temperature: f32| {
+            let c = biome_climate(name, 0.5, temperature);
+            (dawn.water_temperature + c.water) - (dawn.air_temperature + c.air)
+        };
+        assert!(excess("minecraft:plains", 0.8) > 7.0);
+        assert!(excess("minecraft:river", 0.5) > 7.0);
+        assert!(excess("minecraft:frozen_ocean", 0.0) > 7.0);
+        for sea in [
+            "minecraft:ocean",
+            "minecraft:deep_ocean",
+            "minecraft:warm_ocean",
+            "minecraft:lukewarm_ocean",
+            "minecraft:cold_ocean",
+        ] {
+            assert!(excess(sea, 0.5) < 2.5, "{sea}");
+        }
     }
 
     #[test]
@@ -559,6 +627,7 @@ mod tests {
                     humid: 1.0,
                     calm: 1.0,
                     cold: 0.0,
+                    warmth: 0.0,
                 })
             })
             .collect();
@@ -585,6 +654,7 @@ mod tests {
                 humid: 0.5,
                 calm: 1.0,
                 cold: 0.0,
+                warmth: 0.0,
             })
         };
         assert!(maps.step(camera, 1000, flat).is_none());
