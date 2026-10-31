@@ -51,25 +51,29 @@ pub fn buffer(device: &wgpu::Device) -> wgpu::Buffer {
 /// path's lean) when the sun stands `sun_angle` degrees past noon, on today's date (the
 /// environment's `HORIZON_SKY_DATE=YYYY-MM-DD` another, to see the sky of a season).
 pub fn frame(sun_angle: f32, latitude: f32) -> Mat4 {
+    let local_hours = (12.0 + f64::from(sun_angle) / 15.0).rem_euclid(24.0);
+    sky_turn(days(), local_hours, latitude)
+}
+
+/// The sky's date in days since J2000: now, or `HORIZON_SKY_DATE`'s noon.
+pub fn days() -> f64 {
     static DATE: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
     let date = *DATE.get_or_init(|| {
         std::env::var("HORIZON_SKY_DATE")
             .ok()
             .and_then(|d| days_of(&d))
     });
-    let days = date.unwrap_or_else(|| {
+    date.unwrap_or_else(|| {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0.0, |d| d.as_secs_f64() / 86400.0)
             + 2_440_587.5
             - 2_451_545.0
-    });
-    let local_hours = (12.0 + f64::from(sun_angle) / 15.0).rem_euclid(24.0);
-    sky_turn(days, local_hours, latitude)
+    })
 }
 
 /// `YYYY-MM-DD`'s noon in days since J2000 (the Julian day of the Gregorian date).
-fn days_of(date: &str) -> Option<f64> {
+pub(super) fn days_of(date: &str) -> Option<f64> {
     let mut parts = date.trim().splitn(3, '-').map(str::parse::<i64>);
     let (y, m, d) = (
         parts.next()?.ok()?,

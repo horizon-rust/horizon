@@ -18,8 +18,10 @@ const METEORS: u64 = 32768;
 /// The sky's tiles a side and the streaks a tile holds at most (`ALDHANI_TILES`, `ALDHANI_TILE_CAP`).
 const TILES: u64 = 64;
 const TILE_CAP: u64 = 256;
-/// The event's seconds (`ALDHANI_EVENT`).
+/// The event's seconds (`ALDHANI_EVENT`), and the seconds its stream's front takes to cross the
+/// sky (`ALDHANI_SWEEP`): the sky by the eye fills and empties that much later.
 pub const EVENT: f32 = 300.0;
+pub const SWEEP: f32 = 35.0;
 /// A slot's seconds: at most one meteor each, so 8000 a second at the storm's height, burning for
 /// one to two seconds each (the slots looked back over, all but the long ones', cover 3.6 s, past
 /// the longest a meteor lasts, 2.8 s).
@@ -28,6 +30,7 @@ const SLOT: f32 = 1.0 / 8000.0;
 /// two holds an earthgrazer, 128 a second, their 4096 slots covering 16 s, past the longest, 15 s.
 const LONG: u64 = 4096;
 const LONG_SLOT: f32 = 1.0 / 256.0;
+const _: () = assert!(LONG as f32 * LONG_SLOT >= 15.0, "the long slots cover the longest earthgrazer");
 /// The tiles' words: their counts, their lists, then the glow summed and blurred, red, green and
 /// blue (`ALDHANI_GLOW_SUM`, `ALDHANI_GLOW_BLUR`).
 const GLOW_SUM: u64 = TILES * TILES + TILES * TILES * TILE_CAP;
@@ -178,14 +181,14 @@ impl Aldhani {
         if self.passes.is_none() {
             return Err("the Eye of Aldhani needs HORIZON_METEORS=aldhani");
         }
-        self.start = seconds.map(|s| now - s.clamp(0.0, EVENT));
+        self.start = seconds.map(|s| now - s.clamp(0.0, EVENT + SWEEP));
         Ok(())
     }
 
     /// The seconds into the event at clock time `now`, while it runs.
     pub fn time(&mut self, now: f32) -> Option<f32> {
         let t = now - self.start?;
-        if !(0.0..=EVENT).contains(&t) {
+        if !(0.0..=EVENT + SWEEP).contains(&t) {
             self.start = None;
             return None;
         }
@@ -306,6 +309,7 @@ mod tests {
             ("ALDHANI_METEORS", super::METEORS),
             ("ALDHANI_TILES", super::TILES),
             ("ALDHANI_TILE_CAP", super::TILE_CAP),
+            ("ALDHANI_LONG", super::LONG),
         ] {
             assert!(
                 source.contains(&format!("const {name}: u32 = {value}u;")),
@@ -313,5 +317,6 @@ mod tests {
             );
         }
         assert!(source.contains(&format!("const ALDHANI_EVENT: f32 = {:.1};", super::EVENT)));
+        assert!(source.contains(&format!("const ALDHANI_SWEEP: f32 = {:.1};", super::SWEEP)));
     }
 }

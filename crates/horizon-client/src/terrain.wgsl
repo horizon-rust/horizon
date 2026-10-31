@@ -385,9 +385,10 @@ const ALDHANI_GLOW_UNIT: f32 = 1024.0;
 const ALDHANI_REACH: f32 = 0.012;
 // The event's seconds: the storm builds over a minute, holds, and dies out over the last minute.
 const ALDHANI_EVENT: f32 = 300.0;
-// Where the meteors come from: a fixed direction of the world, due south eight degrees under the
-// horizon, far behind it, so the streaks rise out of the haze beyond the mountains and fan out
-// upward and outward over the whole sky.
+// Where the meteors go (the eye): a fixed direction of the world, due south eight degrees under
+// the horizon, far beyond it. They fly away from the observer toward it, their streaks converging
+// on it as they shrink into the haze beyond the mountains (their radiant, the opposite point, is
+// eight degrees over the northern horizon, behind the observer facing the eye).
 const ALDHANI_RADIANT: vec3<f32> = vec3<f32>(0.0, -0.1392, 0.99027);
 // The light the field gives a face turned to it at the storm's height, in full moons (the moon's
 // light overhead, `rt.held.z`), and the glow of the sky around the radiant at its brightest, in
@@ -1638,11 +1639,11 @@ struct DebugLineOut {
     let d = view_ray(in.ndc);
     let sky = rt_sky(d);
     let pixel = length(fwidth(d));
-    // What lies beyond the Moon (the Milky Way, the meteors far behind it in the Eye's storm too,
-    // their streaks drawn over the whole sky) it hides, even new and dark; the air before it not.
-    let beyond = (rt_milky_way(d, sky, pixel) + rt_meteor(d, sky, pixel) + aldhani_streaks(d, pixel))
-        * rt_moon_hides(d, pixel);
-    return vec4(sky + rt_sun_disc(d) + rt_moon_disc(d) + rt_glare(d) + beyond, 1.0);
+    // What lies beyond the Moon (the Milky Way) it hides, even new and dark; the air before it
+    // not, nor the meteors burning in it, a hundred kilometres up, in front of the Moon.
+    let beyond = rt_milky_way(d, sky, pixel) * rt_moon_hides(d, pixel);
+    return vec4(sky + rt_sun_disc(d) + rt_moon_disc(d) + rt_glare(d) + beyond
+        + rt_meteor(d, sky, pixel) + aldhani_streaks(d, pixel), 1.0);
 }
 // 0 toward the Moon's disc (above the horizon), 1 off it, over a pixel at its edge.
 fn rt_moon_hides(d: vec3<f32>, pixel: f32) -> f32 {
@@ -1670,9 +1671,33 @@ struct StarOut {
     let magnitude = f32(packed & 255u) / 25.0 - 2.0;
     let kelvin = f32(packed >> 8u) * 100.0;
     let d = normalize((globals.rt_star_frame * vec4(vec3<f32>(star.xyz) / 32767.0, 0.0)).xyz);
+    if globals.rt_stars.w <= 0.0 || d.y <= 0.0 { return out; }
+    let airmass = 1.0 / max(d.y + 0.025, 0.03);
+    return rt_sky_point(vertex, d, magnitude, star_colour(kelvin) * rt_scintillation(id, airmass));
+}
+// RT lighting's planets (gfx/sky_planets.rs): Mercury to Uranus where their orbits put them on
+// the sky's date, turned with the stars, drawn like them by their magnitude, coloured by the
+// sunlight their surfaces give back. They hardly twinkle: a planet's disc, a few to tens of
+// arcseconds, spans many of the air's cells, whose flickers average out; only through the thick
+// air near the horizon does a little of the star's flicker show.
+@vertex fn vs_rt_planet(@builtin(vertex_index) vertex: u32, @builtin(instance_index) id: u32,
+    @location(0) planet: vec4<f32>, @location(1) colour: vec4<f32>) -> StarOut {
+    var out: StarOut;
+    out.clip = vec4(0.0, 0.0, 2.0, 1.0);
+    let d = normalize((globals.rt_star_frame * vec4(planet.xyz, 0.0)).xyz);
+    if globals.rt_stars.w <= 0.0 || d.y <= 0.0 { return out; }
+    let airmass = 1.0 / max(d.y + 0.025, 0.03);
+    let low = 0.12 * smoothstep(10.0, 30.0, airmass);
+    let twinkle = mix(vec3(1.0), rt_scintillation(id + 20011u, airmass), low);
+    return rt_sky_point(vertex, d, planet.w, colour.rgb * twinkle);
+}
+// A point of light on the night sky (a star's, a planet's) toward `d` (above the horizon), of
+// magnitude `magnitude` and colour `colour` (its flicker in it): its quad's corner `vertex`.
+fn rt_sky_point(vertex: u32, d: vec3<f32>, magnitude: f32, colour: vec3<f32>) -> StarOut {
+    var out: StarOut;
+    out.clip = vec4(0.0, 0.0, 2.0, 1.0);
     let brightness = globals.rt_stars.w;
-    if brightness <= 0.0 || d.y <= 0.0 { return out; }
-    // The Moon passes in front of the stars (an occultation), dark when new.
+    // The Moon passes in front of the stars and planets (an occultation), dark when new.
     let moon = normalize(globals.rt_moon.xyz);
     if moon.y > -0.01 && dot(d, moon) > cos(globals.rt_moon.w) { return out; }
     let sky = rt_sky(d);
@@ -1680,11 +1705,10 @@ struct StarOut {
     // Through the air: airmass over the zenith's, more of the blue lost (the stars redden low).
     let airmass = 1.0 / max(d.y + 0.025, 0.03);
     let air = exp(-vec3(0.12, 0.18, 0.3) * airmass);
-    let twinkle = rt_scintillation(id, airmass);
     // Paper whites at the quad's middle: a magnitude 0 star 20 (the eye adapted to the night),
     // each magnitude 2.5 times dimmer.
     let flux = 20.0 * pow(10.0, -0.4 * magnitude);
-    out.light = star_colour(kelvin) * (flux * brightness * glare * twinkle) * air;
+    out.light = colour * (flux * brightness * glare) * air;
     if max(out.light.r, max(out.light.g, out.light.b)) < 0.004 { return out; }
     let corners = array<vec2<f32>, 6>(vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0),
         vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
