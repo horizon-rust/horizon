@@ -1014,8 +1014,7 @@ fn bindings(
             .iter()
             .position(|i| i.def.sampler.as_deref() == Some(s.name.as_str()));
         let (src, sample_type, dimension) = match custom {
-            _ if image.is_some() => {
-                let k = image.unwrap();
+            _ if let Some(k) = image => {
                 let i = &pack.images[k];
                 (Source::Image(k), i.sample_type(features), i.dimension)
             }

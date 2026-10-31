@@ -6069,8 +6069,7 @@ impl Renderer {
                 _ if pack_draws_water => {}
                 // LevelRenderer.executeOit in place of the classic blend; what
                 // follows draws over its composite in a pass of its own.
-                flat if oit.is_some() => {
-                    let oit = oit.unwrap();
+                flat if let Some(oit) = oit => {
                     drop(pass);
                     // LevelRenderer.executeOitWaterMask and CloudRenderer.renderOit.
                     let mask = |pass: &mut wgpu::RenderPass<'_>| {
