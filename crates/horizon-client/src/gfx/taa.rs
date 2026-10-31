@@ -284,6 +284,14 @@ impl Taa {
         jitter(frame)
     }
 
+    /// The last resolved frame of view `view` (linear light, before the exposure), while its
+    /// history runs: what the water's and the glass's screen-space reflections read
+    /// (terrain.wgsl `rt_screen_reflection`).
+    pub fn last_color(&self, view: usize) -> Option<wgpu::TextureView> {
+        let history = self.views.get(view)?.as_ref()?;
+        history.camera?;
+        Some(history.color[history.last].clone())
+    }
     /// Frees the histories (RT lighting is off, or the title is up): 120 MB at 3440x1440.
     pub fn release(&mut self) {
         self.views.clear();

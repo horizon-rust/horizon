@@ -131,6 +131,60 @@ fn rt_reflection(pixel: vec2<f32>, pos: vec3<f32>) -> vec4<f32> {
     let at = clamp(vec2<i32>(pixel / globals.rt_motion.xy * size), vec2(0), vec2<i32>(size) - 1);
     return textureLoad(rt_reflect, at, 0);
 }
+// The view's last resolved frame (gfx/taa.rs `last_color`, linear light; 1x1 without the temporal
+// resolve), for the screen-space reflections.
+@group(0) @binding(24) var rt_scene: texture_2d<f32>;
+// A screen-space reflection, where the rays have none (past the 8 chunks their structures hold, or
+// a ray that found nothing there): the reflected ray from camera-relative `pos` along `dir`
+// marched across the screen in growing steps (half a block to a kilometre) against this frame's
+// solid depth (`rt_depth`, reversed: its linear distance is the clip w times the ratio of the
+// depths), refined by halving where it passes behind a surface by less than the step, and the
+// light there read from the view's last resolved frame (the scene a frame old: far off, as good
+// as this one's). rgb that light, a its weight: fading out at the screen's edges, 0 where the ray
+// leaves the screen, turns behind the camera or meets nothing (the sky then shows, as before).
+fn rt_screen_reflection(pos: vec3<f32>, dir: vec3<f32>) -> vec4<f32> {
+    if globals.rt_motion.w < 1.5 || textureDimensions(rt_scene).x < 2u { return vec4(0.0); }
+    let size = vec2<f32>(textureDimensions(rt_depth));
+    var near = 0.0;
+    var far = 0.5;
+    var found = false;
+    for (var i = 0; i < 24; i++) {
+        let c = globals.view_proj * vec4(pos + dir * far, 1.0);
+        if c.w <= 1e-3 { return vec4(0.0); }
+        let ndc = c.xy / c.w;
+        if any(abs(ndc) > vec2(1.0)) { return vec4(0.0); }
+        let at = clamp(vec2<i32>(vec2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y) * size), vec2(0),
+            vec2<i32>(size) - 1);
+        let depth = textureLoad(rt_depth, at, 0);
+        let ray_depth = c.z / c.w;
+        if depth > ray_depth {
+            // The surface there is nearer than the ray's point: by how much, in blocks.
+            let behind = c.w - c.w * ray_depth / depth;
+            if behind < max(far - near, 0.5) {
+                found = true;
+                break;
+            }
+        }
+        near = far;
+        far *= 1.35;
+    }
+    if !found { return vec4(0.0); }
+    for (var i = 0; i < 5; i++) {
+        let mid = 0.5 * (near + far);
+        let c = globals.view_proj * vec4(pos + dir * mid, 1.0);
+        let ndc = c.xy / c.w;
+        let at = clamp(vec2<i32>(vec2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y) * size), vec2(0),
+            vec2<i32>(size) - 1);
+        if textureLoad(rt_depth, at, 0) > c.z / c.w { far = mid; } else { near = mid; }
+    }
+    let c = globals.view_proj * vec4(pos + dir * far, 1.0);
+    let ndc = c.xy / c.w;
+    let scene = vec2<f32>(textureDimensions(rt_scene));
+    let at = clamp(vec2<i32>(vec2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y) * scene), vec2(0),
+        vec2<i32>(scene) - 1);
+    let edge = 1.0 - smoothstep(0.85, 1.0, max(abs(ndc.x), abs(ndc.y)));
+    return vec4(textureLoad(rt_scene, at, 0).rgb, edge);
+}
 // How many sprite arrays hold layers (a pipeline constant): 1 for vanilla,
 // which then samples exactly as before.
 override SPRITE_ARRAYS: u32 = 1u;
@@ -1217,7 +1271,13 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
     }
     if globals.rt_motion.w > 1.5 {
         let traced = rt_reflection(in.clip, in.pos);
-        if traced.a > 0.5 { reflected = traced.rgb; }
+        if traced.a > 0.5 {
+            reflected = traced.rgb;
+        } else {
+            // Past the rays' structures: what the screen shows that way (`rt_screen_reflection`).
+            let seen = rt_screen_reflection(in.pos, mirrored);
+            reflected = mix(reflected, seen.rgb, seen.a);
+        }
         // HORIZON_RT_DEBUG=9: the traced reflection alone (magenta: none, the sky's).
         if globals.rt_mode.y > 2.5 && globals.rt_mode.y < 3.5 {
             return WaterLight(select(vec3(1.0, 0.0, 1.0), traced.rgb, traced.a > 0.5), vec3(0.0),
@@ -1810,7 +1870,12 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
         let shift = rt_shift(g.pos, mirrored, reflect(ray, g.face), 4.0);
         var traced = rt_reflection(g.clip + shift, g.pos);
         if traced.a < 0.5 { traced = rt_reflection(g.clip, g.pos); }
-        if traced.a > 0.5 { reflected = traced.rgb; }
+        if traced.a > 0.5 {
+            reflected = traced.rgb;
+        } else {
+            let seen = rt_screen_reflection(g.pos, mirrored);
+            reflected = mix(reflected, seen.rgb, seen.a);
+        }
     }
     // The sun's glint (GGX, the glass's roughness, a smooth face's at least 0.02).
     let l = globals.rt_light.xyz;

@@ -804,6 +804,7 @@ fn terrain_group(
     milky_way: &wgpu::TextureView,
     aldhani: &aldhani::Aldhani,
     rain: &wgpu::Buffer,
+    scene: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     let view = |binding, view| wgpu::BindGroupEntry {
         binding,
@@ -855,6 +856,7 @@ fn terrain_group(
                 binding: 23,
                 resource: rain.as_entire_binding(),
             },
+            view(24, scene),
         ],
     })
 }
@@ -1728,6 +1730,17 @@ impl Renderer {
                 entry(22, wgpu::ShaderStages::VERTEX_FRAGMENT, aldhani_storage),
                 // RT lighting's rain map (`rain`): the drops, the wet surfaces and the puddles.
                 entry(23, vf, aldhani_storage),
+                // The view's last resolved frame (taa.rs `last_color`), for the screen-space
+                // reflections where the rays have none (terrain.wgsl `rt_screen_reflection`).
+                entry(
+                    24,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
                 // The sky table: the stars read it where they are (vs_rt_star).
                 entry(
                     14,
@@ -2286,6 +2299,7 @@ impl Renderer {
             &milky_way_map,
             &aldhani,
             rain.map(),
+            &rt_history_unused,
         );
         let crosshair_group = terrain_group(
             &device,
@@ -2307,6 +2321,7 @@ impl Renderer {
             &milky_way_map,
             &aldhani,
             rain.map(),
+            &rt_history_unused,
         );
         let index_quads = 1 << 16;
         let indices = Self::quad_indices(&device, index_quads);
@@ -4174,7 +4189,7 @@ impl Renderer {
         self.rt_aerial = aerial as f32;
     }
     fn rebuild_terrain_groups(&mut self) {
-        self.terrain_groups_with(None, None, None, None, None, None);
+        self.terrain_groups_with(None, None, None, None, None, None, None);
     }
     /// RT lighting's rays on this frame: the solid terrain's `draws` into a depth of the world
     /// target's `size`, then the rays' pass on it; returns the mask and the light sources' light
@@ -4257,7 +4272,9 @@ impl Renderer {
         )
     }
     /// The terrain's groups, with `history` (RT lighting's last light for the view drawn, or this
-    /// frame's) and `blocks` (this frame's light from the light sources).
+    /// frame's), `blocks` (this frame's light from the light sources) and `scene` (the view's last
+    /// resolved frame, for the screen-space reflections).
+    #[allow(clippy::too_many_arguments)]
     fn terrain_groups_with(
         &mut self,
         history: Option<&wgpu::TextureView>,
@@ -4266,6 +4283,7 @@ impl Renderer {
         depth: Option<&wgpu::TextureView>,
         reflection: Option<&wgpu::TextureView>,
         refraction: Option<&wgpu::TextureView>,
+        scene: Option<&wgpu::TextureView>,
     ) {
         let views = sprite_views(
             &self.sprite_textures,
@@ -4278,6 +4296,7 @@ impl Renderer {
         let depth = depth.unwrap_or(&self.rt_depth_unused);
         let reflection = reflection.unwrap_or(&self.rt_history_unused);
         let refraction = refraction.unwrap_or(&self.rt_history_unused);
+        let scene = scene.unwrap_or(&self.rt_history_unused);
         self.group = terrain_group(
             &self.device,
             "Horizon terrain resources",
@@ -4298,6 +4317,7 @@ impl Renderer {
             &self.milky_way_map,
             &self.aldhani,
             self.rain.map(),
+            scene,
         );
         self.crosshair_group = terrain_group(
             &self.device,
@@ -4319,6 +4339,7 @@ impl Renderer {
             &self.milky_way_map,
             &self.aldhani,
             self.rain.map(),
+            scene,
         );
     }
     /// This frame's ray-traced shadows: the grid written up to date, the light's direction (the
@@ -5014,7 +5035,7 @@ impl Renderer {
         };
         if self.rt_lighting {
             let mask = rt_history.as_ref().map(|h| h.2.clone());
-            self.terrain_groups_with(mask.as_ref(), None, None, None, None, None);
+            self.terrain_groups_with(mask.as_ref(), None, None, None, None, None, None);
         }
         let rt_history = rt_history.map(|(view_proj, camera, _)| (view_proj, camera));
         // RT lighting's real sun and sky: the sky table follows the sun; the light traced toward is
@@ -6186,6 +6207,7 @@ impl Renderer {
                 .iter()
                 .find(|(s, _)| *s == world_size)
                 .map(|(_, d)| d.clone());
+            let scene = self.taa.last_color(rt_view);
             self.terrain_groups_with(
                 Some(&mask),
                 Some(&blocks),
@@ -6193,6 +6215,7 @@ impl Renderer {
                 depth.as_ref(),
                 Some(&reflection),
                 Some(&refraction),
+                scene.as_ref(),
             );
             let motion = [world_size[0] as f32, world_size[1] as f32, 0.0, 2.0];
             self.uploads.buffer(
