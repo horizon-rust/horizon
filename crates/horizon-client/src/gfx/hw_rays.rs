@@ -684,6 +684,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_three_copies_of_the_water_waves_are_the_same() {
+        let waves = |text: &'static str| {
+            let start = text.find("fn water_hash(").expect("the sea state");
+            let end = text.find("fn water_waves(").expect("the waves");
+            // Whatever line endings the checkout gave each file.
+            text[start..end].replace('\r', "")
+        };
+        let shown = waves(include_str!("../terrain.wgsl"));
+        assert_eq!(shown, waves(include_str!("shadow_rays_hw.wgsl")));
+        assert_eq!(shown, waves(include_str!("froxels_hw.wgsl")));
+    }
+
+    #[test]
     fn the_shaders_read_as_many_arena_pages_as_are_bound() {
         for text in [
             include_str!("shadow_rays_hw.wgsl"),

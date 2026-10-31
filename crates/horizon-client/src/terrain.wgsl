@@ -1006,27 +1006,62 @@ fn water_wave(p: vec2<f32>, t: f32, footprint: f32, d: vec4<f32>, w: vec2<f32>) 
 fn water_sum(a: WaterSurface, b: WaterSurface) -> WaterSurface {
     return WaterSurface(a.height + b.height, a.slope + b.slope, a.curvature + b.curvature);
 }
+// The sea state varies over the water, as wind and fetch make it vary on a real lake: three gains
+// on the waves' slopes, smooth over the swell's 230 m, the wind sea's 70 m and the ripples' 23 m
+// (the cat's paws, gusts drifting with the wind), about a mean of 1 (0.4 to 1.6, 0.15 to 1.85), from
+// a value noise of the world position (no period: a lake 16 km across never shows the same water
+// twice). The gains change slowly enough for their own slopes to be neglected.
+fn water_hash(c: vec2<i32>) -> f32 {
+    var h = (u32(c.x) * 0x8da6b343u) ^ (u32(c.y) * 0xd8163841u);
+    h = (h ^ (h >> 15u)) * 0x2c1b3c6du;
+    h = (h ^ (h >> 12u)) * 0x297a2d39u;
+    return f32((h ^ (h >> 15u)) & 0xffffu) / 65535.0;
+}
+fn water_noise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = p - i;
+    let u = f * f * (3.0 - 2.0 * f);
+    let c = vec2<i32>(i);
+    return mix(mix(water_hash(c), water_hash(c + vec2(1, 0)), u.x),
+        mix(water_hash(c + vec2(0, 1)), water_hash(c + vec2(1, 1)), u.x), u.y);
+}
+fn water_sea(q: vec2<f32>, t: f32) -> vec3<f32> {
+    let swell = water_noise(q / 233.0 + vec2(0.003, 0.001) * t);
+    let wind = water_noise(q / 71.0 + vec2(17.3, 5.1) + vec2(0.006, -0.004) * t);
+    let gusts = water_noise(q / 23.0 + vec2(-3.7, 11.9) + vec2(0.045, 0.02) * t);
+    // The wind's gains contrast more than the swell's: calm slicks beside rippled patches.
+    let patches = smoothstep(vec2(0.15), vec2(0.85), vec2(wind, gusts));
+    return vec3(0.4 + 1.2 * swell, 0.15 + 1.7 * patches);
+}
 fn water_surface(q: vec2<f32>, t: f32, footprint: f32) -> WaterSurface {
     var s = WaterSurface(0.0, vec2(0.0), vec3(0.0));
-    // The crests are not straight lines: a slow swirl bends the coordinates every wave is read at
-    // (its own slopes are neglected: the bend is gentle, 20 % at most).
-    let p = q + 0.6 * vec2(sin(0.31 * q.y + 0.23 * t + 1.3), sin(0.27 * q.x - 0.19 * t));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(0.92106, 0.38942, 1.0400, 0.02600), vec2(1.9165, 0.0)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.94221, 0.33503, 1.3000, 0.03250), vec2(2.1427, 2.1)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(0.46845, -0.88349, 1.6250, 0.04063), vec2(2.3956, 4.2)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(0.25138, 0.96789, 2.0312, 0.05078), vec2(2.6784, 6.3)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.83916, -0.54389, 2.5391, 0.06000), vec2(2.9946, 8.4)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(0.98616, -0.16580, 3.1738, 0.06000), vec2(3.3481, 10.5)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.61516, 0.78840, 3.9673, 0.06000), vec2(3.7433, 12.6)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.07896, -0.99688, 4.9591, 0.06000), vec2(4.1853, 14.7)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(0.73160, 0.68173, 6.1989, 0.06000), vec2(4.6796, 16.8)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.99996, -0.00849, 7.7486, 0.06000), vec2(5.2323, 18.9)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(0.74308, -0.66921, 9.6858, 0.06000), vec2(5.8506, 21.0)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.09587, 0.99539, 12.1072, 0.06000), vec2(6.5425, 23.1)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.60169, -0.79873, 15.1340, 0.06000), vec2(7.3170, 25.2)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(0.98320, 0.18252, 18.9175, 0.05286), vec2(8.1846, 27.3)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.84827, 0.52956, 23.6469, 0.04229), vec2(9.1574, 29.4)));
-    s = water_sum(s, water_wave(p, t, footprint, vec4(0.26778, -0.96348, 29.5586, 0.03383), vec2(10.2503, 31.5)));
+    // The crests are not straight lines: a slow swirl bends the coordinates every wave is read at,
+    // and a noise over a hundred metres and thirty turns their lines on the scale of a lake, so
+    // they never run parallel far (its own slopes are neglected: it turns them by a few degrees).
+    let swirl = 0.6 * vec2(sin(0.31 * q.y + 0.23 * t + 1.3), sin(0.27 * q.x - 0.19 * t));
+    let bend = 12.0 * (vec2(water_noise(q / 97.0 + vec2(31.1, 7.7)),
+        water_noise(q / 97.0 + vec2(-12.4, 23.5))) - 0.5)
+        + 3.6 * (vec2(water_noise(q / 29.0 + vec2(5.3, -19.2)),
+        water_noise(q / 29.0 + vec2(40.6, 2.9))) - 0.5);
+    let p = q + swirl + bend;
+    // The sea state there: the swell's, the wind sea's and the ripples' gains (`water_sea`).
+    let g = water_sea(q, t);
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.92106, 0.38942, 1.0400, 0.02600 * g.x), vec2(1.9165, 0.0)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.94221, 0.33503, 1.3000, 0.03250 * g.x), vec2(2.1427, 2.1)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.46845, -0.88349, 1.6250, 0.04063 * g.x), vec2(2.3956, 4.2)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.25138, 0.96789, 2.0312, 0.05078 * g.x), vec2(2.6784, 6.3)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.83916, -0.54389, 2.5391, 0.06000 * g.x), vec2(2.9946, 8.4)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.98616, -0.16580, 3.1738, 0.06000 * g.y), vec2(3.3481, 10.5)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.61516, 0.78840, 3.9673, 0.06000 * g.y), vec2(3.7433, 12.6)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.07896, -0.99688, 4.9591, 0.06000 * g.y), vec2(4.1853, 14.7)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.73160, 0.68173, 6.1989, 0.06000 * g.y), vec2(4.6796, 16.8)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.99996, -0.00849, 7.7486, 0.06000 * g.y), vec2(5.2323, 18.9)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.74308, -0.66921, 9.6858, 0.06000 * g.y), vec2(5.8506, 21.0)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.09587, 0.99539, 12.1072, 0.06000 * g.z), vec2(6.5425, 23.1)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.60169, -0.79873, 15.1340, 0.06000 * g.z), vec2(7.3170, 25.2)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.98320, 0.18252, 18.9175, 0.05286 * g.z), vec2(8.1846, 27.3)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(-0.84827, 0.52956, 23.6469, 0.04229 * g.z), vec2(9.1574, 29.4)));
+    s = water_sum(s, water_wave(p, t, footprint, vec4(0.26778, -0.96348, 29.5586, 0.03383 * g.z), vec2(10.2503, 31.5)));
     return s;
 }
 // The height and the slopes along x and z, for the shaders that only look at the surface.
@@ -1045,12 +1080,14 @@ fn water_footprint(pos: vec3<f32>, face: vec3<f32>) -> f32 {
 // The slope variance (both axes summed) of the waves `water_surface` fades out at `footprint`: what
 // the pixel still sees of them, as roughness (Toksvig's, a LEAN map's variance), so far water turns
 // into a soft, rough mirror (wider glints, a softer Fresnel) and keeps the light the ripples
-// scattered instead of dropping it. The same wavenumbers and slopes as the sixteen waves.
-fn water_lost_slope(footprint: f32) -> f32 {
+// scattered instead of dropping it. The same wavenumbers and slopes as the sixteen waves, in the
+// sea state `sea` (`water_sea`).
+fn water_lost_slope(footprint: f32, sea: vec3<f32>) -> f32 {
     var lost = 0.0;
     var k = 1.04;
     for (var i = 0; i < 16; i++) {
-        let a = min(1.0 / k, 0.06 * min(1.0, k / 2.4));
+        let a = min(1.0 / k, 0.06 * min(1.0, k / 2.4))
+            * select(select(sea.z, sea.y, i < 11), sea.x, i < 5);
         let fade = 1.0 - smoothstep(1.5, 4.0, k * footprint);
         lost += 0.5 * a * a * (1.0 - fade * fade);
         k *= 1.25;
@@ -1227,7 +1264,7 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
     if face.y > 0.5 {
         let footprint = water_footprint(in.pos, face);
         let w = water_waves(world.xz, globals.rt_water.z, footprint);
-        rough = water_lost_slope(footprint);
+        rough = water_lost_slope(footprint, water_sea(world.xz, globals.rt_water.z));
         // The rain's ripples where it falls on this water (`rain_ripples`).
         let r = rt_rain_ripples(in.pos);
         // On the face as drawn: far off it leans with the Earth's curvature.
