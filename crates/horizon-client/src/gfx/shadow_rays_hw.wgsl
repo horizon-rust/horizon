@@ -347,8 +347,10 @@ const WATER_PURE_ABSORPTION: vec3<f32> = vec3(0.30, 0.045, 0.012);
 // The nearest opaque triangle from camera-relative `pos` along `l` (unit) within `reach`, as
 // Remix's bounce rays meet it: its distance (-1 none), its face's normal toward the ray, its
 // texel's colour times the vertex tint in light (the grid's map colour past the first arena page
-// or sprite array), and what the translucent triangles before it let through.
+// or sprite array), and what the translucent triangles before it let through; the light
+// sources' light by its block light level in `hw_level`.
 fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
+    hw_level = vec3(0.0);
     var q: ray_query;
     rayQueryInitialize(&q, terrain, RayDesc(0x0u, NO_CLOUDS, 0.0, reach, pos + rt.hw_offset.xyz, l));
     var through = vec3(1.0);
@@ -381,6 +383,11 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
         let f = cross(hw_position(base + 1u) - p0, hw_position(base + 2u) - p0);
         if dot(f, f) > 1e-12 { n = normalize(f); }
         let texel = hw_texel(hit, base);
+        // The light sources' light by the quad's block light level (the light's high byte, 16
+        // a level), the steps from the light it stands for squared (terrain.wgsl `rt_shade`'s law).
+        let block = f32((arena_at(base, 4u) >> 24u) & 255u) / 16.0;
+        let steps = max(15.0 - block, 0.0);
+        hw_level = select(vec3(0.0), HW_BLOCK_LIGHT / ((1.0 + steps) * (1.0 + steps)), block > 0.0);
         if texel.a >= 0.0 {
             let w = arena_at(base, 5u);
             let tint = vec3(f32(w & 255u), f32((w >> 8u) & 255u), f32((w >> 16u) & 255u)) / 255.0;
@@ -393,6 +400,33 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
         albedo = max(map_albedo(cell), vec3(0.0));
     }
     return HwHit(hit.t, n, albedo, through);
+}
+// The light sources' light on the surface `hw_hit` last met by its block light level (terrain.wgsl
+// `BLOCK_LIGHT` over the square of the steps from the light), which what the primary surface
+// replacement sees takes where the radiance cache holds less (`hw_seen_light`): the cache's cell,
+// coarser, averages the light near a lamp with the dark around it.
+var<private> hw_level: vec3<f32>;
+const HW_BLOCK_LIGHT: vec3<f32> = vec3(3.0, 1.9, 0.9);
+// The light other than the sun's on a surface the primary surface replacement sees (`hw_hit`'s,
+// at camera-relative `seen`, normal `n`): the radiance cache's, or the open sky's guess, at least
+// its block light level's (`hw_level`); on a light source itself and what touches it (a
+// lantern, a torch, a lamp, in `lights`: within a block of its point), at least that source's
+// light at point-blank range as the pixels' own rays give it (`light_path`, no shadow ray so
+// close), which the cache's coarse cell averages away: it shines as seen directly.
+fn hw_seen_light(seen: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    let lifted = seen + n * 0.02;
+    let last = cached_on(seen, n);
+    var light = max(select(open_light(lifted, n, seen), last.rgb, last.a >= 0.0), hw_level);
+    let local = lifted + rt.camera.xyz + rt.fraction.xyz - vec3(rt.grid.x, -64.0, rt.grid.y);
+    let words = light_cell(local);
+    for (var k = 0; k < 8; k++) {
+        let i = cell_light(words, k);
+        if i == 0u { continue; }
+        if distance(lights[i - 1u].at.xyz, local) < 1.0 {
+            light = max(light, light_path(i, local, n, vec3(0.0)).light);
+        }
+    }
+    return light;
 }
 // Arena vertex `v`'s section-relative position.
 fn hw_position(v: u32) -> vec3<f32> {
@@ -458,9 +492,6 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     let h = hw_hit(start, r, 512.0);
     if h.t < 0.0 { return vec4(0.0); }
     let seen = start + r * h.t;
-    let lifted = seen + h.normal * 0.02;
-    var light = sun_on(lifted, h.normal);
-    let last = cached_on(seen, h.normal);
-    light += select(open_light(lifted, h.normal, seen), last.rgb, last.a >= 0.0);
+    let light = sun_on(seen + h.normal * 0.02, h.normal) + hw_seen_light(seen, h.normal);
     return vec4(h.through * h.albedo * light, 1.0);
 }

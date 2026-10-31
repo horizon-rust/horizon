@@ -31,10 +31,7 @@ fn hw_refract(p: vec2<i32>) -> vec4<f32> {
         return vec4(sky_at(bent) * h.through, 0.01);
     }
     let seen = start + bent * h.t;
-    let lifted = seen + h.normal * 0.02;
-    var light = sun_on(lifted, h.normal);
-    let last = cached_on(seen, h.normal);
-    light += select(open_light(lifted, h.normal, seen), last.rgb, last.a >= 0.0);
+    let light = sun_on(seen + h.normal * 0.02, h.normal) + hw_seen_light(seen, h.normal);
     // From above, the distance in the water; from below, the ray is already out of it.
     return vec4(h.through * h.albedo * light, select(0.01, max(h.t, 0.01), inside));
 }
@@ -129,9 +126,6 @@ fn hw_refract_glass(ray: vec3<f32>) -> vec4<f32> {
     let h = hw_hit(pos, dir, 256.0);
     if h.t < 0.0 { return vec4(sky_at(dir) * h.through * absorbed, 1.0 + beam); }
     let seen = pos + dir * h.t;
-    let lifted = seen + h.normal * 0.02;
-    var light = sun_on(lifted, h.normal);
-    let last = cached_on(seen, h.normal);
-    light += select(open_light(lifted, h.normal, seen), last.rgb, last.a >= 0.0);
+    let light = sun_on(seen + h.normal * 0.02, h.normal) + hw_seen_light(seen, h.normal);
     return vec4(absorbed * h.through * h.albedo * light, 1.0 + beam);
 }
