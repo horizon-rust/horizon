@@ -411,6 +411,61 @@ pub(crate) struct NativeZoom {
     pub(crate) turn: f32,
 }
 
+/// The camera shake native mods ask for (`native_camera_shake`): turns in
+/// degrees, and an offset in blocks along the camera's right, up and back.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct NativeShake {
+    pub(crate) pitch: f32,
+    pub(crate) yaw: f32,
+    pub(crate) roll: f32,
+    pub(crate) offset: [f32; 3],
+}
+
+/// The largest turn a shake gives, in degrees, on each axis.
+const SHAKE_MAX_DEGREES: f32 = 10.0;
+/// The largest offset a shake gives, in blocks, along each axis.
+const SHAKE_MAX_OFFSET: f32 = 0.5;
+
+/// `shake` scaled by `scale` (Distortion Effects) and bounded on each axis;
+/// a value that isn't finite counts as none.
+fn bounded_shake(shake: NativeShake, scale: f32) -> NativeShake {
+    let scale = if scale.is_finite() {
+        scale.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let turn = |v: f32| {
+        if v.is_finite() {
+            (v * scale).clamp(-SHAKE_MAX_DEGREES, SHAKE_MAX_DEGREES)
+        } else {
+            0.0
+        }
+    };
+    let shift = |v: f32| {
+        if v.is_finite() {
+            (v * scale).clamp(-SHAKE_MAX_OFFSET, SHAKE_MAX_OFFSET)
+        } else {
+            0.0
+        }
+    };
+    NativeShake {
+        pitch: turn(shake.pitch),
+        yaw: turn(shake.yaw),
+        roll: turn(shake.roll),
+        offset: shake.offset.map(shift),
+    }
+}
+
+/// The pose a bounded shake multiplies into the projection, after the view
+/// bobbing: the offset, then roll, pitch and yaw.
+fn shake_pose(shake: NativeShake) -> glam::Mat4 {
+    let [x, y, z] = shake.offset;
+    glam::Mat4::from_translation(glam::Vec3::new(-x, -y, -z))
+        * glam::Mat4::from_rotation_z(shake.roll.to_radians())
+        * glam::Mat4::from_rotation_x(shake.pitch.to_radians())
+        * glam::Mat4::from_rotation_y(shake.yaw.to_radians())
+}
+
 /// The minimap a native mod shows (`native_minimap`), drawn by Horizon's
 /// minimap: its corner, its side in GUI pixels, blocks per map pixel,
 /// turning with the player or north up, round or square.
@@ -839,6 +894,15 @@ impl Game<'_> {
     /// own view wins): set `zoom` when it is none yet.
     pub(super) fn native_zoom(&self, zoom: &mut Option<NativeZoom>) {
         let _ = zoom;
+    }
+    /// The camera shake native mods ask for in this frame, `partial` ticks
+    /// past the last tick (0 to 1): add your pitch, yaw and roll in degrees
+    /// and your offset in blocks, along the camera's right, up and back, to
+    /// `shake`, so several mods' shakes add up. Read while playing only;
+    /// Horizon scales the sum by Distortion Effects and bounds it
+    /// (`native_shake_matrix`). API @API:native_camera_shake@.
+    pub(super) fn native_camera_shake(&self, partial: f32, shake: &mut NativeShake) {
+        let _ = (partial, shake);
     }
     /// The minimap a native mod shows: set `minimap` when it is none yet.
     pub(super) fn native_minimap(&self, minimap: &mut Option<NativeMinimap>) {
@@ -2980,6 +3044,19 @@ impl Game<'_> {
             },
         })
     }
+    /// The pose of native mods' camera shake in this frame (`native_camera_shake`),
+    /// none while not playing.
+    pub(super) fn native_shake_matrix(&self, partial: f32) -> glam::Mat4 {
+        if !self.native_playing() {
+            return glam::Mat4::IDENTITY;
+        }
+        let mut shake = NativeShake::default();
+        self.native_camera_shake(partial, &mut shake);
+        if shake == NativeShake::default() {
+            return glam::Mat4::IDENTITY;
+        }
+        shake_pose(bounded_shake(shake, self.screen_effect_scale()))
+    }
     /// The minimap a native mod shows.
     pub(super) fn native_minimap_now(&self) -> Option<NativeMinimap> {
         let mut minimap = None;
@@ -3079,6 +3156,31 @@ fn box_meets(b: &horizon_core::geometry::Aabb, min: [f64; 3], max: [f64; 3]) -> 
 
 #[cfg(test)]
 mod tests {
+
+    /// A shake is scaled by Distortion Effects, bounded on each axis, and a
+    /// value that isn't finite is none.
+    #[test]
+    fn a_shake_is_scaled_and_bounded() {
+        use super::{NativeShake, bounded_shake, shake_pose};
+        let shake = NativeShake {
+            pitch: 4.0,
+            yaw: -30.0,
+            roll: f32::NAN,
+            offset: [0.2, 2.0, f32::INFINITY],
+        };
+        assert_eq!(
+            bounded_shake(shake, 1.0),
+            NativeShake {
+                pitch: 4.0,
+                yaw: -10.0,
+                roll: 0.0,
+                offset: [0.2, 0.5, 0.0],
+            }
+        );
+        assert_eq!(bounded_shake(shake, 0.5).pitch, 2.0);
+        assert_eq!(bounded_shake(shake, 0.0), NativeShake::default());
+        assert_eq!(shake_pose(NativeShake::default()), glam::Mat4::IDENTITY);
+    }
 
     /// A mod's property write: none for a key or value the block lacks, the
     /// state itself when it already has the value, else the new state.

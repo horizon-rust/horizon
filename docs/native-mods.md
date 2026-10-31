@@ -738,6 +738,15 @@ Helpers for a server mod, by the rules hoppers follow: a furnace's sides, a doub
 
 During a machine's own tick its block entity is out of the world, so these answer as if no container were there: it has its slots in hand, in the `items` it's given. A composter takes one item a call, and these don't empty it: a hopper does. Container entities (minecarts, chest boats) aren't reached yet.
 
+### Camera shake
+
+`native_camera_shake(partial, shake)` (client) asks every frame for the camera shake a mod wants: `pitch`, `yaw` and `roll`
+in degrees and an `offset` in blocks along the camera's right, up and back. Add to `shake` rather than set it, so two
+mods' shakes add up. Horizon reads it only while playing, scales the sum by Distortion Effects (a player who turns
+that to 0% sees no shake), bounds it to 10 degrees and half a block on each axis, and multiplies it into the view
+after the hurt tilt and view bobbing. A mod keeps its own shake's time and decay, from `partial` and its tick hooks;
+it moves only what the player sees, not where they are or aim.
+
 ### Mod messages
 
 API 40, `crates/horizon-client/src/game/native_net.rs`: bytes between a mod's server half and its client half, on the
