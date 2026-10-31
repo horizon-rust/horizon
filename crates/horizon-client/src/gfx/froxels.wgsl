@@ -66,8 +66,8 @@ struct Fx {
     // x: the valley fog's density scale (0: none), y: the steam fog's, z: the air's humidity, w: how
     // far the valley fog has lifted (0..1).
     fog: vec4<f32>,
-    // x: how far it has formed (0..1), y: the water's temperature less the air's, z: the sun's
-    // warmth (0..1).
+    // x: how far it has formed (0..1), y: the air's temperature in a temperate biome, z: the sun's
+    // warmth (0..1), w: a temperate lake's water's (degrees Celsius).
     fog2: vec4<f32>,
     // How far the valley fog's noise and the steam fog's have drifted (the wind, the steam's
     // rising): whole blocks (xyz), and the fraction of a block.
@@ -464,9 +464,13 @@ fn fog_at(pos: vec3<f32>, spacing: f32) -> FogAt {
     let water = m.climate.y;
     let h = y - m.shape.y;
     if fx.fog.y > 0.0 && water > 0.05 && h > -0.5 && h < STEAM_TOP {
-        // Colder air over warmer water (a cold biome's air colder still), the sun's warmth
-        // burning it off.
-        let cold = smoothstep(2.0, 9.0, fx.fog2.y - 0.5 * m.climate.z) * (1.0 - 0.7 * fx.fog2.z);
+        // Colder air over warmer water, each by its biome (climate z the air's offset, w the
+        // water's), the sun's warmth burning it off. Shallow water (a puddle, a marsh's) cools
+        // as fast as the air over it and does not steam, unless heated (over magma).
+        let depth = m.shape.y - m.shape.x;
+        let keeps = max(smoothstep(1.0, 4.0, depth), smoothstep(10.0, 25.0, m.climate.w));
+        let excess = (fx.fog2.w + m.climate.w) - (fx.fog2.y + m.climate.z);
+        let cold = smoothstep(2.0, 9.0, excess * keeps) * (1.0 - 0.7 * fx.fog2.z);
         if cold > 0.0 {
             let base = camera + vec3<i32>(fx.steam_drift.xyz);
             var off = local + fx.steam_drift_f.xyz;

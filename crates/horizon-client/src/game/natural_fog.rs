@@ -92,15 +92,21 @@ impl Game<'_> {
             let b = biomes.get(biome);
             natural_fog::biome_climate(&b.name, b.downfall, b.temperature)
         };
-        let column = |ground: i32, water: Option<i32>, biome: u16| {
-            let (humid, calm, cold) = climate(biome);
+        let column = |ground: i32, water: Option<i32>, biome: u16, heated: bool| {
+            let c = climate(biome);
             FogColumn {
                 ground: ground as f32,
                 surface: water.unwrap_or(ground).max(ground) as f32,
                 water: water.is_some_and(|w| w > ground),
-                humid,
-                calm,
-                cold,
+                humid: c.humid,
+                calm: c.calm,
+                cold: c.air,
+                warmth: c.water
+                    + if heated {
+                        natural_fog::HEATED_WATER
+                    } else {
+                        0.0
+                    },
             }
         };
         if self.world.loaded(x, z) {
@@ -116,6 +122,7 @@ impl Game<'_> {
             // at most: deeper water needs no ground).
             let mut y = top - 1;
             let mut water = None;
+            let mut heated = false;
             for _ in 0..24 {
                 let state = self.world.block(x, y, z);
                 if facts.get(state).fluid == Fluid::Water {
@@ -124,6 +131,8 @@ impl Game<'_> {
                     .heightmap_state(state)
                     .blocks_motion_in_heightmap_no_leaves()
                 {
+                    // Water on magma (its bubbles) is warm: a hot spring.
+                    heated = water.is_some() && &*facts.get(state).name == "minecraft:magma_block";
                     break;
                 }
                 y -= 1;
@@ -133,13 +142,13 @@ impl Game<'_> {
                 .chunks
                 .get(&(x >> 4, z >> 4))
                 .map_or(0, |c| c.biome(x, y + 1, z));
-            return Some(column(y + 1, water, biome));
+            return Some(column(y + 1, water, biome, heated));
         }
         let surface = self.lod.as_ref()?.surface(x, z)?;
         let water = surface
             .water
             .filter(|&(_, state)| self.res.facts().get(state).fluid == Fluid::Water)
             .map(|(h, _)| h);
-        Some(column(surface.height, water, surface.biome))
+        Some(column(surface.height, water, surface.biome, false))
     }
 }
