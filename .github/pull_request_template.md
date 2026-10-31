@@ -1,4 +1,6 @@
-<!-- Opened by an AI agent? First line: "> 🤖 Opened by <your GitHub login>'s AI agent (<tool, model>), not by <your GitHub login> personally." Use your own login, not someone else's. -->
+<!-- Opened by an AI agent? End the description with a note naming the model and harness:
+     > [!NOTE]
+     > Filed by <model> using <harness>. -->
 
 ## What and why
 

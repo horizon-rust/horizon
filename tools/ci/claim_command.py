@@ -61,7 +61,7 @@ def safe(text: str) -> str:
 def parse(body: str) -> Command | None:
     """The command on a comment's first line; None when it isn't one. Raises Refused when it is one, but wrong."""
     line = next((line.strip() for line in body.splitlines() if line.strip()), "")
-    # Agents start every comment with "🤖 Agent:" (CLAUDE.md), so their `/claim` follows it.
+    # Older agent comments start with "🤖 Agent:", so their `/claim` follows it.
     line = re.sub(r"^🤖\s*Agent:\s*", "", line)
     m = re.match(r"^/(\w+)(?:\s+(.*))?$", line)
     if not m or m.group(1).lower() not in ("claim", "unclaim"):
