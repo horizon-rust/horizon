@@ -63,7 +63,20 @@ echo Pushing to %REPO_URL% ...
 git push -u origin %BRANCH%
 if errorlevel 1 (
     echo.
-    echo Push was rejected. The repo probably already has files that this folder doesn't.
+    echo Remote has commits you don't have locally. Pulling them in first...
+    git pull --rebase origin %BRANCH%
+    if errorlevel 1 (
+        echo Pull/rebase hit a problem, aborting it so nothing is left half-done.
+        git rebase --abort >nul 2>&1
+        set "PUSHFAIL=1"
+    ) else (
+        git push -u origin %BRANCH%
+        if errorlevel 1 set "PUSHFAIL=1"
+    )
+)
+if defined PUSHFAIL (
+    echo.
+    echo Push still failed.
     set /p FORCE="Force push and overwrite the remote? (y/N): "
     if /i "%FORCE%"=="y" (
         git push -u --force origin %BRANCH%
