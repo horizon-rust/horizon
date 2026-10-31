@@ -658,7 +658,7 @@ impl Game<'_> {
         let info = self
             .settings
             .client_information(client_view_distance(self.settings.render_distance));
-        if local.is_none() {
+        if local.is_none() && !self.options.split_guest {
             horizon_client::crash::set_detail(
                 "Server",
                 horizon_client::net::shown_address(address),
@@ -950,7 +950,10 @@ impl Game<'_> {
             }
             None => false,
         };
-        horizon_client::crash::clear_detail("Server");
+        // A splitscreen player leaving says nothing of where P1 plays.
+        if !self.options.split_guest {
+            horizon_client::crash::clear_detail("Server");
+        }
         self.clock = Default::default();
         self.adv = Default::default();
         self.stats = Default::default();
@@ -1772,6 +1775,7 @@ impl Game<'_> {
         r.predictions.clear();
         self.set_mode_id(spawn.game_type);
         self.dim = Dim::from_id(&spawn.dimension);
+        self.audio.set_world(&spawn.dimension);
         // ClientPacketListener.handleLogin / handleRespawn: the server's
         // Player.getLastDeathLocation, for the recovery compass.
         self.level.last_death = spawn
