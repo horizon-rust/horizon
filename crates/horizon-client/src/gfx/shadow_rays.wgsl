@@ -249,36 +249,46 @@ fn rain_film(p: vec3<f32>) -> bool {
     return abs(p.y - rain_top(w)) < 0.02 && rain_absorbs(s) == 0.0 && s != 9u && s != 10u
         && s != 12u;
 }
-// The rain's ripples on still water at world `p` (x, z), `t` seconds: rings spreading from the
-// drops' impacts, in two offset layers of 0.4-block cells, each cell struck once a period (0.6 to
-// 1.1 s) with a chance growing with the rate (`rate` mm/h); the surface's slope (x, z). A ring
-// finer than a pixel (`footprint` blocks) fades out.
-fn rain_ripples(p: vec2<f32>, t: f32, rate: f32, footprint: f32) -> vec2<f32> {
-    let fade = 1.0 - smoothstep(0.03, 0.09, footprint);
+// The rain's impacts at world `p` (x, z), `t` seconds: rings spreading from where the drops strike,
+// in two offset layers of quarter-block cells, each cell struck once a period (0.5 to 0.9 s) with a
+// chance growing with the rate (`rate` mm/h): about thirty impacts a square metre a second in
+// moderate rain. `spread` is how far a ring runs (blocks): wide on standing water, a small circle
+// on the thin film of a wet surface. `wet` (0 to 1) sharpens them: on a surface that is drying only the
+// strongest show, a soaked one shows all (SEUS's idea, with a procedural field instead of its
+// flipbook). The slope (x, z); a ring finer than a pixel (`footprint` blocks) fades out.
+// RAIN_RING: how steep a ring's front stands at most on standing water (its slope), RAIN_CROWN on
+// a film: steep enough to show in the reflection of an overcast sky, whose light barely changes
+// with the direction.
+const RAIN_RING: f32 = 2.5;
+const RAIN_CROWN: f32 = 2.0;
+fn rain_ripples(p: vec2<f32>, t: f32, rate: f32, footprint: f32, spread: f32, wet: f32)
+    -> vec2<f32> {
+    let fade = 1.0 - smoothstep(0.25 * spread, 0.6 * spread, footprint);
     if rate <= 0.0 || fade <= 0.0 { return vec2(0.0); }
-    let chance = clamp(rate / 12.0, 0.2, 1.0);
+    let chance = clamp(rate / 6.0, 0.3, 1.0);
     var slope = vec2(0.0);
     for (var layer = 0u; layer < 2u; layer++) {
-        let q = p / 0.4 + f32(layer) * vec2(0.5, 0.37);
+        let q = p / 0.25 + f32(layer) * vec2(0.5, 0.37);
         let base = vec2<i32>(floor(q));
         for (var i = 0; i < 9; i++) {
             let cell = base + vec2(i % 3 - 1, i / 3 - 1);
             let seed = rain_seed(cell, 11u + layer);
-            let period = 0.6 + 0.5 * rain_rand(seed);
+            let period = 0.5 + 0.4 * rain_rand(seed);
             let phase = t / period + rain_rand(seed + 1u);
             let age = fract(phase);
             let strike = seed ^ (u32(i32(floor(phase))) * 2654435761u);
             if rain_rand(strike) > chance { continue; }
             let centre = vec2<f32>(cell) + vec2(rain_rand(strike + 2u), rain_rand(strike + 3u));
-            let d = (q - centre) * 0.4;
+            let d = (q - centre) * 0.25;
             let r = length(d);
-            let x = r - age * 0.32;
-            let width = 0.02 + 0.03 * age;
+            let x = r - sqrt(age) * spread;
+            let width = spread * (0.08 + 0.12 * age);
             let envelope = exp(-x * x / (width * width)) * (1.0 - age) * (1.0 - age);
-            slope += 0.35 * cos(x * 125.66) * envelope * d / max(r, 1e-4);
+            slope += 0.5 * cos(x * 3.14159 / width) * envelope * d / max(r, 1e-4);
         }
     }
-    return slope * fade;
+    let sharp = 2.0 - 1.2 * wet * wet * wet;
+    return sign(slope) * pow(min(abs(slope), vec2(1.0)), vec2(sharp)) * fade;
 }
 // RAIN-END
 // RT lighting's light from the light sources reaching the pixel (rgb, linear, the faces' facing

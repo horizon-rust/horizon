@@ -404,7 +404,7 @@ fn hw_rain_ripples(world: vec3<f32>, t: f32) -> vec2<f32> {
     if w == 0u || !rain_falls(w) || rain_surface(w) != 10u || world.y < rain_height(w) - 1.2 {
         return vec2(0.0);
     }
-    return rain_ripples(world.xz, rt.water.z, rt.rain.x, t * 1.5 / rt.size.y);
+    return rain_ripples(world.xz, rt.water.z, rt.rain.x, t * 1.5 / rt.size.y, 0.2, 1.0) * RAIN_RING;
 }
 // A puddle or a wet film on the solid terrain at camera-relative `at` (terrain.wgsl `rt_wet`; a
 // puddle as deep as it can be there: the pack's relief unknown, the sunlit puddles' level or the
@@ -416,7 +416,8 @@ fn hw_puddle(at: vec3<f32>, ray: vec3<f32>) -> vec4<f32> {
     let world = at + rt.camera.xyz + rt.fraction.xyz;
     var slope = vec2(0.0);
     if rain_puddle(world, level, 0.8) > 0.0 {
-        slope = rain_ripples(world.xz, rt.water.z, rt.rain.x, length(at) * 1.5 / rt.size.y);
+        slope = rain_ripples(world.xz, rt.water.z, rt.rain.x, length(at) * 1.5 / rt.size.y, 0.2,
+            1.0) * RAIN_RING;
     } else if max(rt.rain.y, rt.rain_sun.x) <= 0.2 || !rain_film(world) {
         return vec4(0.0);
     }

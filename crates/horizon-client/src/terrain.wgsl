@@ -740,8 +740,10 @@ fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: 
     var reflected = rt_sky(r) * seen * m.ao * ambient_f * (horizon * horizon);
     // Water and glass: what the rays found that way (Remix's primary surface replacement).
     if rt_mirror.a > 0.5 { reflected = rt_mirror.rgb * ambient_f; }
+    // The rain's impacts (`rt_spray`): their broken crests scatter the sky's light.
+    let spray = rt_sky(vec3(0.0, 1.0, 0.0)) * seen * (RAIN_SPRAY * rt_spray);
     return sun * (direct + through) + highlight + diffuse * (1.0 - ambient_f) * around + reflected
-        + m.albedo * m.emission * MATERIAL_EMISSION;
+        + m.albedo * m.emission * MATERIAL_EMISSION + spray;
 }
 // RT lighting: material `m`'s linear colour, lit by the model and fogged. The fog scatters the
 // light it gets: the sky's, as much as the surface sees of it (a sealed room's air carries none).
@@ -998,11 +1000,14 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
     let absorption = WATER_ABSORPTION + WATER_PURE_ABSORPTION + WATER_TINT_ABSORPTION * (1.0 - colour);
     let world = in.pos + globals.rt_camera.xyz;
     var n = face;
+    // How steep the rain's impacts stand here (`rt_spray`).
+    var spray = 0.0;
     if face.y > 0.5 {
         let w = water_waves(world.xz, globals.rt_water.z, length(in.pos) * 1.5 / globals.rt_motion.y);
         // The rain's ripples where it falls on this water (`rain_ripples`).
         let r = rt_rain_ripples(in.pos);
         n = normalize(vec3(-w.y - r.x, 1.0, -w.z - r.y));
+        spray = min(length(r), 1.0);
     }
     let distance = length(in.pos);
     let ray = in.pos / max(distance, 1e-4);
@@ -1062,7 +1067,8 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
     // (blue-green, red absorbed first) and a shallow bed shows through it.
     let both = 1.0 + 0.8 / max(l.y, 0.25);
     let glow = lit * colour * vec3(0.206, 0.999, 0.903) * 0.15 * (1.0 - exp(-absorption * thickness * both)) / both;
-    var added = fresnel * reflected + (1.0 - fresnel) * glow;
+    var added = fresnel * reflected + (1.0 - fresnel) * glow
+        + rt_sky(vec3(0.0, 1.0, 0.0)) * sky_seen * (RAIN_SPRAY * spray);
     var shows = (1.0 - fresnel) * through;
     // The air in front, as for the terrain: it dims both and adds the horizon's light.
     let f = rt_fade(in.spherical, in.cylindrical, in.pos) * globals.fog_color.a;
@@ -1245,36 +1251,46 @@ fn rain_film(p: vec3<f32>) -> bool {
     return abs(p.y - rain_top(w)) < 0.02 && rain_absorbs(s) == 0.0 && s != 9u && s != 10u
         && s != 12u;
 }
-// The rain's ripples on still water at world `p` (x, z), `t` seconds: rings spreading from the
-// drops' impacts, in two offset layers of 0.4-block cells, each cell struck once a period (0.6 to
-// 1.1 s) with a chance growing with the rate (`rate` mm/h); the surface's slope (x, z). A ring
-// finer than a pixel (`footprint` blocks) fades out.
-fn rain_ripples(p: vec2<f32>, t: f32, rate: f32, footprint: f32) -> vec2<f32> {
-    let fade = 1.0 - smoothstep(0.03, 0.09, footprint);
+// The rain's impacts at world `p` (x, z), `t` seconds: rings spreading from where the drops strike,
+// in two offset layers of quarter-block cells, each cell struck once a period (0.5 to 0.9 s) with a
+// chance growing with the rate (`rate` mm/h): about thirty impacts a square metre a second in
+// moderate rain. `spread` is how far a ring runs (blocks): wide on standing water, a small circle
+// on the thin film of a wet surface. `wet` (0 to 1) sharpens them: on a surface that is drying only the
+// strongest show, a soaked one shows all (SEUS's idea, with a procedural field instead of its
+// flipbook). The slope (x, z); a ring finer than a pixel (`footprint` blocks) fades out.
+// RAIN_RING: how steep a ring's front stands at most on standing water (its slope), RAIN_CROWN on
+// a film: steep enough to show in the reflection of an overcast sky, whose light barely changes
+// with the direction.
+const RAIN_RING: f32 = 2.5;
+const RAIN_CROWN: f32 = 2.0;
+fn rain_ripples(p: vec2<f32>, t: f32, rate: f32, footprint: f32, spread: f32, wet: f32)
+    -> vec2<f32> {
+    let fade = 1.0 - smoothstep(0.25 * spread, 0.6 * spread, footprint);
     if rate <= 0.0 || fade <= 0.0 { return vec2(0.0); }
-    let chance = clamp(rate / 12.0, 0.2, 1.0);
+    let chance = clamp(rate / 6.0, 0.3, 1.0);
     var slope = vec2(0.0);
     for (var layer = 0u; layer < 2u; layer++) {
-        let q = p / 0.4 + f32(layer) * vec2(0.5, 0.37);
+        let q = p / 0.25 + f32(layer) * vec2(0.5, 0.37);
         let base = vec2<i32>(floor(q));
         for (var i = 0; i < 9; i++) {
             let cell = base + vec2(i % 3 - 1, i / 3 - 1);
             let seed = rain_seed(cell, 11u + layer);
-            let period = 0.6 + 0.5 * rain_rand(seed);
+            let period = 0.5 + 0.4 * rain_rand(seed);
             let phase = t / period + rain_rand(seed + 1u);
             let age = fract(phase);
             let strike = seed ^ (u32(i32(floor(phase))) * 2654435761u);
             if rain_rand(strike) > chance { continue; }
             let centre = vec2<f32>(cell) + vec2(rain_rand(strike + 2u), rain_rand(strike + 3u));
-            let d = (q - centre) * 0.4;
+            let d = (q - centre) * 0.25;
             let r = length(d);
-            let x = r - age * 0.32;
-            let width = 0.02 + 0.03 * age;
+            let x = r - sqrt(age) * spread;
+            let width = spread * (0.08 + 0.12 * age);
             let envelope = exp(-x * x / (width * width)) * (1.0 - age) * (1.0 - age);
-            slope += 0.35 * cos(x * 125.66) * envelope * d / max(r, 1e-4);
+            slope += 0.5 * cos(x * 3.14159 / width) * envelope * d / max(r, 1e-4);
         }
     }
-    return slope * fade;
+    let sharp = 2.0 - 1.2 * wet * wet * wet;
+    return sign(slope) * pow(min(abs(slope), vec2(1.0)), vec2(sharp)) * fade;
 }
 // RAIN-END
 // The world position of camera-relative `pos`: x and z in the 4096-block wrap the camera's is kept
@@ -1297,11 +1313,16 @@ fn rt_rain_ripples(pos: vec3<f32>) -> vec2<f32> {
     if w == 0u || !rain_falls(w) || rain_surface(w) != 10u || world.y < rain_height(w) - 1.2 {
         return vec2(0.0);
     }
-    return rain_ripples(world.xz, globals.rt_water.z, globals.rain.x, rain_footprint(pos));
+    return rain_ripples(world.xz, globals.rt_water.z, globals.rain.x, rain_footprint(pos), 0.2, 1.0)
+        * RAIN_RING;
 }
 // How much of a puddle the fragment being lit is (`rt_wet`): `rt_material_lit` then takes what the
 // rays found it reflects (`rt_puddle_reflection`).
 var<private> rt_puddle: f32 = 0.0;
+// How steep the rain's impacts stand at the fragment being lit (0 to 1): their crests, broken
+// water, catch the sky's light from every side (`rt_shade` adds RAIN_SPRAY of it).
+var<private> rt_spray: f32 = 0.0;
+const RAIN_SPRAY: f32 = 0.08;
 // What the rays found the puddle at `pixel` reflects (shadow_rays_hw.wgsl `hw_reflect`): rgb its
 // light, a 1 when it reflects a surface (0: the sky, reflected here).
 fn rt_puddle_reflection(pixel: vec2<f32>) -> vec4<f32> {
@@ -1322,6 +1343,7 @@ fn rt_wet(material: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, pixel: vec2<f32>
     porosity: f32, relief: f32) -> RtMaterial {
     var m = material;
     rt_puddle = 0.0;
+    rt_spray = 0.0;
     let shade = globals.rain;
     let sunny = globals.rain_sun;
     if max(max(shade.y, shade.z), max(sunny.x, sunny.y)) <= 0.0 { return m; }
@@ -1348,11 +1370,22 @@ fn rt_wet(material: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, pixel: vec2<f32>
     if surface == 6u { rough = m.roughness * mix(1.0, 0.5, wet); }
     m.roughness = rough;
     if geo.y > 0.9 {
+        let holds = 1.0 - rain_absorbs(surface);
+        // The water fills the relief as it soaks: the normal map's slopes fade (SEUS's and
+        // Lagarde's wet surfaces), and the drops strike the film, small circles.
+        m.normal = normalize(mix(m.normal, geo, wet * wet * wet * wet * holds * 0.85));
         let depth = rain_puddle(world, level, relief);
+        if depth < 1.0 && holds > 0.0 {
+            let circles = rain_ripples(world.xz, globals.rt_water.z, shade.x, rain_footprint(pos),
+                0.12, wet) * (RAIN_CROWN * exposure * holds * (1.0 - depth));
+            m.normal = normalize(m.normal + vec3(-circles.x, 0.0, -circles.y));
+            rt_spray = min(length(circles), 1.0);
+        }
         if depth > 0.0 {
-            let slope = rain_ripples(world.xz, globals.rt_water.z, shade.x, rain_footprint(pos))
-                * exposure;
+            let slope = rain_ripples(world.xz, globals.rt_water.z, shade.x, rain_footprint(pos), 0.2,
+                1.0) * (RAIN_RING * exposure);
             m.normal = normalize(mix(m.normal, normalize(vec3(-slope.x, 1.0, -slope.y)), depth));
+            rt_spray = max(rt_spray, min(length(slope), 1.0) * depth);
             m.roughness = mix(m.roughness, 0.02, depth);
             m.f0 = mix(m.f0, vec3(0.02), depth);
             m.metal *= 1.0 - depth;
@@ -2051,8 +2084,8 @@ fn meteor_streak(m: Meteor, d: vec3<f32>, pixel: f32) -> vec3<f32> {
 // for both eyes. A band RAIN_*_BAND tall around the camera holds the falling drops.
 const RAIN_NEAR: u32 = 64u;
 const RAIN_FAR: u32 = 32u;
-const RAIN_TRACKS: u32 = 24u;
-const RAIN_FAR_TRACKS: u32 = 16u;
+const RAIN_TRACKS: u32 = 40u;
+const RAIN_FAR_TRACKS: u32 = 24u;
 const RAIN_NEAR_BAND: f32 = 16.0;
 const RAIN_FAR_BAND: f32 = 48.0;
 // The smallest drop drawn and the largest, in mm: the smaller ones only veil the distance (the
@@ -2062,19 +2095,19 @@ const RAIN_DROP_MAX: f32 = 6.0;
 // A streak is the drop's path over the eye's exposure (s, about its persistence): a fast drop a
 // line, drizzle near a dot.
 const RAIN_EXPOSURE: f32 = 0.033;
-// How long a drop's splash lasts (s).
-const RAIN_SPLASH: f32 = 0.14;
+// How long the circle a drop leaves where it lands lasts (s), and how wide it grows (blocks).
+const RAIN_SPLASH: f32 = 0.5;
+const RAIN_CIRCLE: f32 = 0.12;
 struct RainOut {
     @builtin(position) clip: vec4<f32>,
-    // A streak: across it (-1 to 1) and along it (0 its head, 1 its tail); a splash: its quad
-    // (-1 to 1 both ways).
+    // A streak: across it (-1 to 1) and along it (0 its head, 1 its tail); an impact's circle: its
+    // quad (-1 to 1 both ways).
     @location(0) uv: vec2<f32>,
     // The light the drop sends to the eye (paper whites), and how much of the pixel it covers.
     @location(1) colour: vec3<f32>,
     @location(2) alpha: f32,
-    // 0 a streak; a splash 1 + its age (0 to 1).
+    // 0 a streak; the circle an impact leaves, 1 + its age (0 to 1).
     @location(3) splash: f32,
-    @location(4) @interpolate(flat) seed: u32,
 }
 // The sky table toward `d` (`rt_sky` without the Eye of Aldhani's glow, which the vertex stage
 // does not see).
@@ -2096,8 +2129,8 @@ fn rain_sky(d: vec3<f32>) -> vec3<f32> {
 fn rain_drop_light(p: vec3<f32>, view: vec3<f32>, column: u32, ground: f32) -> vec3<f32> {
     // Through a sphere of water the scene behind shows turned over: the sky above the eye's line
     // comes out below it, so a drop shows the sky's light whatever is behind it.
-    let sky = rain_sky(normalize(vec3(view.x, 0.6, view.z))) * 0.9
-        + rain_sky(vec3(0.0, 1.0, 0.0)) * 0.15;
+    let sky = rain_sky(normalize(vec3(view.x, 0.8, view.z))) * 1.1
+        + rain_sky(vec3(0.0, 1.0, 0.0)) * 0.3;
     let l = globals.rt_light.xyz;
     var lit = globals.rt_sun_light.rgb * globals.rt_light.w;
     for (var k = 1; k <= 6; k++) {
@@ -2132,7 +2165,6 @@ fn rain_drop_light(p: vec3<f32>, view: vec3<f32>, column: u32, ground: f32) -> v
     out.colour = vec3(0.0);
     out.alpha = 0.0;
     out.splash = 0.0;
-    out.seed = 0u;
     let rate = globals.rain.x;
     if rate <= 0.0 { return out; }
     let near_count = RAIN_NEAR * RAIN_NEAR * RAIN_TRACKS;
@@ -2168,8 +2200,8 @@ fn rain_drop_light(p: vec3<f32>, view: vec3<f32>, column: u32, ground: f32) -> v
     let column = rain_cell(vec2<i32>(floor(xz)));
     if column == 0u || !rain_falls(column) { return out; }
     // It stops on the first block that stops motion (vanilla's rain heightmap), a water's top a
-    // little under it, and splashes there for a moment.
-    let ground = rain_top(column) - select(0.0, 0.12, rain_surface(column) == 10u);
+    // little under it, and leaves a circle there for a moment.
+    let ground = rain_top(column) - select(0.0, 0.11, rain_surface(column) == 10u);
     var head = vec3(xz.x, y, xz.y);
     var splash = -1.0;
     if y < ground {
@@ -2193,20 +2225,17 @@ fn rain_drop_light(p: vec3<f32>, view: vec3<f32>, column: u32, ground: f32) -> v
     out.colour = rain_drop_light(head, toward, column, ground);
     // HORIZON_RT_DEBUG=10: the drops in magenta.
     if globals.rt_mode.y > 3.5 && globals.rt_mode.y < 4.5 { out.colour = vec3(4.0, 0.0, 4.0); }
-    out.seed = seed;
     let corner = vec2(f32(vertex & 1u) * 2.0 - 1.0, f32(vertex >> 1u));
     if splash >= 0.0 {
-        // A crown of droplets a few centimetres across, turned to the eye.
-        let radius = 0.03 + 0.06 * splash;
-        let right = normalize(cross(toward, vec3(0.0, 1.0, 0.0)) + vec3(1e-4, 0.0, 0.0));
-        let up = cross(right, toward);
-        let extent = max(radius, pixel * 2.0);
-        let at = rel + vec3(0.0, radius * 0.5, 0.0)
-            + (right * corner.x + up * (corner.y * 2.0 - 1.0)) * extent;
+        // The circle it leaves where it lands, flat on the ground or the water and spreading:
+        // a quad lying there, its ring drawn by fs_rain; larger drops leave wider ones.
+        let extent = RAIN_CIRCLE * (0.6 + 0.2 * diameter);
+        let at = rel + vec3(corner.x * extent, 0.006, (corner.y * 2.0 - 1.0) * extent);
         out.clip = globals.view_proj * vec4(at, 1.0);
         out.uv = vec2(corner.x, corner.y * 2.0 - 1.0);
         out.splash = 1.0 + splash;
-        out.alpha = 0.5 * fade * min(1.0, diameter / 2.0) * min(1.0, radius / extent);
+        // As faint as the ring is thin against the pixels it covers.
+        out.alpha = 0.45 * fade * min(1.0, extent * 0.08 / pixel);
         return out;
     }
     // A streak: its path over the exposure, a thin quad turned to the eye about it, a pixel wide
@@ -2217,7 +2246,7 @@ fn rain_drop_light(p: vec3<f32>, view: vec3<f32>, column: u32, ground: f32) -> v
     let tail = rel - down * streak;
     let across = normalize(cross(down, (rel + tail) * 0.5) + vec3(0.0, 1e-5, 0.0));
     let width = max(diameter * 0.001, pixel);
-    let opacity = clamp(40.0 * diameter * 0.001 / streak, 0.0, 0.5)
+    let opacity = clamp(60.0 * diameter * 0.001 / streak, 0.0, 0.6)
         * sqrt(diameter * 0.001 / width);
     let at = mix(rel + down * pixel, tail - down * pixel, corner.y)
         + across * (corner.x * width * 0.5);
@@ -2229,16 +2258,13 @@ fn rain_drop_light(p: vec3<f32>, view: vec3<f32>, column: u32, ground: f32) -> v
 @fragment fn fs_rain(in: RainOut) -> @location(0) vec4<f32> {
     var a = in.alpha;
     if in.splash > 0.5 {
-        // Six droplets thrown up and out from the impact, falling back as it ages.
+        // A thin circle spreading from the impact (fast at first, as a capillary ring slows),
+        // widening and fading as it goes.
         let age = in.splash - 1.0;
-        var cover = 0.0;
-        for (var k = 0u; k < 6u; k++) {
-            let angle = (f32(k) + rain_rand(in.seed + k)) * 1.0472;
-            let lift = 0.6 + 0.4 * rain_rand(in.seed + 9u + k);
-            let at = vec2(cos(angle) * age * 0.9, -0.7 + 3.2 * age * (1.0 - age) * lift);
-            cover = max(cover, 1.0 - smoothstep(0.08, 0.16, length(in.uv - at)));
-        }
-        a *= cover * (1.0 - age);
+        let radius = sqrt(age) * 0.9;
+        let width = 0.05 + 0.08 * age;
+        let x = (length(in.uv) - radius) / width;
+        a *= exp(-x * x) * (1.0 - age) * (1.0 - age);
     } else {
         a *= (1.0 - in.uv.x * in.uv.x) * smoothstep(0.0, 0.12, in.uv.y)
             * (1.0 - smoothstep(0.75, 1.0, in.uv.y));
