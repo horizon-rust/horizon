@@ -292,6 +292,46 @@ impl Game<'_> {
         b.velocity = Vec3::ZERO;
     }
 
+    /// `AbstractBoat.handleEntityEvent`: 71 and 72, a bubble column dragging
+    /// the boat down or throwing it up (`handleBubbleColumnEffect`, which the
+    /// client applies to the boat it drives).
+    pub(super) fn remote_boat_event(&mut self, id: i32, event: i8) {
+        let drag_down = event == super::boats::BUBBLE_DOWN_EVENT;
+        if !drag_down && event != super::boats::BUBBLE_UP_EVENT {
+            return;
+        }
+        if let Some(i) = self.boats.iter().position(|b| b.id == id as u32) {
+            self.handle_bubble_column_effect(i, drag_down);
+        }
+    }
+
+    /// `AbstractBoat.tick`: the part that reaches bubble columns, for every
+    /// boat on a client: `status`, the two `applyEffectsFromBlocks` (a boat
+    /// above a column may splash; the boat the player drives is lifted or
+    /// dragged by a column it is inside) and `tickBubbleColumn`'s wobble from
+    /// the synched bubble time.
+    pub(super) fn tick_remote_boat_bubbles(&mut self) {
+        for i in 0..self.boats.len() {
+            let driven = self.riding == Some(self.boats[i].id);
+            if !driven {
+                self.refresh_boat_status(i);
+            }
+            let touches = self.boat_bubble_columns(i);
+            for _ in 0..2 {
+                for &column in &touches {
+                    if column.surface {
+                        if self.boat_splash_roll(i) {
+                            self.boat_bubble_splash(i);
+                        }
+                    } else if driven {
+                        self.boat_inside_bubble_column(i, column);
+                    }
+                }
+            }
+            self.boats[i].tick_bubble_wobble();
+        }
+    }
+
     /// Whether this client moves `m`, the mount the player rides: as its
     /// first passenger (`AbstractHorse.getControllingPassenger`), on its
     /// saddle (`isLocalInstanceAuthoritative`).
