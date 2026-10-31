@@ -94,6 +94,7 @@ mod native_material;
 mod native_pack;
 mod native_post;
 pub mod native_render;
+mod native_shadow;
 mod native_sky;
 mod occlusion;
 mod oit;
@@ -4652,7 +4653,12 @@ impl Renderer {
             .as_ref()
             .and_then(|p| p.1.as_ref())
             .filter(|_| !frame.title)
-            .and_then(|p| p.shadow_view(frame));
+            .and_then(|p| p.shadow_view(frame))
+            .or_else(|| {
+                // One of Horizon's own packs with `[shadow]` uses the same lists.
+                let native = self.native.as_ref().filter(|_| !frame.title)?;
+                Some(native.shadow.as_ref()?.view(frame))
+            });
         let mut shadow_visible = std::mem::take(&mut self.shadow_visible);
         shadow_visible.clear();
         if let Some(v) = &shadow_view {
@@ -5591,6 +5597,41 @@ impl Renderer {
                 t.begin(&self.device, &self.queue);
                 native_sky_pass =
                     native.sky.is_some() && t.recording() && sky_visible && frame.skybox;
+            }
+        }
+        // One of Horizon's own packs with `[shadow]`: the solid terrain the light sees, from the
+        // shadow camera's lists, into the pack's shadow map (a pack without one gets its 1×1 map
+        // cleared to "far" once).
+        if !frame.title
+            && let Some(native) = &mut self.native
+        {
+            native.frame.shadow_map.clear_blank(&mut encoder);
+        }
+        if !frame.title
+            && shadow_view.is_some()
+            && let Some(native) = &self.native
+            && let Some(shadow) = &native.shadow
+        {
+            let mut pass = native
+                .frame
+                .shadow_map
+                .begin(&mut encoder, "Native shader pack shadow");
+            pass.set_bind_group(0, &self.group, &[]);
+            pass.set_bind_group(horizon_shader_api::stages::GROUP, &shadow.group, &[]);
+            if flat_frame
+                && let Some(flat) = &self.flat
+                && let Some(pipeline) = &shadow.flat
+            {
+                pass.set_pipeline(pipeline);
+                let [first, translucent] = flat.shadow_calls;
+                flat.draw(&mut pass, &flat.calls[first..translucent], |p| {
+                    self.arena.buffer(p)
+                });
+            } else if !flat_frame {
+                pass.set_pipeline(&shadow.solid);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_vertex_buffer(1, self.instances.slice(..));
+                self.draw_sections(&mut pass, &self.indirect, 0, shadow_first, shadow_solid);
             }
         }
         if native_sky_pass

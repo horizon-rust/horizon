@@ -34,7 +34,39 @@ const FRAME: Resource = Resource {
     doc: "The frame (`Frame`).",
 };
 
-const POST_RESOURCES: [Resource; 7] = [
+/// The shadow map at `binding`.
+const fn shadow_map(binding: u32) -> Resource {
+    Resource {
+        binding,
+        name: "shadow_map",
+        ty: "var shadow_map: texture_depth_2d",
+        doc: "This frame's shadow map: the depth of the solid terrain the light sees, 0 at the light, 1 away from it (and where nothing is), stored at `shadow_position`'s mapping. Valid while `frame.has_shadow` is 1 (the pack asks for it with `[shadow]`), else a 1×1 map that lights everything.",
+    }
+}
+
+/// The shadow map's comparison sampler at `binding`.
+const fn shadow_sampler(binding: u32) -> Resource {
+    Resource {
+        binding,
+        name: "shadow_sampler",
+        ty: "var shadow_sampler: sampler_comparison",
+        doc: "Depth comparison, bilinear (2×2 percentage-closer filtering): `textureSampleCompareLevel(shadow_map, shadow_sampler, p.xy, p.z)` is 1 where the point is lit, 0 in shadow.",
+    }
+}
+
+/// A function the material and post preludes give packs.
+const SHADOW_HELPERS: &str = "\
+// Where the camera-relative point `position` is stored in the shadow map: xy its 0..1 texture
+// coordinate (from the top left), z its depth from the light, for `textureSampleCompareLevel`.
+fn shadow_position(position: vec3<f32>) -> vec3<f32> {
+    let clip = frame.shadow_view_proj * vec4<f32>(position, 1.0);
+    let k = frame.shadow_distortion;
+    let xy = clip.xy / (length(clip.xy) * k + 1.0 - k);
+    return vec3<f32>(xy.x * 0.5 + 0.5, 0.5 - xy.y * 0.5, clip.z);
+}
+";
+
+const POST_RESOURCES: [Resource; 9] = [
     FRAME,
     Resource {
         binding: 1,
@@ -66,6 +98,8 @@ const POST_RESOURCES: [Resource; 7] = [
         ty: "var nearest_sampler: sampler",
         doc: "Nearest texel, clamped to the edges.",
     },
+    shadow_map(6),
+    shadow_sampler(7),
     Resource {
         binding: 8,
         name: "history",
@@ -76,7 +110,7 @@ const POST_RESOURCES: [Resource; 7] = [
 
 /// The material stage's resources: the frame, and the world as it was before translucent
 /// terrain drew (for water and glass to see what lies behind them).
-const MATERIAL_RESOURCES: [Resource; 5] = [
+const MATERIAL_RESOURCES: [Resource; 7] = [
     FRAME,
     Resource {
         binding: 1,
@@ -90,6 +124,8 @@ const MATERIAL_RESOURCES: [Resource; 5] = [
         ty: "var reflection_sampler: sampler",
         doc: "Bilinear filtering, clamped to the edges.",
     },
+    shadow_map(3),
+    shadow_sampler(4),
     Resource {
         binding: 6,
         name: "opaque_depth",
@@ -279,8 +315,14 @@ impl StageKind {
             out += &format!("@group({GROUP}) @binding({}) {};\n", r.binding, r.ty);
         }
         match self {
-            StageKind::Post => out += POST_HELPERS,
-            StageKind::Material => out += MATERIAL_HELPERS,
+            StageKind::Post => {
+                out += POST_HELPERS;
+                out += SHADOW_HELPERS;
+            }
+            StageKind::Material => {
+                out += MATERIAL_HELPERS;
+                out += SHADOW_HELPERS;
+            }
             StageKind::Sky => {}
         }
         out
