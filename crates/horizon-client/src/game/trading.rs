@@ -83,7 +83,9 @@ impl merchant::MapMaker for GameMaps<'_> {
             origin[1].floor() as i32,
             origin[2].floor() as i32,
         ];
-        let Some((_, at)) = terrain.locate(&names, from, map.search_radius) else {
+        let Some((_, at)) =
+            terrain.locate_for_map(&names, from, map.search_radius, map.skip_existing_chunks)
+        else {
             return stack;
         };
         let id = self.next_id.get();
@@ -497,7 +499,7 @@ impl Game<'_> {
                     eye[1] - eye[1].clamp(lo.y, hi.y),
                     eye[2] - eye[2].clamp(lo.z, hi.z),
                 ];
-                let range = if self.creative { 5.0 } else { 3.0 } + 4.0;
+                let range = self.entity_reach + 4.0;
                 m.alive() && d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < range * range
             });
             if !valid {
@@ -630,7 +632,7 @@ impl Game<'_> {
         };
         if m.session.offers.len() > 7 {
             let max = m.session.offers.len() - 7;
-            m.scroll = (m.scroll as i32 - d.signum() as i32).clamp(0, max as i32) as usize;
+            m.scroll = scrolled(m.scroll, max, d);
         }
     }
     /// `MerchantScreen` rendering.
@@ -670,8 +672,7 @@ impl Game<'_> {
             r.v1 = r.v0 + 166.0 * dv;
             batch.rect_uv(ox + SHIFT, oy, 276.0, 166.0, r, u32::MAX);
         }
-        let e = &self.stations().enchantments;
-        let tr = |k: &str, f: &str| e.translate(k).unwrap_or(f).to_owned();
+        let tr = |k: &str, f: &str| horizon_client::lang::get_or(k, f);
         let name = custom.unwrap_or_else(|| {
             if progress {
                 tr(
@@ -682,6 +683,8 @@ impl Game<'_> {
                 tr("entity.minecraft.wandering_trader", "Wandering Trader")
             }
         });
+        // The screen's title is the merchant's name; its label adds the level.
+        super::screen_info::name_container(|| name.clone());
         let title = if progress {
             tr("merchant.title", "%s - %s")
                 .replacen("%s", &name, 1)
@@ -895,13 +898,10 @@ impl Game<'_> {
                 self.draw_stack_tooltip(batch, &stack, self.cursor.0, self.cursor.1);
             }
         } else if deprecated {
-            let text = self
-                .res
-                .stations()
-                .enchantments
-                .translate("merchant.deprecated")
-                .unwrap_or("Villagers restock up to two times per day.")
-                .to_owned();
+            let text = horizon_client::lang::get_or(
+                "merchant.deprecated",
+                "Villagers restock up to two times per day.",
+            );
             let lines: Vec<(String, u32)> =
                 text.split('\n').map(|l| (l.to_owned(), u32::MAX)).collect();
             self.draw_tooltip_lines(batch, &lines, self.cursor.0, self.cursor.1);
@@ -930,9 +930,29 @@ fn drag_scroll(y: f32, offers: usize) -> usize {
     ((offs * max as f32 + 0.5) as i32).clamp(0, max) as usize
 }
 
+/// `MerchantScreen.mouseScrolled`: `Mth.clamp((int)(scrollOff - scrollY), 0, max)`,
+/// so a fractional wheel step that truncates to zero does not move the list.
+fn scrolled(scroll: usize, max: usize, d: f32) -> usize {
+    ((scroll as f64 - f64::from(d)) as i32).clamp(0, max as i32) as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `MerchantScreen.mouseScrolled`: the offset is `(int)(scrollOff - scrollY)`
+    /// clamped, so the list moves by as many rows as the event's delta and a
+    /// fractional delta still moves one row (the truncation is after the
+    /// subtraction). Horizon moved exactly one row per event.
+    #[test]
+    fn the_offers_scroll_by_the_wheel_delta() {
+        assert_eq!(scrolled(3, 5, 1.0), 2, "one notch down");
+        assert_eq!(scrolled(3, 5, -1.0), 4, "one notch up");
+        assert_eq!(scrolled(3, 5, 0.25), 2, "a fraction still moves a row");
+        assert_eq!(scrolled(3, 5, 2.5), 0, "a two-and-a-half notch event");
+        assert_eq!(scrolled(0, 5, 1.0), 0, "clamped at the top");
+        assert_eq!(scrolled(5, 5, -1.0), 5, "clamped at the bottom");
+    }
 
     #[test]
     fn scroller_takes_presses_only_with_more_than_seven_offers() {

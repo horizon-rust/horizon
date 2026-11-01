@@ -38,7 +38,7 @@ harness named checks that loader against vanilla).
 | Block states: variants, multipart, weights, rotations, uvlock | `blockstates/` | works | `test_blockstate_model_parity`, `test_model_choice_parity`, `test_blockstate_transform_parity` |
 | Block models: parents, elements, rotations, faces, cullface, tint, shade, light emission, ambient occlusion | `models/block/` | works | `test_model_resolution_parity`, `test_model_baking_parity`, `test_section_mesh_parity` |
 | Item definitions and item models (all model types, display transforms, tints) | `items/`, `models/item/` | works | `test_item_model_parity` |
-| Entity models | (code in vanilla) | n/a | entity models aren't resource files in 26.3 (`test_entity_model_parity` checks the code ones) |
+| Custom entity models (OptiFine/EMF): a `.jem` reshapes a mob's model layer, with its animations and texture; Entity Model Features' files win over OptiFine's | `optifine/cem/`, `emf/cem/` | partly | `mobs::cem` and `mobs::cem_anim` unit tests; no per-bone textures, no random models, no textures under `optifine/` (vanilla's own entity models are code in 26.3, which `test_entity_model_parity` checks) |
 | Textures, any resolution (16x to 512x) | `textures/` | works | atlases stitched from the overlay; Faithful 32x, Default HD 128x and FPBR measured in [reuse-pack-overlays.md](reuse-pack-overlays.md) |
 | Texture animation: frames, frame time, frame size | `*.png.mcmeta` `animation` | works | `test_sprite_animation_parity` |
 | Texture animation: `interpolate` | `*.png.mcmeta` `animation` | **no** | frames step instead of blending (vanilla's own prismarine, magma, stems, lit furnaces and campfires, command blocks, sculk too): fix in progress |
@@ -72,11 +72,11 @@ harness named checks that loader against vanilla).
 | Paintings, mob effect icons | `atlases/paintings.json`, `textures/mob_effect/` | works | loaded from the overlay |
 | Locator bar styles | `waypoint_style/` | **no** | the locator bar isn't drawn yet |
 | Post effects (spectating a creeper, spider or enderman; glowing outlines) | `post_effect/`, `shaders/post/` | **no** | Horizon's effects are WGSL; a pack's GLSL post chain isn't run |
-| Core shaders | `shaders/core/`, `shaders/include/` | **no** | Horizon draws with WGSL; a pack's GLSL core shaders aren't run |
+| Core shaders | `shaders/core/`, `shaders/include/` | partly | `core/text` draws the GUI's text (HUDs moved by its vertex shader, text effects), translated by naga (`horizon-shaders` `core_shader.rs`, `hud/pack_text.rs`); the other core shaders aren't run |
 | GPU warn list, regional compliance | `gpu_warnlist.json`, `regional_compliancies.json` | n/a | OpenGL driver warnings and play-time notices for some regions; not used |
 
-Summary: 45 rows; 32 work, 3 partly, 8 don't (interpolated animation, TrueType fonts, credits and end poem,
-villager hats, trims on worn armour, locator bar styles, post effects, core shaders), 2 don't apply. Except the
+Summary: 45 rows; 32 work, 4 partly, 7 don't (interpolated animation, TrueType fonts, credits and end poem,
+villager hats, trims on worn armour, locator bar styles, post effects), 2 don't apply. Except the
 shaders, the missing pieces are missing vanilla features too, and each vanilla parity fix covers the pack case as well.
 
 ## Gaps and their work
@@ -91,7 +91,7 @@ shaders, the missing pieces are missing vanilla features too, and each vanilla p
 | Trims on worn armour (paletted textures) | medium | [#337](https://github.com/horizon-rust/horizon/issues/337) |
 | Credits and end poem screen | medium | [#338](https://github.com/horizon-rust/horizon/issues/338) |
 | Locator bar | medium | [#339](https://github.com/horizon-rust/horizon/issues/339) |
-| Post effects and core shaders | large | none yet |
+| Post effects, core shaders but GUI text | large | none yet |
 
 ## Testing a pack
 

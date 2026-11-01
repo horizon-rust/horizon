@@ -184,6 +184,17 @@ fn body_anchor_y(m: &Mob, front: bool, height: f32, scale: f32) -> f64 {
     }
     base_sit_offset
 }
+/// `Camel.getLeashOffset` at the partial tick 0: the lead hangs from the
+/// front body anchor (sinking while the camel sits) less 0.2 scaled, and
+/// 0.56 of the width ahead.
+pub fn leash_offset(m: &Mob) -> [f64; 3] {
+    let scale = if m.is_baby() { 0.6 } else { 1.0 };
+    [
+        0.0,
+        body_anchor_y(m, true, m.height(), scale) - f64::from(0.2_f32 * scale),
+        f64::from(m.width() * 0.56),
+    ]
+}
 /// `Camel.getPassengerAttachmentPoint` of the one rider Horizon seats, before
 /// the camel's yaw turns it: half a block ahead (scaled by `getAgeScale`, 0.6
 /// for a baby) at the body anchor, which sinks while the camel sits. The
@@ -388,10 +399,16 @@ fn animation_states(m: &mut Mob, pose_time: i64, sitting: bool) {
         st[2].animate_when(transition, age);
     }
 }
-/// `Camel.executeRidersJump`: the dash along the look, once cooled down.
-pub fn dash(m: &mut Mob, amount: f32, events: &mut Vec<MobEvent>) {
-    if m.extra.anim_ticks > 0 || !m.on_ground || refuse_to_move(m) {
-        return;
+/// `Camel.executeRidersJump`: the dash along the look, once cooled down. Returns whether the
+/// jump is used up: it is, by a dash or when the camel cannot dash at all (cooling down,
+/// refusing to move: `onPlayerJump` would not have taken it); it waits while the camel is off
+/// the ground (`AbstractHorse.tickRidden` runs a pending jump when it lands).
+pub fn dash(m: &mut Mob, amount: f32, events: &mut Vec<MobEvent>) -> bool {
+    if m.extra.anim_ticks > 0 || refuse_to_move(m) {
+        return true;
+    }
+    if !m.on_ground {
+        return false;
     }
     let yaw = m.yaw.to_radians();
     let (dx, dz) = (f64::from(-yaw.msin()), f64::from(yaw.mcos()));
@@ -403,6 +420,7 @@ pub fn dash(m: &mut Mob, amount: f32, events: &mut Vec<MobEvent>) {
     m.extra.anim_ticks = DASH_COOLDOWN;
     m.extra.flag2 = true;
     sound(m, voice(m, 3), events);
+    true
 }
 /// `CamelModel.setupAnim`.
 pub fn anim(
@@ -609,7 +627,7 @@ mod tests {
                 "{{id:\"minecraft:camel\",Pos:[0.0d,0.0d,0.0d],LastPoseTick:{tick}L}}"
             ))
             .unwrap();
-            let mut m = crate::entity_nbt::mob_from_nbt(&tag, &types, 2).unwrap();
+            let mut m = crate::entity_nbt::mob_from_nbt(&tag, &types, 2, None).unwrap();
             finish_load(&mut m, now);
             m
         };
@@ -628,7 +646,7 @@ mod tests {
         let (tag, _) =
             horizon_world::nbt::parse_snbt("{id:\"minecraft:camel\",Pos:[0.0d,0.0d,0.0d]}")
                 .unwrap();
-        let mut m = crate::entity_nbt::mob_from_nbt(&tag, &types, 2).unwrap();
+        let mut m = crate::entity_nbt::mob_from_nbt(&tag, &types, 2, None).unwrap();
         finish_load(&mut m, 5000);
         assert!(!refuse_to_move(&m));
     }

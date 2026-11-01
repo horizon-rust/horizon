@@ -241,9 +241,7 @@ impl Game<'_> {
         if stack.damage + 1 >= max || (riptide && !self.in_water_or_rain()) {
             return true;
         }
-        if self.using.is_none() {
-            self.using = Some((self.held_slot(), 0));
-        }
+        self.start_using_item();
         true
     }
     fn in_water_or_rain(&mut self) -> bool {
@@ -545,11 +543,6 @@ impl Game<'_> {
                         return false;
                     };
                     let rest = self.as_guest(&mut host, conn, |g| g.give(t.stack.clone()));
-                    // Player.take: the guest's client plays the pickup sound.
-                    if rest.is_some() {
-                        let at = [t.position.x, t.position.y, t.position.z];
-                        host.hub.take_item(t.id as i32, by.id, 1, at);
-                    }
                     self.lan = Some(host);
                     let Some(rest) = rest else {
                         return false;
@@ -560,6 +553,14 @@ impl Game<'_> {
             if let Some(rest) = rest {
                 self.spawn_item(rest, [by.feet.x, by.feet.y, by.feet.z], [0.0; 3], 0);
             }
+        }
+        // Player.take, for a creative thrower's trident too: the clients near
+        // play the pickup sound and fly the trident to its collector.
+        if by.guest.is_some()
+            && let Some(host) = self.lan.as_ref()
+        {
+            let at = [t.position.x, t.position.y, t.position.z];
+            host.hub.take_item(t.id as i32, by.id, 1, at);
         }
         if by.guest.is_none() {
             let pitch = ((self.world.random.next_float() - self.world.random.next_float()) * 0.7
@@ -669,15 +670,18 @@ impl Game<'_> {
                     );
                     t.dealt_damage = true;
                     let mut hurt_at = None;
+                    let aim = self.attacker_aim(Some(Who::Player));
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                         let from = Some([t.position.x, t.position.y, t.position.z]);
-                        let hurt = m.damage(
+                        let hurt = m.damage_projectile(
                             damage,
                             Damage {
                                 kind: DamageKind::Arrow,
                                 attacker: Some(Who::Player),
                                 from,
                             },
+                            aim,
+                            [t.velocity.x, t.velocity.z],
                         );
                         if hurt {
                             hurt_at = Some([m.position.x, m.position.y, m.position.z]);
@@ -701,6 +705,12 @@ impl Game<'_> {
                         };
                         self.thrower_hit(t.guest, &victim, direct, damage);
                     }
+                    // Projectile.onHit: the landing is heard, at the hit.
+                    self.projectile_event(
+                        "minecraft:projectile_land",
+                        Some(Who::Player),
+                        [t.position.x, t.position.y, t.position.z],
+                    );
                     self.audio.play(
                         "minecraft:item.trident.hit",
                         Some([t.position.x, t.position.y, t.position.z]),
@@ -719,9 +729,20 @@ impl Game<'_> {
                     // `AbstractArrow.onHitBlock` on a hit.
                     let from = t.position;
                     let flight = t.velocity;
-                    if let Some((stop, _)) =
+                    if let Some((stop, block)) =
                         clip_block_stop(&self.world, self.res.facts(), self.collision, from, flight)
                     {
+                        // Projectile.onHit on a block: PROJECTILE_LAND at the
+                        // block's centre.
+                        self.projectile_event(
+                            "minecraft:projectile_land",
+                            Some(Who::Player),
+                            [
+                                f64::from(block.x) + 0.5,
+                                f64::from(block.y) + 0.5,
+                                f64::from(block.z) + 0.5,
+                            ],
+                        );
                         if t.stack.enchantment_level("minecraft:channeling") > 0 {
                             self.channel_rod_hit(from, flight, t.guest);
                         }
@@ -795,9 +816,9 @@ impl Game<'_> {
                 glam::DVec3::splat(2.0 * HALF),
                 self.view_scale(),
             );
-        for t in &self.tridents {
+        let live = self.tridents.iter().filter_map(|t| {
             // EntityRenderer.shouldRender; ThrownTridentRenderer grows the box by 1.5.
-            if !self.standing_entity_in_view(
+            self.standing_entity_in_view(
                 camera,
                 super::entity_culling::at(t.previous),
                 super::entity_culling::at(t.position),
@@ -806,14 +827,25 @@ impl Game<'_> {
                 2.0 * HALF,
                 range,
                 1.5,
-            ) {
-                continue;
-            }
-            let p = glam::DVec3::new(
-                t.previous.x + (t.position.x - t.previous.x) * alpha,
-                t.previous.y + (t.position.y - t.previous.y) * alpha,
-                t.previous.z + (t.position.z - t.previous.z) * alpha,
-            ) - camera;
+            )
+            .then(|| {
+                (
+                    t,
+                    [
+                        t.previous.x + (t.position.x - t.previous.x) * alpha,
+                        t.previous.y + (t.position.y - t.previous.y) * alpha,
+                        t.previous.z + (t.position.z - t.previous.z) * alpha,
+                    ],
+                )
+            })
+        });
+        // ItemPickupParticle: a picked-up trident flying to its collector.
+        let taken = self.pickups.live.iter().filter_map(|p| match &p.taken {
+            super::pickups::Taken::Trident(t) => Some((&**t, super::pickups::position(p, alpha))),
+            _ => None,
+        });
+        for (t, at) in live.chain(taken) {
+            let p = glam::DVec3::from_array(at) - camera;
             let yaw =
                 horizon_client::projectiles::lerp_rotation(t.previous_yaw, t.yaw, alpha as f32);
             let pitch =
@@ -822,9 +854,9 @@ impl Game<'_> {
                 * glam::Mat4::from_rotation_y((yaw - 90.0).to_radians())
                 * glam::Mat4::from_rotation_z((pitch + 90.0).to_radians());
             let l = self.world.light(
-                t.position.x.floor() as i32,
-                t.position.y.floor() as i32,
-                t.position.z.floor() as i32,
+                at[0].floor() as i32,
+                at[1].floor() as i32,
+                at[2].floor() as i32,
             );
             let packed = (u32::from(l >> 4) * 16) | ((u32::from(l & 15) * 16) << 8);
             let poses = Poses::new(model);

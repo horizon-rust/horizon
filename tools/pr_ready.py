@@ -97,6 +97,13 @@ def touched_crates(paths, packages):
     for path in paths:
         if is_doc(path):
             continue
+        if "horizon-client-lib" in packages and path.startswith("crates/horizon-client/"):
+            relative = path.removeprefix("crates/horizon-client/")
+            gameplay = relative in {"Cargo.toml", "build.rs", "windows-segment-heap.manifest",
+                                    "src/lib.rs", "src/main.rs", "src/entry.rs", "src/game.rs", "tests/launch_api.rs"} \
+                or relative.startswith("src/game/")
+            crates.add("horizon-client" if gameplay else "horizon-client-lib")
+            continue
         owners = [name for name, directory in packages.items() if path.startswith(directory.rstrip("/") + "/")]
         if owners:
             crates.add(max(owners, key=lambda name: len(packages[name])))
@@ -270,7 +277,7 @@ def parity_summary(output):
     return text
 
 
-# CI's clippy job (.github/workflows/ci.yml): clippy over the whole workspace, and over the server build (the game
+# CI's verify job (.github/workflows/ci.yml): clippy over the whole workspace, and over the server build (the game
 # without sound or controllers).
 CI_CLIPPY = "cargo clippy --workspace --all-targets --locked -- -D warnings"
 CI_CLIPPY_SERVER = "cargo clippy -p horizon-client --all-targets --locked --no-default-features -- -D warnings"
@@ -328,7 +335,7 @@ def mod_features(crates):
 # they are #[ignore]d and run here only when one of these changes.
 CONTENT_ROOT = ("crates/horizon-client/src/mod_content", "crates/horizon-client-render/src/assets.rs", "crates/horizon-items/",
                 "crates/horizon-mods/", "crates/horizon-assets/")
-CONTENT_ROOT_TESTS = "cargo test --locked -p horizon-client --lib mod_content::tests:: -- --ignored"
+CONTENT_ROOT_TESTS = "cargo test --locked -p horizon-client-lib --lib mod_content::tests:: -- --ignored"
 
 
 def plan(args, base, changed, crates_of, libraries, dependencies):

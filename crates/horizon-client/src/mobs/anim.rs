@@ -121,7 +121,8 @@ impl Poses {
     /// a mob draws its body and every equipment layer each frame.
     pub fn reset(&mut self, model: &Part) {
         fn walk(p: &Part, map: &mut HashMap<String, [f32; 9]>) {
-            map.insert(p.name.clone(), p.pose);
+            // ModelPart.createPartLookup fills its map with putIfAbsent: the first part keeps a name.
+            map.entry(p.name.clone()).or_insert(p.pose);
             for c in &p.children {
                 walk(c, map);
             }
@@ -145,7 +146,11 @@ impl Poses {
         self.skipped.insert(name.to_owned());
     }
     pub fn skips(&self, part: &Part) -> bool {
-        self.skipped.contains(&part.name)
+        self.skips_named(&part.name)
+    }
+    /// `skips` by the part's name.
+    pub fn skips_named(&self, name: &str) -> bool {
+        self.skipped.contains(name)
     }
     pub fn has(&self, name: &str) -> bool {
         self.map.contains_key(name)
@@ -168,7 +173,11 @@ impl Poses {
         }
     }
     pub fn is_hidden(&self, part: &Part) -> bool {
-        self.hidden.contains(&part.name)
+        self.is_hidden_named(&part.name)
+    }
+    /// `is_hidden` by the part's name.
+    pub fn is_hidden_named(&self, name: &str) -> bool {
+        self.hidden.contains(name)
     }
 }
 /// The LivingEntityRenderState values setupAnim reads.
@@ -185,6 +194,10 @@ pub struct State {
     pub baby: bool,
     pub partial: f32,
 }
+/// `WalkAnimationState.position(partial)`: babies' legs move 3 times as far.
+pub fn walk_position(m: &Mob, alpha: f32) -> f32 {
+    (m.limb_position - m.limb_speed * (1.0 - alpha)) * if m.is_baby() { 3.0 } else { 1.0 }
+}
 pub fn state(m: &Mob, alpha: f32) -> State {
     let body = m.previous_body_yaw + wrap(m.body_yaw - m.previous_body_yaw) * alpha;
     let head = m.previous_head_yaw + wrap(m.head_yaw - m.previous_head_yaw) * alpha;
@@ -197,8 +210,7 @@ pub fn state(m: &Mob, alpha: f32) -> State {
     let walking = m.alive() && !m.extra.passenger;
     State {
         pos: if walking {
-            // WalkAnimationState.position(partial): babies' legs move 3 times as far.
-            (m.limb_position - m.limb_speed * (1.0 - alpha)) * if m.is_baby() { 3.0 } else { 1.0 }
+            walk_position(m, alpha)
         } else {
             0.0
         },
@@ -1237,6 +1249,19 @@ mod flight_pose_tests {
         assert_eq!(dry.get("head")[3], 30.0f32.to_radians());
     }
 
+    #[test]
+    fn walk_position_triples_for_babies() {
+        // WalkAnimationState.position(partial) = (position - speed * (1 - partial)) * scale.
+        let mut m = player();
+        m.limb_position = 2.0;
+        m.limb_speed = 0.5;
+        assert!(!m.is_baby());
+        assert_eq!(walk_position(&m, 0.5), 1.75);
+        m.extra.age = -100;
+        assert!(m.is_baby());
+        assert_eq!(walk_position(&m, 0.5), 5.25);
+    }
+
     /// A player: a humanoid model with a shield in its main hand.
     fn player() -> Mob {
         let mut kind = crate::mobs::sensor_scan_tests::kind();
@@ -1349,5 +1374,25 @@ mod flight_pose_tests {
         assert_eq!(p.get("left_arm")[4], 0.0);
         assert!((p.get("right_arm")[3] + PI / 10.0).abs() < 1e-6);
         assert_eq!(p.get("right_arm")[4], 0.0);
+    }
+
+    /// ModelPart.createPartLookup fills the name map with putIfAbsent, so of two
+    /// parts sharing a name the first registered keeps it, not the last.
+    #[test]
+    fn a_name_two_parts_share_belongs_to_the_first() {
+        let child = |xrot: f32| Part {
+            name: "leg".into(),
+            pose: [0.0, 0.0, 0.0, xrot, 0.0, 0.0, 1.0, 1.0, 1.0],
+            polygons: Vec::new(),
+            children: Vec::new(),
+        };
+        let root = Part {
+            name: "root".into(),
+            pose: [0.0; 9],
+            polygons: Vec::new(),
+            children: vec![child(0.5), child(-0.5)],
+        };
+        let mut p = Poses::new(&root);
+        assert_eq!(p.get("leg")[3], 0.5);
     }
 }
