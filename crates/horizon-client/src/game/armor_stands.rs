@@ -13,7 +13,6 @@ use horizon_client::{
 };
 use horizon_core::{
     geometry::{Aabb, Vec3},
-    position::BlockPos,
     random::RandomSource,
 };
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
@@ -786,14 +785,16 @@ impl Game<'_> {
             if a.on_ground {
                 a.enchantment_fall_distance = 0.0;
             }
-            let (on_ground, at) = (a.on_ground, a.position);
-            self.armor_stand_turtle_eggs(on_ground, landed, at)?;
+            // LivingEntity.checkFallDamage: onChangedBlock before the block's
+            // fallOn, then aiStep's applyEffectsFromBlocks (stepOn, then the
+            // blocks it is inside).
+            if landed {
+                self.armor_stand_location_effects(i, true);
+            }
+            self.armor_stand_turtle_eggs(i, landed)?;
             let a = &mut self.armor_stands[i];
             if !a.environment_tick(&self.world, self.res.facts(), self.pack.assets.registry) {
                 dead.push(i);
-            }
-            if landed {
-                self.armor_stand_location_effects(i, true);
             }
         }
         for i in dead.into_iter().rev() {
@@ -807,11 +808,22 @@ impl Game<'_> {
     /// in 100 while it is on the ground (`LivingEntity.aiStep`'s
     /// `applyEffectsFromBlocks`, after `travel`, so a marker that has landed
     /// still steps). `canDestroyEgg` wants mob griefing before the level's roll.
-    fn armor_stand_turtle_eggs(&mut self, on_ground: bool, landed: bool, at: Vec3) -> Result<()> {
-        if !on_ground || self.remote.is_some() || self.options.execution_role.is_client() {
+    fn armor_stand_turtle_eggs(&mut self, i: usize, landed: bool) -> Result<()> {
+        let stand = &self.armor_stands[i];
+        if !stand.on_ground || self.remote.is_some() || self.options.execution_role.is_client() {
             return Ok(());
         }
-        let p = BlockPos::containing(at.add_vector(Vec3::new(0.0, -f64::from(0.2_f32), 0.0)));
+        let p = stand.on_pos_legacy(|p| {
+            let name = &self.res.facts().get(self.world.block(p.x, p.y, p.z)).name;
+            let tags = &self.res.items().block_tags;
+            [
+                "minecraft:fences",
+                "minecraft:walls",
+                "minecraft:fence_gates",
+            ]
+            .iter()
+            .any(|t| tags.get(*t).is_some_and(|s| s.contains(&**name)))
+        });
         for chance in [landed.then_some(3), Some(100)].into_iter().flatten() {
             let egg = self
                 .pack

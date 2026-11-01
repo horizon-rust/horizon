@@ -5,7 +5,9 @@ An armor stand is a LivingEntity, so `TurtleEggBlock.stepOn` cracks an egg
 under it one tick in 100 while mob griefing is on (`canDestroyEgg`). After
 1500 ticks a stack of four is gone with near certainty (fewer than four
 cracks: about 2 in 10000). Controls: a marker stand never lands, so it never
-steps; an egg with no stand stays; with mob griefing off the eggs stay.
+steps; an egg with no stand stays; a stand whose centre is past the egg's
+edge still stands on it (`mainSupportingBlockPos`); with mob griefing off
+the eggs stay.
 """
 import json
 
@@ -24,8 +26,8 @@ def cmd(command):
 
 SCRIPT = [('setup', ['chat on', cmd('gamerule spawn_mobs false'),
                      cmd('gamerule random_tick_speed 0'), cmd('tp @s 4.5 83 -4.5'),
-                     cmd('fill -2 79 -2 12 79 2 minecraft:stone'),
-                     cmd('fill -2 80 -2 12 84 2 minecraft:air')])]
+                     cmd('fill -2 79 -2 15 79 2 minecraft:stone'),
+                     cmd('fill -2 80 -2 15 84 2 minecraft:air')])]
 EXPECTED = []
 
 
@@ -45,15 +47,19 @@ def check(name, x, block, result):
 
 SCRIPT.append(('griefing-setup', [
     cmd('gamerule mob_griefing true'),
-    eggs(0), eggs(3), eggs(6), eggs(9),
+    eggs(0), eggs(3), eggs(6), eggs(9), eggs(12),
     cmd('summon minecraft:armor_stand 0.5 80.5 0.5'),
     cmd('summon minecraft:armor_stand 3.5 80.5 0.5 {Small:1b}'),
     cmd('summon minecraft:armor_stand 6.5 80.5 0.5 {Marker:1b}'),
+    # Centre past the egg's edge, box still on the eggs (getOnPos takes the
+    # supporting block's column, not the air under the centre).
+    cmd('summon minecraft:armor_stand 13.05 80.5 0.5'),
 ]))
 wait('griefing')
 check('stand', 0, 'minecraft:turtle_egg', 'fail')
 check('small-stand', 3, 'minecraft:turtle_egg', 'fail')
 check('marker-stand', 6, 'minecraft:turtle_egg[eggs=4]', 'pass')
+check('edge-stand', 12, 'minecraft:turtle_egg', 'fail')
 check('no-stand', 9, 'minecraft:turtle_egg[eggs=4]', 'pass')
 
 SCRIPT.append(('no-griefing-setup', [
