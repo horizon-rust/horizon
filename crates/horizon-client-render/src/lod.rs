@@ -168,14 +168,22 @@ impl Column {
         if width == 1 {
             return columns[z * 16 + x].clone();
         }
+        Self::merge(
+            (z..z + width).flat_map(move |dz| (x..x + width).map(move |dx| &columns[dz * 16 + dx])),
+            width * width,
+        )
+    }
+    /// One column for a footprint of `footprint` columns, which `columns`
+    /// are (all of them, or the ones that are known: the far store's
+    /// coarser levels). It stands where at least half of the footprint
+    /// has material, as the most common block there.
+    pub(crate) fn merge<'a>(columns: impl Iterator<Item = &'a Column>, footprint: usize) -> Self {
         let mut events = Vec::new();
-        for dz in z..z + width {
-            for dx in x..x + width {
-                for span in &columns[dz * 16 + dx].spans {
-                    let material = (span.state, span.biome, span.light);
-                    events.push((span.min, material, 1));
-                    events.push((span.max, material, -1));
-                }
+        for column in columns {
+            for span in &column.spans {
+                let material = (span.state, span.biome, span.light);
+                events.push((span.min, material, 1));
+                events.push((span.max, material, -1));
             }
         }
         events.sort_unstable_by_key(|event| event.0);
@@ -187,7 +195,7 @@ impl Column {
         let mut bottom = MIN_Y as i16;
         for (y, material, change) in events {
             if bottom < y {
-                if occupied * 2 >= (width * width) as i32
+                if occupied * 2 >= footprint as i32
                     && let Some(&((state, biome), _)) =
                         votes.iter().max_by_key(|&(material, count)| {
                             (*count, std::cmp::Reverse((material.0.0, material.1)))
