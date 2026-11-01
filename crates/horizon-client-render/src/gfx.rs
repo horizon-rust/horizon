@@ -91,6 +91,7 @@ pub use hdr::Calibration as HdrCalibration;
 pub mod lightning;
 mod lod;
 mod lod_gpu;
+mod lod_meshlet;
 mod native_material;
 mod native_pack;
 mod native_post;
@@ -278,6 +279,9 @@ struct SectionGpu {
     leaving: Option<std::time::Instant>,
     /// Animated sprite layers present in this section.
     animated_layers: Box<[u16]>,
+    /// A far tile's meshlets, for the mesh shader path (`lod_meshlet`); empty
+    /// for sections, and where the device has no mesh shaders.
+    meshlets: Box<[lod_meshlet::Meshlet]>,
 }
 /// Extracts the animated sprite layers present in a section mesh. Meshing
 /// records the distinct layers, so uploading does not rescan every vertex.
@@ -658,6 +662,8 @@ pub struct Renderer {
     lod_gpu: Option<lod_gpu::LodGpu>,
     /// Whether `lod_gpu` is used (`set_gpu_lods`).
     lod_gpu_on: bool,
+    /// The device has mesh shaders: far tiles are cut into meshlets as they upload.
+    lod_meshlets: bool,
     /// The chunk columns the resident tiles leave out (`Lod::take_cutout`):
     /// their sections are drawn even past the render distance, so terrain
     /// leaving it never opens a hole before the tiles fill it in.
@@ -3067,6 +3073,9 @@ impl Renderer {
                 cull
             });
         let lod_gpu = lod_gpu::LodGpu::create(&adapter, &device);
+        let lod_meshlets = device
+            .features()
+            .contains(wgpu::Features::EXPERIMENTAL_MESH_SHADER);
         let depth = Self::depth(&device, &config);
         let world_post = world_post::Post::new(&device, config.format.remove_srgb_suffix());
         let uploads = upload::Uploads::new(&device);
@@ -3211,6 +3220,7 @@ impl Renderer {
             lod_revision: 0,
             lod_gpu_on: lod_gpu.is_some(),
             lod_gpu,
+            lod_meshlets,
             lod_cutout: Default::default(),
             lod_retiring: Default::default(),
             lod_leaving: Vec::new(),
@@ -3618,15 +3628,23 @@ impl Renderer {
         }
         let animated_layers =
             collect_animated_layers(mesh, |layer| self.animations.is_animated(layer));
+        let sides = if mesh.sides.quads() == solid {
+            mesh.sides
+        } else {
+            Sides::unsorted(solid)
+        };
+        // Far tiles (the meshes with bounds) get meshlets where the device has mesh shaders.
+        let meshlets = if self.lod_meshlets && mesh.bounds.is_some() {
+            lod_meshlet::build(&mesh.solid, &sides).into_boxed_slice()
+        } else {
+            Box::default()
+        };
         Some(SectionGpu {
             page,
             start,
             solid,
-            sides: if mesh.sides.quads() == solid {
-                mesh.sides
-            } else {
-                Sides::unsorted(solid)
-            },
+            sides,
+            meshlets,
             translucent,
             sort: translucency::SortState::new(
                 mesh.translucent

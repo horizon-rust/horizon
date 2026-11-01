@@ -82,6 +82,16 @@ pub fn wgsl_rules() -> String {
     )
 }
 
+/// The axis a bucket's quads lie across and whether they face its positive
+/// direction (`visible_from` compares the eye with their planes), `None`
+/// for the bucket drawn from everywhere. Buckets are in `wgsl_rules` order.
+pub fn rule(bucket: usize) -> Option<(usize, bool)> {
+    match BUCKETS[bucket] {
+        Bucket::Side(axis, positive) => Some((axis, positive)),
+        Bucket::Other => None,
+    }
+}
+
 impl Sides {
     /// The solid quads up to the end of each bucket, in the order `wgsl_rules`
     /// lists the buckets.
