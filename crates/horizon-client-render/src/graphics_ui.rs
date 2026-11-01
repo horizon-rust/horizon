@@ -1633,18 +1633,19 @@ impl GraphicsUi {
             // Where the control starts, and the value's text for a slider at rest.
             let start = match (switch, slider) {
                 (Some(_), _) => right - style::CONTROL_H,
-                (None, Some(_)) if active => tx - 8.0 - vw,
+                (None, Some(_)) if active => tx,
                 (None, Some(_)) => right - vw,
                 (None, None) => right - vw - 18.0,
             };
             match (switch, slider) {
                 (Some(on), _) => style::checkbox(batch, atlas, right, y, on, live),
-                // A slider shows its track while it is pointed at, focused or held.
+                // A slider shows its track, the value on it, while it is pointed at, focused or held.
                 (None, Some(position)) => {
                     let value = Text::literal(value);
-                    batch.text_styled(atlas, &value, start, ty, soft, true);
                     if active {
-                        style::slider(batch, atlas, control, position, (lit, live));
+                        style::slider(batch, atlas, control, &value, position, (lit, live));
+                    } else {
+                        batch.text_styled(atlas, &value, start, ty, soft, true);
                     }
                 }
                 (None, None) => {

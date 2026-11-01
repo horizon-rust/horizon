@@ -228,11 +228,12 @@ pub fn button(
     let ty = y + ((h - 8.0) / 2.0).floor() - if primary { 1.0 } else { 0.0 };
     ui::centered_text(batch, atlas, label, x + 2.0, ty, w - 4.0, color);
 }
-/// A slider's track: a well and the 8 px handle at `position`. The row writes its value beside it.
+/// Vanilla's slider: a well, the 8 px handle at `position`, the value written over both.
 pub fn slider(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
     rect: [f32; 4],
+    value: &Text,
     position: f32,
     (hover, live): (bool, bool),
 ) {
@@ -250,6 +251,9 @@ pub fn slider(
     if hover && live {
         ring(batch, atlas, handle, WHITE);
     }
+    let color = if live { WHITE } else { MUTED };
+    let ty = y + ((h - 8.0) / 2.0).floor();
+    ui::centered_text(batch, atlas, value, x + 2.0, ty, w - 4.0, color);
 }
 /// A value that a press steps through: in a well, between the arrows that say so.
 pub fn cycler(
