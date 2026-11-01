@@ -964,9 +964,11 @@ mod tests {
             living: None,
             mount: None,
         };
-        let mut camera = Camera::default();
-        camera.eye_height = 0.2;
-        camera.eye_height_old = 0.2;
+        let mut camera = Camera {
+            eye_height: 0.2,
+            eye_height_old: 0.2,
+            ..Camera::default()
+        };
         camera.align_with_entity(&entity, 1.0, CameraType::ThirdPersonBack, |_, _| None);
         assert!((camera.position[2] + 4.0).abs() < 1e-6);
         camera.align_with_entity(&entity, 1.0, CameraType::ThirdPersonBack, |_, _| {
@@ -992,9 +994,11 @@ mod tests {
             }),
             mount: None,
         };
-        let mut camera = Camera::default();
-        camera.eye_height = 0.2;
-        camera.eye_height_old = 0.2;
+        let mut camera = Camera {
+            eye_height: 0.2,
+            eye_height_old: 0.2,
+            ..Camera::default()
+        };
         camera.align_with_entity(&entity, 1.0, CameraType::FirstPerson, |_, _| None);
         assert!((camera.y_rot - (90.0 - 180.0)).abs() < 1e-6);
         assert_eq!(camera.x_rot, 0.0);
@@ -1019,9 +1023,11 @@ mod tests {
             }),
             mount: None,
         };
-        let mut camera = Camera::default();
-        camera.eye_height = 0.2;
-        camera.eye_height_old = 0.2;
+        let mut camera = Camera {
+            eye_height: 0.2,
+            eye_height_old: 0.2,
+            ..Camera::default()
+        };
         camera.align_with_entity(&entity, 1.0, CameraType::ThirdPersonBack, |_, _| None);
         assert!((camera.y_rot - (90.0 - 180.0)).abs() < 1e-6);
         assert_eq!(camera.x_rot, 0.0);
