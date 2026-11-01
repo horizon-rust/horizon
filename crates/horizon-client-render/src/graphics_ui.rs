@@ -2129,6 +2129,8 @@ mod tests {
 
     const SIZE: (f32, f32) = (640.0, 360.0);
     const FB: [i32; 2] = [1920, 1080];
+    /// Held by the tests that set `offer_hdr`, which is global.
+    static HDR_OFFER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn items() -> Vec<(Page, Item)> {
         rows()
@@ -2377,7 +2379,7 @@ mod tests {
 
     #[test]
     fn hdr_waits_for_a_display_that_offers_it_and_its_sliders_for_the_switch() {
-        // The only test that sets `offer_hdr`, which is global: the others don't reach HDR.
+        let _offer = HDR_OFFER.lock().unwrap_or_else(|e| e.into_inner());
         let mut s = Settings::default();
         let mut ui = GraphicsUi::default();
         let at = |[x, y, ..]: [f32; 4]| (x + 8.0, y + 4.0);
@@ -2799,6 +2801,9 @@ mod tests {
 
     #[test]
     fn graphics_step_slider_matches_set_slider_for_all_options() {
+        // HDR's sliders step only where the display offers HDR.
+        let _offer = HDR_OFFER.lock().unwrap_or_else(|e| e.into_inner());
+        crate::graphics::offer_hdr(true);
         let options = [
             H::ChunkUpdates,
             H::UploadBudget,
