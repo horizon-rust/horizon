@@ -22,6 +22,9 @@ struct View {
     // x: milliseconds on the renderer's clock, y: 1 to draw a tile as one
     // run of quads, z: arena pages.
     times: vec4<i32>,
+    // The columns near chunks draw in full (gfx/lod.rs's `column_mask`, a
+    // bit a column, 128 by 128 around the camera's column).
+    mask: array<vec4<u32>, 128>,
 }
 struct Node {
     origin: vec2<i32>,
@@ -134,6 +137,29 @@ fn push_run(page: u32, base: u32, ti: u32, first: u32, count: u32) {
     draws[entry + 4u] = ti;
 }
 
+// gfx/lod.rs's `masked`: a node whose footprint lies wholly in the columns
+// near chunks draw in full, where terrain.wgsl's `lod_hidden` leaves every
+// pixel of it out, and so of everything under it.
+fn masked(origin: vec2<i32>, level: u32) -> bool {
+    let chunks = 1i << level;
+    let c = (origin >> vec2(4u)) - (view.cam_int.xz >> vec2(4u)) + vec2(64);
+    if any(c < vec2(0)) || any(c + vec2(chunks) > vec2(128)) {
+        return false;
+    }
+    for (var z = c.y; z < c.y + chunks; z++) {
+        for (var x = c.x; x < c.x + chunks; x++) {
+            let bit = u32(z * 128 + x);
+            let v = view.mask[bit >> 7u];
+            let w = (bit >> 5u) & 3u;
+            let bits = select(select(v.x, v.y, w == 1u), select(v.z, v.w, w == 3u), w >= 2u);
+            if ((bits >> (bit & 31u)) & 1u) == 0u {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 // Tile `ti`, at `origin` from the camera, drawn as the CPU's `Tile::visible`
 // and `facing_runs_from` draw it.
 fn emit(ti: u32, origin: vec3<f32>) {
@@ -207,7 +233,7 @@ fn traverse(@builtin(global_invocation_id) id: vec3<u32>) {
     let origin = relative(n.origin);
     let lo = origin + n.bmin;
     let hi = origin + n.bmax;
-    if outside(lo, hi) || too_small(lo, hi) || node_hidden(lo, hi) {
+    if outside(lo, hi) || too_small(lo, hi) || node_hidden(lo, hi) || masked(n.origin, n.level) {
         return;
     }
     if n.tile != NONE {

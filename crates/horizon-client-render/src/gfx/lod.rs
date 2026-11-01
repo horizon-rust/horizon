@@ -92,6 +92,25 @@ pub(super) fn column_mask(
     mask
 }
 
+/// Whether `key`'s whole footprint is in `mask` (`column_mask` around
+/// `center`): every pixel of it is left out (terrain.wgsl's `lod_hidden`), so
+/// it need not be drawn at all. Tiles under the near chunks are meshed whole,
+/// and drawing them only to discard them cost about 3 ms of GPU a frame.
+pub(super) fn masked(mask: &[[u32; 4]; MASK_VECS], center: (i32, i32), key: TileKey) -> bool {
+    let chunks = 1 << key.level;
+    let half = MASK_SIDE / 2;
+    let (x0, z0) = (key.x * chunks - center.0 + half, key.z * chunks - center.1 + half);
+    if x0 < 0 || z0 < 0 || x0 + chunks > MASK_SIDE || z0 + chunks > MASK_SIDE {
+        return false;
+    }
+    (z0..z0 + chunks).all(|z| {
+        (x0..x0 + chunks).all(|x| {
+            let bit = (z * MASK_SIDE + x) as usize;
+            mask[bit / 128][bit / 32 % 4] & (1 << (bit % 32)) != 0
+        })
+    })
+}
+
 /// `HORIZON_LOD_CUTOUT=1` keeps the far terrain cut around the near columns
 /// in the tiles' geometry, as before the screen-space mask.
 fn cutout_forced() -> bool {

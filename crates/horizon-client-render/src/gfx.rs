@@ -5087,10 +5087,16 @@ impl Renderer {
                         eye,
                         focal,
                         now: lod::clock_ms(self.started, now),
+                        mask: lod_columns,
                     },
                 );
             }
         }
+        let mask_center = (
+            (frame.camera.x.floor() as i32) >> 4,
+            (frame.camera.z.floor() as i32) >> 4,
+        );
+        let shown = |key: crate::lod::TileKey| !lod::masked(&lod_columns, mask_center, key);
         if frame.title {
             visible.clear();
         } else if gpu_lods {
@@ -5098,6 +5104,7 @@ impl Renderer {
             visible_lods.extend(
                 water
                     .iter()
+                    .filter(|&&key| shown(key))
                     .filter_map(|&key| self.lods.get(&key)?.visible(key, camera, &view, now)),
             );
             visible_lods.sort_unstable_by_key(|v| (v.distance, v.key));
@@ -5105,6 +5112,7 @@ impl Renderer {
             visible_lods.extend(
                 self.lods
                     .iter()
+                    .filter(|&(&key, _)| shown(key))
                     .filter_map(|(&key, tile)| tile.visible(key, camera, &view, now)),
             );
             visible_lods.sort_unstable_by_key(|v| (v.distance, v.key));

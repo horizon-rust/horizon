@@ -116,6 +116,7 @@ struct ViewUniform {
     eye: [f32; 4],
     misc: [f32; 4],
     times: [i32; 4],
+    mask: [[u32; 4]; super::lod::MASK_VECS],
 }
 
 /// What one frame's walk needs of the camera.
@@ -129,6 +130,8 @@ pub struct Camera {
     pub focal: f32,
     /// Milliseconds on the renderer's clock (`Renderer::lod_millis`).
     pub now: i32,
+    /// The columns near chunks draw in full (`Renderer::lod_mask`).
+    pub mask: [[u32; 4]; super::lod::MASK_VECS],
 }
 
 /// A buffer that grows by doubling, losing its contents when it does.
@@ -868,6 +871,7 @@ impl LodGpu {
             ],
             misc: [frame.focal, self.threshold.pixels(), 0.0, 0.0],
             times: [frame.now, i32::from(!self.counted), self.pages as i32, 0],
+            mask: frame.mask,
         };
         uploads.buffer(encoder, &self.view, 0, bytemuck::bytes_of(&view));
         // Nothing walked, no draws yet; the first level is the roots.
@@ -1048,8 +1052,8 @@ mod tests {
 
     #[test]
     fn the_view_uniform_is_what_the_shader_declares() {
-        // 6 planes, a matrix, and five vectors: lod_gpu.wgsl's `View`.
-        assert_eq!(std::mem::size_of::<ViewUniform>(), 96 + 64 + 5 * 16);
+        // 6 planes, a matrix, five vectors and the column mask: lod_gpu.wgsl's `View`.
+        assert_eq!(std::mem::size_of::<ViewUniform>(), 96 + 64 + 5 * 16 + 128 * 16);
         assert_eq!(std::mem::size_of::<tree::Node>(), 48);
         assert_eq!(std::mem::size_of::<TileRecord>(), 88);
     }
