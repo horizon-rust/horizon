@@ -413,7 +413,7 @@ mod tests {
     /// through the pane, exactly as vanilla 26.3 does.
     #[test]
     fn a_phantom_bites_a_player_pressed_behind_a_foot_high_pane_wall() {
-        with_built_test_world(&[], press_setup(65), |w, types| {
+        with_built_test_world(&[], true, press_setup(65), |w, types| {
             let mut w = w.clone();
             w.player = Some(test_player(Vec3::new(2.8625, 64.0, 2.5)));
             let kind = std::sync::Arc::new(types.types["minecraft:phantom"].clone());
@@ -462,7 +462,7 @@ mod tests {
     /// would reach through the 0.125-thick pane.
     #[test]
     fn a_phantom_cannot_target_a_player_behind_a_window_of_panes() {
-        with_built_test_world(&[], press_setup(67), |w, types| {
+        with_built_test_world(&[], true, press_setup(67), |w, types| {
             let mut w = w.clone();
             w.player = Some(test_player(Vec3::new(2.8625, 64.0, 2.5)));
             let kind = std::sync::Arc::new(types.types["minecraft:phantom"].clone());
@@ -491,6 +491,7 @@ mod tests {
         for roof in [None, Some("minecraft:stone"), Some("minecraft:glass")] {
             with_built_test_world(
                 &[],
+                true,
                 |world, registry| {
                     for x in -1..=1 {
                         for z in -1..=1 {

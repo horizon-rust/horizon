@@ -395,12 +395,22 @@ pub(crate) fn with_test_world(
     others: &[Seen],
     f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
 ) -> bool {
-    with_built_test_world(others, |_, _| {}, f)
+    with_test_world_rules(others, true, f)
+}
+/// `with_test_world` with the `mob_griefing` game rule set (EatBlockGoal).
+#[cfg(test)]
+pub(crate) fn with_test_world_rules(
+    others: &[Seen],
+    mob_griefing: bool,
+    f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
+) -> bool {
+    with_built_test_world(others, mob_griefing, |_, _| {}, f)
 }
 /// `with_test_world` with `build` placing blocks first.
 #[cfg(test)]
 pub(crate) fn with_built_test_world(
     others: &[Seen],
+    mob_griefing: bool,
     build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
     f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
 ) -> bool {
@@ -454,7 +464,7 @@ pub(crate) fn with_built_test_world(
         block_tags: &items.block_tags,
         landing: &motion.landing,
         biomes: &biomes,
-        mob_griefing: true,
+        mob_griefing,
         universal_anger: false,
         mob_drops: true,
         max_entity_cramming: 24,

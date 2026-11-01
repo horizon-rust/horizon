@@ -191,6 +191,8 @@ public final class VanillaMobAiOracle {
         /** The player feeds an animal, or uses another item on it, at the start of a tick
          *  (Animal.mobInteract with the item in its main hand): {tick, mob index, item id}. */
         List<Object[]> feeds = new ArrayList<>();
+        /** The `mob_griefing` game rule during the scenario. */
+        boolean mobGriefing;
     }
 
     static void parse(Path path) throws Exception {
@@ -203,6 +205,7 @@ public final class VanillaMobAiOracle {
                 case "scenario" -> {
                     s = new Scenario();
                     s.name = f[1];
+                    s.mobGriefing = true;
                     for (int i = 2; i < f.length; i++) {
                         String[] kv = f[i].split("=", 2);
                         switch (kv[0]) {
@@ -214,6 +217,7 @@ public final class VanillaMobAiOracle {
                             case "levelseed" -> s.levelSeed = Long.parseLong(kv[1]);
                             case "daycycle" -> s.daycycle = true;
                             case "spawning" -> s.spawning = true;
+                            case "mob_griefing" -> s.mobGriefing = Boolean.parseBoolean(kv[1]);
                             default -> throw new IllegalArgumentException(line);
                         }
                     }
@@ -505,6 +509,8 @@ public final class VanillaMobAiOracle {
         void run(Scenario s, ServerLevel level) throws Exception {
             net.minecraft.world.entity.vehicle.boat.Boat boat = null;
             this.setDifficulty(net.minecraft.world.Difficulty.byId(s.difficulty), true);
+            // Per-scenario game rules (EatBlockGoal reads MOB_GRIEFING every eat).
+            level.getGameRules().set(GameRules.MOB_GRIEFING, s.mobGriefing, null);
             out.println("== " + s.name);
             var clock = level.registryAccess().lookupOrThrow(Registries.WORLD_CLOCK).getOrThrow(WorldClocks.OVERWORLD);
             this.clockManager().setTotalTicks(clock, s.time);

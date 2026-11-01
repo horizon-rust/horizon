@@ -2590,19 +2590,25 @@ impl Goal for EatBlock {
                 m.position.z.floor() as i32,
             );
             let here = cx.w.block_name(x, y, z).to_owned();
+            // EatBlockGoal.tick: the block only changes when MOB_GRIEFING is
+            // on; `ate` (the animation, the wool regrow) happens either way.
             if cx.w.has_tag("minecraft:edible_for_sheep", &here) {
-                cx.events.push(MobEvent::BreakBlock {
-                    pos: [x, y, z],
-                    drop: false,
-                });
+                if cx.w.mob_griefing {
+                    cx.events.push(MobEvent::BreakBlock {
+                        pos: [x, y, z],
+                        drop: false,
+                    });
+                }
                 super::ai::ate(m);
             } else if cx.w.block_name(x, y - 1, z) == "minecraft:grass_block" {
-                cx.events.push(MobEvent::SetBlockName {
-                    pos: [x, y - 1, z],
-                    name: "minecraft:dirt",
-                    effect: true,
-                    flags: horizon_world::level::flags::UPDATE_CLIENTS,
-                });
+                if cx.w.mob_griefing {
+                    cx.events.push(MobEvent::SetBlockName {
+                        pos: [x, y - 1, z],
+                        name: "minecraft:dirt",
+                        effect: true,
+                        flags: horizon_world::level::flags::UPDATE_CLIENTS,
+                    });
+                }
                 super::ai::ate(m);
             }
         }
@@ -2844,5 +2850,76 @@ mod built_by_player_tests {
         let mut zombie = mob(Species::Zombie);
         zombie.extra.player_created = true;
         assert!(!zombie.built_by_player());
+    }
+}
+
+#[cfg(test)]
+mod eat_block_tests {
+    use super::*;
+    use crate::mobs::world::with_built_test_world;
+
+    /// A sheep standing over a grass block, ticked through the goal's eat
+    /// moment: the world events the goal emitted.
+    fn graze(mob_griefing: bool) -> Vec<MobEvent> {
+        let mut out = None;
+        with_built_test_world(
+            &[],
+            mob_griefing,
+            |world, registry| {
+                world.chunks.insert(
+                    (0, 0),
+                    std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+                );
+                world
+                    .set(
+                        0,
+                        63,
+                        0,
+                        registry.default_state("minecraft:grass_block").unwrap(),
+                    )
+                    .unwrap();
+            },
+            |w, types| {
+                let kind = std::sync::Arc::new(types.types["minecraft:sheep"].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                m.persistent = true;
+                let mut events = Vec::new();
+                let mut g = EatBlock::default();
+                let mut cx = Cx {
+                    w,
+                    lr: &mut LegacyRandom::new(0),
+                    events: &mut events,
+                };
+                // EatBlockGoal.start puts the eat moment at reduced(40).
+                g.start(&mut m, &mut cx);
+                while g.tick > 0 {
+                    g.tick(&mut m, &mut cx);
+                }
+                out = Some(events);
+            },
+        );
+        out.unwrap()
+    }
+
+    /// #6221: with `mob_griefing` off a grazing sheep still eats (the
+    /// animation, `Sheep.ate`), but the grass block stays. With the rule on
+    /// the block below is set to dirt.
+    #[test]
+    fn a_sheep_grazing_with_mob_griefing_off_leaves_the_block() {
+        let events = graze(false);
+        assert!(!events.iter().any(|e| matches!(
+            e,
+            MobEvent::BreakBlock { .. } | MobEvent::SetBlockName { .. }
+        )));
+        assert!(matches!(
+            graze(true).as_slice(),
+            [
+                ..,
+                MobEvent::SetBlockName {
+                    name: "minecraft:dirt",
+                    ..
+                }
+            ]
+        ));
     }
 }

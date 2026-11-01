@@ -45,6 +45,13 @@ def scenarios():
     def add(name, ticks, lines, opts=''):
         s.append((name, ticks, opts, lines))
 
+    # #6221: a baby sheep (grazes every ~50 ticks, so the roll lands) eats
+    # with mobGriefing off — the eat animation and wool regrow happen; the
+    # block-write side is covered by the goals.rs unit test. (The mobGriefing-on
+    # side shows a pre-existing eat-cadence divergence after the block breaks;
+    # left to its own issue.)
+    add('sheep_graze_no_griefing', 800, ['mob minecraft:sheep 0.5 -60 0.5 0 9 persistent baby'],
+        'mob_griefing=false')
     # Passive and hostile land mobs on open grass with a survival player nearby.
     for species, seed in [('zombie', 1), ('skeleton', 2), ('creeper', 3), ('spider', 4), ('husk', 5),
                           ('cow', 6), ('pig', 7), ('chicken', 8), ('sheep', 9), ('wandering_trader', 10),

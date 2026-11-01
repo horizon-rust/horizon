@@ -3345,6 +3345,7 @@ mod burn_and_rose_tests {
     fn wither_rose_applies_wither_whatever_the_hit_timer_and_local_difficulty() {
         let ran = crate::mobs::world::with_built_test_world(
             &[],
+            true,
             build_with("minecraft:wither_rose"),
             |w, types| {
                 let mut m = golem(types);
@@ -3369,19 +3370,24 @@ mod burn_and_rose_tests {
     /// full invulnerable time.
     #[test]
     fn lava_ignites_to_the_full_time_and_hits_after_the_timers_count_down() {
-        crate::mobs::world::with_built_test_world(&[], build_with("minecraft:lava"), |w, types| {
-            let mut m = golem(types);
-            let mut events = Vec::new();
-            let start = m.health;
-            base_tick(&mut m, w, &mut events);
-            assert_eq!(m.health, start - 4.0, "one lava hit");
-            assert_eq!(m.fire_ticks, 300, "fire after the first tick");
-            assert_eq!(m.invulnerable, 20, "the hit's own invulnerable time");
-            for _ in 0..10 {
+        crate::mobs::world::with_built_test_world(
+            &[],
+            true,
+            build_with("minecraft:lava"),
+            |w, types| {
+                let mut m = golem(types);
+                let mut events = Vec::new();
+                let start = m.health;
                 base_tick(&mut m, w, &mut events);
-            }
-            assert_eq!(m.health, start - 8.0, "second hit on tick 11");
-            assert_eq!(m.fire_ticks, 300);
-        });
+                assert_eq!(m.health, start - 4.0, "one lava hit");
+                assert_eq!(m.fire_ticks, 300, "fire after the first tick");
+                assert_eq!(m.invulnerable, 20, "the hit's own invulnerable time");
+                for _ in 0..10 {
+                    base_tick(&mut m, w, &mut events);
+                }
+                assert_eq!(m.health, start - 8.0, "second hit on tick 11");
+                assert_eq!(m.fire_ticks, 300);
+            },
+        );
     }
 }

@@ -553,7 +553,7 @@ mod tests {
                 }
             }
         };
-        crate::mobs::world::with_built_test_world(&[], build, |w, _| {
+        crate::mobs::world::with_built_test_world(&[], true, build, |w, _| {
             let mut events = Vec::new();
             let mut free = enderman();
             assert!((0..64).any(|_| teleport_random(&mut free, w, &mut events)));

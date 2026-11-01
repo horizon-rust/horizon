@@ -75,6 +75,8 @@ struct Scenario {
     feeds: Vec<(i32, usize, Option<String>)>,
     hand: Option<String>,
     mobs: Vec<MobSpec>,
+    /// The `mob_griefing` game rule during the scenario.
+    mob_griefing: bool,
 }
 
 fn parse(text: &str) -> Vec<Scenario> {
@@ -91,6 +93,7 @@ fn parse(text: &str) -> Vec<Scenario> {
                 s.name = f[1].to_owned();
                 s.time = 6000;
                 s.difficulty = 2;
+                s.mob_griefing = true;
                 for kv in &f[2..] {
                     let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
                     match k {
@@ -102,6 +105,7 @@ fn parse(text: &str) -> Vec<Scenario> {
                         "levelseed" => {}
                         "spawning" => s.spawning = true,
                         "daycycle" => s.daycycle = true,
+                        "mob_griefing" => s.mob_griefing = v.parse().unwrap(),
                         _ => panic!("unknown scenario option {kv}"),
                     }
                 }
@@ -1184,7 +1188,7 @@ pub fn main() -> horizon_client::Result<()> {
                     block_tags: &items.block_tags,
                     landing: &motion.landing,
                     biomes: &biomes,
-                    mob_griefing: true,
+                    mob_griefing: s.mob_griefing,
                     universal_anger: false,
                     mob_drops: true,
                     max_entity_cramming: 24,
