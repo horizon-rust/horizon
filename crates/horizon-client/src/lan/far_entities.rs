@@ -94,7 +94,9 @@ impl Feed {
         let level = wire::level_id(dimension);
         let here = |g: &Guest| g.placed && g.dimension == dimension;
         let due = |g: &Guest, sub: &Sub, every: u64, offset: u64| {
-            sub.fresh || sub.level != level || (ticks + u64::from(g.conn) * offset) % every == 0
+            sub.fresh
+                || sub.level != level
+                || (ticks + u64::from(g.conn) * offset).is_multiple_of(every)
         };
         let mut want_players = false;
         let mut want_mobs = false;

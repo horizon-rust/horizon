@@ -282,6 +282,7 @@ pub fn bake(quads: &[Quad], atlas: AtlasPixels, azimuth: f32, elevation: f32, fi
     let mut color = vec![[0.0f32; 3]; BAKE * BAKE];
     let mut depth = vec![f32::MIN; BAKE * BAKE];
     for quad in quads.as_chunks::<4>().0 {
+        let quad: [Quad; 4] = *quad;
         if !shown(&quad[0]) {
             continue;
         }
