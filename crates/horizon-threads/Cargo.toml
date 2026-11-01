@@ -12,6 +12,7 @@ libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["e
 
 [target.'cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))'.dependencies]
 libc = "0.2"
+log = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Console", "Win32_System_IO", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_WindowsAndMessaging"] }

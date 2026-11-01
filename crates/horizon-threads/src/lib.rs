@@ -496,13 +496,32 @@ mod junction_tests {
 /// Bench only: mimalloc with a count of the bytes held live.
 pub struct Counting;
 pub static LIVE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+pub static PEAK: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+fn grew(n: isize) {
+    let now = LIVE.fetch_add(n, std::sync::atomic::Ordering::Relaxed) + n;
+    PEAK.fetch_max(now, std::sync::atomic::Ordering::Relaxed);
+}
+/// Bench only: run `f`, log its peak and kept live bytes.
+pub fn mem_step<T>(name: &str, f: impl FnOnce() -> T) -> T {
+    use std::sync::atomic::Ordering::Relaxed;
+    let start = LIVE.load(Relaxed);
+    PEAK.store(start, Relaxed);
+    let out = f();
+    let (end, peak) = (LIVE.load(Relaxed), PEAK.load(Relaxed));
+    log::info!(
+        "memstep {name} peak +{:.1} MB kept +{:.1} MB",
+        (peak - start) as f64 / 1e6,
+        (end - start) as f64 / 1e6
+    );
+    out
+}
 unsafe impl std::alloc::GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
-        LIVE.fetch_add(l.size() as isize, std::sync::atomic::Ordering::Relaxed);
+        grew(l.size() as isize);
         unsafe { mimalloc::MiMalloc.alloc(l) }
     }
     unsafe fn alloc_zeroed(&self, l: std::alloc::Layout) -> *mut u8 {
-        LIVE.fetch_add(l.size() as isize, std::sync::atomic::Ordering::Relaxed);
+        grew(l.size() as isize);
         unsafe { mimalloc::MiMalloc.alloc_zeroed(l) }
     }
     unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
