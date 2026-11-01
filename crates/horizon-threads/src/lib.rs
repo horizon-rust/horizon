@@ -524,21 +524,45 @@ pub fn mem_step<T>(name: &str, f: impl FnOnce() -> T) -> T {
 unsafe impl std::alloc::GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
         grew(l.size() as isize);
-        unsafe { mimalloc::MiMalloc.alloc(l) }
+        unsafe {
+            if option_env!("SP2_SYSTEM").is_some() {
+                std::alloc::System.alloc(l)
+            } else {
+                mimalloc::MiMalloc.alloc(l)
+            }
+        }
     }
     unsafe fn alloc_zeroed(&self, l: std::alloc::Layout) -> *mut u8 {
         grew(l.size() as isize);
-        unsafe { mimalloc::MiMalloc.alloc_zeroed(l) }
+        unsafe {
+            if option_env!("SP2_SYSTEM").is_some() {
+                std::alloc::System.alloc_zeroed(l)
+            } else {
+                mimalloc::MiMalloc.alloc_zeroed(l)
+            }
+        }
     }
     unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
         if COUNT.load(std::sync::atomic::Ordering::Relaxed) {
             LIVE.fetch_sub(l.size() as isize, std::sync::atomic::Ordering::Relaxed);
         }
-        unsafe { mimalloc::MiMalloc.dealloc(p, l) }
+        unsafe {
+            if option_env!("SP2_SYSTEM").is_some() {
+                std::alloc::System.dealloc(p, l)
+            } else {
+                mimalloc::MiMalloc.dealloc(p, l)
+            }
+        }
     }
     unsafe fn realloc(&self, p: *mut u8, l: std::alloc::Layout, n: usize) -> *mut u8 {
         grew(n as isize - l.size() as isize);
-        unsafe { mimalloc::MiMalloc.realloc(p, l, n) }
+        unsafe {
+            if option_env!("SP2_SYSTEM").is_some() {
+                std::alloc::System.realloc(p, l, n)
+            } else {
+                mimalloc::MiMalloc.realloc(p, l, n)
+            }
+        }
     }
 }
 /// Bench only: `memdbg STAGE live MB rss MB`.
