@@ -1900,7 +1900,7 @@ impl GraphicsUi {
                             matches!(t, Target::Item(_)) && *y >= cols.top && *y < cols.bottom
                         });
                     let pick = if key == K::ArrowUp {
-                        rows.last()
+                        rows.next_back()
                     } else {
                         rows.next()
                     };
