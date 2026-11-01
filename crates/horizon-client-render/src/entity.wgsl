@@ -28,6 +28,10 @@ struct Globals {
     emissive_count: vec4<u32>,
     sunrise_fan: array<vec4<f32>, 32>,
     filtering: vec4<f32>,
+    // Read by terrain.wgsl: the camera's offset in its chunk column, and the columns far tiles
+    // leave out.
+    lod_view: vec4<f32>,
+    lod_columns: array<vec4<u32>, 128>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var atlas: texture_2d<f32>;

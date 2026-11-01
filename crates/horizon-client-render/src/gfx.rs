@@ -247,6 +247,11 @@ struct Globals {
     sunrise_fan: [[f32; 4]; 2 * sunrise_fan::TRIANGLES],
     /// x: `Options.textureFiltering` (0 none, 1 RGSS, 2 anisotropic); y: the sprite arrays' width.
     filtering: [f32; 4],
+    /// x, z: the camera's offset in blocks within its chunk column (`Renderer::lod_mask`).
+    lod_view: [f32; 4],
+    /// The chunk columns near chunks draw in full, a bit each in a window around the camera's:
+    /// far tiles leave them out per pixel (`lod::column_mask`, terrain.wgsl's `lod_hidden`).
+    lod_columns: [[u32; 4]; lod::MASK_VECS],
 }
 pub type SectionKey = (i32, i32, i32);
 /// The water mirror's targets: the world as a camera mirrored about the water plane sees
@@ -662,6 +667,9 @@ pub struct Renderer {
     detail_columns: crate::fast_hash::FxHashMap<(i32, i32), SectionMask>,
     /// Bumped whenever a column becomes or stops being complete.
     detail_revision: u64,
+    /// When each complete column of `detail_columns` became so: far tiles stay
+    /// in it until its sections have faded in (`Renderer::lod_mask`).
+    detail_complete: crate::fast_hash::FxHashMap<(i32, i32), std::time::Instant>,
     arena: arena::Arena,
     sorted_indices: arena::Arena,
     translucent_sorter: translucency::Sorter,
@@ -3202,6 +3210,7 @@ impl Renderer {
             lod_pending: None,
             detail_columns: Default::default(),
             detail_revision: 0,
+            detail_complete: Default::default(),
             arena,
             sorted_indices,
             translucent_sorter: translucency::Sorter::default(),
@@ -3781,6 +3790,7 @@ impl Renderer {
         self.lod_leaving.clear();
         self.lod_pending = None;
         self.detail_columns.clear();
+        self.detail_complete.clear();
         self.detail_revision += 1;
         self.arena.clear();
         if let Some(flat) = &mut self.flat {
@@ -3827,6 +3837,12 @@ impl Renderer {
         let complete = self.complete_column();
         if (mask == complete) != (next == complete) {
             self.detail_revision += 1;
+            if next == complete {
+                self.detail_complete
+                    .insert(column, std::time::Instant::now());
+            } else {
+                self.detail_complete.remove(&column);
+            }
         }
         if next.is_empty() {
             self.detail_columns.remove(&column);
@@ -3878,6 +3894,7 @@ impl Renderer {
             if self.detail_columns.remove(&(x, z)) == Some(self.complete_column()) {
                 self.detail_revision += 1;
             }
+            self.detail_complete.remove(&(x, z));
             self.occlusion.remove_column(x, z);
             let retiring = !self.lod_cutout.is_empty() && self.lod_cutout.contains(&(x, z));
             for sy in 0..self.layout.sections() as i32 {
@@ -4735,6 +4752,8 @@ impl Renderer {
                 },
             )
         };
+        let (lod_view, lod_columns) =
+            self.lod_mask(frame.camera, (frame.detail_distance / 16.0) as i32);
         let globals = Globals {
             view_proj: jittered.to_cols_array_2d(),
             fog_color,
@@ -4809,6 +4828,8 @@ impl Renderer {
                 0.0,
                 0.0,
             ],
+            lod_view,
+            lod_columns,
         };
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));
