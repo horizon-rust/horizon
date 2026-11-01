@@ -347,6 +347,7 @@ mod tests {
         let sums = sums_file(&[
             ("horizon-linux-x86_64.tar.gz".into(), sha256_hex(b"linux")),
             ("horizon-windows-x64.zip".into(), sha256_hex(b"windows")),
+            ("horizon-windows-arm64.zip".into(), sha256_hex(b"windows")),
         ]);
         let signature = key.sign(tag, sums.as_bytes()) + "\n";
         (key, sums, signature)

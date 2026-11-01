@@ -17,7 +17,7 @@ $ProgressPreference = "SilentlyContinue"
 
 $Repo = "horizon-rust/horizon"
 $Asset = "horizon-windows-x64.zip"
-if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
+if ($env:PROCESSOR_ARCHITECTURE -ne "ARM64" && $env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
     throw "No Horizon release for Windows on $env:PROCESSOR_ARCHITECTURE yet: build it from source (docs/server.md)"
 }
 
