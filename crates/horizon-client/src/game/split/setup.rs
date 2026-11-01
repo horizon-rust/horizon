@@ -143,7 +143,10 @@ impl<'a> Split<'a> {
         // Every view says where it is: after a change, or asked.
         if changed {
             for i in 0..self.players() {
-                let label = format!("Window {}", self.window_of(i));
+                let label = horizon_client::lang::tr(
+                    "horizon.splitscreen.setup.window",
+                    &[&self.window_of(i)],
+                );
                 self.tag(i, &label);
             }
         }
