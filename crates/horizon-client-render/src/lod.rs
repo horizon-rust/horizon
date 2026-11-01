@@ -1307,6 +1307,7 @@ impl Lod {
             self.screen_space = on;
             self.retiring.clear();
             self.leave_out();
+            self.flush_deferred();
         }
     }
     /// Marks an active tile for remeshing. Versioned so a result from an
@@ -1618,7 +1619,10 @@ impl Lod {
                 .insert(fine, Arc::new(columns.to_vec()))
                 .is_some();
             self.detail_masks.insert(fine, [u64::MAX; 4]);
-            self.refresh_ready(fine, existed);
+            self.refresh_path(fine);
+            if existed {
+                self.data_changed(fine, (cx, cz));
+            }
         }
     }
     fn apply_detail(&mut self, (cx, cz): (i32, i32), columns: &ReducedColumns) {
@@ -1664,7 +1668,43 @@ impl Lod {
             modified.push(key);
         }
         for key in modified {
+            self.data_changed(key, (cx, cz));
+        }
+    }
+    /// Whether the renderer hides tiles over `chunk`: it is in the near area.
+    fn hidden_near(&self, (x, z): (i32, i32)) -> bool {
+        self.screen_space
+            && (self.full.contains(&(x, z))
+                || self.area.is_some_and(|([cx, cz], detail, ..)| {
+                    crate::streaming::in_view_distance((cx, cz), detail, x, z)
+                }))
+    }
+    /// `key`'s columns inside `chunk` changed: remeshed now, or once the chunk
+    /// leaves the near area when the tile is hidden there.
+    fn data_changed(&mut self, key: TileKey, chunk: (i32, i32)) {
+        if self.hidden_near(chunk) {
+            self.deferred.entry(chunk).or_default().insert(key);
+        } else {
             self.mark_data_changed(key);
+        }
+    }
+    /// Remeshes the deferred tiles of chunks no longer in the near area.
+    fn flush_deferred(&mut self) {
+        if self.deferred.is_empty() {
+            return;
+        }
+        let gone: Vec<_> = self
+            .deferred
+            .keys()
+            .copied()
+            .filter(|&chunk| !self.hidden_near(chunk))
+            .collect();
+        for chunk in gone {
+            for key in self.deferred.remove(&chunk).unwrap_or_default() {
+                if self.ready.contains_key(&key) {
+                    self.mark_data_changed(key);
+                }
+            }
         }
     }
     fn finish_sample(&mut self, key: TileKey, samples: Vec<Column>) {
@@ -1816,7 +1856,8 @@ impl Lod {
             elevation,
             self.reduced_detail,
         );
-        if self.area != Some(area) {
+        let moved = self.area != Some(area);
+        if moved {
             crate::spans::time("lod_plan", || {
                 self.area = Some(area);
                 self.replan(camera, detail, distance, elevation);
@@ -1825,7 +1866,11 @@ impl Lod {
         let mut meshes = Vec::new();
         crate::spans::time("lod_results", || self.receive(&mut meshes));
         crate::spans::time("lod_retiring", || self.prune_retiring());
+        let full_changed = covered.as_ref().is_some_and(|full| *full != self.full);
         crate::spans::time("lod_covered", || self.cover(covered));
+        if moved || full_changed {
+            self.flush_deferred();
+        }
         if std::mem::take(&mut self.reselect) {
             self.rebuild_selection();
         }
@@ -1931,7 +1976,13 @@ impl Lod {
         self.wanted_stale = true;
     }
     fn receive(&mut self, meshes: &mut Vec<(TileKey, SectionMesh)>) {
-        while let Ok(done) = self.results.try_recv() {
+        // Visited chunks' summaries are applied here, on the render thread: a
+        // burst of them while chunks load waits for the next frames instead.
+        const BUDGET: std::time::Duration = std::time::Duration::from_millis(2);
+        let start = std::time::Instant::now();
+        while start.elapsed() < BUDGET
+            && let Ok(done) = self.results.try_recv()
+        {
             match done {
                 Done::Detail(key, columns) => {
                     crate::spans::time("lod_detail", || self.finish_detail(key, columns))
