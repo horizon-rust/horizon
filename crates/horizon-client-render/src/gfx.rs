@@ -650,6 +650,14 @@ pub struct Renderer {
     depth: wgpu::TextureView,
     sections: resident::Resident<SectionGpu>,
     lods: HashMap<crate::lod::TileKey, lod::Tile>,
+    /// Changes whenever a far tile is added, replaced, removed, moved in the
+    /// arena or changes how it fades: `lod_gpu` builds its tree again.
+    lod_revision: u64,
+    /// Far tiles walked and culled on the GPU (`lod_gpu.rs`), where the
+    /// device can: the CPU walk is the fallback.
+    lod_gpu: Option<lod_gpu::LodGpu>,
+    /// Whether `lod_gpu` is used (`set_gpu_lods`).
+    lod_gpu_on: bool,
     /// The chunk columns the resident tiles leave out (`Lod::take_cutout`):
     /// their sections are drawn even past the render distance, so terrain
     /// leaving it never opens a hole before the tiles fill it in.
@@ -1338,6 +1346,7 @@ async fn open_backend(
     // atomics on images: their buffers and images.
     let features = timing::GpuTimer::features(&adapter)
         | cull::Cull::features(&adapter)
+        | lod_gpu::LodGpu::features(&adapter)
         | oit::features(&adapter)
         | (adapter.features()
             & (wgpu::Features::INDIRECT_FIRST_INSTANCE
@@ -3057,6 +3066,7 @@ impl Renderer {
                 }
                 cull
             });
+        let lod_gpu = lod_gpu::LodGpu::create(&adapter, &device);
         let depth = Self::depth(&device, &config);
         let world_post = world_post::Post::new(&device, config.format.remove_srgb_suffix());
         let uploads = upload::Uploads::new(&device);
@@ -3075,9 +3085,10 @@ impl Renderer {
         );
         if previous.is_none() {
             startup_step(format_args!(
-                "pipelines ready (multi-draw {}, occlusion culling {}, GPU timer {})",
+                "pipelines ready (multi-draw {}, occlusion culling {}, GPU far terrain {}, GPU timer {})",
                 on_off(multi_draw),
                 on_off(cull.is_some()),
+                on_off(lod_gpu.is_some()),
                 on_off(gpu_timer.is_some()),
             ));
         }
@@ -3197,6 +3208,9 @@ impl Renderer {
             depth,
             sections: resident::Resident::default(),
             lods: HashMap::new(),
+            lod_revision: 0,
+            lod_gpu_on: lod_gpu.is_some(),
+            lod_gpu,
             lod_cutout: Default::default(),
             lod_retiring: Default::default(),
             lod_leaving: Vec::new(),
@@ -3461,6 +3475,18 @@ impl Renderer {
         self.cull_on = on;
         Ok(())
     }
+    /// Whether far terrain tiles are walked and culled on the GPU (`lod_gpu`).
+    pub fn gpu_lods(&self) -> bool {
+        self.lod_gpu_on && self.lod_gpu.is_some()
+    }
+    /// Switches the GPU walk of far tiles, for A/B checks.
+    pub fn set_gpu_lods(&mut self, on: bool) -> Result<()> {
+        if on && self.lod_gpu.is_none() {
+            return Err("GPU far terrain is off on this device".into());
+        }
+        self.lod_gpu_on = on;
+        Ok(())
+    }
     /// Of the boxes occlusion culling's last test read back drew, how many
     /// it did not see and how many it drew, and the share of solid indices
     /// it hid.
@@ -3699,6 +3725,8 @@ impl Renderer {
         let Some(page) = self.arena.closing() else {
             return;
         };
+        // Tiles it moves have new places in the arena for the GPU's tree.
+        self.lod_revision += 1;
         let stride = std::mem::size_of::<TerrainVertex>() as u64;
         let mut budget = BUDGET;
         let encoder = self.section_copies.get_or_insert_with(|| {
@@ -3777,6 +3805,7 @@ impl Renderer {
         self.block_entity_revision = next_block_entity_revision();
         self.sections.clear();
         self.lods.clear();
+        self.lod_revision += 1;
         self.lod_cutout.clear();
         self.lod_retiring.clear();
         self.lod_leaving.clear();
@@ -4902,8 +4931,63 @@ impl Renderer {
         let now = std::time::Instant::now();
         let mut visible_lods = std::mem::take(&mut self.visible_lods);
         visible_lods.clear();
+        // Far tiles are walked on the GPU (`lod_gpu`) in Horizon's own terrain pass: a water
+        // mirror, a shader pack or a native pack draws the same lists again or reads them, and
+        // the title draws no terrain. Tiles with water stay in `visible_lods`: their
+        // translucent quads are sorted here.
+        let gpu_walk = !frame.title
+            && self.lod_gpu_on
+            && self.lod_gpu.is_some()
+            && mirror.is_none()
+            && self.native.is_none()
+            && self.pack_post.as_ref().is_none_or(|p| p.1.is_none());
+        let mut gpu_lods = false;
+        if gpu_walk {
+            if self
+                .lod_gpu
+                .as_ref()
+                .is_some_and(|gpu| !gpu.is_current(self.lod_revision))
+            {
+                let (entries, water, layers) = self.gpu_tiles();
+                if let Some(gpu) = &mut self.lod_gpu {
+                    gpu.rebuild(
+                        &self.device,
+                        &mut encoder,
+                        &mut self.uploads,
+                        self.lod_revision,
+                        &entries,
+                        water,
+                        layers,
+                    );
+                }
+            }
+            let focal = self.config.height as f32 * 0.5 / views.primary().tan_half_fov;
+            if let Some(gpu) = &mut self.lod_gpu {
+                gpu_lods = gpu.walk(
+                    &self.device,
+                    &mut encoder,
+                    &mut self.uploads,
+                    &lod_gpu::Camera {
+                        planes: view.planes,
+                        view_proj: cull_proj,
+                        camera,
+                        eye,
+                        focal,
+                        now: lod::clock_ms(self.started, now),
+                    },
+                );
+            }
+        }
         if frame.title {
             visible.clear();
+        } else if gpu_lods {
+            let water = self.lod_gpu.as_ref().map_or(&[][..], |gpu| gpu.water());
+            visible_lods.extend(
+                water
+                    .iter()
+                    .filter_map(|&key| self.lods.get(&key)?.visible(key, camera, &view, now)),
+            );
+            visible_lods.sort_unstable_by_key(|v| (v.distance, v.key));
         } else {
             visible_lods.extend(
                 self.lods
@@ -4988,6 +5072,14 @@ impl Renderer {
                         self.active_animated_layers[layer / u64::BITS as usize] |=
                             1_u64 << (layer % u64::BITS as usize);
                     }
+                }
+            }
+            // The GPU keeps tiles by their own tests: every tile's layers count.
+            if gpu_lods && let Some(gpu) = &self.lod_gpu {
+                for &layer in gpu.animated_layers() {
+                    let layer = layer as usize;
+                    self.active_animated_layers[layer / u64::BITS as usize] |=
+                        1_u64 << (layer % u64::BITS as usize);
                 }
             }
             for v in &shadow_visible {
@@ -5133,10 +5225,11 @@ impl Renderer {
                 c.deferred(i as usize, slot, r.start as usize, r.len as usize, indices);
             }
         }
-        // Distant terrain tiles are never occlusion tested: phase 1.
+        // Distant terrain tiles are never occlusion tested: phase 1. The GPU writes
+        // those it walks its own list (`lod_gpu`).
         let tiles = self.draws.len();
         self.solid_runs.clear();
-        for (i, v) in visible_lods.iter().enumerate() {
+        for (i, v) in visible_lods.iter().enumerate().filter(|_| !gpu_lods) {
             let s = self.lods[&v.key].drawn();
             let start = self.draws.len();
             let instance = (visible.len() + i) as u32;
@@ -6103,6 +6196,17 @@ impl Renderer {
                 pass.set_bind_group(horizon_shader_api::stages::GROUP, group, &[]);
             }
         };
+        // The far tiles the GPU walked (`lod_gpu`), drawn where their share of the CPU's list
+        // was: with the sections of phase 1, before occlusion culling reads the depth.
+        let far_tiles = self.lod_gpu.as_ref().filter(|_| gpu_lods);
+        let (far_group, far_arena, far_indices) = (&self.group, &self.arena, &self.indices);
+        let draw_far = |pass: &mut wgpu::RenderPass<'_>| {
+            if let Some(far) = far_tiles {
+                pass.set_pipeline(solid_pipeline);
+                pass.set_bind_group(0, far_group, &[]);
+                far.draw(pass, far_arena, far_indices);
+            }
+        };
         {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: world_view,
@@ -6191,6 +6295,7 @@ impl Renderer {
                         // that the test saw, copied after it.
                         Some(cull) => {
                             flat.draw(&mut pass, &flat.calls[..flat.phase1_calls], vertices);
+                            draw_far(&mut pass);
                             cull.test(&mut pass);
                             drop(pass);
                             cull.test_pass(&mut encoder);
@@ -6206,7 +6311,10 @@ impl Renderer {
                             pass.set_pipeline(pack_flat.map_or(&flat.solid, |p| &p.0));
                             flat.draw_phase2(&mut pass, vertices);
                         }
-                        None => flat.draw(&mut pass, &flat.calls[..flat.solid_calls], vertices),
+                        None => {
+                            flat.draw(&mut pass, &flat.calls[..flat.solid_calls], vertices);
+                            draw_far(&mut pass);
+                        }
                     }
                     pass.set_bind_group(0, &self.group, &[]);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -6222,6 +6330,7 @@ impl Renderer {
                             // what they found in sight, in a pass that loads
                             // both targets (it reads the test's results).
                             self.draw_sections(&mut pass, &self.indirect, 0, 0, phase1_draws);
+                            draw_far(&mut pass);
                             cull.test(&mut pass);
                             drop(pass);
                             cull.test_pass(&mut encoder);
@@ -6247,7 +6356,10 @@ impl Renderer {
                                 solid_draws - phase1_draws,
                             );
                         }
-                        None => self.draw_sections(&mut pass, &self.indirect, 0, 0, solid_draws),
+                        None => {
+                            self.draw_sections(&mut pass, &self.indirect, 0, 0, solid_draws);
+                            draw_far(&mut pass);
+                        }
                     }
                 }
             }
@@ -7048,7 +7160,13 @@ impl Renderer {
         }
         if let Some(timer) = &mut self.gpu_timer {
             timer.submitted(&self.queue);
+            let before = self.gpu_times.len();
             timer.collect(&self.device, &mut self.gpu_times);
+            if let Some(gpu) = &mut self.lod_gpu {
+                for &ms in &self.gpu_times[before..] {
+                    gpu.frame_time(ms);
+                }
+            }
         }
         if let Some(Some(timer)) = Self::pass_timer(&mut self.pack_post, &mut self.native) {
             timer.submitted(&self.queue);
