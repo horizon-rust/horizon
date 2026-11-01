@@ -684,6 +684,7 @@ pub fn shared_data_with(
     let started = std::time::Instant::now();
     let data = GeneratorData::load_with(dir, registry, overrides)?;
     log::info!("Horizon: worldgen data loaded in {:?}", started.elapsed());
+    log::info!("{}", horizon_threads::mem_line("worldgen_data"));
     for warning in data.warnings() {
         log::warn!("Horizon: data pack worldgen: {warning}");
     }
