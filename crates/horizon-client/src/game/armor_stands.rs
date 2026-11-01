@@ -4,6 +4,7 @@
 //! the default pose, the hit wobble and humanoid armor layers.
 use super::{Game, InteractTarget};
 use horizon_client::{
+    Result,
     entities::ArmorStand,
     items::ItemStack,
     mesher::Vertex,
@@ -12,6 +13,7 @@ use horizon_client::{
 };
 use horizon_core::{
     geometry::{Aabb, Vec3},
+    position::BlockPos,
     random::RandomSource,
 };
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
@@ -743,7 +745,7 @@ impl Game<'_> {
             .insert(((at[0].floor() as i32) >> 4, (at[2].floor() as i32) >> 4));
         true
     }
-    pub(super) fn tick_armor_stands(&mut self) {
+    pub(super) fn tick_armor_stands(&mut self) -> Result<()> {
         let mut dead = Vec::new();
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
@@ -784,6 +786,9 @@ impl Game<'_> {
             if a.on_ground {
                 a.enchantment_fall_distance = 0.0;
             }
+            let (on_ground, at) = (a.on_ground, a.position);
+            self.armor_stand_turtle_eggs(on_ground, landed, at)?;
+            let a = &mut self.armor_stands[i];
             if !a.environment_tick(&self.world, self.res.facts(), self.pack.assets.registry) {
                 dead.push(i);
             }
@@ -794,6 +799,34 @@ impl Game<'_> {
         for i in dead.into_iter().rev() {
             self.break_armor_stand_by_anything(i);
         }
+        Ok(())
+    }
+    /// An armor stand is a `LivingEntity`, so the egg under it
+    /// (`getOnPosLegacy`) cracks like under a mob: `TurtleEggBlock.fallOn` one
+    /// landing in 3 (`Entity.move`'s `checkFallDamage`), then `stepOn` one tick
+    /// in 100 while it is on the ground (`LivingEntity.aiStep`'s
+    /// `applyEffectsFromBlocks`, after `travel`, so a marker that has landed
+    /// still steps). `canDestroyEgg` wants mob griefing before the level's roll.
+    fn armor_stand_turtle_eggs(&mut self, on_ground: bool, landed: bool, at: Vec3) -> Result<()> {
+        if !on_ground || self.remote.is_some() || self.options.execution_role.is_client() {
+            return Ok(());
+        }
+        let p = BlockPos::containing(at.add_vector(Vec3::new(0.0, -f64::from(0.2_f32), 0.0)));
+        for chance in [landed.then_some(3), Some(100)].into_iter().flatten() {
+            let egg = self
+                .pack
+                .assets
+                .registry
+                .state(self.world.block(p.x, p.y, p.z))
+                .is_some_and(|s| s.name == "minecraft:turtle_egg");
+            if egg
+                && self.ui.rules.bool("mob_griefing")
+                && self.world.random.next_int_bound(chance).unwrap_or(1) == 0
+            {
+                self.crack_turtle_egg([p.x, p.y, p.z])?;
+            }
+        }
+        Ok(())
     }
     /// `ArmorStand.brokenByAnything`, then `kill`, as burning out or a blast
     /// breaks a stand: its equipment pops above its block, the stand item does
