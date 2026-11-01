@@ -243,51 +243,19 @@ pub(super) fn entity_uuid(id: u32) -> u128 {
 }
 
 /// The SynchedEntityData index of the baby flag: AgeableMob.DATA_BABY_ID and
-/// Zombie.DATA_BABY_ID are both the first entry after Mob's (16); Piglin's
-/// comes after AbstractPiglin's zombification flag (17).
-pub(super) fn baby_index(kind: &str) -> Option<u8> {
-    match kind {
-        "minecraft:piglin" => Some(17),
-        "minecraft:cow"
-        | "minecraft:mooshroom"
-        | "minecraft:pig"
-        | "minecraft:sheep"
-        | "minecraft:chicken"
-        | "minecraft:horse"
-        | "minecraft:donkey"
-        | "minecraft:mule"
-        | "minecraft:skeleton_horse"
-        | "minecraft:zombie_horse"
-        | "minecraft:llama"
-        | "minecraft:trader_llama"
-        | "minecraft:cat"
-        | "minecraft:wolf"
-        | "minecraft:fox"
-        | "minecraft:rabbit"
-        | "minecraft:panda"
-        | "minecraft:polar_bear"
-        | "minecraft:bee"
-        | "minecraft:frog"
-        | "minecraft:sniffer"
-        | "minecraft:armadillo"
-        | "minecraft:villager"
-        | "minecraft:zombie"
-        | "minecraft:husk"
-        | "minecraft:drowned"
-        | "minecraft:zombie_villager"
-        | "minecraft:zombified_piglin"
-        | "minecraft:hoglin"
-        | "minecraft:zoglin"
-        | "minecraft:goat"
-        | "minecraft:ocelot"
-        | "minecraft:turtle"
-        | "minecraft:strider"
-        | "minecraft:camel"
-        | "minecraft:axolotl"
-        | "minecraft:dolphin"
-        | "minecraft:squid"
-        | "minecraft:glow_squid"
-        | "minecraft:sulfur_cube" => Some(16),
+/// Zombie.DATA_BABY_ID (Zoglin's too) are the first entry after Mob's (16);
+/// Piglin's comes after AbstractPiglin's zombification flag (17). Every
+/// AgeableMob has one, the happy ghast and the nautilus included (#6133).
+pub(super) fn baby_index(species: Species) -> Option<u8> {
+    use Species as S;
+    match species {
+        S::Piglin => Some(17),
+        s if horizon_client::mobs::finalize::ageable(s)
+            || horizon_client::mobs::doors::is_zombie(s)
+            || s == S::Zoglin =>
+        {
+            Some(16)
+        }
         _ => None,
     }
 }
@@ -507,8 +475,8 @@ fn mob_meta(
         meta.push((15, serializer::BYTE, Value::Byte(flags)));
     }
     defaults.push((15, serializer::BYTE, Value::Byte(0)));
-    // AgeableMob.DATA_BABY_ID (and Zombie's, Piglin's).
-    if let Some(index) = baby_index(kind) {
+    // AgeableMob.DATA_BABY_ID (and Zombie's, Zoglin's, Piglin's).
+    if let Some(index) = baby_index(m.species()) {
         if m.is_baby() {
             meta.push((index, serializer::BOOLEAN, Value::Bool(true)));
         }
@@ -2016,6 +1984,9 @@ impl Game<'_> {
                         host = self.lan.take()?;
                     }
                 }
+                HostEvent::Flight { conn, flying } => {
+                    self.lan_flight_toggled(&mut host, conn, flying);
+                }
                 HostEvent::Packet(conn, packet) => {
                     self.lan_guest_packet(&mut host, conn, *packet);
                     if !host.commands.is_empty() {
@@ -2116,6 +2087,11 @@ impl Game<'_> {
     /// (`IntegratedServer.tickPaused`): `ServerGamePacketListenerImpl.tick`
     /// skips `tickPlayer`, so no player's air, hunger or damage moves on.
     pub(super) fn tick_lan(&mut self, paused: bool) {
+        // A frozen level does not reach tick_lan_packets through tick_world.
+        // Apply its packets before taking the snapshot too.
+        if !paused {
+            self.tick_lan_packets();
+        }
         let Some(mut host) = self.lan.take() else {
             if self.level_pass.running.is_none() {
                 self.level_pass.packets_drained = false;
@@ -2146,6 +2122,12 @@ impl Game<'_> {
         }
         // A guest whose file names the vehicle it rode rides it again.
         self.restore_guest_vehicles(&mut host);
+        // Finish the players' mining, item use and pickups before describing
+        // this tick to their clients. Otherwise a newly broken block and its
+        // drops remain absent from the snapshot until the following tick.
+        if !paused {
+            self.tick_guests(&mut host);
+        }
         // A dedicated server runs the hub without a host player.
         if state.is_some() || host.hub.config.dedicated {
             let has_guests = !host.hub.guests.is_empty();
@@ -2299,9 +2281,6 @@ impl Game<'_> {
                 .lan
                 .take()
                 .expect("the hub is back after the tracking events");
-        }
-        if !paused {
-            self.tick_guests(&mut host);
         }
         self.lan = Some(host);
         // A blast from a guest's attack, and a mace's wind burst.
@@ -2505,6 +2484,12 @@ impl Game<'_> {
         // Fox.handleEntityEvent 45: the same window draws the eating crumbs.
         if event == 45 && self.options.execution_role.is_client() {
             self.fox_eat_particles(id as u32);
+        }
+        // Entity event 35: a mob's death protection fired
+        // (`LivingEntity.checkTotemDeathProtection`); the clients draw the
+        // totem particles and play its sound.
+        if event == 35 && self.options.execution_role.is_client() {
+            self.remote_totem(id);
         }
     }
     /// `LivingEntity.onEquippedItemBroken` for the acting player (the guest whose turn it
