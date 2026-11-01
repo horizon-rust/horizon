@@ -1010,9 +1010,9 @@ mod tests {
         let entity = CameraEntity {
             position: [0.0; 3],
             previous: [0.0; 3],
-            x_rot: 20.0,
+            x_rot: 0.0,
             y_rot: 0.0,
-            x_rot_o: 20.0,
+            x_rot_o: 0.0,
             y_rot_o: 0.0,
             eye_height: 0.2,
             living: Some(LivingCamera {
