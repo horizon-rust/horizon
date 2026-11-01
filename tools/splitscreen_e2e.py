@@ -877,7 +877,7 @@ def scenario_pointer():
 
 
 def scenario_pausemenu():
-    print("pausemenu: Splitscreen Settings remains available while enabled, including alone")
+    print("pausemenu: Splitscreen Settings in the pause menu only while another player plays")
     g = Game(2, saved_split=True, pick=True)
     try:
         def paused(n):
@@ -889,8 +889,9 @@ def scenario_pausemenu():
             return labels
         menu = lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode')  # noqa: E731
         g.wait(lambda: menu() == 'splitscreen-profiles', "P2's picker")
-        # P2 still choosing: P1 can arrange windows from its pause menu while enabled.
-        check('alone: Setup remains in the pause menu', 'Splitscreen Settings' in paused(1), True)
+        # P2 still choosing: nobody else plays yet, so the pause menu has no Splitscreen Settings;
+        # Setup stays reachable from Horizon Settings.
+        check('alone: no Splitscreen Settings in the pause menu', 'Splitscreen Settings' in paused(1), False)
         g.page(1)
         check('alone: Horizon Settings > Splitscreen... still there', 'Done' in g.labels(1), True)
         g.close_page(1)
@@ -901,13 +902,13 @@ def scenario_pausemenu():
         time.sleep(1)
         check('joined: in P1\'s pause menu', 'Splitscreen Settings' in paused(1), True)
         check("joined: in Dee's", 'Splitscreen Settings' in paused(2), True)
-        # Dee leaves: P1 can still open Setup while enabled.
+        # Dee leaves: P1 alone again, the pause menu drops it.
         g.ctl(2, 'key', 'esc', 'tap')
         g.wait(lambda: 'Leave' in g.labels(2), "Dee's pause menu", seconds=5)
         g.press(2, 'Leave')
         g.wait(lambda: not g.alive(2), 'Dee gone', seconds=10)
         time.sleep(1)
-        check('alone again: Setup remains available', 'Splitscreen Settings' in paused(1), True)
+        check('alone again: no Splitscreen Settings in the pause menu', 'Splitscreen Settings' in paused(1), False)
     finally:
         g.quit()
 
