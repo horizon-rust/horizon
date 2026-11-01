@@ -77,6 +77,9 @@ pub(super) struct LanHost {
     /// Hurt time, death and swing time (while swinging) of the mobs guests
     /// see; the players' hurt time by entity id.
     mob_state: HashMap<super::Dim, HashMap<u32, (i32, bool, Option<i32>)>>,
+    /// The dragon's hurt time the guests were last told of, so a hit that
+    /// restarted its flash reaches them as a damage event (#5999).
+    dragon_hurt: HashMap<super::Dim, i32>,
     /// The guest each mob sees as its player, when not the host (game/lan_mobs.rs).
     pub mob_players: HashMap<u32, u32>,
     /// An integrated server's owner (game/integrated.rs).
@@ -1277,6 +1280,7 @@ impl Game<'_> {
             play: HashMap::new(),
             broken: Vec::new(),
             mob_state: HashMap::new(),
+            dragon_hurt: HashMap::new(),
             mob_players: HashMap::new(),
             owner: None,
             waypoints: Default::default(),
@@ -2171,6 +2175,7 @@ impl Game<'_> {
         self.lan_broadcast_effects(host);
         if host.hub.guests.is_empty() {
             host.mob_state.clear();
+            host.dragon_hurt.clear();
             return;
         }
         // Hurt and death animations of mobs.
@@ -2264,6 +2269,27 @@ impl Game<'_> {
             seen.insert(id as u32, (hurt, dead, None));
         }
         host.mob_state.insert(self.dim, seen);
+        // The dragon's hurt flash. It is drawn from its own state rather than
+        // as a mob, so the mob loop above never carries it: without this a
+        // guest sees it take damage with no red flash (#5999). Vanilla's
+        // `ServerLevel.broadcastDamageEvent` runs wherever the hit landed.
+        let old = host.dragon_hurt.get(&self.dim).copied().unwrap_or(0);
+        let dragon = self.dragon.as_ref().filter(|d| d.id != 0).map(|d| {
+            (
+                d.id as i32,
+                d.hurt_time,
+                d.hurt_source,
+                [d.position.x, d.position.y, d.position.z],
+            )
+        });
+        if let Some((id, hurt, Some(source), at)) = dragon
+            && hurt > old
+        {
+            let kind = super::creatures::source_damage_type(source);
+            host.hub.damage_event(id, kind, None, None, at);
+        }
+        host.dragon_hurt
+            .insert(self.dim, dragon.map_or(0, |(_, hurt, ..)| hurt));
         // Level.broadcastEntityEvent(player, 2) of a spear's stab.
         for attacker in kinetic_hits {
             let hit = match attacker {
