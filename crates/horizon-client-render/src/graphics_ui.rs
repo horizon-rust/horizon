@@ -1217,18 +1217,42 @@ impl GraphicsUi {
             self.changed = true;
         }
     }
-    /// Undo: every setting back to what it was when the screen opened. What
-    /// the game keeps up to date meanwhile (the monitor's modes, the packs on
-    /// disk, fullscreen, which F11 and the window manager change) stays.
+    /// Undo: what this screen edits back to what it was when the screen
+    /// opened: Horizon's graphics settings and the vanilla options on its rows.
+    /// Not the rest of the options (the narrator, what `horizon-ctl options-set`
+    /// set meanwhile), nor fullscreen, which F11 and the window manager change too.
     fn undo(&mut self, s: &mut Settings) {
-        let Some(before) = &self.before else { return };
-        let mut back = (**before).clone();
-        back.video_modes = std::mem::take(&mut s.video_modes);
-        back.startup_api = s.startup_api;
-        back.shader_packs = std::mem::take(&mut s.shader_packs);
-        back.shader_options = s.shader_options.take();
-        back.fullscreen = s.fullscreen;
-        *s = back;
+        let Some(b) = self.before.as_deref() else {
+            return;
+        };
+        s.horizon = b.horizon.clone();
+        s.render_distance = b.render_distance;
+        s.simulation_distance = b.simulation_distance;
+        s.gamma = b.gamma;
+        s.gui_scale = b.gui_scale;
+        s.vsync = b.vsync;
+        s.max_fps = b.max_fps;
+        s.inactivity_fps_limit = b.inactivity_fps_limit.clone();
+        s.fov = b.fov;
+        s.view_bobbing = b.view_bobbing;
+        s.attack_indicator = b.attack_indicator;
+        s.autosave_indicator = b.autosave_indicator;
+        s.clouds = b.clouds.clone();
+        s.cloud_range = b.cloud_range;
+        s.weather_radius = b.weather_radius;
+        s.particles = b.particles;
+        s.smooth_lighting = b.smooth_lighting;
+        s.biome_blend = b.biome_blend;
+        s.entity_distance = b.entity_distance;
+        s.entity_shadows = b.entity_shadows;
+        s.vignette = b.vignette;
+        s.chunk_fade = b.chunk_fade;
+        s.mipmap_levels = b.mipmap_levels;
+        s.cutout_leaves = b.cutout_leaves;
+        s.improved_transparency = b.improved_transparency;
+        s.prioritize_chunk_updates = b.prioritize_chunk_updates;
+        // Presets set it beside the options above.
+        s.graphics_preset = b.graphics_preset.clone();
         self.changed = false;
     }
 
@@ -1583,6 +1607,9 @@ impl GraphicsUi {
         let at = |[rx, ry, rw, rh]: [f32; 4]| ui::hovered((x, y), rx, ry, rw, rh);
         if drag {
             // AbstractScrollArea.mouseDragged: the held scrollbar follows the pointer.
+            if self.scroll.held() && !cols.scrolls() {
+                self.scroll.release();
+            }
             if self.scroll.held() {
                 self.picked = None;
                 self.scroll.drag(y, cols.top, cols.bottom, content);
@@ -1710,8 +1737,8 @@ impl GraphicsUi {
             .wheel(amount, 18.0, cols.top, cols.bottom, content);
     }
     /// What Tab steps through, in order, with where each is on screen. The
-    /// arrows (`near`) only reach the rows in view and the next one past either
-    /// edge, which scrolls in: a row far out of view sits under the tabs or the
+    /// arrows (`near`) only reach the rows in view and the one next past either
+    /// edge, which scrolls in: a row farther out sits under the tabs or the
     /// buttons and would take the step from them.
     fn focusables(
         &self,
@@ -1726,21 +1753,37 @@ impl GraphicsUi {
                 out.push((Target::Page(page), cols.page(i)));
             }
         }
-        for line in lines {
-            if let Some(setting) = line.setting
-                && setting.item.blocked(s).is_none()
-            {
-                let y = self.row_y(cols, line);
-                // The next row past an edge can be a page's break away.
-                let reach = style::ROW + style::PAGE_GAP + style::HEADER_ROW + style::BLOCK_GAP;
-                if near && (y + style::ROW < cols.top - reach || y > cols.bottom + reach) {
-                    continue;
-                }
-                out.push((
-                    Target::Item(setting.item),
-                    [cols.list_x, y, cols.list_w, style::ROW],
-                ));
-            }
+        let rows: Vec<(Item, f32)> = lines
+            .iter()
+            .filter_map(|line| {
+                let setting = line.setting?;
+                setting
+                    .item
+                    .blocked(s)
+                    .is_none()
+                    .then(|| (setting.item, self.row_y(cols, line)))
+            })
+            .collect();
+        // For the arrows, the rows in view and the next one past either edge.
+        let in_view = |y: f32| y + style::ROW > cols.top && y < cols.bottom;
+        let first = rows
+            .iter()
+            .position(|&(_, y)| in_view(y))
+            .unwrap_or(rows.len());
+        let last = rows
+            .iter()
+            .rposition(|&(_, y)| in_view(y))
+            .map_or(0, |i| i + 1);
+        let reach = match (near, first < last) {
+            (false, _) => 0..rows.len(),
+            (true, true) => first.saturating_sub(1)..(last + 1).min(rows.len()),
+            (true, false) => 0..0,
+        };
+        for &(item, y) in &rows[reach] {
+            out.push((
+                Target::Item(item),
+                [cols.list_x, y, cols.list_w, style::ROW],
+            ));
         }
         if self.changed {
             out.push((Target::Undo, cols.button(1)));
@@ -2120,14 +2163,16 @@ mod tests {
         let sky = row(&mut ui, &s, Item::Horizon(H::Sky));
         press(&mut ui, &mut s, at(sky));
         assert!(!s.horizon.fog && !s.horizon.sky && ui.changed);
-        // F11 meanwhile: Undo leaves the window as it is.
+        // F11 and another option meanwhile: Undo leaves them as they are.
         s.fullscreen = true;
+        s.chat_opacity = 0.25;
         assert_eq!(
             press(&mut ui, &mut s, at(undo)),
             [Action::ButtonClick, Action::Changed]
         );
         assert!(s.horizon.fog && s.horizon.sky && !ui.changed);
         assert!(s.fullscreen);
+        assert_eq!(s.chat_opacity, 0.25);
         // From the keyboard: Undo puts it back and goes away.
         let fog = row(&mut ui, &s, Item::Horizon(H::Fog));
         press(&mut ui, &mut s, at(fog));
@@ -2280,13 +2325,21 @@ mod tests {
         assert!(in_view(&mut ui, &s, clouds));
         ui.key_modifiers(&mut s, K::ArrowUp, None, false, SIZE, FB);
         assert_eq!(ui.focus, Some(Target::Item(last)));
-        // Up from Done: a row in view, not one far off under the tabs.
+        // Up from Done: the row at the list's bottom edge, scrolled in by a row at most.
         ui.focus = Some(Target::Done);
+        let before = ui.scroll.amount;
         ui.key_modifiers(&mut s, K::ArrowUp, None, false, SIZE, FB);
+        assert!(matches!(ui.focus, Some(Target::Item(_))), "{:?}", ui.focus);
+        assert!(ui.scroll.amount - before <= style::ROW);
+        // Its row wheeled far out of view: Down takes the first row in view, as it is.
+        ui.scroll(&s, SIZE, -1000.0);
+        let before = ui.scroll.amount;
+        ui.key_modifiers(&mut s, K::ArrowDown, None, false, SIZE, FB);
         let Some(Target::Item(item)) = ui.focus else {
             panic!("{:?}", ui.focus)
         };
         assert!(in_view(&mut ui, &s, item), "{item:?}");
+        assert_eq!(ui.scroll.amount, before);
     }
 
     #[test]
