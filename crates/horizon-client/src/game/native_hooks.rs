@@ -2746,6 +2746,25 @@ impl Game<'_> {
     pub(super) fn native_perform_console_command(&mut self, command: &str, ran: &mut bool) {
         let _ = (command, ran);
     }
+    /// TNT at `pos` is about to be lit (primed): a flint and steel or a fire
+    /// charge on it, fire burning it, a redstone signal, an arrow, or a
+    /// dispenser's flint and steel or TNT item. `player` is the server player
+    /// whose click lit it, with their state swapped in (so `native_tell`
+    /// answers them), None when no player is behind it (fire, redstone, an
+    /// arrow, a dispenser). Set `cancel` and it is not primed: a TNT block
+    /// stays where it is (one that fire or a signal had already taken out is
+    /// put back, without a block update), a dispenser's TNT item stays in it.
+    /// Not asked: TNT set off by a blast (`native_explosion_detonate` spares
+    /// blocks), a TNT minecart and a sulfur cube. Server-side and in single
+    /// player. @API:native_tnt_primed@.
+    pub(super) fn native_tnt_primed(
+        &mut self,
+        player: Option<u128>,
+        pos: [i32; 3],
+        cancel: &mut bool,
+    ) {
+        let _ = (player, pos, cancel);
+    }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
     /// inventory, `native_menu_inventory_slot`; -999 outside), the `button`
