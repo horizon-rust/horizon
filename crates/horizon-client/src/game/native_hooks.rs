@@ -2691,6 +2691,19 @@ impl Game<'_> {
     ) {
         let _ = (dimension, pos, viewers, previous);
     }
+    /// `player` (`name`) pressed the swap-hands key: heard before the main and
+    /// off hand items swap (the `SWAP_ITEM_WITH_OFFHAND` player action that
+    /// `ServerGamePacketListenerImpl.handlePlayerAction` answers; Bukkit's
+    /// `PlayerSwapHandItemsEvent`), not for a spectator. Set `cancel` to keep
+    /// the items where they are: the player's client, which swapped them at
+    /// once, gets its slots back. The player's state is swapped in, so
+    /// `native_acting_player`, `native_tell` and the item helpers reach them.
+    /// Once for each press, on a server. Not heard: the same swap made in an
+    /// open inventory (hovering a slot and pressing the key, a menu click) and
+    /// the host of a LAN world. @API:native_player_swap_hands@.
+    pub(super) fn native_player_swap_hands(&mut self, player: u128, name: &str, cancel: &mut bool) {
+        let _ = (player, name, cancel);
+    }
     /// `player` died: where `ServerPlayer.die` starts, with the death
     /// message's key when the game knows it (`death.attack.lava`; none for a
     /// message it builds from the combat). It only hears. Server-side, for
