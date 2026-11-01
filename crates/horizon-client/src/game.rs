@@ -15311,12 +15311,30 @@ impl Game<'_> {
             renderer.clear_lods();
         }
     }
+    /// Far terrain on a server: its own directory per address and dimension,
+    /// keyed by the level and the hashed seed it sent (`lod::store`).
+    fn remote_lod_source(
+        remote: &remote::Remote,
+        registry: &horizon_world::registry::BlockRegistry,
+        biomes: &horizon_client::biome::Biomes,
+    ) -> Option<Arc<dyn horizon_client::streaming::LodSource>> {
+        use horizon_client::lod::store;
+        let (level, seed) = &remote.far_world;
+        let dir = store::server_dir(
+            &std::env::current_dir().ok()?,
+            &remote.session.address,
+            level,
+        );
+        let key = store::store_key(registry, biomes, store::world_id(level, *seed));
+        Some(Arc::new(store::RemoteSource::new(store::FarStore::open(
+            dir, key, true,
+        ))))
+    }
     fn prepare_lod(&mut self) {
         let enabled = self.far_terrain_choice().0 > 0
             && self.renderer.is_some()
             && self.player.is_some()
-            && self.title.is_none()
-            && (self.remote.is_none() || self.integrated.is_some());
+            && self.title.is_none();
         if !enabled {
             if self.lod.is_some() || self.lod_source_attempted {
                 self.clear_lod();
@@ -15328,9 +15346,14 @@ impl Game<'_> {
         }
         self.lod_source_attempted = true;
         let dim = self.dim;
-        let source = match &self.integrated {
-            Some(server) => server.call(move |game| game.lod_source_in(dim)).flatten(),
-            None => Some(self.streaming.lod_source()),
+        let source = match (&self.integrated, &self.remote) {
+            (Some(server), _) => server.call(move |game| game.lod_source_in(dim)).flatten(),
+            // A server has no seed for the generator: far terrain is what
+            // its chunks showed, kept on disk.
+            (None, Some(remote)) => {
+                Self::remote_lod_source(remote, self.pack.assets.registry, world_biomes!(self))
+            }
+            (None, None) => Some(self.streaming.lod_source()),
         };
         if let Some(source) = source {
             self.lod = Some(horizon_client::lod::Lod::new(

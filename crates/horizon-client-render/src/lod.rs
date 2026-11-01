@@ -1676,6 +1676,11 @@ impl Lod {
         self.small && self.near_loading
     }
     fn request_detail(&mut self, camera: [i32; 2]) {
+        // Without a generator (a server) nothing answers: chunks seen are
+        // the only detail, and they arrive through `observe`.
+        if self.store.as_ref().is_some_and(|store| store.is_pyramid()) {
+            return;
+        }
         if self.held()
             || self.detail_request_pending
             || self.detail_request_at.elapsed() < std::time::Duration::from_millis(250)

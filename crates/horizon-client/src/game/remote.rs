@@ -448,6 +448,9 @@ pub(super) struct Remote {
     /// The item the player's use began with (`LivingEntity.useItem`).
     pub(super) use_item: Option<Arc<str>>,
     pub(super) dimension: DimensionType,
+    /// The level the server put the player in and the hashed seed it sent:
+    /// what far terrain kept from this server is filed under.
+    pub(super) far_world: (String, i64),
     /// What chunk packets decode with (the dimension's height and sky, the
     /// biome registry); replaced whenever one of them changes.
     pub(super) chunk_format: Arc<ChunkFormat>,
@@ -948,6 +951,7 @@ impl Game<'_> {
             camera: None,
             use_item: None,
             dimension: DimensionType::vanilla("minecraft:overworld"),
+            far_world: (String::new(), 0),
             chunk_format: Arc::new(ChunkFormat::new(
                 &DimensionType::vanilla("minecraft:overworld"),
                 Vec::new(),
@@ -1976,6 +1980,10 @@ impl Game<'_> {
                 .in_column(shape.column()),
         );
         r.dimension = dimension;
+        // Another level or seed than the far terrain in use is from.
+        let far_world = (spawn.dimension.clone(), spawn.seed);
+        let far_world_changed = r.far_world != far_world;
+        r.far_world = far_world;
         r.game_mode = spawn.game_type;
         r.flat = spawn.flat;
         r.loaded_sent = false;
@@ -1990,6 +1998,9 @@ impl Game<'_> {
         // A replacement LocalPlayer has a fresh sendPosition baseline.
         r.position_sender = Default::default();
         r.predictions.clear();
+        if far_world_changed {
+            self.clear_lod();
+        }
         self.set_mode_id(spawn.game_type);
         self.dim = Dim::from_id(&spawn.dimension);
         self.audio.set_world(&spawn.dimension);
