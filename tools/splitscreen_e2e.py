@@ -1125,8 +1125,12 @@ def scenario_native_pointer():
             other = 3 - owner
             # Spectator movement decelerates after a release; measure fresh movement
             # after that inertia settles, while checking held keys independently.
-            g.wait(lambda: all(abs(state(other)['player']['velocity'][i]) < 0.001 for i in [0, 2]),
-                   f"P{other}'s previous movement settles", seconds=5)
+            def settled():
+                before = state(other)['player']['position']
+                time.sleep(0.15)
+                after = state(other)['player']['position']
+                return all(abs(after[i] - before[i]) < 0.001 for i in [0, 2])
+            g.wait(settled, f"P{other}'s previous movement settles", seconds=5)
             before = [state(n)['player']['position'] for n in [1, 2]]
             native.key('w', True)
             try:
