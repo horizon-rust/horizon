@@ -417,6 +417,7 @@ impl<'a> Split<'a> {
             }
         };
         self.host.renderer = Some(renderer);
+        self.host.split_window = !self.host.options.offscreen;
         self.host.options.offscreen = true;
         self.host.options.paced_by_split = true;
         // The new renderer takes the old one's present mode, settings and all: P1's again.
@@ -487,6 +488,7 @@ impl<'a> Split<'a> {
         drop(old);
         self.host.renderer = Some(renderer);
         self.host.options.offscreen = false;
+        self.host.split_window = false;
         self.host.options.paced_by_split = false;
         // Alone again: the pointer is P1's, its view the whole window.
         self.focus = 0;

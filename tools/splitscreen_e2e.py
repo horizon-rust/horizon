@@ -79,9 +79,10 @@ class Game:
         if not split:
             self.env.pop("HORIZON_SPLIT", None)
         try:
-            self.ctl(1, 'launch', *(['--wait'] if ready else []), '--world', 'Split', '--creative',
+            launched = self.ctl(1, 'launch', *(['--wait'] if ready else []), '--world', 'Split', '--creative',
                      '--resources', str(RESOURCES), '--width', str(WIDTH), '--height', str(HEIGHT),
                      '--render-distance', '4', '--name', 'P1', '--no-pause', *args)
+            self.pid = launched.get('launch', launched)['pid']
             if not ready:
                 self.wait(lambda: self.alive(1), "P1's game")
                 return
@@ -1084,6 +1085,109 @@ def scenario_integrated_profiles():
         g.quit()
 
 
+def scenario_native_pointer():
+    print('native_pointer: OS keys and mouse drive the owning view across joins, menus and handoffs')
+    if sys.platform != 'darwin':
+        print('  SKIP: native event injection currently requires macOS; portable capture tests run separately')
+        return
+    from native_input import MacInput
+    g = Game(2, saved_split=True)
+    native = MacInput(g.pid)
+    try:
+        g.wait(lambda: all(g.ctl(n, 'state').get('player') for n in [1, 2]), 'both players loaded')
+        native.activate()
+        size = (g.size(1)[0] + g.size(2)[0], g.size(1)[1])
+        point = lambda x, y: native.point(size, x, y)
+        native.click(point(0.25, 0.4))
+        state = lambda n: g.ctl(n, 'state')
+        grabbed = lambda: [state(n)['pointer_grabbed'] for n in [1, 2]]
+        check('P1 owns capture after P2 joined', grabbed(), [True, False])
+        # OS mouse motion, unlike horizon-ctl mouse-move, passes through Split.device_event.
+        before = [state(n)['player']['yaw'] for n in [1, 2]]
+        for _ in range(3):
+            native.relative(20, 0)
+        time.sleep(0.3)
+        after = [state(n)['player']['yaw'] for n in [1, 2]]
+        check('native mouse turns P1 after the join', abs(after[0] - before[0]) > 0.1, True)
+        check('P2 does not turn with P1 mouse', after[1], before[1])
+        g.ctl(1, 'command', 'gamemode spectator @a')
+        g.ctl(1, 'command', 'tp P1 0 150 0 0 0')
+        g.ctl(1, 'command', 'tp P2 20 150 0 0 0')
+        time.sleep(0.5)
+
+        def walk(owner):
+            other = 3 - owner
+            # Spectator movement decelerates after a release; measure fresh movement
+            # after that inertia settles, while checking held keys independently.
+            g.wait(lambda: all(abs(state(other)['player']['velocity'][i]) < 0.001 for i in [0, 2]),
+                   f"P{other}'s previous movement settles", seconds=5)
+            before = [state(n)['player']['position'] for n in [1, 2]]
+            native.key('w', True)
+            try:
+                g.wait(lambda: 'KeyW' in g.ctl(owner, 'status')['keys'], f'OS W reaches P{owner}')
+                check(f'OS W reaches only P{owner}', 'KeyW' in g.ctl(other, 'status')['keys'], False)
+                time.sleep(0.4)
+            finally:
+                native.key('w', False)
+            time.sleep(0.3)
+            after = [state(n)['player']['position'] for n in [1, 2]]
+            moved = lambda n: sum((after[n-1][i] - before[n-1][i]) ** 2 for i in [0, 2]) > 0.01
+            check(f'P{owner} actually moves with OS W', moved(owner), True)
+            check(f'P{other} stays put', moved(other), False)
+
+        walk(1)
+        g.ctl(2, 'key', 'esc', 'tap')  # A controller player's pause menu.
+        walk(1)
+        check("P2's menu leaves native capture with P1", grabbed(), [True, False])
+        g.ctl(2, 'key', 'esc', 'tap')
+        # A click on P2 cannot steal a locked P1 pointer.
+        native.click(point(0.75, 0.4))
+        check('clicking another view while captured keeps P1 ownership', grabbed(), [True, False])
+        native.tap('escape')
+        native.click(point(0.75, 0.4))
+        check('Esc then click hands native capture to P2', grabbed(), [False, True])
+        walk(2)
+        # Transfer while W is still physically held: the old player must not keep walking.
+        native.key('w', True)
+        g.wait(lambda: 'KeyW' in g.ctl(2, 'status')['keys'], 'P2 holds W')
+        native.tap('escape')
+        native.click(point(0.25, 0.1))
+        native.tap('escape')  # Close P1's own pause menu.
+        check('handoff releases the previous owners held W', 'KeyW' in g.ctl(2, 'status')['keys'], False)
+        native.key('w', False)
+        walk(1)
+        check('P1 recaptures after the round trip', grabbed(), [True, False])
+        # Separate native windows keep the same ownership rules and deliver
+        # key releases to the old player when its window loses the keyboard.
+        g.play_on(2, 'New window')
+        native.activate()
+        for _ in range(3):
+            native.relative(15, 0)
+        check('moving P2 to another window keeps P1 capture', grabbed(), [True, False])
+        walk(1)
+        native.tap('escape')
+        native.click(native.point(g.size(2), 0.5, 0.2, title='Window 2'))
+        check('clicking Window 2 gives P2 native capture', grabbed(), [False, True])
+        walk(2)
+        native.tap('escape')
+        native.click(native.point(g.size(1), 0.5, 0.1, title='Window 1'))
+        native.tap('escape')
+        check('clicking Window 1 restores P1 capture', grabbed(), [True, False])
+        walk(1)
+        g.ctl(2, 'disconnect')
+        g.wait(lambda: not g.alive(2), 'P2 left')
+        time.sleep(0.3)
+        before = state(1)['player']['yaw']
+        for _ in range(3):
+            native.relative(15, 0)
+        time.sleep(0.3)
+        check('native mouse still turns P1 after the compositor is removed',
+              abs(state(1)['player']['yaw'] - before) > 0.1, True)
+    finally:
+        native.release()
+        g.quit()
+
+
 SCENARIOS = {
     'alone': scenario_alone,
     'join': scenario_join,
@@ -1108,6 +1212,7 @@ SCENARIOS = {
     'eight': scenario_eight,
     'sixteen': scenario_sixteen,
     'pointer': scenario_pointer,
+    'native_pointer': scenario_native_pointer,
     'pausemenu': scenario_pausemenu,
     'server': scenario_server,
     'packs': scenario_packs,
