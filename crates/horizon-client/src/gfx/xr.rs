@@ -82,6 +82,9 @@ pub(super) struct EyeView {
     pub cull_view_proj: Mat4,
     /// The second eye: the first eye's visible sections stand (`cull_view_proj` is theirs).
     pub reuse_visibility: bool,
+    /// The first of exactly two eyes: the second's `view_proj`, for the depth prepass both eyes
+    /// share (`EyeDepths`).
+    pub next_view_proj: Option<Mat4>,
     /// The window's size, which the HUD is laid out for.
     pub hud_size: [u32; 2],
     /// `Globals::inverse_view`'s inverse for the sky's rays: the eye's rotation, with the
@@ -389,12 +392,16 @@ impl Renderer {
             .gaze
             .map_or(head * Vec3::NEG_Z, |g| Vec3::from(g.direction));
         let gaze = body.inverse().transform_vector3(look);
-        for (i, (eye, size)) in views.iter().enumerate() {
+        let view_proj = |eye: &horizon_xr::Eye| {
             let rotation = quat(eye.pose.orientation);
             let head = Mat4::from_rotation_translation(rotation, vec(eye.pose.position) - origin)
                 .inverse();
-            let projection =
-                Mat4::from_cols_array_2d(&horizon_xr::projection(eye.fov, 0.05, frame.depth_far));
+            Mat4::from_cols_array_2d(&horizon_xr::projection(eye.fov, 0.05, frame.depth_far))
+                * head
+                * body
+        };
+        for (i, (eye, size)) in views.iter().enumerate() {
+            let rotation = quat(eye.pose.orientation);
             let (l, r) = (eye.fov.angle_left.tan(), eye.fov.angle_right.tan());
             let (d, u) = (eye.fov.angle_down.tan(), eye.fov.angle_up.tan());
             // The sky's ray for ndc (x, y) is (x * (r - l) / 2 + (r + l) / 2, ..., -1): the
@@ -415,9 +422,10 @@ impl Renderer {
                 target,
                 *size,
                 EyeView {
-                    view_proj: projection * head * body,
+                    view_proj: view_proj(eye),
                     cull_view_proj,
                     reuse_visibility: i > 0,
+                    next_view_proj: (i == 0 && views.len() == 2).then(|| view_proj(&views[1].0)),
                     hud_size: [self.config.width, self.config.height],
                     view,
                     aspect: (r - l) / (u - d),

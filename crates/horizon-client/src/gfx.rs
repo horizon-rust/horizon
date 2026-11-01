@@ -677,6 +677,8 @@ pub struct Renderer {
     /// RT lighting's depth prepass: its pipeline and a depth per view size.
     solid_depth: wgpu::RenderPipeline,
     rt_depths: Vec<([u32; 2], wgpu::TextureView)>,
+    /// VR's two eyes' prepass in one multiview pass, where the device has it.
+    eye_depths: Option<EyeDepths>,
     voxels: voxels::Voxels,
     shadow_rays: shadow_rays::ShadowRays,
     /// Froxel volumetrics (froxels.rs): hook 2, the pass and its settings.
@@ -1165,6 +1167,18 @@ fn backends_name(backends: wgpu::Backends) -> &'static str {
         _ => "graphics",
     }
 }
+/// VR's depth prepass for both eyes at once (multiview): the first eye draws the solid terrain
+/// into a two-layer depth, each layer from its eye, and the second eye's rays take layer 1.
+struct EyeDepths {
+    pipeline: wgpu::RenderPipeline,
+    /// Both eyes' matrices (terrain_views.wgsl) and their group.
+    matrices: wgpu::Buffer,
+    group: wgpu::BindGroup,
+    /// The two-layer depth for the eyes' size: its view to draw into and each layer's.
+    layers: Option<([u32; 2], wgpu::TextureView, [wgpu::TextureView; 2])>,
+    /// The second eye's layer, drawn by the first eye this frame.
+    next: Option<wgpu::TextureView>,
+}
 /// A device and what it came from.
 struct Opened {
     instance: wgpu::Instance,
@@ -1242,6 +1256,14 @@ fn dual_source_terrain() -> String {
         include_str!("terrain_dual.wgsl")
     )
 }
+/// terrain.wgsl with VR's two-view depth prepass entry (`vs_terrain_views`, `EyeDepths`).
+fn terrain_views() -> String {
+    format!(
+        "{}{}",
+        include_str!("terrain.wgsl"),
+        include_str!("terrain_views.wgsl")
+    )
+}
 fn device_features(adapter: &wgpu::Adapter) -> wgpu::Features {
     timing::GpuTimer::features(adapter)
         | cull::Cull::features(adapter)
@@ -1268,7 +1290,8 @@ fn open_xr_device(window: &Arc<Window>, offscreen: bool, layers: u32) -> Option<
     // RT lighting's hardware rays in the headset as on the screen, where the adapter has them.
     let xr = xr::open(|adapter| {
         (
-            device_features(adapter) | (adapter.features() & hw_rt_features()),
+            device_features(adapter)
+                | (adapter.features() & (hw_rt_features() | wgpu::Features::MULTIVIEW)),
             adapter.limits(),
         )
     })?;
@@ -1867,40 +1890,100 @@ impl Renderer {
             None,
         );
         // RT lighting's depth prepass: the solid terrain into a depth of its own, colour-less.
-        let solid_depth = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Terrain depth for the rays"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_terrain"),
-                compilation_options: Default::default(),
-                buffers: &terrain_buffers,
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: tri,
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_depth"),
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &sprite_constants,
+        let depth_prepass =
+            |layout: &wgpu::PipelineLayout,
+             module: &wgpu::ShaderModule,
+             vertex: &str,
+             multiview_mask: Option<std::num::NonZeroU32>| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("Terrain depth for the rays"),
+                    layout: Some(layout),
+                    vertex: wgpu::VertexState {
+                        module,
+                        entry_point: Some(vertex),
+                        compilation_options: Default::default(),
+                        buffers: &terrain_buffers,
+                    },
+                    primitive: wgpu::PrimitiveState {
+                        topology: tri,
+                        cull_mode: Some(wgpu::Face::Back),
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: Some(true),
+                        depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module,
+                        entry_point: Some("fs_depth"),
+                        compilation_options: wgpu::PipelineCompilationOptions {
+                            constants: &sprite_constants,
+                            ..Default::default()
+                        },
+                        targets: &[],
+                    }),
+                    multiview_mask,
+                    cache: None,
+                })
+            };
+        let solid_depth = depth_prepass(&layout, &shader, "vs_terrain", None);
+        // VR: both eyes' prepass in one multiview pass, where the device draws two views at once.
+        let eye_depths = device
+            .features()
+            .contains(wgpu::Features::MULTIVIEW)
+            .then(|| {
+                let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("Horizon terrain, two views"),
+                    source: wgpu::ShaderSource::Wgsl(terrain_views().into()),
+                });
+                let views = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Both eyes' matrices"),
+                    entries: &[entry(
+                        2,
+                        wgpu::ShaderStages::VERTEX,
+                        wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                    )],
+                });
+                let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Horizon terrain layout, two views"),
+                    bind_group_layouts: &[Some(&bindings), Some(&views)],
                     ..Default::default()
-                },
-                targets: &[],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+                });
+                let matrices = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Both eyes' matrices"),
+                    size: 128,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Both eyes' matrices"),
+                    layout: &views,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: matrices.as_entire_binding(),
+                    }],
+                });
+                EyeDepths {
+                    pipeline: depth_prepass(
+                        &layout,
+                        &shader,
+                        "vs_terrain_views",
+                        std::num::NonZeroU32::new(0b11),
+                    ),
+                    matrices,
+                    group,
+                    layers: None,
+                    next: None,
+                }
+            });
         let translucent = pipeline(
             "Terrain translucent",
             "vs_terrain",
@@ -3371,6 +3454,7 @@ impl Renderer {
             rt_cloud_mesh: None,
             solid_depth,
             rt_depths: Vec::new(),
+            eye_depths,
             voxels: voxels::Voxels::default(),
             shadow_rays,
             froxels, // hook 4
@@ -4204,7 +4288,125 @@ impl Renderer {
         rt: &shadow_rays::Rays,
         phase1: u32,
         draws: u32,
-    ) -> [wgpu::TextureView; 5] {
+    ) -> [wgpu::TextureView; 6] {
+        let depth = match self.eye_prepass(encoder, size, view_proj, phase1, draws) {
+            Some(d) => d,
+            None => self.view_prepass(encoder, size, phase1, draws),
+        };
+        let view = self.eye.map_or(0, |e| e.view_index);
+        let foveation = match &self.eye {
+            Some(eye) => eye.foveation,
+            None => shadow_rays::Foveation::screen(size),
+        };
+        let grid = self.voxels.views().expect("the grid runs");
+        let lights = self.voxels.light_buffers().expect("the grid runs");
+        let hw = self.hw_bindings();
+        let [mask, blocks, sun, reflection, refraction] = self.shadow_rays.run(
+            &self.device,
+            &mut self.uploads,
+            encoder,
+            view,
+            &depth,
+            size,
+            view_proj,
+            camera,
+            rt,
+            foveation,
+            grid,
+            lights,
+            self.voxels.light_visibility().expect("the grid runs"),
+            &self.atmosphere.view,
+            hw.as_ref().map(hw_rays::Bindings::hardware),
+        );
+        [mask, blocks, sun, reflection, refraction, depth]
+    }
+    /// VR's two eyes: the first draws both eyes' prepass in one multiview pass and its own
+    /// layer; the second takes its layer. `None` elsewhere, or without multiview.
+    fn eye_prepass(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        size: [u32; 2],
+        view_proj: Mat4,
+        phase1: u32,
+        draws: u32,
+    ) -> Option<wgpu::TextureView> {
+        let eye = self.eye?;
+        let mut depths = self.eye_depths.take()?;
+        let Some(next) = eye.next_view_proj else {
+            let layer = depths.next.take();
+            self.eye_depths = Some(depths);
+            return layer;
+        };
+        if depths.layers.as_ref().is_none_or(|(s, _, _)| *s != size) {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Both eyes' terrain depth for the rays"),
+                size: wgpu::Extent3d {
+                    width: size[0],
+                    height: size[1],
+                    depth_or_array_layers: 2,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth32Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let layer = |i| {
+                texture.create_view(&wgpu::TextureViewDescriptor {
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    base_array_layer: i,
+                    array_layer_count: Some(1),
+                    ..Default::default()
+                })
+            };
+            let both = texture.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
+            depths.layers = Some((size, both, [layer(0), layer(1)]));
+        }
+        let (_, both, [first, second]) = depths.layers.clone().expect("made above");
+        self.uploads.buffer(
+            encoder,
+            &depths.matrices,
+            0,
+            bytemuck::cast_slice(&[view_proj.to_cols_array(), next.to_cols_array()]),
+        );
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Both eyes' terrain depth for the rays"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &both,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                multiview_mask: std::num::NonZeroU32::new(0b11),
+                ..Default::default()
+            });
+            pass.set_pipeline(&depths.pipeline);
+            pass.set_bind_group(0, &self.group, &[]);
+            pass.set_bind_group(1, &depths.group, &[]);
+            self.prepass_draws(&mut pass, phase1, draws);
+        }
+        gpu_passes::stamp(encoder, "rays: depth prepass (both eyes)");
+        depths.next = Some(second);
+        self.eye_depths = Some(depths);
+        Some(first)
+    }
+    /// One view's prepass into its size's depth.
+    fn view_prepass(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        size: [u32; 2],
+        phase1: u32,
+        draws: u32,
+    ) -> wgpu::TextureView {
         let depth = match self.rt_depths.iter().find(|(s, _)| *s == size) {
             Some((_, d)) => d.clone(),
             None => {
@@ -4235,41 +4437,21 @@ impl Renderer {
             });
             pass.set_pipeline(&self.solid_depth);
             pass.set_bind_group(0, &self.group, &[]);
-            pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.set_vertex_buffer(1, self.instances.slice(..));
-            // The sections occlusion culling left to its second phase have no instance yet in the
-            // indirect arguments (the GPU's test after the world's first phase gives them one):
-            // the rays see them all, from the draws' own counts, or a section meshed again (no
-            // visibility history) would be missing for a frame, the room behind it lit as if open.
-            self.draw_sections(&mut pass, &self.indirect, 0, 0, phase1);
-            self.draw_sections_with(&mut pass, &self.indirect, 0, phase1, draws - phase1, false);
+            self.prepass_draws(&mut pass, phase1, draws);
         }
         gpu_passes::stamp(encoder, "rays: depth prepass");
-        let view = self.eye.map_or(0, |e| e.view_index);
-        let foveation = match &self.eye {
-            Some(eye) => eye.foveation,
-            None => shadow_rays::Foveation::screen(size),
-        };
-        let grid = self.voxels.views().expect("the grid runs");
-        let lights = self.voxels.light_buffers().expect("the grid runs");
-        let hw = self.hw_bindings();
-        self.shadow_rays.run(
-            &self.device,
-            &mut self.uploads,
-            encoder,
-            view,
-            &depth,
-            size,
-            view_proj,
-            camera,
-            rt,
-            foveation,
-            grid,
-            lights,
-            self.voxels.light_visibility().expect("the grid runs"),
-            &self.atmosphere.view,
-            hw.as_ref().map(hw_rays::Bindings::hardware),
-        )
+        depth
+    }
+    /// The prepass's draws: every solid section, both phases of occlusion culling.
+    fn prepass_draws(&self, pass: &mut wgpu::RenderPass<'_>, phase1: u32, draws: u32) {
+        pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+        pass.set_vertex_buffer(1, self.instances.slice(..));
+        // The sections occlusion culling left to its second phase have no instance yet in the
+        // indirect arguments (the GPU's test after the world's first phase gives them one):
+        // the rays see them all, from the draws' own counts, or a section meshed again (no
+        // visibility history) would be missing for a frame, the room behind it lit as if open.
+        self.draw_sections(pass, &self.indirect, 0, 0, phase1);
+        self.draw_sections_with(pass, &self.indirect, 0, phase1, draws - phase1, false);
     }
     /// The terrain's groups, with `history` (RT lighting's last light for the view drawn, or this
     /// frame's), `blocks` (this frame's light from the light sources) and `scene` (the view's last
@@ -6202,7 +6384,7 @@ impl Renderer {
                     bytemuck::cast_slice(&clean_view_proj.to_cols_array()),
                 );
             }
-            let [mask, blocks, sun, reflection, refraction] = self.rt_prepass(
+            let [mask, blocks, sun, reflection, refraction, depth] = self.rt_prepass(
                 &mut encoder,
                 world_size,
                 clean_view_proj,
@@ -6219,17 +6401,12 @@ impl Renderer {
                     bytemuck::cast_slice(&view_proj.to_cols_array()),
                 );
             }
-            let depth = self
-                .rt_depths
-                .iter()
-                .find(|(s, _)| *s == world_size)
-                .map(|(_, d)| d.clone());
             let scene = self.taa.last_color(rt_view);
             self.terrain_groups_with(
                 Some(&mask),
                 Some(&blocks),
                 Some(&sun),
-                depth.as_ref(),
+                Some(&depth),
                 Some(&reflection),
                 Some(&refraction),
                 scene.as_ref(),
@@ -7827,18 +8004,21 @@ mod tests {
             .validate(&module)
             .unwrap_or_else(|e| panic!("dual-source froxels: {e:?}"));
         }
-        // The translucent terrain's dual-source entry comes after terrain.wgsl (gfx.rs).
-        files.retain(|p| !named(p, "terrain_dual.wgsl"));
-        {
-            let dual = super::dual_source_terrain();
+        // The translucent terrain's dual-source entry and VR's two-view prepass come after
+        // terrain.wgsl (gfx.rs).
+        files.retain(|p| !named(p, "terrain_dual.wgsl") && !named(p, "terrain_views.wgsl"));
+        for (name, dual) in [
+            ("dual-source terrain", super::dual_source_terrain()),
+            ("two-view terrain", super::terrain_views()),
+        ] {
             let module = naga::front::wgsl::parse_str(&dual)
-                .unwrap_or_else(|e| panic!("dual-source terrain: {}", e.emit_to_string(&dual)));
+                .unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(&dual)));
             naga::valid::Validator::new(
                 naga::valid::ValidationFlags::all(),
                 naga::valid::Capabilities::all(),
             )
             .validate(&module)
-            .unwrap_or_else(|e| panic!("dual-source terrain: {e:?}"));
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
         }
         for path in files {
             let text = if named(&path, "shadow_rays.wgsl") {

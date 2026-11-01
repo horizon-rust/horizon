@@ -540,6 +540,11 @@ wind):
    quads take it from 4.7 to 4.1 ms. Away from the sharp zone the water's edges step by 4 pixels. `horizon-ctl rt-sharp
    DEGREES` sets the sharp zone in a running game: 180 sharp everywhere took the two eyes' frames from 19.3 to 33 ms,
    1 (periphery everywhere) to 17.1.
+8. **Both eyes' depth prepass in one multiview pass** (gfx.rs `EyeDepths`, terrain_views.wgsl: the first eye draws a
+   two-layer depth, each layer with its eye's matrix, the second eye's rays take layer 1), where the device has
+   `MULTIVIEW`: 0.9 + 0.7 to 1.5 ms, and one pass less to record. Little, the prepass's cost being its pixels (the
+   alpha test at 3660x3200) more than its vertices: multiview for the world's raster would give as little, the eyes'
+   GPU time being per pixel.
 
 **Kept, though measured:** the second bounce on a radiance cache miss (3 ms of 12 in the RTX Demo's interior, which
 loses 1 % of its light without it) and the reuse's visibility ray (1.3 ms; without it a neighbour's sample leaks
