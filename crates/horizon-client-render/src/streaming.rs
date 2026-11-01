@@ -1240,8 +1240,11 @@ impl Streaming {
         let sweep = area != self.scan_area || self.scan_age >= 8;
         self.scan_area = area;
         self.scan_age = if sweep { 0 } else { self.scan_age + 1 };
+        let g = crate::spans::guard("st_relight_edits");
         self.requeue();
         self.relight_edits(world);
+        drop(g);
+        let g = crate::spans::guard("st_receive");
         let deferred = std::mem::take(&mut self.deferred);
         let received = self.shared.done.take();
         // Meshes made stale meanwhile, freed with the uploaded ones (`free`).
@@ -1322,6 +1325,8 @@ impl Streaming {
                 }
             }
         }
+        drop(g);
+        let g = crate::spans::guard("st_sweep");
         self.free(stale);
         let mut removed = Vec::new();
         if sweep {
@@ -1391,6 +1396,8 @@ impl Streaming {
             }
             self.save_checked_out(written);
         }
+        drop(g);
+        let g = crate::spans::guard("st_finalize");
         let (protos, finishing) = (&self.protos, &self.finishing);
         self.decorated.retain(|k| {
             protos.contains_key(k) || finishing.contains(k) || world.chunks.contains_key(k)
@@ -1425,6 +1432,8 @@ impl Streaming {
         // Decorate chunks whose 3x3 proto neighbourhood is available, in
         // vanilla's order: decoration is order dependent where write regions
         // overlap (see `DecorationOrder`).
+        drop(g);
+        let g = crate::spans::guard("st_decorate");
         let workers = self.threads.len();
         if self.decorates && self.order_area != Some((self.center, self.radius)) {
             let (decorated, chunks) = (&self.decorated, &world.chunks);
@@ -1546,6 +1555,8 @@ impl Streaming {
                 self.submit(Some((x, z)), 1, Job::Decorate(x, z, region, finals));
             }
         }
+        drop(g);
+        let g = crate::spans::guard("st_schedule");
         self.schedule_generation(world, workers);
         // Lighting once all neighbours exist, nearest first and only as
         // much of it as the workers can chew. Vanilla's light engine also
@@ -1555,6 +1566,8 @@ impl Streaming {
         // grew with the render distance and outlived the columns they
         // were queued for (#3629). What stays in `dirty_light` is asked
         // for again, from the current centre, as capacity frees.
+        drop(g);
+        let g = crate::spans::guard("st_light");
         let mut light: Vec<(i64, i32, i32)> = Vec::new();
         let mut gone: Vec<(i32, i32)> = Vec::new();
         for &(x, z) in world.dirty_light.iter() {
@@ -1584,6 +1597,7 @@ impl Streaming {
                 Job::Light(x, z, region, self.sequence, self.sky_light),
             );
         }
+        drop(g);
         // A server draws nothing: its sections are never meshed.
         if !self.mesh {
             world.dirty_sections.clear();

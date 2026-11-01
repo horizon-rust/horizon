@@ -161,3 +161,24 @@ mod tests {
         assert!(worked.as_millis() >= 10, "{worked:?} while busy");
     }
 }
+
+/// Bench only: a span from here to the guard's drop.
+pub struct Guard(&'static str, Instant, Option<Duration>);
+pub fn guard(name: &'static str) -> Option<Guard> {
+    enabled().then(|| Guard(name, Instant::now(), thread_cpu()))
+}
+impl Drop for Guard {
+    fn drop(&mut self) {
+        let ms = self.1.elapsed().as_secs_f32() * 1000.0;
+        let cpu_ms = thread_cpu()
+            .zip(self.2)
+            .map_or(ms, |(e, s)| (e - s).as_secs_f32() * 1000.0);
+        SPANS.with(|s| {
+            s.borrow_mut().push(Span {
+                name: self.0,
+                ms,
+                cpu_ms,
+            })
+        });
+    }
+}
