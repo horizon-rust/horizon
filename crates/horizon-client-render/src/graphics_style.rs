@@ -77,8 +77,10 @@ pub const HEADER: u32 = hex(0xffff55, 255);
 pub const VEIL: u32 = hex(B.page, 140);
 
 /// Sizes in GUI pixels.
-pub const ROW: f32 = 22.0;
-pub const HEADER_ROW: f32 = 20.0;
+/// Shorter screens than this (a 720p window at scale 3) leave the title out.
+pub const TITLED: f32 = 300.0;
+pub const ROW: f32 = 20.0;
+pub const HEADER_ROW: f32 = 18.0;
 /// Space between two blocks of rows, and before a section's name.
 pub const BLOCK_GAP: f32 = 4.0;
 pub const PAGE_GAP: f32 = 6.0;

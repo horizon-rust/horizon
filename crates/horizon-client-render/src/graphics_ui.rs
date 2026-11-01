@@ -957,7 +957,8 @@ impl Columns {
     fn of(w: f32, h: f32) -> Self {
         let pw = (w - 16.0).min(400.0).floor();
         let x = ((w - pw) / 2.0).floor();
-        let panel_y = 40.0;
+        // The title's room goes to the list on a short screen; the tabs say where you are.
+        let panel_y = if h >= style::TITLED { 40.0 } else { 22.0 };
         let foot_y = h - 6.0 - style::BUTTON_H;
         let info_y = foot_y - 4.0 - style::INFO_H;
         let panel_h = info_y - 4.0 - panel_y;
@@ -1222,8 +1223,10 @@ impl GraphicsUi {
         let (cols, lines, content) = self.layout(s, w, h);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
         style::fill(batch, atlas, [0.0, 0.0, w, h], style::VEIL);
-        let title = Text::literal(lang::get("options.videoTitle"));
-        ui::centered_text(batch, atlas, &title, 0.0, 8.0, w, style::WHITE);
+        if h >= style::TITLED {
+            let title = Text::literal(lang::get("options.videoTitle"));
+            ui::centered_text(batch, atlas, &title, 0.0, 8.0, w, style::WHITE);
+        }
         self.draw_tabs(batch, atlas, &cols, &lines, cursor);
         self.draw_search(batch, atlas, &cols, cursor);
 
