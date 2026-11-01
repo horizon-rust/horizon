@@ -2194,10 +2194,16 @@ impl Game<'_> {
                     .iter()
                     .filter_map(|g| Some((g.vehicle?, g.entity_id)))
                     .collect();
+                let g = horizon_client::spans::guard("ln_riding");
                 self.lan_riding(host_entity, &guests, &mut host.hub.riding);
+                drop(g);
+                let g = horizon_client::spans::guard("ln_entities");
                 self.lan_entities(host_entity, &host.mob_players, &mut host.hub, &mut states);
+                drop(g);
+                let g = horizon_client::spans::guard("ln_hooks_uuids");
                 self.lan_hook_states(host_entity, &host.play, &host.hub, &mut states);
                 self.lan_entity_uuids(&mut states);
+                drop(g);
             } else {
                 states.clear();
             }
@@ -2267,6 +2273,7 @@ impl Game<'_> {
                 // Player packets may already have been drained before
                 // scheduled block ticks (`tick_lan_packets`).
                 let pass = self.level_pass;
+                let g = horizon_client::spans::guard("ln_poll");
                 let mut events = if pass.first && !pass.packets_drained {
                     host.hub.poll(&mut ctx)
                 } else {
@@ -2275,7 +2282,10 @@ impl Game<'_> {
                 if !pass.packets_drained {
                     events.extend(host.hub.drain_packets(&mut ctx));
                 }
+                drop(g);
+                let g = horizon_client::spans::guard("ln_tick_level");
                 events.extend(host.hub.tick_level(&mut ctx));
+                drop(g);
                 if pass.last {
                     host.hub.end_tick();
                 }
@@ -2288,6 +2298,7 @@ impl Game<'_> {
                 host.hub.set_host_game_mode(state.uuid, state.game_mode);
             }
             self.wake_woken_guests(&mut host);
+            let g = horizon_client::spans::guard("ln_events");
             let Some(back) = self.lan_process_events(host, events, state.as_ref(), entities, spawn)
             else {
                 return;
@@ -2319,9 +2330,12 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the menu events");
         }
+        let g = horizon_client::spans::guard("ln_guests");
         if !paused {
             self.tick_guests(&mut host);
         }
+        drop(g);
+        let _g = horizon_client::spans::guard("ln_flush");
         self.lan = Some(host);
         // A blast from a guest's attack, and a mace's wind burst.
         self.flush_lan_explosions();
