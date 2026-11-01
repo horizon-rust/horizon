@@ -12,6 +12,13 @@
   "horizon.options.button_glyphs": "Значки кнопок",
   "horizon.options.menu_navigation": "Навігація в меню",
   "horizon.options.on_screen_keyboard": "Екранна клавіатура",
+  "horizon.multiplayer.finding_friend": "Шукаємо світ друга…",
+  "horizon.loading.opening_world": "Відкриття світу",
+  "horizon.loading.cancelling_world": "Скасування",
+  "horizon.multiplayer.not_signed_in": "Цей сервер працює в онлайн-режимі. Увійдіть за допомогою акаунта Microsoft у лаунчері Horizon, щоб приєднатися.",
+  "horizon.multiplayer.invalid_address": "Недійсна адреса сервера: %s",
+  "horizon.multiplayer.connected_friend_direct": "Пряме з'єднання з другом встановлено…",
+  "horizon.multiplayer.connected_friend_relay": "З'єднання з другом через ретранслятор…",
   "horizon.options.chat_delay": "Затримка чату",
   "horizon.options.lightbar.health": "Здоров’я",
   "horizon.options.lightbar.dimension": "Вимір",
@@ -203,9 +210,6 @@
   "Vulkan, then DirectX 12 (Windows) or OpenGL (Linux) where it fails. Next start.": "Vulkan, інакше DirectX 12 (Windows)/OpenGL (Linux). Після рестарту.",
   "Mesh data sent to the GPU per frame. Lower is smoother while loading.": "Дані сітки до GPU за кадр. Менше — плавніше завантаження.",
   "Frame rate and frame times over the game, with a graph.": "Частота та час кадрів поверх гри, з графіком.",
-  "horizon.multiplayer.finding_friend": "Шукаємо світ друга…",
-  "horizon.loading.opening_world": "Відкриття світу",
-  "horizon.loading.cancelling_world": "Скасування",
   "horizon.title.not_affiliated": "Не пов’язано з Mojang чи Microsoft",
   "horizon.extras.header.lighting": "Освітлення",
   "horizon.extras.header.third_person": "Вигляд від третьої особи",
@@ -285,7 +289,5 @@
   "horizon.osk.delete": "Видалити",
   "horizon.osk.type": "Ввести",
   "horizon.osk.symbols": "Символи",
-  "horizon.osk.close": "Закрити",
-  "horizon.multiplayer.connected_direct": "З’єднано безпосередньо з другом…",
-  "horizon.multiplayer.connected_relay": "З’єднано з другом через ретранслятор…"
+  "horizon.osk.close": "Закрити"
 }

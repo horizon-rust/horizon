@@ -614,5 +614,17 @@
   "Not ported: {item}": "Non porté : {item}",
   "Modpacks": "Modpacks",
   "{name} moved to the trash.": "{name} a été mis à la corbeille.",
-  "Copied": "Copié"
+  "Copied": "Copié",
+  "Couldn't load patch notes. {error}": "Couldn't load patch notes. {error}",
+  "Couldn't load releases. {error}": "Couldn't load releases. {error}",
+  "Launcher updated to {version}": "Launcher updated to {version}",
+  "Launcher {version}": "Launcher {version}",
+  "Launcher {version}  {percent}%": "Launcher {version}  {percent}%",
+  "Manage versions": "Manage versions",
+  "No build for this platform": "No build for this platform",
+  "No notes for this release.": "No notes for this release.",
+  "No version": "No version",
+  "Signed in as {name}.": "Signed in as {name}.",
+  "follows updates": "follows updates",
+  "Search, then Enter": "Search, then Enter"
 }

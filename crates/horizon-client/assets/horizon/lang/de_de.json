@@ -286,6 +286,8 @@
   "horizon.osk.type": "Eingeben",
   "horizon.osk.symbols": "Symbole",
   "horizon.osk.close": "Schließen",
-  "horizon.multiplayer.connected_direct": "Direkt mit deinem Freund verbunden …",
-  "horizon.multiplayer.connected_relay": "Über das Relay mit deinem Freund verbunden …"
+  "horizon.multiplayer.connected_friend_direct": "Direkt mit deinem Freund verbunden …",
+  "horizon.multiplayer.connected_friend_relay": "Über das Relay mit deinem Freund verbunden …",
+  "horizon.multiplayer.not_signed_in": "Dieser Server läuft im Online-Modus. Melde dich im Horizon-Launcher mit deinem Microsoft-Konto an, um beizutreten.",
+  "horizon.multiplayer.invalid_address": "Ungültige Serveradresse: %s"
 }

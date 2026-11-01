@@ -286,6 +286,8 @@
   "horizon.osk.type": "Saisir",
   "horizon.osk.symbols": "Symboles",
   "horizon.osk.close": "Fermer",
-  "horizon.multiplayer.connected_direct": "Connecté directement à votre ami...",
-  "horizon.multiplayer.connected_relay": "Connecté à votre ami via le relais..."
+  "horizon.multiplayer.connected_friend_direct": "Connecté directement à votre ami...",
+  "horizon.multiplayer.connected_friend_relay": "Connecté à votre ami via le relais...",
+  "horizon.multiplayer.not_signed_in": "Ce serveur est en mode en ligne. Connectez-vous avec votre compte Microsoft dans le launcher Horizon pour le rejoindre.",
+  "horizon.multiplayer.invalid_address": "Adresse de serveur invalide : %s"
 }

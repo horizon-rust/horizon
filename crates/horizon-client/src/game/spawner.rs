@@ -446,7 +446,8 @@ impl Game<'_> {
             .unwrap_or(self.ui.registries.permission)
             > 0
     }
-    /// Ticks spawners and trial spawners near the player on a remote client (`tick_remote`).
+    /// Ticks spawners, trial spawners and vaults near the player on a remote
+    /// client (`tick_remote`).
     pub(super) fn tick_remote_spawners(&mut self) {
         let Some(p) = self.player.as_ref() else {
             return;
@@ -458,6 +459,7 @@ impl Game<'_> {
         ];
         let mut keys = Vec::new();
         let mut trial_keys = Vec::new();
+        let mut vault_keys = Vec::new();
         for (&pos, be) in &self.world.block_entities {
             let d = (pos.0 - center[0])
                 .abs()
@@ -467,6 +469,7 @@ impl Game<'_> {
                 match be {
                     BlockEntity::Spawner(_) => keys.push(pos),
                     BlockEntity::TrialSpawner(_) => trial_keys.push(pos),
+                    BlockEntity::Vault(_) => vault_keys.push(pos),
                     _ => {}
                 }
             }
@@ -474,6 +477,10 @@ impl Game<'_> {
         self.client_tick_spawners(&keys);
         for key in trial_keys {
             self.client_tick_trial_spawner(key);
+        }
+        // VaultBlock.getTicker on the client: VaultBlockEntity.Client.tick.
+        for key in vault_keys {
+            self.client_tick_vault(key);
         }
     }
     /// `SpawnerRenderer` and `TrialSpawnerRenderer`: the next mob of every

@@ -482,6 +482,9 @@ impl Game<'_> {
         if let Some(p) = self.player.as_mut() {
             p.is_passenger = g.vehicle.is_some();
         }
+        // Entity.collide: the guest's body collides with the level's world
+        // border too, as it is this turn (it moves with /worldborder).
+        self.player_border();
         let host_station = self.station.take();
         // The guest's bed, sleep counter and respawn point; the host's
         // respawn point, anchor and action bar stay theirs.

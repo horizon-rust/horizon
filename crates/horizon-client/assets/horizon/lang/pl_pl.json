@@ -12,6 +12,13 @@
   "horizon.options.button_glyphs": "Symbole przycisków",
   "horizon.options.menu_navigation": "Nawigacja po menu",
   "horizon.options.on_screen_keyboard": "Klawiatura ekranowa",
+  "horizon.multiplayer.finding_friend": "Szukanie świata znajomego…",
+  "horizon.loading.opening_world": "Otwieranie świata",
+  "horizon.loading.cancelling_world": "Anulowanie",
+  "horizon.multiplayer.not_signed_in": "Ten serwer działa w trybie online. Zaloguj się kontem Microsoft w launcherze Horizon, aby dołączyć.",
+  "horizon.multiplayer.invalid_address": "Nieprawidłowy adres serwera: %s",
+  "horizon.multiplayer.connected_friend_direct": "Połączono bezpośrednio ze znajomym…",
+  "horizon.multiplayer.connected_friend_relay": "Połączono ze znajomym przez przekaźnik…",
   "horizon.options.chat_delay": "Opóźnienie czatu",
   "horizon.options.lightbar.health": "Zdrowie",
   "horizon.options.lightbar.dimension": "Wymiar",
@@ -203,9 +210,6 @@
   "Vulkan, then DirectX 12 (Windows) or OpenGL (Linux) where it fails. Next start.": "Vulkan, awaryjnie DirectX 12 (Windows) / OpenGL (Linux). Po restarcie.",
   "Mesh data sent to the GPU per frame. Lower is smoother while loading.": "Dane siatki wysyłane do GPU na klatkę. Mniej to płynniej podczas ładowania.",
   "Frame rate and frame times over the game, with a graph.": "Liczba klatek i czasy klatek nad grą, z wykresem.",
-  "horizon.multiplayer.finding_friend": "Szukanie świata znajomego…",
-  "horizon.loading.opening_world": "Otwieranie świata",
-  "horizon.loading.cancelling_world": "Anulowanie",
   "horizon.title.not_affiliated": "Niepowiązane z Mojang ani Microsoft",
   "horizon.extras.header.lighting": "Oświetlenie",
   "horizon.extras.header.third_person": "Widok z trzeciej osoby",
@@ -285,7 +289,5 @@
   "horizon.osk.delete": "Usuń",
   "horizon.osk.type": "Wpisz",
   "horizon.osk.symbols": "Symbole",
-  "horizon.osk.close": "Zamknij",
-  "horizon.multiplayer.connected_direct": "Połączono bezpośrednio ze znajomym…",
-  "horizon.multiplayer.connected_relay": "Połączono ze znajomym przez przekaźnik…"
+  "horizon.osk.close": "Zamknij"
 }
