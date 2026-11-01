@@ -385,16 +385,14 @@ pub(super) fn preload_world_data(
     }
 }
 
-/// A launch that names a world (`--world`, `--quickPlaySingleplayer`, or a
-/// dedicated server's `level-name`): the same preload, started as soon as the
-/// block registry and the biomes are loaded, so it overlaps the rest of the
-/// startup instead of the world's opening. Read for the world's own data
-/// packs and preset (`preset`: the one a new world will be written with, else
-/// the world's own), the bundle and decoration `make_streaming` asks for; a
-/// world they don't fit (one its upgrade rewrites) reads its own when it opens.
+/// A launch that names a world (`--world`, `--quickPlaySingleplayer`): the
+/// same preload, started as soon as the block registry and the biomes are
+/// loaded, so it overlaps the rest of the startup instead of the world's
+/// opening. Read for the world's own data packs and preset, the bundle and
+/// decoration `make_streaming` asks for; a world they don't fit (one its
+/// upgrade rewrites) reads its own when it opens.
 pub(super) fn preload_launch_world(
-    world_root: std::path::PathBuf,
-    preset: Option<&'static str>,
+    folder: &str,
     resources: &std::path::Path,
     registry: &'static horizon_world::registry::BlockRegistry,
     biomes: Arc<horizon_client::biome::Biomes>,
@@ -403,6 +401,10 @@ pub(super) fn preload_launch_world(
     if !matches!(*preload, Preload::Idle) {
         return;
     }
+    let Ok(dir) = std::env::current_dir() else {
+        return;
+    };
+    let world_root = dir.join("saves").join(folder);
     let resources = resources.to_owned();
     let spawned = std::thread::Builder::new()
         .name("World data preload".into())
@@ -421,8 +423,7 @@ pub(super) fn preload_launch_world(
                 &overrides,
                 registry,
             ) {
-                let preset =
-                    preset.unwrap_or_else(|| horizon_client::save::WorldGen::preset(&world_root));
+                let preset = horizon_client::save::WorldGen::preset(&world_root);
                 let _ = data.prepare_decoration(preset, "minecraft:overworld");
             }
             let _ = horizon_client::structure_blocks::loot_data(

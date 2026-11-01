@@ -522,14 +522,25 @@ impl Game<'_> {
     /// streaming reads them.
     fn write_world_gen(&self, dir: &std::path::Path, props: &ServerProperties) -> Result<()> {
         let level_type = &props.level_type;
-        let preset = level_type_preset(level_type).unwrap_or_else(|| {
-            log_from(
-                "Worker-Main-1",
-                "WARN",
-                &format!("Failed to parse level-type {level_type}, defaulting to minecraft:normal"),
-            );
-            horizon_client::save::WorldPreset::Normal
-        });
+        let preset = parse_identifier(level_type)
+            .as_deref()
+            .and_then(horizon_client::save::WorldPreset::of_id)
+            .or_else(|| {
+                LEGACY_PRESET_NAMES
+                    .iter()
+                    .find(|(name, _)| *name == level_type)
+                    .map(|(_, preset)| *preset)
+            })
+            .unwrap_or_else(|| {
+                log_from(
+                    "Worker-Main-1",
+                    "WARN",
+                    &format!(
+                        "Failed to parse level-type {level_type}, defaulting to minecraft:normal"
+                    ),
+                );
+                horizon_client::save::WorldPreset::Normal
+            });
         let flat = preset == horizon_client::save::WorldPreset::Flat;
         let settings = if flat {
             let biomes = world_biomes!(self);
@@ -552,38 +563,6 @@ impl Game<'_> {
         };
         horizon_client::save::write_world_gen_settings_with(dir, props.seed, options, settings)
     }
-}
-
-/// `level-type`'s world preset (an identifier, or a legacy name such as
-/// `DEFAULT`); none when it names neither.
-fn level_type_preset(level_type: &str) -> Option<horizon_client::save::WorldPreset> {
-    parse_identifier(level_type)
-        .as_deref()
-        .and_then(horizon_client::save::WorldPreset::of_id)
-        .or_else(|| {
-            LEGACY_PRESET_NAMES
-                .iter()
-                .find(|(name, _)| *name == level_type)
-                .map(|(_, preset)| *preset)
-        })
-}
-
-/// The world this server opens, once `preflight` has read server.properties,
-/// and, for a world not made yet, the preset `write_world_gen` will give it:
-/// its data is read beside the game's resources (`preload_launch_world`).
-pub(super) fn launch_world() -> Option<(PathBuf, Option<&'static str>)> {
-    let setup = SETUP.get()?.lock().unwrap_or_else(|e| e.into_inner());
-    let setup = setup.as_ref()?;
-    let world = std::env::current_dir()
-        .ok()?
-        .join(&setup.universe)
-        .join(&setup.level_name);
-    let preset = (!world.join("level.dat").exists()).then(|| {
-        level_type_preset(&setup.props.level_type)
-            .unwrap_or(horizon_client::save::WorldPreset::Normal)
-            .id()
-    });
-    Some((world, preset))
 }
 
 /// PlayerList.BAN_DATE_FORMAT ("yyyy-MM-dd 'at' HH:mm:ss z"), in UTC.
