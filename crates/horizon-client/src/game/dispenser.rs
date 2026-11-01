@@ -67,6 +67,15 @@ fn y_rot(d: Direction) -> f32 {
         _ => 270.0,
     }
 }
+/// `DirectionalPlaceContext.getRotation`: `get2DDataValue() * 90`, so a
+/// vertical direction (`data2d = -1`) gives -90 where `toYRot` gives 270: the
+/// same horizontal facing, but the raw value a mod's placement hook reads.
+fn place_rotation(d: Direction) -> f32 {
+    match d {
+        Direction::Up | Direction::Down => -90.0,
+        _ => y_rot(d),
+    }
+}
 fn block_box(p: Pos) -> Aabb {
     Aabb::new(
         Vec3::new(f64::from(p.0), f64::from(p.1), f64::from(p.2)),
@@ -507,7 +516,7 @@ impl Game<'_> {
     /// Drop one item as DefaultDispenseItemBehavior does. For a dispenser hook:
     /// return this remainder in its answer with `CLICK`; the caller plays the
     /// answer's event and smoke once. A client, another dimension or an unloaded
-    /// chunk keeps the input stack unchanged. API @API:dispenser_behaviour@.
+    /// chunk keeps the input stack unchanged. API 67.
     #[allow(dead_code)]
     pub(super) fn native_dispense_default(
         &mut self,
@@ -1252,22 +1261,7 @@ impl Game<'_> {
                 BucketContent::Fluid(FluidKind::Water) | BucketContent::MobWater
             )
         {
-            // The water evaporates in a cloud of smoke.
-            let c = Self::center(target);
-            for _ in 0..8 {
-                let r = self.particles.random();
-                let p = [
-                    f64::from(target.0) + (r.next_double() * 2.0 - 1.0),
-                    f64::from(target.1) + (r.next_double() * 2.0 - 1.0),
-                    f64::from(target.2) + (r.next_double() * 2.0 - 1.0),
-                ];
-                let _ = c;
-                self.particles.add(
-                    &ParticleOptions::simple(ParticleType::LargeSmoke),
-                    p,
-                    [0.0; 3],
-                );
-            }
+            self.evaporation_smoke([target.0, target.1, target.2]);
         }
         if let Some(kind) = mob {
             // MobBucketItem.checkExtraContent: the mob (from the bucket, so
@@ -1581,7 +1575,7 @@ impl Game<'_> {
                 f64::from(front.2) + 0.5,
             ),
             inside: false,
-            yaw: y_rot(facing),
+            yaw: place_rotation(facing),
             pitch: 0.0,
             sneaking: false,
             item: stack.item.to_string(),
