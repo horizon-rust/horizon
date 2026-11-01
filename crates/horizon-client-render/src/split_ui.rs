@@ -387,10 +387,7 @@ impl SplitUi {
                 "switch",
                 &[
                     &tr("horizon.extras.splitscreen", &[]),
-                    &lang::get_or(
-                        if self.on { "options.on" } else { "options.off" },
-                        &tr(if self.on { "on" } else { "off" }, &[]),
-                    ),
+                    &tr(if self.on { "on" } else { "off" }, &[]),
                 ],
             ),
             Target::Switch,
