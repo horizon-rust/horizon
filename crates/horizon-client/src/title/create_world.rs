@@ -505,6 +505,22 @@ impl Title {
             }
             // The label sits 3 pixels lower on unselected tabs.
             let top = if selected { 0.0 } else { 3.0 };
+            // MenuTabButton.renderLabel: margin 1, a label wider than the tab
+            // scrolls with the clock inside it.
+            if ui::label_overflows(atlas, &label, tw - 2.0) {
+                ui::scrolling_label(
+                    batch,
+                    atlas,
+                    &label,
+                    x + 1.0,
+                    x + tw - 1.0,
+                    top,
+                    TAB_BAR,
+                    u32::MAX,
+                    crate::hud_overlays::now_ms(),
+                );
+                continue;
+            }
             batch.text_styled(
                 atlas,
                 &label,

@@ -461,6 +461,44 @@ pub(crate) struct Button {
     /// `SpriteIconButton.TextAndIcon`: the icon at the right end, the text centred.
     trailing: Option<(&'static str, f32)>,
 }
+impl Button {
+    /// `AbstractButton.extractDefaultLabel` (`SpriteIconButton.TextAndIcon`
+    /// when `trailing` is set, which keeps the icon's room clear): a label that
+    /// fits is centred in the button; a wider one is clipped to the button and
+    /// scrolls with the clock (`now_ms`) as `ActiveTextCollector.defaultScrollingHelper`
+    /// does, instead of spilling over the neighbouring buttons.
+    fn draw_label(&self, atlas: &HudAtlas, batch: &mut HudBatch, color: u32, now_ms: i64) {
+        let left = self.x + 2.0;
+        let right = match self.trailing {
+            Some((_, size)) => self.x + self.w - size - 4.0,
+            None => self.x + self.w - 2.0,
+        };
+        let label = Text::literal(self.label.clone());
+        if crate::ui::label_overflows(atlas, &label, right - left) {
+            crate::ui::scrolling_label(
+                batch,
+                atlas,
+                &label,
+                left,
+                right,
+                self.y,
+                self.y + 20.0,
+                color,
+                now_ms,
+            );
+            return;
+        }
+        let tw = HudBatch::text_width(atlas, &self.label);
+        batch.text(
+            atlas,
+            &self.label,
+            self.x + (self.w / 2.0).floor() - (tw.ceil() / 2.0).floor(),
+            self.y + 6.0,
+            color,
+            true,
+        );
+    }
+}
 /// Java String.hashCode for text seeds (WorldOptions.parseSeed).
 pub fn parse_seed(text: &str) -> Option<i64> {
     let t = text.trim();
@@ -2991,15 +3029,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 );
                 continue;
             }
-            let tw = HudBatch::text_width(atlas, &b.label);
-            batch.text(
-                atlas,
-                &b.label,
-                b.x + (b.w / 2.0).floor() - (tw.ceil() / 2.0).floor(),
-                b.y + 6.0,
-                color,
-                true,
-            );
+            b.draw_label(atlas, batch, color, crate::hud_overlays::now_ms());
             if let Some((icon, size)) = b.trailing {
                 // TextAndIcon: `x + width - spriteWidth - 2`, centred in the height.
                 batch.sprite_scaled(
@@ -4533,6 +4563,120 @@ mod classic_tests {
                     .iter()
                     .any(|v| v.color == rgba(255, 255, 0, 255))
             );
+        }
+    }
+}
+
+/// The labels of the title screens' buttons (Main Menu, Select World, Create
+/// World, Multiplayer) are clipped to their button and scroll when wider than
+/// it, on a fixed clock.
+#[cfg(test)]
+mod button_label_tests {
+    use super::*;
+
+    fn atlas() -> HudAtlas {
+        HudAtlas::build(Path::new("/nonexistent/horizon-test-assets")).unwrap()
+    }
+    fn button(label: &str, w: f32, trailing: Option<(&'static str, f32)>) -> Button {
+        Button {
+            x: 30.0,
+            y: 40.0,
+            w,
+            label: label.into(),
+            enabled: true,
+            id: 0,
+            icon: None,
+            trailing,
+        }
+    }
+    /// The x of every vertex of the label's text.
+    fn label_xs(atlas: &HudAtlas, b: &Button, now_ms: i64) -> Vec<f32> {
+        let mut batch = HudBatch::new([640, 480]);
+        b.draw_label(atlas, &mut batch, u32::MAX, now_ms);
+        batch
+            .vertices
+            .iter()
+            .filter(|v| v.text == 1)
+            .map(|v| v.pos[0])
+            .collect()
+    }
+    /// A label of the first `n` letters of a text with no repeating pattern.
+    fn label(n: usize) -> String {
+        "Bezpostrzydnie połōnczynie Direct Connection Join Server"
+            .chars()
+            .take(n)
+            .collect()
+    }
+    fn width(atlas: &HudAtlas, label: &str) -> i32 {
+        HudBatch::text_width(atlas, label).ceil() as i32
+    }
+
+    /// A label wider than its button (the Multiplayer footer's 100 px Join
+    /// Server in Hindi, Create World's 150 px World Type in Somali) stays in
+    /// the button, `x + 2` to `x + w - 2`, at every time; before it was drawn
+    /// whole, centred, over its neighbours.
+    #[test]
+    fn a_label_wider_than_its_button_stays_inside_it_and_scrolls() {
+        let atlas = atlas();
+        for (w, n) in [(100.0, 30), (150.0, 40), (71.0, 20)] {
+            let text = label(n);
+            assert!(width(&atlas, &text) as f32 > w - 4.0, "{text}");
+            let b = button(&text, w, None);
+            let mut seen = std::collections::BTreeSet::new();
+            for now_ms in (0..40_000).step_by(250) {
+                let xs = label_xs(&atlas, &b, now_ms);
+                assert!(!xs.is_empty());
+                for x in &xs {
+                    assert!(
+                        (30.0 + 2.0..=30.0 + w - 2.0).contains(x),
+                        "{x} outside {w} px button at {now_ms} ms"
+                    );
+                }
+                seen.insert(xs.iter().map(|x| x.to_bits()).collect::<Vec<_>>());
+            }
+            assert!(seen.len() > 3, "the label hardly moves");
+        }
+    }
+
+    /// A label that fits is drawn where it always was, whatever the time.
+    #[test]
+    fn a_label_that_fits_is_drawn_as_before() {
+        let atlas = atlas();
+        for text in ["Singleplayer", "Back", "Done", ""] {
+            let b = button(text, 98.0, None);
+            let mut before = HudBatch::new([640, 480]);
+            let tw = HudBatch::text_width(&atlas, text);
+            before.text(
+                &atlas,
+                text,
+                b.x + (b.w / 2.0).floor() - (tw.ceil() / 2.0).floor(),
+                b.y + 6.0,
+                u32::MAX,
+                true,
+            );
+            let expected: Vec<f32> = before
+                .vertices
+                .iter()
+                .filter(|v| v.text == 1)
+                .map(|v| v.pos[0])
+                .collect();
+            for now_ms in [0, 700, 31_337] {
+                assert_eq!(label_xs(&atlas, &b, now_ms), expected, "{text:?}");
+            }
+        }
+    }
+
+    /// A button with an icon at its right end (`SpriteIconButton.TextAndIcon`)
+    /// scrolls its label in `x + 2 ..= x + w - icon - 4`.
+    #[test]
+    fn a_label_beside_an_icon_keeps_clear_of_the_icon() {
+        let atlas = atlas();
+        let text = label(40);
+        let b = button(&text, 150.0, Some(("icon/music_notes", 16.0)));
+        for now_ms in (0..40_000).step_by(500) {
+            for x in label_xs(&atlas, &b, now_ms) {
+                assert!((32.0..=30.0 + 150.0 - 16.0 - 4.0).contains(&x), "{x}");
+            }
         }
     }
 }

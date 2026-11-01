@@ -349,7 +349,109 @@ pub fn centered_text(
         batch.text_styled(atlas, &shown, x + 1.0, y, color, true);
     }
 }
-/// Button (AbstractButton): nine-slice sprite plus the centred label.
+/// Whether `text` is wider than the `avail` pixels a widget leaves for its
+/// label: `ActiveTextCollector.defaultScrollingHelper` then scrolls it
+/// instead of centring it.
+pub fn label_overflows(atlas: &HudAtlas, text: &Text, avail: f32) -> bool {
+    crate::screen_draw::Measure(&atlas.font).width(text) > avail.floor() as i32
+}
+/// Draws what `screen_draw`'s scrolling helpers pushed into `draws` (one
+/// scissored text, or one centred text) in `color` (an ABGR as `rgba` makes
+/// it, which `Draw::Text` has no room for). The scissor is applied to the
+/// text's own quads (`HudBatch::clip_since`), so a list that clips the whole
+/// screen's quads afterwards (Options, Multiplayer, ...) intersects with it,
+/// which `screen_draw::paint` does not do.
+fn paint_scrolled(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    draws: &[crate::screen_draw::Draw],
+    color: u32,
+) {
+    use crate::screen_draw::Draw;
+    let mut clip = None;
+    for draw in draws {
+        match draw {
+            Draw::Text { text, x, y, .. } => {
+                batch.text_styled(atlas, text, *x as f32, *y as f32, color, true);
+            }
+            Draw::Scissor { x0, y0, x1, y1 } => {
+                clip = Some((batch.vertices.len(), [*x0, *y0, *x1, *y1]));
+            }
+            Draw::NoScissor => {
+                if let Some((start, [x0, y0, x1, y1])) = clip.take() {
+                    batch.clip_since(start, x0 as f32, y0 as f32, x1 as f32, y1 as f32);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+/// `ActiveTextCollector.acceptScrollingWithDefaultCenter` for a label wider
+/// than `left..right` (`screen_draw::scrolling_with_default_center`):
+/// left-aligned, clipped to `[left, right] x [top, bottom]` and slid back and
+/// forth with the clock (`now_ms`).
+#[allow(clippy::too_many_arguments)]
+pub fn scrolling_label(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    text: &Text,
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
+    color: u32,
+    now_ms: i64,
+) {
+    let mut draws = Vec::new();
+    crate::screen_draw::scrolling_with_default_center(
+        &mut draws,
+        &crate::screen_draw::Measure(&atlas.font),
+        text,
+        left.floor() as i32,
+        right.floor() as i32,
+        top.floor() as i32,
+        bottom.floor() as i32,
+        now_ms,
+    );
+    paint_scrolled(batch, atlas, &draws, color);
+}
+/// `AbstractWidget.extractScrollingStringOverContents` for the widget at
+/// `x, y, w, h` with the given `margin` (2 for buttons and sliders, 1 for
+/// tabs): a label that fits is centred as [`centered_text`] does, with its
+/// top at `fit_y`; a wider one scrolls with the clock
+/// (`screen_draw::scrolling_string_over_contents`).
+#[allow(clippy::too_many_arguments)]
+pub fn widget_label(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    text: &Text,
+    (x, y, w, h): (f32, f32, f32, f32),
+    margin: f32,
+    fit_y: f32,
+    color: u32,
+    now_ms: i64,
+) {
+    let (left, right) = (x + margin, x + w - margin);
+    if !label_overflows(atlas, text, right - left) {
+        centered_text(batch, atlas, text, left, fit_y, right - left, color);
+        return;
+    }
+    let mut draws = Vec::new();
+    crate::screen_draw::scrolling_string_over_contents(
+        &mut draws,
+        &crate::screen_draw::Measure(&atlas.font),
+        text,
+        x.floor() as i32,
+        y.floor() as i32,
+        w.floor() as i32,
+        h.floor() as i32,
+        margin as i32,
+        now_ms,
+    );
+    paint_scrolled(batch, atlas, &draws, color);
+}
+/// Button (`AbstractButton.extractDefaultSprite` and `AbstractButton.extractDefaultLabel`):
+/// nine-slice sprite plus the label, centred, or scrolling when wider than the button.
 pub fn button(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -361,11 +463,49 @@ pub fn button(
     active: bool,
     hover: bool,
 ) {
-    button_as(batch, atlas, x, y, w, h, label, active, hover, |rect| {
-        crate::widgets::Narratable::button(label.plain(), rect, active)
-    });
+    button_at(
+        batch,
+        atlas,
+        x,
+        y,
+        w,
+        h,
+        label,
+        active,
+        hover,
+        crate::hud_overlays::now_ms(),
+    );
 }
-/// A [`button`] that vanilla narrates as another widget (a `CycleButton`, a
+/// [`button`] at the time `now_ms` (`Util.getMillis`), which moves a label
+/// wider than the button.
+#[allow(clippy::too_many_arguments)]
+pub fn button_at(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    label: &Text,
+    active: bool,
+    hover: bool,
+    now_ms: i64,
+) {
+    button_as_at(
+        batch,
+        atlas,
+        x,
+        y,
+        w,
+        h,
+        label,
+        active,
+        hover,
+        now_ms,
+        |rect| crate::widgets::Narratable::button(label.plain(), rect, active),
+    );
+}
+/// A [`button`] (`CycleButton.extractContents` and the like) that vanilla narrates as another widget (a `CycleButton`, a
 /// `LockIconButton`): `narration` builds what it records from its rectangle,
 /// and only while the narrator records.
 #[allow(clippy::too_many_arguments)]
@@ -379,6 +519,35 @@ pub fn button_as(
     label: &Text,
     active: bool,
     hover: bool,
+    narration: impl FnOnce([f32; 4]) -> crate::widgets::Narratable,
+) {
+    button_as_at(
+        batch,
+        atlas,
+        x,
+        y,
+        w,
+        h,
+        label,
+        active,
+        hover,
+        crate::hud_overlays::now_ms(),
+        narration,
+    );
+}
+/// [`button_as`] at the time `now_ms`.
+#[allow(clippy::too_many_arguments)]
+pub fn button_as_at(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    label: &Text,
+    active: bool,
+    hover: bool,
+    now_ms: i64,
     narration: impl FnOnce([f32; 4]) -> crate::widgets::Narratable,
 ) {
     crate::widgets::record(&label.plain(), [x, y, w, h], active);
@@ -397,14 +566,16 @@ pub fn button_as(
     } else {
         rgba(160, 160, 160, 255)
     };
-    centered_text(
+    // `AbstractButton.extractDefaultLabel`: scrolls when wider than the button.
+    widget_label(
         batch,
         atlas,
         label,
-        x + 2.0,
+        (x, y, w, h),
+        2.0,
         y + ((h - 8.0) / 2.0).floor(),
-        w - 4.0,
         color,
+        now_ms,
     );
 }
 /// AbstractSliderButton: track, 8px handle at `value` (0..1) and the label.
@@ -441,6 +612,39 @@ pub fn slider_ext(
     active: bool,
     dragging: bool,
 ) {
+    slider_ext_at(
+        batch,
+        atlas,
+        x,
+        y,
+        w,
+        label,
+        value,
+        hover,
+        focused,
+        can_change_value,
+        active,
+        dragging,
+        crate::hud_overlays::now_ms(),
+    );
+}
+/// [`slider_ext`] at the time `now_ms`, which moves a label wider than the slider.
+#[allow(clippy::too_many_arguments)]
+pub fn slider_ext_at(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    x: f32,
+    y: f32,
+    w: f32,
+    label: &Text,
+    value: f32,
+    hover: bool,
+    focused: bool,
+    can_change_value: bool,
+    active: bool,
+    dragging: bool,
+    now_ms: i64,
+) {
     let kind = crate::widgets::Kind::Slider {
         value,
         track: [x + 4.0, w - 8.0],
@@ -471,7 +675,17 @@ pub fn slider_ext(
     } else {
         rgba(160, 160, 160, 255)
     };
-    centered_text(batch, atlas, label, x + 2.0, y + 6.0, w - 4.0, color);
+    // `AbstractSliderButton.extractWidgetRenderState`: the label scrolls over the handle.
+    widget_label(
+        batch,
+        atlas,
+        label,
+        (x, y, w, 20.0),
+        2.0,
+        y + 6.0,
+        color,
+        now_ms,
+    );
 }
 #[cfg(test)]
 fn slider_sprites(hover: bool, active: bool, dragging: bool) -> (&'static str, &'static str) {
@@ -1780,5 +1994,321 @@ mod tests {
         let mut v = "stone".to_string();
         assert!(!delete_words(&mut v, 1));
         assert_eq!(v, "stone");
+    }
+}
+
+/// `AbstractButton`, `AbstractSliderButton` and tab labels wider than their
+/// widget scroll (`ActiveTextCollector.defaultScrollingHelper`), on a fixed
+/// clock.
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+
+    fn atlas() -> HudAtlas {
+        HudAtlas::build(Path::new("/nonexistent/horizon-test-assets")).unwrap()
+    }
+    /// The x of every text vertex in a batch (the glyphs and their shadows).
+    fn text_xs(batch: &HudBatch) -> Vec<f32> {
+        batch
+            .vertices
+            .iter()
+            .filter(|v| v.text == 1)
+            .map(|v| v.pos[0])
+            .collect()
+    }
+    fn text_colors(batch: &HudBatch) -> Vec<u32> {
+        batch
+            .vertices
+            .iter()
+            .filter(|v| v.text == 1)
+            .map(|v| v.color)
+            .collect()
+    }
+    fn width(atlas: &HudAtlas, label: &Text) -> i32 {
+        crate::screen_draw::Measure(&atlas.font).width(label)
+    }
+    /// A label of the first `n` letters of a text with no repeating pattern
+    /// (so that every position of the scroll is a different picture).
+    fn label(n: usize) -> Text {
+        Text::literal(
+            "Prefer Vulkan (Experimental) Simulation Distance: 32 Chunks > Left Control <"
+                .chars()
+                .take(n)
+                .collect::<String>(),
+        )
+    }
+    fn button_text(atlas: &HudAtlas, label: &Text, w: f32, active: bool, now_ms: i64) -> HudBatch {
+        let mut batch = HudBatch::new([640, 480]);
+        button_at(
+            &mut batch, atlas, 10.0, 20.0, w, 20.0, label, active, false, now_ms,
+        );
+        batch
+    }
+    fn slider_text(atlas: &HudAtlas, label: &Text, w: f32, now_ms: i64) -> HudBatch {
+        let mut batch = HudBatch::new([640, 480]);
+        slider_ext_at(
+            &mut batch, atlas, 10.0, 20.0, w, label, 0.5, false, false, false, true, false, now_ms,
+        );
+        batch
+    }
+    /// Every text vertex lies in `[x + margin, x + w - margin]`.
+    fn assert_inside(batch: &HudBatch, x: f32, w: f32, margin: f32) {
+        let xs = text_xs(batch);
+        assert!(!xs.is_empty(), "no text was drawn");
+        for v in xs {
+            assert!(
+                v >= x + margin && v <= x + w - margin,
+                "text at {v} leaves [{}, {}]",
+                x + margin,
+                x + w - margin
+            );
+        }
+    }
+    /// A label 180 px wide, 34 px more than a 150 px widget leaves: its
+    /// scroll takes 17 s a way and back.
+    fn wide_label(atlas: &HudAtlas) -> Text {
+        let n = (1..80).find(|n| width(atlas, &label(*n)) >= 180).unwrap();
+        label(n)
+    }
+    /// What `defaultScrollingHelper` draws for `label` in a 150 px widget at
+    /// (10, 20): the label unclipped at `left - scroll_offset`, then clipped to
+    /// the widget's inside. The vertices are compared with the widget's own,
+    /// whatever the font (the test font gives every letter one width, so
+    /// pictures a multiple of a letter apart look alike).
+    fn scrolled_reference(atlas: &HudAtlas, label: &Text, color: u32, now_ms: i64) -> Vec<f32> {
+        let overflow = width(atlas, label) - 146;
+        let mut batch = HudBatch::new([640, 480]);
+        let left = 12.0 - crate::screen_draw::scroll_offset(overflow, now_ms) as f32;
+        batch.text_styled(atlas, label, left, 26.0, color, true);
+        batch.clip_since(0, 12.0, 20.0, 158.0, 40.0);
+        text_xs(&batch)
+    }
+    /// How many different pictures the label makes over 40 seconds.
+    fn pictures(draw: impl Fn(i64) -> HudBatch) -> usize {
+        (0..40_000)
+            .step_by(250)
+            .map(|now_ms| {
+                text_xs(&draw(now_ms))
+                    .iter()
+                    .map(|x| x.to_bits())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    }
+    /// The widest label that fits a 150 px button (146 px), and the next one.
+    fn fit_and_overflow(atlas: &HudAtlas) -> (Text, Text) {
+        let n = (1..60)
+            .take_while(|n| width(atlas, &label(*n)) <= 146)
+            .count();
+        (label(n), label(n + 1))
+    }
+
+    /// A button label wider than the button stays inside it and slides with
+    /// the clock; before, it was cut by characters and never moved.
+    #[test]
+    fn a_button_label_wider_than_the_button_scrolls_inside_it() {
+        let atlas = atlas();
+        let wide = wide_label(&atlas);
+        assert!(width(&atlas, &wide) > 146);
+        for now_ms in (0..40_000).step_by(250) {
+            let batch = button_text(&atlas, &wide, 150.0, true, now_ms);
+            assert_inside(&batch, 10.0, 150.0, 2.0);
+            assert_eq!(
+                text_xs(&batch),
+                scrolled_reference(&atlas, &wide, u32::MAX, now_ms),
+                "{now_ms} ms"
+            );
+        }
+        assert!(pictures(|t| button_text(&atlas, &wide, 150.0, true, t)) > 3);
+        // At time 0 the label rests at its far end, half a cycle later at its
+        // start (`scroll_offset`): the two pictures differ.
+        assert_ne!(
+            text_xs(&button_text(&atlas, &wide, 150.0, true, 0)),
+            text_xs(&button_text(&atlas, &wide, 150.0, true, 1500))
+        );
+    }
+
+    /// Greyed-out buttons keep their grey while scrolling.
+    #[test]
+    fn a_scrolling_label_keeps_the_disabled_colour() {
+        let atlas = atlas();
+        let wide = wide_label(&atlas);
+        let colors = text_colors(&button_text(&atlas, &wide, 150.0, false, 700));
+        let grey = rgba(160, 160, 160, 255);
+        assert!(colors.contains(&grey), "{colors:x?}");
+        assert!(!colors.contains(&u32::MAX), "{colors:x?}");
+        // And it scrolls: the grey label is where the reference puts it.
+        assert_eq!(
+            text_xs(&button_text(&atlas, &wide, 150.0, false, 700)),
+            scrolled_reference(&atlas, &wide, grey, 700)
+        );
+        assert_ne!(
+            text_xs(&button_text(&atlas, &wide, 150.0, false, 0)),
+            text_xs(&button_text(&atlas, &wide, 150.0, false, 1500))
+        );
+    }
+
+    /// A slider label too wide for the slider scrolls inside it, over the
+    /// handle (`AbstractSliderButton.extractWidgetRenderState`).
+    #[test]
+    fn a_slider_label_wider_than_the_slider_scrolls_inside_it() {
+        let atlas = atlas();
+        let wide = wide_label(&atlas);
+        for now_ms in (0..40_000).step_by(250) {
+            let batch = slider_text(&atlas, &wide, 150.0, now_ms);
+            assert_inside(&batch, 10.0, 150.0, 2.0);
+            assert_eq!(
+                text_xs(&batch),
+                scrolled_reference(&atlas, &wide, u32::MAX, now_ms),
+                "{now_ms} ms"
+            );
+        }
+        assert!(pictures(|t| slider_text(&atlas, &wide, 150.0, t)) > 3);
+    }
+
+    /// The box is 146 px wide: the widest label that fits is centred as
+    /// `centered_text` put it and does not move; one letter more scrolls.
+    #[test]
+    fn a_label_that_fits_stays_centred_and_one_that_overflows_by_a_letter_scrolls() {
+        let atlas = atlas();
+        let (fits, overflows) = fit_and_overflow(&atlas);
+        assert!(width(&atlas, &fits) <= 146 && width(&atlas, &overflows) > 146);
+        let mut centred = HudBatch::new([640, 480]);
+        centered_text(&mut centred, &atlas, &fits, 12.0, 26.0, 146.0, u32::MAX);
+        let centred = text_xs(&centred);
+        assert!(!centred.is_empty());
+        assert_eq!(pictures(|t| button_text(&atlas, &fits, 150.0, true, t)), 1);
+        assert_eq!(pictures(|t| slider_text(&atlas, &fits, 150.0, t)), 1);
+        assert_eq!(
+            text_xs(&button_text(&atlas, &fits, 150.0, true, 0)),
+            centred
+        );
+        assert_eq!(text_xs(&slider_text(&atlas, &fits, 150.0, 0)), centred);
+        assert!(pictures(|t| button_text(&atlas, &overflows, 150.0, true, t)) > 1);
+        assert!(pictures(|t| slider_text(&atlas, &overflows, 150.0, t)) > 1);
+    }
+
+    /// The usual short labels are drawn exactly as before.
+    #[test]
+    fn short_labels_are_drawn_as_before() {
+        let atlas = atlas();
+        for text in ["Done", "Back", "", "Video Settings..."] {
+            let text = Text::literal(text);
+            let mut before = HudBatch::new([640, 480]);
+            centered_text(&mut before, &atlas, &text, 12.0, 26.0, 146.0, u32::MAX);
+            for now_ms in [0, 999, 123_456] {
+                let batch = button_text(&atlas, &text, 150.0, true, now_ms);
+                assert_eq!(text_xs(&batch), text_xs(&before), "{text:?}");
+            }
+        }
+    }
+
+    /// A tab's margin is 1: `MenuTabBar.MenuTabButton.renderLabel`.
+    #[test]
+    fn a_tab_label_wider_than_the_tab_scrolls_inside_margin_1() {
+        let atlas = atlas();
+        let wide = wide_label(&atlas);
+        let draw = |now_ms| {
+            let mut batch = HudBatch::new([640, 480]);
+            widget_label(
+                &mut batch,
+                &atlas,
+                &wide,
+                (10.0, 0.0, 124.0, 24.0),
+                1.0,
+                10.0,
+                u32::MAX,
+                now_ms,
+            );
+            batch
+        };
+        assert!(width(&atlas, &wide) > 122);
+        for now_ms in (0..40_000).step_by(500) {
+            assert_inside(&draw(now_ms), 10.0, 124.0, 1.0);
+        }
+        assert!(pictures(draw) > 3);
+    }
+
+    /// A scrolling list (Options, Multiplayer, ...) clips its rows' quads
+    /// after drawing them: the label's own clip and the list's intersect,
+    /// which `screen_draw::paint` would not do (it replaces the scissor).
+    #[test]
+    fn a_scrolling_label_inside_a_clipped_list_is_clipped_to_both() {
+        let atlas = atlas();
+        let wide = wide_label(&atlas);
+        for now_ms in (0..40_000).step_by(1000) {
+            // The list shows only x in 60..100 and y from 25 down, cutting the
+            // button's label (x 12..158, y 20..40) on three sides.
+            let mut batch = button_text(&atlas, &wide, 150.0, true, now_ms);
+            batch.clip_since(0, 60.0, 25.0, 100.0, 200.0);
+            let (xs, ys): (Vec<f32>, Vec<f32>) = batch
+                .vertices
+                .iter()
+                .filter(|v| v.text == 1)
+                .map(|v| (v.pos[0], v.pos[1]))
+                .unzip();
+            assert!(!xs.is_empty());
+            assert!(xs.iter().all(|x| (60.0..=100.0).contains(x)), "{xs:?}");
+            assert!(ys.iter().all(|y| *y >= 25.0), "{ys:?}");
+        }
+    }
+
+    /// A box with next to no room (a 1 to 4 px wide button) draws without a
+    /// panic, whatever the label: `scrolling_text` scissors it to nothing.
+    #[test]
+    fn a_label_in_a_box_with_no_room_does_not_panic() {
+        let atlas = atlas();
+        for w in [0.0, 1.0, 3.0, 4.0, 5.0] {
+            for text in [label(1), label(5), Text::literal("")] {
+                let _ = button_text(&atlas, &text, w, true, 0);
+                let _ = slider_text(&atlas, &text, w, 0);
+            }
+        }
+    }
+
+    /// The cases of the issue, in English, with the real font and a local
+    /// `Language` (the global language stays as it was): Graphics API (216 px
+    /// in a 150 px button), Simulation Distance (150 px in a 150 px slider)
+    /// and a key button (`> Left Control <`, 80 px in 75) scroll inside their
+    /// boxes.
+    #[test]
+    #[ignore = "requires prepared resources in HORIZON_TEST_RESOURCES or .local/horizon-client/26.3"]
+    fn the_english_cases_of_the_issue_scroll_inside_their_widgets() {
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local/horizon-client/26.3")
+            });
+        let atlas = HudAtlas::build(&root).unwrap();
+        let language = crate::lang::Language::load(&[&root], "en_us");
+        let get = |k: &str| language.get(k).unwrap().to_owned();
+        let caption = |k: &str, value: &str| Text::literal(format!("{}: {value}", get(k)));
+        let graphics = caption("options.graphicsApi", &get("options.graphicsApi.vulkan"));
+        let simulation = caption(
+            "options.simulationDistance",
+            &get("options.chunks").replace("%s", "32"),
+        );
+        let key = Text::literal(format!("> {} <", get("key.keyboard.left.control")));
+        assert_eq!(width(&atlas, &graphics), 216);
+        assert_eq!(width(&atlas, &simulation), 150);
+        assert_eq!(width(&atlas, &key), 80);
+        for (text, w, is_slider) in [
+            (graphics, 150.0, false),
+            (simulation, 150.0, true),
+            (key, 75.0, false),
+        ] {
+            let draw = |now_ms| {
+                if is_slider {
+                    slider_text(&atlas, &text, w, now_ms)
+                } else {
+                    button_text(&atlas, &text, w, true, now_ms)
+                }
+            };
+            for now_ms in (0..12_000).step_by(100) {
+                assert_inside(&draw(now_ms), 10.0, w, 2.0);
+            }
+            assert!(pictures(draw) > 4, "{text:?} hardly moves");
+        }
     }
 }
