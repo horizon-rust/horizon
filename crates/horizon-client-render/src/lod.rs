@@ -970,7 +970,7 @@ impl Lod {
                     thread::Builder::new()
                         .name("Far meshing".into())
                         .spawn(move || {
-                            horizon_threads::behind_server();
+                            horizon_threads::far_terrain_current();
                             let mut mesher = mesh::Mesher::default();
                             loop {
                                 let job = {
@@ -1056,7 +1056,7 @@ impl Lod {
                     .name("Far terrain".into())
                     .spawn(move || {
                         // Ticks and frames come first (horizon_threads).
-                        horizon_threads::behind_server();
+                        horizon_threads::far_terrain_current();
                         let mut sampler = source.sampler();
                         let count = sampling_threads(cores);
                         let mut sampling = Vec::new();
@@ -1070,7 +1070,7 @@ impl Lod {
                                 thread::Builder::new()
                                     .name("Far sampling".into())
                                     .spawn(move || {
-                                        horizon_threads::behind_server();
+                                        horizon_threads::far_terrain_current();
                                         loop {
                                             let key = {
                                                 let mut jobs = shared.jobs.lock().unwrap();
