@@ -765,10 +765,13 @@ mod tests {
             assert_eq!(g.lod_distance_on(&discrete), distance);
         }
         assert!(
-            crate::graphics_ui::rows(crate::graphics_ui::Level::Simple)
-                .iter()
-                .any(|row| matches!(row, crate::graphics_ui::Row::Setting(s)
-                    if s.text.contains(&format!("{INTEGRATED_LOD_DISTANCE} chunks")))),
+            crate::graphics_ui::pages()
+                .into_iter()
+                .flat_map(|p| p.groups)
+                .flatten()
+                .any(|s| s
+                    .text
+                    .contains(&format!("{INTEGRATED_LOD_DISTANCE} chunks"))),
             "the LOD Distance description names the cap"
         );
     }

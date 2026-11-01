@@ -34,6 +34,7 @@ pub mod font;
 pub mod gfx;
 pub mod graphics;
 pub mod graphics_style;
+pub mod sodium_style;
 pub mod graphics_ui;
 pub mod hdr_calibration;
 pub mod hud;

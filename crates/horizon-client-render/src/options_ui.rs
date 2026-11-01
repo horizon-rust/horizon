@@ -1903,6 +1903,10 @@ impl OptionsUi {
         self.settings_search.focused
             && matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds)
     }
+    /// Whether the graphics screen's search bar has the focus.
+    fn graphics_search_active(&self) -> bool {
+        Self::graphics_level(self.page()).is_some() && self.graphics.search.focused
+    }
     /// Whether the resource pack screen is open (not Create World's data packs on the same
     /// page).
     pub fn resource_packs_open(&self) -> bool {
@@ -1934,7 +1938,7 @@ impl OptionsUi {
                     .pack_screen
                     .as_ref()
                     .is_some_and(|p| p.search_focused()),
-                _ => self.settings_search_active(),
+                _ => self.settings_search_active() || self.graphics_search_active(),
             }
     }
     /// Jump straight to a page (control socket / tests).
@@ -3571,22 +3575,10 @@ impl OptionsUi {
                     Action::ButtonClick => events.push(Event::ButtonClick),
                     Action::Changed => events.push(Event::Changed),
                     Action::SliderDrag => events.push(Event::SliderDrag),
-                    Action::OpenAdvanced => self.push(Page::GraphicsAdvanced),
-                    Action::OpenHdr => self.push(Page::GraphicsHdr),
                     Action::BindKey(name) => self.selected_key = Some(name),
                     Action::Calibrate => {
                         self.calibration = Some(crate::hdr_calibration::Calibration::new(s));
                         self.push(Page::HdrCalibration);
-                    }
-                    Action::OpenSimple => {
-                        if self.stack.len() >= 2
-                            && self.stack[self.stack.len() - 2] == Page::Graphics
-                        {
-                            events.extend(self.back(s));
-                        } else {
-                            self.stack.pop();
-                            self.push(Page::Graphics);
-                        }
                     }
                     Action::Done => events.extend(self.back(s)),
                 }
@@ -3971,18 +3963,6 @@ impl OptionsUi {
                     Action::ButtonClick => events.push(Event::ButtonClick),
                     Action::Changed => events.push(Event::Changed),
                     Action::SliderDrag => events.push(Event::SliderDrag),
-                    Action::OpenAdvanced => self.push(Page::GraphicsAdvanced),
-                    Action::OpenHdr => self.push(Page::GraphicsHdr),
-                    Action::OpenSimple => {
-                        if self.stack.len() >= 2
-                            && self.stack[self.stack.len() - 2] == Page::Graphics
-                        {
-                            events.extend(self.back(s));
-                        } else {
-                            self.stack.pop();
-                            self.push(Page::Graphics);
-                        }
-                    }
                     Action::BindKey(name) => self.selected_key = Some(name),
                     Action::Calibrate => {
                         self.calibration = Some(crate::hdr_calibration::Calibration::new(s));
@@ -4252,6 +4232,8 @@ impl OptionsUi {
         } else if self.settings_search_active() {
             self.settings_search.insert_text(text);
             self.scroll = 0.0;
+        } else if self.graphics_search_active() {
+            self.graphics.search.insert_text(text);
         }
     }
     /// Ctrl+A/C/V/X in the language or pack search box; false when neither
@@ -4284,6 +4266,10 @@ impl OptionsUi {
             if self.settings_search.shortcut(shortcut, clipboard) {
                 self.scroll = 0.0;
             }
+            return true;
+        }
+        if self.graphics_search_active() {
+            self.graphics.search.shortcut(shortcut, clipboard);
             return true;
         }
         false
@@ -4392,6 +4378,9 @@ impl OptionsUi {
 
         if let Some(level) = Self::graphics_level(self.page()) {
             use crate::graphics_ui::Action;
+            if self.graphics.search_key(key, false, shift, text) {
+                return Vec::new();
+            }
             let size = (self.size.0.max(480.0), self.size.1.max(240.0));
             let fb = [self.framebuffer[0].max(480), self.framebuffer[1].max(240)];
             let (actions, handled) = self.graphics.key_modifiers(level, s, key, shift, size, fb);
@@ -4401,18 +4390,6 @@ impl OptionsUi {
                     Action::ButtonClick => events.push(Event::ButtonClick),
                     Action::Changed => events.push(Event::Changed),
                     Action::SliderDrag => events.push(Event::SliderDrag),
-                    Action::OpenAdvanced => self.push(Page::GraphicsAdvanced),
-                    Action::OpenHdr => self.push(Page::GraphicsHdr),
-                    Action::OpenSimple => {
-                        if self.stack.len() >= 2
-                            && self.stack[self.stack.len() - 2] == Page::Graphics
-                        {
-                            events.extend(self.back(s));
-                        } else {
-                            self.stack.pop();
-                            self.push(Page::Graphics);
-                        }
-                    }
                     Action::BindKey(name) => self.selected_key = Some(name),
                     Action::Calibrate => {
                         self.calibration = Some(crate::hdr_calibration::Calibration::new(s));
