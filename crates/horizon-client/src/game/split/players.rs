@@ -9,7 +9,7 @@ fn on_profiles(game: &Game<'_>) -> bool {
 }
 
 /// An offline profile on an online-mode server: the session service knows no such player.
-const ONLINE_ONLY: &str = "This server is in online mode: offline profiles can't join it, each player needs its own Minecraft account.";
+const ONLINE_ONLY: &str = "horizon.splitscreen.online_only";
 
 /// Why a player's game left its server, when the server said (its Disconnected or error screen).
 fn turned_away(game: &Game<'_>) -> Option<String> {
@@ -21,7 +21,7 @@ fn turned_away(game: &Game<'_>) -> Option<String> {
     };
     // An online-mode server: the other players have no Minecraft account of their own here.
     Some(if why.contains("verify username") {
-        "This server needs each player's own Minecraft account".to_owned()
+        horizon_client::lang::tr("horizon.splitscreen.own_account", &[])
     } else {
         why
     })
@@ -104,7 +104,7 @@ impl Split<'_> {
             return Err(format!("{name} is already playing."));
         }
         if self.p1_server().is_some() && self.host.online_server() {
-            return Err(ONLINE_ONLY.to_owned());
+            return Err(horizon_client::lang::tr(ONLINE_ONLY, &[]));
         }
         Ok(())
     }

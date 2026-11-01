@@ -360,5 +360,7 @@
   "horizon.splitscreen.setup.give_up_pad": "Give Up Pad",
   "horizon.splitscreen.setup.help.give_up_pad": "Your controller stops driving you and is offered to join (A).",
   "horizon.splitscreen.setup.note.held_at": "%s to %s: A drops it here, B puts it back.",
-  "horizon.splitscreen.setup.note.held": "%s picked up: left/right picks where, A drops, B puts it back."
+  "horizon.splitscreen.setup.note.held": "%s picked up: left/right picks where, A drops, B puts it back.",
+  "horizon.splitscreen.online_only": "This server is in online mode: offline profiles can't join it, each player needs its own Minecraft account.",
+  "horizon.splitscreen.own_account": "This server needs each player's own Minecraft account"
 }
