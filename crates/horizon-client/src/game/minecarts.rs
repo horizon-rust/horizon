@@ -151,6 +151,18 @@ pub(super) const HEIGHT: f64 = 0.7;
 fn display_offset(kind: CartKind) -> f64 {
     if kind == CartKind::Hopper { 1.0 } else { 6.0 }
 }
+/// `MinecartSoundInstance.tick`: remote carts move by interpolation, which
+/// does not update their delta movement on every client tick.
+fn sound_speed(cart: &Minecart, remote: bool) -> f64 {
+    let velocity = (cart.velocity.x * cart.velocity.x + cart.velocity.z * cart.velocity.z).sqrt();
+    if remote {
+        let interpolated =
+            (cart.position.x - cart.previous.x).hypot(cart.position.z - cart.previous.z) * 3.0;
+        velocity.max(interpolated)
+    } else {
+        velocity
+    }
+}
 /// `MinecartFurnace.calculateNewPushAlong`: the push turned onto the
 /// movement's direction, at the push's own length (3D, so it holds from tick
 /// to tick while the movement has a vertical part).
@@ -1392,8 +1404,7 @@ impl Game<'_> {
             .map(|c| CartSound {
                 id: c.id,
                 position: [c.position.x, c.position.y, c.position.z],
-                // Vec3.horizontalDistance.
-                speed: (c.velocity.x * c.velocity.x + c.velocity.z * c.velocity.z).sqrt(),
+                speed: sound_speed(c, self.remote.is_some()),
             })
             .collect();
         self.cart_sounds
@@ -2306,6 +2317,16 @@ mod tests {
         assert_eq!(display_offset(CartKind::Tnt), 6.0);
         assert_eq!(display_offset(CartKind::CommandBlock), 6.0);
         assert_eq!(display_offset(CartKind::Rideable), 6.0);
+    }
+
+    #[test]
+    fn remote_cart_sound_uses_interpolated_movement_when_velocity_is_missing() {
+        let mut cart = Minecart::new(1, CartKind::Rideable, Vec3::ZERO);
+        cart.previous = Vec3::ZERO;
+        cart.position = Vec3::new(0.1, 0.0, 0.0);
+
+        assert!((sound_speed(&cart, true) - 0.3).abs() < 1.0e-12);
+        assert_eq!(sound_speed(&cart, false), 0.0);
     }
 
     /// `MinecartSpawner`: its `BaseSpawner` is saved and loaded with the cart (the delay, the
