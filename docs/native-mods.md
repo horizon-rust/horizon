@@ -1203,6 +1203,20 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   `native_player`, `native_give_items` and the other helpers reach them. A respawn at an anchor in another dimension, or
   at the world spawn's free column, may still move them on a later tick, once that level has loaded round them; the
   End-exit respawn (after the credits) does not fire it.
+- **`native_player_login(player, name, cancel, reason)`**: a player the server has accepted (their name, the whitelist,
+  bans and the player limit are checked) and who holds a place, heard before their saved state is loaded and before they
+  are placed in a level (NeoForge's `PlayerNegotiationEvent`). Set `cancel` and they are disconnected with `reason` (a
+  plain "Disconnected" when it stays `None`); no join message and no `native_player_logged_in` follow. It runs after the
+  client's configuration, so the client sees the refusal as an in-game disconnect screen. The player is not placed yet,
+  so no player's state is swapped in and `native_tell` reaches nobody: the refusal text is the answer. Players the
+  server refuses itself (name, whitelist, bans, a full server, the proxy's forwarding) are not heard.
+- **`native_player_teleported(player, name, from, to, dimension)`**: a server player a command (`/tp`, `/teleport`,
+  also what a mod's `run_command` reaches) moved, inside their level or into another; `from` and `to` are their feet
+  before and after and `dimension` the level they are in now. Heard after the move has reached the player's state and
+  their client (into another level: when that level is entered, before it has loaded around them), so it cannot stop it
+  (NeoForge's `EntityTeleportEvent`). The player's state is swapped in, so `native_tell` and the acting-player helpers
+  work. Not heard yet: ender pearls, chorus fruit, a spectator's teleport menu; portals and respawns are not teleports
+  here.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
