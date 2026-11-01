@@ -791,13 +791,32 @@ impl Ord for MeshQueued {
             .then(other.order.cmp(&self.order))
     }
 }
-/// A tile the sampler should produce next, nearest first.
+/// A tile the sampler should produce next: the coarsest level first, so every
+/// leaf has a coarse stand-in early, then nearest first within a level.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Wanted {
+    /// `MAX_LEVEL - level`: coarser tiles sort first.
+    depth: u8,
     distance: i64,
     x: i32,
     z: i32,
-    level: u8,
+}
+impl Wanted {
+    fn new(key: TileKey, camera: [i32; 2]) -> Self {
+        Self {
+            depth: MAX_LEVEL - key.level,
+            distance: i64::from(key.distance(camera)),
+            x: key.x,
+            z: key.z,
+        }
+    }
+    fn key(self) -> TileKey {
+        TileKey {
+            x: self.x,
+            z: self.z,
+            level: MAX_LEVEL - self.depth,
+        }
+    }
 }
 struct Shared {
     jobs: Mutex<VecDeque<Job>>,
@@ -890,8 +909,8 @@ pub struct Lod {
     cutout_pending: Option<FxHashSet<(i32, i32)>>,
     /// Active tiles whose mesh must be accepted before the cutout publishes.
     cutout_waiting: FxHashSet<TileKey>,
-    /// Unsample final tiles, nearest first. Rebuilt when the view changes,
-    /// not scanned every frame.
+    /// Unsampled tiles, coarsest level first and nearest first within a level.
+    /// Rebuilt when the view changes, not scanned every frame.
     wanted: std::collections::BinaryHeap<std::cmp::Reverse<Wanted>>,
     wanted_at: Option<[i32; 2]>,
     wanted_stale: bool,
@@ -1415,15 +1434,22 @@ impl Lod {
         // stand-in even while its children are still incomplete, so no
         // second fallback is drawn above it.
         let (complete, active) = if self.plan.split.contains(&key) {
-            let children = key.children().into_iter().all(|child| {
-                !self.plan.nodes.contains(&child)
-                    || self.complete.get(&child).copied().unwrap_or(false)
-            });
+            let children = self.replaced_by_children(key);
             (children || ready, ready && !children)
         } else {
             (present, ready)
         };
         (complete, active)
+    }
+    /// Whether `key` is split and every planned child can stand alone, a
+    /// resident chunk's covered stand-in included: its own samples would
+    /// never be drawn.
+    fn replaced_by_children(&self, key: TileKey) -> bool {
+        self.plan.split.contains(&key)
+            && key.children().into_iter().all(|child| {
+                !self.plan.nodes.contains(&child)
+                    || self.complete.get(&child).copied().unwrap_or(false)
+            })
     }
     /// Re-evaluates `key` and its ancestors after its readiness or coverage
     /// changed. Work is O(tree depth), not O(plan), per finished sample.
@@ -1957,6 +1983,8 @@ impl Lod {
             .symmetric_difference(&covered)
             .copied()
             .collect();
+        // Columns leaving the set uncover tiles `request_samples` skipped.
+        self.wanted_stale |= changes.len() > added.len();
         self.covered = covered;
         self.covered_bounds = self.covered.iter().fold(None, |bounds, &(x, z)| {
             Some(match bounds {
@@ -2178,17 +2206,14 @@ impl Lod {
             let Some(std::cmp::Reverse(wanted)) = self.wanted.pop() else {
                 break;
             };
-            let key = TileKey {
-                x: wanted.x,
-                z: wanted.z,
-                level: wanted.level,
-            };
-            // Final tiles only: a coarse tile under the near area is work
-            // that finer tiles replace moments later.
+            let key = wanted.key();
+            // A coarse tile stands in for its missing children, but not for
+            // children that are all ready, or under the near area: finer
+            // tiles replace it moments later.
             if self.pending.contains(&key)
                 || self.ready.contains_key(&key)
-                || self.plan.split.contains(&key)
                 || !self.plan.nodes.contains(&key)
+                || self.replaced_by_children(key)
             {
                 continue;
             }
@@ -2204,15 +2229,11 @@ impl Lod {
     fn rebuild_wanted(&mut self, camera: [i32; 2]) {
         self.wanted.clear();
         for &key in &self.plan.nodes {
-            if self.plan.split.contains(&key) || self.ready.contains_key(&key) {
+            if self.ready.contains_key(&key) || self.replaced_by_children(key) {
                 continue;
             }
-            self.wanted.push(std::cmp::Reverse(Wanted {
-                distance: i64::from(key.distance(camera)),
-                x: key.x,
-                z: key.z,
-                level: key.level,
-            }));
+            self.wanted
+                .push(std::cmp::Reverse(Wanted::new(key, camera)));
         }
     }
 
@@ -3154,23 +3175,24 @@ mod tests {
         lod.detail_request_pending = true;
         lod.wanted_stale = true;
         lod.update(camera, 2, 64, Some(FxHashSet::default()));
-        let Some(Job::Sample(nearby)) = lod.shared.jobs.lock().unwrap().pop_front() else {
-            panic!("nearby detail was not scheduled");
+        let Some(Job::Sample(first)) = lod.shared.jobs.lock().unwrap().pop_front() else {
+            panic!("the coarsest tile was not scheduled");
         };
-        assert_eq!(nearby.level, 0);
+        let coarsest = lod.plan.nodes.iter().map(|key| key.level).max().unwrap();
+        assert_eq!(first.level, coarsest, "coarse tiles load first");
         assert_eq!(
-            nearby.distance([-256, -256]),
+            first.distance([-256, -256]),
             0,
-            "the nearest tiles load first"
+            "the nearest tile of a level loads first"
         );
-        lod.finish_sample(nearby, vec![Column::default(); 256]);
+        lod.finish_sample(first, vec![Column::default(); 256]);
         lod.update(camera, 2, 64, Some(FxHashSet::default()));
         let Some(Job::Sample(next)) = lod.shared.jobs.lock().unwrap().pop_front() else {
-            panic!("the next ring was not scheduled");
+            panic!("the next tile was not scheduled");
         };
         assert!(
-            !lod.plan.split.contains(&next) && next.distance([-256, -256]) <= 64,
-            "the next nearest final tile, never a coarse one under it: {next:?}"
+            Wanted::new(next, [-256, -256]) >= Wanted::new(first, [-256, -256]),
+            "never a finer tile before a coarser one: {next:?}"
         );
         lod.shared.jobs.lock().unwrap().clear();
         let near = TileKey {
@@ -3205,12 +3227,12 @@ mod tests {
             .collect();
         lod.update(camera, 2, 64, Some(FxHashSet::default()));
         let Some(Job::Sample(first)) = lod.shared.jobs.lock().unwrap().pop_front() else {
-            panic!("no final tile scheduled")
+            panic!("no tile scheduled")
         };
         assert_eq!(
             (first.level, first.parent()),
-            (1, near),
-            "the nearest parent's final tiles come first"
+            (5, far),
+            "the coarser parent's children come before the nearer one's"
         );
         lod.shared.jobs.lock().unwrap().clear();
         lod.active = (0..DETAIL_REQUEST as i32 + 8)
@@ -3319,6 +3341,66 @@ mod tests {
         lod.active.remove(&key);
         lod.accept_mesh(key, next + 1, SectionMesh::default(), false, &mut meshes);
         assert_eq!(meshes.len(), 2, "a tile that left the view is dropped");
+    }
+
+    /// The far view fills coarse first: every leaf has a coarse stand-in
+    /// early, and the sampler never asks for a finer tile while a coarser
+    /// one is waiting. Coarse tiles that their ready children replace are
+    /// not sampled.
+    #[test]
+    fn coarse_tiles_are_sampled_before_finer_ones_and_nearest_first() {
+        let mut lod = Lod::scheduler_for_test();
+        let camera = [100, -300];
+        lod.plan = Plan::new(camera, 12, 512);
+        lod.sample_jobs = lod.plan.nodes.len();
+        lod.rebuild_selection();
+        let queued = |lod: &mut Lod| {
+            lod.shared.jobs.lock().unwrap().clear();
+            lod.pending.clear();
+            lod.wanted_stale = true;
+            lod.request_samples(camera);
+            let mut keys = Vec::new();
+            for job in lod.shared.jobs.lock().unwrap().iter() {
+                let Job::Sample(key) = job else {
+                    unreachable!("only samples are queued")
+                };
+                keys.push(*key);
+            }
+            keys
+        };
+        let keys = queued(&mut lod);
+        assert_eq!(
+            keys.len(),
+            lod.plan.nodes.len(),
+            "split tiles are sampled too"
+        );
+        for pair in keys.windows(2) {
+            assert!(
+                Wanted::new(pair[0], camera) < Wanted::new(pair[1], camera),
+                "{:?} before {:?}",
+                pair[0],
+                pair[1]
+            );
+            assert!(pair[0].level >= pair[1].level, "coarse before fine");
+        }
+        assert_eq!(
+            keys[0].level,
+            lod.plan.nodes.iter().map(|k| k.level).max().unwrap()
+        );
+
+        // A split tile whose planned children are all ready is not wanted.
+        let parent = *keys
+            .iter()
+            .rev()
+            .find(|key| lod.plan.split.contains(key) && key.level == 1)
+            .unwrap();
+        for child in parent.children() {
+            lod.finish_sample(child, vec![Column::default(); CELLS * CELLS]);
+        }
+        assert!(!lod.ready.contains_key(&parent));
+        let keys = queued(&mut lod);
+        assert!(!keys.contains(&parent), "its children replace it");
+        assert!(keys.iter().any(|key| key.level > 1), "coarser tiles stay");
     }
 
     #[test]
