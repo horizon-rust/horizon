@@ -1103,13 +1103,16 @@ def scenario_native_pointer():
         grabbed = lambda: [state(n)['pointer_grabbed'] for n in [1, 2]]
         check('P1 owns capture after P2 joined', grabbed(), [True, False])
         # OS mouse motion, unlike horizon-ctl mouse-move, passes through Split.device_event.
-        before = [state(n)['player']['yaw'] for n in [1, 2]]
-        for _ in range(3):
-            native.relative(20, 0)
-        time.sleep(0.3)
-        after = [state(n)['player']['yaw'] for n in [1, 2]]
-        check('native mouse turns P1 after the join', abs(after[0] - before[0]) > 0.1, True)
-        check('P2 does not turn with P1 mouse', after[1], before[1])
+        def look(owner):
+            other = 3 - owner
+            before = [state(n)['player']['yaw'] for n in [1, 2]]
+            for _ in range(3):
+                native.relative(20, 0)
+            time.sleep(0.3)
+            after = [state(n)['player']['yaw'] for n in [1, 2]]
+            check(f'native mouse turns P{owner}', abs(after[owner-1] - before[owner-1]) > 0.1, True)
+            check(f'P{other} does not turn with P{owner} mouse', after[other-1], before[other-1])
+        look(1)
         g.ctl(1, 'command', 'gamemode spectator @a')
         g.ctl(1, 'command', 'tp P1 0 150 0 0 0')
         g.ctl(1, 'command', 'tp P2 20 150 0 0 0')
@@ -1139,6 +1142,7 @@ def scenario_native_pointer():
         g.ctl(2, 'key', 'esc', 'tap')  # A controller player's pause menu.
         walk(1)
         check("P2's menu leaves native capture with P1", grabbed(), [True, False])
+        look(1)
         g.ctl(2, 'key', 'esc', 'tap')
         # A click on P2 cannot steal a locked P1 pointer.
         native.click(point(0.75, 0.4))
@@ -1147,6 +1151,7 @@ def scenario_native_pointer():
         native.click(point(0.75, 0.4))
         check('Esc then click hands native capture to P2', grabbed(), [False, True])
         walk(2)
+        look(2)
         # Transfer while W is still physically held: the old player must not keep walking.
         native.key('w', True)
         g.wait(lambda: 'KeyW' in g.ctl(2, 'status')['keys'], 'P2 holds W')
@@ -1169,6 +1174,7 @@ def scenario_native_pointer():
         native.click(native.point(g.size(2), 0.5, 0.2, title='Window 2'))
         check('clicking Window 2 gives P2 native capture', grabbed(), [False, True])
         walk(2)
+        look(2)
         native.tap('escape')
         native.click(native.point(g.size(1), 0.5, 0.1, title='Window 1'))
         native.tap('escape')
