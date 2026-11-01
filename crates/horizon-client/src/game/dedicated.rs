@@ -768,6 +768,7 @@ impl Game<'_> {
         let lists = Arc::new(Mutex::new(lists));
         self.server_lists = Some(lists.clone());
         log("INFO", &format!("Preparing level \"{level_name}\""));
+        log::info!("{}", horizon_threads::mem_line("preparing"));
         let folder = world_dir.to_string_lossy().into_owned();
         // MinecraftServer.loadLevel's start: nothing is loaded yet.
         self.native_server_about_to_start(true);
@@ -959,6 +960,17 @@ impl Game<'_> {
                 started.elapsed().as_secs_f64()
             ),
         );
+        log::info!("{}", horizon_threads::mem_line("done"));
+        std::thread::spawn(|| {
+            for t in [10, 30] {
+                std::thread::sleep(std::time::Duration::from_secs(if t == 10 {
+                    10
+                } else {
+                    20
+                }));
+                log::info!("{}", horizon_threads::mem_line(&format!("idle{t}s")));
+            }
+        });
         // DedicatedServer.initServer ends with saveEverything(false, true, true).
         self.save_game()?;
         self.log_saved_levels();
