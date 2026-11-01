@@ -277,6 +277,11 @@ pub(super) struct Dragon {
     /// `lastHurtByPlayer` with its 100 tick memory: the player credited with
     /// the kill, and the dragon tick of their last hit.
     hurt_by_player: Option<(FightWho, i32)>,
+    /// `LivingEntity.lastHurtSource`: the hit that restarted the flash, or
+    /// None. `ServerLevel.broadcastDamageEvent` names it to the clients, and
+    /// the dragon is drawn from this state rather than as a mob, so nothing
+    /// else would carry the flash to a guest (#5999).
+    pub hurt_source: Option<Damage>,
     pub death_time: i32,
     pub flap: f32,
     pub old_flap: f32,
@@ -405,6 +410,7 @@ impl Dragon {
             invulnerable: 0,
             last_hurt: 0.0,
             hurt_by_player: None,
+            hurt_source: None,
             death_time: 0,
             flap: 0.0,
             old_flap: 0.0,
@@ -481,7 +487,20 @@ impl Dragon {
                 ProjectileKind::Arrow { .. } | ProjectileKind::Trident | ProjectileKind::WindCharge
             )
         );
-        self.hurt(part, damage, counts, arrow)
+        let before = self.hurt_time;
+        let hurt = self.hurt(part, damage, counts, arrow);
+        // LivingEntity.hurtServer restarts the flash on a hit it applies in
+        // full; the source it restarts with is what the clients are told
+        // (#5999). A direct hit names no projectile here: only the type goes
+        // over the wire (`broadcastDamageEvent`'s source type).
+        if self.hurt_time > before {
+            self.hurt_source = Some(Damage {
+                kind,
+                attacker: None,
+                from: None,
+            });
+        }
+        hurt
     }
     /// `EnderDragon.hurt(part, source, damage)`: whether the hit landed
     /// (an arrow is spent, else it turns back). `counts` is
@@ -3884,6 +3903,45 @@ mod tests {
             time: 0,
         };
         assert_eq!(d.hurt(0, 20.0, true, false), Hurt::Refused);
+    }
+
+    /// #5999: the dragon's red flash never reached a guest, because the dragon
+    /// is drawn from its own state and the mob loop that broadcasts damage
+    /// events does not see it. The source it restarted with is what
+    /// `broadcastDamageEvent` names, so a hit that lands in full records one
+    /// and a hit the cooldown absorbs or refuses does not.
+    #[test]
+    fn a_hit_that_lands_records_the_source_the_clients_are_told() {
+        let arrow = ProjectileKind::Arrow {
+            base_damage: 6.0,
+            critical: false,
+            effect: None,
+        };
+        let mut d = dragon(flying());
+        assert!(d.hurt_source.is_none());
+        d.hurt_part(0, 6.0, true, DamageKind::PlayerAttack, None);
+        let source = d.hurt_source.expect("the first hit lands in full");
+        assert_eq!(source.kind, DamageKind::PlayerAttack);
+        // Inside the cooldown, a hit the cooldown absorbs leaves it alone.
+        d.hurt_part(0, 2.0, true, DamageKind::Arrow, None);
+        assert_eq!(
+            d.hurt_source.map(|s| s.kind),
+            Some(DamageKind::PlayerAttack)
+        );
+        // A fire hit is refused before any of that, a perched dragon's arrow
+        // is shrugged off, and a dead one takes nothing.
+        let mut d = dragon(flying());
+        d.hurt_part(0, 6.0, true, DamageKind::Fireball, None);
+        assert!(d.hurt_source.is_none());
+        let mut d = dragon(Phase::Scanning { time: 0 });
+        d.hurt_part(0, 6.0, true, DamageKind::Arrow, Some(&arrow));
+        assert!(d.hurt_source.is_none());
+        let mut d = dragon(Phase::Dying {
+            target: None,
+            time: 0,
+        });
+        d.hurt_part(0, 6.0, true, DamageKind::PlayerAttack, None);
+        assert!(d.hurt_source.is_none());
     }
 
     #[test]
