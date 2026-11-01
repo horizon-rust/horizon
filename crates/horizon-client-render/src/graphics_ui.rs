@@ -1219,8 +1219,8 @@ impl GraphicsUi {
     }
     /// Undo: what this screen edits back to what it was when the screen
     /// opened: Horizon's graphics settings and the vanilla options on its rows.
-    /// Not the rest of the options (the narrator, what `horizon-ctl options-set`
-    /// set meanwhile), nor fullscreen, which F11 and the window manager change too.
+    /// Not the other options (the narrator, or one `horizon-ctl options-set`
+    /// changed meanwhile), nor fullscreen, which F11 and the window manager change.
     fn undo(&mut self, s: &mut Settings) {
         let Some(b) = self.before.as_deref() else {
             return;
@@ -1320,10 +1320,13 @@ impl GraphicsUi {
         ];
         for (rect, label, target, live) in foot {
             let label = Text::literal(lang::get(label));
-            let hover = live && (hovered(rect) || self.focus == Some(target));
+            let focused = self.focus == Some(target);
+            let hover = live && (hovered(rect) || focused);
             crate::widgets::record(&label.plain(), rect, live);
             crate::widgets::narratable(|| {
-                crate::widgets::Narratable::button(label.plain(), rect, live).hovered(hover)
+                crate::widgets::Narratable::button(label.plain(), rect, live)
+                    .hovered(hovered(rect))
+                    .focused(focused)
             });
             crate::widgets::widget_cursor(hovered(rect), live);
             if live {
@@ -1349,10 +1352,13 @@ impl GraphicsUi {
             let open = current == Some(page);
             let name = Text::literal(lang::get(page.name()));
             crate::widgets::record(&name.plain(), rect, has);
+            let hover = has && ui::hovered(cursor, x, y, w, h);
+            let focused = self.focus == Some(Target::Page(page));
             crate::widgets::narratable(|| {
                 crate::widgets::Narratable::button(name.plain(), rect, has)
+                    .hovered(hover)
+                    .focused(focused)
             });
-            let hover = has && ui::hovered(cursor, x, y, w, h);
             crate::widgets::widget_cursor(hover, has);
             if has {
                 crate::widgets::target_as(rect, crate::widgets::Kind::Tab(open));
@@ -1753,33 +1759,35 @@ impl GraphicsUi {
                 out.push((Target::Page(page), cols.page(i)));
             }
         }
-        let rows: Vec<(Item, f32)> = lines
+        // Every setting row, and whether it can take the focus.
+        let rows: Vec<(Item, f32, bool)> = lines
             .iter()
             .filter_map(|line| {
                 let setting = line.setting?;
-                setting
-                    .item
-                    .blocked(s)
-                    .is_none()
-                    .then(|| (setting.item, self.row_y(cols, line)))
+                let live = setting.item.blocked(s).is_none();
+                Some((setting.item, self.row_y(cols, line), live))
             })
             .collect();
-        // For the arrows, the rows in view and the next one past either edge.
+        // For the arrows, the rows in view and the next live one past either
+        // edge, over any greyed ones (HDR's page on a display without HDR).
         let in_view = |y: f32| y + style::ROW > cols.top && y < cols.bottom;
-        let first = rows
-            .iter()
-            .position(|&(_, y)| in_view(y))
-            .unwrap_or(rows.len());
-        let last = rows
-            .iter()
-            .rposition(|&(_, y)| in_view(y))
-            .map_or(0, |i| i + 1);
-        let reach = match (near, first < last) {
-            (false, _) => 0..rows.len(),
-            (true, true) => first.saturating_sub(1)..(last + 1).min(rows.len()),
-            (true, false) => 0..0,
+        let reach = match rows.iter().position(|r| in_view(r.1)) {
+            Some(first) if near => {
+                let last = rows.iter().rposition(|r| in_view(r.1)).unwrap_or(first);
+                let lo = rows[..first].iter().rposition(|r| r.2).unwrap_or(first);
+                let hi = rows[last + 1..]
+                    .iter()
+                    .position(|r| r.2)
+                    .map_or(last, |i| last + 1 + i);
+                lo..hi + 1
+            }
+            None if near => 0..0,
+            _ => 0..rows.len(),
         };
-        for &(item, y) in &rows[reach] {
+        for &(item, y, live) in &rows[reach] {
+            if !live {
+                continue;
+            }
             out.push((
                 Target::Item(item),
                 [cols.list_x, y, cols.list_w, style::ROW],
@@ -1891,18 +1899,18 @@ impl GraphicsUi {
                     let rects: Vec<[f32; 4]> = focusables.iter().map(|f| f.1).collect();
                     crate::gamepad::focus_step_rect(focusables[i].1, dir, &rects)
                 }
-                // Nothing focused in view: the first setting there, or the last.
+                // Nothing focused in view: going down, the first setting from the
+                // view's top on (the next past its bottom where greyed rows fill it);
+                // going up, the last one down to its bottom.
                 None => {
                     let mut rows = focusables
                         .iter()
                         .enumerate()
-                        .filter(|(_, (t, [_, y, ..]))| {
-                            matches!(t, Target::Item(_)) && *y >= cols.top && *y < cols.bottom
-                        });
+                        .filter(|(_, (t, _))| matches!(t, Target::Item(_)));
                     let pick = if key == K::ArrowUp {
-                        rows.next_back()
+                        rows.rfind(|(_, (_, [_, y, ..]))| *y + style::ROW <= cols.bottom)
                     } else {
-                        rows.next()
+                        rows.find(|(_, (_, [_, y, ..]))| *y >= cols.top)
                     };
                     pick.map(|(i, _)| i)
                 }
@@ -2217,6 +2225,12 @@ mod tests {
         let mut ui = GraphicsUi::default();
         let at = |[x, y, ..]: [f32; 4]| (x + 8.0, y + 4.0);
         crate::graphics::offer_hdr(false);
+        // A 720p window opened at HDR shows only its greyed rows: Down still reaches the shortcut.
+        let short = (427.0, 240.0);
+        let mut at_hdr = GraphicsUi::default();
+        at_hdr.open(Page::Hdr);
+        at_hdr.key_modifiers(&mut s, K::ArrowDown, None, false, short, FB);
+        assert_eq!(at_hdr.focus, Some(Target::Item(Item::Horizon(H::HdrKey))));
         let hdr = row(&mut ui, &s, Item::Horizon(H::Hdr));
         assert!(press(&mut ui, &mut s, at(hdr)).is_empty());
         // Not even with HDR saved on, from another computer: nor its sliders and calibration.
@@ -2280,6 +2294,24 @@ mod tests {
         assert!(!ui.release());
         drag(&mut ui, &mut s, cols.bottom + 50.0, true);
         assert_eq!(ui.scroll.amount, 0.0);
+    }
+
+    #[test]
+    fn a_held_scroller_lets_go_when_the_window_gets_too_short_for_it() {
+        let mut s = Settings::default();
+        let mut ui = GraphicsUi::default();
+        let (cols, ..) = ui.layout(&s, SIZE.0, SIZE.1);
+        let x = cols.bar_x() + 2.0;
+        ui.click(&mut s, (x, cols.top + 5.0), SIZE, FB, false, false);
+        assert!(ui.scroll.held());
+        // A 150-high GUI leaves the list under the 40 px the scroller's thumb needs.
+        let short = (SIZE.0, 150.0);
+        assert!(!Columns::of(short.0, short.1).scrolls());
+        assert!(
+            ui.click(&mut s, (x, 80.0), short, FB, true, false)
+                .is_empty()
+        );
+        assert!(!ui.scroll.held());
     }
 
     #[test]
