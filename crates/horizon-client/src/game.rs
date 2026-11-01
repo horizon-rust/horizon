@@ -7768,11 +7768,16 @@ impl Game<'_> {
             // so everywhere else warp after grabbing.
             #[cfg(target_os = "macos")]
             warp(window);
+            // winit's `Locked` grab on Windows is a 1x1 `ClipCursor` at the
+            // pointer's current spot, and `SetCursorPos` cannot leave that
+            // clip, so the warp to the centre has to come before the grab.
+            #[cfg(target_os = "windows")]
+            warp(window);
             self.captured = window
                 .set_cursor_grab(CursorGrabMode::Locked)
                 .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
                 .is_ok();
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             if self.captured && self.focused {
                 warp(window);
             }
