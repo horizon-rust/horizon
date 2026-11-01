@@ -31,6 +31,13 @@ pub enum H {
     CaveCulling,
     EntityCulling,
     LeafCulling,
+    CacheShulkerBoxes,
+    CacheSigns,
+    CacheDecoratedPots,
+    CacheBells,
+    CacheChests,
+    CacheBanners,
+    CacheCopperGolemStatues,
     ChunkUpdates,
     UploadBudget,
     Sky,
@@ -213,6 +220,42 @@ pub fn rows(level: Level) -> Vec<Row> {
                 H::LeafCulling,
                 Saves,
                 "Draws or drops leaf faces inside canopies. Off keeps vanilla's fancy leaves.",
+            ),
+            Row::Header("Block Entities"),
+            h(
+                H::CacheShulkerBoxes,
+                Saves,
+                "Reuses settled boxes; lid movement stays animated.",
+            ),
+            h(
+                H::CacheSigns,
+                Saves,
+                "Reuses sign text until text, light, or font changes.",
+            ),
+            h(
+                H::CacheDecoratedPots,
+                Saves,
+                "Reuses still pots; break wobble and sherd changes redraw.",
+            ),
+            h(
+                H::CacheBells,
+                Saves,
+                "Reuses still bells; ringing stays animated.",
+            ),
+            h(
+                H::CacheChests,
+                Saves,
+                "Reuses closed chests; moving lids stay animated.",
+            ),
+            h(
+                H::CacheBanners,
+                Saves,
+                "Reuses poles; flags and pattern layers still update.",
+            ),
+            h(
+                H::CacheCopperGolemStatues,
+                Saves,
+                "Reuses statue geometry until its block state changes.",
             ),
             Row::Header("Quality"),
             v(
@@ -551,6 +594,15 @@ impl H {
             H::CaveCulling => labelled("Cave Culling", on_off(g.cave_culling)),
             H::EntityCulling => labelled("Entity Culling", g.entity_culling.label()),
             H::LeafCulling => labelled("Leaf Culling", g.leaf_culling.label()),
+            H::CacheShulkerBoxes => labelled("Shulker Boxes", on_off(g.cache_shulker_boxes)),
+            H::CacheSigns => labelled("Signs", on_off(g.cache_signs)),
+            H::CacheDecoratedPots => labelled("Decorated Pots", on_off(g.cache_decorated_pots)),
+            H::CacheBells => labelled("Bells", on_off(g.cache_bells)),
+            H::CacheChests => labelled("Chests", on_off(g.cache_chests)),
+            H::CacheBanners => labelled("Banners", on_off(g.cache_banners)),
+            H::CacheCopperGolemStatues => {
+                labelled("Copper Golem Statues", on_off(g.cache_copper_golem_statues))
+            }
             H::ChunkUpdates => match g.chunk_updates {
                 0 => labelled("Chunk Updates", "Unlimited"),
                 n => labelled("Chunk Updates", lang::tr("%s per frame", &[&n])),
@@ -696,6 +748,15 @@ impl H {
             H::LeafCulling => {
                 g.leaf_culling = step(&LeafCullingMode::ALL, g.leaf_culling, back);
             }
+            H::CacheShulkerBoxes => g.cache_shulker_boxes = !g.cache_shulker_boxes,
+            H::CacheSigns => g.cache_signs = !g.cache_signs,
+            H::CacheDecoratedPots => g.cache_decorated_pots = !g.cache_decorated_pots,
+            H::CacheBells => g.cache_bells = !g.cache_bells,
+            H::CacheChests => g.cache_chests = !g.cache_chests,
+            H::CacheBanners => g.cache_banners = !g.cache_banners,
+            H::CacheCopperGolemStatues => {
+                g.cache_copper_golem_statues = !g.cache_copper_golem_statues
+            }
             H::Sky => g.sky = !g.sky,
             H::Fog => g.fog = !g.fog,
             H::Weather => g.weather = !g.weather,
@@ -793,6 +854,13 @@ impl Item {
         let g = &s.horizon;
         Some(match self {
             Item::Horizon(H::CaveCulling) => g.cave_culling,
+            Item::Horizon(H::CacheShulkerBoxes) => g.cache_shulker_boxes,
+            Item::Horizon(H::CacheSigns) => g.cache_signs,
+            Item::Horizon(H::CacheDecoratedPots) => g.cache_decorated_pots,
+            Item::Horizon(H::CacheBells) => g.cache_bells,
+            Item::Horizon(H::CacheChests) => g.cache_chests,
+            Item::Horizon(H::CacheBanners) => g.cache_banners,
+            Item::Horizon(H::CacheCopperGolemStatues) => g.cache_copper_golem_statues,
             Item::Horizon(H::Sky) => g.sky,
             Item::Horizon(H::Fog) => g.fog,
             Item::Horizon(H::Weather) => g.weather,
@@ -1910,8 +1978,8 @@ mod tests {
         item.cycle(&mut s, true, [854, 480]);
         assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Hollow);
 
-        // The three culling settings share one group, below Rendering's chunk
-        // updates and above Quality.
+        // The culling group is followed by the separate block-entity cache
+        // group, then Quality.
         let rows = rows(Level::Advanced);
         let culling = rows
             .iter()
@@ -1931,6 +1999,27 @@ mod tests {
         ));
         assert!(matches!(
             rows.get(culling + 4),
+            Some(Row::Header("Block Entities"))
+        ));
+        for (offset, cache) in [
+            H::CacheShulkerBoxes,
+            H::CacheSigns,
+            H::CacheDecoratedPots,
+            H::CacheBells,
+            H::CacheChests,
+            H::CacheBanners,
+            H::CacheCopperGolemStatues,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(matches!(
+                rows.get(culling + 5 + offset),
+                Some(Row::Setting(setting)) if setting.item == Item::Horizon(cache)
+            ));
+        }
+        assert!(matches!(
+            rows.get(culling + 12),
             Some(Row::Header("Quality"))
         ));
 

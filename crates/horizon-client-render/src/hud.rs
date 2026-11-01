@@ -57,6 +57,9 @@ impl TextureFlags {
     }
 }
 pub struct HudAtlas {
+    /// Identity of this packed atlas, used to invalidate cached model UV data
+    /// even when a resource reload places sprites at the same coordinates.
+    pub revision: u64,
     pub pixels: Vec<u8>,
     pub width: u32,
     pub height: u32,
@@ -476,6 +479,10 @@ fn atlas_sprites(root: &Path, packed: &[PackedImage]) -> (Vec<PackedImage>, Vec<
 pub const MISSING_SPRITE: &str = "horizon/missing";
 
 impl HudAtlas {
+    fn next_revision() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
     /// A sprite, or the missing one when the atlas has no such sprite (an
     /// effect without its icon), as a stitched atlas answers.
     pub fn sprite_or_missing(&self, name: &str) -> Option<Rect> {
@@ -614,6 +621,7 @@ impl HudAtlas {
         );
         let white = sprites["horizon/white"];
         Self {
+            revision: Self::next_revision(),
             font: crate::font::Font::load(
                 Path::new("horizon-boot"),
                 &sprites,
@@ -1032,6 +1040,7 @@ impl HudAtlas {
             white,
         );
         Ok(Self {
+            revision: Self::next_revision(),
             pixels,
             width,
             height,
