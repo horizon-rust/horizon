@@ -414,6 +414,19 @@ pub(crate) fn with_built_test_world_rules(
     build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
     f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
 ) -> bool {
+    with_adjusted_test_world(others, mob_griefing, |_, _| {}, build, f)
+}
+/// `with_built_test_world_rules` with `adjust` changing the block facts and
+/// the item tables before the blocks go in: a content block is its template's
+/// states under its own name, and a mod adds to tags.
+#[cfg(test)]
+pub(crate) fn with_adjusted_test_world(
+    others: &[Seen],
+    mob_griefing: bool,
+    adjust: impl FnOnce(&mut BlockFacts, &mut crate::items::Items),
+    build: impl FnOnce(&mut crate::world::World, &horizon_world::registry::BlockRegistry),
+    f: impl FnOnce(&MobWorld<'_>, &super::MobTypes),
+) -> bool {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../.local/horizon-client")
         .join(horizon_core::VANILLA_VERSION);
@@ -422,18 +435,19 @@ pub(crate) fn with_built_test_world_rules(
     }
     let assets = crate::assets::Assets::load(&root).unwrap();
     let registry = assets.registry;
-    let facts = BlockFacts::load(&root, registry).unwrap();
+    let mut facts = BlockFacts::load(&root, registry).unwrap();
     let motion = crate::motion::MotionResources::load(&root, &assets).unwrap();
     let data = super::MobData::load(&root, &facts);
     let types = super::MobTypes::load(&root).unwrap();
     let biomes = crate::biome::Biomes::load(&root).unwrap();
-    let items = crate::items::Items::load(
+    let mut items = crate::items::Items::load(
         &root,
         registry,
         &facts,
         &horizon_world::loot::PackOverlay::NONE,
     )
     .unwrap();
+    adjust(&mut facts, &mut items);
     let collision = crate::collisions::load(&root, registry).unwrap();
     let air = registry.default_state("minecraft:air").unwrap();
     let mut world = crate::world::World::new(air, 0);

@@ -1059,6 +1059,16 @@ place; `native_server_tick` does not define one, so name the dimension and expec
 - While the game ticks its mobs they are out of the level: from a hook inside that tick, a spawned mob joins after the tick, and the others
   read as gone.
 
+### Farmer villagers
+
+No hook: a farmer works a mod's soil and crops by their templates, as vanilla's farmers check classes. A crop is a block whose template
+is one of vanilla's crops (`CropBlock`), ripe at its template's last age (7, a beetroot's 3, and never for a torchflower crop's).
+Farmland is a block whose template is `minecraft:farmland` (`FarmlandBlock`). A farmer counts that soil as its secondary job site within
+four blocks, harvests ripe crops on it, and sows it from the first stack in its inventory that is in `minecraft:villager_plantable_seeds`
+and places a block: that block's default state. `minecraft:villager_picks_up` includes the seeds tag, so farmers pick those seeds up
+as well; the world's tags count, a data pack's and those a mod adds with `native_data_pack_files` included. A crop stays only on a
+block in `minecraft:supports_crops`, so a mod's soil goes in that tag too.
+
 ### Loot tables
 
 Changing loot a mod didn't make, as NeoForge's `LootTableLoadEvent` and global loot modifiers and Fabric's

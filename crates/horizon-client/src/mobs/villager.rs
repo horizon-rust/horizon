@@ -343,27 +343,35 @@ pub fn work_sound(profession: u8) -> Option<&'static str> {
         _ => return None,
     })
 }
-/// A `CropBlock` at `p`.
+/// A `CropBlock` at `p`, by class: a mod's crop has its template's.
 pub fn crop(w: &MobWorld, p: [i32; 3]) -> bool {
-    matches!(
-        w.block_name(p[0], p[1], p[2]),
-        "minecraft:wheat"
-            | "minecraft:carrots"
-            | "minecraft:potatoes"
-            | "minecraft:beetroots"
-            | "minecraft:torchflower_crop"
-    )
+    w.facts
+        .get(w.world.block(p[0], p[1], p[2]))
+        .has_class("CropBlock")
 }
-/// `CropBlock.isMaxAge` for the block at `p`.
+/// `CropBlock.isMaxAge` for the block at `p`: its age at `getMaxAge`.
 pub fn ripe_crop(w: &MobWorld, p: [i32; 3]) -> bool {
-    let max = match w.block_name(p[0], p[1], p[2]) {
-        "minecraft:wheat" | "minecraft:carrots" | "minecraft:potatoes" => "7",
-        "minecraft:beetroots" => "3",
-        // TorchflowerCropBlock.getMaxAge is 2, past its age property (0-1):
-        // the crop is never at max age (age 2 is the torchflower itself).
-        _ => return false,
+    let facts = w.facts.get(w.world.block(p[0], p[1], p[2]));
+    // TorchflowerCropBlock.getMaxAge is 2, past its age property (0-1):
+    // the crop is never at max age (age 2 is the torchflower itself).
+    if !facts.has_class("CropBlock") || facts.has_class("TorchflowerCropBlock") {
+        return false;
+    }
+    let max = if facts.has_class("BeetrootBlock") {
+        3
+    } else {
+        7
     };
-    w.prop(p[0], p[1], p[2], "age") == Some(max)
+    w.prop(p[0], p[1], p[2], "age")
+        .and_then(|age| age.parse::<i32>().ok())
+        .is_some_and(|age| age >= max)
+}
+/// `HarvestFarmland`'s soil at `p`: a `FarmlandBlock`, by class, so a mod's
+/// farmland (one whose template is `minecraft:farmland`) is one too.
+pub fn farmland(w: &MobWorld, p: [i32; 3]) -> bool {
+    w.facts
+        .get(w.world.block(p[0], p[1], p[2]))
+        .has_class("FarmlandBlock")
 }
 
 /// The gift loot table of a villager (`GiveGiftToHero.getLootTableToThrow`).

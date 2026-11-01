@@ -253,8 +253,8 @@ impl Game<'_> {
             }
             return;
         }
+        // The world's tags: a data pack or a native mod's pack files add seeds.
         let picks_up = self
-            .res
             .items()
             .item_tags
             .get("minecraft:villager_picks_up")
@@ -309,7 +309,6 @@ impl Game<'_> {
             return;
         }
         let picks_up = self
-            .res
             .items()
             .item_tags
             .get("minecraft:villager_picks_up")

@@ -775,7 +775,9 @@ fn sense_babies(m: &mut Mob, w: &MobWorld) {
     }
     mem(m).visible_villager_babies.set_list(babies);
 }
-/// `SecondaryPoiSensor`: a farmer's farmland within four blocks.
+/// `SecondaryPoiSensor`: a farmer's farmland within four blocks. Vanilla
+/// names the block (`VillagerProfession.secondaryPoi`); a mod's farmland
+/// counts too, by its template's class, so a farm of it alone is worked.
 fn sense_secondary(m: &mut Mob, w: &MobWorld) {
     let mut sites = Vec::new();
     if super::villager::is_farmer(m) {
@@ -784,7 +786,7 @@ fn sense_secondary(m: &mut Mob, w: &MobWorld) {
             for y in -2..=2 {
                 for z in -4..=4 {
                     let p = [c[0] + x, c[1] + y, c[2] + z];
-                    if w.block_name(p[0], p[1], p[2]) == "minecraft:farmland" {
+                    if super::villager::farmland(w, p) {
                         sites.push(p);
                     }
                 }
@@ -3517,7 +3519,7 @@ fn farmland_around(m: &Mob, w: &MobWorld) -> Vec<[i32; 3]> {
 fn farmland_valid(w: &MobWorld, p: [i32; 3]) -> bool {
     super::villager::ripe_crop(w, p)
         || w.facts.is_air(w.world.block(p[0], p[1], p[2]))
-            && w.block_name(p[0], p[1] - 1, p[2]) == "minecraft:farmland"
+            && super::villager::farmland(w, [p[0], p[1] - 1, p[2]])
 }
 /// `HarvestFarmland.getValidFarmland`: one picked by the level random.
 fn pick_farmland(valid: &[[i32; 3]], cx: &mut Bx) -> Option<[i32; 3]> {
@@ -3527,16 +3529,19 @@ fn pick_farmland(valid: &[[i32; 3]], cx: &mut Bx) -> Option<[i32; 3]> {
     let i = cx.lr.next_int_bound(valid.len() as i32).unwrap_or(0) as usize;
     Some(valid[i])
 }
-/// The seeds a villager plants (`VILLAGER_PLANTABLE_SEEDS`) and their crops.
-fn seed_crop(item: &str) -> Option<&'static str> {
-    Some(match item {
-        "minecraft:wheat_seeds" => "minecraft:wheat",
-        "minecraft:potato" => "minecraft:potatoes",
-        "minecraft:carrot" => "minecraft:carrots",
-        "minecraft:beetroot_seeds" => "minecraft:beetroots",
-        "minecraft:torchflower_seeds" => "minecraft:torchflower_crop",
-        "minecraft:pitcher_pod" => "minecraft:pitcher_crop",
-        _ => return None,
+/// The stack `HarvestFarmland` sows from: the first in
+/// `VILLAGER_PLANTABLE_SEEDS` that is a `BlockItem`, with its block's default
+/// state.
+fn seed_slot(
+    w: &MobWorld,
+    inventory: &[crate::items::ItemStack],
+) -> Option<(usize, horizon_world::registry::BlockStateId)> {
+    let items = w.items?;
+    inventory.iter().enumerate().find_map(|(i, s)| {
+        if s.count == 0 || !items.item_in_tag("minecraft:villager_plantable_seeds", &s.item) {
+            return None;
+        }
+        Some((i, items.items.get(&*s.item)?.block?))
     })
 }
 /// `HarvestFarmland.tick` at the farmland: harvest a ripe crop, sow bare
@@ -3559,24 +3564,15 @@ fn harvest_tick(
     if ripe {
         cx.events.push(MobEvent::BreakBlock { pos: p, drop: true });
     }
-    if air && w.block_name(p[0], p[1] - 1, p[2]) == "minecraft:farmland" {
+    if air && super::villager::farmland(w, [p[0], p[1] - 1, p[2]]) {
         let e = super::villager::ext_mut(m);
-        if let Some(slot) = e
-            .inventory
-            .iter()
-            .position(|s| s.count > 0 && seed_crop(&s.item).is_some())
-        {
-            let crop = seed_crop(&e.inventory[slot].item).unwrap_or("minecraft:wheat");
+        if let Some((slot, state)) = seed_slot(w, &e.inventory) {
             e.inventory[slot].count -= 1;
             if e.inventory[slot].count == 0 {
                 e.inventory.remove(slot);
             }
-            cx.events.push(MobEvent::SetBlockName {
-                pos: p,
-                name: crop,
-                effect: false,
-                flags: horizon_world::level::flags::UPDATE_ALL,
-            });
+            // `setBlockAndUpdate`.
+            cx.events.push(MobEvent::SetBlock { pos: p, state });
             cx.events.push(MobEvent::Sound(
                 "item.crop.plant",
                 [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])],
@@ -4570,4 +4566,203 @@ pub fn seen_memories(
         mm.golem_detected_recently.present(),
         mm.last_slept.value(),
     )
+}
+
+/// `HarvestFarmland` on a mod's soil and crops. A content block copies its
+/// template's states and class chain under its own name; these tests give
+/// vanilla's blocks mod names the same way.
+#[cfg(test)]
+mod farming_tests {
+    use super::*;
+    use crate::{blocks::BlockFacts, items::ItemStack, mobs::world::with_adjusted_test_world};
+    use horizon_world::registry::{BlockRegistry, BlockStateId};
+    use std::sync::Arc;
+
+    fn rename(facts: &mut BlockFacts, block: &str, name: &str) {
+        let name: Arc<str> = name.into();
+        for s in &mut facts.states {
+            if &*s.name == block {
+                s.name = name.clone();
+            }
+        }
+    }
+    fn state(registry: &BlockRegistry, block: &str, age: Option<i32>) -> BlockStateId {
+        let id = registry.default_state(block).unwrap();
+        let Some(age) = age else { return id };
+        let mut s = registry.state(id).unwrap().clone();
+        s.properties.insert("age".into(), age.to_string());
+        registry.resolve(&s).unwrap()
+    }
+    fn place(world: &mut crate::world::World, p: [i32; 3], s: BlockStateId) {
+        let (cx, cz) = (p[0] >> 4, p[2] >> 4);
+        if world.chunks.get(&(cx, cz)).is_none() {
+            let chunk = Arc::new(crate::chunk::Chunk::empty(cx, cz));
+            world.chunks.insert((cx, cz), chunk);
+        }
+        world.set(p[0], p[1], p[2], s).unwrap();
+    }
+    fn farmer(types: &super::super::MobTypes, at: [f64; 3]) -> Mob {
+        let kind = Arc::new(types.types["minecraft:villager"].clone());
+        let mut m = Mob::new(1, kind, Vec3::new(at[0], at[1], at[2]), 0.0);
+        let farmer = super::super::render::PROFESSIONS
+            .iter()
+            .position(|p| *p == "farmer")
+            .unwrap();
+        super::super::villager::set_profession(&mut m, farmer as u8);
+        m
+    }
+
+    /// `CropBlock.isMaxAge` is the age at `getMaxAge`: 7, a `BeetrootBlock`'s
+    /// 3, and a `TorchflowerCropBlock`'s 2, which its age (0-1) never reaches.
+    #[test]
+    fn templated_crops_ripen_at_their_templates_max_age() {
+        with_adjusted_test_world(
+            &[],
+            true,
+            |facts, _| {
+                rename(facts, "minecraft:wheat", "testmod:rice");
+                rename(facts, "minecraft:beetroots", "testmod:onions");
+                rename(facts, "minecraft:torchflower_crop", "testmod:glowbuds");
+            },
+            |world, registry| {
+                place(
+                    world,
+                    [0, 0, 0],
+                    state(registry, "minecraft:wheat", Some(6)),
+                );
+                place(
+                    world,
+                    [1, 0, 0],
+                    state(registry, "minecraft:wheat", Some(7)),
+                );
+                place(
+                    world,
+                    [2, 0, 0],
+                    state(registry, "minecraft:beetroots", Some(3)),
+                );
+                let glowbuds = state(registry, "minecraft:torchflower_crop", Some(1));
+                place(world, [3, 0, 0], glowbuds);
+                place(
+                    world,
+                    [4, 0, 0],
+                    state(registry, "minecraft:pitcher_crop", None),
+                );
+            },
+            |w, _| {
+                let crop = (0..5).map(|x| super::super::villager::crop(w, [x, 0, 0]));
+                assert_eq!(crop.collect::<Vec<_>>(), [true, true, true, true, false]);
+                let ripe = (0..5).map(|x| super::super::villager::ripe_crop(w, [x, 0, 0]));
+                assert_eq!(ripe.collect::<Vec<_>>(), [false, true, true, false, false]);
+            },
+        );
+    }
+
+    /// A mod's farmland (its template's `FarmlandBlock`) is the farmer's job
+    /// site and soil; other blocks aren't.
+    #[test]
+    fn farmers_work_mod_farmland() {
+        with_adjusted_test_world(
+            &[],
+            true,
+            |facts, _| rename(facts, "minecraft:farmland", "testmod:rich_farmland"),
+            |world, registry| {
+                place(
+                    world,
+                    [1, 0, 0],
+                    state(registry, "minecraft:farmland", None),
+                );
+                place(world, [0, 0, 1], state(registry, "minecraft:dirt", None));
+            },
+            |w, types| {
+                let mut m = farmer(types, [0.5, 1.0, 0.5]);
+                sense_secondary(&mut m, w);
+                let sites = mem(&mut m).secondary_job_site.get().cloned();
+                assert_eq!(sites, Some(vec![[1, 0, 0]]));
+                let valid = [[1, 1, 0], [0, 1, 1]].map(|p| farmland_valid(w, p));
+                assert_eq!(valid, [true, false]);
+            },
+        );
+    }
+
+    /// The farmer harvests a ripe mod crop, then sows the first stack in
+    /// `villager_plantable_seeds` that places a block: that block's default
+    /// state, one item less.
+    #[test]
+    fn farmers_harvest_mod_crops_and_sow_mod_seeds() {
+        with_adjusted_test_world(
+            &[],
+            true,
+            |facts, items| {
+                rename(facts, "minecraft:farmland", "testmod:rich_farmland");
+                rename(facts, "minecraft:wheat", "testmod:rice");
+                rename(facts, "minecraft:beetroots", "testmod:onions");
+                let onions = items.items["minecraft:beetroot_seeds"].block;
+                let mut seeds = items.items["minecraft:wheat_seeds"].clone();
+                seeds.id = "testmod:onion_seeds".into();
+                seeds.block = onions;
+                items.items.insert(seeds.id.clone(), seeds);
+                let tag = items
+                    .item_tags
+                    .entry("minecraft:villager_plantable_seeds".into())
+                    .or_default();
+                tag.insert("testmod:onion_seeds".into());
+                tag.insert("minecraft:stick".into());
+            },
+            |world, registry| {
+                for x in 0..2 {
+                    place(
+                        world,
+                        [x, 0, 0],
+                        state(registry, "minecraft:farmland", None),
+                    );
+                }
+                place(
+                    world,
+                    [0, 1, 0],
+                    state(registry, "minecraft:wheat", Some(7)),
+                );
+            },
+            |w, types| {
+                let mut m = farmer(types, [0.5, 1.0, 1.5]);
+                let e = super::super::villager::ext_mut(&mut m);
+                e.inventory = vec![
+                    ItemStack::new("minecraft:dirt", 1),
+                    ItemStack::new("minecraft:stick", 1),
+                    ItemStack::new("testmod:onion_seeds", 3),
+                ];
+                let mut lr = LegacyRandom::new(0);
+                let mut events = Vec::new();
+                let (mut next_ok, mut valid) = (0, vec![[0, 1, 0], [1, 1, 0]]);
+                for target in [[0, 1, 0], [1, 1, 0]] {
+                    let mut cx = Bx {
+                        w,
+                        lr: &mut lr,
+                        events: &mut events,
+                        now: 100,
+                        refresh: false,
+                    };
+                    harvest_tick(&mut m, &mut cx, &mut next_ok, &mut Some(target), &mut valid);
+                }
+                let onions = w.registry.default_state("minecraft:beetroots").unwrap();
+                assert!(
+                    matches!(events.as_slice(), [
+                        MobEvent::BreakBlock { pos: [0, 1, 0], drop: true },
+                        MobEvent::SetBlock { pos: [1, 1, 0], state },
+                        MobEvent::Sound("item.crop.plant", ..),
+                    ] if *state == onions),
+                    "{events:?}"
+                );
+                let left = &super::super::villager::ext(&m).unwrap().inventory;
+                let left: Vec<_> = left.iter().map(|s| (&*s.item, s.count)).collect();
+                assert_eq!(
+                    left,
+                    [
+                        ("minecraft:dirt", 1),
+                        ("minecraft:stick", 1),
+                        ("testmod:onion_seeds", 2)
+                    ]
+                );
+            },
+        );
+    }
 }
