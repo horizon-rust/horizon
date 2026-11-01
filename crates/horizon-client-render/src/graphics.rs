@@ -246,11 +246,11 @@ impl FarDetail {
     }
 }
 
-/// Whether far terrain is drawn with mesh shaders where the GPU has them (Vulkan and
-/// Metal): a task shader leaves out parts of a tile before any vertex is shaded.
-/// On by default wherever the device has them (Auto), with the vertex path as the
-/// fallback elsewhere; applies at the next start, when the device is opened with the
-/// feature.
+/// Whether far terrain is drawn with mesh shaders where the GPU has them: a task
+/// shader leaves out parts of a tile before any vertex is shaded. Auto (the default)
+/// uses them on Vulkan; Metal has them too but draws slower with them, so it keeps
+/// the vertex path unless `HORIZON_MESH_SHADERS=1`. Applies at the next start, when
+/// the device is opened with the feature.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum MeshShaders {
     Off,
@@ -286,12 +286,14 @@ pub fn request_mesh_shaders(on: bool) {
     MESH_SHADERS.store(on, Ordering::Relaxed);
 }
 /// Whether to open the device with mesh shaders, where the adapter has them:
-/// `HORIZON_MESH_SHADERS` (`1` or `0`) if set, else the setting.
-pub fn mesh_shaders_requested() -> bool {
+/// `HORIZON_MESH_SHADERS` (`1` or `0`) if set, else the setting on Vulkan. On Metal
+/// (Apple's tiled GPUs) the meshlet path measured slower than the indirect draws,
+/// about 9 ms more CPU and 4 ms more GPU a frame on an M1 Pro, so Auto leaves it off.
+pub fn mesh_shaders_requested(backend: wgpu::Backend) -> bool {
     match std::env::var("HORIZON_MESH_SHADERS").as_deref() {
         Ok("1") => true,
         Ok("0") => false,
-        _ => MESH_SHADERS.load(Ordering::Relaxed),
+        _ => MESH_SHADERS.load(Ordering::Relaxed) && backend == wgpu::Backend::Vulkan,
     }
 }
 

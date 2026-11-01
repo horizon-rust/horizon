@@ -3125,7 +3125,7 @@ impl Renderer {
         });
         let mut lod_gpu = lod_gpu::LodGpu::create(&adapter, &device, lod_mesh_setup);
         if let Some(gpu) = &mut lod_gpu {
-            gpu.set_mesh_shaders(crate::graphics::mesh_shaders_requested());
+            gpu.set_mesh_shaders(crate::graphics::mesh_shaders_requested(adapter_info.backend));
         }
         let depth = Self::depth(&device, &config);
         let world_post = world_post::Post::new(&device, config.format.remove_srgb_suffix());

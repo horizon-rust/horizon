@@ -50,7 +50,7 @@ pub fn supported(adapter: &wgpu::Adapter) -> bool {
 /// The device feature far terrain asks for: when the setting (or
 /// `HORIZON_MESH_SHADERS=1`) says so and the adapter can run it.
 pub fn features(adapter: &wgpu::Adapter) -> wgpu::Features {
-    if graphics::mesh_shaders_requested() && supported(adapter) {
+    if graphics::mesh_shaders_requested(adapter.get_info().backend) && supported(adapter) {
         wgpu::Features::EXPERIMENTAL_MESH_SHADER
     } else {
         wgpu::Features::empty()
