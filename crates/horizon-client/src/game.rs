@@ -18088,12 +18088,17 @@ fn load_world_rest(
     // Independent tables load together, within the worker budget the settings
     // allow. Only the recipes and the stations read another table: the items.
     let load_items = || -> Result<_> {
-        let items = Items::load(root, registry, facts, overlay)?;
+        let items = horizon_threads::mem_step("items_only", || {
+            Items::load(root, registry, facts, overlay)
+        })?;
         log::info!("load items: {:.2}s", started.elapsed().as_secs_f32());
         log::info!("{}", horizon_threads::mem_line("items"));
         progress.set(7);
-        let recipes = Recipes::load(root, &items, overlay)?;
-        let stations = horizon_client::stations::StationData::load(root, &items, overlay);
+        let recipes =
+            horizon_threads::mem_step("recipes", || Recipes::load(root, &items, overlay))?;
+        let stations = horizon_threads::mem_step("stations", || {
+            horizon_client::stations::StationData::load(root, &items, overlay)
+        });
         Ok((items, recipes, stations))
     };
     let load_behaviours =
@@ -18140,33 +18145,37 @@ fn load_world_rest(
     ) -> std::result::Result<T, String> {
         result.map_err(|e| e.to_string())
     }
-    let (items, behaviours, block_entity_render, animate, mobs, transformers) = if threads > 1 {
-        std::thread::scope(|scope| {
-            let items = scope.spawn(|| text(load_items()));
-            let behaviours = scope.spawn(|| text(load_behaviours()));
-            let block_entity_render = scope.spawn(|| text(load_block_entity_render()));
-            let animate = scope.spawn(|| text(load_animate()));
-            let mobs = scope.spawn(|| text(load_mobs()));
-            let transformers = text(load_transformers());
+    let serial = std::env::var_os("SP2_SERIAL").is_some();
+    let (items, behaviours, block_entity_render, animate, mobs, transformers) =
+        if threads > 1 && !serial {
+            std::thread::scope(|scope| {
+                let items = scope.spawn(|| text(load_items()));
+                let behaviours = scope.spawn(|| text(load_behaviours()));
+                let block_entity_render = scope.spawn(|| text(load_block_entity_render()));
+                let animate = scope.spawn(|| text(load_animate()));
+                let mobs = scope.spawn(|| text(load_mobs()));
+                let transformers = text(load_transformers());
+                (
+                    items.join().unwrap(),
+                    behaviours.join().unwrap(),
+                    block_entity_render.join().unwrap(),
+                    animate.join().unwrap(),
+                    mobs.join().unwrap(),
+                    transformers,
+                )
+            })
+        } else {
             (
-                items.join().unwrap(),
-                behaviours.join().unwrap(),
-                block_entity_render.join().unwrap(),
-                animate.join().unwrap(),
-                mobs.join().unwrap(),
-                transformers,
+                horizon_threads::mem_step("rest_items", || text(load_items())),
+                horizon_threads::mem_step("rest_behaviours", || text(load_behaviours())),
+                horizon_threads::mem_step("rest_block_entity_render", || {
+                    text(load_block_entity_render())
+                }),
+                horizon_threads::mem_step("rest_animate", || text(load_animate())),
+                horizon_threads::mem_step("rest_mobs", || text(load_mobs())),
+                horizon_threads::mem_step("rest_transformers", || text(load_transformers())),
             )
-        })
-    } else {
-        (
-            text(load_items()),
-            text(load_behaviours()),
-            text(load_block_entity_render()),
-            text(load_animate()),
-            text(load_mobs()),
-            text(load_transformers()),
-        )
-    };
+        };
     let (items, recipes, stations) = items?;
     let (animate, fog) = animate?;
     let (mob_types, mob_data) = mobs?;
