@@ -7,7 +7,7 @@ use horizon_world::loot::PackOverlay;
 use horizon_world::registry::{BlockRegistry, BlockStateId};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     fs,
     path::Path,
     sync::Arc,
@@ -58,6 +58,93 @@ pub enum ConsumeEffect {
     /// `TeleportRandomlyConsumeEffect`.
     TeleportRandomly(horizon_world::teleport_consume::TeleportConsume),
     PlaySound(String),
+    /// A mod's own kind, kept as the file wrote it (the loader used to drop
+    /// it silently): the game hands it to `native_consume_effect`.
+    /// API 74
+    Native {
+        kind: String,
+        data: serde_json::Value,
+    },
+}
+
+/// One `on_consume_effects` entry. A bare type name is minecraft's own, as
+/// a bare item id is: `apply_effects` and `:apply_effects` are
+/// `minecraft:apply_effects`. A
+/// namespaced kind outside `minecraft:` is the mod's own, kept whole for
+/// the hook. An unknown `minecraft:` kind and a missing type are dropped.
+fn parse_consume_effect(effect: &serde_json::Value) -> Option<ConsumeEffect> {
+    let kind = effect.get("type")?.as_str()?;
+    // `Identifier.bySeparator`: no namespace, or an empty one (`:clear_all_effects`), is minecraft's.
+    let kind = match kind.split_once(':') {
+        Some(("", path)) => format!("minecraft:{path}"),
+        Some(_) => kind.to_owned(),
+        None => format!("minecraft:{kind}"),
+    };
+    match kind.as_str() {
+        "minecraft:apply_effects" => {
+            let probability = effect
+                .get("probability")
+                .and_then(|p| p.as_f64())
+                .map_or(1.0, |p| p as f32);
+            let mut specs = Vec::new();
+            if let Some(list) = effect.get("effects").and_then(|l| l.as_array()) {
+                for e in list {
+                    if let Some(id) = e.get("id").and_then(|i| i.as_str()) {
+                        let duration =
+                            e.get("duration").and_then(|d| d.as_i64()).unwrap_or(0) as i32;
+                        let amplifier =
+                            e.get("amplifier").and_then(|a| a.as_i64()).unwrap_or(0) as i32;
+                        specs.push(ConsumeEffectSpec {
+                            id: id.to_string(),
+                            duration,
+                            amplifier,
+                        });
+                    }
+                }
+            }
+            Some(ConsumeEffect::ApplyEffects {
+                effects: specs,
+                probability,
+            })
+        }
+        "minecraft:clear_all_effects" => Some(ConsumeEffect::ClearAllEffects),
+        "minecraft:remove_effects" => {
+            let mut targets = Vec::new();
+            if let Some(eff) = effect.get("effects") {
+                if let Some(s) = eff.as_str() {
+                    targets.push(s.to_string());
+                } else if let Some(arr) = eff.as_array() {
+                    for item in arr {
+                        if let Some(s) = item.as_str() {
+                            targets.push(s.to_string());
+                        }
+                    }
+                }
+            }
+            Some(ConsumeEffect::RemoveEffects(targets))
+        }
+        "minecraft:teleport_randomly" => Some(ConsumeEffect::TeleportRandomly(
+            horizon_world::teleport_consume::TeleportConsume {
+                diameter: effect
+                    .get("diameter")
+                    .and_then(serde_json::Value::as_f64)
+                    .map_or(16.0, |d| d as f32),
+                directional_particles: effect
+                    .get("directional_particles")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true),
+            },
+        )),
+        "minecraft:play_sound" => effect
+            .get("sound")
+            .and_then(|s| s.as_str())
+            .map(|s| ConsumeEffect::PlaySound(s.to_string())),
+        k if !k.starts_with("minecraft:") => Some(ConsumeEffect::Native {
+            kind: k.to_owned(),
+            data: effect.clone(),
+        }),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -596,8 +683,7 @@ impl Items {
         block_for_item: &HashMap<&str, BlockStateId>,
         overlay: &PackOverlay,
     ) -> Result<Self> {
-        let raw: BTreeMap<String, Value> =
-            serde_json::from_slice(&fs::read(root.join("items.json"))?)?;
+        let raw = horizon_world::item_defaults::read(root)?;
         let entity_tags = load_tags(root, "entity_type", overlay)?;
         let path = root.join(MOD_CRAFT_REMAINDERS);
         let mod_remainders: HashMap<String, String> = match fs::read(&path) {
@@ -658,75 +744,8 @@ impl Items {
                 .and_then(|e| e.as_array())
             {
                 for effect in effects {
-                    match effect.get("type").and_then(|t| t.as_str()) {
-                        Some("minecraft:apply_effects") => {
-                            let probability = effect
-                                .get("probability")
-                                .and_then(|p| p.as_f64())
-                                .map_or(1.0, |p| p as f32);
-                            let mut specs = Vec::new();
-                            if let Some(list) = effect.get("effects").and_then(|l| l.as_array()) {
-                                for e in list {
-                                    if let Some(id) = e.get("id").and_then(|i| i.as_str()) {
-                                        let duration =
-                                            e.get("duration").and_then(|d| d.as_i64()).unwrap_or(0)
-                                                as i32;
-                                        let amplifier = e
-                                            .get("amplifier")
-                                            .and_then(|a| a.as_i64())
-                                            .unwrap_or(0)
-                                            as i32;
-                                        specs.push(ConsumeEffectSpec {
-                                            id: id.to_string(),
-                                            duration,
-                                            amplifier,
-                                        });
-                                    }
-                                }
-                            }
-                            consume_effects.push(ConsumeEffect::ApplyEffects {
-                                effects: specs,
-                                probability,
-                            });
-                        }
-                        Some("minecraft:clear_all_effects") => {
-                            consume_effects.push(ConsumeEffect::ClearAllEffects);
-                        }
-                        Some("minecraft:remove_effects") => {
-                            let mut targets = Vec::new();
-                            if let Some(eff) = effect.get("effects") {
-                                if let Some(s) = eff.as_str() {
-                                    targets.push(s.to_string());
-                                } else if let Some(arr) = eff.as_array() {
-                                    for item in arr {
-                                        if let Some(s) = item.as_str() {
-                                            targets.push(s.to_string());
-                                        }
-                                    }
-                                }
-                            }
-                            consume_effects.push(ConsumeEffect::RemoveEffects(targets));
-                        }
-                        Some("minecraft:teleport_randomly") => {
-                            consume_effects.push(ConsumeEffect::TeleportRandomly(
-                                horizon_world::teleport_consume::TeleportConsume {
-                                    diameter: effect
-                                        .get("diameter")
-                                        .and_then(Value::as_f64)
-                                        .map_or(16.0, |d| d as f32),
-                                    directional_particles: effect
-                                        .get("directional_particles")
-                                        .and_then(Value::as_bool)
-                                        .unwrap_or(true),
-                                },
-                            ));
-                        }
-                        Some("minecraft:play_sound") => {
-                            if let Some(sound) = effect.get("sound").and_then(|s| s.as_str()) {
-                                consume_effects.push(ConsumeEffect::PlaySound(sound.to_string()));
-                            }
-                        }
-                        _ => {}
+                    if let Some(parsed) = parse_consume_effect(effect) {
+                        consume_effects.push(parsed);
                     }
                 }
             }
@@ -1024,7 +1043,7 @@ impl Items {
         table: &Value,
         random: &mut R,
     ) -> Vec<ItemStack> {
-        let empty = BTreeMap::new();
+        let empty = horizon_world::chunk::BlockProperties::new();
         let ctx = LootContext {
             items: self,
             block: "",
@@ -1042,16 +1061,30 @@ impl Items {
         registry: &BlockRegistry,
         state: BlockStateId,
     ) -> Option<String> {
+        self.loot_sequence(&self.block_loot_table(registry, state)?)
+    }
+    /// The id of the block's loot table (`minecraft:blocks/stone`), when it
+    /// has one. `Blocks.wallVariant`: wall signs, banners, heads, fans and
+    /// torches use the standing block's table.
+    pub fn block_loot_table(
+        &self,
+        registry: &BlockRegistry,
+        state: BlockStateId,
+    ) -> Option<String> {
         let block = registry.state(state)?;
         let (namespace, name) = block
             .name
             .split_once(':')
             .unwrap_or(("minecraft", &block.name));
+        let own = format!("{namespace}:blocks/{name}");
+        if self.loot.contains_key(&own) {
+            return Some(own);
+        }
         let standing = name.replacen("_wall_", "_", 1);
         let standing = standing.strip_prefix("wall_").unwrap_or(&standing);
         let standing = standing.replacen("wall_", "", 1);
-        self.loot_sequence(&format!("{namespace}:blocks/{name}"))
-            .or_else(|| self.loot_sequence(&format!("{namespace}:blocks/{standing}")))
+        let standing = format!("{namespace}:blocks/{standing}");
+        self.loot.contains_key(&standing).then_some(standing)
     }
     /// Evaluate the block's loot table for a player break without explosions.
     pub fn block_drops<R: RandomSource>(
@@ -1159,20 +1192,8 @@ impl Items {
         let Some(block) = registry.state(state) else {
             return vec![];
         };
-        let (namespace, name) = block
-            .name
-            .split_once(':')
-            .unwrap_or(("minecraft", &block.name));
-        // `Blocks.wallVariant`: wall signs, banners, heads, fans and torches
-        // reuse the standing block's loot table.
-        let standing = name.replacen("_wall_", "_", 1);
-        let standing = standing.strip_prefix("wall_").unwrap_or(&standing);
-        let standing = standing.replacen("wall_", "", 1);
-        let table = self
-            .loot
-            .get(&format!("{namespace}:blocks/{name}"))
-            .or_else(|| self.loot.get(&format!("{namespace}:blocks/{standing}")));
-        let Some(table) = table else {
+        let table = self.block_loot_table(registry, state);
+        let Some(table) = table.and_then(|id| self.loot.get(&id)) else {
             return vec![];
         };
         // LootTable.getRandomItems draws from the table's random sequence.
@@ -1215,7 +1236,7 @@ impl Items {
         let Some(table) = self.loot.get(id) else {
             return vec![];
         };
-        let empty = BTreeMap::new();
+        let empty = horizon_world::chunk::BlockProperties::new();
         let ctx = LootContext {
             items: self,
             block: "",
@@ -1274,7 +1295,7 @@ impl Items {
         let Some(table) = self.loot.get(id) else {
             return vec![];
         };
-        let empty = BTreeMap::new();
+        let empty = horizon_world::chunk::BlockProperties::new();
         let ctx = LootContext {
             items: self,
             block: "",
@@ -1297,7 +1318,7 @@ impl Items {
         let Some(table) = self.loot.get(&format!("minecraft:entities/{name}")) else {
             return vec![];
         };
-        let empty = BTreeMap::new();
+        let empty = horizon_world::chunk::BlockProperties::new();
         let ctx = LootContext {
             items: self,
             block: "",
@@ -1344,7 +1365,7 @@ impl LootContext<'_> {
 struct LootContext<'a> {
     items: &'a Items,
     block: &'a str,
-    properties: &'a BTreeMap<String, String>,
+    properties: &'a horizon_world::chunk::BlockProperties,
     held: Option<&'a ItemStack>,
     killed_by_player: bool,
     /// `LootContextParams.EXPLOSION_RADIUS`: an explosion that decays drops.
@@ -1934,6 +1955,37 @@ pub(crate) fn prepared_items() -> Option<Items> {
 }
 
 #[cfg(test)]
+mod consume_effect_tests {
+    use super::*;
+
+    #[test]
+    fn a_mods_own_consume_effect_kind_is_kept() {
+        let v = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+        // A mod's own kind: Native with its JSON.
+        let native =
+            parse_consume_effect(&v(r#"{"type":"mymod:energy_boost","amount":42}"#)).unwrap();
+        assert!(matches!(&native, ConsumeEffect::Native { kind, data }
+            if kind == "mymod:energy_boost" && data["amount"] == 42));
+        // A bare vanilla name and its namespaced form are the same kind.
+        let bare = parse_consume_effect(&v(
+            r#"{"type":"apply_effects","effects":[{"id":"minecraft:speed","duration":100}]}"#,
+        ))
+        .unwrap();
+        assert!(matches!(bare, ConsumeEffect::ApplyEffects { .. }));
+        let named = parse_consume_effect(
+            &v(r#"{"type":"minecraft:apply_effects","effects":[{"id":"minecraft:speed","duration":100}]}"#),
+        ).unwrap();
+        assert!(matches!(named, ConsumeEffect::ApplyEffects { .. }));
+        // An empty namespace is minecraft's too (`Identifier.bySeparator`).
+        let empty = parse_consume_effect(&v(r#"{"type":":clear_all_effects"}"#)).unwrap();
+        assert!(matches!(empty, ConsumeEffect::ClearAllEffects));
+        // An unknown minecraft: kind and a missing type are dropped.
+        assert!(parse_consume_effect(&v(r#"{"type":"minecraft:future"}"#)).is_none());
+        assert!(parse_consume_effect(&v(r#"{"amount":42}"#)).is_none());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use horizon_core::random::LegacyRandom;
@@ -1992,10 +2044,60 @@ mod tests {
         assert!(!items.item_in_tag("test:missing", "test:apple"));
     }
 
+    /// `Blocks.wallVariant`: a wall block without a table of its own drops
+    /// from its standing block's (vanilla's tables: `blocks/torch` for
+    /// `wall_torch`, `blocks/oak_sign` for `oak_wall_sign`...).
+    #[test]
+    fn wall_blocks_use_the_standing_blocks_table() {
+        let facts = br#"{"defaults":{"minecraft:air":0,"minecraft:wall_torch":1,
+            "minecraft:oak_wall_sign":2,"minecraft:skeleton_wall_skull":3,
+            "minecraft:dead_brain_coral_wall_fan":4,"test:wall_lamp":5,"minecraft:cobblestone_wall":6},
+            "states":[
+            ["air",true,false,"","minecraft:air"],
+            ["a",false,false,"","minecraft:wall_torch"],
+            ["b",false,false,"","minecraft:oak_wall_sign"],
+            ["c",false,false,"","minecraft:skeleton_wall_skull"],
+            ["d",false,false,"","minecraft:dead_brain_coral_wall_fan"],
+            ["e",false,false,"","test:wall_lamp"],
+            ["f",false,false,"","minecraft:cobblestone_wall"]
+        ]}"#;
+        let registry = BlockRegistry::from_facts_json(&facts[..]).unwrap();
+        let mut items = Items::for_tests(HashMap::new());
+        items.loot = Arc::new(
+            [
+                "minecraft:blocks/torch",
+                "minecraft:blocks/oak_sign",
+                "minecraft:blocks/skeleton_skull",
+                "minecraft:blocks/dead_brain_coral_fan",
+                "test:blocks/wall_lamp",
+                "test:blocks/lamp",
+                "minecraft:blocks/cobblestone_wall",
+            ]
+            .map(|id| (id.to_owned(), json!({"pools": []})))
+            .into_iter()
+            .collect(),
+        );
+        let table = |state| items.block_loot_table(&registry, BlockStateId(state));
+        assert_eq!(table(1).as_deref(), Some("minecraft:blocks/torch"));
+        assert_eq!(table(2).as_deref(), Some("minecraft:blocks/oak_sign"));
+        assert_eq!(table(3).as_deref(), Some("minecraft:blocks/skeleton_skull"));
+        assert_eq!(
+            table(4).as_deref(),
+            Some("minecraft:blocks/dead_brain_coral_fan")
+        );
+        // A table of its own wins over the standing block's.
+        assert_eq!(table(5).as_deref(), Some("test:blocks/wall_lamp"));
+        assert_eq!(
+            table(6).as_deref(),
+            Some("minecraft:blocks/cobblestone_wall")
+        );
+        assert_eq!(table(0), None);
+    }
+
     fn ctx<'a>(
         items: &'a Items,
         held: Option<&'a ItemStack>,
-        props: &'a BTreeMap<String, String>,
+        props: &'a horizon_world::chunk::BlockProperties,
         block: &'a str,
     ) -> LootContext<'a> {
         LootContext {
@@ -2012,7 +2114,7 @@ mod tests {
     #[test]
     fn fortune_silk_touch_and_looting() {
         let items = Items::for_tests(HashMap::new());
-        let props = BTreeMap::new();
+        let props = horizon_world::chunk::BlockProperties::new();
         let mut pick = ItemStack::new("minecraft:diamond_pickaxe", 1);
         pick.enchant("minecraft:fortune", 3);
         let ore = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:alternatives","children":[
@@ -2084,7 +2186,7 @@ mod tests {
     #[test]
     fn set_potion_gives_the_potion_its_contents() {
         let items = Items::for_tests(HashMap::new());
-        let props = BTreeMap::new();
+        let props = horizon_world::chunk::BlockProperties::new();
         let table = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:splash_potion",
             "modifier":{"type":"minecraft:set_potion","id":"minecraft:fire_resistance"}}]}]});
         let drops = ctx(&items, None, &props, "").evaluate(&table, &mut LegacyRandom::new(1));
@@ -2101,7 +2203,7 @@ mod tests {
         let Some(items) = super::prepared_items() else {
             return;
         };
-        let props = BTreeMap::new();
+        let props = horizon_world::chunk::BlockProperties::new();
         let mut random = LegacyRandom::new(11);
         // A sword at levels 20..39 comes out enchanted, as in an End city.
         let levels = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:item",
@@ -2162,7 +2264,7 @@ mod tests {
         let Some(items) = super::prepared_items() else {
             return;
         };
-        let props = BTreeMap::new();
+        let props = horizon_world::chunk::BlockProperties::new();
         let table = json!({"pools":[{"rolls":1,"entries":[{"type":"minecraft:item",
             "name":"minecraft:book","modifier":[
             {"type":"minecraft:enchant_randomly","options":"minecraft:mending"},
