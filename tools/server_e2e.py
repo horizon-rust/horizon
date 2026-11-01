@@ -17,18 +17,24 @@ Checks:
           dropped the packets).
 - titles: a chest named with styles (`CustomName`, as a plugin's menu is): its screen's title keeps
           the colours and bold (it used to be flattened to plain grey).
+- dialog_close: a local frame proxy injects ContainerClose after a multi-action custom click,
+          reproducing Paper's closeInventory without a plugin. Covers the waiting screen,
+          parent screens, warning, lectern, replacement dialogs, key release and death;
+          clear_dialog and after_action close must retain their distinct parent semantics.
 
-The game runs with fresh HORIZON_HOME, launcher and XDG folders and without audio. Screenshots and both
+The game runs offscreen with fresh HORIZON_HOME, launcher and XDG folders and without audio. Screenshots and both
 logs go to --out.
 """
 import argparse
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import time
+import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -73,6 +79,192 @@ def snbt(value):
     if isinstance(value, dict):
         return '{' + ','.join(f'{k}:{snbt(v)}' for k, v in value.items()) + '}'
     return str(value)
+
+
+class ClosePacketProxy:
+    """Forward whole frames; inject the pinned protocol's container-close packet.
+
+    Offline vanilla uses compression threshold 256. The injected packet is
+    below that threshold (uncompressed length 0). Forwarded frames stay opaque.
+    """
+    def __init__(self, upstream):
+        self.upstream = upstream
+        self.listener = socket.socket()
+        self.listener.bind(('127.0.0.1', 0))
+        self.listener.listen(1)
+        self.port = self.listener.getsockname()[1]
+        self.client = None
+        self.server = None
+        self.lock = threading.Lock()
+        self.ready = threading.Event()
+        threading.Thread(target=self.run, daemon=True).start()
+
+    @staticmethod
+    def read(sock, count):
+        data = bytearray()
+        while len(data) < count:
+            chunk = sock.recv(count - len(data))
+            if not chunk:
+                raise EOFError()
+            data.extend(chunk)
+        return bytes(data)
+
+    def run(self):
+        try:
+            self.client, _ = self.listener.accept()
+            self.server = socket.create_connection(('127.0.0.1', self.upstream))
+            self.ready.set()
+            threading.Thread(target=self.upload, daemon=True).start()
+            while True:
+                prefix = bytearray()
+                length = 0
+                for shift in range(0, 35, 7):
+                    byte = self.read(self.server, 1)[0]
+                    prefix.append(byte)
+                    length |= (byte & 127) << shift
+                    if byte < 128:
+                        break
+                else:
+                    raise ValueError('invalid packet length')
+                frame = bytes(prefix) + self.read(self.server, length)
+                with self.lock:
+                    self.client.sendall(frame)
+        except (EOFError, OSError):
+            pass
+
+    def upload(self):
+        try:
+            while data := self.client.recv(65536):
+                self.server.sendall(data)
+        except OSError:
+            pass
+
+    def close_container(self, container=0):
+        assert self.ready.wait(10), 'client did not connect through the proxy'
+        # ClientboundContainerClosePacket: protocol 777, play packet 0x11.
+        body = b'\0' + lab.varint(0x11) + lab.varint(container)
+        with self.lock:
+            self.client.sendall(lab.varint(len(body)) + body)
+
+    def close(self):
+        for sock in (self.client, self.server, self.listener):
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                sock.close()
+
+
+def check_dialog_close(server, game, out, proxy):
+    """Paper closeInventory's packet must close a waiting dialog and its parent."""
+    dialog = {
+        'type': 'minecraft:multi_action', 'title': 'Container close regression',
+        'can_close_with_escape': False, 'pause': False, 'columns': 1,
+        'after_action': 'wait_for_response',
+        'actions': [{'label': 'Close', 'width': 20,
+                     'action': {'type': 'minecraft:custom', 'id': 'horizon:close_dialog'}}],
+    }
+
+    def show(data=dialog):
+        server.console(f'dialog show {PLAYER} {snbt(data)}')
+        game.raw('wait-for', 'screen', 'dialog', '--timeout', 30)
+        game.until(lambda: game('state')['dialog'],
+                   lambda state: state['screen'] is None and state['open'] is not None
+                   and state['open']['title'] == data['title'])
+
+    def close():
+        proxy.close_container()
+        game.raw('wait-for', 'screen', 'playing', '--timeout', 10)
+        state = game('state')
+        assert state['dialog']['screen'] is None, state['dialog']
+        assert state['dialog']['open'] is None, state['dialog']
+
+    # WAIT_FOR_RESPONSE must survive clear_dialog, but not container_close.
+    show()
+    game.raw('click', 'close')
+    server.wait_for(r'Received custom click action horizon:close_dialog', timeout=30)
+    assert game('state')['dialog']['screen'] == 'waiting_for_response'
+    server.console(f'dialog clear {PLAYER}')
+    game.wait(10)
+    assert game('state')['dialog']['screen'] == 'waiting_for_response'
+    close()
+
+    # A normal server clear returns to the parent inventory. CLOSE does too.
+    game.raw('key', 'e', 'tap')
+    game.raw('wait-for', 'screen', 'inventory', '--timeout', 10)
+    show(dict(dialog, after_action='none'))
+    server.console(f'dialog clear {PLAYER}')
+    game.raw('wait-for', 'screen', 'inventory', '--timeout', 10)
+    show(dict(dialog, after_action='close'))
+    game.raw('click', 'close')
+    game.raw('wait-for', 'screen', 'inventory', '--timeout', 10)
+
+    # ContainerClose discards the waiting dialog AND that parent screen.
+    show()
+    game.raw('click', 'close')
+    assert game('state')['dialog']['screen'] == 'waiting_for_response'
+    close()
+    # An active dialog and its warning overlay must also close without Escape.
+    show(dict(dialog, after_action='none'))
+    close()
+    show()
+    game.raw('click', 'warning')
+    assert game('state')['dialog']['screen'] == 'warning'
+    close()
+
+    # A server response may replace the waiting screen with another dialog.
+    show()
+    game.raw('click', 'close')
+    show(dict(dialog, title='Replacement dialog', after_action='none'))
+    assert game('state')['dialog']['open']['title'] == 'Replacement dialog'
+    close()
+
+    # Closing a dialog over chat must not reveal the old chat input.
+    game.raw('key', 't', 'tap')
+    game.raw('wait-for', 'screen', 'chat', '--timeout', 10)
+    show(dict(dialog, after_action='none'))
+    close()
+
+    # Keep the existing lectern close path working, including a dialog over it.
+    x, y, z = (int(v // 1) for v in game('state')['player']['position'])
+    at = (x + 2, y, z)
+    book = ('{id:"minecraft:written_book",count:1,components:{"minecraft:written_book_content":'
+            '{title:"Dialog",author:"Test",pages:["one","two"]}}}')
+    server.console(f'setblock {at[0]} {at[1]} {at[2]} minecraft:lectern[has_book=true]{{Book:{book}}}')
+    game.wait(10)
+    for overlay in (False, True):
+        game.raw('interact', *at)
+        game.raw('wait-for', 'screen', 'book', '--timeout', 10)
+        if overlay:
+            show(dict(dialog, after_action='none'))
+        close()
+    server.console(f'setblock {at[0]} {at[1]} {at[2]} minecraft:air')
+    game.wait(10)
+
+    # Preserve releaseAll on dialog open: W must not remain held afterwards.
+    game.raw('key', 'w', 'down')
+    show()
+    game.raw('key', 'w', 'up')
+    close()
+    game.wait(10)
+    before = game('state')['player']['position']
+    game.wait(10)
+    after = game('state')['player']['position']
+    assert sum((after[i] - before[i]) ** 2 for i in (0, 2)) < .0001, (before, after)
+
+    # Preserve the prior fix closing server dialogs on player death.
+    show()
+    server.console(f'kill {PLAYER}')
+    game.raw('wait-for', 'screen', 'dead', '--timeout', 30)
+    assert game('state')['dialog'] == {'open': None, 'screen': None}
+    game.raw('respawn')
+    game.raw('wait-for', 'screen', 'playing', '--timeout', 30)
+    game.shot(out, 'dialog-closed')
+    return {'waiting_closed': True, 'parent_closed': True, 'warning_closed': True,
+            'clear_keeps_waiting': True, 'clear_and_close_restore_parent': True,
+            'replacement_dialog': True, 'chat_parent_closed': True,
+            'lectern_closes': True, 'held_keys_released': True, 'death_closes_dialog': True}
 
 
 def check_dialog(server, game, out):
@@ -160,7 +352,7 @@ def check_titles(server, game, out):
     return {'title': title}
 
 
-CHECKS = {'dialog': check_dialog, 'titles': check_titles}
+CHECKS = {'dialog': check_dialog, 'titles': check_titles, 'dialog_close': check_dialog_close}
 
 
 def run(bins, out, checks):
@@ -170,12 +362,15 @@ def run(bins, out, checks):
     directory = work / 'server'
     directory.mkdir()
     props = dict(PROPERTIES, **{'server-port': str(port)})
+    if 'dialog_close' in checks:
+        props['network-compression-threshold'] = '256'
     (directory / 'server.properties').write_text(''.join(f'{k}={v}\n' for k, v in props.items()))
     (directory / 'eula.txt').write_text('eula=true\n')
     (work / 'log4j2.xml').write_text(LOG4J)
     classpath = os.pathsep.join(map(str, [jars['server'], *libraries]))
     server = Server(['java', '-Xmx2g', f'-Dlog4j.configurationFile={work / "log4j2.xml"}', '-cp', classpath,
                      'net.minecraft.server.Main', 'nogui'], directory, 'vanilla')
+    proxy = ClosePacketProxy(port) if 'dialog_close' in checks else None
     game = Game('client', bins / 'horizon-ctl', lab.RESOURCES.resolve())
     for key in ('XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'HORIZON_LAUNCHER_HOME'):
         game.d.env[key] = str(game.work / key.lower())
@@ -184,20 +379,23 @@ def run(bins, out, checks):
     try:
         server.wait_for(r'Done \(')
         server.console('gamerule spawn_mobs false')
-        game('launch', wait=False, offscreen=sys.platform == 'darwin')
-        game.raw('connect', f'127.0.0.1:{port}', PLAYER)
+        game('launch', wait=False, offscreen=True)
+        game.raw('connect', f'127.0.0.1:{proxy.port if proxy else port}', PLAYER)
         game.raw('wait-for', 'loaded', '--timeout', 300)
         server.wait_for(rf'{PLAYER} joined the game')
         server.console(f'op {PLAYER}')
         game.wait(20)
         for name in checks:
             try:
-                results[name] = {'pass': True, 'detail': CHECKS[name](server, game, out)}
+                detail = CHECKS[name](server, game, out, proxy) if name == 'dialog_close' else CHECKS[name](server, game, out)
+                results[name] = {'pass': True, 'detail': detail}
             except (Failed, AssertionError, StopIteration, KeyError) as e:
                 results[name] = {'pass': False, 'detail': repr(e)}
             print(f'[server] {name}: {"PASS" if results[name]["pass"] else "FAIL"} {results[name]["detail"]}')
     finally:
         (out / 'client.log').write_text(game.close())
+        if proxy:
+            proxy.close()
         server.stop()
         shutil.copy(server.log_path, out / 'server.log')
         shutil.rmtree(game.work, ignore_errors=True)
