@@ -442,8 +442,22 @@ pub fn button(
     let (left, right) = (x + 2, x + w - 2);
     let lw = m.width(label);
     let top = (y + y + h - 9) / 2 + 1;
-    let cx = ((left + right) / 2).clamp(left + lw / 2, right - lw / 2);
-    text(out, label.clone(), center_left(cx, lw), top, WHITE, true);
+    text(
+        out,
+        label.clone(),
+        center_left(label_centre(left, right, lw), lw),
+        top,
+        WHITE,
+        true,
+    );
+}
+/// Where a button's label is centred: `ActiveTextCollector.defaultScrollingHelper`
+/// centres it inside `left..right`, and a label wider than that box keeps its
+/// left edge (vanilla scrolls it with the clock) instead of inverting the clamp.
+fn label_centre(left: i32, right: i32, width: i32) -> i32 {
+    let min = left + width / 2;
+    let centre = (left + right) / 2;
+    centre.clamp(min, (right - width / 2).max(min))
 }
 /// `Tooltip.splitTooltip` of a widget's tooltip, shown under the mouse.
 pub fn tooltip(out: &mut Vec<Draw>, m: &Measure, message: &Text, mouse: (i32, i32)) {
@@ -960,5 +974,24 @@ pub fn paint(batch: &mut HudBatch, atlas: &HudAtlas, draws: &[Draw]) {
     }
     if let Some((lines, at)) = tooltip {
         crate::ui::tooltip(batch, atlas, &lines, at);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #6129: `pack.openFolder` in `af_za` is about 154 px in a 150 px button,
+    /// and the inverted `clamp` bounds panicked the client on the first frame.
+    #[test]
+    fn a_label_wider_than_its_button_keeps_its_left_edge() {
+        // A 150 px button's inner box is 2..148.
+        assert_eq!(label_centre(2, 148, 154), 79);
+        assert_eq!(center_left(label_centre(2, 148, 154), 154), 2);
+        // The widest of the eight languages (isv) at about 171 px.
+        assert_eq!(center_left(label_centre(2, 148, 171), 171), 2);
+        // A label that fits, or fills the box exactly, is centred as before.
+        assert_eq!(label_centre(2, 148, 40), 75);
+        assert_eq!(label_centre(2, 148, 146), 75);
     }
 }
