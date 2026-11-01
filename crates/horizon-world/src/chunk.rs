@@ -191,7 +191,7 @@ impl BlockState {
         let Some(Tag::String(name)) = tag.get("id") else {
             return Err(invalid("block state is missing id"));
         };
-        let mut properties = BlockProperties::new();
+        let mut properties = Vec::new();
         if let Some(tag) = tag.get("properties") {
             let Tag::Compound(map) = tag else {
                 return Err(invalid("block properties are not a compound"));
@@ -200,15 +200,15 @@ impl BlockState {
                 let Tag::String(v) = v else {
                     return Err(invalid("block property is not a string"));
                 };
-                properties.insert(
+                properties.push((
                     k.to_string().map_err(|e| invalid(e.to_string()))?,
                     v.to_string().map_err(|e| invalid(e.to_string()))?,
-                );
+                ));
             }
         }
         Ok(Self {
             name: name.to_string().map_err(|e| invalid(e.to_string()))?,
-            properties,
+            properties: properties.into_iter().collect(),
         })
     }
 }
