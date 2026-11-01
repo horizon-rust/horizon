@@ -1086,6 +1086,47 @@
       "neoforge": "none (NeoForge has no flight toggle event; Bukkit's PlayerToggleFlightEvent)",
       "side": "server",
       "cancellable": true
+    },
+    {
+      "name": "player_changed_dimension",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_changed_dimension",
+      "neoforge": "PlayerEvent.PlayerChangedDimensionEvent",
+      "side": "server"
+    },
+    {
+      "name": "experience_orb_pickup_listened",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_experience_orb_pickup_listened",
+      "side": "server"
+    },
+    {
+      "name": "experience_orb_pickup",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_experience_orb_pickup",
+      "side": "server",
+      "cancellable": true
+    },
+    {
+      "name": "mending_repair",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_mending_repair",
+      "side": "server"
+    },
+    {
+      "name": "fire_odds",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::GameLevel<'_>::native_fire_odds"
+    },
+    {
+      "name": "smoke_source",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::GameLevel<'_>::native_smoke_source"
+    },
+    {
+      "name": "player_game_mode_changed",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_game_mode_changed"
     }
   ]
 }
