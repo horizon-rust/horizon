@@ -782,6 +782,7 @@ impl Game<'_> {
             game_mode == 1,
             None,
         )?)?;
+        log::info!("{}", horizon_threads::mem_line("load_world"));
         if new_world {
             self.level.hardcore = props.hardcore;
         }
@@ -815,6 +816,7 @@ impl Game<'_> {
         // Nothing is kept around the spawn while nobody is on.
         self.streaming.radius = -1;
         self.settle_spawn()?;
+        log::info!("{}", horizon_threads::mem_line("settle_spawn"));
         let gate_lists = lists.clone();
         let gate: LoginGate = Arc::new(move |address, uuid, name| {
             let user = NameAndId {
@@ -923,6 +925,7 @@ impl Game<'_> {
             log("WARN", "Perhaps a server is already running on that port?");
             return Ok(());
         }
+        log::info!("{}", horizon_threads::mem_line("lan_host"));
         self.sync_ops(&lists);
         let anticheat = load_anticheat();
         let chat_filter = load_chat_filter();
