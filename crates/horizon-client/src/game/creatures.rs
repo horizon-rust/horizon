@@ -2308,19 +2308,10 @@ impl Game<'_> {
                     flags,
                 } => {
                     if effect {
+                        // `levelEvent(2001, pos, Block.getId(old))`: the particles and the break
+                        // sound, for the players a server serves too.
                         let old = self.world.block(pos[0], pos[1], pos[2]);
-                        self.destroy_particles(pos, old);
-                        let s = self.res.facts().get(old).sounds.break_sound.clone();
-                        self.audio.play(
-                            &s,
-                            Some([
-                                f64::from(pos[0]) + 0.5,
-                                f64::from(pos[1]) + 0.5,
-                                f64::from(pos[2]) + 0.5,
-                            ]),
-                            1.0,
-                            0.8,
-                        );
+                        self.level_event_at(2001, pos, old.0 as i32);
                     }
                     if let Some(state) = self.pack.assets.registry.default_state(name) {
                         self.level_set_with_flags(pos, state, flags)?;
@@ -2372,7 +2363,7 @@ impl Game<'_> {
                     }
                     // Block.spawnDestroyParticles: fire breaks leave nothing.
                     if !self.res.facts().get(old).has_class("BaseFireBlock") {
-                        self.destroy_particles(pos, old);
+                        self.level_event_at(2001, pos, old.0 as i32);
                     }
                     if drop {
                         let mut drops = world_items!(self).block_drops_in(
