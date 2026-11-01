@@ -248,12 +248,13 @@ impl FarDetail {
 
 /// Whether far terrain is drawn with mesh shaders where the GPU has them (Vulkan and
 /// Metal): a task shader leaves out parts of a tile before any vertex is shaded.
-/// Experimental, so Off until picked; applies at the next start, when the device is
-/// opened with the feature.
+/// On by default wherever the device has them (Auto), with the vertex path as the
+/// fallback elsewhere; applies at the next start, when the device is opened with the
+/// feature.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum MeshShaders {
-    #[default]
     Off,
+    #[default]
     Auto,
 }
 impl MeshShaders {
@@ -513,7 +514,7 @@ impl Default for Graphics {
             battery: false,
             shadow_cache: false,
             api: GraphicsApi::Auto,
-            mesh_shaders: MeshShaders::Off,
+            mesh_shaders: MeshShaders::Auto,
             shader_pack: String::new(),
         }
     }
@@ -818,7 +819,7 @@ mod tests {
             battery: true,
             shadow_cache: true,
             api: GraphicsApi::Dx12,
-            mesh_shaders: MeshShaders::Auto,
+            mesh_shaders: MeshShaders::Off,
             shader_pack: "Golden Hour".into(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
