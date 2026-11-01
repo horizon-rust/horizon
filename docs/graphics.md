@@ -4,10 +4,10 @@
 
 Horizon's graphics settings are one screen, opened from the top of **Video Settings** (**Horizon Graphics...** opens it at General, **Advanced Graphics...** at Advanced) or from **Options → Horizon Settings...**. Vanilla's Video Settings screen stays as vanilla draws it.
 
-The screen holds vanilla's video options and Horizon's own together, built from Minecraft's own screen patterns in the design system's Blocks look (`docs/design-system.md`):
+The screen holds vanilla's video options and Horizon's own together, built from Minecraft's own screen patterns in the design system's Blocks palette (`docs/design-system.md`), on see-through panels so the world stays in view:
 
 - Down the left, under the Horizon mark: the search field, the pages (General, Quality, Performance, Advanced and HDR) as a column of names, and **Undo** and **Done** at the foot.
-- On the right, a plate shows the open page alone, under its name: its settings in titled groups (Distance, Display, Culling...), each group on a panel of its own. A row has the setting's name on the left and its control on the right: a tick box for on and off, a value between arrows that a press steps through, a value whose slider shows while the row is pointed at or focused. A setting that can't be used now is greyed.
+- On the right, a plate shows the open page alone, under its name: its settings in titled groups (Distance, Display, Culling...), each group on a panel of its own. A row has the setting's name on the left and its control on the right: a tick box for on and off, a value between arrows that a press steps through, a value whose slider (a thin track under the value) shows while the row is pointed at or focused. A setting that can't be used now is greyed.
 - The search field shows the settings of every page whose name or description has the words typed, under their page's name; picking a page then scrolls to its matches.
 - A strip under the plate holds the hovered or focused setting's name, its cost in frame time (no cost, low, medium, high, or saves time for culling that makes frames faster) and what it does; with none, what the open page holds.
 - Undo shows once something changed; it puts back every setting as it was when the screen opened.

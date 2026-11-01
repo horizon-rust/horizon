@@ -147,8 +147,8 @@ Geist (400, 500, 600) and Geist Mono (400), bundled under the SIL Open Font Lice
   sunset) behind the hero. Light and dark follow the system, with a toggle. A giant wordmark in
   pixels sits in the footer.
 - **Game**: vanilla's screens. The on-screen keyboard is a rounded plate of keys in the page
-  colour, the focused key in the accent. Horizon's graphics settings screen is the one in the
-  Blocks look below (`graphics_style.rs`).
+  colour, the focused key in the accent. Horizon's graphics settings screen takes the Blocks
+  palette below in a lighter form (`graphics_style.rs`).
 
 ## Blocks
 
@@ -159,9 +159,10 @@ Minecraft's inventory rather than a document. Its colours are `horizon_theme::Bl
 `--panel`, `--raised`, `--button`, `--well`, `--bevel`, `--lip`, `--outline` and the `--face`
 of the main action. The game's other menus keep `LIGHT` and `DARK`.
 
-In the game the Blocks look is drawn in GUI pixels, so its lines are one GUI pixel (two or three
-on screen): a 1 px outline and bevel, a 1 px lip (2 px under the panel and Done), and vanilla's
-font rather than Pixelify. Hover and focus are vanilla's white edge.
+In the game the graphics settings screen draws the Blocks palette in GUI pixels, lighter than the
+website's blocks so the world stays in view: square panels of the page colour, see-through, with a
+1 px edge and no bevel or lip, flat controls, the violet face on Done, and vanilla's font rather
+than Pixelify. Hover and focus are vanilla's white edge.
 
 - **Pixel type for what names and what you act on.** Headings, navigation, buttons and the
   wordmark use Pixelify Sans (OFL; Medium, SemiBold, Bold); paragraphs and numbers stay in Geist

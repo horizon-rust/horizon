@@ -1380,7 +1380,7 @@ impl GraphicsUi {
             batch,
             atlas,
             [px + 8.0, py + 24.0, pw - 16.0, 1.0],
-            style::BEVEL,
+            style::HEAD_RULE,
         );
 
         // The list, clipped to its view: each group's panel, then its rows on it.
@@ -1418,7 +1418,7 @@ impl GraphicsUi {
             let item = setting.item;
             if !after_name {
                 let rule = [cols.list_x + 8.0, y, cols.list_w - 16.0, 1.0];
-                style::fill(batch, atlas, rule, style::PANEL);
+                style::fill(batch, atlas, rule, style::ROW_RULE);
             }
             let rect = [cols.list_x, y, cols.list_w, style::ROW];
             let hover = over_list && ui::hovered(cursor, rect[0], rect[1], rect[2], rect[3]);
@@ -1683,12 +1683,8 @@ impl GraphicsUi {
             return;
         };
         let x = cols.bar_x();
-        style::well(
-            batch,
-            atlas,
-            [x, cols.top, style::SCROLLER_W, cols.bottom - cols.top],
-        );
-        style::thumb(batch, atlas, [x, y, style::SCROLLER_W, bar]);
+        let track = [x, cols.top, style::SCROLLER_W, cols.bottom - cols.top];
+        style::scroller(batch, atlas, track, [x, y, style::SCROLLER_W, bar]);
     }
     /// The strip under the plate: the hovered or focused setting's name and
     /// cost, then what it does (or why it can't be used now); with none, what

@@ -2,11 +2,10 @@
 //! colours and the controls it draws with. The screen (`graphics_ui`) only
 //! lays out rows and handles input; a menu theme replaces this module.
 //!
-//! It is the design system's Blocks look (`horizon_theme::BLOCKS_DARK`,
-//! `docs/design-system.md`): square panels with an outline, a light bevel
-//! along the top and left and a darker lip under them, sunk wells for fields,
-//! boxes and tracks, and the violet face on the one main button, in vanilla's
-//! font.
+//! It takes the design system's Blocks palette (`horizon_theme::BLOCKS_DARK`,
+//! `docs/design-system.md`) in a lighter form: square panels of dark glass
+//! with a thin edge, so the world shows through, flat controls, and the violet
+//! face on the one main button, in vanilla's font.
 use crate::{
     hud::{HudAtlas, HudBatch},
     text::Text,
@@ -49,22 +48,32 @@ impl Cost {
 const fn hex(c: u32, a: u8) -> u32 {
     (a as u32) << 24 | (c & 0xff) << 16 | (c >> 8 & 0xff) << 8 | (c >> 16 & 0xff)
 }
-pub const PANEL: u32 = hex(B.panel, 255);
-/// A group's panel, raised off the plate.
-const RAISED: u32 = hex(B.raised, 255);
+/// The plate and the strip: the page's dark, see-through, so the world shows behind them.
+const GLASS: u32 = hex(B.page, 118);
+/// Their 1 px edge.
+const EDGE: u32 = hex(B.ink, 26);
+/// A group's panel, a little lighter than the plate it sits on.
+const GROUP: u32 = hex(B.ink, 11);
 /// A hovered or focused row, lit on its group's panel.
-pub const HOVER: u32 = hex(B.ink, 16);
+pub const HOVER: u32 = hex(B.ink, 18);
 /// The open page in the page list.
-pub const OPEN: u32 = hex(B.ink, 31);
-const BUTTON: u32 = hex(B.button, 255);
-const BUTTON_BEVEL: u32 = hex(B.button_bevel, 255);
-const WELL: u32 = hex(B.well, 255);
-pub const BEVEL: u32 = hex(B.bevel, 255);
-const LIP: u32 = hex(B.lip, 255);
-const OUTLINE: u32 = hex(B.outline, 255);
+pub const OPEN: u32 = hex(B.ink, 26);
+/// The rule under the plate's heading, and between two rows of a group.
+pub const HEAD_RULE: u32 = hex(B.ink, 31);
+pub const ROW_RULE: u32 = hex(B.ink, 15);
+/// Fields, boxes and the value stepper: sunk, see-through.
+const WELL: u32 = hex(B.outline, 102);
+/// A button, a slider's track, the scroller's thumb.
+const BUTTON: u32 = hex(B.ink, 20);
+const BUTTON_HOVER: u32 = hex(B.ink, 41);
+const TRACK: u32 = hex(B.ink, 64);
+const HANDLE: u32 = hex(B.ink, 255);
+/// The one main button.
 const FACE: u32 = hex(B.face, 255);
-const FACE_BEVEL: u32 = hex(B.face_bevel, 255);
-const FACE_LIP: u32 = hex(B.face_lip, 255);
+const FACE_HOVER: u32 = hex(0x6a50e6, 255);
+/// A tick box's edge when off.
+const BOX_EDGE: u32 = hex(B.ink_soft, 89);
+const OUTLINE: u32 = hex(B.outline, 255);
 pub const ACCENT: u32 = hex(B.accent, 255);
 /// Vanilla's white text, and its grey for what can't be used now.
 pub const WHITE: u32 = u32::MAX;
@@ -73,8 +82,8 @@ pub const MUTED: u32 = hex(B.muted, 255);
 pub const SOFT: u32 = hex(B.ink_soft, 255);
 /// Vanilla's grey for a tooltip's lines under its first (`ChatFormatting.GRAY`).
 pub const GREY: u32 = hex(0xaaaaaa, 255);
-/// A dim veil over the backdrop, under the panels.
-pub const VEIL: u32 = hex(B.page, 140);
+/// A light veil over the backdrop, under the panels.
+pub const VEIL: u32 = hex(B.page, 77);
 
 /// Sizes in GUI pixels.
 /// Shorter screens than this (a 720p window at scale 3) keep a narrower margin on top.
@@ -109,45 +118,23 @@ pub fn ring(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, h]: [f32; 4], colo
     batch.fill(atlas, x, y + 1.0, 1.0, h - 2.0, color);
     batch.fill(atlas, x + w - 1.0, y + 1.0, 1.0, h - 2.0, color);
 }
-/// A block: the outline, the fill, a light top and left edge, a dark lip `lip` high.
-fn block(
-    batch: &mut HudBatch,
-    atlas: &HudAtlas,
-    [x, y, w, h]: [f32; 4],
-    (face, bevel, under): (u32, u32, u32),
-    lip: f32,
-) {
-    fill(batch, atlas, [x, y, w, h], OUTLINE);
-    fill(batch, atlas, [x + 1.0, y + 1.0, w - 2.0, h - 2.0], face);
-    fill(batch, atlas, [x + 1.0, y + 1.0, w - 2.0, 1.0], bevel);
-    fill(batch, atlas, [x + 1.0, y + 1.0, 1.0, h - 2.0 - lip], bevel);
-    fill(
-        batch,
-        atlas,
-        [x + 1.0, y + h - 1.0 - lip, w - 2.0, lip],
-        under,
-    );
-}
-/// A button's face, bevel and lip; a control that can't be used now.
-const FACE_OF_BUTTON: (u32, u32, u32) = (BUTTON, BUTTON_BEVEL, LIP);
-const DIM: (u32, u32, u32) = (PANEL, PANEL, LIP);
-/// The screen's plate, and the strip under it.
+/// The screen's plate, and the strip under it: dark glass with a thin edge.
 pub fn panel(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
-    block(batch, atlas, rect, (PANEL, BEVEL, LIP), 2.0);
+    fill(batch, atlas, rect, GLASS);
+    ring(batch, atlas, rect, EDGE);
 }
-/// A group's panel, raised off the plate, its rows on it.
+/// A group's panel on the plate, its rows on it.
 pub fn group(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
-    block(batch, atlas, rect, (RAISED, BEVEL, LIP), 1.0);
+    fill(batch, atlas, rect, GROUP);
 }
-/// A sunk well: fields, tick boxes, slider tracks, the scroller's track.
-pub fn well(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, h]: [f32; 4]) {
-    fill(batch, atlas, [x, y, w, h], OUTLINE);
-    fill(batch, atlas, [x + 1.0, y + 1.0, w - 2.0, h - 2.0], WELL);
-    fill(batch, atlas, [x + 1.0, y + 1.0, w - 2.0, 1.0], LIP);
+/// A sunk well: the search field, the value stepper.
+pub fn well(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
+    fill(batch, atlas, rect, WELL);
 }
-/// The scroller's thumb, a button on its track.
-pub fn thumb(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
-    block(batch, atlas, rect, FACE_OF_BUTTON, 1.0);
+/// The scroller: a faint track and its thumb.
+pub fn scroller(batch: &mut HudBatch, atlas: &HudAtlas, track: [f32; 4], thumb: [f32; 4]) {
+    fill(batch, atlas, track, ROW_RULE);
+    fill(batch, atlas, thumb, TRACK);
 }
 /// `text` cut to `width` with an ellipsis, as a long name gives way to its control.
 pub fn fit(atlas: &HudAtlas, text: &str, width: f32) -> String {
@@ -163,23 +150,18 @@ pub fn fit(atlas: &HudAtlas, text: &str, width: f32) -> String {
     }
     format!("{}...", out.trim_end())
 }
-/// A 16 px tick box ending at `right`, centred in the row at `y`.
+/// A 12 px tick box ending at `right`, centred in the row at `y`: its edge in the accent when on.
 pub fn checkbox(batch: &mut HudBatch, atlas: &HudAtlas, right: f32, y: f32, on: bool, live: bool) {
-    let rect = [
-        right - CONTROL_H,
-        y + (ROW - CONTROL_H) / 2.0,
-        CONTROL_H,
-        CONTROL_H,
-    ];
-    well(batch, atlas, rect);
+    let rect = [right - 12.0, y + 4.0, 12.0, 12.0];
+    fill(batch, atlas, rect, WELL);
+    let edge = match (on, live) {
+        (true, true) => ACCENT,
+        (true, false) => MUTED,
+        (false, _) => BOX_EDGE,
+    };
+    ring(batch, atlas, rect, edge);
     if on {
-        tick(
-            batch,
-            atlas,
-            rect[0] + 3.0,
-            rect[1] + 4.0,
-            if live { ACCENT } else { MUTED },
-        );
+        tick(batch, atlas, rect[0] + 1.0, rect[1] + 2.0, edge);
     }
 }
 /// A pixel tick, 10 by 8, over its own shadow.
@@ -204,8 +186,8 @@ fn tick(batch: &mut HudBatch, atlas: &HudAtlas, x: f32, y: f32, color: u32) {
         }
     }
 }
-/// A beveled button with its label centred: a row's value, Undo, and Done
-/// on the violet face (`primary`).
+/// A flat button with its label centred: Undo, Calibrate..., and Done in the
+/// violet (`primary`). Pointed at or focused, vanilla's white edge.
 pub fn button(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -214,21 +196,22 @@ pub fn button(
     (hover, live, primary): (bool, bool, bool),
 ) {
     let [x, y, w, h] = rect;
-    let (colors, lip) = match (live, primary) {
-        (false, _) => (DIM, 1.0),
-        (true, true) => ((FACE, FACE_BEVEL, FACE_LIP), 2.0),
-        (true, false) => (FACE_OF_BUTTON, 1.0),
+    let face = match (live, primary, hover) {
+        (false, _, _) => WELL,
+        (true, true, false) => FACE,
+        (true, true, true) => FACE_HOVER,
+        (true, false, false) => BUTTON,
+        (true, false, true) => BUTTON_HOVER,
     };
-    block(batch, atlas, rect, colors, lip);
-    // Vanilla's highlighted button: a white edge.
+    fill(batch, atlas, rect, face);
     if hover && live {
         ring(batch, atlas, rect, WHITE);
     }
     let color = if live { WHITE } else { MUTED };
-    let ty = y + ((h - 8.0) / 2.0).floor() - if primary { 1.0 } else { 0.0 };
+    let ty = y + ((h - 8.0) / 2.0).floor();
     ui::centered_text(batch, atlas, label, x + 2.0, ty, w - 4.0, color);
 }
-/// Vanilla's slider: a well, the 8 px handle at `position`, the value written over both.
+/// A slider: its value over a thin track filled in the accent up to the handle at `position`.
 pub fn slider(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -238,22 +221,22 @@ pub fn slider(
     (hover, live): (bool, bool),
 ) {
     let [x, y, w, h] = rect;
-    well(batch, atlas, rect);
-    let at = x + 1.0 + (position.clamp(0.0, 1.0) * (w - 10.0)).round();
-    let handle = [at, y, 8.0, h];
-    block(
+    let color = if live { WHITE } else { MUTED };
+    ui::centered_text(batch, atlas, value, x + 2.0, y + 1.0, w - 4.0, color);
+    let line = y + h - 3.0;
+    let at = x + (position.clamp(0.0, 1.0) * (w - 4.0)).round();
+    fill(batch, atlas, [x, line, w, 2.0], TRACK);
+    fill(
         batch,
         atlas,
-        handle,
-        if live { FACE_OF_BUTTON } else { DIM },
-        1.0,
+        [x, line, at - x, 2.0],
+        if live { ACCENT } else { MUTED },
     );
+    let handle = [at, line - 3.0, 4.0, 8.0];
+    fill(batch, atlas, handle, if live { HANDLE } else { MUTED });
     if hover && live {
-        ring(batch, atlas, handle, WHITE);
+        ring(batch, atlas, [at - 1.0, line - 4.0, 6.0, 10.0], ACCENT);
     }
-    let color = if live { WHITE } else { MUTED };
-    let ty = y + ((h - 8.0) / 2.0).floor();
-    ui::centered_text(batch, atlas, value, x + 2.0, ty, w - 4.0, color);
 }
 /// A value that a press steps through: in a well, between the arrows that say so.
 pub fn cycler(
