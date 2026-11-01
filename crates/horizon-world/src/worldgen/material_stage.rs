@@ -395,7 +395,7 @@ where
                     worker.update_y(above, y.wrapping_sub(bottom).wrapping_add(1), water, y);
                     if y >= write_min_y && y <= write_max_y {
                         let above = variants.surface && y >= worker.minimum_surface_level()?;
-                        let rule = variants.rule(y, above);
+                        let rule = worker.for_biome(variants.rule(y, above));
                         if let Some(state) = worker.try_apply(rule, BlockPos::new(x, y, z))? {
                             column.set_block(y, state)?;
                         }

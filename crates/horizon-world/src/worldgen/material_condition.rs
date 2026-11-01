@@ -333,6 +333,8 @@ pub struct Facts {
     pub low: i32,
     pub high: i32,
     pub above_surface: Option<bool>,
+    /// The block's biome (`MaterialSurfaceQueries::biome_id`), when known.
+    pub biome: Option<u32>,
 }
 impl<R: RandomSource> Clone for Kind<R>
 where
@@ -387,8 +389,20 @@ impl<R: RandomSource> Compiled<R> {
                     None
                 }
             }
+            Kind::BiomeIds(bits) => facts.biome.map(|id| {
+                bits.get(id as usize / 64)
+                    .is_some_and(|word| word >> (id % 64) & 1 == 1)
+            }),
             Kind::Not(child) => child.decided(facts).map(|value| !value),
             _ => None,
+        }
+    }
+    /// Whether a biome in `Facts` decides more of this condition.
+    fn reads_biome(&self) -> bool {
+        match &self.kind {
+            Kind::BiomeIds(_) => true,
+            Kind::Not(child) => child.reads_biome(),
+            _ => false,
         }
     }
     /// The vertical gradients' bounds, and whether the preliminary surface
@@ -646,6 +660,11 @@ pub struct MaterialConditions<R: RandomSource, S: MaterialSurfaceQueries> {
     context: Context<S>,
     conditions: Vec<Compiled<R>>,
     rules: Vec<CompiledRule<R>>,
+    /// Per rule, whether its biome conditions can be decided in advance
+    /// (`for_biome`), once asked.
+    reads_biome: Vec<Option<bool>>,
+    /// Rules specialised for a biome (`for_biome`): (rule, biome) to rule.
+    by_biome: horizon_core::fast_hash::FxHashMap<(usize, u32), usize>,
 }
 impl<R: RandomSource, S: MaterialSurfaceQueries> MaterialConditions<R, S> {
     pub fn new(generation: WorldGenerationContext, root: R::Positional, surface: S) -> Self {
@@ -683,6 +702,8 @@ impl<R: RandomSource, S: MaterialSurfaceQueries> MaterialConditions<R, S> {
             },
             conditions: Vec::new(),
             rules: Vec::new(),
+            reads_biome: Vec::new(),
+            by_biome: Default::default(),
         }
     }
     /// Compile a condition at the current context revision. Gradient bounds and

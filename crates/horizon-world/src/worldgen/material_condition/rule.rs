@@ -276,6 +276,14 @@ where
             Self::Empty | Self::OreVein { .. } | Self::Condition { .. } => false,
         }
     }
+    /// Whether a biome in `Facts` decides any of its conditions.
+    fn reads_biome(&self) -> bool {
+        match self {
+            Self::Condition { condition, rule } => condition.reads_biome() || rule.reads_biome(),
+            Self::Sequence(children) => children.iter().any(Self::reads_biome),
+            _ => false,
+        }
+    }
     fn inputs(&self, gradients: &mut Vec<(i32, i32)>, surface: &mut bool) {
         match self {
             Self::Condition { condition, rule } => {
@@ -354,6 +362,7 @@ where
                     low,
                     high,
                     above_surface,
+                    biome: None,
                 };
                 variants.push(self.rules[index].specialize(facts));
             }
@@ -365,6 +374,48 @@ where
             rules: (first..self.rules.len()).collect(),
             surface,
         })
+    }
+}
+impl<R: RandomSource, S: MaterialSurfaceQueries> MaterialConditions<R, S>
+where
+    R::Positional: Clone,
+{
+    /// Rule `index` for the current block's biome: its biome conditions
+    /// decided (`CompiledRule::specialize`), made once per biome. Near the
+    /// surface the rule is a long sequence of biome tests (a forest's, a
+    /// desert's, a badlands'...): most of them are then gone. Applying the
+    /// result gives what applying the rule does (conditions only read the
+    /// block and the world). Without a biome it is the rule itself: the rule
+    /// then meets the missing biome itself, as before.
+    pub fn for_biome(&mut self, index: usize) -> usize {
+        if self.reads_biome.len() <= index {
+            self.reads_biome.resize(index + 1, None);
+        }
+        let reads = *self.reads_biome[index]
+            .get_or_insert_with(|| self.rules.get(index).is_some_and(CompiledRule::reads_biome));
+        if !reads {
+            return index;
+        }
+        let Ok(Some(biome)) = self.context.biome_id() else {
+            return index;
+        };
+        if let Some(&rule) = self.by_biome.get(&(index, biome)) {
+            return rule;
+        }
+        let facts = Facts {
+            low: i32::MIN,
+            high: i32::MAX,
+            above_surface: None,
+            biome: Some(biome),
+        };
+        let rule = self.rules[index].specialize(facts);
+        self.rules.push(rule);
+        let specialised = self.rules.len() - 1;
+        // A specialised rule reads no biome.
+        self.reads_biome.resize(specialised + 1, None);
+        self.reads_biome[specialised] = Some(false);
+        self.by_biome.insert((index, biome), specialised);
+        specialised
     }
 }
 impl<R: RandomSource, T: MaterialSurfaceQueries> MaterialConditions<R, MaterialDensitySources<T>> {
