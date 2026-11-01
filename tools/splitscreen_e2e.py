@@ -511,7 +511,7 @@ def scenario_setup_leave():
 
 def scenario_controls():
     print('controls: the 2-sharing layout square, dragging a player between windows, Names, Identify')
-    g = Game(2)
+    g = Game(2, saved_split=True)
     def widgets():
         return g.ctl(1, 'ui')['widgets']
     def labels():
