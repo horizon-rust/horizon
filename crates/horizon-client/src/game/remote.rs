@@ -4835,7 +4835,10 @@ impl Game<'_> {
         };
         match &mut r.own_profile {
             OwnProfile::Idle => {
-                let Some(auth) = self.auth() else {
+                let Some(auth) = (!self.options.split_guest)
+                    .then(horizon_client::auth::current)
+                    .flatten()
+                else {
                     r.own_profile = OwnProfile::Done(None);
                     return;
                 };
