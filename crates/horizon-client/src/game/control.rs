@@ -608,13 +608,21 @@ impl Game<'_> {
                     .map_err(|e| e.to_string())?;
                 ok()
             }
+            "rt-scale" => {
+                let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
+                let scale = arg(1)?.parse::<u32>().ok().filter(|s| *s <= 8).ok_or(
+                    "rt-scale N (pixels a ray on each side, 1 to 8; 0 by the screen's size)",
+                )?;
+                renderer.set_rt_scale(scale);
+                Ok(Some(json!({ "ok": true, "scale": scale })))
+            }
             "rt-skip" => {
                 let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
-                let skip = arg(1)?
-                    .parse::<u32>()
-                    .map_err(|_| "rt-skip MASK (1 sun, 2 GI, 4 DI, 8 PSR; 0 all)")?;
-                renderer.set_rt_skip(skip & 15);
-                Ok(Some(json!({ "ok": true, "skip": skip & 15 })))
+                let skip = arg(1)?.parse::<u32>().map_err(
+                    |_| "rt-skip MASK (1 sun, 2 GI, 4 DI, 8 PSR, 16 GI every frame; 0 all)",
+                )?;
+                renderer.set_rt_skip(skip & 31);
+                Ok(Some(json!({ "ok": true, "skip": skip & 31 })))
             }
             "gpu-passes" => {
                 let on = match line.split_whitespace().nth(1) {

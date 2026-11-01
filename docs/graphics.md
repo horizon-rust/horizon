@@ -70,12 +70,13 @@ meshed, so a changed block reaches the shadows with its section. After the world
 (`gfx/shadow_rays.rs`) traces one ray per pixel of the depth toward the light, crossing empty 32- and 8-block bricks
 in one step; a solid block stops the light, leaves let half of it through. The tone mapping then dims what the
 solid terrain loses in the shadow: its sky light, never its block light (torches still light a shadowed wall).
-On the screen there is a ray for every pixel; in VR one for 2x2 pixels within 25 degrees of where the eyes look
+On the screen there is a ray for every pixel up to 3440x1440; in VR one for 2x2 pixels within 25 degrees of where the eyes look
 (the headset's gaze, else ahead) and one for 8x8 beyond (the quad views' insets are sharp all over), the same
 pass for every view. Measured on an RTX 4090: +1.2 ms of GPU a frame at 3440x1440 with a low morning sun, under
 the noise at noon; about +0.3 ms for the two 4096x3288 eyes of the fake VR runtime. Not yet: entities, water and
 glass neither cast nor receive, plants cast nothing, shadows are hard (no penumbra) and end at 8 chunks.
-`HORIZON_RT_SCALE=N` traces one ray for NxN pixels on the screen; `HORIZON_RT_DEBUG=1` shows the light the rays
+Past 3440x1440 the screen traces one ray for 2x2 pixels (a 4K screen 1920x1080 rays, read back through a depth-aware
+upsampling); `HORIZON_RT_SCALE=N` or `horizon-ctl rt-scale N` traces one ray for NxN pixels on the screen; `HORIZON_RT_DEBUG=1` shows the light the rays
 found, `2` the share the terrain keeps in the shadow, `6` the ambient occlusion.
 
 **Ray-Traced AO** (Quality, off by default, `rayTracedAo`, with Linear Light on) adds ambient occlusion over

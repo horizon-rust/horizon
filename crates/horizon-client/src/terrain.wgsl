@@ -127,9 +127,7 @@ fn rt_reflection(pixel: vec2<f32>, pos: vec3<f32>) -> vec4<f32> {
     let distance = length(pos);
     let bottom = rt_bottom(pixel, pos / max(distance, 1e-4));
     if bottom >= 0.0 && bottom < distance + 0.05 { return vec4(0.0); }
-    let size = vec2<f32>(textureDimensions(rt_reflect));
-    let at = clamp(vec2<i32>(pixel / globals.rt_motion.xy * size), vec2(0), vec2<i32>(size) - 1);
-    return textureLoad(rt_reflect, at, 0);
+    return rt_psr_at(rt_reflect, pixel, false);
 }
 // The view's last resolved frame (gfx/taa.rs `last_color`, linear light; 1x1 without the temporal
 // resolve), for the screen-space reflections.
@@ -395,13 +393,101 @@ fn sun_share(light: vec2<f32>, emission: u32) -> f32 {
 // the sky seen, below 0 when no ray got there: past the grid), reprojected into this view's last
 // mask; (1, 1, -1) where none of the four texels around showed this surface (a disocclusion, the
 // view's edge): lit and open for that frame.
+// RT lighting's masks hold a texel for `scale`x`scale` pixels where they are coarser than the view
+// (HORIZON_RT_SCALE, the screen's at 4K, a VR eye's 2x2), each traced from one pixel of its block
+// (shadow_rays.wgsl `pixel_of`). A fragment reads the four texels around it, each weighed
+// bilinearly and by how near the surface its ray met lies to the fragment's (the distance in
+// `rt_history`'s alpha), so a shadow's or a wall's edge stays where it is instead of showing the
+// blocks a nearest read does; with no texel on its surface (a thin edge) the nearest. The weights
+// once a fragment (`rt_taps`), for every mask read.
+struct RtTaps {
+    base: vec2<i32>,
+    w: vec4<f32>,
+    // A plain read: one texel (`base`) a pixel, or the nearest.
+    nearest: bool,
+}
+var<private> rt_taps: RtTaps;
+var<private> rt_taps_ready: bool = false;
+fn rt_taps_at(pixel: vec2<f32>, pos: vec3<f32>) -> RtTaps {
+    if rt_taps_ready { return rt_taps; }
+    rt_taps_ready = true;
+    let size = vec2<f32>(textureDimensions(rt_history));
+    let scale = globals.rt_motion.xy / size;
+    let top = vec2<i32>(size) - 1;
+    let nearest = clamp(vec2<i32>(pixel / scale), vec2(0), top);
+    rt_taps = RtTaps(nearest, vec4(0.0), true);
+    if scale.x < 1.5 || globals.rt_mode.x < 0.5 { return rt_taps; }
+    let s = floor(scale.x + 0.5);
+    let at = (pixel - 0.5 - floor(s / 2.0)) / s;
+    let base = vec2<i32>(floor(at));
+    let f = at - floor(at);
+    let d = length(pos);
+    var w = vec4(0.0);
+    for (var i = 0; i < 4; i++) {
+        let t = clamp(base + vec2(i & 1, i >> 1u), vec2(0), top);
+        let a = textureLoad(rt_history, t, 0).a;
+        let bi = select(1.0 - f.x, f.x, (i & 1) == 1) * select(1.0 - f.y, f.y, i >= 2);
+        let near = 1.0 - smoothstep(0.0, 0.05 + 0.02 * d, abs(a - d));
+        w[i] = select(0.0, (bi + 0.01) * near, a >= 0.0);
+    }
+    let total = w.x + w.y + w.z + w.w;
+    if total > 1e-3 { rt_taps = RtTaps(base, w / total, false); }
+    return rt_taps;
+}
+// What the mirrors and the refraction traced at `pixel` (`rt_reflect`, `rt_refract`): where they are
+// coarser than the view, read bilinearly between the four texels around (no 2x2 blocks on the
+// water), over those that traced something (alpha above 0) when `traced`, else all of them (a
+// reflection's alpha is its share of surface against the sky's). The light at a hit is one
+// sample, not denoised: a texel's surface far brighter than the others' around (a firefly, which
+// would cover 2x2 pixels and more) is left out.
+fn rt_psr_at(t: texture_2d<f32>, pixel: vec2<f32>, traced: bool) -> vec4<f32> {
+    let size = vec2<f32>(textureDimensions(t));
+    let scale = globals.rt_motion.xy / size;
+    let top = vec2<i32>(size) - 1;
+    if scale.x < 1.5 { return textureLoad(t, clamp(vec2<i32>(pixel / scale), vec2(0), top), 0); }
+    let s = floor(scale.x + 0.5);
+    let at = (pixel - 0.5 - floor(s / 2.0)) / s;
+    let base = vec2<i32>(floor(at));
+    let f = at - floor(at);
+    var taps: array<vec4<f32>, 4>;
+    var w = vec4(0.0);
+    var lum = vec4(0.0);
+    var dimmest = 1e30;
+    for (var i = 0; i < 4; i++) {
+        taps[i] = textureLoad(t, clamp(base + vec2(i & 1, i >> 1u), vec2(0), top), 0);
+        w[i] = select(1.0 - f.x, f.x, (i & 1) == 1) * select(1.0 - f.y, f.y, i >= 2) + 1e-3;
+        if traced && taps[i].a <= 0.0 { w[i] = 0.0; }
+        lum[i] = dot(taps[i].rgb, vec3(0.2126, 0.7152, 0.0722));
+        if w[i] > 0.0 && taps[i].a > 0.0 { dimmest = min(dimmest, lum[i]); }
+    }
+    var sum = vec4(0.0);
+    var total = 0.0;
+    for (var i = 0; i < 4; i++) {
+        if taps[i].a > 0.0 && lum[i] > 4.0 * dimmest + 0.05 { w[i] = 0.0; }
+        sum += w[i] * taps[i];
+        total += w[i];
+    }
+    if total <= 1e-4 { return vec4(0.0); }
+    return sum / total;
+}
+// Mask `t` at the fragment at `pixel` (camera-relative `pos`), through `rt_taps`.
+fn rt_mask(t: texture_2d<f32>, pixel: vec2<f32>, pos: vec3<f32>) -> vec4<f32> {
+    let taps = rt_taps_at(pixel, pos);
+    if taps.nearest { return textureLoad(t, taps.base, 0); }
+    let top = vec2<i32>(textureDimensions(t)) - 1;
+    var sum = vec4(0.0);
+    for (var i = 0; i < 4; i++) {
+        if taps.w[i] > 0.0 {
+            sum += taps.w[i] * textureLoad(t, clamp(taps.base + vec2(i & 1, i >> 1u), vec2(0), top), 0);
+        }
+    }
+    return sum;
+}
 fn rt_visibility(pos: vec3<f32>, pixel: vec2<f32>) -> vec3<f32> {
     // This frame's rays, traced on the depth prepass (rt_motion.xy the world target's size): the
-    // mask at this very pixel.
+    // mask at this pixel.
     if globals.rt_motion.w > 1.5 {
-        let size = vec2<f32>(textureDimensions(rt_history));
-        let at = clamp(vec2<i32>(pixel / globals.rt_motion.xy * size), vec2(0), vec2<i32>(size) - 1);
-        return textureLoad(rt_history, at, 0).rgb;
+        return rt_mask(rt_history, pixel, pos).rgb;
     }
     if globals.rt_motion.w < 0.5 { return vec3(1.0, 1.0, -1.0); }
     let q = pos + globals.rt_motion.xyz;
@@ -777,12 +863,15 @@ fn rt_moon_disc(d: vec3<f32>) -> vec3<f32> {
 // visibility the mask already holds; white without this frame's rays.
 fn rt_sun_colour(pixel: vec2<f32>, visible: f32) -> vec3<f32> {
     if globals.rt_motion.w < 1.5 { return vec3(1.0); }
+    // Read as the visibility was (`rt_taps`).
+    if rt_taps_ready { return rt_mask(rt_sun_tint, pixel, vec3(0.0)).rgb / max(visible, 1e-3); }
     let size = vec2<f32>(textureDimensions(rt_sun_tint));
     let at = clamp(vec2<i32>(pixel / globals.rt_motion.xy * size), vec2(0), vec2<i32>(size) - 1);
     return textureLoad(rt_sun_tint, at, 0).rgb / max(visible, 1e-3);
 }
 fn rt_traced(pixel: vec2<f32>) -> vec4<f32> {
     if globals.rt_motion.w < 1.5 { return vec4(0.0, 0.0, 0.0, -1.0); }
+    if rt_taps_ready { return rt_mask(rt_blocks, pixel, vec3(0.0)); }
     let size = vec2<f32>(textureDimensions(rt_blocks));
     let at = clamp(vec2<i32>(pixel / globals.rt_motion.xy * size), vec2(0), vec2<i32>(size) - 1);
     return textureLoad(rt_blocks, at, 0);
@@ -1317,10 +1406,7 @@ fn rt_water_at(pos: vec3<f32>, pixel: vec2<f32>, levels: vec2<f32>, spherical: f
     // (the scene behind, unbent, no longer shows).
     var refracted = vec4(0.0);
     if globals.rt_motion.w > 1.5 {
-        let size = vec2<f32>(textureDimensions(rt_refract));
-        let at = clamp(vec2<i32>(in.clip / globals.rt_motion.xy * size), vec2(0),
-            vec2<i32>(size) - 1);
-        refracted = textureLoad(rt_refract, at, 0);
+        refracted = rt_psr_at(rt_refract, in.clip, true);
         if refracted.a > 0.0 { thickness = refracted.a; }
     }
     let through = exp(-absorption * thickness);
@@ -1629,9 +1715,7 @@ const RAIN_SPRAY: f32 = 0.08;
 // light, a 1 when it reflects a surface (0: the sky, reflected here).
 fn rt_puddle_reflection(pixel: vec2<f32>) -> vec4<f32> {
     if globals.rt_motion.w < 1.5 { return vec4(0.0); }
-    let size = vec2<f32>(textureDimensions(rt_reflect));
-    let at = clamp(vec2<i32>(pixel / globals.rt_motion.xy * size), vec2(0), vec2<i32>(size) - 1);
-    return textureLoad(rt_reflect, at, 0);
+    return rt_psr_at(rt_reflect, pixel, false);
 }
 // RT lighting's wet world (after Lagarde 2013, "Water drop 2b: dynamic rain and its effects"):
 // material `m` on a face of normal `geo` at camera-relative `pos` (its pixel, its sky light level
@@ -1932,9 +2016,7 @@ fn rt_shift(pos: vec3<f32>, bent: vec3<f32>, straight: vec3<f32>, d: f32) -> vec
 }
 // What the rays met through the translucent surface at `pixel` (`rt_refract`).
 fn rt_refracted(pixel: vec2<f32>) -> vec4<f32> {
-    let size = vec2<f32>(textureDimensions(rt_refract));
-    let at = clamp(vec2<i32>(pixel / globals.rt_motion.xy * size), vec2(0), vec2<i32>(size) - 1);
-    return textureLoad(rt_refract, at, 0);
+    return rt_psr_at(rt_refract, pixel, true);
 }
 fn rt_glass_at(g: GlassIn) -> WaterLight {
     let distance = length(g.pos);

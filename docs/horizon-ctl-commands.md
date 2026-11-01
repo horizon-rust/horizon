@@ -27,6 +27,7 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | --- | --- | --- | --- |
 | `events [--since SEQ]` | `events` | What happened since SEQ, oldest first: screens, chat, deaths, respawns, items gained or lost, dimensions, worlds | `--since` (integer): only events after this seq |
 | `gpu-passes [on\|off\|report]` | `gpu_passes` | Time each stage of the GPU's frame in the running game, and read the times | `action` (on, off, report): start, stop or just read (default) |
+| `rt-scale N` | `rt_scale` | Trace RT lighting's rays on the screen at one for NxN pixels | `n` (integer, required): pixels a ray on each side, 0 auto |
 | `rt-skip MASK` | `rt_skip` | Leave parts of RT lighting's kernel out, to time each alone | `mask` (integer, required): the parts left out |
 | `state` | `state` | Player, world, screen and crosshair target in one reply | none |
 | `looking-at` | `looking_at` | The block or entity under the crosshair | none |

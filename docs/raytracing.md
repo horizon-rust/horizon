@@ -334,7 +334,7 @@ Remix's values, from its `native/rtx.conf` and its per-situation confs (`minecra
 | Primary visibility | rasterised G-buffer (the depth prepass and the terrain's fragments), rays from it; on water, stained glass and ice the ray pass replaces the reflected surface (`hw_reflect`): a ray from the camera meets the nearest translucent triangle in front of the solid depth, turns off it (off the waves on water), meets what it reflects and lights it with the sun's shadow ray and the radiance cache; the material model takes it in place of the sky (`rt_mirror`) | open equivalent of Remix's PSR for reflections. On the water's top the ray also bends by Snell's law (1.33, total internal reflection from below: Snell's window) and what it meets replaces the scene behind (`shadow_rays_psr.wgsl`), absorbed over the distance run in the water; through glass too (see Glass). Gaps: primary visibility rasterised, not traced; one reflection and one refraction, no PSR chain (glass or water behind the first glass only tints); what the reflected and refracted rays meet is lit by the sun's shadow ray and the radiance cache, at least by its faces' block light level (the light sources' light over the square of the steps from them) and, within a block of a light source, by that source's light at point-blank range unshadowed: the light of a lantern behind a window or under water reaches what is around it, but the lantern's own body looks duller than seen directly (the terrain's vertices carry no emission there to make it shine) |
 | Direct light | ReSTIR DI over the 8 lights each 8-block cell lists (those lighting its centre most, chosen on the CPU from all lights in range: a static NEE cache), temporal and spatial reuse from the last frame, one shadow ray; a light reaches 24 blocks at level 15 (half again vanilla's), falling off by the inverse square under a window; the moving lights (held torch, burning mobs, dropped items) added by RIS with one shadow ray | open equivalent of RTXDI. An NEE cache as Remix's in kind: each cell counts its shadow rays toward each of its lights and those that got there, and the draw weighs each light by that learnt visibility (at least a tenth), so lights behind walls are drawn less. Gaps: the cells' lists are chosen on the CPU by unshadowed light, the cache only reweighs them; Remix's lights have no cut-off; no sparse rendering (`quality 0.3`): every pixel traces, more rays than Remix for the same image |
 | Every emissive block a light | emitters touching air, coloured by block (`mesher.rs` `light_colour`) | as Remix in kind; to do: per-block multipliers, the held light |
-| Indirect light | ReSTIR GI: one cosine ray a pixel, resampled with the last frame's reservoir and two neighbours' (same face and distance), a visibility ray for reused samples. With hardware rays the bounce rays meet the drawn triangles (alpha-tested, through tinted glass and water), the hit's normal from its triangle and its colour from its texel times the vertex tint; the hit is lit by the sun's shadow ray and the radiance cache, and a cache miss traces a second bounce (lit by the sun and the cache). Without them, the voxel grid's blocks and map colours. GPU: unchanged within the noise (8.5 against 8.7 ms, 3440x1440, the night hall) | open equivalent of Remix's ReSTIR GI and path tracer. Gaps: two traced bounces then the cache, where Remix traces up to 4; the neighbours' Jacobian taken as 1; the hit's material is its albedo only (no normal map, roughness or emission at the hit); the vertex tint keeps vanilla's directional shade |
+| Indirect light | ReSTIR GI: one cosine ray a pixel (traced one frame in four on a surface already seen, in turns by 8x8 tiles), resampled with the last frame's reservoir and two neighbours' (same face and distance), a visibility ray for reused samples. With hardware rays the bounce rays meet the drawn triangles (alpha-tested, through tinted glass and water), the hit's normal from its triangle and its colour from its texel times the vertex tint; the hit is lit by the sun's shadow ray and the radiance cache, and a cache miss traces a second bounce (lit by the sun and the cache). Without them, the voxel grid's blocks and map colours. GPU: unchanged within the noise (8.5 against 8.7 ms, 3440x1440, the night hall) | open equivalent of Remix's ReSTIR GI and path tracer. Gaps: two traced bounces then the cache, where Remix traces up to 4; the neighbours' Jacobian taken as 1; the hit's material is its albedo only (no normal map, roughness or emission at the hit); the vertex tint keeps vanilla's directional shade |
 | Radiance cache | a hash grid of surface cells (SHaRC-like): each cell averages its frames up to 1000 and is emptied after 1024 frames unseen, Remix's SHaRC values; read by the bounce rays' hits | open equivalent of SHaRC. Gaps: NRC is not reproduced, since an MLP trained each frame needs cooperative matrices to be fast (later escape hatch: `VK_KHR_cooperative_matrix`); the cells are surface cells a 1/1024 block of light apart, not SHaRC's level-of-detail by distance |
 | Denoiser | after NRD's ReLAX, Remix's denoiser without DLSS Ray Reconstruction: a per-pixel history of up to 30 frames (each frame adds 1/(n+1)), reprojected bilinearly with face and distance checks; then a variance-guided a-trous filter (4 passes, SVGF) over the indirect and the direct light together, blurring wider where the history is under 4 frames (ReLAX's history fix); the slow history clamped to a 6-frame fast history's mean within 2 standard deviations (ReLAX's history clamping), so a light switched on or off shows within 6 frames | open equivalent of ReLAX, gaps: Remix's default is DLSS Ray Reconstruction (NVIDIA-only, not reproduced); the first pass brings a pixel brighter than 4 times its brightest neighbour on its face down to that (ReLAX's anti-firefly) | open equivalent of ReLAX; to do: separate specular |
 | Translucent shadows | direct (sun, lights) and indirect (the bounce rays, `hw_hit`'s `through`) through stained glass and water, with the water's caustics; each glass face crossed is a wall of its colour (`glass_wall`: Fresnel, Beer-Lambert over the wall along the ray bent inside it, plain glass's diffuse layer), so layers of colours multiply (yellow over cyan lights the floor green) | as Remix; the walls are the thin-walled adaptation (see Glass) |
@@ -478,6 +478,55 @@ the 11.1 ms for an eye of about 2050x1650 (at about 3 ms a million pixels, lever
 
 **Still to do:** the whole table again on an idle GPU; 3 on the Vision Pro's real gaze (fixed foveation without it:
 the periphery's blocks show when the eyes turn); the depth prepass and the shared trace of 4.
+
+### The screen first, at 4K, and what it gives VR (1 November 2026)
+
+RTX 4090 on an idle GPU, 3840x2160, the player's settings (render distance 24, distant terrain 1024, RT lighting,
+parallax, natural fog, HDR); the copy of NVIDIA's RTX Demo world with RTX-Remix-Materials and RTX-Remix-Glass, and the
+player's own world (its packs). Timed in the running game (`horizon-ctl gpu-passes`, `tools/gpu_now.py`), each change
+against its own absence within one session (`horizon-ctl rt-skip 16`, `horizon-ctl rt-scale 1`), the same pose held:
+
+| View | Frame before (ms) | Frame after (ms) | Trace before | Trace after |
+|---|---|---|---|---|
+| RTX Demo, spawn, east (interior, lanterns) | 77 | 18-20 | 67 | 8-12 |
+| RTX Demo, spawn, west | 60 | 18-20 | 50 | 9 |
+| Player's world, at the beach (water fills the view) | 111 | 25-30 | 90 | 12-16 |
+| Player's world, the lake by day / by night | 30 / 30 | 14.4 / 14.7 | 15 / 18 | 1.5 / 1.6 |
+| Player's world, the player's place (high up) | 18 | 14.5 | 7.0 | 0.8 |
+
+What changed, each a compromise, its cost to the picture checked on captures of the same pose:
+
+1. **The bounced light (ReSTIR GI) in turns** (shadow_rays.wgsl `trace`): a surface the last frame showed traces it one
+   frame in four, in 8x8 tiles (a wave of threads skips it whole), a 2x2 pattern turning with the view's own frames; the
+   frames between keep the last frame's light, reservoir and sky and feed the radiance cache with them; behind water or
+   glass whose refraction replaces it, one frame in eight. A surface just seen traces every frame. GI was 70 to 80 % of
+   the trace; one frame in two took the trace from 50 to 35 ms in the RTX Demo, one in four 3.4 ms more of 12. The
+   captures differ by 0.9 to 1.9 levels of 255 against 0.7 between two of the same: noise. The light sources (ReSTIR DI)
+   stay every frame. Each view counts its own frames (`ViewMasks::frame`): two eyes sharing the passes' counter would
+   each have seen every other frame, half the tiles never.
+2. **One ray for 2x2 pixels on a screen past 3440x1440** (`shadow_rays::Foveation::screen`, `SHARP_PIXELS`): 4K traces
+   1920x1080 rays, as Remix's path tracing renders at DLSS Performance's resolution there; the trace and the denoiser a
+   quarter (45 to 9.5 ms, 2.3 to 0.6). The terrain reads the masks through a depth-aware upsampling (terrain.wgsl
+   `rt_taps`: the four texels around a fragment weighed bilinearly and by how near their surface lies to it, 0.2 to
+   0.6 ms of the world's raster), the mirrors and the refraction bilinearly without a texel brighter than four times its
+   neighbours (`rt_psr_at`: the light at a mirror's hit is one sample, a firefly would cover 2x2 pixels). The water's
+   refraction is a little softer than at a ray a pixel; edges and shadows hold. `horizon-ctl rt-scale N` (or
+   `HORIZON_RT_SCALE`) chooses.
+3. **The froxels' composite in one pass** (`froxels_dual.wgsl`, dual-source blending): the in-scatter added and the
+   scene times the transmittance from one march of the fogs a pixel instead of one for each: 3.1 to about 1.8 ms with
+   the natural fogs at 4K.
+4. **In VR the first eye builds the rays' structures** (BLAS and TLAS) for the frame's views; the second eye traces the
+   same (0.4 ms an eye).
+
+**What it gives VR**, the simulated headset (`tools/vr_fake_run.py --hz 1000`) at 3660x3200 an eye in the RTX Demo,
+the head ahead: the two eyes' frames 22.2 ms before 1 and 4, 18.4 ms after (the trace 11.5 to 4.4 ms of both eyes).
+What is left of the eyes (first eye / second eye): the trace 2.4 / 1.9, the raster 1.5 / 1.4, the denoiser 1.0 / 1.0,
+the depth prepass 0.9 / 0.7, the froxels' inject 1.25 (the first eye's alone), the TAA 0.3 / 0.3. Not yet tried in a
+headset.
+
+**Kept, though measured:** the second bounce on a radiance cache miss (3 ms of 12 in the RTX Demo's interior, which
+loses 1 % of its light without it) and the reuse's visibility ray (1.3 ms; without it a neighbour's sample leaks
+through walls).
 
 ## What exists: the spike (`origin/feat/raytracing-spike`, 42c752d6b)
 

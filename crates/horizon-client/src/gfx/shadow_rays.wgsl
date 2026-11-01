@@ -30,7 +30,8 @@ struct Rt {
     // xyz toward the real sun (the sky table's frame), w 1 when the sky table holds its sky.
     sun: vec4<f32>,
     // x: this frame's number (the rays' directions change with it), y: the plain glass's sprite
-    // layers, packed (shadow_rays_hw.wgsl `hw_glass`).
+    // layers, packed (shadow_rays_hw.wgsl `hw_glass`), z: this view's own frame number (what rests
+    // in turn, `trace`).
     frame: vec4<f32>,
     // rgb: the light the rays trace toward (the sun's through the atmosphere, or the moon's), in
     // paper whites, for the light bouncing off what the rays hit; w its disc's angular radius.
@@ -511,7 +512,8 @@ const MAP_COLORS: array<u32, 62> = array<u32, 62>(
 override DEBUG: u32 = 0u;
 // `HORIZON_RT_SKIP`, a mask of what the kernel leaves out, to time each part alone (the GPU budget,
 // docs/raytracing.md): 1 the sun's ray, 2 the sky and bounced light (ReSTIR GI), 4 the light
-// sources' (ReSTIR DI), 8 the mirrors and water (PSR).
+// sources' (ReSTIR DI), 8 the mirrors and water (PSR); 16 traces the bounced light every frame
+// instead of in turns (`trace`), to measure what the turns save and what they change.
 override SKIP: u32 = 0u;
 
 // Ray-traced shadows (gfx/voxels.rs, docs/raytracing.md): whether world block `v` is in the grid.
@@ -1518,13 +1520,20 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         // the reservoirs the last frame left where this surface was.
         let back = restir_last(pos);
         var sky = vec4(0.0, 0.0, 0.0, 1.0);
-        // Behind water or glass the refraction replaced (`behind_psr`), this surface's bounced
-        // light never shows: what does is what the bent ray met, lit by the radiance cache. It is
-        // traced one frame in four (in 8x8 tiles, a workgroup's, turning: a wave of threads skips it
-        // whole or not at all); the frames between keep the last frame's light, reservoir and sky,
-        // without a ray, and feed the cache with that.
-        let rest = behind_psr && back.z == 1
-            && (((texel.x >> 3) & 1) + 2 * ((texel.y >> 3) & 1)) != i32(u32(rt.frame.x) & 3u);
+        // The bounced light is traced in turns, in 8x8 tiles (a workgroup's: a wave of threads
+        // skips it whole or not at all): a surface the last frame showed traces it one frame in
+        // four, a 2x2 pattern of tiles turning with the view's frames, its 30 frames' history
+        // averaging a quarter as many rays (the sky's and the bounces' light changes slowly; the
+        // light sources', ReSTIR DI's, is traced every frame); the frames between keep the last
+        // frame's light, reservoir and sky, without a ray, and feed the cache with that. A surface
+        // just seen traces every frame. Behind water or glass the refraction replaced
+        // (`behind_psr`), this surface's light never shows (what does is what the bent ray met,
+        // lit by the radiance cache): one frame in eight, a 4x2 pattern, to keep the cache fed.
+        let t = vec2<u32>(texel) >> vec2(3u);
+        let frame = u32(rt.frame.z);
+        var rest = tile_of(t, 2u) != (frame & 3u);
+        if behind_psr { rest = tile_of(t, 3u) != (frame & 7u); }
+        rest = rest && back.z == 1 && (SKIP & 16u) == 0u;
         if rest {
             sky = vec4(textureLoad(last_blocks, back.xy, 0).rgb, textureLoad(last_mask, back.xy, 0).b);
             gi_out_a = textureLoad(last_gi_a, back.xy, 0);
@@ -1548,6 +1557,12 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
             reservoir_out);
     }
     return Traced(vec4(sun, open, 0.0, 1.0), none.blocks, none.direct, none.sun, none.reservoir);
+}
+// An 8x8 tile's place (`t`, in tiles) in a pattern of 2^`bits` tiles (2: 2x2, 3: 4x2), the turn it
+// is traced on (`trace`'s bounced light).
+fn tile_of(t: vec2<u32>, bits: u32) -> u32 {
+    let k = (t.x & 1u) | ((t.y & 1u) << 1u) | (((t.x >> 1u) & 1u) << 2u);
+    return k & ((1u << bits) - 1u);
 }
 // Where camera-relative `pos` was in the last frame's masks (xy), and z 1 when it showed it there.
 fn restir_last(pos: vec3<f32>) -> vec3<i32> {

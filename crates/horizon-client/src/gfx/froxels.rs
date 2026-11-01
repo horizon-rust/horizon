@@ -332,6 +332,15 @@ pub fn source(hardware: bool, sprite_split: u32) -> String {
     )
 }
 
+/// The same with the one-pass composite (`froxels_dual.wgsl`), for a GPU that blends two sources.
+pub fn dual_source(hardware: bool, sprite_split: u32) -> String {
+    format!(
+        "enable dual_source_blending;\n{}{}",
+        source(hardware, sprite_split),
+        include_str!("froxels_dual.wgsl")
+    )
+}
+
 pub struct Froxels {
     /// The volumetrics are drawn (`Renderer::set_volumetrics`, or `HORIZON_FROXELS=1`).
     pub enabled: bool,
@@ -347,10 +356,13 @@ pub struct Froxels {
     integrate: wgpu::ComputePipeline,
     integrate_layout: wgpu::BindGroupLayout,
     shader: wgpu::ShaderModule,
+    /// The shader with the one-pass composite (`froxels_dual.wgsl`), where the GPU blends two
+    /// sources.
+    dual: Option<wgpu::ShaderModule>,
     apply_layout: wgpu::BindGroupLayout,
-    /// The composite's pipelines (the scene times the transmittance, then the in-scatter added), for
-    /// the colour format they were made for.
-    apply: Option<(wgpu::TextureFormat, [wgpu::RenderPipeline; 2])>,
+    /// The composite's pipelines (the scene times the transmittance, then the in-scatter added; or
+    /// both at once with `dual`), for the colour format they were made for.
+    apply: Option<(wgpu::TextureFormat, Vec<wgpu::RenderPipeline>)>,
     sampler: wgpu::Sampler,
     uniform: wgpu::Buffer,
     views: Vec<ViewFroxels>,
@@ -400,6 +412,15 @@ impl Froxels {
             label: Some("Froxel volumetrics"),
             source: wgpu::ShaderSource::Wgsl(source(hardware, sprite_split).into()),
         });
+        let dual = device
+            .features()
+            .contains(wgpu::Features::DUAL_SOURCE_BLENDING)
+            .then(|| {
+                device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("Froxel volumetrics' one-pass composite"),
+                    source: wgpu::ShaderSource::Wgsl(dual_source(hardware, sprite_split).into()),
+                })
+            });
         let entry = |binding, visibility, ty| wgpu::BindGroupLayoutEntry {
             binding,
             visibility,
@@ -560,6 +581,7 @@ impl Froxels {
             integrate,
             integrate_layout,
             shader,
+            dual,
             apply_layout,
             apply: None,
             sampler: device.create_sampler(&wgpu::SamplerDescriptor {
@@ -639,7 +661,7 @@ impl Froxels {
         &mut self,
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
-    ) -> &[wgpu::RenderPipeline; 2] {
+    ) -> &[wgpu::RenderPipeline] {
         if self.apply.as_ref().is_none_or(|(f, _)| *f != format) {
             let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Froxel volumetrics' composite"),
@@ -651,7 +673,7 @@ impl Froxels {
                 dst_factor: wgpu::BlendFactor::One,
                 operation: wgpu::BlendOperation::Add,
             };
-            let make = |label, entry_point, color: wgpu::BlendComponent| {
+            let make = |label, module, entry_point, color: wgpu::BlendComponent| {
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some(label),
                     layout: Some(&layout),
@@ -662,7 +684,7 @@ impl Froxels {
                         buffers: &[],
                     },
                     fragment: Some(wgpu::FragmentState {
-                        module: &self.shader,
+                        module,
                         entry_point: Some(entry_point),
                         compilation_options: Default::default(),
                         targets: &[Some(wgpu::ColorTargetState {
@@ -681,26 +703,41 @@ impl Froxels {
                     cache: None,
                 })
             };
-            let pipelines = [
-                make(
-                    "Froxel volumetrics' transmittance",
-                    "fs_transmit",
-                    wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::Zero,
-                        dst_factor: wgpu::BlendFactor::Src,
-                        operation: wgpu::BlendOperation::Add,
-                    },
-                ),
-                make(
-                    "Froxel volumetrics' in-scatter",
-                    "fs_scatter",
+            let pipelines = match &self.dual {
+                // One march of the fogs: the in-scatter plus the scene times the transmittance.
+                Some(dual) => vec![make(
+                    "Froxel volumetrics' composite",
+                    dual,
+                    "fs_apply_dual",
                     wgpu::BlendComponent {
                         src_factor: wgpu::BlendFactor::One,
-                        dst_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::Src1,
                         operation: wgpu::BlendOperation::Add,
                     },
-                ),
-            ];
+                )],
+                None => vec![
+                    make(
+                        "Froxel volumetrics' transmittance",
+                        &self.shader,
+                        "fs_transmit",
+                        wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
+                            dst_factor: wgpu::BlendFactor::Src,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    ),
+                    make(
+                        "Froxel volumetrics' in-scatter",
+                        &self.shader,
+                        "fs_scatter",
+                        wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    ),
+                ],
+            };
             self.apply = Some((format, pipelines));
         }
         &self.apply.as_ref().expect("just made").1
@@ -1015,7 +1052,7 @@ impl Froxels {
                 view(20, &integrated),
             ],
         });
-        let pipelines = self.apply_pipelines(device, inputs.color_format).clone();
+        let pipelines = self.apply_pipelines(device, inputs.color_format).to_vec();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Froxel volumetrics' composite"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {

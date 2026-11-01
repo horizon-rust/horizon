@@ -14,9 +14,12 @@ const KEPT: usize = 5;
 /// A sparse ray's bytes (shadow_rays.wgsl `SparseRay`: seven vectors of four).
 const SPARSE_RAY_BYTES: u64 = 7 * 16;
 
-/// Where the rays go, a view's choice: on the screen one a pixel (quality first); in VR one for
-/// 2x2 pixels where the eyes look, about the density KRVR streams to the headset, and one for 8x8
-/// away from it (shared by a 4x4 block of mask texels, shadow_rays.wgsl).
+/// Where the rays go, a view's choice: on the screen one a pixel up to about 1440p, one for 2x2
+/// pixels past it (a 4K screen traces 1920x1080 rays, as Remix's path tracing renders at DLSS
+/// Performance's resolution there: the terrain reads the masks through a depth-aware upsampling,
+/// terrain.wgsl `rt_taps`); in VR one for 2x2 pixels where the eyes look, about the density KRVR
+/// streams to the headset, and one for 8x8 away from it (shared by a 4x4 block of mask texels,
+/// shadow_rays.wgsl).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Foveation {
     /// Depth pixels a mask texel stands for, on each side.
@@ -26,21 +29,34 @@ pub struct Foveation {
     pub gaze: Option<([f32; 3], f32)>,
 }
 
+/// The screen's pixels a ray stands for on each side, set in a running game (`horizon-ctl rt-scale`,
+/// 1 to 8); 0 chooses by the screen's size (`Foveation::screen`).
+pub static SCREEN_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The most pixels the screen traces a ray each for (3440x1440 and below; 4K traces one for 2x2).
+pub const SHARP_PIXELS: u64 = 3440 * 1440;
+
 /// The sharp zone's half angle, as VRS's (horizon-xr `foveation.rs`): a 12-degree gaze step on
 /// each side stays sharp.
 pub const SHARP_DEGREES: f32 = 25.0;
 
 impl Foveation {
-    /// The screen's: one ray a pixel, or `HORIZON_RT_SCALE`'s.
-    pub fn screen() -> Self {
-        static SCALE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-        let scale = *SCALE.get_or_init(|| {
+    /// The screen's of `size` pixels: one ray a pixel, one for 2x2 past `SHARP_PIXELS`, or
+    /// `set_screen_scale`'s, or `HORIZON_RT_SCALE`'s.
+    pub fn screen(size: [u32; 2]) -> Self {
+        static SCALE: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+        let forced = *SCALE.get_or_init(|| {
             std::env::var("HORIZON_RT_SCALE")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .filter(|v| (1..=8).contains(v))
-                .unwrap_or(1)
         });
+        let pixels = u64::from(size[0]) * u64::from(size[1]);
+        let set = SCREEN_SCALE.load(std::sync::atomic::Ordering::Relaxed);
+        let scale = (set > 0)
+            .then_some(set)
+            .or(forced)
+            .unwrap_or(if pixels > SHARP_PIXELS { 2 } else { 1 });
         Self { scale, gaze: None }
     }
 
@@ -178,6 +194,9 @@ struct ViewMasks {
     next: usize,
     /// The last pass's view projection and camera.
     last: Option<(Mat4, DVec3)>,
+    /// This view's passes so far: what rests in turn (shadow_rays.wgsl `trace`) turns with the
+    /// view's own frames, not with the passes of all views (two eyes would each see every other).
+    frame: u32,
 }
 
 /// RT lighting's hybrid's (`hw_rays`) for the shadow rays: the terrain's top-level structure,
@@ -679,6 +698,7 @@ impl ShadowRays {
                     light: [mask(), mask()],
                     next: 0,
                     last: None,
+                    frame: 0,
                 });
                 self.views.len() - 1
             }
@@ -789,6 +809,8 @@ impl ShadowRays {
         let last_light = masks.light[1 - masks.next].clone();
         let last = masks.last.replace((view_proj, camera));
         masks.next = 1 - masks.next;
+        masks.frame = masks.frame.wrapping_add(1);
+        let view_frame = (masks.frame % 65536) as f32;
         self.frame = self.frame.wrapping_add(1);
         let uniform = Uniform {
             inverse_view_proj: view_proj.inverse().to_cols_array_2d(),
@@ -816,7 +838,7 @@ impl ShadowRays {
                 None => [0.0; 4],
             },
             sun: rays.sun,
-            frame: [(self.frame % 65536) as f32, rays.glass, 0.0, 0.0],
+            frame: [(self.frame % 65536) as f32, rays.glass, view_frame, 0.0],
             sun_light: rays.sun_light,
             water: rays.water,
             hw_offset: rays.hw_offset,

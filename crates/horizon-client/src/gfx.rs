@@ -4248,7 +4248,7 @@ impl Renderer {
         let view = self.eye.map_or(0, |e| e.view_index);
         let foveation = match &self.eye {
             Some(eye) => eye.foveation,
-            None => shadow_rays::Foveation::screen(),
+            None => shadow_rays::Foveation::screen(size),
         };
         let grid = self.voxels.views().expect("the grid runs");
         let lights = self.voxels.light_buffers().expect("the grid runs");
@@ -4412,6 +4412,11 @@ impl Renderer {
     /// (`shadow_rays::ShadowRays::set_skip`, `horizon-ctl rt-skip`).
     pub fn set_rt_skip(&mut self, skip: u32) {
         self.shadow_rays.set_skip(&self.device, skip);
+    }
+    /// The screen's pixels an RT lighting ray stands for on each side, 0 by its size
+    /// (`shadow_rays::Foveation::screen`, `horizon-ctl rt-scale`).
+    pub fn set_rt_scale(&mut self, scale: u32) {
+        shadow_rays::SCREEN_SCALE.store(scale, std::sync::atomic::Ordering::Relaxed);
     }
     pub fn set_aldhani(&mut self, seconds: Option<f32>) -> std::result::Result<(), &'static str> {
         let now = self.water_clock.elapsed().as_secs_f32();
@@ -6171,7 +6176,10 @@ impl Renderer {
         // world draws (the flat draws, Metal's, still read the last frame's, reprojected).
         let rt_now = rt.lighting && world_linear && !flat_frame && self.voxels.views().is_some();
         gpu_passes::stamp(&mut encoder, "prep (copies, lightmap, cull)");
-        if rt.any() {
+        // In VR the first eye builds them for the frame's views: the second eye (and the quad
+        // views' insets) trace the same structures, the entities where the first eye's camera
+        // placed them (the instances carry that offset, the rays their own).
+        if rt.any() && self.eye.is_none_or(|e| e.view_index <= 1) {
             // The entities' vertices are known now: they join the terrain in the rays.
             let clouds = rt_clouds_on && rt_clouds::mode() == rt_clouds::Mode::Mesh;
             self.hw_finish(&mut encoder, frame, entity_quads, clouds);
@@ -6714,7 +6722,7 @@ impl Renderer {
                     &rt,
                     match &self.eye {
                         Some(eye) => eye.foveation,
-                        None => shadow_rays::Foveation::screen(),
+                        None => shadow_rays::Foveation::screen(size),
                     },
                     grid,
                     self.voxels.light_buffers().expect("the grid runs"),
@@ -7802,6 +7810,19 @@ mod tests {
         // The froxels' hardware section replaces a stub in froxels.wgsl (froxels.rs, hook 8; its
         // own test validates both variants).
         files.retain(|p| !named(p, "froxels_hw.wgsl"));
+        // Its one-pass composite comes after it (froxels.rs `dual_source`).
+        files.retain(|p| !named(p, "froxels_dual.wgsl"));
+        for hardware in [false, true] {
+            let dual = super::froxels::dual_source(hardware, 2048);
+            let module = naga::front::wgsl::parse_str(&dual)
+                .unwrap_or_else(|e| panic!("dual-source froxels: {}", e.emit_to_string(&dual)));
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("dual-source froxels: {e:?}"));
+        }
         // The translucent terrain's dual-source entry comes after terrain.wgsl (gfx.rs).
         files.retain(|p| !named(p, "terrain_dual.wgsl"));
         {

@@ -949,9 +949,14 @@ fn fog_view(uv: vec2<f32>, r: f32, dither: f32, light: bool) -> vec4<f32> {
     let keep = m.a / max(a.a, 1e-4);
     return vec4(m.rgb + keep * max(b.rgb - a.rgb, vec3(0.0)), m.a * b.a / max(a.a, 1e-4));
 }
-// The light the medium adds in front of the pixel, added to the scene.
-@fragment
-fn fs_scatter(in: Screen) -> @location(0) vec4<f32> {
+// The medium in front of the pixel: the light it adds (`light`), what its fogs let through
+// (`through`, `fog_view`'s) and the pixel's distance.
+struct Medium {
+    light: vec3<f32>,
+    through: f32,
+    r: f32,
+}
+fn medium(in: Screen) -> Medium {
     let texel = vec2<i32>(in.position.xy);
     let r = pixel_distance(texel, in.uv);
     let dither = pixel_dither(in.position.xy);
@@ -972,16 +977,27 @@ fn fs_scatter(in: Screen) -> @location(0) vec4<f32> {
             light += layer * fresnel * here.a;
         }
     }
-    return vec4(light, 0.0);
+    return Medium(light, here.a, r);
 }
-// What the medium lets through of the scene behind it (Beer-Lambert, exact for the homogeneous
-// medium, out to the froxels' reach), times what the fogs let through (integrated), multiplied
-// into the scene.
+// What the medium lets through of the scene behind it at distance `r` (Beer-Lambert, exact for the
+// homogeneous medium, out to the froxels' reach), times what the fogs let through (`fogs`).
+fn medium_through(r: f32, fogs: f32) -> vec3<f32> {
+    var t = exp(-fx.sigma_t.rgb * min(r, fx.depth.y));
+    if fog_on() { t *= fogs; }
+    return t;
+}
+// The light the medium adds in front of the pixel, added to the scene.
+@fragment
+fn fs_scatter(in: Screen) -> @location(0) vec4<f32> {
+    return vec4(medium(in).light, 0.0);
+}
+// What the medium lets through of the scene behind it (`medium_through`), multiplied into the
+// scene, before `fs_scatter` (without dual-source blending: `fs_apply_dual` does both at once).
 @fragment
 fn fs_transmit(in: Screen) -> @location(0) vec4<f32> {
     let texel = vec2<i32>(in.position.xy);
     let r = pixel_distance(texel, in.uv);
-    var t = exp(-fx.sigma_t.rgb * min(r, fx.depth.y));
-    if fog_on() { t *= fog_view(in.uv, r, pixel_dither(in.position.xy), false).a; }
-    return vec4(t, 1.0);
+    var fogs = 1.0;
+    if fog_on() { fogs = fog_view(in.uv, r, pixel_dither(in.position.xy), false).a; }
+    return vec4(medium_through(r, fogs), 1.0);
 }
