@@ -9,6 +9,7 @@ use crate::{
 };
 pub mod cache;
 mod mesh;
+pub mod store;
 use horizon_world::registry::BlockStateId;
 use std::{
     collections::VecDeque,
