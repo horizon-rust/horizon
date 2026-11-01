@@ -59,7 +59,9 @@ wait('griefing')
 check('stand', 0, 'minecraft:turtle_egg', 'fail')
 check('small-stand', 3, 'minecraft:turtle_egg', 'fail')
 check('marker-stand', 6, 'minecraft:turtle_egg[eggs=4]', 'pass')
-check('edge-stand', 12, 'minecraft:turtle_egg', 'fail')
+# Three cracks, then the single egg's narrower shape no longer reaches under
+# the stand: it drops to the stone and the last egg stays.
+check('edge-stand', 12, 'minecraft:turtle_egg[eggs=1]', 'pass')
 check('no-stand', 9, 'minecraft:turtle_egg[eggs=4]', 'pass')
 
 SCRIPT.append(('no-griefing-setup', [
