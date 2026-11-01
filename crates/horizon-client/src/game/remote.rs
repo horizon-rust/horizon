@@ -715,7 +715,6 @@ impl Game<'_> {
             None => horizon_client::health::hurt_sound("hurt"),
         }
     }
-    /// Leave the title for a server (ConnectScreen): an empty world fed by the connection.
     /// Offline local profiles never borrow the account that started P1's game.
     pub(super) fn auth(&self) -> Option<std::sync::Arc<horizon_client::auth::AuthSession>> {
         if self.options.split_guest {
@@ -725,6 +724,7 @@ impl Game<'_> {
         }
     }
 
+    /// Leave the title for a server (ConnectScreen): an empty world fed by the connection.
     pub(super) fn connect_server(&mut self, address: &str, name: &str) -> Result<()> {
         self.connect_server_with_cookies(address, name, None)
     }
