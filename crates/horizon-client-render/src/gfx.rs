@@ -8421,7 +8421,14 @@ struct Overlay {
 }
 
 fn world_projection(fov_degrees: f32, aspect: f32, far: f32) -> Mat4 {
-    Mat4::perspective_rh(fov_degrees.to_radians(), aspect, far, NEAR_PLANE)
+    Mat4::from_cols_array(&crate::camera::perspective(
+        fov_degrees,
+        aspect,
+        1.0,
+        far,
+        NEAR_PLANE,
+        true,
+    ))
 }
 
 /// `view_proj` mirrored about the horizontal plane at the camera-relative height `plane`:
