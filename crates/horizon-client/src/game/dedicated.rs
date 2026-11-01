@@ -969,6 +969,10 @@ impl Game<'_> {
                     20
                 }));
                 log::info!("{}", horizon_threads::mem_line(&format!("idle{t}s")));
+                if t == 10 && std::env::var_os("SP2_RELEASE").is_some() {
+                    horizon_threads::release_free_memory();
+                    log::info!("{}", horizon_threads::mem_line("released"));
+                }
             }
         });
         // DedicatedServer.initServer ends with saveEverything(false, true, true).
