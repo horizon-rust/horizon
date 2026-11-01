@@ -530,17 +530,19 @@ impl Flat {
         } else {
             solid_draws
         };
-        // Origins by section id.
-        self.origin_data.clear();
+        // Origins by section id, up to the highest drawn. The ids of sections not drawn keep
+        // what an earlier frame wrote: no draw reads them, so they are not cleared each frame.
+        let mut end = 0;
         for (id, o) in origins {
             let id = id as usize;
             if self.origin_data.len() <= id {
                 self.origin_data.resize(id + 1, [0.0; 4]);
             }
             self.origin_data[id] = o;
+            end = end.max(id + 1);
         }
-        if self.origin_data.len() as u64 > self.origin_capacity {
-            self.origin_capacity = (self.origin_data.len() as u64).next_power_of_two();
+        if end as u64 > self.origin_capacity {
+            self.origin_capacity = (end as u64).next_power_of_two();
             self.origins = buffer(
                 device,
                 "Section origins by id",
@@ -551,12 +553,12 @@ impl Flat {
                 page.group = None;
             }
         }
-        if !self.origin_data.is_empty() {
+        if end > 0 {
             uploads.buffer(
                 encoder,
                 &self.origins,
                 0,
-                bytemuck::cast_slice(&self.origin_data),
+                bytemuck::cast_slice(&self.origin_data[..end]),
             );
         }
         let Plan {

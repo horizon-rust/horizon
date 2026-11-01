@@ -696,6 +696,7 @@ mod tests {
             flat_id: None,
             fading: None,
             leaving: None,
+            uploaded: None,
             animated_layers: Box::new([]),
         };
         for split in [true, false] {

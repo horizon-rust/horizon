@@ -355,6 +355,9 @@ struct SectionGpu {
     /// When it began to fade out, its column gone over far terrain that
     /// stays behind it (`Renderer::leave_section`); released once it has.
     leaving: Option<std::time::Instant>,
+    /// Its entry in `Renderer::section_uploaded` (the start of the vanilla chunk fade-in),
+    /// kept here so a frame finds it without a lookup; none once that entry is gone.
+    uploaded: Option<std::time::Instant>,
     /// Animated sprite layers present in this section.
     animated_layers: Box<[u16]>,
 }
@@ -374,15 +377,37 @@ pub(crate) fn collect_animated_layers(
 impl SectionGpu {
     /// Its fade code this frame (`lod::fade_code`), 0 once whole. `retiring`:
     /// its column has left the render distance, far terrain is coming in
-    /// under it (`lod::HELD`).
-    fn fade(&self, now: std::time::Instant, retiring: bool) -> u32 {
+    /// under it (`lod::HELD`). `faded` is `now - lod::FADE`: a fade-in that
+    /// began by then has ended, found without the time arithmetic.
+    fn fade(
+        &self,
+        now: std::time::Instant,
+        faded: Option<std::time::Instant>,
+        retiring: bool,
+    ) -> u32 {
         match self.leaving {
             Some(since) => lod::fade_out_code(since, 0, now),
             None if retiring => lod::HELD,
             None => self
                 .fading
+                .filter(|&since| faded.is_none_or(|faded| since > faded))
                 .and_then(|since| lod::fade_code(Some(since), 0, now))
                 .unwrap_or(0),
+        }
+    }
+    /// `SectionRenderDispatcher.RenderSection.getVisibility` this frame, `fade_ms` the fade-in's
+    /// length; `whole` is `now - fade_ms`: a section uploaded by then is fully visible.
+    fn visibility(
+        &self,
+        now: std::time::Instant,
+        fade_ms: u64,
+        whole: Option<std::time::Instant>,
+    ) -> f32 {
+        match self.uploaded {
+            Some(t) if fade_ms != 0 && whole.is_none_or(|whole| t > whole) => {
+                chunk_visibility(now.saturating_duration_since(t).as_millis() as u64, fade_ms)
+            }
+            _ => 1.0,
         }
     }
     /// Its vertices in `arena`, and in `translucent_arena` when `split` (there
@@ -3912,9 +3937,12 @@ impl Renderer {
                 .or_insert_with(std::time::Instant::now);
         }
         self.release_section(key);
-        let section = self
-            .upload_mesh(mesh)
-            .map(|section| SectionGpu { fading, ..section });
+        let uploaded = self.section_uploaded.get(&key).copied();
+        let section = self.upload_mesh(mesh).map(|section| SectionGpu {
+            fading,
+            uploaded,
+            ..section
+        });
         self.set_detail(
             key,
             section.is_some() || (mesh.solid.is_empty() && mesh.translucent.is_empty()),
@@ -4047,6 +4075,7 @@ impl Renderer {
             flat_id,
             fading: None,
             leaving: None,
+            uploaded: None,
             animated_layers,
         })
     }
@@ -4351,7 +4380,11 @@ impl Renderer {
                 if self.light_blocks.remove(&key).is_some() {
                     self.light_revision += 1;
                 }
-                self.section_uploaded.remove(&key);
+                if self.section_uploaded.remove(&key).is_some()
+                    && let Some(section) = self.sections.find_mut(key)
+                {
+                    section.uploaded = None;
+                }
                 if retiring {
                     // Distant tiles still leave its column out: drawn until they don't.
                     self.lod_retiring.insert(key);
@@ -5601,31 +5634,23 @@ impl Renderer {
         let (sections, retiring) = (&self.sections, &self.lod_retiring);
         // `LevelRenderer.extractSectionDrawGroups`: each section's `getVisibility`.
         let fade_ms = fade_millis(frame.chunk_fade);
-        let uploaded = &self.section_uploaded;
-        let visibility = |key: SectionKey| {
-            if fade_ms == 0 {
-                return 1.0;
-            }
-            uploaded.get(&key).map_or(1.0, |t| {
-                chunk_visibility(
-                    now.saturating_duration_since(*t).as_millis() as u64,
-                    fade_ms,
-                )
-            })
-        };
+        // Fade-ins that began by these instants have ended: most sections, found by comparing.
+        let whole = now.checked_sub(std::time::Duration::from_millis(fade_ms));
+        let faded = now.checked_sub(lod::FADE);
+        let is_retiring = |key: &SectionKey| !retiring.is_empty() && retiring.contains(key);
         self.origins.extend(
             visible
                 .iter()
                 .map(|v| {
-                    let code = sections.get(v.slot).fade(now, retiring.contains(&v.key));
-                    section_instance(v.origin, code, visibility(v.key))
+                    let s = sections.get(v.slot);
+                    let code = s.fade(now, faded, is_retiring(&v.key));
+                    section_instance(v.origin, code, s.visibility(now, fade_ms, whole))
                 })
                 .chain(visible_lods.iter().map(|v| lod::instance(v.origin, v.fade)))
-                .chain(
-                    shadow_visible
-                        .iter()
-                        .map(|v| section_instance(v.origin, 0, visibility(v.key))),
-                ),
+                .chain(shadow_visible.iter().map(|v| {
+                    let s = sections.get(v.slot);
+                    section_instance(v.origin, 0, s.visibility(now, fade_ms, whole))
+                })),
         );
         if !self.origins.is_empty() {
             self.uploads.buffer(
@@ -6257,6 +6282,8 @@ impl Renderer {
                 let lods = &self.lods;
                 let sorted = &self.sorted_indices;
                 let phase2 = self.cull.as_ref().filter(|_| culling).map(|c| &c.phase2);
+                // The camera's sections take the instances made for them above.
+                let instances = &self.origins[..visible.len()];
                 crate::spans::time("flatten", || {
                     flat.prepare(
                         &self.device,
@@ -6270,15 +6297,20 @@ impl Renderer {
                         phase2,
                         visible
                             .iter()
-                            .chain(&shadow_visible)
-                            .filter_map(|v| {
+                            .zip(instances)
+                            .filter_map(|(v, &instance)| {
+                                Some((sections.get(v.slot).flat_id?, instance))
+                            })
+                            .chain(shadow_visible.iter().filter_map(|v| {
                                 let section = sections.get(v.slot);
-                                let code = section.fade(now, retiring.contains(&v.key));
+                                let retiring = !retiring.is_empty() && retiring.contains(&v.key);
+                                let code = section.fade(now, faded, retiring);
+                                let visibility = section.visibility(now, fade_ms, whole);
                                 Some((
                                     section.flat_id?,
-                                    section_instance(v.origin, code, visibility(v.key)),
+                                    section_instance(v.origin, code, visibility),
                                 ))
-                            })
+                            }))
                             .chain(visible_lods.iter().filter_map(|v| {
                                 let id = lods[&v.key].drawn().flat_id?;
                                 Some((id, lod::instance(v.origin, v.fade)))
