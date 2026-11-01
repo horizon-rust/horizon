@@ -219,6 +219,8 @@ pub struct Hub {
     pub chat_filter: Option<Box<horizon_chat_filter::Guard>>,
     /// The far ring, when `server.toml`'s `max_view_distance` turns it on (dedicated servers).
     pub far: Option<super::far::Far>,
+    /// The far players and mobs Horizon clients ask for (`horizon_protocol::far_entities`).
+    pub far_entities: super::far_entities::Feed,
     /// The `immediate_respawn` game rule, as the players were last told.
     immediate_respawn: bool,
     /// An integrated server's owner (`MinecraftServer.isSingleplayerOwner`),
@@ -501,6 +503,7 @@ impl Hub {
         let clock_ids = (0..sync.dynamic.len("minecraft:world_clock") as i32).collect();
         let mut encoder = encoder;
         encoder.set_dimension(config.levels.get(&config.dimension));
+        let far_entities = super::far_entities::Feed::new(lan.shared.config.far_entity_range);
         Self {
             lan,
             config,
@@ -514,6 +517,7 @@ impl Hub {
             anticheat: None,
             chat_filter: None,
             far: None,
+            far_entities,
             singleplayer_owner: None,
             flat_world: false,
             debug_world: false,
@@ -2297,6 +2301,15 @@ impl Hub {
         for (g, out) in self.guests.iter().filter(|g| here(g)).zip(outs.iter_mut()) {
             g.sender.send_many(out.drain(..));
         }
+        // What the clients don't track, from far away (the tracking above has just paired the
+        // ones in range).
+        self.far_entities.publish(
+            self.ticks,
+            &self.config.dimension,
+            &self.guests,
+            &entities,
+            |kind| entity_type(types, sync, kind),
+        );
         let ticks = self.ticks;
         for (g, gone) in self
             .guests

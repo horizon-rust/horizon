@@ -121,6 +121,7 @@ mod explosion;
 mod extras;
 mod falling_damage;
 mod fangs;
+mod far_entities;
 mod fireworks;
 mod fishing;
 mod fov;
@@ -2675,6 +2676,8 @@ struct Game<'a> {
     gpu_utilization: f64,
     /// The mobs `mob_geometry` drew last frame (`lastEntityRenderStateCount`).
     rendered_mobs: std::cell::Cell<usize>,
+    /// Far players and mobs, and the mobs drawn as impostors (`game/far_entities.rs`).
+    far: far_entities::Far,
     /// `ServerChunkCache.lastSpawnState` of each level: its spawnable chunks
     /// and each `MobCategory`'s count.
     spawn_counts: HashMap<Dim, (i32, [i32; 8])>,
@@ -14613,6 +14616,7 @@ impl Game<'_> {
             .renderer
             .as_ref()
             .map(|r| r.camera_frustum(fov_degrees, yaw, pitch, bob * spin, depth_far));
+        self.begin_far_entities(size, fov_degrees);
         // Keep the buffer local while builders need mutable access to the game.
         let mut entities = std::mem::take(&mut self.entity_vertices);
         entities.clear();
@@ -14623,6 +14627,12 @@ impl Game<'_> {
                 self.entity_geometry(camera, alpha, entities)
             });
         }
+        // The far entities, and the mobs `entity_geometry` left to impostors, as pictures.
+        let (far_tiles, far_quads) = if title {
+            (Vec::new(), Vec::new())
+        } else {
+            self.far_entity_draw(camera, alpha, yaw, pitch)
+        };
         let bolts = if title {
             Vec::new()
         } else {
@@ -14701,6 +14711,10 @@ impl Game<'_> {
         let frame = Frame {
             weather: &weather,
             weather_time: horizon_client::weather::Time::new(self.world.game_time, alpha as f32),
+            impostors: horizon_client::impostor::Draw {
+                uploads: &far_tiles,
+                vertices: &far_quads,
+            },
             nether_lighting: self.dim == Dim::Nether,
             camera,
             yaw,
@@ -17403,6 +17417,7 @@ impl<'a> Game<'a> {
             memory_meter: Default::default(),
             gpu_utilization: 0.0,
             rendered_mobs: Default::default(),
+            far: far_entities::Far::new(),
             spawn_counts: HashMap::new(),
             pause_menu: true,
             pause_focus: None,
@@ -18631,6 +18646,7 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
     Frame {
         weather: &[],
         weather_time: horizon_client::weather::Time::new(0, 0.0),
+        impostors: Default::default(),
         camera: glam::DVec3::new(0.5, 100.0, 0.5),
         yaw: 0.0,
         pitch: 10.0,

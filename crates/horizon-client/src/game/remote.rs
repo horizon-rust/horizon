@@ -612,7 +612,7 @@ pub(super) struct Remote {
     death_message: Option<horizon_client::text::Text>,
     /// `LocalPlayer.showDeathScreen`: off with `immediate_respawn`.
     show_death_screen: bool,
-    player_type: Option<Arc<MobType>>,
+    pub(super) player_type: Option<Arc<MobType>>,
     /// Inventory, off hand and armour as last synchronised, for creative-mode
     /// slot updates (`creative_sync_stacks`).
     synced: Vec<Option<ItemStack>>,
@@ -932,6 +932,7 @@ impl Game<'_> {
                     }
                 };
             });
+        self.far.reset();
         self.remote = Some(Remote {
             session,
             brand: "unknown".into(),
@@ -1770,6 +1771,7 @@ impl Game<'_> {
                         remote.mod_net = true;
                     }
                 }
+                Event::FarEntities(range) => self.far_entities_offered(range),
                 Event::Reconfiguring => {
                     // handleConfigurationStart: the held-back chat shows, then
                     // clearClientLevel opens ServerReconfigScreen over no level.
@@ -2861,12 +2863,17 @@ impl Game<'_> {
             C::CustomPayload(p) if p.channel == horizon_protocol::mod_net::CHANNEL => {
                 self.remote_native_net(&p.data);
             }
+            // The players and mobs past the entity range, from a Horizon server.
+            C::CustomPayload(p) if p.channel == horizon_protocol::far_entities::CHANNEL => {
+                self.far_entities_payload(&p.data);
+            }
             // PingDebugMonitor.onPongReceived.
             C::PongResponse(p) => {
                 let delay = self.debug_millis() - p.time;
                 self.debug_charts.ping.log(delay);
             }
             C::Login(p) => {
+                self.far_entities_clear();
                 self.test_highlights.clear();
                 self.level.hardcore = p.hardcore;
                 // handleLogin: startWaitingForNewLevel with Reason.OTHER, which
@@ -2911,6 +2918,7 @@ impl Game<'_> {
                 self.remote_chat_login();
             }
             C::Respawn(p) => {
+                self.far_entities_clear();
                 // A new player, without effects (the server sends them
                 // again) and with no item in use.
                 self.potions.effects.clear();
@@ -3122,6 +3130,8 @@ impl Game<'_> {
                     p.id as u32,
                     horizon_client::lan::playerdata::uuid_ints(p.uuid),
                 );
+                // The server tracks it now: a real entity, no longer a far one.
+                self.far_entities_forget(p.id);
                 self.spawn_entity(p.id, &kind, p.position, rotation);
                 // Entity.recreateFromPacket: setDeltaMovement(packet.getMovement()).
                 self.remote_motion(p.id, p.velocity);
@@ -5427,6 +5437,7 @@ impl Game<'_> {
         self.border.tick();
         self.player_border();
         self.tick_remote_entities(running);
+        self.tick_far_entities();
         // Breeze.tick's block dust: drawn by each client for the breezes it sees.
         if running {
             self.tick_breeze_effects();

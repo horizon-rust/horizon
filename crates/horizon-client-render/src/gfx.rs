@@ -37,6 +37,7 @@ fn entity_shader() -> String {
 mod crumbling_tests;
 mod entity_batch;
 mod entity_outline;
+mod impostors;
 mod weather;
 use entity_batch::EntityBatch;
 pub use entity_batch::{
@@ -415,6 +416,8 @@ pub struct Frame<'a> {
     pub entity_spans: &'a [pack_draw::EntitySpan],
     pub weather: &'a [crate::weather::Vertex],
     pub weather_time: crate::weather::Time,
+    /// Far entities as impostors: the tiles baked since the last frame and the quads (`crate::impostor`).
+    pub impostors: crate::impostor::Draw<'a>,
     /// Horizon Extras' dynamic lights, nearest first (`dynamic_light::select`); empty when off.
     pub dynamic_lights: &'a [[f32; 4]],
     pub colored_lights: &'a [crate::dynamic_light::Colored],
@@ -578,6 +581,8 @@ pub struct Renderer {
     hdr_mark_pipeline: wgpu::RenderPipeline,
     hdr_mark_lightning_pipeline: wgpu::RenderPipeline,
     weather: weather::Weather,
+    /// Far entities drawn as pictures (`impostor.rs`).
+    impostors: impostors::Impostors,
     crumbling_pipeline: wgpu::RenderPipeline,
     shadow_blob_pipeline: wgpu::RenderPipeline,
     translucent_item_pipeline: wgpu::RenderPipeline,
@@ -2285,6 +2290,11 @@ impl Renderer {
             &entity_bindings,
             &entity_shader,
         );
+        let impostors = impostors::Impostors::new(
+            &device,
+            config.format.remove_srgb_suffix(),
+            &entity_bindings,
+        );
         let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Atlas"),
             ..Default::default()
@@ -3192,6 +3202,7 @@ impl Renderer {
             hdr_mark_pipeline,
             hdr_mark_lightning_pipeline,
             weather,
+            impostors,
             crumbling_pipeline,
             shadow_blob_pipeline,
             translucent_item_pipeline,
@@ -5652,6 +5663,12 @@ impl Renderer {
             frame.weather,
             frame.weather_time,
         );
+        self.impostors.prepare(
+            &self.device,
+            &mut encoder,
+            &mut self.uploads,
+            &frame.impostors,
+        );
         let outline_edges = frame.outline.len().min(MAX_OUTLINE_EDGES as usize);
         if outline_edges > 0 {
             // The same per-line colour and pixel width layout as the gizmo lines. A high
@@ -5827,6 +5844,7 @@ impl Renderer {
                 lightning::QUADS
             })
             .max(weather_quads)
+            .max(frame.impostors.vertices.len() as u32 / 4)
             .max(frame.glowing.len() as u32 / 4);
         if max_quads > self.index_quads {
             self.index_quads = max_quads.next_power_of_two();
@@ -6545,6 +6563,11 @@ impl Renderer {
                 }
                 pass.set_bind_group(0, &self.group, &[]);
             }
+            // Far entities (`impostor.rs`): pictures in the same depth as the terrain, the far
+            // tiles' included, so a hill hides them.
+            self.impostors
+                .draw(&mut pass, &self.entity_group, &self.indices);
+            pass.set_bind_group(0, &self.group, &[]);
             if text_quads > 0 && !oit_on {
                 pass.set_pipeline(&self.text_polygon_offset_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);

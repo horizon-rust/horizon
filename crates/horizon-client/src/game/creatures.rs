@@ -5887,6 +5887,10 @@ impl Game<'_> {
                     1.0
                 };
             let range = edge * 64.0 * scale;
+            // Past its model's range, or far enough to be a picture, a mob is an impostor.
+            if outline.is_none() && self.far_as_impostor(mob, d, range, h, alpha) {
+                continue;
+            }
             if d.length_squared() >= range * range {
                 continue;
             }

@@ -219,6 +219,19 @@ average tick goes over 40 ms, the ring pulls in by two chunks a second, never in
 30 s of ticks under 25 ms, it grows back by one chunk every 5 s. What it sent is kept in memory for 5
 minutes (96 MB at most), so a player walking back isn't sent the save again.
 
+### Seeing the living world far away: far entities
+
+On by default for Horizon clients, nothing for a vanilla one. Past the distance a mob or a player is
+normally sent, a Horizon client that asks (Graphics, Advanced: Far Entities, its range and its mob limit) is
+also sent where the entities it isn't tracking are: the players every 4 ticks, the mobs every 5 seconds, a few
+bytes each on the `horizon:far_entities` channel. Its game remembers them and draws each as a flat picture of
+the model that the far terrain hides, so players and herds stay in view long after their models would have
+gone. Only entities the server has loaded are in the feed (the ones around its players, the spawn area and
+chunk loaders), and an invisible entity or a player in spectator mode is left out as it is for near ones.
+
+The server sends up to 2048 blocks by default and at most 4000. Set `horizon-far-entity-range` under
+`[properties]` in `server.toml` to change it, or to 0 to send nothing (the server then doesn't announce the feed).
+
 Already have a vanilla server? Run `horizon-server init` in its folder, or `horizon-server import
 server.properties` to write `server.toml` from it. The world, `ops.json`, `whitelist.json` and the ban lists
 keep vanilla's names and formats, so going back to vanilla works too.
