@@ -1101,10 +1101,9 @@ def scenario_native_pointer():
         native.activate()
         size = (g.size(1)[0] + g.size(2)[0], g.size(1)[1])
         point = lambda x, y: native.point(size, x, y)
-        native.click(point(0.25, 0.4))
         state = lambda n: g.ctl(n, 'state')
         grabbed = lambda: [state(n)['pointer_grabbed'] for n in [1, 2]]
-        check('P1 owns capture after P2 joined', grabbed(), [True, False])
+        check('P1 keeps capture after P2 joins without another click', grabbed(), [True, False])
         # OS mouse motion, unlike horizon-ctl mouse-move, passes through Split.device_event.
         def look(owner):
             other = 3 - owner
@@ -1146,11 +1145,11 @@ def scenario_native_pointer():
             check(f'P{other} stays put', moved(other), False)
 
         walk(1)
-        g.ctl(2, 'key', 'esc', 'tap')  # A controller player's pause menu.
+        g.ctl(2, 'pad', 'start', 'tap')  # A controller player's pause menu.
         walk(1)
         check("P2's menu leaves native capture with P1", grabbed(), [True, False])
         look(1)
-        g.ctl(2, 'key', 'esc', 'tap')
+        g.ctl(2, 'pad', 'start', 'tap')
         # A click on P2 cannot steal a locked P1 pointer.
         native.click(point(0.75, 0.4))
         check('clicking another view while captured keeps P1 ownership', grabbed(), [True, False])
@@ -1178,13 +1177,13 @@ def scenario_native_pointer():
         check('moving P2 to another window keeps P1 capture', grabbed(), [True, False])
         walk(1)
         native.tap('escape')
-        native.click(native.point(g.size(2), 0.5, 0.2, title='Window 2'))
+        native.click(native.point(g.size(2), 0.5, 0.2, title='Window 2'), title='Window 2')
         native.tap('escape')  # P2 kept its own pause menu from the previous handoff.
         check('clicking Window 2 gives P2 native capture', grabbed(), [False, True])
         walk(2)
         look(2)
         native.tap('escape')
-        native.click(native.point(g.size(1), 0.5, 0.1, title='Window 1'))
+        native.click(native.point(g.size(1), 0.5, 0.1, title='Window 1'), title='Window 1')
         native.tap('escape')
         check('clicking Window 1 restores P1 capture', grabbed(), [True, False])
         walk(1)

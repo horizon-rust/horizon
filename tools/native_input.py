@@ -31,6 +31,11 @@ class MacInput:
             raise RuntimeError('native input requires macOS Accessibility permission')
         bind(self.ax, 'AXUIElementCreateApplication', c.c_void_p, c.c_int)
         bind(self.ax, 'AXUIElementSetAttributeValue', c.c_int, c.c_void_p, c.c_void_p, c.c_void_p)
+        bind(self.ax, 'AXUIElementCopyAttributeValue', c.c_int, c.c_void_p, c.c_void_p, c.POINTER(c.c_void_p))
+        bind(self.ax, 'AXUIElementPerformAction', c.c_int, c.c_void_p, c.c_void_p)
+        bind(self.cf, 'CFArrayGetCount', c.c_long, c.c_void_p)
+        bind(self.cf, 'CFArrayGetValueAtIndex', c.c_void_p, c.c_void_p, c.c_long)
+        bind(self.cf, 'CFStringGetCString', c.c_bool, c.c_void_p, c.c_void_p, c.c_long, c.c_uint32)
         bind(self.cf, 'CFStringCreateWithCString', c.c_void_p, c.c_void_p, c.c_char_p, c.c_uint32)
         bind(self.cf, 'CFRelease', None, c.c_void_p)
         bind(self.cg, 'CGWindowListCopyWindowInfo', c.c_void_p, c.c_uint32, c.c_uint32)
@@ -79,6 +84,40 @@ class MacInput:
             time.sleep(0.1)
         raise RuntimeError('the test game never became the frontmost window')
 
+    def raise_window(self, title):
+        # A background split window may be mostly covered by Window 1. Raise it
+        # before clicking its content, like selecting it from the OS window menu.
+        app = self.ax.AXUIElementCreateApplication(self.pid)
+        keys = [self.cf.CFStringCreateWithCString(None, name, 0x08000100)
+                for name in (b'AXWindows', b'AXTitle', b'AXRaise')]
+        windows = c.c_void_p()
+        try:
+            if self.ax.AXUIElementCopyAttributeValue(app, keys[0], c.byref(windows)) != 0:
+                raise RuntimeError('could not read the test games native windows')
+            for i in range(self.cf.CFArrayGetCount(windows)):
+                window = self.cf.CFArrayGetValueAtIndex(windows, i)
+                name = c.c_void_p()
+                if self.ax.AXUIElementCopyAttributeValue(window, keys[1], c.byref(name)) != 0:
+                    continue
+                try:
+                    text = c.create_string_buffer(2048)
+                    self.cf.CFStringGetCString(name, text, len(text), 0x08000100)
+                    if title not in text.value.decode('utf-8'):
+                        continue
+                    if self.ax.AXUIElementPerformAction(window, keys[2]) != 0:
+                        raise RuntimeError(f'could not raise {title}')
+                    time.sleep(0.15)
+                    return
+                finally:
+                    self.cf.CFRelease(name)
+            raise RuntimeError(f'no accessible native window matching {title!r}')
+        finally:
+            if windows:
+                self.cf.CFRelease(windows)
+            for key in keys:
+                self.cf.CFRelease(key)
+            self.cf.CFRelease(app)
+
     def window(self, title=None):
         windows = [w for w in self.windows() if w.get('kCGWindowOwnerPID') == self.pid
                    and (title is None or title in w.get('kCGWindowName', ''))]
@@ -111,8 +150,10 @@ class MacInput:
         self.key(key, False)
         time.sleep(0.15)
 
-    def click(self, at):
+    def click(self, at, title=None):
         self.activate()
+        if title is not None:
+            self.raise_window(title)
         self.move(at)
         for kind in (1, 2):  # Left down, left up.
             event = self.cg.CGEventCreateMouseEvent(None, kind, Point(*at), 0)
