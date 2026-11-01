@@ -624,6 +624,17 @@ impl Game<'_> {
             let pose = head
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, y_offset, 0.0))
                 * glam::Mat4::from_scale(glam::Vec3::splat(1.1875));
+            // LivingEntityRenderer.extractRenderState's wornHeadAnimationPos:
+            // the walk position of the living vehicle it rides, else its own,
+            // so a worn dragon head's jaw moves as the wearer walks.
+            let animation = match mob
+                .extra
+                .mount
+                .and_then(|id| self.mobs.iter().find(|m| m.id == id))
+            {
+                Some(v) => v.limb_position - v.limb_speed * (1.0 - alpha as f32),
+                None => horizon_client::mobs::anim::state(mob, alpha as f32).pos,
+            };
             let special = horizon_assets::item_model::SpecialModel {
                 kind: if kind == "player" {
                     horizon_assets::item_model::SpecialKind::PlayerHead
@@ -631,7 +642,7 @@ impl Game<'_> {
                     horizon_assets::item_model::SpecialKind::Head {
                         kind: kind.to_owned(),
                         texture: None,
-                        animation: 0.0,
+                        animation,
                     }
                 },
             };
