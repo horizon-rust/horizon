@@ -3820,8 +3820,12 @@ impl Renderer {
         let Some(page) = self.arena.closing() else {
             return;
         };
-        // Tiles it moves have new places in the arena for the GPU's tree.
-        self.lod_revision += 1;
+        // Tiles it moves have new places in the arena for the GPU's tree. A
+        // page of sections alone leaves the tree as it is: rebuilding it every
+        // compacting frame stalled the frames chunks load in.
+        if self.lods.values().any(|tile| tile.on_page(page)) {
+            self.lod_revision += 1;
+        }
         let stride = std::mem::size_of::<TerrainVertex>() as u64;
         let mut budget = BUDGET;
         let encoder = self.section_copies.get_or_insert_with(|| {

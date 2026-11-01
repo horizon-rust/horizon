@@ -237,6 +237,10 @@ impl Tile {
     pub fn meshes_mut(&mut self) -> impl Iterator<Item = &mut SectionGpu> {
         std::iter::once(&mut self.mesh).chain(self.previous.as_mut().map(|(mesh, _)| mesh))
     }
+    /// Whether a mesh of it is in arena page `page`.
+    pub fn on_page(&self, page: u32) -> bool {
+        self.mesh.page == page || self.previous.as_ref().is_some_and(|(mesh, _)| mesh.page == page)
+    }
     /// Its box relative to its origin, for occlusion culling by depth
     /// (`Cull::tile_drawn`); none while a stand-in mesh is drawn, whose extent
     /// the box may not hold.

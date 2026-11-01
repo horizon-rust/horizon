@@ -922,6 +922,10 @@ pub struct Lod {
     /// The renderer keeps tiles out of the columns near chunks cover, per
     /// pixel (`set_screen_space`): tiles are meshed whole, nothing is cut out.
     screen_space: bool,
+    /// Tiles whose data a near chunk replaced while the renderer hid them
+    /// there, per chunk: remeshed once the chunk leaves the near area, so a
+    /// tile never swaps in view while the chunks load.
+    deferred: FxHashMap<(i32, i32), FxHashSet<TileKey>>,
     /// Unsampled tiles, coarsest level first and nearest first within a level.
     /// Rebuilt when the view changes, not scanned every frame.
     wanted: std::collections::BinaryHeap<std::cmp::Reverse<Wanted>>,
@@ -1238,6 +1242,7 @@ impl Lod {
             cutout_pending: None,
             cutout_waiting: FxHashSet::default(),
             screen_space: false,
+            deferred: FxHashMap::default(),
             wanted: std::collections::BinaryHeap::new(),
             wanted_at: None,
             wanted_stale: true,
