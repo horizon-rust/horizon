@@ -208,15 +208,39 @@ pub use mimalloc::MiMalloc as Allocator;
 /// `mi_option_purge_delay` in mimalloc.h (index 15 in v2 and v3); the bindings
 /// don't name it.
 const PURGE_DELAY: libmimalloc_sys::mi_option_t = 15;
+/// `mi_option_arena_eager_commit` in mimalloc.h (index 4 in v3).
+#[cfg(target_os = "linux")]
+const ARENA_EAGER_COMMIT: libmimalloc_sys::mi_option_t = 4;
 
 /// Set the allocator up, first thing in `main`: free pages go back to the OS
 /// at once instead of a second later. With mimalloc's delay the game held a
 /// quarter more memory than with the system heap; without it a few percent,
 /// and generation keeps most of its speed-up.
 pub fn configure_allocator() {
+    // The arena option is set before `main` (`EARLY`); this keeps it linked.
+    #[cfg(target_os = "linux")]
+    std::hint::black_box(&EARLY);
     // SAFETY: sets one integer option, which mimalloc reads at each purge.
     unsafe {
         libmimalloc_sys::mi_option_set(PURGE_DELAY, 0);
+    }
+}
+
+/// Arenas are committed as they are used, not whole when reserved: mimalloc
+/// commits eagerly where the OS overcommits (`arena_eager_commit` = 2: Linux),
+/// and an idle dedicated server held 60 MB more anonymous memory with it
+/// (264 against 204 MB). The Rust runtime allocates before `main` and the
+/// first arena (1 GiB reserved) is taken then, so the option is set from the
+/// program's initializers, which run earlier.
+#[cfg(target_os = "linux")]
+#[used]
+#[unsafe(link_section = ".init_array")]
+static EARLY: extern "C" fn() = lazy_arena_commit;
+#[cfg(target_os = "linux")]
+extern "C" fn lazy_arena_commit() {
+    // SAFETY: sets one integer option before any arena is reserved.
+    unsafe {
+        libmimalloc_sys::mi_option_set(ARENA_EAGER_COMMIT, 0);
     }
 }
 
