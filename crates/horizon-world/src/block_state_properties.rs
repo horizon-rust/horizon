@@ -6,7 +6,7 @@
 use std::{
     borrow::Borrow,
     cmp::Ordering,
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     fmt,
     hash::{Hash, Hasher},
     ops::Deref,
@@ -48,9 +48,9 @@ impl Text {
 
 /// Strings shared by the states of one registry ([`BlockProperties::share`]).
 #[derive(Default)]
-pub struct SharedStrings(HashMap<String, Arc<String>>);
+pub struct SharedStrings(horizon_core::fast_hash::FxHashMap<String, Arc<String>>);
 impl SharedStrings {
-    fn get(&mut self, text: &str) -> Arc<String> {
+    pub fn get(&mut self, text: &str) -> Arc<String> {
         if let Some(shared) = self.0.get(text) {
             return shared.clone();
         }
@@ -131,12 +131,25 @@ impl BlockProperties {
         self.0.iter().map(|(_, v)| &**v)
     }
     /// These properties over the strings `strings` holds, which other states
-    /// share (a registry's states, built once).
+    /// share (a registry's states, built once). Strings already shared stay.
     pub fn share(&mut self, strings: &mut SharedStrings) {
-        for (k, v) in self.0.iter_mut() {
-            *k = Text::Shared(strings.get(k));
-            *v = Text::Shared(strings.get(v));
+        for text in self.0.iter_mut().flat_map(|(k, v)| [k, v]) {
+            if let Text::Owned(owned) = text {
+                *text = Text::Shared(strings.get(owned));
+            }
         }
+    }
+    /// Shared names and values, collected as a `BTreeMap` collects them.
+    pub fn from_shared(mut pairs: Vec<(Arc<String>, Arc<String>)>) -> Self {
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut kept: Vec<(Text, Text)> = Vec::with_capacity(pairs.len());
+        for (k, v) in pairs {
+            match kept.last_mut() {
+                Some(last) if *last.0 == *k => last.1 = Text::Shared(v),
+                _ => kept.push((Text::Shared(k), Text::Shared(v))),
+            }
+        }
+        Self(kept.into_boxed_slice())
     }
 }
 
