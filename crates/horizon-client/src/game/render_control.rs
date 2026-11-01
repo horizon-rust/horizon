@@ -14,6 +14,7 @@ pub const HELP: &[&str] = &[
     "section-draws [flat|indirect]  how terrain sections are drawn (A/B checks); replies the mode",
     "section-cull [on|off]          occlusion culling of solid sections (A/B checks); replies the mode",
     "lod-gpu [on|off]               far terrain tiles walked and culled on the GPU (A/B checks); replies the mode",
+    "mesh-shaders [on|off]          far terrain drawn with mesh shaders where the device was opened with them (A/B checks); replies the mode",
     "section-sides [on|off]         leave out solid quads facing away from the eye (A/B checks); replies the mode",
 ];
 

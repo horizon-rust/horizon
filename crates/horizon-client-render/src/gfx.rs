@@ -1634,7 +1634,16 @@ impl Renderer {
             ty,
             count: None,
         };
-        let vf = wgpu::ShaderStages::VERTEX_FRAGMENT;
+        // The mesh stage of far terrain's meshlets (`lod_mesh`) reads the same group.
+        let vf = wgpu::ShaderStages::VERTEX_FRAGMENT
+            | if device
+                .features()
+                .contains(wgpu::Features::EXPERIMENTAL_MESH_SHADER)
+            {
+                wgpu::ShaderStages::MESH
+            } else {
+                wgpu::ShaderStages::empty()
+            };
         let sprite_array = wgpu::BindingType::Texture {
             sample_type: wgpu::TextureSampleType::Float { filterable: true },
             view_dimension: wgpu::TextureViewDimension::D2Array,
@@ -3080,10 +3089,20 @@ impl Renderer {
                 }
                 cull
             });
-        let lod_gpu = lod_gpu::LodGpu::create(&adapter, &device);
         let lod_meshlets = device
             .features()
             .contains(wgpu::Features::EXPERIMENTAL_MESH_SHADER);
+        // Far terrain's meshlets read the arena as storage, as flat draws do.
+        let lod_mesh_setup = (lod_meshlets && flat_wanted).then_some(lod_mesh::Setup {
+            terrain_layout: &bindings,
+            fragment: &shader,
+            constants: &sprite_constants,
+            format: config.format.remove_srgb_suffix(),
+        });
+        let mut lod_gpu = lod_gpu::LodGpu::create(&adapter, &device, lod_mesh_setup);
+        if let Some(gpu) = &mut lod_gpu {
+            gpu.set_mesh_shaders(crate::graphics::mesh_shaders_requested());
+        }
         let depth = Self::depth(&device, &config);
         let world_post = world_post::Post::new(&device, config.format.remove_srgb_suffix());
         let uploads = upload::Uploads::new(&device);
@@ -3496,6 +3515,29 @@ impl Renderer {
     /// Whether far terrain tiles are walked and culled on the GPU (`lod_gpu`).
     pub fn gpu_lods(&self) -> bool {
         self.lod_gpu_on && self.lod_gpu.is_some()
+    }
+    /// Whether far terrain is drawn with mesh shaders (the device has them and the
+    /// setting is on).
+    pub fn mesh_shaders(&self) -> bool {
+        self.lod_gpu.as_ref().is_some_and(|gpu| gpu.mesh_shaders())
+    }
+    /// Whether the device was opened with mesh shaders and far terrain's meshlet pipeline
+    /// built: the Mesh Shaders setting then applies.
+    pub fn has_mesh_shaders(&self) -> bool {
+        self.lod_gpu
+            .as_ref()
+            .is_some_and(|gpu| gpu.has_mesh_shaders())
+    }
+    /// Switches far terrain's mesh shaders (the Mesh Shaders setting) where the device
+    /// was opened with them and the meshlet pipeline built; false where it cannot.
+    pub fn set_mesh_shaders(&mut self, on: bool) -> bool {
+        match &mut self.lod_gpu {
+            Some(gpu) if gpu.has_mesh_shaders() => {
+                gpu.set_mesh_shaders(on);
+                true
+            }
+            _ => false,
+        }
     }
     /// Switches the GPU walk of far tiles, for A/B checks.
     pub fn set_gpu_lods(&mut self, on: bool) -> Result<()> {
@@ -4963,7 +5005,7 @@ impl Renderer {
         // translucent quads are sorted here.
         let gpu_walk = !frame.title
             && self.lod_gpu_on
-            && self.lod_gpu.is_some()
+            && self.lod_gpu.as_ref().is_some_and(|gpu| gpu.active())
             && mirror.is_none()
             && self.native.is_none()
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none());
@@ -4974,7 +5016,8 @@ impl Renderer {
                 .as_ref()
                 .is_some_and(|gpu| !gpu.is_current(self.lod_revision))
             {
-                let (entries, water, layers) = self.gpu_tiles();
+                let meshlets = self.lod_gpu.as_ref().is_some_and(|gpu| gpu.mesh_shaders());
+                let (entries, water, layers) = Self::gpu_tiles(&self.lods, self.started, meshlets);
                 if let Some(gpu) = &mut self.lod_gpu {
                     gpu.rebuild(
                         &self.device,
@@ -4993,6 +5036,7 @@ impl Renderer {
                     &self.device,
                     &mut encoder,
                     &mut self.uploads,
+                    &self.arena,
                     &lod_gpu::Camera {
                         planes: view.planes,
                         view_proj: cull_proj,
@@ -6228,9 +6272,7 @@ impl Renderer {
         let (far_group, far_arena, far_indices) = (&self.group, &self.arena, &self.indices);
         let draw_far = |pass: &mut wgpu::RenderPass<'_>| {
             if let Some(far) = far_tiles {
-                pass.set_pipeline(solid_pipeline);
-                pass.set_bind_group(0, far_group, &[]);
-                far.draw(pass, far_arena, far_indices);
+                far.draw(pass, far_arena, far_indices, solid_pipeline, far_group);
             }
         };
         {

@@ -41,6 +41,9 @@ struct Tile {
     alone: u32,
     ends: array<u32, 7>,
     planes: array<f32, 7>,
+    // The tile's meshlets, for the mesh shader path (lod_gpu_items.wgsl).
+    meshlet_first: u32,
+    meshlet_count: u32,
 }
 @group(0) @binding(0) var<uniform> view: View;
 @group(0) @binding(1) var<storage, read> nodes: array<Node>;
@@ -150,6 +153,10 @@ fn emit(ti: u32, origin: vec3<f32>) {
     }
     let w = select(-(f32(code) + UV_STEP), UV_STEP, code == 0u);
     instances[ti] = vec4(origin, w);
+    if MESH_PATH {
+        push_items(ti, t.page);
+        return;
+    }
     if view.eye.w < 0.5 {
         push_run(t.page, t.base, ti, 0u, t.ends[6]);
         return;

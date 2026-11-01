@@ -7,7 +7,10 @@ use crate::{
     mesher::SectionMesh,
 };
 use glam::{DVec3, Vec3};
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 /// Finished tile meshes not uploaded yet, the tiles they replace (removed
 /// once every mesh is in) and the columns they leave out.
@@ -156,12 +159,18 @@ impl Tile {
     /// quads to draw: its bounds, where the mesh drawn now sits in the arena
     /// and how its quads are sorted, and when it began to fade (`started`'s
     /// clock). Translucent quads stay with the CPU (`Renderer::gpu_tiles`).
-    pub fn gpu_entry(&self, key: TileKey, started: Instant) -> Option<lod_gpu::tree::Entry> {
+    pub fn gpu_entry(
+        &self,
+        key: TileKey,
+        started: Instant,
+        meshlets: bool,
+    ) -> Option<lod_gpu::tree::Entry<'_>> {
         let mesh = self.drawn();
         if mesh.sides.quads() == 0 {
             return None;
         }
         let ms = |t: Instant| clock_ms(started, t);
+        let meshlets: &[super::lod_meshlet::Meshlet] = if meshlets { &mesh.meshlets } else { &[] };
         Some(lod_gpu::tree::Entry {
             key,
             min: self.bounds.min.to_array(),
@@ -175,6 +184,7 @@ impl Tile {
                 self.dying.map(ms),
                 self.alone,
             ),
+            meshlets,
         })
     }
     /// The mesh drawn this frame: the previous one while it stands in.
@@ -264,10 +274,17 @@ impl Renderer {
     /// the keys of those with water (their translucent quads are sorted on
     /// the CPU every frame, so it still walks them) and the animated sprite
     /// layers of them all.
-    pub(super) fn gpu_tiles(&self) -> (Vec<lod_gpu::tree::Entry>, Vec<TileKey>, Vec<u16>) {
+    ///
+    /// Takes the tiles rather than `&self`, so the entries borrow only them.
+    /// `meshlets`: the entries carry their tiles' meshlets (the mesh shader path).
+    pub(super) fn gpu_tiles(
+        lods: &HashMap<TileKey, Tile>,
+        started: Instant,
+        meshlets: bool,
+    ) -> (Vec<lod_gpu::tree::Entry<'_>>, Vec<TileKey>, Vec<u16>) {
         let (mut entries, mut water, mut layers) = (Vec::new(), Vec::new(), Vec::new());
-        for (&key, tile) in &self.lods {
-            entries.extend(tile.gpu_entry(key, self.started));
+        for (&key, tile) in lods {
+            entries.extend(tile.gpu_entry(key, started, meshlets));
             if tile.drawn().translucent > 0 {
                 water.push(key);
             }

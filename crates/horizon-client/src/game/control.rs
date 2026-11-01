@@ -259,6 +259,18 @@ impl Game<'_> {
                 }
                 Ok(Some(json!({ "ok": true, "gpu": r.gpu_lods() })))
             }
+            "mesh-shaders" => {
+                let r = self.renderer.as_mut().ok_or("no renderer")?;
+                let available = match words.get(1).copied() {
+                    None => r.has_mesh_shaders(),
+                    Some("on") => r.set_mesh_shaders(true),
+                    Some("off") => r.set_mesh_shaders(false),
+                    Some(other) => return Err(format!("unknown mesh-shaders mode {other}").into()),
+                };
+                Ok(Some(
+                    json!({ "ok": true, "mesh": r.mesh_shaders(), "available": available }),
+                ))
+            }
             "section-sides" => {
                 let r = self.renderer.as_mut().ok_or("no renderer")?;
                 match words.get(1).copied() {

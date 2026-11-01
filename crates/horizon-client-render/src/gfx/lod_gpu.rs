@@ -26,6 +26,7 @@
 //! The walk goes level by level with `dispatchIndirect`, with a frustum
 //! test and a projected size test, here as a cull rather than
 //! the choice of a level (Horizon's plan picks the tiles on the CPU).
+use super::{lod_mesh, lod_meshlet::Meshlet};
 use crate::lod::TileKey;
 use glam::{DVec3, Mat4, Vec3, Vec4};
 use std::borrow::Cow;
@@ -127,15 +128,15 @@ pub struct Camera {
 }
 
 /// A buffer that grows by doubling, losing its contents when it does.
-struct Grown {
-    buffer: wgpu::Buffer,
+pub(super) struct Grown {
+    pub buffer: wgpu::Buffer,
     size: u64,
     label: &'static str,
     usage: wgpu::BufferUsages,
 }
 
 impl Grown {
-    fn new(device: &wgpu::Device, label: &'static str, usage: wgpu::BufferUsages) -> Self {
+    pub fn new(device: &wgpu::Device, label: &'static str, usage: wgpu::BufferUsages) -> Self {
         let usage = usage | wgpu::BufferUsages::COPY_DST;
         let size = 256;
         Self {
@@ -162,7 +163,7 @@ impl Grown {
 
     /// Room for `bytes`; true when the buffer is a new one (empty, and not
     /// the one the bind groups hold).
-    fn ensure(&mut self, device: &wgpu::Device, bytes: u64) -> bool {
+    pub fn ensure(&mut self, device: &wgpu::Device, bytes: u64) -> bool {
         if bytes <= self.size {
             return false;
         }
@@ -180,7 +181,31 @@ struct Segment {
     capacity: u32,
 }
 
+/// The mesh shader path's own resources (`lod_mesh`): the meshlet pipeline,
+/// the traversal that lists meshlets for it instead of drawing, and the
+/// lists.
+struct MeshPath {
+    pipeline: wgpu::RenderPipeline,
+    /// Group 1 of `pipeline`.
+    layout: wgpu::BindGroupLayout,
+    traverse: wgpu::ComputePipeline,
+    traverse_layout: wgpu::BindGroupLayout,
+    traverse_group: Option<wgpu::BindGroup>,
+    /// A task workgroup each: a tile and a group of its meshlets.
+    items: Grown,
+    /// Per page the task workgroups to dispatch, then 1 and 1.
+    task_args: Grown,
+    meshlets: Grown,
+    /// Per arena page, its first item (a uniform the task shader reads).
+    page_info: Vec<wgpu::Buffer>,
+    /// This frame's bind groups of group 1, by arena page.
+    page_groups: Vec<(u32, wgpu::BindGroup)>,
+    /// The setting: the mesh shaders draw instead of the indexed draws.
+    on: bool,
+}
+
 pub struct LodGpu {
+    mesh: Option<MeshPath>,
     traverse: wgpu::ComputePipeline,
     advance: wgpu::ComputePipeline,
     traverse_layout: wgpu::BindGroupLayout,
@@ -206,6 +231,8 @@ pub struct LodGpu {
     segments: Vec<Segment>,
     /// The GPU wrote a count for each page's draws (`MULTI_DRAW_INDIRECT_COUNT`).
     counted: bool,
+    /// `HORIZON_GPU_LOD=1`: used where it would not be by default.
+    forced: bool,
     water: Vec<TileKey>,
     animated: Vec<u16>,
     threshold: Threshold,
@@ -223,6 +250,103 @@ fn storage(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
             min_binding_size: None,
         },
         count: None,
+    }
+}
+
+/// The traversal's WGSL: the constants it reads, the visibility test, the
+/// shader; for the mesh shader path (`items`) with its lists.
+fn traverse_source(visibility: &str, items: bool) -> String {
+    format!(
+        "{}const FADE_MS: i32 = {};\nconst UV_STEP: f32 = {:?};\n{}\n{}\n{}",
+        crate::mesher::side_rules(),
+        tree::FADE_MS,
+        1.0 / crate::mesher::TILED_UV_STEPS,
+        if items {
+            include_str!("lod_gpu_items.wgsl")
+        } else {
+            "const MESH_PATH: bool = false;\nfn push_items(ti: u32, page: u32) {}\n"
+        },
+        visibility,
+        include_str!("lod_gpu.wgsl"),
+    )
+}
+
+impl MeshPath {
+    /// The traversal for meshlets, after `pipeline`, or `None` (with a warning)
+    /// when the device refuses it.
+    fn new(
+        device: &wgpu::Device,
+        pipeline: lod_mesh::Pipeline,
+        visibility: &Visibility,
+        usage: wgpu::BufferUsages,
+    ) -> Option<Self> {
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let compute = wgpu::ShaderStages::COMPUTE;
+        let mut entries = vec![wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: compute,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }];
+        entries.extend([
+            storage(1, true),
+            storage(2, true),
+            storage(3, false),
+            storage(4, false),
+            storage(5, false),
+            storage(6, false),
+            storage(7, false),
+            storage(8, false),
+        ]);
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Far tile meshlet traversal"),
+            entries: &entries,
+        });
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Far tile meshlet traversal"),
+            source: wgpu::ShaderSource::Wgsl(traverse_source(&visibility.wgsl, true).into()),
+        });
+        let mut groups = vec![Some(&layout)];
+        groups.extend(visibility.layout.as_ref().map(Some));
+        let traverse = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Far tile meshlet traversal"),
+            layout: Some(
+                &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Far tile meshlet traversal"),
+                    bind_group_layouts: &groups,
+                    ..Default::default()
+                }),
+            ),
+            module: &module,
+            entry_point: Some("traverse"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        if let Some(error) = pollster::block_on(scope.pop()) {
+            log::warn!("Horizon renderer: mesh shaders are off for far terrain: {error}");
+            return None;
+        }
+        Some(Self {
+            pipeline: pipeline.pipeline,
+            layout: pipeline.layout,
+            traverse,
+            traverse_layout: layout,
+            traverse_group: None,
+            items: Grown::new(device, "Far tile meshlet items", usage),
+            task_args: Grown::new(
+                device,
+                "Far tile task dispatches",
+                usage | wgpu::BufferUsages::INDIRECT,
+            ),
+            meshlets: Grown::new(device, "Far tile meshlets", usage),
+            page_info: Vec::new(),
+            page_groups: Vec::new(),
+            on: false,
+        })
     }
 }
 
@@ -246,18 +370,24 @@ impl LodGpu {
     /// The walk where this device should run it, or `None`: indirect draws
     /// with a first instance, compute shaders, and not the Intel Vulkan
     /// drivers whose first instance is broken (`flat::is_broken_intel_vulkan`).
-    /// On by default where the GPU can write the draw counts (Vulkan, DX12);
-    /// elsewhere (Metal replays every entry of a multi-draw as a call, so
-    /// the whole list would cost more than the walk it replaces) only with
-    /// `HORIZON_GPU_LOD=1`; `0` turns it off.
-    pub fn create(adapter: &wgpu::Adapter, device: &wgpu::Device) -> Option<Self> {
+    /// On by default where the GPU can write the draw counts (Vulkan, DX12) or
+    /// the mesh shader path is on, which draws a few indirect calls per page;
+    /// elsewhere (Metal replays every entry of a multi-draw as a call, so the
+    /// whole list would cost more than the walk it replaces) only with
+    /// `HORIZON_GPU_LOD=1`; `0` turns it off (`active`).
+    pub fn create(
+        adapter: &wgpu::Adapter,
+        device: &wgpu::Device,
+        mesh: Option<lod_mesh::Setup<'_>>,
+    ) -> Option<Self> {
         let counted = device
             .features()
             .contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT);
-        let wanted = match std::env::var("HORIZON_GPU_LOD").as_deref() {
+        let env = std::env::var("HORIZON_GPU_LOD");
+        let wanted = match env.as_deref() {
             Ok("0") => false,
             Ok("1") => true,
-            _ => counted,
+            _ => counted || mesh.is_some(),
         };
         let indirect = device
             .features()
@@ -273,13 +403,26 @@ impl LodGpu {
         {
             return None;
         }
-        Self::new(device, counted, Visibility::default())
+        let mut gpu = Self::new(device, counted, Visibility::default(), mesh)?;
+        gpu.forced = env.as_deref() == Ok("1");
+        Some(gpu)
+    }
+
+    /// Whether the walk beats the CPU's here: the GPU writes counts, the mesh
+    /// shaders are on, or `HORIZON_GPU_LOD=1` says to.
+    pub fn active(&self) -> bool {
+        self.counted || self.forced || self.mesh_shaders()
     }
 
     /// The walk's pipelines, or `None` when the device refuses them (the
     /// caller keeps the CPU walk). `counted`: the device has
     /// `MULTI_DRAW_INDIRECT_COUNT`.
-    pub fn new(device: &wgpu::Device, counted: bool, visibility: Visibility) -> Option<Self> {
+    pub fn new(
+        device: &wgpu::Device,
+        counted: bool,
+        visibility: Visibility,
+        mesh: Option<lod_mesh::Setup<'_>>,
+    ) -> Option<Self> {
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let compute = wgpu::ShaderStages::COMPUTE;
         let traverse_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -307,17 +450,9 @@ impl LodGpu {
             label: Some("Far tile traversal levels"),
             entries: &[storage(0, false), storage(1, false)],
         });
-        let source = format!(
-            "{}const FADE_MS: i32 = {};\nconst UV_STEP: f32 = {:?};\n{}\n{}",
-            crate::mesher::side_rules(),
-            tree::FADE_MS,
-            1.0 / crate::mesher::TILED_UV_STEPS,
-            visibility.wgsl,
-            include_str!("lod_gpu.wgsl"),
-        );
         let traverse_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Far tile traversal"),
-            source: wgpu::ShaderSource::Wgsl(source.into()),
+            source: wgpu::ShaderSource::Wgsl(traverse_source(&visibility.wgsl, false).into()),
         });
         let advance_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Far tile traversal levels"),
@@ -358,7 +493,12 @@ impl LodGpu {
             return None;
         }
         let storage_usage = wgpu::BufferUsages::STORAGE;
+        let mesh = mesh.and_then(|setup| {
+            let pipeline = lod_mesh::Pipeline::new(device, &setup)?;
+            MeshPath::new(device, pipeline, &visibility, storage_usage)
+        });
         Some(Self {
+            mesh,
             traverse,
             advance,
             traverse_layout,
@@ -405,6 +545,7 @@ impl LodGpu {
             draw_bytes: 0,
             segments: Vec::new(),
             counted,
+            forced: false,
             water: Vec::new(),
             animated: Vec::new(),
             threshold: Threshold::default(),
@@ -446,7 +587,7 @@ impl LodGpu {
         encoder: &mut wgpu::CommandEncoder,
         uploads: &mut super::upload::Uploads,
         revision: u64,
-        entries: &[Entry],
+        entries: &[Entry<'_>],
         water: Vec<TileKey>,
         animated: Vec<u16>,
     ) {
@@ -462,33 +603,86 @@ impl LodGpu {
         if tree.nodes.is_empty() {
             return;
         }
+        // Each page's share of the list: draws, or with mesh shaders the task workgroups.
+        let mesh_on = self.mesh.as_ref().is_some_and(|m| m.on);
         let per_tile = if self.counted { MOST_RUNS } else { 1 };
         let mut bases = vec![0u32; tree.tiles_per_page.len()];
         let mut first = 0;
         for (page, &tiles) in tree.tiles_per_page.iter().enumerate() {
             if tiles > 0 {
+                let share = if mesh_on {
+                    tree.groups_per_page[page]
+                } else {
+                    tiles * per_tile
+                };
                 bases[page] = first;
                 self.segments.push(Segment {
                     page: page as u32,
                     first,
-                    capacity: tiles * per_tile,
+                    capacity: share,
                 });
-                first += tiles * per_tile;
+                first += share;
             }
         }
-        self.draw_bytes = u64::from(first) * DRAW_BYTES;
+        self.draw_bytes = if mesh_on {
+            0
+        } else {
+            u64::from(first) * DRAW_BYTES
+        };
         let nodes = tree.nodes.len() as u64;
         let tiles = tree.tiles.len() as u64;
         let state_words = PAGES + 2 * u64::from(self.pages);
         let mut grown = false;
-        grown |= self.nodes.ensure(device, nodes * 48);
-        grown |= self.tiles.ensure(device, tiles * 80);
+        grown |= self
+            .nodes
+            .ensure(device, nodes * std::mem::size_of::<tree::Node>() as u64);
+        grown |= self
+            .tiles
+            .ensure(device, tiles * std::mem::size_of::<TileRecord>() as u64);
         grown |= self.queue.ensure(device, nodes * 8);
         grown |= self.state.ensure(device, state_words * 4);
         grown |= self.draws.ensure(device, self.draw_bytes);
         grown |= self.instances.ensure(device, tiles * 16);
         if grown {
             self.groups = None;
+            if let Some(mesh) = &mut self.mesh {
+                mesh.traverse_group = None;
+            }
+        }
+        if mesh_on && let Some(mesh) = &mut self.mesh {
+            let mut grown = false;
+            grown |= mesh.items.ensure(device, u64::from(first) * 16);
+            grown |= mesh.meshlets.ensure(
+                device,
+                tree.meshlets.len() as u64 * std::mem::size_of::<Meshlet>() as u64,
+            );
+            grown |= mesh.task_args.ensure(device, u64::from(self.pages) * 16);
+            if grown {
+                mesh.traverse_group = None;
+            }
+            uploads.buffer(
+                encoder,
+                &mesh.meshlets.buffer,
+                0,
+                bytemuck::cast_slice(&tree.meshlets),
+            );
+            // Each page's first item, for the task shader (`lod_mesh.wgsl`'s `page`).
+            mesh.page_info.clear();
+            for segment in &self.segments {
+                let info = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Far tile page items"),
+                    size: 16,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                uploads.buffer(
+                    encoder,
+                    &info,
+                    0,
+                    bytemuck::bytes_of(&[segment.first, 0u32, 0, 0]),
+                );
+                mesh.page_info.push(info);
+            }
         }
         uploads.buffer(
             encoder,
@@ -510,41 +704,31 @@ impl LodGpu {
         );
     }
 
+    /// The traversal's bindings, groups 0 of both its pipelines.
+    fn base_entries(&self) -> Vec<wgpu::BindGroupEntry<'_>> {
+        [
+            &self.view,
+            &self.nodes.buffer,
+            &self.tiles.buffer,
+            &self.queue.buffer,
+            &self.state.buffer,
+            &self.draws.buffer,
+            &self.instances.buffer,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(binding, buffer)| wgpu::BindGroupEntry {
+            binding: binding as u32,
+            resource: buffer.as_entire_binding(),
+        })
+        .collect()
+    }
+
     fn make_groups(&self, device: &wgpu::Device) -> [wgpu::BindGroup; 2] {
-        let whole = |buffer: &wgpu::Buffer| buffer.as_entire_binding();
         let traverse = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Far tile traversal"),
             layout: &self.traverse_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: whole(&self.view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: whole(&self.nodes.buffer),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: whole(&self.tiles.buffer),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: whole(&self.queue.buffer),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: whole(&self.state.buffer),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: whole(&self.draws.buffer),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: whole(&self.instances.buffer),
-                },
-            ],
+            entries: &self.base_entries(),
         });
         let advance = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Far tile traversal levels"),
@@ -552,15 +736,33 @@ impl LodGpu {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: whole(&self.state.buffer),
+                    resource: self.state.buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: whole(&self.args),
+                    resource: self.args.as_entire_binding(),
                 },
             ],
         });
         [traverse, advance]
+    }
+
+    /// The meshlet traversal's group 0: the draw path's, with the lists.
+    fn make_mesh_group(&self, device: &wgpu::Device, mesh: &MeshPath) -> wgpu::BindGroup {
+        let mut entries = self.base_entries();
+        entries.push(wgpu::BindGroupEntry {
+            binding: 7,
+            resource: mesh.task_args.buffer.as_entire_binding(),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: 8,
+            resource: mesh.items.buffer.as_entire_binding(),
+        });
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Far tile meshlet traversal"),
+            layout: &mesh.traverse_layout,
+            entries: &entries,
+        })
     }
 
     /// Records this frame's walk of the tree. Does nothing without tiles, or
@@ -571,6 +773,7 @@ impl LodGpu {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         uploads: &mut super::upload::Uploads,
+        arena: &super::arena::Arena,
         frame: &Camera,
     ) -> bool {
         self.walked = false;
@@ -579,6 +782,65 @@ impl LodGpu {
         }
         if self.groups.is_none() {
             self.groups = Some(self.make_groups(device));
+        }
+        let mesh_on = self.mesh.as_ref().is_some_and(|m| m.on);
+        if mesh_on {
+            if self
+                .mesh
+                .as_ref()
+                .is_some_and(|m| m.traverse_group.is_none())
+            {
+                let group = self.mesh.as_ref().map(|m| self.make_mesh_group(device, m));
+                if let Some(mesh) = &mut self.mesh {
+                    mesh.traverse_group = group;
+                }
+            }
+            // This frame's bind groups of the pages' vertices (their buffers may have grown).
+            let groups: Vec<(u32, wgpu::BindGroup)> = self
+                .segments
+                .iter()
+                .enumerate()
+                .filter(|(_, segment)| arena.has_page(segment.page))
+                .filter_map(|(i, segment)| {
+                    let mesh = self.mesh.as_ref()?;
+                    Some((
+                        segment.page,
+                        device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("Far tile meshlets"),
+                            layout: &mesh.layout,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: self.view.as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: self.instances.buffer.as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 2,
+                                    resource: mesh.items.buffer.as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 3,
+                                    resource: mesh.meshlets.buffer.as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 4,
+                                    resource: arena.buffer(segment.page).as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 5,
+                                    resource: mesh.page_info.get(i)?.as_entire_binding(),
+                                },
+                            ],
+                        }),
+                    ))
+                })
+                .collect();
+            if let Some(mesh) = &mut self.mesh {
+                mesh.page_groups = groups;
+            }
         }
         let camera_block = frame.camera.floor();
         let fraction = (frame.camera - camera_block).as_vec3();
@@ -606,7 +868,18 @@ impl LodGpu {
         // Nothing walked, no draws yet; the first level is the roots.
         let counters = (PAGES + u64::from(self.pages)) * 4;
         encoder.clear_buffer(&self.state.buffer, 0, Some(counters));
-        if !self.counted {
+        if mesh_on {
+            // Per page no task workgroups yet, and the one and one the dispatch needs.
+            let dispatches: Vec<u32> = (0..self.pages).flat_map(|_| [0, 1, 1, 0]).collect();
+            if let Some(mesh) = &self.mesh {
+                uploads.buffer(
+                    encoder,
+                    &mesh.task_args.buffer,
+                    0,
+                    bytemuck::cast_slice(&dispatches),
+                );
+            }
+        } else if !self.counted {
             encoder.clear_buffer(&self.draws.buffer, 0, Some(self.draw_bytes));
         }
         let roots: Vec<u32> = (0..self.roots).collect();
@@ -623,13 +896,20 @@ impl LodGpu {
             0,
             bytemuck::bytes_of(&[self.roots.div_ceil(GROUP), 1u32, 1, 0]),
         );
-        let [traverse_group, advance_group] = self.groups.as_ref().expect("bind groups");
+        let [draw_group, advance_group] = self.groups.as_ref().expect("bind groups");
+        let (traverse, traverse_group) = match self.mesh.as_ref().filter(|m| m.on) {
+            Some(mesh) => match &mesh.traverse_group {
+                Some(group) => (&mesh.traverse, group),
+                None => return false,
+            },
+            None => (&self.traverse, draw_group),
+        };
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("Far tile traversal"),
             timestamp_writes: None,
         });
         for level in 0..self.levels {
-            pass.set_pipeline(&self.traverse);
+            pass.set_pipeline(traverse);
             pass.set_bind_group(0, traverse_group, &[]);
             if let Some(group) = &self.visibility_group {
                 pass.set_bind_group(1, group, &[]);
@@ -645,18 +925,32 @@ impl LodGpu {
         true
     }
 
-    /// Draws the solid quads of the tiles the walk kept, with the terrain
-    /// pipeline and bind group already set: `indices` are the quad indices,
-    /// the instances this module's, each arena page's vertices one call.
+    /// Draws the solid quads of the tiles the walk kept into a pass whose
+    /// terrain bind group is `terrain`: with `solid` (the terrain pipeline) and
+    /// the quad `indices`, a multi-draw per arena page; or, with mesh shaders
+    /// on, the meshlet pipeline and a mesh draw per page.
     pub fn draw(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         arena: &super::arena::Arena,
         indices: &wgpu::Buffer,
+        solid: &wgpu::RenderPipeline,
+        terrain: &wgpu::BindGroup,
     ) {
         if !self.walked {
             return;
         }
+        if let Some(mesh) = self.mesh.as_ref().filter(|m| m.on) {
+            pass.set_pipeline(&mesh.pipeline);
+            pass.set_bind_group(0, terrain, &[]);
+            for (page, group) in &mesh.page_groups {
+                pass.set_bind_group(1, group, &[]);
+                pass.draw_mesh_tasks_indirect(&mesh.task_args.buffer, u64::from(*page) * 16);
+            }
+            return;
+        }
+        pass.set_pipeline(solid);
+        pass.set_bind_group(0, terrain, &[]);
         pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
         pass.set_vertex_buffer(1, self.instances.buffer.slice(..));
         for segment in &self.segments {
@@ -676,6 +970,28 @@ impl LodGpu {
             } else {
                 pass.multi_draw_indexed_indirect(&self.draws.buffer, offset, segment.capacity);
             }
+        }
+    }
+
+    /// Whether far terrain is drawn with mesh shaders: the device has them
+    /// and the setting is on.
+    pub fn mesh_shaders(&self) -> bool {
+        self.mesh.as_ref().is_some_and(|m| m.on)
+    }
+
+    /// Whether the device can draw far terrain with mesh shaders at all.
+    pub fn has_mesh_shaders(&self) -> bool {
+        self.mesh.is_some()
+    }
+
+    /// Switches the mesh shader path (the Mesh Shaders setting, once the device
+    /// has them); the lists are built again for the other path.
+    pub fn set_mesh_shaders(&mut self, on: bool) {
+        if let Some(mesh) = &mut self.mesh
+            && mesh.on != on
+        {
+            mesh.on = on;
+            self.revision = None;
         }
     }
 
@@ -705,6 +1021,8 @@ pub(super) fn record(
         alone: u32::from(alone),
         ends: sides.ends(),
         planes: sides.planes(),
+        meshlet_first: 0,
+        meshlet_count: 0,
     }
 }
 
@@ -733,7 +1051,7 @@ mod tests {
         // 6 planes, a matrix, and five vectors: lod_gpu.wgsl's `View`.
         assert_eq!(std::mem::size_of::<ViewUniform>(), 96 + 64 + 5 * 16);
         assert_eq!(std::mem::size_of::<tree::Node>(), 48);
-        assert_eq!(std::mem::size_of::<TileRecord>(), 80);
+        assert_eq!(std::mem::size_of::<TileRecord>(), 88);
     }
 
     #[test]

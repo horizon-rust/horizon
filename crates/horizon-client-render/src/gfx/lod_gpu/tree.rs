@@ -6,6 +6,7 @@
 //! test on an ancestor leaves out everything under it, and lays the nodes out
 //! breadth first: a node's children are consecutive, and each level is one
 //! stretch of the array, which is the order the shader visits them in.
+use super::super::lod_meshlet::Meshlet;
 use crate::{fast_hash::FxHashMap, lod::TileKey};
 
 /// No node, tile or child.
@@ -33,6 +34,10 @@ pub struct TileRecord {
     /// `Sides::ends` and `Sides::planes`.
     pub ends: [u32; 7],
     pub planes: [f32; 7],
+    /// Where the tile's meshlets are in `Tree::meshlets`, and how many (none
+    /// without mesh shaders).
+    pub meshlet_first: u32,
+    pub meshlet_count: u32,
 }
 
 /// One node: a tile, an ancestor of tiles, or both.
@@ -54,12 +59,15 @@ pub struct Node {
 
 /// A tile with solid quads, as `build` takes it.
 #[derive(Clone, Copy, Debug)]
-pub struct Entry {
+pub struct Entry<'a> {
     pub key: TileKey,
     /// The tile's bounds relative to its origin.
     pub min: [f32; 3],
     pub max: [f32; 3],
     pub record: TileRecord,
+    /// The mesh's meshlets (`lod_meshlet`), if it has them; `build` sets the
+    /// record's `meshlet_first` and `meshlet_count`.
+    pub meshlets: &'a [Meshlet],
 }
 
 #[derive(Default)]
@@ -72,7 +80,16 @@ pub struct Tree {
     pub levels: u32,
     /// Tiles per arena page, which sizes each page's share of the draw list.
     pub tiles_per_page: Vec<u32>,
+    /// Every tile's meshlets, one tile after another, each with the first
+    /// vertex in its page.
+    pub meshlets: Vec<Meshlet>,
+    /// Task workgroups per arena page the mesh shader path needs: a tile's
+    /// meshlets in groups of `GROUP_MESHLETS`.
+    pub groups_per_page: Vec<u32>,
 }
+
+/// Meshlets a task workgroup culls (`lod_mesh::TASK_THREADS`).
+pub const GROUP_MESHLETS: u32 = 32;
 
 struct Work {
     key: TileKey,
@@ -95,7 +112,7 @@ impl Work {
 }
 
 /// The tree of `entries`: tile `i` is `Tree::tiles[i]`.
-pub fn build(entries: &[Entry]) -> Tree {
+pub fn build(entries: &[Entry<'_>]) -> Tree {
     let Some(top) = entries.iter().map(|e| e.key.level).max() else {
         return Tree::default();
     };
@@ -180,19 +197,34 @@ pub fn build(entries: &[Entry]) -> Tree {
         })
         .collect();
     let mut tiles_per_page: Vec<u32> = Vec::new();
+    let mut groups_per_page: Vec<u32> = Vec::new();
+    let mut meshlets: Vec<Meshlet> = Vec::new();
+    let mut tiles: Vec<TileRecord> = Vec::with_capacity(entries.len());
     for e in entries {
         let page = e.record.page as usize;
         if tiles_per_page.len() <= page {
             tiles_per_page.resize(page + 1, 0);
+            groups_per_page.resize(page + 1, 0);
         }
         tiles_per_page[page] += 1;
+        groups_per_page[page] += (e.meshlets.len() as u32).div_ceil(GROUP_MESHLETS);
+        let mut record = e.record;
+        record.meshlet_first = meshlets.len() as u32;
+        record.meshlet_count = e.meshlets.len() as u32;
+        meshlets.extend(e.meshlets.iter().map(|m| Meshlet {
+            base: e.record.base + m.first * 4,
+            ..*m
+        }));
+        tiles.push(record);
     }
     Tree {
         nodes,
-        tiles: entries.iter().map(|e| e.record).collect(),
+        tiles,
         roots: root_count,
         levels: u32::from(top) + 1,
         tiles_per_page,
+        meshlets,
+        groups_per_page,
     }
 }
 
@@ -224,7 +256,7 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
-    fn entry(x: i32, z: i32, level: u8, page: u32) -> Entry {
+    fn entry(x: i32, z: i32, level: u8, page: u32) -> Entry<'static> {
         let size = TileKey { x, z, level }.size() as f32;
         Entry {
             key: TileKey { x, z, level },
@@ -239,7 +271,10 @@ mod tests {
                 alone: 0,
                 ends: [0, 0, 0, 4, 4, 4, 4],
                 planes: [0.0; 7],
+                meshlet_first: 0,
+                meshlet_count: 0,
             },
+            meshlets: &[],
         }
     }
 
@@ -301,6 +336,45 @@ mod tests {
         assert_eq!(tree.nodes.len(), 3);
         let root = tree.nodes[0];
         assert_eq!((root.tile, root.child_count, root.first_child), (0, 2, 1));
+    }
+
+    #[test]
+    fn meshlets_follow_their_tiles_with_their_vertices_in_the_page() {
+        let meshlet = |first, count| Meshlet {
+            first,
+            count,
+            side: 3,
+            plane: 0.0,
+            min: [0.0; 3],
+            base: 0,
+            max: [1.0; 3],
+            pad: 0,
+        };
+        let few = [meshlet(0, 16), meshlet(16, 5)];
+        let many: Vec<Meshlet> = (0..40).map(|i| meshlet(i * 16, 16)).collect();
+        let mut a = entry(0, 0, 0, 0);
+        let mut b = entry(1, 0, 0, 0);
+        a.meshlets = &few;
+        b.meshlets = &many;
+        // The first tile's vertices start at 0, the second's at 4.
+        let tree = build(&[a, b]);
+        assert_eq!(tree.meshlets.len(), 42);
+        assert_eq!(
+            (tree.tiles[0].meshlet_first, tree.tiles[0].meshlet_count),
+            (0, 2)
+        );
+        assert_eq!(
+            (tree.tiles[1].meshlet_first, tree.tiles[1].meshlet_count),
+            (2, 40)
+        );
+        assert_eq!(
+            tree.meshlets[1].base,
+            16 * 4,
+            "quad 16 of a tile at vertex 0"
+        );
+        assert_eq!(tree.meshlets[3].base, 4 + 16 * 4);
+        // One group for the first tile, two (32 + 8 meshlets) for the second.
+        assert_eq!(tree.groups_per_page, [3]);
     }
 
     #[test]
