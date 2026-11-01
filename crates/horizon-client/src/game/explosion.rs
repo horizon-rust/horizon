@@ -435,7 +435,7 @@ impl Game<'_> {
             }
         }
         if raised {
-            self.after_block(outcome, amount, None, false);
+            self.after_block(outcome, None, false);
         }
         pushed
     }

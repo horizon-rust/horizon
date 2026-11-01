@@ -119,6 +119,7 @@ pub fn run(dir: &Path) -> Result<(), String> {
             &format!("Json-RPC Management connection listening on {address}"),
         );
     }
+    crate::rcon::start(shared.clone())?;
     match config.panel.address() {
         Ok(Some(address)) => match crate::panel::start(shared.clone(), address) {
             Ok(()) => note(

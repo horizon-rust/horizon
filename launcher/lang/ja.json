@@ -614,5 +614,17 @@
   "Upload this log to mclo.gs, a paste service for Minecraft logs? Anyone with the link can read it, until it is deleted or unread for 90 days. Your home folder, user name and account names are taken out first.": "Upload this log to mclo.gs, a paste service for Minecraft logs? Anyone with the link can read it, until it is deleted or unread for 90 days. Your home folder, user name and account names are taken out first.",
   "{count} lines, the game is running": "{count} lines, the game is running",
   "Move to trash": "Move to trash",
-  "{name} moved to the trash.": "{name} moved to the trash."
+  "{name} moved to the trash.": "{name} moved to the trash.",
+  "Couldn't load patch notes. {error}": "パッチノートを読み込めませんでした。{error}",
+  "Couldn't load releases. {error}": "リリースを読み込めませんでした。{error}",
+  "Launcher updated to {version}": "ランチャーを {version} に更新しました",
+  "Launcher {version}": "ランチャー {version}",
+  "Launcher {version}  {percent}%": "ランチャー {version}  {percent}%",
+  "Manage versions": "バージョンを管理",
+  "No build for this platform": "このプラットフォーム向けのビルドはありません",
+  "No notes for this release.": "このリリースのノートはありません。",
+  "No version": "バージョンなし",
+  "Search, then Enter": "検索して Enter",
+  "Signed in as {name}.": "{name} としてサインインしました。",
+  "follows updates": "アップデートに追従"
 }

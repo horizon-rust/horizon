@@ -614,6 +614,10 @@ impl<'a> Game<'a> {
         let Some(terrain) = self.end.locator() else {
             return;
         };
+        // `FlatLevelSource.spawnOriginalMobs` is empty: a superflat world places no packs.
+        if terrain.is_flat() {
+            return;
+        }
         let mut region = terrain.region_random(cx, cz);
         let any = region.as_any();
         let added = if let Some(r) = any.downcast_mut::<LegacyRandom>() {

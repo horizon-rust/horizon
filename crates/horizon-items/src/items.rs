@@ -139,6 +139,8 @@ pub struct ItemInfo {
     pub bundle: bool,
     /// The ids of the item's default components (its prototype's keys).
     pub components: Vec<String>,
+    /// Opaque native component defaults, keyed by their registered name.
+    pub custom_components: std::collections::BTreeMap<String, horizon_world::nbt::Tag>,
 }
 /// `Item.Properties.craftRemainder` (not a data component, so not in the
 /// default-component report): what an item leaves in the grid when crafted with.
@@ -174,6 +176,25 @@ pub struct BlocksAttacks {
     pub disabled_sound: Option<String>,
 }
 impl BlocksAttacks {
+    /// The `blocks_attacks` `stack` has (`ItemStack.get(DataComponents.BLOCKS_ATTACKS)`):
+    /// its own component when it carries one (`/give @s diamond_sword[blocks_attacks={}]`,
+    /// or a server's item), else its item's (`item`, a shield's).
+    pub fn of_stack<'a>(
+        stack: &ItemStack,
+        item: Option<&'a ItemInfo>,
+    ) -> Option<std::borrow::Cow<'a, Self>> {
+        if let Some(own) = stack
+            .data()
+            .and_then(|d| d.other("minecraft:blocks_attacks"))
+        {
+            let json = horizon_client_core::scoreboard::tag_to_json(own);
+            return Self::parse(&json).map(std::borrow::Cow::Owned);
+        }
+        item?
+            .blocks_attacks
+            .as_ref()
+            .map(std::borrow::Cow::Borrowed)
+    }
     fn parse(v: &Value) -> Option<Self> {
         if !v.is_object() {
             return None;
@@ -786,6 +807,18 @@ impl Items {
                         .as_object()
                         .map(|c| c.keys().cloned().collect())
                         .unwrap_or_default(),
+                    custom_components: c
+                        .as_object()
+                        .into_iter()
+                        .flatten()
+                        .filter(|(name, _)| !name.starts_with("minecraft:"))
+                        .map(|(name, value)| {
+                            (
+                                name.clone(),
+                                horizon_client_core::scoreboard::json_to_tag(value),
+                            )
+                        })
+                        .collect(),
                     crafting_remainder: CRAFT_REMAINDERS
                         .iter()
                         .find(|(item, _)| *item == name)
@@ -1905,6 +1938,41 @@ mod tests {
     use super::*;
     use horizon_core::random::LegacyRandom;
     use serde_json::json;
+
+    #[test]
+    fn a_stacks_own_blocks_attacks_component_counts() {
+        let plain = ItemStack::new("minecraft:diamond_sword", 1);
+        assert!(BlocksAttacks::of_stack(&plain, None).is_none());
+        let mut sword = plain.clone();
+        let component = json!({
+            "block_delay_seconds": 0.0,
+            "disable_cooldown_scale": 0.0,
+            "damage_reductions": [{"horizontal_blocking_angle": 180.0, "base": -0.5, "factor": 0.5}],
+            "item_damage": {"threshold": 1.0e9, "base": 0.0, "factor": 0.0},
+            "bypassed_by": "#minecraft:bypasses_armor",
+        });
+        sword.data_mut().other.push((
+            "minecraft:blocks_attacks".into(),
+            horizon_client_core::scoreboard::json_to_tag(&component),
+        ));
+        let b = BlocksAttacks::of_stack(&sword, None).expect("the stack's own component");
+        assert_eq!(b.delay_seconds, 0.0);
+        assert_eq!(b.disable_scale, 0.0);
+        assert_eq!(b.reductions.len(), 1);
+        assert_eq!(b.reductions[0].horizontal_angle, 180.0);
+        assert_eq!((b.reductions[0].base, b.reductions[0].factor), (-0.5, 0.5));
+        assert_eq!(b.item_damage.0, 1.0e9);
+        assert_eq!(b.bypassed_by.as_deref(), Some("#minecraft:bypasses_armor"));
+        // An empty compound is the codec's defaults: a shield's 90 degrees.
+        let mut bare = plain.clone();
+        bare.data_mut().other.push((
+            "minecraft:blocks_attacks".into(),
+            horizon_client_core::scoreboard::json_to_tag(&json!({})),
+        ));
+        let b = BlocksAttacks::of_stack(&bare, None).expect("defaults");
+        assert_eq!(b.reductions[0].horizontal_angle, 90.0);
+        assert_eq!(b.disable_scale, 1.0);
+    }
 
     #[test]
     fn loaded_block_and_item_tags_answer_membership() {

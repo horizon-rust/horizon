@@ -139,9 +139,19 @@ impl Game<'_> {
             Tag::List(pos.map(|v| Tag::Double(v.to_bits())).to_vec()),
         );
         let from = self.mobs.len();
+        let deferred = (self.tnts.len(), self.falling.len(), self.rockets.len());
         let target = self.spawn_entity_from_nbt(Tag::Compound(tag));
+        // These roots load with id 0 and have no command Target variant.
+        // Select the newly appended root, never an older waiting entity.
+        let root = match kind {
+            "minecraft:tnt" => self.tnts.get_mut(deferred.0).map(|e| &mut e.id),
+            "minecraft:falling_block" => self.falling.get_mut(deferred.1).map(|e| &mut e.id),
+            "minecraft:firework_rocket" => self.rockets.get_mut(deferred.2).map(|e| &mut e.id),
+            _ => None,
+        };
+        let root = root.map(|id| super::lan_entities::assign_entity_id(&mut self.next_entity, id));
         self.native_mobs_joined(from, false);
-        target.and_then(target_id)
+        root.or_else(|| target.and_then(target_id))
     }
     /// Moves entity `id`, one Horizon keeps without simulating (a display, a
     /// marker, an interaction), to `pos` facing `yaw` and `pitch` in degrees;

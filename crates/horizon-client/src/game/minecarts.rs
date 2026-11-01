@@ -56,7 +56,7 @@ impl CartKind {
             Self::CommandBlock => "minecraft:command_block_minecart",
         }
     }
-    fn slots(self) -> usize {
+    pub(super) fn slots(self) -> usize {
         match self {
             Self::Chest => 27,
             Self::Hopper => 5,
@@ -1452,6 +1452,22 @@ impl Game<'_> {
             }
         }
         best
+    }
+    /// The slots of the cart `id`, for a command: `getChestVehicleItem` and
+    /// `setChestVehicleItem` first unpack its loot table with no player, so
+    /// no `player_generates_container_loot` fires later. While its menu is
+    /// open the live slots are the placeholder copy (`open_cart_container`).
+    pub(super) fn cart_slots(&mut self, id: u32) -> Option<&mut Vec<Option<ItemStack>>> {
+        let c = self.carts.iter_mut().find(|c| c.id == id)?;
+        c.loot = None;
+        match self
+            .world
+            .block_entities
+            .get_mut(&(i32::MAX - 15, CART_KEY_Y, id as i32))
+        {
+            Some(BlockEntity::Chest(open)) => Some(open),
+            _ => Some(&mut c.items),
+        }
     }
     /// `ContainerEntity.unpackChestVehicleLootTable` for a player who opens a
     /// chest minecart: a roll it still holds fires `player_generates_container_loot`
