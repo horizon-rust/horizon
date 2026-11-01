@@ -138,12 +138,10 @@ fn connect(port: u16, name: &str, known_pack: bool) -> Result<Bot, String> {
             }
             cfg::Clientbound::RegistryData(r) => {
                 registries += 1;
-                // A client that knows the core pack rebuilds the entries itself, except
-                // the dialogs: the server always sends their data (#4698), since
-                // Horizon's client reads them from the packet.
+                // A client that knows the core pack rebuilds the entries itself
+                // (RegistrySynchronization.packRegistry), dialogs included.
                 let has_data = r.entries.iter().any(|e| e.data.is_some());
-                let sends_data = !known_pack || r.registry == "minecraft:dialog";
-                assert_eq!(has_data, sends_data, "{}", r.registry);
+                assert_eq!(has_data, !known_pack, "{}", r.registry);
             }
             cfg::Clientbound::UpdateTags(t) => tags += t.registries.len(),
             cfg::Clientbound::UpdateEnabledFeatures(_) => features += 1,

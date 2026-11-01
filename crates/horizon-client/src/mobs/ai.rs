@@ -663,11 +663,18 @@ fn effects_from_blocks(
     // Block.stepOn for the block under a mob on the ground (`getOnPosLegacy`):
     // MagmaBlock.stepOn's hot floor, 1 damage (a mob never sneaks).
     if m.on_ground && m.alive() {
-        let (x, y, z) = (
-            m.position.x.floor() as i32,
-            (m.position.y - f64::from(0.2_f32)).floor() as i32,
-            m.position.z.floor() as i32,
-        );
+        // 0.2 below the feet, or the supporting block when the centre is over
+        // its edge.
+        let [x, y, z] = m.block_on_legacy(w);
+        crate::block_contact::emit(crate::block_contact::Event::StepOn(
+            crate::block_contact::Contact {
+                entity: m.id as i32,
+                kind: &m.kind.id,
+                block: w.block_name(x, y, z),
+                state: w.world.block(x, y, z),
+                position: horizon_core::position::BlockPos::new(x, y, z),
+            },
+        ));
         if w.block_name(x, y, z) == "minecraft:magma_block" {
             m.damage(1.0, Damage::of(DamageKind::HotFloor));
         }
@@ -702,6 +709,16 @@ fn effects_from_blocks(
                     if visited.contains(&p) {
                         continue;
                     }
+                    crate::block_contact::emit(crate::block_contact::Event::Inside(
+                        crate::block_contact::Contact {
+                            entity: m.id as i32,
+                            kind: &m.kind.id,
+                            block: w.block_name(x, y, z),
+                            state: w.world.block(x, y, z),
+                            position: horizon_core::position::BlockPos::new(x, y, z),
+                        },
+                    ));
+                    visited.push(p);
                     match w.block_name(x, y, z) {
                         "minecraft:cactus" => {
                             m.damage(1.0, Damage::of(DamageKind::Cactus));
@@ -751,7 +768,6 @@ fn effects_from_blocks(
                         "minecraft:honey_block" => honey_slide(m, p, level_random, events),
                         _ => continue,
                     }
-                    visited.push(p);
                 }
             }
         }
@@ -1524,6 +1540,7 @@ fn server_ai_step(
         || m.species() == Species::HappyGhast && m.is_baby()
         || m.species() == Species::CopperGolem
         || m.species() == Species::Axolotl
+        || m.species() == Species::Tadpole
     {
         super::animal_brain::tick(m, w, level_random, events);
     }

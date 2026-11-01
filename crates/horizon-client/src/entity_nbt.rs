@@ -1141,6 +1141,25 @@ pub fn mob_to_nbt(
                 equipment.insert(slot.into(), crate::save::item_to_nbt(&stack));
                 continue;
             }
+            // A worn piece or held item that kept its damage, name or
+            // components is saved with them.
+            if slot != "mainhand"
+                && item.is_some()
+                && let Some(stack) = crate::mobs::finalize::stored_stack(
+                    m,
+                    [
+                        crate::mobs::finalize::MAINHAND,
+                        crate::mobs::finalize::OFFHAND,
+                        crate::mobs::finalize::HEAD,
+                        crate::mobs::finalize::CHEST,
+                        crate::mobs::finalize::LEGS,
+                        crate::mobs::finalize::FEET,
+                    ][index],
+                )
+            {
+                equipment.insert(slot.into(), crate::save::item_to_nbt(&stack));
+                continue;
+            }
             // Enchanted or trimmed gear is saved with its components.
             if let (Some(id), Some(g)) = (item, crate::mobs::gear::gear(m))
                 && (!g.slots[index].is_empty() || g.trims[index].is_some())
@@ -1405,6 +1424,10 @@ pub fn mob_from_nbt(
                 crate::mobs::gear::set(&mut m, index, stack.enchantments().to_vec());
                 let trim = stack.data().and_then(|d| d.trim.clone());
                 crate::mobs::gear::set_trim(&mut m, index, trim);
+                // The damage, name and components stay with the slot.
+                if index != crate::mobs::gear::MAIN {
+                    crate::mobs::gear::set_stack(&mut m, index, stack);
+                }
             }
         }
     } else {
@@ -2155,6 +2178,7 @@ pub fn arrow_from_nbt(
     p.velocity = motion(tag);
     [p.yaw, p.pitch] = rotation(tag);
     p.left_owner = flag(tag, "LeftOwner");
+    p.owner_uuid = owner;
     let a = p.arrow.as_mut()?;
     a.life = number(tag.get("life")).unwrap_or(0) as i16 as i32;
     a.shake = (number(tag.get("shake")).unwrap_or(0) as i8 as u8).into();
@@ -2198,24 +2222,104 @@ pub fn fireball_to_nbt(
         "acceleration_power",
         Tag::Double(p.acceleration.to_bits()),
     );
-    // Projectile: LeftOwner only when set; HasBeenShot once it has ticked
-    // (a fireball saved before its first tick keeps what it was loaded with).
-    if let Tag::Compound(map) = &mut tag {
-        map.remove(&"LeftOwner".into());
-    }
-    if p.left_owner {
-        put(&mut tag, "LeftOwner", Tag::Byte(1));
-    }
-    if p.age > 0 || tag.get("HasBeenShot").is_none() {
-        put(&mut tag, "HasBeenShot", Tag::Byte(i8::from(p.age > 0)));
-    }
+    put_projectile(&mut tag, p, owner);
     if let Some(power) = power {
         put(&mut tag, "ExplosionPower", Tag::Byte(power as i8));
     }
+    Some(tag)
+}
+
+/// `Projectile.addAdditionalSaveData`: Owner, LeftOwner only when set, and
+/// HasBeenShot once it has ticked (one saved before its first tick keeps
+/// what it was loaded with).
+fn put_projectile(tag: &mut Tag, p: &Projectile, owner: Option<[i32; 4]>) {
+    if let Tag::Compound(map) = tag {
+        map.remove(&"LeftOwner".into());
+    }
+    if p.left_owner {
+        put(tag, "LeftOwner", Tag::Byte(1));
+    }
+    if p.age > 0 || tag.get("HasBeenShot").is_none() {
+        put(tag, "HasBeenShot", Tag::Byte(i8::from(p.age > 0)));
+    }
     if let Some(owner) = owner {
-        put(&mut tag, "Owner", Tag::IntArray(owner.to_vec()));
+        put(tag, "Owner", Tag::IntArray(owner.to_vec()));
+    }
+}
+
+/// The thrown item projectiles Horizon saves: each entity type's id is also
+/// the item it saves when none was loaded (`getDefaultItem`).
+const THROWABLES: [(ProjectileKind, &str); 3] = [
+    (ProjectileKind::Snowball, "minecraft:snowball"),
+    (ProjectileKind::Egg, "minecraft:egg"),
+    (ProjectileKind::EnderPearl, "minecraft:ender_pearl"),
+];
+fn throwable_item(kind: &ProjectileKind) -> Option<&'static str> {
+    THROWABLES
+        .iter()
+        .find(|(k, _)| k == kind)
+        .map(|&(_, id)| id)
+}
+
+/// Whether its chunk saves it: the kinds `arrow_to_nbt`, `fireball_to_nbt`
+/// and [`throwable_to_nbt`] write.
+pub fn saved_with_chunk(p: &Projectile) -> bool {
+    matches!(
+        p.kind,
+        ProjectileKind::LargeFireball { .. } | ProjectileKind::SmallFireball
+    ) || (p.arrow.is_some() && matches!(p.kind, ProjectileKind::Arrow { .. }))
+        || throwable_item(&p.kind).is_some()
+}
+
+/// `ThrowableItemProjectile.addAdditionalSaveData`: `Projectile`'s keys and
+/// the `Item` it flies as.
+pub fn throwable_to_nbt(
+    p: &Projectile,
+    uuid: [i32; 4],
+    owner: Option<[i32; 4]>,
+    raw: Option<&Tag>,
+) -> Option<Tag> {
+    let item = throwable_item(&p.kind)?;
+    let base = Base {
+        id: p.kind.id(),
+        uuid,
+        position: p.position,
+        motion: p.velocity,
+        rotation: [p.yaw, p.pitch],
+        on_ground: false,
+        fall_distance: 0.0,
+    };
+    let mut tag = base.tag(raw);
+    put_projectile(&mut tag, p, owner);
+    // the loaded item stays (a blue egg's, a renamed one's).
+    if tag.get("Item").is_none() {
+        put(
+            &mut tag,
+            "Item",
+            item_to_nbt(&crate::items::ItemStack::new(item, 1)),
+        );
     }
     Some(tag)
+}
+
+/// `ThrowableItemProjectile.readAdditionalSaveData` for the kinds
+/// [`throwable_to_nbt`] writes; the owner is the player when it is theirs.
+pub fn throwable_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projectile> {
+    let id = kind(tag)?;
+    let (kind, _) = THROWABLES.iter().find(|(_, i)| *i == id)?.clone();
+    let owner = owner_uuid(tag);
+    let from_player = player.is_some() && owner == player;
+    let mut p = Projectile::new(kind, position(tag)?, from_player.then_some(Who::Player));
+    p.velocity = motion(tag);
+    [p.yaw, p.pitch] = rotation(tag);
+    p.left_owner = flag(tag, "LeftOwner");
+    p.owner_uuid = owner;
+    Some(p)
+}
+
+/// `Projectile`'s `Owner`.
+pub fn owner_uuid(tag: &Tag) -> Option<[i32; 4]> {
+    uuid_from_tag(tag.get("Owner"))
 }
 
 pub fn fireball_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projectile> {
@@ -2234,6 +2338,7 @@ pub fn fireball_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projecti
     p.velocity = motion(tag);
     [p.yaw, p.pitch] = rotation(tag);
     p.left_owner = flag(tag, "LeftOwner");
+    p.owner_uuid = owner;
     p.acceleration = float(tag.get("acceleration_power")).unwrap_or(0.1);
     Some(p)
 }
@@ -2498,6 +2603,7 @@ pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> 
     } else {
         put(&mut tag, "equipment", Tag::compound(equipment));
     }
+    put(&mut tag, "DisabledSlots", Tag::Int(a.disabled_slots));
     for (key, value) in [
         ("Small", a.small),
         ("ShowArms", a.show_arms),
@@ -2572,6 +2678,7 @@ pub fn armor_stand_from_nbt(tag: &Tag, id: u32) -> Option<ArmorStand> {
     }
     a.small = flag(tag, "Small");
     a.show_arms = flag(tag, "ShowArms");
+    a.disabled_slots = number(tag.get("DisabledSlots")).unwrap_or(0) as i32;
     a.no_base_plate = flag(tag, "NoBasePlate");
     a.invisible = flag(tag, "Invisible");
     a.marker = flag(tag, "Marker");
@@ -4084,6 +4191,69 @@ mod fireball_nbt_tests {
             assert_eq!(fireball_from_nbt(&tag, None).unwrap().kind, kind);
         }
     }
+
+    #[test]
+    fn thrown_item_projectiles_round_trip_their_flight_item_and_owner() {
+        let player = Some([5, 6, 7, 8]);
+        for (kind, id) in [
+            (ProjectileKind::Snowball, "minecraft:snowball"),
+            (ProjectileKind::Egg, "minecraft:egg"),
+            (ProjectileKind::EnderPearl, "minecraft:ender_pearl"),
+        ] {
+            let mut p =
+                Projectile::new(kind.clone(), Vec3::new(1.5, 70.0, -2.5), Some(Who::Player));
+            (p.velocity, p.left_owner, p.age) = (Vec3::new(0.3, -0.1, 1.2), true, 4);
+            [p.yaw, p.pitch] = [30.0, -10.0];
+            let tag = throwable_to_nbt(&p, [1, 2, 3, 4], player, None).unwrap();
+            assert_eq!(super::kind(&tag).as_deref(), Some(id));
+            // ThrowableItemProjectile: the item it flies as, by its default.
+            let item = tag.get("Item").and_then(item_from_nbt).unwrap();
+            assert_eq!((&*item.item, item.count), (id, 1));
+            assert_eq!(number(tag.get("HasBeenShot")), Some(1));
+            assert_eq!(uuid_from_tag(tag.get("Owner")), player);
+            let back = throwable_from_nbt(&tag, player).unwrap();
+            assert_eq!((back.kind, back.owner), (kind, Some(Who::Player)));
+            assert_eq!((back.position, back.velocity), (p.position, p.velocity));
+            assert_eq!(
+                ([back.yaw, back.pitch], back.left_owner),
+                ([30.0, -10.0], true)
+            );
+            // an owner who is not here keeps their UUID through a moved resave.
+            let mut away = throwable_from_nbt(&tag, Some([9; 4])).unwrap();
+            assert_eq!((away.owner, away.owner_uuid), (None, player));
+            away.position.y += 3.0;
+            let resaved = throwable_to_nbt(&away, [1; 4], away.owner_uuid, None).unwrap();
+            assert_eq!(uuid_from_tag(resaved.get("Owner")), player);
+        }
+        // the chunk saves arrows, fireballs and these, and so takes them with it.
+        let kinds = [
+            (ProjectileKind::SmallFireball, true),
+            (ProjectileKind::Snowball, true),
+            (ProjectileKind::WindCharge, false),
+            (ProjectileKind::Trident, false),
+        ];
+        for (kind, saved) in kinds {
+            let p = Projectile::new(kind, Vec3::ZERO, None);
+            assert_eq!(saved_with_chunk(&p), saved, "{:?}", p.kind);
+        }
+        // a loaded item stays, and a new projectile leaves LeftOwner out.
+        let raw = Tag::compound([
+            ("id", Tag::String("minecraft:egg".into())),
+            ("Pos", doubles(&[0.0, 64.0, 0.0])),
+            (
+                "Item",
+                item_to_nbt(&crate::items::ItemStack::new("minecraft:blue_egg", 1)),
+            ),
+        ]);
+        let egg = throwable_from_nbt(&raw, None).unwrap();
+        let tag = throwable_to_nbt(&egg, [1; 4], None, Some(&raw)).unwrap();
+        let item = tag.get("Item").and_then(item_from_nbt).unwrap();
+        assert_eq!(&*item.item, "minecraft:blue_egg");
+        assert!(tag.get("LeftOwner").is_none() && tag.get("Owner").is_none());
+        assert_eq!(number(tag.get("HasBeenShot")), Some(0));
+        let wind = Projectile::new(ProjectileKind::WindCharge, Vec3::ZERO, None);
+        assert!(throwable_to_nbt(&wind, [1; 4], None, None).is_none());
+    }
 }
 
 #[cfg(test)]
@@ -4135,6 +4305,43 @@ mod neutral_anger_tests {
 #[cfg(test)]
 mod held_item_name_tests {
     use super::*;
+
+    #[test]
+    fn a_worn_piece_keeps_its_damage_and_name_through_the_save() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<_, _> = data
+            .types
+            .into_iter()
+            .map(|(id, kind)| (id, Arc::new(kind)))
+            .collect();
+        let mut mob = Mob::new(1, Arc::clone(&types["minecraft:zombie"]), Vec3::ZERO, 0.0);
+        let mut helmet = crate::items::ItemStack::new("minecraft:iron_helmet", 1);
+        helmet.damage = 40;
+        helmet.data_mut().custom_name = Some(horizon_world::nbt::Tag::String("Hat".into()));
+        crate::mobs::finalize::set_item_stack(&mut mob, crate::mobs::finalize::HEAD, helmet);
+        let raw = mob_to_nbt(&mob, [1, 2, 3, 4], None, None);
+        let loaded = mob_from_nbt(&raw, &types, 2, None).unwrap();
+        let worn = crate::mobs::finalize::item_stack(&loaded, crate::mobs::finalize::HEAD).unwrap();
+        assert_eq!(worn.damage, 40);
+        assert_eq!(worn.custom_name().as_deref(), Some("Hat"));
+        // Replacing the item forgets the old stack.
+        let mut loaded = loaded;
+        crate::mobs::finalize::set_item(
+            &mut loaded,
+            crate::mobs::finalize::HEAD,
+            "minecraft:iron_helmet",
+        );
+        let fresh =
+            crate::mobs::finalize::item_stack(&loaded, crate::mobs::finalize::HEAD).unwrap();
+        assert_eq!(fresh.damage, 0);
+        assert!(fresh.custom_name().is_none());
+    }
 
     #[test]
     fn replacing_a_named_item_does_not_restore_its_old_name_on_save() {

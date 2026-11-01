@@ -435,7 +435,7 @@ impl Game<'_> {
             }
         }
         if raised {
-            self.after_block(outcome, amount, None, false);
+            self.after_block(outcome, None, false);
         }
         pushed
     }
@@ -941,7 +941,7 @@ impl Game<'_> {
             // tables' survives_explosion and explosion_decay draw from their
             // random sequence.
             let decay = (interaction == BlockInteraction::DestroyWithDecay).then_some(radius);
-            let drops = world_items!(self).block_drops_exploded(
+            let mut drops = world_items!(self).block_drops_exploded(
                 self.pack.assets.registry,
                 state,
                 None,
@@ -951,6 +951,7 @@ impl Game<'_> {
                 decay,
                 false,
             );
+            self.native_block_drops(pos, state, None, None, Some(radius), &mut drops);
             for mut stack in drops {
                 if &*stack.item == "minecraft:air" || stack.count == 0 {
                     continue;

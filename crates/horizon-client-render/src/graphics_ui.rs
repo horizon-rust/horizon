@@ -41,6 +41,7 @@ pub enum H {
     ResolutionScale,
     Antialiasing,
     Upscaling,
+    ScreenshotQuality,
     Hdr,
     HdrBlackLevel,
     /// Binds `Graphics::hdr_key`.
@@ -51,6 +52,7 @@ pub enum H {
     HdrPaperWhite,
     HdrUiBrightness,
     BatteryMode,
+    ShadowCache,
     GraphicsApi,
 }
 
@@ -313,11 +315,18 @@ pub fn pages() -> Vec<Page> {
                         "Animates water, lava, fire and other moving textures.",
                     ),
                 ],
-                vec![h(
-                    H::BatteryMode,
-                    None,
-                    "60 FPS cap (30 in menus or unfocused), half the workers: less power.",
-                )],
+                vec![
+                    h(
+                        H::BatteryMode,
+                        None,
+                        "60 FPS cap (30 in menus or unfocused), half the workers: less power.",
+                    ),
+                    h(
+                        H::ShadowCache,
+                        Saves,
+                        "Reuses the pack shadow map when sun, view and world match. Off by default.",
+                    ),
+                ],
             ],
         },
         Page {
@@ -335,11 +344,18 @@ pub fn pages() -> Vec<Page> {
                         "Efficient sleeps until the next frame; Precise spins, like vanilla.",
                     ),
                 ],
-                vec![h(
-                    H::Overlay,
-                    None,
-                    "Frame rate and frame times over the game, with a graph.",
-                )],
+                vec![
+                    h(
+                        H::Overlay,
+                        None,
+                        "Frame rate and frame times over the game, with a graph.",
+                    ),
+                    h(
+                        H::ScreenshotQuality,
+                        None,
+                        "F2 screenshots at this many times the game's resolution. Higher takes longer.",
+                    ),
+                ],
             ],
         },
         Page {
@@ -582,6 +598,9 @@ impl H {
                 },
             ),
             H::Upscaling => labelled("Upscaling", g.upscaling.label()),
+            H::ScreenshotQuality => {
+                labelled("Screenshot Quality", format!("{}x", g.screenshot_quality))
+            }
             H::Hdr => labelled("HDR", on_off(g.hdr)),
             H::HdrCalibrate => Text::literal(lang::get(match setup(s) {
                 Setup::Unknown => "Calibrate...",
@@ -614,6 +633,7 @@ impl H {
                 Text::literal("Shortcut: ").append(crate::keybinds::display_name(&g.hdr_key))
             }
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
+            H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
             H::Overlay => labelled(
                 "Performance Overlay",
@@ -690,8 +710,16 @@ impl H {
                     (g.fxaa, g.taa) = (false, true);
                 }
             }
+            H::ScreenshotQuality => {
+                g.screenshot_quality = step(
+                    &crate::graphics::SCREENSHOT_QUALITIES,
+                    g.screenshot_quality,
+                    back,
+                )
+            }
             H::Hdr => g.hdr = !g.hdr,
             H::BatteryMode => g.battery = !g.battery,
+            H::ShadowCache => g.shadow_cache = !g.shadow_cache,
             H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
             H::Pacing => {
                 g.pacing = match g.pacing {
@@ -754,6 +782,7 @@ impl Item {
             Item::Horizon(H::AnimatedTextures) => g.animated_textures,
             Item::Horizon(H::Hdr) => g.hdr,
             Item::Horizon(H::BatteryMode) => g.battery,
+            Item::Horizon(H::ShadowCache) => g.shadow_cache,
             Item::Vanilla(Opt::ViewBobbing) => s.view_bobbing,
             Item::Vanilla(Opt::Vsync) => s.vsync,
             Item::Vanilla(Opt::Fullscreen) => s.fullscreen,
@@ -810,10 +839,12 @@ impl Item {
             Item::Horizon(
                 H::Preset
                     | H::Overlay
+                    | H::ScreenshotQuality
                     | H::Pacing
                     | H::PresentMode
                     | H::Workers
                     | H::BatteryMode
+                    | H::ShadowCache
                     | H::GraphicsApi
             ) | Item::Vanilla(
                 Opt::GuiScale
@@ -2278,6 +2309,21 @@ mod tests {
         Item::Horizon(H::Preset).cycle(&mut s, true, [854, 480]);
         Item::Vanilla(Opt::Vsync).cycle(&mut s, false, [854, 480]);
         assert_eq!(s.horizon.preset, Preset::Ultra);
+    }
+
+    #[test]
+    fn screenshot_quality_cycles_1_2_4_8_and_keeps_the_preset() {
+        let mut s = Settings::default();
+        Item::Horizon(H::Preset).cycle(&mut s, false, [854, 480]);
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            Item::Horizon(H::ScreenshotQuality).cycle(&mut s, false, [854, 480]);
+            seen.push(s.horizon.screenshot_quality);
+        }
+        assert_eq!(seen, [2, 4, 8, 1]);
+        Item::Horizon(H::ScreenshotQuality).cycle(&mut s, true, [854, 480]);
+        assert_eq!(s.horizon.screenshot_quality, 8);
+        assert_eq!(s.horizon.preset, Preset::Performance);
     }
 
     #[test]

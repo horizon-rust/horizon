@@ -88,7 +88,7 @@ fn finish(
         .map(|o| format!("{} {}", o.id, o.version))
         .collect();
     Ok(trf(
-        "Installed {mods} from GitHub ({source}). Build it from Settings > Native mods.",
+        "Installed {mods} from GitHub ({source}). Build it on the Mods page.",
         &[("mods", &names.join(", ")), ("source", &found.label())],
     ))
 }

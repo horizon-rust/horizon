@@ -64,6 +64,7 @@ pub mod interaction_shapes;
 pub mod item_after_use;
 pub mod item_blocking;
 pub mod item_cooldowns;
+pub mod item_defaults;
 pub mod item_durability;
 pub mod item_particles;
 pub mod item_stack_storage;

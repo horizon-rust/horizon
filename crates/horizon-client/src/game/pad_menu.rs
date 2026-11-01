@@ -332,6 +332,14 @@ impl Game<'_> {
         self.pad.menu.synthetic = was;
     }
 
+    /// The event being handled is one the pad or the keyboard's focus made
+    /// up (`pad_synthetic_event`), not the window's. A controller's click or
+    /// a focused widget's is not the mouse, so the native mods' mouse hooks
+    /// skip it.
+    pub(super) fn pad_synthetic_input(&self) -> bool {
+        self.pad.menu.synthetic
+    }
+
     fn pad_click_at(&mut self, event_loop: &dyn EventLoopCtl, at: (f32, f32), right: bool) {
         self.pad_pointer_to(event_loop, at);
         self.pad_pointer_button(event_loop, right, true);

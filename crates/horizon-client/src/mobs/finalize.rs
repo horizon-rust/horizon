@@ -920,12 +920,12 @@ pub fn set_baby(m: &mut Mob, baby: bool) {
 
 /// `EquipmentSlot` names (the `drops::SLOTS` order).
 pub const SLOT_NAMES: [&str; 8] = super::drops::SLOTS;
-const MAINHAND: usize = 0;
-const OFFHAND: usize = 1;
-const FEET: usize = 2;
-const LEGS: usize = 3;
-const CHEST: usize = 4;
-const HEAD: usize = 5;
+pub const MAINHAND: usize = 0;
+pub const OFFHAND: usize = 1;
+pub const FEET: usize = 2;
+pub const LEGS: usize = 3;
+pub const CHEST: usize = 4;
+pub const HEAD: usize = 5;
 const SADDLE: usize = 7;
 /// The `gear` slot of an `EquipmentSlot`.
 fn gear_slot(slot: usize) -> usize {
@@ -948,6 +948,48 @@ pub fn item(m: &Mob, slot: usize) -> Option<Arc<str>> {
         HEAD => m.extra.head.clone(),
         SADDLE => m.extra.saddled.then(|| Arc::from("minecraft:saddle")),
         _ => None,
+    }
+}
+/// The whole stack a mob keeps in `slot` (damage, name, components, count,
+/// enchantments and trim), when it kept more than the item id.
+pub fn stored_stack(m: &Mob, slot: usize) -> Option<crate::items::ItemStack> {
+    let id = item(m, slot)?;
+    let index = gear_slot(slot);
+    let mut stack = if slot == MAINHAND {
+        m.extra.main_hand_stack()?.clone()
+    } else {
+        gear::gear(m)?.stacks[index]
+            .clone()
+            .filter(|s| s.item == id)?
+    };
+    if let Some(g) = gear::gear(m) {
+        if !g.slots[index].is_empty() {
+            stack.data_mut().enchantments = g.slots[index].clone();
+        }
+        if g.trims[index].is_some() {
+            stack.data_mut().trim = g.trims[index].clone();
+        }
+    }
+    Some(stack)
+}
+/// What a mob has in `slot` as a stack: the one it kept, else one item with
+/// its enchantments.
+pub fn item_stack(m: &Mob, slot: usize) -> Option<crate::items::ItemStack> {
+    stored_stack(m, slot).or_else(|| {
+        let mut stack = crate::items::ItemStack::new(&item(m, slot)?, 1);
+        stack.set_crafting_enchantments(slot_enchantments(m, slot));
+        Some(stack)
+    })
+}
+/// `setItemSlot` with the whole `stack`: its enchantments, trim, damage, name
+/// and count stay with the mob.
+pub fn set_item_stack(m: &mut Mob, slot: usize, stack: crate::items::ItemStack) {
+    set_item(m, slot, &stack.item);
+    set_slot_enchantments(m, slot, stack.enchantments().to_vec());
+    if slot == MAINHAND {
+        m.extra.set_main_hand_stack(Some(stack));
+    } else if slot <= HEAD {
+        gear::set_stack(m, gear_slot(slot), stack);
     }
 }
 /// `setItemSlot` with a fresh stack (enchantments cleared).

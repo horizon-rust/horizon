@@ -2199,6 +2199,10 @@ pub fn client_command(tag: &str) -> Command {
     let _ = fs::create_dir_all(&home);
     let mut cmd = Command::new(client_program(tag));
     cmd.current_dir(home).arg("--resources").arg(resources(tag));
+    // How the game asks for a renewed session (`account session`) while it runs.
+    if let Ok(exe) = std::env::current_exe() {
+        cmd.env("HORIZON_LAUNCHER_EXE", exe);
+    }
     // PipeWire remembers volume and mute per application name. The game's own name is
     // "PipeWire ALSA [horizon-client]", shared with development and test runs, where
     // muting it once left every later game silent: played from here it is "Horizon".
@@ -2377,8 +2381,16 @@ pub fn need_prepared(tag: &str) -> Result<(), String> {
 /// the gate, a sign-in that can't be renewed (no network, expired) still lets the game start,
 /// offline.
 pub fn client(tag: &str) -> Result<Command, String> {
-    let (session, offline) = account::session_for_game(&game_home(), false)
-        .map_err(|refused| format!("{refused} Sign in with `horizon-launcher account sign-in`."))?;
+    client_as(tag, None)
+}
+
+/// [`client`], playing as `who` for this launch only (`play --account`).
+pub fn client_as(tag: &str, who: Option<&account::Player>) -> Result<Command, String> {
+    let (session, offline) = match who {
+        None => account::session_for_game(&game_home(), false).map_err(|e| e.to_string()),
+        Some(who) => account::session_for_game_as(&game_home(), who),
+    }
+    .map_err(|refused| format!("{refused} Sign in with `horizon-launcher account sign-in`."))?;
     need_prepared(tag)?;
     complete_assets(tag);
     crate::browser::horizon::before_play(&game_home());
@@ -3098,6 +3110,11 @@ pub enum Msg {
     Keychain(Option<String>),
     /// Whether an account in the launcher owned the game at its last check (the owner gate).
     Owner(bool),
+    /// Credential-free result from a background account operation.
+    AccountStatus(String, u64, crate::account::session::Status),
+    AccountProgress(String, u64, crate::account::session::Phase),
+    AccountHead(String, Option<String>, Option<Vec<[u8; 4]>>, bool),
+    AccountRemoved(String, u64, Result<bool, String>),
     /// The owner gate's answer for the game about to start: the selected account's session
     /// file (none = offline) and why it plays offline, if it does.
     Session(Result<(Option<PathBuf>, Option<String>), crate::account::NoOwner>),
@@ -4123,6 +4140,8 @@ pub fn {f}("
     /// `$APPIMAGE` names the file the runtime mounted; a path that is not there (moved or deleted
     /// since the launcher started) is no AppImage, and the launcher updates its own binary again.
     /// Nor is one inherited from another AppImage's program: the binary has to run from `$APPDIR`.
+    // AppImages are Linux's, and the paths below are absolute only on Unix.
+    #[cfg(unix)]
     #[test]
     fn only_an_appimage_file_counts() {
         use std::ffi::OsStr;
