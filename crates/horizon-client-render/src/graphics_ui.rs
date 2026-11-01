@@ -1250,9 +1250,8 @@ impl GraphicsUi {
             let rect = [cols.list_x, y, cols.list_w, style::ROW];
             let hover = over_list && ui::hovered(cursor, rect[0], rect[1], rect[2], rect[3]);
             let focused = self.focus == Some(Target::Item(item));
-            if hover || self.dragging == Some(item) {
-                described = Some(setting);
-            } else if focused && described.is_none() {
+            // The pointer's row wins over the keyboard's.
+            if hover || self.dragging == Some(item) || (focused && described.is_none()) {
                 described = Some(setting);
             }
             self.draw_row(batch, atlas, s, &cols, item, y, hover, focused);
