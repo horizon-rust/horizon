@@ -27,6 +27,40 @@ use std::{
 /// generator's scratch buffers ([`ChunkGenerator::idle`]).
 pub const IDLE_RELEASE: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Worker CPU time and job counts by kind, and the time workers waited for a
+/// job, for benchmarks (`examples/gen_light_bench.rs`). Off unless enabled:
+/// a relaxed load per job then.
+pub mod job_stats {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    pub const KINDS: [&str; 8] = [
+        "load", "generate", "decorate", "finish", "light", "mesh", "other", "idle",
+    ];
+    static ENABLED: AtomicBool = AtomicBool::new(false);
+    static NANOS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+    static COUNT: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+    pub fn enable(on: bool) {
+        ENABLED.store(on, Ordering::Relaxed);
+    }
+    pub(super) fn enabled() -> bool {
+        ENABLED.load(Ordering::Relaxed)
+    }
+    pub(super) fn add(kind: usize, nanos: u64) {
+        NANOS[kind].fetch_add(nanos, Ordering::Relaxed);
+        COUNT[kind].fetch_add(1, Ordering::Relaxed);
+    }
+    /// (kind, nanoseconds, count) since the last call; resets them.
+    pub fn take() -> Vec<(&'static str, u64, u64)> {
+        (0..KINDS.len())
+            .map(|i| {
+                (
+                    KINDS[i],
+                    NANOS[i].swap(0, Ordering::Relaxed),
+                    COUNT[i].swap(0, Ordering::Relaxed),
+                )
+            })
+            .collect()
+    }
+}
 /// A chunk under generation, opaque to the streamer.
 pub type Proto = Box<dyn std::any::Any + Send>;
 /// Chunk generation in vanilla's stages: a neighbour-independent proto chunk
@@ -656,6 +690,7 @@ impl Streaming {
                         let mut faces: Option<(Arc<MeshTables>, FaceVisibility)> = None;
                         let mut mesh_scratch = MeshScratch::default();
                         loop {
+                            let waited = job_stats::enabled().then(std::time::Instant::now);
                             let job = {
                                 let mut queue = shared.queue.lock().unwrap();
                                 let mut released = false;
@@ -704,9 +739,22 @@ impl Streaming {
                                     }
                                 }
                             };
+                            let started = waited.map(|w| {
+                                job_stats::add(7, w.elapsed().as_nanos() as u64);
+                                crate::spans::thread_cpu().unwrap_or_default()
+                            });
+                            let mut kind = match &job {
+                                Job::Generate(..) => 1,
+                                Job::Decorate(..) => 2,
+                                Job::Finish(..) => 3,
+                                Job::Light(..) => 4,
+                                Job::Mesh(..) => 5,
+                                _ => 6,
+                            };
                             let done = match job {
                                 Job::Generate(x, z) => match generator.load(x, z) {
                                     Some(chunk) => {
+                                        kind = 0;
                                         generator.prepare_loaded(&mut worker, &chunk);
                                         Done::Generated(chunk)
                                     }
@@ -800,6 +848,10 @@ impl Streaming {
                                     Done::Meshed(x, sy, z, mesh, seq)
                                 }
                             };
+                            if let Some(started) = started {
+                                let cpu = crate::spans::thread_cpu().unwrap_or_default();
+                                job_stats::add(kind, cpu.saturating_sub(started).as_nanos() as u64);
+                            }
                             shared.done.send(done);
                         }
                     })
