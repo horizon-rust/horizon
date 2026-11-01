@@ -62,17 +62,20 @@ impl WorldRequest {
         let live_features = || growth::install_live_features(res, pack, options);
         if res.threads() <= 1 {
             loot();
-            let prepared = self.prepare_world(res, pack, options, settings, upgrade)?;
+            let prepared = self.prepare_world(res, pack, options, settings, upgrade, &mut || {})?;
             live_features();
             return Ok(prepared);
         }
-        // Neither needs the world: they load beside it (the generator's decoration keeps one
-        // core busy) and are done before it opens. A bundle both read loads once.
+        // Neither needs the world: the loot loads beside it (the generator's decoration keeps
+        // one core busy), the live features once the world's generator has loaded the worldgen
+        // bundle they share. Both are done before the world opens.
         std::thread::scope(|scope| {
             let loot = scope.spawn(loot);
-            let live_features = scope.spawn(live_features);
-            let prepared = self.prepare_world(res, pack, options, settings, upgrade);
-            for helper in [loot, live_features] {
+            let mut live = None;
+            let prepared = self.prepare_world(res, pack, options, settings, upgrade, &mut || {
+                live = Some(scope.spawn(live_features));
+            });
+            for helper in std::iter::once(loot).chain(live) {
                 helper
                     .join()
                     .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
@@ -88,6 +91,7 @@ impl WorldRequest {
         options: &Options,
         settings: &Settings,
         upgrade: &horizon_world::datafix::progress::UpgradeProgress,
+        streaming_made: &mut dyn FnMut(),
     ) -> Result<PreparedWorld> {
         let Self {
             save_root,
@@ -239,6 +243,7 @@ impl WorldRequest {
             level.seed,
             &level.enabled_features,
         )?;
+        streaming_made();
         streaming.radius = settings.render_distance;
         let mut world = World::new(res.facts().air, level.seed);
         world.shape = shape;
