@@ -263,9 +263,32 @@ fn camera(c: &Value, out: &mut impl Write) -> Result<()> {
                     |m: [f32; 16]| m.iter().map(|&x| format!(" {}", fb(x))).collect::<String>();
                 writeln!(
                     out,
+                    "view{}",
+                    matrix(
+                        horizon_client::camera::view_matrix(camera.y_rot, camera.x_rot)
+                            .to_cols_array()
+                    )
+                )?;
+                writeln!(
+                    out,
                     "projection{}{}",
                     matrix(perspective(fov, w, h, far, 0.05, true)),
                     matrix(perspective(hud, w, h, far, 0.05, true))
+                )?;
+                writeln!(
+                    out,
+                    "renderer_projection{}",
+                    matrix(
+                        horizon_client::gfx::View::screen(
+                            camera.y_rot,
+                            camera.x_rot,
+                            fov,
+                            w / h,
+                            far,
+                        )
+                        .projection
+                        .to_cols_array()
+                    )
                 )?;
             }
             other => panic!("{other}"),

@@ -1278,26 +1278,17 @@ fn draw_normals(
     out: &mut Vec<Vertex>,
 ) {
     let p = poses.pose(part);
-    let m = base
-        * glam::Mat4::from_translation(glam::Vec3::new(p[0], p[1], p[2]) / 16.0)
-        * glam::Mat4::from_quat(glam::Quat::from_euler(
-            glam::EulerRot::ZYX,
-            p[5],
-            p[4],
-            p[3],
-        ))
-        * glam::Mat4::from_scale(glam::Vec3::new(p[6], p[7], p[8]));
+    let (m, normals) = super::model_part_transform(base, normals, p);
     if poses.is_hidden(part) || p[6] == 0.0 && p[7] == 0.0 && p[8] == 0.0 {
         return;
     }
-    let normals = normals.part(p);
     // `skips` is a name lookup: ask once per part, not once per polygon. A part
     // hidden this way still draws its children, so only the polygons are gated.
     if !poses.skips(part) {
         for poly in &part.polygons {
             let normal = poly.vertex_normal(normals);
             for v in poly.vertices {
-                let pos = m.transform_point3(glam::Vec3::new(v[0], v[1], v[2]) / 16.0);
+                let pos = super::model_part_position(m, v);
                 // The armour glint scrolls the layer's model UV in the shader;
                 // the item path already passed its transformed UV.
                 let glint_uv = if overlay == ARMOR_GLINT {
@@ -1307,7 +1298,7 @@ fn draw_normals(
                 };
                 out.push(Vertex {
                     normal,
-                    pos: pos.to_array(),
+                    pos,
                     uv: [
                         uv[0] + (uv[2] - uv[0]) * scroll_u(v[3], scroll),
                         uv[1] + (uv[3] - uv[1]) * v[4],

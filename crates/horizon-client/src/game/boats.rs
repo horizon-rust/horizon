@@ -1432,7 +1432,7 @@ impl Game<'_> {
             let damage = (b.damage - a).max(0.0);
             let mut base =
                 glam::Mat4::from_translation(p.as_vec3() + glam::Vec3::new(0.0, 0.375, 0.0))
-                    * glam::Mat4::from_rotation_y((180.0 - yaw).to_radians());
+                    * horizon_client::camera::rotation_y_degrees(180.0 - yaw);
             if hurt > 0.0 {
                 base *= glam::Mat4::from_rotation_x(
                     (hurt.sin() * hurt * damage / 10.0 * b.hurt_dir as f32).to_radians(),
@@ -1449,7 +1449,7 @@ impl Game<'_> {
                 );
             }
             base *= glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0))
-                * glam::Mat4::from_rotation_y(90f32.to_radians());
+                * horizon_client::camera::rotation_y_degrees(90.0);
             let mut poses = Poses::new(model);
             // AbstractBoatModel.animatePaddle
             for (side, name) in [(0usize, "left_paddle"), (1, "right_paddle")] {

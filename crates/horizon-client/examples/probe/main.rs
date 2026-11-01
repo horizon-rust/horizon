@@ -22,6 +22,7 @@ mod block_entity_tickers_fixture;
 mod block_particles_fixture;
 mod block_tint_probe;
 mod block_transform_fixture;
+mod boat_floor_fixture;
 mod breaking_fixture;
 mod camera_probe;
 mod cauldron_fixture;
@@ -119,6 +120,7 @@ probes! {
     block_entity_tickers_fixture,
     block_particles_fixture,
     block_transform_fixture,
+    boat_floor_fixture,
     breaking_fixture,
     block_tint_probe,
     camera_probe,

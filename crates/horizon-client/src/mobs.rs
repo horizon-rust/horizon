@@ -153,9 +153,10 @@ impl ModelNormals {
             trusted: uniform,
         }
     }
+    /// `ModelPart.translateAndRotate`: JOML's quaternion rotation, shared by positions and normals.
     fn rotation(x: f32, y: f32, z: f32) -> glam::Mat3 {
         // JOML derives cosine from the rounded sine, then retains quaternion length.
-        // Assuming an exactly unit quaternion changes a packed normal by one byte.
+        // Assuming an exactly unit quaternion changes packed normals and tilts coplanar faces.
         let sin_cos = |angle: f32| {
             let angle = angle * 0.5;
             let sin = f64::from(angle).sin() as f32;
@@ -199,8 +200,8 @@ impl ModelNormals {
             zz - yy - xx + ww,
         ])
     }
-    fn part(mut self, pose: [f32; 9]) -> Self {
-        self.matrix *= Self::rotation(pose[3], pose[4], pose[5]);
+    fn part(mut self, pose: [f32; 9], rotation: glam::Mat3) -> Self {
+        self.matrix *= rotation;
         let scale = glam::Vec3::new(pose[6], pose[7], pose[8]);
         if scale.x.abs() == scale.y.abs() && scale.x.abs() == scale.z.abs() {
             if scale.min_element() < 0.0 {
@@ -212,6 +213,45 @@ impl ModelNormals {
         }
         self
     }
+}
+
+/// `ModelPart.translateAndRotate`: preserve the quaternion's rounded length for geometry too.
+/// A unit-quaternion matrix tilts the boat floor through a coplanar bottom trapdoor (#5950).
+fn model_part_transform(
+    parent: glam::Mat4,
+    normals: ModelNormals,
+    pose: [f32; 9],
+) -> (glam::Mat4, ModelNormals) {
+    let rotation = ModelNormals::rotation(pose[3], pose[4], pose[5]);
+    let mut matrix = parent.to_cols_array_2d();
+    // Matrix4f.translate groups additions from the translation column inward.
+    let offset = [pose[0] / 16.0, pose[1] / 16.0, pose[2] / 16.0];
+    for row in 0..4 {
+        matrix[3][row] = matrix[0][row] * offset[0]
+            + (matrix[1][row] * offset[1] + (matrix[2][row] * offset[2] + matrix[3][row]));
+    }
+    // Matrix4f.rotateAffine, followed by scaleGeneric (no unit-quaternion shortcut).
+    let before = matrix;
+    let rotation_columns = rotation.to_cols_array_2d();
+    for column in 0..3 {
+        for row in 0..4 {
+            matrix[column][row] = (before[0][row] * rotation_columns[column][0]
+                + before[1][row] * rotation_columns[column][1]
+                + before[2][row] * rotation_columns[column][2])
+                * pose[6 + column];
+        }
+    }
+    (
+        glam::Mat4::from_cols_array_2d(&matrix),
+        normals.part(pose, rotation),
+    )
+}
+
+/// `Matrix4f.transformPosition`: keep JOML's addition order at the last rounding step.
+fn model_part_position(matrix: glam::Mat4, vertex: [f32; 5]) -> [f32; 3] {
+    let m = matrix.to_cols_array_2d();
+    let [x, y, z] = [vertex[0] / 16.0, vertex[1] / 16.0, vertex[2] / 16.0];
+    std::array::from_fn(|row| m[0][row] * x + (m[1][row] * y + (m[2][row] * z + m[3][row])))
 }
 
 #[derive(Clone, Debug)]
@@ -3412,23 +3452,14 @@ pub fn render_model(
         out: &mut Vec<Vertex>,
     ) {
         let p = pose_for(part);
-        let m = parent
-            * glam::Mat4::from_translation(glam::Vec3::new(p[0], p[1], p[2]) / 16.0)
-            * glam::Mat4::from_quat(glam::Quat::from_euler(
-                glam::EulerRot::ZYX,
-                p[5],
-                p[4],
-                p[3],
-            ))
-            * glam::Mat4::from_scale(glam::Vec3::new(p[6], p[7], p[8]));
-        let normals = normals.part(p);
+        let (m, normals) = model_part_transform(parent, normals, p);
         for poly in &part.polygons {
             let normal = poly.vertex_normal(normals);
             for v in poly.vertices {
-                let pos = m.transform_point3(glam::Vec3::new(v[0], v[1], v[2]) / 16.0);
+                let pos = model_part_position(m, v);
                 out.push(Vertex {
                     normal,
-                    pos: pos.to_array(),
+                    pos,
                     uv: [
                         uv[0] + (uv[2] - uv[0]) * v[3],
                         uv[1] + (uv[3] - uv[1]) * v[4],
