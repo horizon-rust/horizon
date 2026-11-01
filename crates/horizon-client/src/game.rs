@@ -17871,6 +17871,7 @@ fn load_resources(
         root = vanilla_root.to_path_buf();
     };
     log::info!("load core tables: {:.2}s", started.elapsed().as_secs_f32());
+    log::info!("{}", horizon_threads::mem_line("core_tables"));
     let CoreTables {
         assets,
         render,
@@ -17905,6 +17906,7 @@ fn load_resources(
         Arc::new(light),
     );
     log::info!("load pack tables: {:.2}s", started.elapsed().as_secs_f32());
+    log::info!("{}", horizon_threads::mem_line("pack_tables"));
     progress.set(4);
     if !menu {
         horizon_client::ui::load_metadata(&root);
@@ -18037,6 +18039,7 @@ fn load_world_rest(
     let load_items = || -> Result<_> {
         let items = Items::load(root, registry, facts, overlay)?;
         log::info!("load items: {:.2}s", started.elapsed().as_secs_f32());
+        log::info!("{}", horizon_threads::mem_line("items"));
         progress.set(7);
         let recipes = Recipes::load(root, &items, overlay)?;
         let stations = horizon_client::stations::StationData::load(root, &items, overlay);

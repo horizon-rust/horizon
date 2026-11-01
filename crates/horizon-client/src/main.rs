@@ -5,7 +5,7 @@ mod game;
 use horizon_client::{crash, logging};
 
 #[global_allocator]
-static ALLOCATOR: horizon_threads::Allocator = horizon_threads::Allocator;
+static ALLOCATOR: horizon_threads::Counting = horizon_threads::Counting;
 
 /// The mod API level this game serves, kept in the program for the launcher
 /// to read without running it (`horizon_mods::api_level::MARK`). `main`

@@ -492,3 +492,37 @@ mod junction_tests {
         assert!(super::mount_point_buffer(&[0; 100]).is_ok());
     }
 }
+
+/// Bench only: mimalloc with a count of the bytes held live.
+pub struct Counting;
+pub static LIVE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+unsafe impl std::alloc::GlobalAlloc for Counting {
+    unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
+        LIVE.fetch_add(l.size() as isize, std::sync::atomic::Ordering::Relaxed);
+        unsafe { mimalloc::MiMalloc.alloc(l) }
+    }
+    unsafe fn alloc_zeroed(&self, l: std::alloc::Layout) -> *mut u8 {
+        LIVE.fetch_add(l.size() as isize, std::sync::atomic::Ordering::Relaxed);
+        unsafe { mimalloc::MiMalloc.alloc_zeroed(l) }
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
+        LIVE.fetch_sub(l.size() as isize, std::sync::atomic::Ordering::Relaxed);
+        unsafe { mimalloc::MiMalloc.dealloc(p, l) }
+    }
+    unsafe fn realloc(&self, p: *mut u8, l: std::alloc::Layout, n: usize) -> *mut u8 {
+        LIVE.fetch_add(
+            n as isize - l.size() as isize,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        unsafe { mimalloc::MiMalloc.realloc(p, l, n) }
+    }
+}
+/// Bench only: `memdbg STAGE live MB rss MB`.
+pub fn mem_line(stage: &str) -> String {
+    let rss = std::fs::read_to_string("/proc/self/statm")
+        .ok()
+        .and_then(|s| s.split_whitespace().nth(1)?.parse::<f64>().ok())
+        .map_or(0.0, |p| p * 4096.0 / 1e6);
+    let live = LIVE.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6;
+    format!("memdbg {stage} live {live:.1} MB rss {rss:.1} MB")
+}
