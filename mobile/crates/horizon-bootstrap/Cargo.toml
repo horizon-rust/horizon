@@ -1,0 +1,22 @@
+[package]
+name = "horizon-bootstrap"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version = "1.85"
+description = "First-run setup for the mobile build: Microsoft sign-in with the game-ownership check, and the player's own download of Minecraft from Mojang"
+
+[dependencies]
+serde_json = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+# Reading the Termux .deb packages the Java runtime comes in (ar, xz, tar).
+lzma-rs = "0.3"
+tar = { version = "0.4", default-features = false }
+flate2 = "1"
+# The mod registry's index and the checks a download passes before it is installed.
+horizon-mods = { path = "../horizon-mods", features = ["index"] }
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+
+[lints]
+workspace = true

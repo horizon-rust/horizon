@@ -1,0 +1,35 @@
+name: Android APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [claude/horizon-mobile-version-fqqzqo]
+    paths: ["crates/**", "packaging/android/**", ".github/workflows/android.yml"]
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: android-actions/setup-android@v3
+      - name: SDK and NDK
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;27.2.12479018"
+      - run: cargo install cargo-apk --locked
+      - name: Build
+        working-directory: crates/horizon-client
+        env:
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+        run: |
+          N=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$N/aarch64-linux-android26-clang
+          export CC_aarch64_linux_android=$N/aarch64-linux-android26-clang
+          export AR_aarch64_linux_android=$N/llvm-ar
+          cargo apk build --profile fast --no-default-features --example horizon_android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Horizon.apk
+          path: target/fast/apk/examples/Horizon.apk

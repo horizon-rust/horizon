@@ -1,0 +1,179 @@
+[package]
+name = "horizon-client"
+default-run = "horizon-client"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version = "1.90"
+description = "Horizon native development client"
+
+[dependencies]
+horizon-assets = { path = "../horizon-assets" }
+horizon-client-core = { path = "../horizon-client-core" }
+horizon-client-input = { path = "../horizon-client-input" }
+# Touch controls for the mobile build (joystick, look drag, tap/hold, buttons).
+horizon-touch = { path = "../horizon-touch" }
+# The mobile build's launcher screen: Microsoft sign-in and the player's own Mojang download.
+horizon-bootstrap = { path = "../horizon-bootstrap" }
+# The exporter sources the Android build unpacks (game/mobile_launcher.rs).
+tar = { version = "0.4", default-features = false }
+# Turns the downloaded files into the game's resources (needs Java 25 for the vanilla exporters).
+horizon-prepare = { path = "../horizon-prepare" }
+horizon-client-render = { path = "../horizon-client-render" }
+horizon-command = { path = "../horizon-command" }
+horizon-items = { path = "../horizon-items" }
+horizon-core = { path = "../horizon-core" }
+# The server thread ahead of the workers (MinecraftServer.spin's Thread.setPriority).
+horizon-threads = { path = "../horizon-threads" }
+horizon-hdr = { path = "../horizon-hdr" }
+horizon-world = { path = "../horizon-world" }
+horizon-protocol = { path = "../horizon-protocol" }
+# server.properties, eula.txt and the user lists, shared with horizon-server.
+horizon-server-files = { path = "../horizon-server-files" }
+# The dedicated server's anticheat, off unless server.toml's [anticheat] turns it on (docs/anticheat.md).
+horizon-anticheat = { path = "../horizon-anticheat" }
+# Shader packs: reading them and turning their GLSL into naga modules.
+horizon-shaders = { path = "../horizon-shaders" }
+# Horizon's own shader packs: the format, the stages and the check (docs/shaders.md).
+horizon-shader-api = { path = "../horizon-shader-api" }
+horizon-friends = { path = "../horizon-friends" }
+# Horizon mods: sandboxed WebAssembly components, off unless installed and turned on (docs/mods.md).
+# Their runtime is the `mods` feature.
+horizon-mods = { path = "../horizon-mods", default-features = false, features = ["index"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }
+winit = "0.30.13"
+pollster = "0.4"
+bytemuck = { version = "1.24", features = ["derive"] }
+glam = "0.30"
+png = "0.18"
+sha2 = "0.10.9"
+# Server resource packs are checked and cached by their SHA-1, as vanilla does.
+sha1 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["raw_value"] }
+# hlsl-out: the gfx.rs tests translate every shader as wgpu's DirectX 12 backend does. A normal feature,
+# not a dev-dependency's, so builds, tests and examples share one build of naga, wgpu and this crate.
+naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out"] }
+miniz_oxide = "0.8"
+ab_glyph = "0.2.32"
+log = "0.4"
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
+horizon-theme = { path = "../horizon-theme" }
+# Opt-in data collection: the game keeps, the launcher sends (docs/telemetry.md); `live` is
+# the anonymous "I'm playing" ping the game sends itself (`heartbeat.rs`).
+horizon-telemetry = { path = "../horizon-telemetry", default-features = false, features = ["live"] }
+horizon-bench = { path = "../horizon-bench" }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# Controllers (evdev + libudev on Linux, IOKit on macOS, Windows.Gaming.Input); the `controllers` feature.
+gilrs = { version = "0.11", optional = true }
+# The DualSense's rumble, adaptive triggers and lights over HID (gilrs only reads it).
+horizon-dualsense = { path = "../horizon-dualsense", optional = true }
+# HTTPS to the Minecraft services (online-mode session join).
+ureq = { version = "2", default-features = false, features = ["tls"] }
+unicode-bidi = "0.3.18"
+# `LevelStorageAccess.estimateDiskSpace`: usable disk space, without unsafe code on Windows.
+fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
+
+# Android: the NativeActivity backend (the game is a cdylib started by android_main).
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { version = "0.30.13", features = ["android-native-activity"] }
+# Logs and panics go to logcat (`adb logcat -s Horizon`).
+android_logger = "0.14"
+libc = "0.2"
+# Puts the log on the clipboard when the game stops, so it can be pasted into a bug report.
+jni = "0.21"
+
+[target.'cfg(unix)'.dependencies]
+# The server thread's CPU time per tick (`HORIZON_SPIKES`, spans.rs).
+rustix = { version = "1", default-features = false, features = ["std", "time", "process", "fs"] }
+
+[target.'cfg(windows)'.dependencies]
+# Use the registered URI handler without routing links through Explorer/cmd.
+open = { version = "5.4.5", features = ["shellexecute-on-windows"] }
+# DirectX 12, where Vulkan has no adapter or device, or by choice (`graphicsApi`, graphics.rs).
+# Shaders compile with FXC (d3dcompiler_47.dll, part of Windows), or DXC when dxcompiler.dll is
+# on the PATH.
+wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+# OpenGL (WGL on Windows, EGL on Linux), the last fallback, for GPUs with no Vulkan or
+# DirectX 12 driver (`graphicsApi`, graphics.rs).
+wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
+
+# The exporter sources packed for the Android build (build.rs).
+[build-dependencies]
+tar = { version = "0.4", default-features = false }
+flate2 = "1"
+
+[target.'cfg(windows)'.build-dependencies]
+# The icon resource in the .exe (build.rs).
+winresource = "0.1"
+
+[features]
+default = ["audio", "controllers"]
+# Sound output. Without it (and `controllers`) the program links neither libasound nor libudev on
+# Linux: the server build (`--no-default-features`, released as horizon-engine; docs/server.md).
+audio = ["horizon-client-render/audio"]
+# Controllers: gilrs, and the DualSense's own output. Without it only `horizon-ctl pad`'s virtual pad.
+controllers = ["dep:gilrs", "dep:horizon-dualsense", "horizon-client-input/controllers"]
+# Records the call sites of mob random draws (`mob_ai_probe` traces).
+rng-trace = ["horizon-core/rng-trace"]
+# Compatibility with earlier experiment commands: main already uses mimalloc.
+windows-mimalloc = []
+# Opt-in Windows heap experiment; see docs/windows-allocators.md.
+windows-segment-heap = []
+
+# The Android library: NativeActivity loads this cdylib and calls its `android_main`.
+# Empty on other platforms. Build: cargo ndk -t arm64-v8a build --example horizon_android (docs/android.md).
+[[example]]
+name = "horizon_android"
+path = "examples/android/main.rs"
+crate-type = ["cdylib"]
+
+# Its own name, not `probe`: Cargo copies every crate's examples into one target/<profile>/examples.
+[[example]]
+name = "client_probe"
+path = "examples/probe/main.rs"
+
+# Android packaging: `cargo apk build --example horizon_android` (docs/android.md).
+[package.metadata.android]
+package = "dev.horizon.mobile"
+apk_name = "Horizon"
+build_targets = ["aarch64-linux-android"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 26
+# 28, not newer: from Android 10 an app targeting 29+ may not run programs from its own folder,
+# and preparing the game files runs Java (Termux's OpenJDK 25) from there.
+target_sdk_version = 28
+
+[package.metadata.android.application]
+label = "Horizon"
+debuggable = false
+
+[package.metadata.android.application.activity]
+orientation = "sensorLandscape"
+config_changes = "orientation|keyboardHidden|screenSize|screenLayout|uiMode"
+
+# Signed with a throwaway debug keystore (packaging/android/debug.keystore, password "android").
+# Use your own keystore for anything you publish.
+[package.metadata.android.signing.fast]
+path = "../../packaging/android/debug.keystore"
+keystore_password = "android"
+
+[package.metadata.android.signing.release]
+path = "../../packaging/android/debug.keystore"
+keystore_password = "android"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+horizon-client-render = { path = "../horizon-client-render", features = ["test-support"] }
+horizon-items = { path = "../horizon-items", features = ["test-support"] }
+# Every WGSL shader translated as wgpu's DirectX 12 backend does (gfx.rs tests).
+naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out", "msl-out", "spv-out"] }
