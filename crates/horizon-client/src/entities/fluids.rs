@@ -60,6 +60,20 @@ fn update_entity_fluids(
     );
     (water_height, lava_height)
 }
+/// `Entity.updateFluidHeightAndDoFluidPushing` for water then lava, for an
+/// entity that keeps no fluid state of its own here (a boat, whose `baseTick`
+/// runs it before `floatBoat`): pushes `velocity` by the currents over
+/// `bounds`.
+pub fn push_by_currents(
+    bounds: Aabb,
+    position: Vec3,
+    eye_y: f64,
+    velocity: &mut Vec3,
+    world: &World,
+    fluids: &FluidResources,
+) {
+    update_entity_fluids(bounds, position, eye_y, velocity, world, fluids);
+}
 impl ItemEntity {
     pub(super) fn update_fluids(&mut self, world: &World, fluids: &FluidResources) -> (f64, f64) {
         update_entity_fluids(

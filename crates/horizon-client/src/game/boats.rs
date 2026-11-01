@@ -577,6 +577,17 @@ impl Game<'_> {
             b.paddling = [false; 2];
             b.input = [false; 4];
         }
+        // VehicleEntity.tick -> Entity.baseTick: water and lava currents push
+        // the boat (it doesn't override isPushedByFluid), before floatBoat.
+        let eye_y = b.position.y + f64::from(HEIGHT as f32 * 0.85);
+        horizon_client::entities::push_by_currents(
+            b.bounds(),
+            b.position,
+            eye_y,
+            &mut b.velocity,
+            &self.world,
+            &self.res.motion().fluids,
+        );
         // floatBoat
         let mut vspeed = -0.04;
         let mut buoyancy = 0.0;
