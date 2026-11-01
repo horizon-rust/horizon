@@ -11247,6 +11247,7 @@ impl Game<'_> {
     /// integrated-server selection. Server startup must use this entry point.
     fn load_world(&mut self, request: world_loading::WorldRequest) -> Result<()> {
         self.join_world_rest()?;
+        log::info!("{}", horizon_threads::mem_line("world_rest_joined"));
         self.perf.world_opening();
         let prepared = request.prepare(
             &self.res,
@@ -11255,6 +11256,7 @@ impl Game<'_> {
             &self.settings,
             &horizon_world::datafix::progress::UpgradeProgress::new(),
         )?;
+        log::info!("{}", horizon_threads::mem_line("world_prepared"));
         self.finish_open_world(prepared)
     }
 

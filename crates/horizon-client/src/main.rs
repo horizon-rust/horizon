@@ -13,6 +13,7 @@ static ALLOCATOR: horizon_threads::Counting = horizon_threads::Counting;
 static MOD_API_LEVEL: [u8; 27] = horizon_mods::api_level::MARK;
 
 fn main() {
+    horizon_threads::T0.get_or_init(std::time::Instant::now);
     horizon_threads::configure_allocator();
     std::hint::black_box(&MOD_API_LEVEL);
     horizon_client::telemetry::mark_start();

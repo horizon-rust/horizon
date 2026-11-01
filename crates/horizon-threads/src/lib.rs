@@ -506,10 +506,12 @@ pub fn mem_step<T>(name: &str, f: impl FnOnce() -> T) -> T {
     use std::sync::atomic::Ordering::Relaxed;
     let start = LIVE.load(Relaxed);
     PEAK.store(start, Relaxed);
+    let began = std::time::Instant::now();
     let out = f();
+    let took = began.elapsed().as_secs_f64() * 1000.0;
     let (end, peak) = (LIVE.load(Relaxed), PEAK.load(Relaxed));
     log::info!(
-        "memstep {name} peak +{:.1} MB kept +{:.1} MB",
+        "memstep {name} {took:.0} ms peak +{:.1} MB kept +{:.1} MB",
         (peak - start) as f64 / 1e6,
         (end - start) as f64 / 1e6
     );
@@ -537,11 +539,13 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
     }
 }
 /// Bench only: `memdbg STAGE live MB rss MB`.
+pub static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 pub fn mem_line(stage: &str) -> String {
+    let t = T0.get_or_init(std::time::Instant::now).elapsed().as_secs_f64() * 1000.0;
     let rss = std::fs::read_to_string("/proc/self/statm")
         .ok()
         .and_then(|s| s.split_whitespace().nth(1)?.parse::<f64>().ok())
         .map_or(0.0, |p| p * 4096.0 / 1e6);
     let live = LIVE.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6;
-    format!("memdbg {stage} live {live:.1} MB rss {rss:.1} MB")
+    format!("memdbg {stage} t {t:.0} ms live {live:.1} MB rss {rss:.1} MB")
 }
