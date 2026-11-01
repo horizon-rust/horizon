@@ -91,6 +91,7 @@ pub use hdr::Calibration as HdrCalibration;
 pub mod lightning;
 mod lod;
 mod lod_gpu;
+mod lod_mesh;
 mod lod_meshlet;
 mod native_material;
 mod native_pack;
@@ -1353,6 +1354,7 @@ async fn open_backend(
     let features = timing::GpuTimer::features(&adapter)
         | cull::Cull::features(&adapter)
         | lod_gpu::LodGpu::features(&adapter)
+        | lod_mesh::features(&adapter)
         | oit::features(&adapter)
         | (adapter.features()
             & (wgpu::Features::INDIRECT_FIRST_INSTANCE
@@ -1380,6 +1382,12 @@ async fn open_backend(
         label: Some("Horizon device"),
         required_features: features,
         required_limits: limits,
+        // Mesh shaders are an experimental wgpu feature: asked for only when `features` has them.
+        experimental_features: if features.contains(wgpu::Features::EXPERIMENTAL_MESH_SHADER) {
+            horizon_hdr::experimental_features()
+        } else {
+            Default::default()
+        },
         ..Default::default()
     };
     #[cfg(not(target_os = "macos"))]

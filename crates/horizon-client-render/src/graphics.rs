@@ -246,6 +246,53 @@ impl FarDetail {
     }
 }
 
+/// Whether far terrain is drawn with mesh shaders where the GPU has them (Vulkan and
+/// Metal): a task shader leaves out parts of a tile before any vertex is shaded.
+/// Experimental, so Off until picked; applies at the next start, when the device is
+/// opened with the feature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum MeshShaders {
+    #[default]
+    Off,
+    Auto,
+}
+impl MeshShaders {
+    pub fn name(self) -> &'static str {
+        match self {
+            MeshShaders::Off => "off",
+            MeshShaders::Auto => "auto",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            MeshShaders::Off => "Off",
+            MeshShaders::Auto => "Auto",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        if s == "auto" {
+            MeshShaders::Auto
+        } else {
+            MeshShaders::Off
+        }
+    }
+}
+static MESH_SHADERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Sets whether the next device is opened with mesh shaders (`Graphics::load`, and the
+/// setting when it changes).
+pub fn request_mesh_shaders(on: bool) {
+    MESH_SHADERS.store(on, Ordering::Relaxed);
+}
+/// Whether to open the device with mesh shaders, where the adapter has them:
+/// `HORIZON_MESH_SHADERS` (`1` or `0`) if set, else the setting.
+pub fn mesh_shaders_requested() -> bool {
+    match std::env::var("HORIZON_MESH_SHADERS").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => MESH_SHADERS.load(Ordering::Relaxed),
+    }
+}
+
 /// TAA upscaling: the world renders this much smaller than the resolution scale's size,
 /// and TAA builds the full-size picture from the jittered frames (FSR's and DLSS's ratios).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -409,6 +456,8 @@ pub struct Graphics {
     pub shadow_cache: bool,
     /// The graphics API (Windows only; see `GraphicsApi`).
     pub api: GraphicsApi,
+    /// Far terrain with mesh shaders; applies at the next start.
+    pub mesh_shaders: MeshShaders,
     /// The shader pack picked in `shaderpacks/` (`shader_pack_list`); empty: none. Its key is
     /// not `shaderPack`, which versions before the clean-room rewrite saved and which stays
     /// ignored.
@@ -446,6 +495,7 @@ impl Default for Graphics {
             battery: false,
             shadow_cache: false,
             api: GraphicsApi::Auto,
+            mesh_shaders: MeshShaders::Off,
             shader_pack: String::new(),
         }
     }
@@ -465,6 +515,7 @@ impl Graphics {
                 "the last start ended before HDR output showed a frame; HDR is off now (graphics option hdr, in {FILE})"
             );
         }
+        request_mesh_shaders(g.mesh_shaders == MeshShaders::Auto);
         g
     }
     pub fn parse(text: &str) -> Self {
@@ -533,6 +584,7 @@ impl Graphics {
                 "batteryMode" => g.battery = flag(g.battery),
                 "shadowCache" => g.shadow_cache = flag(g.shadow_cache),
                 "graphicsApi" => g.api = GraphicsApi::from_name(value).unwrap_or_default(),
+                "meshShaders" => g.mesh_shaders = MeshShaders::parse(value),
                 "pickedShaderPack" => g.shader_pack = value.to_owned(),
                 "overlay" => {
                     g.overlay = match value {
@@ -548,7 +600,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\nmeshShaders:{}\npickedShaderPack:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -585,6 +637,7 @@ impl Graphics {
             bool_text(self.battery),
             bool_text(self.shadow_cache),
             self.api.name(),
+            self.mesh_shaders.name(),
             self.shader_pack,
         )
     }
@@ -731,6 +784,7 @@ mod tests {
             battery: true,
             shadow_cache: true,
             api: GraphicsApi::Dx12,
+            mesh_shaders: MeshShaders::Auto,
             shader_pack: "Golden Hour".into(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
@@ -764,6 +818,18 @@ mod tests {
             Graphics::parse("workers:abc\nsky:maybe\ncullLeaves:true\nentityCulling:maybe\n"),
             Graphics::default()
         );
+    }
+
+    #[test]
+    fn mesh_shaders_are_off_until_picked() {
+        assert_eq!(Graphics::default().mesh_shaders, MeshShaders::Off);
+        assert_eq!(
+            Graphics::parse("meshShaders:auto\n").mesh_shaders,
+            MeshShaders::Auto
+        );
+        for text in ["meshShaders:off\n", "meshShaders:\n", "meshShaders:maybe\n"] {
+            assert_eq!(Graphics::parse(text).mesh_shaders, MeshShaders::Off);
+        }
     }
 
     #[test]
