@@ -53,7 +53,7 @@ pub const PAGE_BYTES: u64 = {
     bytes
 };
 /// The atlas's budget in MB, its pages and its tiles.
-pub const BUDGET_MB: u64 = 32;
+pub const BUDGET_MB: u64 = 40;
 pub const PAGES: u32 = (BUDGET_MB * 1024 * 1024 / PAGE_BYTES) as u32;
 pub const SLOTS: u32 = PAGES * PAGE_TILES * PAGE_TILES;
 
@@ -575,7 +575,9 @@ mod tests {
         assert_eq!(TILE_BYTES, 21760);
         assert_eq!(PAGE_BYTES, 5_570_560);
         assert!(u64::from(PAGES) * PAGE_BYTES <= BUDGET_MB * 1024 * 1024);
-        assert!(PAGES >= 1);
+        // Seven pages: a GL array of 1 layer is a 2D texture and one of 6 a cube map.
+        assert_eq!(PAGES, 7);
+        assert!(!matches!(PAGES, 1 | 6));
         assert_eq!(slot_origin(0), (0, 0, 0));
         assert_eq!(slot_origin(17), (0, 1, 1));
         assert_eq!(slot_origin(256), (1, 0, 0));

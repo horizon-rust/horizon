@@ -14701,6 +14701,7 @@ impl Game<'_> {
         let frame = Frame {
             weather: &weather,
             weather_time: horizon_client::weather::Time::new(self.world.game_time, alpha as f32),
+            impostors: Default::default(),
             nether_lighting: self.dim == Dim::Nether,
             camera,
             yaw,
@@ -18604,6 +18605,7 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
     Frame {
         weather: &[],
         weather_time: horizon_client::weather::Time::new(0, 0.0),
+        impostors: Default::default(),
         camera: glam::DVec3::new(0.5, 100.0, 0.5),
         yaw: 0.0,
         pitch: 10.0,
