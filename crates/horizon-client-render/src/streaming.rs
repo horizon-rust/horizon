@@ -1398,10 +1398,14 @@ impl Streaming {
         }
         drop(g);
         let g = crate::spans::guard("st_finalize");
+        drop(g);
+        let g = crate::spans::guard("st_retain");
         let (protos, finishing) = (&self.protos, &self.finishing);
         self.decorated.retain(|k| {
             protos.contains_key(k) || finishing.contains(k) || world.chunks.contains_key(k)
         });
+        drop(g);
+        let g = crate::spans::guard("st_finalize");
         // Finalize chunks whose neighbourhood is decorated.
         let candidates: Vec<(i32, i32)> = self.protos.keys().copied().collect();
         for (x, z) in candidates {
@@ -1580,7 +1584,20 @@ impl Streaming {
         for key in gone {
             world.dirty_light.remove(&key);
         }
+        drop(g);
+        let g = crate::spans::guard("st_light_submit");
         let room = (self.threads.len() * 4).saturating_sub(self.lighting.len());
+        if crate::spans::enabled() && self.sequence % 50 == 0 {
+            log::info!(
+                "stdbg dirty_light {} ready {} room {} decorated {} protos {} chunks {}",
+                world.dirty_light.len(),
+                light.len(),
+                room,
+                self.decorated.len(),
+                self.protos.len(),
+                world.chunks.len()
+            );
+        }
         nearest_first(&mut light, room);
         for (_, x, z) in light {
             let Some(region) = self.light_region(world, x, z) else {
