@@ -32,7 +32,7 @@ use super::{
     start_game,
 };
 use horizon_client::gamepad::Button;
-use horizon_client::split_layout::{self as layout, MAX_PLAYERS, Placement, View};
+use horizon_client::split_layout::{self as layout, MAX_PLAYERS, Placement, Spot, View};
 use horizon_client::{Result, gfx::compositor::Compositor, widgets};
 use std::{
     cell::RefCell,
@@ -52,6 +52,7 @@ use winit::{
 mod hud;
 mod pads;
 mod players;
+mod setup;
 mod windows;
 
 pub(super) use hud::Hud;
@@ -81,14 +82,6 @@ impl Game<'_> {
 
 const WINDOW_1: &str = "Window 1";
 const NEW_WINDOW: &str = "New window";
-
-/// A place offered while picking a profile.
-#[derive(Clone, PartialEq)]
-enum Spot {
-    Window(u8),
-    New,
-    Fill(String),
-}
 
 struct Guest<'a> {
     game: Box<Game<'a>>,
@@ -125,6 +118,8 @@ pub(super) struct Split<'a> {
     p1_window: u8,
     /// Seats in the order their views fill a shared window.
     order: Vec<usize>,
+    /// Seats represented by the open Setup draft, to detect join/leave changes.
+    setup_seats: Vec<usize>,
     /// Whether Window 1 is shown (hidden while nobody plays in it): set once per change, since
     /// Wayland can't say whether a window is visible.
     window1_shown: bool,
@@ -178,6 +173,7 @@ impl<'a> Split<'a> {
             }],
             p1_window: 1,
             order: Vec::new(),
+            setup_seats: Vec::new(),
             window1_shown: true,
             window_rects: Default::default(),
             screens: Vec::new(),
@@ -430,6 +426,7 @@ impl<'a> Split<'a> {
         }
         self.applied.clear();
         self.order.clear();
+        self.setup_seats.clear();
         if !watching {
             self.stop_routing();
         }
@@ -685,7 +682,7 @@ impl ApplicationHandler for Split<'_> {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.refresh_monitors();
         let on = self.host.settings.extras.splitscreen || self.forced;
-        self.host.ui.options.split_joined = self.guests.iter().any(|g| g.name.is_some());
+        self.host.split_hud.menu = self.guests.iter().any(|g| g.name.is_some());
         // Off, or the last other player gone: P1 draws on its window again.
         if !self.surfaces.is_empty()
             && (!on || self.guests.is_empty())
@@ -694,6 +691,7 @@ impl ApplicationHandler for Split<'_> {
             log::warn!("Horizon: splitscreen could not switch back: {e}");
         }
         if self.surfaces.is_empty() {
+            self.sync_setup();
             if !on {
                 self.stop_routing();
                 return self.host.about_to_wait(event_loop);
@@ -720,6 +718,7 @@ impl ApplicationHandler for Split<'_> {
         let mut changed = self.drop_out() | self.admit(event_loop, pad_joins);
         self.sync_profiles();
         changed |= self.pick_profiles();
+        changed |= self.sync_setup();
         changed |= self.sync_surfaces(event_loop);
         if changed || self.views() != self.applied {
             self.relayout(event_loop);
