@@ -303,7 +303,7 @@ mod tests {
                 Some(Paint {
                     layer: span.state.0 as u16,
                     light: span.light,
-                    color: 0xFF00_0000 | span.light as u32 * 0x0101,
+                    color: 0xFF00_0000 | (span.light as u32 * 0x0101),
                     translucent: water,
                 }),
                 None,

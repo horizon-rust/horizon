@@ -157,8 +157,8 @@ impl Impostors {
                         texture: &atlas.texture,
                         mip_level: mip,
                         origin: wgpu::Origin3d {
-                            x: tx * TILE as u32 >> mip,
-                            y: ty * TILE as u32 >> mip,
+                            x: (tx * TILE as u32) >> mip,
+                            y: (ty * TILE as u32) >> mip,
                             z: page,
                         },
                         aspect: wgpu::TextureAspect::All,

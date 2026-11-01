@@ -113,8 +113,10 @@ mod tests {
 
     #[test]
     fn meshlets_cut_each_bucket_into_runs_of_sixteen_quads() {
-        let mut mesh = SectionMesh::default();
-        mesh.solid = tops(35, 5.0);
+        let mut mesh = SectionMesh {
+            solid: tops(35, 5.0),
+            ..SectionMesh::default()
+        };
         mesh.solid.extend(wall(2.0));
         mesh.solid.extend(wall(1.0));
         mesh.sort_solid();

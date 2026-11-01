@@ -444,7 +444,7 @@ fn bleed(tile: &mut [[u8; 4]]) {
                         }
                     }
                 }
-                if n > 0 {
+                if let Some(n) = std::num::NonZeroU32::new(n) {
                     let i = y * TILE + x;
                     tile[i] = [
                         (sum[0] / n) as u8,
@@ -476,7 +476,7 @@ fn halve(tile: &[[u8; 4]], size: usize) -> Vec<[u8; 4]> {
                     plain[k] += u32::from(p[k]);
                 }
             }
-            out[y * half + x] = if weight > 0 {
+            out[y * half + x] = if let Some(weight) = std::num::NonZeroU32::new(weight) {
                 [
                     (rgb[0] / weight) as u8,
                     (rgb[1] / weight) as u8,
