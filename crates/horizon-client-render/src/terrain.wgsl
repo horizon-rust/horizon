@@ -34,6 +34,11 @@ struct Globals {
     // x: Options.textureFiltering (0 none, 1 RGSS, 2 anisotropic), y: the sprite arrays' width
     // in texels (vanilla's TextureSize).
     filtering: vec4<f32>,
+    // x, z: the camera's offset in blocks within its chunk column (gfx/lod.rs's `lod_mask`).
+    lod_view: vec4<f32>,
+    // A bit per chunk column in a 128 x 128 window around the camera's: the columns near chunks
+    // draw in full, which far tiles leave out (`lod_hidden`; gfx/lod.rs's `column_mask`).
+    lod_columns: array<vec4<u32>, 128>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var sprites: texture_2d_array<f32>;
@@ -163,6 +168,10 @@ struct TerrainOut {
     // The camera-relative height, for the water mirror's cut at the plane.
     @location(9) height: f32,
     @location(10) @interpolate(flat) emissive_layer: u32,
+    // The camera-relative position, and whether this is a distant tile (1) or a section (0),
+    // for the columns far tiles leave out (`lod_hidden`).
+    @location(11) rel: vec3<f32>,
+    @location(12) @interpolate(flat) tile: u32,
 }
 // Whether a fading tile or section leaves this pixel out (gfx/lod.rs's
 // `fade_code`, `fade_out_code`). It fades in, or out, chunk by chunk: each
@@ -317,6 +326,8 @@ fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f3
     }
     out.emission = 15u - (u32(round(color.a * 255.0)) & 15u);
     out.height = pos.y;
+    out.rel = pos;
+    out.tile = select(0u, 1u, instance_step(w) > 0.001);
     out.spherical = length(pos);
     out.cylindrical = max(length(pos.xz), abs(pos.y));
     out.fade = fade_code(w);
@@ -341,6 +352,27 @@ fn brightness(c: vec3<f32>) -> f32 {
     let l = pow(max(c, vec3(0.0)), vec3(2.2));
     return 0.5 * (dot(l, vec3(0.2126, 0.7152, 0.0722)) + max(l.r, max(l.g, l.b)));
 }
+// Whether this pixel of a distant tile lies in a chunk column near chunks draw in full
+// (`lod_columns`): the tile is left out there, so tiles are meshed whole and near chunks coming
+// or going remesh none. `dx` and `dy`: `local`'s screen derivatives. A wall on a column's edge
+// belongs to the cell behind it as the eye sees it (a block of its own column), so it is kept or
+// left out with its owner; the point is moved a hair into that cell.
+fn lod_hidden(in: TerrainOut, dx: vec3<f32>, dy: vec3<f32>) -> bool {
+    if in.tile == 0u { return false; }
+    var n = cross(dx, dy);
+    // Toward the eye: the camera-relative position points away from it.
+    if dot(n, in.rel) > 0.0 { n = -n; }
+    let inward = -n.xz / max(length(n), 1e-30);
+    let at = (globals.lod_view.xy + in.rel.xz + inward * 0.05) / 16.0;
+    let column = vec2<i32>(floor(at)) + vec2<i32>(64);
+    if any(column < vec2<i32>(0)) || any(column >= vec2<i32>(128)) { return false; }
+    let bit = u32(column.y * 128 + column.x);
+    let word = bit >> 5u;
+    let v = globals.lod_columns[word >> 2u];
+    let c = word & 3u;
+    let bits = select(select(v.x, v.y, c == 1u), select(v.z, v.w, c == 3u), c >= 2u);
+    return ((bits >> (bit & 31u)) & 1u) != 0u;
+}
 @fragment fn fs_solid(in: TerrainOut) -> @location(0) vec4<f32> {
     return solid_color(in);
 }
@@ -353,6 +385,7 @@ fn brightness(c: vec3<f32>) -> f32 {
 fn solid_color(in: TerrainOut) -> vec4<f32> {
     let dx = dpdx(in.local);
     let dy = dpdy(in.local);
+    if lod_hidden(in, dx, dy) { discard; }
     if faded(in.fade, in.local, dx, dy) { discard; }
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
     let texel = sprite(in.uv, in.layer & 0x7fffu);
@@ -384,6 +417,7 @@ fn solid_color(in: TerrainOut) -> vec4<f32> {
 // layer drawn first in front (gfx.rs's water tiers): dithered, the faded-out
 // pixels showed the layer behind through the one in front, twice the water.
 @fragment fn fs_translucent(in: TerrainOut) -> @location(0) vec4<f32> {
+    if lod_hidden(in, dpdx(in.local), dpdy(in.local)) { discard; }
     var color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
     if color.a < 0.01 { discard; }

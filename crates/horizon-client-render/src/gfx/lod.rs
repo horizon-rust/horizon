@@ -5,6 +5,7 @@ use crate::{
     fast_hash::{FxHashMap, FxHashSet},
     lod::{MAX_LEVEL, TileKey},
     mesher::SectionMesh,
+    streaming::in_view_distance,
 };
 use glam::{DVec3, Vec3};
 use std::time::{Duration, Instant};
@@ -59,6 +60,41 @@ pub(super) struct Tile {
 
 /// How long a tile takes to fade in over the ones it replaces.
 pub(super) const FADE: Duration = Duration::from_millis(600);
+/// The widest render distance, in chunks, whose near columns the screen-space
+/// mask holds (`Renderer::lod_screen_space`).
+const MASK_RADIUS: i32 = 63;
+/// The mask is a window this many columns on a side around the camera's.
+const MASK_SIDE: i32 = 128;
+/// Its `vec4<u32>`s in terrain.wgsl's `Globals::lod_columns`: a bit a column.
+pub(super) const MASK_VECS: usize = (MASK_SIDE * MASK_SIDE / 128) as usize;
+
+/// terrain.wgsl's `lod_columns`: one bit for each chunk column of the window
+/// around `center` (the camera's column), row after row, set for those of
+/// `columns` inside it. Bit `i` is bit `i % 32` of word `i / 32`, which is
+/// component `word % 4` of vector `word / 4` (`lod_hidden` reads it back).
+pub(super) fn column_mask(
+    center: (i32, i32),
+    columns: impl Iterator<Item = (i32, i32)>,
+) -> [[u32; 4]; MASK_VECS] {
+    let half = MASK_SIDE / 2;
+    let mut mask = [[0u32; 4]; MASK_VECS];
+    for (x, z) in columns {
+        let (x, z) = (x - center.0 + half, z - center.1 + half);
+        if !(0..MASK_SIDE).contains(&x) || !(0..MASK_SIDE).contains(&z) {
+            continue;
+        }
+        let bit = (z * MASK_SIDE + x) as usize;
+        mask[bit / 128][bit / 32 % 4] |= 1 << (bit % 32);
+    }
+    mask
+}
+
+/// `HORIZON_LOD_CUTOUT=1` keeps the far terrain cut around the near columns
+/// in the tiles' geometry, as before the screen-space mask.
+fn cutout_forced() -> bool {
+    static FORCED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FORCED.get_or_init(|| std::env::var("HORIZON_LOD_CUTOUT").as_deref() == Ok("1"))
+}
 
 /// A tile or section fading in: 0 drawn whole, else 1 + `level` * 129 +
 /// `shown`, `shown` 1 to 63 sixty-fourths of `FADE` (`fade_out_code`: 65 to
@@ -179,6 +215,51 @@ impl Tile {
 }
 
 impl Renderer {
+    /// Whether far tiles stay out of the columns near chunks draw per pixel
+    /// (terrain.wgsl's `lod_hidden`, from `lod_mask`), so tiles are meshed
+    /// whole and near chunks coming or going remesh nothing. Not for a shader
+    /// pack that draws terrain with its own shaders (they have no mask), nor
+    /// for a render distance past the mask's window: tiles are then cut
+    /// around the near columns (`Lod::set_screen_space`).
+    pub fn lod_screen_space(&self, radius: i32) -> bool {
+        let pack_terrain = self
+            .pack_post
+            .as_ref()
+            .and_then(|p| p.1.as_ref())
+            .is_some_and(|p| p.has_terrain());
+        let material = self.native.as_ref().is_some_and(|n| n.material.is_some());
+        radius <= MASK_RADIUS && !pack_terrain && !material && !cutout_forced()
+    }
+
+    /// terrain.wgsl's `lod_view` (the camera's offset in its chunk column)
+    /// and `lod_columns` for this frame: the columns whose near sections are
+    /// all in and have faded in, within the render distance `radius`. A column
+    /// that stops being complete leaves it at once; its sections fade out
+    /// over the tile, which then shows.
+    pub(super) fn lod_mask(&self, camera: DVec3, radius: i32) -> ([f32; 4], [[u32; 4]; MASK_VECS]) {
+        let center = (
+            (camera.x.floor() as i32) >> 4,
+            (camera.z.floor() as i32) >> 4,
+        );
+        let view = [
+            (camera.x - f64::from(center.0 * 16)) as f32,
+            (camera.z - f64::from(center.1 * 16)) as f32,
+            0.0,
+            0.0,
+        ];
+        if self.lods.is_empty() || !self.lod_screen_space(radius) {
+            return (view, [[0; 4]; MASK_VECS]);
+        }
+        let now = Instant::now();
+        let columns = self
+            .detail_complete
+            .iter()
+            .filter(|&(_, &since)| now.saturating_duration_since(since) >= FADE)
+            .map(|(&column, _)| column)
+            .filter(|&(x, z)| in_view_distance(center, radius, x, z));
+        (view, column_mask(center, columns))
+    }
+
     /// A tile meshed again (finer detail) takes its place at once, but for
     /// one meshed around near chunks or finer tiles that are new (`keep`):
     /// its old mesh stands in while they fade in. A new one waits for the rest of its job
@@ -472,6 +553,37 @@ mod tests {
         // A section's largest code keeps its UV step exact (terrain_uv).
         let w = 129.0f32 + 1.0 / 32768.0;
         assert_eq!(w.fract(), 1.0 / 32768.0);
+    }
+
+    #[test]
+    fn the_column_mask_holds_the_window_around_the_camera() {
+        let center = (-100, 40);
+        let columns = [
+            center,
+            (center.0 + 63, center.1 - 64),
+            (center.0 - 64, center.1 + 63),
+            // Just outside the window on each side: left out.
+            (center.0 + 64, center.1),
+            (center.0 - 65, center.1),
+            (center.0, center.1 + 64),
+            (center.0, center.1 - 65),
+        ];
+        let mask = column_mask(center, columns.into_iter());
+        // terrain.wgsl's lookup: the window's own index, word, vector, component.
+        let bit = |dx: i32, dz: i32| {
+            let index = ((dz + 64) * MASK_SIDE + dx + 64) as usize;
+            mask[index / 128][index / 32 % 4] >> (index % 32) & 1 == 1
+        };
+        assert!(bit(0, 0) && bit(63, -64) && bit(-64, 63));
+        assert!(!bit(1, 0) && !bit(0, 1) && !bit(-1, -1));
+        let set: u32 = mask.iter().flatten().map(|w| w.count_ones()).sum();
+        assert_eq!(set, 3, "only the columns in the window");
+        // Moving the window moves the bits, not the columns' meaning.
+        let moved = column_mask((center.0 + 1, center.1), [center].into_iter());
+        assert_eq!(
+            moved[(64 * 128 + 63) / 128][(64 * 128 + 63) / 32 % 4],
+            1 << 31
+        );
     }
 
     #[test]

@@ -15523,6 +15523,9 @@ impl Game<'_> {
                     horizon_client::graphics::lod_distance_capped(far_distance, &renderer.info);
                 lod.set_near_loading(self.streaming.busy());
                 lod.set_reduced_detail(far_reduced);
+                // Tiles are meshed whole where the renderer masks them in
+                // screen space, cut around the near columns where it cannot.
+                lod.set_screen_space(renderer.lod_screen_space(self.streaming.radius));
                 // The covered columns change only with the complete ones and
                 // the render area: rebuilt then, not every frame.
                 let at = (

@@ -925,6 +925,9 @@ pub struct Lod {
     cutout_pending: Option<FxHashSet<(i32, i32)>>,
     /// Active tiles whose mesh must be accepted before the cutout publishes.
     cutout_waiting: FxHashSet<TileKey>,
+    /// The renderer keeps tiles out of the columns near chunks cover, per
+    /// pixel (`set_screen_space`): tiles are meshed whole, nothing is cut out.
+    screen_space: bool,
     /// Unsampled tiles, coarsest level first and nearest first within a level.
     /// Rebuilt when the view changes, not scanned every frame.
     wanted: std::collections::BinaryHeap<std::cmp::Reverse<Wanted>>,
@@ -1240,6 +1243,7 @@ impl Lod {
             cutout: None,
             cutout_pending: None,
             cutout_waiting: FxHashSet::default(),
+            screen_space: false,
             wanted: std::collections::BinaryHeap::new(),
             wanted_at: None,
             wanted_stale: true,
@@ -1299,6 +1303,17 @@ impl Lod {
     /// distance, or a hole opens there.
     pub fn take_cutout(&mut self) -> Option<FxHashSet<(i32, i32)>> {
         self.cutout.take()
+    }
+    /// Whether the renderer masks tiles inside the full-detail columns itself
+    /// (`Renderer::lod_screen_space`): then tiles are meshed and drawn whole,
+    /// under the near chunks, and chunks coming or going remesh nothing. Off,
+    /// the tiles leave those columns out (`covered`).
+    pub fn set_screen_space(&mut self, on: bool) {
+        if self.screen_space != on {
+            self.screen_space = on;
+            self.retiring.clear();
+            self.leave_out();
+        }
     }
     /// Marks an active tile for remeshing. Versioned so a result from an
     /// older batch can never overwrite a newer one.
@@ -1727,7 +1742,9 @@ impl Lod {
             .filter(|key| {
                 key.level <= DETAIL_LEVEL
                     && !self.plan.split.contains(key)
-                    && !(key.level == 0 && self.covered.contains(&(key.x, key.z)))
+                    && !(key.level == 0
+                        && (self.covered.contains(&(key.x, key.z))
+                            || self.full.contains(&(key.x, key.z))))
                     && self.detail_masks.get(key) != Some(&[u64::MAX; 4])
             })
             .copied()
@@ -1988,8 +2005,10 @@ impl Lod {
         if let Some(full) = covered
             && self.full != full
         {
-            self.retiring.extend(self.full.difference(&full).copied());
-            self.retiring.retain(|column| !full.contains(column));
+            if !self.screen_space {
+                self.retiring.extend(self.full.difference(&full).copied());
+                self.retiring.retain(|column| !full.contains(column));
+            }
             self.full = full;
             self.leave_out();
         }
@@ -2018,7 +2037,13 @@ impl Lod {
         }
     }
     fn leave_out(&mut self) {
-        let covered: FxHashSet<_> = self.full.union(&self.retiring).copied().collect();
+        // Tiles under the near chunks are drawn whole in screen space; the
+        // full-detail columns then only spare their detail requests.
+        let covered: FxHashSet<_> = if self.screen_space {
+            FxHashSet::default()
+        } else {
+            self.full.union(&self.retiring).copied().collect()
+        };
         if self.covered == covered {
             return;
         }
@@ -3873,6 +3898,33 @@ mod tests {
         lod.prune_retiring();
         assert!(!lod.retiring.contains(&(3, -2)));
         assert!(!lod.covered.contains(&(3, -2)));
+    }
+
+    /// Screen space: the renderer masks the tiles, so no column is left out
+    /// of them, and the tile over a full-detail column is drawn under it.
+    #[test]
+    fn screen_space_draws_tiles_under_full_detail_columns() {
+        let mut lod = Lod::scheduler_for_test();
+        let key = TileKey {
+            x: 3,
+            z: -2,
+            level: 0,
+        };
+        lod.plan.nodes.insert(key);
+        lod.ready
+            .insert(key, Arc::new(vec![Column::default(); 256]));
+        lod.cover(Some([(3, -2)].into_iter().collect()));
+        assert!(lod.covered.contains(&(3, -2)));
+        assert_eq!(lod.evaluate(key), (true, false), "left out");
+        lod.set_screen_space(true);
+        assert!(lod.covered.is_empty() && lod.retiring.is_empty());
+        assert_eq!(lod.evaluate(key), (true, true), "drawn under the chunk");
+        // A column leaving the full-detail area retires nothing to wait for.
+        lod.cover(Some(Default::default()));
+        assert!(lod.retiring.is_empty() && lod.covered.is_empty());
+        lod.set_screen_space(false);
+        lod.cover(Some([(3, -2)].into_iter().collect()));
+        assert!(lod.covered.contains(&(3, -2)));
     }
 
     /// Completing a subtree must not remesh every tile inside it: only a
