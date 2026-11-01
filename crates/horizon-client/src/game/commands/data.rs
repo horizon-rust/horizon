@@ -280,6 +280,13 @@ impl Game<'_> {
     fn raw_mut(&mut self, t: Target) -> Option<&mut Tag> {
         match t {
             Target::Player => Some(self.level.player_extra.get_or_insert_with(empty)),
+            // `ServerPlayer.getTags` is the player's own record, which for a
+            // guest is the compound its player file was read from.
+            Target::Guest(conn) => self
+                .lan
+                .as_mut()
+                .and_then(|h| h.hub.guest_mut(conn))
+                .map(|g| g.saved.get_or_insert_with(empty)),
             Target::Mob(id)
             | Target::Item(id)
             | Target::Stand(id)
@@ -287,6 +294,7 @@ impl Game<'_> {
             | Target::Painting(id)
             | Target::Boat(id)
             | Target::Cart(id)
+            | Target::Tnt(id)
             | Target::Other(id) => Some(self.persist.raw.entry(id).or_insert_with(empty)),
             _ => None,
         }
