@@ -325,6 +325,11 @@ pub fn hdr_offered() -> bool {
     HDR_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Far entities' range in blocks (the server's cap is 4000) and the mobs kept, by default and at most.
+pub const FAR_ENTITY_RANGE_DEFAULT: u32 = 2048;
+pub const FAR_ENTITY_RANGE_MAX: u32 = 4000;
+pub const FAR_ENTITY_MAX_DEFAULT: u32 = 1000;
+pub const FAR_ENTITY_MAX_MAX: u32 = 4000;
 /// The farthest LOD Distance, in chunks, on integrated GPUs other than
 /// Apple's: they share the CPU's memory bandwidth, and past it far terrain
 /// costs them more frame time than it is worth.
@@ -360,6 +365,12 @@ pub struct Graphics {
     pub cave_culling: bool,
     /// Skip drawing entities hidden behind opaque terrain.
     pub entity_culling: bool,
+    /// Far players and mobs a Horizon server feeds, drawn as impostors past the entity render
+    /// distance (`far_entities`, `impostor.rs`).
+    pub far_entities: bool,
+    /// How far they are asked for and drawn, in blocks, and the most mobs kept.
+    pub far_entity_range: u32,
+    pub far_entity_max: u32,
     /// Meshed sections uploaded per frame; 0 uploads all that are ready.
     pub chunk_updates: u32,
     /// Section mesh bytes uploaded per frame, in KiB; 0 is unlimited.
@@ -422,6 +433,9 @@ impl Default for Graphics {
             far_detail: FarDetail::Full,
             cave_culling: true,
             entity_culling: false,
+            far_entities: true,
+            far_entity_range: FAR_ENTITY_RANGE_DEFAULT,
+            far_entity_max: FAR_ENTITY_MAX_DEFAULT,
             chunk_updates: 0,
             upload_budget_kib: 0,
             sky: true,
@@ -488,6 +502,13 @@ impl Graphics {
                 "farDetail" => g.far_detail = FarDetail::parse(value),
                 "caveCulling" => g.cave_culling = flag(g.cave_culling),
                 "entityCulling" => g.entity_culling = flag(g.entity_culling),
+                "farEntities" => g.far_entities = flag(g.far_entities),
+                "farEntityRange" => {
+                    g.far_entity_range = number(g.far_entity_range).min(FAR_ENTITY_RANGE_MAX)
+                }
+                "farEntityMax" => {
+                    g.far_entity_max = number(g.far_entity_max).min(FAR_ENTITY_MAX_MAX)
+                }
                 "chunkUpdates" => g.chunk_updates = number(g.chunk_updates).min(512),
                 "uploadBudgetKiB" => g.upload_budget_kib = number(g.upload_budget_kib).min(65536),
                 "sky" => g.sky = flag(g.sky),
@@ -548,7 +569,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nfarEntities:{}\nfarEntityRange:{}\nfarEntityMax:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -586,6 +607,9 @@ impl Graphics {
             bool_text(self.shadow_cache),
             self.api.name(),
             self.shader_pack,
+            bool_text(self.far_entities),
+            self.far_entity_range,
+            self.far_entity_max,
         )
     }
     /// Binds Horizon's graphics key `name` (`HDR_KEY`); false for another name.
@@ -707,6 +731,9 @@ mod tests {
             far_detail: FarDetail::Reduced,
             cave_culling: false,
             entity_culling: true,
+            far_entities: false,
+            far_entity_range: 1024,
+            far_entity_max: 250,
             chunk_updates: 12,
             upload_budget_kib: 4096,
             sky: false,
@@ -804,6 +831,23 @@ mod tests {
                     if s.text.contains(&format!("{INTEGRATED_LOD_DISTANCE} chunks")))),
             "the LOD Distance description names the cap"
         );
+    }
+
+    #[test]
+    fn far_entities_are_on_and_bounded() {
+        let g = Graphics::default();
+        assert!(g.far_entities);
+        assert_eq!(g.far_entity_range, 2048);
+        assert_eq!(
+            Graphics::parse("farEntityRange:99999\n").far_entity_range,
+            4000
+        );
+        assert_eq!(Graphics::parse("farEntityMax:99999\n").far_entity_max, 4000);
+        assert_eq!(
+            Graphics::parse("farEntityRange:nope\n").far_entity_range,
+            2048
+        );
+        assert!(!Graphics::parse("farEntities:false\n").far_entities);
     }
 
     #[test]
