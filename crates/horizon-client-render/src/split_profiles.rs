@@ -3,7 +3,7 @@
 //! pause menu (Splitscreen Settings), playing on until the new one can join. A profile is a name
 //! (kept in the game folder), with its own options. The
 //! game fills the list when the page opens (`filled`), takes the choice, and says why a pick
-//! can't play (`refused`). Built from vanilla's widgets, as Horizon's own pages are.
+//! can't play (`refused`). Built from vanilla's widgets.
 use crate::{
     gamepad::{Button as PadButton, GlyphStyle},
     graphics_style,

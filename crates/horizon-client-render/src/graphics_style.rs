@@ -89,7 +89,8 @@ pub const CONTROL_W: f32 = 112.0;
 pub const CONTROL_H: f32 = 16.0;
 pub const TAB_H: f32 = 20.0;
 pub const SEARCH_H: f32 = 16.0;
-pub const SCROLLER_W: f32 = 8.0;
+/// Vanilla's scroller: the column `ui::Scroll::press` takes.
+pub const SCROLLER_W: f32 = 6.0;
 pub const INFO_H: f32 = 34.0;
 pub const BUTTON_W: f32 = 150.0;
 pub const BUTTON_H: f32 = 20.0;
@@ -125,6 +126,9 @@ fn block(
         under,
     );
 }
+/// A button's face, bevel and lip; a control that can't be used now.
+const FACE_OF_BUTTON: (u32, u32, u32) = (BUTTON, BUTTON_BEVEL, LIP);
+const DIM: (u32, u32, u32) = (PANEL, PANEL, LIP);
 /// The screen's panel, and the tabs on it.
 pub fn panel(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
     block(batch, atlas, rect, (PANEL, BEVEL, LIP), 2.0);
@@ -153,7 +157,21 @@ pub fn well(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, h]: [f32; 4]) {
 }
 /// The scroller's thumb, a button on its track.
 pub fn thumb(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
-    block(batch, atlas, rect, (BUTTON, BUTTON_BEVEL, LIP), 1.0);
+    block(batch, atlas, rect, FACE_OF_BUTTON, 1.0);
+}
+/// `text` cut to `width` with an ellipsis, as a long name gives way to its control.
+pub fn fit(atlas: &HudAtlas, text: &str, width: f32) -> String {
+    if atlas.font.width(text) <= width {
+        return text.to_owned();
+    }
+    let mut out = String::new();
+    for c in text.chars() {
+        if atlas.font.width(&format!("{out}{c}...")) > width {
+            break;
+        }
+        out.push(c);
+    }
+    format!("{}...", out.trim_end())
 }
 /// A 16 px tick box ending at `right`, centred in the row at `y`.
 pub fn checkbox(batch: &mut HudBatch, atlas: &HudAtlas, right: f32, y: f32, on: bool, live: bool) {
@@ -206,13 +224,13 @@ pub fn button(
     (hover, live, primary): (bool, bool, bool),
 ) {
     let [x, y, w, h] = rect;
-    let (colors, lip) = match (live, primary, hover) {
-        (false, ..) => ((PANEL, PANEL, LIP), 1.0),
-        (true, true, _) => ((FACE, FACE_BEVEL, FACE_LIP), 2.0),
-        (true, false, true) => ((BUTTON_BEVEL, hex(0x4c4377, 255), LIP), 1.0),
-        (true, false, false) => ((BUTTON, BUTTON_BEVEL, LIP), 1.0),
+    let (colors, lip) = match (live, primary) {
+        (false, _) => (DIM, 1.0),
+        (true, true) => ((FACE, FACE_BEVEL, FACE_LIP), 2.0),
+        (true, false) => (FACE_OF_BUTTON, 1.0),
     };
     block(batch, atlas, rect, colors, lip);
+    // Vanilla's highlighted button: a white edge.
     if hover && live {
         ring(batch, atlas, rect, WHITE);
     }
@@ -232,12 +250,17 @@ pub fn slider(
     let [x, y, w, h] = rect;
     well(batch, atlas, rect);
     let at = x + 1.0 + (position.clamp(0.0, 1.0) * (w - 10.0)).round();
-    let colors = match (live, hover) {
-        (false, _) => (PANEL, PANEL, LIP),
-        (true, true) => (BUTTON_BEVEL, hex(0x4c4377, 255), LIP),
-        (true, false) => (BUTTON, BUTTON_BEVEL, LIP),
-    };
-    block(batch, atlas, [at, y, 8.0, h], colors, 1.0);
+    let handle = [at, y, 8.0, h];
+    block(
+        batch,
+        atlas,
+        handle,
+        if live { FACE_OF_BUTTON } else { DIM },
+        1.0,
+    );
+    if hover && live {
+        ring(batch, atlas, handle, WHITE);
+    }
     let color = if live { WHITE } else { MUTED };
     ui::centered_text(
         batch,
@@ -302,3 +325,4 @@ pub fn title(batch: &mut HudBatch, atlas: &HudAtlas, text: &Text) {
 pub fn cost_line(cost: Cost) -> Text {
     Text::literal(lang::get(cost.label())).with_color(cost.rgb())
 }
+

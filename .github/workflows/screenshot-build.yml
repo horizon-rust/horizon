@@ -28,6 +28,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: screenshot-build
+          # Another commit (`ref`) may be anyone's: its build scripts run here, so it never writes the cache that
+          # runs of this branch read.
+          save-if: ${{ inputs.ref == '' }}
       - name: ALSA and udev headers
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
       - name: Build the client and horizon-ctl
