@@ -3592,9 +3592,16 @@ fn harvest_tick(
         }
     }
 }
-/// `UseBonemeal.validPos`: a `CropBlock` below its max age.
+/// `UseBonemeal.validPos`: a vanilla crop below its max age.
 fn bonemeal_valid(w: &MobWorld, p: [i32; 3]) -> bool {
-    super::villager::crop(w, p) && !super::villager::ripe_crop(w, p)
+    matches!(
+        w.block_name(p[0], p[1], p[2]),
+        "minecraft:wheat"
+            | "minecraft:carrots"
+            | "minecraft:potatoes"
+            | "minecraft:beetroots"
+            | "minecraft:torchflower_crop"
+    ) && !super::villager::ripe_crop(w, p)
 }
 /// `UseBonemeal.pickNextTarget`: one of the valid blocks around the villager,
 /// each equally likely (reservoir sampling with the level random).
@@ -4655,6 +4662,63 @@ mod farming_tests {
                 assert_eq!(ripe.collect::<Vec<_>>(), [false, true, true, false, false]);
             },
         );
+    }
+
+    #[test]
+    fn bonemeal_targets_stay_limited_to_growing_vanilla_crops() {
+        let cases = [
+            ("minecraft:wheat", Some(6), true),
+            ("minecraft:wheat", Some(7), false),
+            ("minecraft:carrots", Some(6), true),
+            ("minecraft:carrots", Some(7), false),
+            ("minecraft:potatoes", Some(6), true),
+            ("minecraft:potatoes", Some(7), false),
+            ("minecraft:beetroots", Some(2), true),
+            ("minecraft:beetroots", Some(3), false),
+            ("minecraft:torchflower_crop", Some(0), true),
+            ("minecraft:torchflower_crop", Some(1), true),
+            ("minecraft:torchflower", None, false),
+            ("minecraft:pitcher_crop", None, false),
+        ];
+        for mod_crops in [false, true] {
+            let ran = with_adjusted_test_world(
+                &[],
+                true,
+                |facts, _| {
+                    if mod_crops {
+                        for (block, _, _) in cases {
+                            rename(facts, block, &block.replace("minecraft:", "testmod:"));
+                        }
+                    }
+                },
+                |world, registry| {
+                    for (i, (block, age, _)) in cases.iter().enumerate() {
+                        place(world, [i as i32 * 4, 0, 0], state(registry, block, *age));
+                    }
+                },
+                |w, types| {
+                    for (i, (block, age, growing)) in cases.iter().enumerate() {
+                        let p = [i as i32 * 4, 0, 0];
+                        let m = farmer(types, [f64::from(p[0]) + 0.5, 0.0, 0.5]);
+                        let mut lr = LegacyRandom::new(0);
+                        let mut events = Vec::new();
+                        let mut cx = Bx {
+                            w,
+                            lr: &mut lr,
+                            events: &mut events,
+                            now: 100,
+                            refresh: false,
+                        };
+                        assert_eq!(
+                            pick_bonemeal_crop(&m, &mut cx),
+                            (!mod_crops && *growing).then_some(p),
+                            "{block} age={age:?}, mod_crops={mod_crops}"
+                        );
+                    }
+                },
+            );
+            assert!(ran, "prepared test resources must be available");
+        }
     }
 
     /// A mod's farmland (its template's `FarmlandBlock`) is the farmer's job
