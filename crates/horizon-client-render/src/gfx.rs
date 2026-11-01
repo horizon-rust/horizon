@@ -87,6 +87,7 @@ mod flat;
 mod frame_gen;
 mod hdr;
 mod hdr_stats;
+mod hiz;
 pub use hdr::Calibration as HdrCalibration;
 pub mod lightning;
 mod lod;
@@ -351,6 +352,9 @@ pub struct Frame<'a> {
     /// Skip sections the camera cannot see through open faces (vanilla's
     /// occlusion graph; off in spectator-like views inside blocks).
     pub cave_culling: bool,
+    /// Leave out far terrain tiles hidden behind nearer terrain (`gfx/hiz.rs`;
+    /// `horizon-graphics.txt` `farCulling`).
+    pub far_cull: bool,
     /// Title screen: only the dedicated panorama cube map and the HUD.
     pub title: bool,
     /// Lava, powder snow, blindness or darkness blocks the sky pass.
@@ -690,6 +694,8 @@ pub struct Renderer {
     /// Each section's solid draws, to group them by arena page.
     solid_runs: page_runs::PageRuns,
     phase2_runs: page_runs::PageRuns,
+    /// Far tiles' draws in phase 2, grouped as `phase2_runs` groups sections'.
+    lod_phase2_runs: page_runs::PageRuns,
     /// The shadow camera's draws by page, in bands of distance from the light.
     shadow_runs: page_runs::PageRuns,
     /// Block-entity blocks per meshed section (world position, state id).
@@ -3220,6 +3226,7 @@ impl Renderer {
             phase2_pages: Vec::new(),
             solid_runs: page_runs::PageRuns::default(),
             phase2_runs: page_runs::PageRuns::default(),
+            lod_phase2_runs: page_runs::PageRuns::default(),
             shadow_runs: page_runs::PageRuns::default(),
             block_entities: Default::default(),
             section_uploaded: Default::default(),
@@ -5068,6 +5075,12 @@ impl Renderer {
                 .as_ref()
                 .and_then(|p| p.1.as_ref())
                 .is_some_and(|p| p.has_terrain());
+        // Far tiles count toward the sections that make culling worth its passes.
+        let far_tiles = if frame.far_cull {
+            visible_lods.len()
+        } else {
+            0
+        };
         let mut cull = self
             .cull
             .as_mut()
@@ -5078,13 +5091,14 @@ impl Renderer {
                     && self.multi_draw
                     // Occlusion is found from the camera, not the mirror's eye.
                     && mirror.is_none()
-                    && visible.len() >= c.min_sections
+                    && visible.len() + far_tiles >= c.min_sections
             })
             .and_then(|cull| cull.begin(&self.device).then_some(cull));
         self.phase2_draws.clear();
         self.phase2_pages.clear();
         self.solid_runs.clear();
         self.phase2_runs.clear();
+        self.lod_phase2_runs.clear();
         for (i, v) in visible.iter().enumerate() {
             let s = self.sections.get(v.slot);
             let first_phase = cull.as_ref().is_none_or(|c| c.first(v.slot));
@@ -5132,23 +5146,76 @@ impl Renderer {
                 c.deferred(i as usize, slot, r.start as usize, r.len as usize, indices);
             }
         }
-        // Distant terrain tiles are never occlusion tested: phase 1.
+        // Distant terrain tiles are drawn like sections: in phase 1 where the
+        // last test saw them, else in phase 2 once this frame's test has
+        // (`cull.tile_drawn`, `tile_deferred`). One with a stand-in mesh, and
+        // every tile while far culling is off, is drawn in phase 1 untested.
+        let far_cull = frame.far_cull && cull.is_some();
         let tiles = self.draws.len();
+        let phase2_tiles = self.phase2_draws.len();
         self.solid_runs.clear();
         for (i, v) in visible_lods.iter().enumerate() {
-            let s = self.lods[&v.key].drawn();
-            let start = self.draws.len();
+            let tile = &self.lods[&v.key];
+            let s = tile.drawn();
+            let bounds = tile.cull_bounds().filter(|_| far_cull);
+            let first_phase = match (&cull, bounds) {
+                (Some(c), Some(_)) => c.first_tile(v.key),
+                _ => true,
+            };
+            let (draws, pages, runs) = if first_phase {
+                (&mut self.draws, &mut self.draw_pages, &mut self.solid_runs)
+            } else {
+                (
+                    &mut self.phase2_draws,
+                    &mut self.phase2_pages,
+                    &mut self.lod_phase2_runs,
+                )
+            };
+            let start = draws.len();
             let instance = (visible.len() + i) as u32;
+            let mut indices = 0;
             facing_runs_from(&s.sides, eye, mirror_low, v.origin, |first, quads| {
+                indices += quads * 6;
                 let base = s.start as u32 + first * 4;
-                self.draws.push([quads * 6, 1, 0, base, instance]);
-                self.draw_pages.push((s.page, None));
+                draws.push([quads * 6, u32::from(first_phase), 0, base, instance]);
+                pages.push((s.page, None));
             });
-            self.solid_runs
-                .push(v.distance, s.page, start, self.draws.len() - start, [0; 3]);
+            runs.push(
+                v.distance,
+                s.page,
+                start,
+                draws.len() - start,
+                [i as u32, 0, indices],
+            );
+            if let (Some(c), Some(bounds), true) = (&mut cull, bounds, first_phase) {
+                c.tile_drawn(v.key, instance as usize, bounds, indices);
+            }
         }
         self.solid_runs
             .regroup(&mut self.draws, &mut self.draw_pages, tiles);
+        // Phase 2's tiles are tested where grouping left them.
+        let runs = self.lod_phase2_runs.regroup(
+            &mut self.phase2_draws,
+            &mut self.phase2_pages,
+            phase2_tiles,
+        );
+        if let Some(c) = &mut cull {
+            for r in runs {
+                let [i, _, indices] = r.tag;
+                let v = &visible_lods[i as usize];
+                if let Some(bounds) = self.lods[&v.key].cull_bounds() {
+                    let instance = visible.len() + i as usize;
+                    c.tile_deferred(
+                        v.key,
+                        instance,
+                        bounds,
+                        r.start as usize,
+                        r.len as usize,
+                        indices,
+                    );
+                }
+            }
+        }
         let phase1_draws = self.draws.len() as u32;
         self.draws.extend_from_slice(&self.phase2_draws);
         self.draw_pages.extend_from_slice(&self.phase2_pages);
@@ -5783,6 +5850,18 @@ impl Renderer {
         };
         if culling && let Some(cull) = &mut self.cull {
             cull.bind_depth(&self.device, world_depth);
+            let size = self
+                .world_post
+                .size()
+                .filter(|_| scaled.is_some())
+                .unwrap_or([self.config.width, self.config.height]);
+            cull.prepare_tiles(
+                &self.device,
+                &mut self.uploads,
+                &mut encoder,
+                world_depth,
+                size,
+            );
         }
         if oit_on {
             let size = self
@@ -6193,6 +6272,7 @@ impl Renderer {
                             cull.test(&mut pass);
                             drop(pass);
                             cull.test_pass(&mut encoder);
+                            cull.test_tiles(&self.device, &mut encoder);
                             flat.flatten_phase2(&mut encoder);
                             pass = world_pass_after_culling(
                                 &mut encoder,
@@ -6224,6 +6304,7 @@ impl Renderer {
                             cull.test(&mut pass);
                             drop(pass);
                             cull.test_pass(&mut encoder);
+                            cull.test_tiles(&self.device, &mut encoder);
                             pass = world_pass_after_culling(
                                 &mut encoder,
                                 world_view,

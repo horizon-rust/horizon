@@ -26,12 +26,20 @@
 //! Vulkan's native multi-draw, and Metal's, which wgpu replays as one
 //! indirect draw per entry. Translucent draws are not culled.
 //!
+//! Far terrain tiles take part with a test of their own (`hiz.rs`): a box over
+//! a depth pyramid, in compute passes between the phases, since a tile's box
+//! can cover most of the screen. Their draws are phase 1's or phase 2's like
+//! sections', their results come back in the same buffers, and what
+//! phase 1 draws is the tiles the last test saw.
+//!
 //! Metal cannot force the depth test before a fragment shader that writes
 //! storage (naga writes no `[[early_fragment_tests]]`), so there the boxes
 //! are drawn in a pass of their own between the phases, which reads phase
 //! 1's depth as a texture and makes the same comparison in the shader: the
 //! fragment's depth against the stored one, greater or equal passing. The
 //! same fragments pass, so the same sections are seen.
+use crate::{fast_hash::FxHashMap, lod::TileKey};
+use glam::Vec3;
 use std::num::NonZeroU64;
 use std::sync::{
     Arc,
@@ -77,11 +85,20 @@ struct Readback {
     capacity: u64,
     state: Arc<AtomicU8>,
     stamp: u32,
-    /// The resident slot of each test, and its section's solid indices.
+    /// The resident slot of each section test, the tile of each far tile
+    /// test (those come after), and the solid indices of the draws they test.
     slots: Vec<u32>,
+    tiles: Vec<TileKey>,
     indices: Vec<u32>,
     /// The frame's solid indices.
     total: u64,
+}
+
+impl Readback {
+    /// The results to read: one a test.
+    fn words(&self) -> u64 {
+        (self.slots.len() + self.tiles.len()) as u64
+    }
 }
 
 /// The bind group and the buffers from outside it was made with.
@@ -135,6 +152,11 @@ pub struct Cull {
     test_data: Vec<[u32; 4]>,
     test_slots: Vec<u32>,
     test_indices: Vec<u32>,
+    /// The far tile tests (`hiz`), after the section tests: their tiles and
+    /// solid indices.
+    tile_keys: Vec<TileKey>,
+    tile_indices: Vec<u32>,
+    hiz: super::hiz::Hiz,
     total: u64,
     /// The frame tests every section, as culling was off.
     probe: bool,
@@ -144,6 +166,8 @@ pub struct Cull {
     current: Option<usize>,
     /// Per resident slot: whether the last result read back saw it.
     seen: Vec<bool>,
+    /// Per far tile the last result read back covers: whether it saw it.
+    tile_seen: FxHashMap<TileKey, bool>,
     stamp: u32,
     /// Of the boxes the last test read back drew, how many it did not see
     /// and how many it drew, and the share of solid indices hidden.
@@ -330,6 +354,9 @@ impl Cull {
             test_data: Vec::new(),
             test_slots: Vec::new(),
             test_indices: Vec::new(),
+            tile_keys: Vec::new(),
+            tile_indices: Vec::new(),
+            hiz: super::hiz::Hiz::new(device),
             total: 0,
             probe: false,
             results: buffer(device, "Section test results", 4, RESULTS_USAGE),
@@ -340,6 +367,7 @@ impl Cull {
                     state: Arc::new(AtomicU8::new(FREE)),
                     stamp: 0,
                     slots: Vec::new(),
+                    tiles: Vec::new(),
                     indices: Vec::new(),
                     total: 0,
                 })
@@ -347,6 +375,7 @@ impl Cull {
             next: 0,
             current: None,
             seen: Vec::new(),
+            tile_seen: FxHashMap::default(),
             stamp: 0,
             hidden: ([0; 2], 1.0),
             always: false,
@@ -363,7 +392,7 @@ impl Cull {
             if r.state.load(Ordering::Acquire) != MAPPED {
                 continue;
             }
-            let mapped = r.buffer.slice(..r.slots.len() as u64 * 4);
+            let mapped = r.buffer.slice(..r.words() * 4);
             if let Ok(data) = mapped.get_mapped_range() {
                 // The mapping isn't guaranteed to be 4-byte aligned (a Vega 11
                 // on Windows panicked in cast_slice), so copy the words out.
@@ -377,13 +406,23 @@ impl Cull {
                 }
                 let share = indices as f32 / r.total.max(1) as f32;
                 self.hidden = ([hidden, results.len()], share);
-                for (&slot, &result) in r.slots.iter().zip(&results) {
+                let (sections, tiles) = results.split_at(r.slots.len());
+                for (&slot, &result) in r.slots.iter().zip(sections) {
                     let slot = slot as usize;
                     if slot >= self.seen.len() {
                         self.seen.resize(slot + 1, false);
                     }
                     self.seen[slot] = result == r.stamp;
                 }
+                // Tiles the readback does not hold are not in sight, or new:
+                // phase 2 draws them with a test of their own.
+                self.tile_seen.clear();
+                self.tile_seen.extend(
+                    r.tiles
+                        .iter()
+                        .zip(tiles)
+                        .map(|(&key, &result)| (key, result == r.stamp)),
+                );
             }
             r.buffer.unmap();
             r.state.store(FREE, Ordering::Release);
@@ -392,6 +431,9 @@ impl Cull {
         self.test_data.clear();
         self.test_slots.clear();
         self.test_indices.clear();
+        self.tile_keys.clear();
+        self.tile_indices.clear();
+        self.hiz.clear();
         self.total = 0;
         self.probe = !self.always && self.hidden.1 < MIN_SHARE;
         !self.probe || self.stamp.is_multiple_of(PROBE)
@@ -425,6 +467,48 @@ impl Cull {
         self.test_indices.push(indices);
     }
 
+    /// Whether phase 1 draws `tile`: the last result read back saw it.
+    pub fn first_tile(&self, tile: TileKey) -> bool {
+        self.tile_seen.get(&tile).copied().unwrap_or(false)
+    }
+
+    /// A far tile phase 1 draws, `index` in the frame's visible list (sections,
+    /// then tiles), with `indices` solid indices and its box `bounds` relative
+    /// to its origin: tested in turn.
+    pub fn tile_drawn(&mut self, tile: TileKey, index: usize, bounds: [Vec3; 2], indices: u32) {
+        self.total += u64::from(indices);
+        if indices > 0 {
+            self.push_tile(tile, [index as u32, 0, 0], bounds, indices);
+        }
+    }
+
+    /// A far tile left to phase 2: its `draws` from phase 2's `first`.
+    pub fn tile_deferred(
+        &mut self,
+        tile: TileKey,
+        index: usize,
+        bounds: [Vec3; 2],
+        first: usize,
+        draws: usize,
+        indices: u32,
+    ) {
+        self.total += u64::from(indices);
+        if draws > 0 {
+            self.push_tile(
+                tile,
+                [index as u32, first as u32, draws as u32],
+                bounds,
+                indices,
+            );
+        }
+    }
+
+    fn push_tile(&mut self, tile: TileKey, test: [u32; 3], bounds: [Vec3; 2], indices: u32) {
+        self.hiz.push(test, bounds);
+        self.tile_keys.push(tile);
+        self.tile_indices.push(indices);
+    }
+
     /// Stage this frame's inputs: phase 2's draws, with instance counts of 0,
     /// and the tests, which read the frame's camera-relative `origins` and
     /// view projection (the start of `globals`).
@@ -448,7 +532,7 @@ impl Cull {
             );
             self.group = None;
         }
-        let tests = self.test_data.len() as u64;
+        let tests = (self.test_data.len() + self.hiz.len()) as u64;
         if tests > self.tests_capacity {
             self.tests_capacity = tests.next_power_of_two();
             self.tests = buffer(
@@ -468,7 +552,7 @@ impl Cull {
         if draws > 0 {
             uploads.buffer(encoder, &self.phase2, 0, bytemuck::cast_slice(phase2));
         }
-        if tests > 0 {
+        if !self.test_data.is_empty() {
             uploads.buffer(
                 encoder,
                 &self.tests,
@@ -553,10 +637,43 @@ impl Cull {
         pass.draw(0..36, 0..self.test_data.len() as u32);
     }
 
+    /// Before the world pass: bind the far tile tests' depth pyramid to the
+    /// depth the world is drawn with this frame, `size` pixels.
+    pub fn prepare_tiles(
+        &mut self,
+        device: &wgpu::Device,
+        uploads: &mut super::upload::Uploads,
+        encoder: &mut wgpu::CommandEncoder,
+        depth: &wgpu::TextureView,
+        size: [u32; 2],
+    ) {
+        let first = self.test_data.len() as u32;
+        self.hiz
+            .prepare(device, uploads, encoder, depth, size, self.stamp, first);
+    }
+
+    /// Between the phases, after the sections' tests: the far tiles'.
+    pub fn test_tiles(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder) {
+        let Some(Group {
+            origins, globals, ..
+        }) = &self.group
+        else {
+            return;
+        };
+        self.hiz.run(
+            device,
+            encoder,
+            &self.results,
+            &self.phase2,
+            origins,
+            globals,
+        );
+    }
+
     /// After the world passes: copy the results for reading back, when a
     /// readback buffer is free.
     pub fn end(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder) {
-        let tests = self.test_data.len() as u64;
+        let tests = (self.test_data.len() + self.hiz.len()) as u64;
         let r = &mut self.readbacks[self.next];
         if tests == 0 || r.state.load(Ordering::Acquire) != FREE {
             return;
@@ -574,8 +691,11 @@ impl Cull {
         r.stamp = self.stamp;
         r.slots.clear();
         r.slots.extend_from_slice(&self.test_slots);
+        r.tiles.clear();
+        r.tiles.extend_from_slice(&self.tile_keys);
         r.indices.clear();
         r.indices.extend_from_slice(&self.test_indices);
+        r.indices.extend_from_slice(&self.tile_indices);
         r.total = self.total;
         self.current = Some(self.next);
     }
@@ -589,7 +709,7 @@ impl Cull {
         let state = r.state.clone();
         state.store(PENDING, Ordering::Release);
         r.buffer
-            .slice(..r.slots.len() as u64 * 4)
+            .slice(..r.words() * 4)
             .map_async(wgpu::MapMode::Read, move |result| {
                 state.store(
                     if result.is_ok() { MAPPED } else { FREE },
