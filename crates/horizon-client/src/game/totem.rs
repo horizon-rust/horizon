@@ -29,10 +29,20 @@ impl Game<'_> {
     /// count it, set health to 1, then clear and apply its effects. Returns
     /// the player's body, for entity event 35, which the caller broadcasts.
     pub(super) fn apply_totem(&mut self) -> Option<Body> {
-        let p = self.player.as_mut()?;
-        if !p.health.totem_used {
+        if !self.player.as_ref()?.health.totem_used {
             return None;
         }
+        // The mods hear a server player's totem before it fires, and may keep
+        // it from saving them: it stays in the hand and they die.
+        if let (Some(uuid), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
+            let mut cancel = false;
+            self.native_player_totem(uuid, &name, &mut cancel);
+            if cancel {
+                self.player.as_mut()?.health.totem_used = false;
+                return None;
+            }
+        }
+        let p = self.player.as_mut()?;
         p.health.totem_used = false;
         let _ = p.set_health(1.0, false);
         let body = Body {

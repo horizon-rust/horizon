@@ -1,0 +1,12 @@
+{
+  "hooks": [
+    {
+      "name": "player_totem",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_totem",
+      "neoforge": "LivingUseTotemEvent",
+      "side": "server"
+    }
+  ],
+  "rust_summary": "a totem of undying about to save a player, cancellable (`native_player_totem`).",
+  "doc_summary": "a totem about to save a player: `native_player_totem(player, name, cancel)` is heard for a player of a server whose hurt would have killed them and whose totem fired (`LivingEntity.checkTotemDeathProtection`, Bukkit's `EntityResurrectEvent`), before the totem is used up. A mod sets `cancel` and the totem does not fire: it stays in the hand and the player dies. The player's state is swapped in. Bundles that use it need `\"hooks\": @API:native_player_totem@`."
+}

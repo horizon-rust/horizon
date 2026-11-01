@@ -1231,6 +1231,10 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   and points are 0; no level-up sound). Both return false for a player not here, dead, or swapped out by another
   player's hook, and where the server's player list is busy (some world ticks hold it): give first, and cancel the orb
   only when the give returned true. A merged orb is worth `value` × `count`.
+- **`native_player_totem(player, name, cancel)`**: a totem of undying is about to save a player whose hurt would have
+  killed them, on a server (`checkTotemDeathProtection`), before it is used up. Set `cancel` and it does not fire: the
+  totem stays in the hand and the player dies (the blow's killer gets no kill credit). The player's state is
+  swapped in, so `native_acting_player`, `native_tell` and the item helpers reach them. Not heard: the host of a LAN world.
 - API 21: `native_acting_player()`, the player whose state is swapped in (inside `native_perform_command`,
   `native_right_click_block`, `native_use_item_on`, `native_destroy_block`...; None elsewhere);
   `native_run_command(line)`, a command run as the server's console (level 4, no output), only where no player is
