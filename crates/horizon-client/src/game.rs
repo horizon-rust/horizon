@@ -70,6 +70,7 @@ mod boat_authority_fixture;
 mod boat_leads;
 mod boat_passengers;
 mod boats;
+mod body_fluid;
 mod books;
 mod bossbars;
 mod breezes;

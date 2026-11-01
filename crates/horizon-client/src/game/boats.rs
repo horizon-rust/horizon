@@ -45,6 +45,8 @@ pub(super) struct Boat {
     pub delta_rotation: f32,
     status: Status,
     old_status: Status,
+    /// `AbstractBoat.oldStatus` is null until the first tick has set a status.
+    status_known: bool,
     water_level: f64,
     land_friction: f32,
     out_of_control: f32,
@@ -124,6 +126,7 @@ impl Boat {
             delta_rotation: 0.0,
             status: Status::InAir,
             old_status: Status::InAir,
+            status_known: false,
             water_level: 0.0,
             land_friction: 0.0,
             out_of_control: 0.0,
@@ -568,11 +571,21 @@ impl Game<'_> {
         if !controlled && self.remote.is_none() {
             self.tick_boat_leash(&mut b);
         }
+        let had_status = std::mem::replace(&mut b.status_known, true);
         b.old_status = b.status;
         b.status = self.boat_status(&mut b);
         b.tick_submersion();
         b.hurt_time = (b.hurt_time - 1).max(0);
         b.damage = (b.damage - 1.0).max(0.0);
+        // Entity.baseTick: updateFluidInteraction, a stream pushes the boat.
+        let _ = super::body_fluid::push_by_fluid(
+            &self.world,
+            &self.pack.assets,
+            self.res.facts(),
+            b.bounds(),
+            b.position,
+            &mut b.velocity,
+        );
         if !controlled {
             b.paddling = [false; 2];
             b.input = [false; 4];
@@ -587,7 +600,10 @@ impl Game<'_> {
             binding: self.collision,
             subject: None,
         };
-        if b.old_status == Status::InAir && b.status != Status::InAir && b.status != Status::OnLand
+        if had_status
+            && b.old_status == Status::InAir
+            && b.status != Status::InAir
+            && b.status != Status::OnLand
         {
             b.water_level = b.position.y;
             let target = self.water_level_above(&b) - HEIGHT + 0.101;
