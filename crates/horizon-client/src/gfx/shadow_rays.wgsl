@@ -1701,23 +1701,43 @@ fn blocks_across() -> i32 {
     sparse[block.y * blocks_across() + block.x] = SparseRay(v.rays, v.blocks, v.direct, v.sun,
         v.reservoir, gi_out_a, gi_out_b);
 }
-@compute @workgroup_size(8, 8) fn cs_shadow(@builtin(global_invocation_id) id: vec3<u32>) {
+// Away from the sharp zone, the mirrors and the refraction of a 2x2 quad of mask texels (4x4
+// pixels): its first texel's, shared through the workgroup (`cs_shadow`).
+var<workgroup> quad_reflected: array<vec4<f32>, 16>;
+var<workgroup> quad_refracted: array<vec4<f32>, 16>;
+@compute @workgroup_size(8, 8) fn cs_shadow(@builtin(global_invocation_id) id: vec3<u32>,
+    @builtin(local_invocation_id) local: vec3<u32>) {
     let texel = vec2<i32>(id.xy);
     let corner = (texel / 4) * 4;
     let fine = sharp(corner + 2);
     var v = Traced(vec4(1.0), vec4(0.0, 0.0, 0.0, -1.0), vec4(0.0, 0.0, 0.0, -1.0), vec4(1.0),
         vec4(0u));
     // The mirrors and the refraction first: where the refraction replaces what lies behind, the
-    // ray there rests its bounced light (`behind_psr`).
+    // ray there rests its bounced light (`behind_psr`). Away from the sharp zone a 2x2 quad of
+    // texels shares its first texel's (each finds the water or glass before it with a ray of its
+    // own: they were 1.5 ms of the two eyes' 4.7 in VR, the view mostly away from the gaze).
     let inside = all(vec2<u32>(texel) < textureDimensions(mask));
+    let first = all((texel & vec2(1)) == vec2(0));
+    let quad = (local.y / 2u) * 4u + local.x / 2u;
     var reflected = vec4(0.0);
     var refracted = vec4(0.0);
-    behind_psr = false;
-    if inside && rt.mode.x > 0.5 && (SKIP & 8u) == 0u {
-        reflected = finite4(hw_reflect(pixel_of(texel)));
-        refracted = finite4(hw_refract(pixel_of(texel)));
-        behind_psr = refracted.a > 0.0;
+    if inside && rt.mode.x > 0.5 && (SKIP & 8u) == 0u && (fine || first) {
+        // A quad's rays from its centre pixel.
+        let scale = i32(rt.size.z);
+        let at = select(pixel_of(texel), texel * scale + scale, !fine);
+        reflected = finite4(hw_reflect(at));
+        refracted = finite4(hw_refract(at));
     }
+    if first {
+        quad_reflected[quad] = reflected;
+        quad_refracted[quad] = refracted;
+    }
+    workgroupBarrier();
+    if !fine && !first {
+        reflected = quad_reflected[quad];
+        refracted = quad_refracted[quad];
+    }
+    behind_psr = refracted.a > 0.0;
     if fine {
         v = trace(pixel_of(texel), texel);
     } else {

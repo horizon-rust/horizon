@@ -40,6 +40,10 @@ pub const SHARP_PIXELS: u64 = 3440 * 1440;
 /// each side stays sharp.
 pub const SHARP_DEGREES: f32 = 25.0;
 
+/// The sharp zone's half angle in degrees set in a running game (`horizon-ctl rt-sharp`, 1 to
+/// 180); 0 keeps `HORIZON_RT_SHARP`'s or `SHARP_DEGREES`.
+pub static SHARP_SET: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 impl Foveation {
     /// The screen's of `size` pixels: one ray a pixel, one for 2x2 past `SHARP_PIXELS`, or
     /// `set_screen_scale`'s, or `HORIZON_RT_SCALE`'s.
@@ -72,6 +76,8 @@ impl Foveation {
                 .filter(|v| (0.0..=180.0).contains(v))
                 .unwrap_or(SHARP_DEGREES)
         });
+        let set = SHARP_SET.load(std::sync::atomic::Ordering::Relaxed);
+        let sharp = if set > 0 { set as f32 } else { sharp };
         Self {
             scale: 2,
             gaze: gaze.map(|g| {

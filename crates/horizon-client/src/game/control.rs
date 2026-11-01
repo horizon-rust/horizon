@@ -616,6 +616,14 @@ impl Game<'_> {
                 renderer.set_rt_scale(scale);
                 Ok(Some(json!({ "ok": true, "scale": scale })))
             }
+            "rt-sharp" => {
+                let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
+                let degrees = arg(1)?.parse::<u32>().ok().filter(|d| *d <= 180).ok_or(
+                    "rt-sharp DEGREES (the VR sharp zone's half angle, 1 to 180; 0 the default)",
+                )?;
+                renderer.set_rt_sharp(degrees);
+                Ok(Some(json!({ "ok": true, "sharp": degrees })))
+            }
             "rt-skip" => {
                 let renderer = self.renderer.as_mut().ok_or("no renderer yet")?;
                 let skip = arg(1)?.parse::<u32>().map_err(

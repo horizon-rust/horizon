@@ -4418,6 +4418,10 @@ impl Renderer {
     pub fn set_rt_scale(&mut self, scale: u32) {
         shadow_rays::SCREEN_SCALE.store(scale, std::sync::atomic::Ordering::Relaxed);
     }
+    /// The VR eyes' sharp zone's half angle in degrees (`shadow_rays::SHARP_SET`), 0 the default.
+    pub fn set_rt_sharp(&mut self, degrees: u32) {
+        shadow_rays::SHARP_SET.store(degrees, std::sync::atomic::Ordering::Relaxed);
+    }
     pub fn set_aldhani(&mut self, seconds: Option<f32>) -> std::result::Result<(), &'static str> {
         let now = self.water_clock.elapsed().as_secs_f32();
         self.aldhani.set(now, seconds)

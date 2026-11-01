@@ -534,6 +534,12 @@ wind):
 6. **Half the froxels injected a frame** (froxels.wgsl `injected`: a checker along the slices, turning each frame; the
    other half keeps its 128-frame history): the inject 1.28 to 0.81 ms in VR, the froxels 2.25 to 1.95 on the screen;
    a change of light reaches the fog a frame later.
+7. **VR's periphery traces its mirrors and refraction a 2x2 quad of texels at a time** (shadow_rays.wgsl `cs_shadow`,
+   shared through the workgroup): each texel found the water or glass before it with a ray of its own, though the
+   periphery's lighting is one ray a 4x4 block; with them out (`rt-skip 8`) the two eyes' trace was 1.5 ms less, the
+   quads take it from 4.7 to 4.1 ms. Away from the sharp zone the water's edges step by 4 pixels. `horizon-ctl rt-sharp
+   DEGREES` sets the sharp zone in a running game: 180 sharp everywhere took the two eyes' frames from 19.3 to 33 ms,
+   1 (periphery everywhere) to 17.1.
 
 **Kept, though measured:** the second bounce on a radiance cache miss (3 ms of 12 in the RTX Demo's interior, which
 loses 1 % of its light without it) and the reuse's visibility ray (1.3 ms; without it a neighbour's sample leaks
