@@ -979,6 +979,19 @@ fn login_and_configure(
                 data: Vec::new(),
             }),
         )?;
+        // And that it feeds far players and mobs (horizon_protocol::far_entities).
+        if shared.config.far_entity_range > 0 {
+            send(
+                c,
+                cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+                    channel: horizon_protocol::far_entities::CHANNEL.into(),
+                    data: horizon_protocol::far_entities::Hello {
+                        range: shared.config.far_entity_range,
+                    }
+                    .encode(),
+                }),
+            )?;
+        }
     }
     if brand == "horizon"
         && let Some(hash) = sync.content_identity
