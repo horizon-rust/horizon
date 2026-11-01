@@ -1004,6 +1004,7 @@ def scenario_native_pointer():
         walk(1)
         native.tap('escape')
         native.click(native.point(g.size(2), 0.5, 0.2, title='Window 2'))
+        native.tap('escape')  # P2 kept its own pause menu from the previous handoff.
         check('clicking Window 2 gives P2 native capture', grabbed(), [False, True])
         walk(2)
         look(2)
