@@ -1093,6 +1093,9 @@ mod tests {
         fn targets(&self) -> &[(Who, Aabb)] {
             &self.0
         }
+        fn no_block_collision(&self, _: Aabb) -> bool {
+            false
+        }
     }
     fn thrown(kind: ProjectileKind) -> Projectile {
         let mut p = Projectile::new(kind, Vec3::new(0.0, 100.0, 0.0), Some(Who::Player));

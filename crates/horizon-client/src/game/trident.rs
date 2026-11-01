@@ -816,19 +816,23 @@ impl Game<'_> {
                 glam::DVec3::splat(2.0 * HALF),
                 self.view_scale(),
             );
-        let live = self.tridents.iter().filter_map(|t| {
-            // EntityRenderer.shouldRender; ThrownTridentRenderer grows the box by 1.5.
-            self.standing_entity_in_view(
-                camera,
-                super::entity_culling::at(t.previous),
-                super::entity_culling::at(t.position),
-                alpha,
-                2.0 * HALF,
-                2.0 * HALF,
-                range,
-                1.5,
-            )
-            .then(|| {
+        let live = self
+            .tridents
+            .iter()
+            .filter(|t| {
+                // EntityRenderer.shouldRender; ThrownTridentRenderer grows the box by 1.5.
+                self.standing_entity_in_view(
+                    camera,
+                    super::entity_culling::at(t.previous),
+                    super::entity_culling::at(t.position),
+                    alpha,
+                    2.0 * HALF,
+                    2.0 * HALF,
+                    range,
+                    1.5,
+                )
+            })
+            .map(|t| {
                 (
                     t,
                     [
@@ -837,8 +841,7 @@ impl Game<'_> {
                         t.previous.z + (t.position.z - t.previous.z) * alpha,
                     ],
                 )
-            })
-        });
+            });
         // ItemPickupParticle: a picked-up trident flying to its collector.
         let taken = self.pickups.live.iter().filter_map(|p| match &p.taken {
             super::pickups::Taken::Trident(t) => Some((&**t, super::pickups::position(p, alpha))),
