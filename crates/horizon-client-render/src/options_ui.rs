@@ -2014,6 +2014,9 @@ impl OptionsUi {
                     .pack_screen
                     .as_ref()
                     .is_some_and(|p| p.search_focused()),
+                Page::Graphics | Page::GraphicsAdvanced | Page::GraphicsHdr => {
+                    self.graphics.typing()
+                }
                 _ => self.settings_search_active(),
             }
     }
@@ -2116,22 +2119,19 @@ impl OptionsUi {
         if page == Page::Packs {
             self.pack_screen = None;
         }
-        if matches!(
-            page,
-            Page::Graphics | Page::GraphicsAdvanced | Page::GraphicsHdr
-        ) {
-            self.graphics.reset();
+        if let Some(at) = Self::graphics_level(page) {
+            self.graphics.open(at);
         }
         if page == Page::SplitProfiles {
             self.split_profiles.reset();
         }
     }
-    /// The graphics screen level of `page`, if it is one.
-    fn graphics_level(page: Page) -> Option<crate::graphics_ui::Level> {
+    /// Where the graphics screen opens for `page`, if it is one of its pages.
+    fn graphics_level(page: Page) -> Option<crate::graphics_ui::Page> {
         match page {
-            Page::Graphics => Some(crate::graphics_ui::Level::Simple),
-            Page::GraphicsAdvanced => Some(crate::graphics_ui::Level::Advanced),
-            Page::GraphicsHdr => Some(crate::graphics_ui::Level::Hdr),
+            Page::Graphics => Some(crate::graphics_ui::Page::General),
+            Page::GraphicsAdvanced => Some(crate::graphics_ui::Page::Advanced),
+            Page::GraphicsHdr => Some(crate::graphics_ui::Page::Hdr),
             _ => None,
         }
     }
@@ -3340,10 +3340,9 @@ impl OptionsUi {
             c.draw(batch, atlas, cursor);
             return;
         }
-        if let Some(level) = Self::graphics_level(self.page()) {
+        if Self::graphics_level(self.page()).is_some() {
             self.graphics.binding = self.selected_key;
-            self.graphics
-                .draw(level, s, batch, atlas, cursor, self.in_world);
+            self.graphics.draw(s, batch, atlas, cursor, self.in_world);
             return;
         }
         if self.page() == Page::SplitProfiles {
@@ -3670,7 +3669,7 @@ impl OptionsUi {
             let outcome = c.click((x, y), size, drag);
             return self.calibration_outcome(s, outcome);
         }
-        if let Some(level) = Self::graphics_level(self.page()) {
+        if Self::graphics_level(self.page()).is_some() {
             use crate::graphics_ui::Action;
             // Waiting on a key: a mouse button binds, as on Key Binds.
             if self.selected_key.is_some() && !drag {
@@ -3684,28 +3683,16 @@ impl OptionsUi {
             let mut events = Vec::new();
             for action in self
                 .graphics
-                .click(level, s, (x, y), size, framebuffer, drag, right)
+                .click(s, (x, y), size, framebuffer, drag, right)
             {
                 match action {
                     Action::ButtonClick => events.push(Event::ButtonClick),
                     Action::Changed => events.push(Event::Changed),
                     Action::SliderDrag => events.push(Event::SliderDrag),
-                    Action::OpenAdvanced => self.push(Page::GraphicsAdvanced),
-                    Action::OpenHdr => self.push(Page::GraphicsHdr),
                     Action::BindKey(name) => self.selected_key = Some(name),
                     Action::Calibrate => {
                         self.calibration = Some(crate::hdr_calibration::Calibration::new(s));
                         self.push(Page::HdrCalibration);
-                    }
-                    Action::OpenSimple => {
-                        if self.stack.len() >= 2
-                            && self.stack[self.stack.len() - 2] == Page::Graphics
-                        {
-                            events.extend(self.back(s));
-                        } else {
-                            self.stack.pop();
-                            self.push(Page::Graphics);
-                        }
                     }
                     Action::Done => events.extend(self.back(s)),
                 }
@@ -4114,29 +4101,15 @@ impl OptionsUi {
     ) -> Vec<Event> {
         self.size = size;
         self.framebuffer = framebuffer;
-        if let Some(level) = Self::graphics_level(self.page()) {
+        if Self::graphics_level(self.page()).is_some() {
             use crate::graphics_ui::Action;
-            let actions = self
-                .graphics
-                .wheel(level, s, cursor, size, framebuffer, amount);
+            let actions = self.graphics.wheel(s, cursor, size, amount);
             let mut events = Vec::new();
             for action in actions {
                 match action {
                     Action::ButtonClick => events.push(Event::ButtonClick),
                     Action::Changed => events.push(Event::Changed),
                     Action::SliderDrag => events.push(Event::SliderDrag),
-                    Action::OpenAdvanced => self.push(Page::GraphicsAdvanced),
-                    Action::OpenHdr => self.push(Page::GraphicsHdr),
-                    Action::OpenSimple => {
-                        if self.stack.len() >= 2
-                            && self.stack[self.stack.len() - 2] == Page::Graphics
-                        {
-                            events.extend(self.back(s));
-                        } else {
-                            self.stack.pop();
-                            self.push(Page::Graphics);
-                        }
-                    }
                     Action::BindKey(name) => self.selected_key = Some(name),
                     Action::Calibrate => {
                         self.calibration = Some(crate::hdr_calibration::Calibration::new(s));
@@ -4221,8 +4194,8 @@ impl OptionsUi {
         if self.resource_error.is_some() {
             return;
         }
-        if let Some(level) = Self::graphics_level(self.page()) {
-            self.graphics.scroll(level, s, size.1, amount);
+        if Self::graphics_level(self.page()).is_some() {
+            self.graphics.scroll(s, size, amount);
             return;
         }
         match &mut self.pack_screen {
@@ -4403,6 +4376,8 @@ impl OptionsUi {
             self.scroll = 0.0;
         } else if self.page() == Page::SplitProfiles {
             self.split_profiles.type_text(text);
+        } else if Self::graphics_level(self.page()).is_some() && self.graphics.typing() {
+            self.graphics.type_text(text);
         } else if self.settings_search_active() {
             self.settings_search.insert_text(text);
             self.scroll = 0.0;
@@ -4433,6 +4408,9 @@ impl OptionsUi {
         }
         if self.page() == Page::SplitProfiles {
             return self.split_profiles.shortcut(shortcut, clipboard);
+        }
+        if Self::graphics_level(self.page()).is_some() {
+            return self.graphics.typing() && self.graphics.search.shortcut(shortcut, clipboard);
         }
         if self.settings_search_active() {
             if self.settings_search.shortcut(shortcut, clipboard) {
@@ -4544,29 +4522,17 @@ impl OptionsUi {
             return Vec::new();
         }
 
-        if let Some(level) = Self::graphics_level(self.page()) {
+        if Self::graphics_level(self.page()).is_some() {
             use crate::graphics_ui::Action;
             let size = (self.size.0.max(480.0), self.size.1.max(240.0));
             let fb = [self.framebuffer[0].max(480), self.framebuffer[1].max(240)];
-            let (actions, handled) = self.graphics.key_modifiers(level, s, key, shift, size, fb);
+            let (actions, handled) = self.graphics.key_modifiers(s, key, text, shift, size, fb);
             let mut events = Vec::new();
             for action in actions {
                 match action {
                     Action::ButtonClick => events.push(Event::ButtonClick),
                     Action::Changed => events.push(Event::Changed),
                     Action::SliderDrag => events.push(Event::SliderDrag),
-                    Action::OpenAdvanced => self.push(Page::GraphicsAdvanced),
-                    Action::OpenHdr => self.push(Page::GraphicsHdr),
-                    Action::OpenSimple => {
-                        if self.stack.len() >= 2
-                            && self.stack[self.stack.len() - 2] == Page::Graphics
-                        {
-                            events.extend(self.back(s));
-                        } else {
-                            self.stack.pop();
-                            self.push(Page::Graphics);
-                        }
-                    }
                     Action::BindKey(name) => self.selected_key = Some(name),
                     Action::Calibrate => {
                         self.calibration = Some(crate::hdr_calibration::Calibration::new(s));
@@ -7036,13 +7002,13 @@ mod tests {
 
         // 2. Horizon Graphics page through OptionsUi:
         // Tab onto ChunkUpdates slider, ArrowRight adjusts value, Space toggles can_change_value
-        ui.show(Page::GraphicsAdvanced);
+        ui.show(Page::Graphics);
         s.horizon.chunk_updates = 10;
         ui.size = size;
         ui.framebuffer = [854, 480];
 
         // Tab into controls
-        for _ in 0..15 {
+        for _ in 0..80 {
             ui.key(&mut s, &atlas, K::Tab, None);
             if ui.graphics.focus
                 == Some(crate::graphics_ui::Target::Item(

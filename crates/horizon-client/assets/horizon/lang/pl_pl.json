@@ -24,5 +24,15 @@
   "horizon.pages.split_profiles.tooltip": "Kto gra: profil przechowywany w tym folderze gry.",
   "horizon.shader_options.open": "Ustawienia shaderów…",
   "horizon.shader_options.profile": "Profil",
-  "horizon.shader_options.loading": "Wczytywanie ustawień paczki shaderów…"
+  "horizon.shader_options.loading": "Wczytywanie ustawień paczki shaderów…",
+  "General": "Ogólne",
+  "Advanced": "Zaawansowane",
+  "Undo": "Cofnij",
+  "Search options": "Szukaj opcji",
+  "Shortcut": "Skrót",
+  "Graphics": "Grafika",
+  "Quality": "Jakość",
+  "Performance": "Wydajność",
+  "Done": "Gotowe",
+  "Select a setting to see what it does and what it costs.": "Wybierz ustawienie, aby zobaczyć, co robi i ile kosztuje."
 }

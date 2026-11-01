@@ -24,5 +24,15 @@
   "horizon.pages.split_profiles.tooltip": "Хто грає: профіль, що зберігається в цій теці гри.",
   "horizon.shader_options.open": "Налаштування шейдерів…",
   "horizon.shader_options.profile": "Профіль",
-  "horizon.shader_options.loading": "Читання налаштувань набору шейдерів…"
+  "horizon.shader_options.loading": "Читання налаштувань набору шейдерів…",
+  "General": "Загальні",
+  "Advanced": "Додатково",
+  "Undo": "Скасувати",
+  "Search options": "Пошук налаштувань",
+  "Shortcut": "Сполучення клавіш",
+  "Graphics": "Графіка",
+  "Quality": "Якість",
+  "Performance": "Продуктивність",
+  "Done": "Готово",
+  "Select a setting to see what it does and what it costs.": "Виберіть налаштування, щоб побачити, що воно робить і скільки коштує."
 }

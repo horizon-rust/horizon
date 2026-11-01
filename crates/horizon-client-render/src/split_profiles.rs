@@ -6,7 +6,7 @@
 //! can't play (`refused`). Built from vanilla's widgets, as Horizon's own pages are.
 use crate::{
     gamepad::{Button as PadButton, GlyphStyle},
-    graphics_style::STYLE,
+    graphics_style,
     hud::{HudAtlas, HudBatch, rgba},
     lang,
     text::Text,
@@ -220,7 +220,7 @@ impl SplitProfiles {
         };
         let buttons = self.buttons(w, h);
         if let Some(name) = &self.forgetting {
-            STYLE.title(batch, atlas, &Text::literal("Forget profile?"));
+            graphics_style::title(batch, atlas, &Text::literal("Forget profile?"));
             line(batch, name, 52.0, u32::MAX);
             line(batch, "It leaves this instance's list.", 76.0, grey);
             line(batch, "World progress and settings are kept.", 90.0, grey);
@@ -228,7 +228,7 @@ impl SplitProfiles {
                 line(batch, why, 176.0, rgba(255, 85, 85, 255));
             }
         } else if let Some(field) = &mut self.new {
-            STYLE.title(batch, atlas, &Text::literal("New Profile"));
+            graphics_style::title(batch, atlas, &Text::literal("New Profile"));
             let (x, top) = ((w / 2.0).floor() - 100.0, field_top(h));
             let label = "Name (3 to 16 letters, digits, _)";
             batch.text(atlas, label, x, top - 14.0, grey, true);
@@ -239,7 +239,7 @@ impl SplitProfiles {
                 Some(_) => "Switch profile",
                 None => "Who's playing?",
             };
-            STYLE.title(batch, atlas, &Text::literal(title));
+            graphics_style::title(batch, atlas, &Text::literal(title));
             self.draw_bumpers(batch, atlas, style);
             // Under Cancel: where offline profiles live.
             let y = buttons.last().map_or(0.0, |b| b.0[1] + 30.0);
