@@ -4,6 +4,7 @@
     python3 tools/splitscreen_e2e.py                 # every scenario
     python3 tools/splitscreen_e2e.py --only join     # some scenarios by name
     python3 tools/splitscreen_e2e.py -v --only join  # -v: every command and its reply
+    python3 tools/splitscreen_e2e.py --only native_pointer  # macOS, real OS input; desktop must be idle
 
 How it works
 - `Game(players)` launches P1's game through horizon-ctl (`target/fast/horizon-ctl`, built with
@@ -21,7 +22,9 @@ Adding a scenario: write `scenario_<name>()` that prints `"<name>: what it check
 `Game` in a try/finally with `g.quit()`, checks with `check`, and add it to `SCENARIOS`.
 
 Don't rebuild the game while it runs: the next launch takes the new binary or times out. The
-windows are real and can take keyboard focus.
+windows are real and can take keyboard focus. The opt-in native_pointer scenario also moves
+the real pointer and sends OS keys; it requires macOS Accessibility permission and is excluded
+from the default sweep.
 
 Exit status 0 when every check passed.
 """
@@ -913,12 +916,12 @@ def scenario_pausemenu():
 def scenario_native_pointer():
     print('native_pointer: OS keys and mouse drive the owning view across joins, menus and handoffs')
     if sys.platform != 'darwin':
-        print('  SKIP: native event injection currently requires macOS; portable capture tests run separately')
-        return
+        raise RuntimeError('native_pointer requires macOS; portable capture tests run separately')
     from native_input import MacInput
     g = Game(2, saved_split=True)
-    native = MacInput(g.pid)
+    native = None
     try:
+        native = MacInput(g.pid)
         g.wait(lambda: all(g.ctl(n, 'state').get('player') for n in [1, 2]), 'both players loaded')
         native.activate()
         size = (g.size(1)[0] + g.size(2)[0], g.size(1)[1])
@@ -1015,7 +1018,8 @@ def scenario_native_pointer():
         check('native mouse still turns P1 after the compositor is removed',
               abs(state(1)['player']['yaw'] - before) > 0.1, True)
     finally:
-        native.release()
+        if native is not None:
+            native.release()
         g.quit()
 
 
@@ -1060,7 +1064,7 @@ def main():
         sys.exit(f'{CTL} is missing: cargo build --profile fast -p horizon-client')
     if not (RESOURCES / 'assets').exists():
         sys.exit(f'no prepared resources in {RESOURCES}')
-    for name in args.only or list(SCENARIOS):
+    for name in args.only or [n for n in SCENARIOS if n != 'native_pointer']:
         print(f'[{name}]')
         try:
             SCENARIOS[name]()
