@@ -614,5 +614,17 @@
   "Not ported: {item}": "Не портировано: {item}",
   "Modpacks": "Модпаки",
   "{name} moved to the trash.": "{name} перемещён в корзину.",
-  "Copied": "Скопировано"
+  "Copied": "Скопировано",
+  "Couldn't load patch notes. {error}": "Не удалось загрузить список изменений. {error}",
+  "Couldn't load releases. {error}": "Не удалось загрузить сборки. {error}",
+  "Launcher updated to {version}": "Лаунчер обновлён до {version}",
+  "Launcher {version}": "Лаунчер {version}",
+  "Launcher {version}  {percent}%": "Лаунчер {version}  {percent}%",
+  "Manage versions": "Управление версиями",
+  "No build for this platform": "Нет сборки для этой платформы",
+  "No notes for this release.": "Для этой сборки нет списка изменений.",
+  "No version": "Нет версии",
+  "Signed in as {name}.": "Вы вошли как {name}.",
+  "follows updates": "следует за обновлениями",
+  "Search, then Enter": "Поиск, затем Enter"
 }

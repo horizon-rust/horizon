@@ -1771,6 +1771,7 @@ impl Game<'_> {
                 }
                 Event::Disconnected {
                     reason,
+                    key,
                     from_server,
                 } => {
                     log::info!("Horizon: disconnected: {reason}");
@@ -1788,7 +1789,7 @@ impl Game<'_> {
                         self.connect_server_with_cookies(&address, &name, Some(cookies))?;
                         return Ok(());
                     }
-                    let retry = self.reconnect_after(&reason, from_server);
+                    let retry = self.reconnect_after(&reason, key.as_deref(), from_server);
                     self.leave_server(Some(reason))?;
                     self.offer_reconnect(retry);
                     return Ok(());
@@ -3610,6 +3611,7 @@ impl Game<'_> {
                     self.remote_firework_explosion(p.id);
                 }
                 self.remote_fangs_event(p.id as u32, p.event);
+                self.remote_boat_event(p.id, p.event);
                 // Arrow.handleEntityEvent 0: a tipped arrow's burst of particles.
                 if p.event == 0 {
                     self.remote_arrow_puff(p.id as u32);
@@ -3727,6 +3729,7 @@ impl Game<'_> {
                                     "minecraft:snowball"
                                 }
                                 horizon_client::projectiles::ProjectileKind::Egg => "minecraft:egg",
+                                horizon_client::projectiles::ProjectileKind::Thrown(t) => t.item,
                                 _ => return None,
                             };
                             Some(([pr.position.x, pr.position.y, pr.position.z], item))
@@ -6141,7 +6144,7 @@ impl Game<'_> {
                     .filter(|(feet, _)| distance(feet) < 64.0)
                     .min_by(|a, b| distance(&a.0).total_cmp(&distance(&b.0)))
                     .map(|(_, target)| *target);
-                o.tick(world, facts, collision, target, &mut next_float)
+                o.tick(world, facts, collision, target, false, &mut next_float)
             });
         }
         // ItemEntity.tick runs on a client too: gravity, collisions and
@@ -7360,7 +7363,8 @@ impl Game<'_> {
             return false;
         }
         let gliding = self.player.as_ref().is_some_and(|p| p.fall_flying);
-        use_ends_click(&info, gliding)
+        // A stack's own `blocks_attacks` raises it as a shield's does.
+        use_ends_click(&info, gliding) || self.blocks_attacks(&held).is_some()
     }
 
     /// Whether `held`'s `Item.use` needs a target this client sees none of
@@ -7966,6 +7970,10 @@ impl Game<'_> {
             KeyCode::KeyT | KeyCode::Slash | KeyCode::Enter => {
                 // ChatScreen, over the server's command tree.
                 self.open_chat_method(if key == KeyCode::Slash { "/" } else { "" });
+                // `Minecraft.handleKeybinds` opens it in the call that then
+                // releases an active use (Gui.handleKeybinds runs before the
+                // isUsingItem branch).
+                self.release_use_for_keybind_screen();
                 Ok(true)
             }
             KeyCode::KeyQ => {
@@ -8003,9 +8011,52 @@ impl Game<'_> {
                 }
                 self.craft_size = 2;
                 self.capture(false);
+                // `Minecraft.handleKeybinds` opens the inventory in the same
+                // call that then releases an active use.
+                self.release_use_for_keybind_screen();
                 Ok(true)
             }
             _ => Ok(false),
+        }
+    }
+    /// `Minecraft.handleKeybinds`: a key that opens a screen runs
+    /// `Gui.setScreen`, whose `KeyMapping.releaseAll` clears the use key, and
+    /// the same invocation then releases an active use
+    /// (`player.isUsingItem() && !keyUse.isDown()` → `releaseUsingItem`).
+    /// Only the screens opened from those keybinds do this (inventory, chat,
+    /// advancements); the pause menu, server containers, mount inventories and
+    /// dialogs release on the first tick after closing instead, as vanilla
+    /// does.
+    pub(super) fn release_use_for_keybind_screen(&mut self) {
+        // In-frame (deprecated) has no server client; `tick_used_item` releases
+        // the use on its own.
+        if self.remote.is_none() {
+            return;
+        }
+        // `KeyMapping.releaseAll` clears key.use; without this the button still
+        // reads held and a use would start again on the first tick back.
+        self.right = false;
+        horizon_client::interaction_input::release_on_screen_open(&mut RemoteInputWorld(self));
+    }
+    /// `MultiPlayerGameMode.releaseUsingItem`: sends `RELEASE_USE_ITEM` and
+    /// runs the client half of `Item.releaseUsing` (a Riptide launch moves the
+    /// player itself). Vanilla reaches it both when the use key is let go and,
+    /// in the same tick, when a keybind opens a screen.
+    fn release_remote_use(&mut self) {
+        self.send(S::PlayerAction(play::PlayerAction {
+            action: 6,
+            pos: [0; 3],
+            direction: 0,
+            sequence: 0,
+        }));
+        let hand = self.used_hand();
+        if let Some((slot, ticks)) = self.using.take()
+            && let Some(hand) = hand
+            && self
+                .stack_in(slot)
+                .is_some_and(|s| &*s.item == "minecraft:trident")
+        {
+            self.with_hand(hand, |g| g.release_trident(ticks));
         }
     }
     /// ClientPacketListener.sendChat / sendCommand, signed with a chat
@@ -9214,24 +9265,7 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
         self.0.using.is_some()
     }
     fn release_using(&mut self) {
-        self.0.send(S::PlayerAction(play::PlayerAction {
-            action: 6,
-            pos: [0; 3],
-            direction: 0,
-            sequence: 0,
-        }));
-        // MultiPlayerGameMode.releaseUsingItem also runs `Item.releaseUsing` here: the
-        // player moves by itself, so a Riptide launch happens on the client.
-        let hand = self.0.used_hand();
-        if let Some((slot, ticks)) = self.0.using.take()
-            && let Some(hand) = hand
-            && self
-                .0
-                .stack_in(slot)
-                .is_some_and(|s| &*s.item == "minecraft:trident")
-        {
-            self.0.with_hand(hand, |g| g.release_trident(ticks));
-        }
+        self.0.release_remote_use();
     }
     fn start_attack(&mut self) -> bool {
         self.0.remote_start_attack()

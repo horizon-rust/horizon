@@ -18,9 +18,10 @@ Mods are **off by default**. A fresh install has no `horizon-mods` folder and pl
    game folder (the one holding `options.txt`): a content mod's `.hmod` (or a folder holding `horizon-mod.toml`) in
    `horizon-mods/`. Native mods go in `horizon-native-mods/`, and the launcher builds them
    ([native-mods.md](native-mods.md)).
-2. Options > **Mods** lists them with what each may do ("May add blocks, items and mob effects to your worlds") and a
-   switch. They start off. The choice is kept in `horizon-mods.txt` (`mod.<id>:true`).
-3. A content mod's blocks, items and mob effects load once, when the game starts: restart the game after a switch.
+2. Options > **Mods** lists them with what each may do ("May add blocks, items, mob effects and entity types to your
+   worlds") and a switch. They start off. The choice is kept in `horizon-mods.txt` (`mod.<id>:true`).
+3. A content mod's blocks, items, mob effects and entity types load once, when the game starts: restart the game after
+   a switch.
 4. A mod that can't load shows why, in red, on its row.
 
 Two turned-on content mods never own the same namespace: the first by file name loads, and the other stays out with
@@ -116,6 +117,13 @@ gets its own damage and durability, or a tool its mining speed:
     "!minecraft:repairable": {} } }
 ```
 
+Native mods can register component types before content loads. A content item
+can set a registered type with a JSON value, such as `"sample:charge": {"charge": 42}`.
+JSON values become NBT values. Values must fit the network NBT limits and
+round-trip through saved NBT; negative zero is not supported. A key such as
+`"!sample:charge": {}` removes the template's default. Unknown types fail when Horizon builds the content root;
+`cargo horizon-mod check` cannot check native registrations.
+
 A block's item takes the same `components`, over the components of its
 template block's item; a block with `"item": false` can't have them. Block files
 have no `max_stack_size` or `rarity` keys, so those two go in `components` here
@@ -176,6 +184,23 @@ dedicated server players who run the same mods (its network id follows vanilla's
 as vanilla's; without one it draws as the missing texture). It does nothing on its own yet: no tick behaviour and no
 attribute modifiers. A world opened without the mod drops the effect from its players and mobs. Clients join a server
 only with the same mods' effects, as with its blocks.
+
+A mod entity type is declared in `data/<id>/horizon/entity_type/<name>.json`. It copies a vanilla type: for now only
+`minecraft:snowball`, a thrown item projectile. `item` is one of the mod's own items (one type per item), and `damage`
+(0 by default) is what a hit deals to anything it hits, as `thrown` damage from the thrower (the snowball's 3 to blazes
+is not copied):
+
+```json
+{ "template": "minecraft:snowball", "item": "ruby:ember", "damage": 2.0 }
+```
+
+It is the entity type `<id>:<name>`, with its network id after vanilla's. Using its item throws it as a snowball is
+thrown: same speed, spread, sound and cooldown, and one item used outside creative. It flies as a snowball, breaks on
+what it hits with its item's crumbs, and is drawn as its item's model (`ThrownItemRenderer`). Its name is the translation
+`entity.<id>.<name>`. It works in single player and on LAN with the same mods. Dedicated servers share that code,
+untested so far. Clients join a server only with the same mods' entity types, as with its blocks. Not yet: it is not
+saved (it is gone when the chunk unloads or the world closes), `/summon` doesn't know it, a dispenser doesn't throw it,
+and a vanilla client on a server with it may be disconnected when one spawns.
 
 `crafting_remainder` names what the item leaves in the crafting grid when a
 recipe uses it, as a milk bucket leaves a bucket (vanilla's

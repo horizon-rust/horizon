@@ -182,47 +182,14 @@ impl ItemEntity {
     /// up) without a full collision cube, at `speed` (`nextFloat() * 0.2 +
     /// 0.1`).
     pub fn move_towards_closest_space(&mut self, world: &World, facts: &BlockFacts, speed: f32) {
-        let bounds = self.bounds();
-        let at = Vec3::new(
-            self.position.x,
-            (bounds.min_position().y + bounds.max_position().y) / 2.0,
-            self.position.z,
+        self.velocity = towards_closest_space(
+            self.position,
+            self.bounds(),
+            self.velocity,
+            world,
+            facts,
+            speed,
         );
-        let pos = [
-            at.x.floor() as i32,
-            at.y.floor() as i32,
-            at.z.floor() as i32,
-        ];
-        let delta = [
-            at.x - f64::from(pos[0]),
-            at.y - f64::from(pos[1]),
-            at.z - f64::from(pos[2]),
-        ];
-        // (axis, step): NORTH, SOUTH, WEST, EAST, UP.
-        let mut closest = (1, 1);
-        let mut nearest = f64::MAX;
-        for (axis, step) in [(2, -1), (2, 1), (0, -1), (0, 1), (1, 1)] {
-            let mut n = pos;
-            n[axis] += step;
-            if !facts.get(world.block(n[0], n[1], n[2])).full_collision {
-                let d = if step > 0 {
-                    1.0 - delta[axis]
-                } else {
-                    delta[axis]
-                };
-                if d < nearest {
-                    nearest = d;
-                    closest = (axis, step);
-                }
-            }
-        }
-        let push = f64::from(closest.1 as f32 * speed);
-        let v = self.velocity.scale(0.75);
-        self.velocity = match closest.0 {
-            0 => Vec3::new(push, v.y, v.z),
-            1 => Vec3::new(v.x, push, v.z),
-            _ => Vec3::new(v.x, v.y, push),
-        };
     }
     /// Returns false when the item should be removed. `no_physics`: the item
     /// moves through blocks this tick ([`ItemEntity::inside_block`]).
@@ -638,6 +605,7 @@ impl ExperienceOrb {
         facts: &BlockFacts,
         collision: &BlockCollisionRegistry<'_>,
         player: Option<[f64; 3]>,
+        server: bool,
         next_float: &mut dyn FnMut() -> f32,
     ) -> bool {
         self.ticks += 1;
@@ -647,13 +615,22 @@ impl ExperienceOrb {
             self.position.y.floor() as i32,
             self.position.z.floor() as i32,
         );
+        let bounds = self.bounds();
+        let mut scene = SceneCollisions {
+            world,
+            binding: collision,
+            subject: None,
+        };
+        // `boolean colliding = !level.noCollision(getBoundingBox())`: an orb
+        // inside blocks takes no gravity until it is pushed out below.
+        let colliding = !crate::collisions::no_collision_empty(&mut scene, bounds);
         if facts.get(block).fluid == Fluid::Water {
             self.velocity = Vec3::new(
                 self.velocity.x * 0.99,
                 (self.velocity.y + 5.0e-4).min(0.06),
                 self.velocity.z * 0.99,
             );
-        } else {
+        } else if !colliding {
             self.velocity.y -= 0.03;
         }
         if facts.get(block).fluid == Fluid::Lava {
@@ -681,12 +658,18 @@ impl ExperienceOrb {
                 );
             }
         }
-        let bounds = self.bounds();
-        let mut scene = SceneCollisions {
-            world,
-            binding: collision,
-            subject: None,
-        };
+        if player.is_none() && server && colliding {
+            // `followingPlayer == null && !level().isClientSide() && colliding`: an orb that would still
+            // be stuck at its next position gets
+            // `Entity.moveTowardsClosestSpace`, a nudge towards the nearest
+            // free side of its block.
+            if !crate::collisions::no_collision_empty(&mut scene, bounds.move_by(self.velocity)) {
+                let speed = next_float() * 0.2 + 0.1;
+                self.move_towards_closest_space(world, facts, speed);
+            }
+        }
+        // `double fallSpeed = getDeltaMovement().y`, taken after the stuck
+        // push and before the move.
         let wanted = self.velocity;
         let moved = scene
             .resolve(bounds, wanted, 0.0, self.on_ground)
@@ -697,25 +680,113 @@ impl ExperienceOrb {
             self.position.z + moved.z,
         );
         self.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
-        let mut friction = 0.98;
+        // Entity.move's restituteMovementAfterCollisions, an orb's bounciness
+        // 0: each collided axis's velocity is zeroed — x and z by Mth.equal's
+        // 1.0E-5, y exactly.
+        if (wanted.x - moved.x).abs() >= 1.0e-5 {
+            self.velocity.x = 0.0;
+        }
+        if (wanted.z - moved.z).abs() >= 1.0e-5 {
+            self.velocity.z = 0.0;
+        }
+        if moved.y != wanted.y {
+            self.velocity.y = 0.0;
+        }
+        // `float friction = getAirDrag()` (0.98F), the ground's block
+        // friction multiplied in as a float, widened once for the scale.
+        let mut friction = 0.98_f32;
         if self.on_ground {
             let below = world.block(
                 self.position.x.floor() as i32,
-                (self.position.y - 1.0).floor() as i32,
+                (self.position.y - 0.999_999).floor() as i32,
                 self.position.z.floor() as i32,
             );
-            friction = f64::from(facts.get(below).friction) * 0.98;
+            friction *= facts.get(below).friction;
         }
+        let friction = f64::from(friction);
+        // The drag scales every axis by the same friction, the ground's
+        // block friction included.
         self.velocity = Vec3::new(
             self.velocity.x * friction,
-            self.velocity.y * 0.98,
+            self.velocity.y * friction,
             self.velocity.z * friction,
         );
-        if self.on_ground {
-            self.velocity.y *= -0.9;
+        // `if (verticalCollisionBelow && fallSpeed < -getGravity())`: the
+        // landing bounce is 0.4 of the pre-move speed, not a fixed
+        // restitution.
+        if self.on_ground && wanted.y < -0.03 {
+            self.velocity.y = -wanted.y * 0.4;
         }
         self.age += 1;
         self.age < 6000
+    }
+    /// `Entity.moveTowardsClosestSpace` from the middle of the orb's box:
+    /// towards the nearest side of its block (north, south, west, east or
+    /// up) without a full collision cube, at `speed` (the orb's own
+    /// random, `nextFloat() * 0.2 + 0.1`).
+    fn move_towards_closest_space(&mut self, world: &World, facts: &BlockFacts, speed: f32) {
+        self.velocity = towards_closest_space(
+            self.position,
+            self.bounds(),
+            self.velocity,
+            world,
+            facts,
+            speed,
+        );
+    }
+}
+/// `Entity.moveTowardsClosestSpace` from the middle of an entity's box
+/// (`bounds`, its feet at `position`): the velocity pushed towards the
+/// nearest side of its block (north, south, west, east or up) without a full
+/// collision cube, at `speed` (`nextFloat() * 0.2 + 0.1`). Items and
+/// experience orbs share it.
+fn towards_closest_space(
+    position: Vec3,
+    bounds: Aabb,
+    velocity: Vec3,
+    world: &World,
+    facts: &BlockFacts,
+    speed: f32,
+) -> Vec3 {
+    let at = Vec3::new(
+        position.x,
+        (bounds.min_position().y + bounds.max_position().y) / 2.0,
+        position.z,
+    );
+    let pos = [
+        at.x.floor() as i32,
+        at.y.floor() as i32,
+        at.z.floor() as i32,
+    ];
+    let delta = [
+        at.x - f64::from(pos[0]),
+        at.y - f64::from(pos[1]),
+        at.z - f64::from(pos[2]),
+    ];
+    // (axis, step): NORTH, SOUTH, WEST, EAST, UP.
+    let mut closest = (1, 1);
+    let mut nearest = f64::MAX;
+    for (axis, step) in [(2, -1), (2, 1), (0, -1), (0, 1), (1, 1)] {
+        let mut n = pos;
+        n[axis] += step;
+        if !facts.get(world.block(n[0], n[1], n[2])).full_collision {
+            let d = if step > 0 {
+                1.0 - delta[axis]
+            } else {
+                delta[axis]
+            };
+            if d < nearest {
+                nearest = d;
+                closest = (axis, step);
+            }
+        }
+    }
+    let push = f64::from(closest.1 as f32 * speed);
+    let v = velocity.scale(0.75);
+    match closest.0 {
+        0 => Vec3::new(push, v.y, v.z),
+        1 => Vec3::new(v.x, push, v.z),
+        _ => Vec3::new(v.x, v.y, push),
     }
 }
 /// `ExperienceOrb.scanForMerges`, run by each orb on `tickCount % 20 == 1`:

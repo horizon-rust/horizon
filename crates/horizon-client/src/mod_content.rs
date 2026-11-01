@@ -16,7 +16,9 @@
 //! content mod the root is the base root itself.
 use crate::{Result, blocks::MAP_COLORS};
 use horizon_core::geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape};
-use horizon_mods::content::{Block, Content, CreativeTab, MobEffect, Rarity, StateProperty};
+use horizon_mods::content::{
+    Block, Content, CreativeTab, EntityType, MobEffect, Rarity, StateProperty,
+};
 use horizon_world::nbt::{self, Compound, JavaString, Limits, Tag};
 use serde::{Deserialize, Serialize, de};
 use std::{
@@ -38,6 +40,13 @@ pub fn mob_effects(mods: &[ContentMod]) -> Vec<&MobEffect> {
     let mut effects: Vec<&MobEffect> = mods.iter().flat_map(|m| &m.content.effects).collect();
     effects.sort_by(|a, b| a.id.cmp(&b.id));
     effects
+}
+
+/// the mods' entity types in registry order, by id as effects are.
+pub fn entity_types(mods: &[ContentMod]) -> Vec<&EntityType> {
+    let mut types: Vec<&EntityType> = mods.iter().flat_map(|m| &m.content.entity_types).collect();
+    types.sort_by(|a, b| a.id.cmp(&b.id));
+    types
 }
 
 /// JSON with its object keys in file order, so a rewritten table differs
@@ -435,6 +444,15 @@ struct NewBlock<'a> {
     /// the block's states are its template's states times these.
     combos: Vec<Vec<(String, String)>>,
 }
+impl NewBlock<'_> {
+    /// Template states and declared combinations in registry order.
+    fn state_combinations(&self) -> impl Iterator<Item = (u32, &[(String, String)])> {
+        self.rename
+            .states
+            .clone()
+            .flat_map(|id| self.combos.iter().map(move |combo| (id, combo.as_slice())))
+    }
+}
 /// An item being added (declared, or a block's).
 struct NewItem {
     rename: Rename,
@@ -450,6 +468,7 @@ struct Plan<'a> {
     /// Every vanilla item id, including items omitted from the search tab.
     vanilla_items: BTreeSet<String>,
     effects: Vec<&'a MobEffect>,
+    entity_types: Vec<&'a EntityType>,
     /// Vanilla's state count (the tables' length before).
     states: usize,
     /// Each vanilla block's default state.
@@ -463,6 +482,65 @@ struct Plan<'a> {
     names: BTreeMap<String, String>,
 }
 
+/// Component types present in the vanilla item table.
+pub fn known_components(base: &Path) -> Result<BTreeSet<String>> {
+    let path = base.join("items.json");
+    if !path.exists() {
+        return Ok(BTreeSet::new());
+    }
+    Ok(component_types(&read_json(&path)?))
+}
+
+fn component_types(map: &J) -> BTreeSet<String> {
+    match map {
+        J::Obj(entries) => entries
+            .iter()
+            .filter_map(|(_, v)| match v {
+                J::Obj(c) => Some(c.iter().map(|(k, _)| k.clone())),
+                _ => None,
+            })
+            .flatten()
+            .collect(),
+        _ => BTreeSet::new(),
+    }
+}
+
+/// Check and accept one mod without disturbing previously accepted mods.
+pub fn accept_mod(
+    mods: &mut Vec<ContentMod>,
+    candidate: ContentMod,
+    known: &BTreeSet<String>,
+) -> Result<()> {
+    validate_components(&candidate.content, known)?;
+    let own = (
+        candidate.id.as_str(),
+        candidate.content.namespaces.as_slice(),
+    );
+    if let Some(error) = mods
+        .iter()
+        .find_map(|c| horizon_mods::content::clash((&c.id, &c.content.namespaces), own))
+    {
+        return Err(error.into());
+    }
+    mods.push(candidate);
+    Ok(())
+}
+
+fn validate_components(content: &horizon_mods::Content, known: &BTreeSet<String>) -> Result<()> {
+    for (id, components) in content.items.iter().map(|i| (&i.id, &i.components)).chain(
+        content
+            .blocks
+            .iter()
+            .filter(|b| b.item)
+            .map(|b| (&b.id, &b.components)),
+    ) {
+        let patch = component_patch(id, components)?;
+        patch_components(&mut J::Obj(Vec::new()), &patch, known)
+            .map_err(|e| format!("{id}: {e}"))?;
+    }
+    Ok(())
+}
+
 /// An item's component patch on its entry; `known` holds every type a vanilla item has, so typos fail.
 fn patch_components(
     entry: &mut J,
@@ -471,8 +549,8 @@ fn patch_components(
 ) -> std::result::Result<(), String> {
     for (key, value) in patch {
         let kind = key.strip_prefix('!').unwrap_or(key);
-        if !known.contains(kind) {
-            return Err(format!("{kind} is no component a vanilla item has"));
+        if !known.contains(kind) && horizon_protocol::item::custom::id(kind).is_none() {
+            return Err(format!("{kind} is not a known component type"));
         }
         if kind == key {
             entry.set(key, value.clone());
@@ -488,11 +566,20 @@ fn component_patch(
     id: &str,
     components: &BTreeMap<String, serde_json::Value>,
 ) -> Result<Vec<(String, J)>> {
-    Ok(components
+    components
         .iter()
-        .map(|(k, v)| Ok((k.clone(), serde_json::from_value(v.clone())?)))
-        .collect::<std::result::Result<_, serde_json::Error>>()
-        .map_err(|e| format!("{id}: {e}"))?)
+        .map(|(key, value)| {
+            if !key.starts_with('!') && horizon_protocol::item::custom::id(key).is_some() {
+                let tag = horizon_client_core::scoreboard::json_to_tag(value);
+                horizon_protocol::item::custom::validate(&tag)
+                    .map_err(|error| format!("{id}: component {key}: {error}"))?;
+            }
+            Ok((
+                key.clone(),
+                serde_json::from_value(value.clone()).map_err(|error| format!("{id}: {error}"))?,
+            ))
+        })
+        .collect()
 }
 
 fn read_json(path: &Path) -> Result<J> {
@@ -790,6 +877,7 @@ impl<'a> Plan<'a> {
             items,
             vanilla_items,
             effects: mob_effects(mods),
+            entity_types: entity_types(mods),
             states: names.len(),
             defaults,
             sounds,
@@ -821,56 +909,51 @@ impl<'a> Plan<'a> {
             let renames = self.renames(b);
             // One row per template state per combination the block declares,
             // so its states stay one run in registry order.
-            let mut next = b.rename.first;
-            for (t, id) in b.rename.states.clone().enumerate() {
-                for combo in &b.combos {
-                    let mut row = list[id as usize].clone();
-                    for r in &renames {
-                        row.rename(r, ids);
-                    }
-                    if !combo.is_empty() {
-                        set_state_properties(&mut row, combo);
-                    }
-                    if gameplay {
-                        row.set("id", J::Num(next.into()));
-                        if !b.decl.item {
-                            row.set("item", J::Str("minecraft:air".into()));
-                        }
-                        self.override_gameplay(b, &mut row);
-                        if let Some(shapes) = &b.shapes {
-                            let shape = &shapes[t];
-                            let boxes = shape
-                                .boxes()
-                                .iter()
-                                .map(|b| {
-                                    J::Arr(
-                                        [
-                                            b.min(Axis::X),
-                                            b.min(Axis::Y),
-                                            b.min(Axis::Z),
-                                            b.max(Axis::X),
-                                            b.max(Axis::Y),
-                                            b.max(Axis::Z),
-                                        ]
-                                        .into_iter()
-                                        .map(J::f64)
-                                        .collect(),
-                                    )
-                                })
-                                .collect();
-                            row.set("outline", J::Arr(boxes));
-                            row.set("outline_edges", J::Arr(shape_edges(shape)));
-                            row.set(
-                                "full_collision",
-                                J::Bool(
-                                    !shape.join_is_not_empty(&VoxelShape::block(), ShapeOp::XOR)?,
-                                ),
-                            );
-                        }
-                    }
-                    list.push(row);
-                    next += 1;
+            for (next, (id, combo)) in (b.rename.first..).zip(b.state_combinations()) {
+                let t = (id - b.rename.states.start) as usize;
+                let mut row = list[id as usize].clone();
+                for r in &renames {
+                    row.rename(r, ids);
                 }
+                if !combo.is_empty() {
+                    set_state_properties(&mut row, combo);
+                }
+                if gameplay {
+                    row.set("id", J::Num(next.into()));
+                    if !b.decl.item {
+                        row.set("item", J::Str("minecraft:air".into()));
+                    }
+                    self.override_gameplay(b, &mut row);
+                    if let Some(shapes) = &b.shapes {
+                        let shape = &shapes[t];
+                        let boxes = shape
+                            .boxes()
+                            .iter()
+                            .map(|b| {
+                                J::Arr(
+                                    [
+                                        b.min(Axis::X),
+                                        b.min(Axis::Y),
+                                        b.min(Axis::Z),
+                                        b.max(Axis::X),
+                                        b.max(Axis::Y),
+                                        b.max(Axis::Z),
+                                    ]
+                                    .into_iter()
+                                    .map(J::f64)
+                                    .collect(),
+                                )
+                            })
+                            .collect();
+                        row.set("outline", J::Arr(boxes));
+                        row.set("outline_edges", J::Arr(shape_edges(shape)));
+                        row.set(
+                            "full_collision",
+                            J::Bool(!shape.join_is_not_empty(&VoxelShape::block(), ShapeOp::XOR)?),
+                        );
+                    }
+                }
+                list.push(row);
             }
         }
         Ok(())
@@ -919,16 +1002,10 @@ impl<'a> Plan<'a> {
     /// Adds each new item's copy of its template's entry to a map by name;
     /// `components` applies the overrides (items.json).
     fn items(&self, map: &mut J, components: bool) -> Result<()> {
-        let known: BTreeSet<String> = match map {
-            J::Obj(entries) if components => entries
-                .iter()
-                .filter_map(|(_, v)| match v {
-                    J::Obj(c) => Some(c.iter().map(|(k, _)| k.clone())),
-                    _ => None,
-                })
-                .flatten()
-                .collect(),
-            _ => BTreeSet::new(),
+        let known = if components {
+            component_types(map)
+        } else {
+            BTreeSet::new()
         };
         for i in &self.items {
             let Some(v) = map.get(&i.rename.from) else {
@@ -1028,10 +1105,54 @@ impl<'a> Plan<'a> {
                     }
                 }
             }
-            "model-states.json"
-            | "landing-definitions.json"
-            | "worldgen/blocks/survival-rules.json" => self.names(doc, false),
-            "render-definitions.json" => self.names(doc, true),
+            "model-states.json" | "render-definitions.json" => {
+                let model = name == "model-states.json";
+                self.names(doc, !model);
+                for b in &self.blocks {
+                    let Some(entry) = doc.get_mut(&b.decl.id) else {
+                        continue;
+                    };
+                    if model && let Some(schema) = entry.get_mut("schema") {
+                        for (property_name, property) in &b.decl.state_properties {
+                            schema.set(
+                                property_name,
+                                J::Obj(vec![(
+                                    "named".into(),
+                                    J::Arr(
+                                        property
+                                            .values()
+                                            .into_iter()
+                                            .map(|v| J::Str(v.into()))
+                                            .collect(),
+                                    ),
+                                )]),
+                            );
+                        }
+                    }
+                    if let Some(J::Arr(states)) = entry.get_mut("states") {
+                        let template = states.clone();
+                        let mut expanded = Vec::new();
+                        for (index, (id, combo)) in b.state_combinations().enumerate() {
+                            if model {
+                                let mut state = template
+                                    .get((id - b.rename.states.start) as usize)
+                                    .ok_or("model states do not match the template")?
+                                    .clone();
+                                for (name, value) in combo {
+                                    state.set(name, J::Str(value.clone()));
+                                }
+                                expanded.push(state);
+                            } else {
+                                expanded.push(J::Num((b.rename.first + index as u32).into()));
+                            }
+                        }
+                        *states = expanded;
+                    }
+                }
+            }
+            "landing-definitions.json" | "worldgen/blocks/survival-rules.json" => {
+                self.names(doc, false)
+            }
             "worldgen/blocks/survival-extra-definitions.json" => {
                 if let Some(map) = doc.at("ignition_odds") {
                     self.names(map, false);
@@ -1039,12 +1160,12 @@ impl<'a> Plan<'a> {
             }
             "items.json" => self.items(doc, true)?,
             "registries.json" => {
-                // Network ids: the game and its server map items, blocks and mob
-                // effects through this report, so new ones get the ids after
-                // vanilla's, in plan order. A block entity type for each block too,
-                // named after it: a mod names its types only when one is made
-                // (`native_block_entity`), and the chunk packet carries the type of
-                // each block's entity.
+                // Network ids: the game and its server map items, blocks, mob
+                // effects and entity types through this report, so new ones get
+                // the ids after vanilla's, in plan order. A block entity type for
+                // each block too, named after it: a mod names its types only when
+                // one is made (`native_block_entity`), and the chunk packet
+                // carries the type of each block's entity.
                 let new_items = self.items.iter().map(|i| i.rename.to.clone());
                 let new_blocks: Vec<_> = self.blocks.iter().map(|b| b.decl.id.clone()).collect();
                 let mut registries = vec![
@@ -1055,6 +1176,10 @@ impl<'a> Plan<'a> {
                 if !self.effects.is_empty() {
                     let new_effects = self.effects.iter().map(|e| e.id.clone());
                     registries.push(("minecraft:mob_effect", new_effects.collect()));
+                }
+                if !self.entity_types.is_empty() {
+                    let new_types = self.entity_types.iter().map(|t| t.id.clone());
+                    registries.push(("minecraft:entity_type", new_types.collect()));
                 }
                 for (registry, names) in registries {
                     let Some(J::Obj(entries)) =
@@ -1105,6 +1230,14 @@ impl<'a> Plan<'a> {
                 }
                 if let Some(J::Arr(ids)) = doc.at("by_registry/minecraft:mob_effect/ids") {
                     ids.extend(new_effects());
+                }
+                // entity type arguments and `type=` in selectors.
+                let new_types = || self.entity_types.iter().map(|t| J::Str(t.id.clone()));
+                if let Some(J::Arr(ids)) = doc.at("entity_types") {
+                    ids.extend(new_types());
+                }
+                if let Some(J::Arr(ids)) = doc.at("by_registry/minecraft:entity_type/ids") {
+                    ids.extend(new_types());
                 }
             }
             "mob-data.json" => states(doc, "states", false, false)?,
@@ -1237,15 +1370,13 @@ impl<'a> Plan<'a> {
                         // order `states` numbers them in (`Rename::id`): a
                         // template state's combinations are one run, and the
                         // first of the run is where the template state maps.
-                        for id in b.rename.states.clone() {
-                            for combo in &b.combos {
-                                let mut state = list[id as usize].clone();
-                                if let Some(slot) = state.get_mut("id") {
-                                    *slot = Tag::String(b.decl.id.as_str().into());
-                                }
-                                set_nbt_properties(&mut state, combo);
-                                list.push(state);
+                        for (id, combo) in b.state_combinations() {
+                            let mut state = list[id as usize].clone();
+                            if let Some(slot) = state.get_mut("id") {
+                                *slot = Tag::String(b.decl.id.as_str().into());
                             }
+                            set_nbt_properties(&mut state, combo);
+                            list.push(state);
                         }
                     }
                 }
@@ -1947,9 +2078,13 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
             &serde_json::to_vec(&remainders)?,
         )?;
     }
-    // clients must agree on the block states and the items' and mob effects'
-    // network ids.
-    if !plan.blocks.is_empty() || !plan.items.is_empty() || !plan.effects.is_empty() {
+    // clients must agree on the block states and the items', mob effects' and
+    // entity types' network ids.
+    if !plan.blocks.is_empty()
+        || !plan.items.is_empty()
+        || !plan.effects.is_empty()
+        || !plan.entity_types.is_empty()
+    {
         overlay.write(crate::content_identity::MARKER, b"1")?;
     }
     overlay.write(WARNINGS, warnings.join("\n").as_bytes())?;
