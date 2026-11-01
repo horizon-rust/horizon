@@ -1,14 +1,39 @@
 //! Setup's monitor map and draft window choices. Apply is consumed by the game adapter.
 use crate::{
-    extras::{SPLIT_THREE, SPLIT_TWO},
     gamepad::Button as PadButton,
     graphics_style::STYLE,
     hud::{HudAtlas, HudBatch, rgba},
+    lang,
     split_layout::{Draft, Monitor, Placement, Spot, Warning, ordered},
     split_map::{self, BOTTOM, uncovered},
     text::Text,
     ui,
 };
+
+/// Resolve against the selected language on every draw, with bundled English
+/// defaults even in a resource-free UI test. Arguments use Minecraft's formatter.
+fn tr(key: &str, args: &[&dyn std::fmt::Display]) -> String {
+    static ENGLISH: std::sync::OnceLock<lang::Language> = std::sync::OnceLock::new();
+    let key = if key.starts_with("horizon.") {
+        key.to_owned()
+    } else {
+        format!("horizon.splitscreen.setup.{key}")
+    };
+    let template = lang::current()
+        .and_then(|language| language.get(&key).map(str::to_owned))
+        .unwrap_or_else(|| {
+            ENGLISH
+                .get_or_init(|| lang::Language::load(&[], "en_us"))
+                .get(&key)
+                .unwrap_or(&key)
+                .to_owned()
+        });
+    let args: Vec<_> = args
+        .iter()
+        .map(|arg| Text::literal(arg.to_string()))
+        .collect();
+    crate::text::format_translation(&template, &args).plain()
+}
 
 #[derive(Default)]
 pub struct SplitUi {
@@ -81,29 +106,29 @@ enum Glyph {
     Panes(&'static [[f32; 4]]),
 }
 
-/// The glyph for a layout button's label ("2 sharing: Side by side"...).
-fn layout_glyph(label: &str) -> Option<Glyph> {
-    let (_, layout) = label.split_once(": ")?;
-    Some(match (label.starts_with('2'), layout) {
-        (true, "Auto") => Glyph::Auto,
-        (true, "Side by side") => Glyph::Panes(&[[0.0, 0.0, 6.5, 10.0], [7.5, 0.0, 6.5, 10.0]]),
-        (true, _) => Glyph::Panes(&[[0.0, 0.0, 14.0, 4.5], [0.0, 5.5, 14.0, 4.5]]),
-        (false, "One wide on top") => Glyph::Panes(&[
+/// The glyph for a layout: 2 sharing (`splitscreen_two`: Auto, side by side, top and bottom) or
+/// 3 (`splitscreen_three`: one wide on top, one tall on the left, side by side).
+fn layout_glyph(three: bool, layout: u8) -> Glyph {
+    match (three, layout) {
+        (false, 0) => Glyph::Auto,
+        (false, 1) => Glyph::Panes(&[[0.0, 0.0, 6.5, 10.0], [7.5, 0.0, 6.5, 10.0]]),
+        (false, _) => Glyph::Panes(&[[0.0, 0.0, 14.0, 4.5], [0.0, 5.5, 14.0, 4.5]]),
+        (true, 0) => Glyph::Panes(&[
             [0.0, 0.0, 14.0, 4.5],
             [0.0, 5.5, 6.5, 4.5],
             [7.5, 5.5, 6.5, 4.5],
         ]),
-        (false, "One tall on the left") => Glyph::Panes(&[
+        (true, 1) => Glyph::Panes(&[
             [0.0, 0.0, 6.5, 10.0],
             [7.5, 0.0, 6.5, 4.5],
             [7.5, 5.5, 6.5, 4.5],
         ]),
-        (false, _) => Glyph::Panes(&[
+        (true, _) => Glyph::Panes(&[
             [0.0, 0.0, 4.0, 10.0],
             [5.0, 0.0, 4.0, 10.0],
             [10.0, 0.0, 4.0, 10.0],
         ]),
-    })
+    }
 }
 pub enum Click {
     Nothing,
@@ -246,8 +271,8 @@ impl SplitUi {
 
     fn monitor_name(&self, name: &str) -> String {
         match self.monitors.iter().position(|m| m.name == name) {
-            Some(n) => format!("Monitor {}", n + 1),
-            None => "a monitor".to_owned(),
+            Some(n) => tr("monitor", &[&(n + 1)]),
+            None => tr("monitor_unknown", &[]),
         }
     }
 
@@ -261,9 +286,9 @@ impl SplitUi {
             .windows
             .iter()
             .filter(|w| Some(w.number) != mine)
-            .map(|w| (format!("Window {}", w.number), Spot::Window(w.number)))
+            .map(|w| (tr("window", &[&w.number]), Spot::Window(w.number)))
             .collect();
-        spots.push(("New window".to_owned(), Spot::New));
+        spots.push((tr("new_window", &[]), Spot::New));
         for m in &self.monitors {
             let filled = draft
                 .windows
@@ -271,7 +296,7 @@ impl SplitUi {
                 .any(|w| w.placement == Placement::Fill(m.name.clone()));
             if m.name != self.main && !filled {
                 spots.push((
-                    format!("Fill {}", self.monitor_name(&m.name)),
+                    tr("fill_monitor", &[&self.monitor_name(&m.name)]),
                     Spot::Fill(m.name.clone()),
                 ));
             }
@@ -290,24 +315,21 @@ impl SplitUi {
         for w in &draft.windows {
             let others = draft.sharing(i, w.number).len();
             if others == 0 {
-                stops.push((
-                    format!("Window {}", w.number),
-                    Drop::At(Spot::Window(w.number)),
-                ));
+                stops.push((tr("window", &[&w.number]), Drop::At(Spot::Window(w.number))));
             }
             for k in (0..=others).filter(|_| others > 0) {
-                let label = format!("Window {} ({} of {})", w.number, k + 1, others + 1);
+                let label = tr("window_place", &[&w.number, &(k + 1), &(others + 1)]);
                 stops.push((label, Drop::Place(w.number, k)));
             }
         }
-        stops.push(("New window".to_owned(), Drop::At(Spot::New)));
+        stops.push((tr("new_window", &[]), Drop::At(Spot::New)));
         for m in &self.monitors {
             let filled = draft
                 .windows
                 .iter()
                 .any(|w| w.placement == Placement::Fill(m.name.clone()));
             if m.name != self.main && !filled {
-                let label = format!("Fill {}", self.monitor_name(&m.name));
+                let label = tr("fill_monitor", &[&self.monitor_name(&m.name)]);
                 stops.push((label, Drop::At(Spot::Fill(m.name.clone()))));
             }
         }
@@ -351,12 +373,26 @@ impl SplitUi {
                 x += bw + 4.0;
             }
         };
-        let done = (64.0, "Done".into(), Target::Done, true);
+        let done = (
+            64.0,
+            lang::get_or("gui.done", &tr("done", &[])),
+            Target::Done,
+            true,
+        );
         // The switch, top right (P1's): off only once P1 plays alone (turning it off with others
         // in drops them all at once).
         let switch = (
             [w - 110.0, 6.0, 104.0, 20.0],
-            format!("Splitscreen: {}", if self.on { "On" } else { "Off" }),
+            tr(
+                "switch",
+                &[
+                    &tr("horizon.extras.splitscreen", &[]),
+                    &lang::get_or(
+                        if self.on { "options.on" } else { "options.off" },
+                        &tr(if self.on { "on" } else { "off" }, &[]),
+                    ),
+                ],
+            ),
             Target::Switch,
             !self.on || self.names.len() <= 1,
         );
@@ -385,7 +421,7 @@ impl SplitUi {
                     .names
                     .get(i)
                     .cloned()
-                    .unwrap_or_else(|| format!("Player {}", i + 1));
+                    .unwrap_or_else(|| tr("player", &[&(i + 1)]));
                 // The part no later window covers: what can be seen and pressed.
                 let at = windows.iter().position(|(n, _)| *n == tiles[i].0);
                 let covers = at.map_or(&[][..], |k| &windows[k + 1..]);
@@ -418,7 +454,13 @@ impl SplitUi {
         // Names, top left: each player's name in the corner of their view.
         let names = (
             [6.0, 6.0, 80.0, 20.0],
-            format!("Names: {}", if self.names_shown { "On" } else { "Off" }),
+            tr(
+                "switch",
+                &[
+                    &tr("names", &[]),
+                    &tr(if self.names_shown { "on" } else { "off" }, &[]),
+                ],
+            ),
             Target::Names,
             true,
         );
@@ -437,20 +479,20 @@ impl SplitUi {
                     .any(|win| draft.players.iter().filter(|&&n| n == win.number).count() == k)
             };
             if sharing(2) {
-                let two = SPLIT_TWO[usize::from(draft.two.min(2))];
-                footer.push((20.0, format!("2 sharing: {two}"), Target::Two, true));
+                let two = tr(&format!("layout.two.{}", draft.two.min(2)), &[]);
+                footer.push((20.0, tr("layout.two", &[&two]), Target::Two, true));
             }
             if sharing(3) {
-                let three = SPLIT_THREE[usize::from(draft.three.min(2))];
-                footer.push((20.0, format!("3 sharing: {three}"), Target::Three, true));
+                let three = tr(&format!("layout.three.{}", draft.three.min(2)), &[]);
+                footer.push((20.0, tr("layout.three", &[&three]), Target::Three, true));
             }
         }
         // Narrow enough for two squares in the narrowest view (320 GUI pixels).
         let editing = self.changed();
         footer.extend([
-            (64.0, "Identify".into(), Target::Identify, true),
-            (64.0, "Revert".into(), Target::Revert, editing),
-            (64.0, "Apply".into(), Target::Apply, editing),
+            (64.0, tr("identify", &[]), Target::Identify, true),
+            (64.0, tr("revert", &[]), Target::Revert, editing),
+            (64.0, tr("apply", &[]), Target::Apply, editing),
             done,
         ]);
         row(&mut out, h - 27.0, footer);
@@ -460,26 +502,20 @@ impl SplitUi {
     /// What a button does, for the tooltip while the pointer is on it; for one that can't be
     /// pressed, why not.
     fn help(&self, (_, label, target, active): &Button) -> Option<String> {
+        let auto = self.draft().is_some_and(|d| d.two == 0);
         Some(match target {
-            Target::Player(_) => format!("Click or drag {label} to move them."),
-            Target::Move(_) => return None,
-            Target::Two if label.ends_with("Auto") => {
-                format!("{label} (side by side when the window is wide). Press to change.")
-            }
-            Target::Two | Target::Three => format!("{label}. Press to change."),
-            Target::Switch if !*active => {
-                "Splitscreen turns off once the others have left (their pause menu).".to_owned()
-            }
-            Target::Switch => "Splitscreen for this computer, on or off.".to_owned(),
-            Target::Identify => "Each player's view shows which window it is in.".to_owned(),
-            Target::Names => "Each player's name in the corner of their view.".to_owned(),
-            Target::GiveUpPad => {
-                "Your controller stops driving you and is offered to join (A).".to_owned()
-            }
-            Target::Revert if *active => "Undo the changes not applied yet.".to_owned(),
-            Target::Apply if *active => "Play the way the map shows.".to_owned(),
-            Target::Revert | Target::Apply => "Nothing changed yet.".to_owned(),
-            Target::Done => return None,
+            Target::Player(_) => tr("help.player", &[label]),
+            Target::Move(_) | Target::Done => return None,
+            Target::Two if auto => tr("help.layout_auto", &[label]),
+            Target::Two | Target::Three => tr("help.layout", &[label]),
+            Target::Switch if !*active => tr("switch_disabled", &[]),
+            Target::Switch => tr("help.switch", &[]),
+            Target::Identify => tr("help.identify", &[]),
+            Target::Names => tr("help.names", &[]),
+            Target::GiveUpPad => tr("help.give_up_pad", &[]),
+            Target::Revert if *active => tr("help.revert", &[]),
+            Target::Apply if *active => tr("help.apply", &[]),
+            Target::Revert | Target::Apply => tr("help.unchanged", &[]),
         })
     }
 
@@ -491,18 +527,14 @@ impl SplitUi {
             .warnings(&self.monitors, &self.main)
             .into_iter()
             .map(|w| match w {
-                Warning::Empty(1) => "Nobody plays in Window 1: it hides".to_owned(),
+                Warning::Empty(1) => tr("warning.empty_main", &[]),
                 // One open now closes; one only in the draft never opens.
                 Warning::Empty(n) if self.live.as_ref().is_some_and(|l| !l.empty(n)) => {
-                    format!("Nobody plays in Window {n}: it closes on Apply")
+                    tr("warning.empty_close", &[&n])
                 }
-                Warning::Empty(n) => format!("Nobody plays in Window {n}: it won't open"),
-                Warning::OnWindow1(n) => {
-                    format!("Window {n} fills Window 1's monitor: its players play in Window 1")
-                }
-                Warning::Unplugged(n, _) => {
-                    format!("Window {n}'s monitor is not connected: its players play in Window 1")
-                }
+                Warning::Empty(n) => tr("warning.empty_new", &[&n]),
+                Warning::OnWindow1(n) => tr("warning.on_main", &[&n]),
+                Warning::Unplugged(n, _) => tr("warning.unplugged", &[&n]),
             })
             .collect()
     }
@@ -518,18 +550,18 @@ impl SplitUi {
         }
     }
 
-    fn status_lines(&self) -> Option<[&'static str; 3]> {
+    fn status_lines(&self) -> Option<[String; 3]> {
         if !self.on {
             Some([
-                "Splitscreen is off.",
-                "Turn it on, then in a world press a button on another",
-                "controller to add a player.",
+                tr("status.off", &[]),
+                tr("status.enable_hint", &[]),
+                tr("status.join_hint", &[]),
             ])
         } else if self.idle {
             Some([
-                "Splitscreen idle",
-                "No other local players.",
-                "Solo controls and controller feedback are unchanged.",
+                tr("status.idle", &[]),
+                tr("status.alone", &[]),
+                tr("status.solo_controls", &[]),
             ])
         } else {
             None
@@ -539,12 +571,21 @@ impl SplitUi {
     pub fn draw(&self, batch: &mut HudBatch, atlas: &HudAtlas, cursor: (f32, f32), in_world: bool) {
         let (w, h) = (batch.width, batch.height);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
-        STYLE.title(batch, atlas, &Text::literal("Splitscreen Setup"));
+        STYLE.title(
+            batch,
+            atlas,
+            &Text::literal(tr("horizon.pages.split_setup", &[])),
+        );
         if let Some(lines) = self.status_lines() {
             let grey = rgba(170, 170, 170, 255);
+            let lines: Vec<_> = lines
+                .iter()
+                .flat_map(|line| atlas.font.split(&Text::literal(line), (w - 40.0).max(10.0)))
+                .collect();
+            let top = h / 2.0 - 6.0 * lines.len() as f32;
             for (k, line) in lines.into_iter().enumerate() {
-                let y = (h / 2.0 - 30.0 + 12.0 * k as f32).floor();
-                ui::centered_text(batch, atlas, &Text::literal(line), 0.0, y, w, grey);
+                let y = (top + 12.0 * k as f32).floor();
+                ui::centered_text(batch, atlas, &line, 0.0, y, w, grey);
             }
             for b in &self.buttons(w, h) {
                 self.draw_button(batch, atlas, cursor, b);
@@ -577,7 +618,7 @@ impl SplitUi {
             };
             batch.fill(atlas, x, y, ww, wh, edge);
             if emptied(number) {
-                let label = Text::literal(format!("Window {number}: empty"));
+                let label = Text::literal(tr("window_empty", &[&number]));
                 batch.text_styled(atlas, &label, x + 3.0, y - 10.0, grey, true);
             }
             batch.fill(
@@ -597,7 +638,7 @@ impl SplitUi {
         }
         // The windows' names over everything, so another window's tiles never hide them.
         for (number, [x, y, _, _]) in windows.iter().copied().filter(|w| !emptied(w.0)) {
-            let (label, color) = (format!("Window {number}"), yellow);
+            let (label, color) = (tr("window", &[&number]), yellow);
             // A title above this window can land on another player's visible tile.
             let covered = windows.iter().any(|(n, r)| {
                 *n != number && ui::hovered((x + 3.0, y - 10.0), r[0], r[1], r[2], r[3])
@@ -627,7 +668,7 @@ impl SplitUi {
         }
         // The monitors' names under them, where no window covers them.
         for (n, [x, y, _, mh]) in monitors.into_iter().enumerate() {
-            let label = Text::literal(format!("Monitor {}", n + 1));
+            let label = Text::literal(tr("monitor", &[&(n + 1)]));
             batch.text_styled(atlas, &label, x + 1.0, y + mh + 2.0, grey, true);
         }
         self.draw_notes(batch, atlas, cursor, &buttons);
@@ -648,10 +689,11 @@ impl SplitUi {
         if matches!(target, Target::Player(_)) {
             (x, y, bw, bh) = (x + 1.0, y + 1.0, (bw - 2.0).max(4.0), (bh - 2.0).max(4.0));
         }
-        let glyph = match target {
-            Target::Two | Target::Three => layout_glyph(label),
+        let glyph = self.draft().and_then(|d| match target {
+            Target::Two => Some(layout_glyph(false, d.two)),
+            Target::Three => Some(layout_glyph(true, d.three)),
             _ => None,
-        };
+        });
         // The selected player's name in yellow: picked, not just under the pointer.
         let text = if glyph.is_some() {
             Text::literal("")
@@ -728,11 +770,15 @@ impl SplitUi {
         });
         let note = match self.selected {
             _ if held.is_some() => held.unwrap_or_default(),
-            None => "Click a player, or drag it to a window or a monitor.".to_owned(),
-            Some(_) if self.edit.is_some() => "Apply to play this way, Revert to undo.".to_owned(),
-            Some(i) => format!(
-                "Where should {} play?",
-                self.names.get(i).map_or("this player", String::as_str)
+            None => tr("note.select", &[]),
+            Some(_) if self.edit.is_some() => tr("note.apply", &[]),
+            Some(i) => tr(
+                "note.place",
+                &[&self
+                    .names
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| tr("this_player", &[]))],
             ),
         };
         for (k, (line, color)) in std::iter::once((note, rgba(170, 170, 170, 255)))
@@ -1350,14 +1396,11 @@ mod tests {
         );
         press(&mut ui, "3 sharing: One wide on top");
         assert_eq!(ui.edit.as_ref().unwrap().three, 1);
-        assert!(matches!(
-            layout_glyph("3 sharing: One tall on the left"),
-            Some(Glyph::Panes(p)) if p.len() == 3
-        ));
+        assert!(matches!(layout_glyph(true, 1), Glyph::Panes(p) if p.len() == 3));
         // Two: only the 2's, Auto a letter, explained under the pointer.
         let ui = screen(2);
         assert_eq!(labels(&ui).collect::<Vec<_>>(), ["2 sharing: Auto"]);
-        assert!(matches!(layout_glyph("2 sharing: Auto"), Some(Glyph::Auto)));
+        assert!(matches!(layout_glyph(false, 0), Glyph::Auto));
         let buttons = ui.buttons(SIZE.0, SIZE.1);
         let two = buttons.iter().find(|b| b.2 == Target::Two).unwrap();
         assert_eq!(
@@ -1491,6 +1534,104 @@ mod tests {
         assert_eq!(
             (ui.selected, ui.take_refocus()),
             (None, Some(rect(&ui, "P2")))
+        );
+    }
+
+    #[test]
+    fn locale_switch_and_pack_overrides_keep_the_same_draft() {
+        // The language table is process-wide. Run this test alone in a child so
+        // other UI tests cannot observe its temporary French language.
+        const CHILD: &str = "HORIZON_TEST_SPLIT_SETUP_LOCALE";
+        if std::env::var_os(CHILD).is_none() {
+            let module = module_path!().split_once("::").unwrap().1;
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    &format!("{module}::locale_switch_and_pack_overrides_keep_the_same_draft"),
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed;"),
+                "locale child test did not run: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        struct Pack;
+        impl lang::ResourceSource for Pack {
+            fn namespaces(&self) -> Vec<String> {
+                vec!["horizon".into()]
+            }
+            fn read(&self, path: &str) -> Option<Vec<u8>> {
+                (path == "assets/horizon/lang/fr_fr.json").then(|| {
+                    serde_json::to_vec(&serde_json::json!({
+                        "horizon.splitscreen.setup.new_window": "Créer une fenêtre",
+                        "horizon.splitscreen.setup.monitor": "Écran personnalisé %s",
+                        "horizon.splitscreen.setup.fill_monitor": "Occuper %s",
+                        "horizon.splitscreen.setup.warning.empty_main": "Fenêtre principale masquée"
+                    }))
+                    .unwrap()
+                })
+            }
+        }
+        let mut ui = screen(2);
+        ui.names[1] = "Élodie %s".into();
+        lang::set(lang::Language::load(&[], "en_us"));
+        press(&mut ui, "Élodie %s");
+        assert!(labels(&ui).contains(&"New window".to_owned()));
+        lang::set(lang::Language::load(&[], "fr_fr"));
+        assert!(labels(&ui).contains(&"Nouvelle fenêtre".to_owned()));
+        assert!(labels(&ui).contains(&"Appliquer".to_owned()));
+        assert!(labels(&ui).contains(&"Noms : Désactivé".to_owned()));
+        assert!(labels(&ui).contains(&"2 par fenêtre : Auto".to_owned()));
+        assert!(
+            labels(&ui).contains(&"Élodie %s".to_owned()),
+            "player names remain literal"
+        );
+        press(&mut ui, "Nouvelle fenêtre");
+        let draft = ui.edit.clone().unwrap();
+        assert_eq!(draft.players, [1, 2]);
+        lang::set(lang::Language::load(&[&Pack], "fr_fr"));
+        let translated = labels(&ui);
+        assert!(translated.contains(&"Créer une fenêtre".to_owned()));
+        assert!(translated.contains(&"Occuper Écran personnalisé 2".to_owned()));
+        assert_eq!(
+            ui.edit,
+            Some(draft),
+            "a language change must not reset the arrangement"
+        );
+        ui.place(0, Spot::Window(2));
+        assert!(
+            ui.warnings()
+                .contains(&"Fenêtre principale masquée".to_owned())
+        );
+        press(&mut ui, "Appliquer");
+        assert_eq!(ui.apply.take().unwrap().players, [2, 2]);
+        ui.on = false;
+        assert_eq!(
+            ui.status(),
+            "off",
+            "agent protocol states stay language independent"
+        );
+        assert_eq!(
+            ui.status_lines().unwrap()[0],
+            "L'écran partagé est désactivé."
+        );
+        assert!(labels(&ui).contains(&"Écran partagé : Désactivé".to_owned()));
+        lang::set(lang::Language::load(&[], "de_de"));
+        assert_eq!(
+            ui.status_lines().unwrap()[0],
+            "Splitscreen is off.",
+            "untranslated new keys use bundled English"
         );
     }
 }
