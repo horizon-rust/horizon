@@ -55,6 +55,7 @@ impl PrimedTnt {
         let moved = scene
             .resolve(self.bounds(), wanted, 0.0, self.on_ground)
             .unwrap_or(Vec3::ZERO);
+        let from = self.position;
         self.position = Vec3::new(
             self.position.x + moved.x,
             self.position.y + moved.y,
@@ -70,6 +71,31 @@ impl PrimedTnt {
         if moved.y != wanted.y {
             self.velocity.y = 0.0;
         }
+        // applyEffectsFromBlocks: BubbleColumnBlock.entityInside lifts or
+        // drags it. Entity.move records the move unless it was blocked short
+        // of a tiny one.
+        let length = moved.length_squared();
+        let recorded = length > 1.0e-7 || wanted.length_squared() - length < 1.0e-7;
+        horizon_client::falling_block::apply_effects_from_blocks(
+            from,
+            self.position,
+            recorded.then_some(wanted),
+            &mut self.velocity,
+            &mut 0.0,
+            |p| {
+                horizon_client::motion::bubble_column_at(
+                    world,
+                    assets.registry,
+                    facts,
+                    collision,
+                    p,
+                )
+                .map_or(
+                    horizon_client::falling_block::Inside::Nothing,
+                    horizon_client::falling_block::Inside::BubbleColumn,
+                )
+            },
+        );
         self.velocity = Vec3::new(
             self.velocity.x * 0.98,
             self.velocity.y * 0.98,
@@ -586,6 +612,56 @@ mod tests {
         tnt.on_ground = false;
         assert_eq!(tnt.velocity.y, 1.0);
         assert!(!tnt.on_ground);
+    }
+
+    /// Soul sand's column (drag=false): applyEffectsFromBlocks after the move
+    /// lifts the TNT, min(0.7, -0.04 + 0.06), before the 0.98 drag.
+    #[test]
+    fn a_soul_sand_bubble_column_lifts_primed_tnt() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = horizon_client::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = horizon_client::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let collision = horizon_client::collisions::load(&root, assets.registry).unwrap();
+        let mut world = horizon_client::world::World::test_scene(&assets, &render, 3).unwrap();
+        let soul_sand = assets
+            .registry
+            .default_state("minecraft:soul_sand")
+            .unwrap();
+        let column = assets
+            .registry
+            .default_state("minecraft:bubble_column")
+            .unwrap();
+        let mut state = assets.registry.state(column).unwrap().clone();
+        state.properties.insert("drag".into(), "false".into());
+        let lifting = assets.registry.resolve(&state).unwrap();
+        world.set(20, 3, 20, soul_sand).unwrap();
+        for y in 4..=12 {
+            world.set(20, y, 20, lifting).unwrap();
+        }
+        // Its box stays within one column block, which pushes once.
+        let at = Vec3::new(20.5, 6.05, 20.5);
+        let mut tnt = PrimedTnt {
+            id: 0,
+            position: at,
+            previous: at,
+            velocity: Vec3::ZERO,
+            fuse: 80,
+            on_ground: false,
+            owner: None,
+            guest: None,
+        };
+        tnt.tick(&world, &collision, &assets, &facts).unwrap();
+        assert!(
+            (tnt.velocity.y - 0.02 * 0.98).abs() < 1e-9,
+            "the column must lift primed TNT: {:?}",
+            tnt.velocity
+        );
     }
 
     #[test]
