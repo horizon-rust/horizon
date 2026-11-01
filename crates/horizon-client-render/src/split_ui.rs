@@ -399,7 +399,7 @@ impl SplitUi {
         // P1's controller handed to a friend: it's offered to join.
         let give_up = (
             [90.0, 6.0, 80.0, 20.0],
-            "Give Up Pad".to_owned(),
+            tr("give_up_pad", &[]),
             Target::GiveUpPad,
             true,
         );
@@ -757,15 +757,11 @@ impl SplitUi {
             let who = self
                 .names
                 .get(h.player)
-                .map_or("this player", String::as_str);
+                .cloned()
+                .unwrap_or_else(|| tr("this_player", &[]));
             match h.at {
-                Some(k) => format!(
-                    "{who} to {}: A drops it here, B puts it back.",
-                    h.spots[k].0
-                ),
-                None => {
-                    format!("{who} picked up: left/right picks where, A drops, B puts it back.")
-                }
+                Some(k) => tr("note.held_at", &[&who, &h.spots[k].0]),
+                None => tr("note.held", &[&who]),
             }
         });
         let note = match self.selected {

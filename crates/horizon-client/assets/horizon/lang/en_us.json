@@ -356,5 +356,9 @@
   "horizon.splitscreen.setup.help.names": "Each player's name in the corner of their view.",
   "horizon.splitscreen.setup.help.revert": "Undo the changes not applied yet.",
   "horizon.splitscreen.setup.help.apply": "Play the way the map shows.",
-  "horizon.splitscreen.setup.help.unchanged": "Nothing changed yet."
+  "horizon.splitscreen.setup.help.unchanged": "Nothing changed yet.",
+  "horizon.splitscreen.setup.give_up_pad": "Give Up Pad",
+  "horizon.splitscreen.setup.help.give_up_pad": "Your controller stops driving you and is offered to join (A).",
+  "horizon.splitscreen.setup.note.held_at": "%s to %s: A drops it here, B puts it back.",
+  "horizon.splitscreen.setup.note.held": "%s picked up: left/right picks where, A drops, B puts it back."
 }

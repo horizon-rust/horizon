@@ -343,5 +343,9 @@
   "horizon.splitscreen.setup.help.names": "Le nom de chaque joueur dans le coin de sa vue.",
   "horizon.splitscreen.setup.help.revert": "Annuler les modifications pas encore appliquées.",
   "horizon.splitscreen.setup.help.apply": "Jouer comme le montre la carte.",
-  "horizon.splitscreen.setup.help.unchanged": "Rien n'a encore changé."
+  "horizon.splitscreen.setup.help.unchanged": "Rien n'a encore changé.",
+  "horizon.splitscreen.setup.give_up_pad": "Céder la manette",
+  "horizon.splitscreen.setup.help.give_up_pad": "Votre manette ne vous contrôle plus et peut rejoindre la partie (A).",
+  "horizon.splitscreen.setup.note.held_at": "%s vers %s : A le dépose ici, B le remet en place.",
+  "horizon.splitscreen.setup.note.held": "%s est pris : gauche/droite choisit où, A dépose, B remet en place."
 }
