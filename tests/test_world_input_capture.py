@@ -1,8 +1,9 @@
 """Exercise the client's capture methods without opening or focusing an OS window.
 
-The fixture substitutes only winit and mouse state. Method bodies come from the
-client, so the assertions observe grab attempts, visibility and stored capture
-state. Native Windows delivery remains a manual check. Vanilla 26.3 reference:
+Capture fixtures substitute winit; the raw-motion fixture uses the real mouse
+accumulator and rotation math. Method bodies come from the client, so assertions
+observe capture and camera outcomes. Native OS routing is checked separately by
+`tools/splitscreen_e2e.py --only native_pointer` on macOS. Vanilla 26.3 reference:
 LevelLoadingScreen.tick/onClose, Gui.setScreen, MouseHandler.grabMouse/releaseMouse.
 """
 from pathlib import Path
@@ -347,7 +348,7 @@ fn main() {
     }
 }
 '''
-        fixture = fixture.replace("MOUSE_PATH", str(ROOT / "crates/horizon-client-input/src/mouse.rs"))
+        fixture = fixture.replace("MOUSE_PATH", (ROOT / "crates/horizon-client-input/src/mouse.rs").as_posix())
         fixture = fixture.replace("METHOD", method(source, "device_event"))
         self.run_fixture(fixture, "native-mouse")
 
