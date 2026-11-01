@@ -68,6 +68,9 @@ Every command `horizon-ctl` takes, its MCP tool in `horizon-ctl mcp` (the launch
 | `key KEY down\|up\|tap\|repeat` | `key` | Press, release or auto-repeat a key (w a s d space shift ctrl e q esc f3 1-9 arrows ...) | `key` (string, required): key name<br>`action` (down, up, tap, repeat, required): what to do |
 | `mouse left\|right\|middle down\|up\|click` | `mouse` | Press or release a mouse button in the world | `button` (left, right, middle, required): button<br>`action` (down, up, click, required): what to do |
 | `interact-entity ID` | `interact_entity` | Right-click an entity: trade with a villager, mount a horse, ride a boat, shear a sheep | `id` (integer, required): entity id from entities |
+| `mount ID` | `mount` | Face and right-click an entity to mount it | `id` (integer, required): entity id from entities |
+| `dismount` | `dismount` | Jump off the current vehicle | none |
+| `elytra launch\|boost\|status` | `elytra` | Start or boost gliding, or report Elytra state | `action` (launch, boost, status, required): the Elytra action |
 | `pad BUTTON down\|up\|tap \| pad stick left\|right X Y \| pad trigger left\|right V \| pad release \| pad status` | `pad` | A virtual controller: buttons, sticks and triggers as a real pad would send them | `what` (string, required): a button name, stick, trigger, release or status<br>`a` (string): down\|up\|tap, or left\|right<br>`b` (number): stick X or trigger value<br>`c` (number): stick Y |
 | `release` | `release` | Release every key and mouse button | none |
 | `stop` | `stop` | Cancel the running action (goto, break...) and release every key | none |

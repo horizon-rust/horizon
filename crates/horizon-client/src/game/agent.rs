@@ -50,6 +50,9 @@ pub(super) const HELP: &[&str] = &[
     "break X Y Z [--timeout S]      mine a block until it breaks; reports drops and pickups",
     "place X Y Z [--item ITEM]      place the held (or given) item at a position",
     "interact X Y Z [FACE]          right-click a block (open a door, chest, crafting table...)",
+    "mount ID                       face and right-click an entity to mount it",
+    "dismount                      jump off the current vehicle",
+    "elytra launch|boost|status     start gliding, boost with a firework, or report glide state",
     "use-item [--hold S]            right-click with the held item (eat, drink, throw, draw a bow)",
     "select SLOT|ITEM               select a hotbar slot (1-9) or the hotbar slot holding ITEM",
     "drop [all]                     drop one of the held item (all: the stack)",
@@ -1212,6 +1215,55 @@ impl Game<'_> {
                     reply,
                     5.0,
                 )
+            }
+            "dismount" | "elytra" if name == "dismount" || a.pos.first() == Some(&"launch") => {
+                self.playing()?;
+                self.keys.insert(KeyCode::Space);
+                let from_y = self.player.as_ref().map_or(0.0, |p| p.position.y);
+                self.start_task(
+                    if name == "dismount" {
+                        "dismount"
+                    } else {
+                        "elytra-launch"
+                    },
+                    TaskKind::Jump {
+                        release_tick: self.ticks + 3,
+                        from_y,
+                    },
+                    reply,
+                    5.0,
+                )
+            }
+            "elytra" if a.pos.first() == Some(&"status") => ok(json!({
+                "fall_flying": self.player.as_ref().is_some_and(|p| p.fall_flying),
+                "glider": self.player.as_ref().is_some_and(|p| p.glider),
+                "wear": self.player.as_ref().map_or(0, |p| p.glider_wear),
+            })),
+            "elytra" if a.pos.first() == Some(&"boost") => {
+                self.playing()?;
+                self.select_item("minecraft:firework_rocket")?;
+                self.agent_mouse(MouseButton::Right, true)?;
+                self.agent_mouse(MouseButton::Right, false)?;
+                ok(
+                    json!({ "ok": true, "fall_flying": self.player.as_ref().is_some_and(|p| p.fall_flying) }),
+                )
+            }
+            "mount" => {
+                self.playing()?;
+                let id: u32 = a.get(0, "ID")?.parse()?;
+                let m = self
+                    .mobs
+                    .iter()
+                    .find(|m| m.id == id)
+                    .ok_or_else(|| format!("no entity {id}"))?;
+                self.face_point(m.center())?;
+                self.agent_mouse(MouseButton::Right, true)?;
+                self.agent_mouse(MouseButton::Right, false)?;
+                ok(json!({
+                    "ok": true,
+                    "entity": id,
+                    "mounted": self.player.as_ref().is_some_and(|p| p.is_passenger),
+                }))
             }
             "goto" => {
                 self.playing()?;
