@@ -1262,7 +1262,7 @@ impl Game<'_> {
                 ok(json!({
                     "ok": true,
                     "entity": id,
-                    "mounted": self.player.as_ref().is_some_and(|p| p.is_passenger),
+                    "mounted": self.riding.is_some(),
                 }))
             }
             "goto" => {
