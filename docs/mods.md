@@ -198,9 +198,31 @@ It is the entity type `<id>:<name>`, with its network id after vanilla's. Using 
 thrown: same speed, spread, sound and cooldown, and one item used outside creative. It flies as a snowball, breaks on
 what it hits with its item's crumbs, and is drawn as its item's model (`ThrownItemRenderer`). Its name is the translation
 `entity.<id>.<name>`. It works in single player and on LAN with the same mods. Dedicated servers share that code,
-untested so far. Clients join a server only with the same mods' entity types, as with its blocks. Not yet: it is not
-saved (it is gone when the chunk unloads or the world closes), `/summon` doesn't know it, a dispenser doesn't throw it,
-and a vanilla client on a server with it may be disconnected when one spawns.
+untested so far. Clients join a server only with the same mods' entity types, as with its blocks. It is saved with its
+chunk, `/summon <id>:<name>` makes one, and it has its template's row in `entity-types.json`. A world opened without the
+mod keeps the saved ones as they are, frozen in place. Not yet: a dispenser doesn't throw it, and a vanilla client on a
+server with it may be disconnected when one spawns.
+
+#### Menu types
+
+A mod menu type (vanilla's `MenuType`) is declared in `data/<id>/horizon/menu/<name>.json`: its container's slot count
+(1 to 256), the data slots its menu syncs (`ContainerData`, 0 to 256, 0 by default), and the slots players only take
+from (`results`, as a furnace's result slot):
+
+```json
+{ "slots": 9, "data_slots": 2, "results": [7, 8] }
+```
+
+It is the menu type `<id>:<name>`, with its network id after vanilla's. A mod block's container opens it when its
+`menu` names it with as many slots ([native-mods.md](native-mods.md), `native_block_entity_container`). The menu holds
+its slots, then the player's 36. A shift-click from the inventory goes to the first slots with room, never a result
+slot, and one on the container goes to the inventory, as a chest's does. `results` fence players only: hoppers follow the
+container's faces and `inputs`, so leave result slots out of `inputs`. The data slots are the block entity's `data`
+(16-bit on the network, as vanilla's), all sent when it opens, then each change. A Horizon client shows it through the
+mod's own screen (`native_screen`); without one it closes again. Clients join a server only with the same mods' menu
+types, as with its blocks, and a client that isn't Horizon's is never sent one: the block opens nothing for it. Not
+yet: per-slot rules beyond `results`, hooks for shift-click routing and `stillValid`, opening with extra data, and
+client prediction of its clicks.
 
 `crafting_remainder` names what the item leaves in the crafting grid when a
 recipe uses it, as a milk bucket leaves a bucket (vanilla's
@@ -262,6 +284,29 @@ itself. A name nobody defines is skipped.
 A pool addition holds `"elements"` as a pool does, a processor list addition `"processors"`. This is what
 Lithostitched's `add_structure_set_entries`, `add_template_pool_elements` and `add_processor_list_processors` modifiers
 do on NeoForge and Fabric, and `horizon-port-pack carry` writes the last two from those.
+
+A mod's own configured and placed features (`data/<ns>/worldgen/configured_feature/`, `placed_feature/`) generate in
+biomes it does not own (vanilla's) through NeoForge's biome modifiers, files in `data/<ns>/neoforge/biome_modifier/`
+(older Forge mods: `data/<ns>/forge/biome_modifier/`, `forge:` types). `add_features` appends its `features` to one
+generation `step` of every biome in `biomes`; `remove_features` takes them out of its `steps` (every step when it lists
+none); `none` does nothing. `biomes` and `features` are an id, a `#tag` or a list of ids; `biomes` may also be
+NeoForge's `any`, `or`, `and` or `not`. Every addition comes before every removal, each in mod and file order, and a
+feature already in the step is not added twice.
+
+```json
+{ "type": "neoforge:add_features", "biomes": "#minecraft:is_overworld",
+  "features": "zinc:ore_zinc", "step": "underground_ores" }
+```
+
+The modifiers rewrite the biomes when the content root builds, and the generator orders every biome's features as
+vanilla's `FeatureSorter` does, so an added feature takes its place in that order (its random seed follows from it). A
+biome no modifier names keeps its text, and a world without mods keeps vanilla's biomes byte for byte. A modifier
+naming a biome, biome tag, feature or feature tag the game doesn't have (another mod's, a `#c:` convention tag), or of a
+type not read yet (spawns and climate: `add_spawns`, `add_carvers`, a mod's own serializer), is skipped with a warning
+naming the mod and file, as NeoForge skips what it can't resolve; the mods still load. A malformed modifier of a type
+that is read (an unknown step, a missing field) stops the build, and the game starts without content mods ("content
+mods not loaded: ..." in the log). Feature tags are vanilla's for now (`#tag` in `features` doesn't read a mod's
+`placed_feature` tags yet); a world's data pack that replaces a biome replaces the mods' changes to it too.
 
 A pool element may be one of Lithostitched's: `lithostitched:limited` (`delegate`, `limit`, `min_depth`) places its
 `delegate` at most `limit` times in one structure start, and `lithostitched:guaranteed` (`delegate`, `count`,
