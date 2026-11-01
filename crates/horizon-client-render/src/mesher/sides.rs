@@ -55,7 +55,45 @@ pub struct Sides {
     planes: [f32; 7],
 }
 
+/// The buckets as the far tiles' draw list on the GPU reads them
+/// (`gfx/lod_gpu.wgsl`): WGSL constants for each bucket's axis (3 for the one
+/// drawn from everywhere) and whether it faces the positive direction, and
+/// for `MARGIN`, so the shader's `visible_from` cannot drift from this one.
+pub fn wgsl_rules() -> String {
+    let axis: Vec<String> = BUCKETS
+        .iter()
+        .map(|b| match *b {
+            Bucket::Side(axis, _) => format!("{axis}u"),
+            Bucket::Other => "3u".to_owned(),
+        })
+        .collect();
+    let positive: Vec<String> = BUCKETS
+        .iter()
+        .map(|b| match *b {
+            Bucket::Side(_, true) => "1u".to_owned(),
+            _ => "0u".to_owned(),
+        })
+        .collect();
+    format!(
+        "const BUCKET_AXIS = array<u32, 7>({});\nconst BUCKET_POSITIVE = array<u32, 7>({});\nconst SIDE_MARGIN: f32 = {:?};\n",
+        axis.join(", "),
+        positive.join(", "),
+        MARGIN
+    )
+}
+
 impl Sides {
+    /// The solid quads up to the end of each bucket, in the order `wgsl_rules`
+    /// lists the buckets.
+    pub fn ends(&self) -> [u32; 7] {
+        self.ends
+    }
+
+    /// Per bucket, the plane `visible_from` compares the eye with.
+    pub fn planes(&self) -> [f32; 7] {
+        self.planes
+    }
+
     /// `quads` solid quads in one bucket drawn from everywhere: for meshes
     /// that were not sorted.
     pub fn unsorted(quads: u32) -> Self {
@@ -432,5 +470,17 @@ mod tests {
             .map(|q| q[0].layer)
             .collect();
         assert_eq!(layers, [10, 20, 30]);
+    }
+
+    #[test]
+    fn the_shader_reads_the_buckets_in_mesh_order() {
+        let rules = wgsl_rules();
+        assert!(rules.contains("BUCKET_AXIS = array<u32, 7>(0u, 2u, 3u, 1u, 2u, 0u, 1u)"));
+        assert!(rules.contains("BUCKET_POSITIVE = array<u32, 7>(1u, 1u, 0u, 1u, 0u, 0u, 0u)"));
+        assert!(rules.contains("SIDE_MARGIN: f32 = 0.0625;"));
+        let mut solid = cube([0.0; 3], 0);
+        let sides = sort(&mut solid);
+        assert_eq!(sides.ends()[6], 6);
+        assert_eq!(sides.planes()[0], 1.0, "the +X bucket's plane");
     }
 }
