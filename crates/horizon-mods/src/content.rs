@@ -1,7 +1,7 @@
 //! A content mod's `assets/` and `data/` (API 0.2, docs/modpacks.md): the
 //! files it adds to the game's resource tree, and the blocks, items, mob
-//! effects and entity types it declares in
-//! `data/<id>/horizon/{block,item,mob_effect,entity_type}/`.
+//! effects, entity types and menu types it declares in
+//! `data/<id>/horizon/{block,item,mob_effect,entity_type,menu}/`.
 //!
 //! Content is data, not code: nothing here runs in the sandbox. What a mod
 //! may add is fenced instead. Its own namespaces (its id and the ones its
@@ -86,6 +86,35 @@ pub struct BlockProperties {
     pub map_color: Option<u8>,
     /// A vanilla block whose sounds this block uses.
     pub sounds: Option<String>,
+    /// Which states tick randomly, whatever the template does (`isRandomlyTicking`).
+    pub random_ticks: Option<RandomTicks>,
+}
+
+/// Which of a block's states get random ticks (`BlockBehaviour.isRandomlyTicking(state)`), so a
+/// crop, sapling or soil on a template that doesn't tick still grows. The sections' random tick
+/// counts follow it, and `native_random_tick` fires for the states it picks.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum RandomTicks {
+    /// Every state (`true`), or none (`false`, for a template that ticks).
+    All(bool),
+    /// The states whose own state property `property` is one of `values`.
+    States {
+        property: String,
+        values: Vec<String>,
+    },
+}
+
+impl RandomTicks {
+    /// Whether a state ticks, `combo` being its values of the block's own state properties.
+    pub fn applies(&self, combo: &[(String, String)]) -> bool {
+        match self {
+            RandomTicks::All(all) => *all,
+            RandomTicks::States { property, values } => combo
+                .iter()
+                .any(|(name, value)| name == property && values.contains(value)),
+        }
+    }
 }
 
 /// Per-state outline and collision boxes, selected by one state property.
@@ -276,6 +305,31 @@ pub struct EntityType {
     pub damage: f32,
 }
 
+/// a menu type the mod adds (vanilla's `MenuType`, NeoForge's
+/// `IMenuTypeExtension.create`): its container's slot count, the
+/// `ContainerData` count its menu syncs, and its take-only slots
+/// (`FurnaceResultSlot.mayPlace`). The slots come first in the menu, then the
+/// player's 36, and a mod screen (`native_screen`) places them.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MenuType {
+    /// `<mod id>:<path>`.
+    #[serde(skip)]
+    pub id: String,
+    /// 1 to [`MAX_MENU_SLOTS`].
+    pub slots: u16,
+    /// 0 to [`MAX_MENU_SLOTS`].
+    #[serde(default)]
+    pub data_slots: u16,
+    /// slots a player takes from but never puts into, each below `slots`.
+    #[serde(default)]
+    pub results: Vec<u16>,
+}
+
+/// the most container or data slots a mod menu type has, as many as a mod
+/// container (`native_block_entity_container`) may.
+pub const MAX_MENU_SLOTS: u16 = 256;
+
 #[derive(Debug)]
 enum Source {
     Dir(PathBuf),
@@ -294,6 +348,7 @@ pub struct Content {
     /// Its creative inventory tabs, by id.
     pub creative_tabs: Vec<CreativeTab>,
     pub entity_types: Vec<EntityType>,
+    pub menu_types: Vec<MenuType>,
     /// The namespaces it owns: the mod id, then the manifest's `namespaces`.
     pub namespaces: Vec<String>,
 }
@@ -383,6 +438,7 @@ impl Content {
             effects: Vec::new(),
             creative_tabs: Vec::new(),
             entity_types: Vec::new(),
+            menu_types: Vec::new(),
             namespaces: manifest.owned_namespaces().map(str::to_owned).collect(),
         };
         content.check(manifest)?;
@@ -428,6 +484,7 @@ impl Content {
         let mut effects = Vec::new();
         let mut tabs = Vec::new();
         let mut types = Vec::new();
+        let mut menus = Vec::new();
         for name in &self.files {
             let mut parts = name.splitn(3, '/');
             let (top, namespace, rest) = (
@@ -448,7 +505,7 @@ impl Content {
             }
             if !own && top == "data" && rest.starts_with("horizon/") {
                 return Err(format!(
-                    "{name}: blocks, items, mob effects and entity types are declared in data/{id}/horizon/"
+                    "{name}: blocks, items, mob effects, entity types and menu types are declared in data/{id}/horizon/"
                 ));
             }
             let Some(decl) = (own && top == "data")
@@ -474,9 +531,11 @@ impl Content {
                 tabs.push((tab, name.clone()));
             } else if let Some(kind) = parse("entity_type") {
                 types.push((kind, name.clone()));
+            } else if let Some(menu) = parse("menu") {
+                menus.push((menu, name.clone()));
             } else {
                 return Err(format!(
-                    "{name}: data/{id}/horizon/ holds block/, item/, mob_effect/, creative_tab/ and entity_type/*.json only"
+                    "{name}: data/{id}/horizon/ holds block/, item/, mob_effect/, creative_tab/, entity_type/ and menu/*.json only"
                 ));
             }
         }
@@ -600,6 +659,28 @@ impl Content {
             }
             self.entity_types.push(EntityType { id: kind, ..file });
         }
+        for (menu, name) in menus {
+            let file: MenuType =
+                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+            if !(1..=MAX_MENU_SLOTS).contains(&file.slots) || file.data_slots > MAX_MENU_SLOTS {
+                return Err(format!(
+                    "{name}: slots is 1 to {MAX_MENU_SLOTS}, data_slots 0 to {MAX_MENU_SLOTS}"
+                ));
+            }
+            let mut seen = BTreeSet::new();
+            for &r in &file.results {
+                if r >= file.slots {
+                    return Err(format!(
+                        "{name}: result {r} is past the last slot, {}",
+                        file.slots - 1
+                    ));
+                }
+                if !seen.insert(r) {
+                    return Err(format!("{name}: result {r} is listed twice"));
+                }
+            }
+            self.menu_types.push(MenuType { id: menu, ..file });
+        }
         Ok(())
     }
 }
@@ -682,6 +763,19 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
         }
     }
     let p = &file.properties;
+    if let Some(RandomTicks::States { property, values }) = &p.random_ticks {
+        let declared = file
+            .state_properties
+            .get(property)
+            .map(StateProperty::values);
+        if declared.is_none_or(|all| {
+            values.is_empty() || values.iter().any(|v| !all.contains(&v.as_str()))
+        }) {
+            return Err(format!(
+                "random_ticks needs values of the block's own state property {property:?} (state_properties)"
+            ));
+        }
+    }
     let finite = |v: Option<f32>| v.is_none_or(f32::is_finite);
     if !finite(p.hardness) || !finite(p.explosion_resistance) || !finite(p.friction) {
         return Err("hardness, explosion_resistance and friction are numbers".into());
@@ -949,6 +1043,52 @@ capabilities = ["registries"]
     }
 
     #[test]
+    fn menu_types_take_slots_data_slots_and_results() {
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/menu/press.json",
+                br#"{"slots": 9, "data_slots": 2, "results": [7, 8]}"#,
+            ),
+            ("data/ruby/horizon/menu/bag.json", br#"{"slots": 4}"#),
+        ];
+        let content = hmod("menus", MANIFEST_TEXT, files).unwrap();
+        let menus: Vec<_> = content
+            .menu_types
+            .iter()
+            .map(|m| (m.id.as_str(), m.slots, m.data_slots, m.results.clone()))
+            .collect();
+        assert_eq!(
+            menus,
+            [("ruby:bag", 4, 0, vec![]), ("ruby:press", 9, 2, vec![7, 8])]
+        );
+        for (case, file, why) in [
+            ("menu-empty", r#"{"slots": 0}"#, "slots is 1 to 256"),
+            ("menu-large", r#"{"slots": 257}"#, "slots is 1 to 256"),
+            (
+                "menu-data",
+                r#"{"slots": 1, "data_slots": 257}"#,
+                "data_slots 0 to 256",
+            ),
+            (
+                "menu-result",
+                r#"{"slots": 3, "results": [3]}"#,
+                "result 3 is past the last slot, 2",
+            ),
+            (
+                "menu-twice",
+                r#"{"slots": 3, "results": [1, 1]}"#,
+                "result 1 is listed twice",
+            ),
+            ("menu-key", r#"{"slots": 3, "rows": 1}"#, "unknown field"),
+            ("menu-missing", r#"{"data_slots": 1}"#, "missing field"),
+        ] {
+            let files: &[(&str, &[u8])] = &[("data/ruby/horizon/menu/a.json", file.as_bytes())];
+            let e = hmod(case, MANIFEST_TEXT, files).unwrap_err();
+            assert!(e.contains(why), "{case}: {e}");
+        }
+    }
+
+    #[test]
     fn entity_types_copy_a_throwable_and_name_its_item() {
         let files: &[(&str, &[u8])] = &[
             ("data/ruby/horizon/item/gem.json", ITEM),
@@ -1018,6 +1158,42 @@ capabilities = ["registries"]
         ];
         let e = hmod("type-shared", MANIFEST_TEXT, files).unwrap_err();
         assert!(e.contains("already throws another entity type"), "{e}");
+    }
+
+    #[test]
+    fn blocks_pick_the_states_that_tick_randomly() {
+        let own = r#""state_properties": {"grown": {"type": "boolean"}}"#;
+        let block = |ticks: &str| {
+            let text = format!(
+                r#"{{"template": "minecraft:dirt", {own}, "properties": {{"random_ticks": {ticks}}}}}"#
+            );
+            let files: &[(&str, &[u8])] = &[("data/ruby/horizon/block/crop.json", text.as_bytes())];
+            hmod("random-ticks", MANIFEST_TEXT, files)
+        };
+        let ticks =
+            |c: Result<Content, String>| c.unwrap().blocks[0].properties.random_ticks.clone();
+        let state = |v: &str| [("grown".to_owned(), v.to_owned())];
+        // Every state, whatever the template does; `false` stops a template that ticks.
+        let all = ticks(block("true")).unwrap();
+        assert!(all.applies(&state("true")) && all.applies(&[]));
+        assert!(!ticks(block("false")).unwrap().applies(&state("false")));
+        // Chosen states: a crop that stops ticking once it is grown.
+        let chosen = ticks(block(r#"{"property": "grown", "values": ["false"]}"#)).unwrap();
+        assert!(chosen.applies(&state("false")) && !chosen.applies(&state("true")));
+        assert!(
+            !chosen.applies(&[]),
+            "a state without the property does not tick"
+        );
+        // Not the block's own property, no values, or a value it doesn't have.
+        for bad in [
+            r#"{"property": "age", "values": ["0"]}"#,
+            r#"{"property": "grown", "values": []}"#,
+            r#"{"property": "grown", "values": ["maybe"]}"#,
+        ] {
+            let e = block(bad).err().unwrap();
+            assert!(e.contains("random_ticks"), "{bad}: {e}");
+        }
+        assert!(block("3").is_err());
     }
 
     #[test]

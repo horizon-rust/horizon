@@ -88,6 +88,7 @@ fn creative_tabs_keep_vanilla_items_missing_from_search() {
         vanilla_items: tab.items.iter().cloned().collect(),
         effects: Vec::new(),
         entity_types: Vec::new(),
+        menu_types: Vec::new(),
         states: 0,
         defaults: BTreeMap::new(),
         sounds: BTreeMap::new(),
@@ -388,7 +389,8 @@ fn ruby_mod(dir: &Path) -> ContentMod {
         (
             "data/ruby/horizon/block/ruby_block.json",
             r##"{"template": "minecraft:iron_block", "properties": {"hardness": 4.0, "light": 3,
-                "sounds": "minecraft:amethyst_block", "map_color": 28, "friction": 0.8},
+                "sounds": "minecraft:amethyst_block", "map_color": 28, "friction": 0.8,
+                "random_ticks": true},
                 "components": {"minecraft:max_stack_size": 16,
                     "minecraft:damage_resistant": {"types": "#minecraft:is_fire"}}}"##,
         ),
@@ -527,11 +529,17 @@ fn content_root_loads_with_every_table() {
         BlockFacts::load_with_behaviours(&root, new, &shared_json).unwrap();
     let independent_behaviours = horizon_world::level::Behaviours::load(new, &root).unwrap();
     let (deferred_facts, gameplay) =
-        BlockFacts::load_with_projection(&root, new, &shared_json).unwrap();
+        BlockFacts::load_with_projection(&root, new, &shared_json, true).unwrap();
     let deferred_behaviours =
         horizon_world::level::Behaviours::load_with_gameplay(new, &root, &shared_json, &gameplay)
             .unwrap();
     assert_eq!(shared_facts.states.len(), facts.states.len());
+    // `random_ticks` makes the block tick randomly although its template (iron) never does; the
+    // sections' counts read the same flag (`random_tick_candidate`).
+    assert!(independent_behaviours.is_randomly_ticking(ruby));
+    assert!(independent_behaviours.random_tick_candidate(ruby));
+    assert!(!independent_behaviours.is_randomly_ticking(iron));
+    assert!(deferred_behaviours.is_randomly_ticking(ruby));
     for state in [ruby, ruby_door, BlockStateId(n + 65)] {
         assert_eq!(shared_facts.get(state).hardness, facts.get(state).hardness);
         assert_eq!(
@@ -743,7 +751,7 @@ fn shared_behaviour_document_matches_independent_loaders() {
     let original = BlockFacts::load(&root, assets.registry).unwrap();
     let (shared, b) = BlockFacts::load_with_behaviours(&root, assets.registry, &doc).unwrap();
     let (deferred_facts, projection) =
-        BlockFacts::load_with_projection(&root, assets.registry, &doc).unwrap();
+        BlockFacts::load_with_projection(&root, assets.registry, &doc, true).unwrap();
     let deferred = horizon_world::level::Behaviours::load_with_gameplay(
         assets.registry,
         &root,
@@ -1416,6 +1424,54 @@ fn content_root_registers_a_mod_entity_type() {
     ] {
         assert!(ids.as_array().unwrap().contains(&"example:bolt".into()));
     }
+    // its size and eyes are the snowball's, for `execute anchored eyes` and spawners.
+    let types: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("entity-types.json")).unwrap()).unwrap();
+    assert!(types["minecraft:snowball"].is_object());
+    assert_eq!(types["example:bolt"], types["minecraft:snowball"]);
+    // the rewritten table keeps vanilla's floats to the bit (a zombie's speed).
+    let speed = |root: &Path| {
+        let attributes =
+            crate::mobs::exact_attributes(&fs::read(root.join("entity-types.json")).unwrap());
+        attributes["minecraft:zombie"]["minecraft:movement_speed"]
+    };
+    assert_eq!(speed(&root).to_bits(), speed(&base).to_bits());
+    assert!(root.join(crate::content_identity::MARKER).exists());
+    let identity = crate::content_identity::identity;
+    assert_ne!(identity(&root).unwrap(), identity(&base).unwrap());
+    fs::remove_dir_all(&scratch).unwrap();
+}
+
+/// a mod's menu type gets the menu network id after vanilla's last, and it
+/// changes the content identity.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn content_root_registers_a_mod_menu_type() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-menu-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let m = folder_mod(
+        &scratch.join("example"),
+        &[
+            ("horizon-mod.toml", &manifest("example", "")),
+            (
+                "data/example/horizon/menu/press.json",
+                r#"{"slots": 9, "data_slots": 2, "results": [7, 8]}"#,
+            ),
+        ],
+    );
+    let root = resource_root(&base, std::slice::from_ref(&m), &scratch.join("cache")).unwrap();
+    let report = |root: &Path| {
+        horizon_protocol::registry::Builtin::load(&root.join("registries.json")).unwrap()
+    };
+    let (vanilla, ids) = (report(&base), report(&root));
+    let vanilla = vanilla.get("minecraft:menu").unwrap();
+    let ids = ids.get("minecraft:menu").unwrap();
+    let count = (0..).take_while(|&i| vanilla.name(i).is_some()).count() as i32;
+    assert_eq!(ids.id("example:press"), Some(count));
+    assert_eq!(ids.id("minecraft:furnace"), vanilla.id("minecraft:furnace"));
     assert!(root.join(crate::content_identity::MARKER).exists());
     let identity = crate::content_identity::identity;
     assert_ne!(identity(&root).unwrap(), identity(&base).unwrap());
@@ -2618,6 +2674,24 @@ fn content_block_state_properties_are_validated() {
         Ok(_) => panic!("a shadowed template property was accepted"),
     };
     assert!(error.contains("axis is already on"), "{error}");
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+
+    // A declared name that sorts before the template's `axis` would make the state table
+    // disagree with vanilla's order and stop the game at load: refused, naming the block.
+    let (base, mods) = block_base(
+        "block-name-order",
+        &[r#"{"template":"minecraft:test","state_properties":{"alpha":{"type":"boolean"}}}"#],
+    );
+    let error = match Plan::new(&base, &mods) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a property sorting before the template's was accepted"),
+    };
+    assert!(
+        error.contains("testmod:") && error.contains("alpha sorts before axis, a property of"),
+        "{error}"
+    );
+    assert!(!error.contains("  "), "one space between words: {error}");
     fs::remove_dir_all(&base).unwrap();
     fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
 

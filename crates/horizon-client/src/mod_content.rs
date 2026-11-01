@@ -17,7 +17,7 @@
 use crate::{Result, blocks::MAP_COLORS};
 use horizon_core::geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape};
 use horizon_mods::content::{
-    Block, Content, CreativeTab, EntityType, MobEffect, Rarity, StateProperty,
+    Block, Content, CreativeTab, EntityType, MenuType, MobEffect, Rarity, StateProperty,
 };
 use horizon_world::nbt::{self, Compound, JavaString, Limits, Tag};
 use serde::{Deserialize, Serialize, de};
@@ -47,6 +47,13 @@ pub fn entity_types(mods: &[ContentMod]) -> Vec<&EntityType> {
     let mut types: Vec<&EntityType> = mods.iter().flat_map(|m| &m.content.entity_types).collect();
     types.sort_by(|a, b| a.id.cmp(&b.id));
     types
+}
+
+/// the mods' menu types in registry order, by id as effects are.
+pub fn menu_types(mods: &[ContentMod]) -> Vec<&MenuType> {
+    let mut menus: Vec<&MenuType> = mods.iter().flat_map(|m| &m.content.menu_types).collect();
+    menus.sort_by(|a, b| a.id.cmp(&b.id));
+    menus
 }
 
 /// JSON with its object keys in file order, so a rewritten table differs
@@ -469,6 +476,7 @@ struct Plan<'a> {
     vanilla_items: BTreeSet<String>,
     effects: Vec<&'a MobEffect>,
     entity_types: Vec<&'a EntityType>,
+    menu_types: Vec<&'a MenuType>,
     /// Vanilla's state count (the tables' length before).
     states: usize,
     /// Each vanilla block's default state.
@@ -584,6 +592,40 @@ fn component_patch(
 
 fn read_json(path: &Path) -> Result<J> {
     Ok(serde_json::from_slice(&fs::read(path)?).map_err(|e| format!("{}: {e}", path.display()))?)
+}
+
+impl Plan<'_> {
+    /// `entity-types.json` with a row for each mod type: its template's, so its
+    /// size, eyes and category are the template's (`execute anchored eyes`,
+    /// spawner checks and the commands' entity type list, `reg.entity_types`).
+    /// The rows are appended as text: parsed and written back, a float such as
+    /// a zombie's `movement_speed` can come back one ulp off.
+    fn entity_types_json(&self, bytes: &[u8]) -> std::result::Result<Vec<u8>, String> {
+        use serde_json::value::RawValue;
+        let rows: BTreeMap<String, Box<RawValue>> =
+            serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let mut out = bytes.trim_ascii_end().to_vec();
+        if out.pop() != Some(b'}') {
+            return Err("not an object".into());
+        }
+        let mut empty = rows.is_empty();
+        for t in &self.entity_types {
+            if rows.contains_key(&t.id) {
+                continue;
+            }
+            let Some(row) = rows.get(&t.template) else {
+                continue;
+            };
+            if !std::mem::take(&mut empty) {
+                out.push(b',');
+            }
+            out.extend(serde_json::to_vec(&t.id).map_err(|e| e.to_string())?);
+            out.push(b':');
+            out.extend(row.get().as_bytes());
+        }
+        out.push(b'}');
+        Ok(out)
+    }
 }
 
 impl<'a> Plan<'a> {
@@ -721,6 +763,25 @@ impl<'a> Plan<'a> {
                         )
                         .into());
                     }
+                }
+                // A block's states are its template's times the declared combinations, the
+                // template's properties varying slowest, but the game reads a state table the
+                // way vanilla's `StateDefinition` does: sorted by property name, the first name
+                // slowest. The two agree only when every declared name sorts after the template's,
+                // and a table that disagrees stops the game at load, so such a block is refused.
+                let last = match properties(default) {
+                    Some(J::Obj(own)) => own.iter().map(|(k, _)| k.as_str()).max(),
+                    _ => None,
+                };
+                if let Some(last) = last
+                    && let Some(early) = decl.state_properties.keys().find(|k| k.as_str() < last)
+                {
+                    return Err(format!(
+                        "{}: state property {early} sorts before {last}, a property of {}: the \
+                         game orders states by property name, so name it after {last}",
+                        decl.id, decl.template
+                    )
+                    .into());
                 }
                 let combos = combinations(&decl.state_properties, &decl.default_state)
                     .map_err(|e| format!("{}: {e}", decl.id))?;
@@ -878,6 +939,7 @@ impl<'a> Plan<'a> {
             vanilla_items,
             effects: mob_effects(mods),
             entity_types: entity_types(mods),
+            menu_types: menu_types(mods),
             states: names.len(),
             defaults,
             sounds,
@@ -923,7 +985,7 @@ impl<'a> Plan<'a> {
                     if !b.decl.item {
                         row.set("item", J::Str("minecraft:air".into()));
                     }
-                    self.override_gameplay(b, &mut row);
+                    self.override_gameplay(b, combo, &mut row);
                     if let Some(shapes) = &b.shapes {
                         let shape = &shapes[t];
                         let boxes = shape
@@ -960,8 +1022,11 @@ impl<'a> Plan<'a> {
     }
 
     /// The declared properties, on a gameplay row.
-    fn override_gameplay(&self, b: &NewBlock, row: &mut J) {
+    fn override_gameplay(&self, b: &NewBlock, combo: &[(String, String)], row: &mut J) {
         let p = &b.decl.properties;
+        if let Some(ticks) = &p.random_ticks {
+            row.set("random_ticks", J::Bool(ticks.applies(combo)));
+        }
         if let Some(v) = p.hardness {
             row.set("hardness", J::f64(v as f64));
         }
@@ -1180,6 +1245,11 @@ impl<'a> Plan<'a> {
                 if !self.entity_types.is_empty() {
                     let new_types = self.entity_types.iter().map(|t| t.id.clone());
                     registries.push(("minecraft:entity_type", new_types.collect()));
+                }
+                // `ClientboundOpenScreenPacket` carries a menu type's id.
+                if !self.menu_types.is_empty() {
+                    let new_menus = self.menu_types.iter().map(|m| m.id.clone());
+                    registries.push(("minecraft:menu", new_menus.collect()));
                 }
                 for (registry, names) in registries {
                     let Some(J::Obj(entries)) =
@@ -1417,8 +1487,9 @@ impl<'a> Plan<'a> {
 }
 
 /// The JSON and NBT tables rewritten for new blocks and items.
-const JSON_TABLES: [&str; 15] = [
+const JSON_TABLES: [&str; 16] = [
     "facts.json",
+    "entity-types.json",
     "creative-inventory.json",
     "registries.json",
     "gameplay-facts.json",
@@ -1898,7 +1969,10 @@ fn tables(base: &Path, plan: &Plan, overlay: &Overlay<'_>) -> Result<()> {
     }
     let table = |name: &str| -> Result<()> {
         let path = base.join(name);
-        let bytes = if JSON_TABLES.contains(&name) {
+        let bytes = if name == "entity-types.json" {
+            plan.entity_types_json(&fs::read(&path)?)
+                .map_err(|e| format!("{name}: {e}"))?
+        } else if JSON_TABLES.contains(&name) {
             let mut doc = read_json(&path)?;
             plan.json(name, &mut doc)
                 .map_err(|e| format!("{name}: {e}"))?;
@@ -2151,6 +2225,11 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
         .collect();
     namespaces.sort();
     overlay.write(MARKER, &serde_json::to_vec(&namespaces)?)?;
+    let mod_ids: Vec<&str> = mods.iter().map(|m| m.id.as_str()).collect();
+    overlay.write(
+        horizon_items::content_namespaces::MOD_IDS_MARKER,
+        &serde_json::to_vec(&mod_ids)?,
+    )?;
     let remainders: BTreeMap<&str, &str> = plan
         .items
         .iter()
@@ -2162,12 +2241,13 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
             &serde_json::to_vec(&remainders)?,
         )?;
     }
-    // clients must agree on the block states and the items', mob effects' and
-    // entity types' network ids.
+    // clients must agree on the block states and the items', mob effects',
+    // entity types' and menu types' network ids.
     if !plan.blocks.is_empty()
         || !plan.items.is_empty()
         || !plan.effects.is_empty()
         || !plan.entity_types.is_empty()
+        || !plan.menu_types.is_empty()
     {
         overlay.write(crate::content_identity::MARKER, b"1")?;
     }

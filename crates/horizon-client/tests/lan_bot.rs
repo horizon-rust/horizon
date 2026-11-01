@@ -2,6 +2,7 @@
 //! handshake, status, offline login, configuration (registries and tags),
 //! then the play state (login, chunks with light, player list, entities,
 //! block changes). Needs the prepared resources; skipped without them.
+extern crate horizon_client_lib as horizon_client;
 use horizon_client::{
     chunk::{Chunk, MIN_Y},
     lan::{
@@ -203,7 +204,7 @@ impl Server {
             clock_rate: 1.0,
             tick_rate: 20.0,
             tick_frozen: false,
-            tick_steps: (0, 0),
+            tick_steps: Default::default(),
             collision: None,
             border: &horizon_client::worldborder::WorldBorder::default(),
             streaming: None,
@@ -1419,7 +1420,7 @@ fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
         clock_rate: 1.0,
         tick_rate: 20.0,
         tick_frozen: false,
-        tick_steps: (0, 0),
+        tick_steps: Default::default(),
         collision: None,
         border: &border,
         streaming: None,
