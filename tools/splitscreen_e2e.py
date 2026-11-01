@@ -562,7 +562,7 @@ def scenario_controls():
 
 def scenario_three():
     print('three: the three layouts')
-    g = Game(3)
+    g = Game(3, saved_split=True)
     try:
         w2, h = g.size(2)  # one wide on top by default: P2 has a quarter
         layouts = [
@@ -588,7 +588,7 @@ def scenario_three():
 
 def scenario_live():
     print('live: splitscreen off and on in a world')
-    g = Game(2)
+    g = Game(2, saved_split=True)
     try:
         half = g.size(1)
         # With another player in, the switch is greyed: it turns off once P1 plays alone.
@@ -682,7 +682,7 @@ def scenario_fullscreen():
         profile.mkdir(parents=True)
         (profile / 'options.txt').write_text('fullscreen:true\n')
 
-    g = Game(2, seed=seed)
+    g = Game(2, saved_split=True, seed=seed)
     try:
         time.sleep(3)
         value = g.ctl(1, 'options-get', 'fullscreen')['options']['fullscreen']['value']
@@ -714,7 +714,7 @@ def scenario_fullscreen():
 
 def scenario_leave():
     print("leave: from the pause menu, or switch profile from Splitscreen Settings")
-    g = Game(3)
+    g = Game(3, saved_split=True)
     try:
         def settings(n):
             """Player n's pause menu, then its Splitscreen Settings."""
@@ -781,7 +781,7 @@ def scenario_signedin():
 
 def scenario_monitor():
     print('monitor: a player fills another monitor, another joins it (skipped with one monitor)')
-    g = Game(2)
+    g = Game(2, saved_split=True)
     try:
         half = g.size(1)
         g.setup(1)
@@ -808,7 +808,7 @@ def scenario_monitor():
 
 def scenario_eight():
     print('eight: eight players in one window')
-    g = Game(8)
+    g = Game(8, saved_split=True)
     try:
         sizes = g.sizes(range(1, 9))
         near = lambda a, b: abs(a - b) <= 1  # thirds of an odd width differ by a pixel
@@ -830,7 +830,7 @@ def scenario_eight():
 def scenario_sixteen():
     print('sixteen: sixteen players in a 4x4 grid, P16 moves to its own window and leaves')
     # Room for P1's menus in a sixteenth of the window on a 100% display too.
-    g = Game(16, args=('--width', '2000', '--height', '1200'))
+    g = Game(16, saved_split=True, args=('--width', '2000', '--height', '1200'))
     try:
         players = range(1, 17)
         g.wait(lambda: all(g.ctl(n, 'state').get('player') is not None for n in players),
@@ -873,8 +873,8 @@ def scenario_pointer():
 
 
 def scenario_pausemenu():
-    print("pausemenu: Splitscreen Settings in the pause menu only while another player has joined")
-    g = Game(2, pick=True)
+    print("pausemenu: Splitscreen Settings remains available while enabled, including alone")
+    g = Game(2, saved_split=True, pick=True)
     try:
         def paused(n):
             """Player n's pause menu: its buttons, then closed again."""
@@ -885,8 +885,8 @@ def scenario_pausemenu():
             return labels
         menu = lambda: (g.ctl(2, 'state').get('menu') or {}).get('mode')  # noqa: E731
         g.wait(lambda: menu() == 'splitscreen-profiles', "P2's picker")
-        # P2 still choosing: P1 plays alone, so no Splitscreen Settings; Horizon Settings has it.
-        check('alone: none in the pause menu', 'Splitscreen Settings' in paused(1), False)
+        # P2 still choosing: P1 can arrange windows from its pause menu while enabled.
+        check('alone: Setup remains in the pause menu', 'Splitscreen Settings' in paused(1), True)
         g.page(1)
         check('alone: Horizon Settings > Splitscreen... still there', 'Done' in g.labels(1), True)
         g.close_page(1)
@@ -897,13 +897,13 @@ def scenario_pausemenu():
         time.sleep(1)
         check('joined: in P1\'s pause menu', 'Splitscreen Settings' in paused(1), True)
         check("joined: in Dee's", 'Splitscreen Settings' in paused(2), True)
-        # Dee leaves: P1 alone again, gone.
+        # Dee leaves: P1 can still open Setup while enabled.
         g.ctl(2, 'key', 'esc', 'tap')
         g.wait(lambda: 'Leave' in g.labels(2), "Dee's pause menu", seconds=5)
         g.press(2, 'Leave')
         g.wait(lambda: not g.alive(2), 'Dee gone', seconds=10)
         time.sleep(1)
-        check('alone again: none in the pause menu', 'Splitscreen Settings' in paused(1), False)
+        check('alone again: Setup remains available', 'Splitscreen Settings' in paused(1), True)
     finally:
         g.quit()
 
