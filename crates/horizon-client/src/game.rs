@@ -2409,6 +2409,8 @@ struct Game<'a> {
     be_anims: horizon_client::block_entity_anim::BlockEntityAnims,
     /// Item being used (eaten): hotbar slot and ticks used.
     using: Option<(usize, u32)>,
+    /// `CrossbowItem.onUseTick`'s two loading sounds, played once per charge.
+    crossbow_sounds: [bool; 2],
     /// `getUseDuration` when that use started, as a mod left it
     /// (`game/item_use.rs`): consumables and mod items count to it.
     use_duration: i32,
@@ -17971,6 +17973,7 @@ impl<'a> Game<'a> {
                 anims
             },
             using: None,
+            crossbow_sounds: [false; 2],
             use_duration: 0,
             use_ticks_set: false,
             view: Default::default(),

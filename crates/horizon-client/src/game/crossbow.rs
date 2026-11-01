@@ -100,16 +100,21 @@ impl Game<'_> {
         let held = self.ticks_held(stack, ticks);
         self.using = Some((slot, ticks + 1));
         let charge = Self::charge_ticks(stack).max(1) as f32;
-        let (before, now) = (held as f32 / charge, (held + 1) as f32 / charge);
+        let now = (held + 1) as f32 / charge;
         let sounds = Self::charging_sounds(stack);
         let at = self
             .player
             .as_ref()
             .map(|p| [p.position.x, p.position.y, p.position.z]);
-        if before < 0.2 && now >= 0.2 && !sounds[0].is_empty() {
+        // `CrossbowItem.onUseTick`: each sound asks whether it has played, not
+        // whether this tick crossed its point, so a charge a tick hook moves
+        // past both points still plays both.
+        let (start, mid, played) = loading_sounds(now, self.crossbow_sounds);
+        self.crossbow_sounds = played;
+        if start && !sounds[0].is_empty() {
             self.audio.play(sounds[0], at, 0.5, 1.0);
         }
-        if before < 0.5 && now >= 0.5 && !sounds[1].is_empty() {
+        if mid && !sounds[1].is_empty() {
             self.audio.play(sounds[1], at, 0.5, 1.0);
         }
         let charged = stack.data().is_some_and(|d| !d.charged.is_empty());
@@ -250,9 +255,45 @@ impl Game<'_> {
     }
 }
 
+/// `CrossbowItem.onUseTick`'s two loading sounds: each plays once the charge
+/// reaches its point and has not played yet, and both reset while the charge is
+/// under 0.2, so the next charge starts them again.
+fn loading_sounds(charge: f32, played: [bool; 2]) -> (bool, bool, [bool; 2]) {
+    if charge < 0.2 {
+        return (false, false, [false, false]);
+    }
+    let start = !played[0];
+    let mid = charge >= 0.5 && !played[1];
+    (start, mid, [played[0] || start, played[1] || mid])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_charge_that_jumps_past_both_points_plays_both_sounds() {
+        // A tick hook moved the charge from 0.1 to 1.0 in one tick.
+        assert_eq!(
+            loading_sounds(1.0, [false, false]),
+            (true, true, [true, true])
+        );
+        // Held past both points: neither sounds again.
+        assert_eq!(
+            loading_sounds(1.0, [true, true]),
+            (false, false, [true, true])
+        );
+        // A new charge resets both while it is under 0.2.
+        assert_eq!(
+            loading_sounds(0.1, [true, true]),
+            (false, false, [false, false])
+        );
+        // The middle sound waits for its own point.
+        assert_eq!(
+            loading_sounds(0.3, [false, false]),
+            (true, false, [true, false])
+        );
+    }
 
     #[test]
     fn held_projectiles_come_before_the_inventory() {
