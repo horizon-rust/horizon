@@ -2234,6 +2234,8 @@ struct Game<'a> {
     captured: bool,
     /// Only the local player owning keyboard and mouse changes the native pointer.
     keyboard_mouse: bool,
+    /// Offscreen rendering into a visible splitscreen window still accepts native input.
+    split_window: bool,
     /// This view's corner in its shared window; cursor warps include the offset.
     view_at: [u32; 2],
     /// Splitscreen: what it draws over this player's view (its badge, questions, notices).
@@ -7758,9 +7760,9 @@ impl Game<'_> {
         };
         let scale = HudBatch::new(size).scale;
         let was_grabbed = self.captured;
-        if self.options.offscreen {
-            // `--offscreen` shows no window: the system pointer stays where the
-            // person at the computer has it, and the grab is the game's own (an
+        if self.options.offscreen && !self.split_window {
+            // A genuinely hidden `--offscreen` run leaves the system pointer where
+            // the person at the computer has it. Its grab is internal (an
             // agent turns the view with `mouse-move`).
             if capture {
                 self.mouse.set_ignore_first_move();
@@ -7820,7 +7822,7 @@ impl Game<'_> {
         ) {
             self.cursor = pos;
         }
-        if !self.options.offscreen {
+        if !self.options.offscreen || self.split_window {
             window.set_cursor_visible(!self.captured);
         }
     }
@@ -16226,11 +16228,13 @@ impl ApplicationHandler for Game<'_> {
         }
     }
     fn device_event(&mut self, _: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
-        // The real mouse never steers an offscreen game: its pointer is not grabbed.
+        // A composited view renders offscreen but its keyboard/mouse owner still
+        // controls a visible native window. A headless offscreen run never does.
         if self.pending_save.is_none()
             && self.captured
             && self.focused
-            && !self.options.offscreen
+            && self.keyboard_mouse
+            && (!self.options.offscreen || self.split_window)
             && self.screen == Screen::Playing
             && let DeviceEvent::MouseMotion { delta: (x, y) } = event
         {
@@ -17871,6 +17875,7 @@ impl<'a> Game<'a> {
             cursor_icon: horizon_client::widgets::Cursor::Arrow,
             captured: false,
             keyboard_mouse: true,
+            split_window: false,
             view_at: [0, 0],
             split_hud: Default::default(),
             focused: true,
