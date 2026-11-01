@@ -2309,9 +2309,10 @@ impl Game<'_> {
                 } => {
                     if effect {
                         // `levelEvent(2001, pos, Block.getId(old))`: the particles and the break
-                        // sound, for the players a server serves too.
+                        // sound, for the players a server serves too. Queued, not flushed here:
+                        // flushing would run the events queued before it (their drops) early.
                         let old = self.world.block(pos[0], pos[1], pos[2]);
-                        self.level_event_at(2001, pos, old.0 as i32);
+                        self.queue_destroy_event(pos, old);
                     }
                     if let Some(state) = self.pack.assets.registry.default_state(name) {
                         self.level_set_with_flags(pos, state, flags)?;
@@ -2363,7 +2364,7 @@ impl Game<'_> {
                     }
                     // Block.spawnDestroyParticles: fire breaks leave nothing.
                     if !self.res.facts().get(old).has_class("BaseFireBlock") {
-                        self.level_event_at(2001, pos, old.0 as i32);
+                        self.queue_destroy_event(pos, old);
                     }
                     if drop {
                         let mut drops = world_items!(self).block_drops_in(
@@ -7130,5 +7131,19 @@ mod knockback_tests {
         // After the resistance: a 0.5 resistance hands the hook half the strength.
         assert_eq!(push(9203, 0.5), (0.0, 0.2, -0.2));
         assert_eq!(seen(9203)[0].2.strength, 0.2);
+    }
+}
+
+impl Game<'_> {
+    /// `levelEvent(2001, pos, Block.getId(old))` queued with the tick's other level events:
+    /// the next flush draws the particles, plays the break sound and sends it to the players a
+    /// server serves.
+    fn queue_destroy_event(&mut self, pos: [i32; 3], old: horizon_world::registry::BlockStateId) {
+        self.level_events
+            .push(horizon_world::level::LevelEvent::LevelEvent {
+                id: 2001,
+                pos: BlockPos::new(pos[0], pos[1], pos[2]),
+                data: old.0 as i32,
+            });
     }
 }
