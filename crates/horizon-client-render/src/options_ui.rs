@@ -7000,6 +7000,7 @@ mod tests {
         // 2. Horizon Graphics page through OptionsUi:
         // Tab onto ChunkUpdates slider, ArrowRight adjusts value, Space toggles can_change_value
         ui.show(Page::Graphics);
+        ui.graphics.open(crate::graphics_ui::Page::Performance);
         s.horizon.chunk_updates = 10;
         ui.size = size;
         ui.framebuffer = [854, 480];

@@ -6,10 +6,9 @@
 //! `docs/design-system.md`): square panels with an outline, a light bevel
 //! along the top and left and a darker lip under them, sunk wells for fields,
 //! boxes and tracks, and the violet face on the one main button, in vanilla's
-//! font. The description sits in vanilla's own tooltip.
+//! font.
 use crate::{
     hud::{HudAtlas, HudBatch},
-    lang,
     text::Text,
     ui,
 };
@@ -51,13 +50,16 @@ const fn hex(c: u32, a: u8) -> u32 {
     (a as u32) << 24 | (c & 0xff) << 16 | (c >> 8 & 0xff) << 8 | (c >> 16 & 0xff)
 }
 pub const PANEL: u32 = hex(B.panel, 255);
-/// A hovered or focused row, an open tab's neighbours under the pointer.
-pub const RAISED: u32 = hex(B.raised, 255);
-const PAGE: u32 = hex(B.page, 255);
+/// A group's panel, raised off the plate.
+const RAISED: u32 = hex(B.raised, 255);
+/// A hovered or focused row, lit on its group's panel.
+pub const HOVER: u32 = hex(B.ink, 16);
+/// The open page in the page list.
+pub const OPEN: u32 = hex(B.ink, 31);
 const BUTTON: u32 = hex(B.button, 255);
 const BUTTON_BEVEL: u32 = hex(B.button_bevel, 255);
 const WELL: u32 = hex(B.well, 255);
-const BEVEL: u32 = hex(B.bevel, 255);
+pub const BEVEL: u32 = hex(B.bevel, 255);
 const LIP: u32 = hex(B.lip, 255);
 const OUTLINE: u32 = hex(B.outline, 255);
 const FACE: u32 = hex(B.face, 255);
@@ -67,35 +69,35 @@ pub const ACCENT: u32 = hex(B.accent, 255);
 /// Vanilla's white text, and its grey for what can't be used now.
 pub const WHITE: u32 = u32::MAX;
 pub const MUTED: u32 = hex(B.muted, 255);
-/// A tab that isn't open.
+/// A page that isn't open, a value at rest.
 pub const SOFT: u32 = hex(B.ink_soft, 255);
 /// Vanilla's grey for a tooltip's lines under its first (`ChatFormatting.GRAY`).
 pub const GREY: u32 = hex(0xaaaaaa, 255);
-/// The section names in the list: vanilla's yellow (`ChatFormatting.YELLOW`).
-pub const HEADER: u32 = hex(0xffff55, 255);
 /// A dim veil over the backdrop, under the panels.
 pub const VEIL: u32 = hex(B.page, 140);
 
 /// Sizes in GUI pixels.
-/// Shorter screens than this (a 720p window at scale 3) leave the title out.
+/// Shorter screens than this (a 720p window at scale 3) keep a narrower margin on top.
 pub const TITLED: f32 = 300.0;
 pub const ROW: f32 = 20.0;
-pub const HEADER_ROW: f32 = 18.0;
-/// Space between two blocks of rows, and before a section's name.
-pub const BLOCK_GAP: f32 = 4.0;
+/// A group's name over its panel, and a page's over its groups while searching.
+pub const GROUP_ROW: f32 = 14.0;
+pub const PAGE_ROW: f32 = 16.0;
+/// Space under a group's panel, and more before the next page's name.
+pub const GROUP_GAP: f32 = 10.0;
 pub const PAGE_GAP: f32 = 6.0;
-/// The control on the right of a row: a button, a box or a slider.
+/// The control on the right of a row (a button, a box or a slider), and the
+/// left column: the search field, the page list and the buttons.
 pub const CONTROL_W: f32 = 112.0;
 pub const CONTROL_H: f32 = 16.0;
-pub const TAB_H: f32 = 20.0;
 pub const SEARCH_H: f32 = 16.0;
 /// Vanilla's scroller: the column `ui::Scroll::press` takes.
 pub const SCROLLER_W: f32 = 6.0;
-pub const INFO_H: f32 = 34.0;
-pub const BUTTON_W: f32 = 150.0;
+/// The strip under the plate that describes a setting.
+pub const DOCK_H: f32 = 50.0;
 pub const BUTTON_H: f32 = 20.0;
-/// Text inside a row or panel, from its edge.
-pub const PAD: f32 = 6.0;
+/// A row's name and control, from its group panel's edges.
+pub const INSET: f32 = 10.0;
 
 pub fn fill(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, h]: [f32; 4], color: u32) {
     batch.fill(atlas, x, y, w, h, color);
@@ -129,25 +131,13 @@ fn block(
 /// A button's face, bevel and lip; a control that can't be used now.
 const FACE_OF_BUTTON: (u32, u32, u32) = (BUTTON, BUTTON_BEVEL, LIP);
 const DIM: (u32, u32, u32) = (PANEL, PANEL, LIP);
-/// The screen's panel, and the tabs on it.
+/// The screen's plate, and the strip under it.
 pub fn panel(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
     block(batch, atlas, rect, (PANEL, BEVEL, LIP), 2.0);
 }
-/// A tab that isn't open: lower and darker than the panel it sits on.
-pub fn tab(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4], hover: bool) {
-    let colors = if hover {
-        (RAISED, BEVEL, LIP)
-    } else {
-        (PAGE, PANEL, LIP)
-    };
-    block(batch, atlas, rect, colors, 1.0);
-}
-/// The open tab: the panel's colour running into the panel under it.
-pub fn open_tab(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, h]: [f32; 4]) {
-    fill(batch, atlas, [x, y, w, h + 1.0], OUTLINE);
-    fill(batch, atlas, [x + 1.0, y + 1.0, w - 2.0, h + 1.0], PANEL);
-    fill(batch, atlas, [x + 1.0, y + 1.0, w - 2.0, 1.0], BEVEL);
-    fill(batch, atlas, [x + 1.0, y + 1.0, 1.0, h], BEVEL);
+/// A group's panel, raised off the plate, its rows on it.
+pub fn group(batch: &mut HudBatch, atlas: &HudAtlas, rect: [f32; 4]) {
+    block(batch, atlas, rect, (RAISED, BEVEL, LIP), 1.0);
 }
 /// A sunk well: fields, tick boxes, slider tracks, the scroller's track.
 pub fn well(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, h]: [f32; 4]) {
@@ -238,12 +228,11 @@ pub fn button(
     let ty = y + ((h - 8.0) / 2.0).floor() - if primary { 1.0 } else { 0.0 };
     ui::centered_text(batch, atlas, label, x + 2.0, ty, w - 4.0, color);
 }
-/// Vanilla's slider: a well, the 8 px handle at `value`, the value written over both.
+/// A slider's track: a well and the 8 px handle at `position`. The row writes its value beside it.
 pub fn slider(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
     rect: [f32; 4],
-    value: &Text,
     position: f32,
     (hover, live): (bool, bool),
 ) {
@@ -261,67 +250,37 @@ pub fn slider(
     if hover && live {
         ring(batch, atlas, handle, WHITE);
     }
-    let color = if live { WHITE } else { MUTED };
-    ui::centered_text(
-        batch,
-        atlas,
-        value,
-        x + 2.0,
-        y + ((h - 8.0) / 2.0).floor(),
-        w - 4.0,
-        color,
-    );
 }
-/// A section's name centred between two rules, in vanilla's yellow.
-pub fn header(batch: &mut HudBatch, atlas: &HudAtlas, name: &Text, [x, y, w, h]: [f32; 4]) {
-    let tw = atlas.font.width_text(name);
-    let mid = y + (h / 2.0).floor();
-    let left = (x + (w - tw) / 2.0).floor();
-    fill(
-        batch,
-        atlas,
-        [x + PAD, mid, left - 6.0 - x - PAD, 1.0],
-        BEVEL,
-    );
-    fill(
-        batch,
-        atlas,
-        [left + tw + 6.0, mid, x + w - PAD - left - tw - 6.0, 1.0],
-        BEVEL,
-    );
-    batch.text_styled(
-        atlas,
-        name,
-        left,
-        y + ((h - 8.0) / 2.0).floor(),
-        HEADER,
-        true,
-    );
-}
-/// The description's box: vanilla's tooltip background and frame around `rect`.
-pub fn tooltip_box(batch: &mut HudBatch, atlas: &HudAtlas, [x, y, w, h]: [f32; 4]) {
-    for sprite in [
-        "gui/sprites/tooltip/background",
-        "gui/sprites/tooltip/frame",
-    ] {
-        ui::nine_slice(
-            batch,
-            atlas,
-            sprite,
-            x - 9.0,
-            y - 9.0,
-            w + 18.0,
-            h + 18.0,
-            u32::MAX,
-        );
+/// A value that a press steps through: in a well, between the arrows that say so.
+pub fn cycler(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    rect: [f32; 4],
+    value: &Text,
+    (hover, live): (bool, bool),
+) {
+    let [x, y, w, h] = rect;
+    well(batch, atlas, rect);
+    if hover && live {
+        ring(batch, atlas, rect, WHITE);
     }
+    let ty = y + ((h - 8.0) / 2.0).floor();
+    let arrows = if hover && live { WHITE } else { MUTED };
+    batch.text_styled(atlas, &Text::literal("<"), x + 3.0, ty, arrows, true);
+    batch.text_styled(atlas, &Text::literal(">"), x + w - 8.0, ty, arrows, true);
+    let color = match (live, hover) {
+        (false, _) => MUTED,
+        (true, true) => WHITE,
+        (true, false) => SOFT,
+    };
+    batch.text_styled(atlas, value, x + 9.0, ty, color, true);
 }
 /// A screen's title, centred at the top (split-screen profiles).
 pub fn title(batch: &mut HudBatch, atlas: &HudAtlas, text: &Text) {
     let w = batch.width;
     ui::centered_text(batch, atlas, text, 0.0, 12.0, w, u32::MAX);
 }
-/// "High cost" in the cost's colour.
-pub fn cost_line(cost: Cost) -> Text {
-    Text::literal(lang::get(cost.label())).with_color(cost.rgb())
+/// The cost's colour in the HUD's encoding: the square beside its name.
+pub fn cost_color(cost: Cost) -> u32 {
+    hex(cost.rgb(), 255)
 }

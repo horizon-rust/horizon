@@ -44,6 +44,16 @@ impl Page {
             Page::Hdr => "HDR",
         }
     }
+    /// What the page holds, in the strip while no setting is pointed at.
+    pub fn about(self) -> &'static str {
+        match self {
+            Page::General => "How far you see, the window and the HUD.",
+            Page::Quality => "The sky and weather, lighting, textures and the image.",
+            Page::Performance => "Chunk loading, culling and power use.",
+            Page::Advanced => "How frames reach the screen, and the performance overlay.",
+            Page::Hdr => "Brighter-than-white output on an HDR display.",
+        }
+    }
 }
 
 /// Horizon's own settings (`graphics::Graphics`).
@@ -111,8 +121,8 @@ fn h(opt: H, cost: Cost, text: &'static str) -> Setting {
     }
 }
 
-/// Every page's settings, in blocks of related rows.
-pub fn rows() -> Vec<(Page, Vec<Vec<Setting>>)> {
+/// Every page's settings, in named groups of related rows.
+pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
     use Cost::*;
     // Suggested, never switched on, where far terrain costs the GPU most.
     let far = if crate::graphics::reduced_far_detail_suggested() {
@@ -124,291 +134,339 @@ pub fn rows() -> Vec<(Page, Vec<Vec<Setting>>)> {
         (
             Page::General,
             vec![
-                vec![h(
-                    H::Preset,
-                    None,
-                    "Sets the options below together. Changing one makes it Custom.",
-                )],
-                vec![
-                    v(
-                        Opt::RenderDistance,
-                        High,
-                        "Full-detail terrain range. LOD Distance can extend local worlds farther.",
-                    ),
-                    h(
-                        H::LodDistance,
-                        Medium,
-                        "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.",
-                    ),
-                    h(H::FarDetail, Medium, far),
-                    v(
-                        Opt::SimulationDistance,
-                        Medium,
-                        "How far mobs, crops and machines keep working. CPU time.",
-                    ),
-                    v(Opt::Gamma, None, "Brightens dark places."),
-                ],
-                vec![
-                    v(Opt::GuiScale, None, "Size of menus and the HUD."),
-                    v(Opt::Fullscreen, None, "Fills the screen (borderless)."),
-                    v(
-                        Opt::Vsync,
+                (
+                    "Preset",
+                    vec![h(
+                        H::Preset,
                         None,
-                        "Waits for the display's refresh: no tearing, a little latency.",
-                    ),
-                    v(
-                        Opt::MaxFps,
-                        None,
-                        "Caps frames per second; a cap saves power and heat.",
-                    ),
-                    v(
-                        Opt::InactivityFps,
-                        None,
-                        "Lowers the frame rate when minimised, or idle too.",
-                    ),
-                    v(
-                        Opt::Fov,
-                        Low,
-                        "Field of view. Wider shows more terrain at once.",
-                    ),
-                ],
-                vec![
-                    v(Opt::ViewBobbing, None, "Sways the view while walking."),
-                    v(Opt::AttackIndicator, None, "Shows attack cooldown."),
-                    v(Opt::Autosave, None, "Shows when the world saves."),
-                ],
+                        "Sets the options below together. Changing one makes it Custom.",
+                    )],
+                ),
+                (
+                    "Distance",
+                    vec![
+                        v(
+                            Opt::RenderDistance,
+                            High,
+                            "Full-detail terrain range. LOD Distance can extend local worlds farther.",
+                        ),
+                        h(
+                            H::LodDistance,
+                            Medium,
+                            "Coarse distant terrain in local worlds. Integrated GPUs stop at 128 chunks.",
+                        ),
+                        h(H::FarDetail, Medium, far),
+                        v(
+                            Opt::SimulationDistance,
+                            Medium,
+                            "How far mobs, crops and machines keep working. CPU time.",
+                        ),
+                        v(Opt::Gamma, None, "Brightens dark places."),
+                    ],
+                ),
+                (
+                    "Display",
+                    vec![
+                        v(Opt::GuiScale, None, "Size of menus and the HUD."),
+                        v(Opt::Fullscreen, None, "Fills the screen (borderless)."),
+                        v(
+                            Opt::Vsync,
+                            None,
+                            "Waits for the display's refresh: no tearing, a little latency.",
+                        ),
+                        v(
+                            Opt::MaxFps,
+                            None,
+                            "Caps frames per second; a cap saves power and heat.",
+                        ),
+                        v(
+                            Opt::InactivityFps,
+                            None,
+                            "Lowers the frame rate when minimised, or idle too.",
+                        ),
+                        v(
+                            Opt::Fov,
+                            Low,
+                            "Field of view. Wider shows more terrain at once.",
+                        ),
+                    ],
+                ),
+                (
+                    "Interface",
+                    vec![
+                        v(Opt::ViewBobbing, None, "Sways the view while walking."),
+                        v(Opt::AttackIndicator, None, "Shows attack cooldown."),
+                        v(Opt::Autosave, None, "Shows when the world saves."),
+                    ],
+                ),
             ],
         ),
         (
             Page::Quality,
             vec![
-                vec![
-                    v(
-                        Opt::Clouds,
-                        Low,
-                        "Cloud layer: off, flat (fast) or 3D (fancy).",
-                    ),
-                    v(Opt::CloudRange, Low, "How far clouds reach, in chunks."),
-                    h(H::Sky, Low, "Draws the sky, sun, moon and stars."),
-                    h(
-                        H::Fog,
-                        None,
-                        "Distance fog. Off shows the edge of the loaded world.",
-                    ),
-                    h(H::Weather, High, "Draws rain and snow."),
-                    v(
-                        Opt::WeatherRadius,
-                        Medium,
-                        "How far rain and snow fall around you.",
-                    ),
-                    v(Opt::Particles, Medium, "How many particles effects spawn."),
-                ],
-                vec![
-                    v(
-                        Opt::SmoothLighting,
-                        Low,
-                        "Soft shadows in corners. Costs chunk building time only.",
-                    ),
-                    v(
-                        Opt::BiomeBlend,
-                        Low,
-                        "Blends grass and water colours across biomes when building chunks.",
-                    ),
-                    v(
-                        Opt::EntityDistance,
-                        Medium,
-                        "How far away mobs and items are drawn, as a share of normal.",
-                    ),
-                    v(
-                        Opt::EntityShadows,
-                        Low,
-                        "Round shadows under mobs and items.",
-                    ),
-                    v(Opt::Vignette, None, "Darkens the screen's edges."),
-                    v(Opt::ChunkFade, None, "Fades newly loaded chunks in."),
-                ],
-                vec![
-                    v(
-                        Opt::Mipmaps,
-                        None,
-                        "Smaller copies of block textures for distant terrain: less shimmer.",
-                    ),
-                    v(
-                        Opt::CutoutLeaves,
-                        Medium,
-                        "Leaves with see-through gaps. Off draws them solid.",
-                    ),
-                    v(
-                        Opt::ImprovedTransparency,
-                        Medium,
-                        "Sorts water and glass more exactly behind each other.",
-                    ),
-                    h(
-                        H::AnimatedTextures,
-                        Low,
-                        "Animates water, lava, fire and other moving textures.",
-                    ),
-                    h(
-                        H::DitherCutoutMips,
-                        Low,
-                        "Keeps fine plants in high-res packs from fading far away.",
-                    ),
-                ],
-                vec![
-                    h(
-                        H::ResolutionScale,
-                        High,
-                        "World pixels per screen pixel. Below 100% is faster on the GPU.",
-                    ),
-                    h(
-                        H::Antialiasing,
-                        Medium,
-                        "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.",
-                    ),
-                    h(
-                        H::Upscaling,
-                        High,
-                        "Renders the world smaller and rebuilds it with TAA. Faster, softer.",
-                    ),
-                    h(
-                        H::ScreenshotQuality,
-                        None,
-                        "F2 screenshots at this many times the game's resolution. Higher takes longer.",
-                    ),
-                ],
+                (
+                    "Sky and weather",
+                    vec![
+                        v(
+                            Opt::Clouds,
+                            Low,
+                            "Cloud layer: off, flat (fast) or 3D (fancy).",
+                        ),
+                        v(Opt::CloudRange, Low, "How far clouds reach, in chunks."),
+                        h(H::Sky, Low, "Draws the sky, sun, moon and stars."),
+                        h(
+                            H::Fog,
+                            None,
+                            "Distance fog. Off shows the edge of the loaded world.",
+                        ),
+                        h(H::Weather, High, "Draws rain and snow."),
+                        v(
+                            Opt::WeatherRadius,
+                            Medium,
+                            "How far rain and snow fall around you.",
+                        ),
+                        v(Opt::Particles, Medium, "How many particles effects spawn."),
+                    ],
+                ),
+                (
+                    "Lighting and entities",
+                    vec![
+                        v(
+                            Opt::SmoothLighting,
+                            Low,
+                            "Soft shadows in corners. Costs chunk building time only.",
+                        ),
+                        v(
+                            Opt::BiomeBlend,
+                            Low,
+                            "Blends grass and water colours across biomes when building chunks.",
+                        ),
+                        v(
+                            Opt::EntityDistance,
+                            Medium,
+                            "How far away mobs and items are drawn, as a share of normal.",
+                        ),
+                        v(
+                            Opt::EntityShadows,
+                            Low,
+                            "Round shadows under mobs and items.",
+                        ),
+                        v(Opt::Vignette, None, "Darkens the screen's edges."),
+                        v(Opt::ChunkFade, None, "Fades newly loaded chunks in."),
+                    ],
+                ),
+                (
+                    "Textures",
+                    vec![
+                        v(
+                            Opt::Mipmaps,
+                            None,
+                            "Smaller copies of block textures for distant terrain: less shimmer.",
+                        ),
+                        v(
+                            Opt::CutoutLeaves,
+                            Medium,
+                            "Leaves with see-through gaps. Off draws them solid.",
+                        ),
+                        v(
+                            Opt::ImprovedTransparency,
+                            Medium,
+                            "Sorts water and glass more exactly behind each other.",
+                        ),
+                        h(
+                            H::AnimatedTextures,
+                            Low,
+                            "Animates water, lava, fire and other moving textures.",
+                        ),
+                        h(
+                            H::DitherCutoutMips,
+                            Low,
+                            "Keeps fine plants in high-res packs from fading far away.",
+                        ),
+                    ],
+                ),
+                (
+                    "Image",
+                    vec![
+                        h(
+                            H::ResolutionScale,
+                            High,
+                            "World pixels per screen pixel. Below 100% is faster on the GPU.",
+                        ),
+                        h(
+                            H::Antialiasing,
+                            Medium,
+                            "Smooths jagged edges. FXAA: softer. TAA: smoothest, moving things may trail.",
+                        ),
+                        h(
+                            H::Upscaling,
+                            High,
+                            "Renders the world smaller and rebuilds it with TAA. Faster, softer.",
+                        ),
+                        h(
+                            H::ScreenshotQuality,
+                            None,
+                            "F2 screenshots at this many times the game's resolution. Higher takes longer.",
+                        ),
+                    ],
+                ),
             ],
         ),
         (
             Page::Performance,
             vec![
-                vec![
-                    v(
-                        Opt::ChunkBuilder,
-                        Low,
-                        "Which chunk rebuilds wait for the frame: none, nearby or yours.",
-                    ),
-                    h(
-                        H::ChunkUpdates,
-                        Low,
-                        "Meshed sections uploaded per frame. Lower is smoother while loading.",
-                    ),
-                    h(
-                        H::UploadBudget,
-                        Low,
-                        "Mesh data sent to the GPU per frame. Lower is smoother while loading.",
-                    ),
-                    h(
-                        H::Workers,
+                (
+                    "Chunk loading",
+                    vec![
+                        v(
+                            Opt::ChunkBuilder,
+                            Low,
+                            "Which chunk rebuilds wait for the frame: none, nearby or yours.",
+                        ),
+                        h(
+                            H::ChunkUpdates,
+                            Low,
+                            "Meshed sections uploaded per frame. Lower is smoother while loading.",
+                        ),
+                        h(
+                            H::UploadBudget,
+                            Low,
+                            "Mesh data sent to the GPU per frame. Lower is smoother while loading.",
+                        ),
+                        h(
+                            H::Workers,
+                            None,
+                            "Threads that generate, light and mesh chunks. Next start.",
+                        ),
+                    ],
+                ),
+                (
+                    "Culling",
+                    vec![
+                        h(
+                            H::CaveCulling,
+                            Saves,
+                            "Skips terrain hidden behind closed sections. Off costs a lot.",
+                        ),
+                        h(
+                            H::EntityCulling,
+                            None,
+                            "Hides models behind opaque blocks. Async checks off-thread; entities tick.",
+                        ),
+                        h(
+                            H::LeafCulling,
+                            Saves,
+                            "Draws or drops leaf faces inside canopies. Off keeps vanilla's fancy leaves.",
+                        ),
+                        h(
+                            H::ShadowCache,
+                            Saves,
+                            "Reuses the pack shadow map when sun, view and world match. Off by default.",
+                        ),
+                    ],
+                ),
+                (
+                    "Power",
+                    vec![h(
+                        H::BatteryMode,
                         None,
-                        "Threads that generate, light and mesh chunks. Next start.",
-                    ),
-                ],
-                vec![
-                    h(
-                        H::CaveCulling,
-                        Saves,
-                        "Skips terrain hidden behind closed sections. Off costs a lot.",
-                    ),
-                    h(
-                        H::EntityCulling,
-                        None,
-                        "Hides models behind opaque blocks. Async checks off-thread; entities tick.",
-                    ),
-                    h(
-                        H::LeafCulling,
-                        Saves,
-                        "Draws or drops leaf faces inside canopies. Off keeps vanilla's fancy leaves.",
-                    ),
-                    h(
-                        H::ShadowCache,
-                        Saves,
-                        "Reuses the pack shadow map when sun, view and world match. Off by default.",
-                    ),
-                ],
-                vec![h(
-                    H::BatteryMode,
-                    None,
-                    "60 FPS cap (30 in menus or unfocused), half the workers: less power.",
-                )],
+                        "60 FPS cap (30 in menus or unfocused), half the workers: less power.",
+                    )],
+                ),
             ],
         ),
         (
             Page::Advanced,
             vec![
-                vec![
-                    h(
-                        H::PresentMode,
+                (
+                    "Frames",
+                    vec![
+                        h(
+                            H::PresentMode,
+                            None,
+                            "How frames reach the screen while VSync is off.",
+                        ),
+                        h(
+                            H::Pacing,
+                            None,
+                            "Efficient sleeps until the next frame; Precise spins, like vanilla.",
+                        ),
+                        h(
+                            H::GraphicsApi,
+                            None,
+                            "Vulkan, then DirectX 12 (Windows) or OpenGL (Linux) where it fails. Next start.",
+                        ),
+                    ],
+                ),
+                (
+                    "Overlay",
+                    vec![h(
+                        H::Overlay,
                         None,
-                        "How frames reach the screen while VSync is off.",
-                    ),
-                    h(
-                        H::Pacing,
-                        None,
-                        "Efficient sleeps until the next frame; Precise spins, like vanilla.",
-                    ),
-                    h(
-                        H::GraphicsApi,
-                        None,
-                        "Vulkan, then DirectX 12 (Windows) or OpenGL (Linux) where it fails. Next start.",
-                    ),
-                ],
-                vec![h(
-                    H::Overlay,
-                    None,
-                    "Frame rate and frame times over the game, with a graph.",
-                )],
+                        "Frame rate and frame times over the game, with a graph.",
+                    )],
+                ),
             ],
         ),
         (
             Page::Hdr,
             vec![
-                vec![
-                    h(
-                        H::Hdr,
+                (
+                    "Output",
+                    vec![
+                        h(
+                            H::Hdr,
+                            None,
+                            "Lava, fire and sunlight shine brighter than white. Needs an HDR display.",
+                        ),
+                        h(
+                            H::HdrCalibrate,
+                            None,
+                            "Sets the three below full screen, one test picture at a time.",
+                        ),
+                    ],
+                ),
+                (
+                    "Brightness",
+                    vec![
+                        h(
+                            H::HdrBlackLevel,
+                            None,
+                            "Your display's darkest black. 0 for OLED; LCDs glow a little.",
+                        ),
+                        h(
+                            H::HdrPeak,
+                            None,
+                            "How bright highlights get. Auto: the peak your system reports.",
+                        ),
+                        h(
+                            H::HdrPaperWhite,
+                            None,
+                            "How bright white paper and menus look. Auto: your desktop's white.",
+                        ),
+                        h(
+                            H::HdrUiBrightness,
+                            None,
+                            "How bright the HUD and menus are, against paper white.",
+                        ),
+                    ],
+                ),
+                (
+                    "Shortcut",
+                    vec![h(
+                        H::HdrKey,
                         None,
-                        "Lava, fire and sunlight shine brighter than white. Needs an HDR display.",
-                    ),
-                    h(
-                        H::HdrCalibrate,
-                        None,
-                        "Sets the three below full screen, one test picture at a time.",
-                    ),
-                ],
-                vec![
-                    h(
-                        H::HdrBlackLevel,
-                        None,
-                        "Your display's darkest black. 0 for OLED; LCDs glow a little.",
-                    ),
-                    h(
-                        H::HdrPeak,
-                        None,
-                        "How bright highlights get. Auto: the peak your system reports.",
-                    ),
-                    h(
-                        H::HdrPaperWhite,
-                        None,
-                        "How bright white paper and menus look. Auto: your desktop's white.",
-                    ),
-                    h(
-                        H::HdrUiBrightness,
-                        None,
-                        "How bright the HUD and menus are, against paper white.",
-                    ),
-                ],
-                vec![h(
-                    H::HdrKey,
-                    None,
-                    "A key that opens this screen from the game. Not bound at first.",
-                )],
+                        "A key that opens this screen from the game. Not bound at first.",
+                    )],
+                ),
             ],
         ),
     ];
     // Only Windows and Linux have more than one graphics API.
     if cfg!(target_os = "macos") {
-        for (_, blocks) in &mut pages {
-            for block in blocks {
-                block.retain(|r| r.item != Item::Horizon(H::GraphicsApi));
+        for (_, groups) in &mut pages {
+            for (_, rows) in groups {
+                rows.retain(|r| r.item != Item::Horizon(H::GraphicsApi));
             }
         }
     }
@@ -936,63 +994,71 @@ pub enum Target {
     Done,
 }
 
-/// A line of the list at `y` in its content: a page's header or one of its settings.
+/// A line of the list at `y` in its content: a page's name (only while
+/// searching, which shows every page), a group's name with the height of the
+/// panel its rows sit on, or a setting.
 #[derive(Clone, Copy)]
 struct Line {
     y: f32,
     page: Page,
+    group: Option<(&'static str, f32)>,
     setting: Option<Setting>,
 }
+impl Line {
+    fn h(&self) -> f32 {
+        match (self.setting, self.group) {
+            (Some(_), _) => style::ROW,
+            (None, Some(_)) => style::GROUP_ROW,
+            (None, None) => style::PAGE_ROW,
+        }
+    }
+}
 
-/// The screen's parts in GUI pixels: the title, the tabs, the panel (the
-/// search field, the list and its scroller), the description under it and the
-/// buttons along the foot. `list_x`, `list_w`, `top` and `bottom` are the
-/// list's view.
+/// The screen's parts in GUI pixels. Down the left: the mark, the search
+/// field, the page list, and Undo and Done at the foot. On the right: the
+/// plate with the open page's name and its list, and the strip under it that
+/// describes the hovered setting. `list_x`, `list_w`, `top` and `bottom` are
+/// the list's view.
 #[derive(Clone, Copy, Debug)]
 struct Columns {
-    x: f32,
-    w: f32,
-    panel_y: f32,
-    panel_h: f32,
+    side_x: f32,
+    side_y: f32,
+    plate: [f32; 4],
+    dock: [f32; 4],
     list_x: f32,
     list_w: f32,
     top: f32,
     bottom: f32,
-    info_y: f32,
-    foot_y: f32,
 }
 impl Columns {
     fn of(w: f32, h: f32) -> Self {
-        let pw = (w - 16.0).min(400.0).floor();
-        let x = ((w - pw) / 2.0).floor();
-        // The title's room goes to the list on a short screen; the tabs say where you are.
-        let panel_y = if h >= style::TITLED { 40.0 } else { 22.0 };
-        let foot_y = h - 6.0 - style::BUTTON_H;
-        let info_y = foot_y - 4.0 - style::INFO_H;
-        let panel_h = info_y - 4.0 - panel_y;
-        let list_x = x + 4.0;
+        let side_w = style::CONTROL_W;
+        let gap = if w >= 560.0 { 16.0 } else { 8.0 };
+        let pw = (w - 16.0 - side_w - gap).min(432.0).floor();
+        let side_x = ((w - side_w - gap - pw) / 2.0).floor();
+        let px = side_x + side_w + gap;
+        // A short screen (a 720p window at scale 3) gives the margin to the list.
+        let side_y = if h >= style::TITLED { 24.0 } else { 8.0 };
+        let dock = [px, h - 8.0 - style::DOCK_H, pw, style::DOCK_H];
+        let plate = [px, side_y, pw, dock[1] - 4.0 - side_y];
+        let list_x = px + 8.0;
         Self {
-            x,
-            w: pw,
-            panel_y,
-            panel_h,
+            side_x,
+            side_y,
+            plate,
+            dock,
             list_x,
-            list_w: pw - 8.0 - style::SCROLLER_W - 2.0,
-            top: panel_y + 7.0 + style::SEARCH_H + 5.0,
-            bottom: panel_y + panel_h - 5.0,
-            info_y,
-            foot_y,
+            list_w: pw - 16.0 - style::SCROLLER_W - 2.0,
+            top: side_y + 30.0,
+            bottom: plate[1] + plate[3] - 6.0,
         }
     }
-    fn panel(&self) -> [f32; 4] {
-        [self.x, self.panel_y, self.w, self.panel_h]
-    }
-    /// The search field, sunk into the top of the panel.
+    /// The search field, under the mark.
     fn search(&self) -> [f32; 4] {
         [
-            self.x + 7.0,
-            self.panel_y + 7.0,
-            self.w - 14.0,
+            self.side_x,
+            self.side_y + 26.0,
+            style::CONTROL_W,
             style::SEARCH_H,
         ]
     }
@@ -1006,31 +1072,30 @@ impl Columns {
         self.bottom - self.top >= 40.0
     }
     fn bar_x(&self) -> f32 {
-        self.x + self.w - 4.0 - style::SCROLLER_W
+        self.plate[0] + self.plate[2] - 8.0 - style::SCROLLER_W
     }
-    /// A page's tab, along the top of the panel.
+    /// A page in the page list, under the search field.
     fn page(&self, i: usize) -> [f32; 4] {
-        let tw = (self.w / Page::ALL.len() as f32).floor();
         [
-            self.x + i as f32 * tw,
-            self.panel_y - style::TAB_H + 2.0,
-            tw,
-            style::TAB_H,
+            self.side_x,
+            self.side_y + 56.0 + i as f32 * 18.0,
+            style::CONTROL_W,
+            16.0,
         ]
     }
-    /// Done (`0`), and Undo beside it (`1`).
+    /// Done (`0`), and Undo over it (`1`): under the page list, level with the strip.
     fn button(&self, i: usize) -> [f32; 4] {
-        let bw = style::BUTTON_W.min((self.w - 8.0) / 2.0).floor();
-        let cx = (self.x + self.w / 2.0).floor();
-        let x = if i == 0 { cx + 4.0 } else { cx - 4.0 - bw };
-        [x, self.foot_y, bw, style::BUTTON_H]
-    }
-    fn info(&self) -> [f32; 4] {
-        [self.x, self.info_y, self.w, style::INFO_H]
+        let foot = self.dock[1] + self.dock[3] - style::BUTTON_H;
+        let y = if i == 0 {
+            foot
+        } else {
+            foot - 4.0 - style::BUTTON_H
+        };
+        [self.side_x, y, style::CONTROL_W, style::BUTTON_H]
     }
     /// A row's control column: its button, tick box or slider.
     fn track(&self) -> (f32, f32) {
-        let x = self.list_x + self.list_w - style::PAD - style::CONTROL_W;
+        let x = self.list_x + self.list_w - style::INSET - style::CONTROL_W;
         (x, style::CONTROL_W)
     }
     /// A slider's value for the pointer at `x`: the handle's middle follows it.
@@ -1074,10 +1139,10 @@ pub struct GraphicsUi {
     /// The key binding the options screen is waiting on (`Action::BindKey`).
     pub binding: Option<&'static str>,
     pub search: ui::EditBox,
-    /// The page last picked in the page list: current until the list scrolls.
+    /// The page the plate shows, alone, while nothing is searched.
+    page: Page,
+    /// While searching, the page last picked in the page list: current until the list scrolls.
     picked: Option<Page>,
-    /// The page to scroll to once the screen lays out.
-    opening: Option<Page>,
     /// The settings as the screen found them, for Undo, and whether they changed since.
     before: Option<Box<Settings>>,
     pub changed: bool,
@@ -1095,8 +1160,8 @@ impl Default for GraphicsUi {
             can_change_value: false,
             binding: None,
             search,
+            page: Page::General,
             picked: None,
-            opening: None,
             before: None,
             changed: false,
         }
@@ -1112,27 +1177,31 @@ impl GraphicsUi {
     /// The screen opens, at `page`.
     pub fn open(&mut self, page: Page) {
         *self = Self {
-            opening: Some(page),
+            page,
             ..Self::default()
         };
     }
     fn query(&self) -> String {
         self.search.value.trim().to_lowercase()
     }
-    /// The list's lines and its content height: the settings on the screen
-    /// whose name or description has the search in it, under their pages'
-    /// headers, blocks a little apart. Not their values (nor the descriptions
-    /// that follow them), and the row being changed stays whatever it reads
-    /// now: a change mustn't take its row away under the pointer.
+    /// The list's lines and its content height: the open page's settings in
+    /// their groups or, while searching, the settings of every page whose name
+    /// or description has the search in it, under their pages' names. Not
+    /// their values (nor the descriptions that follow them), and the row being
+    /// changed stays whatever it reads now: a change mustn't take its row away
+    /// under the pointer.
     fn lines(&self, s: &Settings) -> (Vec<Line>, f32) {
         let query = self.query();
         let mut lines = Vec::new();
-        let mut y = 0.0;
-        for (page, blocks) in rows() {
-            let blocks: Vec<Vec<Setting>> = blocks
+        let mut y: f32 = 0.0;
+        for (page, groups) in rows() {
+            if query.is_empty() && page != self.page {
+                continue;
+            }
+            let groups: Vec<(&'static str, Vec<Setting>)> = groups
                 .into_iter()
-                .map(|block| {
-                    block
+                .map(|(name, rows)| {
+                    let rows = rows
                         .into_iter()
                         .filter(|r| shown(r.item, s))
                         .filter(|r| {
@@ -1142,59 +1211,82 @@ impl GraphicsUi {
                                 || parts(r.item, s, false).0.to_lowercase().contains(&query)
                                 || lang::get(r.text).to_lowercase().contains(&query)
                         })
-                        .collect::<Vec<_>>()
+                        .collect::<Vec<_>>();
+                    (name, rows)
                 })
-                .filter(|block| !block.is_empty())
+                .filter(|(_, rows)| !rows.is_empty())
                 .collect();
-            if blocks.is_empty() {
+            if groups.is_empty() {
                 continue;
             }
-            if !lines.is_empty() {
-                y += style::PAGE_GAP;
+            if !query.is_empty() {
+                if !lines.is_empty() {
+                    y += style::PAGE_GAP;
+                }
+                lines.push(Line {
+                    y,
+                    page,
+                    group: None,
+                    setting: None,
+                });
+                y += style::PAGE_ROW;
             }
-            lines.push(Line {
-                y,
-                page,
-                setting: None,
-            });
-            y += style::HEADER_ROW;
-            for block in blocks {
-                y += style::BLOCK_GAP;
-                for setting in block {
+            for (name, rows) in groups {
+                lines.push(Line {
+                    y,
+                    page,
+                    group: Some((name, rows.len() as f32 * style::ROW)),
+                    setting: None,
+                });
+                y += style::GROUP_ROW;
+                for setting in rows {
                     lines.push(Line {
                         y,
                         page,
+                        group: None,
                         setting: Some(setting),
                     });
                     y += style::ROW;
                 }
+                y += style::GROUP_GAP;
             }
         }
-        (lines, y)
+        (lines, (y - style::GROUP_GAP).max(0.0))
     }
     /// The columns and the list, with the scroll kept within it.
     fn layout(&mut self, s: &Settings, w: f32, h: f32) -> (Columns, Vec<Line>, f32) {
         let cols = Columns::of(w, h);
         let (lines, content) = self.lines(s);
-        if let Some(page) = self.opening.take() {
-            self.jump(page, &lines, &cols, content);
-        }
         self.scroll.clamp(cols.top, cols.bottom, content);
         (cols, lines, content)
     }
-    fn jump(&mut self, page: Page, lines: &[Line], cols: &Columns, content: f32) {
+    /// Pick `page`: the plate shows it alone or, while searching, scrolls to its matches.
+    fn pick(&mut self, page: Page, lines: &[Line], cols: &Columns, content: f32) {
+        self.page = page;
+        self.scroll.amount = 0.0;
+        if self.query().is_empty() {
+            return;
+        }
         if let Some(line) = lines.iter().find(|l| l.page == page) {
             self.scroll.amount = line.y;
             self.scroll.clamp(cols.top, cols.bottom, content);
             self.picked = Some(page);
         }
     }
-    /// The page the list shows: the one picked, else the topmost line's.
+    /// Whether the page list's `page` has anything to show.
+    fn has(&self, page: Page, lines: &[Line]) -> bool {
+        self.query().is_empty() || lines.iter().any(|l| l.page == page)
+    }
+    /// The page the plate shows: the open one or, while searching, the one
+    /// picked, else the topmost line's.
     fn current(&self, lines: &[Line]) -> Option<Page> {
+        if self.query().is_empty() {
+            return Some(self.page);
+        }
         self.picked.or_else(|| {
             lines
                 .iter()
-                .find(|l| l.y + style::ROW > self.scroll.amount)
+                .find(|l| l.y + l.h() > self.scroll.amount)
                 .map(|l| l.page)
         })
     }
@@ -1269,30 +1361,65 @@ impl GraphicsUi {
         let (cols, lines, content) = self.layout(s, w, h);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
         style::fill(batch, atlas, [0.0, 0.0, w, h], style::VEIL);
-        if h >= style::TITLED {
-            let title = Text::literal(lang::get("Graphics"));
-            ui::centered_text(batch, atlas, &title, 0.0, 8.0, w, style::WHITE);
-        }
-        self.draw_tabs(batch, atlas, &cols, &lines, cursor);
+        let current = self.current(&lines);
+        self.draw_side(batch, atlas, &cols, &lines, current, cursor);
         self.draw_search(batch, atlas, &cols, cursor);
 
-        // The list, clipped to its view.
+        // The plate, with the open page's name (or the search's) over its list.
+        let [px, py, pw, _] = cols.plate;
+        style::panel(batch, atlas, cols.plate);
+        let query = self.search.value.trim();
+        let heading = if query.is_empty() {
+            lang::get(current.unwrap_or(self.page).name())
+        } else {
+            lang::get("Results for \"%s\"").replace("%s", query)
+        };
+        let heading = Text::literal(style::fit(atlas, &heading, pw - 24.0));
+        batch.text_styled(atlas, &heading, px + 12.0, py + 10.0, style::WHITE, true);
+        style::fill(
+            batch,
+            atlas,
+            [px + 8.0, py + 24.0, pw - 16.0, 1.0],
+            style::BEVEL,
+        );
+
+        // The list, clipped to its view: each group's panel, then its rows on it.
         let over_list = cursor.1 >= cols.top && cursor.1 < cols.bottom;
         let start = batch.vertices.len();
         let mark = crate::widgets::targets_mark();
         let mut described = None;
+        let shows = |y: f32, h: f32| y + h > cols.top && y < cols.bottom;
         for line in &lines {
             let y = self.row_y(&cols, line);
-            if y + style::ROW <= cols.top || y >= cols.bottom {
+            if let Some((_, panel)) = line.group
+                && shows(y + style::GROUP_ROW, panel)
+            {
+                let rect = [cols.list_x, y + style::GROUP_ROW, cols.list_w, panel];
+                style::group(batch, atlas, rect);
+            }
+        }
+        // A group's first row, which has no rule over it.
+        let mut first = false;
+        for line in &lines {
+            let y = self.row_y(&cols, line);
+            let after_name = std::mem::replace(&mut first, line.group.is_some());
+            if !shows(y, line.h()) {
                 continue;
             }
             let Some(setting) = line.setting else {
-                let name = Text::literal(lang::get(line.page.name()));
-                let rect = [cols.list_x, y, cols.list_w, style::HEADER_ROW];
-                style::header(batch, atlas, &name, rect);
+                let (name, color, dy) = match line.group {
+                    Some((name, _)) => (name, style::MUTED, 3.0),
+                    None => (line.page.name(), style::ACCENT, 4.0),
+                };
+                let name = Text::literal(lang::get(name));
+                batch.text_styled(atlas, &name, cols.list_x + 2.0, y + dy, color, true);
                 continue;
             };
             let item = setting.item;
+            if !after_name {
+                let rule = [cols.list_x + 8.0, y, cols.list_w - 16.0, 1.0];
+                style::fill(batch, atlas, rule, style::PANEL);
+            }
             let rect = [cols.list_x, y, cols.list_w, style::ROW];
             let hover = over_list && ui::hovered(cursor, rect[0], rect[1], rect[2], rect[3]);
             let focused = self.focus == Some(Target::Item(item));
@@ -1301,6 +1428,17 @@ impl GraphicsUi {
                 described = Some(setting);
             }
             self.draw_row(batch, atlas, s, &cols, item, y, hover, focused);
+        }
+        if lines.is_empty() {
+            let none = Text::literal(lang::get("No settings match."));
+            batch.text_styled(
+                atlas,
+                &none,
+                cols.list_x + 2.0,
+                cols.top + 4.0,
+                style::MUTED,
+                true,
+            );
         }
         batch.clip_since(
             start,
@@ -1311,48 +1449,55 @@ impl GraphicsUi {
         );
         crate::widgets::clip_targets(mark, cols.top, cols.bottom);
         self.draw_scroller(batch, atlas, &cols, content);
-        self.draw_description(batch, atlas, s, &cols, described);
+        self.draw_dock(batch, atlas, s, &cols, described, current);
 
         let hovered = |[x, y, w, h]: [f32; 4]| ui::hovered(cursor, x, y, w, h);
-        let foot = [
-            (cols.button(0), "Done", Target::Done, true),
-            (cols.button(1), "Undo", Target::Undo, self.changed),
-        ];
-        for (rect, label, target, live) in foot {
+        let mut foot = vec![(cols.button(0), "Done", Target::Done)];
+        // Undo only once there is something to undo.
+        if self.changed {
+            foot.push((cols.button(1), "Undo", Target::Undo));
+        }
+        for (rect, label, target) in foot {
             let label = Text::literal(lang::get(label));
             let focused = self.focus == Some(target);
-            let hover = live && (hovered(rect) || focused);
-            crate::widgets::record(&label.plain(), rect, live);
+            let hover = hovered(rect) || focused;
+            crate::widgets::record(&label.plain(), rect, true);
             crate::widgets::narratable(|| {
-                crate::widgets::Narratable::button(label.plain(), rect, live)
+                crate::widgets::Narratable::button(label.plain(), rect, true)
                     .hovered(hovered(rect))
                     .focused(focused)
             });
-            crate::widgets::widget_cursor(hovered(rect), live);
-            if live {
-                crate::widgets::target(rect);
-            }
+            crate::widgets::widget_cursor(hovered(rect), true);
+            crate::widgets::target(rect);
             let primary = target == Target::Done;
-            style::button(batch, atlas, rect, &label, (hover, live, primary));
+            style::button(batch, atlas, rect, &label, (hover, true, primary));
         }
     }
-    fn draw_tabs(
+    /// The mark over the search field, and the page list: the open page on a
+    /// plate with the accent's bar beside it, the others bare text.
+    fn draw_side(
         &self,
         batch: &mut HudBatch,
         atlas: &HudAtlas,
         cols: &Columns,
         lines: &[Line],
+        current: Option<Page>,
         cursor: (f32, f32),
     ) {
-        let current = self.current(lines);
+        let (x, y) = (cols.side_x, cols.side_y);
+        style::fill(batch, atlas, [x, y + 2.0, 6.0, 6.0], style::ACCENT);
+        let horizon = Text::literal("Horizon");
+        batch.text_styled(atlas, &horizon, x + 10.0, y, style::WHITE, true);
+        let title = Text::literal(lang::get("Graphics"));
+        batch.text_styled(atlas, &title, x, y + 10.0, style::MUTED, true);
         for (i, page) in Page::ALL.into_iter().enumerate() {
             let rect = cols.page(i);
-            let [x, y, w, h] = rect;
-            let has = lines.iter().any(|l| l.page == page);
+            let [px, py, pw, ph] = rect;
+            let has = self.has(page, lines);
             let open = current == Some(page);
             let name = Text::literal(lang::get(page.name()));
             crate::widgets::record(&name.plain(), rect, has);
-            let hover = has && ui::hovered(cursor, x, y, w, h);
+            let hover = has && ui::hovered(cursor, px, py, pw, ph);
             let focused = self.focus == Some(Target::Page(page));
             crate::widgets::narratable(|| {
                 crate::widgets::Narratable::button(name.plain(), rect, has)
@@ -1363,34 +1508,20 @@ impl GraphicsUi {
             if has {
                 crate::widgets::target_as(rect, crate::widgets::Kind::Tab(open));
             }
-            if !open {
-                style::tab(batch, atlas, [x + 1.0, y + 3.0, w - 2.0, h - 3.0], hover);
+            if open {
+                style::fill(batch, atlas, rect, style::OPEN);
+                style::fill(batch, atlas, [px, py, 2.0, ph], style::ACCENT);
             }
-            let color = match (open, has) {
+            let color = match (open || hover, has) {
                 (true, _) => style::WHITE,
                 (false, true) => style::SOFT,
                 (false, false) => style::MUTED,
             };
-            let ty = y + if open { 6.0 } else { 8.0 };
-            ui::centered_text(batch, atlas, &name, x + 2.0, ty, w - 4.0, color);
-        }
-        // The panel, then the open tab running into it.
-        style::panel(batch, atlas, cols.panel());
-        if let Some(i) = current.and_then(|p| Page::ALL.iter().position(|q| *q == p)) {
-            let [x, y, w, h] = cols.page(i);
-            style::open_tab(batch, atlas, [x, y, w, h]);
-            let name = Text::literal(lang::get(Page::ALL[i].name()));
-            ui::centered_text(batch, atlas, &name, x + 2.0, y + 6.0, w - 4.0, style::WHITE);
-        }
-        for (i, page) in Page::ALL.into_iter().enumerate() {
-            if self.focus == Some(Target::Page(page)) {
-                let [x, y, w, h] = cols.page(i);
-                style::ring(
-                    batch,
-                    atlas,
-                    [x + 1.0, y + 1.0, w - 2.0, h - 1.0],
-                    style::WHITE,
-                );
+            let ty = py + ((ph - 8.0) / 2.0).floor();
+            let name = Text::literal(style::fit(atlas, &name.plain(), pw - 12.0));
+            batch.text_styled(atlas, &name, px + 8.0, ty, color, true);
+            if focused {
+                style::ring(batch, atlas, rect, style::WHITE);
             }
         }
     }
@@ -1451,19 +1582,17 @@ impl GraphicsUi {
         let label = item.label(s).plain();
         let (name, value) = parts(item, s, self.binding.is_some());
         let (tx, tw) = cols.track();
+        let right = tx + tw;
         let control = [
             tx,
             y + (style::ROW - style::CONTROL_H) / 2.0,
             tw,
             style::CONTROL_H,
         ];
-        if live && (hover || focused || self.dragging == Some(item)) {
-            style::fill(
-                batch,
-                atlas,
-                [rect[0] + 2.0, y, rect[2] - 4.0, style::ROW],
-                style::RAISED,
-            );
+        let active = live && (hover || focused || self.dragging == Some(item));
+        if active {
+            let lit = [rect[0] + 2.0, y + 1.0, rect[2] - 4.0, style::ROW - 2.0];
+            style::fill(batch, atlas, lit, style::HOVER);
         }
         crate::widgets::widget_cursor(hover, live);
         let slider = item.slider(s);
@@ -1490,39 +1619,54 @@ impl GraphicsUi {
             crate::widgets::target_as(rect, kind);
         }
         let color = if live { style::WHITE } else { style::MUTED };
+        let soft = if live { style::SOFT } else { style::MUTED };
         let ty = y + ((style::ROW - 8.0) / 2.0).floor();
         let lit = live && (hover || self.dragging == Some(item));
+        let left = rect[0] + style::INSET;
         // An action (Calibrate...) is a button across the row, as vanilla's lists have them.
         if switch.is_none() && slider.is_none() && value.is_none() {
-            let wide = [
-                rect[0] + style::PAD,
-                control[1],
-                rect[2] - 2.0 * style::PAD,
-                style::CONTROL_H,
-            ];
+            let wide = [left, control[1], right - left, style::CONTROL_H];
             style::button(batch, atlas, wide, &Text::literal(name), (lit, live, false));
         } else {
-            // The name, cut short before the control where a translation runs long.
-            let room = tx - 4.0 - rect[0] - style::PAD;
-            let shown = Text::literal(style::fit(atlas, &name, room));
-            batch.text_styled(atlas, &shown, rect[0] + style::PAD, ty, color, true);
+            let value = value.unwrap_or_default();
+            let vw = atlas.font.width(&value);
+            // Where the control starts, and the value's text for a slider at rest.
+            let start = match (switch, slider) {
+                (Some(_), _) => right - style::CONTROL_H,
+                (None, Some(_)) if active => tx - 8.0 - vw,
+                (None, Some(_)) => right - vw,
+                (None, None) => right - vw - 18.0,
+            };
             match (switch, slider) {
-                (Some(on), _) => style::checkbox(batch, atlas, tx + tw, y, on, live),
+                (Some(on), _) => style::checkbox(batch, atlas, right, y, on, live),
+                // A slider shows its track while it is pointed at, focused or held.
                 (None, Some(position)) => {
-                    let value = Text::literal(value.unwrap_or_default());
-                    style::slider(batch, atlas, control, &value, position, (lit, live));
+                    let value = Text::literal(value);
+                    batch.text_styled(atlas, &value, start, ty, soft, true);
+                    if active {
+                        style::slider(batch, atlas, control, position, (lit, live));
+                    }
                 }
                 (None, None) => {
-                    let value = Text::literal(value.unwrap_or_default());
-                    style::button(batch, atlas, control, &value, (lit, live, false));
+                    let value = Text::literal(value);
+                    style::cycler(
+                        batch,
+                        atlas,
+                        [start, y + 3.0, vw + 18.0, 14.0],
+                        &value,
+                        (lit, live),
+                    );
                 }
             }
+            // The name, cut short before the control where a translation runs long.
+            let shown = Text::literal(style::fit(atlas, &name, start - 6.0 - left));
+            batch.text_styled(atlas, &shown, left, ty, color, true);
         }
         if focused {
             style::ring(
                 batch,
                 atlas,
-                [rect[0] + 2.0, y, rect[2] - 4.0, style::ROW],
+                [rect[0] + 1.0, y, rect[2] - 2.0, style::ROW],
                 style::WHITE,
             );
         }
@@ -1545,55 +1689,48 @@ impl GraphicsUi {
         );
         style::thumb(batch, atlas, [x, y, style::SCROLLER_W, bar]);
     }
-    /// The hovered or focused setting under the panel, in vanilla's tooltip:
-    /// its name and cost, then what it does (or why it can't be used now).
-    fn draw_description(
+    /// The strip under the plate: the hovered or focused setting's name and
+    /// cost, then what it does (or why it can't be used now); with none, what
+    /// the open page holds.
+    fn draw_dock(
         &self,
         batch: &mut HudBatch,
         atlas: &HudAtlas,
         s: &Settings,
         cols: &Columns,
         setting: Option<Setting>,
+        current: Option<Page>,
     ) {
-        let [x, y, w, _] = cols.info();
-        style::tooltip_box(batch, atlas, cols.info());
-        let left = x + style::PAD;
-        let Some(setting) = setting else {
-            let hint = Text::literal(lang::get(
-                "Select a setting to see what it does and what it costs.",
-            ));
-            batch.text_styled(atlas, &hint, left, y + 13.0, style::MUTED, true);
-            return;
+        let [x, y, w, _] = cols.dock;
+        style::panel(batch, atlas, cols.dock);
+        let left = x + 12.0;
+        let (text, color) = match setting {
+            Some(setting) => {
+                let (name, _) = parts(setting.item, s, false);
+                let cost = lang::get(setting.cost.label());
+                let line = style::fit(atlas, &format!("{name} · {cost}"), w - 32.0);
+                let line = Text::literal(line).with_color(setting.cost.rgb());
+                let square = [left, y + 10.0, 4.0, 4.0];
+                style::fill(batch, atlas, square, style::cost_color(setting.cost));
+                batch.text_styled(atlas, &line, left + 8.0, y + 8.0, style::WHITE, true);
+                match setting.item.blocked(s) {
+                    Some(why) => (lang::get(why), style::MUTED),
+                    None => (
+                        lang::get(description(setting.item, s, setting.text)),
+                        style::GREY,
+                    ),
+                }
+            }
+            None => {
+                let Some(page) = current else { return };
+                let name = Text::literal(lang::get(page.name()));
+                batch.text_styled(atlas, &name, left, y + 8.0, style::WHITE, true);
+                (lang::get(page.about()), style::GREY)
+            }
         };
-        let (name, _) = parts(setting.item, s, false);
-        batch.text_styled(
-            atlas,
-            &Text::literal(name),
-            left,
-            y + 4.0,
-            style::WHITE,
-            true,
-        );
-        let cost = style::cost_line(setting.cost);
-        let cw = atlas.font.width_text(&cost);
-        batch.text_styled(
-            atlas,
-            &cost,
-            x + w - style::PAD - cw,
-            y + 4.0,
-            style::WHITE,
-            true,
-        );
-        let (text, color) = match setting.item.blocked(s) {
-            Some(why) => (lang::get(why), style::MUTED),
-            None => (
-                lang::get(description(setting.item, s, setting.text)),
-                style::GREY,
-            ),
-        };
-        let lines = atlas.font.split(&Text::literal(text), w - 2.0 * style::PAD);
+        let lines = atlas.font.split(&Text::literal(text), w - 24.0);
         for (i, line) in lines.iter().take(2).enumerate() {
-            batch.text_styled(atlas, line, left, y + 15.0 + i as f32 * 9.0, color, true);
+            batch.text_styled(atlas, line, left, y + 20.0 + i as f32 * 10.0, color, true);
         }
     }
 
@@ -1663,9 +1800,9 @@ impl GraphicsUi {
             return vec![Action::ButtonClick, Action::Changed];
         }
         for (i, page) in Page::ALL.into_iter().enumerate() {
-            if at(cols.page(i)) && lines.iter().any(|l| l.page == page) {
+            if at(cols.page(i)) && self.has(page, &lines) {
                 self.focus = Some(Target::Page(page));
-                self.jump(page, &lines, &cols, content);
+                self.pick(page, &lines, &cols, content);
                 return vec![Action::ButtonClick];
             }
         }
@@ -1755,7 +1892,7 @@ impl GraphicsUi {
     ) -> Vec<(Target, [f32; 4])> {
         let mut out = vec![(Target::Search, cols.search())];
         for (i, page) in Page::ALL.into_iter().enumerate() {
-            if lines.iter().any(|l| l.page == page) {
+            if self.has(page, lines) {
                 out.push((Target::Page(page), cols.page(i)));
             }
         }
@@ -1929,7 +2066,7 @@ impl GraphicsUi {
             let actions = match target {
                 Target::Search => Vec::new(),
                 Target::Page(page) => {
-                    self.jump(page, &lines, &cols, content);
+                    self.pick(page, &lines, &cols, content);
                     vec![Action::ButtonClick]
                 }
                 Target::Item(item) if item.slider(s).is_some() => {
@@ -1996,11 +2133,19 @@ mod tests {
     fn items() -> Vec<(Page, Item)> {
         rows()
             .into_iter()
-            .flat_map(|(page, blocks)| blocks.into_iter().flatten().map(move |r| (page, r.item)))
+            .flat_map(|(page, groups)| {
+                groups
+                    .into_iter()
+                    .flat_map(|(_, rows)| rows)
+                    .map(move |r| (page, r.item))
+            })
             .collect()
     }
-    /// Where `item`'s row is on screen now (the list scrolled to it first).
+    /// Where `item`'s row is on screen now (its page open and the list scrolled to it first).
     fn row(ui: &mut GraphicsUi, s: &Settings, item: Item) -> [f32; 4] {
+        if ui.query().is_empty() {
+            ui.page = items().into_iter().find(|(_, i)| *i == item).unwrap().0;
+        }
         let (cols, lines, content) = ui.layout(s, SIZE.0, SIZE.1);
         let line = lines
             .iter()
@@ -2036,56 +2181,65 @@ mod tests {
         for page in Page::ALL {
             assert!(all.iter().any(|(p, _)| *p == page), "{page:?} is empty");
         }
-        for (_, blocks) in rows() {
-            for r in blocks.into_iter().flatten() {
+        for (_, groups) in rows() {
+            for r in groups.into_iter().flat_map(|(_, rows)| rows) {
                 assert!(!r.text.is_empty() && r.text.len() < 80, "{:?}", r.item);
             }
         }
     }
 
     #[test]
-    fn a_picked_page_scrolls_the_list_to_it_and_the_open_tab_follows_the_scroll() {
+    fn a_picked_page_shows_alone_in_its_groups_from_the_top() {
         let mut s = Settings::default();
         let mut ui = GraphicsUi::default();
-        let (cols, lines, _) = ui.layout(&s, SIZE.0, SIZE.1);
-        assert_eq!(ui.current(&lines), Some(Page::General));
-        let [x, y, w, h] = cols.page(1);
+        let settings = |ui: &mut GraphicsUi, s: &Settings| {
+            let (_, lines, _) = ui.layout(s, SIZE.0, SIZE.1);
+            assert!(
+                lines[0].group.is_some(),
+                "the list starts at a group's name"
+            );
+            lines
+                .iter()
+                .filter_map(|l| l.setting.map(|r| (l.page, r.item)))
+                .collect::<Vec<_>>()
+        };
+        // Upscaling shows only with TAA, off by default.
+        let on = |page| -> Vec<(Page, Item)> {
+            items()
+                .into_iter()
+                .filter(|(p, i)| *p == page && *i != Item::Horizon(H::Upscaling))
+                .collect()
+        };
+        assert_eq!(settings(&mut ui, &s), on(Page::General));
+        ui.scroll(&s, SIZE, -3.0);
+        assert!(ui.scroll.amount > 0.0);
+        let [x, y, w, h] = Columns::of(SIZE.0, SIZE.1).page(1);
         assert_eq!(
             press(&mut ui, &mut s, (x + w / 2.0, y + h / 2.0)),
             [Action::ButtonClick]
         );
-        let (cols, lines, _) = ui.layout(&s, SIZE.0, SIZE.1);
-        let header = lines.iter().find(|l| l.page == Page::Quality).unwrap();
-        assert_eq!(ui.row_y(&cols, header), cols.top);
-        assert_eq!(ui.current(&lines), Some(Page::Quality));
-        // Scrolled to the end, then back: the open tab is always a page the list shows.
-        let shows = |ui: &GraphicsUi, cols: &Columns, lines: &[Line], page| {
-            lines.iter().any(|l| {
-                let y = ui.row_y(cols, l);
-                l.page == page && y + style::ROW > cols.top && y < cols.bottom
-            })
-        };
-        for amount in [-1000.0, 3.0, -1.0] {
-            ui.scroll(&s, SIZE, amount);
-            let (cols, lines, _) = ui.layout(&s, SIZE.0, SIZE.1);
-            let open = ui.current(&lines).unwrap();
-            assert!(shows(&ui, &cols, &lines, open), "{open:?} after {amount}");
-        }
-        ui.scroll(&s, SIZE, 1000.0);
+        assert_eq!(settings(&mut ui, &s), on(Page::Quality));
+        assert_eq!(ui.scroll.amount, 0.0);
+        // Groups sit apart: each name follows the gap under the panel before it.
         let (_, lines, _) = ui.layout(&s, SIZE.0, SIZE.1);
-        assert_eq!(ui.current(&lines), Some(Page::General));
-        // Opened at a page (Advanced..., the HDR key), its section is in view.
+        assert_eq!(ui.current(&lines), Some(Page::Quality));
+        let names: Vec<&Line> = lines.iter().filter(|l| l.group.is_some()).collect();
+        assert!(names.len() > 1);
+        for pair in names.windows(2) {
+            let (_, panel) = pair[0].group.unwrap();
+            assert_eq!(
+                pair[1].y,
+                pair[0].y + style::GROUP_ROW + panel + style::GROUP_GAP
+            );
+        }
+        // Opened at a page (Advanced..., the HDR key), it shows that page.
         let mut ui = GraphicsUi::default();
         ui.open(Page::Hdr);
-        let (cols, lines, _) = ui.layout(&s, SIZE.0, SIZE.1);
-        let hdr = lines.iter().find(|l| l.page == Page::Hdr).unwrap();
-        let y = ui.row_y(&cols, hdr);
-        assert!(y >= cols.top && y < cols.bottom);
-        assert_eq!(ui.current(&lines), Some(Page::Hdr));
+        assert_eq!(settings(&mut ui, &s), on(Page::Hdr));
     }
 
     #[test]
-    fn a_720p_window_keeps_the_tabs_and_five_rows() {
+    fn a_720p_window_keeps_the_page_list_the_buttons_and_five_rows() {
         // 1280x720 at GUI scale 3.
         let size = (427.0, 240.0);
         let mut s = Settings::default();
@@ -2094,6 +2248,8 @@ mod tests {
         assert!((cols.bottom - cols.top) / style::ROW >= 5.0);
         let [x, y, w, h] = cols.page(4);
         assert!(y >= 0.0 && x + w <= size.0);
+        // Undo, over Done, stays clear of the page list.
+        assert!(cols.button(1)[1] >= y + h);
         ui.click(&mut s, (x + w / 2.0, y + h / 2.0), size, FB, false, false);
         let (_, lines, _) = ui.layout(&s, size.0, size.1);
         assert_eq!(ui.current(&lines), Some(Page::Hdr));
@@ -2115,6 +2271,7 @@ mod tests {
         let mut s = Settings::default();
         let mut ui = GraphicsUi::default();
         let (cols, all, _) = ui.layout(&s, SIZE.0, SIZE.1);
+        assert!(all.iter().all(|l| l.page == Page::General));
         let [x, y, ..] = cols.search();
         press(&mut ui, &mut s, (x + 4.0, y + 4.0));
         assert!(ui.typing());
@@ -2138,7 +2295,6 @@ mod tests {
             l.setting
                 .is_some_and(|r| r.item == Item::Vanilla(Opt::Vsync))
         }));
-        // The clear button brings every setting back, from the top.
         ui.search.set_value("hdr");
         let [x, y, w, h] = cols.page(4);
         press(&mut ui, &mut s, (x + w / 2.0, y + h / 2.0));
@@ -2148,10 +2304,11 @@ mod tests {
             press(&mut ui, &mut s, (x + 2.0, y + 2.0)),
             [Action::ButtonClick]
         );
+        // The clear button leaves the page picked meanwhile open, alone, from the top.
         let (lines, _) = ui.lines(&s);
-        assert_eq!(lines.len(), all.len());
+        assert!(lines.len() < all.len() && lines.iter().all(|l| l.page == Page::Hdr));
         assert_eq!(ui.scroll.amount, 0.0);
-        assert_eq!(ui.current(&lines), Some(Page::General));
+        assert_eq!(ui.current(&lines), Some(Page::Hdr));
     }
 
     #[test]
@@ -2304,8 +2461,8 @@ mod tests {
         let x = cols.bar_x() + 2.0;
         ui.click(&mut s, (x, cols.top + 5.0), SIZE, FB, false, false);
         assert!(ui.scroll.held());
-        // A 150-high GUI leaves the list under the 40 px the scroller's thumb needs.
-        let short = (SIZE.0, 150.0);
+        // A 130-high GUI leaves the list under the 40 px the scroller's thumb needs.
+        let short = (SIZE.0, 130.0);
         assert!(!Columns::of(short.0, short.1).scrolls());
         assert!(
             ui.click(&mut s, (x, 80.0), short, FB, true, false)
@@ -2318,15 +2475,15 @@ mod tests {
     fn the_wheel_scrolls_and_stops_at_both_ends_without_changing_values() {
         let mut s = Settings::default();
         let mut ui = GraphicsUi::default();
-        s.horizon.chunk_updates = 16;
-        let cu = row(&mut ui, &s, Item::Horizon(H::ChunkUpdates));
+        s.fov = 90.0;
+        let fov = row(&mut ui, &s, Item::Vanilla(Opt::Fov));
         // A slider being changed doesn't take the wheel either: a controller scrolls with it.
-        press(&mut ui, &mut s, (cu[0] + 4.0, cu[1] + 4.0));
+        press(&mut ui, &mut s, (fov[0] + 4.0, fov[1] + 4.0));
         assert!(ui.can_change_value);
         let before = ui.scroll.amount;
         ui.scroll(&s, SIZE, -1.0);
         assert_eq!(ui.scroll.amount, before + 18.0);
-        assert_eq!(s.horizon.chunk_updates, 16);
+        assert_eq!(s.fov, 90.0);
         let (cols, _, content) = ui.layout(&s, SIZE.0, SIZE.1);
         ui.scroll(&s, SIZE, -1000.0);
         assert_eq!(ui.scroll.amount, content - (cols.bottom - cols.top));
@@ -2335,7 +2492,7 @@ mod tests {
     }
 
     #[test]
-    fn the_arrows_cross_a_page_break_and_stay_on_rows_in_view() {
+    fn the_arrows_move_between_rows_in_view_and_over_to_the_page_list() {
         let mut s = Settings::default();
         let mut ui = GraphicsUi::default();
         let in_view = |ui: &mut GraphicsUi, s: &Settings, item| {
@@ -2347,25 +2504,26 @@ mod tests {
             let y = ui.row_y(&cols, line);
             y >= cols.top && y + style::ROW <= cols.bottom
         };
-        // General's last row, against the bottom of the view, then Down: Quality's first.
+        // General's last row, against the bottom of the view, then Up: the row over it.
         let last = Item::Vanilla(Opt::Autosave);
         row(&mut ui, &s, last);
         ui.focus = Some(Target::Item(last));
-        ui.key_modifiers(&mut s, K::ArrowDown, None, false, SIZE, FB);
-        let clouds = Item::Vanilla(Opt::Clouds);
-        assert_eq!(ui.focus, Some(Target::Item(clouds)));
-        assert!(in_view(&mut ui, &s, clouds));
         ui.key_modifiers(&mut s, K::ArrowUp, None, false, SIZE, FB);
-        assert_eq!(ui.focus, Some(Target::Item(last)));
-        // Up from Done: the row at the list's bottom edge, scrolled in by a row at most.
+        let indicator = Item::Vanilla(Opt::AttackIndicator);
+        assert_eq!(ui.focus, Some(Target::Item(indicator)));
+        assert!(in_view(&mut ui, &s, indicator));
+        // Left leaves the plate.
+        ui.key_modifiers(&mut s, K::ArrowLeft, None, false, SIZE, FB);
+        assert!(!matches!(ui.focus, Some(Target::Item(_))), "{:?}", ui.focus);
+        // Up from Done: the page list's last page.
         ui.focus = Some(Target::Done);
-        let before = ui.scroll.amount;
         ui.key_modifiers(&mut s, K::ArrowUp, None, false, SIZE, FB);
-        assert!(matches!(ui.focus, Some(Target::Item(_))), "{:?}", ui.focus);
-        assert!(ui.scroll.amount - before <= style::ROW);
+        assert_eq!(ui.focus, Some(Target::Page(Page::Hdr)));
         // Its row wheeled far out of view: Down takes the first row in view, as it is.
+        ui.focus = Some(Target::Item(Item::Horizon(H::Preset)));
         ui.scroll(&s, SIZE, -1000.0);
         let before = ui.scroll.amount;
+        assert!(before > 0.0);
         ui.key_modifiers(&mut s, K::ArrowDown, None, false, SIZE, FB);
         let Some(Target::Item(item)) = ui.focus else {
             panic!("{:?}", ui.focus)
@@ -2379,15 +2537,18 @@ mod tests {
         let mut s = Settings::default();
         let mut ui = GraphicsUi::default();
         s.horizon.chunk_updates = 10;
-        let mut found = false;
-        for _ in 0..80 {
-            ui.key_modifiers(&mut s, K::Tab, None, false, SIZE, FB);
-            if ui.focus == Some(Target::Item(Item::Horizon(H::ChunkUpdates))) {
-                found = true;
-                break;
-            }
-        }
-        assert!(found && ui.can_change_value);
+        let tab_to = |ui: &mut GraphicsUi, s: &mut Settings, target| {
+            (0..40).any(|_| {
+                ui.key_modifiers(s, K::Tab, None, false, SIZE, FB);
+                ui.focus == Some(target)
+            })
+        };
+        // Tab reaches the page list; Enter opens Performance and Tab goes on into it.
+        assert!(tab_to(&mut ui, &mut s, Target::Page(Page::Performance)));
+        let (actions, _) = ui.key_modifiers(&mut s, K::Enter, None, false, SIZE, FB);
+        assert_eq!(actions, [Action::ButtonClick]);
+        let chunk_updates = Target::Item(Item::Horizon(H::ChunkUpdates));
+        assert!(tab_to(&mut ui, &mut s, chunk_updates) && ui.can_change_value);
         // Tab scrolled its row into view.
         let r = {
             let (cols, lines, _) = ui.layout(&s, SIZE.0, SIZE.1);
@@ -2603,10 +2764,10 @@ mod tests {
         item.cycle(&mut s, true, FB);
         assert_eq!(s.horizon.leaf_culling, LeafCullingMode::Hollow);
 
-        // The three culling settings share one block of the Performance page.
+        // The three culling settings share one group of the Performance page.
         let culling = rows()
             .into_iter()
-            .flat_map(|(page, blocks)| blocks.into_iter().map(move |b| (page, b)))
+            .flat_map(|(page, groups)| groups.into_iter().map(move |(_, b)| (page, b)))
             .find(|(_, b)| b.iter().any(|r| r.item == item))
             .unwrap();
         assert_eq!(culling.0, Page::Performance);

@@ -1084,7 +1084,7 @@ mod tests {
         assert!(
             crate::graphics_ui::rows()
                 .into_iter()
-                .flat_map(|(_, blocks)| blocks.into_iter().flatten())
+                .flat_map(|(_, groups)| groups.into_iter().flat_map(|(_, rows)| rows))
                 .any(|r| r
                     .text
                     .contains(&format!("{INTEGRATED_LOD_DISTANCE} chunks"))),

@@ -6,13 +6,13 @@ Horizon's graphics settings are one screen, opened from the top of **Video Setti
 
 The screen holds vanilla's video options and Horizon's own together, built from Minecraft's own screen patterns in the design system's Blocks look (`docs/design-system.md`):
 
-- The pages, General, Quality, Performance, Advanced and HDR, are tabs along the top of the panel, as on Create World; the open tab joins the panel. Picking one scrolls the list to its section, and the list's scroll moves the open tab.
-- One list under a search field: each section's name centred between rules, then a row per setting, its name on the left and its control on the right: a button for a value, a tick box for on and off, a slider with the value on its track. A setting that can't be used now is greyed.
-- The search field keeps only the settings whose name, value or description has the words typed, across every page.
-- Under the panel, in vanilla's tooltip, the hovered or focused setting's name, its cost in frame time (no cost, low, medium, high, or saves time for culling that makes frames faster) and what it does.
-- **Undo** and **Done** along the foot. Undo is greyed until something changed; it puts back every setting as it was when the screen opened.
+- Down the left, under the Horizon mark: the search field, the pages (General, Quality, Performance, Advanced and HDR) as a column of names, and **Undo** and **Done** at the foot.
+- On the right, a plate shows the open page alone, under its name: its settings in titled groups (Distance, Display, Culling...), each group on a panel of its own. A row has the setting's name on the left and its control on the right: a tick box for on and off, a value between arrows that a press steps through, a value whose slider shows while the row is pointed at or focused. A setting that can't be used now is greyed.
+- The search field shows the settings of every page whose name or description has the words typed, under their page's name; picking a page then scrolls to its matches.
+- A strip under the plate holds the hovered or focused setting's name, its cost in frame time (no cost, low, medium, high, or saves time for culling that makes frames faster) and what it does; with none, what the open page holds.
+- Undo shows once something changed; it puts back every setting as it was when the screen opened.
 
-Tab, the arrows, Enter and Space work it from the keyboard (Left and Right step a focused slider, Space lets go of it), a controller moves between its rows and its bumpers between the tabs, and the narrator reads each row as a tick box, a slider or a button.
+Tab, the arrows, Enter and Space work it from the keyboard (Left and Right step a focused slider, Space lets go of it), a controller moves between its rows and its bumpers between the pages, and the narrator reads each row as a tick box, a slider or a button.
 
 Every setting applies at once, except worker threads and the graphics API, which apply at the next start. A preset sets the quality settings together; changing one of them turns it into Custom. Display preferences (FOV, framerate, VSync, GUI scale, fullscreen, present mode, pacing) leave the preset as it is.
 

@@ -161,8 +161,7 @@ of the main action. The game's other menus keep `LIGHT` and `DARK`.
 
 In the game the Blocks look is drawn in GUI pixels, so its lines are one GUI pixel (two or three
 on screen): a 1 px outline and bevel, a 1 px lip (2 px under the panel and Done), and vanilla's
-font rather than Pixelify. Its section names are vanilla's yellow and the description sits in
-vanilla's own tooltip, as the game's screens have them; hover and focus are vanilla's white edge.
+font rather than Pixelify. Hover and focus are vanilla's white edge.
 
 - **Pixel type for what names and what you act on.** Headings, navigation, buttons and the
   wordmark use Pixelify Sans (OFL; Medium, SemiBold, Bold); paragraphs and numbers stay in Geist
