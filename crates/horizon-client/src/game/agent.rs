@@ -1815,7 +1815,7 @@ impl Game<'_> {
                         .find(|&i| {
                             guest.inventory[i]
                                 .as_ref()
-                                .is_some_and(|s| &*s.item == requested)
+                                .is_some_and(|s| *s.item == requested)
                         })
                         .map(|i| (i, guest.inventory.clone()))
                 })
