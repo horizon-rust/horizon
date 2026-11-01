@@ -876,6 +876,37 @@ mod tests {
     }
 
     #[test]
+    fn a_slime_piston_bounce_releases_a_stuck_arrow_into_flight() {
+        let mut p = Projectile::new(
+            ProjectileKind::Arrow {
+                base_damage: 2.0,
+                critical: false,
+                effect: None,
+            },
+            Vec3::new(0.0, 100.0, 0.0),
+            None,
+        );
+        p.stuck = true;
+        let arrow = p.arrow.as_mut().expect("an arrow has arrow state");
+        arrow.in_ground = true;
+        arrow.in_ground_time = 10;
+
+        p.piston_slime_bounce(horizon_core::geometry::Direction::Up);
+        remote_arrow_tick(
+            &mut p,
+            &TestWorld {
+                no_collision: false,
+            },
+        );
+
+        assert!(!p.stuck);
+        assert!(!p.arrow.as_ref().expect("arrow state").in_ground);
+        assert_eq!(p.position.y, 101.0);
+        assert!((p.velocity.y - 0.94).abs() < 1e-9);
+        assert!(p.needs_sync);
+    }
+
+    #[test]
     fn a_remote_arrow_eases_its_rotation_towards_its_flight() {
         let mut p = thrown(ProjectileKind::Arrow {
             base_damage: 2.0,

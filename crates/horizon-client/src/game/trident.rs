@@ -107,6 +107,12 @@ impl ThrownTrident {
         self.position = self.position.add_vector(movement);
         self.needs_sync = true;
     }
+    pub(super) fn piston_slime_bounce(&mut self, movement: horizon_core::geometry::Direction) {
+        self.velocity = horizon_world::piston_push::bounce_velocity(movement, self.velocity);
+        self.in_ground = false;
+        self.in_ground_time = 0;
+        self.needs_sync = true;
+    }
     pub(super) fn bounds(&self) -> Aabb {
         Aabb::new(
             Vec3::new(
@@ -905,6 +911,27 @@ mod tests {
         assert_eq!(trident.velocity.y, -0.05);
         trident.remote_tick(&TestWorld { no_collision: true }, None);
         assert!(trident.position.y < 101.0);
+    }
+
+    #[test]
+    fn a_slime_piston_bounce_releases_a_stuck_trident_into_flight() {
+        let start = Vec3::new(0.0, 100.0, 0.0);
+        let mut trident = ThrownTrident::remote(1, start, 0.0, 0.0);
+        trident.in_ground = true;
+        trident.in_ground_time = 10;
+
+        trident.piston_slime_bounce(horizon_core::geometry::Direction::Up);
+        trident.remote_tick(
+            &TestWorld {
+                no_collision: false,
+            },
+            None,
+        );
+
+        assert!(!trident.in_ground);
+        assert_eq!(trident.position.y, 101.0);
+        assert!((trident.velocity.y - 0.94).abs() < 1e-9);
+        assert!(trident.needs_sync);
     }
 
     #[test]

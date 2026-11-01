@@ -4846,21 +4846,21 @@ impl Game<'_> {
         // ClientLevel.tick: the border's size change.
         self.border.tick();
         self.player_border();
-        self.tick_remote_entities(running);
-        self.tick_remote_guardian_eyes(running);
-        // ClientLevel.tickBlockEntities: chest lids, shulker boxes, bells,
-        // and the moving pistons a block event's client-side moveBlocks made
-        // (their progress advances between the server's block updates).
-        self.tick_block_entity_anims();
-        self.tick_remote_spawners();
-        self.client_tick_beacons();
-        self.tick_remote_potent_sulfur();
+        // Keep predicted piston pushes in the same phase as the server's
+        // piston pushes, before the client advances its entities/projectiles.
         self.with_level(|b, level, ticks| {
             b.client_tick_block_entities(level, ticks);
         });
         let pushes = std::mem::take(&mut self.block_ticks.piston_pushes);
         self.push_piston_entities(pushes);
         self.sync_moving_pistons();
+        self.tick_remote_entities(running);
+        self.tick_remote_guardian_eyes(running);
+        // ClientLevel.tickBlockEntities: chest lids, shulker boxes and bells.
+        self.tick_block_entity_anims();
+        self.tick_remote_spawners();
+        self.client_tick_beacons();
+        self.tick_remote_potent_sulfur();
         self.tick_hand();
         self.tick_particles();
         self.tick_client_ambient();

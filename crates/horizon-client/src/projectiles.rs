@@ -5,7 +5,7 @@
 //! The game applies the effects of a hit.
 use crate::mobs::Who;
 use horizon_core::{
-    geometry::{Aabb, Vec3},
+    geometry::{Aabb, Direction, Vec3},
     random::RandomSource,
 };
 
@@ -171,15 +171,14 @@ pub trait ProjectileWorld {
     }
 }
 /// `Projectile.lerpRotation`, wrapping the shortest way around a full turn.
-pub fn lerp_rotation(old: f32, new: f32, amount: f32) -> f32 {
-    let mut delta = new - old;
-    while delta < -180.0 {
-        delta += 360.0;
+pub fn lerp_rotation(mut old: f32, new: f32, amount: f32) -> f32 {
+    while new - old < -180.0 {
+        old -= 360.0;
     }
-    while delta >= 180.0 {
-        delta -= 360.0;
+    while new - old >= 180.0 {
+        old += 360.0;
     }
-    old + amount * delta
+    old + amount * (new - old)
 }
 
 /// `AbstractArrow.tick`'s flight orientation update.
@@ -229,6 +228,17 @@ impl Projectile {
             self.piston_pushed_this_tick = true;
         }
         self.position = self.position.add_vector(movement);
+        self.needs_sync = true;
+    }
+    /// `moveCollidedEntities`' slime bounce releases a projectile embedded in
+    /// a block so its new velocity takes effect on this tick.
+    pub fn piston_slime_bounce(&mut self, movement: Direction) {
+        self.velocity = horizon_world::piston_push::bounce_velocity(movement, self.velocity);
+        self.stuck = false;
+        if let Some(arrow) = self.arrow.as_mut() {
+            arrow.in_ground = false;
+            arrow.in_ground_time = 0;
+        }
         self.needs_sync = true;
     }
     pub fn begin_tick(&mut self) {
@@ -941,7 +951,7 @@ mod tests {
     }
     #[test]
     fn rotation_interpolation_takes_the_short_way_across_a_turn() {
-        assert_eq!(lerp_rotation(179.0, -179.0, 0.5), 180.0);
+        assert_eq!(lerp_rotation(179.0, -179.0, 0.5), -180.0);
     }
 
     #[test]

@@ -520,14 +520,8 @@ impl Game<'_> {
                 }
             }
             Target::Item(i) => self.dropped[i].piston_slime_bounce(movement),
-            Target::Projectile(i) => {
-                let projectile = &mut self.creatures.projectiles[i];
-                projectile.velocity = piston_push::bounce_velocity(movement, projectile.velocity);
-            }
-            Target::Trident(i) => {
-                let trident = &mut self.tridents[i];
-                trident.velocity = piston_push::bounce_velocity(movement, trident.velocity);
-            }
+            Target::Projectile(i) => self.creatures.projectiles[i].piston_slime_bounce(movement),
+            Target::Trident(i) => self.tridents[i].piston_slime_bounce(movement),
             Target::Boat(i) => {
                 self.boats[i].velocity =
                     piston_push::bounce_velocity(movement, self.boats[i].velocity)
