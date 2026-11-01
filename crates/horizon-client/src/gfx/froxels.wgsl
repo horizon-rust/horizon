@@ -560,9 +560,18 @@ fn lights_scatter(pos: vec3<f32>, dir: vec3<f32>, rnd: vec3<f32>) -> vec3<f32> {
         * seen * fx.history.y;
 }
 
+// Whether `cs_inject` drew a sample in froxel `id` this frame: one in two, a checker along the
+// slices turning each frame (`history.z` 1 or 2, froxels.rs `ViewFroxels::turn`), the history
+// (`MAX_ACCUMULATION` frames) filling the other half: half the rays for the same light.
+fn injected(id: vec3<u32>) -> bool {
+    return (id.z & 1u) == ((id.x + id.y + u32(fx.history.z)) & 1u);
+}
+
 @compute @workgroup_size(4, 4, 4)
-fn cs_inject(@builtin(global_invocation_id) id: vec3<u32>) {
+fn cs_inject(@builtin(global_invocation_id) id_in: vec3<u32>) {
     let dims = vec3<u32>(fx.dims.xyz);
+    // Half the froxels a frame (`injected`): a thread each, the slices two by two.
+    let id = vec3(id_in.xy, id_in.z * 2u + ((id_in.x + id_in.y + u32(fx.history.z)) & 1u));
     if any(id >= dims) { return; }
     let rnd = random3(vec3(id.x + u32(fx.dims.w) * 16411u, id.y * 3571u, id.z + 977u * u32(fx.dims.w)));
     let rnd2 = random3(id * 7919u + vec3(u32(fx.dims.w) * 31u, 17u, 5u));
@@ -670,6 +679,12 @@ fn cs_blend(@builtin(global_invocation_id) id: vec3<u32>) {
     // neighbourhood's mean rather than one noisy sample.
     if count <= 0.0 { fresh = mean; }
     let n = min(count + 1.0, fx.history.x);
+    // A froxel not injected this frame keeps its history, reprojected and held to the
+    // neighbourhood (its own sample there is the last frame's).
+    if !injected(id) && count > 0.0 {
+        textureStore(source_out, here_id, vec4(old.rgb, count));
+        return;
+    }
     // Bright outliers (a ray through a gap) are held to what the history shows, beyond a few
     // times its light, so one lucky ray doesn't flash.
     let limit = max(luminance(old.rgb) * 6.0, 0.5);

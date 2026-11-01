@@ -246,14 +246,15 @@ pub fn source(hardware: bool, split: u32) -> String {
 /// RT lighting's radiance cache's cells (a power of two).
 const CACHE_CELLS: usize = 1 << 20;
 
-/// The denoiser's passes' tap spacings (denoise.wgsl), the last adding the direct light.
-const DENOISE_STEPS: [i32; 4] = [1, 2, 4, 8];
+/// The denoiser's passes' tap spacings (denoise.wgsl): 3x3 taps each, reaching 31 pixels as four
+/// passes of 5x5 did, for 45 taps a pixel rather than 100.
+const DENOISE_STEPS: [i32; 5] = [1, 2, 4, 8, 16];
 
 pub struct ShadowRays {
     /// RT lighting's denoiser (denoise.wgsl): its pipeline and layout, a uniform a pass.
     denoise: wgpu::ComputePipeline,
     denoise_layout: wgpu::BindGroupLayout,
-    denoise_params: [wgpu::Buffer; 4],
+    denoise_params: [wgpu::Buffer; 5],
     /// RT lighting's radiance cache (shadow_rays.wgsl `CacheCell`, radiance_cache.wgsl), shared by
     /// every view, and its resolve's pipeline and group.
     cache: wgpu::Buffer,
@@ -1004,7 +1005,8 @@ impl ShadowRays {
         // RT lighting's denoiser: the sky and bounced light from `blocks` to `light` by way of
         // `scratch`, a pass a tap spacing, the direct light added by the last.
         let passes = [
-            (&blocks, &scratch),
+            (&blocks, &light),
+            (&light, &scratch),
             (&scratch, &light),
             (&light, &scratch),
             (&scratch, &light),
@@ -1034,7 +1036,7 @@ impl ShadowRays {
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(mask_size[0].div_ceil(8), mask_size[1].div_ceil(8), 1);
             drop(pass);
-            super::gpu_passes::stamp(encoder, "rays: denoiser (4 passes)");
+            super::gpu_passes::stamp(encoder, "rays: denoiser (5 passes)");
         }
         [mask, light, sun, reflection, refraction]
     }

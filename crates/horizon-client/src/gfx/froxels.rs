@@ -6,10 +6,11 @@
 //! ray, exponential from `NEAR` to `FAR` blocks (1 block = 1 metre, Remix's `rtx.sceneScale` 0.01 over
 //! centimetre units). Each frame, for every view (the window, each VR eye), `Froxels::run`:
 //!
-//! 1. *injects* (`cs_inject`): for each froxel a point drawn inside it (a 3D R-sequence shifted per
-//!    froxel, so the history supersamples the froxel), the light the medium scatters toward the
-//!    camera: the sun (a shadow ray, tinted by stained glass and water, times the Henyey-Greenstein
-//!    phase), the sky (a ray toward it, times the sky's mean light) and one light source drawn by
+//! 1. *injects* (`cs_inject`): for half the froxels, a checker along the slices turning each frame
+//!    (`ViewFroxels::turn`; the other half keeps its history, 128 frames long), a point drawn
+//!    inside it (a 3D R-sequence shifted per froxel, so the history supersamples the froxel), the
+//!    light the medium scatters toward the camera: the sun (a shadow ray, tinted by stained glass
+//!    and water, times the Henyey-Greenstein phase), the sky (a ray toward it, times the sky's mean light) and one light source drawn by
 //!    importance (a shadow ray), through hardware ray queries against the terrain's TLAS (`hw_rays`)
 //!    where the GPU has them, else the voxel grid's DDA; then *blends* (`cs_blend`) that sample with
 //!    the last frame's froxels reprojected in world space (the history `MAX_ACCUMULATION` frames
@@ -292,6 +293,8 @@ struct ViewFroxels {
     /// The medium the history was made in, and the frames of settling left.
     medium: Option<Medium>,
     settling: u32,
+    /// The frames this view injected: which half of the froxels it injects (`cs_inject`).
+    turn: u32,
     /// The `Froxels::frame` it last ran in.
     drawn: u32,
 }
@@ -791,6 +794,7 @@ impl Froxels {
             last: None,
             medium: None,
             settling: SETTLING_FRAMES,
+            turn: 0,
             drawn: 0,
         });
         self.views.len() - 1
@@ -837,6 +841,9 @@ impl Froxels {
             MAX_ACCUMULATION
         };
         state.settling = state.settling.saturating_sub(1);
+        state.turn = state.turn.wrapping_add(1);
+        // Which half of the froxels this frame injects: 1 or 2 (froxels.wgsl `injected`).
+        let half = 1 + state.turn % 2;
         let last = state.last.replace((inputs.view_proj, inputs.camera));
         let from = state.source[1 - state.next].clone();
         let to = state.source[state.next].clone();
@@ -903,7 +910,7 @@ impl Froxels {
                 medium.anisotropy,
             ],
             albedo: [medium.albedo.x, medium.albedo.y, medium.albedo.z, 1.0],
-            history: [cap, 1.0, 0.0, 0.0],
+            history: [cap, 1.0, half as f32, 0.0],
             size: [inputs.size[0] as f32, inputs.size[1] as f32, 0.0, 0.0],
             eye: [eye.x, eye.y, eye.z, 0.0],
             prev_eye: [prev_eye.x, prev_eye.y, prev_eye.z, 0.0],
@@ -982,7 +989,7 @@ impl Froxels {
                 pass.dispatch_workgroups(
                     dims[0].div_ceil(4),
                     dims[1].div_ceil(4),
-                    dims[2].div_ceil(4),
+                    dims[2].div_ceil(2).div_ceil(4),
                 );
             }
             super::gpu_passes::stamp(encoder, "froxels: inject (lights, shadows)");

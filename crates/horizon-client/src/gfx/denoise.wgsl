@@ -2,11 +2,12 @@
 // denoiser Remix runs without DLSS Ray Reconstruction): the light the rays found, the sky's, the
 // bounced and the light sources' direct (a few rays a pixel accumulated over up to 30 frames, still
 // grainy) smoothed over the surface a pixel shows, an edge-stopping a-trous wavelet filter
-// (Dammertz et al.): 5x5 taps spread `step` pixels apart, a pass each for steps 1, 2, 4 and 8,
-// weighted down across a jump in distance or a change of face, so light doesn't leak from one
-// surface onto the next, and by the difference in light against the pixel's own noise (SVGF,
-// Schied et al. 2017): the variance of the accumulated light from its first and second moments, so
-// grainy light smooths out and real changes (a contact shadow, the edge of a lit patch) stay.
+// (Dammertz et al.): 3x3 taps spread `step` pixels apart, a pass each for steps 1, 2, 4, 8 and 16
+// (as far as four passes of 5x5 reach, for under half the taps), weighted down across a jump in
+// distance or a change of face, so light doesn't leak from one surface onto the next, and by the
+// difference in light against the pixel's own noise (SVGF, Schied et al. 2017): the variance of the
+// accumulated light from its first and second moments, so grainy light smooths out and real changes
+// (a contact shadow, the edge of a lit patch) stay.
 // Where the history is short (a surface just uncovered, its moments not yet meaningful) the
 // variance is taken as large, so the filter blurs wider there (ReLAX's history fix). On the first
 // pass a pixel far brighter than every neighbour on its face is brought down to them (ReLAX's
@@ -46,8 +47,8 @@ fn signal(c: vec4<f32>, q: vec2<i32>, first: bool) -> vec3<f32> {
     return c.rgb;
 }
 
-// The B3 spline's weights, the filter's kernel.
-const KERNEL: array<f32, 5> = array<f32, 5>(0.0625, 0.25, 0.375, 0.25, 0.0625);
+// The filter's kernel, the linear B-spline's weights.
+const KERNEL: array<f32, 3> = array<f32, 3>(0.25, 0.5, 0.25);
 
 @compute @workgroup_size(8, 8) fn cs_denoise(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = vec2<i32>(textureDimensions(input));
@@ -90,9 +91,9 @@ const KERNEL: array<f32, 5> = array<f32, 5>(0.0625, 0.25, 0.375, 0.25, 0.0625);
         let l0 = luminance(light);
         var sum = vec3(0.0);
         var weight = 0.0;
-        for (var y = 0; y < 5; y++) {
-            for (var x = 0; x < 5; x++) {
-                let q = clamp(p + vec2(x - 2, y - 2) * step, vec2(0), size - 1);
+        for (var y = 0; y < 3; y++) {
+            for (var x = 0; x < 3; x++) {
+                let q = clamp(p + vec2(x - 1, y - 1) * step, vec2(0), size - 1);
                 let c = textureLoad(input, q, 0);
                 let d = textureLoad(mask, q, 0).a;
                 if c.a < 0.0 || d < 0.0 { continue; }
