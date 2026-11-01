@@ -55,6 +55,11 @@ pub trait ChunkGenerator: Send + Sync + 'static {
     ) -> Option<crate::lod::Surface> {
         None
     }
+    /// Where far terrain of this world is kept between sessions
+    /// (`lod::store`): none for a generator that has no place for it.
+    fn lod_store(&self) -> Option<Arc<crate::lod::store::FarStore>> {
+        None
+    }
     /// A previously saved final chunk, bypassing generation.
     fn load(&self, _x: i32, _z: i32) -> Option<Chunk> {
         None
@@ -165,6 +170,11 @@ pub trait LodSampler: Send {
 }
 pub trait LodSource: Send + Sync {
     fn sampler(self: Arc<Self>) -> Box<dyn LodSampler>;
+    /// The store the far terrain of this source is kept in. `Lod` feeds the
+    /// summaries of the chunks it sees to it.
+    fn store(&self) -> Option<Arc<crate::lod::store::FarStore>> {
+        None
+    }
 }
 struct GeneratorSampler<G: ChunkGenerator> {
     generator: Arc<G>,
@@ -178,6 +188,9 @@ impl<G: ChunkGenerator> LodSampler for GeneratorSampler<G> {
 impl<G: ChunkGenerator> LodSource for G {
     fn sampler(self: Arc<Self>) -> Box<dyn LodSampler> {
         ChunkGenerator::lod_sampler(self)
+    }
+    fn store(&self) -> Option<Arc<crate::lod::store::FarStore>> {
+        ChunkGenerator::lod_store(self)
     }
 }
 /// The generator's saving, for the streamer (which doesn't know its type).

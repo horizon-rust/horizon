@@ -9,6 +9,7 @@ use crate::{
 };
 pub mod cache;
 mod mesh;
+pub mod store;
 use horizon_world::registry::BlockStateId;
 use std::{
     collections::VecDeque,
@@ -168,14 +169,22 @@ impl Column {
         if width == 1 {
             return columns[z * 16 + x].clone();
         }
+        Self::merge(
+            (z..z + width).flat_map(move |dz| (x..x + width).map(move |dx| &columns[dz * 16 + dx])),
+            width * width,
+        )
+    }
+    /// One column for a footprint of `footprint` columns, which `columns`
+    /// are (all of them, or the ones that are known: the far store's
+    /// coarser levels). It stands where at least half of the footprint
+    /// has material, as the most common block there.
+    pub(crate) fn merge<'a>(columns: impl Iterator<Item = &'a Column>, footprint: usize) -> Self {
         let mut events = Vec::new();
-        for dz in z..z + width {
-            for dx in x..x + width {
-                for span in &columns[dz * 16 + dx].spans {
-                    let material = (span.state, span.biome, span.light);
-                    events.push((span.min, material, 1));
-                    events.push((span.max, material, -1));
-                }
+        for column in columns {
+            for span in &column.spans {
+                let material = (span.state, span.biome, span.light);
+                events.push((span.min, material, 1));
+                events.push((span.max, material, -1));
             }
         }
         events.sort_unstable_by_key(|event| event.0);
@@ -187,7 +196,7 @@ impl Column {
         let mut bottom = MIN_Y as i16;
         for (y, material, change) in events {
             if bottom < y {
-                if occupied * 2 >= (width * width) as i32
+                if occupied * 2 >= footprint as i32
                     && let Some(&((state, biome), _)) =
                         votes.iter().max_by_key(|&(material, count)| {
                             (*count, std::cmp::Reverse((material.0.0, material.1)))
@@ -924,6 +933,10 @@ pub struct Lod {
     saved: Saved,
     reduced: Reduced,
     saved_order: VecDeque<(i32, i32)>,
+    /// Where the far terrain is kept between sessions: fed every visited
+    /// chunk's summary, and for a server without a generator what tiles are
+    /// sampled from (`store::FarStore`).
+    store: Option<Arc<store::FarStore>>,
 }
 impl Lod {
     pub fn new(source: Arc<dyn LodSource>, context: Arc<WorkerContext>) -> Self {
@@ -941,6 +954,7 @@ impl Lod {
         workers: bool,
     ) -> Self {
         let cores = thread::available_parallelism().map_or(1, |n| n.get());
+        let store = source.as_ref().and_then(|source| source.store());
         let shared = Arc::new(Shared {
             jobs: Mutex::new(VecDeque::new()),
             mesh_jobs: Mutex::new(std::collections::BinaryHeap::new()),
@@ -1232,6 +1246,7 @@ impl Lod {
             saved: FxHashMap::default(),
             reduced: FxHashMap::default(),
             saved_order: VecDeque::new(),
+            store,
         }
     }
     /// The solid ground at block column (x, z): its top face's height and
@@ -1567,6 +1582,9 @@ impl Lod {
         {
             return;
         }
+        if let Some(store) = &self.store {
+            store.ingest(key, columns.columns.clone());
+        }
         if !self.saved.contains_key(&key) {
             while self.saved.len() >= MAX_SAVED {
                 if let Some(old) = self.saved_order.pop_front() {
@@ -1691,6 +1709,11 @@ impl Lod {
         self.small && self.near_loading
     }
     fn request_detail(&mut self, camera: [i32; 2]) {
+        // Without a generator (a server) nothing answers: chunks seen are
+        // the only detail, and they arrive through `observe`.
+        if self.store.as_ref().is_some_and(|store| store.is_pyramid()) {
+            return;
+        }
         if self.held()
             || self.detail_request_pending
             || self.detail_request_at.elapsed() < std::time::Duration::from_millis(250)
@@ -1796,6 +1819,7 @@ impl Lod {
             self.rebuild_selection();
         }
         crate::spans::time("lod_request", || self.request_detail(camera));
+        crate::spans::time("lod_store", || self.refresh_from_store());
         crate::spans::time("lod_wanted", || self.request_samples(camera));
         crate::spans::time("lod_dispatch", || self.dispatch_meshes(camera));
         crate::spans::time("lod_removed", || self.release_removed());
@@ -2246,6 +2270,29 @@ impl Lod {
         }
         drop(jobs);
         if issued > 0 {
+            self.shared.wake.notify_all();
+        }
+    }
+    /// Samples again the coarse tiles a server's chunks changed since they
+    /// were sampled (`FarStore::take_changed`); the finer ones are updated
+    /// by `apply_detail` as the chunks arrive.
+    fn refresh_from_store(&mut self) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        let mut queued = false;
+        let mut jobs = self.shared.jobs.lock().unwrap();
+        for key in store.take_changed() {
+            if self.ready.contains_key(&key)
+                && self.plan.nodes.contains(&key)
+                && self.pending.insert(key)
+            {
+                jobs.push_back(Job::Sample(key));
+                queued = true;
+            }
+        }
+        drop(jobs);
+        if queued {
             self.shared.wake.notify_all();
         }
     }
