@@ -75,6 +75,12 @@ pub const PLATFORMS: [(&str, &str, &str, &str); 4] = [
         "horizon-windows-x64.zip",
         "horizon-launcher-windows-x64.zip",
     ),
+    (
+        "windows",
+        "aarch64",
+        "horizon-windows-arm64.zip",
+        "horizon-launcher-windows-arm64.zip",
+    ),
 ];
 
 /// `a == b`, in a const context.

@@ -101,6 +101,13 @@ jobs:
             exe: .exe
             # The C runtime linked in, so the game runs without the Visual C++ redistributable.
             rustflags: -C target-feature=+crt-static
+          - name: windows
+            os: windows-latest
+            dir: horizon-windows-arm64
+            asset: horizon-windows-arm64.zip
+            exe: .exe
+            # The C runtime linked in, so the game runs without the Visual C++ redistributable.
+            rustflags: -C target-feature=+crt-static
           - name: macos
             mac: true
             dir: horizon-macos-arm64
