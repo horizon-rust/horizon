@@ -3110,6 +3110,37 @@ impl EntityModelDocument {
             root.join("entity-models.json"),
         )?)?))
     }
+    /// Only the models under `keys`: the others are skipped as they are
+    /// read, never built. The whole document as values is about ten times
+    /// the 2.4 MB file, for a loader that wants one model of it.
+    pub fn load_keys(root: &Path, keys: &[&str]) -> crate::Result<Self> {
+        struct Wanted<'a>(&'a [&'a str]);
+        impl<'de> serde::de::Visitor<'de> for Wanted<'_> {
+            type Value = serde_json::Map<String, Value>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an object of entity models")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut out = serde_json::Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if self.0.contains(&key.as_str()) {
+                        out.insert(key, map.next_value()?);
+                    } else {
+                        map.next_value::<serde::de::IgnoredAny>()?;
+                    }
+                }
+                Ok(out)
+            }
+        }
+        let bytes = fs::read(root.join("entity-models.json"))?;
+        let mut de = serde_json::Deserializer::from_slice(&bytes);
+        let models = serde::Deserializer::deserialize_map(&mut de, Wanted(keys))?;
+        de.end()?;
+        Ok(Self(Value::Object(models)))
+    }
 
     pub fn model(&self, key: &str) -> Option<Part> {
         self.0.get(key).map(|m| Part::parse("root", m))
@@ -3126,7 +3157,9 @@ impl EntityModelDocument {
 /// Load one baked model layer from `entity-models.json` (e.g. `minecraft:chest#main`).
 /// Batch loaders should share an `EntityModelDocument` instead.
 pub fn load_model(root: &Path, key: &str) -> Option<Part> {
-    EntityModelDocument::load(root).ok()?.model(key)
+    EntityModelDocument::load_keys(root, &[key])
+        .ok()?
+        .model(key)
 }
 /// ModelPart.render: translate, rotate ZYX, scale, then children.
 pub fn render_model(
@@ -4101,5 +4134,31 @@ mod armor_hurt_tests {
                 .iter()
                 .any(|e| matches!(e, MobEvent::ArmorHurt { .. }))
         );
+    }
+}
+
+#[cfg(test)]
+mod entity_model_keys_tests {
+    use super::EntityModelDocument;
+
+    #[test]
+    fn load_keys_keeps_the_wanted_models_as_the_whole_document_has_them() {
+        let dir = std::env::temp_dir().join(format!("horizon-model-keys-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = r#"{
+            "minecraft:a#main": {"cubes": [{"from": [0, 1, 2]}], "children": {"x": {"pivot": [1.5, 2, 3]}}},
+            "minecraft:b#main": {"cubes": [], "big": [[1, 2], {"deep": [true, null, "s"]}]},
+            "minecraft:c#main": {"cubes": [{"from": [-1, -2, -3]}]}
+        }"#;
+        std::fs::write(dir.join("entity-models.json"), text).unwrap();
+        let whole = EntityModelDocument::load(&dir).unwrap();
+        let some = EntityModelDocument::load_keys(&dir, &["minecraft:a#main", "minecraft:c#main"])
+            .unwrap();
+        for key in ["minecraft:a#main", "minecraft:c#main"] {
+            assert_eq!(some.0.get(key), whole.0.get(key), "{key}");
+        }
+        assert_eq!(some.0.get("minecraft:b#main"), None);
+        assert_eq!(some.keys().count(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

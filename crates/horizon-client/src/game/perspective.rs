@@ -160,7 +160,9 @@ pub(super) fn player_type(root: &Path) -> Option<Arc<MobType>> {
 }
 /// `player_type` from the document: the model and its layers from one parse.
 fn load_player_type(root: &Path) -> Option<Arc<MobType>> {
-    let models = horizon_client::mobs::EntityModelDocument::load(root).ok()?;
+    let models =
+        horizon_client::mobs::EntityModelDocument::load_keys(root, &["minecraft:player#main"])
+            .ok()?;
     models.model("minecraft:player#main").map(|model| {
         Arc::new(MobType {
             id: "minecraft:player".into(),
