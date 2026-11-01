@@ -135,6 +135,9 @@ impl ProjectileWorld for ProjWorld<'_, '_> {
     fn targets(&self) -> &[(Who, Aabb)] {
         &self.targets
     }
+    fn no_block_collision(&self, bounds: Aabb) -> bool {
+        self.w.no_block_collision(bounds)
+    }
     fn empty(&self, p: [i32; 3]) -> bool {
         self.w.facts.is_air(self.w.world.block(p[0], p[1], p[2]))
     }
@@ -6375,6 +6378,10 @@ impl Game<'_> {
             }
             let p = glam::DVec3::from_array(at) - camera;
             let c = p.as_vec3();
+            let yaw =
+                horizon_client::projectiles::lerp_rotation(a.previous_yaw, a.yaw, alpha as f32);
+            let pitch =
+                horizon_client::projectiles::lerp_rotation(a.previous_pitch, a.pitch, alpha as f32);
             let light = self.world.light(
                 a.position.x.floor() as i32,
                 a.position.y.floor() as i32,
@@ -6449,8 +6456,8 @@ impl Game<'_> {
                     continue;
                 };
                 let m = glam::Mat4::from_translation(c)
-                    * glam::Mat4::from_rotation_y((a.yaw - 90.0).to_radians())
-                    * glam::Mat4::from_rotation_z((a.pitch + 90.0).to_radians());
+                    * glam::Mat4::from_rotation_y((yaw - 90.0).to_radians())
+                    * glam::Mat4::from_rotation_z((pitch + 90.0).to_radians());
                 let poses = horizon_client::mobs::anim::Poses::new(model);
                 horizon_client::mobs::render::draw(
                     model,

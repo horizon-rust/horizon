@@ -643,6 +643,7 @@ impl Game<'_> {
             let mut e = state(t.id, "minecraft:trident", at(t.position), t.yaw, false);
             e.pitch = t.pitch;
             e.velocity = at(t.velocity);
+            e.needs_sync = t.needs_sync;
             // Projectile.getAddEntityPacket: the owner's id, the guest's that
             // threw it.
             e.data = match t.guest.and_then(|conn| hub.guest(conn)) {

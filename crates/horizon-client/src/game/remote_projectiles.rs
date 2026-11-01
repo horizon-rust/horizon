@@ -112,27 +112,33 @@ fn projectile_kind(kind: &str) -> Option<ProjectileKind> {
 /// `AbstractArrow.tick` on a client: water drag before the move, air drag
 /// after it, then gravity; a block it reaches holds it (`inGround`).
 fn remote_arrow_tick(p: &mut Projectile, w: &impl ProjectileWorld) {
-    p.set_old_pos_and_rot();
+    p.begin_tick();
     p.age += 1;
     // AbstractArrow.tick: the shake timer runs down, and `inGroundTime` counts
     // the ticks in a block.
     if let Some(a) = p.arrow.as_mut() {
         a.shake = (a.shake - 1).max(0);
-        a.in_ground_time = if p.stuck { a.in_ground_time + 1 } else { 0 };
     }
     if p.stuck {
-        return;
+        let at = p.position;
+        if !w.no_block_collision(
+            horizon_core::geometry::Aabb::new(at, at).inflate(Vec3::new(0.06, 0.06, 0.06)),
+        ) {
+            if let Some(a) = p.arrow.as_mut() {
+                a.in_ground_time += 1;
+            }
+            return;
+        }
+        p.stuck = false;
     }
+    if let Some(a) = p.arrow.as_mut() {
+        a.in_ground_time = if p.stuck { a.in_ground_time + 1 } else { 0 };
+    }
+    horizon_client::projectiles::update_arrow_rotation(&mut p.yaw, &mut p.pitch, p.velocity, false);
     let water = w.in_water(p.bounds());
     if water {
         p.velocity = p.velocity.scale(0.6);
     }
-    let (movement_x, movement_y, movement_z) = (p.velocity.x, p.velocity.y, p.velocity.z);
-    let sd = (movement_x * movement_x + movement_z * movement_z).sqrt();
-    let y_rot = horizon_core::geometry::trig::atan2_degrees(movement_x, movement_z);
-    let x_rot = horizon_core::geometry::trig::atan2_degrees(movement_y, sd);
-    p.pitch = horizon_client::arrows::lerp_rotation(p.pitch, x_rot);
-    p.yaw = horizon_client::arrows::lerp_rotation(p.yaw, y_rot);
     let to = p.position.add_vector(p.velocity);
     if let Some((at, _, _)) = w.clip(p.position, to) {
         p.position = at;
@@ -406,6 +412,8 @@ impl Game<'_> {
                 p.velocity = velocity;
                 p.yaw = yaw;
                 p.pitch = pitch;
+                p.previous_yaw = yaw;
+                p.previous_pitch = pitch;
                 self.add_projectile(p);
             }
         }
@@ -623,7 +631,7 @@ impl Game<'_> {
                     ProjectileKind::Arrow { .. } => remote_arrow_tick(p, &world),
                     // ShulkerBullet.tick: only the server steers it.
                     ProjectileKind::ShulkerBullet { .. } => {
-                        p.set_old_pos_and_rot();
+                        p.begin_tick();
                         p.age += 1;
                         p.position = p.position.add_vector(p.velocity);
                     }
@@ -830,6 +838,27 @@ mod tests {
         fn targets(&self) -> &[(Who, Aabb)] {
             &[]
         }
+        fn no_block_collision(&self, _: horizon_core::geometry::Aabb) -> bool {
+            true
+        }
+    }
+
+    struct TestWorld {
+        no_collision: bool,
+    }
+    impl ProjectileWorld for TestWorld {
+        fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+            None
+        }
+        fn in_water(&self, _: Aabb) -> bool {
+            false
+        }
+        fn targets(&self) -> &[(Who, Aabb)] {
+            &[]
+        }
+        fn no_block_collision(&self, _: Aabb) -> bool {
+            self.no_collision
+        }
     }
 
     /// A thrown item, as a server's client tracks it: the spawn position and
@@ -842,7 +871,9 @@ mod tests {
 
     /// The same, under the id a server tracks it by.
     fn tracked(kind: ProjectileKind, id: u32) -> Projectile {
-        Projectile { id, ..thrown(kind) }
+        let mut projectile = thrown(kind);
+        projectile.id = id;
+        projectile
     }
 
     #[test]
@@ -963,5 +994,82 @@ mod tests {
             list.iter().map(|p| p.acceleration).collect::<Vec<_>>(),
             [0.1; 3]
         );
+    }
+
+    #[test]
+    fn a_stuck_remote_arrow_resumes_falling_when_its_block_is_removed() {
+        let mut p = Projectile::new(
+            ProjectileKind::Arrow {
+                base_damage: 2.0,
+                critical: false,
+                effect: None,
+            },
+            Vec3::new(0.0, 100.0, 0.0),
+            None,
+        );
+        p.stuck = true;
+
+        remote_arrow_tick(
+            &mut p,
+            &TestWorld {
+                no_collision: false,
+            },
+        );
+        assert!(p.stuck);
+
+        remote_arrow_tick(&mut p, &TestWorld { no_collision: true });
+        assert!(!p.stuck);
+        assert_eq!(p.velocity.y, -0.05);
+
+        remote_arrow_tick(&mut p, &TestWorld { no_collision: true });
+        assert!(p.position.y < 100.0);
+    }
+
+    #[test]
+    fn a_slime_piston_bounce_releases_a_stuck_arrow_into_flight() {
+        let mut p = Projectile::new(
+            ProjectileKind::Arrow {
+                base_damage: 2.0,
+                critical: false,
+                effect: None,
+            },
+            Vec3::new(0.0, 100.0, 0.0),
+            None,
+        );
+        p.stuck = true;
+        let arrow = p.arrow.as_mut().expect("an arrow has arrow state");
+        arrow.in_ground = true;
+        arrow.in_ground_time = 10;
+
+        p.piston_slime_bounce(horizon_core::geometry::Direction::Up);
+        remote_arrow_tick(
+            &mut p,
+            &TestWorld {
+                no_collision: false,
+            },
+        );
+
+        assert!(!p.stuck);
+        assert!(!p.arrow.as_ref().expect("arrow state").in_ground);
+        assert_eq!(p.position.y, 101.0);
+        assert!((p.velocity.y - 0.94).abs() < 1e-9);
+        assert!(p.needs_sync);
+    }
+
+    #[test]
+    fn a_remote_arrow_eases_its_rotation_towards_its_flight() {
+        let mut p = thrown(ProjectileKind::Arrow {
+            base_damage: 2.0,
+            critical: false,
+            effect: None,
+        });
+        p.velocity = Vec3::new(1.0, -1.0, 0.0);
+
+        remote_arrow_tick(&mut p, &Empty);
+
+        assert!((p.yaw - 18.0).abs() < 1e-5);
+        assert!((p.pitch - (-9.0)).abs() < 1e-5);
+        assert_eq!(p.previous_yaw, 0.0);
+        assert_eq!(p.previous_pitch, 0.0);
     }
 }

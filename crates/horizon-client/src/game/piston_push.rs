@@ -35,6 +35,8 @@ enum Target {
     Guest(u32),
     Mob(usize),
     Item(usize),
+    Projectile(usize),
+    Trident(usize),
     Boat(usize),
     Cart(usize),
     ArmorStand(usize),
@@ -44,9 +46,7 @@ enum Target {
     /// `PushReaction.IGNORE_ENTITY` (a marker armor stand) is spared.
     Falling(usize),
     Orb(usize),
-    Projectile(usize),
     Rocket(usize),
-    Trident(usize),
 }
 
 /// `Entity.getStepHeight` of each body, read before the push.
@@ -363,15 +363,15 @@ impl Game<'_> {
         }
         targets.extend((0..self.mobs.len()).map(Target::Mob));
         targets.extend((0..self.dropped.len()).map(Target::Item));
+        targets.extend((0..self.creatures.projectiles.len()).map(Target::Projectile));
+        targets.extend((0..self.tridents.len()).map(Target::Trident));
         targets.extend((0..self.boats.len()).map(Target::Boat));
         targets.extend((0..self.carts.len()).map(Target::Cart));
         targets.extend((0..self.armor_stands.len()).map(Target::ArmorStand));
         targets.extend((0..self.tnts.len()).map(Target::Tnt));
         targets.extend((0..self.falling.len()).map(Target::Falling));
         targets.extend((0..self.orbs.len()).map(Target::Orb));
-        targets.extend((0..self.creatures.projectiles.len()).map(Target::Projectile));
         targets.extend((0..self.rockets.len()).map(Target::Rocket));
-        targets.extend((0..self.tridents.len()).map(Target::Trident));
         targets
     }
 
@@ -433,6 +433,26 @@ impl Game<'_> {
                     bounds: entity.bounds(),
                     position: entity.position,
                     on_ground: entity.on_ground,
+                    step_height: 0.0,
+                    supported: false,
+                })
+            }
+            Target::Projectile(i) => {
+                let entity = &self.creatures.projectiles[i];
+                Some(Body {
+                    bounds: entity.bounds(),
+                    position: entity.position,
+                    on_ground: false,
+                    step_height: 0.0,
+                    supported: false,
+                })
+            }
+            Target::Trident(i) => {
+                let entity = &self.tridents[i];
+                Some(Body {
+                    bounds: entity.bounds(),
+                    position: entity.position,
+                    on_ground: false,
                     step_height: 0.0,
                     supported: false,
                 })
@@ -500,41 +520,10 @@ impl Game<'_> {
                     supported: false,
                 })
             }
-            Target::Projectile(i) => {
-                let entity = &self.creatures.projectiles[i];
-                Some(Body {
-                    bounds: entity.bounds(),
-                    position: entity.position,
-                    on_ground: false,
-                    step_height: 0.0,
-                    supported: false,
-                })
-            }
             Target::Rocket(i) => {
                 let entity = &self.rockets[i];
                 Some(Body {
                     bounds: entity.bounds(),
-                    position: entity.position,
-                    on_ground: false,
-                    step_height: 0.0,
-                    supported: false,
-                })
-            }
-            Target::Trident(i) => {
-                let entity = &self.tridents[i];
-                Some(Body {
-                    bounds: Aabb::new(
-                        Vec3::new(
-                            entity.position.x - 0.25,
-                            entity.position.y,
-                            entity.position.z - 0.25,
-                        ),
-                        Vec3::new(
-                            entity.position.x + 0.25,
-                            entity.position.y + 0.5,
-                            entity.position.z + 0.25,
-                        ),
-                    ),
                     position: entity.position,
                     on_ground: false,
                     step_height: 0.0,
@@ -652,6 +641,10 @@ impl Game<'_> {
                     item.on_ground = movement.y < 0.0;
                 }
             }
+            Target::Projectile(i) => {
+                self.creatures.projectiles[i].move_by_piston(movement);
+            }
+            Target::Trident(i) => self.tridents[i].move_by_piston(movement),
             Target::Boat(i) => self.boats[i].position = self.boats[i].position.add_vector(movement),
             Target::Cart(i) => self.carts[i].position = self.carts[i].position.add_vector(movement),
             Target::ArmorStand(i) => {
@@ -668,16 +661,8 @@ impl Game<'_> {
                     orb.on_ground = movement.y < 0.0;
                 }
             }
-            Target::Projectile(i) => {
-                let p = &mut self.creatures.projectiles[i];
-                p.position = p.position.add_vector(movement);
-                p.needs_sync = true;
-            }
             Target::Rocket(i) => {
                 self.rockets[i].position = self.rockets[i].position.add_vector(movement)
-            }
-            Target::Trident(i) => {
-                self.tridents[i].position = self.tridents[i].position.add_vector(movement)
             }
         }
     }
@@ -703,6 +688,8 @@ impl Game<'_> {
                 }
             }
             Target::Item(i) => self.dropped[i].piston_slime_bounce(movement),
+            Target::Projectile(i) => self.creatures.projectiles[i].piston_slime_bounce(movement),
+            Target::Trident(i) => self.tridents[i].piston_slime_bounce(movement),
             Target::Boat(i) => {
                 self.boats[i].velocity =
                     piston_push::bounce_velocity(movement, self.boats[i].velocity)
@@ -731,18 +718,9 @@ impl Game<'_> {
                     piston_push::bounce_velocity(movement, self.orbs[i].velocity);
                 self.orbs[i].on_ground = false;
             }
-            Target::Projectile(i) => {
-                let p = &mut self.creatures.projectiles[i];
-                p.velocity = piston_push::bounce_velocity(movement, p.velocity);
-                p.needs_sync = true;
-            }
             Target::Rocket(i) => {
                 self.rockets[i].velocity =
                     piston_push::bounce_velocity(movement, self.rockets[i].velocity)
-            }
-            Target::Trident(i) => {
-                self.tridents[i].velocity =
-                    piston_push::bounce_velocity(movement, self.tridents[i].velocity)
             }
         }
     }

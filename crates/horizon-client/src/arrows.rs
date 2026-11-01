@@ -533,7 +533,7 @@ fn tick_with(
     };
     // Entity.setOldPosAndRot: the renderer interpolates from here, in flight
     // and stuck alike; ServerLevel.tickNonPassenger counts the tick.
-    p.set_old_pos_and_rot();
+    p.begin_tick();
     p.age += 1;
     let hit = Ticker {
         p,
@@ -724,8 +724,8 @@ impl Ticker<'_, '_, '_, '_> {
             degrees(-movement.x, -movement.z)
         };
         let x_rot = degrees(movement.y, movement.horizontal_distance());
-        self.p.pitch = lerp_rotation(self.p.pitch, x_rot);
-        self.p.yaw = lerp_rotation(self.p.yaw, y_rot);
+        self.p.pitch = crate::projectiles::lerp_rotation(self.p.pitch, x_rot, 0.2);
+        self.p.yaw = crate::projectiles::lerp_rotation(self.p.yaw, y_rot, 0.2);
         self.check_left_owner(targets);
         let mut hit = Hit::None;
         let end = Vec3::new(

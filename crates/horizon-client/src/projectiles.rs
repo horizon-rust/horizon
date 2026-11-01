@@ -5,7 +5,7 @@
 //! The game applies the effects of a hit.
 use crate::mobs::Who;
 use horizon_core::{
-    geometry::{Aabb, Vec3},
+    geometry::{Aabb, Direction, Vec3},
     random::RandomSource,
 };
 
@@ -184,8 +184,7 @@ pub struct Projectile {
     pub velocity: Vec3,
     pub yaw: f32,
     pub pitch: f32,
-    /// `Entity.yRotO`/`xRotO`: the rotation the last tick ended with, which
-    /// the renderer interpolates from (`setOldPosAndRot`).
+    /// previous yaw/pitch are used for render interpolation.
     pub previous_yaw: f32,
     pub previous_pitch: f32,
     pub age: u32,
@@ -201,6 +200,7 @@ pub struct Projectile {
     /// `Entity.needsSync`: a server tells its clients about the change this
     /// tick instead of at the next update interval.
     pub needs_sync: bool,
+    piston_pushed_this_tick: bool,
     /// `Entity.wasTouchingWater`: what the last tick's
     /// `updateFluidInteraction` found around the box after the move, read by
     /// the next tick's inertia (false until the first tick has moved it).
@@ -232,6 +232,8 @@ pub trait ProjectileWorld {
     fn targets(&self) -> &[(Who, Aabb)];
     /// Server-only mod-block contacts along the completed movement.
     fn block_contacts(&self, _entity: i32, _kind: &str, _from: Vec3, _to: Vec3, _bounds: Aabb) {}
+    /// `CollisionGetter.noCollision(null, bounds)` over blocks.
+    fn no_block_collision(&self, bounds: Aabb) -> bool;
     /// `Level.isEmptyBlock`.
     fn empty(&self, _p: [i32; 3]) -> bool {
         true
@@ -240,6 +242,30 @@ pub trait ProjectileWorld {
     fn solid(&self, _p: [i32; 3]) -> bool {
         false
     }
+}
+/// `Projectile.lerpRotation`, wrapping the shortest way around a full turn.
+pub fn lerp_rotation(mut old: f32, new: f32, amount: f32) -> f32 {
+    while new - old < -180.0 {
+        old -= 360.0;
+    }
+    while new - old >= 180.0 {
+        old += 360.0;
+    }
+    old + amount * (new - old)
+}
+
+/// `AbstractArrow.tick`'s flight orientation update.
+pub fn update_arrow_rotation(yaw: &mut f32, pitch: &mut f32, movement: Vec3, no_physics: bool) {
+    let (x, z) = if no_physics {
+        (-movement.x, -movement.z)
+    } else {
+        (movement.x, movement.z)
+    };
+    let y_rot = horizon_core::geometry::trig::atan2_degrees(x, z);
+    let x_rot =
+        horizon_core::geometry::trig::atan2_degrees(movement.y, movement.horizontal_distance());
+    *pitch = lerp_rotation(*pitch, x_rot, 0.2);
+    *yaw = lerp_rotation(*yaw, y_rot, 0.2);
 }
 /// Direction steps by 3D data value: down, up, north, south, west, east.
 pub const STEPS: [[i32; 3]; 6] = [
@@ -266,6 +292,35 @@ impl Projectile {
             Vec3::new(p.x - half, p.y, p.z - half),
             Vec3::new(p.x + half, p.y + height, p.z + half),
         )
+    }
+    /// Move with a moving piston, preserving the position from before the
+    /// push as the start of this tick's render interpolation.
+    pub fn move_by_piston(&mut self, movement: Vec3) {
+        if !self.piston_pushed_this_tick {
+            self.previous = self.position;
+            self.piston_pushed_this_tick = true;
+        }
+        self.position = self.position.add_vector(movement);
+        self.needs_sync = true;
+    }
+    /// `moveCollidedEntities`' slime bounce releases a projectile embedded in
+    /// a block so its new velocity takes effect on this tick.
+    pub fn piston_slime_bounce(&mut self, movement: Direction) {
+        self.velocity = horizon_world::piston_push::bounce_velocity(movement, self.velocity);
+        self.stuck = false;
+        if let Some(arrow) = self.arrow.as_mut() {
+            arrow.in_ground = false;
+            arrow.in_ground_time = 0;
+        }
+        self.needs_sync = true;
+    }
+    pub fn begin_tick(&mut self) {
+        if !self.piston_pushed_this_tick {
+            self.previous = self.position;
+        }
+        self.previous_yaw = self.yaw;
+        self.previous_pitch = self.pitch;
+        self.piston_pushed_this_tick = false;
     }
     pub fn new(kind: ProjectileKind, position: Vec3, owner: Option<Who>) -> Self {
         let kind_is_arrow = matches!(kind, ProjectileKind::Arrow { .. } | ProjectileKind::Trident);
@@ -297,6 +352,7 @@ impl Projectile {
             bonus: Default::default(),
             acceleration,
             needs_sync: false,
+            piston_pushed_this_tick: false,
             touching_water: false,
             no_gravity: false,
             arrow: kind_is_arrow.then(|| {
@@ -806,10 +862,7 @@ impl Projectile {
         result
     }
     fn tick_inner(&mut self, w: &impl ProjectileWorld, impact: bool) -> (bool, Hit) {
-        // `Entity.setOldPosAndRot` (the previous position and rotation the
-        // renderer interpolates from), kept across the `impact` flag's arrival
-        // from #6279.
-        self.set_old_pos_and_rot();
+        self.begin_tick();
         self.age += 1;
         if matches!(self.kind, ProjectileKind::ShulkerBullet { .. }) {
             return self.tick_bullet(w, impact);
@@ -1008,7 +1061,15 @@ mod tests {
         fn targets(&self) -> &[(Who, Aabb)] {
             &self.0
         }
+        fn no_block_collision(&self, _: Aabb) -> bool {
+            true
+        }
     }
+    #[test]
+    fn rotation_interpolation_takes_the_short_way_across_a_turn() {
+        assert_eq!(lerp_rotation(179.0, -179.0, 0.5), -180.0);
+    }
+
     #[test]
     fn snowball_falls_with_throwable_gravity_and_drag() {
         let mut p = Projectile::new(ProjectileKind::Snowball, Vec3::new(0.0, 100.0, 0.0), None);
@@ -1031,6 +1092,9 @@ mod tests {
         }
         fn targets(&self) -> &[(Who, Aabb)] {
             &self.0
+        }
+        fn no_block_collision(&self, _: Aabb) -> bool {
+            false
         }
     }
     fn thrown(kind: ProjectileKind) -> Projectile {
@@ -1164,6 +1228,17 @@ mod tests {
         assert_eq!(settings("ruby:late"), (5, 3, true));
     }
 
+    #[test]
+    fn piston_push_preserves_projectile_interpolation() {
+        let start = Vec3::new(0.0, 100.0, 0.0);
+        let mut p = Projectile::new(ProjectileKind::WindCharge, start, None);
+        p.move_by_piston(Vec3::new(0.5, 0.0, 0.0));
+        let w = Empty(vec![]);
+        p.tick(&w);
+        assert_eq!(p.previous, start);
+        assert_eq!(p.position, Vec3::new(0.5, 100.0, 0.0));
+        assert!(p.needs_sync);
+    }
     #[test]
     fn llama_spit_moves_first_then_drags_and_falls() {
         let mut p = Projectile::new(ProjectileKind::LlamaSpit, Vec3::new(0.0, 100.0, 0.0), None);
