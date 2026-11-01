@@ -182,9 +182,7 @@ impl Split<'_> {
 
     /// Guest `i` plays as profile `name`: its options, then into P1's world.
     pub(super) fn enter(&mut self, i: usize, name: String) -> Result<()> {
-        if self.taken().iter().any(|n| n.eq_ignore_ascii_case(&name)) {
-            return Err(format!("{name} is already playing.").into());
-        }
+        self.can_join(&name)?;
         // The page's names are player names; a test seat's (P2) isn't one, but no name leaves
         // the profiles folder.
         if !folder_name(&name) {
