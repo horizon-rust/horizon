@@ -50,7 +50,7 @@ const RECORD: u64 = 24;
 /// A tile is a few tens of kilobytes deflated; anything larger is damage.
 const MAX_RECORD: u32 = 1 << 22;
 /// Region files kept open at once (a process may hold a few hundred).
-const OPEN_REGIONS: usize = 48;
+const OPEN_REGIONS: usize = 96;
 /// Dead bytes in a region file beyond its live ones that make it compact.
 const COMPACT_SLACK: u64 = 4 << 20;
 /// Chunk summaries and compressed tiles waiting for the writer; past them an
