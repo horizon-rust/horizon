@@ -17999,7 +17999,8 @@ fn load_core(
     parallel: bool,
     progress: &Progress,
 ) -> std::result::Result<std::result::Result<CoreTables, String>, String> {
-    let assets = match Assets::load(root) {
+    let parallel = parallel && std::env::var_os("SP2_SERIAL").is_none();
+    let assets = match horizon_threads::mem_step("core_assets", || Assets::load(root)) {
         Ok(assets) => assets,
         Err(e) => return Ok(Err(e.to_string())),
     };
@@ -18009,20 +18010,23 @@ fn load_core(
         std::thread::scope(|scope| {
             let assets = &assets;
             let render = Step::spawn(scope, parallel, move || {
-                // A server reads no block sprites' pixels, which only the
-                // renderer draws (32 MB).
-                let render = if headless {
-                    assets.reload_for_server(root)
-                } else {
-                    assets.reload(root)
-                }
-                .map_err(|e| e.to_string())?;
-                let item_renderer = horizon_client::item_render::ItemRenderer::load_with_library(
-                    root,
-                    render.model_library.clone(),
-                )
-                .map_err(|e| e.to_string());
-                Ok((render, item_renderer))
+                horizon_threads::mem_step("core_render", || {
+                    // A server reads no block sprites' pixels, which only the
+                    // renderer draws (32 MB).
+                    let render = if headless {
+                        assets.reload_for_server(root)
+                    } else {
+                        assets.reload(root)
+                    }
+                    .map_err(|e| e.to_string())?;
+                    let item_renderer =
+                        horizon_client::item_render::ItemRenderer::load_with_library(
+                            root,
+                            render.model_library.clone(),
+                        )
+                        .map_err(|e| e.to_string());
+                    Ok((render, item_renderer))
+                })
             });
             // Nor the face visibility the mesher and the block entity
             // renderer cull with (19 MB).
@@ -18033,13 +18037,16 @@ fn load_core(
                 models::load_visibility(root, registry).map_err(|e| e.to_string())
             });
             let biomes = Step::spawn(scope, parallel, || {
-                Biomes::load(root).map_err(|e| e.to_string())
+                horizon_threads::mem_step("core_biomes", || Biomes::load(root))
+                    .map_err(|e| e.to_string())
             });
             let environment = Step::spawn(scope, parallel, || {
-                Environment::load(root).map_err(|e| e.to_string())
+                horizon_threads::mem_step("core_environment", || Environment::load(root))
+                    .map_err(|e| e.to_string())
             });
             let collision = Step::spawn(scope, parallel, || {
-                collisions::load(root, registry).map_err(|e| e.to_string())
+                horizon_threads::mem_step("core_collision", || collisions::load(root, registry))
+                    .map_err(|e| e.to_string())
             });
             let gameplay = gameplay_tables(root, assets, parallel, progress);
             (
@@ -18077,13 +18084,18 @@ fn gameplay_tables(
     parallel: bool,
     progress: &Progress,
 ) -> std::result::Result<GameplayTables, String> {
-    let behaviour_json: serde_json::Value = serde_json::from_reader(std::io::BufReader::new(
-        std::fs::File::open(root.join("block-behaviours.json")).map_err(|e| e.to_string())?,
-    ))
-    .map_err(|e| e.to_string())?;
-    let (facts, gameplay_projection) =
+    let behaviour_json: serde_json::Value =
+        horizon_threads::mem_step("core_behaviour_json", || {
+            serde_json::from_reader(std::io::BufReader::new(
+                std::fs::File::open(root.join("block-behaviours.json"))
+                    .map_err(|e| e.to_string())?,
+            ))
+            .map_err(|e| e.to_string())
+        })?;
+    let (facts, gameplay_projection) = horizon_threads::mem_step("core_facts", || {
         BlockFacts::load_with_projection(root, assets.registry, &behaviour_json)
-            .map_err(|e| e.to_string())?;
+    })
+    .map_err(|e| e.to_string())?;
     horizon_client::block_contact::set_mod_blocks(
         facts
             .states
@@ -18093,10 +18105,15 @@ fn gameplay_tables(
     progress.set(2);
     let (light, motion) = std::thread::scope(|scope| {
         let light = Step::spawn(scope, parallel, || {
-            LightTables::load(root, assets.registry, &facts).map_err(|e| e.to_string())
+            horizon_threads::mem_step("core_light", || {
+                LightTables::load(root, assets.registry, &facts)
+            })
+            .map_err(|e| e.to_string())
         });
-        let motion =
-            MotionResources::load_with_facts(root, assets, &facts).map_err(|e| e.to_string());
+        let motion = horizon_threads::mem_step("core_motion", || {
+            MotionResources::load_with_facts(root, assets, &facts)
+        })
+        .map_err(|e| e.to_string());
         (light.join(), motion)
     });
     Ok(GameplayTables {
