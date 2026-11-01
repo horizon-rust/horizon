@@ -1307,6 +1307,23 @@ impl Mob {
         {
             self.velocity.y = f64::from(0.3_f32);
         }
+        // `floatInLiquidWhileRidden(FluidTags.ENTITY_FLOATABLE)`: a ridden horse, donkey, mule,
+        // zombie horse, camel or camel husk is pushed up in fluid deeper than the jump threshold.
+        if self.floats_while_ridden() {
+            self.velocity.y += f64::from(0.04_f32);
+        }
+    }
+    /// `LivingEntity.floatInLiquidWhileRidden`'s test: carries a rider (the player driving it or
+    /// another mob), is in `#can_float_while_ridden`, and is in water or lava deeper than the
+    /// jump threshold.
+    pub fn floats_while_ridden(&self) -> bool {
+        use super::Species::{Camel, CamelHusk, Donkey, Horse, Mule, ZombieHorse};
+        (self.rider.is_some() || self.extra.rider.is_some())
+            && matches!(
+                self.species(),
+                Horse | ZombieHorse | Mule | Donkey | Camel | CamelHusk
+            )
+            && self.fluids.water.max(self.fluids.lava) > self.fluid_jump_threshold()
     }
     /// The jump part of LivingEntity.aiStep.
     pub fn handle_jumping(&mut self, w: &MobWorld) {
@@ -1651,6 +1668,33 @@ impl RestitutionWorld for MobRestitution<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `floatInLiquidWhileRidden`: only a ridden member of `#can_float_while_ridden` in fluid
+    /// deeper than the jump threshold floats (a horse with a player on it, not a bare one, and
+    /// not a pig).
+    #[test]
+    fn a_ridden_horse_floats_in_deep_water_and_a_bare_one_does_not() {
+        use super::super::{Mob, Species};
+        use horizon_core::geometry::Vec3;
+        use std::sync::Arc;
+        let make = |species: Species| {
+            let mut kind = (*super::super::sensor_scan_tests::kind()).clone();
+            kind.species = species;
+            kind.eye_height = 1.5;
+            Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0)
+        };
+        let mut horse = make(Species::Horse);
+        horse.fluids.water = 1.0;
+        assert!(!horse.floats_while_ridden(), "nobody rides it");
+        horse.rider = Some(super::super::equine::Rider::default());
+        assert!(horse.floats_while_ridden());
+        horse.fluids.water = 0.3;
+        assert!(!horse.floats_while_ridden(), "shallower than the threshold");
+        let mut pig = make(Species::Pig);
+        pig.fluids.water = 1.0;
+        pig.rider = Some(super::super::equine::Rider::default());
+        assert!(!pig.floats_while_ridden(), "a pig is not in the tag");
+    }
+
     /// A pig dropped hard onto a block bounces by that block's restitution
     /// (`Entity.getBlockBounciness`): landing on a slime block sends it back
     /// up, landing on stone stops it dead. The same 8-block fall then costs the
