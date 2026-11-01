@@ -533,13 +533,17 @@ impl Camera {
                 &mut clip,
             );
             self.move_by(-zoom, 0.0, 0.0);
-        } else if let Some(LivingCamera {
+        }
+        // Camera.setup applies the sleeping pose after the detached-camera
+        // placement too. Keep this outside the first/third-person split:
+        // otherwise a sleeping player in third person keeps the old view.
+        if let Some(LivingCamera {
             sleeping: Some(bed),
             ..
         }) = entity.living
         {
             self.set_rotation(bed.map_or(0.0, |yaw| yaw - 180.0), 0.0);
-            self.move_by(0.0, 0.15, 0.0);
+            self.move_by(0.0, 0.3, 0.0);
         }
     }
     /// `Camera.getMaxZoom`: eight rays from the corners of a 0.2 cube about
@@ -961,6 +965,8 @@ mod tests {
             mount: None,
         };
         let mut camera = Camera::default();
+        camera.eye_height = 0.2;
+        camera.eye_height_old = 0.2;
         camera.align_with_entity(&entity, 1.0, CameraType::ThirdPersonBack, |_, _| None);
         assert!((camera.position[2] + 4.0).abs() < 1e-6);
         camera.align_with_entity(&entity, 1.0, CameraType::ThirdPersonBack, |_, _| {
@@ -968,6 +974,61 @@ mod tests {
         });
         assert!(camera.position[2] > -1.1 && camera.position[2] < -0.9);
     }
+    #[test]
+    fn sleeping_camera_uses_the_bed_view_in_first_person() {
+        let entity = CameraEntity {
+            position: [0.0; 3],
+            previous: [0.0; 3],
+            x_rot: 20.0,
+            y_rot: 45.0,
+            x_rot_o: 20.0,
+            y_rot_o: 45.0,
+            eye_height: 0.2,
+            living: Some(LivingCamera {
+                scale: 1.0,
+                camera_distance: 4.0,
+                sleeping: Some(Some(90.0)),
+                dead: None,
+            }),
+            mount: None,
+        };
+        let mut camera = Camera::default();
+        camera.eye_height = 0.2;
+        camera.eye_height_old = 0.2;
+        camera.align_with_entity(&entity, 1.0, CameraType::FirstPerson, |_, _| None);
+        assert!((camera.y_rot - (90.0 - 180.0)).abs() < 1e-6);
+        assert_eq!(camera.x_rot, 0.0);
+        assert!((camera.position[1] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sleeping_third_person_camera_keeps_its_offset_and_faces_the_bed() {
+        let entity = CameraEntity {
+            position: [0.0; 3],
+            previous: [0.0; 3],
+            x_rot: 20.0,
+            y_rot: 0.0,
+            x_rot_o: 20.0,
+            y_rot_o: 0.0,
+            eye_height: 0.2,
+            living: Some(LivingCamera {
+                scale: 1.0,
+                camera_distance: 4.0,
+                sleeping: Some(Some(90.0)),
+                dead: None,
+            }),
+            mount: None,
+        };
+        let mut camera = Camera::default();
+        camera.eye_height = 0.2;
+        camera.eye_height_old = 0.2;
+        camera.align_with_entity(&entity, 1.0, CameraType::ThirdPersonBack, |_, _| None);
+        assert!((camera.y_rot - (90.0 - 180.0)).abs() < 1e-6);
+        assert_eq!(camera.x_rot, 0.0);
+        assert!((camera.position[1] - 0.5).abs() < 1e-6);
+        assert!((camera.position[2] - 4.0).abs() < 1e-6);
+    }
+
     #[test]
     fn fov_modifier_combines_speed_flight_and_bow() {
         let mut p = FovPlayer {
