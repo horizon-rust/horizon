@@ -526,11 +526,22 @@ impl<'a> Game<'a> {
         if players.is_empty() {
             return;
         }
+        let g = horizon_client::spans::guard("sn_chunks");
         let mut scratch = std::mem::take(&mut self.spawn_scratch);
         let spawnable = self.spawning_chunks(&players, &mut scratch);
+        if horizon_client::spans::enabled() && self.world.game_time % 200 == 0 {
+            log::info!(
+                "sndbg mobs {} candidates {} players {}",
+                self.mobs.len(),
+                scratch.candidates.len(),
+                players.len()
+            );
+        }
         for &key in &scratch.candidates {
             *self.world.inhabited.entry(key).or_insert(0) += 1;
         }
+        drop(g);
+        let g = horizon_client::spans::guard("sn_state");
         let spawn_mobs = self.ui.rules.bool("spawn_mobs");
         let spawn_enemies = self.ui.rules.bool("spawn_monsters");
         let mut random = std::mem::replace(&mut self.world.random, LegacyRandom::new(0));
@@ -575,6 +586,8 @@ impl<'a> Game<'a> {
                 let j = random.next_int_bound(i as i32 + 1).unwrap_or(0) as usize;
                 scratch.candidates.swap(i, j);
             }
+            drop(g);
+            let _g = horizon_client::spans::guard("sn_loop");
             if !categories.is_empty() {
                 for chunk in scratch.candidates.drain(..) {
                     let mut spawn = |l: &GameLevel, r: &SpawnRequest| {
@@ -599,6 +612,7 @@ impl<'a> Game<'a> {
         self.world.random = random;
         // ServerChunkCache.lastSpawnState, for the debug overlay.
         self.spawn_counts.insert(self.dim, last_state);
+        let _g = horizon_client::spans::guard("sn_add");
         self.add_spawned(pending, false);
         self.spawn_scratch = scratch;
     }
