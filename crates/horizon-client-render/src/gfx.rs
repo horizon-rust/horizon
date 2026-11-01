@@ -90,6 +90,7 @@ mod hdr_stats;
 pub use hdr::Calibration as HdrCalibration;
 pub mod lightning;
 mod lod;
+mod lod_gpu;
 mod native_material;
 mod native_pack;
 mod native_post;

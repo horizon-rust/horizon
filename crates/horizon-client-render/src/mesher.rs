@@ -21,7 +21,7 @@ use horizon_world::{
     fluid::{FluidKind, FluidState},
     registry::BlockStateId,
 };
-pub use sides::Sides;
+pub use sides::{Sides, wgsl_rules as side_rules};
 use std::sync::Arc;
 
 /// An entity, item and effect vertex (the entity pipelines), with a face
