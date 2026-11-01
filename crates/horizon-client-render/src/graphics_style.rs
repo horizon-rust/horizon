@@ -325,4 +325,3 @@ pub fn title(batch: &mut HudBatch, atlas: &HudAtlas, text: &Text) {
 pub fn cost_line(cost: Cost) -> Text {
     Text::literal(lang::get(cost.label())).with_color(cost.rgb())
 }
-
