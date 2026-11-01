@@ -23,6 +23,10 @@
 //! tiles are the GPU's). Frames drawn through a water mirror, a shader pack
 //! or the title screen use the CPU walk altogether.
 //!
+//! With mesh shaders on (`lod_mesh`) the walk lists each kept tile's meshlets
+//! for a task shader instead of writing draws, and the page's mesh draw takes
+//! the place of its multi-draw.
+//!
 //! The walk goes level by level with `dispatchIndirect`, with a frustum
 //! test and a projected size test, here as a cull rather than
 //! the choice of a level (Horizon's plan picks the tiles on the CPU).
@@ -554,6 +558,7 @@ impl LodGpu {
     }
 
     /// Binds the group 1 the visibility test reads (`Visibility::layout`).
+    #[allow(dead_code)] // The hook stage 5's HiZ test binds its resources through.
     pub fn set_visibility_group(&mut self, group: Option<wgpu::BindGroup>) {
         self.visibility_group = group;
     }
@@ -993,11 +998,6 @@ impl LodGpu {
             mesh.on = on;
             self.revision = None;
         }
-    }
-
-    /// Whether this frame's walk was recorded.
-    pub fn walked(&self) -> bool {
-        self.walked
     }
 }
 
