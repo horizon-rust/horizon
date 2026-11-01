@@ -1800,6 +1800,32 @@ impl Game<'_> {
             self.selected = i;
             return Ok(());
         }
+        // A control `give` on the integrated server updates the authoritative inventory before
+        // the corresponding client packet is processed. Consult that server state once so a
+        // command pipeline can select an item immediately after giving it instead of depending on
+        // an extra rendered frame.
+        if let Some(server) = &self.integrated {
+            let requested = item.to_owned();
+            if let Some((i, inventory)) = server
+                .call(move |game| {
+                    let owner = game.serving.as_ref()?.owner;
+                    let host = game.lan.as_ref()?;
+                    let guest = host.hub.guests.iter().find(|guest| guest.uuid == owner)?;
+                    (0..9)
+                        .find(|&i| {
+                            guest.inventory[i]
+                                .as_ref()
+                                .is_some_and(|s| &*s.item == requested)
+                        })
+                        .map(|i| (i, guest.inventory.clone()))
+                })
+                .flatten()
+            {
+                self.inventory = inventory;
+                self.selected = i;
+                return Ok(());
+            }
+        }
         if self.inventory.iter().flatten().any(|s| &*s.item == item) {
             return Err(format!(
                 "{item} is in the main inventory, not the hotbar; move it with open-inventory and click-slot"
