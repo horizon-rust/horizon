@@ -1053,7 +1053,10 @@ mod tests {
     #[test]
     fn the_view_uniform_is_what_the_shader_declares() {
         // 6 planes, a matrix, five vectors and the column mask: lod_gpu.wgsl's `View`.
-        assert_eq!(std::mem::size_of::<ViewUniform>(), 96 + 64 + 5 * 16 + 128 * 16);
+        assert_eq!(
+            std::mem::size_of::<ViewUniform>(),
+            96 + 64 + 5 * 16 + 128 * 16
+        );
         assert_eq!(std::mem::size_of::<tree::Node>(), 48);
         assert_eq!(std::mem::size_of::<TileRecord>(), 88);
     }

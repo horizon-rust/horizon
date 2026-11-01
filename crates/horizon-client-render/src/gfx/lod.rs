@@ -99,7 +99,10 @@ pub(super) fn column_mask(
 pub(super) fn masked(mask: &[[u32; 4]; MASK_VECS], center: (i32, i32), key: TileKey) -> bool {
     let chunks = 1 << key.level;
     let half = MASK_SIDE / 2;
-    let (x0, z0) = (key.x * chunks - center.0 + half, key.z * chunks - center.1 + half);
+    let (x0, z0) = (
+        key.x * chunks - center.0 + half,
+        key.z * chunks - center.1 + half,
+    );
     if x0 < 0 || z0 < 0 || x0 + chunks > MASK_SIDE || z0 + chunks > MASK_SIDE {
         return false;
     }
@@ -258,7 +261,11 @@ impl Tile {
     }
     /// Whether a mesh of it is in arena page `page`.
     pub fn on_page(&self, page: u32) -> bool {
-        self.mesh.page == page || self.previous.as_ref().is_some_and(|(mesh, _)| mesh.page == page)
+        self.mesh.page == page
+            || self
+                .previous
+                .as_ref()
+                .is_some_and(|(mesh, _)| mesh.page == page)
     }
     /// Its box relative to its origin, for occlusion culling by depth
     /// (`Cull::tile_drawn`); none while a stand-in mesh is drawn, whose extent
