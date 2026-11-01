@@ -6,6 +6,16 @@
 #[cfg(target_os = "linux")]
 pub mod wayland;
 
+/// The token that lets a device be asked for wgpu's experimental features (mesh
+/// shaders): `ExperimentalFeatures::enabled` is `unsafe`, which the crates that
+/// forbid unsafe code can't call.
+pub fn experimental_features() -> wgpu::ExperimentalFeatures {
+    // Safety: the caller accepts that an experimental feature may hit bugs in wgpu
+    // that behave as undefined behaviour; Horizon asks only for mesh shaders, and
+    // only when its settings do.
+    unsafe { wgpu::ExperimentalFeatures::enabled() }
+}
+
 /// Opens a Vulkan device with `VK_EXT_hdr_metadata` too, when the GPU offers
 /// it, so [`set_metadata`] can tell the compositor the real peak brightness.
 /// `None` leaves opening to wgpu.

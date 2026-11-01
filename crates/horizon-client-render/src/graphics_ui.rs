@@ -2,7 +2,9 @@
 //! they show, in what groups, with what description and cost, and their
 //! input. How they look comes from `graphics_style`.
 use crate::{
-    graphics::{FarDetail, GraphicsApi, Overlay, Pacing, PresentMode, Preset, Upscaling},
+    graphics::{
+        FarDetail, GraphicsApi, MeshShaders, Overlay, Pacing, PresentMode, Preset, Upscaling,
+    },
     graphics_style::{Cost, STYLE},
     hud::{HudAtlas, HudBatch},
     lang,
@@ -56,6 +58,7 @@ pub enum H {
     BatteryMode,
     ShadowCache,
     GraphicsApi,
+    MeshShaders,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -342,6 +345,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 "Vulkan, then DirectX 12 (Windows) or OpenGL (Linux) where it fails. Next start.",
             ),
             h(
+                H::MeshShaders,
+                Saves,
+                "Far terrain with mesh shaders (Vulkan, Metal). Experimental. Next start.",
+            ),
+            h(
                 H::UploadBudget,
                 Low,
                 "Mesh data sent to the GPU per frame. Lower is smoother while loading.",
@@ -595,6 +603,7 @@ impl H {
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
+            H::MeshShaders => labelled("Mesh Shaders", g.mesh_shaders.label()),
             H::Overlay => labelled(
                 "Performance Overlay",
                 match g.overlay {
@@ -682,6 +691,10 @@ impl H {
             H::BatteryMode => g.battery = !g.battery,
             H::ShadowCache => g.shadow_cache = !g.shadow_cache,
             H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
+            H::MeshShaders => {
+                g.mesh_shaders = step(&[MeshShaders::Off, MeshShaders::Auto], g.mesh_shaders, back);
+                crate::graphics::request_mesh_shaders(g.mesh_shaders == MeshShaders::Auto);
+            }
             H::Pacing => {
                 g.pacing = match g.pacing {
                     Pacing::Efficient => Pacing::Precise,
@@ -808,6 +821,7 @@ impl Item {
                     | H::ShadowCache
                     | H::FarCulling
                     | H::GraphicsApi
+                    | H::MeshShaders
             ) | Item::Vanilla(
                 Opt::GuiScale
                     | Opt::Fullscreen

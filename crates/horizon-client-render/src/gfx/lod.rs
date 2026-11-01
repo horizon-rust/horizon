@@ -1,6 +1,6 @@
 //! Far meshes share the terrain arena and passes, with their actual bounds
 //! rather than the 16³ boxes used by the near-section residency walk.
-use super::{Frustum, Renderer, SectionGpu};
+use super::{Frustum, Renderer, SectionGpu, lod_gpu};
 use crate::{
     fast_hash::{FxHashMap, FxHashSet},
     lod::{MAX_LEVEL, TileKey},
@@ -8,7 +8,10 @@ use crate::{
     streaming::in_view_distance,
 };
 use glam::{DVec3, Vec3};
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 /// Finished tile meshes not uploaded yet, the tiles they replace (removed
 /// once every mesh is in) and the columns they leave out.
@@ -177,7 +180,49 @@ pub(super) struct Visible {
     pub old: bool,
 }
 
+/// `t` in milliseconds on the clock that began at `started`, which `lod_gpu`
+/// subtracts as whole numbers (negative before it began).
+pub(super) fn clock_ms(started: Instant, t: Instant) -> i32 {
+    let ms = |d: Duration| d.as_millis().min(i32::MAX as u128) as i32;
+    match t.checked_duration_since(started) {
+        Some(d) => ms(d),
+        None => -ms(started.saturating_duration_since(t)),
+    }
+}
+
 impl Tile {
+    /// The tile as the GPU's tree takes it (`lod_gpu`), when it has solid
+    /// quads to draw: its bounds, where the mesh drawn now sits in the arena
+    /// and how its quads are sorted, and when it began to fade (`started`'s
+    /// clock). Translucent quads stay with the CPU (`Renderer::gpu_tiles`).
+    pub fn gpu_entry(
+        &self,
+        key: TileKey,
+        started: Instant,
+        meshlets: bool,
+    ) -> Option<lod_gpu::tree::Entry<'_>> {
+        let mesh = self.drawn();
+        if mesh.sides.quads() == 0 {
+            return None;
+        }
+        let ms = |t: Instant| clock_ms(started, t);
+        let meshlets: &[super::lod_meshlet::Meshlet] = if meshlets { &mesh.meshlets } else { &[] };
+        Some(lod_gpu::tree::Entry {
+            key,
+            min: self.bounds.min.to_array(),
+            max: self.bounds.max.to_array(),
+            record: lod_gpu::record(
+                mesh.page,
+                mesh.start as u32,
+                key.level,
+                &mesh.sides,
+                self.shown.map(ms),
+                self.dying.map(ms),
+                self.alone,
+            ),
+            meshlets,
+        })
+    }
     /// The mesh drawn this frame: the previous one while it stands in.
     pub fn drawn(&self) -> &SectionGpu {
         self.previous.as_ref().map_or(&self.mesh, |(mesh, _)| mesh)
@@ -311,6 +356,33 @@ impl Renderer {
                 }
             }
         }
+        self.lod_revision += 1;
+    }
+
+    /// The resident tiles as `lod_gpu` takes them: those with solid quads,
+    /// the keys of those with water (their translucent quads are sorted on
+    /// the CPU every frame, so it still walks them) and the animated sprite
+    /// layers of them all.
+    ///
+    /// Takes the tiles rather than `&self`, so the entries borrow only them.
+    /// `meshlets`: the entries carry their tiles' meshlets (the mesh shader path).
+    pub(super) fn gpu_tiles(
+        lods: &HashMap<TileKey, Tile>,
+        started: Instant,
+        meshlets: bool,
+    ) -> (Vec<lod_gpu::tree::Entry<'_>>, Vec<TileKey>, Vec<u16>) {
+        let (mut entries, mut water, mut layers) = (Vec::new(), Vec::new(), Vec::new());
+        for (&key, tile) in lods {
+            entries.extend(tile.gpu_entry(key, started, meshlets));
+            if tile.drawn().translucent > 0 {
+                water.push(key);
+            }
+            layers.extend(tile.drawn().animated_layers.iter().copied());
+            layers.extend(tile.mesh.animated_layers.iter().copied());
+        }
+        layers.sort_unstable();
+        layers.dedup();
+        (entries, water, layers)
     }
 
     fn release_tile(&mut self, tile: Tile) {
@@ -323,6 +395,7 @@ impl Renderer {
     pub fn remove_lod(&mut self, key: TileKey) {
         if let Some(tile) = self.lods.remove(&key) {
             self.release_tile(tile);
+            self.lod_revision += 1;
         }
     }
 
@@ -341,6 +414,7 @@ impl Renderer {
         for (_, tile) in std::mem::take(&mut self.lods) {
             self.release_tile(tile);
         }
+        self.lod_revision += 1;
         self.set_lod_cutout(Default::default());
     }
 
@@ -383,6 +457,9 @@ impl Renderer {
                 _ => None,
             })
             .collect();
+        if !stood_in.is_empty() {
+            self.lod_revision += 1;
+        }
         for (previous, _) in stood_in {
             self.release_mesh(previous);
         }
@@ -474,6 +551,7 @@ impl Renderer {
                         })
                 };
                 let whole = start.checked_sub(FADE).unwrap_or(start);
+                self.lod_revision += 1;
                 for (&key, tile) in &mut self.lods {
                     if tile.shown.is_none() {
                         tile.shown = Some(if over_replaced(key) { start } else { whole });
