@@ -754,7 +754,7 @@ impl Item {
     fn available(self) -> bool {
         !matches!(self, Item::Vanilla(o) if !o.available())
     }
-    /// Why a control can't be used now, when it can't: HDR's screen opens only where
+    /// Why a control can't be used now, when it can't: HDR's page works only where
     /// the display offers HDR output, whatever `horizon-graphics.txt` says (a copied game
     /// folder, a display swapped for an SDR one: the renderer leaves HDR off there, and
     /// the saved values wait for an HDR display), and its sliders do something only
@@ -764,7 +764,14 @@ impl Item {
             return Some("This feature is not yet available in Horizon.");
         }
         match self {
-            Item::Horizon(H::Hdr) if !crate::graphics::hdr_offered() => {
+            Item::Horizon(
+                H::Hdr
+                | H::HdrCalibrate
+                | H::HdrBlackLevel
+                | H::HdrPeak
+                | H::HdrPaperWhite
+                | H::HdrUiBrightness,
+            ) if !crate::graphics::hdr_offered() => {
                 Some("Your display or system doesn't offer HDR output.")
             }
             Item::Horizon(
@@ -994,6 +1001,10 @@ impl Columns {
         let [x, y, w, h] = self.search();
         [x + w - h, y, h, h]
     }
+    /// Room for vanilla's scroller, whose thumb is 32 high and 8 short of its track.
+    fn scrolls(&self) -> bool {
+        self.bottom - self.top >= 40.0
+    }
     fn bar_x(&self) -> f32 {
         self.x + self.w - 4.0 - style::SCROLLER_W
     }
@@ -1093,6 +1104,11 @@ impl Default for GraphicsUi {
 }
 
 impl GraphicsUi {
+    /// How far the list is scrolled (the options screen's tests).
+    #[cfg(test)]
+    pub(crate) fn scroll_amount(&self) -> f32 {
+        self.scroll.amount
+    }
     /// The screen opens, at `page`.
     pub fn open(&mut self, page: Page) {
         *self = Self {
@@ -1105,8 +1121,9 @@ impl GraphicsUi {
     }
     /// The list's lines and its content height: the settings on the screen
     /// whose name or description has the search in it, under their pages'
-    /// headers, blocks a little apart. Not their values: changing one would
-    /// take its row away under the pointer.
+    /// headers, blocks a little apart. Not their values (nor the descriptions
+    /// that follow them), and the row being changed stays whatever it reads
+    /// now: a change mustn't take its row away under the pointer.
     fn lines(&self, s: &Settings) -> (Vec<Line>, f32) {
         let query = self.query();
         let mut lines = Vec::new();
@@ -1120,10 +1137,10 @@ impl GraphicsUi {
                         .filter(|r| shown(r.item, s))
                         .filter(|r| {
                             query.is_empty()
+                                || self.focus == Some(Target::Item(r.item))
+                                || self.dragging == Some(r.item)
                                 || parts(r.item, s, false).0.to_lowercase().contains(&query)
-                                || lang::get(description(r.item, s, r.text))
-                                    .to_lowercase()
-                                    .contains(&query)
+                                || lang::get(r.text).to_lowercase().contains(&query)
                         })
                         .collect::<Vec<_>>()
                 })
@@ -1482,6 +1499,9 @@ impl GraphicsUi {
     }
     /// Vanilla's scroller, inside the panel's right edge, sized as `ui::Scroll` drags it.
     fn draw_scroller(&self, batch: &mut HudBatch, atlas: &HudAtlas, cols: &Columns, content: f32) {
+        if !cols.scrolls() {
+            return;
+        }
         let Some((y, bar)) =
             ui::scrollbar_thumb(cols.top, cols.bottom, content, self.scroll.amount)
         else {
@@ -1578,9 +1598,10 @@ impl GraphicsUi {
         if right {
             return Vec::new();
         }
-        if self
-            .scroll
-            .press((x, y), cols.bar_x(), cols.top, cols.bottom, content)
+        if cols.scrolls()
+            && self
+                .scroll
+                .press((x, y), cols.bar_x(), cols.top, cols.bottom, content)
         {
             return Vec::new();
         }
@@ -1710,8 +1731,9 @@ impl GraphicsUi {
                 && setting.item.blocked(s).is_none()
             {
                 let y = self.row_y(cols, line);
-                if near && (y + style::ROW < cols.top - style::ROW || y > cols.bottom + style::ROW)
-                {
+                // The next row past an edge can be a page's break away.
+                let reach = style::ROW + style::PAGE_GAP + style::HEADER_ROW + style::BLOCK_GAP;
+                if near && (y + style::ROW < cols.top - reach || y > cols.bottom + reach) {
                     continue;
                 }
                 out.push((
@@ -1826,17 +1848,21 @@ impl GraphicsUi {
                     let rects: Vec<[f32; 4]> = focusables.iter().map(|f| f.1).collect();
                     crate::gamepad::focus_step_rect(focusables[i].1, dir, &rects)
                 }
-                // Nothing focused yet: the first setting, or the last.
-                None => focusables
-                    .iter()
-                    .position(|(t, _)| matches!(t, Target::Item(_)))
-                    .map(|first| {
-                        if key == K::ArrowUp {
-                            focusables.len() - 1
-                        } else {
-                            first
-                        }
-                    }),
+                // Nothing focused in view: the first setting there, or the last.
+                None => {
+                    let mut rows = focusables
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (t, [_, y, ..]))| {
+                            matches!(t, Target::Item(_)) && *y >= cols.top && *y < cols.bottom
+                        });
+                    let pick = if key == K::ArrowUp {
+                        rows.last()
+                    } else {
+                        rows.next()
+                    };
+                    pick.map(|(i, _)| i)
+                }
             };
             let Some(next) = next else {
                 return (Vec::new(), false);
@@ -1894,11 +1920,12 @@ impl GraphicsUi {
             return false;
         }
         let before = self.search.value.clone();
-        let handled = self.search.shortcut(shortcut, clipboard);
+        self.search.shortcut(shortcut, clipboard);
         if self.search.value != before {
             self.searched();
         }
-        handled
+        // Whatever it did: the key is the field's, not something to type.
+        true
     }
     /// The search changed: the list starts over at its top.
     fn searched(&mut self) {
@@ -2147,9 +2174,11 @@ mod tests {
         crate::graphics::offer_hdr(false);
         let hdr = row(&mut ui, &s, Item::Horizon(H::Hdr));
         assert!(press(&mut ui, &mut s, at(hdr)).is_empty());
-        // Not even with HDR saved on, from another computer.
+        // Not even with HDR saved on, from another computer: nor its sliders and calibration.
         s.horizon.hdr = true;
-        assert!(Item::Horizon(H::Hdr).blocked(&s).is_some());
+        for h in [H::Hdr, H::HdrCalibrate, H::HdrPeak, H::HdrPaperWhite] {
+            assert!(Item::Horizon(h).blocked(&s).is_some(), "{h:?}");
+        }
         s.horizon.hdr = false;
         crate::graphics::offer_hdr(true);
         let (tx, _) = Columns::of(SIZE.0, SIZE.1).track();
@@ -2226,6 +2255,38 @@ mod tests {
         assert_eq!(ui.scroll.amount, content - (cols.bottom - cols.top));
         ui.scroll(&s, SIZE, 1000.0);
         assert_eq!(ui.scroll.amount, 0.0);
+    }
+
+    #[test]
+    fn the_arrows_cross_a_page_break_and_stay_on_rows_in_view() {
+        let mut s = Settings::default();
+        let mut ui = GraphicsUi::default();
+        let in_view = |ui: &mut GraphicsUi, s: &Settings, item| {
+            let (cols, lines, _) = ui.layout(s, SIZE.0, SIZE.1);
+            let line = lines
+                .iter()
+                .find(|l| l.setting.is_some_and(|r| r.item == item))
+                .unwrap();
+            let y = ui.row_y(&cols, line);
+            y >= cols.top && y + style::ROW <= cols.bottom
+        };
+        // General's last row, against the bottom of the view, then Down: Quality's first.
+        let last = Item::Vanilla(Opt::Autosave);
+        row(&mut ui, &s, last);
+        ui.focus = Some(Target::Item(last));
+        ui.key_modifiers(&mut s, K::ArrowDown, None, false, SIZE, FB);
+        let clouds = Item::Vanilla(Opt::Clouds);
+        assert_eq!(ui.focus, Some(Target::Item(clouds)));
+        assert!(in_view(&mut ui, &s, clouds));
+        ui.key_modifiers(&mut s, K::ArrowUp, None, false, SIZE, FB);
+        assert_eq!(ui.focus, Some(Target::Item(last)));
+        // Up from Done: a row in view, not one far off under the tabs.
+        ui.focus = Some(Target::Done);
+        ui.key_modifiers(&mut s, K::ArrowUp, None, false, SIZE, FB);
+        let Some(Target::Item(item)) = ui.focus else {
+            panic!("{:?}", ui.focus)
+        };
+        assert!(in_view(&mut ui, &s, item), "{item:?}");
     }
 
     #[test]

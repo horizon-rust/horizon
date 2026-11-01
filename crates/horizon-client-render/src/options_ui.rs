@@ -4099,6 +4099,8 @@ impl OptionsUi {
     /// cycles that widget regardless of where the cursor is. Vanilla 26.3
     /// does not intercept the wheel for sliders at all; this makes keyboard
     /// navigation far more usable.
+    /// The graphics screen's list only scrolls, focused or not: a controller
+    /// scrolls it with the wheel.
     pub fn wheel(
         &mut self,
         s: &mut Settings,
@@ -6947,6 +6949,22 @@ mod tests {
         let events = ui.wheel(&mut s, size, cursor, [854, 480], 1.0);
         assert_eq!(s.master_volume, 0.5);
         assert!(!events.iter().any(|e| matches!(e, Event::Volume(0, _))));
+    }
+
+    #[test]
+    fn the_graphics_screens_wheel_scrolls_even_over_a_slider_being_changed() {
+        use crate::graphics_ui::{H, Item, Target};
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        ui.show(Page::Graphics);
+        let size = (640.0, 360.0);
+        s.horizon.chunk_updates = 16;
+        ui.graphics.focus = Some(Target::Item(Item::Horizon(H::ChunkUpdates)));
+        ui.graphics.can_change_value = true;
+        let before = ui.graphics.scroll_amount();
+        ui.wheel(&mut s, size, (320.0, 150.0), [1920, 1080], -1.0);
+        assert_eq!(s.horizon.chunk_updates, 16);
+        assert!(ui.graphics.scroll_amount() > before);
     }
 
     #[test]
