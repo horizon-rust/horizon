@@ -497,7 +497,11 @@ mod junction_tests {
 pub struct Counting;
 pub static LIVE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 pub static PEAK: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+pub static COUNT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 fn grew(n: isize) {
+    if !COUNT.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     let now = LIVE.fetch_add(n, std::sync::atomic::Ordering::Relaxed) + n;
     PEAK.fetch_max(now, std::sync::atomic::Ordering::Relaxed);
 }
@@ -527,21 +531,24 @@ unsafe impl std::alloc::GlobalAlloc for Counting {
         unsafe { mimalloc::MiMalloc.alloc_zeroed(l) }
     }
     unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
-        LIVE.fetch_sub(l.size() as isize, std::sync::atomic::Ordering::Relaxed);
+        if COUNT.load(std::sync::atomic::Ordering::Relaxed) {
+            LIVE.fetch_sub(l.size() as isize, std::sync::atomic::Ordering::Relaxed);
+        }
         unsafe { mimalloc::MiMalloc.dealloc(p, l) }
     }
     unsafe fn realloc(&self, p: *mut u8, l: std::alloc::Layout, n: usize) -> *mut u8 {
-        LIVE.fetch_add(
-            n as isize - l.size() as isize,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        grew(n as isize - l.size() as isize);
         unsafe { mimalloc::MiMalloc.realloc(p, l, n) }
     }
 }
 /// Bench only: `memdbg STAGE live MB rss MB`.
 pub static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 pub fn mem_line(stage: &str) -> String {
-    let t = T0.get_or_init(std::time::Instant::now).elapsed().as_secs_f64() * 1000.0;
+    let t = T0
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs_f64()
+        * 1000.0;
     let rss = std::fs::read_to_string("/proc/self/statm")
         .ok()
         .and_then(|s| s.split_whitespace().nth(1)?.parse::<f64>().ok())
