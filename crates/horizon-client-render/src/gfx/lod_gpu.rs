@@ -259,7 +259,7 @@ fn storage(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
 
 /// The traversal's WGSL: the constants it reads, the visibility test, the
 /// shader; for the mesh shader path (`items`) with its lists.
-fn traverse_source(visibility: &str, items: bool) -> String {
+pub(super) fn traverse_source(visibility: &str, items: bool) -> String {
     format!(
         "{}const FADE_MS: i32 = {};\nconst UV_STEP: f32 = {:?};\n{}\n{}\n{}",
         crate::mesher::side_rules(),

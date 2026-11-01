@@ -8125,6 +8125,18 @@ mod tests {
             if name == "oit.wgsl" {
                 // The shared maths: it needs the file it is appended to.
                 continue;
+            } else if matches!(
+                name,
+                "lod_gpu_items.wgsl" | "lod_visibility.wgsl" | "lod_mesh.wgsl"
+            ) {
+                // Parts of the far terrain walk (`lod_gpu::traverse_source`, below), and
+                // the meshlet shaders, which DirectX 12 never builds (naga has no HLSL
+                // mesh shader back end; the mesh path is Vulkan and Metal only).
+                continue;
+            } else if name == "lod_gpu.wgsl" {
+                let source =
+                    super::lod_gpu::traverse_source(include_str!("gfx/lod_visibility.wgsl"), false);
+                sources.push((path, source));
             } else if name == "oit_world.wgsl" {
                 let base = include_str!("terrain.wgsl").to_owned() + include_str!("oit.wgsl");
                 sources.push((path, base + &text));

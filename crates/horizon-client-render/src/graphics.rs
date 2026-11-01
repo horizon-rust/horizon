@@ -270,11 +270,12 @@ impl MeshShaders {
             MeshShaders::Auto => "Auto",
         }
     }
+    /// Only `off` turns them off; anything else is the default, Auto.
     fn parse(s: &str) -> Self {
-        if s == "auto" {
-            MeshShaders::Auto
-        } else {
+        if s == "off" {
             MeshShaders::Off
+        } else {
+            MeshShaders::Auto
         }
     }
 }
@@ -856,14 +857,18 @@ mod tests {
     }
 
     #[test]
-    fn mesh_shaders_are_off_until_picked() {
-        assert_eq!(Graphics::default().mesh_shaders, MeshShaders::Off);
+    fn mesh_shaders_are_auto_unless_turned_off() {
+        assert_eq!(Graphics::default().mesh_shaders, MeshShaders::Auto);
         assert_eq!(
             Graphics::parse("meshShaders:auto\n").mesh_shaders,
             MeshShaders::Auto
         );
-        for text in ["meshShaders:off\n", "meshShaders:\n", "meshShaders:maybe\n"] {
-            assert_eq!(Graphics::parse(text).mesh_shaders, MeshShaders::Off);
+        assert_eq!(
+            Graphics::parse("meshShaders:off\n").mesh_shaders,
+            MeshShaders::Off
+        );
+        for text in ["meshShaders:\n", "meshShaders:maybe\n"] {
+            assert_eq!(Graphics::parse(text).mesh_shaders, MeshShaders::Auto);
         }
     }
 
