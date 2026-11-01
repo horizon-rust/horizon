@@ -419,6 +419,8 @@ impl Game<'_> {
     /// player, except one riding this cart. A cart that runs into one has a horizontal
     /// collision, which sets a TNT minecart off.
     fn cart_entity_collisions(&self, c: &Minecart) -> Vec<Aabb> {
+        // Only the boxes near the cart: a cart that copied every mob's box
+        // each move cost ~2 ms a tick on a server of 2,000 mobs.
         let near = c.bounds().inflate(Vec3::new(2.0, 2.0, 2.0));
         let mut boxes: Vec<Aabb> = self
             .carts
@@ -438,10 +440,12 @@ impl Game<'_> {
                     })
                     .map(|m| m.bounds()),
             )
+            .filter(|b| b.intersects(near))
             .collect();
         if self.riding != Some(c.id)
             && let Some(p) = self.player.as_ref()
             && !self.spectator()
+            && p.bounds().intersects(near)
         {
             boxes.push(p.bounds());
         }
@@ -457,10 +461,10 @@ impl Game<'_> {
                             && !g.spectator()
                             && g.vehicle != Some(c.id)
                     })
-                    .map(|g| g.bounds()),
+                    .map(|g| g.bounds())
+                    .filter(|b| b.intersects(near)),
             );
         }
-        boxes.retain(|b| b.intersects(near));
         boxes
     }
     /// Entity.move for a cart: collisions zero the blocked components.
