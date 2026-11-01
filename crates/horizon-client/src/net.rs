@@ -46,6 +46,9 @@ pub enum Event {
     QuietCommands,
     /// The server carries mod messages (`horizon_protocol::mod_net`).
     ModNet,
+    /// The server feeds far players and mobs up to this many blocks
+    /// (`horizon_protocol::far_entities`).
+    FarEntities(u32),
     /// Configuration finished: the play state begins with these registries.
     Joined {
         registries: Arc<Dynamic>,
@@ -915,6 +918,10 @@ fn receive_brand(payload: &cfg::CustomPayload, send: &Sender<Event>) {
         let _ = send.send(Event::QuietCommands);
     } else if payload.channel == horizon_protocol::mod_net::CHANNEL {
         let _ = send.send(Event::ModNet);
+    } else if payload.channel == horizon_protocol::far_entities::CHANNEL
+        && let Ok(hello) = horizon_protocol::far_entities::Hello::decode(&payload.data)
+    {
+        let _ = send.send(Event::FarEntities(hello.range));
     }
 }
 

@@ -312,6 +312,28 @@ impl Game<'_> {
                 }
                 Ok(Some(json!({ "ok": true, "cull": r.section_cull() })))
             }
+            "lod-gpu" => {
+                let r = self.renderer.as_mut().ok_or("no renderer")?;
+                match words.get(1).copied() {
+                    None => {}
+                    Some("on") => r.set_gpu_lods(true)?,
+                    Some("off") => r.set_gpu_lods(false)?,
+                    Some(other) => return Err(format!("unknown lod-gpu mode {other}").into()),
+                }
+                Ok(Some(json!({ "ok": true, "gpu": r.gpu_lods() })))
+            }
+            "mesh-shaders" => {
+                let r = self.renderer.as_mut().ok_or("no renderer")?;
+                let available = match words.get(1).copied() {
+                    None => r.has_mesh_shaders(),
+                    Some("on") => r.set_mesh_shaders(true),
+                    Some("off") => r.set_mesh_shaders(false),
+                    Some(other) => return Err(format!("unknown mesh-shaders mode {other}").into()),
+                };
+                Ok(Some(
+                    json!({ "ok": true, "mesh": r.mesh_shaders(), "available": available }),
+                ))
+            }
             "section-sides" => {
                 let r = self.renderer.as_mut().ok_or("no renderer")?;
                 match words.get(1).copied() {
@@ -1144,7 +1166,7 @@ impl Game<'_> {
             "distance": self.settings.horizon.lod_distance,
             "effective_distance": self.lod_distance(),
             "terrain_distance": self.terrain_distance(),
-            "source": if self.lod.is_none() { "none" } else if self.integrated.is_some() { "integrated" } else { "local" },
+            "source": if self.lod.is_none() { "none" } else if self.integrated.is_some() { "integrated" } else if self.remote.is_some() { "remote" } else { "local" },
             "source_attempted": self.lod_source_attempted,
             "active_tiles": self.lod.as_ref().map_or(0, |lod| lod.stats().0),
             "cached_tiles": self.lod.as_ref().map_or(0, |lod| lod.stats().1),

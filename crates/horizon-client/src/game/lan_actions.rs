@@ -2096,6 +2096,10 @@ impl Game<'_> {
             S::CustomPayload(p) if p.channel == horizon_protocol::mod_net::CHANNEL => {
                 self.guest_native_net(host, conn, &p.data)
             }
+            // The range and count of the far players and mobs it wants.
+            S::CustomPayload(p) if p.channel == horizon_protocol::far_entities::CHANNEL => {
+                host.hub.far_entities.set(conn, &p.data)
+            }
             S::ChatCommandSigned(p) => self.guest_signed_command(host, conn, p),
             S::ChangeDifficulty(p) if host.hub.guests[gi].permission >= 2 => {
                 if !self.level.difficulty_locked && (0..=3).contains(&p.difficulty) {

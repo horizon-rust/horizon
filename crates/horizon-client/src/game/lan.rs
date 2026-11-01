@@ -243,50 +243,7 @@ pub(super) fn entity_uuid(id: u32) -> u128 {
 /// Zombie.DATA_BABY_ID are both the first entry after Mob's (16); Piglin's
 /// comes after AbstractPiglin's zombification flag (17).
 pub(super) fn baby_index(kind: &str) -> Option<u8> {
-    match kind {
-        "minecraft:piglin" => Some(17),
-        "minecraft:cow"
-        | "minecraft:mooshroom"
-        | "minecraft:pig"
-        | "minecraft:sheep"
-        | "minecraft:chicken"
-        | "minecraft:horse"
-        | "minecraft:donkey"
-        | "minecraft:mule"
-        | "minecraft:skeleton_horse"
-        | "minecraft:zombie_horse"
-        | "minecraft:llama"
-        | "minecraft:trader_llama"
-        | "minecraft:cat"
-        | "minecraft:wolf"
-        | "minecraft:fox"
-        | "minecraft:rabbit"
-        | "minecraft:panda"
-        | "minecraft:polar_bear"
-        | "minecraft:bee"
-        | "minecraft:frog"
-        | "minecraft:sniffer"
-        | "minecraft:armadillo"
-        | "minecraft:villager"
-        | "minecraft:zombie"
-        | "minecraft:husk"
-        | "minecraft:drowned"
-        | "minecraft:zombie_villager"
-        | "minecraft:zombified_piglin"
-        | "minecraft:hoglin"
-        | "minecraft:zoglin"
-        | "minecraft:goat"
-        | "minecraft:ocelot"
-        | "minecraft:turtle"
-        | "minecraft:strider"
-        | "minecraft:camel"
-        | "minecraft:axolotl"
-        | "minecraft:dolphin"
-        | "minecraft:squid"
-        | "minecraft:glow_squid"
-        | "minecraft:sulfur_cube" => Some(16),
-        _ => None,
-    }
+    horizon_client::lan::far_entities::baby_index(kind)
 }
 
 /// The variant and look entries of `mob_meta`'s mobs (registry holders, the

@@ -121,6 +121,7 @@ mod explosion;
 mod extras;
 mod falling_damage;
 mod fangs;
+mod far_entities;
 mod fireworks;
 mod fishing;
 mod fov;
@@ -2689,6 +2690,8 @@ struct Game<'a> {
     gpu_utilization: f64,
     /// The mobs `mob_geometry` drew last frame (`lastEntityRenderStateCount`).
     rendered_mobs: std::cell::Cell<usize>,
+    /// Far players and mobs, and the mobs drawn as impostors (`game/far_entities.rs`).
+    far: far_entities::Far,
     /// `ServerChunkCache.lastSpawnState` of each level: its spawnable chunks
     /// and each `MobCategory`'s count.
     spawn_counts: HashMap<Dim, (i32, [i32; 8])>,
@@ -14685,6 +14688,7 @@ impl Game<'_> {
             .renderer
             .as_ref()
             .map(|r| r.camera_frustum(fov_degrees, yaw, pitch, bob * spin, depth_far));
+        self.begin_far_entities(size, fov_degrees);
         // Keep the buffer local while builders need mutable access to the game.
         let mut entities = std::mem::take(&mut self.entity_vertices);
         entities.clear();
@@ -14696,6 +14700,12 @@ impl Game<'_> {
                 self.entity_geometry(camera, alpha, entities)
             });
         }
+        // The far entities, and the mobs `entity_geometry` left to impostors, as pictures.
+        let (far_tiles, far_quads) = if title {
+            (Vec::new(), Vec::new())
+        } else {
+            self.far_entity_draw(camera, alpha, yaw, pitch)
+        };
         let bolts = if title {
             Vec::new()
         } else {
@@ -14775,6 +14785,10 @@ impl Game<'_> {
         let frame = Frame {
             weather: &weather,
             weather_time: horizon_client::weather::Time::new(self.world.game_time, alpha as f32),
+            impostors: horizon_client::impostor::Draw {
+                uploads: &far_tiles,
+                vertices: &far_quads,
+            },
             nether_lighting: self.dim == Dim::Nether,
             camera,
             yaw,
@@ -14825,6 +14839,7 @@ impl Game<'_> {
                 .map(|r| [r.u0, r.v0, r.u1, r.v1]),
             environment_fog: (self.dim == Dim::Nether).then_some((sky.fog_start, sky.fog_end)),
             cave_culling,
+            far_cull: self.settings.horizon.far_cull,
             water_fog,
             fog: Some(self.frame_fog(camera, &sky, biome, water_fog)),
             dark_disc: self.dark_disc(camera),
@@ -15387,12 +15402,30 @@ impl Game<'_> {
             renderer.clear_lods();
         }
     }
+    /// Far terrain on a server: its own directory per address and dimension,
+    /// keyed by the level and the hashed seed it sent (`lod::store`).
+    fn remote_lod_source(
+        remote: &remote::Remote,
+        registry: &horizon_world::registry::BlockRegistry,
+        biomes: &horizon_client::biome::Biomes,
+    ) -> Option<Arc<dyn horizon_client::streaming::LodSource>> {
+        use horizon_client::lod::store;
+        let (level, seed) = &remote.far_world;
+        let dir = store::server_dir(
+            &std::env::current_dir().ok()?,
+            &remote.session.address,
+            level,
+        );
+        let key = store::store_key(registry, biomes, store::world_id(level, *seed));
+        Some(Arc::new(store::RemoteSource::new(store::FarStore::open(
+            dir, key, true,
+        ))))
+    }
     fn prepare_lod(&mut self) {
         let enabled = self.far_terrain_choice().0 > 0
             && self.renderer.is_some()
             && self.player.is_some()
-            && self.title.is_none()
-            && (self.remote.is_none() || self.integrated.is_some());
+            && self.title.is_none();
         if !enabled {
             if self.lod.is_some() || self.lod_source_attempted {
                 self.clear_lod();
@@ -15404,9 +15437,14 @@ impl Game<'_> {
         }
         self.lod_source_attempted = true;
         let dim = self.dim;
-        let source = match &self.integrated {
-            Some(server) => server.call(move |game| game.lod_source_in(dim)).flatten(),
-            None => Some(self.streaming.lod_source()),
+        let source = match (&self.integrated, &self.remote) {
+            (Some(server), _) => server.call(move |game| game.lod_source_in(dim)).flatten(),
+            // A server has no seed for the generator: far terrain is what
+            // its chunks showed, kept on disk.
+            (None, Some(remote)) => {
+                Self::remote_lod_source(remote, self.pack.assets.registry, world_biomes!(self))
+            }
+            (None, None) => Some(self.streaming.lod_source()),
         };
         if let Some(source) = source {
             self.lod = Some(horizon_client::lod::Lod::new(
@@ -15576,6 +15614,9 @@ impl Game<'_> {
                     horizon_client::graphics::lod_distance_capped(far_distance, &renderer.info);
                 lod.set_near_loading(self.streaming.busy());
                 lod.set_reduced_detail(far_reduced);
+                // Tiles are meshed whole where the renderer masks them in
+                // screen space, cut around the near columns where it cannot.
+                lod.set_screen_space(renderer.lod_screen_space(self.streaming.radius));
                 // The covered columns change only with the complete ones and
                 // the render area: rebuilt then, not every frame.
                 let at = (
@@ -17544,6 +17585,7 @@ impl<'a> Game<'a> {
             memory_meter: Default::default(),
             gpu_utilization: 0.0,
             rendered_mobs: Default::default(),
+            far: far_entities::Far::new(),
             spawn_counts: HashMap::new(),
             pause_menu: true,
             pause_focus: None,
@@ -18782,6 +18824,7 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
     Frame {
         weather: &[],
         weather_time: horizon_client::weather::Time::new(0, 0.0),
+        impostors: Default::default(),
         camera: glam::DVec3::new(0.5, 100.0, 0.5),
         yaw: 0.0,
         pitch: 10.0,
@@ -18800,6 +18843,7 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         underwater: false,
         water_plane: None,
         cave_culling: false,
+        far_cull: false,
         title: true,
         sky_blocked: false,
         skybox: false,

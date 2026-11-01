@@ -2,7 +2,9 @@
 //! they show, in what groups, with what description and cost, and their
 //! input. How they look comes from `graphics_style`.
 use crate::{
-    graphics::{FarDetail, GraphicsApi, Overlay, Pacing, PresentMode, Preset, Upscaling},
+    graphics::{
+        FarDetail, GraphicsApi, MeshShaders, Overlay, Pacing, PresentMode, Preset, Upscaling,
+    },
     graphics_style::{Cost, STYLE},
     hud::{HudAtlas, HudBatch},
     lang,
@@ -26,7 +28,11 @@ pub enum H {
     LodDistance,
     FarDetail,
     CaveCulling,
+    FarCulling,
     EntityCulling,
+    FarEntities,
+    FarEntityRange,
+    FarEntityMax,
     ChunkUpdates,
     UploadBudget,
     Sky,
@@ -56,6 +62,7 @@ pub enum H {
     BatteryMode,
     ShadowCache,
     GraphicsApi,
+    MeshShaders,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,9 +200,29 @@ pub fn rows(level: Level) -> Vec<Row> {
                 "Skips terrain hidden behind closed sections. Off costs a lot.",
             ),
             h(
+                H::FarCulling,
+                Saves,
+                "Skips far terrain hidden behind hills. Vulkan and Metal only.",
+            ),
+            h(
                 H::EntityCulling,
                 None,
                 "Hides models behind opaque blocks. Entities update. Off with custom packs.",
+            ),
+            h(
+                H::FarEntities,
+                Medium,
+                "Distant players and mobs as flat pictures. Needs a Horizon server.",
+            ),
+            h(
+                H::FarEntityRange,
+                Low,
+                "How far, in blocks, they are asked for and drawn. The server may cap it.",
+            ),
+            h(
+                H::FarEntityMax,
+                Low,
+                "Most distant mobs kept and drawn. Players always show.",
             ),
             h(
                 H::ChunkUpdates,
@@ -342,6 +369,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 "Vulkan, then DirectX 12 (Windows) or OpenGL (Linux) where it fails. Next start.",
             ),
             h(
+                H::MeshShaders,
+                Saves,
+                "Far terrain with mesh shaders (Vulkan, Metal). Experimental. Next start.",
+            ),
+            h(
                 H::UploadBudget,
                 Low,
                 "Mesh data sent to the GPU per frame. Lower is smoother while loading.",
@@ -363,6 +395,9 @@ pub fn rows(level: Level) -> Vec<Row> {
     rows
 }
 
+/// What the far entity sliders stop at: the range in blocks, and the mobs kept.
+const FAR_RANGE_STEPS: [u32; 8] = [256, 512, 1024, 1536, 2048, 2560, 3072, 4000];
+const FAR_MAX_STEPS: [u32; 6] = [100, 250, 500, 1000, 2000, 4000];
 const UPLOAD_STEPS: [u32; 8] = [0, 256, 512, 1024, 2048, 4096, 8192, 16384];
 /// What the LOD Distance slider stops at, in chunks: off, then each doubling
 /// up to the whole world.
@@ -478,6 +513,8 @@ impl H {
                     .unwrap_or(LOD_STEPS.len() - 1);
                 Some(i as f32 / (LOD_STEPS.len() - 1) as f32)
             }
+            H::FarEntityRange => Some(stop(&FAR_RANGE_STEPS, g.far_entity_range)),
+            H::FarEntityMax => Some(stop(&FAR_MAX_STEPS, g.far_entity_max)),
             H::Workers => Some(g.workers as f32 / max_workers() as f32),
             H::ResolutionScale => Some((g.resolution_scale as f32 - 50.0) / 150.0),
             // Auto, then 10..480 by 10.
@@ -496,6 +533,8 @@ impl H {
         match self {
             H::ChunkUpdates => Some(64),
             H::UploadBudget => Some((UPLOAD_STEPS.len() - 1) as u32),
+            H::FarEntityRange => Some((FAR_RANGE_STEPS.len() - 1) as u32),
+            H::FarEntityMax => Some((FAR_MAX_STEPS.len() - 1) as u32),
             H::Workers => Some(max_workers()),
             H::ResolutionScale => Some(30),
             H::HdrPaperWhite => Some(41),
@@ -515,7 +554,14 @@ impl H {
             },
             H::FarDetail => labelled("Far Detail", g.far_detail.label()),
             H::CaveCulling => labelled("Cave Culling", on_off(g.cave_culling)),
+            H::FarCulling => labelled("Far Terrain Culling", on_off(g.far_cull)),
             H::EntityCulling => labelled("Entity Culling", on_off(g.entity_culling)),
+            H::FarEntities => labelled("Far Entities", on_off(g.far_entities)),
+            H::FarEntityRange => labelled(
+                "Far Entity Range",
+                lang::tr("%s blocks", &[&g.far_entity_range]),
+            ),
+            H::FarEntityMax => labelled("Far Mob Limit", g.far_entity_max),
             H::ChunkUpdates => match g.chunk_updates {
                 0 => labelled("Chunk Updates", "Unlimited"),
                 n => labelled("Chunk Updates", lang::tr("%s per frame", &[&n])),
@@ -595,6 +641,7 @@ impl H {
             H::BatteryMode => labelled("Battery Mode", on_off(g.battery)),
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
             H::GraphicsApi => labelled("Graphics API", g.api.label()),
+            H::MeshShaders => labelled("Mesh Shaders", g.mesh_shaders.label()),
             H::Overlay => labelled(
                 "Performance Overlay",
                 match g.overlay {
@@ -616,6 +663,8 @@ impl H {
             H::LodDistance => {
                 g.lod_distance = LOD_STEPS[(v * (LOD_STEPS.len() - 1) as f32).round() as usize]
             }
+            H::FarEntityRange => g.far_entity_range = at_stop(&FAR_RANGE_STEPS, v),
+            H::FarEntityMax => g.far_entity_max = at_stop(&FAR_MAX_STEPS, v),
             H::Workers => g.workers = (v * max_workers() as f32).round() as u32,
             H::ResolutionScale => g.resolution_scale = (50.0 + (v * 30.0).round() * 5.0) as u32,
             H::HdrPaperWhite => g.hdr_paper_white = (v * 48.0).round() as u32 * 10,
@@ -648,7 +697,9 @@ impl H {
                 g.far_detail = step(&[FarDetail::Full, FarDetail::Reduced], g.far_detail, back)
             }
             H::CaveCulling => g.cave_culling = !g.cave_culling,
+            H::FarCulling => g.far_cull = !g.far_cull,
             H::EntityCulling => g.entity_culling = !g.entity_culling,
+            H::FarEntities => g.far_entities = !g.far_entities,
             H::Sky => g.sky = !g.sky,
             H::Fog => g.fog = !g.fog,
             H::Weather => g.weather = !g.weather,
@@ -682,6 +733,10 @@ impl H {
             H::BatteryMode => g.battery = !g.battery,
             H::ShadowCache => g.shadow_cache = !g.shadow_cache,
             H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
+            H::MeshShaders => {
+                g.mesh_shaders = step(&[MeshShaders::Off, MeshShaders::Auto], g.mesh_shaders, back);
+                crate::graphics::request_mesh_shaders(g.mesh_shaders == MeshShaders::Auto);
+            }
             H::Pacing => {
                 g.pacing = match g.pacing {
                     Pacing::Efficient => Pacing::Precise,
@@ -698,6 +753,18 @@ impl H {
             _ => {}
         }
     }
+}
+/// A slider's position at the stop that is `value`, or the first one past it.
+fn stop(stops: &[u32], value: u32) -> f32 {
+    let i = stops
+        .iter()
+        .position(|&s| s >= value)
+        .unwrap_or(stops.len() - 1);
+    i as f32 / (stops.len() - 1) as f32
+}
+/// The stop at a slider's position.
+fn at_stop(stops: &[u32], position: f32) -> u32 {
+    stops[(position * (stops.len() - 1) as f32).round() as usize]
 }
 fn max_workers() -> u32 {
     std::thread::available_parallelism().map_or(8, |n| n.get() as u32)
@@ -728,6 +795,9 @@ impl Item {
                 | H::HdrPaperWhite
                 | H::HdrUiBrightness,
             ) if !s.horizon.hdr => Some("Turn HDR on to use it."),
+            Item::Horizon(H::FarEntityRange | H::FarEntityMax) if !s.horizon.far_entities => {
+                Some("Turn Far Entities on to use it.")
+            }
             _ => None,
         }
     }
@@ -736,7 +806,9 @@ impl Item {
         let g = &s.horizon;
         Some(match self {
             Item::Horizon(H::CaveCulling) => g.cave_culling,
+            Item::Horizon(H::FarCulling) => g.far_cull,
             Item::Horizon(H::EntityCulling) => g.entity_culling,
+            Item::Horizon(H::FarEntities) => g.far_entities,
             Item::Horizon(H::Sky) => g.sky,
             Item::Horizon(H::Fog) => g.fog,
             Item::Horizon(H::Weather) => g.weather,
@@ -799,6 +871,9 @@ impl Item {
             self,
             Item::Horizon(
                 H::Preset
+                    | H::FarEntities
+                    | H::FarEntityRange
+                    | H::FarEntityMax
                     | H::Overlay
                     | H::ScreenshotQuality
                     | H::Pacing
@@ -806,7 +881,9 @@ impl Item {
                     | H::Workers
                     | H::BatteryMode
                     | H::ShadowCache
+                    | H::FarCulling
                     | H::GraphicsApi
+                    | H::MeshShaders
             ) | Item::Vanilla(
                 Opt::GuiScale
                     | Opt::Fullscreen

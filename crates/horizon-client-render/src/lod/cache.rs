@@ -193,6 +193,12 @@ pub fn build_key(states: usize, biomes: usize) -> u64 {
 }
 
 fn encode(columns: &[Column; 256]) -> Vec<u8> {
+    compress(&raw(columns))
+}
+
+/// A tile's or chunk's columns, laid out and not yet deflated (the far
+/// store hashes this to tell a rewrite that changed nothing).
+pub(super) fn raw(columns: &[Column]) -> Vec<u8> {
     let mut out = Vec::new();
     for column in columns {
         match column.surface {
@@ -217,14 +223,18 @@ fn encode(columns: &[Column; 256]) -> Vec<u8> {
             out.extend_from_slice(&span.light.to_le_bytes());
         }
     }
+    out
+}
+
+pub(super) fn compress(raw: &[u8]) -> Vec<u8> {
     let mut deflate =
         flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
     // Writing to a Vec cannot fail.
-    deflate.write_all(&out).unwrap();
+    deflate.write_all(raw).unwrap();
     deflate.finish().unwrap()
 }
 
-fn decode(bytes: &[u8]) -> Option<[Column; 256]> {
+pub(super) fn decode(bytes: &[u8]) -> Option<[Column; 256]> {
     let mut raw = Vec::new();
     flate2::read::DeflateDecoder::new(bytes)
         .take(u64::from(MAX_RECORD) * 8)

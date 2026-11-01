@@ -877,6 +877,13 @@ impl Game<'_> {
                 .raw
                 .get(horizon_client::lan::HORIZON_CLIENTS_ONLY)
                 .is_some_and(|v| v.trim().eq_ignore_ascii_case("true")),
+            // Far players and mobs for Horizon clients: 2048 blocks unless set, 4000 at most.
+            far_entity_range: props
+                .raw
+                .get(horizon_client::lan::FAR_ENTITY_RANGE)
+                .and_then(|v| v.trim().parse::<u32>().ok())
+                .unwrap_or(horizon_protocol::far_entities::DEFAULT_RANGE)
+                .min(horizon_protocol::far_entities::MAX_RANGE),
             server_links: if props.bug_report_link.is_empty() {
                 Vec::new()
             } else if super::server_links::valid_untrusted_uri(&props.bug_report_link) {

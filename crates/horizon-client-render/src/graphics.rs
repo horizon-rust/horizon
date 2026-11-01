@@ -246,6 +246,57 @@ impl FarDetail {
     }
 }
 
+/// Whether far terrain is drawn with mesh shaders where the GPU has them: a task
+/// shader leaves out parts of a tile before any vertex is shaded. Auto (the default)
+/// uses them on Vulkan; Metal has them too but draws slower with them, so it keeps
+/// the vertex path unless `HORIZON_MESH_SHADERS=1`. Applies at the next start, when
+/// the device is opened with the feature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum MeshShaders {
+    Off,
+    #[default]
+    Auto,
+}
+impl MeshShaders {
+    pub fn name(self) -> &'static str {
+        match self {
+            MeshShaders::Off => "off",
+            MeshShaders::Auto => "auto",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            MeshShaders::Off => "Off",
+            MeshShaders::Auto => "Auto",
+        }
+    }
+    /// Only `off` turns them off; anything else is the default, Auto.
+    fn parse(s: &str) -> Self {
+        if s == "off" {
+            MeshShaders::Off
+        } else {
+            MeshShaders::Auto
+        }
+    }
+}
+static MESH_SHADERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Sets whether the next device is opened with mesh shaders (`Graphics::load`, and the
+/// setting when it changes).
+pub fn request_mesh_shaders(on: bool) {
+    MESH_SHADERS.store(on, Ordering::Relaxed);
+}
+/// Whether to open the device with mesh shaders, where the adapter has them:
+/// `HORIZON_MESH_SHADERS` (`1` or `0`) if set, else the setting on Vulkan. On Metal
+/// (Apple's tiled GPUs) the meshlet path measured slower than the indirect draws,
+/// about 9 ms more CPU and 4 ms more GPU a frame on an M1 Pro, so Auto leaves it off.
+pub fn mesh_shaders_requested(backend: wgpu::Backend) -> bool {
+    match std::env::var("HORIZON_MESH_SHADERS").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => MESH_SHADERS.load(Ordering::Relaxed) && backend == wgpu::Backend::Vulkan,
+    }
+}
+
 /// TAA upscaling: the world renders this much smaller than the resolution scale's size,
 /// and TAA builds the full-size picture from the jittered frames (FSR's and DLSS's ratios).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -325,6 +376,11 @@ pub fn hdr_offered() -> bool {
     HDR_OFFERED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Far entities' range in blocks (the server's cap is 4000) and the mobs kept, by default and at most.
+pub const FAR_ENTITY_RANGE_DEFAULT: u32 = 2048;
+pub const FAR_ENTITY_RANGE_MAX: u32 = 4000;
+pub const FAR_ENTITY_MAX_DEFAULT: u32 = 1000;
+pub const FAR_ENTITY_MAX_MAX: u32 = 4000;
 /// The farthest LOD Distance, in chunks, on integrated GPUs other than
 /// Apple's: they share the CPU's memory bandwidth, and past it far terrain
 /// costs them more frame time than it is worth.
@@ -358,8 +414,17 @@ pub struct Graphics {
     pub far_detail: FarDetail,
     /// Skip sections hidden behind closed ones (vanilla's occlusion graph).
     pub cave_culling: bool,
+    /// Skip far terrain tiles hidden behind nearer terrain (`gfx/hiz.rs`), on
+    /// the GPUs that can (Vulkan and Metal).
+    pub far_cull: bool,
     /// Skip drawing entities hidden behind opaque terrain.
     pub entity_culling: bool,
+    /// Far players and mobs a Horizon server feeds, drawn as impostors past the entity render
+    /// distance (`far_entities`, `impostor.rs`).
+    pub far_entities: bool,
+    /// How far they are asked for and drawn, in blocks, and the most mobs kept.
+    pub far_entity_range: u32,
+    pub far_entity_max: u32,
     /// Meshed sections uploaded per frame; 0 uploads all that are ready.
     pub chunk_updates: u32,
     /// Section mesh bytes uploaded per frame, in KiB; 0 is unlimited.
@@ -415,6 +480,8 @@ pub struct Graphics {
     pub shadow_cache: bool,
     /// The graphics API (Windows only; see `GraphicsApi`).
     pub api: GraphicsApi,
+    /// Far terrain with mesh shaders; applies at the next start.
+    pub mesh_shaders: MeshShaders,
     /// The shader pack picked in `shaderpacks/` (`shader_pack_list`); empty: none. Its key is
     /// not `shaderPack`, which versions before the clean-room rewrite saved and which stays
     /// ignored.
@@ -427,7 +494,11 @@ impl Default for Graphics {
             lod_distance: 0,
             far_detail: FarDetail::Full,
             cave_culling: true,
+            far_cull: true,
             entity_culling: false,
+            far_entities: true,
+            far_entity_range: FAR_ENTITY_RANGE_DEFAULT,
+            far_entity_max: FAR_ENTITY_MAX_DEFAULT,
             chunk_updates: 0,
             upload_budget_kib: 0,
             texture_budget_mib: 0,
@@ -454,6 +525,7 @@ impl Default for Graphics {
             battery: false,
             shadow_cache: false,
             api: GraphicsApi::Auto,
+            mesh_shaders: MeshShaders::Auto,
             shader_pack: String::new(),
         }
     }
@@ -473,6 +545,7 @@ impl Graphics {
                 "the last start ended before HDR output showed a frame; HDR is off now (graphics option hdr, in {FILE})"
             );
         }
+        request_mesh_shaders(g.mesh_shaders == MeshShaders::Auto);
         g
     }
     pub fn parse(text: &str) -> Self {
@@ -495,7 +568,15 @@ impl Graphics {
                 }
                 "farDetail" => g.far_detail = FarDetail::parse(value),
                 "caveCulling" => g.cave_culling = flag(g.cave_culling),
+                "farCulling" => g.far_cull = flag(g.far_cull),
                 "entityCulling" => g.entity_culling = flag(g.entity_culling),
+                "farEntities" => g.far_entities = flag(g.far_entities),
+                "farEntityRange" => {
+                    g.far_entity_range = number(g.far_entity_range).min(FAR_ENTITY_RANGE_MAX)
+                }
+                "farEntityMax" => {
+                    g.far_entity_max = number(g.far_entity_max).min(FAR_ENTITY_MAX_MAX)
+                }
                 "chunkUpdates" => g.chunk_updates = number(g.chunk_updates).min(512),
                 "uploadBudgetKiB" => g.upload_budget_kib = number(g.upload_budget_kib).min(65536),
                 "textureBudgetMiB" => {
@@ -545,6 +626,7 @@ impl Graphics {
                 "batteryMode" => g.battery = flag(g.battery),
                 "shadowCache" => g.shadow_cache = flag(g.shadow_cache),
                 "graphicsApi" => g.api = GraphicsApi::from_name(value).unwrap_or_default(),
+                "meshShaders" => g.mesh_shaders = MeshShaders::parse(value),
                 "pickedShaderPack" => g.shader_pack = value.to_owned(),
                 "overlay" => {
                     g.overlay = match value {
@@ -560,11 +642,12 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nfarCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\nmeshShaders:{}\npickedShaderPack:{}\nfarEntities:{}\nfarEntityRange:{}\nfarEntityMax:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
             bool_text(self.cave_culling),
+            bool_text(self.far_cull),
             bool_text(self.entity_culling),
             self.chunk_updates,
             self.upload_budget_kib,
@@ -599,7 +682,11 @@ impl Graphics {
             bool_text(self.battery),
             bool_text(self.shadow_cache),
             self.api.name(),
+            self.mesh_shaders.name(),
             self.shader_pack,
+            bool_text(self.far_entities),
+            self.far_entity_range,
+            self.far_entity_max,
         )
     }
     /// Binds Horizon's graphics key `name` (`HDR_KEY`); false for another name.
@@ -720,7 +807,11 @@ mod tests {
             lod_distance: 256,
             far_detail: FarDetail::Reduced,
             cave_culling: false,
+            far_cull: false,
             entity_culling: true,
+            far_entities: false,
+            far_entity_range: 1024,
+            far_entity_max: 250,
             chunk_updates: 12,
             upload_budget_kib: 4096,
             texture_budget_mib: 1536,
@@ -747,6 +838,7 @@ mod tests {
             battery: true,
             shadow_cache: true,
             api: GraphicsApi::Dx12,
+            mesh_shaders: MeshShaders::Off,
             shader_pack: "Golden Hour".into(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
@@ -780,6 +872,22 @@ mod tests {
             Graphics::parse("workers:abc\nsky:maybe\ncullLeaves:true\nentityCulling:maybe\n"),
             Graphics::default()
         );
+    }
+
+    #[test]
+    fn mesh_shaders_are_auto_unless_turned_off() {
+        assert_eq!(Graphics::default().mesh_shaders, MeshShaders::Auto);
+        assert_eq!(
+            Graphics::parse("meshShaders:auto\n").mesh_shaders,
+            MeshShaders::Auto
+        );
+        assert_eq!(
+            Graphics::parse("meshShaders:off\n").mesh_shaders,
+            MeshShaders::Off
+        );
+        for text in ["meshShaders:\n", "meshShaders:maybe\n"] {
+            assert_eq!(Graphics::parse(text).mesh_shaders, MeshShaders::Auto);
+        }
     }
 
     #[test]
@@ -820,6 +928,23 @@ mod tests {
                     if s.text.contains(&format!("{INTEGRATED_LOD_DISTANCE} chunks")))),
             "the LOD Distance description names the cap"
         );
+    }
+
+    #[test]
+    fn far_entities_are_on_and_bounded() {
+        let g = Graphics::default();
+        assert!(g.far_entities);
+        assert_eq!(g.far_entity_range, 2048);
+        assert_eq!(
+            Graphics::parse("farEntityRange:99999\n").far_entity_range,
+            4000
+        );
+        assert_eq!(Graphics::parse("farEntityMax:99999\n").far_entity_max, 4000);
+        assert_eq!(
+            Graphics::parse("farEntityRange:nope\n").far_entity_range,
+            2048
+        );
+        assert!(!Graphics::parse("farEntities:false\n").far_entities);
     }
 
     #[test]

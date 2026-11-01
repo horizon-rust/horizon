@@ -10,12 +10,17 @@ use horizon_core::position::BlockPos;
 use horizon_world::registry::BlockStateId;
 use std::collections::BTreeMap;
 
+mod quad;
+
 const CELLS: usize = 16;
 
 pub(super) struct EdgeColumn<'a> {
     pub start: i32,
     pub end: i32,
     pub column: &'a Column,
+    /// The neighbour is planned but not drawn yet: its terrain is not known
+    /// to be empty, so the sides facing it are left out, not drawn as walls.
+    pub unknown: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -307,6 +312,7 @@ fn mesh_columns_with_neighbors(
                 start: row as i32 * stride,
                 end: (row as i32 + 1) * stride,
                 column,
+                unknown: false,
             })
             .collect()
     });
@@ -335,13 +341,17 @@ fn heightmap(column: &Column, mut fluid: impl FnMut(&Span) -> bool) -> Column {
         ..*span
     };
     let mut spans = Spans::with_capacity(2);
-    match below.last() {
-        Some(under) if fluid(top) => {
-            spans.push(ground(under));
-            spans.push(*top);
-        }
-        _ if fluid(top) => spans.push(*top),
-        _ => spans.push(ground(top)),
+    if !fluid(top) {
+        spans.push(ground(top));
+    } else if let Some(under) = below.iter().rev().find(|&span| !fluid(span)) {
+        // Shaded water is a span per light level; the bed is under all of it.
+        spans.push(ground(under));
+        spans.push(Span {
+            min: under.max,
+            ..*top
+        });
+    } else {
+        spans.push(*top);
     }
     Column {
         surface: column.surface,
@@ -384,6 +394,7 @@ fn mesh_columns_with_edges(
                     start: edge.start,
                     end: edge.end,
                     column,
+                    unknown: edge.unknown,
                 })
                 .collect()
         });
@@ -648,6 +659,9 @@ fn mesh_columns_with_edges(
                                 // A coarse face can meet several finer columns.
                                 // Clip each interval independently to avoid missing walls.
                                 for (i, edge) in neighbors[edge_side].iter().enumerate() {
+                                    if edge.unknown {
+                                        continue;
+                                    }
                                     let start = u0.max(edge.start as f32);
                                     let end = u1.min(edge.end as f32);
                                     if start < end {
@@ -772,6 +786,70 @@ mod refinement_tests {
             );
         }
         assert_eq!(area, (parent.size() * parent.size() - 256) as f32);
+    }
+    /// A neighbour that is still to come draws no wall against it; an empty
+    /// one (out of range) does.
+    #[test]
+    fn unknown_neighbor_leaves_its_side_out() {
+        let key = TileKey {
+            x: 0,
+            z: 0,
+            level: 0,
+        };
+        let columns = vec![
+            Column {
+                surface: None,
+                spans: vec![Span {
+                    min: 0,
+                    max: 8,
+                    state: BlockStateId(1),
+                    biome: 0,
+                    light: 240,
+                }]
+                .into()
+            };
+            256
+        ];
+        let columns: Vec<&Column> = columns.iter().collect();
+        let empty = Column::default();
+        let east_quads = |unknown: bool| {
+            let edge = |column| EdgeColumn {
+                start: 0,
+                end: 16,
+                column,
+                unknown,
+            };
+            let neighbors = [Vec::new(), vec![edge(&empty)], Vec::new(), Vec::new()];
+            let mesh = mesh_columns_with_edges(
+                key,
+                &columns,
+                &FxHashSet::default(),
+                None,
+                &neighbors,
+                &[],
+                |_, _, _| Material {
+                    faces: [
+                        Some(Paint {
+                            layer: 1,
+                            light: 240,
+                            color: u32::MAX,
+                            translucent: false,
+                        }),
+                        None,
+                    ],
+                    fluid: 0,
+                    opaque: true,
+                },
+            );
+            mesh.solid
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|quad| quad.iter().all(|v| v.pos[0] == 16.0))
+                .count()
+        };
+        assert!(east_quads(false) > 0, "a wall faces the empty neighbour");
+        assert_eq!(east_quads(true), 0, "none faces the unknown one");
     }
 }
 
@@ -1055,8 +1133,7 @@ const MAX_STEPS: i32 = 32;
 fn emit(mesh: &mut SectionMesh, key: FaceKey, rect: Rect) {
     let pieces = ((rect.u1 - rect.u0) / MAX_FACE).ceil() * ((rect.v1 - rect.v0) / MAX_FACE).ceil();
     if pieces > MAX_PIECES {
-        let extent = (rect.u1 - rect.u0).max(rect.v1 - rect.v0);
-        emit_quad(mesh, key, rect, (MAX_FACE / extent).min(1.0));
+        emit_quad(mesh, key, rect, uv_scale(rect));
         return;
     }
     let mut u0 = rect.u0;
@@ -1071,33 +1148,59 @@ fn emit(mesh: &mut SectionMesh, key: FaceKey, rect: Rect) {
         u0 = u1;
     }
 }
+/// How far the UVs of a face too wide for them shrink: a face wider than
+/// `MAX_FACE` is one quad only when `emit` scaled it, and then by this.
+fn uv_scale(rect: Rect) -> f32 {
+    let extent = (rect.u1 - rect.u0).max(rect.v1 - rect.v0);
+    (MAX_FACE / extent).min(1.0)
+}
 /// `uv_scale` shrinks the UVs, in blocks from the face's corner, of a face
 /// too wide for them.
 fn emit_quad(mesh: &mut SectionMesh, key: FaceKey, rect: Rect, uv_scale: f32) {
     mesh.note_sprite_layer(key.layer);
-    let Rect { u0, v0, u1, v1 } = rect;
-    let p = f32::from_bits(key.plane);
-    let mut points = match key.direction {
-        Direction::Up | Direction::Down => [[u0, p, v1], [u1, p, v1], [u1, p, v0], [u0, p, v0]],
-        Direction::North | Direction::South => [[u0, v1, p], [u1, v1, p], [u1, v0, p], [u0, v0, p]],
-        Direction::West | Direction::East => [[p, v1, u1], [p, v1, u0], [p, v0, u0], [p, v0, u1]],
-    };
-    if matches!(
-        key.direction,
-        Direction::Down | Direction::South | Direction::East
-    ) {
-        points.reverse()
-    }
     let out = if key.translucent {
         &mut mesh.translucent
     } else {
         &mut mesh.solid
     };
+    out.extend(quad_vertices(
+        key.direction,
+        f32::from_bits(key.plane),
+        rect,
+        uv_scale,
+        key.layer,
+        key.color,
+        key.light,
+    ));
+}
+/// A merged face's four vertices: `rect` in the plane `p` of the face's
+/// `direction` (`quad::FarQuad` makes the same ones from its packed form).
+fn quad_vertices(
+    direction: Direction,
+    p: f32,
+    rect: Rect,
+    uv_scale: f32,
+    layer: u16,
+    color: u32,
+    light: u16,
+) -> [TerrainVertex; 4] {
+    let Rect { u0, v0, u1, v1 } = rect;
+    let mut points = match direction {
+        Direction::Up | Direction::Down => [[u0, p, v1], [u1, p, v1], [u1, p, v0], [u0, p, v0]],
+        Direction::North | Direction::South => [[u0, v1, p], [u1, v1, p], [u1, v0, p], [u0, v0, p]],
+        Direction::West | Direction::East => [[p, v1, u1], [p, v1, u0], [p, v0, u0], [p, v0, u1]],
+    };
+    if matches!(
+        direction,
+        Direction::Down | Direction::South | Direction::East
+    ) {
+        points.reverse()
+    }
     // Tile origins are integer multiples of a block, so local coordinates
     // retain the world texture phase without distant-coordinate precision loss;
     // a whole number of blocks off each UV keeps it (terrain.wgsl's `tile_uv`
     // repeats the sprite per block) and counts it from the face's corner.
-    let uvs = points.map(|pos| match key.direction {
+    let uvs = points.map(|pos| match direction {
         Direction::Up | Direction::Down => [pos[0], -pos[2]],
         Direction::North | Direction::South => [pos[0], -pos[1]],
         Direction::West | Direction::East => [pos[2], -pos[1]],
@@ -1108,18 +1211,18 @@ fn emit_quad(mesh: &mut SectionMesh, key: FaceKey, rect: Rect, uv_scale: f32) {
             .fold(f32::INFINITY, f32::min)
             .floor()
     });
-    out.extend(points.into_iter().zip(uvs).map(|(pos, uv)| {
+    std::array::from_fn(|i| {
         TerrainVertex::tiled(
-            pos,
+            points[i],
             [
-                (uv[0] - corner[0]) * uv_scale,
-                (uv[1] - corner[1]) * uv_scale,
+                (uvs[i][0] - corner[0]) * uv_scale,
+                (uvs[i][1] - corner[1]) * uv_scale,
             ],
-            key.layer,
-            key.color,
-            key.light,
+            layer,
+            color,
+            light,
         )
-    }));
+    })
 }
 
 #[cfg(test)]
@@ -1430,6 +1533,7 @@ mod tests {
             start: 0,
             end: CELLS as i32,
             column: &hill_column,
+            unknown: false,
         };
         let neighbors = [vec![hill()], vec![hill()], vec![hill()], vec![hill()]];
         let fill = |columns: &[Column]| -> Vec<Vec<Span>> {
@@ -1571,6 +1675,7 @@ mod tests {
                 start: 0,
                 end: 32,
                 column: &columns[0],
+                unknown: false,
             }]
         });
         // One fine column is lower than both the coarse cell and its sibling.
@@ -1584,16 +1689,19 @@ mod tests {
                 start: 0,
                 end: 1,
                 column: &columns[0],
+                unknown: false,
             },
             EdgeColumn {
                 start: 1,
                 end: 2,
                 column: &low,
+                unknown: false,
             },
             EdgeColumn {
                 start: 2,
                 end: 32,
                 column: &columns[0],
+                unknown: false,
             },
         ];
         let columns: Vec<&Column> = columns.iter().collect();

@@ -4686,6 +4686,19 @@ impl SaveDir {
     }
 }
 
+impl<G> Persistent<G> {
+    /// The far terrain of this dimension, kept in its save folder. The folder
+    /// is the world's identity; the key adds the block and biome ids the
+    /// columns hold, not the build.
+    fn far_store(&self) -> Arc<crate::lod::store::FarStore> {
+        crate::lod::store::FarStore::open(
+            self.save.root.join("data/horizon_far"),
+            crate::lod::store::store_key(self.registry.registry, &self.biomes, 0),
+            false,
+        )
+    }
+}
+
 impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
     type Worker = G::Worker;
     fn worker(&self) -> G::Worker {
@@ -4697,14 +4710,23 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
             self.save.root.join("data/horizon_far_terrain"),
             crate::lod::cache::build_key(self.registry.registry.len(), self.biomes.list.len()),
         ));
-        Box::new(SavedLodSampler {
-            generator: self,
-            inner,
-            cache: Default::default(),
-            details: Vec::new(),
-            approximate: false,
-            generated,
-        })
+        let store = self.far_store();
+        // The store beside it keeps what was sampled and the chunks seen, so
+        // the next session reads them (`lod::store`).
+        Box::new(crate::lod::store::StoredSampler::new(
+            Box::new(SavedLodSampler {
+                generator: self,
+                inner,
+                cache: Default::default(),
+                details: Vec::new(),
+                approximate: false,
+                generated,
+            }),
+            store,
+        ))
+    }
+    fn lod_store(&self) -> Option<Arc<crate::lod::store::FarStore>> {
+        Some(self.far_store())
     }
     fn load(&self, x: i32, z: i32) -> Option<Chunk> {
         self.save

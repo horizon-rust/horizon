@@ -39,6 +39,7 @@ pub mod hdr_calibration;
 pub mod hud;
 pub mod hud_layout;
 pub mod hud_overlays;
+pub mod impostor;
 pub mod inventory_effects;
 pub mod java_text;
 pub mod jigsaw_block;

@@ -19,6 +19,7 @@ pub mod data;
 pub mod discovery;
 pub mod entity;
 pub mod far;
+pub mod far_entities;
 pub mod forwarding;
 pub mod guest;
 pub mod hub;
@@ -139,6 +140,9 @@ pub struct NetLog {
 
 /// The server.properties key that lets only the Horizon client join (off unless "true").
 pub const HORIZON_CLIENTS_ONLY: &str = "horizon-clients-only";
+/// The server.properties key for the farthest a Horizon client is sent far entities (players and
+/// mobs past the entity tracking range), in blocks; 0 turns them off (2048 unless set, 4000 at most).
+pub const FAR_ENTITY_RANGE: &str = "horizon-far-entity-range";
 /// What another client is told.
 pub const HORIZON_CLIENTS_ONLY_REASON: &str =
     "This server is for the Horizon client: playhorizon.dev";
@@ -198,6 +202,8 @@ pub struct NetConfig {
     /// client whose `minecraft:brand` isn't Horizon's is turned away during
     /// configuration. A brand can be spoofed: a gate, not security.
     pub horizon_clients_only: bool,
+    /// The farthest a Horizon client is sent far entities, in blocks (`FAR_ENTITY_RANGE`); 0 is off.
+    pub far_entity_range: u32,
     /// The shapes of the world's levels: their dimension types go to
     /// clients when the world's data packs changed them.
     pub levels: crate::chunk::LevelShapes,
@@ -232,6 +238,7 @@ impl NetConfig {
             code_of_conducts: Vec::new(),
             server_links: Vec::new(),
             horizon_clients_only: false,
+            far_entity_range: horizon_protocol::far_entities::DEFAULT_RANGE,
             levels: crate::chunk::LevelShapes::VANILLA,
             owner_profile: None,
         }
