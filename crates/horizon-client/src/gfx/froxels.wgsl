@@ -903,6 +903,19 @@ fn view_froxel_at(uv: vec2<f32>, r: f32, dither: f32) -> vec4<f32> {
     let other = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
     return froxel_at(other, min(length(p - fx.other_eye.xyz), end), dither);
 }
+// The froxels' injected light for this view's screen `uv` at distance `r`: its own, or the view's
+// whose froxels it reads (`view_froxel_at`), where that view sees the same point.
+fn view_source_at(uv: vec2<f32>, r: f32) -> vec3<f32> {
+    if fx.other_eye.w < 0.5 {
+        return textureSampleLevel(source_in, linear_sampler, vec3(uv, slice_t(r)), 0.0).rgb;
+    }
+    let p = fx.eye.xyz + ray_dir(uv) * r;
+    let c = fx.other_view_proj * vec4(p, 1.0);
+    let ndc = c.xy / max(c.w, 1e-6);
+    let other = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    let t = slice_t(length(p - fx.other_eye.xyz));
+    return textureSampleLevel(source_in, linear_sampler, vec3(other, t), 0.0).rgb;
+}
 // How far each pixel marches the fogs itself, and in how many steps (closer together near the
 // eye, as the square of their number).
 const MARCH_RANGE: f32 = 1024.0;
@@ -931,7 +944,7 @@ fn fog_march(uv: vec2<f32>, r: f32, dither: f32, light: bool) -> vec4<f32> {
         let f = fog_at(pos, dz);
         let fog = f.valley + f.steam;
         if light {
-            let j = textureSampleLevel(source_in, linear_sampler, vec3(uv, slice_t(d)), 0.0).rgb;
+            let j = view_source_at(uv, d);
             // The fog's shade on itself here (as the far slices light it: the fog up to its top
             // toward the sun, and above), the froxels' light being without it.
             var shade = 1.0;

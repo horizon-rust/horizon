@@ -821,12 +821,18 @@ impl Froxels {
         let frame = self.frame;
         let index = self.view_froxels(device, inputs.view, inputs.size);
         // The froxels another view made just before this one, the same size: its integrated
-        // froxels and its view.
+        // froxels, its view and the light it injected (written last, `1 - next`), which the
+        // per-pixel fog march reads.
         let shared = inputs.share.and_then(|view| {
             let s = self.views.iter().find(|s| s.view == view)?;
             let (view_proj, _) = s.last?;
-            (s.dims == self.views[index].dims && s.drawn == frame.wrapping_sub(1))
-                .then(|| (s.integrated.clone(), view_proj))
+            (s.dims == self.views[index].dims && s.drawn == frame.wrapping_sub(1)).then(|| {
+                (
+                    s.integrated.clone(),
+                    view_proj,
+                    s.source[1 - s.next].clone(),
+                )
+            })
         });
         let state = &mut self.views[index];
         state.drawn = frame;
@@ -1043,7 +1049,7 @@ impl Froxels {
             }
             super::gpu_passes::stamp(encoder, "froxels: integrate");
         }
-        let integrated = shared.map_or(integrated, |s| s.0);
+        let (integrated, to) = shared.map_or((integrated, to), |s| (s.0, s.2));
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Froxel volumetrics' composite"),
             layout: &self.apply_layout,
