@@ -183,8 +183,12 @@ impl VanillaTerrain {
         dimension: &str,
         structures: bool,
     ) -> crate::Result<Self> {
+        let t = std::time::Instant::now();
         let data: Arc<GeneratorData> = shared_data_with(dir, overrides, registry)?;
+        eprintln!("prepdbg worldgen_data {:?}", t.elapsed());
+        let t = std::time::Instant::now();
         let generator = OverworldGenerator::for_world(data, seed, preset, dimension, structures)?;
+        eprintln!("prepdbg generator {:?}", t.elapsed());
         Self::assemble(dir, registry, biomes, generator, seed, preset, dimension)
     }
     /// A superflat overworld with the structures its settings allow
@@ -256,9 +260,11 @@ impl VanillaTerrain {
                 );
             }
         }
+        let t = std::time::Instant::now();
         let loot = dir
             .parent()
             .and_then(|root| crate::structure_blocks::loot_data(root, &PackOverlay::NONE));
+        eprintln!("prepdbg vanillagen_loot {:?}", t.elapsed());
         if let Some(root) = dir.parent() {
             crate::mobs::trial_spawner::load_registry(root);
         }

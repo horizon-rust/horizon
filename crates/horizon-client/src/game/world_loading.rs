@@ -52,10 +52,12 @@ impl WorldRequest {
         // Before any chunk is read: a loaded container with a loot table is rolled as its chunk
         // is decoded (`save::roll_loaded_loot`), and the spawn chunks are read while the world
         // opens. Every world opens here: in-frame, on the server thread, on a dedicated server.
+        let t = std::time::Instant::now();
         horizon_client::structure_blocks::loot_data(
             &options.resources,
             &horizon_world::loot::PackOverlay::NONE,
         );
+        eprintln!("prepdbg loot {:?}", t.elapsed());
         let Self {
             save_root,
             folder,
@@ -195,7 +197,8 @@ impl WorldRequest {
         let dim = Dim::from_id(&level.dimension);
         let shapes = level_shapes(&save_root, res.biomes());
         let shape = shapes.get(dim.id());
-        let (mut streaming, save, locator) = make_streaming(
+        let t = std::time::Instant::now();
+        let r = make_streaming(
             res,
             pack,
             options,
@@ -205,7 +208,9 @@ impl WorldRequest {
             shape,
             level.seed,
             &level.enabled_features,
-        )?;
+        );
+        eprintln!("prepdbg make_streaming {:?}", t.elapsed());
+        let (mut streaming, save, locator) = r?;
         streaming.radius = settings.render_distance;
         let mut world = World::new(res.facts().air, level.seed);
         world.shape = shape;
@@ -227,7 +232,9 @@ impl WorldRequest {
             };
         }
 
+        let t = std::time::Instant::now();
         growth::install_live_features(res, pack, options);
+        eprintln!("prepdbg live_features {:?}", t.elapsed());
 
         // Persist new metadata on the worker too, before publishing the world.
         if !save_root.join("level.dat").exists() {

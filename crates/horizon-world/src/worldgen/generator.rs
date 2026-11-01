@@ -1197,9 +1197,11 @@ where
             spawn_position: std::sync::OnceLock::new(),
             flat: None,
         };
+        let t = std::time::Instant::now();
         pipeline.decoration = pipeline
             .data
             .decoration_for(&source_json, &pipeline.source)?;
+        eprintln!("prepdbg decoration {:?}", t.elapsed());
         if with_structures {
             let possible = pipeline
                 .source
