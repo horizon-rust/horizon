@@ -545,6 +545,14 @@ wind):
    `MULTIVIEW`: 0.9 + 0.7 to 1.5 ms, and one pass less to record. Little, the prepass's cost being its pixels (the
    alpha test at 3660x3200) more than its vertices: multiview for the world's raster would give as little, the eyes'
    GPU time being per pixel.
+9. **The second eye takes the first eye's light** (shadow_rays.wgsl `from_first`, `horizon-ctl rt-skip 32` to trace
+   it again): a surface's sun, sky and light sources don't depend on the eye that looks, so where the first eye's
+   depth (its layer of 8) shows the same point and its mask texel the same face, the second eye takes that texel's
+   light, already accumulated over the first eye's frames, its reservoirs and its fast history; in the periphery a
+   4x4 block at a time, by its ray's point. It traces only what the first eye doesn't see (past an edge, out of its
+   frustum) and, for each eye, the mirrors and the refraction. Both eyes' grain is then the same. The second eye's
+   trace 4.9 to 2.7 ms (3.3 to 1.2 without the mirrors), its frame 9.45 to 7.35; no light bleeds at the near
+   edges in the captures. It needs 8's multiview.
 
 **Kept, though measured:** the second bounce on a radiance cache miss (3 ms of 12 in the RTX Demo's interior, which
 loses 1 % of its light without it) and the reuse's visibility ray (1.3 ms; without it a neighbour's sample leaks

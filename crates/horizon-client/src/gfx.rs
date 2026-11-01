@@ -4289,9 +4289,9 @@ impl Renderer {
         phase1: u32,
         draws: u32,
     ) -> [wgpu::TextureView; 6] {
-        let depth = match self.eye_prepass(encoder, size, view_proj, phase1, draws) {
+        let (depth, first_depth) = match self.eye_prepass(encoder, size, view_proj, phase1, draws) {
             Some(d) => d,
-            None => self.view_prepass(encoder, size, phase1, draws),
+            None => (self.view_prepass(encoder, size, phase1, draws), None),
         };
         let view = self.eye.map_or(0, |e| e.view_index);
         let foveation = match &self.eye {
@@ -4317,11 +4317,13 @@ impl Renderer {
             self.voxels.light_visibility().expect("the grid runs"),
             &self.atmosphere.view,
             hw.as_ref().map(hw_rays::Bindings::hardware),
+            first_depth.as_ref(),
         );
         [mask, blocks, sun, reflection, refraction, depth]
     }
     /// VR's two eyes: the first draws both eyes' prepass in one multiview pass and its own
-    /// layer; the second takes its layer. `None` elsewhere, or without multiview.
+    /// layer; the second takes its layer, and the first's for its rays to take the first eye's
+    /// light (`shadow_rays::ShadowRays::run`). `None` elsewhere, or without multiview.
     fn eye_prepass(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
@@ -4329,13 +4331,17 @@ impl Renderer {
         view_proj: Mat4,
         phase1: u32,
         draws: u32,
-    ) -> Option<wgpu::TextureView> {
+    ) -> Option<(wgpu::TextureView, Option<wgpu::TextureView>)> {
         let eye = self.eye?;
         let mut depths = self.eye_depths.take()?;
         let Some(next) = eye.next_view_proj else {
             let layer = depths.next.take();
+            let first = depths
+                .layers
+                .as_ref()
+                .map(|(_, _, [first, _])| first.clone());
             self.eye_depths = Some(depths);
-            return layer;
+            return layer.map(|layer| (layer, first));
         };
         if depths.layers.as_ref().is_none_or(|(s, _, _)| *s != size) {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -4397,7 +4403,7 @@ impl Renderer {
         gpu_passes::stamp(encoder, "rays: depth prepass (both eyes)");
         depths.next = Some(second);
         self.eye_depths = Some(depths);
-        Some(first)
+        Some((first, None))
     }
     /// One view's prepass into its size's depth.
     fn view_prepass(
@@ -6910,6 +6916,7 @@ impl Renderer {
                     self.voxels.light_visibility().expect("the grid runs"),
                     &self.atmosphere.view,
                     hw.as_ref().map(hw_rays::Bindings::hardware),
+                    None,
                 )[0]
                 .clone()
             });

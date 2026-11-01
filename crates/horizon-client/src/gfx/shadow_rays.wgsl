@@ -20,7 +20,8 @@ struct Rt {
     // Foveated rays (VR): xyz where the eyes look (camera-relative), w the cosine of the sharp
     // zone's half angle; below -1 the whole view is sharp (the screen, the quad views' insets).
     fovea: vec4<f32>,
-    // x: RT lighting (the mask also holds the distance), y: the sun's shadows traced.
+    // x: RT lighting (the mask also holds the distance), y: the sun's shadows traced, z: VR's
+    // second eye takes the first eye's light where both see the surface (`from_first`).
     mode: vec4<f32>,
     // RT lighting's accumulation over frames: the view's last view projection (clip space from
     // world space relative to its camera) and the camera's move since (xyz, w 1 when the last
@@ -51,6 +52,9 @@ struct Rt {
     // shade's puddles; y the sun's puddles.
     rain: vec4<f32>,
     rain_sun: vec4<f32>,
+    // VR's second eye: the first eye's view projection this frame and its inverse (`from_first`).
+    first_view_proj: mat4x4<f32>,
+    first_inverse_view_proj: mat4x4<f32>,
 }
 @group(0) @binding(0) var<uniform> rt: Rt;
 @group(0) @binding(1) var depth: texture_depth_2d;
@@ -1464,6 +1468,18 @@ struct Traced {
     // RT lighting's ReSTIR DI reservoir (`reservoirs`).
     reservoir: vec4<u32>,
 }
+// The surface's normal at depth pixel `p` (at `pos`) from its neighbours, on each axis the side
+// nearer in depth (an edge's other side belongs to another surface).
+fn surface_normal(p: vec2<i32>, pos: vec3<f32>) -> vec3<f32> {
+    let r = surface_at(p + vec2(1, 0)) - pos;
+    let l = pos - surface_at(p - vec2(1, 0));
+    let d = surface_at(p + vec2(0, 1)) - pos;
+    let u = pos - surface_at(p - vec2(0, 1));
+    let dx = select(l, r, dot(r, r) < dot(l, l));
+    let dy = select(u, d, dot(d, d) < dot(u, u));
+    let n = normalize(cross(dx, dy));
+    return select(n, -n, dot(n, pos) > 0.0);
+}
 fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
     let lit_mode = rt.mode.x > 0.5;
     let none = Traced(select(vec4(1.0), vec4(1.0, 1.0, 1.0, -1.0), lit_mode), vec4(0.0, 0.0, 0.0, -1.0),
@@ -1472,16 +1488,7 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
     // Reverse depth: 0 is the sky.
     if textureLoad(depth, p, 0) <= 0.0 { return none; }
     let pos = surface_at(p);
-    // The surface's normal from its neighbours, on each axis the side nearer in depth (an edge's
-    // other side belongs to another surface).
-    let r = surface_at(p + vec2(1, 0)) - pos;
-    let l = pos - surface_at(p - vec2(1, 0));
-    let d = surface_at(p + vec2(0, 1)) - pos;
-    let u = pos - surface_at(p - vec2(0, 1));
-    let dx = select(l, r, dot(r, r) < dot(l, l));
-    let dy = select(u, d, dot(d, d) < dot(u, u));
-    var n = normalize(cross(dx, dy));
-    if dot(n, pos) > 0.0 { n = -n; }
+    let n = surface_normal(p, pos);
     if DEBUG == 4u { return Traced(vec4(dot(n, rt.light.xyz)), none.blocks, none.direct, none.sun, none.reservoir); }
     // The rays fade out toward the grid's edge; RT lighting stops short of it (the terrain past it
     // lights itself as vanilla does).
@@ -1663,6 +1670,62 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
         mix(sun / weight, v.sun, k),
         v.reservoir);
 }
+// VR's second eye: the first eye's depth (its layer of the prepass both eyes share) and masks of
+// this frame (gfx/shadow_rays.rs `run`): its light once accumulated over its frames (not yet
+// denoised), the sun's, its fast history and reservoirs.
+@group(0) @binding(57) var first_depth: texture_depth_2d;
+@group(0) @binding(49) var first_mask: texture_2d<f32>;
+@group(0) @binding(50) var first_blocks: texture_2d<f32>;
+@group(0) @binding(51) var first_direct: texture_2d<f32>;
+@group(0) @binding(52) var first_sun: texture_2d<f32>;
+@group(0) @binding(53) var first_fast: texture_2d<f32>;
+@group(0) @binding(54) var first_reservoirs: texture_2d<u32>;
+@group(0) @binding(55) var first_gi_a: texture_2d<f32>;
+@group(0) @binding(56) var first_gi_b: texture_2d<u32>;
+// The first eye's light at a depth pixel's surface, where it sees it (`from_first`).
+struct FromFirst {
+    found: bool,
+    v: Traced,
+}
+// VR's second eye at depth pixel `p`: what the first eye found this frame on the same surface. A
+// surface's sun, sky and light sources don't depend on the eye that looks (what does, the mirrors
+// and the refraction, is traced for each eye), so the second eye traces only what the first doesn't
+// see: past an edge, out of its frustum. The surface is the first eye's where its depth there is
+// the same point, and its light is the first eye's mask texel there (in the first eye's periphery
+// its 4x4 block's ray, as the first eye shows it), when that texel holds the same face. Also sets
+// `fast_out` and the GI reservoir (`gi_out_a`, `gi_out_b`), for this eye's next frame.
+fn from_first(p: vec2<i32>) -> FromFirst {
+    var out: FromFirst;
+    out.found = false;
+    if f32(p.x) >= rt.size.x || f32(p.y) >= rt.size.y { return out; }
+    if textureLoad(depth, p, 0) <= 0.0 { return out; }
+    let pos = surface_at(p);
+    let c = rt.first_view_proj * vec4(pos, 1.0);
+    if c.w <= 0.0 { return out; }
+    let ndc = c.xy / c.w;
+    if any(abs(ndc) >= vec2(1.0)) { return out; }
+    let q = vec2<i32>(vec2((ndc.x * 0.5 + 0.5) * rt.size.x, (0.5 - ndc.y * 0.5) * rt.size.y));
+    let z = textureLoad(first_depth, q, 0);
+    if z <= 0.0 { return out; }
+    let at = vec2((f32(q.x) + 0.5) / rt.size.x * 2.0 - 1.0, 1.0 - (f32(q.y) + 0.5) / rt.size.y * 2.0);
+    let w = rt.first_inverse_view_proj * vec4(at, z, 1.0);
+    let d = length(pos);
+    if distance(w.xyz / w.w, pos) > 0.05 + 0.02 * d { return out; }
+    let t = q / i32(rt.size.z);
+    let m = textureLoad(first_mask, t, 0);
+    let b = textureLoad(first_blocks, t, 0);
+    let l = textureLoad(first_direct, t, 0);
+    if m.a < 0.0 || b.a < 0.0 || abs(face_in(l.a) - face_of(surface_normal(p, pos))) > 0.5 {
+        return out;
+    }
+    out.found = true;
+    out.v = Traced(vec4(m.rgb, d), b, l, textureLoad(first_sun, t, 0),
+        textureLoad(first_reservoirs, t, 0));
+    fast_out = textureLoad(first_fast, t, 0);
+    gi_out_a = textureLoad(first_gi_a, t, 0);
+    gi_out_b = textureLoad(first_gi_b, t, 0);
+    return out;
+}
 // The depth pixel at the centre of mask texel `texel`.
 fn pixel_of(texel: vec2<i32>) -> vec2<i32> {
     let scale = i32(rt.size.z);
@@ -1687,6 +1750,10 @@ struct SparseRay {
     reservoir: vec4<u32>,
     gi_a: vec4<f32>,
     gi_b: vec4<u32>,
+    // VR's second eye: x 1 when the block's light is the first eye's (`from_first`, already
+    // accumulated over frames), with its fast history.
+    taken: vec4<u32>,
+    fast: vec4<f32>,
 }
 // The sparse blocks' rays, row by row of blocks.
 @group(0) @binding(47) var<storage, read_write> sparse: array<SparseRay>;
@@ -1697,9 +1764,19 @@ fn blocks_across() -> i32 {
     let block = vec2<i32>(id.xy);
     let corner = block * 4;
     if any(corner >= vec2<i32>(textureDimensions(mask))) || sharp(corner + 2) { return; }
+    // VR's second eye: the first eye's light where it sees the block's surface.
+    if rt.mode.z > 0.5 {
+        let seen = from_first(pixel_of(corner + 2));
+        if seen.found {
+            let v = seen.v;
+            sparse[block.y * blocks_across() + block.x] = SparseRay(v.rays, v.blocks, v.direct,
+                v.sun, v.reservoir, gi_out_a, gi_out_b, vec4(1u), fast_out);
+            return;
+        }
+    }
     let v = trace(pixel_of(corner + 2), corner);
     sparse[block.y * blocks_across() + block.x] = SparseRay(v.rays, v.blocks, v.direct, v.sun,
-        v.reservoir, gi_out_a, gi_out_b);
+        v.reservoir, gi_out_a, gi_out_b, vec4(0u), vec4(0.0));
 }
 // Away from the sharp zone, the mirrors and the refraction of a 2x2 quad of mask texels (4x4
 // pixels): its first texel's, shared through the workgroup (`cs_shadow`).
@@ -1738,18 +1815,28 @@ var<workgroup> quad_refracted: array<vec4<f32>, 16>;
         refracted = quad_refracted[quad];
     }
     behind_psr = refracted.a > 0.0;
-    if fine {
+    // VR's second eye: the first eye's light where it sees the surface, already accumulated over
+    // its frames (in the periphery a block's, `cs_sparse`).
+    var taken = false;
+    if fine && rt.mode.z > 0.5 && inside {
+        let seen = from_first(pixel_of(texel));
+        taken = seen.found;
+        v = seen.v;
+    }
+    if fine && !taken {
         v = trace(pixel_of(texel), texel);
-    } else {
+    } else if !fine {
         let s = sparse[(corner.y / 4) * blocks_across() + corner.x / 4];
         v = Traced(s.rays, s.blocks, s.direct, s.sun, s.reservoir);
+        taken = s.taken.x == 1u;
+        if taken { fast_out = s.fast; }
         // The block's GI reservoir is its corner's; the other texels keep none.
         if all(texel == corner) {
             gi_out_a = s.gi_a;
             gi_out_b = s.gi_b;
         }
     }
-    if rt.mode.x > 0.5 { v = accumulate(texel, v); }
+    if rt.mode.x > 0.5 && !taken { v = accumulate(texel, v); }
     if DEBUG == 3u { v.rays = vec4(textureLoad(depth, pixel_of(texel), 0) * 20.0 + 0.25); }
     if all(vec2<u32>(texel) < textureDimensions(mask)) {
         v.rays = finite4(v.rays);

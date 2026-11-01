@@ -11,8 +11,8 @@ use glam::{DVec3, Mat4};
 
 /// The views kept at once: the window (0), two eyes, two quad-view insets.
 const KEPT: usize = 5;
-/// A sparse ray's bytes (shadow_rays.wgsl `SparseRay`: seven vectors of four).
-const SPARSE_RAY_BYTES: u64 = 7 * 16;
+/// A sparse ray's bytes (shadow_rays.wgsl `SparseRay`: nine vectors of four).
+const SPARSE_RAY_BYTES: u64 = 9 * 16;
 
 /// Where the rays go, a view's choice: on the screen one a pixel up to about 1440p, one for 2x2
 /// pixels past it (a 4K screen traces 1920x1080 rays, as Remix's path tracing renders at DLSS
@@ -112,6 +112,8 @@ struct Uniform {
     moving: [[f32; 4]; MOVING_LIGHTS],
     rain: [f32; 4],
     rain_sun: [f32; 4],
+    first_view_proj: [[f32; 4]; 4],
+    first_inverse_view_proj: [[f32; 4]; 4],
 }
 
 /// The moving lights the rays light the terrain with at most (`Rays::moving`).
@@ -288,7 +290,14 @@ pub struct ShadowRays {
     views: Vec<ViewMasks>,
     /// Passes run, for the rays' directions to change.
     frame: u32,
+    /// The pass VR's first eye (view 1) ran in last (`frame` then): the second eye's, right after
+    /// it, takes its light where both see the surface (shadow_rays.wgsl `from_first`).
+    first_eye: Option<u32>,
 }
+
+/// VR's second eye takes the first eye's light (`ShadowRays::run`); off, it traces its own
+/// (`horizon-ctl rt-skip 32`, to time it).
+pub static SHARE_EYES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// The kernel's `entry` (`cs_shadow`, `cs_sparse`) leaving out what `skip` says
 /// (shadow_rays.wgsl `SKIP`), with `HORIZON_RT_DEBUG`'s view of the rays.
@@ -319,9 +328,12 @@ fn kernel(
 
 impl ShadowRays {
     /// Makes the kernel again leaving out what `skip` says (shadow_rays.wgsl `SKIP`: 1 the sun's
-    /// ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR), in a running game, to time each part alone
+    /// ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR, 16 the bounced light's turns; 32 VR's second
+    /// eye's own light, `SHARE_EYES`), in a running game, to time each part alone
     /// (`horizon-ctl rt-skip`); 0 traces it all again.
     pub fn set_skip(&mut self, device: &wgpu::Device, skip: u32) {
+        SHARE_EYES.store(skip & 32 == 0, std::sync::atomic::Ordering::Relaxed);
+        let skip = skip & 31;
         if skip == self.skip {
             return;
         }
@@ -371,6 +383,16 @@ impl ShadowRays {
             access: wgpu::StorageTextureAccess::WriteOnly,
             format: wgpu::TextureFormat::Rgba16Float,
             view_dimension: wgpu::TextureViewDimension::D2,
+        };
+        let first_depth = wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Depth,
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        };
+        let last_uint = wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Uint,
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
         };
         let last = wgpu::BindingType::Texture {
             sample_type: wgpu::TextureSampleType::Float { filterable: false },
@@ -481,6 +503,15 @@ impl ShadowRays {
                 entry(39, storage),
                 entry(47, cache_binding),
                 entry(48, storage),
+                entry(49, last),
+                entry(50, last),
+                entry(51, last),
+                entry(52, last),
+                entry(53, last),
+                entry(54, last_uint),
+                entry(55, last),
+                entry(56, last_uint),
+                entry(57, first_depth),
             ]
             .into_iter()
             .chain(
@@ -660,6 +691,7 @@ impl ShadowRays {
             rain: rain.clone(),
             views: Vec::new(),
             frame: 0,
+            first_eye: None,
         }
     }
 
@@ -791,9 +823,39 @@ impl ShadowRays {
         visibility: &wgpu::Buffer,
         sky: &wgpu::TextureView,
         hardware: Option<Hardware<'_>>,
+        first_depth: Option<&wgpu::TextureView>,
     ) -> [wgpu::TextureView; 5] {
         let scale = foveation.scale;
         let mask_size = size.map(|v| v.div_ceil(scale));
+        // VR's second eye right after the first, at its size, with the first eye's depth: the first
+        // eye's masks of this frame (written last, `1 - next`) and its view projection.
+        let first = (view == 2
+            && rays.lighting
+            && first_depth.is_some()
+            && self.first_eye == Some(self.frame)
+            && SHARE_EYES.load(std::sync::atomic::Ordering::Relaxed))
+        .then(|| {
+            self.views
+                .iter()
+                .find(|v| v.view == 1 && v.size == mask_size)
+        })
+        .flatten()
+        .and_then(|v| {
+            let i = 1 - v.next;
+            Some((
+                v.last?.0,
+                [
+                    v.masks[i].clone(),
+                    v.blocks[i].clone(),
+                    v.direct[i].clone(),
+                    v.sun[i].clone(),
+                    v.fast[i].clone(),
+                    v.reservoirs[i].clone(),
+                    v.gi[i][0].clone(),
+                    v.gi[i][1].clone(),
+                ],
+            ))
+        });
         let masks = self.masks(device, view, mask_size);
         let mask = masks.masks[masks.next].clone();
         let blocks = masks.blocks[masks.next].clone();
@@ -819,6 +881,9 @@ impl ShadowRays {
         masks.frame = masks.frame.wrapping_add(1);
         let view_frame = (masks.frame % 65536) as f32;
         self.frame = self.frame.wrapping_add(1);
+        if view == 1 {
+            self.first_eye = Some(self.frame);
+        }
         let uniform = Uniform {
             inverse_view_proj: view_proj.inverse().to_cols_array_2d(),
             light: rays.light,
@@ -833,7 +898,7 @@ impl ShadowRays {
             mode: [
                 f32::from(u8::from(rays.lighting)),
                 f32::from(u8::from(rays.shadows)),
-                0.0,
+                f32::from(u8::from(first.is_some())),
                 0.0,
             ],
             prev_view_proj: last.map_or([[0.0; 4]; 4], |l| l.0.to_cols_array_2d()),
@@ -858,6 +923,12 @@ impl ShadowRays {
             moving: rays.moving,
             rain: rays.rain,
             rain_sun: rays.rain_sun,
+            first_view_proj: first
+                .as_ref()
+                .map_or([[0.0; 4]; 4], |(m, _)| m.to_cols_array_2d()),
+            first_inverse_view_proj: first
+                .as_ref()
+                .map_or([[0.0; 4]; 4], |(m, _)| m.inverse().to_cols_array_2d()),
         };
         uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));
         let view = |binding, view| wgpu::BindGroupEntry {
@@ -874,12 +945,26 @@ impl ShadowRays {
         if self.sparse.size() < needed {
             self.sparse = Self::sparse_rays(device, needed);
         }
+        // Without the first eye's, this view's own last masks stand in, unread.
+        let first_views = first.map(|(_, t)| t).unwrap_or_else(|| {
+            [
+                last_mask.clone(),
+                last_blocks.clone(),
+                last_direct.clone(),
+                last_sun.clone(),
+                last_fast.clone(),
+                last_reservoirs.clone(),
+                last_gi[0].clone(),
+                last_gi[1].clone(),
+            ]
+        });
         let mut entries = vec![
             wgpu::BindGroupEntry {
                 binding: 0,
                 resource: self.uniform.as_entire_binding(),
             },
             view(1, depth),
+            view(57, first_depth.unwrap_or(depth)),
             view(2, grid[0]),
             view(3, grid[1]),
             view(4, grid[2]),
@@ -938,6 +1023,11 @@ impl ShadowRays {
                 resource: self.rain.as_entire_binding(),
             },
         ];
+        entries.extend(
+            (49..)
+                .zip(&first_views)
+                .map(|(binding, t)| view(binding, t)),
+        );
         if let (true, Some(hw)) = (self.hardware, &hardware) {
             entries.extend([
                 wgpu::BindGroupEntry {
