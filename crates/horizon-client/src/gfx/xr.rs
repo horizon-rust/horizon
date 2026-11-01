@@ -822,7 +822,14 @@ impl Renderer {
         let eye = {
             let shared = self.xr.clone().ok_or("no VR session")?;
             let xr = shared.lock().map_err(|_| "VR session poisoned")?;
-            xr.eye_texture(xr_frame, 0)
+            // An HDR eye's image is scRGB: the window shows its 8-bit frame.
+            let sdr = self
+                .eye_hdr
+                .first()
+                .and_then(|h| h.as_ref()?.last_frame())
+                .filter(|_| xr.eye_format() == wgpu::TextureFormat::Rgba16Float);
+            sdr.as_ref()
+                .unwrap_or(xr.eye_texture(xr_frame, 0))
                 .create_view(&wgpu::TextureViewDescriptor {
                     format: Some(format),
                     ..Default::default()
@@ -891,9 +898,29 @@ impl Renderer {
             }
         };
         let window = [self.config.width, self.config.height];
+        // HDR eyes (an `Rgba16Float` image, scRGB): the eye's own HDR output in place of the
+        // window's, 1.0 the SDR white (80 nits in its scale) at the player's paper white, the
+        // peak as far above it as the player's is above theirs.
+        let view = eye.view_index - 1;
+        let eye_hdr = (target.format() == wgpu::TextureFormat::Rgba16Float).then(|| {
+            if self.eye_hdr.len() <= view {
+                self.eye_hdr.resize_with(view + 1, || None);
+            }
+            let mut hdr = self.eye_hdr[view].take().unwrap_or_else(|| {
+                super::hdr::Hdr::new(
+                    &self.device,
+                    self.config.format.remove_srgb_suffix(),
+                    super::hdr::Output::ScRgb,
+                )
+            });
+            let (paper_white, peak) = self.hdr_levels;
+            hdr.paper_white = 80.0;
+            hdr.peak = 80.0 * (peak / paper_white.max(1.0)).max(1.0);
+            hdr
+        });
         let surface = self.surface.take();
         let offscreen = self.offscreen.replace(target);
-        let hdr = self.hdr.take();
+        let hdr = std::mem::replace(&mut self.hdr, eye_hdr);
         let depth = std::mem::replace(&mut self.depth, depth);
         [self.config.width, self.config.height] = size;
         self.eye = Some(eye);
@@ -902,7 +929,9 @@ impl Renderer {
         self.eye = None;
         [self.config.width, self.config.height] = window;
         self.depth = depth;
-        self.hdr = hdr;
+        if let Some(eye_hdr) = std::mem::replace(&mut self.hdr, hdr) {
+            self.eye_hdr[view] = Some(eye_hdr);
+        }
         self.offscreen = offscreen;
         self.surface = surface;
         drawn

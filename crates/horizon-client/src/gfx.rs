@@ -692,6 +692,11 @@ pub struct Renderer {
     hdr: Option<hdr::Hdr>,
     /// The HDR output the window's surface can present.
     hdr_output: Option<hdr::Output>,
+    /// The player's HDR paper white and peak (`set_hdr`), for the eyes' HDR too.
+    hdr_levels: (f32, f32),
+    /// HDR eyes (a runtime that prefers float images, `horizon_xr::Xr::eye_format`): each
+    /// view's scRGB output, in turn `hdr` while it draws (`xr::draw_eye`).
+    eye_hdr: Vec<Option<hdr::Hdr>>,
     /// The shader pack's post-processing, and the dimension (legacy id) it was loaded for.
     pack_post: Option<(i32, Option<pack_post::PackPost>)>,
     /// The post passes of one of Horizon's own shader packs; never beside `pack_post`'s.
@@ -3461,6 +3466,8 @@ impl Renderer {
             world_format,
             hdr: None,
             hdr_output,
+            hdr_levels: (200.0, 1000.0),
+            eye_hdr: Vec::new(),
             pack_post: None,
             native: None,
             pass_timing: pack_timing::PassTiming::logging(),
@@ -4051,6 +4058,7 @@ impl Renderer {
     /// HDR output (Horizon setting): HDR10 or scRGB at `paper_white` nits, the world's
     /// highlights expanded up to `peak` nits. Off where the surface can't present it.
     pub fn set_hdr(&mut self, on: bool, paper_white: f32, peak: f32) {
+        self.hdr_levels = (paper_white, peak);
         let output = self.hdr_output.filter(|_| on && self.surface.is_some());
         if output.is_some() != self.hdr.is_some() {
             let format = self.config.format.remove_srgb_suffix();
@@ -5076,6 +5084,8 @@ impl Renderer {
         let target_texture = match (&surface_frame, &mut self.hdr) {
             (Some(_), Some(hdr)) => hdr.frame(&self.device, size),
             (Some(f), None) => f.texture.clone(),
+            // An HDR eye (`xr::draw_eye`): the 8-bit frame, written to the eye's image after.
+            (None, Some(hdr)) if self.eye.is_some() => hdr.frame(&self.device, size),
             (None, _) => self.offscreen.clone().ok_or("no offscreen target")?,
         };
         // One command buffer for the frame, after the section copies staged
@@ -7426,7 +7436,12 @@ impl Renderer {
             self.section_copy_bytes = 0;
             self.section_uploads.finish(&encoder);
         }
-        if let (Some(hdr), Some(f)) = (&self.hdr, &surface_frame) {
+        // The swapchain image, or an HDR eye's.
+        let output = match &surface_frame {
+            Some(f) => Some(f.texture.clone()),
+            None => self.eye.and(self.offscreen.clone()),
+        };
+        if let (Some(hdr), Some(output)) = (&self.hdr, &output) {
             match &scene {
                 // Linear Light: the world from the scene's light, up to the display's peak.
                 Some(scene) => {
@@ -7437,7 +7452,7 @@ impl Renderer {
                         &self.device,
                         &self.queue,
                         &mut encoder,
-                        &f.texture,
+                        output,
                         graded.unwrap_or(scene),
                         graded
                             .and(Some(tonemap.no_mask()))
@@ -7446,7 +7461,7 @@ impl Renderer {
                         !frame.title,
                     )
                 }
-                None => hdr.present(&self.queue, &mut encoder, &f.texture, !frame.title),
+                None => hdr.present(&self.queue, &mut encoder, output, !frame.title),
             }
         }
         gpu_passes::stamp(&mut encoder, "output (copies, HDR present)");

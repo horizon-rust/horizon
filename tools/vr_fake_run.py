@@ -89,6 +89,7 @@ def main() -> int:
     ap.add_argument("--ctl", help="a file of horizon-ctl commands sent to the game in turn (one a line, "
                     "'sleep SECONDS' waits; replies go to ctl.log), e.g. to teleport the player")
     ap.add_argument("--no-clouds", action="store_true", help="play without clouds (frames compare cleanly)")
+    ap.add_argument("--hdr", action="store_true", help="the headset prefers R16G16B16A16_SFLOAT (HDR, scRGB) eyes")
     ap.add_argument("--home", help="a folder to keep HORIZON_HOME and the saves in: the next run with it plays the same world")
     args = ap.parse_args()
 
@@ -157,6 +158,8 @@ def main() -> int:
             env["HORIZON_FAKE_XR_SCRIPT"] = str(Path(args.script).resolve())
         if args.capture_seconds:
             env["HORIZON_FAKE_XR_CAPTURE_SECONDS"] = args.capture_seconds
+        if args.hdr:
+            env["HORIZON_FAKE_XR_HDR"] = "1"
         if args.title:
             cmd = [str(game / f"horizon-client{EXE}"), "--frames", str(args.world_frames)]
         else:

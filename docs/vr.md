@@ -271,6 +271,17 @@ each value clamped to 0..1 before the 10-bit quantization (strings in `krvr_xr2.
 up` in `%LOCALAPPDATA%\KRVR\logs\runtime_*.log`): through it, everything past scRGB 1.0 is SDR white. In the
 headset, 10, 20 and 40 nits got brighter and every patch from 80 or 100 up looked the same: no HDR through KRVR.
 
+## HDR eyes
+
+A runtime whose first swapchain format is `R16G16B16A16_SFLOAT` gets the eyes in it, in HDR: the world tone
+mapped from its light up to the player's HDR peak, as the screen's HDR output does with Linear Light
+(`gfx/hdr.rs` `present_scene`), as scRGB with 1.0 the SDR white (Apple's EDR convention, the headset's own white
+standing for the player's paper white) and the peak that many times above it (the player's peak over their paper
+white: 5 at the defaults, 1000 over 200 nits). `HORIZON_XR_HDR=1` takes the float format wherever the runtime
+offers it, `0` keeps the 8-bit sRGB eyes. The window's mirror shows the left eye's SDR frame. The fake runtime
+offers it first with `HORIZON_FAKE_XR_HDR=1` (`vr_fake_run.py --hdr`): at the spawn its eyes went up to 5.0, a
+tenth of the pixels (the sky) above 1.0, the HDR pass 0.1 ms an eye.
+
 ## Not there yet
 
 Room-scale movement, aiming with a controller in the world, the hand and held item, the hotbar on the off hand,

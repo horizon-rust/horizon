@@ -263,6 +263,12 @@ impl Hdr {
         self.targets.as_ref().unwrap().frame.clone()
     }
 
+    /// The 8-bit frame last drawn (`frame`), if any: an HDR eye's SDR picture, for the window's
+    /// mirror of it.
+    pub fn last_frame(&self) -> Option<wgpu::Texture> {
+        self.targets.as_ref().map(|t| t.frame.clone())
+    }
+
     /// Keeps the world as drawn so far, before the hand and HUD cover it.
     pub fn keep_world(&self, encoder: &mut wgpu::CommandEncoder) {
         let Some(t) = &self.targets else {

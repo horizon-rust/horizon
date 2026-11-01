@@ -19,6 +19,9 @@
 //! - `HORIZON_FAKE_XR_CAPTURE`: frame numbers to capture, `120,240`.
 //! - `HORIZON_FAKE_XR_VIDEO`: frames `FIRST-LAST` of the left eye only, as `video00123.png`
 //!   (one PNG per frame, to make a video of: flicker shows across frames, not in one).
+//! - `HORIZON_FAKE_XR_HDR=1`: offer `R16G16B16A16_SFLOAT` first, as an HDR runtime prefers
+//!   (scRGB: linear, 1.0 the SDR white); captures of it show the SDR range, and the log says
+//!   how bright the image goes.
 //! - `HORIZON_FAKE_XR_CAPTURE_EVERY`: also capture every N frames into `latest-*.png`, so a
 //!   run that ends on its own leaves its last view.
 //! - `HORIZON_FAKE_XR_CAPTURE_SECONDS`: script times to capture, `8,12.5`: the first frame at
@@ -75,6 +78,17 @@ const LEFT_FOV: sys::Fovf = sys::Fovf {
 };
 /// Formats offered, sRGB first (Vulkan's numbers).
 const FORMATS: [i64; 4] = [43, 50, 37, 44];
+/// With `HORIZON_FAKE_XR_HDR=1`: `R16G16B16A16_SFLOAT` first, as an HDR runtime prefers it.
+const HDR_FORMATS: [i64; 5] = [97, 43, 50, 37, 44];
+
+/// The formats offered (`HDR_FORMATS` with `HORIZON_FAKE_XR_HDR=1`).
+fn formats() -> &'static [i64] {
+    if std::env::var("HORIZON_FAKE_XR_HDR").is_ok_and(|v| v == "1") {
+        &HDR_FORMATS
+    } else {
+        &FORMATS
+    }
+}
 
 #[derive(Default)]
 struct Report {
@@ -1065,7 +1079,7 @@ unsafe extern "system" fn enumerate_swapchain_formats(
     count: *mut u32,
     out: *mut i64,
 ) -> XrResult {
-    unsafe { two_call(capacity, count, out, &FORMATS) }
+    unsafe { two_call(capacity, count, out, formats()) }
 }
 
 unsafe extern "system" fn create_swapchain(
@@ -1080,7 +1094,7 @@ unsafe extern "system" fn create_swapchain(
     };
     let instance = s.vulkan.as_ref().map(|v| v.instance.clone()).unwrap();
     let format = vk::Format::from_raw(info.format as i32);
-    if !FORMATS.contains(&info.format) {
+    if !formats().contains(&info.format) {
         return XrResult::ERROR_SWAPCHAIN_FORMAT_UNSUPPORTED;
     }
     let u = info.usage_flags;
@@ -1493,7 +1507,8 @@ fn read_image(s: &State, sub: &sys::SwapchainSubImage) -> Result<(u32, u32, Vec<
                         .command_buffer_count(1),
                 )
                 .map_err(|e| e.to_string())?[0];
-            let bytes = u64::from(w) * u64::from(h) * 4;
+            let float = format == vk::Format::R16G16B16A16_SFLOAT;
+            let bytes = u64::from(w) * u64::from(h) * if float { 8 } else { 4 };
             let buffer = device
                 .create_buffer(
                     &vk::BufferCreateInfo::default()
@@ -1634,9 +1649,59 @@ fn read_image(s: &State, sub: &sys::SwapchainSubImage) -> Result<(u32, u32, Vec<
                     p.swap(0, 2);
                 }
             }
+            if float {
+                pixels = from_scrgb(&pixels);
+            }
             Ok((w, h, pixels))
         }
     })()
+}
+
+/// An `R16G16B16A16_SFLOAT` image (scRGB: linear, 1.0 the SDR white) as 8-bit sRGB, the range
+/// above the SDR white clipped; stderr says its brightest pixel and how much of it is above.
+fn from_scrgb(halves: &[u8]) -> Vec<u8> {
+    let half = |b: &[u8]| {
+        let h = u16::from_le_bytes([b[0], b[1]]);
+        let (sign, exp, frac) = ((h >> 15) as u32, ((h >> 10) & 31) as u32, (h & 1023) as u32);
+        let bits = match exp {
+            0 if frac == 0 => sign << 31,
+            0 => {
+                // Subnormal: frac * 2^-24.
+                return if sign == 1 { -1.0 } else { 1.0 } * frac as f32 / 16_777_216.0;
+            }
+            31 => (sign << 31) | 0x7f80_0000 | (frac << 13),
+            _ => (sign << 31) | ((exp + 112) << 23) | (frac << 13),
+        };
+        f32::from_bits(bits)
+    };
+    let encode = |v: f32| {
+        let v = v.clamp(0.0, 1.0);
+        let s = if v <= 0.003_130_8 {
+            v * 12.92
+        } else {
+            1.055 * v.powf(1.0 / 2.4) - 0.055
+        };
+        (s * 255.0 + 0.5) as u8
+    };
+    let (mut peak, mut above) = (0.0f32, 0usize);
+    let mut out = Vec::with_capacity(halves.len() / 2);
+    for p in halves.chunks_exact(8) {
+        let [r, g, b, a] = [0, 2, 4, 6].map(|i| half(&p[i..i + 2]));
+        let max = r.max(g).max(b);
+        peak = peak.max(max);
+        above += usize::from(max > 1.0);
+        out.extend([
+            encode(r),
+            encode(g),
+            encode(b),
+            (a.clamp(0.0, 1.0) * 255.0 + 0.5) as u8,
+        ]);
+    }
+    eprintln!(
+        "[horizon-xr-fake] scRGB image: brightest {peak:.2}x the SDR white, {:.2} % of it above",
+        100.0 * above as f32 / (halves.len() / 8).max(1) as f32
+    );
+    out
 }
 
 fn write_png(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {

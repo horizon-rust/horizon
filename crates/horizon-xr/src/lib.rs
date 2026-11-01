@@ -338,12 +338,19 @@ impl Xr {
     /// `format`: an 8-bit format without sRGB (Horizon writes gamma-encoded colour, like
     /// vanilla). The images themselves are the sRGB twin, so the runtime reads them right.
     /// `Rgba16Float` and `Rgb10a2Unorm`, which have no sRGB twin, are taken as they are.
+    /// A runtime that prefers `R16G16B16A16_SFLOAT` (its first format) gets HDR eyes in it
+    /// instead (`hdr_eyes`): `eye_format` says which.
     pub fn create_swapchains(&mut self, format: wgpu::TextureFormat) -> Result<(), Error> {
-        let (vk_format, srgb) = srgb_twin(format)?;
         let offered = self
             .session
             .enumerate_swapchain_formats()
             .map_err(err("swapchain formats"))?;
+        let format = if hdr_eyes(&offered) {
+            wgpu::TextureFormat::Rgba16Float
+        } else {
+            format
+        };
+        let (vk_format, srgb) = srgb_twin(format)?;
         if !offered.contains(&(vk_format.as_raw() as u32)) {
             return Err(Error(format!("the runtime offers no {srgb:?} swapchain")));
         }
@@ -944,6 +951,19 @@ fn gaze_from(head: xr::Posef, view: xr::Posef, tracked: bool, invert_pitch: bool
     }
 }
 
+/// Whether the eyes go to the runtime in HDR, `R16G16B16A16_SFLOAT` (scRGB: linear, BT.709
+/// primaries, 1.0 the SDR white, above it the display's headroom): where the runtime offers it
+/// first among `offered` (Vulkan formats, its preferred first). `HORIZON_XR_HDR=1` takes it
+/// wherever offered, `0` never.
+fn hdr_eyes(offered: &[u32]) -> bool {
+    let float = vk::Format::R16G16B16A16_SFLOAT.as_raw() as u32;
+    match std::env::var("HORIZON_XR_HDR").ok().as_deref() {
+        Some("0") => false,
+        Some("1") => offered.contains(&float),
+        _ => offered.first() == Some(&float),
+    }
+}
+
 /// The sRGB swapchain format whose images the renderer writes through `format` views.
 fn srgb_twin(format: wgpu::TextureFormat) -> Result<(vk::Format, wgpu::TextureFormat), Error> {
     match format.remove_srgb_suffix() {
@@ -1194,6 +1214,19 @@ pub fn projection(fov: xr::Fovf, near: f32, far: f32) -> [[f32; 4]; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_eyes_are_hdr_where_the_runtime_prefers_float_images() {
+        if std::env::var_os("HORIZON_XR_HDR").is_some() {
+            return;
+        }
+        let float = vk::Format::R16G16B16A16_SFLOAT.as_raw() as u32;
+        let srgb = vk::Format::B8G8R8A8_SRGB.as_raw() as u32;
+        assert!(hdr_eyes(&[float, srgb]));
+        assert!(!hdr_eyes(&[srgb, float]));
+        assert!(!hdr_eyes(&[srgb]));
+        assert!(!hdr_eyes(&[]));
+    }
 
     fn clip(m: [[f32; 4]; 4], p: [f32; 3]) -> [f32; 3] {
         let v = [p[0], p[1], p[2], 1.0];
