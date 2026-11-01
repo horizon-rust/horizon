@@ -158,10 +158,21 @@ pub fn keep(dir: &Path, name: &str, file: &Path, cape: bool) -> Result<(), Strin
 }
 
 /// Drops a forgotten name's files (`Accounts::remove_offline`); missing files are fine.
-pub fn forget(dir: &Path, name: &str) {
+pub fn forget(dir: &Path, name: &str) -> Result<(), String> {
     let (skin, cape) = files(dir, name);
-    let _ = std::fs::remove_file(skin);
-    let _ = std::fs::remove_file(cape);
+    let mut errors = Vec::new();
+    for path in [skin, cape] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => errors.push(format!("{}: {error}", path.display())),
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 /// The variables the game gets for `name`'s look.

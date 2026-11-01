@@ -490,6 +490,51 @@ fn no_network_never_blocks_a_past_owner() {
 }
 
 #[test]
+fn an_offline_profile_uses_cached_ownership_without_contacting_auth_services() {
+    let (mock, ep) = mock(|_| {});
+    let store = MemoryStore::default();
+    let stale = Secrets {
+        minecraft_expires_at: 0,
+        sign_in_required: true,
+        ..secrets("expired-token", true)
+    };
+    let mut accounts = signed_in(&store, &stale);
+    accounts
+        .play_as(&store, Player::Offline("Builder_1".into()))
+        .unwrap();
+
+    let pass = launch_for_game(&ep, Some("test-client"), &store, &mut accounts, false).unwrap();
+
+    assert!(pass.session.is_none());
+    assert!(pass.owner.is_none());
+    assert!(pass
+        .offline
+        .unwrap()
+        .contains("authentication services were not contacted"));
+    assert_eq!(accounts.player(), Player::Offline("Builder_1".into()));
+    assert!(
+        mock.lock().unwrap().log.is_empty(),
+        "offline profile launches must not call Microsoft, Xbox Live or Minecraft services"
+    );
+}
+
+#[test]
+fn an_offline_profile_without_cached_ownership_cannot_launch() {
+    let (mock, ep) = mock(|_| {});
+    let store = MemoryStore::default();
+    let mut accounts = Accounts::default();
+    accounts
+        .play_as_with(&store, Player::Offline("Builder_1".into()), true)
+        .unwrap();
+
+    assert_eq!(
+        launch_for_game(&ep, Some("test-client"), &store, &mut accounts, false).unwrap_err(),
+        NoOwner
+    );
+    assert!(mock.lock().unwrap().log.is_empty());
+}
+
+#[test]
 fn accounts_from_before_the_gate_owned_the_game_at_sign_in() {
     let old = r#"{"refresh_token":"r","minecraft_token":"t","minecraft_expires_at":1,"xuid":null}"#;
     assert!(serde_json::from_str::<Secrets>(old).unwrap().owns);
@@ -1053,6 +1098,75 @@ fn offline_names_switch_with_accounts() {
 }
 
 #[test]
+fn renaming_an_offline_profile_keeps_its_selection_look_and_skin_files() {
+    let store = MemoryStore::default();
+    let mut accounts = signed_in(&store, &secrets("token", true));
+    accounts
+        .play_as(&store, Player::Offline("Builder_1".into()))
+        .unwrap();
+    let dir = std::env::temp_dir().join(format!("horizon-rename-offline-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (skin, cape) = crate::skins::files(&dir, "Builder_1");
+    std::fs::write(&skin, b"skin").unwrap();
+    std::fs::write(&cape, b"cape").unwrap();
+    accounts.looks.insert(
+        "builder_1".into(),
+        crate::skins::Look {
+            skin: true,
+            cape: true,
+            ..crate::skins::Look::default()
+        },
+    );
+
+    accounts
+        .rename_offline("builder_1", "Builder_2", &dir)
+        .unwrap();
+
+    let (renamed_skin, renamed_cape) = crate::skins::files(&dir, "Builder_2");
+    assert_eq!(accounts.offline, ["Builder_2"]);
+    assert_eq!(accounts.player(), Player::Offline("Builder_2".into()));
+    assert!(accounts.look("Builder_2").skin);
+    assert!(accounts.look("Builder_2").cape);
+    assert_eq!(std::fs::read(&renamed_skin).unwrap(), b"skin");
+    assert_eq!(std::fs::read(&renamed_cape).unwrap(), b"cape");
+    assert!(!skin.exists() && !cape.exists());
+    let saved = dir.join("accounts.json");
+    accounts.save_to(&saved).unwrap();
+    let restarted = Accounts::load_from(&saved);
+    assert_eq!(restarted.player(), Player::Offline("Builder_2".into()));
+    assert!(restarted.look("Builder_2").skin);
+    assert!(accounts
+        .rename_offline("Builder_2", "bad name", &dir)
+        .is_err());
+    assert!(accounts
+        .rename_offline("Builder_2", "Builder_2", &dir)
+        .is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn forgetting_an_offline_profile_reports_skin_cleanup_failures() {
+    let dir = std::env::temp_dir().join(format!("horizon-forget-offline-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (skin, _) = crate::skins::files(&dir, "Builder_1");
+    std::fs::create_dir(&skin).unwrap();
+    let mut accounts = Accounts {
+        offline: vec!["Builder_1".into()],
+        offline_selected: Some("Builder_1".into()),
+        ..Accounts::default()
+    };
+
+    let error = accounts.remove_offline("Builder_1", &dir).unwrap_err();
+
+    assert!(error.contains(&skin.display().to_string()));
+    assert_eq!(accounts.offline, ["Builder_1"]);
+    assert_eq!(accounts.player(), Player::Offline("Builder_1".into()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_java_edition_plays_as_an_owner_even_offline() {
     let (_, ep) = mock(|_| {});
     let store = MemoryStore::default();
@@ -1498,4 +1612,27 @@ fn a_launch_as_another_account_leaves_the_selected_one() {
     );
     assert_eq!(gone.unwrap_err(), "That account isn't signed in.");
     assert_eq!(accounts.player(), Player::Microsoft(UUID.into()));
+}
+
+#[test]
+fn launching_as_an_offline_profile_does_not_contact_auth_services() {
+    let (mock, ep) = mock(|_| {});
+    let store = MemoryStore::default();
+    let mut accounts = signed_in(&store, &secrets("expired-token", true));
+    let pass = launch_as(
+        &ep,
+        Some("test-client"),
+        &store,
+        &mut accounts,
+        &Player::Offline("Builder_1".into()),
+    )
+    .unwrap();
+
+    assert!(pass.session.is_none() && pass.owner.is_none());
+    assert!(pass
+        .offline
+        .unwrap()
+        .contains("authentication services were not contacted"));
+    assert_eq!(accounts.player(), Player::Microsoft(UUID.into()));
+    assert!(mock.lock().unwrap().log.is_empty());
 }

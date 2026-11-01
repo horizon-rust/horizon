@@ -524,6 +524,7 @@
   "The server's log shows here while it runs.": "Dziennik serwera wyświetla się tutaj, gdy serwer działa.",
   "Show all {count}": "Pokaż wszystkie ({count})",
   "Add": "Dodaj",
+  "Rename": "Zmień nazwę",
   "Clear filters": "Wyczyść filtry",
   "Downloads": "Pobrania",
   "What changed in each release, newest first.": "Co się zmieniło w poszczególnych wersjach, od najnowszych.",

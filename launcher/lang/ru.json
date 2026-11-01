@@ -524,6 +524,7 @@
   "The server's log shows here while it runs.": "Журнал сервера отображается здесь во время его работы.",
   "Show all {count}": "Показать все {count}",
   "Add": "Добавить",
+  "Rename": "Переименовать",
   "Clear filters": "Сбросить фильтры",
   "Downloads": "Загрузки",
   "What changed in each release, newest first.": "Что изменилось в каждом релизе, сначала новые.",

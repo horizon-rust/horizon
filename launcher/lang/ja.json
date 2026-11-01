@@ -67,6 +67,7 @@
   "A name, 3 to 16 letters": "3〜16文字の名前",
   "Play offline under another name, and switch from the top bar. Online servers don't take offline names.": "別の名前でオフラインプレイし、上部バーから切り替えられます。オンラインサーバーではオフライン名は使用できません。",
   "Add": "追加",
+  "Rename": "名前を変更",
   "Skin…": "スキン…",
   "Forget": "削除",
   "{name}'s skin": "{name}のスキン",

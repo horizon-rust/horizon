@@ -72,11 +72,12 @@ Decided 2026-10-27 (Ludovic, after a modder's suggestion): like other launchers,
 launcher starts the game only while an account in it owns Java Edition. Offline play stays
 possible; the launcher just doesn't offer it on its own.
 
-- **Play needs an owner.** Every Play (Home, instances and packs, `horizon-launcher play`,
-  `modpack play`, the MCP's `play`) asks `account::launch` first. It asks the Minecraft services
-  again for each account, the selected one first, until one owns the game: the token renewal
-  (below) if due, then entitlements and profile. Without an owner the game doesn't start and Play
-  says "Sign in with a Microsoft account that owns Minecraft: Java Edition to play", with Sign in.
+- **Play needs an owner.** Playing as a Microsoft account (Home, instances and packs,
+  `horizon-launcher play`, `modpack play`, the MCP's `play`) asks `account::launch` first. It asks
+  the Minecraft services again for each account, the selected one first, until one owns the game:
+  the token renewal (below) if due, then entitlements and profile. Without an owner the game
+  doesn't start and Play says "Sign in with a Microsoft account that owns Minecraft: Java Edition
+  to play", with Sign in.
 - **The window says it once.** A player without an owner (one who played offline until now) sees
   the gate's screen once when the launcher opens: why Horizon needs the account ("like other
   launchers"), that worlds, offline names and settings stay where they are, and Sign in, which shows
@@ -87,7 +88,17 @@ possible; the launcher just doesn't offer it on its own.
   last answer stands: being offline never blocks a player who passed before, and the game starts
   without a session, offline. An answer of "doesn't own" (or no profile) blocks at once.
 - **Offline names play behind an owner.** They can be added and played only while an owning
-  account is signed in. Signing the last one out keeps them, and they play again once one is back.
+  account's successful ownership check is kept in the OS keychain. Once an offline name is
+  selected, Horizon checks that local record and does not contact Microsoft, Xbox Live or
+  Minecraft services for that launch. The game receives no authenticated session: this is a local
+  profile, not a Microsoft identity. It supports single-player and local saves; online-mode servers
+  and account-dependent services require a Microsoft profile and connectivity. Local offline-mode
+  servers and LAN work only where their existing authentication and network settings permit.
+  Horizon does not download missing game or resource files in this mode; prepare the selected
+  version while online first. Offline names, their appearance and their selection are kept in
+  launcher data, separately from Microsoft credentials. Settings > Account can add, rename, choose,
+  customize and forget these profiles. Signing the last owner out keeps them, but they cannot launch
+  until an owner is signed in again.
 - **Who isn't affected:** the game binary itself (`horizon-client`, `horizon-ctl launch`, the
   harnesses, CI), the dedicated server and `horizon-server`, the website. There is no bypass flag:
   the launcher's tests use accounts in a memory store (`MemoryStore`, and `HORIZON_NO_KEYCHAIN`

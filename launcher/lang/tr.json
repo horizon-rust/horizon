@@ -67,6 +67,7 @@
   "A name, 3 to 16 letters": "3 ila 16 harf arası bir ad",
   "Play offline under another name, and switch from the top bar. Online servers don't take offline names.": "Başka bir adla çevrimdışı oynayın ve üst çubuktan geçiş yapın. Çevrimiçi sunucular çevrimdışı adları kabul etmez.",
   "Add": "Ekle",
+  "Rename": "Yeniden adlandır",
   "Skin…": "Dış görünüm…",
   "Forget": "Unut",
   "{name}'s skin": "{name} adlı kişinin dış görünümü",

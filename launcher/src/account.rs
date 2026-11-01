@@ -1234,16 +1234,105 @@ impl Accounts {
         Ok(name.to_string())
     }
 
+    /// Renames an offline profile without losing its selected state, look, skin or cape.
+    pub fn rename_offline(&mut self, old: &str, new: &str, skins_dir: &Path) -> Result<(), String> {
+        let Some(index) = self
+            .offline
+            .iter()
+            .position(|name| name.eq_ignore_ascii_case(old))
+        else {
+            return Err(format!("No offline name {old}."));
+        };
+        let new = new.trim();
+        if !valid_offline_name(new) {
+            return Err(format!(
+                "{new}: an offline name is 3 to 16 letters, digits or _"
+            ));
+        }
+        if self
+            .offline
+            .iter()
+            .enumerate()
+            .any(|(i, name)| i != index && name.eq_ignore_ascii_case(new))
+        {
+            return Err(format!("An offline profile named {new} already exists."));
+        }
+
+        let old_name = self.offline[index].clone();
+        if !valid_offline_name(&old_name) {
+            return Err(format!("{old_name}: that offline profile name is invalid."));
+        }
+        let (old_skin, old_cape) = crate::skins::files(skins_dir, &old_name);
+        let (new_skin, new_cape) = crate::skins::files(skins_dir, new);
+        if old_skin != new_skin {
+            for (from, to) in [(&old_skin, &new_skin), (&old_cape, &new_cape)] {
+                if to.exists() {
+                    return Err(format!(
+                        "Cannot rename {old_name}: {} already exists.",
+                        to.display()
+                    ));
+                }
+                if from.exists() && !from.is_file() {
+                    return Err(format!("{} is not a file.", from.display()));
+                }
+            }
+        }
+
+        let moved_skin = if old_skin != new_skin && old_skin.is_file() {
+            std::fs::rename(&old_skin, &new_skin)
+                .map_err(|e| format!("{}: {e}", old_skin.display()))?;
+            true
+        } else {
+            false
+        };
+        if old_cape != new_cape && old_cape.is_file() {
+            if let Err(error) = std::fs::rename(&old_cape, &new_cape) {
+                if moved_skin {
+                    if let Err(rollback) = std::fs::rename(&new_skin, &old_skin) {
+                        return Err(format!(
+                            "{}: {error}; also could not restore {}: {rollback}",
+                            old_cape.display(),
+                            old_skin.display()
+                        ));
+                    }
+                }
+                return Err(format!("{}: {error}", old_cape.display()));
+            }
+        }
+
+        let old_key = old_name.to_ascii_lowercase();
+        let new_key = new.to_ascii_lowercase();
+        if let Some(look) = self.looks.remove(&old_key) {
+            self.looks.insert(new_key, look);
+        }
+        self.offline[index] = new.to_string();
+        if self
+            .offline_selected
+            .as_ref()
+            .is_some_and(|selected| selected.eq_ignore_ascii_case(&old_name))
+        {
+            self.offline_selected = Some(new.to_string());
+        }
+        Ok(())
+    }
+
     /// Forgets an offline name: its look and its skin and cape files (`skins`) go with it; if
     /// it was playing, the game's own name plays.
     pub fn remove_offline(&mut self, name: &str, skins_dir: &Path) -> Result<(), String> {
-        let before = self.offline.len();
-        self.offline.retain(|n| !n.eq_ignore_ascii_case(name));
-        self.looks.remove(&name.to_ascii_lowercase());
-        if self.offline.len() == before {
+        let Some(index) = self
+            .offline
+            .iter()
+            .position(|n| n.eq_ignore_ascii_case(name))
+        else {
             return Err(format!("No offline name {name}."));
+        };
+        let removed = self.offline[index].clone();
+        if !valid_offline_name(&removed) {
+            return Err(format!("{removed}: that offline profile name is invalid."));
         }
-        crate::skins::forget(skins_dir, name);
+        crate::skins::forget(skins_dir, &removed)?;
+        let removed = self.offline.remove(index);
+        self.looks.remove(&removed.to_ascii_lowercase());
         if self
             .offline_selected
             .as_ref()
@@ -1419,10 +1508,38 @@ pub fn launch_for_game(
     accounts: &mut Accounts,
     offline_without_owner: bool,
 ) -> Result<Launch, NoOwner> {
+    if let Player::Offline(name) = accounts.player() {
+        return launch_offline_profile(&name, store, accounts, offline_without_owner);
+    }
     match launch(ep, client_id, store, accounts) {
         Err(NoOwner) if offline_without_owner => Ok(Launch::default()),
         pass => pass,
     }
+}
+
+/// Starts a local profile without authentication requests, trusting only the remembered owner
+/// result unless the launcher's explicit developer option permits an ownerless local test.
+fn launch_offline_profile(
+    name: &str,
+    store: &dyn SecretStore,
+    accounts: &Accounts,
+    offline_without_owner: bool,
+) -> Result<Launch, NoOwner> {
+    if !valid_offline_name(name)
+        || !accounts
+            .offline
+            .iter()
+            .any(|profile| profile.eq_ignore_ascii_case(name))
+        || (!offline_without_owner && !accounts.has_owner(store))
+    {
+        return Err(NoOwner);
+    }
+    Ok(Launch {
+        offline: Some(format!(
+            "Offline profile {name}; authentication services were not contacted."
+        )),
+        ..Launch::default()
+    })
 }
 
 /// Write the session for the game, readable by this user only, in a fresh file it deletes
@@ -1626,9 +1743,13 @@ fn launch_as(
         accounts.offline_selected.clone(),
         accounts.offline.clone(),
     );
-    let pass = accounts
-        .play_as(store, who.clone())
-        .and_then(|()| launch(ep, client_id, store, accounts).map_err(|e| e.to_string()));
+    let pass = accounts.play_as(store, who.clone()).and_then(|()| {
+        if let Player::Offline(name) = who {
+            launch_offline_profile(name, store, accounts, false).map_err(|e| e.to_string())
+        } else {
+            launch(ep, client_id, store, accounts).map_err(|e| e.to_string())
+        }
+    });
     (
         accounts.selected,
         accounts.offline_selected,

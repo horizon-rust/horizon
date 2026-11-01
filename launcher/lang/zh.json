@@ -524,6 +524,7 @@
   "The server's log shows here while it runs.": "服务器运行时会在此处显示日志。",
   "Show all {count}": "显示全部 {count} 张",
   "Add": "添加",
+  "Rename": "重命名",
   "Clear filters": "清除筛选",
   "Downloads": "下载量",
   "What changed in each release, newest first.": "每个版本的更新内容，最新版本优先。",

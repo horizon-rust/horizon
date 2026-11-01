@@ -230,6 +230,8 @@ struct Launcher {
     menu_closed_at: Option<Point<Pixels>>,
     /// Settings > Account's skin panel for an offline name (`skin_page.rs`).
     skin: Option<skin_page::SkinPanel>,
+    /// Settings > Account's offline profile name being edited (`switch_page.rs`).
+    renaming_offline: Option<String>,
     /// Why the last picture for Home's background was refused.
     background_error: Option<String>,
     settings: Settings,
@@ -484,6 +486,7 @@ impl Launcher {
             account_menu: false,
             menu_closed_at: None,
             skin: None,
+            renaming_offline: None,
             background_error: None,
             args_input: line_edit::LineEdit::new(settings.game_args.clone(), 1024, 38),
             args_focused: false,

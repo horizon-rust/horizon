@@ -155,6 +155,21 @@ impl Launcher {
         if name.is_empty() {
             return;
         }
+        if let Some(old) = self.renaming_offline.clone() {
+            let mut accounts = Accounts::load();
+            let done = accounts
+                .rename_offline(&old, &name, &horizon_launcher::skins::dir())
+                .and_then(|()| accounts.save());
+            match done {
+                Ok(()) => {
+                    self.accounts = accounts;
+                    self.renaming_offline = None;
+                    self.servers.text(Field::OfflineName).set(String::new());
+                }
+                Err(e) => self.sign_in_state = Some(SignInState::Done(Err(e))),
+            }
+            return;
+        }
         self.play_as(Player::Offline(name));
         if !matches!(self.sign_in_state, Some(SignInState::Done(Err(_)))) {
             self.servers.text(Field::OfflineName).set(String::new());
@@ -195,17 +210,33 @@ impl Launcher {
                     }),
                 ),
             );
+            let rename = name.clone();
+            actions = actions.child(
+                button(format!("offline-rename-{i}"), "Rename", Kind::Ghost, &t).on_click(
+                    cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.renaming_offline = Some(rename.clone());
+                        this.servers.text(Field::OfflineName).set(rename.clone());
+                        cx.notify();
+                    }),
+                ),
+            );
             let forget = name.clone();
             actions = actions.child(
                 button(format!("offline-forget-{i}"), "Forget", Kind::Ghost, &t).on_click(
                     cx.listener(move |this, _: &ClickEvent, _, cx| {
                         let mut accounts = Accounts::load();
-                        if accounts
+                        let done = accounts
                             .remove_offline(&forget, &horizon_launcher::skins::dir())
-                            .is_ok()
-                            && accounts.save().is_ok()
-                        {
-                            this.accounts = accounts;
+                            .and_then(|()| accounts.save());
+                        match done {
+                            Ok(()) => {
+                                this.accounts = accounts;
+                                if this.renaming_offline.as_deref() == Some(forget.as_str()) {
+                                    this.renaming_offline = None;
+                                    this.servers.text(Field::OfflineName).set(String::new());
+                                }
+                            }
+                            Err(e) => this.sign_in_state = Some(SignInState::Done(Err(e))),
                         }
                         cx.notify();
                     }),
@@ -261,19 +292,37 @@ impl Launcher {
             ));
         }
         n += 1;
+        let editing = self.renaming_offline.is_some();
         let add = div()
             .flex()
             .items_center()
             .gap(px(8.))
             .child(self.field(Field::OfflineName, tr("A name, 3 to 16 letters"), 220., cx))
             .child(
-                button("offline-add", "Add", Kind::Secondary, &t).on_click(cx.listener(
+                button(
+                    if editing {
+                        "offline-save-name"
+                    } else {
+                        "offline-add"
+                    },
+                    if editing { "Save" } else { "Add" },
+                    Kind::Secondary,
+                    &t,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.add_offline_name();
+                    cx.notify();
+                })),
+            )
+            .children(editing.then(|| {
+                button("offline-cancel-rename", "Cancel", Kind::Ghost, &t).on_click(cx.listener(
                     |this, _: &ClickEvent, _, cx| {
-                        this.add_offline_name();
+                        this.renaming_offline = None;
+                        this.servers.text(Field::OfflineName).set(String::new());
                         cx.notify();
                     },
-                )),
-            );
+                ))
+            }));
         rows = rows.child(index_row(
             n,
             tr("Offline name"),

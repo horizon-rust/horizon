@@ -424,10 +424,18 @@ The launcher starts the game only while a Microsoft account that owns Minecraft:
 signed in, as other launchers do: without one, Play (Home, instances, `horizon-launcher play`, the
 MCP's `play`) says "Sign in with a Microsoft account that owns Minecraft: Java Edition to play"
 and starts nothing. Settings → Accounts signs in: the launcher shows a code, you enter it at
-microsoft.com/link, and the launcher checks that the account owns the game. It asks again at every
-Play, with the token renewal; with no network the last answer stands, and a "doesn't own" blocks
-at once. The account also plays online-mode servers under your own name and skin; offline names
-play LAN and offline-mode servers beside it. The game binary started directly (`horizon-client`,
+microsoft.com/link, and the launcher checks that the account owns the game. When playing as that
+Microsoft account, it asks again at every Play, with the token renewal; with no network the last
+answer stands, and a "doesn't own" blocks at once. Choose an offline profile from the account chip
+to launch without contacting Microsoft, Xbox Live or Minecraft services: this requires a prior
+successful ownership check kept in the system keychain. Offline profiles are local names, not
+Microsoft identities; Settings → Accounts lets you add, rename, customize and forget them. Prepare
+the selected Horizon version while online first. Offline play never downloads missing game files.
+It keeps single-player worlds available; online-mode servers and Microsoft-dependent services
+require an authenticated account and internet. Local LAN and offline-mode servers work only when
+their own network and authentication settings permit them. The account also plays online-mode
+servers under your own name and skin; offline names play LAN and offline-mode servers beside it.
+The game binary started directly (`horizon-client`,
 `horizon-ctl launch`), the harnesses and the servers don't go through this check. Tokens live in the system keychain (Keychain,
 Credential Manager, or the Secret Service on Linux), never in a file, a log or the command line;
 `accounts.json` in the data folder keeps only names and UUIDs. Without a keychain you stay signed
