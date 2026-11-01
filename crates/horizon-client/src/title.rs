@@ -458,15 +458,17 @@ pub(crate) struct Button {
     enabled: bool,
     id: u8,
     icon: Option<(&'static str, f32)>,
-    /// `SpriteIconButton.TextAndIcon`: the icon at the right end, the text centred.
+    /// `SpriteIconButton.TextAndIcon`: the icon at the right end, the text
+    /// centred, kept left of it.
     trailing: Option<(&'static str, f32)>,
 }
 impl Button {
     /// `AbstractButton.extractDefaultLabel` (`SpriteIconButton.TextAndIcon`
     /// when `trailing` is set, which keeps the icon's room clear): a label that
-    /// fits is centred in the button; a wider one is clipped to the button and
-    /// scrolls with the clock (`now_ms`) as `ActiveTextCollector.defaultScrollingHelper`
-    /// does, instead of spilling over the neighbouring buttons.
+    /// fits is centred on the button's middle, moved left as far as it must to
+    /// stay clear of the icon; a wider one is clipped and scrolls with the
+    /// clock (`now_ms`) as `ActiveTextCollector.defaultScrollingHelper` does,
+    /// instead of spilling over the neighbouring buttons.
     fn draw_label(&self, atlas: &HudAtlas, batch: &mut HudBatch, color: u32, now_ms: i64) {
         let left = self.x + 2.0;
         let right = match self.trailing {
@@ -488,15 +490,19 @@ impl Button {
             );
             return;
         }
-        let tw = HudBatch::text_width(atlas, &self.label);
-        batch.text(
-            atlas,
-            &self.label,
-            self.x + (self.w / 2.0).floor() - (tw.ceil() / 2.0).floor(),
-            self.y + 6.0,
-            color,
-            true,
-        );
+        // `defaultScrollingHelper`'s centred branch: `Mth.clamp(centerX, left +
+        // lineWidth / 2, right - lineWidth / 2)`, `centerX = x + width / 2`
+        // (TextAndIcon passes it; `acceptScrollingWithDefaultCenter`'s
+        // `(left + right) / 2` is the same for a plain button). Only a label
+        // beside an icon is ever moved: in a plain button the clamp is a no-op.
+        let half = (HudBatch::text_width(atlas, &self.label).ceil() / 2.0).floor();
+        let center = self.x + (self.w / 2.0).floor();
+        let center = if center < left + half {
+            left + half
+        } else {
+            center.min(right - half)
+        };
+        batch.text(atlas, &self.label, center - half, self.y + 6.0, color, true);
     }
 }
 /// Java String.hashCode for text seeds (WorldOptions.parseSeed).
@@ -4678,5 +4684,50 @@ mod button_label_tests {
                 assert!((32.0..=30.0 + 150.0 - 16.0 - 4.0).contains(&x), "{x}");
             }
         }
+    }
+
+    /// A label that fits beside the icon but would reach under it if centred
+    /// on the button (`Settings sa Aksesibilidad...` in `fil_ph`, 128 px of
+    /// the 129 a 150 px button leaves beside a 15 px icon) is moved left until
+    /// it ends where the icon's room begins (`Mth.clamp` in
+    /// `defaultScrollingHelper`), and does not scroll. A plain button's label
+    /// of the same width stays centred.
+    #[test]
+    fn a_label_that_fits_beside_an_icon_is_moved_clear_of_it() {
+        let atlas = atlas();
+        // Beside a 15 px icon: `left = x + 2`, `right = x + 131`, `centerX = x + 75`.
+        let (left, right, center) = (32, 30 + 131, 30 + 75);
+        // The widest label that fits (`width <= right - left`), so that
+        // `right - width / 2 < centerX` by as much as it can be.
+        let text = (1..60)
+            .map(label)
+            .rfind(|t| {
+                let w = width(&atlas, t);
+                w <= right - left && right - w / 2 < center
+            })
+            .expect("a label in the clamped range");
+        let half = width(&atlas, &text) / 2;
+        let drawn_from = |from: i32| {
+            let mut batch = HudBatch::new([640, 480]);
+            batch.text(&atlas, &text, from as f32, 46.0, u32::MAX, true);
+            batch
+                .vertices
+                .iter()
+                .filter(|v| v.text == 1)
+                .map(|v| v.pos[0])
+                .collect::<Vec<_>>()
+        };
+        let b = button(&text, 150.0, Some(("icon/language", 15.0)));
+        // Vanilla: `textX = right - width / 2`, drawn from `textX - width / 2`.
+        assert_eq!(
+            label_xs(&atlas, &b, 0),
+            drawn_from(right - half - half),
+            "{text}"
+        );
+        for now_ms in [700, 1500, 31_337] {
+            assert_eq!(label_xs(&atlas, &b, now_ms), label_xs(&atlas, &b, 0));
+        }
+        let plain = button(&text, 150.0, None);
+        assert_eq!(label_xs(&atlas, &plain, 0), drawn_from(center - half));
     }
 }

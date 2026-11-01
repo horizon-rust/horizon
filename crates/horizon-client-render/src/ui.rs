@@ -321,7 +321,9 @@ fn centered_left(x: f32, w: f32, width: f32) -> f32 {
     x + (w / 2.0).floor() - (width / 2.0).floor()
 }
 
-/// Centered text with a shadow, scrolled when wider than `w` (AbstractWidget.renderScrollingString).
+/// Centered text with a shadow (a screen title, a line of text); text wider
+/// than `w` is cut by characters. A widget's label that may be wider than the
+/// widget goes through [`widget_label`] instead, which scrolls it as vanilla does.
 pub fn centered_text(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -357,10 +359,10 @@ pub fn label_overflows(atlas: &HudAtlas, text: &Text, avail: f32) -> bool {
 }
 /// Draws what `screen_draw`'s scrolling helpers pushed into `draws` (one
 /// scissored text, or one centred text) in `color` (an ABGR as `rgba` makes
-/// it, which `Draw::Text` has no room for). The scissor is applied to the
-/// text's own quads (`HudBatch::clip_since`), so a list that clips the whole
-/// screen's quads afterwards (Options, Multiplayer, ...) intersects with it,
-/// which `screen_draw::paint` does not do.
+/// it, which `Draw::Text` has no room for). The scissor cuts the text's own
+/// quads (the batch's `clip_since`), so a list that clips its rows' quads
+/// afterwards (Options, Key Binds, Game Rules, ...) intersects with it, as
+/// vanilla's scissor stack does and `screen_draw::paint` does not.
 fn paint_scrolled(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -416,8 +418,8 @@ pub fn scrolling_label(
     paint_scrolled(batch, atlas, &draws, color);
 }
 /// `AbstractWidget.extractScrollingStringOverContents` for the widget at
-/// `x, y, w, h` with the given `margin` (2 for buttons and sliders, 1 for
-/// tabs): a label that fits is centred as [`centered_text`] does, with its
+/// `x, y, w, h` with the given `margin` (2 for buttons and sliders): a
+/// label that fits is centred as [`centered_text`] does, with its
 /// top at `fit_y`; a wider one scrolls with the clock
 /// (`screen_draw::scrolling_string_over_contents`).
 #[allow(clippy::too_many_arguments)]
@@ -450,8 +452,8 @@ pub fn widget_label(
     );
     paint_scrolled(batch, atlas, &draws, color);
 }
-/// Button (`AbstractButton.extractDefaultSprite` and `AbstractButton.extractDefaultLabel`):
-/// nine-slice sprite plus the label, centred, or scrolling when wider than the button.
+/// Button: nine-slice sprite plus the label, centred, or scrolling when wider
+/// than the button ([`button_as_at`] on the clock of [`crate::hud_overlays::now_ms`]).
 pub fn button(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -476,8 +478,8 @@ pub fn button(
         crate::hud_overlays::now_ms(),
     );
 }
-/// [`button`] at the time `now_ms` (`Util.getMillis`), which moves a label
-/// wider than the button.
+/// [`button`] at the time `now_ms` (the clock a label wider than the button
+/// scrolls with).
 #[allow(clippy::too_many_arguments)]
 pub fn button_at(
     batch: &mut HudBatch,
@@ -505,7 +507,7 @@ pub fn button_at(
         |rect| crate::widgets::Narratable::button(label.plain(), rect, active),
     );
 }
-/// A [`button`] (`CycleButton.extractContents` and the like) that vanilla narrates as another widget (a `CycleButton`, a
+/// A [`button`] that vanilla narrates as another widget (a `CycleButton`, a
 /// `LockIconButton`): `narration` builds what it records from its rectangle,
 /// and only while the narrator records.
 #[allow(clippy::too_many_arguments)]
@@ -535,7 +537,9 @@ pub fn button_as(
         narration,
     );
 }
-/// [`button_as`] at the time `now_ms`.
+/// `AbstractButton.extractDefaultSprite` and `AbstractButton.extractDefaultLabel`
+/// (`Button.extractContents`, `CycleButton.extractContents`): [`button_as`] at
+/// the time `now_ms`, which scrolls a label wider than the button.
 #[allow(clippy::too_many_arguments)]
 pub fn button_as_at(
     batch: &mut HudBatch,
@@ -596,8 +600,9 @@ pub fn slider(
     );
 }
 
-/// `AbstractSliderButton.extractWidgetRenderState`: track, 8px handle at `value` (0..1),
-/// with support for keyboard focus and `canChangeValue`.
+/// Slider: track, 8px handle at `value` (0..1) and the label, with support for
+/// keyboard focus and `canChangeValue` ([`slider_ext_at`] on the clock of
+/// [`crate::hud_overlays::now_ms`]).
 pub fn slider_ext(
     batch: &mut HudBatch,
     atlas: &HudAtlas,
@@ -628,7 +633,8 @@ pub fn slider_ext(
         crate::hud_overlays::now_ms(),
     );
 }
-/// [`slider_ext`] at the time `now_ms`, which moves a label wider than the slider.
+/// `AbstractSliderButton.extractWidgetRenderState`: [`slider_ext`] at the time
+/// `now_ms`, which scrolls a label wider than the slider over the handle.
 #[allow(clippy::too_many_arguments)]
 pub fn slider_ext_at(
     batch: &mut HudBatch,
@@ -2204,20 +2210,23 @@ mod scroll_tests {
         }
     }
 
-    /// A tab's margin is 1: `MenuTabBar.MenuTabButton.renderLabel`.
+    /// A tab's label box (`MenuTabBar.MenuTabButton.renderLabel`, as
+    /// Create World draws it): margin 1, and on an unselected tab from 3 px
+    /// below the tab's top to its bottom.
     #[test]
     fn a_tab_label_wider_than_the_tab_scrolls_inside_margin_1() {
         let atlas = atlas();
         let wide = wide_label(&atlas);
         let draw = |now_ms| {
             let mut batch = HudBatch::new([640, 480]);
-            widget_label(
+            scrolling_label(
                 &mut batch,
                 &atlas,
                 &wide,
-                (10.0, 0.0, 124.0, 24.0),
-                1.0,
-                10.0,
+                10.0 + 1.0,
+                10.0 + 124.0 - 1.0,
+                3.0,
+                24.0,
                 u32::MAX,
                 now_ms,
             );
@@ -2225,7 +2234,10 @@ mod scroll_tests {
         };
         assert!(width(&atlas, &wide) > 122);
         for now_ms in (0..40_000).step_by(500) {
-            assert_inside(&draw(now_ms), 10.0, 124.0, 1.0);
+            let batch = draw(now_ms);
+            assert_inside(&batch, 10.0, 124.0, 1.0);
+            let mut text = batch.vertices.iter().filter(|v| v.text == 1);
+            assert!(text.all(|v| (3.0..=24.0).contains(&v.pos[1])));
         }
         assert!(pictures(draw) > 3);
     }
