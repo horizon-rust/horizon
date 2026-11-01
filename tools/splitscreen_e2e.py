@@ -367,7 +367,7 @@ def scenario_toggle():
 
 def scenario_setup():
     print('setup: preview, Revert, Apply, Done, and solo return while the page stays open')
-    g = Game(2)
+    g = Game(2, saved_split=True)
     def labels():
         return [w['label'] for w in g.ctl(1, 'ui')['widgets']]
     def enabled(label):
@@ -426,7 +426,7 @@ def scenario_setup():
 
 def scenario_setup_leave():
     print('setup_leave: a middle player leaving invalidates the draft instead of moving the wrong seat')
-    g = Game(3)
+    g = Game(3, saved_split=True)
     try:
         g.wait(lambda: g.ctl(3, 'state').get('player') is not None, 'P3 playing')
         g.ctl(1, 'options', 'horizon')

@@ -271,10 +271,15 @@ impl Game<'_> {
                 tooltip = Some(Text::translate("menu.custom_options.tooltip", &[]));
             }
         }
-        for (i, (x, y, sprite)) in
-            pause_icons(w, h, links, additions.is_some(), self.options.split_guest)
-                .into_iter()
-                .enumerate()
+        for (i, (x, y, sprite)) in pause_icons(
+            w,
+            h,
+            links,
+            additions.is_some(),
+            self.options.split_guest || self.split_hud.menu,
+        )
+        .into_iter()
+        .enumerate()
         {
             let active = icon_active(i, friends);
             let is_focused = (self.pause_focus == Some(10) && i == FRIENDS_ICON)
