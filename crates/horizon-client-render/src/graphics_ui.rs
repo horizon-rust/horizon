@@ -26,6 +26,7 @@ pub enum H {
     LodDistance,
     FarDetail,
     CaveCulling,
+    FarCulling,
     EntityCulling,
     ChunkUpdates,
     UploadBudget,
@@ -190,6 +191,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 H::CaveCulling,
                 Saves,
                 "Skips terrain hidden behind closed sections. Off costs a lot.",
+            ),
+            h(
+                H::FarCulling,
+                Saves,
+                "Skips far terrain hidden behind hills. Vulkan and Metal only.",
             ),
             h(
                 H::EntityCulling,
@@ -509,6 +515,7 @@ impl H {
             },
             H::FarDetail => labelled("Far Detail", g.far_detail.label()),
             H::CaveCulling => labelled("Cave Culling", on_off(g.cave_culling)),
+            H::FarCulling => labelled("Far Terrain Culling", on_off(g.far_cull)),
             H::EntityCulling => labelled("Entity Culling", on_off(g.entity_culling)),
             H::ChunkUpdates => match g.chunk_updates {
                 0 => labelled("Chunk Updates", "Unlimited"),
@@ -641,6 +648,7 @@ impl H {
                 g.far_detail = step(&[FarDetail::Full, FarDetail::Reduced], g.far_detail, back)
             }
             H::CaveCulling => g.cave_culling = !g.cave_culling,
+            H::FarCulling => g.far_cull = !g.far_cull,
             H::EntityCulling => g.entity_culling = !g.entity_culling,
             H::Sky => g.sky = !g.sky,
             H::Fog => g.fog = !g.fog,
@@ -728,6 +736,7 @@ impl Item {
         let g = &s.horizon;
         Some(match self {
             Item::Horizon(H::CaveCulling) => g.cave_culling,
+            Item::Horizon(H::FarCulling) => g.far_cull,
             Item::Horizon(H::EntityCulling) => g.entity_culling,
             Item::Horizon(H::Sky) => g.sky,
             Item::Horizon(H::Fog) => g.fog,
@@ -797,6 +806,7 @@ impl Item {
                     | H::Workers
                     | H::BatteryMode
                     | H::ShadowCache
+                    | H::FarCulling
                     | H::GraphicsApi
             ) | Item::Vanilla(
                 Opt::GuiScale

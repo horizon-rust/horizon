@@ -192,6 +192,14 @@ impl Tile {
     pub fn meshes_mut(&mut self) -> impl Iterator<Item = &mut SectionGpu> {
         std::iter::once(&mut self.mesh).chain(self.previous.as_mut().map(|(mesh, _)| mesh))
     }
+    /// Its box relative to its origin, for occlusion culling by depth
+    /// (`Cull::tile_drawn`); none while a stand-in mesh is drawn, whose extent
+    /// the box may not hold.
+    pub fn cull_bounds(&self) -> Option<[Vec3; 2]> {
+        self.previous
+            .is_none()
+            .then_some([self.bounds.min, self.bounds.max])
+    }
     pub fn visible(
         &self,
         key: TileKey,

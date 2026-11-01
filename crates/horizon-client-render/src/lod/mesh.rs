@@ -10,6 +10,8 @@ use horizon_core::position::BlockPos;
 use horizon_world::registry::BlockStateId;
 use std::collections::BTreeMap;
 
+mod quad;
+
 const CELLS: usize = 16;
 
 pub(super) struct EdgeColumn<'a> {
@@ -1127,8 +1129,7 @@ const MAX_STEPS: i32 = 32;
 fn emit(mesh: &mut SectionMesh, key: FaceKey, rect: Rect) {
     let pieces = ((rect.u1 - rect.u0) / MAX_FACE).ceil() * ((rect.v1 - rect.v0) / MAX_FACE).ceil();
     if pieces > MAX_PIECES {
-        let extent = (rect.u1 - rect.u0).max(rect.v1 - rect.v0);
-        emit_quad(mesh, key, rect, (MAX_FACE / extent).min(1.0));
+        emit_quad(mesh, key, rect, uv_scale(rect));
         return;
     }
     let mut u0 = rect.u0;
@@ -1143,33 +1144,59 @@ fn emit(mesh: &mut SectionMesh, key: FaceKey, rect: Rect) {
         u0 = u1;
     }
 }
+/// How far the UVs of a face too wide for them shrink: a face wider than
+/// `MAX_FACE` is one quad only when `emit` scaled it, and then by this.
+fn uv_scale(rect: Rect) -> f32 {
+    let extent = (rect.u1 - rect.u0).max(rect.v1 - rect.v0);
+    (MAX_FACE / extent).min(1.0)
+}
 /// `uv_scale` shrinks the UVs, in blocks from the face's corner, of a face
 /// too wide for them.
 fn emit_quad(mesh: &mut SectionMesh, key: FaceKey, rect: Rect, uv_scale: f32) {
     mesh.note_sprite_layer(key.layer);
-    let Rect { u0, v0, u1, v1 } = rect;
-    let p = f32::from_bits(key.plane);
-    let mut points = match key.direction {
-        Direction::Up | Direction::Down => [[u0, p, v1], [u1, p, v1], [u1, p, v0], [u0, p, v0]],
-        Direction::North | Direction::South => [[u0, v1, p], [u1, v1, p], [u1, v0, p], [u0, v0, p]],
-        Direction::West | Direction::East => [[p, v1, u1], [p, v1, u0], [p, v0, u0], [p, v0, u1]],
-    };
-    if matches!(
-        key.direction,
-        Direction::Down | Direction::South | Direction::East
-    ) {
-        points.reverse()
-    }
     let out = if key.translucent {
         &mut mesh.translucent
     } else {
         &mut mesh.solid
     };
+    out.extend(quad_vertices(
+        key.direction,
+        f32::from_bits(key.plane),
+        rect,
+        uv_scale,
+        key.layer,
+        key.color,
+        key.light,
+    ));
+}
+/// A merged face's four vertices: `rect` in the plane `p` of the face's
+/// `direction` (`quad::FarQuad` makes the same ones from its packed form).
+fn quad_vertices(
+    direction: Direction,
+    p: f32,
+    rect: Rect,
+    uv_scale: f32,
+    layer: u16,
+    color: u32,
+    light: u16,
+) -> [TerrainVertex; 4] {
+    let Rect { u0, v0, u1, v1 } = rect;
+    let mut points = match direction {
+        Direction::Up | Direction::Down => [[u0, p, v1], [u1, p, v1], [u1, p, v0], [u0, p, v0]],
+        Direction::North | Direction::South => [[u0, v1, p], [u1, v1, p], [u1, v0, p], [u0, v0, p]],
+        Direction::West | Direction::East => [[p, v1, u1], [p, v1, u0], [p, v0, u0], [p, v0, u1]],
+    };
+    if matches!(
+        direction,
+        Direction::Down | Direction::South | Direction::East
+    ) {
+        points.reverse()
+    }
     // Tile origins are integer multiples of a block, so local coordinates
     // retain the world texture phase without distant-coordinate precision loss;
     // a whole number of blocks off each UV keeps it (terrain.wgsl's `tile_uv`
     // repeats the sprite per block) and counts it from the face's corner.
-    let uvs = points.map(|pos| match key.direction {
+    let uvs = points.map(|pos| match direction {
         Direction::Up | Direction::Down => [pos[0], -pos[2]],
         Direction::North | Direction::South => [pos[0], -pos[1]],
         Direction::West | Direction::East => [pos[2], -pos[1]],
@@ -1180,18 +1207,18 @@ fn emit_quad(mesh: &mut SectionMesh, key: FaceKey, rect: Rect, uv_scale: f32) {
             .fold(f32::INFINITY, f32::min)
             .floor()
     });
-    out.extend(points.into_iter().zip(uvs).map(|(pos, uv)| {
+    std::array::from_fn(|i| {
         TerrainVertex::tiled(
-            pos,
+            points[i],
             [
-                (uv[0] - corner[0]) * uv_scale,
-                (uv[1] - corner[1]) * uv_scale,
+                (uvs[i][0] - corner[0]) * uv_scale,
+                (uvs[i][1] - corner[1]) * uv_scale,
             ],
-            key.layer,
-            key.color,
-            key.light,
+            layer,
+            color,
+            light,
         )
-    }));
+    })
 }
 
 #[cfg(test)]
