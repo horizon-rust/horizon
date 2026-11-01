@@ -1,5 +1,5 @@
 //! Startup shared by the gameplay library and its executable.
-use crate::{crash, game, logging};
+use crate::{crash, game, logging, ram_limit};
 
 /// Start the game. The executable supplies the allocator and retains the mod API marker.
 pub fn main() {
@@ -43,6 +43,7 @@ pub fn main() {
         // The log's first line names the build, so a bug report that carries the log says which one it was.
         log::info!("Horizon {}", crash::version());
         crash::install(home.clone(), side);
+        ram_limit::start(&home, side);
     }
     raise_open_file_limit();
     if let Err(error) = game::run() {

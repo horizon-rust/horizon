@@ -1324,6 +1324,7 @@ dependencies = [
  "horizon-items",
  "horizon-mods",
  "horizon-narrator",
+ "horizon-optifine",
  "horizon-protocol",
  "horizon-server-files",
  "horizon-shader-api",
@@ -1451,6 +1452,7 @@ dependencies = [
  "horizon-hdr",
  "horizon-items",
  "horizon-narrator",
+ "horizon-optifine",
  "horizon-protocol",
  "horizon-shader-api",
  "horizon-shaders",
@@ -1572,6 +1574,7 @@ name = "horizon-optifine"
 version = "0.1.0"
 dependencies = [
  "horizon-bench",
+ "log",
  "regex",
 ]
 
