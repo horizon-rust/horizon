@@ -42,6 +42,11 @@ enum Target {
     ArmorStand(usize),
     /// Primed TNT (`PrimedTnt`): slime piston bounce (#4550).
     Tnt(usize),
+    /// Every other entity `getEntities` returns is pushed too: only
+    /// `PushReaction.IGNORE_ENTITY` (a marker armor stand) is spared.
+    Falling(usize),
+    Orb(usize),
+    Rocket(usize),
 }
 
 /// `Entity.getStepHeight` of each body, read before the push.
@@ -364,6 +369,9 @@ impl Game<'_> {
         targets.extend((0..self.carts.len()).map(Target::Cart));
         targets.extend((0..self.armor_stands.len()).map(Target::ArmorStand));
         targets.extend((0..self.tnts.len()).map(Target::Tnt));
+        targets.extend((0..self.falling.len()).map(Target::Falling));
+        targets.extend((0..self.orbs.len()).map(Target::Orb));
+        targets.extend((0..self.rockets.len()).map(Target::Rocket));
         targets
     }
 
@@ -492,6 +500,36 @@ impl Game<'_> {
                     supported: false,
                 })
             }
+            Target::Falling(i) => {
+                let entity = &self.falling[i];
+                Some(Body {
+                    bounds: horizon_client::falling_block::bounds(entity.position),
+                    position: entity.position,
+                    on_ground: false,
+                    step_height: 0.0,
+                    supported: false,
+                })
+            }
+            Target::Orb(i) => {
+                let entity = &self.orbs[i];
+                Some(Body {
+                    bounds: entity.bounds(),
+                    position: entity.position,
+                    on_ground: entity.on_ground,
+                    step_height: 0.0,
+                    supported: false,
+                })
+            }
+            Target::Rocket(i) => {
+                let entity = &self.rockets[i];
+                Some(Body {
+                    bounds: entity.bounds(),
+                    position: entity.position,
+                    on_ground: false,
+                    step_height: 0.0,
+                    supported: false,
+                })
+            }
         }
     }
 
@@ -613,6 +651,19 @@ impl Game<'_> {
                 self.armor_stands[i].position = self.armor_stands[i].position.add_vector(movement)
             }
             Target::Tnt(i) => self.tnts[i].position = self.tnts[i].position.add_vector(movement),
+            Target::Falling(i) => {
+                self.falling[i].position = self.falling[i].position.add_vector(movement)
+            }
+            Target::Orb(i) => {
+                let orb = &mut self.orbs[i];
+                orb.position = orb.position.add_vector(movement);
+                if movement.y != 0.0 {
+                    orb.on_ground = movement.y < 0.0;
+                }
+            }
+            Target::Rocket(i) => {
+                self.rockets[i].position = self.rockets[i].position.add_vector(movement)
+            }
         }
     }
 
@@ -657,6 +708,19 @@ impl Game<'_> {
                 // Leave the ground so the next tick does not apply the
                 // on-ground Y * -0.5 friction that cancels the launch.
                 self.tnts[i].on_ground = false;
+            }
+            Target::Falling(i) => {
+                self.falling[i].velocity =
+                    piston_push::bounce_velocity(movement, self.falling[i].velocity)
+            }
+            Target::Orb(i) => {
+                self.orbs[i].velocity =
+                    piston_push::bounce_velocity(movement, self.orbs[i].velocity);
+                self.orbs[i].on_ground = false;
+            }
+            Target::Rocket(i) => {
+                self.rockets[i].velocity =
+                    piston_push::bounce_velocity(movement, self.rockets[i].velocity)
             }
         }
     }
