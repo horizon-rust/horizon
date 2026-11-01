@@ -82,7 +82,10 @@ impl Game<'_> {
 
     /// One box's push, a body at a time. The move resolves as a piston's does
     /// (`Entity.move` stops at the blocks and the world border), without a
-    /// piston's per-tick travel limit or its noclip.
+    /// piston's per-tick travel limit or its noclip, and — unlike a piston's
+    /// push — with no step height and no ground flag: `Entity.move` has no
+    /// step logic, so a lid rising into a body lifts it the swept amount each
+    /// tick and a body already inside the lid still moves out of it.
     fn push_for_shulker(&mut self, pos: [i32; 3], facing: u8, lid: [f64; 6], steps: &StepHeights) {
         let direction = Direction::ALL[usize::from(facing) % Direction::ALL.len()];
         let [x, y, z] = direction.normal();
@@ -113,8 +116,9 @@ impl Game<'_> {
                 [body.position.x, body.position.z],
                 body.bounds,
                 movement,
-                body.step_height,
-                body.on_ground,
+                // `Entity.move(MoverType.SHULKER_BOX, ...)`: no step, no ground.
+                0.0,
+                false,
             ) else {
                 continue;
             };
