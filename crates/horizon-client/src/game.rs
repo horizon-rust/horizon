@@ -14991,6 +14991,11 @@ impl Game<'_> {
         });
     }
     fn render(&mut self) -> Result<bool> {
+        // The window's GPU holds the atlas: its copy in memory is kept
+        // compressed (a no-op once it is).
+        if self.renderer.is_some() {
+            self.gui.atlas.pack_pixels();
+        }
         // Before any text of this frame: a full glyph region starts over.
         self.gui.atlas.font.begin_frame();
         self.glint_frame = self.capture_glint_frame();
@@ -19684,6 +19689,7 @@ fn build_renderer(
     atlas.font.reset_cache();
     // Made here when the worker did not: the renderer's own fallback has no LabPBR maps.
     let prepared = Some(prepared.unwrap_or_else(|| prepare_renderer_textures(pack)));
+    let atlas_pixels = atlas.pixels();
     let mut renderer = pollster::block_on(Renderer::new(
         window,
         offscreen,
@@ -19693,7 +19699,7 @@ fn build_renderer(
         assets.texture_layers,
         &assets.sprite_mips,
         &assets.animations,
-        (&atlas.pixels, atlas.width, atlas.height),
+        (&atlas_pixels, atlas.width, atlas.height),
         (&atlas.glint.0, atlas.glint.1, atlas.glint.2),
         (
             &atlas.glint_armor.0,
