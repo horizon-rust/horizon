@@ -286,7 +286,30 @@ impl Launcher {
     /// Sets the filters and searches again.
     fn mods_filter(&mut self, change: impl FnOnce(&mut Filters)) {
         change(&mut self.mods.browse.filters);
-        self.mods_search(0);
+        self.mods_search_keeping(0, true);
+    }
+
+    /// The orders the current source can sort by, "Best match" first.
+    fn mods_sorts(&self) -> Vec<(Option<Sort>, &'static str)> {
+        let own =
+            self.mods.source == SourceId::Horizon && self.mods.java_for(self.mods.kind).is_none();
+        let all: &[Sort] = if own {
+            &browser::horizon::SORTS
+        } else {
+            &Sort::ALL
+        };
+        std::iter::once((None, "Best match"))
+            .chain(all.iter().map(|s| (Some(*s), s.label())))
+            .collect()
+    }
+
+    /// The registry's bar: only the sort, since it has no categories, loaders or versions to filter.
+    pub(super) fn mods_sort_bar(&mut self, cx: &mut Context<Self>) -> Div {
+        let sorts = self.mods_sorts();
+        let current = self.mods.browse.filters.sort;
+        div()
+            .flex()
+            .child(self.mods_sort_dropdown(&sorts, current, cx))
     }
 
     /// The "Sort by" dropdown: the chosen order on a button, the choices in a list below it.
@@ -297,9 +320,11 @@ impl Launcher {
         cx: &mut Context<Self>,
     ) -> Div {
         let t = self.theme;
+        // A sort the source can't do (Follows, picked on Modrinth) reads as the default.
         let name = sorts
             .iter()
             .find(|(value, _)| *value == current)
+            .or(sorts.first())
             .map_or("", |(_, label)| *label);
         let mut wrap = div().relative().flex_none().child(
             keyboard(div().id("mods-sort"), &t)
@@ -307,8 +332,10 @@ impl Launcher {
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .h(px(theme::CONTROL))
+                .h(px(theme::CONTROL_LARGE))
                 .px(px(14.))
+                // The button's bottom lip isn't part of its face: centre the text on the face.
+                .pb(px(theme::LIP))
                 .border_2()
                 .border_color(t.outline)
                 .bg(t.button)
@@ -333,7 +360,7 @@ impl Launcher {
             let mut menu = div()
                 .id("mods-sort-menu")
                 .absolute()
-                .top(px(theme::CONTROL + 4.))
+                .top(px(theme::CONTROL_LARGE + 4.))
                 .left_0()
                 .w(px(220.))
                 .p(px(6.))
@@ -357,9 +384,13 @@ impl Launcher {
                         .cursor_pointer()
                         .hover(move |s| s.bg(t.plate_soft))
                         .child(text(theme::LABEL).text_color(t.ink).child(tr(label)))
-                        .when(value == current, |d| {
-                            d.child(div().size(px(6.)).rounded_full().bg(t.accent))
-                        })
+                        .when(
+                            value == current
+                                || (current.is_some()
+                                    && value.is_none()
+                                    && !sorts.iter().any(|(v, _)| *v == current)),
+                            |d| d.child(div().size(px(6.)).rounded_full().bg(t.accent)),
+                        )
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                             this.mods.browse.sort_menu = false;
                             this.mods_filter(|f| f.sort = value);
@@ -376,9 +407,7 @@ impl Launcher {
     pub(super) fn mods_filters(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let f = self.mods.browse.filters.clone();
-        let sorts: Vec<(Option<Sort>, &'static str)> = std::iter::once((None, "Best match"))
-            .chain(Sort::ALL.iter().map(|s| (Some(*s), s.label())))
-            .collect();
+        let sorts = self.mods_sorts();
         let sort = self.mods_sort_dropdown(&sorts, f.sort, cx);
         let shown = self.mods.browse.show_filters;
         let active = f.categories.len()
