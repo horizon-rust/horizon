@@ -2295,6 +2295,44 @@ fn dispenser_buckets_pick_up_and_empty() {
             .bucket_empty(&mut w.level, &mut w.ticks, at, content, sound, true, false)
     );
     assert_eq!(w.prop(at, "waterlogged"), "false");
+    // A click on the slab pours beside it, where Shift no longer matters.
+    let above = BlockPos::new(at.x, at.y + 1, at.z);
+    assert_eq!(
+        w.b().bucket_empty_beside(
+            &mut w.level,
+            &mut w.ticks,
+            at,
+            above,
+            content,
+            sound,
+            true,
+            false
+        ),
+        Some(above)
+    );
+    assert_eq!(w.prop(at, "waterlogged"), "false");
+    assert_eq!(w.name(above), "water[level=0]");
+    // A double slab holds no water: the click fills the block beside it.
+    let air = w.b().air();
+    w.put(above, air);
+    let double = w.id("oak_slab", &[("type", "double")]);
+    w.put(at, double);
+    assert_eq!(
+        w.b().bucket_empty_beside(
+            &mut w.level,
+            &mut w.ticks,
+            at,
+            above,
+            content,
+            sound,
+            false,
+            false
+        ),
+        Some(above)
+    );
+    assert_eq!(w.prop(at, "type"), "double");
+    assert_eq!(w.name(above), "water[level=0]");
+    w.put(above, air);
     // Powder snow only goes into empty space.
     let air = w.b().air();
     w.put(at, air);

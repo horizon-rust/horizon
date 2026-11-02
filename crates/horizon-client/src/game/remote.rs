@@ -7652,18 +7652,26 @@ impl Game<'_> {
         };
         let target = self.bucket_target(content, &hit);
         let pos = horizon_core::position::BlockPos::new(target[0], target[1], target[2]);
+        let beside = horizon_core::position::BlockPos::new(
+            hit.pos[0] + hit.face[0],
+            hit.pos[1] + hit.face[1],
+            hit.pos[2] + hit.face[2],
+        );
         let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
         let creative = self.creative;
-        // A water bucket on a liquid container fills it server-side only.
+        // A water bucket on a liquid container fills it server-side only;
+        // a container that refuses passes it to the block beside, which
+        // this client changes itself.
         let clicked = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
-        let client_change =
-            !(content.is_water() && self.res.behaviours().is_liquid_container(clicked));
+        let container = content.is_water() && self.res.behaviours().is_liquid_container(clicked);
         self.with_level(|b, level, ticks| {
             let mut level = DryLevel::new(level);
-            let emptied =
-                b.bucket_empty(&mut level, ticks, pos, content, sound, sneaking, creative);
+            let emptied = b.bucket_empty_beside(
+                &mut level, ticks, pos, beside, content, sound, sneaking, creative,
+            );
+            let client_change = !(container && emptied == Some(pos));
             (
-                emptied,
+                emptied.is_some(),
                 client_change.then(|| level.changed.into_iter().collect()),
                 std::mem::take(&mut level.sounds),
             )
