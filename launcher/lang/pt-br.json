@@ -788,5 +788,14 @@
   "Export the server outside the launcher's managed folders.": "Exporte o servidor fora das pastas gerenciadas pelo launcher.",
   "{path} is not a folder to build into.": "{path} não é uma pasta para criação de build.",
   "Could not copy the build: {error}": "Não foi possível copiar o build: {error}",
-  "Could not move the build to {path}: {error}": "Não foi possível mover o build para {path}: {error}"
+  "Could not move the build to {path}: {error}": "Não foi possível mover o build para {path}: {error}",
+  "Build log": "Registro de build",
+  "Native build log": "Registro de build nativo",
+  "Copy log": "Copiar registro",
+  "Open full log": "Abrir o registro completo",
+  "Loading build log…": "Carregando o registro de build…",
+  "No native build log is available yet.": "Ainda não há um registro de build nativo disponível.",
+  "Could not read the build log: {error}": "Não foi possível ler o registro de build: {error}",
+  "Copied build log.": "Registro de build copiado.",
+  "Only the last {lines} lines are shown. Copy or open the full log for all details.": "Somente as últimas {lines} linhas são exibidas. Copie ou abra o registro completo para ver todos os detalhes."
 }

@@ -788,5 +788,14 @@
   "Export the server outside the launcher's managed folders.": "Eksportuj serwer poza foldery zarządzane przez launcher.",
   "{path} is not a folder to build into.": "{path} nie jest folderem do kompilacji.",
   "Could not copy the build: {error}": "Nie można skopiować kompilacji: {error}",
-  "Could not move the build to {path}: {error}": "Nie można przenieść kompilacji do {path}: {error}"
+  "Could not move the build to {path}: {error}": "Nie można przenieść kompilacji do {path}: {error}",
+  "Build log": "Dziennik kompilacji",
+  "Native build log": "Dziennik natywnej kompilacji",
+  "Copy log": "Skopiuj dziennik",
+  "Open full log": "Otwórz pełny dziennik",
+  "Loading build log…": "Wczytywanie dziennika kompilacji…",
+  "No native build log is available yet.": "Nie ma jeszcze dziennika natywnej kompilacji.",
+  "Could not read the build log: {error}": "Nie można odczytać dziennika kompilacji: {error}",
+  "Copied build log.": "Skopiowano dziennik kompilacji.",
+  "Only the last {lines} lines are shown. Copy or open the full log for all details.": "Pokazane są tylko ostatnie {lines} wierszy. Skopiuj lub otwórz pełny dziennik, aby zobaczyć wszystkie szczegóły."
 }

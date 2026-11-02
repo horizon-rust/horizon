@@ -788,5 +788,14 @@
   "Export the server outside the launcher's managed folders.": "ランチャーが管理するフォルダーの外にサーバーをエクスポートしてください。",
   "{path} is not a folder to build into.": "{path} はビルド先のフォルダーではありません。",
   "Could not copy the build: {error}": "ビルドをコピーできませんでした: {error}",
-  "Could not move the build to {path}: {error}": "ビルドを {path} に移動できませんでした: {error}"
+  "Could not move the build to {path}: {error}": "ビルドを {path} に移動できませんでした: {error}",
+  "Build log": "ビルドログ",
+  "Native build log": "ネイティブビルドログ",
+  "Copy log": "ログをコピー",
+  "Open full log": "完全なログを開く",
+  "Loading build log…": "ビルドログを読み込み中…",
+  "No native build log is available yet.": "ネイティブビルドログはまだありません。",
+  "Could not read the build log: {error}": "ビルドログを読み込めませんでした: {error}",
+  "Copied build log.": "ビルドログをコピーしました。",
+  "Only the last {lines} lines are shown. Copy or open the full log for all details.": "最後の {lines} 行のみ表示されています。すべての詳細は完全なログをコピーまたは開いてください。"
 }

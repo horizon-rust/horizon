@@ -788,5 +788,14 @@
   "Export the server outside the launcher's managed folders.": "Sunucuyu launcher tarafından yönetilen klasörlerin dışına aktarın.",
   "{path} is not a folder to build into.": "{path} derleme yapılacak klasör değil.",
   "Could not copy the build: {error}": "Build kopyalanamadı: {error}",
-  "Could not move the build to {path}: {error}": "Build {path} konumuna taşınamadı: {error}"
+  "Could not move the build to {path}: {error}": "Build {path} konumuna taşınamadı: {error}",
+  "Build log": "Derleme günlüğü",
+  "Native build log": "Yerel derleme günlüğü",
+  "Copy log": "Günlüğü kopyala",
+  "Open full log": "Tam günlüğü aç",
+  "Loading build log…": "Derleme günlüğü yükleniyor…",
+  "No native build log is available yet.": "Henüz bir yerel derleme günlüğü yok.",
+  "Could not read the build log: {error}": "Derleme günlüğü okunamadı: {error}",
+  "Copied build log.": "Derleme günlüğü kopyalandı.",
+  "Only the last {lines} lines are shown. Copy or open the full log for all details.": "Yalnızca son {lines} satır gösteriliyor. Tüm ayrıntılar için tam günlüğü kopyalayın veya açın."
 }
