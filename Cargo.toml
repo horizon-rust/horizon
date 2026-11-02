@@ -27,6 +27,7 @@ members = [
     "crates/horizon-bench",
     "crates/horizon-friends",
     "crates/horizon-relay",
+    "crates/horizon-gateway",
     "crates/horizon-mods",
     "crates/cargo-horizon-mod",
     "crates/horizon-port-pack",
