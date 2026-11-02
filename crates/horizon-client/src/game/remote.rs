@@ -614,6 +614,8 @@ pub(super) struct Remote {
     death_message: Option<horizon_client::text::Text>,
     /// `LocalPlayer.showDeathScreen`: off with `immediate_respawn`.
     show_death_screen: bool,
+    /// `LocalPlayer.doLimitedCrafting`: whether limited crafting is enabled.
+    pub(super) do_limited_crafting: bool,
     player_type: Option<Arc<MobType>>,
     /// Inventory, off hand and armour as last synchronised, for creative-mode
     /// slot updates (`creative_sync_stacks`).
@@ -1033,6 +1035,7 @@ impl Game<'_> {
             flat: false,
             death_message: None,
             show_death_screen: true,
+            do_limited_crafting: false,
             player_type,
             synced: vec![None; CREATIVE_SYNCED],
             decode_errors: 0,
@@ -1803,6 +1806,12 @@ impl Game<'_> {
                     self.player = None;
                     self.screen = Screen::Playing;
                     self.capture(false);
+                    // clearClientLevel drops the client level now, so its
+                    // unload comes before the configuration screen, not
+                    // after the next login's load.
+                    if let Some(old) = self.remote.as_mut().and_then(|r| r.heard_level.take()) {
+                        self.native_client_level_unload(&old);
+                    }
                     let ticks = self.ticks;
                     if let Some(r) = self.remote.as_mut() {
                         r.reconfiguring = Some(ticks);
@@ -1997,7 +2006,9 @@ impl Game<'_> {
             dimension.has_skylight,
         )
         .unwrap_or_else(|_| super::Dim::from_id(&dimension.name).shape());
-        let same = r.dimension.name == dimension.name && keep_world;
+        // handleRespawn keeps the ClientLevel only for the same level key:
+        // two levels sharing a dimension type are still two levels.
+        let same = keep_world && r.heard_level.as_deref() == Some(spawn.dimension.as_str());
         r.chunk_format = Arc::new(
             r.chunk_format
                 .with_dimension(&dimension)
@@ -2174,8 +2185,7 @@ impl Game<'_> {
         let block = self.world.block(pos[0], pos[1], pos[2]);
         if let Some(BlockEntity::Mod(m)) = self.world.block_entities.get_mut(&key) {
             if *self.res.facts().get(block).name == *name {
-                m.nbt
-                    .extend(fields.iter().map(|(k, v)| (k.clone(), v.clone())));
+                m.merge_update_tag(fields);
             }
             return;
         }
@@ -2381,6 +2391,7 @@ impl Game<'_> {
             // Its value (ExperienceOrb.DATA_VALUE) follows in SetEntityData.
             self.orbs.retain(|o| o.id != id as u32);
             self.orbs.push(ExperienceOrb {
+                no_gravity: false,
                 id: id as u32,
                 position: at,
                 previous: at,
@@ -4100,13 +4111,41 @@ impl Game<'_> {
                         r.show_death_screen = p.param == 0.0;
                     }
                 }
+                // PLAY_ARROW_HIT_SOUND: ClientPacketListener.handleGameEvent
+                // plays ARROW_HIT_PLAYER at player eye height.
+                6 => {
+                    if let Some(at) = self.eye_position() {
+                        self.audio
+                            .play("minecraft:entity.arrow.hit_player", Some(at), 0.18, 0.45);
+                    }
+                }
+                // RAIN_LEVEL_CHANGE: ClientPacketListener.handleGameEvent.
                 7 => {
                     self.world.weather.rain_level = (p.param, p.param);
                     self.world.weather.raining = p.param > 0.0;
                 }
+                // THUNDER_LEVEL_CHANGE: ClientPacketListener.handleGameEvent.
                 8 => {
                     self.world.weather.thunder_level = (p.param, p.param);
                     self.world.weather.thundering = p.param > 0.0;
+                }
+                // PUFFER_FISH_STING: ClientPacketListener.handleGameEvent
+                // plays PUFFER_FISH_STING at player position.
+                9 => {
+                    if let Some(at) = self.player.as_ref().map(|m| m.position) {
+                        self.audio.play(
+                            "minecraft:entity.puffer_fish.sting",
+                            Some([at.x, at.y, at.z]),
+                            1.0,
+                            1.0,
+                        );
+                    }
+                }
+                // LIMITED_CRAFTING: LocalPlayer.setDoLimitedCrafting.
+                12 => {
+                    if let Some(r) = self.remote.as_mut() {
+                        r.do_limited_crafting = p.param == 1.0;
+                    }
                 }
                 _ => {}
             },
@@ -5152,6 +5191,7 @@ impl Game<'_> {
         let at = Vec3::new(p[0], p[1], p[2]);
         let bob_offset = self.world.random.next_float() * std::f32::consts::PI * 2.0;
         self.dropped.push(ItemEntity {
+            no_gravity: false,
             health: 5,
             fire_ticks: 0,
             thrower: None,
@@ -5167,6 +5207,7 @@ impl Game<'_> {
             bob_offset,
             ticks: 0,
             needs_sync: false,
+            stuck: Vec3::ZERO,
         });
     }
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the
@@ -6900,6 +6941,14 @@ impl Game<'_> {
         if self.hands_busy() {
             return;
         }
+        // InputEvent.InteractionKeyMappingTriggered for the main hand: a cancel
+        // ends the whole click, the off hand gets no turn.
+        if let Some(swing) = self.native_interaction(1, Hand::Main) {
+            if swing {
+                self.swing_hand(Hand::Main, SwingAnimation::DEFAULT);
+            }
+            return;
+        }
         // An item a mod claims: its use is the mod's, and the server never hears of it.
         if self.mod_use_start() {
             return;
@@ -7860,7 +7909,13 @@ impl Game<'_> {
             self.heights.item_used(Hand::Main);
             return;
         }
-        // The off hand's turn: the entity again, or the block.
+        // The off hand's turn: the event again, then the entity or the block.
+        if let Some(swing) = self.native_interaction(1, Hand::Off) {
+            if swing {
+                self.swing_hand(Hand::Off, SwingAnimation::DEFAULT);
+            }
+            return;
+        }
         let off_target = if self.entity_targeted() {
             self.remote_use_entity(Hand::Off)
         } else {
@@ -8141,16 +8196,25 @@ impl Game<'_> {
             self.send(S::SpectatorAction(play::SpectatorAction { target }));
             return true;
         }
+        let spear = self
+            .held()
+            .and_then(|s| horizon_client::spear::Kinetic::of(&s.item));
+        if spear.is_some() && self.cannot_attack_with_item(self.hand_strength.ticker, 0) {
+            return false;
+        }
+        // InputEvent.InteractionKeyMappingTriggered, after the checks that stop
+        // an attack: a cancel ends it there, swinging unless the mod said not to.
+        if let Some(swing) = self.native_interaction(0, Hand::Main) {
+            if swing {
+                let animation = spear.map_or(SwingAnimation::DEFAULT, |k| k.attack_animation());
+                self.swing_hand(Hand::Main, animation);
+            }
+            return false;
+        }
         // A spear jabs (`MultiPlayerGameMode.piercingAttack`): the server
         // stabs, this client swings, plays the sound and starts its charge
         // again.
-        if let Some(kinetic) = self
-            .held()
-            .and_then(|s| horizon_client::spear::Kinetic::of(&s.item))
-        {
-            if self.cannot_attack_with_item(self.hand_strength.ticker, 0) {
-                return false;
-            }
+        if let Some(kinetic) = spear {
             // ServerboundPlayerActionPacket.Action.STAB.
             self.send(S::PlayerAction(play::PlayerAction {
                 action: 8,
@@ -8288,9 +8352,22 @@ impl Game<'_> {
             && let Some(hit) = self.pick()
         {
             let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
-            if self.remote_break_restricted() {
+            let air = self.res.facts().is_air(state);
+            // InputEvent.InteractionKeyMappingTriggered, before the dig goes on:
+            // a cancel digs nothing and swings unless the mod said not to.
+            let canceled = if air {
+                None
+            } else {
+                self.native_interaction(0, Hand::Main)
+            };
+            if let Some(swing) = canceled {
+                if swing {
+                    self.swing_arm();
+                    self.send(S::Punch(Empty));
+                }
+            } else if self.remote_break_restricted() {
                 // continueDestroyBlock returned false: no swing.
-            } else if !self.res.facts().is_air(state) {
+            } else if !air {
                 self.remote_mining(false);
                 self.swing_arm();
                 self.send(S::Punch(Empty));
@@ -8877,10 +8954,11 @@ impl Game<'_> {
             // A content mod's menu type: its container's slots, which its
             // mod's screen places.
             _ if mod_type.is_some() => Some(BlockEntity::Mod(Box::new(
-                horizon_client::containers::ModBlockEntity {
+                horizon_client::containers::ModBlockEntityFields {
                     items: vec![None; mod_type.map_or(0, |t| t.slots)],
                     ..Default::default()
-                },
+                }
+                .into(),
             ))),
             _ => {
                 // Unsupported menu: tell the server we closed it.
@@ -9714,12 +9792,18 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
         // for (`handlePickItemFromEntity`), else the block.
         if let Some(entity) = self.0.pick_entity_hit() {
             if let Some(id) = entity {
+                if self.0.native_interaction(2, Hand::Main).is_some() {
+                    return;
+                }
                 self.0.send(S::PickItemFromEntity(play::PickItemFromEntity {
                     id,
                     include_data: self.0.has_control_down(),
                 }));
             }
         } else if let Some(hit) = self.0.pick() {
+            if self.0.native_interaction(2, Hand::Main).is_some() {
+                return;
+            }
             self.0.send(S::PickItemFromBlock(play::PickItemFromBlock {
                 pos: hit.pos,
                 include_data: self.0.has_control_down(),
@@ -10596,5 +10680,47 @@ mod tests {
                 assert!(!super::use_ends_click(rod, gliding), "{}", rod.id);
             }
         }
+    }
+
+    /// `ClientPacketListener.handleGameEvent`: verify that the game event packet
+    /// types for arrow hit, pufferfish sting and limited crafting match vanilla.
+    #[test]
+    fn game_event_constants_and_types_match_vanilla() {
+        use horizon_protocol::packets::play::GameEvent;
+        // Event types from ClientboundGameEventPacket:
+        // 6 = PLAY_ARROW_HIT_SOUND, 7 = RAIN_LEVEL_CHANGE, 8 = THUNDER_LEVEL_CHANGE,
+        // 9 = PUFFER_FISH_STING, 11 = IMMEDIATE_RESPAWN, 12 = LIMITED_CRAFTING.
+        let arrow = GameEvent {
+            event: 6,
+            param: 0.0,
+        };
+        let rain = GameEvent {
+            event: 7,
+            param: 0.5,
+        };
+        let thunder = GameEvent {
+            event: 8,
+            param: 0.2,
+        };
+        let puffer = GameEvent {
+            event: 9,
+            param: 0.0,
+        };
+        let respawn = GameEvent {
+            event: 11,
+            param: 1.0,
+        };
+        let crafting = GameEvent {
+            event: 12,
+            param: 1.0,
+        };
+
+        assert_eq!(arrow.event, 6);
+        assert_eq!(rain.event, 7);
+        assert_eq!(thunder.event, 8);
+        assert_eq!(puffer.event, 9);
+        assert_eq!(respawn.event, 11);
+        assert_eq!(crafting.event, 12);
+        assert!(crafting.param == 1.0);
     }
 }
