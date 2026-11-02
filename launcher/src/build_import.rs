@@ -13,7 +13,7 @@ use crate::i18n::{tr, trf};
 use crate::native_mods::{self, Target};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::Read;
+use std::io::{Cursor, Read, Seek};
 use std::path::Path;
 
 const PREFIX: &str = "imported-";
@@ -62,7 +62,7 @@ fn official(version: &str) -> bool {
     backend::is_game_tag(version) || crate::nightly::date_of(version).is_some()
 }
 
-/// The installed version an import takes its game files from: `requested` (`--base`), else
+/// The installed version an import takes its game files from: `requested` (`--version`), else
 /// `selected` when Horizon published it, else the newest installed release or Nightly.
 fn base_for(
     installed: &[String],
@@ -119,30 +119,80 @@ fn not_a_game(file: &str) -> String {
 }
 
 /// The program at `path`: the file itself when it is named as the game is (`horizon-client`,
-/// "horizon-client (1).exe" as a browser saves a second copy), or from a zip (a GitHub Actions
-/// artifact), its one entry named as the game is on this platform (`CLIENT`), in any folder.
+/// "horizon-client (1).exe" as a browser saves a second copy), or from a zip or a .tar.gz, its
+/// entry named as the game is on this platform (`CLIENT`), in any folder. A GitHub Actions
+/// artifact is a zip around the release's own archive: one archive inside is looked into too.
 /// The launcher and horizon-ctl carry the mod API mark too: the name tells them apart.
 fn read_program(path: &Path, file: &str) -> Result<Vec<u8>, String> {
     let open = || fs::File::open(path).map_err(|e| format!("{file}: {e}"));
-    let Ok(mut zip) = zip::ZipArchive::new(open()?) else {
-        if !file.to_ascii_lowercase().starts_with("horizon-client") {
+    let lower = file.to_ascii_lowercase();
+    if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
+        return from_tar(open()?, file);
+    }
+    let Ok(zip) = zip::ZipArchive::new(open()?) else {
+        if !lower.starts_with("horizon-client") {
             return Err(not_a_game(file));
         }
         return read_at_most(open()?, file);
     };
+    from_zip(zip, file, true)
+}
+
+fn holds_no_game(file: &str) -> String {
+    trf(
+        "{file} holds no {program}.",
+        &[("file", file), ("program", CLIENT)],
+    )
+}
+
+/// The game in `zip`, else (`nested`) in the first zip or .tar.gz it holds.
+fn from_zip<R: Read + Seek>(
+    mut zip: zip::ZipArchive<R>,
+    file: &str,
+    nested: bool,
+) -> Result<Vec<u8>, String> {
+    let mut inner = None;
     for i in 0..zip.len() {
         let entry = zip.by_index(i).map_err(|e| format!("{file}: {e}"))?;
-        let named = entry
+        let name = entry
             .enclosed_name()
-            .is_some_and(|p| p.file_name() == Some(std::ffi::OsStr::new(CLIENT)));
-        if named && entry.is_file() {
+            .and_then(|p| Some(p.file_name()?.to_string_lossy().into_owned()))
+            .unwrap_or_default();
+        if !entry.is_file() {
+            continue;
+        }
+        if name == CLIENT {
+            return read_at_most(entry, file);
+        }
+        if nested && inner.is_none() && (name.ends_with(".zip") || name.ends_with(".tar.gz")) {
+            inner = Some((i, name));
+        }
+    }
+    let Some((i, name)) = inner else {
+        return Err(holds_no_game(file));
+    };
+    let entry = zip.by_index(i).map_err(|e| format!("{file}: {e}"))?;
+    let archive = read_at_most(entry, file)?;
+    if name.ends_with(".tar.gz") {
+        return from_tar(&archive[..], file);
+    }
+    let zip = zip::ZipArchive::new(Cursor::new(archive)).map_err(|e| format!("{name}: {e}"))?;
+    from_zip(zip, file, false)
+}
+
+/// The game in a .tar.gz (the Linux release's archive).
+fn from_tar(from: impl Read, file: &str) -> Result<Vec<u8>, String> {
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(from));
+    for entry in tar.entries().map_err(|e| format!("{file}: {e}"))? {
+        let entry = entry.map_err(|e| format!("{file}: {e}"))?;
+        let named = entry
+            .path()
+            .is_ok_and(|p| p.file_name() == Some(std::ffi::OsStr::new(CLIENT)));
+        if named && entry.header().entry_type().is_file() {
             return read_at_most(entry, file);
         }
     }
-    Err(trf(
-        "{file} holds no {program}.",
-        &[("file", file), ("program", CLIENT)],
-    ))
+    Err(holds_no_game(file))
 }
 
 /// All of `from`, refused past [`MAX_PROGRAM`] rather than cut off.
@@ -205,8 +255,10 @@ fn install_in(
     }
     let tag = format!("{PREFIX}{date}-{short}");
     let dir = versions.join(&tag);
-    let partial = versions.join(format!(".{tag}.partial"));
-    let _ = fs::remove_dir_all(&partial);
+    // This call's own: the window and the CLI may import the same program at once.
+    static IMPORTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = IMPORTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let partial = versions.join(format!(".{tag}.partial-{}-{n}", std::process::id()));
     let record = serde_json::json!({ "base": base, "file": file, "sha256": sha256 });
     let made = fs::create_dir_all(&partial)
         .map_err(|e| e.to_string())
@@ -214,7 +266,9 @@ fn install_in(
         .and_then(|()| finish(&partial, &dir, program, &record).map_err(|e| e.to_string()));
     if let Err(e) = made {
         let _ = fs::remove_dir_all(&partial);
-        let _ = fs::remove_dir_all(&dir);
+        if !dir.join(".installed").exists() {
+            let _ = fs::remove_dir_all(&dir);
+        }
         return Err(trf("Could not import the build: {error}", &[("error", &e)]));
     }
     Ok(tag)
@@ -235,6 +289,10 @@ fn finish(
         fs::set_permissions(partial.join(CLIENT), fs::Permissions::from_mode(0o755))?;
     }
     fs::write(partial.join(RECORD), record.to_string())?;
+    if dir.join(".installed").exists() {
+        // Imported meanwhile by another call: that copy stays.
+        return fs::remove_dir_all(partial);
+    }
     let _ = fs::remove_dir_all(dir);
     fs::rename(partial, dir)?;
     fs::write(dir.join(".installed"), "")
@@ -378,6 +436,60 @@ mod tests {
         let _ = fs::remove_dir_all(d);
     }
 
+    /// An Actions artifact: a zip around the release's own archive, a zip (Windows, macOS) or a
+    /// .tar.gz (Linux) with the game in its top folder.
+    #[test]
+    fn the_game_is_found_inside_an_actions_artifact() {
+        use std::io::Write;
+        let d = dir("artifact");
+        let options = zip::write::SimpleFileOptions::default();
+        let mut inner = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        inner
+            .start_file(format!("horizon-windows-x64/{CLIENT}"), options)
+            .unwrap();
+        inner.write_all(&program(b"inner zip")).unwrap();
+        let inner = inner.finish().unwrap().into_inner();
+        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        let game = program(b"inner tar");
+        let mut header = tar::Header::new_gnu();
+        header.set_size(game.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        tar.append_data(
+            &mut header,
+            format!("horizon-linux-x86_64/{CLIENT}"),
+            &game[..],
+        )
+        .unwrap();
+        let tar = tar.into_inner().unwrap().finish().unwrap();
+        for (archive, bytes, body) in [
+            ("horizon-windows-x64.zip", inner, &b"inner zip"[..]),
+            (
+                "horizon-linux-x86_64.tar.gz",
+                tar.clone(),
+                &b"inner tar"[..],
+            ),
+        ] {
+            let artifact = d.join("artifact.zip");
+            let mut zip = zip::ZipWriter::new(fs::File::create(&artifact).unwrap());
+            zip.start_file(archive, options).unwrap();
+            zip.write_all(&bytes).unwrap();
+            zip.finish().unwrap();
+            assert_eq!(
+                read_program(&artifact, "artifact.zip").unwrap(),
+                program(body)
+            );
+        }
+        let plain_tar = d.join("horizon-linux-x86_64.tar.gz");
+        fs::write(&plain_tar, &tar).unwrap();
+        let name = "horizon-linux-x86_64.tar.gz";
+        assert_eq!(read_program(&plain_tar, name).unwrap(), game);
+        let _ = fs::remove_dir_all(d);
+    }
+
     #[test]
     fn the_base_is_the_selected_release_or_the_newest_one() {
         let installed = [
@@ -395,7 +507,7 @@ mod tests {
             assert_eq!(base_for(&installed, None, selected), newest);
         }
         assert!(base_for(&installed[2..], None, None).is_err());
-        // --base: an installed release or Nightly, never another local build.
+        // --version: an installed release or Nightly, never another local build.
         let asked = |b| base_for(&installed, Some(b), Some("v0.2.95"));
         assert_eq!(asked("nightly-2026-11-01-c9d474d"), newest);
         for b in [

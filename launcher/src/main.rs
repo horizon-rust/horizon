@@ -1338,6 +1338,10 @@ impl Launcher {
                 return;
             };
             let _ = this.update(cx, |this, cx| {
+                // Another picker's import may have started meanwhile.
+                if this.importing_build {
+                    return;
+                }
                 this.importing_build = true;
                 this.import_error = None;
                 let tx = this.tx.clone();

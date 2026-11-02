@@ -805,8 +805,10 @@ pub(crate) fn newest_installed(installed: &[String]) -> Option<&String> {
 /// The installed version a build for an instance that plays `current` starts from: `current`
 /// itself, so a rebuild stays on the Horizon it plays (a native build's own revision, [`about`]).
 /// With `update`, or when it plays nothing installed, the newest installed release or Nightly.
+/// An imported build is no commit to build on: its game files' version is.
 pub fn base_for(current: Option<&str>, installed: &[String], update: bool) -> Option<String> {
-    match current {
+    let imported = current.and_then(crate::build_import::about).map(|a| a.base);
+    match imported.as_deref().or(current) {
         Some(v) if !update && installed.iter().any(|t| t == v) => Some(v.to_owned()),
         _ => newest_installed(installed).cloned(),
     }
