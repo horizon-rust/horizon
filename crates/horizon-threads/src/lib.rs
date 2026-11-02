@@ -4,7 +4,6 @@
 /// The game window's boot screen, before wgpu's first frame paints over it.
 #[cfg(target_os = "windows")]
 pub mod boot_paint;
-pub mod memory_limit;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
