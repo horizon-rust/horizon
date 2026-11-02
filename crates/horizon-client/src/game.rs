@@ -320,6 +320,7 @@ mod trident;
 mod tutorial;
 mod tweaks;
 mod ui_control;
+mod upload_pace;
 mod vault;
 mod villagers;
 mod wandering_trader;
@@ -406,9 +407,6 @@ use winit::{
     window::{CursorGrabMode, Window, WindowId},
 };
 
-/// The time a frame spends uploading chunk meshes when the player set no
-/// Chunk Updates or Upload Budget: a burst past it waits for the next frames.
-const AUTO_UPLOAD_TIME: Duration = Duration::from_millis(2);
 /// A frame's finished meshes up to this many upload at once, unqueued.
 const AUTO_UPLOADS_AT_ONCE: usize = 8;
 
@@ -2753,6 +2751,8 @@ struct Game<'a> {
     native_mod_screen: Option<String>,
     /// Meshed sections waiting for an upload budget (Horizon settings).
     pending_uploads: Vec<((i32, i32, i32), horizon_client::mesher::SectionMesh)>,
+    /// The recent frame time, which sets how long a frame uploads meshes (`upload_pace`).
+    upload_pace: upload_pace::UploadPace,
     /// This frame's view frustum, for culling entities and block entities.
     view_frustum: Option<horizon_client::gfx::Frustum>,
     entity_culler: Option<horizon_client::entity_culling::Culler>,
@@ -16364,6 +16364,7 @@ impl Game<'_> {
         let has = |column: (i32, i32)| self.world.chunks.contains_key(&column);
         let now = Instant::now();
         let arriving = self.view_arrival.arriving(view, now, has) || self.remote_backlog() > 0;
+        let loading = self.loading_reason().is_some();
         if let Some(renderer) = self.renderer.as_mut() {
             let g = &self.settings.horizon;
             let budgeted = g.chunk_updates > 0 || g.upload_budget_kib > 0;
@@ -16408,13 +16409,14 @@ impl Game<'_> {
                     (0, 0)
                 };
                 let (mut count, mut bytes) = (0, 0u64);
-                // Without the player's budgets, uploads stop once they took
-                // AUTO_UPLOAD_TIME of this frame (at least one goes): a burst of
-                // finished meshes spreads over frames, nearest first.
-                let auto = !budgeted;
+                // Without the player's budgets, uploads stop once they took this
+                // frame's share (`UploadPace::budget`: a quarter of the recent frame
+                // time, more with a backlog, at most 2 ms; at least one goes): a burst
+                // of finished meshes spreads over frames, nearest first.
+                let auto = (!budgeted).then(|| self.upload_pace.budget(pending.len(), loading));
                 let started = Instant::now();
                 while let Some((_, mesh)) = pending.last() {
-                    if auto && count > 0 && started.elapsed() >= AUTO_UPLOAD_TIME {
+                    if auto.is_some_and(|time| count > 0 && started.elapsed() >= time) {
                         break;
                     }
                     let size = ((mesh.solid.len() + mesh.translucent.len())
@@ -17779,6 +17781,7 @@ impl Game<'_> {
                     let elapsed = now.duration_since(self.previous);
                     self.frame_ticks = elapsed.as_secs_f32() * 20.0;
                     self.previous = now;
+                    self.upload_pace.frame(elapsed);
                     // Arrow-key camera controls belong to gameplay; chat and
                     // other screens use the same keys for their own navigation.
                     if self.screen == Screen::Playing
@@ -18505,6 +18508,7 @@ impl<'a> Game<'a> {
             async_entity_culling_failed: false,
             pack_shadow_casters: (false, false),
             pending_uploads: Vec::new(),
+            upload_pace: Default::default(),
             frame_graph: Default::default(),
             extras: Default::default(),
             mods: Default::default(),
