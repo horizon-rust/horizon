@@ -103,6 +103,8 @@ pub struct RenderAssets {
     pub pbr_size: u32,
     /// OptiFine connected textures (empty without `optifine/ctm` files).
     pub connected: crate::connected::ConnectedTextures,
+    /// Fusion connected textures (empty without Fusion's connecting textures and models).
+    pub fusion: crate::fusion::FusionTextures,
 }
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
@@ -242,6 +244,17 @@ impl RenderAssets {
         for stage in 0..10 {
             sprites.insert(root, &format!("minecraft:block/destroy_stage_{stage}"))?;
         }
+        let fusion = if draws {
+            let catalog = &models.catalog;
+            crate::fusion::FusionTextures::load(root, registry, &mut sprites, |state| {
+                catalog
+                    .collect(state, horizon_core::position::BlockPos::new(0, 0, 0))
+                    .map(|found| found.into_iter().map(|(v, _)| v.model.clone()).collect())
+                    .unwrap_or_default()
+            })
+        } else {
+            Default::default()
+        };
         let connected = if draws {
             crate::native_emissive::load(root, &mut sprites);
             // A side's sprite, for rules that connect by tile: the first quad facing it.
@@ -295,6 +308,7 @@ impl RenderAssets {
             pbr_specular: sprites.specular,
             pbr_size: sprites.pbr_size,
             connected,
+            fusion,
         })
     }
 }
