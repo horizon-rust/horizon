@@ -3,8 +3,12 @@
     {
       "name": "player_swap_hands",
       "target": "horizon_client::game::native_hooks::Game<'_>::native_player_swap_hands",
-      "neoforge": "none (vanilla: ServerboundPlayerActionPacket.Action.SWAP_ITEM_WITH_OFFHAND)",
-      "side": "server"
+      "neoforge": "LivingSwapItemsEvent.Hands",
+      "side": "server",
+      "mod_api": {
+        "contract": "cancel",
+        "out": "cancel"
+      }
     }
   ],
   "rust_summary": "a player swapping their hands, cancellable (`native_player_swap_hands`).",
