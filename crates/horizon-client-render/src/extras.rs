@@ -120,6 +120,9 @@ pub struct Extras {
     /// Agents may control the game the player starts: it opens its control socket for
     /// horizon-ctl and MCP clients (off by default; an agent's own launch always opens it).
     pub agent_control: bool,
+    /// F3+R and F3+E start/stop a repro recording and write its bundle (off by
+    /// default: a recording copies the world).
+    pub repro_keys: bool,
     /// "Playing Horizon" on the player's Discord profile (`discord_presence`; on by default).
     pub discord_presence: bool,
     /// Another controller can join P1's world (`splitscreen`, off by default).
@@ -160,6 +163,7 @@ impl Default for Extras {
             chat_indicator: true,
             no_ai: false,
             agent_control: false,
+            repro_keys: false,
             discord_presence: true,
             splitscreen: false,
         }
@@ -240,6 +244,7 @@ impl Extras {
                 "chatIndicator" => e.chat_indicator = flag(e.chat_indicator),
                 horizon_core::no_ai::KEY => e.no_ai = flag(e.no_ai),
                 "agentControl" => e.agent_control = flag(e.agent_control),
+                "reproKeys" => e.repro_keys = flag(e.repro_keys),
                 "discordPresence" => e.discord_presence = flag(e.discord_presence),
                 "splitscreen" => e.splitscreen = flag(e.splitscreen),
                 _ => {}
@@ -249,7 +254,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\nsplitscreen:{}\n",
+            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\ndiscordPresence:{}\nsplitscreen:{}\n",
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
             bool_text(self.zoom),
@@ -287,6 +292,7 @@ impl Extras {
             horizon_core::no_ai::KEY,
             bool_text(self.no_ai),
             bool_text(self.agent_control),
+            bool_text(self.repro_keys),
             bool_text(self.discord_presence),
             bool_text(self.splitscreen),
         )
@@ -425,6 +431,8 @@ pub enum Item {
     AgentControl,
     /// On the Horizon Settings page.
     DiscordPresence,
+    /// On the AI Agent page, next to Agent Control: the F3 recording shortcuts.
+    ReproKeys,
     /// On the Splitscreen settings page.
     Splitscreen,
 }
@@ -469,6 +477,7 @@ impl Item {
             Item::SortKey => "horizon.extras.sort_key",
             Item::NoAi => "horizon.extras.no_ai",
             Item::AgentControl => "horizon.extras.agent_control",
+            Item::ReproKeys => "horizon.extras.repro_keys",
             Item::DiscordPresence => "horizon.extras.discord_presence",
             Item::Splitscreen => "horizon.extras.splitscreen",
             Item::ChatAnimation => "horizon.extras.chat_animation",
@@ -490,6 +499,7 @@ impl Item {
             Item::SortKey => "horizon.extras.sort_key.tooltip",
             Item::NoAi => "horizon.extras.no_ai.tooltip",
             Item::AgentControl => "horizon.extras.agent_control.tooltip",
+            Item::ReproKeys => "horizon.extras.repro_keys.tooltip",
             Item::DiscordPresence => "horizon.extras.discord_presence.tooltip",
             Item::Splitscreen => "horizon.extras.splitscreen.tooltip",
             Item::ChatAnimation => "horizon.extras.chat_animation.tooltip",
@@ -522,6 +532,7 @@ impl Item {
             Item::ChatIndicator => "Message indicator",
             Item::NoAi => "No AI",
             Item::AgentControl => "Agent Control",
+            Item::ReproKeys => "Recording shortcuts",
             Item::DiscordPresence => "Discord Rich Presence",
             Item::Splitscreen => "Splitscreen",
         }
@@ -535,7 +546,7 @@ impl Item {
             SortKey => Sort,
             ChatIndicator => ChatAnimation,
             Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks | Sort
-            | AutoReconnect | NoAi | AgentControl | DiscordPresence | Splitscreen
+            | AutoReconnect | NoAi | AgentControl | ReproKeys | DiscordPresence | Splitscreen
             | ChatAnimation => {
                 return None;
             }
@@ -588,6 +599,9 @@ impl Item {
             Item::AgentControl => {
                 "Your own AI agent can play this game through horizon-ctl or an MCP client, on this computer only."
             }
+            Item::ReproKeys => {
+                "F3+R starts or stops a repro recording and F3+E writes its bundle. Off by default: a recording copies the world."
+            }
         }
     }
     /// The frame-time cost the main switch of an extra shows.
@@ -623,6 +637,7 @@ impl Item {
             Item::ChatIndicator => e.chat_indicator,
             Item::NoAi => e.no_ai,
             Item::AgentControl => e.agent_control,
+            Item::ReproKeys => e.repro_keys,
             Item::DiscordPresence => e.discord_presence,
             Item::Splitscreen => e.splitscreen,
             _ => return None,
@@ -655,6 +670,7 @@ impl Item {
             Item::ChatIndicator => e.chat_indicator = !e.chat_indicator,
             Item::NoAi => e.no_ai = !e.no_ai,
             Item::AgentControl => e.agent_control = !e.agent_control,
+            Item::ReproKeys => e.repro_keys = !e.repro_keys,
             Item::DiscordPresence => e.discord_presence = !e.discord_presence,
             Item::Splitscreen => e.splitscreen = !e.splitscreen,
             Item::SortKey => {}
