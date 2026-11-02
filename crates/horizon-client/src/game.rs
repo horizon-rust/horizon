@@ -18085,7 +18085,14 @@ impl Game<'_> {
             self.handle_window_event(event_loop, WindowId::dummy(), WindowEvent::RedrawRequested);
             return;
         }
-        event_loop.set_control_flow(ControlFlow::Poll);
+        // A hidden surface may receive no compositor callbacks. Wake periodically
+        // to service control and shutdown requests without busy-polling; offscreen
+        // mode has no redraw callback and must keep driving frames itself.
+        event_loop.set_control_flow(if self.options.offscreen {
+            ControlFlow::Poll
+        } else {
+            ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(50))
+        });
     }
 }
 /// clouds.png as filled cells (`CloudRenderer.prepare`: alpha 10 or more).
@@ -20396,7 +20403,14 @@ impl Loading {
                 w.request_redraw();
             }
         }
-        event_loop.set_control_flow(ControlFlow::Poll);
+        // A hidden surface may receive no compositor callbacks. Wake periodically
+        // to process shutdown requests without busy-polling; offscreen mode has
+        // no redraw callback and must keep driving frames itself.
+        event_loop.set_control_flow(if self.options.as_ref().is_some_and(|o| o.offscreen) {
+            ControlFlow::Poll
+        } else {
+            ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(50))
+        });
     }
     fn draw(&mut self) {
         let Some(size) = self
