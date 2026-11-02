@@ -649,6 +649,7 @@ impl Launcher {
         }
         self.picker_open = false;
         self.language_menu = false;
+        self.mods.browse.sort_menu = false;
         self.account_menu = false;
     }
 
