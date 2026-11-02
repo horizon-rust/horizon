@@ -4,10 +4,7 @@
       "name": "player_totem",
       "target": "horizon_client::game::native_hooks::Game<'_>::native_player_totem",
       "neoforge": "LivingUseTotemEvent",
-      "side": "server",
-      "mod_api": {
-        "contract": "listen"
-      }
+      "side": "server"
     }
   ],
   "rust_summary": "a totem of undying saving a player (`native_player_totem`).",
