@@ -65,7 +65,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// `hitResult.getBlockPos().relative(hitResult.getDirection())` (None for
     /// a dispenser, which has no hit result). `sound` is the bucket's empty
     /// sound (mob buckets have their own); `sneaking` is
-    /// `user.isShiftKeyDown()` (false for a dispenser, whose user is null);
+    /// `user.isShiftKeyDown()`, which only counts with a hit result;
     /// `creative` is whether that user is a creative player.
     pub(crate) fn bucket_empty(
         &mut self,
@@ -109,14 +109,14 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let place_liquid = may_replace || container;
         // `canPlaceFluidInsideBlock`: air always takes the fluid; a block that
         // merely holds it (a waterloggable block, a replaceable plant) only
-        // when the player is not sneaking (a dispenser has no user and so
-        // no hit result, which always allows it).
-        if !(b.is_air(state) || place_liquid && !sneaking) {
+        // when the player is not sneaking or there is no hit result (a
+        // dispenser, or the retry below).
+        if !(b.is_air(state) || place_liquid && (!sneaking || beside.is_none())) {
             // A refused click (a double slab, or Shift on a waterloggable
             // block) pours into the block beside the clicked face instead,
-            // without a hit result, so Shift no longer matters there.
+            // without a hit result.
             return beside.and_then(|beside| {
-                self.bucket_empty(beside, None, content, sound, false, creative)
+                self.bucket_empty(beside, None, content, sound, sneaking, creative)
             });
         }
         let water = matches!(fluid, FluidKind::Water | FluidKind::FlowingWater);
@@ -184,36 +184,21 @@ impl Behaviours {
     ) -> Option<&'static str> {
         self.sim(level, ticks).bucket_pickup(pos, creative)
     }
-    /// `DispensibleContainerItem.emptyContents(user, level, pos, null)`.
+    /// `DispensibleContainerItem.emptyContents(user, level, pos, hitResult)`:
+    /// where the contents went. `beside` is the block beside the clicked
+    /// face, tried when `pos` refuses (None without a hit result).
     pub fn bucket_empty<L: LevelAccess + ?Sized>(
         &self,
         level: &mut L,
         ticks: &mut Ticks,
         pos: BlockPos,
-        content: BucketContent,
-        sound: &str,
-        sneaking: bool,
-        creative: bool,
-    ) -> bool {
-        self.sim(level, ticks)
-            .bucket_empty(pos, None, content, sound, sneaking, creative)
-            .is_some()
-    }
-    /// `BucketItem.emptyContents(user, level, pos, hitResult)` for a click:
-    /// `beside` is the block beside the clicked face, tried when `pos`
-    /// refuses. Returns where the contents went.
-    pub fn bucket_empty_beside<L: LevelAccess + ?Sized>(
-        &self,
-        level: &mut L,
-        ticks: &mut Ticks,
-        pos: BlockPos,
-        beside: BlockPos,
+        beside: Option<BlockPos>,
         content: BucketContent,
         sound: &str,
         sneaking: bool,
         creative: bool,
     ) -> Option<BlockPos> {
         self.sim(level, ticks)
-            .bucket_empty(pos, Some(beside), content, sound, sneaking, creative)
+            .bucket_empty(pos, beside, content, sound, sneaking, creative)
     }
 }
