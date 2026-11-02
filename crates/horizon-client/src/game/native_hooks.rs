@@ -5700,37 +5700,39 @@ impl Game<'_> {
             return false;
         };
         let atlas = &self.gui.atlas;
-        let (w, h) = (s.screen.width, s.screen.height);
-        batch.fill(atlas, ox, oy, w, h, rgba(0, 0, 0, 255));
-        batch.fill(
-            atlas,
-            ox + 1.0,
-            oy + 1.0,
-            w - 2.0,
-            h - 2.0,
-            rgba(198, 198, 198, 255),
-        );
-        let container = self.native_screen_slots().unwrap_or_default();
-        for i in (0..36).chain(container) {
-            let (x, y) = self.slot_position(i);
-            let (x, y) = (ox + x - 1.0, oy + y - 1.0);
-            batch.fill(atlas, x, y, 18.0, 18.0, rgba(55, 55, 55, 255));
+        if !s.screen.own_background {
+            let (w, h) = (s.screen.width, s.screen.height);
+            batch.fill(atlas, ox, oy, w, h, rgba(0, 0, 0, 255));
             batch.fill(
                 atlas,
-                x + 1.0,
-                y + 1.0,
-                17.0,
-                17.0,
-                rgba(255, 255, 255, 255),
+                ox + 1.0,
+                oy + 1.0,
+                w - 2.0,
+                h - 2.0,
+                rgba(198, 198, 198, 255),
             );
-            batch.fill(
-                atlas,
-                x + 1.0,
-                y + 1.0,
-                16.0,
-                16.0,
-                rgba(139, 139, 139, 255),
-            );
+            let container = self.native_screen_slots().unwrap_or_default();
+            for i in (0..36).chain(container) {
+                let (x, y) = self.slot_position(i);
+                let (x, y) = (ox + x - 1.0, oy + y - 1.0);
+                batch.fill(atlas, x, y, 18.0, 18.0, rgba(55, 55, 55, 255));
+                batch.fill(
+                    atlas,
+                    x + 1.0,
+                    y + 1.0,
+                    17.0,
+                    17.0,
+                    rgba(255, 255, 255, 255),
+                );
+                batch.fill(
+                    atlas,
+                    x + 1.0,
+                    y + 1.0,
+                    16.0,
+                    16.0,
+                    rgba(139, 139, 139, 255),
+                );
+            }
         }
         self.native_screen_draw(&s.block, &s.data, batch, [ox, oy]);
         if s.screen.own_labels {
@@ -6697,5 +6699,21 @@ mod tests {
         assert!(debug_takes(Corner::BottomLeft, true, [true, false]));
         assert!(!debug_takes(Corner::BottomRight, true, [true, false]));
         assert!(debug_takes(Corner::BottomRight, true, [false, true]));
+    }
+
+    #[test]
+    fn native_screen_own_background() {
+        let s = super::NativeScreen::default();
+        assert!(!s.own_background);
+        assert!(!s.own_labels);
+
+        let custom = super::NativeScreen {
+            own_background: true,
+            own_labels: true,
+            ..Default::default()
+        };
+        assert!(custom.own_background);
+        assert!(custom.own_labels);
+        assert_ne!(s, custom);
     }
 }
