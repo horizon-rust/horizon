@@ -3,7 +3,11 @@
     {
       "name": "item_energy_buffer",
       "target": "horizon_client::game::native_hooks::Game<'_>::native_item_energy_buffer",
-      "neoforge": "Capabilities.Energy.ITEM"
+      "neoforge": "Capabilities.Energy.ITEM",
+      "mod_api": {
+        "contract": "replace",
+        "out": "buffer"
+      }
     }
   ],
   "rust_summary": "a mod item holding energy (`native_item_energy_buffer`), and the item energy helpers in\n`native_item_energy.rs`: `native_item_energy`, `native_item_energy_insert`, `native_item_energy_extract`.",
