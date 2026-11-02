@@ -115,6 +115,7 @@ mod dragon;
 mod dynamic_lights;
 mod enchant_effects;
 mod end;
+mod entity;
 mod entity_culling;
 mod event_loop;
 mod events;
@@ -2675,6 +2676,10 @@ struct Game<'a> {
     cart_models: minecarts::CartModels,
     /// The boat the player rides.
     riding: Option<u32>,
+    /// The mount the last `position_rider` put the player on, to tell the tick
+    /// a seat is taken (`Entity.moveTo`, no camera sweep) from the ones that
+    /// follow it (`positionRider`, interpolated as usual).
+    posed_rider: Option<u32>,
     /// The vehicle the player's file names, waiting for it to be in the world
     /// (`ServerPlayer.loadAndSpawnParentVehicle`).
     pending_vehicle: Option<[i32; 4]>,
@@ -2847,6 +2852,13 @@ struct Game<'a> {
     /// `remote_handle_input`): picked once, so a creative break does not
     /// move the use that follows it past the broken block.
     tick_hit: Option<Option<Hit>>,
+    /// The mob of that `hitResult`, picked with the item held at the pick
+    /// (`LocalPlayer.raycastHitResult`: a spear's `attack_range`), before the
+    /// tick's number keys change it.
+    tick_mob: Option<Option<(usize, f64)>>,
+    /// Number keys since the last tick (`keyHotbarSlots[i].consumeClick`):
+    /// `Minecraft.handleKeybinds` selects them after the tick's pick.
+    hotbar_presses: Vec<usize>,
     /// `Player.entityInteractionRange` and `blockInteractionRange`, refreshed
     /// each tick from the attribute (a server's reach modifier, creative's
     /// +2): the pick helpers' `&self` reach.
@@ -7148,6 +7160,11 @@ impl Game<'_> {
             self.tick_riding(keys)?;
         }
         let riding = self.riding.is_some();
+        // A seat that is given up is taken again as a new one: the next mount
+        // snaps the camera even when it is the same vehicle.
+        if !riding {
+            self.posed_rider = None;
+        }
         let entity_collisions = self.player_entity_collisions();
         let spin_targets = self.spin_targets();
         let sprint_window = self.settings.sprint_window;
@@ -8552,7 +8569,7 @@ impl Game<'_> {
         batch.blur_at = batch.vertices.len() as u32;
         // PackConfirmScreen takes the open screen's place (it comes back once
         // the prompt is answered): the screen under the prompt isn't drawn.
-        let screen = if self.server_packs.prompt.is_some() {
+        let screen = if self.server_packs.prompt.is_some() || self.book.is_some() {
             Screen::Playing
         } else {
             self.screen
@@ -8625,7 +8642,7 @@ impl Game<'_> {
     /// read-only: what a mod draws is its own.
     fn fire_screen_render_post(&self, batch: &mut HudBatch) {
         let screen = self.screen;
-        if screen == Screen::Playing || self.server_packs.prompt.is_some() {
+        if screen == Screen::Playing || self.server_packs.prompt.is_some() || self.book.is_some() {
             return;
         }
         // slot_count mirrors slots() without allocating; keep them in step.
@@ -11183,6 +11200,9 @@ impl Game<'_> {
         darken
     }
     fn mob_hit(&self) -> Option<(usize, f64)> {
+        if let Some(hit) = self.tick_mob {
+            return hit;
+        }
         let (eye, dir) = self.aim()?;
         let reach: f64 = self.entity_reach;
         let mut best: Option<(usize, f64)> = None;
@@ -11406,7 +11426,7 @@ impl Game<'_> {
         let Some((index, distance)) = self.mob_hit() else {
             return false;
         };
-        if !self.before_block(distance) {
+        if !self.before_block(distance) || !self.held_range_allows(distance) {
             return false;
         }
         self.attack_mob(index);
@@ -15972,6 +15992,8 @@ impl Game<'_> {
             KeyCode::KeyE => match self.screen {
                 Screen::Playing if self.spectator() => {}
                 Screen::Playing => {
+                    // handleKeybinds: the number keys select before key.inventory.
+                    self.select_queued_hotbar();
                     // key.inventory while riding a tamed mount opens its inventory.
                     if !self.open_ridden_mount_menu() {
                         if self.tutorial.open_inventory() {
@@ -16012,6 +16034,8 @@ impl Game<'_> {
                 }
             }
             KeyCode::KeyF if self.screen == Screen::Playing => {
+                // handleKeybinds: the number keys select before key.swapOffhand.
+                self.select_queued_hotbar();
                 // handlePlayerAction SWAP_ITEM_WITH_OFFHAND: setItemInHand for
                 // the off hand, then the main hand.
                 std::mem::swap(&mut self.offhand, &mut self.inventory[self.selected]);
@@ -16023,6 +16047,8 @@ impl Game<'_> {
                 self.using = None;
             }
             KeyCode::KeyQ if self.screen == Screen::Playing => {
+                // handleKeybinds: the number keys select before key.drop.
+                self.select_queued_hotbar();
                 let all = drop_whole_stack(self.modifiers);
                 self.drop_held(all);
             }
@@ -16060,7 +16086,7 @@ impl Game<'_> {
                 {
                     self.hotbar_load_or_save(slot, load);
                 } else {
-                    self.selected = slot;
+                    self.hotbar_presses.push(slot);
                 }
             }
             _ if self.screen == Screen::Paused && self.pause_menu => {
@@ -16111,6 +16137,8 @@ impl Game<'_> {
                 }
             }
             MouseButton::Middle if pressed => {
+                // handleKeybinds: the number keys select before key.pickItem.
+                self.select_queued_hotbar();
                 // Minecraft.pickBlockOrEntity -> the server's handlePickItemFromBlock:
                 // the block's clone item, with its block entity's data on Ctrl in
                 // creative, picked from the inventory (`pick_item`).
@@ -18442,6 +18470,7 @@ impl<'a> Game<'a> {
             trim_slots: Vec::new(),
             cart_models: prepared.cart_models,
             riding: None,
+            posed_rider: None,
             pending_vehicle: None,
             ender_items: vec![None; 27],
             ender_open: None,
@@ -18537,6 +18566,8 @@ impl<'a> Game<'a> {
             world_icon: None,
             forced_hit: None,
             tick_hit: None,
+            tick_mob: None,
+            hotbar_presses: Vec::new(),
             entity_reach: 3.0,
             block_reach: 4.5,
             guest_use: None,
@@ -18967,6 +18998,9 @@ impl Game<'_> {
                 return None;
             }
         };
+        // The recipe tables, the stations and the recipe book read one folder:
+        // hold its files so it is read once.
+        let _recipe_files = horizon_client::json_folder::read(&root.join("data/minecraft/recipe"));
         let recipes = match Recipes::load(root, &items, &overlay) {
             Ok(recipes) => recipes,
             Err(e) => {
@@ -19344,6 +19378,9 @@ fn load_resources(
     publish: &mut dyn FnMut(UiResources, &std::path::Path),
 ) -> Result<Loaded> {
     let threads = settings.horizon.worker_threads();
+    // One pool of workers for every level's streaming, the client's and the
+    // server thread's (horizon_threads::jobs), sized before any world opens.
+    horizon_threads::jobs::configure(threads);
     horizon_client::sprites::set_texture_budget(settings.horizon.texture_budget_mib);
     horizon_client::sprites::set_labpbr_maps(shader_packs::picks_native_pack(settings));
     // Stage A: the menu bundle (atlas and panorama). With a loading screen it is
@@ -19598,6 +19635,9 @@ fn load_world_rest(
         let items = startup::time("rest.items", || Items::load(root, registry, facts, overlay))?;
         log::info!("load items: {:.2}s", started.elapsed().as_secs_f32());
         progress.set(7);
+        // The recipe tables, the stations and the recipe book read one folder:
+        // hold its files so it is read once.
+        let _recipe_files = horizon_client::json_folder::read(&root.join("data/minecraft/recipe"));
         let recipes = startup::time("rest.recipes", || Recipes::load(root, &items, overlay))?;
         let stations = startup::time("rest.stations", || {
             horizon_client::stations::StationData::load(root, &items, overlay)
@@ -20659,9 +20699,8 @@ pub fn run_with() -> Result<()> {
     horizon_threads::put_helpers_behind();
     if options.execution_role.is_client() {
         // The render thread, like the server thread, ahead of the workers on
-        // macOS and Windows. While terrain loads, the worker pools (two with
-        // single player's server thread) and other programs outnumber the
-        // cores, and a frame that gave its core up (in a GPU submit) waited
+        // macOS and Windows. While terrain loads, the workers
+        // (horizon_threads::jobs) and other programs outnumber the cores, and a frame that gave its core up (in a GPU submit) waited
         // 10 to 200 ms to get one back.
         horizon_threads::favour_current();
     }
@@ -20669,6 +20708,15 @@ pub fn run_with() -> Result<()> {
         horizon_threads::catch_stop_signals();
     }
     let started = Instant::now();
+    // A dedicated server writes its slow ticks to the log with the spans
+    // they spent their time in (`HORIZON_SPIKES`'s line; the variable still
+    // sets another threshold), so a lag spike players felt can be traced
+    // from the log alone. Timing the spans costs microseconds a tick.
+    if options.spikes.is_none()
+        && options.execution_role == execution_role::ExecutionRole::DedicatedServer
+    {
+        options.spikes = Some(dedicated::SLOW_TICK_MS);
+    }
     horizon_client::spans::enable(options.spikes.is_some());
     let vanilla_root = options.resources.clone();
     if let Some(error) = missing_resources(&vanilla_root) {
