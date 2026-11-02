@@ -580,15 +580,6 @@ impl Game<'_> {
         b.tick_submersion();
         b.hurt_time = (b.hurt_time - 1).max(0);
         b.damage = (b.damage - 1.0).max(0.0);
-        // Entity.baseTick: updateFluidInteraction, a stream pushes the boat.
-        let _ = super::body_fluid::push_by_fluid(
-            &self.world,
-            &self.pack.assets,
-            self.res.facts(),
-            b.bounds(),
-            b.position,
-            &mut b.velocity,
-        );
         if !controlled {
             b.paddling = [false; 2];
             b.input = [false; 4];

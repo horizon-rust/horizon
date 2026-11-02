@@ -988,15 +988,15 @@ impl Game<'_> {
             &mut c.velocity,
         );
         // AbstractMinecart.tick: updateFluidInteraction, a stream pushes the cart.
-        c.in_water = super::body_fluid::push_by_fluid(
-            &self.world,
-            &self.pack.assets,
-            self.res.facts(),
+        c.in_water = horizon_client::entities::update_entity_fluids(
             c.bounds(),
             c.position,
+            c.bounds().max_position().y,
             &mut c.velocity,
+            &self.world,
+            &self.res.motion().fluids,
         )
-        .unwrap_or(false);
+        .0 > 0.0;
         // Variants.
         match c.kind {
             CartKind::Furnace => {
