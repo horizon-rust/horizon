@@ -1,8 +1,7 @@
 use crate::{
-    block_entity_anim::chest_lid_x_rot,
     block_entity_render::{
-        BlockAnim, BlockEntityRenderer, CacheOptions, ChestPart, Kind, ModelPart, Paint,
-        SIGN_TEXT_KEEP, Scene, StaticSectionRevision, around, classify, diffuse_lights, draw_part,
+        BlockAnim, BlockEntityRenderer, BlockEntityShapes, CacheOptions, ChestPart, Kind,
+        ModelPart, SIGN_TEXT_KEEP, Scene, StaticSectionRevision, classify,
     },
     chunk::Chunk,
     hud::Rect,
@@ -48,20 +47,35 @@ fn part(y: f32) -> ModelPart {
     }
 }
 
+fn renderer_with_shapes(
+    models: HashMap<&'static str, ModelPart>,
+    kinds: Vec<Kind>,
+    pot_patterns: HashMap<String, String>,
+) -> BlockEntityRenderer {
+    let vanilla = Arc::new(BlockEntityShapes::new(models, HashMap::new()));
+    BlockEntityRenderer {
+        vanilla: vanilla.clone(),
+        shapes: std::sync::RwLock::new(vanilla),
+        kinds,
+        pot_patterns,
+        ..Default::default()
+    }
+}
+
 fn shulker_renderer() -> BlockEntityRenderer {
     let model = ModelPart {
         pose: unit_pose(),
         polygons: Vec::new(),
         children: vec![("base".into(), part(0.0)), ("lid".into(), part(24.0))],
     };
-    BlockEntityRenderer {
-        models: HashMap::from([("shulker_box", model)]),
-        kinds: vec![Kind::Shulker {
+    renderer_with_shapes(
+        HashMap::from([("shulker_box", model)]),
+        vec![Kind::Shulker {
             texture: "entity/shulker/shulker".into(),
             facing: "up",
         }],
-        ..Default::default()
-    }
+        HashMap::new(),
+    )
 }
 
 fn bell_renderer() -> BlockEntityRenderer {
@@ -70,11 +84,11 @@ fn bell_renderer() -> BlockEntityRenderer {
         polygons: Vec::new(),
         children: vec![("bell_body".into(), part(0.0))],
     };
-    BlockEntityRenderer {
-        models: HashMap::from([("bell", model)]),
-        kinds: vec![Kind::Bell],
-        ..Default::default()
-    }
+    renderer_with_shapes(
+        HashMap::from([("bell", model)]),
+        vec![Kind::Bell],
+        HashMap::new(),
+    )
 }
 
 fn chest_model(offset: f32) -> ModelPart {
@@ -100,50 +114,9 @@ fn chest_renderer_with(kinds: Vec<Kind>) -> BlockEntityRenderer {
         ("double_chest_left", chest_model(1.0)),
         ("double_chest_right", chest_model(2.0)),
     ]);
-    // Match Renderer::new's closed-chest precomputation so the fixture covers
+    // Shape construction precomputes closed-chest geometry so the fixture covers
     // the cached world path as well as the direct model path.
-    let closed_chests = [false, true].map(|nether| {
-        ["chest", "double_chest_left", "double_chest_right"].map(|name| {
-            [0.0f32, 90.0, 180.0, 270.0].map(|y_rot| {
-                let mut vertices = Vec::new();
-                draw_part(
-                    models.get(name).unwrap(),
-                    "root",
-                    around(
-                        Mat4::from_rotation_y((-y_rot).to_radians()),
-                        Vec3::new(0.5, 0.0, 0.5),
-                    ),
-                    &|name, pose| {
-                        if name == "lid" || name == "lock" {
-                            pose[3] = chest_lid_x_rot(0.0);
-                        }
-                    },
-                    Paint {
-                        sprite: Rect {
-                            u0: 0.0,
-                            v0: 0.0,
-                            u1: 1.0,
-                            v1: 1.0,
-                            w: 16,
-                            h: 16,
-                        },
-                        tint: 0xFFFFFF,
-                        light: 0,
-                        lights: diffuse_lights(nether),
-                        glow: None,
-                    },
-                    &mut vertices,
-                );
-                vertices
-            })
-        })
-    });
-    BlockEntityRenderer {
-        models,
-        kinds,
-        closed_chests,
-        ..Default::default()
-    }
+    renderer_with_shapes(models, kinds, HashMap::new())
 }
 
 fn chest_renderer() -> BlockEntityRenderer {
@@ -174,13 +147,13 @@ fn decorated_pot_renderer() -> BlockEntityRenderer {
             .map(|(i, name)| (name.into(), part(i as f32)))
             .collect(),
     };
-    BlockEntityRenderer {
-        models: HashMap::from([
+    renderer_with_shapes(
+        HashMap::from([
             ("decorated_pot_base", part(0.0)),
             ("decorated_pot_sides", sides),
         ]),
-        kinds: vec![Kind::DecoratedPot { y_rot: 0.0 }],
-        pot_patterns: ["back", "left", "right", "front"]
+        vec![Kind::DecoratedPot { y_rot: 0.0 }],
+        ["back", "left", "right", "front"]
             .into_iter()
             .map(|side| {
                 (
@@ -189,8 +162,7 @@ fn decorated_pot_renderer() -> BlockEntityRenderer {
                 )
             })
             .collect(),
-        ..Default::default()
-    }
+    )
 }
 
 fn banner_renderer() -> BlockEntityRenderer {
@@ -207,16 +179,16 @@ fn banner_renderer() -> BlockEntityRenderer {
         "facing" => Some("north".into()),
         _ => None,
     });
-    BlockEntityRenderer {
-        models: HashMap::from([
+    renderer_with_shapes(
+        HashMap::from([
             ("standing_banner", banner_model("pole")),
             ("standing_banner_flag", banner_model("flag")),
             ("wall_banner", banner_model("pole")),
             ("wall_banner_flag", banner_model("flag")),
         ]),
-        kinds: vec![standing, wall],
-        ..Default::default()
-    }
+        vec![standing, wall],
+        HashMap::new(),
+    )
 }
 
 fn copper_statue_renderer() -> BlockEntityRenderer {
@@ -225,12 +197,12 @@ fn copper_statue_renderer() -> BlockEntityRenderer {
         polygons: vec![quad(); copies],
         children: Vec::new(),
     };
-    BlockEntityRenderer {
-        models: HashMap::from([
+    renderer_with_shapes(
+        HashMap::from([
             ("copper_golem", model(1)),
             ("copper_golem_sitting", model(2)),
         ]),
-        kinds: vec![
+        vec![
             Kind::CopperGolem {
                 texture: "entity/copper_golem/copper_golem",
                 pose: "standing",
@@ -242,8 +214,8 @@ fn copper_statue_renderer() -> BlockEntityRenderer {
                 facing: "north",
             },
         ],
-        ..Default::default()
-    }
+        HashMap::new(),
+    )
 }
 
 fn sprites(texture: &str) -> HashMap<String, Rect> {
@@ -1501,16 +1473,16 @@ fn copper_statue_cache_covers_weathering_waxing_and_all_poses() {
         polygons: vec![quad(); copies],
         children: Vec::new(),
     };
-    let renderer = BlockEntityRenderer {
-        models: HashMap::from([
+    let renderer = renderer_with_shapes(
+        HashMap::from([
             ("copper_golem", model(1)),
             ("copper_golem_running", model(2)),
             ("copper_golem_sitting", model(3)),
             ("copper_golem_star", model(4)),
         ]),
         kinds,
-        ..Default::default()
-    };
+        HashMap::new(),
+    );
     let texture_strings: Vec<_> = variants.iter().map(|(_, texture)| *texture).collect();
     let sprites = sprite_atlas(&texture_strings);
     let world = World::new(BlockStateId(0), 1);
