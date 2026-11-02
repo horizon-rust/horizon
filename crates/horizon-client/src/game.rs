@@ -203,6 +203,7 @@ mod native_explosions;
 mod native_falling;
 mod native_hooks;
 mod native_inventories;
+mod native_item_energy;
 mod native_item_fluids;
 mod native_lifecycle;
 mod native_menus;
