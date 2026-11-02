@@ -112,7 +112,8 @@ reaches the integrated server from `127.0.0.1`.
 
 For networks nothing can reach (CGNAT on both sides, no VPN), a **relay** carries the session: one small
 binary, `horizon-relay`, that anyone can run on their own PC, a VPS, a Raspberry Pi or a free tier.
-There is no default relay. With one configured:
+There is no default relay. (For an address any Minecraft client can join, with the trade-offs that brings, see the
+[public address prototype](public-address.md).) With one configured:
 
 - the host also registers there and gets a **short code** (`K7QM-3XPD`: a 4-symbol nameplate the relay
   allocates, a 4-symbol secret it never sees), and the full code names the relay and carries the short
