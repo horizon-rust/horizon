@@ -463,6 +463,10 @@ pub(super) fn preload_launch_world(
                 let preset = horizon_client::save::WorldGen::preset(&world_root);
                 let _ = data.prepare_decoration(preset, "minecraft:overworld");
             }
+            // As in `preload_world_data`: the loot data and the server's
+            // data share one read of the recipe folder.
+            let _recipe_files =
+                horizon_client::json_folder::read(&resources.join("data/minecraft/recipe"));
             let _ = horizon_client::structure_blocks::loot_data(
                 &resources,
                 &horizon_world::loot::PackOverlay::NONE,
