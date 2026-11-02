@@ -33,6 +33,8 @@ pub struct BakedFace {
     pub opaque: bool,
     /// Fractional alpha: drawn in the sorted translucent pass.
     pub translucent: bool,
+    /// The Fusion connecting texture rule its sprite joins by ([`crate::fusion`]).
+    pub fusion: Option<u16>,
 }
 pub struct BakedModel {
     pub ambient_occlusion: bool,
@@ -90,6 +92,7 @@ fn bake_resolved(
                 opaque: sprites.region_opaque(layer, &quad.uv),
                 quad,
                 layer,
+                fusion: None,
             })
         })
         .collect::<Result<_>>()?;
@@ -342,6 +345,12 @@ impl StateModels {
             }
         }
         Ok(())
+    }
+    /// Every baked model with the variant it was baked from, to change its faces.
+    pub fn models_mut(&mut self) -> impl Iterator<Item = (&Variant, &mut BakedModel)> {
+        self.baked
+            .iter_mut()
+            .map(|(variant, model)| (&*variant, model))
     }
     /// A model baked by [`Self::bake_standalone`], by id (`mymod:block/shaft_half`).
     pub fn standalone(&self, name: &str) -> Option<&BakedModel> {

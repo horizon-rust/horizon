@@ -1346,12 +1346,10 @@ impl Mesher<'_> {
         };
         let neighbour =
             |[dx, dy, dz]: [i32; 3]| pad.blocks[pi(pos[0] + dx, pos[1] + dy, pos[2] + dz)];
-        let fused = if fusion.is_empty() {
-            None
-        } else {
+        let fused = face.fusion.and_then(|rule| {
             fusion.pick(
+                rule,
                 id,
-                face.layer,
                 CtmFace::ALL[q.facing as usize],
                 neighbour,
                 |s| {
@@ -1362,7 +1360,7 @@ impl Mesher<'_> {
                 },
                 &mut push,
             )
-        };
+        });
         let pick = if let Some(pick) = fused {
             pick
         } else if connected.is_empty() {

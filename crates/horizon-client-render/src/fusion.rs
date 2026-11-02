@@ -1,13 +1,17 @@
 //! Fusion connected textures at mesh time. A pack's connecting textures (a `fusion` section in
-//! their `.mcmeta`) are cut into a sprite per tile at load; each block state whose model is a
-//! `fusion:connecting` one gets, for each such texture on its faces, the predicates it joins by
-//! with their blocks resolved to state ids. Meshing a face then evaluates them in the face's
-//! eight directions and draws the layout's tiles through [`crate::connected`]'s [`Pick`] and
-//! [`Overlay`]. Without Fusion files nothing is loaded and nothing changes.
+//! their `.mcmeta`) are cut into a sprite per tile at load, and every baked face of a
+//! `fusion:connecting` model that shows one is given the rule it joins by: the sheet and its
+//! predicates, with their blocks resolved to state ids. Meshing such a face evaluates them in
+//! the face's eight directions and draws the layout's tiles through [`crate::connected`]'s
+//! [`Pick`] and [`Overlay`]. Without Fusion files nothing is loaded and nothing changes.
+//!
+//! Directions follow a cube's default UVs ([`Axes::cube`]): the top and bottom of a model
+//! turned about x, or turned with `uvlock`, join a quarter turn off.
 //!
 //! The format is `horizon_optifine::fusion`'s.
 
 use crate::connected::{Overlay, Pick, TileLayer};
+use crate::models::StateModels;
 use crate::sprites::Sprites;
 use horizon_optifine::cem::json::Json;
 use horizon_optifine::ctm::connect::{self, Axes, Face};
@@ -25,11 +29,9 @@ use std::{collections::HashMap, fs, path::Path};
 struct Sheet {
     layout: Layout,
     tiles: Vec<Option<TileLayer>>,
-    /// The texture's own predicates, for models that name none.
-    connections: Connection,
 }
 
-/// A sheet on a state's faces and what it joins by, blocks as sorted state ids.
+/// A sheet and what it joins by, blocks as sorted state ids.
 struct Rule {
     sheet: usize,
     connection: Connection<Vec<u32>>,
@@ -38,50 +40,41 @@ struct Rule {
 #[derive(Default)]
 pub struct FusionTextures {
     sheets: Vec<Sheet>,
+    /// By [`crate::models::BakedFace::fusion`].
     rules: Vec<Rule>,
-    /// By block state: a range of `faces`, each a sprite layer its faces show (the whole
-    /// sheet) and the rule for it.
-    by_state: Vec<(u32, u32)>,
-    faces: Vec<(u32, u32)>,
-    /// Each state's block, for `is_same_block`.
+    /// Each state's block, for `is_same_block` (`u32::MAX` for an id the registry skips).
     blocks: Vec<u32>,
 }
 
-/// The sprite name of a model's texture reference (`block/glass`, `ns:block/x`).
-fn sprite(reference: &str) -> String {
+/// A model's reference to a texture or another model (`block/glass`), namespaced.
+fn namespaced(reference: &str) -> String {
     horizon_optifine::matchers::namespaced(reference)
 }
 
-fn read_json(path: &Path) -> Option<Json> {
-    Json::parse(&fs::read_to_string(path).ok()?).ok()
+fn read_model(root: &Path, name: &str) -> Option<Json> {
+    let (ns, path) = name.split_once(':')?;
+    let text = fs::read_to_string(root.join(format!("assets/{ns}/models/{path}.json"))).ok()?;
+    Json::parse(&text).ok()
 }
 
-/// A model's file and its parents' (up to one that has no file, `builtin/generated`), the
-/// model first; empty when the model has no file.
-fn model_chain(root: &Path, name: &str) -> Vec<Json> {
-    let mut chain = Vec::new();
-    let mut next = Some(sprite(name));
-    // Parents deeper than vanilla's few levels are a loop.
-    while let Some(name) = next.take().filter(|_| chain.len() < 16) {
-        let Some((ns, path)) = name.split_once(':') else {
-            break;
-        };
-        let Some(model) = read_json(&root.join(format!("assets/{ns}/models/{path}.json"))) else {
-            break;
-        };
-        next = model.get("parent").and_then(Json::as_str).map(sprite);
-        chain.push(model);
-    }
-    chain
-}
-
-/// Of a `fusion:connecting` model: each texture key's sprite and the model's predicates for
-/// it (`None`: the texture's own). Faces' own `connections` references aren't read: a face
-/// joins by its texture's key.
+/// Of a `fusion:connecting` model: the sprite of each texture its faces draw and the
+/// predicates for it (`None`: the texture's own), the first face's where several faces draw
+/// one sprite. Empty for any other model.
 fn connecting_model(root: &Path, name: &str) -> Vec<(String, Option<Connection>)> {
-    let chain = model_chain(root, name);
-    if chain.first().and_then(ModelType::of) != Some(ModelType::Connecting) {
+    let Some(model) = read_model(root, name) else {
         return Vec::new();
+    };
+    if ModelType::of(&model) != Some(ModelType::Connecting) {
+        return Vec::new();
+    }
+    // Its parents, up to one without a file (`builtin/generated`); deeper than vanilla's few
+    // levels is a loop.
+    let mut chain = vec![model];
+    while chain.len() < 16
+        && let Some(parent) = chain.last().and_then(|m| m.get("parent")?.as_str())
+        && let Some(parent) = read_model(root, &namespaced(parent))
+    {
+        chain.push(parent);
     }
     // Parents first, so a child's keys replace theirs.
     let mut connections = Connections::Textures;
@@ -101,26 +94,45 @@ fn connecting_model(root: &Path, name: &str) -> Vec<(String, Option<Connection>)
             }
         }
     }
-    textures
-        .iter()
-        .filter_map(|(&key, &value)| {
-            // `#other` references, as vanilla resolves them.
-            let mut value = value;
-            for _ in 0..16 {
-                match value.strip_prefix('#') {
-                    Some(other) => value = *textures.get(other)?,
-                    None => break,
-                }
+    // A `#key` as vanilla resolves it.
+    let resolve = |reference: &str| {
+        let mut value = reference;
+        for _ in 0..16 {
+            match value.strip_prefix('#') {
+                Some(key) => value = textures.get(key)?,
+                None => return Some(namespaced(value)),
             }
-            (!value.starts_with('#'))
-                .then(|| (sprite(value), connections.for_face(None, key).cloned()))
-        })
-        .collect()
+        }
+        None
+    };
+    // The elements are the nearest model's that has some.
+    let elements = chain
+        .iter()
+        .find_map(|m| m.get("elements")?.as_array())
+        .unwrap_or(&[]);
+    let mut out: Vec<(String, Option<Connection>)> = Vec::new();
+    let faces = elements
+        .iter()
+        .filter_map(|e| e.get("faces")?.as_object())
+        .flatten();
+    for (_, face) in faces {
+        let Some(texture) = face.get("texture").and_then(Json::as_str) else {
+            continue;
+        };
+        let Some(sprite) = resolve(texture) else {
+            continue;
+        };
+        if out.iter().all(|(s, _)| *s != sprite) {
+            let key = face.get("connections").and_then(Json::as_str);
+            out.push((sprite, connections.for_face(key, texture).cloned()));
+        }
+    }
+    out
 }
 
-/// The connecting textures under `root`: sprite names and their metadata.
-fn connecting_textures(root: &Path) -> Vec<(String, Meta)> {
-    let mut out = Vec::new();
+/// The connecting textures under `root`, by sprite name.
+fn connecting_textures(root: &Path) -> HashMap<String, Meta> {
+    let mut out = HashMap::new();
     let Ok(namespaces) = fs::read_dir(root.join("assets")) else {
         return out;
     };
@@ -131,7 +143,7 @@ fn connecting_textures(root: &Path) -> Vec<(String, Meta)> {
         while let Some(dir) = dirs.pop() {
             for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
                 let path = entry.path();
-                if path.is_dir() {
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
                     dirs.push(path);
                     continue;
                 }
@@ -153,120 +165,138 @@ fn connecting_textures(root: &Path) -> Vec<(String, Meta)> {
                 };
                 let name = format!("{ns_name}:{}", rel.replace('\\', "/"));
                 match Meta::from_mcmeta(&text) {
-                    Ok(Some(meta)) => out.push((name, meta)),
+                    Ok(Some(meta)) => {
+                        out.insert(name, meta);
+                    }
                     Ok(None) => {}
                     Err(e) => log::warn!("Horizon: Fusion texture {name}: {e}"),
                 }
             }
         }
     }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
     out
 }
 
+/// `sprites`' tiles of the connecting texture `name`, and the predicates it joins by itself.
+fn sheet(
+    root: &Path,
+    sprites: &mut Sprites,
+    name: &str,
+    meta: Meta,
+) -> Option<(Sheet, Connection)> {
+    let Kind::Connecting {
+        layout,
+        connections,
+        per_tile_animation,
+        ..
+    } = meta.kind
+    else {
+        return None;
+    };
+    let tiles = sprites
+        .insert_tiles(root, name, layout.grid(), per_tile_animation)
+        .map_err(|e| log::warn!("Horizon: Fusion texture {name}: {e}"))
+        .ok()?;
+    // A layer past the mesher's `u16` leaves the sheet to vanilla.
+    let tiles = tiles
+        .into_iter()
+        .map(|t| match t {
+            None => Some(None),
+            Some(l) => Some(Some(TileLayer::Layer {
+                layer: u16::try_from(l).ok()?,
+                translucent: sprites.translucent[l as usize],
+                opaque: sprites.opaque[l as usize],
+            })),
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some((Sheet { layout, tiles }, connections))
+}
+
 impl FusionTextures {
-    /// The connecting textures under `root` with their tiles inserted into `sprites` (before
-    /// it finishes). `models` answers a block state's model names.
+    /// The connecting textures under `root`: the tiles of those `fusion:connecting` models
+    /// draw are inserted into `sprites` (before it finishes), and each face in `catalog` that
+    /// shows one gets its rule.
     pub fn load(
         root: &Path,
         registry: &BlockRegistry,
         sprites: &mut Sprites,
-        mut models: impl FnMut(BlockStateId) -> Vec<String>,
+        catalog: &mut StateModels,
     ) -> Self {
-        let mut sheets = Vec::new();
-        // The layer each sheet shows as on the models' faces, and the sheets by name.
-        let mut layers = Vec::new();
-        let mut by_name = HashMap::new();
-        for (name, meta) in connecting_textures(root) {
-            let Kind::Connecting {
-                layout,
-                connections,
-                per_tile_animation,
-                ..
-            } = meta.kind
-            else {
-                continue;
-            };
-            let Some(&layer) = sprites.layers.get(&name) else {
-                continue;
-            };
-            match sprites.insert_tiles(root, &name, layout.grid(), per_tile_animation) {
-                Ok(tiles) => {
-                    let tiles = tiles
-                        .into_iter()
-                        .map(|t| {
-                            t.and_then(|l| {
-                                Some(TileLayer::Layer {
-                                    layer: u16::try_from(l).ok()?,
-                                    translucent: sprites.translucent[l as usize],
-                                    opaque: sprites.opaque[l as usize],
-                                })
-                            })
-                        })
-                        .collect();
-                    layers.push(layer);
-                    by_name.insert(name, sheets.len());
-                    sheets.push(Sheet {
-                        layout,
-                        tiles,
-                        connections,
-                    });
-                }
-                Err(e) => log::warn!("Horizon: Fusion texture {name}: {e}"),
-            }
-        }
-        if sheets.is_empty() {
+        let mut textures = connecting_textures(root);
+        if textures.is_empty() {
             return Self::default();
         }
-        let states: Vec<_> = (0..registry.len() as u32)
-            .map(|id| {
-                registry
-                    .state(BlockStateId(id))
-                    .map(|s| (s.name.as_str(), &s.properties))
-            })
+        // The layers models show the sheets as: only their models are read.
+        let shown: std::collections::HashSet<u32> = textures
+            .keys()
+            .filter_map(|name| sprites.layers.get(name).copied())
             .collect();
-        // Each state's (sheet, the model's predicates for it).
-        let mut cache: HashMap<String, Vec<(String, Option<Connection>)>> = HashMap::new();
-        let used = (0..states.len() as u32).map(|id| {
-            let mut out = Vec::new();
-            for model in models(BlockStateId(id)) {
-                let rules = cache
-                    .entry(model)
-                    .or_insert_with_key(|name| connecting_model(root, name));
-                for (sprite, connection) in rules.iter() {
-                    if let Some(&sheet) = by_name.get(sprite) {
-                        out.push((sheet, connection.clone()));
-                    }
-                }
+        let mut models: HashMap<String, Vec<(String, Option<Connection>)>> = HashMap::new();
+        let mut sheets: Vec<(Sheet, Connection)> = Vec::new();
+        let mut by_name: HashMap<String, Option<usize>> = HashMap::new();
+        let mut rules: Vec<(usize, Connection)> = Vec::new();
+        for (variant, model) in catalog.models_mut() {
+            if !model.faces.iter().any(|f| shown.contains(&f.layer)) {
+                continue;
             }
-            out
+            let found = models
+                .entry(namespaced(&variant.model))
+                .or_insert_with_key(|name| connecting_model(root, name));
+            for face in &mut model.faces {
+                let sprite = &face.quad.material.sprite;
+                let Some((_, connection)) = found.iter().find(|(s, _)| s == sprite) else {
+                    continue;
+                };
+                // The sheet, cut into tiles on first use.
+                let sheet = *by_name.entry(sprite.clone()).or_insert_with(|| {
+                    let meta = textures.remove(sprite)?;
+                    sheets.push(sheet(root, sprites, sprite, meta)?);
+                    Some(sheets.len() - 1)
+                });
+                let Some(sheet) = sheet else {
+                    continue;
+                };
+                let connection = connection
+                    .clone()
+                    .unwrap_or_else(|| sheets[sheet].1.clone());
+                let rule = match rules.iter().position(|r| r.0 == sheet && r.1 == connection) {
+                    Some(rule) => rule,
+                    None => {
+                        rules.push((sheet, connection));
+                        rules.len() - 1
+                    }
+                };
+                face.fusion = u16::try_from(rule).ok();
+            }
+        }
+        let states = (0..registry.len() as u32).map(|id| {
+            registry
+                .state(BlockStateId(id))
+                .map(|s| (s.name.as_str(), &s.properties))
         });
-        let used: Vec<_> = used.collect();
-        Self::build(sheets, &layers, states, used)
+        let sheets = sheets.into_iter().map(|(sheet, _)| sheet).collect();
+        Self::build(sheets, rules, states)
     }
 
-    /// The lookups for `sheets` (shown as `layers` on faces) over every block state (`None`
-    /// for an id the registry skips), each using the sheets in `used`.
-    fn build(
+    /// The lookups for `rules` over every block state (`None` for an id the registry skips).
+    fn build<'a>(
         sheets: Vec<Sheet>,
-        layers: &[u32],
-        states: Vec<Option<(&str, &BlockProperties)>>,
-        used: Vec<Vec<(usize, Option<Connection>)>>,
+        rules: Vec<(usize, Connection)>,
+        states: impl Iterator<Item = Option<(&'a str, &'a BlockProperties)>>,
     ) -> Self {
-        let mut out = Self::default();
+        let states: Vec<_> = states.collect();
         let mut block_states: HashMap<&str, Vec<u32>> = HashMap::new();
-        let mut blocks = HashMap::new();
-        for (id, state) in states.iter().enumerate() {
-            let block = match state {
+        let mut names = HashMap::new();
+        let blocks = (0..states.len() as u32)
+            .map(|id| match states[id as usize] {
                 Some((name, _)) => {
-                    block_states.entry(*name).or_default().push(id as u32);
-                    let next = blocks.len() as u32;
-                    *blocks.entry(*name).or_insert(next)
+                    block_states.entry(name).or_default().push(id);
+                    let next = names.len() as u32;
+                    *names.entry(name).or_insert(next)
                 }
                 None => u32::MAX,
-            };
-            out.blocks.push(block);
-        }
+            })
+            .collect();
         // Block lists to the states they match.
         let mut resolve = |list: Vec<horizon_optifine::BlockMatch>| {
             let mut ids: Vec<u32> = list
@@ -286,68 +316,43 @@ impl FusionTextures {
             ids.dedup();
             ids
         };
-        // One rule per sheet and predicate (as written), shared by the states using them.
-        let mut written: Vec<(usize, Connection)> = Vec::new();
-        for list in used {
-            let start = out.faces.len() as u32;
-            for (sheet, connection) in list {
-                let connection = connection.unwrap_or_else(|| sheets[sheet].connections.clone());
-                let found = written
-                    .iter()
-                    .position(|w| w.0 == sheet && w.1 == connection);
-                let rule = match found {
-                    Some(rule) => rule as u32,
-                    None => {
-                        written.push((sheet, connection.clone()));
-                        out.rules.push(Rule {
-                            sheet,
-                            connection: connection.map_blocks(&mut resolve),
-                        });
-                        out.rules.len() as u32 - 1
-                    }
-                };
-                if !out.faces[start as usize..]
-                    .iter()
-                    .any(|f| f.0 == layers[sheet])
-                {
-                    out.faces.push((layers[sheet], rule));
-                }
-            }
-            out.by_state.push((start, out.faces.len() as u32 - start));
+        let rules = rules
+            .into_iter()
+            .map(|(sheet, connection)| Rule {
+                sheet,
+                connection: connection.map_blocks(&mut resolve),
+            })
+            .collect();
+        Self {
+            sheets,
+            rules,
+            blocks,
         }
-        out.sheets = sheets;
-        out
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.rules.is_empty()
-    }
-
-    /// What the `face` of the block `state` draws for a quad showing sprite `layer`: `None`
-    /// when Fusion has nothing for it. `neighbour` answers the state at an offset from the
-    /// block, `covers` whether a state hides the face of a block beside it; the overlay
-    /// layout's pieces go to `overlay`.
+    /// What the `face` of the block `state` draws for a quad whose rule is `rule`. `neighbour`
+    /// answers the state at an offset from the block, `covers` whether a state hides the face
+    /// of a block beside it; the overlay layout's pieces go to `overlay`.
     pub fn pick(
         &self,
+        rule: u16,
         state: u32,
-        layer: u32,
         face: Face,
         neighbour: impl Fn([i32; 3]) -> u32,
         covers: impl Fn(u32) -> bool,
         mut overlay: impl FnMut(Overlay),
     ) -> Option<Pick> {
-        let &(start, len) = self.by_state.get(state as usize)?;
-        let faces = &self.faces[start as usize..(start + len) as usize];
-        let &(_, rule) = faces.iter().find(|f| f.0 == layer)?;
-        let rule = &self.rules[rule as usize];
+        let rule = self.rules.get(usize::from(rule))?;
         let normal = face.normal();
         let offsets = connect::offsets(Axes::cube(face));
-        let block = self.blocks.get(state as usize);
+        let block = self.blocks.get(state as usize).filter(|&&b| b != u32::MAX);
         let mask = rule.connection.mask(|bit, query| {
             let &(_, [x, y, z]) = offsets.iter().find(|o| o.0 == bit).expect("a mask bit");
             let in_front = || neighbour([x + normal[0], y + normal[1], z + normal[2]]);
             match query {
-                Query::SameBlock => self.blocks.get(neighbour([x, y, z]) as usize) == block,
+                Query::SameBlock => {
+                    block.is_some() && self.blocks.get(neighbour([x, y, z]) as usize) == block
+                }
                 Query::SameState => neighbour([x, y, z]) == state,
                 Query::Neighbour(ids) => ids.binary_search(&neighbour([x, y, z])).is_ok(),
                 Query::InFront(ids) => ids.binary_search(&in_front()).is_ok(),
@@ -356,7 +361,8 @@ impl FusionTextures {
         });
         let sheet = &self.sheets[rule.sheet];
         let tile = |i: u8| sheet.tiles.get(usize::from(i)).copied().flatten();
-        // An empty tile draws nothing.
+        // An empty tile draws nothing: a pack leaves empty only the tiles its layout's uses
+        // never need.
         Some(match sheet.layout.tiles(mask) {
             Tiles::One(t) => tile(t).map_or(Pick::Nothing, Pick::Tile),
             Tiles::Quarters(q) => match q.map(tile) {
@@ -387,20 +393,13 @@ mod tests {
     use super::*;
 
     /// Tile `i` of a sheet is layer `base + i`; `empty` tiles have none.
-    fn sheet(layout: Layout, base: u16, empty: &[u16], connections: Connection) -> Sheet {
+    fn sheet(layout: Layout, base: u16, empty: &[u16]) -> Sheet {
         let (w, h) = layout.grid();
         Sheet {
             layout,
             tiles: (0..(w * h) as u16)
-                .map(|i| {
-                    (!empty.contains(&i)).then_some(TileLayer::Layer {
-                        layer: base + i,
-                        translucent: false,
-                        opaque: false,
-                    })
-                })
+                .map(|i| (!empty.contains(&i)).then_some(layer(base + i)))
                 .collect(),
-            connections,
         }
     }
 
@@ -416,42 +415,23 @@ mod tests {
         }
     }
 
-    /// State 0 air, 1 and 2 glass (two states), 3 stone, 4 sand. Glass shows a pieced sheet
-    /// (layer 50, tiles from 100) that joins the same block; stone an overlay sheet (layer 60,
-    /// tiles from 200) toward visible sand.
-    fn world() -> FusionTextures {
+    /// The lookups over blocks named `names` (a state each).
+    fn world(
+        names: &[&str],
+        sheets: Vec<Sheet>,
+        rules: Vec<(usize, Connection)>,
+    ) -> FusionTextures {
         let none = BlockProperties::default();
-        let names = [
-            "minecraft:air",
-            "minecraft:glass",
-            "minecraft:glass",
-            "minecraft:stone",
-            "minecraft:sand",
-        ];
-        let states = names.iter().map(|n| Some((*n, &none))).collect();
-        let sheets = vec![
-            sheet(Layout::Pieced, 100, &[], Connection::SameBlock),
-            sheet(Layout::Overlay, 200, &[7], Connection::SameState),
-        ];
-        let sand = predicate(
-            r#"{"type": "and", "predicates": [{"type": "match_block", "block": "sand"}, {"type": "is_face_visible"}]}"#,
-        );
-        let used = vec![
-            vec![],
-            vec![(0, None)],
-            vec![(0, None)],
-            vec![(1, Some(sand))],
-            vec![],
-        ];
-        FusionTextures::build(sheets, &[50, 60], states, used)
+        let states = names.iter().map(|n| Some((*n, &none)));
+        FusionTextures::build(sheets, rules, states)
     }
 
-    /// `pick` for the block at the origin among `blocks` (offset, state), the opaque ones
-    /// in `opaque`; with the overlays it hands out.
+    /// `pick` for the block at the origin among `blocks` (offset, state), the opaque ones in
+    /// `opaque`; with the overlays it hands out.
     fn pick_in(
         fusion: &FusionTextures,
+        rule: u16,
         state: u32,
-        layer: u32,
         face: Face,
         blocks: &[([i32; 3], u32)],
         opaque: &[u32],
@@ -459,8 +439,8 @@ mod tests {
         let at = |o: [i32; 3]| blocks.iter().find(|(p, _)| *p == o).map_or(0, |b| b.1);
         let mut overlays = Vec::new();
         let pick = fusion.pick(
+            rule,
             state,
-            layer,
             face,
             at,
             |s| opaque.contains(&s),
@@ -471,81 +451,124 @@ mod tests {
 
     #[test]
     fn glass_pieces_join_the_same_block() {
-        let fusion = world();
+        // Glass twice (two states of one block), then stone.
+        let fusion = world(
+            &[
+                "minecraft:air",
+                "minecraft:glass",
+                "minecraft:glass",
+                "minecraft:stone",
+            ],
+            vec![sheet(Layout::Pieced, 100, &[])],
+            vec![(0, Connection::SameBlock)],
+        );
+        let at = |blocks: &[([i32; 3], u32)]| pick_in(&fusion, 0, 1, Face::North, blocks, &[]).0;
         // Alone: every quarter the lone tile.
-        assert_eq!(
-            pick_in(&fusion, 1, 50, Face::North, &[], &[]).0,
-            Some(Pick::Quarters([layer(100); 4]))
-        );
+        assert_eq!(at(&[]), Some(Pick::Quarters([layer(100); 4])));
         // A north face's right is west: glass there (in its other state) joins the right
-        // quarters, the horizontal piece.
+        // quarters, the horizontal piece. Stone doesn't.
+        let right = Pick::Quarters([layer(100), layer(103), layer(100), layer(103)]);
+        assert_eq!(at(&[([-1, 0, 0], 2)]), Some(right));
         assert_eq!(
-            pick_in(&fusion, 1, 50, Face::North, &[([-1, 0, 0], 2)], &[]).0,
-            Some(Pick::Quarters([
-                layer(100),
-                layer(103),
-                layer(100),
-                layer(103)
-            ]))
-        );
-        // Stone beside it doesn't join; a face showing another sprite isn't Fusion's.
-        assert_eq!(
-            pick_in(&fusion, 1, 50, Face::North, &[([-1, 0, 0], 3)], &[]).0,
+            at(&[([-1, 0, 0], 3)]),
             Some(Pick::Quarters([layer(100); 4]))
         );
-        assert_eq!(pick_in(&fusion, 1, 51, Face::North, &[], &[]).0, None);
-        assert_eq!(pick_in(&fusion, 4, 50, Face::North, &[], &[]).0, None);
+        // A rule that doesn't exist draws as vanilla.
+        assert_eq!(pick_in(&fusion, 1, 1, Face::North, &[], &[]).0, None);
     }
 
     #[test]
     fn overlays_reach_toward_visible_sand() {
-        let fusion = world();
+        let sand = predicate(
+            r#"{"type": "and", "predicates": [{"type": "match_block", "block": "sand"}, {"type": "is_face_visible"}]}"#,
+        );
+        let fusion = world(
+            &["minecraft:air", "minecraft:stone", "minecraft:sand"],
+            vec![sheet(Layout::Overlay, 200, &[7])],
+            vec![(0, sand)],
+        );
         // Sand to the north of stone's top face, its own top open: the top edge piece, (1, 2),
         // over a face that draws nothing itself.
-        let north = [([0, 0, -1], 4)];
+        let north = [([0, 0, -1], 2)];
         assert_eq!(
-            pick_in(&fusion, 3, 60, Face::Up, &north, &[]),
+            pick_in(&fusion, 0, 1, Face::Up, &north, &[]),
             (Some(Pick::Nothing), vec![213])
         );
         // Stone over that sand hides its top: no edge.
-        let covered = [([0, 0, -1], 4), ([0, 1, -1], 3)];
+        let covered = [([0, 0, -1], 2), ([0, 1, -1], 1)];
         assert_eq!(
-            pick_in(&fusion, 3, 60, Face::Up, &covered, &[3]),
+            pick_in(&fusion, 0, 1, Face::Up, &covered, &[1]),
             (Some(Pick::Nothing), vec![])
         );
         // Sand all round: the ring, (4, 1).
         let ring: Vec<_> = [-1, 0, 1]
             .into_iter()
-            .flat_map(|x| [-1, 0, 1].map(|z| ([x, 0, z], 4)))
+            .flat_map(|x| [-1, 0, 1].map(|z| ([x, 0, z], 2)))
             .filter(|(o, _)| *o != [0, 0, 0])
             .collect();
-        assert_eq!(pick_in(&fusion, 3, 60, Face::Up, &ring, &[]).1, [210]);
+        assert_eq!(pick_in(&fusion, 0, 1, Face::Up, &ring, &[]).1, [210]);
     }
 
     #[test]
     fn in_front_and_empty_tiles() {
-        let none = BlockProperties::default();
-        let names = ["minecraft:air", "minecraft:dirt", "minecraft:sand"];
-        let states = names.iter().map(|n| Some((*n, &none))).collect();
-        // Dirt's side joins where sand sits in front of the neighbour (on top of the block
-        // beside it, for a top face); its full sheet leaves the lone tile empty.
+        // Dirt's top joins where sand sits on the block beside it; its full sheet leaves the
+        // lone tile empty.
         let front = predicate(r#"{"type": "match_block_in_front", "block": "sand"}"#);
-        let fusion = FusionTextures::build(
-            vec![sheet(Layout::Full, 300, &[0], Connection::SameState)],
-            &[70],
-            states,
-            vec![vec![], vec![(0, Some(front))], vec![]],
+        let fusion = world(
+            &["minecraft:air", "minecraft:dirt", "minecraft:sand"],
+            vec![sheet(Layout::Full, 300, &[0])],
+            vec![(0, front)],
         );
-        // Sand above the block east of the top face: joined right, the full template's (1, 0).
-        let east_top = [([1, 1, 0], 2)];
+        // Sand on the block east of the top face: joined right, the full template's (1, 0).
         assert_eq!(
-            pick_in(&fusion, 1, 70, Face::Up, &east_top, &[]).0,
+            pick_in(&fusion, 0, 1, Face::Up, &[([1, 1, 0], 2)], &[]).0,
             Some(Pick::Tile(layer(301)))
         );
         // Sand beside it, not in front of anything: alone, and the lone tile is empty.
         assert_eq!(
-            pick_in(&fusion, 1, 70, Face::Up, &[([1, 0, 0], 2)], &[]).0,
+            pick_in(&fusion, 0, 1, Face::Up, &[([1, 0, 0], 2)], &[]).0,
             Some(Pick::Nothing)
         );
+    }
+
+    #[test]
+    fn models_name_the_predicates_their_faces_draw() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-fusion-models-{}", std::process::id()));
+        let models = root.join("assets/demo/models/block");
+        fs::create_dir_all(&models).unwrap();
+        // A pane arm over a template whose `particle` names the pane sheet but draws no face
+        // with it (as Fusion Connected Glass's posts do): only the faces count.
+        fs::write(
+            models.join("template.json"),
+            r##"{"textures": {"particle": "#pane"}, "elements": [{"from": [7, 0, 0], "to": [9, 16, 7],
+                "faces": {"up": {"texture": "#edge"}, "west": {"texture": "#pane"}}}]}"##,
+        )
+        .unwrap();
+        fs::write(
+            models.join("arm.json"),
+            r#"{"loader": "fusion:model", "type": "fusion:connecting", "parent": "demo:block/template",
+                "connections": {"edge": {"type": "true"}},
+                "textures": {"pane": "demo:block/glass", "edge": "demo:block/edge"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            models.join("plain.json"),
+            r#"{"parent": "demo:block/template", "textures": {"pane": "demo:block/glass"}}"#,
+        )
+        .unwrap();
+        let arm = connecting_model(&root, "demo:block/arm");
+        let plain = connecting_model(&root, "demo:block/plain");
+        fs::remove_dir_all(&root).unwrap();
+        // `edge` has the model's predicate; `pane` none, so the texture's own.
+        assert_eq!(
+            arm,
+            [
+                ("demo:block/edge".to_owned(), Some(Connection::Const(true))),
+                ("demo:block/glass".to_owned(), None),
+            ]
+        );
+        // Not a Fusion model: vanilla.
+        assert!(plain.is_empty());
     }
 }

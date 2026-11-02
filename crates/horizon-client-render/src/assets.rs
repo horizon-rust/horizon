@@ -224,7 +224,7 @@ impl RenderAssets {
         } else {
             crate::model_library::ParsedModels::default()
         };
-        let models = if draws {
+        let mut models = if draws {
             crate::models::prepare_with_models(root, registry, &mut sprites, &parsed)?
         } else {
             crate::models::PreparedModels::default()
@@ -245,13 +245,7 @@ impl RenderAssets {
             sprites.insert(root, &format!("minecraft:block/destroy_stage_{stage}"))?;
         }
         let fusion = if draws {
-            let catalog = &models.catalog;
-            crate::fusion::FusionTextures::load(root, registry, &mut sprites, |state| {
-                catalog
-                    .collect(state, horizon_core::position::BlockPos::new(0, 0, 0))
-                    .map(|found| found.into_iter().map(|(v, _)| v.model.clone()).collect())
-                    .unwrap_or_default()
-            })
+            crate::fusion::FusionTextures::load(root, registry, &mut sprites, &mut models.catalog)
         } else {
             Default::default()
         };
