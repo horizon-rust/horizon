@@ -5,7 +5,7 @@
 //! lightning on a hit (`channeling.json`).
 use super::{Game, view_vector};
 use horizon_client::{
-    arrows::{back_off, clip_block_stop},
+    arrows::{back_off, clip_block_hit},
     collisions::SceneCollisions,
     enchant::EffectContext,
     items::ItemStack,
@@ -433,8 +433,9 @@ impl Game<'_> {
             v,
             on_ground,
         );
+        let id = self.take_entity_id();
         self.tridents.push(ThrownTrident {
-            id: 0,
+            id,
             loyalty: thrown.enchantment_level("minecraft:loyalty"),
             stack: thrown,
             position: start,
@@ -606,8 +607,14 @@ impl Game<'_> {
                 }
                 // ProjectileImpactEvent for the mob hit: a canceled one does
                 // nothing, and the trident stays where it would have hit.
-                let canceled_mob = hit_mob.is_some_and(|(id, _)| {
-                    self.native_trident_impact(t.id, t.guest, Some(id), [0; 3], [0; 3], t.position)
+                let canceled_mob = hit_mob.is_some_and(|(id, d)| {
+                    // `at` is where the movement enters the mob's box.
+                    let at = Vec3::new(
+                        t.position.x + t.velocity.x * d,
+                        t.position.y + t.velocity.y * d,
+                        t.position.z + t.velocity.z * d,
+                    );
+                    self.native_trident_impact(t.id, t.guest, Some(id), [0; 3], [0; 3], at)
                 });
                 if canceled_mob {
                     // No damage, sound or deflection: it flies on.
@@ -696,26 +703,23 @@ impl Game<'_> {
                     // `AbstractArrow.onHitBlock` on a hit.
                     let from = t.position;
                     let flight = t.velocity;
-                    let clip = clip_block_stop(
-                        &self.world,
-                        self.res.facts(),
-                        self.collision,
-                        from,
-                        flight,
-                    );
+                    let clip =
+                        clip_block_hit(&self.world, self.res.facts(), self.collision, from, flight);
                     // ProjectileImpactEvent for the block hit: a canceled one
                     // doesn't stick the trident, which stays where it would
                     // have hit, still flying.
-                    let canceled_block = clip.is_some_and(|(stop, block, face)| {
+                    // The hook's `at` is the clip's hit location, before the back-off.
+                    let canceled_block = clip.is_some_and(|(at, block, face)| {
                         self.native_trident_impact(
                             t.id,
                             t.guest,
                             None,
                             [block.x, block.y, block.z],
                             face,
-                            stop,
+                            at,
                         )
                     });
+                    let clip = clip.map(|(at, block, face)| (back_off(at, flight), block, face));
                     if canceled_block && let Some((stop, _, _)) = clip {
                         t.position = stop;
                     } else if let Some((stop, block, _)) = clip {
@@ -800,6 +804,16 @@ impl Game<'_> {
         else {
             return;
         };
+        // The texture's OptiFine emissive overlay, drawn again full bright.
+        let glow = self
+            .res
+            .mob_data()
+            .emissive
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .overlay("entity/trident/trident")
+            .and_then(|e| self.gui.atlas.sprites.get(e))
+            .map(|r| [r.u0, r.v0, r.u1, r.v1]);
         // AbstractArrow.shouldRenderAtSqrDistance: ten times the default.
         let range = 10.0
             * super::entity_culling::default_range(
@@ -858,6 +872,19 @@ impl Game<'_> {
                 0,
                 out,
             );
+            if let Some(glow) = glow {
+                let full = horizon_client::mobs::render::FULL_BRIGHT;
+                horizon_client::mobs::render::draw(
+                    model,
+                    base,
+                    &poses,
+                    glow,
+                    0xFFFF_FFFF,
+                    full,
+                    0,
+                    out,
+                );
+            }
         }
     }
 }
