@@ -57,10 +57,12 @@ fn read_model(root: &Path, name: &str) -> Option<Json> {
     Json::parse(&text).ok()
 }
 
-/// Of a `fusion:connecting` model: the sprite of each texture its faces draw and the
-/// predicates for it (`None`: the texture's own), the first face's where several faces draw
-/// one sprite. Empty for any other model.
-fn connecting_model(root: &Path, name: &str) -> Vec<(String, Option<Connection>)> {
+/// What a model's face draws and joins by: its sprite, its side in the model, and its
+/// predicates (`None`: the texture's own).
+type ModelFace = (String, Face, Option<Connection>);
+
+/// Of a `fusion:connecting` model: each face's [`ModelFace`]. Empty for any other model.
+fn connecting_model(root: &Path, name: &str) -> Vec<ModelFace> {
     let Some(model) = read_model(root, name) else {
         return Vec::new();
     };
@@ -110,24 +112,50 @@ fn connecting_model(root: &Path, name: &str) -> Vec<(String, Option<Connection>)
         .iter()
         .find_map(|m| m.get("elements")?.as_array())
         .unwrap_or(&[]);
-    let mut out: Vec<(String, Option<Connection>)> = Vec::new();
+    let mut out: Vec<ModelFace> = Vec::new();
     let faces = elements
         .iter()
         .filter_map(|e| e.get("faces")?.as_object())
         .flatten();
-    for (_, face) in faces {
+    for (side, face) in faces {
+        let side = match side.as_str() {
+            "down" => Face::Down,
+            "up" => Face::Up,
+            "north" => Face::North,
+            "south" => Face::South,
+            "west" => Face::West,
+            "east" => Face::East,
+            _ => continue,
+        };
         let Some(texture) = face.get("texture").and_then(Json::as_str) else {
             continue;
         };
         let Some(sprite) = resolve(texture) else {
             continue;
         };
-        if out.iter().all(|(s, _)| *s != sprite) {
+        if !out.iter().any(|(s, f, _)| *s == sprite && *f == side) {
             let key = face.get("connections").and_then(Json::as_str);
-            out.push((sprite, connections.for_face(key, texture).cloned()));
+            out.push((sprite, side, connections.for_face(key, texture).cloned()));
         }
     }
     out
+}
+
+/// Where a model's `face` points once a blockstate turns it `x`, then `y` quarter turns.
+fn turned(face: Face, [x, y, _]: [u8; 3]) -> Face {
+    let mut n = face.normal();
+    for _ in 0..x % 4 {
+        // x=90 takes up to north.
+        n = [n[0], n[2], -n[1]];
+    }
+    for _ in 0..y % 4 {
+        // y=90 takes north to east.
+        n = [-n[2], n[1], n[0]];
+    }
+    Face::ALL
+        .into_iter()
+        .find(|f| f.normal() == n)
+        .expect("a quarter turn maps faces onto faces")
 }
 
 /// The connecting textures under `root`, by sprite name.
@@ -143,7 +171,13 @@ fn connecting_textures(root: &Path) -> HashMap<String, Meta> {
         while let Some(dir) = dirs.pop() {
             for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
                 let path = entry.path();
-                if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                // Linked folders too: mods' content links into the packs' tree.
+                let dir = match entry.file_type() {
+                    Ok(t) if t.is_symlink() => path.is_dir(),
+                    Ok(t) => t.is_dir(),
+                    Err(_) => path.is_dir(),
+                };
+                if dir {
                     dirs.push(path);
                     continue;
                 }
@@ -231,7 +265,7 @@ impl FusionTextures {
             .keys()
             .filter_map(|name| sprites.layers.get(name).copied())
             .collect();
-        let mut models: HashMap<String, Vec<(String, Option<Connection>)>> = HashMap::new();
+        let mut models: HashMap<String, Vec<ModelFace>> = HashMap::new();
         let mut sheets: Vec<(Sheet, Connection)> = Vec::new();
         let mut by_name: HashMap<String, Option<usize>> = HashMap::new();
         let mut rules: Vec<(usize, Connection)> = Vec::new();
@@ -244,7 +278,14 @@ impl FusionTextures {
                 .or_insert_with_key(|name| connecting_model(root, name));
             for face in &mut model.faces {
                 let sprite = &face.quad.material.sprite;
-                let Some((_, connection)) = found.iter().find(|(s, _)| s == sprite) else {
+                // The model's face on the side this one turned to, else any with its sprite.
+                let side = Face::ALL[face.quad.facing as usize];
+                let mut drawing = found.iter().filter(|(s, _, _)| s == sprite);
+                let Some((_, _, connection)) = drawing
+                    .clone()
+                    .find(|(_, f, _)| turned(*f, variant.rotations) == side)
+                    .or_else(|| drawing.next())
+                else {
                     continue;
                 };
                 // The sheet, cut into tiles on first use.
@@ -564,11 +605,45 @@ mod tests {
         assert_eq!(
             arm,
             [
-                ("demo:block/edge".to_owned(), Some(Connection::Const(true))),
-                ("demo:block/glass".to_owned(), None),
+                (
+                    "demo:block/edge".to_owned(),
+                    Face::Up,
+                    Some(Connection::Const(true))
+                ),
+                ("demo:block/glass".to_owned(), Face::West, None),
             ]
         );
         // Not a Fusion model: vanilla.
         assert!(plain.is_empty());
+    }
+
+    #[test]
+    fn faces_of_one_sprite_join_by_their_own_keys() {
+        let root = std::env::temp_dir().join(format!("horizon-fusion-keys-{}", std::process::id()));
+        let models = root.join("assets/demo/models/block");
+        fs::create_dir_all(&models).unwrap();
+        // The wiki's example: four keys on one texture, two of them joining by `blue`.
+        fs::write(
+            models.join("tiles.json"),
+            r##"{"loader": "fusion:model", "type": "connecting",
+                "textures": {"ice": "block/oak_tiles", "dirt": "block/oak_tiles", "stone": "block/oak_tiles"},
+                "connections": {"blue": {"type": "match_block", "block": "ice"},
+                    "dirt": {"type": "is_same_block"}, "default": {"type": "is_same_state"}},
+                "elements": [{"from": [0, 0, 0], "to": [16, 16, 16], "faces": {
+                    "up": {"texture": "#ice", "connections": "#blue"},
+                    "north": {"texture": "#dirt"}, "south": {"texture": "#stone"}}}]}"##,
+        )
+        .unwrap();
+        let faces = connecting_model(&root, "demo:block/tiles");
+        fs::remove_dir_all(&root).unwrap();
+        let joins = |side| faces.iter().find(|f| f.1 == side).and_then(|f| f.2.clone());
+        assert!(matches!(joins(Face::Up), Some(Connection::Neighbour(_))));
+        assert_eq!(joins(Face::North), Some(Connection::SameBlock));
+        assert_eq!(joins(Face::South), Some(Connection::SameState));
+        // A blockstate's turns move them: x=90 takes the top to the north, y=90 the north to
+        // the east.
+        assert_eq!(turned(Face::Up, [1, 0, 0]), Face::North);
+        assert_eq!(turned(Face::North, [0, 1, 0]), Face::East);
+        assert_eq!(turned(Face::Up, [1, 1, 0]), Face::East);
     }
 }
