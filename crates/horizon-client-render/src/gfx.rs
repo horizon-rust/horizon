@@ -4887,6 +4887,11 @@ impl Renderer {
             let world = pack_post::World {
                 atlas: self.pack_atlas.as_ref().map(|a| (a.view.clone(), a.size())),
                 lightmap: self.lightmap_view.clone(),
+                gui_size: self
+                    .hud
+                    .atlas_texture
+                    .as_ref()
+                    .map_or([1, 1], |t| [t.width(), t.height()]),
                 terrain: self.pack_atlas.as_ref().map(|_| pack_post::Geometry {
                     buffers: if flat { &buffers[..1] } else { &buffers },
                     table: self.flat.as_ref().filter(|_| flat).map(|f| &f.draw_layout),
@@ -6358,6 +6363,7 @@ impl Renderer {
                 &self.queue,
                 frame.entities,
                 frame.entity_spans,
+                frame.crumbling_sprite,
                 &mut self.pack_entity_rest,
             );
             entities = &self.pack_entity_rest;
