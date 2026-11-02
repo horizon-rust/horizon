@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use horizon_launcher::account::{self, Accounts};
 use horizon_launcher::backend::{self, Release};
 use horizon_launcher::github_mods;
+use horizon_launcher::i18n::{tr, trf};
 use horizon_launcher::instances;
 use horizon_launcher::loaders;
 use horizon_launcher::native_mods;
@@ -108,8 +109,18 @@ enum AccountCmd {
     List,
     /// Sign in with a Microsoft account in your browser (device code). Play needs one that owns
     /// Minecraft: Java Edition
-    SignIn,
-    /// Sign out: the account's tokens leave the keychain
+    SignIn {
+        /// Sign this account (name or UUID) in again: another Microsoft account is refused and
+        /// who plays stays the same
+        #[arg(long = "for")]
+        target: Option<String>,
+    },
+    /// Renew an account's session now, even when its access token is still fresh
+    Refresh { who: String },
+    /// Renew an account's session for a game already running: prints the read-once session file
+    /// it hands over (`--json`: {"session_file"} or {"authentication"} when it can't)
+    Session { who: String },
+    /// Sign out: the account's tokens leave the keychain (and the secrets file, where it kept them)
     SignOut {
         /// Its name or UUID
         who: String,
@@ -735,6 +746,10 @@ enum Cmd {
         /// --server-thread
         #[arg(long = "arg", value_name = "ARG", allow_hyphen_values = true)]
         arg: Vec<String>,
+        /// Play this launch as this signed-in account (its name or UUID), without changing
+        /// the one `account select` picked: several games can play as several accounts at once
+        #[arg(long, value_name = "WHO")]
+        account: Option<String>,
     },
     /// Run a dedicated server here; type commands into its console
     Server {
@@ -754,6 +769,16 @@ enum Cmd {
         /// A mod folder (horizon-mixin.toml, or an unpacked .hnmod), or a folder of them
         /// (default: the native mods installed and turned on in the instance)
         folder: Option<PathBuf>,
+        /// Export mode: build a standalone dedicated-server engine into this folder instead of
+        /// an instance's build. Needs a mod FOLDER; no instance is read or changed, and no
+        /// launcher config is written
+        #[arg(
+            long = "server-output",
+            value_name = "DIR",
+            conflicts_with = "instance",
+            requires = "folder"
+        )]
+        server_output: Option<PathBuf>,
         /// The instance whose installed native mods to build, and which then plays the build
         /// (default: the selected one)
         #[arg(long)]
@@ -1206,6 +1231,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
         }
         Cmd::NativeBuild {
             folder,
+            server_output,
             instance,
             version,
             update,
@@ -1223,6 +1249,51 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                     native_mods::Profile::from_setting(backend::Settings::load().native_release)
                 }
             };
+            let steps = |step: native_mods::Step| {
+                let secs = started.elapsed().as_secs();
+                eprintln!("[{:>2}:{:02}] {}", secs / 60, secs % 60, step.label())
+            };
+            if let Some(output) = server_output {
+                // Export mode: a standalone server engine in `output`. No instance is read
+                // or changed, and no launcher config is written; `folder` is required (clap).
+                let folder = folder.unwrap();
+                let base = match &version {
+                    Some(v) => backend::resolve_version(Some(v))?,
+                    // The instance's version is never looked at here: the newest installed
+                    // release or Nightly, or that one with `--update` (never a native build).
+                    None => native_mods::base_for(None, &backend::installed(), update)
+                        .ok_or_else(|| tr("No version is installed yet."))?,
+                };
+                let built = native_mods::build_server(
+                    &base,
+                    &folder,
+                    &output,
+                    allow_version_mismatch,
+                    profile,
+                    steps,
+                )
+                .map_err(|e| match e.starts_with(native_mods::MISMATCH) {
+                    true => trf(
+                        "{error} They often still build: pass --allow-version-mismatch to try.",
+                        &[("error", e.as_str())],
+                    ),
+                    false => e,
+                })?;
+                let built = std::path::absolute(&built).unwrap_or(built);
+                let path = built.display().to_string();
+                println!(
+                    "{}",
+                    trf("Built the server engine: {path}", &[("path", &path)])
+                );
+                println!(
+                    "{}",
+                    tr(
+                        "Point the server at it: set engine.path to this file in the server's \
+                        server.toml (docs/hosting.md); the launcher writes nothing itself."
+                    )
+                );
+                return Ok(());
+            }
             let target = match &instance {
                 Some(name) => instances::find(name)?,
                 None => instances::selected(),
@@ -1245,10 +1316,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                 &target,
                 allow_version_mismatch,
                 profile,
-                |step| {
-                    let secs = started.elapsed().as_secs();
-                    eprintln!("[{:>2}:{:02}] {}", secs / 60, secs % 60, step.label())
-                },
+                steps,
             )
             .map_err(|e| match e.starts_with(native_mods::MISMATCH) {
                 true => {
@@ -1296,16 +1364,22 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
             join,
             server,
             arg,
+            account,
         } => {
             let instance = match instance {
                 Some(name) => instances::find(&name)?,
                 None => instances::selected(),
             };
             if instance.java.is_some() {
-                if version.is_some() || world.is_some() || join.is_some() || creative {
+                if version.is_some()
+                    || world.is_some()
+                    || join.is_some()
+                    || creative
+                    || account.is_some()
+                {
                     return Err(format!(
-                        "{} plays Minecraft: Java Edition: --version, --world, --creative and \
-                         --join are for Horizon instances.",
+                        "{} plays Minecraft: Java Edition: --version, --world, --creative, \
+                         --join and --account are for Horizon instances.",
                         instance.name
                     ));
                 }
@@ -1329,7 +1403,26 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                 after_exit(&instance, &vars);
                 return played;
             }
-            let mut cmd = backend::client(&instance.resolve_version(version.as_deref())?)?;
+            // Who plays this launch; the accounts below choose it in memory only, for its
+            // `--name` and look.
+            let mut accounts = Accounts::load();
+            let who = match account {
+                Some(who) => Some(account::Player::Microsoft(
+                    accounts
+                        .find(&who)
+                        .ok_or_else(|| {
+                            format!("No signed-in account {who}. See `horizon-launcher account`.")
+                        })?
+                        .uuid
+                        .clone(),
+                )),
+                None => None,
+            };
+            if let Some(who) = &who {
+                accounts.play_as(account::store(), who.clone())?;
+            }
+            let mut cmd =
+                backend::client_as(&instance.resolve_version(version.as_deref())?, who.as_ref())?;
             instances::apply(&mut cmd, &instance)?;
             if let Some(code) = join {
                 backend::join_friend(&mut cmd, &code)?;
@@ -1347,13 +1440,13 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
             }
             cmd.args(arg);
             let started = std::time::Instant::now();
-            let accounts = Accounts::load();
             if let Some(name) = accounts.name_arg() {
                 cmd.arg("--name").arg(name);
             }
             cmd.envs(accounts.look_env());
             let vars = instance.vars(cmd.get_program());
             cmd.envs(vars.iter().map(|(k, v)| (k, v)));
+            horizon_launcher::launch::limit_memory(&mut cmd, &instance.launch);
             let played = attached(horizon_launcher::launch::wrap(cmd, &instance.launch));
             if let Err(e) = instances::record_play(&instance.id, started.elapsed()) {
                 eprintln!("Play time not saved: {e}");
@@ -1726,6 +1819,7 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                     "accounts": accounts.accounts.iter().map(|a| serde_json::json!({
                         "name": a.name, "uuid": a.uuid,
                         "selected": accounts.selected.as_ref() == Some(&a.uuid),
+                        "authentication": account::session::status(account::store(), &a.uuid),
                     })).collect::<Vec<_>>(),
                     "offline": accounts.offline.iter().map(|n| serde_json::json!({
                         "name": n,
@@ -1746,7 +1840,8 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                     } else {
                         " "
                     };
-                    println!("{mark} {}  {}", a.name, a.uuid);
+                    let status = account::session::status(account::store(), &a.uuid);
+                    println!("{mark} {}  {}  {}", a.name, a.uuid, status.label());
                 }
                 for n in &accounts.offline {
                     let on = accounts.player() == account::Player::Offline(n.clone());
@@ -1762,7 +1857,57 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                 }
             }
         }
-        AccountCmd::SignIn => {
+        AccountCmd::Refresh { who } => {
+            let status = account::session::refresh(&who)?;
+            if as_json {
+                json(serde_json::to_value(&status).map_err(|e| e.to_string())?);
+            } else if status.state != account::session::State::Ready {
+                return Err(format!("{}: {}", status.label(), status.message));
+            } else {
+                println!("{}: {}", status.label(), status.message);
+            }
+        }
+        AccountCmd::Session { who } => {
+            let dir = backend::game_home().join("sessions");
+            match (account::session::renew_for_game(&dir, &who), as_json) {
+                (Ok(file), true) => json(serde_json::json!({ "session_file": file })),
+                (Ok(file), false) => println!("{}", file.display()),
+                (Err(status), true) => json(serde_json::json!({ "authentication": status })),
+                (Err(status), false) => return Err(status.message),
+            }
+        }
+        AccountCmd::SignIn { target: Some(who) } => {
+            let a = find(&accounts, &who)?;
+            let sign_in = account::SignIn::start_for(a.clone());
+            let mut shown = false;
+            let signed_in = loop {
+                match sign_in.state() {
+                    account::SignInState::Code(code) if !shown => {
+                        shown = true;
+                        if as_json {
+                            json(serde_json::json!({
+                                "link": code.verification_uri,
+                                "code": code.user_code,
+                            }));
+                        } else {
+                            eprintln!(
+                                "To sign {} in again, open {} in a browser and enter the code {}",
+                                a.name, code.verification_uri, code.user_code
+                            );
+                        }
+                    }
+                    account::SignInState::Done(result) => break result?,
+                    _ => {}
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            };
+            if as_json {
+                json(serde_json::json!({ "signed_in": signed_in.uuid }));
+            } else {
+                println!("Signed in as {} again.", signed_in.name);
+            }
+        }
+        AccountCmd::SignIn { target: None } => {
             let client_id = account::client_id().ok_or(account::NOT_CONFIGURED)?;
             let ep = account::Endpoints::live();
             let code = account::device_code(&ep, &client_id)?;
@@ -3484,6 +3629,15 @@ mod tests {
     }
 
     #[test]
+    fn play_takes_an_account_for_one_launch() {
+        let cli = Cli::try_parse_from(["horizon-launcher", "play", "--account", "Alex"]).unwrap();
+        match cli.command {
+            Some(Cmd::Play { account, .. }) => assert_eq!(account.as_deref(), Some("Alex")),
+            _ => panic!("not play"),
+        }
+    }
+
+    #[test]
     fn play_takes_extra_arguments_that_start_with_hyphens() {
         let cli = Cli::try_parse_from([
             "horizon-launcher",
@@ -3588,5 +3742,115 @@ mod tests {
             Cli::try_parse_from(["horizon-launcher", "mods", "check", "x", "--instance", "A"])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn native_build_export_mode_needs_a_folder_and_refuses_an_instance() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(
+                [
+                    &["horizon-launcher", "native-build", "--trust-native-code"],
+                    args,
+                ]
+                .concat(),
+            )
+        };
+        // Export mode: a mod folder and an output folder.
+        match parse(&["mods", "--server-output", "engine-out"])
+            .unwrap()
+            .command
+        {
+            Some(Cmd::NativeBuild {
+                folder,
+                server_output,
+                instance,
+                version,
+                update,
+                profile,
+                ..
+            }) => {
+                assert_eq!(folder.as_deref(), Some(Path::new("mods")));
+                assert_eq!(server_output.as_deref(), Some(Path::new("engine-out")));
+                assert_eq!(instance, None);
+                assert_eq!(version, None);
+                assert!(!update);
+                assert_eq!(profile, None);
+            }
+            _ => panic!("expected native-build"),
+        }
+        // The mod folder is explicit in export mode: no default from an instance.
+        assert!(parse(&["--server-output", "engine-out"]).is_err());
+        // Export mode never touches an instance.
+        assert!(parse(&["mods", "--server-output", "engine-out", "--instance", "A"]).is_err());
+        // The options export mode keeps: an explicit version, the profile, mismatch; a version
+        // and --update refuse each other, as in the game mode.
+        match parse(&[
+            "mods",
+            "--server-output",
+            "engine-out",
+            "--version",
+            "v2026.10.13",
+            "--allow-version-mismatch",
+            "--profile",
+            "release",
+        ])
+        .unwrap()
+        .command
+        {
+            Some(Cmd::NativeBuild {
+                version,
+                update,
+                allow_version_mismatch,
+                profile,
+                ..
+            }) => {
+                assert_eq!(version.as_deref(), Some("v2026.10.13"));
+                assert!(!update);
+                assert!(allow_version_mismatch);
+                assert_eq!(profile.as_deref(), Some("release"));
+            }
+            _ => panic!("expected native-build"),
+        }
+        // --update on its own: the newest installed release or Nightly, never a native build.
+        match parse(&["mods", "--server-output", "engine-out", "--update"])
+            .unwrap()
+            .command
+        {
+            Some(Cmd::NativeBuild { update, .. }) => assert!(update),
+            _ => panic!("expected native-build"),
+        }
+        // A version refuses --update, as in the game mode.
+        assert!(parse(&[
+            "mods",
+            "--server-output",
+            "engine-out",
+            "--version",
+            "v2026.10.13",
+            "--update"
+        ])
+        .is_err());
+        // The game mode is unchanged: an instance build without --server-output.
+        assert!(matches!(
+            parse(&["--instance", "A"]).unwrap().command,
+            Some(Cmd::NativeBuild { instance: Some(i), server_output: None, .. }) if i == "A"
+        ));
+    }
+
+    #[test]
+    fn export_mode_base_is_an_installed_release_not_a_native_build() {
+        // The export mode picks the newest installed release or Nightly, never a native build
+        // (`native-*`), and `--update` changes nothing when it already is the newest.
+        let installed = vec![
+            "v2026.10.13".to_string(),
+            "v2026.09.01".to_string(),
+            "native-2b03c1".to_string(),
+        ];
+        for update in [false, true] {
+            assert_eq!(
+                native_mods::base_for(None, &installed, update).as_deref(),
+                Some("v2026.10.13")
+            );
+        }
+        assert_eq!(native_mods::base_for(None, &[], false), None);
     }
 }

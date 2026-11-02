@@ -1,6 +1,7 @@
 //! A content mod's `assets/` and `data/` (API 0.2, docs/modpacks.md): the
-//! files it adds to the game's resource tree, and the blocks, items and mob
-//! effects it declares in `data/<id>/horizon/{block,item,mob_effect}/`.
+//! files it adds to the game's resource tree, and the blocks, items, mob
+//! effects, entity types and menu types it declares in
+//! `data/<id>/horizon/{block,item,mob_effect,entity_type,menu}/`.
 //!
 //! Content is data, not code: nothing here runs in the sandbox. What a mod
 //! may add is fenced instead. Its own namespaces (its id and the ones its
@@ -48,6 +49,18 @@ pub fn check_path(name: &str) -> Result<(), String> {
 }
 
 /// A vanilla identifier, `minecraft:path`.
+/// `Identifier.isValidNamespace` and `isValidPath` on an id with both parts
+/// given: `[a-z0-9_.-]`, and `/` in the path too.
+fn namespaced_id(id: &str) -> bool {
+    let ok = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b);
+    id.split_once(':').is_some_and(|(namespace, path)| {
+        !namespace.is_empty()
+            && !path.is_empty()
+            && namespace.bytes().all(ok)
+            && path.bytes().all(|b| ok(b) || b == b'/')
+    })
+}
+
 fn vanilla_id(id: &str) -> bool {
     id.strip_prefix("minecraft:").is_some_and(|path| {
         !path.is_empty()
@@ -73,6 +86,35 @@ pub struct BlockProperties {
     pub map_color: Option<u8>,
     /// A vanilla block whose sounds this block uses.
     pub sounds: Option<String>,
+    /// Which states tick randomly, whatever the template does (`isRandomlyTicking`).
+    pub random_ticks: Option<RandomTicks>,
+}
+
+/// Which of a block's states get random ticks (`BlockBehaviour.isRandomlyTicking(state)`), so a
+/// crop, sapling or soil on a template that doesn't tick still grows. The sections' random tick
+/// counts follow it, and `native_random_tick` fires for the states it picks.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum RandomTicks {
+    /// Every state (`true`), or none (`false`, for a template that ticks).
+    All(bool),
+    /// The states whose own state property `property` is one of `values`.
+    States {
+        property: String,
+        values: Vec<String>,
+    },
+}
+
+impl RandomTicks {
+    /// Whether a state ticks, `combo` being its values of the block's own state properties.
+    pub fn applies(&self, combo: &[(String, String)]) -> bool {
+        match self {
+            RandomTicks::All(all) => *all,
+            RandomTicks::States { property, values } => combo
+                .iter()
+                .any(|(name, value)| name == property && values.contains(value)),
+        }
+    }
 }
 
 /// Per-state outline and collision boxes, selected by one state property.
@@ -139,8 +181,10 @@ fn yes() -> bool {
 }
 
 /// A block the mod adds: a vanilla template's behaviour, states and shapes
-/// under a new id, with `properties` applied.
-#[derive(Clone, Debug, PartialEq)]
+/// under a new id, with `properties` applied. A native mod may build one in
+/// code (`native_blocks`): `..Default::default()` leaves the rest as a file
+/// leaves it out, except `item`, which a file sets unless told not to.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Block {
     /// `<mod id>:<path>`.
     pub id: String,
@@ -206,8 +250,9 @@ struct ItemFile {
 }
 
 /// An item the mod adds: a vanilla template item's components under a new
-/// id, with these changed.
-#[derive(Clone, Debug, PartialEq)]
+/// id, with these changed. A native mod may build one in code
+/// (`native_items`).
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Item {
     pub id: String,
     /// The vanilla item it copies, `minecraft:<path>`.
@@ -242,10 +287,58 @@ pub struct MobEffect {
     pub color: u32,
 }
 
+/// the vanilla entity types a mod's type may copy: thrown item
+/// projectiles (`ThrowableItemProjectile`).
+pub const ENTITY_TEMPLATES: [&str; 1] = ["minecraft:snowball"];
+
+/// an entity type the mod adds: a copy of a vanilla template's, thrown
+/// from `item` and drawn as it.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EntityType {
+    /// `<mod id>:<path>`.
+    #[serde(skip)]
+    pub id: String,
+    /// one of [`ENTITY_TEMPLATES`].
+    pub template: String,
+    /// one of the mod's own items, which throws it.
+    pub item: String,
+    /// what a hit deals to an entity, as `thrown` damage.
+    #[serde(default)]
+    pub damage: f32,
+}
+
+/// a menu type the mod adds (vanilla's `MenuType`, NeoForge's
+/// `IMenuTypeExtension.create`): its container's slot count, the
+/// `ContainerData` count its menu syncs, and its take-only slots
+/// (`FurnaceResultSlot.mayPlace`). The slots come first in the menu, then the
+/// player's 36, and a mod screen (`native_screen`) places them.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MenuType {
+    /// `<mod id>:<path>`.
+    #[serde(skip)]
+    pub id: String,
+    /// 1 to [`MAX_MENU_SLOTS`].
+    pub slots: u16,
+    /// 0 to [`MAX_MENU_SLOTS`].
+    #[serde(default)]
+    pub data_slots: u16,
+    /// slots a player takes from but never puts into, each below `slots`.
+    #[serde(default)]
+    pub results: Vec<u16>,
+}
+
+/// the most container or data slots a mod menu type has, as many as a mod
+/// container (`native_block_entity_container`) may.
+pub const MAX_MENU_SLOTS: u16 = 256;
+
 #[derive(Debug)]
 enum Source {
     Dir(PathBuf),
     Zip(PathBuf),
+    /// No files: blocks and items a native mod declares in code.
+    Code,
 }
 
 /// A mod's content: its files and declarations.
@@ -259,6 +352,8 @@ pub struct Content {
     pub effects: Vec<MobEffect>,
     /// Its creative inventory tabs, by id.
     pub creative_tabs: Vec<CreativeTab>,
+    pub entity_types: Vec<EntityType>,
+    pub menu_types: Vec<MenuType>,
     /// The namespaces it owns: the mod id, then the manifest's `namespaces`.
     pub namespaces: Vec<String>,
 }
@@ -304,6 +399,16 @@ pub fn clash(a: (&str, &[String]), b: (&str, &[String])) -> Option<String> {
 impl Content {
     /// The content of the mod at `path` (a `.hmod` or a mod folder).
     pub fn read(path: &Path, manifest: &Manifest) -> Result<Content, String> {
+        Self::read_declaring(path, manifest, &[])
+    }
+    /// [`Content::read`] for a mod whose native code also declares items (`native_items`):
+    /// a file's `crafting_remainder` may name one of those `declared` ids, which are not in the
+    /// files.
+    pub fn read_declaring(
+        path: &Path,
+        manifest: &Manifest,
+        declared: &[String],
+    ) -> Result<Content, String> {
         let (source, sized) = if path.is_dir() {
             let mut out = Vec::new();
             for top in ["assets", "data"] {
@@ -347,16 +452,103 @@ impl Content {
             items: Vec::new(),
             effects: Vec::new(),
             creative_tabs: Vec::new(),
+            entity_types: Vec::new(),
+            menu_types: Vec::new(),
             namespaces: manifest.owned_namespaces().map(str::to_owned).collect(),
         };
-        content.check(manifest)?;
+        content.check(manifest, declared)?;
         Ok(content)
+    }
+
+    /// Content with no files, for the blocks and items native mods declare
+    /// in code in `namespace` ([`Content::declare`]).
+    pub fn declared(namespace: &str) -> Content {
+        Content {
+            source: Source::Code,
+            files: Vec::new(),
+            blocks: Vec::new(),
+            items: Vec::new(),
+            effects: Vec::new(),
+            creative_tabs: Vec::new(),
+            entity_types: Vec::new(),
+            menu_types: Vec::new(),
+            namespaces: vec![namespace.to_owned()],
+        }
+    }
+
+    /// Adds blocks and items a native mod declares in code (`native_blocks`,
+    /// `native_items`), checked as declaration files are: ids in this mod's
+    /// own namespace (its id, as `data/<id>/horizon/` is) and declared once
+    /// with what it already has, a vanilla template, a crafting remainder
+    /// that is vanilla or this mod's. All or nothing: on an error nothing is
+    /// added.
+    pub fn declare(&mut self, blocks: &[Block], items: &[Item]) -> Result<(), String> {
+        let own = self
+            .namespaces
+            .first()
+            .map(String::as_str)
+            .unwrap_or_default();
+        let mut ids: BTreeSet<&str> = self
+            .blocks
+            .iter()
+            .map(|b| b.id.as_str())
+            .chain(self.items.iter().map(|i| i.id.as_str()))
+            .collect();
+        let mut item_ids: BTreeSet<&str> = self
+            .blocks
+            .iter()
+            .filter(|b| b.item)
+            .map(|b| b.id.as_str())
+            .chain(self.items.iter().map(|i| i.id.as_str()))
+            .collect();
+        let in_own =
+            |id: &str| namespaced_id(id) && id.split_once(':').is_some_and(|(ns, _)| ns == own);
+        for block in blocks {
+            let id = block.id.as_str();
+            if !in_own(id) {
+                return Err(format!("block {id:?} is not an id in {own}:"));
+            }
+            check_block(block).map_err(|e| format!("block {id}: {e}"))?;
+            if !ids.insert(id) {
+                return Err(format!("block {id} is declared twice"));
+            }
+            if block.item {
+                item_ids.insert(id);
+            }
+        }
+        for item in items {
+            let id = item.id.as_str();
+            if !in_own(id) {
+                return Err(format!("item {id:?} is not an id in {own}:"));
+            }
+            check_item(item).map_err(|e| format!("item {id}: {e}"))?;
+            if !item_ids.insert(id) {
+                return Err(format!(
+                    "item {id} is declared twice, or is also a block's item"
+                ));
+            }
+        }
+        for item in items {
+            if let Some(rest) = &item.crafting_remainder
+                && (rest == "minecraft:air"
+                    || !vanilla_id(rest) && !item_ids.contains(rest.as_str()))
+            {
+                return Err(format!(
+                    "item {}: crafting_remainder {rest:?} is not a vanilla item (minecraft:...) or one of this mod's",
+                    item.id
+                ));
+            }
+        }
+        self.blocks.extend_from_slice(blocks);
+        self.items.extend_from_slice(items);
+        Ok(())
     }
 
     /// Where the files are read from: the mod's folder or its `.hmod`.
     pub fn source(&self) -> &Path {
         match &self.source {
             Source::Dir(path) | Source::Zip(path) => path,
+            Source::Code => Path::new(""),
         }
     }
 
@@ -376,11 +568,12 @@ impl Content {
         Ok(match &self.source {
             Source::Dir(root) => FileReader::Dir(root),
             Source::Zip(path) => FileReader::Zip(Box::new(open_zip(path)?)),
+            Source::Code => FileReader::Dir(Path::new("")),
         })
     }
 
     /// Where content may go, and the declarations.
-    fn check(&mut self, manifest: &Manifest) -> Result<(), String> {
+    fn check(&mut self, manifest: &Manifest, declared: &[String]) -> Result<(), String> {
         let id = manifest.id.as_str();
         if !self.files.is_empty() && !manifest.capabilities.contains(&Capability::Registries) {
             return Err(format!(
@@ -391,6 +584,8 @@ impl Content {
         let mut items = Vec::new();
         let mut effects = Vec::new();
         let mut tabs = Vec::new();
+        let mut types = Vec::new();
+        let mut menus = Vec::new();
         for name in &self.files {
             let mut parts = name.splitn(3, '/');
             let (top, namespace, rest) = (
@@ -411,7 +606,7 @@ impl Content {
             }
             if !own && top == "data" && rest.starts_with("horizon/") {
                 return Err(format!(
-                    "{name}: blocks, items and mob effects are declared in data/{id}/horizon/"
+                    "{name}: blocks, items, mob effects, entity types and menu types are declared in data/{id}/horizon/"
                 ));
             }
             let Some(decl) = (own && top == "data")
@@ -435,9 +630,13 @@ impl Content {
                 effects.push((effect, name.clone()));
             } else if let Some(tab) = parse("creative_tab") {
                 tabs.push((tab, name.clone()));
+            } else if let Some(kind) = parse("entity_type") {
+                types.push((kind, name.clone()));
+            } else if let Some(menu) = parse("menu") {
+                menus.push((menu, name.clone()));
             } else {
                 return Err(format!(
-                    "{name}: data/{id}/horizon/ holds block/, item/, mob_effect/ and creative_tab/*.json only"
+                    "{name}: data/{id}/horizon/ holds block/, item/, mob_effect/, creative_tab/, entity_type/ and menu/*.json only"
                 ));
             }
         }
@@ -445,11 +644,16 @@ impl Content {
         for (block, name) in blocks {
             let file: BlockFile =
                 serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
-            check_block(&file).map_err(|e| format!("{name}: {e}"))?;
-            if file.item {
-                ids.insert(block.clone());
+            if file
+                .connects_to
+                .as_ref()
+                .is_some_and(|t| !t.starts_with('#'))
+            {
+                return Err(format!(
+                    "{name}: connects_to is a block tag, #namespace:path"
+                ));
             }
-            self.blocks.push(Block {
+            let block = Block {
                 id: block,
                 template: file.template,
                 properties: file.properties,
@@ -462,37 +666,33 @@ impl Content {
                     .connects_to
                     .map(|t| t.trim_start_matches('#').to_owned()),
                 thickness: file.thickness,
-            });
+            };
+            check_block(&block).map_err(|e| format!("{name}: {e}"))?;
+            if block.item {
+                ids.insert(block.id.clone());
+            }
+            self.blocks.push(block);
         }
         let mut remainders = Vec::new();
         for (item, name) in items {
             let file: ItemFile =
                 serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
-            if !vanilla_id(&file.template) {
-                return Err(format!(
-                    "{name}: template {:?} is not a vanilla item (minecraft:...)",
-                    file.template
-                ));
-            }
-            if file.max_stack_size.is_some_and(|n| !(1..=99).contains(&n)) {
-                return Err(format!("{name}: max_stack_size is 1 to 99"));
-            }
-            check_components(&file.components, &["max_stack_size", "rarity"])
-                .map_err(|e| format!("{name}: {e}"))?;
-            if !ids.insert(item.clone()) {
-                return Err(format!("{name}: {item} is also a block's item"));
-            }
-            if let Some(rest) = &file.crafting_remainder {
-                remainders.push((name, rest.clone()));
-            }
-            self.items.push(Item {
+            let item = Item {
                 id: item,
                 template: file.template,
                 max_stack_size: file.max_stack_size,
                 rarity: file.rarity,
                 components: file.components,
                 crafting_remainder: file.crafting_remainder,
-            });
+            };
+            check_item(&item).map_err(|e| format!("{name}: {e}"))?;
+            if !ids.insert(item.id.clone()) {
+                return Err(format!("{name}: {} is also a block's item", item.id));
+            }
+            if let Some(rest) = &item.crafting_remainder {
+                remainders.push((name, rest.clone()));
+            }
+            self.items.push(item);
         }
         for (effect, name) in effects {
             let file: MobEffect =
@@ -509,7 +709,7 @@ impl Content {
                     "{name}: crafting_remainder {rest:?} is no remainder (leave it out)"
                 ));
             }
-            if !vanilla_id(&rest) && !ids.contains(&rest) {
+            if !vanilla_id(&rest) && !ids.contains(&rest) && !declared.contains(&rest) {
                 return Err(format!(
                     "{name}: crafting_remainder {rest:?} is not a vanilla item (minecraft:...) or one of this mod's"
                 ));
@@ -534,11 +734,60 @@ impl Content {
                 items: file.items,
             });
         }
+        for (kind, name) in types {
+            let file: EntityType =
+                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+            if !ENTITY_TEMPLATES.contains(&file.template.as_str()) {
+                return Err(format!(
+                    "{name}: template {:?} is not one of {ENTITY_TEMPLATES:?}",
+                    file.template
+                ));
+            }
+            // its own item, so no vanilla item loses its use to it.
+            if !ids.contains(&file.item) {
+                return Err(format!(
+                    "{name}: item {:?} is not one of this mod's items",
+                    file.item
+                ));
+            }
+            if self.entity_types.iter().any(|t| t.item == file.item) {
+                return Err(format!(
+                    "{name}: item {:?} already throws another entity type",
+                    file.item
+                ));
+            }
+            if !(file.damage.is_finite() && file.damage >= 0.0) {
+                return Err(format!("{name}: damage is 0 or more"));
+            }
+            self.entity_types.push(EntityType { id: kind, ..file });
+        }
+        for (menu, name) in menus {
+            let file: MenuType =
+                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+            if !(1..=MAX_MENU_SLOTS).contains(&file.slots) || file.data_slots > MAX_MENU_SLOTS {
+                return Err(format!(
+                    "{name}: slots is 1 to {MAX_MENU_SLOTS}, data_slots 0 to {MAX_MENU_SLOTS}"
+                ));
+            }
+            let mut seen = BTreeSet::new();
+            for &r in &file.results {
+                if r >= file.slots {
+                    return Err(format!(
+                        "{name}: result {r} is past the last slot, {}",
+                        file.slots - 1
+                    ));
+                }
+                if !seen.insert(r) {
+                    return Err(format!("{name}: result {r} is listed twice"));
+                }
+            }
+            self.menu_types.push(MenuType { id: menu, ..file });
+        }
         Ok(())
     }
 }
 
-/// Vanilla component types only, removals as `{}`, and none of `fields`,
+/// Namespaced component types, removals as `{}`, and none of `fields`,
 /// which the file sets with its own keys.
 fn check_components(
     components: &BTreeMap<String, serde_json::Value>,
@@ -549,10 +798,8 @@ fn check_components(
             Some(kind) => (true, kind),
             None => (false, key.as_str()),
         };
-        if !vanilla_id(kind) {
-            return Err(format!(
-                "component {key:?} is not a vanilla type (minecraft:...)"
-            ));
+        if !namespaced_id(kind) {
+            return Err(format!("component {key:?} must be namespaced and valid"));
         }
         if let Some(own) = kind
             .strip_prefix("minecraft:")
@@ -567,7 +814,23 @@ fn check_components(
     Ok(())
 }
 
-fn check_block(file: &BlockFile) -> Result<(), String> {
+/// An item's fields, as a file or code gives them.
+fn check_item(item: &Item) -> Result<(), String> {
+    if !vanilla_id(&item.template) {
+        return Err(format!(
+            "template {:?} is not a vanilla item (minecraft:...)",
+            item.template
+        ));
+    }
+    if item.max_stack_size.is_some_and(|n| !(1..=99).contains(&n)) {
+        return Err("max_stack_size is 1 to 99".into());
+    }
+    check_components(&item.components, &["max_stack_size", "rarity"])
+}
+
+/// A block's fields, as a file or code gives them (`connects_to` without
+/// its `#`).
+fn check_block(file: &Block) -> Result<(), String> {
     if !vanilla_id(&file.template) {
         return Err(format!(
             "template {:?} is not a vanilla block (minecraft:...)",
@@ -618,6 +881,19 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
         }
     }
     let p = &file.properties;
+    if let Some(RandomTicks::States { property, values }) = &p.random_ticks {
+        let declared = file
+            .state_properties
+            .get(property)
+            .map(StateProperty::values);
+        if declared.is_none_or(|all| {
+            values.is_empty() || values.iter().any(|v| !all.contains(&v.as_str()))
+        }) {
+            return Err(format!(
+                "random_ticks needs values of the block's own state property {property:?} (state_properties)"
+            ));
+        }
+    }
     let finite = |v: Option<f32>| v.is_none_or(f32::is_finite);
     if !finite(p.hardness) || !finite(p.explosion_resistance) || !finite(p.friction) {
         return Err("hardness, explosion_resistance and friction are numbers".into());
@@ -659,7 +935,7 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
         if file.template != "minecraft:chorus_plant" {
             return Err("connects_to needs template minecraft:chorus_plant (a PipeBlock)".into());
         }
-        let id = tag.strip_prefix('#').unwrap_or_default();
+        let id = tag.as_str();
         let valid = |s: &str| {
             !s.is_empty()
                 && s.chars()
@@ -749,6 +1025,83 @@ capabilities = ["registries"]
     }
 
     #[test]
+    fn blocks_and_items_declared_in_code_pass_the_files_checks() {
+        let block = |id: &str| Block {
+            id: id.into(),
+            template: "minecraft:iron_block".into(),
+            item: true,
+            ..Block::default()
+        };
+        let item = |id: &str| Item {
+            id: id.into(),
+            template: "minecraft:diamond".into(),
+            ..Item::default()
+        };
+        let mut content = Content::declared("ruby");
+        assert!(content.is_empty());
+        let wrench = Item {
+            crafting_remainder: Some("ruby:gear".into()),
+            ..item("ruby:wrench")
+        };
+        content
+            .declare(&[block("ruby:gear"), block("ruby:casing")], &[wrench])
+            .unwrap();
+        assert_eq!(content.blocks.len(), 2);
+        assert_eq!(content.items[0].id, "ruby:wrench");
+        // Each refusal adds nothing.
+        let refused = |blocks: &[Block], items: &[Item]| {
+            let mut c = Content::declared("ruby");
+            c.declare(&[block("ruby:gear")], &[]).unwrap();
+            let e = c.declare(blocks, items).unwrap_err();
+            assert_eq!((c.blocks.len(), c.items.len()), (1, 0), "{e}");
+            e
+        };
+        assert!(refused(&[block("emerald:gear")], &[]).contains("not an id in ruby:"));
+        assert!(refused(&[block("minecraft:gear")], &[]).contains("not an id in ruby:"));
+        assert!(refused(&[], &[item("ruby")]).contains("not an id in ruby:"));
+        assert!(refused(&[block("ruby:gear")], &[]).contains("declared twice"));
+        assert!(refused(&[], &[item("ruby:gear")]).contains("block's item"));
+        let modded = Block {
+            template: "ruby:other".into(),
+            ..block("ruby:casing")
+        };
+        assert!(refused(&[modded], &[]).contains("not a vanilla block"));
+        let dim = Block {
+            properties: BlockProperties {
+                light: Some(16),
+                ..BlockProperties::default()
+            },
+            ..block("ruby:lamp")
+        };
+        assert!(refused(&[dim], &[]).contains("light is 0 to 15"));
+        let stack = Item {
+            max_stack_size: Some(100),
+            ..item("ruby:ingot")
+        };
+        assert!(refused(&[], &[stack]).contains("max_stack_size"));
+        let rest = Item {
+            crafting_remainder: Some("emerald:dust".into()),
+            ..item("ruby:dust")
+        };
+        assert!(refused(&[block("ruby:pipe")], &[rest]).contains("crafting_remainder"));
+        // A cable's tag comes bare from code.
+        let cable = Block {
+            template: "minecraft:chorus_plant".into(),
+            connects_to: Some("ruby:cables".into()),
+            ..block("ruby:cable")
+        };
+        content.declare(&[cable], &[]).unwrap();
+    }
+
+    #[test]
+    fn a_connecting_block_file_names_its_tag_with_a_hash() {
+        let cable = br#"{"template": "minecraft:chorus_plant", "connects_to": "ruby:cables"}"#;
+        let files: &[(&str, &[u8])] = &[("data/ruby/horizon/block/cable.json", cable)];
+        let e = hmod("bare-tag", MANIFEST_TEXT, files).unwrap_err();
+        assert!(e.contains("#namespace:path"), "{e}");
+    }
+
+    #[test]
     fn content_only_mod_round_trips() {
         let files: &[(&str, &[u8])] = &[
             ("data/ruby/horizon/block/ruby_block.json", BLOCK),
@@ -806,6 +1159,34 @@ capabilities = ["registries"]
             .map(|i| i.crafting_remainder.as_deref())
             .collect();
         assert_eq!(rests, [Some("minecraft:bowl"), Some("ruby:c_flask"), None]);
+    }
+
+    #[test]
+    fn a_file_item_may_leave_a_code_declared_item_as_its_remainder() {
+        // `native_items` declares ruby:wrench in code; a file item names it as its remainder.
+        let files: &[(&str, &[u8])] = &[(
+            "data/ruby/horizon/item/tool.json",
+            br#"{"template": "minecraft:iron_pickaxe", "crafting_remainder": "ruby:wrench"}"#,
+        )];
+        let read = |declared: &[String]| {
+            let dir = scratch("declared-remainder");
+            let path = dir.join("m.hmod");
+            std::fs::write(
+                &path,
+                Package::write_files(MANIFEST_TEXT, None, files).unwrap(),
+            )
+            .unwrap();
+            let package = Package::read(&path).unwrap();
+            let content = Content::read_declaring(&path, &package.manifest, declared);
+            std::fs::remove_dir_all(&dir).unwrap();
+            content
+        };
+        assert!(read(&[]).is_err(), "a remainder nobody declares is refused");
+        let content = read(&["ruby:wrench".to_owned()]).expect("the code-declared item is known");
+        assert_eq!(
+            content.items[0].crafting_remainder.as_deref(),
+            Some("ruby:wrench")
+        );
     }
 
     #[test]
@@ -882,6 +1263,160 @@ capabilities = ["registries"]
             let e = hmod(case, MANIFEST_TEXT, files).unwrap_err();
             assert!(e.contains(why), "{case}: {e}");
         }
+    }
+
+    #[test]
+    fn menu_types_take_slots_data_slots_and_results() {
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/menu/press.json",
+                br#"{"slots": 9, "data_slots": 2, "results": [7, 8]}"#,
+            ),
+            ("data/ruby/horizon/menu/bag.json", br#"{"slots": 4}"#),
+        ];
+        let content = hmod("menus", MANIFEST_TEXT, files).unwrap();
+        let menus: Vec<_> = content
+            .menu_types
+            .iter()
+            .map(|m| (m.id.as_str(), m.slots, m.data_slots, m.results.clone()))
+            .collect();
+        assert_eq!(
+            menus,
+            [("ruby:bag", 4, 0, vec![]), ("ruby:press", 9, 2, vec![7, 8])]
+        );
+        for (case, file, why) in [
+            ("menu-empty", r#"{"slots": 0}"#, "slots is 1 to 256"),
+            ("menu-large", r#"{"slots": 257}"#, "slots is 1 to 256"),
+            (
+                "menu-data",
+                r#"{"slots": 1, "data_slots": 257}"#,
+                "data_slots 0 to 256",
+            ),
+            (
+                "menu-result",
+                r#"{"slots": 3, "results": [3]}"#,
+                "result 3 is past the last slot, 2",
+            ),
+            (
+                "menu-twice",
+                r#"{"slots": 3, "results": [1, 1]}"#,
+                "result 1 is listed twice",
+            ),
+            ("menu-key", r#"{"slots": 3, "rows": 1}"#, "unknown field"),
+            ("menu-missing", r#"{"data_slots": 1}"#, "missing field"),
+        ] {
+            let files: &[(&str, &[u8])] = &[("data/ruby/horizon/menu/a.json", file.as_bytes())];
+            let e = hmod(case, MANIFEST_TEXT, files).unwrap_err();
+            assert!(e.contains(why), "{case}: {e}");
+        }
+    }
+
+    #[test]
+    fn entity_types_copy_a_throwable_and_name_its_item() {
+        let files: &[(&str, &[u8])] = &[
+            ("data/ruby/horizon/item/gem.json", ITEM),
+            (
+                "data/ruby/horizon/entity_type/bolt.json",
+                br#"{"template": "minecraft:snowball", "item": "ruby:gem", "damage": 2.5}"#,
+            ),
+            ("data/ruby/horizon/item/dust.json", ITEM),
+            (
+                "data/ruby/horizon/entity_type/puff.json",
+                br#"{"template": "minecraft:snowball", "item": "ruby:dust"}"#,
+            ),
+        ];
+        let content = hmod("types", MANIFEST_TEXT, files).unwrap();
+        let types: Vec<_> = content
+            .entity_types
+            .iter()
+            .map(|t| (t.id.as_str(), t.item.as_str(), t.damage))
+            .collect();
+        assert_eq!(
+            types,
+            [
+                ("ruby:bolt", "ruby:gem", 2.5),
+                ("ruby:puff", "ruby:dust", 0.0)
+            ]
+        );
+        let snowball = |rest: &str| format!(r#"{{"template": "minecraft:snowball"{rest}}}"#);
+        for (case, file, why) in [
+            (
+                "type-template",
+                r#"{"template": "minecraft:egg", "item": "ruby:gem"}"#.to_owned(),
+                "is not one of",
+            ),
+            (
+                "type-vanilla-item",
+                snowball(r#", "item": "minecraft:stick""#),
+                "is not one of this mod's items",
+            ),
+            (
+                "type-unknown-item",
+                snowball(r#", "item": "ruby:none""#),
+                "is not one of this mod's items",
+            ),
+            (
+                "type-damage",
+                snowball(r#", "item": "ruby:gem", "damage": -1"#),
+                "damage is 0 or more",
+            ),
+            (
+                "type-key",
+                snowball(r#", "item": "ruby:gem", "size": 1"#),
+                "unknown field",
+            ),
+        ] {
+            let files: &[(&str, &[u8])] = &[
+                ("data/ruby/horizon/item/gem.json", ITEM),
+                ("data/ruby/horizon/entity_type/a.json", file.as_bytes()),
+            ];
+            let e = hmod(case, MANIFEST_TEXT, files).unwrap_err();
+            assert!(e.contains(why), "{case}: {e}");
+        }
+        let shared = snowball(r#", "item": "ruby:gem""#);
+        let files: &[(&str, &[u8])] = &[
+            ("data/ruby/horizon/item/gem.json", ITEM),
+            ("data/ruby/horizon/entity_type/a.json", shared.as_bytes()),
+            ("data/ruby/horizon/entity_type/b.json", shared.as_bytes()),
+        ];
+        let e = hmod("type-shared", MANIFEST_TEXT, files).unwrap_err();
+        assert!(e.contains("already throws another entity type"), "{e}");
+    }
+
+    #[test]
+    fn blocks_pick_the_states_that_tick_randomly() {
+        let own = r#""state_properties": {"grown": {"type": "boolean"}}"#;
+        let block = |ticks: &str| {
+            let text = format!(
+                r#"{{"template": "minecraft:dirt", {own}, "properties": {{"random_ticks": {ticks}}}}}"#
+            );
+            let files: &[(&str, &[u8])] = &[("data/ruby/horizon/block/crop.json", text.as_bytes())];
+            hmod("random-ticks", MANIFEST_TEXT, files)
+        };
+        let ticks =
+            |c: Result<Content, String>| c.unwrap().blocks[0].properties.random_ticks.clone();
+        let state = |v: &str| [("grown".to_owned(), v.to_owned())];
+        // Every state, whatever the template does; `false` stops a template that ticks.
+        let all = ticks(block("true")).unwrap();
+        assert!(all.applies(&state("true")) && all.applies(&[]));
+        assert!(!ticks(block("false")).unwrap().applies(&state("false")));
+        // Chosen states: a crop that stops ticking once it is grown.
+        let chosen = ticks(block(r#"{"property": "grown", "values": ["false"]}"#)).unwrap();
+        assert!(chosen.applies(&state("false")) && !chosen.applies(&state("true")));
+        assert!(
+            !chosen.applies(&[]),
+            "a state without the property does not tick"
+        );
+        // Not the block's own property, no values, or a value it doesn't have.
+        for bad in [
+            r#"{"property": "age", "values": ["0"]}"#,
+            r#"{"property": "grown", "values": []}"#,
+            r#"{"property": "grown", "values": ["maybe"]}"#,
+        ] {
+            let e = block(bad).err().unwrap();
+            assert!(e.contains("random_ticks"), "{bad}: {e}");
+        }
+        assert!(block("3").is_err());
     }
 
     #[test]
@@ -1040,14 +1575,34 @@ capabilities = ["registries"]
         );
         for (case, components, why) in [
             (
-                "modded-component",
-                r#"{"ruby:mana": 3}"#,
-                "not a vanilla type",
-            ),
-            (
                 "bare-component",
                 r#"{"max_damage": 3}"#,
-                "not a vanilla type",
+                "must be namespaced",
+            ),
+            (
+                "uppercase-path",
+                r#"{"minecraft:Foo": 3}"#,
+                "must be namespaced and valid",
+            ),
+            (
+                "uppercase-namespace",
+                r#"{"Example:charge": 3}"#,
+                "must be namespaced and valid",
+            ),
+            (
+                "empty-namespace",
+                r#"{":charge": 3}"#,
+                "must be namespaced and valid",
+            ),
+            (
+                "empty-path",
+                r#"{"example:": 3}"#,
+                "must be namespaced and valid",
+            ),
+            (
+                "invalid-removal",
+                r#"{"!example:Foo": {}}"#,
+                "must be namespaced and valid",
             ),
             (
                 "own-key",
@@ -1087,11 +1642,6 @@ capabilities = ["registries"]
             assert!(e.contains("crafting_remainder"), "{case}: {e}");
         }
         for (case, block, why) in [
-            (
-                "block-modded-component",
-                r#"{"template": "minecraft:stone", "components": {"ruby:mana": 3}}"#,
-                "not a vanilla type",
-            ),
             (
                 "block-removal-value",
                 r#"{"template": "minecraft:stone", "components": {"!minecraft:lore": []}}"#,

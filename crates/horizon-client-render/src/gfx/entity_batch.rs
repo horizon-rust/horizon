@@ -20,6 +20,12 @@ const MATERIALS: usize = 10;
 /// (`RenderTypes.entityTranslucent`, `entityTranslucentEmissive`, `eyes`,
 /// `breezeWind`). Only the improved transparency path reads it.
 pub const OIT_ENTITY: u32 = 1 << 24;
+/// `RenderPipelines.DRAGON_RAYS`: untextured colour, additive with depth writes.
+pub const DRAGON_RAYS_OVERLAY: u32 = 37;
+/// `RenderPipelines.ENTITY_CUTOUT_DISSOLVE` (the dying dragon): a pixel is dropped where the
+/// vertex alpha is below the mask's, whose atlas UV rides in `Vertex::glint_uv`; the rest is
+/// drawn opaque. No overlay.
+pub const DISSOLVE_OVERLAY: u32 = 38;
 /// Tags quads as drawn by a render type vanilla gives an `OitPipelineSet`
 /// (`OIT_ENTITY`): improved transparency draws them in its stages.
 pub fn mark_oit(quads: &mut [Vertex]) {
@@ -79,6 +85,11 @@ pub(super) struct EntityBatch {
 }
 
 impl EntityBatch {
+    /// After `update`: quads only a native pack's shadow pass draws, at the buffer's end.
+    pub(super) fn append_shadow_only(&mut self, shadow_only: &[Vertex]) {
+        self.combined.extend_from_slice(shadow_only);
+    }
+
     pub(super) fn update(
         &mut self,
         entities: &[Vertex],

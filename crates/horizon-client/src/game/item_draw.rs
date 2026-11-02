@@ -268,10 +268,13 @@ impl Game<'_> {
             && self.stack_in(slot) == Some(stack)
         {
             let view = item_render::stack_view(stack);
-            let duration = use_duration(&self.pack.item_renderer.models.components(&view));
+            let mut duration = use_duration(&self.pack.item_renderer.models.components(&view));
+            self.native_use_duration(stack, &mut duration);
             owner.using_this_item = true;
             owner.use_duration = duration;
-            owner.use_item_remaining_ticks = duration - ticks as i32;
+            // getUseItemRemainingTicks: the duration the use started with,
+            // as LivingEntityUseItemEvent.Start and .Tick left it (`game/item_use.rs`).
+            owner.use_item_remaining_ticks = self.use_duration - ticks as i32;
             owner.crossbow_charge_duration = Self::charge_ticks(stack).max(1) as i32;
         }
         owner.fishing_cast_with_this_item = stack
@@ -291,14 +294,19 @@ impl Game<'_> {
         seed: i32,
     ) -> ItemRenderState {
         let level = self.item_level();
-        self.pack.item_renderer.resolve(
+        let mut state = self.pack.item_renderer.resolve(
             &item_render::stack_view(stack),
             display,
             owner,
             Some(&level),
             seed,
             &self.item_env(),
-        )
+        );
+        state.hdr_tier = self.luminance().hdr_tier(&stack.item);
+        if state.hdr_tier > 0 && self.renderer.as_ref().is_some_and(|r| r.hdr_on()) {
+            state.hdr_light = self.luminance().of(&stack.item);
+        }
+        state
     }
     /// `GuiGraphics.renderItem(player, level, stack, x, y, 0)`.
     pub(super) fn draw_item_model(&self, batch: &mut HudBatch, stack: &ItemStack, x: f32, y: f32) {
@@ -359,9 +367,10 @@ impl Game<'_> {
     ) {
         let mut sink = WorldSink {
             out,
-            light,
-            lights: Some(lights),
+            light: item_hdr_light(state, light),
+            lights: (state.hdr_light == 0).then_some(lights),
             glint: self.glint(),
+            tier: state.hdr_tier,
         };
         state.submit(
             &self.pack.item_renderer,
@@ -381,9 +390,10 @@ impl Game<'_> {
     ) {
         let mut sink = WorldSink {
             out,
-            light,
+            light: item_hdr_light(state, light),
             lights: None,
             glint: self.glint(),
+            tier: state.hdr_tier,
         };
         state.submit(
             &self.pack.item_renderer,
@@ -407,21 +417,33 @@ impl Game<'_> {
                 p.y + (q.y - p.y) * alpha,
                 p.z + (q.z - p.z) * alpha,
             ];
-            (item, at, alpha as f32)
+            (item, at, alpha as f32, true)
         });
         // ItemPickupParticle: the render state extracted at partial tick 1.
         let taken = self.pickups.live.iter().filter_map(|p| match &p.taken {
             super::pickups::Taken::Item(item) => {
-                Some((&**item, super::pickups::position(p, alpha), 1.0))
+                Some((&**item, super::pickups::position(p, alpha), 1.0, false))
             }
             _ => None,
         });
-        for (item, at, partial) in live.chain(taken) {
+        for (item, at, partial, entity) in live.chain(taken) {
             let entity_start = out.len();
+            self.mark_motion(entity_start, (2 << 32) | u64::from(item.id));
             let q = item.position;
             let pos = glam::DVec3::from_array(at) - camera;
             if pos.length_squared() > 64.0 * 64.0 {
                 continue;
+            }
+            // EntityRenderer.shouldRender: the item's 0.25 box, grown by 0.5,
+            // in the view frustum. Checked before its model is resolved.
+            if entity && let Some(view) = &self.view_frustum {
+                let feet = (glam::DVec3::new(q.x, q.y, q.z) - camera).as_vec3();
+                let half = glam::Vec3::new(0.125 + 0.5, 0.5, 0.125 + 0.5);
+                let lo = feet - half;
+                let hi = feet + glam::Vec3::new(half.x, 0.25 + 0.5, half.z);
+                if !view.intersects(lo, hi) {
+                    continue;
+                }
             }
             // `extractItemGroupRenderState`: GROUND, seeded by the entity id.
             let owner = owner_at([q.x, q.y, q.z], 0.0, "minecraft:item");
@@ -465,6 +487,13 @@ impl Game<'_> {
             }
         }
     }
+}
+
+/// The packed light of an item (sky low, block above it: `vertex_light`, entity.wgsl), its block
+/// light raised to what it glows with in HDR output.
+fn item_hdr_light(state: &ItemRenderState, light: u32) -> u32 {
+    let block = ((light >> 8) & 0xff).max(u32::from(state.hdr_light) * 16);
+    (light & !0xff00) | block << 8
 }
 
 #[cfg(test)]

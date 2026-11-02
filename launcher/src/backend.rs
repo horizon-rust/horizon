@@ -141,7 +141,7 @@ pub(crate) const CLIENT: &str = if cfg!(windows) {
 
 /// The agent `url` is fetched with: the launcher's own user agent, through the player's proxy when
 /// one is set (`proxy`).
-fn agent(url: &str) -> ureq::Agent {
+pub(crate) fn agent(url: &str) -> ureq::Agent {
     crate::proxy::agent(
         ureq::AgentBuilder::new()
             .user_agent(&format!("horizon-launcher/{VERSION}"))
@@ -175,7 +175,10 @@ pub(crate) fn get(url: &str) -> Result<ureq::Response, String> {
         }
     }
     request.call().map_err(|e| match e {
-        ureq::Error::Status(403, _) => {
+        ureq::Error::Status(code, r)
+            if url.starts_with("https://api.github.com/")
+                && crate::github::rate_limited(code, |h| r.header(h).map(str::to_owned)) =>
+        {
             "GitHub's rate limit was reached. Try again in a few minutes.".into()
         }
         ureq::Error::Status(code, _) => format!("{url} answered {code}"),
@@ -311,10 +314,12 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     release_order(a).cmp(&release_order(b))
 }
 
-/// Every published release of the repository, both kinds, as GitHub's JSON.
+/// Every published release of the repository, both kinds, as GitHub's JSON (kept on disk with its
+/// ETag, and read through Kira's mirror past GitHub's rate limit: [`crate::github`]).
 fn release_list() -> Result<serde_json::Value, String> {
-    let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=100");
-    get(&url)?.into_json().map_err(|e| e.to_string())
+    crate::github::json(&format!(
+        "https://api.github.com/repos/{REPO}/releases?per_page=100"
+    ))
 }
 
 /// The releases in `list` whose tag passes `keep`, newest first, with the asset named `asset`.
@@ -391,9 +396,7 @@ pub(crate) fn game_releases(list: &serde_json::Value) -> Vec<Release> {
 /// `launcher@` and `launcher-v` tags are looked up one by one (a draft's tag is skipped: it has no
 /// public release).
 fn launcher_releases_in(list: &serde_json::Value) -> Vec<Release> {
-    launcher_releases_in_with(list, |url| {
-        get(&url)?.into_json().map_err(|e| e.to_string())
-    })
+    launcher_releases_in_with(list, |url| crate::github::json(&url))
 }
 
 fn launcher_releases_in_with(
@@ -572,17 +575,30 @@ pub fn build_dir() -> PathBuf {
     real
 }
 
-/// [`build_dir`] when `real` isn't [`ascii`]: the folder's own short (8.3) name where the
-/// volume keeps one — the same files, spelled in ASCII — else a folder of ProgramData's,
-/// named for the path so each user's is its own and can be created there.
+/// [`build_dir`] when `real` isn't [`ascii`]: [`ascii_build_dir`], a real folder of
+/// ProgramData's. Only when it can't be created, the data folder's short (8.3) name.
+///
+/// The short name came first until #6009, and wasn't enough: it is only another spelling of the
+/// same folder, and rustc canonicalizes its own path to find its sysroot, which spells the long,
+/// Cyrillic name again and hands it to the linker (`x86_64-w64-mingw32-gcc`: "No such file or
+/// directory" on `C:/Users/\xca\xe8…`). A folder whose real name is ASCII stays ASCII however a
+/// tool resolves it.
 #[cfg(windows)]
 fn windows_build_dir(real: &Path) -> PathBuf {
-    use sha2::{Digest, Sha256};
-    if let Some(short) = short_path(real).filter(|p| ascii(p)) {
-        return short;
+    let dir = ascii_build_dir(real, std::env::var_os("ProgramData").map(PathBuf::from));
+    if fs::create_dir_all(&dir).is_ok() {
+        return dir;
     }
-    let public = std::env::var_os("ProgramData")
-        .map(PathBuf::from)
+    short_path(real).filter(|p| ascii(p)).unwrap_or(dir)
+}
+
+/// The build folder for a data folder `real` whose path isn't [`ascii`]: in `program_data`
+/// (`%ProgramData%`, `C:\ProgramData` when unset, relative or not ASCII), which every user may
+/// create folders in, named for `real` so each user's is their own.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ascii_build_dir(real: &Path, program_data: Option<PathBuf>) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let public = program_data
         .filter(|p| p.is_absolute() && ascii(p))
         .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
     let key = Sha256::digest(real.as_os_str().as_encoded_bytes());
@@ -1447,7 +1463,9 @@ fn download_for_owner(
         account::store(),
         &mut accounts,
     );
-    let _ = accounts.save();
+    if let Err(e) = accounts.save() {
+        log(format!("Horizon: the accounts are not saved: {e}"));
+    }
     download_for(pins, dir, pass, !accounts.accounts.is_empty(), fetch, log)
 }
 
@@ -2199,6 +2217,10 @@ pub fn client_command(tag: &str) -> Command {
     let _ = fs::create_dir_all(&home);
     let mut cmd = Command::new(client_program(tag));
     cmd.current_dir(home).arg("--resources").arg(resources(tag));
+    // How the game asks for a renewed session (`account session`) while it runs.
+    if let Ok(exe) = std::env::current_exe() {
+        cmd.env("HORIZON_LAUNCHER_EXE", exe);
+    }
     // PipeWire remembers volume and mute per application name. The game's own name is
     // "PipeWire ALSA [horizon-client]", shared with development and test runs, where
     // muting it once left every later game silent: played from here it is "Horizon".
@@ -2262,10 +2284,14 @@ pub fn resolve_version(requested: Option<&str>) -> Result<String, String> {
         .ok_or_else(|| "No version is installed yet.".into())
 }
 
-/// Removes an installed version and moves the selection to the newest one left if needed.
+/// Removes an installed version, unless a program runs from it, and moves the selection to the
+/// newest one left if needed.
 pub fn remove_version(tag: &str) -> Result<(), String> {
     if !installed().iter().any(|t| t == tag) {
         return Err(format!("{tag} is not installed."));
+    }
+    if in_use(tag) {
+        return Err(format!("{tag} is running. Quit it first."));
     }
     remove(tag)?;
     let mut settings = Settings::load();
@@ -2377,8 +2403,16 @@ pub fn need_prepared(tag: &str) -> Result<(), String> {
 /// the gate, a sign-in that can't be renewed (no network, expired) still lets the game start,
 /// offline.
 pub fn client(tag: &str) -> Result<Command, String> {
-    let (session, offline) = account::session_for_game(&game_home(), false)
-        .map_err(|refused| format!("{refused} Sign in with `horizon-launcher account sign-in`."))?;
+    client_as(tag, None)
+}
+
+/// [`client`], playing as `who` for this launch only (`play --account`).
+pub fn client_as(tag: &str, who: Option<&account::Player>) -> Result<Command, String> {
+    let (session, offline) = match who {
+        None => account::session_for_game(&game_home(), false).map_err(|e| e.to_string()),
+        Some(who) => account::session_for_game_as(&game_home(), who),
+    }
+    .map_err(|refused| format!("{refused} Sign in with `horizon-launcher account sign-in`."))?;
     need_prepared(tag)?;
     complete_assets(tag);
     crate::browser::horizon::before_play(&game_home());
@@ -2824,71 +2858,19 @@ fn find_app(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Whether the bundle's signature (Developer ID or ad hoc) is whole: every file it seals is there
-/// and unchanged.
-#[cfg(target_os = "macos")]
-fn signature_holds(app: &Path) -> bool {
-    Command::new("codesign")
-        .args(["--verify", "--deep", "--strict"])
-        .arg(app)
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
-/// Puts the bundle `new` in place of `app`: copied beside it first (`ditto` keeps its links,
-/// modes and signature) and checked, then the old one is moved aside and the new one renamed in,
-/// so `app` is never half written, and checked again where it lands (the old one comes back if it
-/// doesn't hold). The running launcher keeps its open files and works on.
+/// Puts a verified app bundle in place, retaining old bundles until no process uses them.
 #[cfg(target_os = "macos")]
 fn replace_bundle(new: &Path, app: &Path) -> Result<(), String> {
-    let dir = app.parent().ok_or("The app has no folder.")?;
-    let name = app.file_name().unwrap_or_default().to_string_lossy();
-    let staged = dir.join(format!(".{name}.update-{}", std::process::id()));
-    let old = dir.join(format!(".{name}.old-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&staged);
-    let copied = Command::new("ditto")
-        .arg(new)
-        .arg(&staged)
-        .status()
-        .map_err(|e| format!("ditto: {e}"))?;
-    if !copied.success() {
-        let _ = fs::remove_dir_all(&staged);
-        return Err(format!(
-            "Could not copy the new app next to {}.",
-            app.display()
-        ));
+    crate::mac_update::replace_bundle(new, app)
+}
+
+/// Retired macOS launchers are removed only once their executable is no longer in use.
+/// Run for every entry point (GUI, CLI and MCP), before a command can return or exec.
+pub fn cleanup_launcher_updates() {
+    #[cfg(target_os = "macos")]
+    if let Some(app) = app_bundle(exe_path()) {
+        crate::mac_update::cleanup(app);
     }
-    if !signature_holds(&staged) {
-        let _ = fs::remove_dir_all(&staged);
-        return Err(
-            "The downloaded app's signature doesn't hold; the launcher stays as it is.".into(),
-        );
-    }
-    fs::rename(app, &old).map_err(|e| {
-        let _ = fs::remove_dir_all(&staged);
-        format!("Could not move {} aside: {e}", app.display())
-    })?;
-    if let Err(e) = fs::rename(&staged, app) {
-        let _ = fs::rename(&old, app);
-        let _ = fs::remove_dir_all(&staged);
-        return Err(format!(
-            "Could not put the new app at {}: {e}",
-            app.display()
-        ));
-    }
-    if !signature_holds(app) {
-        let failed = dir.join(format!(".{name}.failed-{}", std::process::id()));
-        if fs::rename(app, &failed).is_ok() && fs::rename(&old, app).is_ok() {
-            let _ = fs::remove_dir_all(&failed);
-        }
-        return Err(format!(
-            "The new app's signature doesn't hold at {}; the launcher stays as it was.",
-            app.display()
-        ));
-    }
-    let _ = fs::remove_dir_all(&old);
-    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -3098,6 +3080,11 @@ pub enum Msg {
     Keychain(Option<String>),
     /// Whether an account in the launcher owned the game at its last check (the owner gate).
     Owner(bool),
+    /// Credential-free result from a background account operation.
+    AccountStatus(String, u64, crate::account::session::Status),
+    AccountProgress(String, u64, crate::account::session::Phase),
+    AccountHead(String, Option<String>, Option<Vec<[u8; 4]>>, bool),
+    AccountRemoved(String, u64, Result<bool, String>),
     /// The owner gate's answer for the game about to start: the selected account's session
     /// file (none = offline) and why it plays offline, if it does.
     Session(Result<(Option<PathBuf>, Option<String>), crate::account::NoOwner>),
@@ -3384,11 +3371,18 @@ impl Settings {
         self.keep_versions.unwrap_or(KEEP_NEWEST).max(1)
     }
     pub fn save(&self) {
-        let _ = fs::create_dir_all(data_dir());
-        let _ = fs::write(
-            data_dir().join("settings.json"),
-            serde_json::to_string_pretty(self).unwrap(),
-        );
+        // A write that stops halfway leaves settings.json unreadable, and `load` answers
+        // defaults for it: the file is replaced only once it is whole.
+        let dir = data_dir();
+        let path = dir.join("settings.json");
+        let tmp = dir.join(format!("settings.{}.tmp", std::process::id()));
+        let written = fs::create_dir_all(&dir)
+            .and_then(|()| fs::write(&tmp, serde_json::to_string_pretty(self).unwrap()))
+            .and_then(|()| fs::rename(&tmp, &path));
+        if let Err(e) = written {
+            let _ = fs::remove_file(&tmp);
+            eprintln!("Horizon: settings.json is not saved: {e}");
+        }
     }
 }
 
@@ -3450,6 +3444,33 @@ mod tests {
                     .map(plain)
                     .unwrap_or_else(|_| built.clone())
             );
+        }
+    }
+
+    /// [#6009](https://github.com/horizon-rust/horizon/issues/6009): with a Cyrillic user name the
+    /// build folder is a real ASCII folder of ProgramData's (not a short name of the data folder,
+    /// which rustc resolves back to the Cyrillic one), its own for each data folder.
+    #[test]
+    fn a_cyrillic_data_folder_builds_in_an_ascii_folder_of_its_own() {
+        let pavlo = Path::new(r"C:\Users\Кириченко Павло\AppData\Roaming\horizon-launcher");
+        let other = Path::new(r"C:\Users\Олена\AppData\Roaming\horizon-launcher");
+        let public = PathBuf::from(if cfg!(windows) { r"D:\Data" } else { "/data" });
+        let dir = ascii_build_dir(pavlo, Some(public.clone()));
+        assert!(ascii(&dir), "{}", dir.display());
+        assert_eq!(dir.parent(), Some(public.as_path()));
+        let name = dir.file_name().unwrap().to_str().unwrap();
+        assert!(
+            name.starts_with("horizon-launcher-") && name.len() == 25,
+            "{name}"
+        );
+        assert_eq!(dir, ascii_build_dir(pavlo, Some(public.clone())), "stable");
+        assert_ne!(dir, ascii_build_dir(other, Some(public)), "one per user");
+        // %ProgramData% unset, relative or itself not ASCII: C:\ProgramData.
+        let default = PathBuf::from(r"C:\ProgramData");
+        for pd in [None, Some("ProgramData".into()), Some(r"C:\Дані".into())] {
+            let dir = ascii_build_dir(pavlo, pd);
+            assert_eq!(dir.parent(), Some(default.as_path()));
+            assert!(ascii(&dir));
         }
     }
 
@@ -4123,6 +4144,8 @@ pub fn {f}("
     /// `$APPIMAGE` names the file the runtime mounted; a path that is not there (moved or deleted
     /// since the launcher started) is no AppImage, and the launcher updates its own binary again.
     /// Nor is one inherited from another AppImage's program: the binary has to run from `$APPDIR`.
+    // AppImages are Linux's, and the paths below are absolute only on Unix.
+    #[cfg(unix)]
     #[test]
     fn only_an_appimage_file_counts() {
         use std::ffi::OsStr;

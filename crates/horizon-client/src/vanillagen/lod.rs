@@ -69,9 +69,11 @@ impl Builder {
         });
         let (tx, results) = mpsc::channel();
         // Idle priority: decoration only takes time the near chunks, the
-        // ticks and the frame leave, so more cores can share it.
+        // ticks and the frame leave, so more cores can share it: a third of
+        // the threads, rounded up (a 4-thread machine's one thread left idle
+        // time while the far trees and structures came in).
         let count = thread::available_parallelism()
-            .map_or(1, |n| n.get() / 3)
+            .map_or(1, |n| n.get().div_ceil(3))
             .clamp(1, 12);
         let threads = (0..count)
             .map(|_| Self::spawn(terrain.clone(), shared.clone(), tx.clone()))
@@ -91,6 +93,12 @@ impl Builder {
             .name("Far decoration".into())
             .spawn(move || {
                 horizon_threads::idle_current();
+                // A superflat world's far ring is its flat ground (`FlatTerrain::lod_surface`);
+                // a normal overworld rebuilt here would draw hills, oceans and trees.
+                if terrain.is_flat() {
+                    worker.stop.store(true, Ordering::Relaxed);
+                    return;
+                }
                 // Structure pieces have mutable one-shot placement flags. Sharing
                 // gameplay's seeded pipeline would consume its chests/spawners.
                 let generator = match OverworldGenerator::for_dimension(

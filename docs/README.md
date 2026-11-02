@@ -6,6 +6,7 @@ To play, use [the launcher](../launcher/README.md); the project site is [playhor
 
 - [AGENTS.md](../AGENTS.md) and [Architecture](architecture.md): where each part of the code lives, how `Game` is organised, which harness checks which area.
 - [Build from source](../README.md#build-from-source): your own copy of the game, resource preparation, `cargo run`.
+- [Build times](build-times.md): `tools/build_times.py` measures cold and incremental builds per crate and the critical path, writes a JSON report and a table, and compares two reports; the first numbers, Windows and Linux.
 - [Native client](native-client.md): options, controls, the dedicated server, `horizon-ctl` scripting, packaging, architecture.
 - [Host a server](hosting.md): install `horizon-server`, prepare the game files, first run, `server.toml`, the commands, the web panel, backups, services and Docker; what works today and what doesn't yet.
 - [A public address (prototype)](public-address.md): `horizon-gateway`, a frontend anyone can run under a wildcard domain that gives a world at home an address like `pullmon.mc.example.net` for any Minecraft client; who sees what, running one, the protocol.

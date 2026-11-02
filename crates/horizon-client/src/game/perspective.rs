@@ -2,7 +2,7 @@
 //! in front, cycled by F5), the detached camera (`Camera.setup` with
 //! `getMaxZoom`), and the local player drawn as a model: in third person
 //! and in the inventory (`InventoryScreen.extractEntityInInventoryFollowsMouse`).
-use super::{Game, Screen, shoulders::shoulder_variants};
+use super::{Game, Screen, native_mob_draw::NativePlayerRender, shoulders::shoulder_variants};
 use horizon_client::{
     blocks::BlockFacts,
     camera::{CameraEntity, LivingCamera},
@@ -275,18 +275,28 @@ impl Game<'_> {
             facts: self.res.facts(),
             context,
         };
-        view.align_with_entity(&entity, partial, kind, |from, to| {
-            let hit = clip_world(
-                &mut rays,
-                Vec3::new(from[0], from[1], from[2]),
-                Vec3::new(to[0], to[1], to[2]),
-                RayBlockMode::Visual,
-                RayFluidMode::None,
-                4096,
-            )
-            .ok()?;
-            (!hit.miss).then_some([hit.hit.location.x, hit.hit.location.y, hit.hit.location.z])
-        });
+        view.align_with_entity_distance(
+            &entity,
+            partial,
+            kind,
+            |distance| {
+                let mut distance = distance;
+                self.native_camera_distance(partial, kind.is_mirrored(), &entity, &mut distance);
+                distance
+            },
+            |from, to| {
+                let hit = clip_world(
+                    &mut rays,
+                    Vec3::new(from[0], from[1], from[2]),
+                    Vec3::new(to[0], to[1], to[2]),
+                    RayBlockMode::Visual,
+                    RayFluidMode::None,
+                    4096,
+                )
+                .ok()?;
+                (!hit.miss).then_some([hit.hit.location.x, hit.hit.location.y, hit.hit.location.z])
+            },
+        );
         self.view = view;
         Some((
             glam::DVec3::from_array(view.position),
@@ -568,7 +578,6 @@ impl Game<'_> {
     pub(super) fn player_model_shown(&self) -> bool {
         // A shader pack's shadow pass draws the player in first person too (shadowPlayer).
         (self.own_body_in_view() || self.pack_shadow_casters.1)
-            && !self.spectator()
             && self
                 .player
                 .as_ref()
@@ -616,7 +625,22 @@ impl Game<'_> {
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let start = out.len();
         let body = self.own_body_visible();
-        let render = if body {
+        // `native_player_submit`: a native mod's own model for this player,
+        // in place of the vanilla one and its layers (an invisible player is
+        // not asked, as for the others).
+        let name = self.own_profile_name();
+        let who = NativePlayerRender {
+            name: &name,
+            local: true,
+        };
+        if body && self.mod_player_geometry(m, who, alpha as f32, camera, packed, out) {
+            return;
+        }
+        // A spectator still draws its own model in third person: the poses'
+        // visibility (set by player_model_visibility) hides body parts, and
+        // translucent_body marks the body OIT for the ghostly look. Only first
+        // person and dead players skip it.
+        let render = if body || self.spectator() {
             horizon_client::mobs::render::render_with
         } else {
             horizon_client::mobs::render::render_layers
@@ -651,6 +675,8 @@ impl Game<'_> {
         self.held_item_geometry(m, camera, alpha, packed, true, out);
         // CustomHeadLayer: a pumpkin, skull or other head item.
         self.head_item_geometry(m, camera, alpha, packed, true, out);
+        // `native_mob_layer`: a native mod's layer, over the vanilla ones.
+        self.mod_mob_layer_geometry(m, Some(who), alpha as f32, camera, packed, out);
         // LivingEntity.isCurrentlyGlowing: the Glowing effect.
         if self.potions.effects.get("glowing").is_some() {
             let color = super::glowing::team_color(self.own_team());
@@ -717,22 +743,26 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let mut verts = Vec::new();
-        // The same render state as in the world: an invisible body is not drawn.
-        let render = if self.own_body_visible() {
+        // A spectator preview still draws its own model: the poses'
+        // visibility hides body parts, leaving the head and its layers.
+        let render = if self.own_body_visible() || self.spectator() {
             horizon_client::mobs::render::render_with
         } else {
             horizon_client::mobs::render::render_layers
         };
-        render(
-            &m,
-            1.0,
-            camera,
-            &lookup,
-            240 | 240 << 8,
-            self.res.mob_data(),
-            &self.player_armor_layers(),
-            &mut verts,
-        );
+        // A screen preview: custom entity model animations see is_in_gui = 1.
+        horizon_client::mobs::cem_anim::in_gui(|| {
+            render(
+                &m,
+                1.0,
+                camera,
+                &lookup,
+                240 | 240 << 8,
+                self.res.mob_data(),
+                &self.player_armor_layers(),
+                &mut verts,
+            );
+        });
         let chest = self.armor[1].as_ref().map(|s| &*s.item);
         if !self.own_invisible() {
             self.player_cape_geometry(&m, chest, camera, 1.0, 240 | 240 << 8, &mut verts);
@@ -867,25 +897,54 @@ impl Game<'_> {
             return;
         };
         let base = base * glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, 0.125));
+        let pose = |part: &horizon_client::mobs::Part| {
+            let mut p = part.pose;
+            if part.name == "left_wing" || part.name == "right_wing" {
+                let invert = if part.name == "left_wing" { 1.0 } else { -1.0 };
+                p[1] = if crouching { 3.0 } else { 0.0 };
+                p[3] = angles[0];
+                p[4] = invert * angles[1];
+                p[5] = invert * angles[2];
+            }
+            p
+        };
         horizon_client::mobs::render_model(
             model,
             base,
-            &|part| {
-                let mut p = part.pose;
-                if part.name == "left_wing" || part.name == "right_wing" {
-                    let invert = if part.name == "left_wing" { 1.0 } else { -1.0 };
-                    p[1] = if crouching { 3.0 } else { 0.0 };
-                    p[3] = angles[0];
-                    p[4] = invert * angles[1];
-                    p[5] = invert * angles[2];
-                }
-                p
-            },
+            &pose,
             [rect.u0, rect.v0, rect.u1, rect.v1],
             light,
             overlay,
             out,
         );
+        // The elytra texture's OptiFine emissive overlay (not a cape's), full bright.
+        let glow = cape
+            .and_then(|c| sprites.get(c))
+            .is_none()
+            .then(|| {
+                let emissive = self
+                    .res
+                    .mob_data()
+                    .emissive
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                emissive
+                    .overlay(texture)
+                    .and_then(|e| sprites.get(e))
+                    .copied()
+            })
+            .flatten();
+        if let Some(g) = glow {
+            horizon_client::mobs::render_model(
+                model,
+                base,
+                &pose,
+                [g.u0, g.v0, g.u1, g.v1],
+                horizon_client::mobs::render::FULL_BRIGHT,
+                0,
+                out,
+            );
+        }
     }
     /// `CapeLayer` for a player wearing `chest`: no cape under an elytra's
     /// wings, and moved out over a chestplate.
@@ -1391,7 +1450,7 @@ mod preview_tests {
             return;
         };
         let m = Mob::new(1, kind.clone(), Vec3::ZERO, 0.0);
-        let armour = [(&*kind.model, [0.5, 0.5, 0.75, 0.75], u32::MAX, 0)];
+        let armour = [(&*kind.model, [0.5, 0.5, 0.75, 0.75], u32::MAX, 0, false)];
         let atlas = |_: &str| Some([0.0, 0.0, 0.25, 0.25]);
         let data = horizon_client::mobs::MobData {
             states: Vec::new(),
@@ -1401,6 +1460,10 @@ mod preview_tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            cem: Default::default(),
+            random_textures: Default::default(),
+            emissive: Default::default(),
+            blinks: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };

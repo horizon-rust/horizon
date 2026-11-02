@@ -18,6 +18,28 @@ fn carried_block_matrix(base: glam::Mat4) -> glam::Mat4 {
         * glam::Mat4::from_rotation_y(90.0f32.to_radians())
 }
 
+/// Drops the quads of `out[first..]` whose face normal points away from the eye, which
+/// is the origin of camera-relative vertices. Each quad is four vertices carrying its
+/// face normal in `Vertex::normal`, as `block_model_vertices` writes for diffuse faces.
+fn cull_back_quads(out: &mut Vec<Vertex>, first: usize) {
+    let mut kept = first;
+    for quad in (first..out.len()).step_by(4) {
+        let vertices = &out[quad..quad + 4];
+        let n = vertices[0].normal;
+        let normal = glam::Vec3::new(f32::from(n[0]), f32::from(n[1]), f32::from(n[2]));
+        let centre = vertices.iter().fold(glam::Vec3::ZERO, |sum, v| {
+            sum + glam::Vec3::from_array(v.pos)
+        }) * 0.25;
+        // The eye is at the origin: the face is seen from its front when the eye is on the
+        // side its normal points to, that is when `normal . (eye - centre) > 0`.
+        if normal.dot(centre) < 0.0 {
+            out.copy_within(quad..quad + 4, kept);
+            kept += 4;
+        }
+    }
+    out.truncate(kept);
+}
+
 /// `CustomHeadLayer.translateToHead` and the banner's `head` display.
 fn banner_matrix(head: glam::Mat4) -> glam::Mat4 {
     head * glam::Mat4::from_translation(glam::Vec3::new(0.0, -0.25, 0.0))
@@ -151,18 +173,11 @@ impl Game<'_> {
         light: u32,
         out: &mut Vec<Vertex>,
     ) {
-        use horizon_client::mobs::{Part, anim::Poses, load_model};
-        static MODELS: std::sync::OnceLock<Option<(Part, Part)>> = std::sync::OnceLock::new();
+        use horizon_client::mobs::anim::Poses;
         if !horizon_client::mobs::raider::is_captain(mob) {
             return;
         }
-        let Some((pole, flag)) = MODELS.get_or_init(|| {
-            let root = &self.options.resources;
-            Some((
-                load_model(root, "minecraft:standing_banner#main")?,
-                load_model(root, "minecraft:standing_banner#flag")?,
-            ))
-        }) else {
+        let Some((pole, flag)) = &self.entity_models.banner else {
             return;
         };
         let Some(head) =
@@ -224,7 +239,13 @@ impl Game<'_> {
             let base = render::base_transform(mob, alpha as f32, camera);
             let t = carried_block_matrix(base);
             // Preserve cross models (flowers, fungi) and state properties (facing).
+            let first = out.len();
             self.block_model_vertices(state, 42, t, light, true, out);
+            // The carried block uses the item cutout render type, which culls back faces
+            // (RenderPipelines.ITEM_CUTOUT). Without that, both coplanar sides of a cross
+            // model are drawn and flicker. CULL_BACK would drop them too, but it turns off
+            // the normal lighting this model needs.
+            cull_back_quads(out, first);
         }
     }
     /// `BlockDecorationLayer.submit`: the block item in a copper golem's
@@ -603,7 +624,15 @@ impl Game<'_> {
                     horizon_assets::item_model::SpecialKind::Head {
                         kind: kind.to_owned(),
                         texture: None,
-                        animation: 0.0,
+                        animation: worn_head_animation(
+                            mob,
+                            // The local player's synthetic mob carries no `mount`.
+                            mob.extra
+                                .mount
+                                .or(if local_player { self.riding } else { None }),
+                            &self.mobs,
+                            alpha as f32,
+                        ),
                     }
                 },
             };
@@ -618,6 +647,7 @@ impl Game<'_> {
                     None
                 },
                 glint: self.glint(),
+                tier: 0,
             };
             let profile = stack
                 .extra
@@ -657,10 +687,62 @@ impl Game<'_> {
     }
 }
 
+/// `LivingEntityRenderer.extractRenderState`'s `wornHeadAnimationPos`: the
+/// walk position of the living mob `mount` carries the wearer on (a boat or
+/// minecart is no mob, so it is not found), else the wearer's own.
+fn worn_head_animation(wearer: &Mob, mount: Option<u32>, mobs: &[Mob], alpha: f32) -> f32 {
+    mount
+        .and_then(|id| mobs.iter().find(|m| m.id == id))
+        .map_or_else(
+            || horizon_client::mobs::anim::state(wearer, alpha).pos,
+            |v| horizon_client::mobs::anim::walk_position(v, alpha),
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use glam::{Mat4, Vec3};
+
+    /// A mob of the prepared resources' type `kind` (None without them).
+    fn mob(id: u32, kind: &str) -> Option<horizon_client::mobs::Mob> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        let types = horizon_client::mobs::MobTypes::load(&root).ok()?;
+        let t = std::sync::Arc::new(types.types.get(kind)?.clone());
+        Some(horizon_client::mobs::Mob::new(
+            id,
+            t,
+            horizon_core::geometry::Vec3::new(0.0, 0.0, 0.0),
+            0.0,
+        ))
+    }
+
+    #[test]
+    fn a_worn_head_follows_the_living_vehicle() {
+        let (Some(mut wearer), Some(mut horse)) =
+            (mob(1, "minecraft:zombie"), mob(2, "minecraft:horse"))
+        else {
+            return;
+        };
+        wearer.limb_position = 1.0;
+        wearer.limb_speed = 0.5;
+        horse.limb_position = 4.0;
+        horse.limb_speed = 1.0;
+        let mobs = [horse];
+        // Walking on its own: its own position (1 - 0.5 * 0.5).
+        assert_eq!(worn_head_animation(&wearer, None, &mobs, 0.5), 0.75);
+        // A mount that is no mob (boat, minecart) or unknown: still its own.
+        assert_eq!(worn_head_animation(&wearer, Some(99), &mobs, 0.5), 0.75);
+        // Riding the horse (a passenger's own position is 0): the horse's.
+        wearer.extra.passenger = true;
+        assert_eq!(worn_head_animation(&wearer, None, &mobs, 0.5), 0.0);
+        assert_eq!(worn_head_animation(&wearer, Some(2), &mobs, 0.5), 3.5);
+        // Dead wearer, living vehicle: the vehicle's.
+        wearer.health = 0.0;
+        assert_eq!(worn_head_animation(&wearer, Some(2), &mobs, 0.5), 3.5);
+    }
 
     #[test]
     fn carried_block_vertices_match_vanilla_block_coordinates() {
