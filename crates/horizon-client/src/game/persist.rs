@@ -452,13 +452,16 @@ impl Game<'_> {
                     }
                     "minecraft:trident" => {
                         if let Some(n) = entity_nbt::trident_from_nbt(&tag) {
-                            self.tridents
-                                .push(super::trident::ThrownTrident::from_nbt(n));
+                            let mut trident = super::trident::ThrownTrident::from_nbt(n);
+                            trident.id = self.take_entity_id();
+                            self.tridents.push(trident);
                         }
                     }
                     "minecraft:firework_rocket" => {
                         if let Some(r) = entity_nbt::firework_rocket_from_nbt(&tag, player_uuid) {
-                            self.rockets.push(super::fireworks::Rocket::from_nbt(r));
+                            let mut rocket = super::fireworks::Rocket::from_nbt(r);
+                            rocket.id = self.take_entity_id();
+                            self.rockets.push(rocket);
                         }
                     }
                     // PrimedTnt.readAdditionalSaveData: its fuse (80 when absent) and motion.
