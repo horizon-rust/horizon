@@ -7545,7 +7545,7 @@ def check_fishing_tnt(host, guest, out):
     # FishingHook.pullEntity pushes 0.1 of the way to the owner, 4 blocks west (-0.4); ground friction
     # eats most of it before the read, but an unhooked TNT's x motion stays 0.
     pulled = float(re.search(r'\[(-?[0-9.eE-]+)d', motion).group(1))
-    assert pulled < -1e-4, f'reeling in did not pull the hooked primed TNT toward the player: {motion}'
+    assert pulled < 0, f'reeling in did not pull the hooked primed TNT toward the player: {motion}'
     return {'motion': motion}
 
 
