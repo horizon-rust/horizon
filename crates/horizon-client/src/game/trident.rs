@@ -433,8 +433,9 @@ impl Game<'_> {
             v,
             on_ground,
         );
+        let id = self.take_entity_id();
         self.tridents.push(ThrownTrident {
-            id: 0,
+            id,
             loyalty: thrown.enchantment_level("minecraft:loyalty"),
             stack: thrown,
             position: start,

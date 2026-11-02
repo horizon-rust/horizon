@@ -227,8 +227,9 @@ impl Game<'_> {
         let seed = r.next_long();
         let flashes = r.next_int_bound(3).unwrap_or(0) + 1;
         self.lightning_seen[0] += 1;
+        let id = self.take_entity_id();
         self.bolts.push(Bolt {
-            id: 0,
+            id,
             at,
             life: 2,
             flashes,

@@ -1302,8 +1302,10 @@ impl Game<'_> {
             target
         };
         let survive = self.world.random.next_int_bound(5).unwrap_or(0) > 0;
+        self.next_entity += 1;
+        let id = self.next_entity;
         self.end.eyes.push(EyeOfEnder {
-            id: 0,
+            id,
             position: start,
             previous: start,
             velocity: glam::DVec3::ZERO,
