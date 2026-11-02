@@ -32,15 +32,9 @@ impl Game<'_> {
         if !self.player.as_ref()?.health.totem_used {
             return None;
         }
-        // The mods hear a server player's totem before it fires, and may keep
-        // it from saving them: it stays in the hand and they die.
+        // The mods hear a server player's totem before it is used up.
         if let (Some(uuid), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
-            let mut cancel = false;
-            self.native_player_totem(uuid, &name, &mut cancel);
-            if cancel {
-                self.player.as_mut()?.health.totem_used = false;
-                return None;
-            }
+            self.native_player_totem(uuid, &name);
         }
         let p = self.player.as_mut()?;
         p.health.totem_used = false;
