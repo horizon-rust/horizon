@@ -1563,11 +1563,14 @@ impl Game<'_> {
             let Some(id) = self.restore_saved_vehicle(uuid, raw.as_ref()) else {
                 continue;
             };
+            host.hub.seat_order += 1;
+            let order = host.hub.seat_order;
             let g = &mut host.hub.guests[i];
             if let Some(horizon_world::nbt::Tag::Compound(p)) = &mut g.saved {
                 p.remove(&"RootVehicle".into());
             }
             g.vehicle = Some(id);
+            g.vehicle_order = order;
             g.saved_vehicle = None;
             // Pair the stationary restored entities before their passenger packet.
             g.moved = true;
@@ -2087,6 +2090,11 @@ impl Game<'_> {
     /// (`IntegratedServer.tickPaused`): `ServerGamePacketListenerImpl.tick`
     /// skips `tickPlayer`, so no player's air, hunger or damage moves on.
     pub(super) fn tick_lan(&mut self, paused: bool) {
+        // A frozen level does not reach tick_lan_packets through tick_world.
+        // Apply its packets before taking the snapshot too.
+        if !paused {
+            self.tick_lan_packets();
+        }
         let Some(mut host) = self.lan.take() else {
             if self.level_pass.running.is_none() {
                 self.level_pass.packets_drained = false;
@@ -2117,6 +2125,12 @@ impl Game<'_> {
         }
         // A guest whose file names the vehicle it rode rides it again.
         self.restore_guest_vehicles(&mut host);
+        // Finish the players' mining, item use and pickups before describing
+        // this tick to their clients. Otherwise a newly broken block and its
+        // drops remain absent from the snapshot until the following tick.
+        if !paused {
+            self.tick_guests(&mut host);
+        }
         // A dedicated server runs the hub without a host player.
         if state.is_some() || host.hub.config.dedicated {
             let has_guests = !host.hub.guests.is_empty();
@@ -2270,9 +2284,6 @@ impl Game<'_> {
                 .lan
                 .take()
                 .expect("the hub is back after the tracking events");
-        }
-        if !paused {
-            self.tick_guests(&mut host);
         }
         self.lan = Some(host);
         // A blast from a guest's attack, and a mace's wind burst.
