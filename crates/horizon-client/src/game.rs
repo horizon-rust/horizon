@@ -115,6 +115,7 @@ mod dragon;
 mod dynamic_lights;
 mod enchant_effects;
 mod end;
+mod entity;
 mod entity_culling;
 mod event_loop;
 mod events;
@@ -10454,6 +10455,7 @@ impl Game<'_> {
             let mut crafted = 0;
             while let Some((recipe, result)) = self.craft_recipe() {
                 let made = (result.item.clone(), result.count);
+                let taken = result.clone();
                 let cells = self.craft_size * self.craft_size;
                 let ingredients = self.craft_grid[..cells].to_vec();
                 let remainders = world_recipes!(self).remainders(
@@ -10494,6 +10496,10 @@ impl Game<'_> {
                     }
                 }
                 crafted += 1;
+                // `ResultSlot.onTake`: the recipe and the stack taken
+                // (native_item_crafted).
+                let player = self.native_acting_id();
+                self.native_item_crafted(player, &format!("minecraft:{recipe}"), &taken);
                 self.stats.add("crafted", &made.0, made.1 as i32);
                 self.award_crafted(&[(format!("minecraft:{recipe}"), ingredients)]);
                 if !shift || crafted >= 64 {
@@ -10587,6 +10593,8 @@ impl Game<'_> {
         alpha: f64,
         mut out: Vec<Vertex>,
     ) -> Vec<Vertex> {
+        // Its steps as spans (HORIZON_SPIKES): each lap names the step that just ended.
+        let mut laps = horizon_client::spans::laps();
         self.entity_spans.borrow_mut().clear();
         self.entity_motion.borrow_mut().clear();
         // LevelExtractor.extract: the transient blocks queued since the last frame.
@@ -10602,6 +10610,7 @@ impl Game<'_> {
         } else {
             self.yaw
         };
+        laps.lap("eg_prep");
         for m in &self.mobs {
             // Blaze.isOnFire: a charged blaze burns.
             let blazing = m.species() == horizon_client::mobs::Species::Blaze && m.extra.flag;
@@ -10646,6 +10655,7 @@ impl Game<'_> {
                 &mut out,
             );
         }
+        laps.lap("eg_fire_mobs");
         for item in &self.dropped {
             if item.fire_ticks > 0
                 && !self
@@ -10670,6 +10680,7 @@ impl Game<'_> {
                 );
             }
         }
+        laps.lap("eg_fire_items");
         for stand in &self.armor_stands {
             if stand.fire_ticks > 0 && !stand.marker {
                 let scale = if stand.small { 0.5 } else { 1.0 };
@@ -10690,6 +10701,7 @@ impl Game<'_> {
                 );
             }
         }
+        laps.lap("eg_fire_stands");
         // `ItemEntityRenderer`.
         self.mark_entity(out.len(), "minecraft:item");
         self.dropped_item_geometry(camera, alpha, &mut out);
@@ -10704,9 +10716,11 @@ impl Game<'_> {
         self.shelf_geometry(camera, &mut out);
         self.mark_entity(out.len(), "minecraft:ominous_item_spawner");
         self.ominous_item_spawner_geometry(camera, alpha, &mut out);
+        laps.lap("eg_items_misc");
         // Mobs and their projectiles (a span each).
         self.mob_geometry(camera, alpha, &mut out);
         self.mark_motion(out.len(), 0);
+        laps.lap("eg_mobs");
         // In first person only a shader pack's shadow pass draws the player.
         self.mark_player(out.len(), !self.own_body_in_view());
         let player_start = out.len();
@@ -10723,6 +10737,7 @@ impl Game<'_> {
         self.mark_entity(out.len(), "minecraft:evoker_fangs");
         self.fangs_geometry(camera, alpha, &mut out);
         self.block_item_display_geometry(camera, alpha, &mut out);
+        laps.lap("eg_players");
         let mut see_through = std::mem::take(&mut self.see_through_vertices);
         see_through.clear();
         self.name_tag_geometry(camera, alpha, &mut out, &mut see_through);
@@ -10730,6 +10745,7 @@ impl Game<'_> {
         self.debug_renderer_geometry(camera, &mut out);
         self.text_display_geometry(camera, alpha, &mut out, &mut see_through);
         self.see_through_vertices = see_through;
+        laps.lap("eg_name_tags");
         // Entity shadows (EntityRenderer.extractShadow).
         self.mark_translucent_entity(out.len(), "minecraft:entity_shadow");
         // A native shader pack's sun shadows already fall under the entities in the Overworld:
@@ -10795,6 +10811,7 @@ impl Game<'_> {
                 );
             }
         }
+        laps.lap("eg_shadows");
         // Block entities (BlockEntityRenderers): chests, shulker boxes, banners, skulls...
         if let Some(r) = &self.renderer {
             let lid = |p: [i32; 3]| self.chest_lid(p, alpha as f32);
@@ -10891,6 +10908,7 @@ impl Game<'_> {
                     .render_breaking(&scene, pos, state.0, stage, &mut out);
             }
         }
+        laps.lap("eg_block_entities");
         // Experience orbs (ExperienceOrbRenderer): pulsing billboards from a 4x4 icon sheet.
         self.mark_entity(out.len(), "minecraft:experience_orb");
         if let Some(r) = self
@@ -10960,6 +10978,7 @@ impl Game<'_> {
                 }
             }
         }
+        laps.lap("eg_orbs");
         // Falling blocks use their baked model, including non-cubic shapes.
         self.mark_entity(out.len(), "minecraft:falling_block");
         for f in &self.falling {
@@ -11024,6 +11043,7 @@ impl Game<'_> {
         self.rocket_geometry(camera, alpha, &mut out);
         self.mark_entity(out.len(), "minecraft:splash_potion");
         self.thrown_potion_geometry(camera, alpha, &mut out);
+        laps.lap("eg_objects");
         // Particles (ParticleEngine.extract): camera-facing quads.
         self.mark_stage(out.len(), "PARTICLES");
         let world = &self.world;
@@ -11035,6 +11055,7 @@ impl Game<'_> {
             &|b| world.light(b[0], b[1], b[2]),
             &mut out,
         );
+        laps.lap("eg_particles");
         // Breaking progress overlays (destroy_stage_0..9): ours and the other players'.
         self.mark_stage(out.len(), "DESTROY");
         for &(pos, stage) in &cracks {
@@ -11065,7 +11086,9 @@ impl Game<'_> {
                 }
             }
         }
+        laps.lap("eg_cracks");
         self.finish_async_entity_culling();
+        laps.lap("eg_culling_finish");
         out
     }
 
@@ -20640,6 +20663,15 @@ pub fn run_with() -> Result<()> {
         horizon_threads::catch_stop_signals();
     }
     let started = Instant::now();
+    // A dedicated server writes its slow ticks to the log with the spans
+    // they spent their time in (`HORIZON_SPIKES`'s line; the variable still
+    // sets another threshold), so a lag spike players felt can be traced
+    // from the log alone. Timing the spans costs microseconds a tick.
+    if options.spikes.is_none()
+        && options.execution_role == execution_role::ExecutionRole::DedicatedServer
+    {
+        options.spikes = Some(dedicated::SLOW_TICK_MS);
+    }
     horizon_client::spans::enable(options.spikes.is_some());
     let vanilla_root = options.resources.clone();
     if let Some(error) = missing_resources(&vanilla_root) {
