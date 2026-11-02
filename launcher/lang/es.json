@@ -239,6 +239,7 @@
   ".mrpack (Modrinth), .zip (CurseForge), or a Prism, MultiMC or CurseForge instance. Horizon ports what it can on this computer, from your own downloads, and plays the pack as its own profile. Nothing is uploaded or shared.": ".mrpack (Modrinth), .zip (CurseForge) o una instancia de Prism, MultiMC o CurseForge. Horizon porta lo que puede en este equipo, a partir de tus propias descargas, y ejecuta el paquete como un perfil propio. No se sube ni se comparte nada.",
   "The build compiles the game: 20 to 30 minutes and a few GB of disk the first time (it downloads Rust), a few minutes after that.": "La compilación construye el juego: de 20 a 30 minutos y unos pocos GB de disco la primera vez (descarga Rust), y unos minutos después.",
   "Applying the mixins": "Aplicando los mixins",
+  "Reusing patched game source": "Reutilizando el código fuente modificado del juego",
   "Empty": "Vacía",
   "Loader": "Cargador",
   "Categories": "Categorías",
@@ -778,5 +779,15 @@
   "tweaks": "Ajustes",
   "utility": "Utilidad",
   "vanilla like": "Estilo vanilla",
-  "worldgen": "Generación de mundo"
+  "worldgen": "Generación de mundo",
+  "No version is installed yet.": "Aún no hay ninguna versión instalada.",
+  "{error} They often still build: pass --allow-version-mismatch to try.": "{error} A menudo aún se compilan: pasa --allow-version-mismatch para intentar.",
+  "Built the server engine: {path}": "Motor del servidor construido: {path}",
+  "Point the server at it: set engine.path to this file in the server's server.toml (docs/hosting.md); the launcher writes nothing itself.": "Apunta el servidor a este archivo: establece engine.path en el server.toml del servidor (docs/hosting.md); el launcher no escribe nada por sí mismo.",
+  "{path} already exists. Move it away, or build into another folder.": "{path} ya existe. Mueve el archivo, o compila en otra carpeta.",
+  "Choose a new folder for the server export.": "Elija una nueva carpeta para la exportación del servidor.",
+  "Export the server outside the launcher's managed folders.": "Exporte el servidor fuera de las carpetas administradas por el launcher.",
+  "{path} is not a folder to build into.": "{path} no es una carpeta para compilar.",
+  "Could not copy the build: {error}": "No se pudo copiar la compilación: {error}",
+  "Could not move the build to {path}: {error}": "No se pudo mover la compilación a {path}: {error}"
 }
