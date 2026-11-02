@@ -49,10 +49,15 @@ pub struct SkinJob {
     pub color: u32,
     pub light: u32,
     pub overlay: u32,
-    /// 1 when the overlay is the armour glint: the model UV rides in `glint_uv`.
-    pub glint: u32,
+    /// `GLINT` and `UNLIT` bits.
+    pub flags: u32,
     pub spare: [u32; 3],
 }
+
+/// `SkinJob::flags`: the overlay is the armour glint (the model UV rides in `glint_uv`).
+pub const GLINT: u32 = 1;
+/// `SkinJob::flags`: no normal (the eyes render type, unshaded).
+pub const UNLIT: u32 = 2;
 
 const _: () = assert!(std::mem::size_of::<Vertex>() == 44);
 const _: () = assert!(std::mem::size_of::<SkinVertex>() == 7 * 4);
@@ -358,8 +363,16 @@ pub fn expand(model: &[SkinVertex], frame: &SkinFrame) -> Vec<Vertex> {
                 layer: job.overlay,
                 color: job.color,
                 light: job.light,
-                normal: [packed[0], packed[1], packed[2], -127],
-                glint_uv: if job.glint != 0 { v.uv } else { [0.0, 0.0] },
+                normal: if job.flags & UNLIT != 0 {
+                    [0; 4]
+                } else {
+                    [packed[0], packed[1], packed[2], -127]
+                },
+                glint_uv: if job.flags & GLINT != 0 {
+                    v.uv
+                } else {
+                    [0.0, 0.0]
+                },
             };
         }
     }
@@ -405,8 +418,8 @@ mod tests {
         }
     }
 
-    /// Two draws of a two-part model with turned, scaled parts, a scrolled
-    /// texture and the armour glint: the shader writes what `expand` does,
+    /// Three draws of a two-part model with turned, scaled parts, a scrolled
+    /// texture, the armour glint and unlit eyes: the shader writes what `expand` does,
     /// to the bit, after the vertices before them.
     #[test]
     fn the_shader_writes_what_the_cpu_reference_computes() {
@@ -464,13 +477,28 @@ mod tests {
                     color: u32::MAX,
                     light: 0xf0f0,
                     overlay: 36,
-                    glint: 1,
+                    flags: GLINT,
+                    ..Default::default()
+                },
+                SkinJob {
+                    first: 0,
+                    count: 24,
+                    part: 1,
+                    dst: 72,
+                    rect: [0.5, 0.5, 0.625, 0.5625],
+                    color: u32::MAX,
+                    light: 0xf0_00f0,
+                    overlay: 7 << 16,
+                    flags: UNLIT,
                     ..Default::default()
                 },
             ],
-            vertices: 72,
+            vertices: 96,
         };
         let expected = expand(&model, &frame);
+        // The eyes render type draws without shading: no normal at all.
+        assert!(expected[72..].iter().all(|v| v.normal == [0; 4]));
+        assert!(expected[..72].iter().all(|v| v.normal[3] == -127));
         // The posed vertices land after 5 others, which they leave alone.
         let before = 5u32;
         let out = device.create_buffer(&wgpu::BufferDescriptor {

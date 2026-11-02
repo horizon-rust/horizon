@@ -1340,14 +1340,21 @@ fn put(
     color: u32,
     light: u32,
     overlay: u32,
+    eyes: bool,
     out: &mut Vec<Vertex>,
 ) {
+    // The eyes render type's marks, which the CPU path's caller sets on what it drew.
     let paint = super::skin::Paint {
         uv,
         scroll,
         color,
         light,
-        overlay,
+        overlay: if eyes {
+            overlay | u32::from(EYES_TIER) << 16
+        } else {
+            overlay
+        },
+        unlit: eyes,
     };
     if let Some(skin) = skin
         && skin.draw(part, base, poses, paint)
@@ -1880,7 +1887,7 @@ fn render_visible(
     }
     // The GPU path takes the whole mob or none of it, so its draws keep their
     // order: only plain opaque and cutout draws of models it can pose (no
-    // custom models, translucency, eyes or energy swirl, which the CPU path
+    // custom models, translucency or energy swirl, which the CPU path
     // changes after drawing).
     let mut skin = skin;
     let posable = match skin.as_deref_mut() {
@@ -1892,7 +1899,8 @@ fn render_visible(
                 && energy_swirl(m, s.age).is_none()
                 && skin.supports(&model)
                 && all_layers.iter().all(|layer| {
-                    !layer.full_bright
+                    // Eyes, not the Warden's fading layers.
+                    (!layer.full_bright || m.species() != Species::Warden)
                         && !translucent_layer(m, layer)
                         && cem.layer(&layer.model).is_none()
                         && m.kind
@@ -1928,6 +1936,7 @@ fn render_visible(
                 body_color(m, alpha),
                 light,
                 body_overlay(m, alpha),
+                false,
                 out,
             );
             if let Some(glow) = drawn.and_then(|(name, _)| emissive_uv(name)) {
@@ -1941,6 +1950,7 @@ fn render_visible(
                     body_color(m, alpha),
                     FULL_BRIGHT,
                     0,
+                    false,
                     out,
                 );
             }
@@ -1999,6 +2009,9 @@ fn render_visible(
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .apply(folder, variant, profession, &mut layer_poses);
         }
+        // The eyes render type's glowing eyes also shine in HDR output, at
+        // `EYES_TIER` in the overlay's high bits (entity.wgsl fs_hdr_mark).
+        let eyes = layer.full_bright && m.species() != Species::Warden;
         let light = if layer.full_bright {
             FULL_BRIGHT
         } else {
@@ -2022,6 +2035,7 @@ fn render_visible(
             layer.color,
             light,
             overlay,
+            eyes,
             out,
         );
         if let Some(glow) = emissive_uv(drawn) {
@@ -2035,15 +2049,14 @@ fn render_visible(
                 layer.color,
                 FULL_BRIGHT,
                 0,
+                eyes,
                 out,
             );
         }
         if translucent_layer(m, layer) {
             mark_oit(&mut out[start..]);
         }
-        // The eyes render type's glowing eyes also shine in HDR output, at
-        // `EYES_TIER` in the overlay's high bits (entity.wgsl fs_hdr_mark).
-        if layer.full_bright && m.species() != Species::Warden {
+        if eyes {
             for vertex in &mut out[start..] {
                 vertex.normal = [0; 4];
                 vertex.layer |= u32::from(EYES_TIER) << 16;

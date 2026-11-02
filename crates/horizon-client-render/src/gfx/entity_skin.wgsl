@@ -15,7 +15,8 @@ const MODEL_WORDS: u32 = 7u;
 const PART_WORDS: u32 = 25u;
 // A job (16 words): first model vertex, vertex count, first part, first output
 // vertex, the texture rect (4 floats), scroll, colour, light, overlay,
-// whether the overlay is the armour glint (its model UV in `glint_uv`), 3 spare.
+// flags (1: the overlay is the armour glint, its model UV in `glint_uv`; 2: no
+// normal, the eyes render type), 3 spare.
 const JOB_WORDS: u32 = 16u;
 // `mesher::Vertex` (11 words): pos (3), uv (2), layer, color, light, normal
 // (4 x i8), glint_uv (2).
@@ -71,7 +72,8 @@ fn skin(
     let color = jobs[j + 9u];
     let light = jobs[j + 10u];
     let overlay = jobs[j + 11u];
-    let glint = jobs[j + 12u] != 0u;
+    let glint = (jobs[j + 12u] & 1u) != 0u;
+    let unlit = (jobs[j + 12u] & 2u) != 0u;
     for (var k = lane; k < count; k += 64u) {
         let v = (first + k) * MODEL_WORDS;
         let p = vec3(f(model[v]), f(model[v + 1u]), f(model[v + 2u]));
@@ -98,7 +100,7 @@ fn skin(
         out[o + 5u] = overlay;
         out[o + 6u] = color;
         out[o + 7u] = light;
-        out[o + 8u] = pack(n);
+        out[o + 8u] = select(pack(n), 0u, unlit);
         if glint {
             out[o + 9u] = bitcast<u32>(uv.x);
             out[o + 10u] = bitcast<u32>(uv.y);

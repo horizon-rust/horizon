@@ -10,7 +10,7 @@
 
 use super::{ModelNormals, Part, anim::Poses};
 use crate::fast_hash::FxHashMap;
-use crate::gfx::entity_skin::{SkinFrame, SkinJob, SkinPart, SkinVertex};
+use crate::gfx::entity_skin::{self, SkinFrame, SkinJob, SkinPart, SkinVertex};
 use std::sync::Arc;
 
 /// A stored model: where its vertices start, and per part (pre-order) its
@@ -169,6 +169,8 @@ pub struct Paint {
     pub color: u32,
     pub light: u32,
     pub overlay: u32,
+    /// No normal: the eyes render type.
+    pub unlit: bool,
 }
 
 /// Where a frame's posed draws go, and the bounds of the current mob's.
@@ -301,7 +303,11 @@ impl Walk<'_> {
                 color: paint.color,
                 light: paint.light,
                 overlay: paint.overlay,
-                glint: u32::from(paint.overlay == super::render::ARMOR_GLINT),
+                flags: if paint.overlay == super::render::ARMOR_GLINT {
+                    entity_skin::GLINT
+                } else {
+                    0
+                } | if paint.unlit { entity_skin::UNLIT } else { 0 },
                 spare: [0; 3],
             });
         }
@@ -357,6 +363,8 @@ mod tests {
         let mut frame = SkinFrame::default();
         let mut store: Vec<crate::gfx::entity_skin::SkinVertex> = Vec::new();
         let (mut posed, mut kept) = (0, 0);
+        // Mobs posed with glowing eyes (the eyes render type: no normal).
+        let mut eyes = Vec::new();
         let mut ids: Vec<_> = types.types.keys().cloned().collect();
         ids.sort();
         for (n, id) in ids.iter().enumerate() {
@@ -395,6 +403,9 @@ mod tests {
                     continue;
                 }
                 posed += 1;
+                if cpu.iter().any(|v| v.normal == [0; 4]) {
+                    eyes.push(id.trim_start_matches("minecraft:").to_string());
+                }
                 assert!(gpu.is_empty(), "{id}: a posed mob left vertices on the CPU");
                 let expanded = expand(&store, &frame);
                 assert_eq!(expanded.len(), cpu.len(), "{id} age {age}: vertex count");
@@ -418,5 +429,11 @@ mod tests {
         }
         eprintln!("posed on the GPU: {posed} mob draws; kept on the CPU: {kept}");
         assert!(posed > 3 * 40, "only {posed} draws took the GPU path");
+        for mob in ["spider", "enderman"] {
+            assert!(
+                eyes.iter().any(|e| e == mob),
+                "{mob}'s eyes stayed on the CPU: {eyes:?}"
+            );
+        }
     }
 }
