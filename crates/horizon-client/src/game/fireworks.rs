@@ -29,7 +29,8 @@ enum RocketHit {
 }
 
 pub(super) struct Rocket {
-    /// The entity id a server tracks it by (0 until it is tracked).
+    /// Its entity id: from the entity counter on the server, the server's on
+    /// a client.
     pub id: u32,
     pub(super) position: Vec3,
     pub(super) previous: Vec3,

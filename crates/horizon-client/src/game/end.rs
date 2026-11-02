@@ -1302,8 +1302,8 @@ impl Game<'_> {
             target
         };
         let survive = self.world.random.next_int_bound(5).unwrap_or(0) > 0;
-        self.next_entity += 1;
-        let id = self.next_entity;
+        let at = [p.position.x, p.position.y, p.position.z];
+        let id = self.take_entity_id();
         self.end.eyes.push(EyeOfEnder {
             id,
             position: start,
@@ -1315,7 +1315,6 @@ impl Game<'_> {
         });
         let r = self.world.random.next_float();
         let pitch = 0.33 + r * (0.5 - 0.33);
-        let at = [p.position.x, p.position.y, p.position.z];
         self.audio
             .play("minecraft:entity.ender_eye.launch", Some(at), 1.0, pitch);
         self.consume_held();
@@ -1573,7 +1572,7 @@ impl Game<'_> {
             // A gateway keeps the item in its level (teleportSameDimension
             // moves it): it doesn't leave, so no native_entity_leave_level.
             self.dropped.remove(i);
-            self.forget_entity(id);
+            self.detach_entity(id);
             tag
         } else if let Some(i) = self.mobs.iter().position(|m| m.id == id) {
             let mut tag = self.mob_tree_nbt(i);
@@ -1596,7 +1595,7 @@ impl Game<'_> {
             }
             self.mobs.retain(|m| !gone.contains(&m.id));
             for g in gone {
-                self.forget_entity(g);
+                self.detach_entity(g);
             }
             tag
         } else if let Some(i) = self.creatures.projectiles.iter().position(|p| p.id == id) {
