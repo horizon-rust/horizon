@@ -46,12 +46,11 @@ MCP: `remove`, needs `confirm: true`.
 
 ## `horizon-launcher import-build`
 
-Install a game program you have, such as a horizon-client built on your fork's Actions, as its own version on an installed release's game files, and select it. Nothing signed it: it runs with your rights, and updates never replace it.
+Install a game program you have, such as a horizon-client built on your fork's Actions, as its own version on an installed release or Nightly's game files, and select it. Nothing signed it: it runs with your rights, and updates never replace it.
 
     horizon-launcher import-build <PATH>
 
 - `PATH`: The program (horizon-client, horizon-client.exe on Windows), or a zip holding it
-- `--base`: The installed release or Nightly whose game files it plays with (default: the selected one, else the newest)
 - `--trust-unsigned`: You picked this build yourself and trust it with full access to this computer
 
 MCP: none: the player's switch.

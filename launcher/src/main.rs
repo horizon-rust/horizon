@@ -64,8 +64,8 @@ use gpui::{
 };
 use horizon_launcher::account::{self, Accounts, SignIn, SignInState};
 use horizon_launcher::backend::{self, Job, Msg, Release, Running, Settings, Updates};
+use horizon_launcher::build_import;
 use horizon_launcher::i18n::{self, tr, trf};
-use horizon_launcher::imported;
 use horizon_launcher::instances;
 use horizon_launcher::native_mods;
 use horizon_launcher::native_status;
@@ -193,7 +193,7 @@ struct Launcher {
     disk: Vec<(String, u64)>,
     disk_for: Vec<String>,
     install_error: Option<(String, String)>,
-    /// Import a game build (`imported`, on the Versions page): whether one is being copied in,
+    /// Import a game build (`build_import`, on the Versions page): whether one is being copied in,
     /// and why the last one failed.
     importing_build: bool,
     import_error: Option<String>,
@@ -1041,7 +1041,7 @@ impl Launcher {
                     self.importing_build = false;
                     self.installed = backend::installed();
                     match result {
-                        // `imported::import` saved the selection; this keeps the window's copy.
+                        // `build_import::import` saved the selection; this keeps the window's copy.
                         Ok(tag) => self.settings.selected = Some(tag),
                         Err(e) => self.import_error = Some(e),
                     }
@@ -1342,7 +1342,7 @@ impl Launcher {
                 this.import_error = None;
                 let tx = this.tx.clone();
                 std::thread::spawn(move || {
-                    let _ = tx.send(Msg::Imported(imported::import(&path, None)));
+                    let _ = tx.send(Msg::Imported(build_import::import(&path, None)));
                 });
                 cx.notify();
             });
@@ -1742,7 +1742,7 @@ fn version_tag(tag: &str) -> Div {
         .font_weight(FontWeight::MEDIUM)
         .child(
             horizon_launcher::nightly::label(tag)
-                .or_else(|| imported::label(tag))
+                .or_else(|| build_import::label(tag))
                 .unwrap_or_else(|| tag.trim_start_matches('v').to_string()),
         )
 }
@@ -2662,7 +2662,7 @@ impl Launcher {
             || tr("No version").into(),
             |tag| {
                 horizon_launcher::nightly::label(tag)
-                    .or_else(|| imported::label(tag))
+                    .or_else(|| build_import::label(tag))
                     .unwrap_or_else(|| tag.clone())
             },
         );
@@ -4061,7 +4061,7 @@ impl Launcher {
         if let Some(about) = native_mods::about(tag) {
             meta.push(trf("Built on {base}", &[("base", &about.base)]));
         }
-        if let Some(about) = imported::about(tag) {
+        if let Some(about) = build_import::about(tag) {
             let base = horizon_launcher::nightly::label(&about.base).unwrap_or(about.base);
             meta.push(trf("Game files from {base}", &[("base", &base)]));
             meta.push(about.file);
@@ -4231,7 +4231,7 @@ impl Launcher {
             ))
             .children(self.local_builds(
                 "Imported builds",
-                imported::is_imported,
+                build_import::is_imported,
                 Some(tr(
                     "Unsigned: you picked these programs yourself, and Horizon can't \
                     check where they came from. Updates never replace them.",

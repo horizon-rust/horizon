@@ -1162,7 +1162,7 @@ fn reuse_prepared(versions: &Path, tag: &str) -> Option<String> {
     None
 }
 
-/// What an install does once its folder is in place (an imported build's too, `imported`):
+/// What an install does once its folder is in place (an imported build's too, `build_import`):
 /// another installed version's resources if it has none, and whatever its resources lack.
 pub(crate) fn reuse_prepared_for(tag: &str) {
     reuse_prepared(&versions_dir(), tag);
@@ -2615,13 +2615,13 @@ pub fn check_updates() -> Result<Updates, String> {
 /// Whether a version installed as an update becomes the selected one: when the player had none,
 /// was on a Nightly, or on the newest installed release (so a player of the release channel moves
 /// to the Nightly at the first check, docs/release-flow.md). An older release picked by hand
-/// stays, and so does an imported build (`imported`); an instance pinned to a version keeps it
+/// stays, and so does an imported build (`build_import`); an instance pinned to a version keeps it
 /// either way.
 pub fn select_after_update(selected: Option<&str>, installed_before: &[String]) -> bool {
     match selected {
         None => true,
         Some(s) if crate::nightly::date_of(s).is_some() => true,
-        Some(s) if crate::imported::is_imported(s) => false,
+        Some(s) if crate::build_import::is_imported(s) => false,
         Some(s) => installed_before
             .iter()
             .find(|t| is_game_tag(t))
@@ -3109,7 +3109,7 @@ pub enum Msg {
     NativeProgress(String),
     /// The native-mods build ended: the version built, or why not.
     Native(Result<String, String>),
-    /// An imported game build is installed (`imported::import`): its version, or why not.
+    /// An imported game build is installed (`build_import::import`): its version, or why not.
     Imported(Result<String, String>),
     /// A Java instance's game is ready to start (`java_game`, wrapped): the instance's id and
     /// game folder, and the command or why not.

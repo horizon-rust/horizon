@@ -37,7 +37,7 @@ impl Launcher {
             what.push(format!(
                 "Horizon {}",
                 horizon_launcher::nightly::label(tag)
-                    .or_else(|| horizon_launcher::imported::label(tag))
+                    .or_else(|| horizon_launcher::build_import::label(tag))
                     .unwrap_or_else(|| tag.trim_start_matches('v').to_string())
             ));
         }
@@ -318,7 +318,7 @@ impl Launcher {
                         .font_weight(FontWeight::BOLD)
                         .child(
                             horizon_launcher::nightly::label(tag)
-                                .or_else(|| horizon_launcher::imported::label(tag))
+                                .or_else(|| horizon_launcher::build_import::label(tag))
                                 .unwrap_or_else(|| tag.trim_start_matches('v').to_string()),
                         ),
                 )

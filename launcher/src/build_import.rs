@@ -7,6 +7,7 @@
 //!
 //! Nothing signed it: the Versions page says so. Its tag (`imported-<date>-<sha>`) is no
 //! release's, so no update replaces it, prunes it or moves the selection off it.
+
 use crate::backend::{self, CLIENT};
 use crate::i18n::{tr, trf};
 use crate::native_mods::{self, Target};

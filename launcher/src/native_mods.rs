@@ -1740,7 +1740,7 @@ fn install(
 }
 
 /// Copies version folder `from` into `to` but for what a new build of `target` makes its own
-/// ([`carried_over`]), cloned where the disk can. Also an imported build's start (`imported`).
+/// ([`carried_over`]), cloned where the disk can. Also an imported build's start (`build_import`).
 pub(crate) fn copy_base(from: &Path, to: &Path, target: Target) -> Result<(), String> {
     for entry in fs::read_dir(from).map_err(|e| e.to_string())?.flatten() {
         let name = entry.file_name();
