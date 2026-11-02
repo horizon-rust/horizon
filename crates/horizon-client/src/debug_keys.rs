@@ -28,10 +28,14 @@ pub enum DebugAction {
     NetworkCharts,
     LightmapTexture,
     ImprovedTransparency,
+    /// F3+R: start a repro recording, or stop it and write its bundle.
+    RecordSession,
+    /// F3+E: write the bundle now.
+    ExportRepro,
 }
 
 /// The mappings `handleDebugKeys` tests, in its order.
-pub const ACTIONS: [(&str, DebugAction); 20] = [
+pub const ACTIONS: [(&str, DebugAction); 22] = [
     ("key.debug.reloadChunk", DebugAction::ReloadChunks),
     ("key.debug.showHitboxes", DebugAction::ShowHitboxes),
     ("key.debug.clearChat", DebugAction::ClearChat),
@@ -67,6 +71,8 @@ pub const ACTIONS: [(&str, DebugAction); 20] = [
         "key.debug.improvedTransparency",
         DebugAction::ImprovedTransparency,
     ),
+    ("key.debug.recordSession", DebugAction::RecordSession),
+    ("key.debug.exportRepro", DebugAction::ExportRepro),
 ];
 
 /// GLFW's key actions.

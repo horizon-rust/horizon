@@ -64,6 +64,10 @@ impl Events {
         }
         self.log.push_back(event);
     }
+    /// An event from outside the once-a-turn comparison (`user-input`).
+    pub(super) fn note(&mut self, tick: u64, event: Value) {
+        self.push(tick, event);
+    }
     fn since(&self, seq: u64) -> impl Iterator<Item = &Value> {
         self.log
             .iter()
@@ -181,7 +185,7 @@ impl Game<'_> {
         }
     }
 
-    fn loaded(&self) -> bool {
+    pub(super) fn loaded(&self) -> bool {
         self.title.is_none()
             && self.player.is_some()
             && self.streaming.pending() + self.pending_uploads.len() == 0
@@ -207,6 +211,7 @@ impl Game<'_> {
                 None => self.ui.chat.recent_lines(new_chat),
             };
             for event in diff(before, &now, &lines) {
+                self.repro.note_event(self.ticks, &event);
                 self.events.push(self.ticks, event);
             }
         }

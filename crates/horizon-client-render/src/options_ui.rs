@@ -1308,6 +1308,10 @@ enum Act {
     /// Credits & Attribution's Credits button (WinScreen without the poem).
     Credits,
     CopyAgentDetails,
+    /// AI Agent: start or stop the repro recording.
+    ToggleRecording,
+    /// AI Agent: write the repro bundle now.
+    ExportRepro,
 }
 enum WKind {
     Button {
@@ -1435,6 +1439,10 @@ pub enum Event {
     Credits,
     /// Copy how an agent connects (the AI Agent page).
     CopyAgentDetails,
+    /// The AI Agent page's recording button: start or stop.
+    ToggleRecording,
+    /// The AI Agent page's export button.
+    ExportRepro,
     /// The narrator option changed (after its `Changed`): the option's
     /// `onValueUpdate`, `GameNarrator.updateNarratorStatus`.
     Narrator,
@@ -2376,6 +2384,22 @@ impl OptionsUi {
                         Act::CopyAgentDetails,
                     )),
                 )];
+                rows.push(Row::Buttons(
+                    button(
+                        0.0,
+                        0.0,
+                        150.0,
+                        Text::literal("Start/Stop Recording"),
+                        Act::ToggleRecording,
+                    ),
+                    Some(button(
+                        0.0,
+                        0.0,
+                        150.0,
+                        Text::literal("Export Repro Bundle"),
+                        Act::ExportRepro,
+                    )),
+                ));
                 rows.extend(self.agent_status.iter().cloned().map(Row::Note));
                 rows
             }
@@ -3994,6 +4018,8 @@ impl OptionsUi {
                         }
                         Act::Credits => events.push(Event::Credits),
                         Act::CopyAgentDetails => events.push(Event::CopyAgentDetails),
+                        Act::ToggleRecording => events.push(Event::ToggleRecording),
+                        Act::ExportRepro => events.push(Event::ExportRepro),
                         Act::None => {}
                     }
                 }
@@ -4917,6 +4943,8 @@ impl OptionsUi {
                         }
                         Act::Credits => events.push(Event::Credits),
                         Act::CopyAgentDetails => events.push(Event::CopyAgentDetails),
+                        Act::ToggleRecording => events.push(Event::ToggleRecording),
+                        Act::ExportRepro => events.push(Event::ExportRepro),
                         Act::None => {}
                     }
                     return events;

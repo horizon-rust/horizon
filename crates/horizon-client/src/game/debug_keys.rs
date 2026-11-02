@@ -710,6 +710,15 @@ impl Game<'_> {
                 self.toggle_debug_options();
                 true
             }
+            // Horizon's own: a repro recording for a bug report (game/repro.rs).
+            DebugAction::RecordSession => {
+                self.toggle_recording_key();
+                true
+            }
+            DebugAction::ExportRepro => {
+                self.export_repro_key();
+                true
+            }
             // Screens and overlays Horizon does not draw yet (the profiler and
             // its chart, the texture dump): the keys are used up as in vanilla.
             DebugAction::DumpDynamicTextures
