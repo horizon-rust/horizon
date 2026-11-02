@@ -139,6 +139,9 @@ impl Game<'_> {
             self.add_primed_tnt(pos, rot, 80, None, None);
             return;
         }
+        // Refused: the level queued the fuse sound and the game event right
+        // after the prime; they are dropped as they come up.
+        self.tnt_refused = Some(pos);
         let Some(tnt) = self.pack.assets.registry.default_state("minecraft:tnt") else {
             return;
         };
