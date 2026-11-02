@@ -111,9 +111,14 @@ impl Game<'_> {
 pub(super) struct SyncPreload(std::thread::JoinHandle<std::result::Result<SyncData, String>>);
 
 /// Start reading the server's data beside the world's preparation; `None`
-/// when it is read already, or being read (`preload_world_data`).
+/// when it is read already, or being read: by `sync_data` (the lock is
+/// held), or soon by a world data preload still running, which ends with
+/// it. A second read would be thrown away by `adopt`.
 pub(super) fn preload_sync_data(root: &std::path::Path) -> Option<SyncPreload> {
-    if !SYNC.try_lock().is_ok_and(|sync| sync.is_none()) {
+    // PRELOAD before SYNC, never both: `preload_world_data` takes SYNC
+    // under PRELOAD.
+    if super::world_loading::preload_running() || !SYNC.try_lock().is_ok_and(|sync| sync.is_none())
+    {
         return None;
     }
     let root = root.to_owned();

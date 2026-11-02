@@ -483,6 +483,15 @@ pub(super) fn preload_launch_world(
     }
 }
 
+/// Whether the "World data preload" thread is still running: it reads the
+/// server's data (`sync_data`) last, so nothing else needs to.
+pub(super) fn preload_running() -> bool {
+    matches!(
+        &*PRELOAD.lock().unwrap_or_else(|e| e.into_inner()),
+        Preload::Started { thread, .. } if !thread.is_finished()
+    )
+}
+
 /// A world opens: what `preload_world_data` read is the world's from now on.
 pub(super) fn world_data_used() {
     *PRELOAD.lock().unwrap_or_else(|e| e.into_inner()) = Preload::Used;
