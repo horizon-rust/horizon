@@ -18,7 +18,7 @@ use std::path::Path;
 const PREFIX: &str = "imported-";
 /// What an import was made from, in its folder.
 const RECORD: &str = "imported.json";
-/// The most a program unpacked from a zip may take: a game build is ~100 MB.
+/// The most a program may take: a game build is ~100 MB.
 const MAX_PROGRAM: u64 = 1 << 30;
 
 /// Whether an installed version is an imported build.
@@ -105,11 +105,25 @@ pub fn import(path: &Path, base: Option<&str>) -> Result<String, String> {
     Ok(tag)
 }
 
-/// The program at `path`: the file itself, or from a zip (a GitHub Actions artifact), its one
-/// entry named as the game is on this platform (`CLIENT`), in any folder.
+/// The program at `path`: the file itself when it is named as the game is (`horizon-client`,
+/// "horizon-client (1).exe" as a browser saves a second copy), or from a zip (a GitHub Actions
+/// artifact), its one entry named as the game is on this platform (`CLIENT`), in any folder.
+/// The launcher and horizon-ctl carry the mod API mark too: the name tells them apart.
 fn read_program(path: &Path, file: &str) -> Result<Vec<u8>, String> {
+    let not_a_game = || {
+        trf(
+            "{file} is not a Horizon game for this computer.",
+            &[("file", file)],
+        )
+    };
     let open = fs::File::open(path).map_err(|e| format!("{file}: {e}"))?;
     let Ok(mut zip) = zip::ZipArchive::new(open) else {
+        let size = fs::metadata(path)
+            .map_err(|e| format!("{file}: {e}"))?
+            .len();
+        if !file.to_ascii_lowercase().starts_with("horizon-client") || size > MAX_PROGRAM {
+            return Err(not_a_game());
+        }
         return fs::read(path).map_err(|e| format!("{file}: {e}"));
     };
     for i in 0..zip.len() {
@@ -120,9 +134,12 @@ fn read_program(path: &Path, file: &str) -> Result<Vec<u8>, String> {
         if named && entry.is_file() {
             let mut program = Vec::new();
             (&mut entry)
-                .take(MAX_PROGRAM)
+                .take(MAX_PROGRAM + 1)
                 .read_to_end(&mut program)
                 .map_err(|e| format!("{file}: {e}"))?;
+            if program.len() as u64 > MAX_PROGRAM {
+                return Err(not_a_game());
+            }
             return Ok(program);
         }
     }
@@ -160,11 +177,24 @@ fn install_in(
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    let tag = format!("{PREFIX}{date}-{}", &sha256[..7]);
-    let dir = versions.join(&tag);
-    if dir.join(".installed").exists() {
+    let short = &sha256[..7];
+    // The same program imported on another day is the version made then.
+    let made = fs::read_dir(versions)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .find_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            (is_imported(&name)
+                && name.ends_with(&format!("-{short}"))
+                && e.path().join(".installed").exists())
+            .then_some(name)
+        });
+    if let Some(tag) = made {
         return Ok(tag);
     }
+    let tag = format!("{PREFIX}{date}-{short}");
+    let dir = versions.join(&tag);
     let partial = versions.join(format!(".{tag}.partial"));
     let _ = fs::remove_dir_all(&partial);
     fs::create_dir_all(&partial).map_err(|e| e.to_string())?;
@@ -176,6 +206,7 @@ fn install_in(
     });
     if let Err(e) = copied {
         let _ = fs::remove_dir_all(&partial);
+        let _ = fs::remove_dir_all(&dir);
         return Err(trf(
             "Could not import the build: {error}",
             &[("error", &e.to_string())],
@@ -281,7 +312,7 @@ mod tests {
             "nightly-2026-11-01-c9d474d",
             &built,
             "x",
-            "2026-11-01",
+            "2026-11-02",
         );
         assert_eq!(again.unwrap(), tag);
         assert_eq!(fs::read_dir(&versions).unwrap().count(), 2);
@@ -307,9 +338,14 @@ mod tests {
             read_program(&zip_path, "a.zip").unwrap(),
             program(b"zipped")
         );
-        let plain = d.join("plain");
+        let name = "horizon-client (1)";
+        let plain = d.join(name);
         fs::write(&plain, program(b"plain")).unwrap();
-        assert_eq!(read_program(&plain, "plain").unwrap(), program(b"plain"));
+        assert_eq!(read_program(&plain, name).unwrap(), program(b"plain"));
+        // The launcher carries the mark too.
+        let launcher = d.join("horizon-launcher");
+        fs::write(&launcher, program(b"launcher")).unwrap();
+        assert!(read_program(&launcher, "horizon-launcher").is_err());
         let empty = d.join("empty.zip");
         let mut zip = zip::ZipWriter::new(fs::File::create(&empty).unwrap());
         zip.start_file("README.md", options).unwrap();

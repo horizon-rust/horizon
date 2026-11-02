@@ -195,7 +195,7 @@ struct Launcher {
     install_error: Option<(String, String)>,
     /// Import a game build (`imported`, on the Versions page): whether one is being copied in,
     /// and why the last one failed.
-    importing: bool,
+    importing_build: bool,
     import_error: Option<String>,
     /// Native mods (`native_mods`, on the Mods page): the build's step while it runs, why it
     /// failed, and the warning before a build while it is open, with the mods it names.
@@ -397,9 +397,23 @@ impl Launcher {
         // Counts the time a partner banner is on screen, until it may be hidden.
         cx.spawn(async move |this, cx| loop {
             cx.background_executor()
-                .timer(Duration::from_millis(80))
+                .timer(Duration::from_secs(10))
                 .await;
-            if this.update(cx, |this, cx| this.drain(cx)).is_err() {
+            let counting = this.update(cx, |this, cx| {
+                let s = &mut this.settings;
+                if s.partner_hidden || s.partner_seen_secs >= partner::SEEN_BEFORE_HIDE {
+                    return false;
+                }
+                // On screen on every page: the card in the sidebar, the banner on Servers.
+                s.partner_seen_secs += 10;
+                if s.partner_seen_secs % 60 == 0 || s.partner_seen_secs >= partner::SEEN_BEFORE_HIDE
+                {
+                    s.save();
+                    cx.notify();
+                }
+                true
+            });
+            if !matches!(counting, Ok(true)) {
                 break;
             }
         })
@@ -460,7 +474,7 @@ impl Launcher {
             disk: Vec::new(),
             disk_for: Vec::new(),
             install_error: None,
-            importing: false,
+            importing_build: false,
             import_error: None,
             native_step: None,
             native_started: None,
@@ -1024,7 +1038,7 @@ impl Launcher {
                 }
                 Msg::DiskUse(disk) => self.disk = disk,
                 Msg::Imported(result) => {
-                    self.importing = false;
+                    self.importing_build = false;
                     self.installed = backend::installed();
                     match result {
                         // `imported::import` saved the selection; this keeps the window's copy.
@@ -1307,7 +1321,7 @@ impl Launcher {
     /// Asks for a game program (or a zip holding one) and installs it as its own version on a
     /// thread: a version is thousands of files. `Msg::Imported` ends it.
     fn import_build(&mut self, cx: &mut Context<Self>) {
-        if self.importing {
+        if self.importing_build {
             return;
         }
         let paths = cx.prompt_for_paths(PathPromptOptions {
@@ -1324,7 +1338,7 @@ impl Launcher {
                 return;
             };
             let _ = this.update(cx, |this, cx| {
-                this.importing = true;
+                this.importing_build = true;
                 this.import_error = None;
                 let tx = this.tx.clone();
                 std::thread::spawn(move || {
@@ -4137,7 +4151,7 @@ impl Launcher {
         };
         let used: u64 = self.installed.iter().filter_map(on_disk).sum();
         // The list's own action at the end of the line above it: a build the player has.
-        let import: AnyElement = if self.importing {
+        let import: AnyElement = if self.importing_build {
             div()
                 .flex()
                 .items_center()
