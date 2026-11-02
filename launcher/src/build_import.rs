@@ -87,10 +87,10 @@ fn base_for(
     }
 }
 
-/// Installs the game program at `path` (or the one inside a zip there) as a new version on the
-/// game files of `base` (default: [`base_for`]), prepared from another version where it can be,
-/// and selects it. Importing the same program again selects the version it made before.
-pub fn import(path: &Path, base: Option<&str>) -> Result<String, String> {
+/// Installs the game program at `path` (or the one inside an archive there) as a new version on
+/// the game files of `requested` (default: [`base_for`]), prepared from another version where it
+/// can be, and selects it. Importing the same program again selects the version it made before.
+pub fn import(path: &Path, requested: Option<&str>) -> Result<String, String> {
     let file = path.file_name().map_or_else(
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
@@ -100,9 +100,16 @@ pub fn import(path: &Path, base: Option<&str>) -> Result<String, String> {
         return Err(not_a_game(&file));
     }
     let selected = backend::Settings::load().selected;
-    let base = base_for(&backend::installed(), base, selected.as_deref())?;
+    let base = base_for(&backend::installed(), requested, selected.as_deref())?;
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
     let tag = install_in(&backend::version_dir(""), &base, &program, &file, &date)?;
+    if let Some(made) = about(&tag).filter(|a| requested.is_some() && a.base != base) {
+        return Err(format!(
+            "{tag} is this program already, on the game files of {}: remove it to import it \
+             on {base}.",
+            made.base
+        ));
+    }
     backend::reuse_prepared_for(&tag);
     // Read again: the window may have saved other settings during the copy.
     let mut settings = backend::Settings::load();

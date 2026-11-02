@@ -1321,7 +1321,8 @@ impl Launcher {
     /// Asks for a game program (or a zip holding one) and installs it as its own version on a
     /// thread: a version is thousands of files. `Msg::Imported` ends it.
     fn import_build(&mut self, cx: &mut Context<Self>) {
-        if self.importing_build {
+        // A removal still running could take the folder of the same program imported again.
+        if self.importing_build || !self.removing.is_empty() {
             return;
         }
         let paths = cx.prompt_for_paths(PathPromptOptions {
@@ -1338,8 +1339,8 @@ impl Launcher {
                 return;
             };
             let _ = this.update(cx, |this, cx| {
-                // Another picker's import may have started meanwhile.
-                if this.importing_build {
+                // Another picker's import, or a removal, may have started meanwhile.
+                if this.importing_build || !this.removing.is_empty() {
                     return;
                 }
                 this.importing_build = true;
