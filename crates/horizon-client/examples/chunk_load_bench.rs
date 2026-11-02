@@ -137,6 +137,7 @@ fn main() -> Result<(), Error> {
         let mut mesher = Mesher {
             nether_shading: false,
             shader_pack_lighting: false,
+            separate_ao: false,
             zoom: BiomeZoom::new(obfuscate_seed(seed)),
             blend_radius: 2,
             smooth_lighting: true,

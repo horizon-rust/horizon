@@ -201,6 +201,7 @@ impl<G: ChunkGenerator> Saves for G {
 struct MeshSettings {
     nether: bool,
     shader_pack_lighting: bool,
+    separate_ao: bool,
     zoom: BiomeZoom,
     blend_radius: i32,
     smooth_lighting: bool,
@@ -435,6 +436,9 @@ pub struct Streaming {
     /// A shader pack lights the faces: sections mesh without face shading
     /// (`Mesher::shader_pack_lighting`).
     pub shader_pack_lighting: bool,
+    /// OptiFine/Iris separate ambient occlusion: vertex RGB has pure tint and alpha holds AO factor
+    /// (`Mesher::separate_ao`).
+    pub separate_ao: bool,
     /// `BiomeManager`'s zoom seed (the hashed world seed) and `biomeBlendRadius`.
     pub biome_zoom: BiomeZoom,
     pub biome_blend: i32,
@@ -776,6 +780,7 @@ impl Streaming {
                                     let mut mesher = Mesher {
                                         nether_shading: settings.nether,
                                         shader_pack_lighting: settings.shader_pack_lighting,
+                                        separate_ao: settings.separate_ao,
                                         zoom: settings.zoom,
                                         blend_radius: settings.blend_radius,
                                         smooth_lighting: settings.smooth_lighting,
@@ -859,6 +864,7 @@ impl Streaming {
             sky_light: true,
             nether_shading: false,
             shader_pack_lighting: false,
+            separate_ao: false,
             biome_zoom: BiomeZoom::new(0),
             biome_blend: 2,
             smooth_lighting: true,
@@ -1782,6 +1788,7 @@ impl Streaming {
                         MeshSettings {
                             nether: self.nether_shading,
                             shader_pack_lighting: self.shader_pack_lighting,
+                            separate_ao: self.separate_ao,
                             zoom: self.biome_zoom,
                             blend_radius: self.biome_blend,
                             smooth_lighting: self.smooth_lighting,
