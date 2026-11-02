@@ -107,7 +107,7 @@ impl Game<'_> {
     }
     /// The fluid at the camera, as `Camera.getFluidInCamera` reports it.
     pub(super) fn camera_fluid(&self, camera: [f64; 3]) -> CameraFluid {
-        match fog_type(&self.world, self.res.facts(), camera, self.forward()) {
+        match fog_type(&self.world, self.res.facts(), camera, &self.near_plane()) {
             FogType::Water => CameraFluid::Water,
             FogType::Lava => CameraFluid::Lava,
             FogType::PowderSnow => CameraFluid::PowderSnow,
@@ -189,12 +189,12 @@ impl Game<'_> {
             self.avatar.add_walked(dx, dz);
         }
     }
-    /// `SpyglassItem.use`: start scoping.
+    /// `SpyglassItem.use`: the sound, then start scoping (a mod's `Start`
+    /// may refuse that, not the sound).
     pub(super) fn use_spyglass(&mut self) {
-        if self.start_using_item() {
-            let at = self.eye_position();
-            self.audio.play("minecraft:item.spyglass.use", at, 1.0, 1.0);
-        }
+        let at = self.eye_position();
+        self.audio.play("minecraft:item.spyglass.use", at, 1.0, 1.0);
+        self.start_using_item();
     }
     /// `SpyglassItem.releaseUsing` / `finishUsingItem` (after 1200 ticks).
     pub(super) fn stop_spyglass(&mut self) {

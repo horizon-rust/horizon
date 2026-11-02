@@ -291,7 +291,7 @@ impl Game<'_> {
     }
     /// Sends `packet` to that player, also when they are the acting player
     /// (their packets then go after the hook); false when they aren't on.
-    fn native_send(&mut self, uuid: u128, packet: C) -> bool {
+    pub(super) fn native_send(&mut self, uuid: u128, packet: C) -> bool {
         self.native_send_all(uuid, vec![packet])
     }
     fn native_send_all(&mut self, uuid: u128, packets: Vec<C>) -> bool {
@@ -704,7 +704,7 @@ impl Game<'_> {
     /// another player's (inside that player's hook, only they are reached).
     /// The player's screen follows as for any change to their inventory.
     /// What an auto-pickup or a machine's output to a player needs, from any
-    /// server hook. API @API:give_stack@.
+    /// server hook. API 98.
     pub(super) fn native_give_stack(
         &mut self,
         uuid: u128,
@@ -786,7 +786,7 @@ fn orb_meets(position: [f64; 3], min: [f64; 3], max: [f64; 3]) -> bool {
         && position[2] + 0.25 > min[2]
 }
 
-/// Experience for server mods. API @API:give_experience@.
+/// Experience for server mods. API 101.
 #[allow(dead_code)]
 impl Game<'_> {
     /// The experience orbs of the server level `dimension` whose box meets
@@ -819,7 +819,7 @@ impl Game<'_> {
     }
     /// Writes the experience orb `id`'s `value` (the points a pickup gives), `count`
     /// (orbs merged into it, each worth `value`) and `age` (ticks lived; an orb
-    /// despawns at 6000); a `None` is left as it is. API @API:experience_orb_merge@.
+    /// despawns at 6000); a `None` is left as it is. API 128.
     /// False, and nothing written, for an orb not in the server level `dimension`, a
     /// `value` or `count` of 0, and on a client of a server.
     pub(super) fn native_set_experience_orb(
