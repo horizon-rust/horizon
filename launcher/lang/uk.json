@@ -788,5 +788,14 @@
   "Export the server outside the launcher's managed folders.": "Експортуйте сервер позаду папок, которыmi керує лаунчер.",
   "{path} is not a folder to build into.": "{path} не є папкою для збірки.",
   "Could not copy the build: {error}": "Не вдалося скопіювати збірку: {error}",
-  "Could not move the build to {path}: {error}": "Не вдалося перемістити збірку у {path}: {error}"
+  "Could not move the build to {path}: {error}": "Не вдалося перемістити збірку у {path}: {error}",
+  "Build log": "Журнал збірки",
+  "Native build log": "Журнал нативної збірки",
+  "Copy log": "Копіювати журнал",
+  "Open full log": "Відкрити повний журнал",
+  "Loading build log…": "Завантаження журналу збірки…",
+  "No native build log is available yet.": "Журналу нативної збірки ще немає.",
+  "Could not read the build log: {error}": "Не вдалося прочитати журнал збірки: {error}",
+  "Copied build log.": "Журнал збірки скопійовано.",
+  "Only the last {lines} lines are shown. Copy or open the full log for all details.": "Показано лише останні {lines} рядків. Скопіюйте або відкрийте повний журнал, щоб побачити всі деталі."
 }

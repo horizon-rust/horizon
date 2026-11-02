@@ -788,5 +788,14 @@
   "Export the server outside the launcher's managed folders.": "将服务器导出到启动器管理的文件夹之外。",
   "{path} is not a folder to build into.": "{path} 不是可供构建的文件夹。",
   "Could not copy the build: {error}": "无法复制构建：{error}",
-  "Could not move the build to {path}: {error}": "无法将构建移动到 {path}：{error}"
+  "Could not move the build to {path}: {error}": "无法将构建移动到 {path}：{error}",
+  "Build log": "构建日志",
+  "Native build log": "原生构建日志",
+  "Copy log": "复制日志",
+  "Open full log": "打开完整日志",
+  "Loading build log…": "正在加载构建日志…",
+  "No native build log is available yet.": "尚无原生构建日志。",
+  "Could not read the build log: {error}": "无法读取构建日志：{error}",
+  "Copied build log.": "已复制构建日志。",
+  "Only the last {lines} lines are shown. Copy or open the full log for all details.": "仅显示最后 {lines} 行。复制或打开完整日志以查看全部细节。"
 }

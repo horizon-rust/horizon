@@ -788,5 +788,14 @@
   "Export the server outside the launcher's managed folders.": "Экспортируйте сервер вне управляемых лаунчером папок.",
   "{path} is not a folder to build into.": "{path} не является папкой для сборки.",
   "Could not copy the build: {error}": "Не удалось скопировать сборку: {error}",
-  "Could not move the build to {path}: {error}": "Не удалось переместить сборку в {path}: {error}"
+  "Could not move the build to {path}: {error}": "Не удалось переместить сборку в {path}: {error}",
+  "Build log": "Журнал сборки",
+  "Native build log": "Журнал нативной сборки",
+  "Copy log": "Скопировать журнал",
+  "Open full log": "Открыть полный журнал",
+  "Loading build log…": "Загрузка журнала сборки…",
+  "No native build log is available yet.": "Журнала нативной сборки пока нет.",
+  "Could not read the build log: {error}": "Не удалось прочитать журнал сборки: {error}",
+  "Copied build log.": "Журнал сборки скопирован.",
+  "Only the last {lines} lines are shown. Copy or open the full log for all details.": "Показаны только последние {lines} строк. Скопируйте или откройте полный журнал, чтобы увидеть все детали."
 }
