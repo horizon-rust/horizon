@@ -23,7 +23,7 @@ use horizon_optifine::fusion::{
 };
 use horizon_world::block_state_properties::BlockProperties;
 use horizon_world::registry::{BlockRegistry, BlockStateId};
-use std::{collections::HashMap, fs, path::Path};
+use std::{collections::HashMap, fs, num::NonZeroU16, path::Path};
 
 /// A connecting texture as drawn: its layout and its tiles, `None` for an empty one.
 struct Sheet {
@@ -91,7 +91,9 @@ fn connecting_model(root: &Path, name: &str) -> Vec<ModelFace> {
             .and_then(Json::as_object)
             .unwrap_or(&[])
         {
-            if let Some(value) = value.as_str() {
+            // A sprite, or an object naming one (`{"sprite": ..., "force_translucent": true}`).
+            let value = value.as_str().or_else(|| value.get("sprite")?.as_str());
+            if let Some(value) = value {
                 textures.insert(key.as_str(), value);
             }
         }
@@ -307,7 +309,7 @@ impl FusionTextures {
                         rules.len() - 1
                     }
                 };
-                face.fusion = u16::try_from(rule).ok();
+                face.fusion = u16::try_from(rule + 1).ok().and_then(NonZeroU16::new);
             }
         }
         let states = (0..registry.len() as u32).map(|id| {
@@ -371,19 +373,22 @@ impl FusionTextures {
         }
     }
 
-    /// What the `face` of the block `state` draws for a quad whose rule is `rule`. `neighbour`
-    /// answers the state at an offset from the block, `covers` whether a state hides the face
-    /// of a block beside it; the overlay layout's pieces go to `overlay`.
+    /// What the `face` of the block `state` draws for a quad whose rule is `rule` and whose
+    /// tint index is `tint`. `neighbour` answers the state at an offset from the block,
+    /// `covers` whether a state hides the face of a block beside it; the overlay layout's
+    /// pieces, tinted as the quad, go to `overlay`.
+    #[allow(clippy::too_many_arguments)]
     pub fn pick(
         &self,
-        rule: u16,
+        rule: NonZeroU16,
         state: u32,
         face: Face,
+        tint: i32,
         neighbour: impl Fn([i32; 3]) -> u32,
         covers: impl Fn(u32) -> bool,
         mut overlay: impl FnMut(Overlay),
     ) -> Option<Pick> {
-        let rule = self.rules.get(usize::from(rule))?;
+        let rule = self.rules.get(usize::from(rule.get() - 1))?;
         let normal = face.normal();
         let offsets = connect::offsets(Axes::cube(face));
         let block = self.blocks.get(state as usize).filter(|&&b| b != u32::MAX);
@@ -419,7 +424,7 @@ impl FusionTextures {
                         overlay(Overlay {
                             layer,
                             translucent,
-                            tint: None,
+                            tint: (tint >= 0).then_some((tint, None)),
                         });
                     }
                 }
@@ -477,12 +482,15 @@ mod tests {
         blocks: &[([i32; 3], u32)],
         opaque: &[u32],
     ) -> (Option<Pick>, Vec<u16>) {
+        // A face's rule counts from 1.
+        let rule = NonZeroU16::new(rule + 1).unwrap();
         let at = |o: [i32; 3]| blocks.iter().find(|(p, _)| *p == o).map_or(0, |b| b.1);
         let mut overlays = Vec::new();
         let pick = fusion.pick(
             rule,
             state,
             face,
+            -1,
             at,
             |s| opaque.contains(&s),
             |o| overlays.push(o.layer),
@@ -548,6 +556,12 @@ mod tests {
             .filter(|(o, _)| *o != [0, 0, 0])
             .collect();
         assert_eq!(pick_in(&fusion, 0, 1, Face::Up, &ring, &[]).1, [210]);
+        // Its pieces take the quad's tint index.
+        let mut tints = Vec::new();
+        let at = |o: [i32; 3]| if o == [0, 0, -1] { 2 } else { 0 };
+        let rule = NonZeroU16::new(1).unwrap();
+        fusion.pick(rule, 1, Face::Up, 0, at, |_| false, |o| tints.push(o.tint));
+        assert_eq!(tints, [Some((0, None))]);
     }
 
     #[test]
@@ -590,7 +604,7 @@ mod tests {
             models.join("arm.json"),
             r#"{"loader": "fusion:model", "type": "fusion:connecting", "parent": "demo:block/template",
                 "connections": {"edge": {"type": "true"}},
-                "textures": {"pane": "demo:block/glass", "edge": "demo:block/edge"}}"#,
+                "textures": {"pane": "demo:block/glass", "edge": {"sprite": "demo:block/edge"}}}"#,
         )
         .unwrap();
         fs::write(

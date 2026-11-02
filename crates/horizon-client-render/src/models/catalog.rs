@@ -33,8 +33,9 @@ pub struct BakedFace {
     pub opaque: bool,
     /// Fractional alpha: drawn in the sorted translucent pass.
     pub translucent: bool,
-    /// The Fusion connecting texture rule its sprite joins by ([`crate::fusion`]).
-    pub fusion: Option<u16>,
+    /// The Fusion connecting texture rule its sprite joins by ([`crate::fusion`]), plus one:
+    /// two bytes, within the padding every face already has.
+    pub fusion: Option<std::num::NonZeroU16>,
 }
 pub struct BakedModel {
     pub ambient_occlusion: bool,

@@ -1351,6 +1351,7 @@ impl Mesher<'_> {
                 rule,
                 id,
                 CtmFace::ALL[q.facing as usize],
+                q.tint_index,
                 neighbour,
                 |s| {
                     self.tables
