@@ -1758,7 +1758,7 @@ fn install(
 /// new build's steps write again) are the new build's own: a mod turned off leaves none of its
 /// data behind. A server build is the headless engine: it keeps neither the game's own binary
 /// nor any `horizon-engine` the base shipped, which would run unmodded beside its own.
-fn carried_over(name: &std::ffi::OsStr, target: Target) -> bool {
+pub(crate) fn carried_over(name: &std::ffi::OsStr, target: Target) -> bool {
     let mut own: Vec<String> = ["Horizon.app", "native-mods.json", "native-data"]
         .iter()
         .map(|s| s.to_string())

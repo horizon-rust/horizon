@@ -15,6 +15,7 @@ pub mod github_mods;
 pub mod heads;
 pub mod i18n;
 pub mod import;
+pub mod imported;
 pub mod instances;
 pub mod java;
 pub mod java_launch;

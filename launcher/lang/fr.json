@@ -788,5 +788,15 @@
   "Export the server outside the launcher's managed folders.": "Exportez le serveur en dehors des dossiers gérés par le launcher.",
   "{path} is not a folder to build into.": "{path} n'est pas un dossier dans lequel compiler.",
   "Could not copy the build: {error}": "Impossible de copier la compilation : {error}",
-  "Could not move the build to {path}: {error}": "Impossible de déplacer la compilation vers {path} : {error}"
+  "Could not move the build to {path}: {error}": "Impossible de déplacer la compilation vers {path} : {error}",
+  "Import a game build…": "Importer une build du jeu…",
+  "Importing…": "Importation…",
+  "Imported builds": "Builds importées",
+  "Unsigned: you picked these programs yourself, and Horizon can't check where they came from. Updates never replace them.": "Non signées : vous avez choisi ces programmes vous-même, et Horizon ne peut pas vérifier d'où ils viennent. Les mises à jour ne les remplacent jamais.",
+  "Game files from {base}": "Fichiers du jeu de {base}",
+  "Imported · {date}": "Importée · {date}",
+  "{file} is not a Horizon game for this computer.": "{file} n'est pas un jeu Horizon pour cet ordinateur.",
+  "Install a release or Nightly first: an imported build plays with its game files.": "Installez d'abord une version ou une Nightly : une build importée utilise ses fichiers du jeu.",
+  "{file} holds no {program}.": "{file} ne contient aucun {program}.",
+  "Could not import the build: {error}": "Impossible d'importer la build : {error}"
 }
