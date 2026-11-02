@@ -1458,7 +1458,7 @@ impl BlockEntityRenderer {
             .unwrap_or_default()
     }
     /// Draws block entities in one section-grouped pass while preserving a
-    /// callback boundary around each entity for spans and occlusion culling.
+    /// callback boundary around each entity for shader-pack spans.
     pub fn render_with_cache_options_and_callbacks<'a>(
         &self,
         scene: &Scene,

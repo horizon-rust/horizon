@@ -10834,10 +10834,12 @@ impl Game<'_> {
                 banners: self.settings.horizon.cache_banners,
                 copper_golem_statues: self.settings.horizon.cache_copper_golem_statues,
             };
-            if self.entity_culler.is_some()
-                || self.async_entity_culler.is_some()
-                || self.pack_ids.is_some()
-            {
+            // Entity occlusion is for ordinary entity meshes. Block entities
+            // already have section and per-block frustum culling; routing them
+            // through the per-vertex occlusion callback both repeats that work
+            // and disables their per-section GPU cache. Shader packs still need
+            // per-entity span marks, so they keep the callback path.
+            if self.pack_ids.is_some() {
                 let section_revision = |pos| r.block_entity_section_revision(pos);
                 static_block_entity_stats = self
                     .res
@@ -10850,14 +10852,7 @@ impl Game<'_> {
                         Some(&section_revision),
                         &mut out,
                         |_, state, start| self.mark_block_entity(start, state),
-                        |_, state, start, out| {
-                            if !off_screen(state)
-                                && (self.entity_culler.is_some()
-                                    || self.async_entity_culler.is_some())
-                            {
-                                self.cull_entity_vertices(out, start);
-                            }
-                        },
+                        |_, _, _, _| {},
                     );
             } else {
                 let cache_candidates = r
