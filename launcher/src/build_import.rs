@@ -265,15 +265,15 @@ fn install_in(
     // `versions` itself): the window and the CLI may import the same program at once.
     static IMPORTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = IMPORTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let importing = versions.join(".importing");
-    let partial = importing.join(format!("{tag}-{}-{n}", std::process::id()));
+    let partial = versions
+        .join(".importing")
+        .join(format!("{tag}-{}-{n}", std::process::id()));
     let record = serde_json::json!({ "base": base, "file": file, "sha256": sha256 });
     let made = fs::create_dir_all(&partial)
         .map_err(|e| e.to_string())
         .and_then(|()| native_mods::copy_base(&versions.join(base), &partial, Target::Client))
         .and_then(|()| finish(&partial, &dir, program, &record).map_err(|e| e.to_string()));
-    let _ = fs::remove_dir_all(&partial);
-    let _ = fs::remove_dir(&importing);
+    let _ = retried(|| fs::remove_dir_all(&partial).or_else(|_| gone(&partial)));
     if let Err(e) = made {
         return Err(trf("Could not import the build: {error}", &[("error", &e)]));
     }
@@ -297,9 +297,36 @@ fn finish(
     }
     fs::write(partial.join(RECORD), record.to_string())?;
     fs::write(partial.join(".installed"), "")?;
-    match fs::rename(partial, dir) {
+    retried(|| match fs::rename(partial, dir) {
         Err(_) if dir.join(".installed").exists() => Ok(()),
+        Err(e) => {
+            // No mark: not a version, but what a removal left while its game still ran.
+            let _ = fs::remove_dir_all(dir);
+            Err(e)
+        }
         done => done,
+    })
+}
+
+/// `step`, tried for a second: Windows refuses to rename or delete a folder while a scan still
+/// holds a file just written in it (`backend::remove` waits the same).
+fn retried(mut step: impl FnMut() -> std::io::Result<()>) -> std::io::Result<()> {
+    let mut attempt = 1;
+    loop {
+        match step() {
+            Err(_) if attempt < 5 => std::thread::sleep(std::time::Duration::from_millis(250)),
+            done => return done,
+        }
+        attempt += 1;
+    }
+}
+
+/// Ok when `path` is gone.
+fn gone(path: &Path) -> std::io::Result<()> {
+    match path.symlink_metadata() {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+        Ok(_) => Err(std::io::ErrorKind::DirectoryNotEmpty.into()),
     }
 }
 
@@ -312,6 +339,15 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// The entries of `dir`, the copies' own `.importing` left out.
+    fn listed(dir: &Path) -> usize {
+        fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name() != ".importing")
+            .count()
     }
 
     /// A program as this platform's are, carrying the mod API mark the game's do.
@@ -377,7 +413,7 @@ mod tests {
             "2026-11-02",
         );
         assert_eq!(again.unwrap(), tag);
-        assert_eq!(fs::read_dir(&versions).unwrap().count(), 2);
+        assert_eq!(listed(&versions), 2);
         let _ = fs::remove_dir_all(versions);
     }
 
@@ -388,13 +424,23 @@ mod tests {
         let built = program(b"build");
         let unfinished = install_in(&versions, "v0.2.95", &built, CLIENT, "2026-10-01");
         assert!(unfinished.is_err(), "no base to copy");
-        assert_eq!(fs::read_dir(&versions).unwrap().count(), 0);
+        assert_eq!(listed(&versions), 0);
+        assert_eq!(listed(&versions.join(".importing")), 0);
         let short: String = Sha256::digest(&built)[..4]
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
         fs::create_dir_all(versions.join(format!("imported-2026-10-01-{}", &short[..7]))).unwrap();
         assert!(install_in(&versions, "v0.2.95", &built, CLIENT, "2026-10-02").is_err());
+        // What a removal left while its game ran (no mark) gives way to the import.
+        fs::create_dir_all(versions.join("v0.2.95")).unwrap();
+        fs::write(versions.join("v0.2.95/research-lock.json"), b"lock").unwrap();
+        let left = versions.join(format!("imported-2026-10-01-{}", &short[..7]));
+        fs::write(left.join(CLIENT), b"old").unwrap();
+        let tag = install_in(&versions, "v0.2.95", &built, CLIENT, "2026-10-01").unwrap();
+        assert_eq!(versions.join(tag), left);
+        assert_eq!(fs::read(left.join(CLIENT)).unwrap(), built);
+        assert!(left.join(".installed").is_file());
         let _ = fs::remove_dir_all(versions);
     }
 
