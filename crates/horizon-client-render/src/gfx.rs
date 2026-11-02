@@ -743,7 +743,8 @@ pub struct Renderer {
     /// (F3+4 shows it).
     pub lightmap_pixels: [u8; 16 * 16 * 4],
     /// Time the last `render` spent blocked on the GPU or the display
-    /// (acquiring, presenting, offscreen pacing), excluded from CPU time.
+    /// (acquiring, presenting, offscreen pacing, the submit thread holding the queue),
+    /// excluded from CPU time.
     pub last_wait: std::time::Duration,
     /// CPU time of the last `render`, waits excluded.
     pub last_encode: std::time::Duration,
@@ -1109,7 +1110,7 @@ const SPRITE_ARRAYS: u32 = 8;
 /// array. wgpu's OpenGL backend picks a texture's target from its layer
 /// count when it is created: one layer makes a 2D texture and a multiple of
 /// six a cube map, neither of which can be viewed as an array.
-fn array_layers(count: u32, gl: bool) -> u32 {
+pub(crate) fn array_layers(count: u32, gl: bool) -> u32 {
     match count {
         _ if !gl => count,
         0 | 1 => 2,
@@ -5354,7 +5355,11 @@ impl Renderer {
     }
     /// `checks`: the error scopes of a scaled screenshot's frame, checked before its PNG is written.
     fn draw_frame(&mut self, frame: &Frame, checks: Option<GpuChecks>) -> Result<bool> {
+        let landing = Instant::now();
         self.land_frame();
+        // Waiting for the previous frame (offscreen: at most two on the GPU), not work.
+        let landed = landing.elapsed();
+        self.queue.take_waited();
         // World frames alone follow the shader pack: the game loads the picked one
         // before it draws one. Title frames draw no terrain and keep the layout
         // through a pack dropped (Shader Options) or not loaded yet (`Renderer::new`),
@@ -5420,6 +5425,8 @@ impl Renderer {
         if !fg {
             self.frame_gen.stop();
         }
+        // Waits for the submit thread since the last frame's present (this frame's uploads).
+        let queued = self.queue.take_waited();
         let acquire = Instant::now();
         let fg_frames = fg
             .then(|| {
@@ -5441,7 +5448,9 @@ impl Renderer {
         } else {
             self.surface.as_ref().map(|s| s.get_current_texture())
         };
-        self.last_wait = acquire.elapsed();
+        self.last_wait = landed + queued + acquire.elapsed();
+        // Inside the acquire's time already.
+        self.queue.take_waited();
         let (surface_frame, reconfigure) = match acquired {
             None => (None, false),
             Some(wgpu::CurrentSurfaceTexture::Success(f)) => (Some(f), false),
@@ -8112,6 +8121,8 @@ impl Renderer {
             match self.queue.submit_later(job) {
                 Ok(()) => {
                     self.deferred = Some(offscreen);
+                    // The frame's waits for the previous one on the submit thread.
+                    self.last_wait += self.queue.take_waited();
                     self.last_encode = started.elapsed().saturating_sub(self.last_wait);
                     self.visible = visible;
                     self.visible_lods = visible_lods;
@@ -8176,6 +8187,8 @@ impl Renderer {
                 );
             }
         }
+        // The frame's own waits for the submit thread (its queue writes and passes).
+        self.last_wait += self.queue.take_waited();
         let present = Instant::now();
         if let Some(surface_frame) = surface_frame {
             // On Wayland this ties RedrawRequested to the compositor's frame
@@ -8208,6 +8221,8 @@ impl Renderer {
             }
         }
         self.last_wait += present.elapsed();
+        // Inside the present's time already.
+        self.queue.take_waited();
         self.last_encode = started.elapsed().saturating_sub(self.last_wait);
         let _ = self.started;
         self.visible = visible;
@@ -9088,6 +9103,14 @@ mod tests {
     }
 
     #[test]
+    fn a_reported_black_level_rounds_down() {
+        use super::hundredths_of_a_nit as h;
+        assert_eq!(h(0.005), 0);
+        assert_eq!(h(0.05), 5);
+        assert_eq!(h(5.0), 100);
+        assert_eq!(h(f32::NAN), 0);
+    }
+    #[test]
     fn os_luminances_become_auto_values() {
         use super::os_reported;
         use crate::graphics::Reported;
@@ -9104,14 +9127,16 @@ mod tests {
             os_reported(&info(Some(998.4), Some(240.0))),
             Some(Reported {
                 paper_white: 240,
-                peak: 998
+                peak: 998,
+                black: 0
             })
         );
         assert_eq!(
             os_reported(&info(Some(120.0), Some(1000.0))),
             Some(Reported {
                 paper_white: 480,
-                peak: 480
+                peak: 480,
+                black: 0
             })
         );
         // White above the calibrated peak (a Samsung QD-OLED's 380, the slider at 456).
@@ -9119,7 +9144,8 @@ mod tests {
             os_reported(&info(Some(380.0), Some(456.0))),
             Some(Reported {
                 paper_white: 456,
-                peak: 456
+                peak: 456,
+                black: 0
             })
         );
         assert_eq!(os_reported(&info(Some(1000.0), None)), None);
@@ -9902,6 +9928,15 @@ fn flush_display_log() {
         (log.last, log.at) = (line, Some(now));
     }
 }
+/// A reported black level, within the setting's range. Rounded down: OLEDs report a figure
+/// just above 0, like KWin's 0.005, which isn't worth lifting the shadows for.
+fn hundredths_of_a_nit(nits: f32) -> u32 {
+    if nits.is_finite() && nits > 0.0 {
+        ((nits * 100.0) as u32).min(100)
+    } else {
+        0
+    }
+}
 fn log_os_reported(reported: Option<crate::graphics::Reported>) {
     log_display(match reported {
         Some(r) => format!(
@@ -9924,6 +9959,7 @@ fn os_reported(info: &wgpu::DisplayHdrInfo) -> Option<crate::graphics::Reported>
     let paper_white = (white.round() as u32).clamp(80, 480);
     Some(crate::graphics::Reported {
         paper_white,
+        black: hundredths_of_a_nit(luminance.min_nits.unwrap_or(0.0)),
         // Windows' SDR brightness slider can set white above the reported peak (480 against
         // a calibrated 380): the highlights then stay at white instead of dropping below it.
         peak: (peak.round() as u32).clamp(200, 10_000).max(paper_white),
@@ -9949,5 +9985,6 @@ fn reported(l: horizon_hdr::wayland::Luminances) -> crate::graphics::Reported {
     crate::graphics::Reported {
         paper_white: 203,
         peak: peak.clamp(200, 10_000),
+        black: hundredths_of_a_nit(l.target_min * 203.0 / l.reference.max(1.0)),
     }
 }
