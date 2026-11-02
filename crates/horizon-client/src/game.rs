@@ -2913,6 +2913,9 @@ struct Game<'a> {
     lan_acting_name: Option<String>,
     /// Their UUID (`Player.getUUID`).
     lan_acting_uuid: Option<u128>,
+    /// Where the mods refused to prime TNT: the sound and game event the level
+    /// queued right after the prime are dropped (`prime_tnt_event`).
+    tnt_refused: Option<BlockPos>,
     /// Their permission level: an op's above 0 (`PlayerList.isOp`).
     lan_acting_permission: Option<u8>,
     /// Their entity id, which the hub (often taken out of `lan` while they
@@ -5012,6 +5015,15 @@ impl Game<'_> {
                         _ => {}
                     }
                 }
+                // A prime the mods refused is silent: no fuse sound, no game event.
+                LevelEvent::Sound { pos, ref sound, .. }
+                    if self.tnt_refused == Some(pos)
+                        && &**sound == "minecraft:entity.tnt.primed" => {}
+                LevelEvent::GameEvent {
+                    pos,
+                    event: "minecraft:prime_fuse",
+                    ..
+                } if self.tnt_refused == Some(pos) => self.tnt_refused = None,
                 LevelEvent::Sound {
                     pos,
                     sound,
@@ -5101,7 +5113,7 @@ impl Game<'_> {
                     }
                     PlayerEffect::InteractLoot(_) => {}
                 },
-                LevelEvent::PrimeTnt { pos, rot } => self.add_primed_tnt(pos, rot, 80, None, None),
+                LevelEvent::PrimeTnt { pos, rot } => self.prime_tnt_event(pos, rot),
                 LevelEvent::BlockEvent {
                     pos,
                     state,
@@ -18588,6 +18600,7 @@ impl<'a> Game<'a> {
             guest_player_sounds: Vec::new(),
             lan_acting_name: None,
             lan_acting_uuid: None,
+            tnt_refused: None,
             lan_acting_permission: None,
             lan_acting_entity: None,
             chat_capture: None,
