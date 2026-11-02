@@ -189,7 +189,33 @@ P1 is alone, turning it off restores the normal controller reader. Leaving it on
 alone keeps watching for joins without a compositor.
 
 `HORIZON_SPLIT=N` remains a testing shortcut to enable it and add N-1 players.
-The Setup map and joining P1 on an external server are separate follow-ups.
+The Setup map previews the monitors, windows and player views. Click a player (its name turns
+yellow) and choose a window or monitor, or drag its tile onto a window, a place among another
+window's players, or a monitor; then **Apply** to move the actual views. **Revert** and
+**Done** discard unapplied moves. An emptied window closes only on Apply. A player joining or
+leaving resets the draft so it cannot apply a move to the wrong seat. P1's pause-menu shortcut
+opens Setup; another player's shortcut opens their profiles.
+
+While a window has two or three players, a square at the bottom picks how they share it
+(two: Auto, side by side, top and bottom; three: one wide on top, one tall on the left, side
+by side); Apply saves it (`splitscreenTwo`, `splitscreenThree`). **Names** (top left,
+`splitscreenNames`, on by default) keeps each player's name in the corner of their view; off,
+it shows only for a moment when something changes. **Identify** makes every view say which
+window it is in.
+
+With a controller, A on a player's tile picks it up: left and right (or LB and RB) cycle where
+it goes, the map showing it there, A drops it, B puts it back. **Give Up Pad** (top, while P1
+has a controller in a world) frees P1's controller and offers it to join, for a friend to
+press A; if nobody joins, the offer runs out, or it's declined, it drives P1 again. A player
+whose controller disconnected shows "(no controller)" on its tile. Other players' pause menus
+say **Leave** for disconnecting. `HORIZON_SPLIT_STATS=1` logs every 5 s where a frame's time
+goes (each player's turn and render, the presents, the GPU wait) and each player's frame rate.
+On a server P1 joined (a dedicated server, another computer's LAN world, a friend's invite) the
+others join the same server, each as its own profile; a name already on the server can't be
+picked, and an online-mode server refuses offline profiles, said on the profile page before it
+tries. A player the server turns away as it comes in picks again, told why; one kicked later
+leaves; when P1 leaves the server, everyone does. The server's resource packs are asked once,
+of P1: the others follow P1's answer.
 
 ## Shared rules
 

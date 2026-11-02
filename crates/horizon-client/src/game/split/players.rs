@@ -1,5 +1,5 @@
-//! Players coming and going: joining P1's world through memory as a profile it picks
-//! (`split_profiles`), dropping out.
+//! Players coming and going: joining (P1's world through memory, or P1's server) as a profile
+//! it picks (`split_profiles`), dropping out.
 use super::*;
 use horizon_client::{gamepad::PadState, options_ui::Page};
 
@@ -8,14 +8,23 @@ fn on_profiles(game: &Game<'_>) -> bool {
     game.screen == crate::game::Screen::Options && game.ui.options.page() == Page::SplitProfiles
 }
 
+/// An offline profile on an online-mode server: the session service knows no such player.
+const ONLINE_ONLY: &str = "horizon.splitscreen.online_only";
+
 /// Why a player's game left its server, when the server said (its Disconnected or error screen).
 fn turned_away(game: &Game<'_>) -> Option<String> {
     use horizon_client::{multiplayer::Screen, title::Mode};
-    match &game.title.as_ref()?.mode {
-        Mode::Multiplayer(Screen::Disconnected { reason, .. }) => Some(reason.clone()),
-        Mode::Error { message, .. } => Some(message.clone()),
-        _ => None,
-    }
+    let why = match &game.title.as_ref()?.mode {
+        Mode::Multiplayer(Screen::Disconnected { reason, .. }) => reason.clone(),
+        Mode::Error { message, .. } => message.clone(),
+        _ => return None,
+    };
+    // An online-mode server: the other players have no Minecraft account of their own here.
+    Some(if why.contains("verify username") {
+        horizon_client::lang::tr("horizon.splitscreen.own_account", &[])
+    } else {
+        why
+    })
 }
 
 /// The `Game` `start` makes (~67 KB, by value) into a box, in a frame of its own that is gone
@@ -83,7 +92,42 @@ impl Split<'_> {
     fn taken(&self) -> Vec<String> {
         std::iter::once(self.host.options.player_name())
             .chain(self.guests.iter().filter_map(|g| g.name.clone()))
+            // On a server: everyone in its player list.
+            .chain(self.host.remote_online_names().unwrap_or_default())
             .collect()
+    }
+
+    /// Whether `name` can play in P1's world, said on the profile page before it tries: P1's
+    /// own world takes anyone, an online-mode server no offline profile.
+    fn can_join(&self, name: &str) -> std::result::Result<(), String> {
+        if self.taken().iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            return Err(format!("{name} is already playing."));
+        }
+        if self.p1_server().is_some() && self.host.online_server() {
+            return Err(horizon_client::lang::tr(ONLINE_ONLY, &[]));
+        }
+        Ok(())
+    }
+
+    /// A server's resource packs: the others answer as P1 did (asked once, by P1). A player
+    /// joining after P1 answered is answered at once; one asked before waits for P1's answer.
+    pub(super) fn follow_pack_answer(&mut self) {
+        let Some(yes) = self.host.pack_answer() else {
+            return;
+        };
+        for i in 0..self.guests.len() {
+            if !self.guests[i].game.pack_prompt_open() {
+                continue;
+            }
+            self.turn(i + 1);
+            if let Err(e) = self.guests[i].game.answer_pack_prompt(yes) {
+                log::warn!(
+                    "Horizon: splitscreen: P{}'s server packs: {e}",
+                    self.guests[i].seat
+                );
+            }
+        }
+        self.turn(0);
     }
 
     /// The profile pages just opened, filled: the list and who plays now.
@@ -138,9 +182,7 @@ impl Split<'_> {
 
     /// Guest `i` plays as profile `name`: its options, then into P1's world.
     pub(super) fn enter(&mut self, i: usize, name: String) -> Result<()> {
-        if self.taken().iter().any(|n| n.eq_ignore_ascii_case(&name)) {
-            return Err(format!("{name} is already playing.").into());
-        }
+        self.can_join(&name)?;
         // The page's names are player names; a test seat's (P2) isn't one, but no name leaves
         // the profiles folder.
         if !folder_name(&name) {
@@ -159,13 +201,13 @@ impl Split<'_> {
             self.host.settings.save(&options);
             self.host.settings.clone()
         };
-        let pipe = self
-            .host
-            .integrated
-            .as_ref()
-            .ok_or("P1 is not in its world")?
-            .join_split(&name)
-            .ok_or("P1's world does not let players in")?;
+        // P1's own world through memory (`Ok`), else P1's server over the network (`Err`).
+        let via = match &self.host.integrated {
+            Some(server) => Ok(server
+                .join_split(&name)
+                .ok_or("P1's world does not let players in")?),
+            None => Err(self.p1_server().ok_or("P1 is not in a world")?),
+        };
         self.guests[i].options = options;
         self.turn(i + 1);
         let guest = &mut self.guests[i];
@@ -175,7 +217,12 @@ impl Split<'_> {
         guest.game.settings = settings;
         guest.game.options.player_name = Some(name.clone());
         guest.game.apply_settings();
-        let joined = guest.game.connect_local(pipe, &name);
+        let joined = match via {
+            Ok(pipe) => guest.game.connect_local(pipe, &name),
+            // A server that refuses it (whitelist, an online-mode sign-in) disconnects it: it
+            // picks again, told why (`drop_out`).
+            Err(address) => guest.game.connect_server(&address, &name),
+        };
         self.turn(0);
         if let Err(e) = joined {
             // Let in for nothing: the world pauses again, the name is free.
@@ -224,9 +271,7 @@ impl Split<'_> {
             let joining = self.guests[i].name.is_none();
             match self.guests[i].game.ui.options.split_profiles.take_choice() {
                 Some(Some(name)) => match (|| {
-                    if self.taken().iter().any(|n| n.eq_ignore_ascii_case(&name)) {
-                        return Err(format!("{name} is already playing.").into());
-                    }
+                    self.can_join(&name)?;
                     if joining {
                         self.enter(i, name)
                     } else {
@@ -330,6 +375,7 @@ impl Split<'_> {
         guest.window = Some(window);
         guest.world_renderer_ready = true;
         guest.keyboard_mouse = false;
+        guest.split_window = host.split_window;
         guest.apply_settings();
         // Its pad comes from the split (`route_pads`): it never opens the controllers itself.
         guest.pad.feed = Some(PadState::default());
@@ -341,7 +387,9 @@ impl Split<'_> {
     /// server turned away as it came in picks again, told why; one it sent away later (a kick)
     /// leaves, and P1 hears why. Whether any left.
     pub(super) fn drop_out(&mut self) -> bool {
-        let p1_left = self.host.title.is_some() || self.host.integrated.is_none();
+        // Out of its world: on the title screen, or neither on its server thread nor a server's.
+        let p1_left = self.host.title.is_some()
+            || (self.host.integrated.is_none() && self.host.remote.is_none());
         let before = self.guests.len();
         if p1_left {
             self.host.split_hud.notice = None;
@@ -349,6 +397,12 @@ impl Split<'_> {
         for k in (0..self.guests.len()).rev() {
             let g = &mut self.guests[k];
             g.entered |= g.game.remote.is_some() && g.game.player.is_some();
+            // In the world: a pad P1 gave up is this player's for good.
+            if g.entered
+                && let Some(id) = g.pad
+            {
+                self.p1_pad.joined(id);
+            }
             let g = &self.guests[k];
             // A player picking a profile has no connection yet.
             let playing = g.name.is_none() || g.game.remote.is_some();
@@ -383,6 +437,12 @@ impl Split<'_> {
             self.turn(0);
         }
         let guest = self.guests.remove(k);
+        // Gone before it got into the world: a pad P1 gave up goes back to P1.
+        if !guest.entered
+            && let Some(id) = guest.pad
+        {
+            self.restore_given_up_pad(id);
+        }
         if self.focus > k + 1 {
             self.focus -= 1;
         }
