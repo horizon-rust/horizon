@@ -108,6 +108,11 @@ pub struct Guest {
     pub input: u8,
     /// The boat or minecart the player rides (`Entity.getVehicle`).
     pub vehicle: Option<u32>,
+    /// When the player last got into its vehicle, from `Hub.seat_order`:
+    /// `Entity.addPassenger` seats a rider behind the players already in the
+    /// vehicle, so the smallest order on a boat is its controlling rider
+    /// (`getControllingPassenger`).
+    pub vehicle_order: u64,
     /// `ServerGamePacketListenerImpl.lastGoodX/Y/Z` of the vehicle it controls.
     pub vehicle_good: Option<[f64; 3]>,
     pub sprinting: bool,
@@ -299,6 +304,8 @@ pub struct Guest {
     pub drag: Option<(u8, Vec<usize>)>,
     /// The compound this player was loaded from, for fields Horizon does not model.
     pub saved: Option<horizon_world::nbt::Tag>,
+    /// Server-owned attachment data for this player.
+    pub attachments: horizon_world::attachments::Attachments,
     /// `ServerPlayer.seenCredits`: the end poem has been shown.
     pub seen_credits: bool,
     /// `ServerPlayer.postEffects` and `postEffectsDirty`.
@@ -354,6 +361,7 @@ impl Guest {
             sneaking: false,
             input: 0,
             vehicle: None,
+            vehicle_order: 0,
             vehicle_good: None,
             sprinting: false,
             fall_flying: false,
@@ -448,6 +456,7 @@ impl Guest {
             next_window: 0,
             drag: None,
             saved: None,
+            attachments: Default::default(),
             seen_credits: false,
             post_effects: Vec::new(),
             post_effects_dirty: true,

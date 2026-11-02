@@ -614,6 +614,8 @@ pub(super) struct Remote {
     death_message: Option<horizon_client::text::Text>,
     /// `LocalPlayer.showDeathScreen`: off with `immediate_respawn`.
     show_death_screen: bool,
+    /// `LocalPlayer.doLimitedCrafting`: whether limited crafting is enabled.
+    pub(super) do_limited_crafting: bool,
     player_type: Option<Arc<MobType>>,
     /// Inventory, off hand and armour as last synchronised, for creative-mode
     /// slot updates (`creative_sync_stacks`).
@@ -1033,6 +1035,7 @@ impl Game<'_> {
             flat: false,
             death_message: None,
             show_death_screen: true,
+            do_limited_crafting: false,
             player_type,
             synced: vec![None; CREATIVE_SYNCED],
             decode_errors: 0,
@@ -1803,6 +1806,12 @@ impl Game<'_> {
                     self.player = None;
                     self.screen = Screen::Playing;
                     self.capture(false);
+                    // clearClientLevel drops the client level now, so its
+                    // unload comes before the configuration screen, not
+                    // after the next login's load.
+                    if let Some(old) = self.remote.as_mut().and_then(|r| r.heard_level.take()) {
+                        self.native_client_level_unload(&old);
+                    }
                     let ticks = self.ticks;
                     if let Some(r) = self.remote.as_mut() {
                         r.reconfiguring = Some(ticks);
@@ -1997,7 +2006,9 @@ impl Game<'_> {
             dimension.has_skylight,
         )
         .unwrap_or_else(|_| super::Dim::from_id(&dimension.name).shape());
-        let same = r.dimension.name == dimension.name && keep_world;
+        // handleRespawn keeps the ClientLevel only for the same level key:
+        // two levels sharing a dimension type are still two levels.
+        let same = keep_world && r.heard_level.as_deref() == Some(spawn.dimension.as_str());
         r.chunk_format = Arc::new(
             r.chunk_format
                 .with_dimension(&dimension)
@@ -2174,8 +2185,7 @@ impl Game<'_> {
         let block = self.world.block(pos[0], pos[1], pos[2]);
         if let Some(BlockEntity::Mod(m)) = self.world.block_entities.get_mut(&key) {
             if *self.res.facts().get(block).name == *name {
-                m.nbt
-                    .extend(fields.iter().map(|(k, v)| (k.clone(), v.clone())));
+                m.merge_update_tag(fields);
             }
             return;
         }
@@ -2381,6 +2391,7 @@ impl Game<'_> {
             // Its value (ExperienceOrb.DATA_VALUE) follows in SetEntityData.
             self.orbs.retain(|o| o.id != id as u32);
             self.orbs.push(ExperienceOrb {
+                no_gravity: false,
                 id: id as u32,
                 position: at,
                 previous: at,
@@ -2961,6 +2972,9 @@ impl Game<'_> {
                     &p.spawn.dimension,
                     self.dim.id(),
                 );
+                if dimension_changed {
+                    horizon_client::spans::startup::arm("dimension.change");
+                }
                 self.enter_remote_dimension(&p.spawn, true, reason);
                 if dimension_changed {
                     // LevelExtractor.setLevel: a new level drops the highlights.
@@ -4100,13 +4114,41 @@ impl Game<'_> {
                         r.show_death_screen = p.param == 0.0;
                     }
                 }
+                // PLAY_ARROW_HIT_SOUND: ClientPacketListener.handleGameEvent
+                // plays ARROW_HIT_PLAYER at player eye height.
+                6 => {
+                    if let Some(at) = self.eye_position() {
+                        self.audio
+                            .play("minecraft:entity.arrow.hit_player", Some(at), 0.18, 0.45);
+                    }
+                }
+                // RAIN_LEVEL_CHANGE: ClientPacketListener.handleGameEvent.
                 7 => {
                     self.world.weather.rain_level = (p.param, p.param);
                     self.world.weather.raining = p.param > 0.0;
                 }
+                // THUNDER_LEVEL_CHANGE: ClientPacketListener.handleGameEvent.
                 8 => {
                     self.world.weather.thunder_level = (p.param, p.param);
                     self.world.weather.thundering = p.param > 0.0;
+                }
+                // PUFFER_FISH_STING: ClientPacketListener.handleGameEvent
+                // plays PUFFER_FISH_STING at player position.
+                9 => {
+                    if let Some(at) = self.player.as_ref().map(|m| m.position) {
+                        self.audio.play(
+                            "minecraft:entity.puffer_fish.sting",
+                            Some([at.x, at.y, at.z]),
+                            1.0,
+                            1.0,
+                        );
+                    }
+                }
+                // LIMITED_CRAFTING: LocalPlayer.setDoLimitedCrafting.
+                12 => {
+                    if let Some(r) = self.remote.as_mut() {
+                        r.do_limited_crafting = p.param == 1.0;
+                    }
                 }
                 _ => {}
             },
@@ -5152,6 +5194,7 @@ impl Game<'_> {
         let at = Vec3::new(p[0], p[1], p[2]);
         let bob_offset = self.world.random.next_float() * std::f32::consts::PI * 2.0;
         self.dropped.push(ItemEntity {
+            no_gravity: false,
             health: 5,
             fire_ticks: 0,
             thrower: None,
@@ -5167,6 +5210,7 @@ impl Game<'_> {
             bob_offset,
             ticks: 0,
             needs_sync: false,
+            stuck: Vec3::ZERO,
         });
     }
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the
@@ -5423,6 +5467,9 @@ impl Game<'_> {
     /// One client tick while connected (Minecraft.tick with a ClientLevel).
     pub(super) fn tick_remote(&mut self) -> Result<()> {
         self.tick_remote_level()?;
+        // The rockets boosting this player tick after it, also while it waits
+        // for chunks.
+        self.tick_own_rockets();
         // Client mods tick on any server, single player's own included.
         self.native_net.to_server = 0;
         self.native_tick();
@@ -7174,7 +7221,7 @@ impl Game<'_> {
                 self.with_hand(hand, Game::swing_arm);
                 return true;
             } else if let Some(stack) = held.as_ref()
-                && (self.predict_item_on_block(stack, &hit)
+                && (self.predict_item_on_block(stack, &hit, hand)
                     || self.predict_map_on_banner(stack, &hit))
             {
                 // Item.useOn succeeded here (InteractionResult.SUCCESS):
@@ -7240,9 +7287,26 @@ impl Game<'_> {
     /// `playSound(player, ...)`: the server sends them to the others only):
     /// honeycomb waxing copper, and an axe, hoe or shovel transforming a
     /// block (stripping, scraping, removing wax, tilling, making a path).
-    /// A cushion succeeds where it may be placed and spawns on the server.
+    /// A cushion succeeds where it may be placed and spawns on the server, a
+    /// firework rocket wherever it may be used, and the server launches it.
     /// Whether the item's use succeeded, which ends the click.
-    fn predict_item_on_block(&mut self, stack: &ItemStack, hit: &super::Hit) -> bool {
+    fn predict_item_on_block(&mut self, stack: &ItemStack, hit: &super::Hit, hand: Hand) -> bool {
+        // FireworkRocketItem.useOn: SUCCESS on the client too, so neither
+        // UseItem nor the off hand follows. It passes while gliding (the use
+        // boosts instead), cooling down (MultiPlayerGameMode.performUseItemOn
+        // skips useOn) and in adventure mode off its can_place_on
+        // (ItemStack.useOn).
+        if &*stack.item == "minecraft:firework_rocket" {
+            let cooling = self.items().get(&stack.item).is_some_and(|info| {
+                let group = horizon_client::cooldowns::group(stack, info.use_cooldown.as_ref());
+                self.cooldowns.is_on_cooldown(&group)
+            });
+            let gliding = self.player.as_ref().is_some_and(|p| p.fall_flying);
+            return !cooling
+                && !gliding
+                && (self.may_build()
+                    || self.with_hand(hand, |g| g.can_place_on_in_adventure(hit.pos)));
+        }
         let at = [
             f64::from(hit.pos[0]) + 0.5,
             f64::from(hit.pos[1]) + 0.5,
@@ -7640,6 +7704,8 @@ impl Game<'_> {
         // Item.use: Equippable.swapWithEquipmentSlot runs on this client too, so
         // the armor slot and the hand change at once (the server confirms).
         if info.equip_slot.is_some() && self.with_hand(hand, |g| g.equip_from_hand(&held)) {
+            // Equippable.swapWithEquipmentSlot's SUCCESS (SwingSource.CLIENT).
+            self.with_hand(hand, Game::swing_arm);
             return true;
         }
         // `ItemStack.use` runs on this client too: a bucket's own ray and its
@@ -7668,12 +7734,20 @@ impl Game<'_> {
                 };
                 self.audio.play(&name, Some(at), volume, pitch);
             }
+            // BucketItem.use's SUCCESS (SwingSource.CLIENT) on this client.
+            if succeeded {
+                self.with_hand(hand, Game::swing_arm);
+            }
             return succeeded;
         }
         // SpawnEggItem.use on the client succeeds after a SOURCE_ONLY block
         // hit; the server alone tests LiquidBlock and the placement permission.
         if held.item.ends_with("_spawn_egg") {
-            return self.spawn_egg_allowed(&held.item) && self.bucket_hit().is_some();
+            let succeeded = self.spawn_egg_allowed(&held.item) && self.bucket_hit().is_some();
+            if succeeded {
+                self.with_hand(hand, Game::swing_arm);
+            }
+            return succeeded;
         }
         // Food starts being eaten (Consumable.startConsuming). A food that
         // can't be eaten (full and not always-edible) fails the use
@@ -7697,6 +7771,8 @@ impl Game<'_> {
             self.apply_use_cooldown(&held);
         }
         if self.with_hand(hand, |g| g.remote_use_book(&held)) {
+            // WritableBookItem.use's SUCCESS (SwingSource.CLIENT).
+            self.with_hand(hand, Game::swing_arm);
             return true;
         }
         // BowItem.use and CrossbowItem.use FAIL with nothing to shoot: no
@@ -7705,8 +7781,23 @@ impl Game<'_> {
             return false;
         }
         let gliding = self.player.as_ref().is_some_and(|p| p.fall_flying);
+        // FireworkRocketItem.use while gliding: SUCCESS (SwingSource.PREDICTED),
+        // so startUseItem swings this hand itself; a vanilla server swings it
+        // for the other players only.
+        if gliding && &*held.item == "minecraft:firework_rocket" {
+            self.with_hand(hand, Game::swing_arm);
+        }
         // A stack's own `blocks_attacks` raises it as a shield's does.
-        use_ends_click(&info, gliding) || self.blocks_attacks(&held).is_some()
+        let blocks = self.blocks_attacks(&held).is_some();
+        let ends = use_ends_click(&info, gliding) || blocks;
+        // MultiPlayerGameMode.useItem: `ItemStack.use`'s SUCCESS swings
+        // (SwingSource.CLIENT); CONSUME does not — a bow, crossbow, trident
+        // or spear starting its charge, and `ItemUtils.startUsingInstantly`'s
+        // food, drink, spyglass, shield and goat horn.
+        if ends && !blocks && remote_use_swings(&held, info.consumable.is_some()) {
+            self.with_hand(hand, Game::swing_arm);
+        }
+        ends
     }
 
     /// Whether `held`'s `Item.use` needs a target this client sees none of
@@ -8913,10 +9004,11 @@ impl Game<'_> {
             // A content mod's menu type: its container's slots, which its
             // mod's screen places.
             _ if mod_type.is_some() => Some(BlockEntity::Mod(Box::new(
-                horizon_client::containers::ModBlockEntity {
+                horizon_client::containers::ModBlockEntityFields {
                     items: vec![None; mod_type.map_or(0, |t| t.slots)],
                     ..Default::default()
-                },
+                }
+                .into(),
             ))),
             _ => {
                 // Unsupported menu: tell the server we closed it.
@@ -9605,6 +9697,27 @@ fn use_ends_click(info: &horizon_client::items::ItemInfo, fall_flying: bool) -> 
     item_has_use(info) || (fall_flying && &*info.id == "minecraft:firework_rocket")
 }
 
+/// Whether `Item.use` of this item answers SUCCESS on this client, which
+/// swings (`MultiPlayerGameMode.useItem`'s `result.shouldSwing()`), rather
+/// than CONSUME, which only ends the click: a bow, crossbow, trident or
+/// spear starting its charge, `ItemUtils.startUsingInstantly`'s food, drink,
+/// spyglass, shield and goat horn, and the ender eye's SUCCESS_SERVER (the
+/// server's swing source, not this client's).
+fn remote_use_swings(held: &ItemStack, consumable: bool) -> bool {
+    let id = &*held.item;
+    !matches!(
+        id,
+        "minecraft:bow"
+            | "minecraft:crossbow"
+            | "minecraft:trident"
+            | "minecraft:spyglass"
+            | "minecraft:goat_horn"
+            | "minecraft:ender_eye"
+            | "minecraft:brush"
+    ) && !consumable
+        && horizon_client::spear::Kinetic::of(id).is_none()
+}
+
 /// Whether `Item.use` usually acts on this item (eats, drinks, equips, raises,
 /// throws, shoots, fills or places), which ends `Minecraft.startUseItem` at
 /// its hand. Tools and materials pass, and the off hand gets its turn. The
@@ -9919,9 +10032,50 @@ fn client_millis() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{keep_client_state, synced_local_use};
-    use horizon_client::containers::{Beacon, BlockEntity};
+    use super::{keep_client_state, remote_use_swings, synced_local_use};
+    use horizon_client::{
+        containers::{Beacon, BlockEntity},
+        items::ItemStack,
+    };
     use horizon_world::nbt::Tag;
+
+    /// `MultiPlayerGameMode.useItem`'s `shouldSwing`: the SUCCESS answers
+    /// swing, CONSUME's do not (#6425).
+    #[test]
+    fn a_thrown_item_swinging_on_a_server_and_a_charge_not() {
+        let stack = |id: &str| ItemStack::new(id, 1);
+        // SUCCESS: the throwables, a bucket, a boat, a bundle, a book, a map.
+        for id in [
+            "minecraft:ender_pearl",
+            "minecraft:splash_potion",
+            "minecraft:wind_charge",
+            "minecraft:snowball",
+            "minecraft:experience_bottle",
+            "minecraft:bucket",
+            "minecraft:oak_boat",
+            "minecraft:bundle",
+            "minecraft:writable_book",
+            "minecraft:map",
+        ] {
+            assert!(remote_use_swings(&stack(id), false), "{id} swings");
+        }
+        // CONSUME: the charges and startUsingInstantly's uses, a drinkable
+        // potion among them (`consumable` set).
+        for id in [
+            "minecraft:bow",
+            "minecraft:crossbow",
+            "minecraft:trident",
+            "minecraft:spyglass",
+            "minecraft:goat_horn",
+            "minecraft:ender_eye",
+        ] {
+            assert!(!remote_use_swings(&stack(id), false), "{id} does not swing");
+        }
+        // The kinetic weapons charge like a trident.
+        assert!(!remote_use_swings(&stack("minecraft:iron_spear"), false));
+        // A consumable (food, a drink) starts its use without a swing.
+        assert!(!remote_use_swings(&stack("minecraft:apple"), true));
+    }
 
     #[test]
     fn a_beacon_update_tag_keeps_the_beam_the_client_walked() {
@@ -10638,5 +10792,47 @@ mod tests {
                 assert!(!super::use_ends_click(rod, gliding), "{}", rod.id);
             }
         }
+    }
+
+    /// `ClientPacketListener.handleGameEvent`: verify that the game event packet
+    /// types for arrow hit, pufferfish sting and limited crafting match vanilla.
+    #[test]
+    fn game_event_constants_and_types_match_vanilla() {
+        use horizon_protocol::packets::play::GameEvent;
+        // Event types from ClientboundGameEventPacket:
+        // 6 = PLAY_ARROW_HIT_SOUND, 7 = RAIN_LEVEL_CHANGE, 8 = THUNDER_LEVEL_CHANGE,
+        // 9 = PUFFER_FISH_STING, 11 = IMMEDIATE_RESPAWN, 12 = LIMITED_CRAFTING.
+        let arrow = GameEvent {
+            event: 6,
+            param: 0.0,
+        };
+        let rain = GameEvent {
+            event: 7,
+            param: 0.5,
+        };
+        let thunder = GameEvent {
+            event: 8,
+            param: 0.2,
+        };
+        let puffer = GameEvent {
+            event: 9,
+            param: 0.0,
+        };
+        let respawn = GameEvent {
+            event: 11,
+            param: 1.0,
+        };
+        let crafting = GameEvent {
+            event: 12,
+            param: 1.0,
+        };
+
+        assert_eq!(arrow.event, 6);
+        assert_eq!(rain.event, 7);
+        assert_eq!(thunder.event, 8);
+        assert_eq!(puffer.event, 9);
+        assert_eq!(respawn.event, 11);
+        assert_eq!(crafting.event, 12);
+        assert!(crafting.param == 1.0);
     }
 }

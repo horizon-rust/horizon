@@ -21,6 +21,14 @@ pub(super) fn assign_entity_id(next: &mut u32, id: &mut u32) -> u32 {
     *id
 }
 
+impl Game<'_> {
+    /// `Entity.nextEntityId`: the id a new entity takes from the one counter.
+    pub(super) fn take_entity_id(&mut self) -> u32 {
+        self.next_entity += 1;
+        self.next_entity
+    }
+}
+
 fn state(id: u32, kind: &str, position: [f64; 3], yaw: f32, on_ground: bool) -> EntityState {
     EntityState {
         id: id as i32,
@@ -380,7 +388,9 @@ impl Game<'_> {
             e.meta.push((
                 8,
                 serializer::ITEM_STACK,
-                Value::Item(hub.stack(&Some(o.item.clone()))),
+                Value::Item(
+                    hub.stack(&Some(o.item.clone()).filter(|i| &*i.item != "minecraft:air")),
+                ),
             ));
             out.push(e);
         }

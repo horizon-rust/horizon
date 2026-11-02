@@ -164,6 +164,12 @@ pub enum HostEvent {
     /// A guest left (state to save, entities to drop).
     Left(Box<Guest>),
     Packet(u32, Box<S>),
+    /// A guest's client started (`flying`) or stopped flying (their abilities packet), applied to
+    /// the guest already: the game tells the mods, which may refuse it.
+    Flight {
+        conn: u32,
+        flying: bool,
+    },
     /// A chat line to show on the host (already broadcast to the guests);
     /// a dedicated server logs it, `[Not Secure]` unless signed and fresh.
     Chat {
@@ -230,6 +236,8 @@ pub struct Hub {
     pub guests: Vec<Guest>,
     pub(super) sync: Arc<SyncData>,
     pub ticks: u64,
+    /// The next `Guest.vehicle_order`: a rider that boards later sits behind.
+    pub seat_order: u64,
     /// `Level.soundSeedGenerator`: a fresh `nextLong` per `playSound`.
     pub(super) sound_seeds: Mutex<LegacyRandom>,
     /// The `player_movement_check` and `elytra_movement_check` game rules,
@@ -530,6 +538,7 @@ impl Hub {
             guests: Vec::new(),
             sync,
             ticks: 0,
+            seat_order: 0,
             sound_seeds: Mutex::new(LegacyRandom::new(crate::sound_engine::unique_seed())),
             immediate_respawn: false,
             movement_checks: (true, true),
@@ -2853,7 +2862,12 @@ impl Hub {
                 // handlePlayerAbilities: the client flies only if it may.
                 S::PlayerAbilities(p) => {
                     let g = &mut self.guests[i];
-                    g.flying = p.flags & 2 != 0 && (g.creative() || g.spectator());
+                    let flying = p.flags & 2 != 0 && (g.creative() || g.spectator());
+                    // The change is the game's to announce (the mods may refuse it).
+                    if flying != g.flying {
+                        g.flying = flying;
+                        events.push(HostEvent::Flight { conn, flying });
+                    }
                 }
                 S::MovePlayerPos(p) => {
                     self.move_player(i, Some([p.x, p.y, p.z]), None, p.flags, ctx, events);
