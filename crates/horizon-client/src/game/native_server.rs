@@ -390,6 +390,18 @@ impl Game<'_> {
             host.hub.send_to(g.conn, &packet);
         }
     }
+    /// Posts a line to the dedicated server's event stream (`GET /api/v1/events`)
+    /// as an `announce` event, which horizon-server's Discord bridge relays when
+    /// `[discord] events` lists `announce`: `name` and `uuid` say who it is
+    /// about (empty and 0 for no one), `message` is the line (`§` codes colour it).
+    /// Only on a dedicated server; false elsewhere and for an empty message.
+    pub(super) fn native_server_event(&self, name: &str, uuid: u128, message: &str) -> bool {
+        if self.options.dedicated.is_none() || message.trim().is_empty() {
+            return false;
+        }
+        super::dedicated::events::record("announce", name, uuid, json!({ "message": message }));
+        true
+    }
     /// A line of the command's answer, inside `native_perform_command`:
     /// sent to the player whose command it is after the call, as vanilla
     /// commands' feedback is.
