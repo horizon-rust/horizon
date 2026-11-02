@@ -39,9 +39,7 @@ impl Launcher {
         if self.selected_instance().is_none() {
             return tabs;
         }
-        if self.has_mods_tab() {
-            tabs.push((HomeTab::Mods, self.instance_mods_count(cx)));
-        }
+        tabs.push((HomeTab::Mods, self.instance_mods_count(cx)));
         tabs.push((HomeTab::Worlds, self.worlds_count(cx)));
         tabs.push((HomeTab::Multiplayer, Some(self.servers_count())));
         tabs.push((HomeTab::Packs, Some(self.packs_count())));

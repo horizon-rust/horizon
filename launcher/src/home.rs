@@ -8,8 +8,7 @@ use theme::night;
 
 impl Launcher {
     /// The focal point: what will start and its state, the instance's name, when it was played,
-    /// and an update when one waits. No `tag`: a Java instance's Minecraft (`game` then names its
-    /// loader too).
+    /// and an update when one waits.
     pub(super) fn hero(
         &mut self,
         tag: &str,
@@ -114,7 +113,6 @@ impl Launcher {
             .children(instance.map(|i| {
                 shell::text(night::UI, c(n.ink_soft)).child(instances_page::played_line(i))
             }));
-        // A Java instance (no Horizon tag) isn't offered Horizon's updates.
         if let Some(release) = self.updates.horizon.as_ref().filter(|_| !tag.is_empty()) {
             let installing = self.installing.as_ref().filter(|(t, _)| *t == release.tag);
             let line = shell::text(night::CAPTION, c(n.muted))
@@ -192,8 +190,8 @@ impl Launcher {
     }
 
     /// Play, then what else the instance offers: its version (Horizon), its mods, its folder.
-    /// `ready`: prepared, or a Java instance (its game comes with Play).
-    pub(super) fn home_actions(&self, ready: bool, java: bool, cx: &mut Context<Self>) -> Div {
+    /// `ready`: prepared.
+    pub(super) fn home_actions(&self, ready: bool, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let running = self.client.is_some() || self.starting_client.is_some();
         if self.preparing {
@@ -261,8 +259,7 @@ impl Launcher {
             .items_center()
             .gap(px(10.))
             .child(play)
-            // Horizon's versions don't apply to a Java instance.
-            .children((!java).then(|| self.picker(cx)))
+            .child(self.picker(cx))
             .child(
                 action("home-mods", Action::Quiet, &t)
                     .child(label(tr("Mods").to_string()))

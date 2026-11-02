@@ -53,8 +53,6 @@ pub(super) struct InstanceDialog {
     pub(super) picture: Option<Option<instance_icons::Chosen>>,
     pub(super) error: Option<String>,
     busy: bool,
-    /// Horizon, or the Java game it plays.
-    pub(super) java: new_instance::JavaChoice,
 }
 
 /// The instances and their icons as images, kept between frames.
@@ -67,8 +65,6 @@ pub(super) struct Instances {
     delete_error: Option<String>,
     /// Textures, pictures and marks as images, by name and size in device pixels.
     pub(super) icons: HashMap<(String, u32), Option<Arc<RenderImage>>>,
-    /// Mojang's versions, for a new Java instance.
-    pub(super) versions: new_instance::VersionList,
 }
 
 impl Launcher {
@@ -202,22 +198,19 @@ impl Launcher {
             let (open, sub) = match i.kind {
                 InstanceKind::Default | InstanceKind::Own => (
                     self.page == Page::Play && selected.as_ref() == Some(&i.id),
-                    match (&i.java, &tag, &i.version) {
-                        (Some(java), _, _) => java_line(java),
-                        (None, None, Some(own)) => {
-                            trf("{version} is not installed", &[("version", own)])
-                        }
-                        (None, None, None) => tr("No version installed").into(),
-                        (None, Some(_), _) if !prepared => tr("Needs preparing").into(),
-                        (None, Some(tag), _) if self.native_build_of(tag).is_some() => {
+                    match (&tag, &i.version) {
+                        (None, Some(own)) => trf("{version} is not installed", &[("version", own)]),
+                        (None, None) => tr("No version installed").into(),
+                        (Some(_), _) if !prepared => tr("Needs preparing").into(),
+                        (Some(tag), _) if self.native_build_of(tag).is_some() => {
                             let build = self.native_build_of(tag).unwrap_or_default();
                             trf(
                                 "Native build · {version}",
                                 &[("version", &build.horizon_short())],
                             )
                         }
-                        (None, Some(tag), Some(_)) => format!("{} · {tag}", tr("Ready")),
-                        (None, Some(_), None) => tr("Ready").into(),
+                        (Some(tag), Some(_)) => format!("{} · {tag}", tr("Ready")),
+                        (Some(_), None) => tr("Ready").into(),
                     },
                 ),
                 InstanceKind::Port => {
@@ -230,10 +223,8 @@ impl Launcher {
                 }
                 InstanceKind::Pack => (false, tr("From Horizon's registry").into()),
             };
-            // Java instances have nothing of Horizon's to prepare: no state square.
-            let state = (matches!(i.kind, InstanceKind::Default | InstanceKind::Own)
-                && i.java.is_none())
-            .then_some(if prepared { t.success } else { t.warn });
+            let state = matches!(i.kind, InstanceKind::Default | InstanceKind::Own)
+                .then_some(if prepared { t.success } else { t.warn });
             let icon = self.instance_icon(&i, 36.);
             let clicked = i.clone();
             out.push(
@@ -275,9 +266,7 @@ impl Launcher {
             copy: false,
             error: None,
             busy: false,
-            java: Default::default(),
         });
-        self.servers.text(Field::InstanceVersion).set(String::new());
     }
 
     /// Escape closes the dialog. Whether it did.
@@ -305,40 +294,15 @@ impl Launcher {
             .map(|p| p.as_ref().map(|c| c.png.clone()));
         let editing = d.editing.clone();
         let copy = selected.filter(|_| d.copy);
-        // A new Java instance: what it plays, and its name when none is typed.
-        let java = (editing.is_none() && d.java.kind != new_instance::NewKind::Horizon)
-            .then(|| d.java.clone());
-        let minecraft = java.as_ref().map(|j| {
-            j.minecraft(match &self.instances.versions {
-                new_instance::VersionList::Ready(v) => Some(v),
-                _ => None,
-            })
-        });
         let Some(d) = self.instances.dialog.as_mut() else {
             return;
-        };
-        let (java, name) = match (java, minecraft) {
-            (Some(_), Some(None)) => {
-                d.error = Some(tr("Mojang's version list isn't here yet.").into());
-                return;
-            }
-            (Some(j), Some(Some(mc))) => {
-                let name = if name.is_empty() {
-                    j.default_name(&mc)
-                } else {
-                    name
-                };
-                (Some((j, mc)), name)
-            }
-            _ => (None, name),
         };
         d.busy = true;
         d.error = None;
         let task = cx.background_executor().spawn(async move {
-            let id = match (editing, java) {
-                (Some(id), _) => id,
-                (None, Some((j, mc))) => new_instance::create_java(&j, &name, &mc)?.id,
-                (None, None) => instances::create(&name, copy.as_deref())?.id,
+            let id = match editing {
+                Some(id) => id,
+                None => instances::create(&name, copy.as_deref())?.id,
             };
             let instance = instances::edit(&id, |m| {
                 m.name = Some(name);
@@ -387,15 +351,13 @@ impl Launcher {
             .picture
             .as_ref()
             .map(|p| p.as_ref().map(|c| c.preview.clone()));
-        let (editing, copy, icon, error, busy, kind) = (
+        let (editing, copy, icon, error, busy) = (
             d.editing.is_some(),
             d.copy,
             d.icon.clone(),
             d.error.clone(),
             d.busy,
-            d.java.kind,
         );
-        let java = !editing && kind != new_instance::NewKind::Horizon;
         let n = t.night;
         let from = self
             .selected_instance()
@@ -428,18 +390,12 @@ impl Launcher {
                     .to_string(),
                 ),
             );
-        if !editing {
-            body = body.child(self.kind_tabs(cx));
-        }
-        if java {
-            body = body.child(self.java_choice_rows(cx));
-        }
         body = body.child(row(
             "Name",
             self.field(Field::InstanceName, tr("My instance"), 400., cx)
                 .into_any_element(),
         ));
-        if !editing && !java {
+        if !editing {
             let weak = cx.entity().downgrade();
             body = body.child(row(
                 "Start from",
@@ -594,7 +550,7 @@ impl Launcher {
         let cancel = shell::action("instance-cancel", shell::Action::Quiet, &t)
             .child(shell::label(tr("Cancel").to_string()));
         let label = match (editing, busy, copy) {
-            (_, true, true) if !java => "Copying…",
+            (_, true, true) => "Copying…",
             (true, false, _) => "Save",
             _ => "Create",
         };
@@ -875,14 +831,6 @@ pub(super) fn played_line(instance: &Instance) -> String {
             ],
         ),
         None => tr("Not played yet").into(),
-    }
-}
-
-/// A Java instance's line in the sidebar: "Java 1.21.4", and its loader ("· Fabric 0.16.9").
-fn java_line(j: &instances::JavaGame) -> String {
-    match &j.loader {
-        Some(l) => format!("Java {} · {} {}", j.minecraft, l.kind.name(), l.version),
-        None => format!("Java {}", j.minecraft),
     }
 }
 

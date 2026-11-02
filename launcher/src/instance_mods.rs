@@ -1,12 +1,11 @@
 //! Home's Mods tab (docs/design-system.md, "Night"; plan R0, screens 5 and 6): every mod of the
 //! selected instance, the browser's and those put in its folder by hand, with its version, where
-//! it comes from, an update when the browser found one, and a switch. A Java instance turns a mod
-//! off by renaming its jar (`.disabled`, as `java_instance` does); a Horizon instance's mods are
-//! the registry's, switched as the game's Options > Mods does. Adding mods is the Mods page's.
+//! it comes from, an update when the browser found one, and a switch. The mods are the registry's,
+//! switched as the game's Options > Mods does. Adding mods is the Mods page's.
 //!
 //! Each row shows the mod's own icon: Modrinth's for what the browser installed from it (the URLs
 //! asked for in one request and kept beside the image cache, the images through the Mods page's
-//! cache at the row's size), else the one its jar names, else a generic glyph.
+//! cache at the row's size), else a generic glyph.
 use super::*;
 use crate::plate::alpha;
 use crate::shell::{c, Action};
@@ -18,9 +17,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use theme::night;
-
-/// A turned-off jar's suffix, which the loaders don't read.
-const OFF: &str = ".disabled";
 
 /// A mod as the tab lists it.
 #[derive(Clone)]
@@ -94,49 +90,14 @@ impl InstanceMods {
     }
 }
 
-/// The mods of the instance at `home`: a Java one's jars in `mods/` (on or off), a Horizon one's
-/// registry mods. Each jar names itself (`fabric.mod.json`, `quilt.mod.json`...), else its file.
-fn read(home: &Path, java_instance: bool) -> Vec<ModRow> {
+/// The mods of the instance at `home`: its registry mods, then the native ones put in by hand.
+fn read(home: &Path) -> Vec<ModRow> {
     let entries: Vec<installed::Entry> = installed::Installed::load(home)
         .entries
         .into_iter()
         .filter(|e| e.kind == PackKind::Mod)
         .collect();
-    let mut rows: Vec<ModRow> = if java_instance {
-        let Ok(dir) = std::fs::read_dir(home.join("mods")) else {
-            return Vec::new();
-        };
-        dir.flatten()
-            .filter_map(|f| {
-                let name = f.file_name().to_string_lossy().into_owned();
-                let on = name.ends_with(".jar");
-                let jar = name.strip_suffix(OFF).unwrap_or(&name);
-                (jar.ends_with(".jar") && f.path().is_file()).then(|| {
-                    let file = format!("mods/{jar}");
-                    let entry = entries.iter().find(|e| e.file == file).cloned();
-                    let (name, version) = match &entry {
-                        Some(e) => (e.title.clone(), e.number.clone()),
-                        None => horizon_port_pack::jar::read(&f.path())
-                            .map(|j| (j.name, j.version))
-                            .unwrap_or_else(|_| {
-                                (jar.trim_end_matches(".jar").into(), String::new())
-                            }),
-                    };
-                    let icon = images::jar_icon(&f.path(), images::ROW)
-                        .map(|png| Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png)));
-                    ModRow {
-                        file,
-                        name,
-                        version,
-                        on,
-                        entry,
-                        icon,
-                        native: None,
-                    }
-                })
-            })
-            .collect()
-    } else {
+    let mut rows: Vec<ModRow> = {
         entries
             .into_iter()
             .map(|e| ModRow {
@@ -150,30 +111,21 @@ fn read(home: &Path, java_instance: bool) -> Vec<ModRow> {
             })
             .collect()
     };
-    if !java_instance {
-        rows.extend(
-            native_status::untracked(home)
-                .into_iter()
-                .map(|native| ModRow {
-                    file: native.file.clone(),
-                    name: native.id.clone(),
-                    version: native.version.clone(),
-                    on: java::is_enabled(home, &native.id),
-                    entry: None,
-                    icon: None,
-                    native: Some(native),
-                }),
-        );
-    }
+    rows.extend(
+        native_status::untracked(home)
+            .into_iter()
+            .map(|native| ModRow {
+                file: native.file.clone(),
+                name: native.id.clone(),
+                version: native.version.clone(),
+                on: java::is_enabled(home, &native.id),
+                entry: None,
+                icon: None,
+                native: Some(native),
+            }),
+    );
     rows.sort_by_key(|r| r.name.to_lowercase());
     rows
-}
-
-/// Turns a Java instance's jar on or off by renaming it.
-fn switch_jar(home: &Path, file: &str, on: bool) -> Result<(), String> {
-    let (jar, off) = (home.join(file), home.join(format!("{file}{OFF}")));
-    let (from, to) = if on { (off, jar) } else { (jar, off) };
-    std::fs::rename(&from, &to).map_err(|e| format!("{}: {e}", from.display()))
 }
 
 impl Launcher {
@@ -182,18 +134,12 @@ impl Launcher {
         self.instance_mods.cull.reset();
     }
 
-    /// Whether the selected instance has mods to show: Horizon's always, a Java one with a loader.
-    pub(super) fn has_mods_tab(&self) -> bool {
-        self.selected_instance()
-            .is_some_and(|i| i.java.as_ref().is_none_or(|j| j.loader.is_some()))
-    }
-
     /// Reads the selected instance's mods off the UI thread, once until something changes them.
     fn load_instance_mods(&mut self, cx: &mut Context<Self>) {
         let Some(i) = self.selected_instance() else {
             return;
         };
-        let (home, java_instance) = (i.home.clone(), i.java.is_some());
+        let home = i.home.clone();
         let m = &mut self.instance_mods;
         if m.home.as_ref() != Some(&home) {
             *m = InstanceMods {
@@ -206,19 +152,14 @@ impl Launcher {
             m.invalidate();
         }
         m.was_busy = busy;
-        let fingerprint = if java_instance {
-            String::new()
-        } else {
-            native_status::fingerprint(&home, None)
-        };
-        m.observe_fingerprint(fingerprint);
+        m.observe_fingerprint(native_status::fingerprint(&home, None));
         if m.fresh || m.reading {
             return;
         }
         let read_fingerprint = m.begin_read();
         let task = cx
             .background_executor()
-            .spawn(async move { (home.clone(), read(&home, java_instance)) });
+            .spawn(async move { (home.clone(), read(&home)) });
         cx.spawn(async move |this, cx| {
             let (home, list) = task.await;
             let _ = this.update(cx, |this, cx| {
@@ -320,13 +261,8 @@ impl Launcher {
     }
 
     fn switch_mod(&mut self, row: &ModRow) {
-        let home = self.instance_mods.home.clone().unwrap_or_default();
-        let java_instance = self.selected_instance().is_some_and(|i| i.java.is_some());
-        match &row.entry {
-            Some(e) if !java_instance => self.mods_switch(e),
-            _ => {
-                self.mods.message = switch_jar(&home, &row.file, !row.on).err().map(Err);
-            }
+        if let Some(e) = &row.entry {
+            self.mods_switch(e);
         }
         self.instance_mods.invalidate();
     }
@@ -360,14 +296,7 @@ impl Launcher {
                         cx.notify();
                     })),
             );
-        let loader = self
-            .selected_instance()
-            .and_then(|i| i.java.as_ref())
-            .map(|j| j.loader.as_ref().map(|l| l.kind.name()));
-        let title = match loader {
-            Some(Some(loader)) => trf("{loader} mods", &[("loader", loader)]),
-            _ => tr("Horizon mods").to_string(),
-        };
+        let title = tr("Horizon mods").to_string();
         let filter = self
             .servers
             .value(Field::InstanceModsFilter)
@@ -430,13 +359,12 @@ impl Launcher {
                 |i| rule(self.mod_row(rows[i].clone(), busy, cx).into_any_element()),
             )
         };
-        let native = self.mods.java.is_none()
-            && self.instance_mods.list.iter().any(|r| {
-                r.native.is_some()
-                    || r.entry
-                        .as_ref()
-                        .is_some_and(|e| native_status::is_native_file(&e.file))
-            });
+        let native = self.instance_mods.list.iter().any(|r| {
+            r.native.is_some()
+                || r.entry
+                    .as_ref()
+                    .is_some_and(|e| native_status::is_native_file(&e.file))
+        });
         let build = native.then(|| self.native_build(cx)).flatten();
         let card = plate::cut(
             night::PIXEL_CORNER,
@@ -610,7 +538,7 @@ mod tests {
         mods.observe_fingerprint(native_status::fingerprint(home, None));
         assert!(!mods.fresh);
         let read_fingerprint = mods.begin_read();
-        let old_list = read(home, false);
+        let old_list = read(home);
         assert_eq!(old_list.len(), 1);
 
         std::fs::write(installed.join("second.hnmod"), b"unreadable").unwrap();
@@ -622,7 +550,7 @@ mod tests {
         let another_read_needed = !mods.fresh && !mods.reading;
         if another_read_needed {
             let read_fingerprint = mods.begin_read();
-            mods.complete_read(home, &read_fingerprint, read(home, false));
+            mods.complete_read(home, &read_fingerprint, read(home));
         }
         let final_files: Vec<_> = mods.list.iter().map(|row| row.file.as_str()).collect();
         let final_listing_is_fresh = mods.fresh
@@ -657,7 +585,7 @@ mod tests {
         .unwrap();
         java::set_enabled(&home, "local", false).unwrap();
         java::set_enabled(&home, "registry", true).unwrap();
-        let rows = read(&home, false);
+        let rows = read(&home);
         let seen: Vec<_> = rows
             .iter()
             .map(|r| (r.name.as_str(), r.on, r.native.is_some()))
@@ -666,26 +594,6 @@ mod tests {
             seen,
             [("local", false, true), ("Registry mod", true, false)]
         );
-        assert!(
-            read(&home, true).is_empty(),
-            "native mods stay out of Java instances"
-        );
         std::fs::remove_dir_all(home).unwrap();
-    }
-
-    #[test]
-    fn a_java_instance_lists_its_jars_on_and_off() {
-        let home = std::env::temp_dir().join(format!("instance-mods-{}", std::process::id()));
-        let mods = home.join("mods");
-        std::fs::create_dir_all(&mods).unwrap();
-        std::fs::write(mods.join("zeta-1.0.jar"), b"not a zip").unwrap();
-        std::fs::write(mods.join("alpha-2.0.jar.disabled"), b"not a zip").unwrap();
-        std::fs::write(mods.join("notes.txt"), b"").unwrap();
-        let rows = read(&home, true);
-        let seen: Vec<_> = rows.iter().map(|r| (r.name.as_str(), r.on)).collect();
-        assert_eq!(seen, [("alpha-2.0", false), ("zeta-1.0", true)]);
-        switch_jar(&home, "mods/alpha-2.0.jar", true).unwrap();
-        assert!(read(&home, true).iter().all(|r| r.on));
-        let _ = std::fs::remove_dir_all(&home);
     }
 }

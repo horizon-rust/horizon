@@ -34,7 +34,6 @@ mod modpacks_page;
 mod mods_page;
 mod mods_project;
 mod multiplayer_page;
-mod new_instance;
 mod owner_page;
 mod packs_page;
 mod partner;
@@ -94,7 +93,7 @@ impl Page {
     /// `settings`) opens on that page, for screenshots; Home otherwise (`getting-ready`: Home
     /// preparing, `home::getting_ready_preview`; `sign-in`: the owner gate's sheet with a
     /// made-up code, `owner_page::sign_in_preview`; `new-instance`: Home with the New instance
-    /// dialog open on Modded; `edit-instance`: the selected one's Edit dialog; `worlds`, `packs`...: Home on that tab, `HomeTab::from_env`).
+    /// dialog open; `edit-instance`: the selected one's Edit dialog; `worlds`, `packs`...: Home on that tab, `HomeTab::from_env`).
     fn from_env() -> Page {
         match std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() {
             Ok("mods" | "modpacks" | "resourcepacks" | "shaders" | "datapacks") => Page::Mods,
@@ -274,8 +273,7 @@ struct Launcher {
     /// (`dev_options`) for this run.
     dev_clicks: u8,
     dev_options: bool,
-    /// The game is waiting for its session (a token renewal), or a Java instance for its files
-    /// and Java (`start_java`), before it starts.
+    /// The game is waiting for its session (a token renewal) before it starts.
     starting_client: Option<String>,
     /// Play was pressed on a version not prepared yet: it starts once this preparation ends well.
     play_when_prepared: Option<String>,
@@ -608,10 +606,9 @@ impl Launcher {
             this.preparing = true;
             this.play_when_prepared = this.selected().cloned();
         }
-        // `HORIZON_LAUNCHER_PAGE=new-instance`: the dialog open on Modded, for screenshots.
+        // `HORIZON_LAUNCHER_PAGE=new-instance`: the dialog open, for screenshots.
         if std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("new-instance") {
             this.open_instance_dialog(None);
-            this.pick_kind(new_instance::NewKind::Modded, cx);
         }
         if std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("edit-instance") {
             this.open_instance_dialog(this.selected_instance().cloned());
@@ -874,29 +871,6 @@ impl Launcher {
                 }
                 Msg::Playing(playing) => self.playing = playing,
                 Msg::OfficialPlayers(players) => self.official_players = players,
-                Msg::JavaGame(id, home, cmd) => {
-                    self.starting_client = None;
-                    let spawned = cmd.and_then(|(cmd, vars)| {
-                        self.client_vars = vars;
-                        backend::spawn(Job::Client, cmd, self.tx.clone())
-                    });
-                    match spawned {
-                        Ok(r) => {
-                            self.client = Some(r);
-                            self.client_home = Some(home);
-                            self.client_run = Some((id, Instant::now()));
-                            self.client_error = account::take_unsaved();
-                            self.step_aside(cx);
-                        }
-                        Err(e) => {
-                            if e == account::NoOwner.to_string() {
-                                self.owner = Some(false);
-                                self.owner_screen_open = true;
-                            }
-                            self.client_error = Some(e);
-                        }
-                    }
-                }
                 Msg::Session(session) => {
                     self.load_auth_statuses(false);
                     if let Some(tag) = self.starting_client.take() {
@@ -966,10 +940,7 @@ impl Launcher {
                         let instance = run
                             .as_ref()
                             .and_then(|id| instances::list().into_iter().find(|i| &i.id == id));
-                        self.client_vars = instance
-                            .as_ref()
-                            .map(|i| i.vars(cmd.get_program()))
-                            .unwrap_or_default();
+                        self.client_vars = instance.as_ref().map(|i| i.vars()).unwrap_or_default();
                         cmd.envs(self.client_vars.iter().map(|(k, v)| (k, v)));
                         let launch = instance.map(|i| i.launch).unwrap_or_default();
                         horizon_launcher::launch::limit_memory(&mut cmd, &launch);
@@ -1355,26 +1326,6 @@ impl Launcher {
     }
 
     fn play(&mut self) {
-        let java = self
-            .selected_instance()
-            .filter(|i| i.java.is_some())
-            .cloned();
-        if let Some(instance) = java {
-            // Mojang's game: no Horizon version or preparation, only no game already running.
-            // It joins a server; a friend's code and opening a world are Horizon's.
-            self.joining = None;
-            let server = self
-                .quick_play
-                .take()
-                .filter(|(flag, _)| *flag == "--server")
-                .map(|(_, ip)| ip);
-            if self.client.is_some() || self.starting_client.is_some() {
-                return;
-            }
-            self.starting_pack = None;
-            self.start_java(instance, server);
-            return;
-        }
         let Some(tag) = self.selected().cloned() else {
             return;
         };
@@ -1385,30 +1336,6 @@ impl Launcher {
         self.start_client(tag);
     }
 
-    /// Starts a Java instance's Minecraft, joining `server` if given: its files and Java first
-    /// (downloaded the first time, their lines in the log), then `drain` starts the game when
-    /// the command arrives.
-    fn start_java(&mut self, instance: instances::Instance, server: Option<String>) {
-        self.client_error = None;
-        self.crash = None;
-        self.prepare_log.clear();
-        self.client_started =
-            Some(std::time::SystemTime::now() - std::time::Duration::from_secs(2));
-        self.starting_client = Some(instance.id.clone());
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let log = |line: String| {
-                let _ = tx.send(Msg::Line(Job::Client, line));
-            };
-            let cmd = backend::java_game(&instance, server.as_deref(), &log).map(|mut cmd| {
-                let vars = instance.vars(cmd.get_program());
-                cmd.envs(vars.iter().map(|(k, v)| (k, v)));
-                (horizon_launcher::launch::wrap(cmd, &instance.launch), vars)
-            });
-            let _ = tx.send(Msg::JavaGame(instance.id, instance.home, cmd));
-        });
-    }
-
     /// Whether `tag` can start now ([`starts_now`]): prepared, no preparation under way, no game
     /// running or starting.
     pub(crate) fn can_start(&self, tag: &str) -> bool {
@@ -1417,19 +1344,9 @@ impl Launcher {
     }
 
     /// Whether the selected instance's version can start now, from a shortcut (a server's Join,
-    /// a world's Play, a friend's code): Horizon's only, never a Java instance.
+    /// a world's Play, a friend's code).
     pub(crate) fn can_start_selected(&self) -> bool {
-        self.selected_instance().is_none_or(|i| i.java.is_none())
-            && self.selected().is_some_and(|tag| self.can_start(tag))
-    }
-
-    /// Whether a server's Join starts the selected instance now: a Java instance too, as Play
-    /// would (no game running or starting).
-    pub(crate) fn can_join_selected(&self) -> bool {
-        match self.selected_instance() {
-            Some(i) if i.java.is_some() => self.client.is_none() && self.starting_client.is_none(),
-            _ => self.can_start_selected(),
-        }
+        self.selected().is_some_and(|tag| self.can_start(tag))
     }
 
     /// Starts the game: the session first (a network round trip when the token needs
@@ -2737,13 +2654,7 @@ impl Launcher {
 
     fn play_page(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
-        // A Java instance plays Mojang's game: no Horizon version, nothing of Horizon's to prepare.
-        let java = self.selected_instance().and_then(|i| i.java.clone());
-        let Some(tag) = self
-            .selected()
-            .cloned()
-            .or_else(|| java.is_some().then(String::new))
-        else {
+        let Some(tag) = self.selected().cloned() else {
             // No hero without a version: the page starts below the top bar like the others.
             let memory = self.memory_row(cx);
             return div()
@@ -2769,21 +2680,9 @@ impl Launcher {
         let prepared = backend::is_prepared(&tag);
         // Prepared without sounds (#1035): Prepare again is the fix, so it stands out.
         let silent = prepared && !backend::has_sounds(&tag);
-        let version = java
-            .as_ref()
-            .map_or_else(|| backend::game_version(&tag), |j| j.minecraft.clone());
-        let hero = match &java {
-            // Its own game: the Minecraft version and the loader, never Horizon's.
-            Some(j) => {
-                let game = match &j.loader {
-                    Some(l) => format!("{version} · {} {}", l.kind.name(), l.version),
-                    None => version.clone(),
-                };
-                self.hero("", &game, true, cx)
-            }
-            None => self.hero(&tag, &version, prepared, cx),
-        };
-        let actions = self.home_actions(prepared || java.is_some(), java.is_some(), cx);
+        let version = backend::game_version(&tag);
+        let hero = self.hero(&tag, &version, prepared, cx);
+        let actions = self.home_actions(prepared, cx);
         let left = self.download_left();
         let steps = self.preparing.then(|| self.steps(&version, left));
 
@@ -2897,30 +2796,15 @@ impl Launcher {
             .children(self.export_panel(cx))
             .children(self.launch_panel(cx))
             .children(self.memory_row(cx));
-        rows = match &java {
-            Some(java) => rows.child(index_row(
+        rows = rows
+            .child(index_row(
                 2,
-                tr("Game"),
-                Some(
-                    div()
-                        .child(trf(
-                            "Minecraft {version} (Java Edition). Play downloads it from Mojang for your account the first time, with the Java it needs.",
-                            &[("version", &java.minecraft)],
-                        ))
-                        .into_any_element(),
-                ),
-                None,
+                tr("Resources"),
+                Some(div().child(resources_value).into_any_element()),
+                Some(prepare.into_any_element()),
                 &t,
-            )),
-            None => rows
-                .child(index_row(
-                    2,
-                    tr("Resources"),
-                    Some(div().child(resources_value).into_any_element()),
-                    Some(prepare.into_any_element()),
-                    &t,
-                ))
-                .child(index_row(
+            ))
+            .child(index_row(
                 3,
                 tr("Minecraft folder"),
                 Some(minecraft),
@@ -2930,8 +2814,7 @@ impl Launcher {
                         .into_any_element(),
                 ),
                 &t,
-            )),
-        };
+            ));
         {
             // The top bar shows who plays; a row only when there is something to do about it:
             // no account that owns the game (Play needs one), or offline.
@@ -3035,8 +2918,7 @@ impl Launcher {
                             // after pressing it, not below the fold (#666).
                             .children(steps),
                     )
-                    // Notes and friends are Horizon's.
-                    .children(java.is_none().then(|| self.home_card(&tag, cx))),
+                    .child(self.home_card(&tag, cx)),
             );
         let mut page = div().flex().flex_col().gap(px(28.)).child(banner);
         if let Some(e) = self.prepare_error.clone() {
