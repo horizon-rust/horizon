@@ -184,6 +184,7 @@ mod mob_blocks;
 mod mob_gear;
 mod mob_looting;
 mod mob_sounds;
+mod mod_api_host;
 mod mods;
 mod mount_menu;
 mod mounts;
@@ -192,7 +193,7 @@ mod music;
 mod names;
 mod narrator;
 mod native_biome_colors;
-mod native_block_entity_draw;
+pub mod native_block_entity_draw;
 mod native_claimed_items;
 mod native_components;
 mod native_criteria;
@@ -911,6 +912,9 @@ struct GameLevel<'w> {
     /// not a rocket boosting a player or a hook on an entity, whose ticks
     /// skip that step, nor a trident, which `tick_blocks` sweeps itself.
     trigger_projectiles: Vec<(Aabb, bool)>,
+    /// The lightning bolts here: none ignores block triggers
+    /// (`Entity.isIgnoringBlockTriggers`).
+    trigger_extras: Vec<Aabb>,
     biomes: &'w Biomes,
     seed: i64,
     behaviours: &'w Behaviours,
@@ -990,6 +994,18 @@ impl EntityObstructionWorld for BuildingObstruction {
             .collect())
     }
 }
+/// An entity's box (`EntityDimensions.makeBoundingBox`): `width` wide and
+/// `height` tall, standing on `feet`.
+fn point_box(feet: [f64; 3], width: f64, height: f64) -> Aabb {
+    Aabb::new(
+        Vec3::new(feet[0] - width / 2.0, feet[1], feet[2] - width / 2.0),
+        Vec3::new(
+            feet[0] + width / 2.0,
+            feet[1] + height,
+            feet[2] + width / 2.0,
+        ),
+    )
+}
 impl GameLevel<'_> {
     /// The living entities that trigger plates and tripwires and don't ignore
     /// block triggers (`Entity.isIgnoringBlockTriggers`: bats and marker armor
@@ -1049,6 +1065,7 @@ impl GameLevel<'_> {
                     .iter()
                     .map(move |p| square(p.position, p.kind.size())),
             )
+            .chain(self.trigger_extras.iter().copied())
     }
     /// `DetectorRailBlock.getAnalogOutputSignal`: a powered rail reads the
     /// minecart on it, a command block cart first (its success count), else the first container cart's fullness.
@@ -2756,6 +2773,7 @@ struct Game<'a> {
     /// The camera's block and the second `water_plane` last scanned at.
     water_plane_scan: std::cell::Cell<Option<([i32; 3], i64)>>,
     persist: persist::EntityMemory,
+    entity_attachments: HashMap<[i32; 4], horizon_world::attachments::Attachments>,
     /// Connected to a server: the world comes from the network (game/remote.rs).
     remote: Option<remote::Remote>,
     /// This world is open to the network (game/lan.rs).
@@ -2871,6 +2889,12 @@ struct Game<'a> {
     /// have each chest open.
     lid_openers: HashMap<(i32, i32, i32), i32>,
     lan_acting: Option<u32>,
+    player_attachments: horizon_world::attachments::Attachments,
+    /// The joined guests' attachments, by UUID: here rather than in their
+    /// records, so a hook in one guest's turn (when the hub is out of
+    /// `self.lan`) still reaches the others'. The acting guest's are in
+    /// `player_attachments` for the turn.
+    guest_attachments: HashMap<u128, horizon_world::attachments::Attachments>,
     /// The block the acting player is breaking (`break_block`): its destroy
     /// event, and the ones before it, are the player's own (`Level.levelEvent`
     /// with the player excluded); the events after it are not.
@@ -3719,13 +3743,16 @@ impl Game<'_> {
     /// Where a loot roll at `origin` happens, for a mod's own loot kinds:
     /// the block entity it may copy from, and this level as
     /// `LootContext.getLevel` gives it (`Level.isRaining`: rain above 0.2;
-    /// `isThundering`: thunder above 0.9).
+    /// `isThundering`: thunder above 0.9; neither where `canHaveWeather` is
+    /// false: a level with a ceiling or no sky light, or the End).
     fn loot_place_at(
         &self,
         origin: [f64; 3],
         block_entity: Option<horizon_world::nbt::Tag>,
     ) -> horizon_world::loot::NativeLootPlace {
         let (rain, thunder) = self.world.weather.levels(1.0);
+        // Level.canHaveWeather: the Nether has a ceiling, the End is the End.
+        let weather = self.dim == Dim::Overworld;
         horizon_world::loot::NativeLootPlace {
             origin: Some(origin),
             block_entity,
@@ -3733,8 +3760,8 @@ impl Game<'_> {
                 dimension: self.dim.id().to_owned(),
                 game_time: self.world.game_time,
                 day_time: self.world.day_time,
-                raining: rain > 0.2,
-                thundering: thunder > 0.9,
+                raining: weather && rain > 0.2,
+                thundering: weather && thunder > 0.9,
             }),
         }
     }
@@ -4175,6 +4202,12 @@ impl Game<'_> {
             )
             .collect();
         self.lan_hook_triggers(&mut trigger_projectiles);
+        // EntityType.LIGHTNING_BOLT: 0 x 0.
+        let trigger_extras: Vec<Aabb> = self
+            .bolts
+            .iter()
+            .map(|b| point_box(b.at, 0.0, 0.0))
+            .collect();
         let blockers = Blockers {
             mobs: &self.mobs,
             armor_stands: &self.armor_stands,
@@ -4183,6 +4216,7 @@ impl Game<'_> {
             tnts: &self.tnts,
             falling: &self.falling,
         };
+        let native_authoritative = self.native_authoritative();
         let mut level = GameLevel {
             cart_boxes,
             item_frames: &self.item_frames,
@@ -4193,6 +4227,7 @@ impl Game<'_> {
             orbs: &self.orbs,
             projectiles: &self.creatures.projectiles,
             trigger_projectiles,
+            trigger_extras,
             world: &mut self.world,
             facts: self.res.facts(),
             collision: self.collision,
@@ -4235,7 +4270,7 @@ impl Game<'_> {
             random_tick_sections: &mut self.random_tick_sections,
             lid_openers: &self.lid_openers,
             client_side: self.remote.is_some(),
-            native_authoritative: self.serving.is_some() || self.options.dedicated.is_some(),
+            native_authoritative,
             debug: self.world_debug,
             native_sounds: &mut self.creatures.lan_sounds,
             native_particles: &mut self.creatures.lan_particles,
@@ -11555,6 +11590,9 @@ impl Game<'_> {
     }
     fn tick_mobs(&mut self) -> Result<()> {
         self.tick_creatures()?;
+        if !self.entity_attachments.is_empty() {
+            self.prune_entity_attachments();
+        }
         self.native_mobs_equipment();
         self.position_rider();
         self.tick_stats();
@@ -12358,6 +12396,7 @@ impl Game<'_> {
         self.pickups.clear();
         self.riding = None;
         self.persist = Default::default();
+        self.entity_attachments.clear();
     }
     /// Equipment attribute modifiers (LivingEntity.collectEquipmentChanges).
     fn apply_equipment(&mut self) {
@@ -13791,7 +13830,12 @@ impl Game<'_> {
                     4,
                 )
             };
-            let state = self.resolve_item(&stack, context, Some(&owner), seed);
+            let cit_hand = if hand == Hand::Off {
+                horizon_client::cit::Hand::Off
+            } else {
+                horizon_client::cit::Hand::Main
+            };
+            let state = self.resolve_item_in_hand(&stack, context, Some(&owner), seed, cit_hand);
             let light = self.world.light(
                 eye[0].floor() as i32,
                 eye[1].floor() as i32,
@@ -14917,7 +14961,9 @@ impl Game<'_> {
         {
             // The vehicle tree goes into a player's file when they leave
             // (`take_parent_vehicle`); here it stays in the chunk saves.
-            for g in host.hub.guests.iter().filter(|g| g.placed) {
+            let mut host = host;
+            for g in host.hub.guests.iter_mut().filter(|g| g.placed) {
+                self.guest_attachments_into(g);
                 horizon_client::lan::playerdata::save(g, &self.world_root);
             }
             self.lan = Some(host);
@@ -14928,6 +14974,7 @@ impl Game<'_> {
     }
     /// Save the level in place: its changed chunks, its entities and its raids.
     fn save_level(&mut self, wait: bool) -> Result<()> {
+        self.save.save_attachments(&self.world.attachments)?;
         self.save.save_forced_chunks(&self.streaming.forced)?;
         self.streaming.save(&mut self.world, wait);
         let keys: Vec<_> = self.world.modified.drain().collect();
@@ -17623,8 +17670,9 @@ impl Game<'_> {
                                 | KeyCode::ArrowUp
                                 | KeyCode::ArrowDown),
                             ) => {
+                                let shift = self.has_shift_down();
                                 if let Some(t) = self.title.as_mut() {
-                                    t.arrow_key(key, (w, h));
+                                    t.arrow_key(key, (w, h), shift);
                                 }
                             }
                             PhysicalKey::Code(KeyCode::Backspace) => self.title_edit(None, true),
@@ -18425,6 +18473,7 @@ impl<'a> Game<'a> {
             water_plane_memo: Default::default(),
             water_plane_scan: Default::default(),
             persist: Default::default(),
+            entity_attachments: Default::default(),
             remote: None,
             lan: None,
             integrated: None,
@@ -18481,6 +18530,8 @@ impl<'a> Game<'a> {
             lan_global_events: Vec::new(),
             lid_openers: HashMap::new(),
             lan_acting: None,
+            player_attachments: Default::default(),
+            guest_attachments: HashMap::new(),
             lan_break_pos: None,
             guest_packets: Vec::new(),
             guest_cooldowns: Vec::new(),
@@ -19721,6 +19772,10 @@ fn build_renderer(
     renderer
         .hud
         .set_text_shader(&renderer.device, atlas.text_shader.as_deref());
+    let cit_glints = pack.item_renderer.cit.as_ref().map(|c| &c.glint_textures);
+    renderer
+        .hud
+        .set_cit_glints(&renderer.device, &renderer.queue, cit_glints);
     Ok(renderer)
 }
 
@@ -20563,7 +20618,7 @@ fn run_loading(
 
 pub use launch_api::{UsageError, exit_code};
 
-pub fn run() -> Result<()> {
+pub fn run_with() -> Result<()> {
     let Some(mut options) = Options::read()? else {
         return Ok(());
     };
