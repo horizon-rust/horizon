@@ -789,5 +789,6 @@
   "Export the server outside the launcher's managed folders.": "ランチャーが管理するフォルダーの外にサーバーをエクスポートしてください。",
   "{path} is not a folder to build into.": "{path} はビルド先のフォルダーではありません。",
   "Could not copy the build: {error}": "ビルドをコピーできませんでした: {error}",
-  "Could not move the build to {path}: {error}": "ビルドを {path} に移動できませんでした: {error}"
+  "Could not move the build to {path}: {error}": "ビルドを {path} に移動できませんでした: {error}",
+  "Sort by: {order}": "並び替え: {order}"
 }

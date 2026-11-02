@@ -98,6 +98,8 @@ pub(super) struct Browse {
     pub(super) open: Option<Opened>,
     pub(super) filters: Filters,
     pub(super) show_filters: bool,
+    /// The Sort by dropdown's list is open.
+    pub(super) sort_menu: bool,
     tags: HashMap<(SourceId, PackKind), Tags>,
     tags_asked: HashSet<(SourceId, PackKind)>,
     /// Images on disk, by URL and size; `None` while they load or when they failed.
@@ -287,23 +289,97 @@ impl Launcher {
         self.mods_search(0);
     }
 
+    /// The "Sort by" dropdown: the chosen order on a button, the choices in a list below it.
+    fn mods_sort_dropdown(
+        &self,
+        sorts: &[(Option<Sort>, &'static str)],
+        current: Option<Sort>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let t = self.theme;
+        let name = sorts
+            .iter()
+            .find(|(value, _)| *value == current)
+            .map_or("", |(_, label)| *label);
+        let mut wrap = div().relative().flex_none().child(
+            keyboard(div().id("mods-sort"), &t)
+                .relative()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .h(px(theme::CONTROL))
+                .px(px(14.))
+                .border_2()
+                .border_color(t.outline)
+                .bg(t.button)
+                .children(blocks::edges(t.button_bevel, t.lip, theme::LIP))
+                .cursor_pointer()
+                .hover(move |s| s.bg(t.raised))
+                .child(
+                    div()
+                        .font_family(theme::PIXEL)
+                        .text_size(px(15.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(t.ink)
+                        .child(trf("Sort by: {order}", &[("order", tr(name))])),
+                )
+                .child(blocks::icon("chevron-down", 16., t.muted))
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.mods.browse.sort_menu = !this.mods.browse.sort_menu;
+                    cx.notify();
+                })),
+        );
+        if self.mods.browse.sort_menu {
+            let mut menu = div()
+                .id("mods-sort-menu")
+                .absolute()
+                .top(px(theme::CONTROL + 4.))
+                .left_0()
+                .w(px(220.))
+                .p(px(6.))
+                .border_2()
+                .border_color(t.outline)
+                .bg(t.surface)
+                .flex()
+                .flex_col()
+                .occlude();
+            for &(value, label) in sorts {
+                menu = menu.child(
+                    div()
+                        .id(SharedString::from(format!("mods-sort-pick-{label}")))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.))
+                        .h(px(30.))
+                        .px(px(10.))
+                        .rounded(px(theme::RADIUS))
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(t.plate_soft))
+                        .child(text(theme::LABEL).text_color(t.ink).child(tr(label)))
+                        .when(value == current, |d| {
+                            d.child(div().size(px(6.)).rounded_full().bg(t.accent))
+                        })
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.mods.browse.sort_menu = false;
+                            this.mods_filter(|f| f.sort = value);
+                            cx.notify();
+                        })),
+                );
+            }
+            wrap = wrap.child(gpui::deferred(menu).with_priority(1));
+        }
+        wrap
+    }
+
     /// The filter bar: sort always; loader, version, environment and categories when shown.
     pub(super) fn mods_filters(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
-        let this = cx.entity().downgrade();
         let f = self.mods.browse.filters.clone();
         let sorts: Vec<(Option<Sort>, &'static str)> = std::iter::once((None, "Best match"))
             .chain(Sort::ALL.iter().map(|s| (Some(*s), s.label())))
             .collect();
-        let sort = segments("mods-sort", &sorts, f.sort, &t, {
-            let this = this.clone();
-            move |value, _, cx| {
-                let _ = this.update(cx, |this, cx| {
-                    this.mods_filter(|f| f.sort = value);
-                    cx.notify();
-                });
-            }
-        });
+        let sort = self.mods_sort_dropdown(&sorts, f.sort, cx);
         let shown = self.mods.browse.show_filters;
         let active = f.categories.len()
             + f.loader.is_some() as usize
