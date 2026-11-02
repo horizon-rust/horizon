@@ -18996,6 +18996,9 @@ impl Game<'_> {
                 return None;
             }
         };
+        // The recipe tables, the stations and the recipe book read one folder:
+        // hold its files so it is read once.
+        let _recipe_files = horizon_client::json_folder::read(&root.join("data/minecraft/recipe"));
         let recipes = match Recipes::load(root, &items, &overlay) {
             Ok(recipes) => recipes,
             Err(e) => {
@@ -19627,6 +19630,9 @@ fn load_world_rest(
         let items = startup::time("rest.items", || Items::load(root, registry, facts, overlay))?;
         log::info!("load items: {:.2}s", started.elapsed().as_secs_f32());
         progress.set(7);
+        // The recipe tables, the stations and the recipe book read one folder:
+        // hold its files so it is read once.
+        let _recipe_files = horizon_client::json_folder::read(&root.join("data/minecraft/recipe"));
         let recipes = startup::time("rest.recipes", || Recipes::load(root, &items, overlay))?;
         let stations = startup::time("rest.stations", || {
             horizon_client::stations::StationData::load(root, &items, overlay)
