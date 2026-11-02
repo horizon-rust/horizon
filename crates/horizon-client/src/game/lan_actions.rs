@@ -2078,6 +2078,9 @@ impl Game<'_> {
                     return;
                 }
                 if !self.guest_may_set_creative_slot(host, conn, i32::from(p.slot), item.as_ref()) {
+                    // The creative client already holds the stack it sent: treat that as
+                    // what it was told, so the next broadcast sends the real slot back.
+                    host.hub.guests[gi].menu_sent[p.slot as usize] = item;
                     return;
                 }
                 let slot = p.slot as usize;
