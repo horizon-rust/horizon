@@ -1416,16 +1416,13 @@ impl ArmorStand {
                 false,
             );
             let position = self.position;
-            let _ = self.support.check_support(
-                self.on_ground,
-                self.bounds(),
-                Some(wanted),
-                |area| {
-                    horizon_world::ground_support::find_supporting_block(
-                        scene, context, position, area, 1_000_000,
-                    )
-                },
-            );
+            let _ =
+                self.support
+                    .check_support(self.on_ground, self.bounds(), Some(wanted), |area| {
+                        horizon_world::ground_support::find_supporting_block(
+                            scene, context, position, area, 1_000_000,
+                        )
+                    });
             if (wanted.x - moved.x).abs() >= f64::from(1.0e-5_f32) {
                 velocity.x = 0.0;
             }
