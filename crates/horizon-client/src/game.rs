@@ -2183,6 +2183,11 @@ struct Game<'a> {
     lod: Option<horizon_client::lod::Lod>,
     lod_source_attempted: bool,
     lod_observe: horizon_client::fast_hash::FxHashSet<(i32, i32)>,
+    /// The server level far terrain keeps the chunks of.
+    lod_level: Option<String>,
+    /// The server's BlueMap far terrain draws from, when the player named one
+    /// or Find BlueMap found it.
+    lod_blue_map: Option<Arc<horizon_client::bluemap::BlueMap>>,
     /// Beacon beam sections kept after their chunk unloads, so far terrain
     /// LOD still draws their beams (`beacon_geometry` refreshes them).
     far_beacons: HashMap<(i32, i32, i32), Vec<(u32, i32)>>,
@@ -16102,6 +16107,7 @@ impl Game<'_> {
         self.lod = None;
         self.lod_source_attempted = false;
         self.lod_observe.clear();
+        self.lod_blue_map = None;
         self.far_beacons.clear();
         self.lod_covered_at = None;
         if let Some(renderer) = &mut self.renderer {
@@ -16112,20 +16118,28 @@ impl Game<'_> {
         let enabled = self.far_terrain_choice().0 > 0
             && self.renderer.is_some()
             && self.player.is_some()
-            && self.title.is_none()
-            && (self.remote.is_none()
-                || self.integrated.is_some()
-                || self.server_far_terrain().is_some());
+            && self.title.is_none();
         if !enabled {
             if self.lod.is_some() || self.lod_source_attempted {
                 self.clear_lod();
             }
             return;
         }
+        // Another level: its own kept chunks. (Another world at the same
+        // address, a proxy's next server, comes through a new login; a seed
+        // changed at a respawn of the same level is a plugin hiding it.)
+        if self
+            .lod_level
+            .as_ref()
+            .is_some_and(|level| self.remote.as_ref().is_some_and(|r| r.level != *level))
+        {
+            self.clear_lod();
+        }
         if self.lod_source_attempted {
             return;
         }
         self.lod_source_attempted = true;
+        self.lod_level = None;
         let dim = self.dim;
         let source = match (&self.integrated, self.server_far_terrain(), &self.remote) {
             (Some(server), ..) => server.call(move |game| game.lod_source_in(dim)).flatten(),
@@ -16136,6 +16150,83 @@ impl Game<'_> {
                     remote.session.far_terrain(offer, biomes, states);
                 Some(source)
             }
+            // A friend's world (a new code at every share) or a splitscreen
+            // guest's (the player's own world, its other guests writing the
+            // same folder): nothing to keep.
+            (None, None, Some(remote))
+                if self.options.split_guest
+                    || remote
+                        .session
+                        .address
+                        .starts_with(horizon_client::net::FRIEND) =>
+            {
+                None
+            }
+            // No offer from a server: draw what it sent, on this visit and before.
+            (None, None, Some(remote)) => std::env::current_dir().ok().map(|home| {
+                use horizon_client::server_terrain as terrain;
+                let address = &remote.session.address;
+                let root = home.join("server-terrain");
+                let dir = terrain::level_dir(&root, address, remote.hashed_seed, &remote.level);
+                self.lod_level = Some(remote.level.clone());
+                // Past them, the server's BlueMap, if the player named it or
+                // lets Horizon look for it (on the BlueMap worker).
+                let maps = root.join(terrain::server_folder(address)).join("BlueMap");
+                let settings = &self.settings.horizon.blue_map;
+                let blue_map = horizon_client::bluemap_detect::source(
+                    settings,
+                    address,
+                    &maps,
+                    std::time::SystemTime::now(),
+                )
+                .map(|source| {
+                    use horizon_client::{bluemap, bluemap_detect::Source};
+                    // The map's address only at debug: logs land in crash reports.
+                    log::info!("Horizon: far terrain also draws {}'s BlueMap", remote.level);
+                    if let Source::Url { url, .. } = &source {
+                        log::debug!("Horizon: BlueMap at {url}");
+                    }
+                    let map = Arc::new(bluemap::BlueMap::from_source(
+                        source,
+                        &remote.level,
+                        maps,
+                        settings.radius_blocks(),
+                        bluemap::Palette::from_game(self.pack.assets.registry, self.res.biomes()),
+                    ));
+                    map.start();
+                    map
+                });
+                self.lod_blue_map = blue_map.clone();
+                // And the player's Bobby cache of the level, only read.
+                let bobby = terrain::bobby_level_dir(
+                    &terrain::minecraft_dir().join(".bobby"),
+                    address,
+                    remote.hashed_seed,
+                    &remote.level,
+                )
+                .map(|bobby| {
+                    log::info!(
+                        "Horizon: far terrain also reads Bobby's chunks of {}",
+                        remote.level
+                    );
+                    let registry = self.pack.assets.registry;
+                    let biomes = self.res.biomes().clone();
+                    let dimension = &remote.dimension;
+                    let layout = horizon_client::chunk::ColumnLayout::of_level(
+                        dimension.min_y,
+                        dimension.height,
+                    );
+                    let sky_light = dimension.has_skylight;
+                    let decode: terrain::DecodeChunk =
+                        Box::new(move |root: &horizon_world::nbt::NamedTag| {
+                            horizon_client::save::decode_lit(
+                                root, registry, &biomes, layout, sky_light,
+                            )
+                        });
+                    terrain::Bobby::new(bobby, decode, self.res.facts())
+                });
+                terrain::ServerTerrain::with_bobby(dir, blue_map, bobby) as _
+            }),
             _ => Some(self.streaming.lod_source()),
         };
         if let Some(source) = source {
@@ -16164,6 +16255,12 @@ impl Game<'_> {
         if self.lod.is_some() {
             for &((x, _, z), _, _) in &self.world.light_edits {
                 self.lod_observe.insert((x >> 4, z >> 4));
+            }
+        }
+        if let (Some(map), Some(p), Some(lod)) = (&self.lod_blue_map, &self.player, &mut self.lod) {
+            map.set_center(p.position.x.floor() as i32, p.position.z.floor() as i32);
+            for change in map.take_changed() {
+                lod.refresh(change.area, change.widths);
             }
         }
         if let Some(p) = &self.player {
@@ -16351,10 +16448,17 @@ impl Game<'_> {
                             .collect()
                     })
                 });
+                // Far terrain's finest tiles stand where full-detail terrain
+                // ends: on a server, where it stops sending chunks, often well
+                // inside the render distance. Thousands of chunk-sized tiles
+                // between the two filled in long after the coarser ones.
+                let detail = self.remote.as_ref().map_or(self.streaming.radius, |r| {
+                    self.streaming.radius.min(r.sent_radius())
+                });
                 let meshes = horizon_client::spans::time("lod_update", || {
                     lod.update(
                         [player.position.x, player.position.y, player.position.z],
-                        self.streaming.radius,
+                        detail,
                         lod_distance,
                         covered,
                     )
@@ -18070,6 +18174,8 @@ impl<'a> Game<'a> {
             lod_source_attempted: false,
             far_beacons: HashMap::new(),
             lod_observe: Default::default(),
+            lod_level: None,
+            lod_blue_map: None,
             lod_covered_at: None,
             view_arrival: Default::default(),
             options,
