@@ -1363,12 +1363,38 @@ impl Mesher<'_> {
             ([lighting::gray(directional); 4], [coords; 4])
         };
         let tint = Self::tint(state, q.tint_index, tints, pos);
-        // OptiFine connected textures: another sprite, or one per quarter, and the overlays
-        // drawn over it (a few per face at most; more are dropped).
-        let connected = &self.render.connected;
+        // Fusion's and then OptiFine's connected textures: another sprite, or one per quarter,
+        // and the overlays drawn over it (a few per face at most; more are dropped).
+        let (fusion, connected) = (&self.render.fusion, &self.render.connected);
         let mut overlays = [None; 8];
         let mut count = 0;
-        let pick = if connected.is_empty() {
+        let mut push = |overlay| {
+            if let Some(slot) = overlays.get_mut(count) {
+                *slot = Some(overlay);
+                count += 1;
+            }
+        };
+        let neighbour =
+            |[dx, dy, dz]: [i32; 3]| pad.blocks[pi(pos[0] + dx, pos[1] + dy, pos[2] + dz)];
+        let fused = face.fusion.and_then(|rule| {
+            fusion.pick(
+                rule,
+                id,
+                CtmFace::ALL[q.facing as usize],
+                q.tint_index,
+                neighbour,
+                |s| {
+                    self.tables
+                        .info
+                        .get(s as usize)
+                        .is_some_and(|i| i.opaque_cube)
+                },
+                &mut push,
+            )
+        });
+        let pick = if let Some(pick) = fused {
+            pick
+        } else if connected.is_empty() {
             Pick::Keep
         } else {
             let tints = &*tints;
@@ -1377,14 +1403,9 @@ impl Mesher<'_> {
                 face.layer as u16,
                 CtmFace::ALL[q.facing as usize],
                 [world.x, world.y, world.z],
-                |[dx, dy, dz]| pad.blocks[pi(pos[0] + dx, pos[1] + dy, pos[2] + dz)],
+                neighbour,
                 || Some(tints.biome(pos[0], pos[1], pos[2])),
-                |overlay| {
-                    if let Some(slot) = overlays.get_mut(count) {
-                        *slot = Some(overlay);
-                        count += 1;
-                    }
-                },
+                &mut push,
             )
         };
         let vertices = |tint: Option<u32>, uv: [[f32; 2]; 4]| {
@@ -1454,6 +1475,7 @@ impl Mesher<'_> {
                     }
                 }
             }
+            Pick::Nothing => {}
         }
         // Overlays: the face again, after it (equal depth passes), tinted as their rule says.
         // `layer=cutout` is an alpha cutout whatever the tile's alpha, but over a translucent
@@ -1466,6 +1488,7 @@ impl Mesher<'_> {
             Pick::Keep => self.translucent(own),
             Pick::Tile(t) => self.translucent(tile(t)),
             Pick::Quarters(tiles) => tiles.into_iter().any(|t| self.translucent(tile(t))),
+            Pick::Nothing => false,
         };
         // Overlay tiles face the standard way too (Continuity: "overlay textures always have the
         // standard orientation"), whatever turns the model's own UVs (dirt's and sand's random

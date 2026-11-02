@@ -135,6 +135,22 @@ pub const DL: u8 = 32;
 pub const L: u8 = 64;
 pub const UL: u8 = 128;
 
+/// Each mask bit of a face and the offset from the block of the neighbour it stands for.
+pub fn offsets(axes: Axes) -> [(u8, Vec3); 8] {
+    let (r, u) = (axes.right, axes.up);
+    let (l, d) = (neg(r), neg(u));
+    [
+        (U, u),
+        (UR, add(u, r)),
+        (R, r),
+        (DR, add(d, r)),
+        (D, d),
+        (DL, add(d, l)),
+        (L, l),
+        (UL, add(u, l)),
+    ]
+}
+
 /// The neighbours of a face that join it, by `joins(offset from the block)`: all eight, so
 /// overlays see the corners whatever the sides. With `inner_seams`, a neighbour whose own face
 /// is covered (the block in front of it joins too) doesn't count, which draws a seam on inner
@@ -145,20 +161,8 @@ pub fn neighbours(
     inner_seams: bool,
     mut joins: impl FnMut(Vec3) -> bool,
 ) -> u8 {
-    let (r, u) = (axes.right, axes.up);
-    let (l, d) = (neg(r), neg(u));
-    let offsets = [
-        (U, u),
-        (UR, add(u, r)),
-        (R, r),
-        (DR, add(d, r)),
-        (D, d),
-        (DL, add(d, l)),
-        (L, l),
-        (UL, add(u, l)),
-    ];
     let mut mask = 0;
-    for (bit, offset) in offsets {
+    for (bit, offset) in offsets(axes) {
         if joins(offset) && !(inner_seams && joins(add(offset, normal))) {
             mask |= bit;
         }
@@ -219,7 +223,7 @@ const TEMPLATE: [u8; 47] = [
 ];
 
 /// A mask without the corners whose sides don't both join.
-const fn reduce(mask: u8) -> u8 {
+pub(crate) const fn reduce(mask: u8) -> u8 {
     let mut out = mask & (U | R | D | L);
     let corners = [(UR, U | R), (DR, D | R), (DL, D | L), (UL, U | L)];
     let mut i = 0;
