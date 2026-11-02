@@ -129,11 +129,12 @@ fn read_program(path: &Path, file: &str) -> Result<Vec<u8>, String> {
     if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
         return from_tar(open()?, file);
     }
-    let Ok(zip) = zip::ZipArchive::new(open()?) else {
-        if !lower.starts_with("horizon-client") {
-            return Err(not_a_game(file));
-        }
-        return read_at_most(open()?, file);
+    let zip = match zip::ZipArchive::new(open()?) {
+        Ok(zip) => zip,
+        // A download cut short, say.
+        Err(e) if lower.ends_with(".zip") => return Err(format!("{file}: {e}")),
+        Err(_) if !lower.starts_with("horizon-client") => return Err(not_a_game(file)),
+        Err(_) => return read_at_most(open()?, file),
     };
     from_zip(zip, file, true)
 }
@@ -164,7 +165,12 @@ fn from_zip<R: Read + Seek>(
         if name == CLIENT {
             return read_at_most(entry, file);
         }
-        if nested && inner.is_none() && (name.ends_with(".zip") || name.ends_with(".tar.gz")) {
+        if nested
+            && inner.is_none()
+            && [".zip", ".tar.gz", ".tgz"]
+                .iter()
+                .any(|x| name.ends_with(x))
+        {
             inner = Some((i, name));
         }
     }
@@ -173,7 +179,7 @@ fn from_zip<R: Read + Seek>(
     };
     let entry = zip.by_index(i).map_err(|e| format!("{file}: {e}"))?;
     let archive = read_at_most(entry, file)?;
-    if name.ends_with(".tar.gz") {
+    if !name.ends_with(".zip") {
         return from_tar(&archive[..], file);
     }
     let zip = zip::ZipArchive::new(Cursor::new(archive)).map_err(|e| format!("{name}: {e}"))?;
@@ -255,27 +261,28 @@ fn install_in(
     }
     let tag = format!("{PREFIX}{date}-{short}");
     let dir = versions.join(&tag);
-    // This call's own: the window and the CLI may import the same program at once.
+    // This call's own, where no version is listed (`backend::installed` reads the folders of
+    // `versions` itself): the window and the CLI may import the same program at once.
     static IMPORTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = IMPORTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let partial = versions.join(format!(".{tag}.partial-{}-{n}", std::process::id()));
+    let importing = versions.join(".importing");
+    let partial = importing.join(format!("{tag}-{}-{n}", std::process::id()));
     let record = serde_json::json!({ "base": base, "file": file, "sha256": sha256 });
     let made = fs::create_dir_all(&partial)
         .map_err(|e| e.to_string())
         .and_then(|()| native_mods::copy_base(&versions.join(base), &partial, Target::Client))
         .and_then(|()| finish(&partial, &dir, program, &record).map_err(|e| e.to_string()));
+    let _ = fs::remove_dir_all(&partial);
+    let _ = fs::remove_dir(&importing);
     if let Err(e) = made {
-        let _ = fs::remove_dir_all(&partial);
-        if !dir.join(".installed").exists() {
-            let _ = fs::remove_dir_all(&dir);
-        }
         return Err(trf("Could not import the build: {error}", &[("error", &e)]));
     }
     Ok(tag)
 }
 
-/// Puts `program` and its record into the copied folder `partial`, then moves it into place as
-/// installed version `dir`.
+/// Puts `program`, its record and the installed mark into the copied folder `partial`, then
+/// moves it into place as version `dir` in one step: no other call ever sees it half made, and a
+/// version already there (the same program, imported meanwhile) stays.
 fn finish(
     partial: &Path,
     dir: &Path,
@@ -289,13 +296,11 @@ fn finish(
         fs::set_permissions(partial.join(CLIENT), fs::Permissions::from_mode(0o755))?;
     }
     fs::write(partial.join(RECORD), record.to_string())?;
-    if dir.join(".installed").exists() {
-        // Imported meanwhile by another call: that copy stays.
-        return fs::remove_dir_all(partial);
+    fs::write(partial.join(".installed"), "")?;
+    match fs::rename(partial, dir) {
+        Err(_) if dir.join(".installed").exists() => Ok(()),
+        done => done,
     }
-    let _ = fs::remove_dir_all(dir);
-    fs::rename(partial, dir)?;
-    fs::write(dir.join(".installed"), "")
 }
 
 #[cfg(test)]
