@@ -57,7 +57,7 @@ fn padded_fill_reads_every_neighbour_and_its_light_like_chunk_reads() {
     let mut pad = Padded::default();
     let mut own = Box::new([0; 4096]);
     for min_y in [MIN_Y, 0] {
-        let layout = crate::chunk::ColumnLayout::new(min_y, 32).unwrap();
+        let layout = crate::chunk::ColumnLayout::new(min_y, 32 * 16).unwrap();
         // Nine chunks with their own blocks and per-block light, near the
         // bottom and top sections too, where the padding leaves the column.
         let chunks: Vec<Chunk> = (0..9)
