@@ -153,6 +153,7 @@ mod page_runs;
 pub mod panorama;
 mod readback;
 mod resident;
+mod reuse;
 mod stars;
 pub mod submit;
 mod sunrise_fan;
@@ -770,7 +771,8 @@ pub struct Renderer {
     /// (F3+4 shows it).
     pub lightmap_pixels: [u8; 16 * 16 * 4],
     /// Time the last `render` spent blocked on the GPU or the display
-    /// (acquiring, presenting, offscreen pacing), excluded from CPU time.
+    /// (acquiring, presenting, offscreen pacing, the submit thread holding the queue),
+    /// excluded from CPU time.
     pub last_wait: std::time::Duration,
     /// CPU time of the last `render`, waits excluded.
     pub last_encode: std::time::Duration,
@@ -781,6 +783,9 @@ pub struct Renderer {
     display_fresh: bool,
     window: Arc<Window>,
     pub device: wgpu::Device,
+    /// The shader modules, layouts and pipelines kept for the next renderer on
+    /// this device ([`reuse`]).
+    reuse: Arc<reuse::Reuse>,
     /// Frames are finished and submitted on its submit thread ([`submit`]).
     pub queue: submit::Queue,
     /// The last frame went to the submit thread; whether it had no window surface.
@@ -961,6 +966,8 @@ pub struct Renderer {
     /// last asked (`take_dropped_sections`).
     sections_dropped: bool,
     sorted_indices: arena::Arena,
+    /// Buffers of released arena pages, freed a few frames later on a thread of their own.
+    graveyard: arena::Graveyard<wgpu::Buffer>,
     translucent_sorter: translucency::Sorter,
     translucency_cursor: usize,
     /// `DrawIndexedIndirectArgs` for this frame's solid then translucent draws.
@@ -1147,7 +1154,7 @@ const SPRITE_ARRAYS: u32 = 8;
 /// array. wgpu's OpenGL backend picks a texture's target from its layer
 /// count when it is created: one layer makes a 2D texture and a multiple of
 /// six a cube map, neither of which can be viewed as an array.
-fn array_layers(count: u32, gl: bool) -> u32 {
+pub(crate) fn array_layers(count: u32, gl: bool) -> u32 {
     match count {
         _ if !gl => count,
         0 | 1 => 2,
@@ -1901,7 +1908,10 @@ impl Renderer {
                     device_lost: renderer.device_lost.clone(),
                 }
             }
-            None => open_device(&window, offscreen, api, layers).await?,
+            None => {
+                let _step = crate::spans::startup::step("renderer.open_device");
+                open_device(&window, offscreen, api, layers).await?
+            }
         };
         // Computed once: the sprite arrays, the shaders' constants and the
         // shader pack atlas all cut the sprites by it.
@@ -1981,8 +1991,15 @@ impl Renderer {
         if previous.is_none() {
             startup_step(format_args!("creating the pipelines"));
         }
+        // A renderer on the same device takes the previous one's shader
+        // modules, layouts and pipelines where they come out the same.
+        let reuse = previous.map_or_else(Default::default, |r| r.reuse.clone());
+        let generation = reuse.begin();
+        let kept = reuse.on(&device);
+        let pipelines_step = crate::spans::startup::step("renderer.pipelines_textures");
+        let terrain_step = crate::spans::startup::step("renderer.terrain_pipelines");
         let gpu_timer = timing::GpuTimer::new(&device, &queue);
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let shader = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon terrain"),
             source: wgpu::ShaderSource::Wgsl(include_str!("terrain.wgsl").into()),
         });
@@ -2006,7 +2023,7 @@ impl Renderer {
             ("SPRITE_ARRAYS", f64::from(sprite_arrays)),
             ("SPRITE_SPLIT", f64::from(split)),
         ];
-        let bindings = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let bindings = kept.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Horizon terrain bindings"),
             entries: &[
                 entry(
@@ -2064,7 +2081,7 @@ impl Renderer {
                 ),
             ],
         });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Horizon terrain layout"),
             bind_group_layouts: &[Some(&bindings)],
             ..Default::default()
@@ -2100,7 +2117,7 @@ impl Renderer {
                            depth_write: bool,
                            depth_test: bool,
                            blend: Option<wgpu::BlendState>| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
                 vertex: wgpu::VertexState {
@@ -2248,7 +2265,7 @@ impl Renderer {
             false,
             Some(alpha_blend),
         );
-        let depth_reset = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let depth_reset = kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Hand depth reset"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
@@ -2327,6 +2344,7 @@ impl Renderer {
             false,
             Some(alpha_blend),
         );
+        drop(terrain_step);
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Horizon globals"),
             size: std::mem::size_of::<Globals>() as u64,
@@ -2638,7 +2656,8 @@ impl Renderer {
             &glint_sampler,
         )?;
         hud.atlas_texture = Some(atlas.clone());
-        let entity_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let entity_step = crate::spans::startup::step("renderer.entity_pipelines");
+        let entity_shader = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon entities"),
             source: wgpu::ShaderSource::Wgsl(entity_shader().into()),
         });
@@ -2646,7 +2665,7 @@ impl Renderer {
             label: Some("Horizon static block entities"),
             source: wgpu::ShaderSource::Wgsl(static_entity_shader().into()),
         });
-        let entity_bindings = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let entity_bindings = kept.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Entity bindings"),
             entries: &[
                 entry(
@@ -2827,7 +2846,7 @@ impl Renderer {
                 },
             ],
         });
-        let entity_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let entity_layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Entity layout"),
             bind_group_layouts: &[Some(&entity_bindings)],
             ..Default::default()
@@ -2837,7 +2856,7 @@ impl Renderer {
             bind_group_layouts: &[Some(&entity_bindings), Some(&static_entity_bindings)],
             ..Default::default()
         });
-        let cloud_bindings = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let cloud_bindings = kept.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Cloud bindings"),
             entries: &[entry(
                 0,
@@ -2863,7 +2882,7 @@ impl Renderer {
                 resource: cloud_uniform.as_entire_binding(),
             }],
         });
-        let cloud_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let cloud_layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Cloud layout"),
             bind_group_layouts: &[Some(&entity_bindings), Some(&cloud_bindings)],
             ..Default::default()
@@ -2903,7 +2922,7 @@ impl Renderer {
                                     clouds,
                                     fragment: &str,
                                     write_mask| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(if clouds {
                     &cloud_layout
@@ -3200,10 +3219,10 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         };
-        let additive_pipeline = device.create_render_pipeline(&additive_descriptor);
+        let additive_pipeline = kept.create_render_pipeline(&additive_descriptor);
         // `RenderPipelines.DRAGON_RAYS` uses DepthStencilState.DEFAULT:
         // unlike eyes, a ray hides the faces and rays behind it.
-        let dragon_rays_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let dragon_rays_pipeline = kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Dragon death rays"),
             primitive: wgpu::PrimitiveState {
                 cull_mode: Some(wgpu::Face::Back),
@@ -3223,7 +3242,7 @@ impl Renderer {
             write_mask: wgpu::ColorWrites::ALPHA,
         })];
         let hdr_mark_lightning_pipeline =
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("HDR lightning mark"),
                 vertex: wgpu::VertexState {
                     entry_point: Some("vs_lightning"),
@@ -3238,7 +3257,7 @@ impl Renderer {
                 }),
                 ..additive_descriptor.clone()
             });
-        let lightning_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let lightning_pipeline = kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Lightning"),
             vertex: wgpu::VertexState {
                 entry_point: Some("vs_lightning"),
@@ -3247,7 +3266,7 @@ impl Renderer {
             },
             ..additive_descriptor
         });
-        let celestial_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let celestial_pipeline = kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Celestial bodies"),
             layout: Some(&entity_layout),
             vertex: wgpu::VertexState {
@@ -3296,6 +3315,7 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
+        drop(entity_step);
         // WorldBorderRenderer: misc/forcefield.png as a MipmappedTexture
         // (repeat, linear minification with mipmaps, nearest magnification).
         let forcefield_size = forcefield.1;
@@ -3341,7 +3361,7 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let border_bindings = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let border_bindings = kept.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("World border bindings"),
             entries: &[
                 entry(
@@ -3400,19 +3420,19 @@ impl Renderer {
                 },
             ],
         });
-        let border_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let border_layout = kept.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("World border layout"),
             bind_group_layouts: &[Some(&border_bindings)],
             ..Default::default()
         });
-        let border_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let border_shader = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon world border"),
             source: wgpu::ShaderSource::Wgsl(include_str!("border.wgsl").into()),
         });
         let border_attributes = wgpu::vertex_attr_array![0=>Float32x3,1=>Float32x2];
         // RenderPipelines.WORLD_BORDER: BlendFunction.OVERLAY, no culling,
         // depth writes with a polygon offset of 3 towards the camera.
-        let border_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let border_pipeline = kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("World border"),
             layout: Some(&border_layout),
             vertex: wgpu::VertexState {
@@ -3465,7 +3485,7 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
-        let screen_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let screen_shader = kept.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon screen effects"),
             source: wgpu::ShaderSource::Wgsl(include_str!("screen.wgsl").into()),
         });
@@ -3504,7 +3524,7 @@ impl Renderer {
                 constants: &constants,
                 ..Default::default()
             };
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("Screen effects"),
                 layout: Some(&entity_layout),
                 vertex: wgpu::VertexState {
@@ -3675,6 +3695,14 @@ impl Renderer {
         );
         let panorama =
             panorama::Panorama::new(&device, config.format.remove_srgb_suffix(), panorama_faces);
+        drop(pipelines_step);
+        reuse.finish(generation);
+        if previous.is_some() {
+            log::info!(
+                "Horizon renderer: rebuilt on the same device ({} shader modules, layouts and pipelines kept)",
+                reuse.len()
+            );
+        }
         if previous.is_none() {
             startup_step(format_args!(
                 "pipelines ready (multi-draw {}, occlusion culling {}, GPU timer {})",
@@ -3705,6 +3733,7 @@ impl Renderer {
             last_encode: std::time::Duration::ZERO,
             window,
             device,
+            reuse,
             queue: submit::Queue::new(queue, submit::wanted()),
             deferred: None,
             device_lost,
@@ -3828,6 +3857,7 @@ impl Renderer {
             translucent_batching,
             sections_dropped: false,
             sorted_indices,
+            graveyard: Default::default(),
             translucent_sorter: translucency::Sorter::default(),
             translucency_cursor: 0,
             indirect,
@@ -4656,14 +4686,15 @@ impl Renderer {
         self.lod_pending = None;
         self.detail_columns.clear();
         self.detail_revision += 1;
-        self.arena.clear();
+        // A dimension change drops every page at once: freed later, off this thread.
+        self.graveyard.add(self.arena.clear());
         if let Some(arena) = &mut self.translucent_arena {
-            arena.clear();
+            self.graveyard.add(arena.clear());
         }
         if let Some(flat) = &mut self.flat {
             flat.clear();
         }
-        self.sorted_indices.clear();
+        self.graveyard.add(self.sorted_indices.clear());
         self.translucency_cursor = 0;
         if layout == self.layout {
             self.occlusion.clear();
@@ -5548,7 +5579,13 @@ impl Renderer {
     }
     /// `checks`: the error scopes of a scaled screenshot's frame, checked before its PNG is written.
     fn draw_frame(&mut self, frame: &Frame, checks: Option<GpuChecks>) -> Result<bool> {
+        // Its steps as spans (HORIZON_SPIKES): each lap names the step that just ended.
+        let mut laps = crate::spans::laps();
+        let landing = Instant::now();
         self.land_frame();
+        // Waiting for the previous frame (offscreen: at most two on the GPU), not work.
+        let landed = landing.elapsed();
+        self.queue.take_waited();
         // World frames alone follow the shader pack: the game loads the picked one
         // before it draws one. Title frames draw no terrain and keep the layout
         // through a pack dropped (Shader Options) or not loaded yet (`Renderer::new`),
@@ -5556,12 +5593,14 @@ impl Renderer {
         if !frame.title {
             self.follow_translucent_layout();
         }
-        self.arena.trim();
+        let released = self.arena.trim();
+        self.graveyard.add(released);
         let left = self.compact_arena();
         if let Some(arena) = &mut self.translucent_arena {
-            arena.trim();
+            self.graveyard.add(arena.trim());
         }
-        self.sorted_indices.trim();
+        self.graveyard.add(self.sorted_indices.trim());
+        arena::free_later(self.graveyard.advance());
         self.shrink_translucent(left);
         if let Some(flat) = &mut self.flat {
             flat.trim(|page| self.arena.has_page(page));
@@ -5597,6 +5636,7 @@ impl Renderer {
             }
             self.surface_unconfigured = false;
         }
+        laps.lap("r_prepare");
         // Frame generation: its present thread acquires and presents, this frame draws
         // into frames of its own. Not over menus that blur the frame, a shader pack's
         // own post passes, HDR or the title screen.
@@ -5612,6 +5652,8 @@ impl Renderer {
         if !fg {
             self.frame_gen.stop();
         }
+        // Waits for the submit thread since the last frame's present (this frame's uploads).
+        let queued = self.queue.take_waited();
         let acquire = Instant::now();
         let fg_frames = fg
             .then(|| {
@@ -5633,7 +5675,9 @@ impl Renderer {
         } else {
             self.surface.as_ref().map(|s| s.get_current_texture())
         };
-        self.last_wait = acquire.elapsed();
+        self.last_wait = landed + queued + acquire.elapsed();
+        // Inside the acquire's time already.
+        self.queue.take_waited();
         let (surface_frame, reconfigure) = match acquired {
             None => (None, false),
             Some(wgpu::CurrentSurfaceTexture::Success(f)) => (Some(f), false),
@@ -5719,6 +5763,7 @@ impl Renderer {
         let views = self.views(frame);
         let pose = frame.bob * frame.spin;
         let view_proj = views.primary().view_proj(pose);
+        laps.lap("r_acquire");
         // TAA runs where the world post pass does, not under a shader pack's own.
         let taa = !frame.title
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
@@ -5861,6 +5906,7 @@ impl Renderer {
         };
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));
+        laps.lap("r_targets");
         // GameRenderer.render3dHud: the hand's projection at hudFov, with the
         // bob in its pose rather than the projection (same product).
         let hand_projection = Mat4::from_cols_array(&crate::camera::hand_projection(
@@ -6066,6 +6112,7 @@ impl Renderer {
         }
         self.origins.clear();
         let (sections, retiring) = (&self.sections, &self.lod_retiring);
+        laps.lap("r_cameras");
         // `LevelRenderer.extractSectionDrawGroups`: each section's `getVisibility`. Once
         // nothing is fading (the usual frame), every section is whole without a lookup.
         let fade_ms = fade_millis(frame.chunk_fade);
@@ -6247,6 +6294,7 @@ impl Renderer {
         self.draw_pages.extend_from_slice(&self.phase2_pages);
         let culling = cull.is_some();
         let solid_draws = self.draws.len() as u32;
+        laps.lap("r_section_groups");
         // LevelRenderer: nearby sections each frame, plus a rotating eighth
         // (at least 15) of the visible list. Cached views avoid needless sorts.
         self.translucent_draws.clear();
@@ -6444,6 +6492,7 @@ impl Renderer {
             (shadow_first + shadow_solid) as usize,
         );
         let shadow_translucent = self.draws.len() as u32 - shadow_first - shadow_solid;
+        laps.lap("r_nearby");
         // Metal replays a multi-draw as one draw call per entry.
         self.section_draw_calls = if self.multi_draw && self.info.backend != wgpu::Backend::Metal {
             (0..self.section_draws)
@@ -6570,6 +6619,7 @@ impl Renderer {
             + translucent_particle_quads
             + translucent_item_quads
             + oit_entity_quads;
+        laps.lap("r_draw_lists");
         // Where the tail of materials the classic and the improved passes
         // both draw ends: the shadows, particles and items count back from it.
         let base_quads = world_quads - oit_entity_quads;
@@ -6834,6 +6884,7 @@ impl Renderer {
                 bytemuck::bytes_of(&uniform),
             );
         }
+        laps.lap("r_materials");
         // Every upload before the frame's first pass: a pass ends wgpu-core's
         // command buffer, so copies between passes would need one more.
         if !frame.screen.is_empty() {
@@ -6960,6 +7011,7 @@ impl Renderer {
                 .flatten();
         }
         let pack_reads_world = pack_post || native_post;
+        laps.lap("r_uploads");
         // Phase 2 of occlusion culling draws over the depth, and a shader pack or TAA reads it.
         let keep_depth = pack_reads_world
             || (taa && self.world_post.taa)
@@ -7091,6 +7143,7 @@ impl Renderer {
             }
         };
         let sky_visible = sky_open(frame);
+        laps.lap("r_world_pass");
         // One of Horizon's own packs: this frame's inputs; in a timed frame its sky draws in a
         // pass of its own, so that it has a time of its own.
         let mut native_sky_pass = false;
@@ -7229,6 +7282,7 @@ impl Renderer {
             pass.set_bind_group(0, &self.group, &[]);
             sky.draw(&mut pass, &native.frame);
         }
+        laps.lap("r_pack_inputs");
         // The water mirror, for one of Horizon's own packs that reads it: the world as a
         // camera mirrored about the water plane sees it, into a half-resolution target the
         // material stage samples as `reflection`.
@@ -7366,6 +7420,7 @@ impl Renderer {
             };
             native.frame.fit_surface(&self.device, size);
         }
+        laps.lap("r_mirror");
         // One of Horizon's own packs with a material stage: terrain draws with its pipelines,
         // which read the pack's frame at group 3.
         let material = self
@@ -8378,6 +8433,7 @@ impl Renderer {
                 (&view_target, self.config.format.remove_srgb_suffix()),
             );
         }
+        laps.lap("r_passes");
         // Under `HORIZON_FRAMEGEN_DEBUG=generated` a screenshot is the made frame.
         let shown_texture = match &fg_frames {
             Some((_, generated)) if fg_made && frame_gen::generated_only() => generated,
@@ -8445,6 +8501,8 @@ impl Renderer {
             match self.queue.submit_later(job) {
                 Ok(()) => {
                     self.deferred = Some(offscreen);
+                    // The frame's waits for the previous one on the submit thread.
+                    self.last_wait += self.queue.take_waited();
                     self.last_encode = started.elapsed().saturating_sub(self.last_wait);
                     self.visible = visible;
                     self.visible_lods = visible_lods;
@@ -8509,6 +8567,8 @@ impl Renderer {
                 );
             }
         }
+        // The frame's own waits for the submit thread (its queue writes and passes).
+        self.last_wait += self.queue.take_waited();
         let present = Instant::now();
         if let Some(surface_frame) = surface_frame {
             // On Wayland this ties RedrawRequested to the compositor's frame
@@ -8541,6 +8601,8 @@ impl Renderer {
             }
         }
         self.last_wait += present.elapsed();
+        // Inside the present's time already.
+        self.queue.take_waited();
         self.last_encode = started.elapsed().saturating_sub(self.last_wait);
         let _ = self.started;
         self.visible = visible;
@@ -9423,6 +9485,14 @@ mod tests {
     }
 
     #[test]
+    fn a_reported_black_level_rounds_down() {
+        use super::hundredths_of_a_nit as h;
+        assert_eq!(h(0.005), 0);
+        assert_eq!(h(0.05), 5);
+        assert_eq!(h(5.0), 100);
+        assert_eq!(h(f32::NAN), 0);
+    }
+    #[test]
     fn os_luminances_become_auto_values() {
         use super::os_reported;
         use crate::graphics::Reported;
@@ -9439,14 +9509,16 @@ mod tests {
             os_reported(&info(Some(998.4), Some(240.0))),
             Some(Reported {
                 paper_white: 240,
-                peak: 998
+                peak: 998,
+                black: 0
             })
         );
         assert_eq!(
             os_reported(&info(Some(120.0), Some(1000.0))),
             Some(Reported {
                 paper_white: 480,
-                peak: 480
+                peak: 480,
+                black: 0
             })
         );
         // White above the calibrated peak (a Samsung QD-OLED's 380, the slider at 456).
@@ -9454,7 +9526,8 @@ mod tests {
             os_reported(&info(Some(380.0), Some(456.0))),
             Some(Reported {
                 paper_white: 456,
-                peak: 456
+                peak: 456,
+                black: 0
             })
         );
         assert_eq!(os_reported(&info(Some(1000.0), None)), None);
@@ -10239,6 +10312,15 @@ fn flush_display_log() {
         (log.last, log.at) = (line, Some(now));
     }
 }
+/// A reported black level, within the setting's range. Rounded down: OLEDs report a figure
+/// just above 0, like KWin's 0.005, which isn't worth lifting the shadows for.
+fn hundredths_of_a_nit(nits: f32) -> u32 {
+    if nits.is_finite() && nits > 0.0 {
+        ((nits * 100.0) as u32).min(100)
+    } else {
+        0
+    }
+}
 fn log_os_reported(reported: Option<crate::graphics::Reported>) {
     log_display(match reported {
         Some(r) => format!(
@@ -10261,6 +10343,7 @@ fn os_reported(info: &wgpu::DisplayHdrInfo) -> Option<crate::graphics::Reported>
     let paper_white = (white.round() as u32).clamp(80, 480);
     Some(crate::graphics::Reported {
         paper_white,
+        black: hundredths_of_a_nit(luminance.min_nits.unwrap_or(0.0)),
         // Windows' SDR brightness slider can set white above the reported peak (480 against
         // a calibrated 380): the highlights then stay at white instead of dropping below it.
         peak: (peak.round() as u32).clamp(200, 10_000).max(paper_white),
@@ -10286,5 +10369,6 @@ fn reported(l: horizon_hdr::wayland::Luminances) -> crate::graphics::Reported {
     crate::graphics::Reported {
         paper_white: 203,
         peak: peak.clamp(200, 10_000),
+        black: hundredths_of_a_nit(l.target_min * 203.0 / l.reference.max(1.0)),
     }
 }
