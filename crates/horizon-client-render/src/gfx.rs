@@ -329,6 +329,7 @@ struct Globals {
     /// HDR output's tier windows, low to very bright: where the lift starts, where it is
     /// full (`hdr::Hdr::windows`); zero without HDR.
     hdr_windows: [[f32; 4]; 2],
+    hdr_light: [f32; 4],
 }
 pub type SectionKey = (i32, i32, i32);
 /// The water mirror's targets: the world as a camera mirrored about the water plane sees
@@ -5688,6 +5689,17 @@ impl Renderer {
                 0.0,
             ],
             hdr_windows: self.hdr.as_ref().map_or([[0.0; 4]; 2], hdr::Hdr::windows),
+            hdr_light: [
+                frame.sky.sky_light_factor,
+                // The underwater overlay: the sky and fog are the water's own colour there.
+                if frame.screen.iter().any(|q| q.world_tint) {
+                    0.0
+                } else {
+                    frame.sky.sky_light_factor
+                },
+                0.0,
+                0.0,
+            ],
         };
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));
@@ -6370,6 +6382,12 @@ impl Renderer {
         }
         // GameRenderer.useImprovedTransparency. A shader pack keeps its own
         // path.
+        let hdr_lighting = self.native.is_none()
+            && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
+            && std::env::var_os("HORIZON_HDR_LIGHTING").is_none_or(|v| v != "0");
+        if let Some(hdr) = &mut self.hdr {
+            hdr.lighting = hdr_lighting;
+        }
         let oit_on = self.improved_transparency
             && !frame.title
             && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())

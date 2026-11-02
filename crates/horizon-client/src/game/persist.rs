@@ -493,9 +493,11 @@ impl Game<'_> {
                     }
                     "minecraft:trident" => {
                         if let Some(n) = entity_nbt::trident_from_nbt(&tag) {
-                            let mut trident = super::trident::ThrownTrident::from_nbt(n);
-                            trident.id = self.take_entity_id();
-                            self.tridents.push(trident);
+                            let mut t = super::trident::ThrownTrident::from_nbt(n);
+                            t.id = self.take_entity_id();
+                            // One that came through a portal keeps its cooldown.
+                            self.restore_portal_cooldown(t.id, &tag);
+                            self.tridents.push(t);
                         }
                     }
                     "minecraft:firework_rocket" => {
@@ -503,6 +505,8 @@ impl Game<'_> {
                             let id = self.take_entity_id();
                             let mut rocket = super::fireworks::Rocket::from_nbt(r);
                             rocket.id = id;
+                            // One that came through a portal keeps its cooldown.
+                            self.restore_portal_cooldown(id, &tag);
                             self.rockets.push(rocket);
                             self.remember(id, uuid, tag);
                         }
