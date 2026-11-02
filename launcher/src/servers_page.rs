@@ -36,8 +36,6 @@ pub(super) enum Field {
     /// The instance dialog's (`instances_page.rs`).
     InstanceName,
     InstanceGroup,
-    /// Its search in Mojang's versions (`new_instance.rs`).
-    InstanceVersion,
     /// Home's Mods tab's filter (`instance_mods.rs`).
     InstanceModsFilter,
     /// Home's Multiplayer section's (`multiplayer_page.rs`).
@@ -58,7 +56,7 @@ pub(super) enum Field {
 }
 
 impl Field {
-    const ALL: [Field; 23] = [
+    const ALL: [Field; 22] = [
         Field::Name,
         Field::Seed,
         Field::Players,
@@ -70,7 +68,6 @@ impl Field {
         Field::Email,
         Field::InstanceName,
         Field::InstanceGroup,
-        Field::InstanceVersion,
         Field::InstanceModsFilter,
         Field::ServerName,
         Field::ServerAddress,
@@ -1009,7 +1006,6 @@ impl Launcher {
             Field::Email => self.invite_friend(),
             Field::InstanceName
             | Field::InstanceGroup
-            | Field::InstanceVersion
             | Field::InstanceModsFilter
             | Field::ConsoleSearch
             | Field::DeleteServer => {}

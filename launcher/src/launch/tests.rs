@@ -265,9 +265,9 @@ fn the_post_exit_command_runs_with_the_instance_variables() {
     let launch = Launch {
         post_exit: if cfg!(windows) {
             // The redirection first: `1> after.txt` would redirect stdout and drop the 1.
-            "> after.txt echo %INST_NAME% %INST_ID% %INST_JAVA% %MINE%".into()
+            "> after.txt echo %INST_NAME% %INST_ID% %MINE%".into()
         } else {
-            "echo \"$INST_NAME $INST_ID $INST_JAVA $MINE\" > after.txt".into()
+            "echo \"$INST_NAME $INST_ID $MINE\" > after.txt".into()
         },
         env: parse_env("MINE=1").unwrap(),
         ..Launch::default()
@@ -276,28 +276,15 @@ fn the_post_exit_command_runs_with_the_instance_variables() {
         launch.summary().unwrap(),
         format!("runs {} after, with 1 variable", launch.post_exit)
     );
-    let vars = instance_vars("My Pack", "my-pack", &dir, Some(OsStr::new("java")));
+    let vars = instance_vars("My Pack", "my-pack", &dir);
     let names: Vec<&str> = vars.iter().map(|(k, _)| *k).collect();
-    assert_eq!(
-        names,
-        [
-            "INST_NAME",
-            "INST_ID",
-            "INST_DIR",
-            "INST_MC_DIR",
-            "INST_JAVA"
-        ]
-    );
+    assert_eq!(names, ["INST_NAME", "INST_ID", "INST_DIR", "INST_MC_DIR"]);
     assert!(after_exit(&launch, &dir, &vars)
         .unwrap()
         .status()
         .unwrap()
         .success());
     let written = std::fs::read_to_string(dir.join("after.txt")).unwrap();
-    assert_eq!(written.trim(), "My Pack my-pack java 1");
-    // A Horizon instance has no Java.
-    assert!(!instance_vars("H", "horizon", &dir, None)
-        .iter()
-        .any(|(k, _)| *k == "INST_JAVA"));
+    assert_eq!(written.trim(), "My Pack my-pack 1");
     let _ = std::fs::remove_dir_all(&dir);
 }

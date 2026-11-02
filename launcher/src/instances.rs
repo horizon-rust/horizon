@@ -152,55 +152,14 @@ pub struct Meta {
     /// What runs around the game: a pre-launch command, a wrapper, variables (`launch`).
     #[serde(default, skip_serializing_if = "Launch::is_empty")]
     pub launch: Launch,
-    /// Set for a Minecraft: Java Edition instance: it plays the real game, not Horizon.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub java: Option<JavaGame>,
-}
-
-/// A Minecraft: Java Edition instance: the real game of one version, with the Java it runs on
-/// (`crate::java` picks one when `home` is none).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JavaGame {
-    /// The Minecraft version, as Mojang names it (`1.21.4`).
-    pub minecraft: String,
-    /// A Java home to run it on instead of the automatic pick.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub home: Option<PathBuf>,
-    /// The most memory the game may use, in MiB (`-Xmx`); none: [`DEFAULT_MEMORY_MB`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub memory_mb: Option<u32>,
-    /// Extra JVM arguments, split on whitespace.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub jvm_args: String,
-    /// The mod loader it plays with, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub loader: Option<crate::loaders::Loader>,
-    /// The game window's size, width then height; none: the game's own 854×480.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub window: Option<(u32, u32)>,
 }
 
 impl Instance {
-    /// Its variables for the game started as `program` and the commands around it
-    /// ([`crate::launch::instance_vars`]).
-    pub fn vars(&self, program: &std::ffi::OsStr) -> crate::launch::Vars {
-        let java = self.java.as_ref().map(|_| program);
-        crate::launch::instance_vars(&self.name, &self.id, &self.home, java)
+    /// Its variables for the game and the commands around it ([`crate::launch::instance_vars`]).
+    pub fn vars(&self) -> crate::launch::Vars {
+        crate::launch::instance_vars(&self.name, &self.id, &self.home)
     }
 }
-
-impl JavaGame {
-    /// What the mod browser installs for: its Minecraft version and its loader.
-    pub fn target(&self) -> crate::browser::java_instance::Target {
-        crate::browser::java_instance::Target {
-            minecraft: self.minecraft.clone(),
-            loader: self.loader.as_ref().map(|l| l.kind.id().to_string()),
-        }
-    }
-}
-
-/// 4 GiB: enough for vanilla and most modpacks, as other launchers start with.
-pub const DEFAULT_MEMORY_MB: u32 = 4096;
 
 fn is_zero(n: &u64) -> bool {
     *n == 0
@@ -245,28 +204,12 @@ pub struct Instance {
     pub last_played: Option<SystemTime>,
     /// What runs around the game (`launch::wrap`).
     pub launch: Launch,
-    /// The Minecraft: Java Edition it plays, for a Java instance.
-    pub java: Option<JavaGame>,
 }
 
 impl Instance {
-    /// Ok when it plays Horizon; for a Java instance, which starts its own game
-    /// (`backend::java_game`), that Horizon's options don't apply to it.
-    fn horizon(&self) -> Result<(), String> {
-        match &self.java {
-            None => Ok(()),
-            Some(java) => Err(format!(
-                "{} plays Minecraft {} (Java Edition), not Horizon: Play starts it, without a \
-                 Horizon version.",
-                self.name, java.minecraft
-            )),
-        }
-    }
-
     /// The installed version this instance plays: its pinned one, else `requested` (the
     /// command line's `--version`) or the launcher's (`backend::resolve_version`).
     pub fn resolve_version(&self, requested: Option<&str>) -> Result<String, String> {
-        self.horizon()?;
         match (requested, &self.version) {
             (None, Some(pinned)) => backend::resolve_version(Some(pinned)).map_err(|_| {
                 format!(
@@ -348,7 +291,6 @@ fn list_in(game_home: &Path, data: &Path) -> Vec<Instance> {
                     .last_played
                     .map(|s| UNIX_EPOCH + Duration::from_secs(s)),
                 launch: meta.launch,
-                java: meta.java,
                 id,
                 kind,
                 work,
@@ -460,19 +402,6 @@ pub fn create(name: &str, from: Option<&str>) -> Result<Instance, String> {
         &backend::data_dir(),
         name,
         from.as_ref(),
-        None,
-    )
-}
-
-/// Creates a Minecraft: Java Edition instance named `name` playing `minecraft` (a version id
-/// from Mojang's list), with an empty game folder: the real game keeps its own options.
-pub fn create_java(name: &str, minecraft: &str) -> Result<Instance, String> {
-    create_in(
-        &backend::game_home(),
-        &backend::data_dir(),
-        name,
-        None,
-        Some(minecraft),
     )
 }
 
@@ -481,7 +410,6 @@ fn create_in(
     data: &Path,
     name: &str,
     from: Option<&Instance>,
-    minecraft: Option<&str>,
 ) -> Result<Instance, String> {
     let name = name.trim();
     if name.is_empty() {
@@ -512,7 +440,6 @@ fn create_in(
     let dir = game_home.join(OWN).join(&slug);
     let made = match from {
         Some(from) => copy_home(&from.home, &dir),
-        None if minecraft.is_some() => fs::create_dir_all(&dir),
         None => fs::create_dir_all(&dir).and_then(|()| {
             for f in PLAYER_FILES {
                 let own = game_home.join(f);
@@ -532,12 +459,6 @@ fn create_in(
     meta.name = (name != slug).then(|| name.to_string());
     meta.icon = from.and_then(|f| f.icon.clone());
     meta.group = from.and_then(|f| f.group.clone());
-    meta.java = from.and_then(|f| f.java.clone()).or_else(|| {
-        minecraft.map(|v| JavaGame {
-            minecraft: v.to_string(),
-            ..JavaGame::default()
-        })
-    });
     store.save(data)?;
     find_in(&list_in(game_home, data), &slug)
 }
@@ -649,7 +570,6 @@ pub fn play_time(played: Duration) -> String {
 /// player's answers that hold everywhere follow it in: data collection and No AI as the
 /// launcher has them, and options.txt and the offline name when it has none yet.
 pub fn apply(cmd: &mut Command, instance: &Instance) -> Result<(), String> {
-    instance.horizon()?;
     match instance.kind {
         Kind::Default => return Ok(()),
         Kind::Own => {

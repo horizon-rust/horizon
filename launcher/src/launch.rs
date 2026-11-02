@@ -36,7 +36,7 @@ pub struct Launch {
     pub env: BTreeMap<String, String>,
     /// The most RAM Horizon may hold that the player chose, in MiB; none (the default): no
     /// limit, so big worlds and modpacks keep their render distance. Read it with
-    /// [`Launch::memory_limit`]. A Java instance has `-Xmx` instead (`instances::Java::memory_mb`).
+    /// [`Launch::memory_limit`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_limit_mb: Option<u32>,
     /// Linux: run the game through Feral's GameMode (`gamemoderun`), when it is installed.
@@ -54,7 +54,7 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// Tells the game its limit (`HORIZON_MEMORY_LIMIT_MB`). Horizon's only: a Java instance has `-Xmx`.
+/// Tells the game its limit (`HORIZON_MEMORY_LIMIT_MB`).
 /// Before [`wrap`], so the player's own variable wins.
 pub fn limit_memory(cmd: &mut Command, launch: &Launch) {
     if let Some(mb) = launch.memory_limit() {
@@ -342,19 +342,14 @@ pub fn env_line(env: &BTreeMap<String, String>) -> String {
 
 /// The instance's variables for the game and the commands around it, named as Prism Launcher
 /// names them so its scripts carry over (<https://prismlauncher.org/wiki/help-pages/custom-commands/>):
-/// `INST_NAME`, `INST_ID`, `INST_DIR` and `INST_MC_DIR` (both the instance's game folder), and
-/// for a Java instance `INST_JAVA`, the `java` it runs on.
-pub fn instance_vars(name: &str, id: &str, dir: &std::path::Path, java: Option<&OsStr>) -> Vars {
-    let mut vars = vec![
+/// `INST_NAME`, `INST_ID`, `INST_DIR` and `INST_MC_DIR` (both the instance's game folder).
+pub fn instance_vars(name: &str, id: &str, dir: &std::path::Path) -> Vars {
+    vec![
         ("INST_NAME", OsString::from(name)),
         ("INST_ID", OsString::from(id)),
         ("INST_DIR", dir.as_os_str().to_owned()),
         ("INST_MC_DIR", dir.as_os_str().to_owned()),
-    ];
-    if let Some(java) = java {
-        vars.push(("INST_JAVA", java.to_owned()));
-    }
-    vars
+    ]
 }
 
 /// An instance's variables ([`instance_vars`]).

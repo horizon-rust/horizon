@@ -128,9 +128,6 @@ impl Launcher {
 
     /// The value under the pointer. Saving waits until the mouse comes up.
     fn pick_memory(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
-        let Some(instance) = self.selected_instance().cloned() else {
-            return;
-        };
         let slider = &mut self.memory_slider;
         let Some(area) = slider.area.get() else {
             return;
@@ -143,10 +140,7 @@ impl Launcher {
         let total = slider.total();
         let picked = launch::memory_at((across / width).clamp(0., 1.), total);
         slider.saved = None;
-        slider.dragging = Some(match instance.java {
-            Some(_) => picked.or(Some(total)),
-            None => picked,
-        });
+        slider.dragging = Some(picked);
         cx.notify();
     }
 
@@ -163,10 +157,7 @@ impl Launcher {
     }
 
     fn save_memory(&mut self, id: &str, memory: Option<u32>) {
-        let saved = instances::edit(id, |m| match &mut m.java {
-            Some(java) => java.memory_mb = memory,
-            None => m.launch.set_memory_limit(memory),
-        });
+        let saved = instances::edit(id, |m| m.launch.set_memory_limit(memory));
         self.memory_slider.saved = Some(saved.map(|_| match memory {
             Some(mb) => trf(
                 "Saved: the next Play uses at most {mb} MB.",
@@ -179,10 +170,7 @@ impl Launcher {
 
     /// The instance's saved value, as the row shows it.
     fn saved_memory(instance: &instances::Instance) -> Option<u32> {
-        match &instance.java {
-            Some(java) => Some(java.memory_mb.unwrap_or(instances::DEFAULT_MEMORY_MB)),
-            None => instance.launch.memory_limit(),
-        }
+        instance.launch.memory_limit()
     }
 
     /// Saves what's in the box to `id`, if it's a value and a new one.
@@ -237,7 +225,6 @@ impl Launcher {
     pub(super) fn memory_row(&mut self, cx: &mut Context<Self>) -> Option<Div> {
         let t = self.theme;
         let instance = self.selected_instance()?.clone();
-        let java = instance.java.as_ref();
         let total = self.memory_slider.total();
         let area = self.memory_slider.area.clone();
         let memory = self
@@ -254,10 +241,7 @@ impl Launcher {
         let unit = (memory.is_some() || self.servers.has_focus(Field::MemoryLimit))
             .then(|| text(theme::LABEL).text_color(t.ink_soft).child("MB"));
         let input = self.field(Field::MemoryLimit, tr("No limit"), 120., cx);
-        let about = match java {
-            Some(_) => "How much memory Java may use (-Xmx). Set it too low and the game can crash.",
-            None => "The game stays under this. Very low values make it slower, and it crashes only if it can't run at all. Change it while playing with /ramlimit.",
-        };
+        let about = "The game stays under this. Very low values make it slower, and it crashes only if it can't run at all. Change it while playing with /ramlimit.";
         let track = div()
             .id("launch-memory")
             .relative()
