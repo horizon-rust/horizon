@@ -115,6 +115,7 @@ mod dragon;
 mod dynamic_lights;
 mod enchant_effects;
 mod end;
+mod entity;
 mod entity_culling;
 mod event_loop;
 mod events;
