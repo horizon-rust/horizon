@@ -183,6 +183,7 @@ mod maps;
 mod minecarts;
 mod mob_blocks;
 mod mob_gear;
+mod mob_index;
 mod mob_looting;
 mod mob_sounds;
 mod mod_api_host;
@@ -2439,6 +2440,8 @@ struct Game<'a> {
     /// player's own (taken by `update_world`).
     spawn_wait: Vec<(i32, i32)>,
     mobs: Vec<Mob>,
+    /// `mobs` by network id, for the packets that name one (`game/mob_index.rs`).
+    mob_index: mob_index::MobIndex,
     creatures: creatures::Creatures,
     sculk: sculk::SculkState,
     raiding: raids::Raiding,
@@ -18322,6 +18325,7 @@ impl<'a> Game<'a> {
             player_spawn: None,
             spawn_wait: Vec::new(),
             mobs: Vec::new(),
+            mob_index: Default::default(),
             creatures: Default::default(),
             sculk: Default::default(),
             raiding: Default::default(),
