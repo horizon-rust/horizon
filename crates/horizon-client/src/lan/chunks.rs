@@ -16,6 +16,7 @@ use horizon_protocol::{
     packets::play::{ChunkBiomeData, LevelChunkWithLight},
     registry::{Builtin, ceil_log2},
 };
+use horizon_threads::jobs::{Class, Rank, Registration, Source};
 use horizon_world::nbt::{Compound, Tag};
 use std::{
     collections::HashMap,
@@ -380,6 +381,10 @@ struct Warm {
 }
 type Warmed = ((Arc<[u8]>, Entities), Option<Arc<Layers>>);
 impl Warm {
+    /// Whether some of it is still to take.
+    fn left(&self) -> bool {
+        self.next.load(Ordering::Relaxed) < self.columns.len() + self.sections.len()
+    }
     /// Take work until none is left.
     fn run(&self) {
         loop {
@@ -407,50 +412,43 @@ impl Warm {
     }
 }
 
-/// The warm-up threads (one per core besides the tick's) and the job they
-/// take: its number, and the job while it has sections left to take.
+/// The warm-up's place in the shared worker pool (`horizon_threads::jobs`):
+/// the job while it has sections left to take. A tick waits for it, so it
+/// goes ahead of chunk generation and meshing.
 struct WarmPool {
-    job: std::sync::Mutex<(u64, Option<Arc<Warm>>)>,
-    ready: std::sync::Condvar,
+    job: std::sync::Mutex<Option<Arc<Warm>>>,
+}
+impl Source for WarmPool {
+    fn next(&self) -> Option<Rank> {
+        let job = self.job.lock().unwrap();
+        job.as_ref()
+            .filter(|job| job.left())
+            .map(|_| Rank::new(Class::Urgent, 0))
+    }
+    fn run(&self, _worker: usize) -> bool {
+        let Some(job) = self.job.lock().unwrap().clone() else {
+            return false;
+        };
+        job.run();
+        true
+    }
 }
 
-/// The warm-up threads, started the first time; none on a single core or
-/// when no thread could start.
-fn warm_pool() -> Option<&'static WarmPool> {
-    static POOL: OnceLock<Option<Arc<WarmPool>>> = OnceLock::new();
+/// The warm-up's source, registered the first time; none on a single core,
+/// where the tick does all of it.
+fn warm_pool() -> Option<&'static (Arc<WarmPool>, Registration)> {
+    static POOL: OnceLock<Option<(Arc<WarmPool>, Registration)>> = OnceLock::new();
     POOL.get_or_init(|| {
-        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()) - 1;
-        let pool = Arc::new(WarmPool {
+        if std::thread::available_parallelism().map_or(1, |n| n.get()) <= 1 {
+            return None;
+        }
+        let source = Arc::new(WarmPool {
             job: Default::default(),
-            ready: Default::default(),
         });
-        let started = (0..threads)
-            .filter(|i| {
-                let pool = pool.clone();
-                std::thread::Builder::new()
-                    .name(format!("horizon-chunk-encode-{i}"))
-                    .spawn(move || {
-                        let mut done = 0;
-                        loop {
-                            let job = {
-                                let mut slot = pool.job.lock().unwrap();
-                                while slot.0 == done {
-                                    slot = pool.ready.wait(slot).unwrap();
-                                }
-                                done = slot.0;
-                                slot.1.clone()
-                            };
-                            if let Some(job) = job {
-                                job.run();
-                            }
-                        }
-                    })
-                    .is_ok()
-            })
-            .count();
-        (started > 0).then_some(pool)
+        let registration = horizon_threads::jobs::pool().register(source.clone());
+        Some((source, registration))
     })
-    .as_deref()
+    .as_ref()
 }
 impl ChunkEncoder {
     /// `biome_names`: the internal biome list in order; `biome_registry`:
@@ -765,22 +763,18 @@ impl ChunkEncoder {
         let Some(job) = self.job(columns) else {
             return;
         };
-        let Some(pool) = warm_pool() else {
+        let Some((pool, registration)) = warm_pool() else {
             return;
         };
         let job = Arc::new(job);
-        {
-            let mut slot = pool.job.lock().unwrap();
-            slot.0 += 1;
-            slot.1 = Some(job.clone());
-        }
-        pool.ready.notify_all();
+        *pool.job.lock().unwrap() = Some(job.clone());
+        registration.notify_all();
         job.run();
         // Everything is claimed: the job leaves the slot.
         {
             let mut slot = pool.job.lock().unwrap();
-            if slot.1.as_ref().is_some_and(|j| Arc::ptr_eq(j, &job)) {
-                slot.1 = None;
+            if slot.as_ref().is_some_and(|j| Arc::ptr_eq(j, &job)) {
+                *slot = None;
             }
         }
         self.keep(&job);
