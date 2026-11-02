@@ -1,6 +1,7 @@
 //! Controllers: which player each drives, joining with one, and one disconnecting (its player
 //! waits for another). One reader for every player's game (`PadRouter`) while splitscreen
 //! watches the controllers; otherwise P1 reads them itself, as without splitscreen.
+use super::hud::tr;
 use super::*;
 use crate::game::pad::{PadEvent, PadId};
 use horizon_client::gamepad::{Button, PadState};
@@ -312,8 +313,8 @@ impl Split<'_> {
             if self.in_world() {
                 self.lost.push(Lost { seat: 1, id, uuid });
                 self.host.split_hud.notice = Some(Notice::new(
-                    "Controller disconnected",
-                    "Reconnect it, or press a button on another",
+                    tr("controller_disconnected", &[]),
+                    tr("controller_disconnected.hint", &[]),
                 ));
             }
             return;
@@ -351,7 +352,7 @@ impl Split<'_> {
         if hud.prompt.as_ref().is_some_and(|p| p.ask == Ask::Lost) {
             hud.prompt = None;
         }
-        hud.notice = Some(Notice::new("Controller connected", ""));
+        hud.notice = Some(Notice::new(tr("controller_connected", &[]), ""));
     }
 
     /// A button on a controller nobody has while players wait for one: true when it answered
@@ -396,14 +397,14 @@ impl Split<'_> {
     /// Every player sees the controllers waiting to join, whatever it is doing.
     fn ask_to_join(&mut self) {
         let title = match self.offers.as_slice() {
-            [(id, _)] => format!("{} wants to join", self.pads.name(*id)),
-            offers => format!("{} controllers want to join", offers.len()),
+            [(id, _)] => tr("join.one", &[&self.pads.name(*id)]),
+            offers => tr("join.many", &[&offers.len()]),
         };
-        let mut choices = vec![(Button::South, "Join")];
+        let mut choices = vec![(Button::South, tr("join.yes", &[]))];
         if self.p1_pad.owner.is_none() && self.host.settings.controller.enabled {
-            choices.push((Button::North, "Play as P1"));
+            choices.push((Button::North, tr("join.as_p1", &[])));
         }
-        choices.push((Button::East, "No"));
+        choices.push((Button::East, tr("join.no", &[])));
         self.prompt_join(Some(Prompt {
             ask: Ask::Join,
             title,
