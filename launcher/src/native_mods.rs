@@ -796,7 +796,7 @@ fn about_in(dir: &Path) -> Option<About> {
 }
 
 /// The newest installed release or Nightly in `installed` (newest first).
-fn newest_installed(installed: &[String]) -> Option<&String> {
+pub(crate) fn newest_installed(installed: &[String]) -> Option<&String> {
     installed
         .iter()
         .find(|t| backend::is_game_tag(t) || t.starts_with("nightly-"))
@@ -1725,21 +1725,7 @@ fn install(
     let partial = target.directory(&format!(".{version}.partial"));
     let _ = fs::remove_dir_all(&partial);
     fs::create_dir_all(&partial).map_err(|e| e.to_string())?;
-    for entry in fs::read_dir(&from).map_err(|e| e.to_string())?.flatten() {
-        let name = entry.file_name();
-        if !carried_over(&name, target) {
-            continue;
-        }
-        let to = partial.join(&name);
-        let copied = if entry.path().is_dir() {
-            backend::copy_dir(&entry.path(), &to)
-        } else {
-            // A clone is a new file: horizon-ctl and horizon-server keep their permissions.
-            horizon_prepare::clone_or_copy(&entry.path(), &to)
-                .and_then(|()| fs::set_permissions(&to, entry.metadata()?.permissions()))
-        };
-        copied.map_err(|e| format!("Could not copy {}: {e}", entry.path().display()))?;
-    }
+    copy_base(&from, &partial, target)?;
     let installed = partial.join(target.binary());
     fs::copy(binary, &installed).map_err(|e| format!("The built game: {e}"))?;
     fs::write(partial.join("native-mods.json"), about.to_string()).map_err(|e| e.to_string())?;
@@ -1753,12 +1739,33 @@ fn install(
     fs::write(dir.join(".installed"), "").map_err(|e| e.to_string())
 }
 
+/// Copies version folder `from` into `to` but for what a new build of `target` makes its own
+/// ([`carried_over`]), cloned where the disk can. Also an imported build's start (`imported`).
+pub(crate) fn copy_base(from: &Path, to: &Path, target: Target) -> Result<(), String> {
+    for entry in fs::read_dir(from).map_err(|e| e.to_string())?.flatten() {
+        let name = entry.file_name();
+        if !carried_over(&name, target) {
+            continue;
+        }
+        let to = to.join(&name);
+        let copied = if entry.path().is_dir() {
+            backend::copy_dir(&entry.path(), &to)
+        } else {
+            // A clone is a new file: horizon-ctl and horizon-server keep their permissions.
+            horizon_prepare::clone_or_copy(&entry.path(), &to)
+                .and_then(|()| fs::set_permissions(&to, entry.metadata()?.permissions()))
+        };
+        copied.map_err(|e| format!("Could not copy {}: {e}", entry.path().display()))?;
+    }
+    Ok(())
+}
+
 /// Whether a file of the version a build starts from goes into the new build. The game (the
 /// target's own binary), its record, and the mods' post-build data (`native-data/`, which the
 /// new build's steps write again) are the new build's own: a mod turned off leaves none of its
 /// data behind. A server build is the headless engine: it keeps neither the game's own binary
 /// nor any `horizon-engine` the base shipped, which would run unmodded beside its own.
-pub(crate) fn carried_over(name: &std::ffi::OsStr, target: Target) -> bool {
+fn carried_over(name: &std::ffi::OsStr, target: Target) -> bool {
     let mut own: Vec<String> = ["Horizon.app", "native-mods.json", "native-data"]
         .iter()
         .map(|s| s.to_string())

@@ -822,8 +822,7 @@ pub(crate) fn install_as(
     fs::rename(&top, &target).map_err(|e| e.to_string())?;
     fs::write(target.join(COMPLETE), "").map_err(|e| e.to_string())?;
     let _ = fs::remove_dir_all(&partial);
-    reuse_prepared(&root, tag);
-    complete_assets(tag);
+    reuse_prepared_for(tag);
     progress(1.0);
     Ok(())
 }
@@ -1163,9 +1162,8 @@ fn reuse_prepared(versions: &Path, tag: &str) -> Option<String> {
     None
 }
 
-/// What an install does after its folder is in place, for a version put there another way (an
-/// imported build, `imported`): another installed version's resources if it has none, and
-/// whatever its resources lack.
+/// What an install does once its folder is in place (an imported build's too, `imported`):
+/// another installed version's resources if it has none, and whatever its resources lack.
 pub(crate) fn reuse_prepared_for(tag: &str) {
     reuse_prepared(&versions_dir(), tag);
     complete_assets(tag);

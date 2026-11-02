@@ -4124,6 +4124,37 @@ impl Launcher {
             .children(error.map(|e| notice(e, &t)))
     }
 
+    /// The installed builds of one kind made here (`is`: native or imported) under their caption,
+    /// with a notice above them; None when there are none.
+    fn local_builds(
+        &self,
+        title: &str,
+        is: fn(&str) -> bool,
+        notice_: Option<&str>,
+        on_disk: &dyn Fn(&String) -> Option<u64>,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        let t = self.theme;
+        let tags: Vec<&String> = self
+            .installed
+            .iter()
+            .chain(&self.removing)
+            .filter(|v| is(v))
+            .collect();
+        (!tags.is_empty()).then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(caps(tr(title)).text_color(t.muted))
+                .children(notice_.map(|n| notice(n.to_string(), &t)))
+                .children(
+                    tags.into_iter()
+                        .map(|tag| self.local_build_row(tag, on_disk, cx)),
+                )
+        })
+    }
+
     fn versions_page(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let header = page_header(
@@ -4189,58 +4220,25 @@ impl Launcher {
                     .child(import),
             )
             .children(self.import_error.clone().map(|e| notice(e, &t)));
-        // Native-mods builds are made here, not downloaded: they are listed apart from the releases.
-        let native: Vec<String> = self
-            .installed
-            .iter()
-            .chain(&self.removing)
-            .filter(|v| native_mods::is_native(v))
-            .cloned()
-            .collect();
-        let page = page.when(!native.is_empty(), |page| {
-            page.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(caps(tr("Native mod builds")).text_color(t.muted))
-                    .children(
-                        native
-                            .iter()
-                            .map(|tag| self.local_build_row(tag, &on_disk, cx)),
-                    ),
-            )
-        });
-        // Imported builds: programs the player picked, which nothing signed.
-        let imports: Vec<String> = self
-            .installed
-            .iter()
-            .chain(&self.removing)
-            .filter(|v| imported::is_imported(v))
-            .cloned()
-            .collect();
-        let page = page.when(!imports.is_empty(), |page| {
-            page.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(caps(tr("Imported builds")).text_color(t.muted))
-                    .child(notice(
-                        tr(
-                            "Unsigned: you picked these programs yourself, and Horizon can't \
-                            check where they came from. Updates never replace them.",
-                        )
-                        .to_string(),
-                        &t,
-                    ))
-                    .children(
-                        imports
-                            .iter()
-                            .map(|tag| self.local_build_row(tag, &on_disk, cx)),
-                    ),
-            )
-        });
+        // Builds made here, not downloaded, are listed apart from the releases.
+        let page = page
+            .children(self.local_builds(
+                "Native mod builds",
+                native_mods::is_native,
+                None,
+                &on_disk,
+                cx,
+            ))
+            .children(self.local_builds(
+                "Imported builds",
+                imported::is_imported,
+                Some(tr(
+                    "Unsigned: you picked these programs yourself, and Horizon can't \
+                    check where they came from. Updates never replace them.",
+                )),
+                &on_disk,
+                cx,
+            ));
         let releases = match &self.releases {
             Load::Loading => return page.child(centered(tr("Loading releases…"), &t)),
             Load::Failed(e) => {

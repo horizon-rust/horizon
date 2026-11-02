@@ -61,13 +61,29 @@ fn official(version: &str) -> bool {
     backend::is_game_tag(version) || crate::nightly::date_of(version).is_some()
 }
 
-/// The installed version an import takes its game files from: `selected` when Horizon published
-/// it, else the newest installed release or Nightly (`installed` is newest first).
-pub fn base_for(installed: &[String], selected: Option<&str>) -> Option<String> {
-    selected
-        .filter(|s| official(s) && installed.iter().any(|t| t == s))
-        .map(str::to_owned)
-        .or_else(|| installed.iter().find(|t| official(t)).cloned())
+/// The installed version an import takes its game files from: `requested` (`--base`), else
+/// `selected` when Horizon published it, else the newest installed release or Nightly.
+fn base_for(
+    installed: &[String],
+    requested: Option<&str>,
+    selected: Option<&str>,
+) -> Result<String, String> {
+    let usable = |v: &str| official(v) && installed.iter().any(|t| t == v);
+    match requested {
+        Some(b) if usable(b) => Ok(b.to_owned()),
+        Some(b) => Err(format!("{b} is not an installed release or Nightly.")),
+        None => {
+            selected
+                .filter(|s| usable(s))
+                .map(str::to_owned)
+                .or_else(|| native_mods::newest_installed(installed).cloned())
+                .ok_or_else(|| {
+                    tr("Install a release or Nightly first: an imported build plays with its game \
+                    files.")
+                .to_string()
+                })
+        }
+    }
 }
 
 /// Installs the game program at `path` (or the one inside a zip there) as a new version on the
@@ -79,22 +95,11 @@ pub fn import(path: &Path, base: Option<&str>) -> Result<String, String> {
         |n| n.to_string_lossy().into_owned(),
     );
     let program = read_program(path, &file)?;
-    if !runs_here(&program) || horizon_mods::api_level::read_mark(&program).is_none() {
-        return Err(trf(
-            "{file} is not a Horizon game for this computer.",
-            &[("file", &file)],
-        ));
+    if !is_game(&program) {
+        return Err(not_a_game(&file));
     }
-    let installed = backend::installed();
     let selected = backend::Settings::load().selected;
-    let base = match base {
-        Some(b) if official(b) && installed.iter().any(|t| t == b) => b.to_owned(),
-        Some(b) => return Err(format!("{b} is not an installed release or Nightly.")),
-        None => base_for(&installed, selected.as_deref()).ok_or_else(|| {
-            tr("Install a release or Nightly first: an imported build plays with its game files.")
-                .to_string()
-        })?,
-    };
+    let base = base_for(&backend::installed(), base, selected.as_deref())?;
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
     let tag = install_in(&backend::version_dir(""), &base, &program, &file, &date)?;
     backend::reuse_prepared_for(&tag);
@@ -105,42 +110,32 @@ pub fn import(path: &Path, base: Option<&str>) -> Result<String, String> {
     Ok(tag)
 }
 
+fn not_a_game(file: &str) -> String {
+    trf(
+        "{file} is not a Horizon game for this computer.",
+        &[("file", file)],
+    )
+}
+
 /// The program at `path`: the file itself when it is named as the game is (`horizon-client`,
 /// "horizon-client (1).exe" as a browser saves a second copy), or from a zip (a GitHub Actions
 /// artifact), its one entry named as the game is on this platform (`CLIENT`), in any folder.
 /// The launcher and horizon-ctl carry the mod API mark too: the name tells them apart.
 fn read_program(path: &Path, file: &str) -> Result<Vec<u8>, String> {
-    let not_a_game = || {
-        trf(
-            "{file} is not a Horizon game for this computer.",
-            &[("file", file)],
-        )
-    };
-    let open = fs::File::open(path).map_err(|e| format!("{file}: {e}"))?;
-    let Ok(mut zip) = zip::ZipArchive::new(open) else {
-        let size = fs::metadata(path)
-            .map_err(|e| format!("{file}: {e}"))?
-            .len();
-        if !file.to_ascii_lowercase().starts_with("horizon-client") || size > MAX_PROGRAM {
-            return Err(not_a_game());
+    let open = || fs::File::open(path).map_err(|e| format!("{file}: {e}"));
+    let Ok(mut zip) = zip::ZipArchive::new(open()?) else {
+        if !file.to_ascii_lowercase().starts_with("horizon-client") {
+            return Err(not_a_game(file));
         }
-        return fs::read(path).map_err(|e| format!("{file}: {e}"));
+        return read_at_most(open()?, file);
     };
     for i in 0..zip.len() {
-        let mut entry = zip.by_index(i).map_err(|e| format!("{file}: {e}"))?;
+        let entry = zip.by_index(i).map_err(|e| format!("{file}: {e}"))?;
         let named = entry
             .enclosed_name()
             .is_some_and(|p| p.file_name() == Some(std::ffi::OsStr::new(CLIENT)));
         if named && entry.is_file() {
-            let mut program = Vec::new();
-            (&mut entry)
-                .take(MAX_PROGRAM + 1)
-                .read_to_end(&mut program)
-                .map_err(|e| format!("{file}: {e}"))?;
-            if program.len() as u64 > MAX_PROGRAM {
-                return Err(not_a_game());
-            }
-            return Ok(program);
+            return read_at_most(entry, file);
         }
     }
     Err(trf(
@@ -149,9 +144,22 @@ fn read_program(path: &Path, file: &str) -> Result<Vec<u8>, String> {
     ))
 }
 
-/// Whether `program` starts as a program of this platform does: PE on Windows, Mach-O on macOS,
-/// ELF elsewhere. A Linux build picked on Windows would only fail to start.
-fn runs_here(program: &[u8]) -> bool {
+/// All of `from`, refused past [`MAX_PROGRAM`] rather than cut off.
+fn read_at_most(from: impl Read, file: &str) -> Result<Vec<u8>, String> {
+    let mut program = Vec::new();
+    from.take(MAX_PROGRAM + 1)
+        .read_to_end(&mut program)
+        .map_err(|e| format!("{file}: {e}"))?;
+    if program.len() as u64 > MAX_PROGRAM {
+        return Err(not_a_game(file));
+    }
+    Ok(program)
+}
+
+/// Whether `program` is a Horizon game for this computer: it starts as this platform's programs
+/// do (PE on Windows, Mach-O on macOS, ELF elsewhere: a Linux build picked on Windows would
+/// only fail to start) and carries the mod API mark every game since 0.2.69 does.
+fn is_game(program: &[u8]) -> bool {
     let magic: &[&[u8]] = if cfg!(windows) {
         &[b"MZ"]
     } else if cfg!(target_os = "macos") {
@@ -161,6 +169,7 @@ fn runs_here(program: &[u8]) -> bool {
         &[b"\x7fELF"]
     };
     magic.iter().any(|m| program.starts_with(m))
+        && horizon_mods::api_level::read_mark(program).is_some()
 }
 
 /// Installs `program` in `versions` as a copy of installed version `base` with it in place of
@@ -197,48 +206,37 @@ fn install_in(
     let dir = versions.join(&tag);
     let partial = versions.join(format!(".{tag}.partial"));
     let _ = fs::remove_dir_all(&partial);
-    fs::create_dir_all(&partial).map_err(|e| e.to_string())?;
     let record = serde_json::json!({ "base": base, "file": file, "sha256": sha256 });
-    let copied = fill(&versions.join(base), &partial, program, &record).and_then(|()| {
-        let _ = fs::remove_dir_all(&dir);
-        fs::rename(&partial, &dir)?;
-        fs::write(dir.join(".installed"), "")
-    });
-    if let Err(e) = copied {
+    let made = fs::create_dir_all(&partial)
+        .map_err(|e| e.to_string())
+        .and_then(|()| native_mods::copy_base(&versions.join(base), &partial, Target::Client))
+        .and_then(|()| finish(&partial, &dir, program, &record).map_err(|e| e.to_string()));
+    if let Err(e) = made {
         let _ = fs::remove_dir_all(&partial);
         let _ = fs::remove_dir_all(&dir);
-        return Err(trf(
-            "Could not import the build: {error}",
-            &[("error", &e.to_string())],
-        ));
+        return Err(trf("Could not import the build: {error}", &[("error", &e)]));
     }
     Ok(tag)
 }
 
-/// Fills the new version's folder `to`: version folder `base`'s files but its game and its
-/// record (`native_mods::carried_over`, cloned where the disk can), `program` as the game, and
-/// what it was made from.
-fn fill(base: &Path, to: &Path, program: &[u8], record: &serde_json::Value) -> std::io::Result<()> {
-    for entry in fs::read_dir(base)?.flatten() {
-        let name = entry.file_name();
-        if !native_mods::carried_over(&name, Target::Client) || name == RECORD {
-            continue;
-        }
-        let target = to.join(&name);
-        if entry.path().is_dir() {
-            backend::copy_dir(&entry.path(), &target)?;
-        } else {
-            horizon_prepare::clone_or_copy(&entry.path(), &target)?;
-            fs::set_permissions(&target, entry.metadata()?.permissions())?;
-        }
-    }
-    fs::write(to.join(CLIENT), program)?;
+/// Puts `program` and its record into the copied folder `partial`, then moves it into place as
+/// installed version `dir`.
+fn finish(
+    partial: &Path,
+    dir: &Path,
+    program: &[u8],
+    record: &serde_json::Value,
+) -> std::io::Result<()> {
+    fs::write(partial.join(CLIENT), program)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(to.join(CLIENT), fs::Permissions::from_mode(0o755))?;
+        fs::set_permissions(partial.join(CLIENT), fs::Permissions::from_mode(0o755))?;
     }
-    fs::write(to.join(RECORD), record.to_string())
+    fs::write(partial.join(RECORD), record.to_string())?;
+    let _ = fs::remove_dir_all(dir);
+    fs::rename(partial, dir)?;
+    fs::write(dir.join(".installed"), "")
 }
 
 #[cfg(test)]
@@ -320,10 +318,35 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_import_leaves_nothing_behind() {
+        let versions = dir("failed");
+        // A folder from an import that never finished is not that program's version.
+        let built = program(b"build");
+        let unfinished = install_in(&versions, "v0.2.95", &built, CLIENT, "2026-10-01");
+        assert!(unfinished.is_err(), "no base to copy");
+        assert_eq!(fs::read_dir(&versions).unwrap().count(), 0);
+        let short: String = Sha256::digest(&built)[..4]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        fs::create_dir_all(versions.join(format!("imported-2026-10-01-{}", &short[..7]))).unwrap();
+        assert!(install_in(&versions, "v0.2.95", &built, CLIENT, "2026-10-02").is_err());
+        let _ = fs::remove_dir_all(versions);
+    }
+
+    #[test]
     fn only_a_horizon_game_for_this_computer_is_imported() {
-        assert!(runs_here(&program(b"")));
-        let other = if cfg!(windows) { b"\x7fELF" } else { b"MZ\0\0" };
-        assert!(!runs_here(other));
+        assert!(is_game(&program(b"")));
+        // Another program of this platform, without the game's mark.
+        assert!(!is_game(&program(b"")[..program(b"").len() - 27]));
+        let other = if cfg!(windows) {
+            &b"\x7fELF"[..]
+        } else {
+            &b"MZ"[..]
+        };
+        assert!(!is_game(
+            &[other, &horizon_mods::api_level::MARK[..]].concat()
+        ));
         let d = dir("zip");
         let zip_path = d.join("horizon-client-windows-x86_64.zip");
         let mut zip = zip::ZipWriter::new(fs::File::create(&zip_path).unwrap());
@@ -362,16 +385,24 @@ mod tests {
             "native-c9d474d-0123456789ab".to_string(),
             "imported-2026-10-31-abcdef0".to_string(),
         ];
+        let newest = Ok("nightly-2026-11-01-c9d474d".to_string());
         assert_eq!(
-            base_for(&installed, Some("v0.2.95")).as_deref(),
-            Some("v0.2.95")
+            base_for(&installed, None, Some("v0.2.95")),
+            Ok("v0.2.95".to_string())
         );
         for selected in [None, Some("imported-2026-10-31-abcdef0"), Some("v0.1.0")] {
-            assert_eq!(
-                base_for(&installed, selected).as_deref(),
-                Some("nightly-2026-11-01-c9d474d")
-            );
+            assert_eq!(base_for(&installed, None, selected), newest);
         }
-        assert_eq!(base_for(&installed[2..], None), None);
+        assert!(base_for(&installed[2..], None, None).is_err());
+        // --base: an installed release or Nightly, never another local build.
+        let asked = |b| base_for(&installed, Some(b), Some("v0.2.95"));
+        assert_eq!(asked("nightly-2026-11-01-c9d474d"), newest);
+        for b in [
+            "v0.1.0",
+            "native-c9d474d-0123456789ab",
+            "imported-2026-10-31-abcdef0",
+        ] {
+            assert!(asked(b).is_err(), "{b}");
+        }
     }
 }
