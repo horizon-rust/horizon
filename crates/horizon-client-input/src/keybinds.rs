@@ -73,9 +73,6 @@ pub const MAPPINGS: &[(&str, &str, &str)] = &[
     ("key.debug.networkCharts", "key.keyboard.3", "debug"),
     ("key.debug.lightmapTexture", "key.keyboard.4", "debug"),
     ("key.debug.improvedTransparency", "key.keyboard.x", "debug"),
-    // Horizon's own: a repro recording (F3+R) and its bundle (F3+E).
-    ("key.debug.recordSession", "key.keyboard.r", "debug"),
-    ("key.debug.exportRepro", "key.keyboard.e", "debug"),
 ];
 /// Mappings Options builds as `ToggleKeyMapping` (hold or toggle by option).
 pub fn is_toggle(name: &str) -> bool {

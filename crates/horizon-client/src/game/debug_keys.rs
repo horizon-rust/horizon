@@ -711,6 +711,9 @@ impl Game<'_> {
                 true
             }
             // Horizon's own: a repro recording for a bug report (game/repro.rs).
+            // Off unless the AI Agent page enables the shortcuts.
+            DebugAction::RecordSession if !self.settings.extras.repro_keys => false,
+            DebugAction::ExportRepro if !self.settings.extras.repro_keys => false,
             DebugAction::RecordSession => {
                 self.toggle_recording_key();
                 true

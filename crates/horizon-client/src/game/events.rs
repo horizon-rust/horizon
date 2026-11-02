@@ -68,6 +68,10 @@ impl Events {
     pub(super) fn note(&mut self, tick: u64, event: Value) {
         self.push(tick, event);
     }
+    /// Whether a `wait-for` is waiting: its agent is still watching.
+    pub(super) fn has_waits(&self) -> bool {
+        !self.waits.is_empty()
+    }
     fn since(&self, seq: u64) -> impl Iterator<Item = &Value> {
         self.log
             .iter()

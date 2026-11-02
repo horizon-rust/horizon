@@ -143,30 +143,29 @@ impl Game<'_> {
             self.answer(request, event_loop);
         }
         while let Some(request) = self.control.as_ref().and_then(|c| c.try_recv()) {
+            // Once per line received, not once per handler: a deferred `ui`
+            // comes back through `ui_wait` and must not be traced twice.
+            self.note_socket_line(&request.line);
             self.agent_command_seen();
             self.answer(request, event_loop);
             if self.pending_save.is_some() {
                 break;
             }
         }
-        if self.control.is_some() {
+        // A recording made from the F3 keys or the Settings page has no socket,
+        // and still wants its events.
+        if self.control.is_some() || self.repro.recording_active() {
             self.watch_events();
         }
         if self.screen == Screen::Options
             && self.ui.options.page() == horizon_client::options_ui::Page::Agent
         {
             self.ui.options.agent_status = self.agent_status_lines();
+            self.ui.options.agent_recording = self.repro.recording_active();
         }
     }
 
     fn answer(&mut self, request: horizon_client::control::Request, event_loop: &dyn EventLoopCtl) {
-        // Whatever the socket asked for is an agent's input, named for `input-log`.
-        self.note_input(
-            super::input_trace::InputOrigin::Agent,
-            super::input_trace::TraceKind::Command {
-                line: request.line.clone(),
-            },
-        );
         let reply = match self.control_command(&request.line, &request.reply, event_loop) {
             Ok(Some(value)) => value,
             // Deferred: the command keeps its own reply channel.
@@ -424,7 +423,148 @@ impl Game<'_> {
             }
             "pad" => Ok(Some(self.pad_command(&words)?)),
             "key" => {
-                self.control_key(arg(1)?, arg(2)?)?;
+                let key = key_code(arg(1)?).ok_or_else(|| format!("unknown key {}", words[1]))?;
+                let action = arg(2)?;
+                if !matches!(action, "down" | "up" | "tap" | "repeat") {
+                    return Err(format!(
+                        "key action must be down, up, tap or repeat, not {action}"
+                    )
+                    .into());
+                }
+                // ConfirmScreen.keyPressed: Escape answers no, nothing else goes past it.
+                if self.command_prompt.is_some() {
+                    if key == KeyCode::Escape && arg(2)? != "up" {
+                        self.answer_command_prompt(false);
+                    }
+                    return ok();
+                }
+                // A server's dialog takes the keys, in configuration too.
+                if self.dialog_open() {
+                    if arg(2)? != "up" {
+                        self.dialog_key(key, None, None)?;
+                    }
+                    return ok();
+                }
+                self.require_world()?;
+                // KeyboardHandler.keyPress: the open screen's narration hears it.
+                super::narrator::narrate_key(&mut self.narration, key, arg(2)? != "up");
+                // The sign editor takes raw presses (Enter, arrows, Backspace, Escape).
+                if self.sign_edit.is_some() {
+                    if arg(2)? != "up" {
+                        self.sign_input(Some(key), None);
+                    }
+                    return ok();
+                }
+                // A held edit modifier (`key super down`) and A/C/V/X: the
+                // open book's Select All, Copy, Paste or Cut.
+                if self.book.is_some() && arg(2)? != "up" {
+                    let held = |k: [KeyCode; 2]| k.iter().any(|k| self.keys.contains(k));
+                    let edit = if cfg!(target_os = "macos") {
+                        held([KeyCode::SuperLeft, KeyCode::SuperRight])
+                    } else {
+                        held([KeyCode::ControlLeft, KeyCode::ControlRight])
+                    };
+                    let name = arg(1)?;
+                    let letter = name.chars().next().filter(|_| name.len() == 1);
+                    let shift = held([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
+                    if let Some(shortcut) =
+                        horizon_client::clipboard::edit_shortcut(letter, edit, shift, false)
+                    {
+                        self.book_shortcut(shortcut);
+                        return ok();
+                    }
+                }
+                // KeyboardHandler.keyPress: the debug keys see the physical key first.
+                let physical = key;
+                {
+                    use horizon_client::debug_keys::KeyAction;
+                    let action = arg(2)?;
+                    self.press_modifier_key(key, action != "up");
+                    if action != "up" {
+                        self.physical_keys.insert(key);
+                        if self.debug_key(key, KeyAction::Press) {
+                            if action == "tap" {
+                                self.physical_keys.remove(&key);
+                                self.debug_key(key, KeyAction::Release);
+                            }
+                            return ok();
+                        }
+                    }
+                    if action == "up" {
+                        self.physical_keys.remove(&key);
+                        self.debug_key(key, KeyAction::Release);
+                    }
+                }
+                // Native mods see the key as the keyboard hook does.
+                let action = arg(2)?;
+                // ScreenEvent.KeyPressed.Pre: the open screen hears of the
+                // press before it acts on it, as the window's key event hands
+                // it over. A cancelled press goes no further — not to the
+                // screens, not to `native_key` — and its release still comes.
+                if action != "up" && self.screen_key_pressed(physical, action == "repeat") {
+                    if action == "tap" {
+                        self.physical_keys.remove(&physical);
+                        self.native_key_event(physical, false, false);
+                    }
+                    return ok();
+                }
+                self.native_key_event(physical, action != "up", action == "repeat");
+                if action == "tap" {
+                    self.native_key_event(physical, false, false);
+                }
+                // The merchant's focused offer and the recipe book's last
+                // recipe take Enter and Space, as the window's.
+                if action != "up"
+                    && self.screen == Screen::Inventory
+                    && (self.merchant_key(physical) || self.recipe_book_key(physical))
+                {
+                    return ok();
+                }
+                // Text screens consume raw presses; releases follow key binds.
+                let typing = matches!(
+                    self.screen,
+                    Screen::Chat | Screen::Options | Screen::CommandBlock | Screen::BlockEditor
+                );
+                let key = if typing && arg(2)? != "up" {
+                    key
+                } else {
+                    match self.settings.keys.translate(key) {
+                        Some(Ok(k)) => k,
+                        Some(Err(button)) => {
+                            let action = arg(2)?;
+                            if self.screen == Screen::Playing {
+                                if action != "up" {
+                                    self.play_mouse(button, true)?;
+                                }
+                                // A repeat keeps the key held, as the window's.
+                                if action == "up" || action == "tap" {
+                                    self.play_mouse(button, false)?;
+                                }
+                            }
+                            return ok();
+                        }
+                        None => return ok(),
+                    }
+                };
+                match arg(2)? {
+                    "down" => self.control_key_down(key)?,
+                    "up" => {
+                        self.keys.remove(&key);
+                        self.physical_keys.remove(&key);
+                    }
+                    // The system's auto-repeat while the key is held.
+                    "repeat" => {
+                        self.physical_keys.insert(physical);
+                        self.mapped_key(key, true, true)?;
+                    }
+                    "tap" => {
+                        self.control_key_down(key)?;
+                        self.keys.remove(&key);
+                        self.physical_keys.remove(&physical);
+                        self.debug_key(physical, horizon_client::debug_keys::KeyAction::Release);
+                    }
+                    _ => unreachable!("checked above"),
+                }
                 ok()
             }
             "release" => {
@@ -897,146 +1037,6 @@ impl Game<'_> {
     fn require_world(&self) -> Result<()> {
         if self.title.is_some() {
             return Err("no world open; use: open WORLD [SEED] [creative]".into());
-        }
-        Ok(())
-    }
-
-    /// One `key` line: what the window's keyboard path does for it. A replay
-    /// feeds recorded keys back through here.
-    pub(super) fn control_key(&mut self, name: &str, action: &str) -> Result<()> {
-        let key = key_code(name).ok_or_else(|| format!("unknown key {name}"))?;
-        if !matches!(action, "down" | "up" | "tap" | "repeat") {
-            return Err(format!("key action must be down, up, tap or repeat, not {action}").into());
-        }
-        // ConfirmScreen.keyPressed: Escape answers no, nothing else goes past it.
-        if self.command_prompt.is_some() {
-            if key == KeyCode::Escape && action != "up" {
-                self.answer_command_prompt(false);
-            }
-            return Ok(());
-        }
-        // A server's dialog takes the keys, in configuration too.
-        if self.dialog_open() {
-            if action != "up" {
-                self.dialog_key(key, None, None)?;
-            }
-            return Ok(());
-        }
-        self.require_world()?;
-        // KeyboardHandler.keyPress: the open screen's narration hears it.
-        super::narrator::narrate_key(&mut self.narration, key, action != "up");
-        // The sign editor takes raw presses (Enter, arrows, Backspace, Escape).
-        if self.sign_edit.is_some() {
-            if action != "up" {
-                self.sign_input(Some(key), None);
-            }
-            return Ok(());
-        }
-        // A held edit modifier (`key super down`) and A/C/V/X: the
-        // open book's Select All, Copy, Paste or Cut.
-        if self.book.is_some() && action != "up" {
-            let held = |k: [KeyCode; 2]| k.iter().any(|k| self.keys.contains(k));
-            let edit = if cfg!(target_os = "macos") {
-                held([KeyCode::SuperLeft, KeyCode::SuperRight])
-            } else {
-                held([KeyCode::ControlLeft, KeyCode::ControlRight])
-            };
-            let letter = name.chars().next().filter(|_| name.len() == 1);
-            let shift = held([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-            if let Some(shortcut) =
-                horizon_client::clipboard::edit_shortcut(letter, edit, shift, false)
-            {
-                self.book_shortcut(shortcut);
-                return Ok(());
-            }
-        }
-        // KeyboardHandler.keyPress: the debug keys see the physical key first.
-        let physical = key;
-        {
-            use horizon_client::debug_keys::KeyAction;
-            self.press_modifier_key(key, action != "up");
-            if action != "up" {
-                self.physical_keys.insert(key);
-                if self.debug_key(key, KeyAction::Press) {
-                    if action == "tap" {
-                        self.physical_keys.remove(&key);
-                        self.debug_key(key, KeyAction::Release);
-                    }
-                    return Ok(());
-                }
-            }
-            if action == "up" {
-                self.physical_keys.remove(&key);
-                self.debug_key(key, KeyAction::Release);
-            }
-        }
-        // Native mods see the key as the keyboard hook does.
-        // ScreenEvent.KeyPressed.Pre: the open screen hears of the
-        // press before it acts on it, as the window's key event hands
-        // it over. A cancelled press goes no further — not to the
-        // screens, not to `native_key` — and its release still comes.
-        if action != "up" && self.screen_key_pressed(physical, action == "repeat") {
-            if action == "tap" {
-                self.physical_keys.remove(&physical);
-                self.native_key_event(physical, false, false);
-            }
-            return Ok(());
-        }
-        self.native_key_event(physical, action != "up", action == "repeat");
-        if action == "tap" {
-            self.native_key_event(physical, false, false);
-        }
-        // The merchant's focused offer and the recipe book's last
-        // recipe take Enter and Space, as the window's.
-        if action != "up"
-            && self.screen == Screen::Inventory
-            && (self.merchant_key(physical) || self.recipe_book_key(physical))
-        {
-            return Ok(());
-        }
-        // Text screens consume raw presses; releases follow key binds.
-        let typing = matches!(
-            self.screen,
-            Screen::Chat | Screen::Options | Screen::CommandBlock | Screen::BlockEditor
-        );
-        let key = if typing && action != "up" {
-            key
-        } else {
-            match self.settings.keys.translate(key) {
-                Some(Ok(k)) => k,
-                Some(Err(button)) => {
-                    if self.screen == Screen::Playing {
-                        if action != "up" {
-                            self.play_mouse(button, true)?;
-                        }
-                        // A repeat keeps the key held, as the window's.
-                        if action == "up" || action == "tap" {
-                            self.play_mouse(button, false)?;
-                        }
-                    }
-                    return Ok(());
-                }
-                None => return Ok(()),
-            }
-        };
-        match action {
-            "down" => self.control_key_down(key)?,
-            "up" => {
-                self.keys.remove(&key);
-                self.physical_keys.remove(&key);
-            }
-            // The system's auto-repeat while the key is held.
-            "repeat" => {
-                self.physical_keys.insert(physical);
-                self.mapped_key(key, true, true)?;
-            }
-            "tap" => {
-                self.control_key_down(key)?;
-                self.keys.remove(&key);
-                self.physical_keys.remove(&physical);
-                self.debug_key(physical, horizon_client::debug_keys::KeyAction::Release);
-            }
-            _ => unreachable!("checked above"),
         }
         Ok(())
     }

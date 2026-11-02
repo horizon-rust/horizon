@@ -177,9 +177,12 @@ pub fn write_tree_skipping<W: Write + Seek>(
         if kind.is_symlink() {
             return Err(format!("Cannot back up symbolic link: {}", path.display()).into());
         }
+        let skipped = skip.iter().any(|name| entry.file_name() == *name);
         if kind.is_dir() {
-            write_tree_skipping(zip, root, &path, prefix, skip)?;
-        } else if kind.is_file() && !skip.iter().any(|name| entry.file_name() == *name) {
+            if !skipped {
+                write_tree_skipping(zip, root, &path, prefix, skip)?;
+            }
+        } else if kind.is_file() && !skipped {
             let relative = path.strip_prefix(root)?;
             let name = format!("{prefix}/{}", relative.to_string_lossy().replace('\\', "/"));
             zip.start_file(

@@ -283,37 +283,52 @@ who took over mid-test.
   `user_since_agent` and `last_user_age_s`.
 - `input-log [--since SEQ] [--limit N] [--origin ORIGIN]` lists the newest 512 input events:
   `seq`, `tick`, `origin`, and the key/button/motion/pad event or control-socket line.
+- Polls (`state`, `events`, `wait-for`, `input-log`, `ui`...) and session commands
+  (`record-*`, `repro-export`, `quit`...) are not input: they do not fill the ring or count as an
+  agent's keystroke. They still count as an agent watching, so a person's next key is noticed.
 - When a person's input arrives while an agent was driving, the game logs one line and pushes a
   `user-input` event: `wait-for event user-input --timeout 600` makes a script notice at once
-  instead of blaming the person's keystroke on itself.
-- Things that are not input (frames, resizes) are not events; typed text is never logged above
-  debug level, though the recording keeps it so chat can be replayed.
+  instead of blaming the person's keystroke on itself. The agent counts as driving while a
+  client is connected, a deferred action runs, or a `wait-for` waits, not only for five seconds
+  after its last line.
+- Things that are not input (frames, resizes) are not events. Typed text is never kept: a
+  `chat`, `command`, `type`, `signedit`, `connect`, `book` or `publish` line is recorded as
+  `<name> <redacted>`. OS-level tools that inject keys (xdotool, computer-use) look like a
+  person (`user`); only the agent's own socket is `agent`.
 
 ### Repro recordings
 
 A recording is one folder, a bundle is that folder plus the logs in one zip:
 
-- `record-start [NAME] [--no-world]` saves the world, copies it into
-  `recordings/<stamp>-NAME/world/` (single player) and starts writing:
-  `inputs.jsonl` (the provenance events above, with ticks), `state.jsonl` (the full
-  `state_value()` every second, entities every ten), `events.jsonl` and `session.json`.
-  A `--no-world` recording keeps only the input and state, for a server session.
+- `record-start [NAME] [--no-world]` saves the world, freezes the server, copies the world into
+  `recordings/<stamp>-NAME/world/` and starts writing: `inputs.jsonl` (the provenance events
+  above, with ticks), `state.jsonl` (the full `state_value()` every second, entities every ten),
+  `events.jsonl` and `session.json`. A `--no-world` recording keeps only the input and state,
+  for a server session. The deprecated in-frame mode (`--no-server-thread`) is refused.
+- A recording cannot cross worlds: quit-to-title stops it. It also stops itself at 1,000,000
+  input events or two hours, and is finished and bundled when the game exits. The newest ten
+  recordings and ten bundles are kept; older ones are pruned.
 - `record-stop [--export]` closes it; `repro-export [NAME] [PATH]` writes
-  `repro/<stamp>-NAME.zip` with the recording, `logs/latest.log`, the newest crash report, a
-  fresh `status.json` and a README. Nothing is uploaded automatically: the player attaches the
-  zip to the bug report.
-- A recording stops itself at 1,000,000 input events or two hours, and is finished and
-  bundled when the game exits.
+  `repro/<stamp>-NAME.zip` with the recording, `logs/latest.log`, a crash report from this
+  recording's session, a reduced `status.json` and a README. The export scrubs the user folder,
+  IPs, UUIDs, the world and server names and the other players' names; `status.json` loses the
+  server, name tags, sidebar and clipboard (an invite code lives there). Nothing is uploaded
+  automatically: the player attaches the zip to the bug report.
 - A player without `horizon-ctl` uses the debug keys: **F3+R** starts a recording and F3+R again
   stops it and writes the bundle (the chat shows the path); **F3+E** writes the bundle of the
-  newest recording. The AI Agent page has the same two buttons and a live recording line.
-- `record-replay NAME [--stop] [--in-place] [--timeout S]` is the best effort replay: it copies
-  the recording's world into `saves/`, opens it, and feeds the recorded keys, mouse, wheel, look,
-  pad buttons and control-socket lines back at their original ticks. It skips its own
-  `record-*`, `repro-export`, `input-log`, `launch`, `mcp`, `bench` and `quit` lines. It is not
-  frame-perfect and only makes sense on the same build and machine; `state.jsonl` is the oracle
-  for where the re-run should have ended. A server recording replays only `--in-place`, into the
-  same world.
+  newest recording. The keys are off until **Recording shortcuts** is turned on (AI Agent page);
+  the page also has the two buttons and a live recording/replay line.
+- `record-replay NAME [--stop] [--in-place] [--keep-world] [--timeout S]` is the best effort
+  replay: it copies the recording's world into `saves/`, opens it, restores the recorded player
+  position, rotation and velocity, and feeds the recorded keys, mouse, wheel, look, pad events
+  and input-socket lines back at their original ticks. **Only input and movement commands run**
+  (`key`, `mouse`, `click*`, `look`, `turn`, `goto`, `pad`, `wait`...), never world, network or
+  account ones (`world-delete`, `connect`, `chat`, `command`...). It ends at the recording's
+  `end_tick`, releases every key and button it held, and removes its `saves/` copy (keep it with
+  `--keep-world`). The timeout counts from the command, not from when the world finished
+  loading. It is not frame-perfect and only makes sense on the same build and machine;
+  `state.jsonl` is the oracle for where the re-run should have ended. A server recording replays
+  only `--in-place`, into the same world.
 
 ## Tests
 

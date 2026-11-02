@@ -1522,6 +1522,8 @@ pub struct OptionsUi {
     pub calibration_fullscreen: Option<bool>,
     /// The AI Agent page's status lines (set by the game while it shows).
     pub agent_status: Vec<String>,
+    /// A repro recording is running: the AI Agent page's button says stop.
+    pub agent_recording: bool,
     /// Keyboard focus: the interactive target currently focused.
     focus: Option<FocusId>,
     /// Whether a focused slider is in value-editing mode (`AbstractSliderButton.canChangeValue`).
@@ -1577,6 +1579,7 @@ impl Default for OptionsUi {
             calibration: None,
             calibration_fullscreen: None,
             agent_status: Vec::new(),
+            agent_recording: false,
             focus: None,
             can_change_value: false,
             size: (427.0, 240.0),
@@ -2389,16 +2392,24 @@ impl OptionsUi {
                         0.0,
                         0.0,
                         150.0,
-                        Text::literal("Start/Stop Recording"),
+                        tr(if self.agent_recording {
+                            "horizon.agent.record_stop"
+                        } else {
+                            "horizon.agent.record_session"
+                        }),
                         Act::ToggleRecording,
                     ),
                     Some(button(
                         0.0,
                         0.0,
                         150.0,
-                        Text::literal("Export Repro Bundle"),
+                        tr("horizon.agent.export_repro"),
                         Act::ExportRepro,
                     )),
+                ));
+                rows.push(Row::Buttons(
+                    self.extra_button(s, crate::extras::Item::ReproKeys),
+                    None,
                 ));
                 rows.extend(self.agent_status.iter().cloned().map(Row::Note));
                 rows

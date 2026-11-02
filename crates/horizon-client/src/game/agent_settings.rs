@@ -113,6 +113,9 @@ impl Game<'_> {
             ));
         }
         lines.push("Local only: agents on this computer, never the network.".into());
+        if let Some(line) = self.repro.agent_line(self.input_trace.events()) {
+            lines.push(line);
+        }
         lines
     }
 

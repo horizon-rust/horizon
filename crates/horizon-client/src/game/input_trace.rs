@@ -87,9 +87,6 @@ pub(super) enum TraceKind {
         key: String,
         /// `down`, `up` or `repeat` (the system's auto-repeat).
         action: String,
-        /// The text the key wrote, when it wrote any: chat and signs need it.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        text: Option<String>,
     },
     Mouse {
         button: String,
@@ -136,6 +133,76 @@ impl TraceKind {
     }
 }
 
+/// Commands that only read. Polling them must not flood the ring or make an
+/// agent that is merely watching look like it acted.
+const READ_ONLY: &[&str] = &[
+    "state",
+    "status",
+    "events",
+    "wait-for",
+    "input-log",
+    "record-status",
+    "record-list",
+    "looking-at",
+    "entities",
+    "block",
+    "blocks",
+    "light",
+    "inventory",
+    "screen",
+    "menu",
+    "messages",
+    "worlds",
+    "servers",
+    "options-get",
+    "stats",
+    "logs",
+    "ui",
+];
+
+/// Commands that steer the session rather than the game: recording them as
+/// input would put `record-stop` in a replay it must not run.
+const SESSION: &[&str] = &[
+    "record-start",
+    "record-stop",
+    "record-replay",
+    "repro-export",
+    "quit",
+    "launch",
+    "mcp",
+    "bench",
+    "sleep",
+];
+
+/// Lines whose arguments can carry someone's data: the trace keeps the command
+/// name and drops the rest.
+const PRIVATE_ARGUMENTS: &[&str] = &[
+    "chat", "command", "type", "signedit", "connect", "book", "publish",
+];
+
+/// Whether `line` only reads.
+fn is_read_only(line: &str) -> bool {
+    line.split_whitespace()
+        .next()
+        .is_some_and(|name| READ_ONLY.contains(&name))
+}
+
+/// Whether `line` steers the session, not the game.
+fn is_session_command(line: &str) -> bool {
+    line.split_whitespace()
+        .next()
+        .is_some_and(|name| SESSION.contains(&name))
+}
+
+/// The line as the trace keeps it: a command whose arguments are private loses
+/// them (`chat <redacted>`).
+fn redact_command(line: &str) -> String {
+    match line.split_whitespace().next() {
+        Some(name) if PRIVATE_ARGUMENTS.contains(&name) => format!("{name} <redacted>"),
+        _ => line.to_owned(),
+    }
+}
+
 /// The recent input, the counters and the recording's line writer.
 #[derive(Default)]
 pub(super) struct InputTrace {
@@ -159,7 +226,14 @@ pub(super) struct InputTrace {
 
 impl InputTrace {
     /// Record one event; whether it is a person intruding on an agent's run.
-    fn record(&mut self, tick: u64, origin: InputOrigin, kind: TraceKind) -> bool {
+    /// `agent_active`: an agent is watching or waiting, not only recently heard.
+    fn record(
+        &mut self,
+        tick: u64,
+        origin: InputOrigin,
+        kind: TraceKind,
+        agent_active: bool,
+    ) -> bool {
         if self.suppress {
             return false;
         }
@@ -168,9 +242,10 @@ impl InputTrace {
         let ms = now.duration_since(started).as_millis() as u64;
 
         let intrusion = origin == InputOrigin::User
-            && self
-                .last_agent
-                .is_some_and(|t| now.duration_since(t) < INTRUSION_GAP)
+            && (agent_active
+                || self
+                    .last_agent
+                    .is_some_and(|t| now.duration_since(t) < INTRUSION_GAP))
             && self.quiet_until.is_none_or(|t| now >= t);
         if intrusion {
             self.quiet_until = Some(now + INTRUSION_QUIET);
@@ -219,6 +294,16 @@ impl InputTrace {
             InputOrigin::Game => {}
         }
         intrusion
+    }
+
+    /// An agent line that is not input (a poll, a wait): it still means an
+    /// agent is watching, so a person's next key is an intrusion.
+    pub(super) fn agent_activity(&mut self) {
+        if self.suppress {
+            return;
+        }
+        self.last_agent = Some(Instant::now());
+        self.user_since_agent = 0;
     }
 
     /// The `input` section of `state` and `status`.
@@ -299,11 +384,34 @@ impl InputTrace {
 }
 
 impl Game<'_> {
+    /// An agent's control line: input unless it only reads, which still counts
+    /// as the agent watching.
+    pub(super) fn note_socket_line(&mut self, line: &str) {
+        if is_read_only(line) || is_session_command(line) {
+            self.input_trace.agent_activity();
+            return;
+        }
+        self.note_input(
+            InputOrigin::Agent,
+            TraceKind::Command {
+                line: redact_command(line),
+            },
+        );
+    }
+
     /// Record an input event and, when a person steps into an agent's run, tell
     /// every watcher once.
     pub(super) fn note_input(&mut self, origin: InputOrigin, kind: TraceKind) {
         let kind_name = kind.name();
-        if self.input_trace.record(self.ticks, origin, kind) {
+        // An agent waiting on a task or a wait, or a client still connected, is
+        // watching even when its last line was minutes ago.
+        let agent_active = self.control.as_ref().is_some_and(|c| c.clients() > 0)
+            || self.agent_busy()
+            || self.events.has_waits();
+        if self
+            .input_trace
+            .record(self.ticks, origin, kind, agent_active)
+        {
             let event = json!({ "event": "user-input", "input": kind_name });
             self.repro.note_event(self.ticks, &event);
             self.events.note(self.ticks, event);
@@ -337,11 +445,6 @@ impl Game<'_> {
                     (_, true) => "repeat",
                     (ElementState::Pressed, false) => "down",
                 };
-                let text = event
-                    .text
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .filter(|t| !t.is_empty());
                 // The platform made this one up (an IME's dead key): not a person.
                 let origin = if *is_synthetic {
                     InputOrigin::Game
@@ -353,7 +456,6 @@ impl Game<'_> {
                     TraceKind::Key {
                         key: name.to_owned(),
                         action: action.to_owned(),
-                        text,
                     },
                 );
             }
@@ -398,7 +500,6 @@ mod tests {
         TraceKind::Key {
             key: name.to_owned(),
             action: "down".to_owned(),
-            text: None,
         }
     }
 
@@ -414,7 +515,7 @@ mod tests {
     fn the_ring_keeps_the_newest_and_counts_every_origin() {
         let mut trace = InputTrace::default();
         for i in 0..=(KEPT as u64 + 10) {
-            trace.record(i, InputOrigin::User, key("key.keyboard.w"));
+            trace.record(i, InputOrigin::User, key("key.keyboard.w"), false);
         }
         assert_eq!(trace.log.len(), KEPT);
         assert_eq!(trace.seq, KEPT as u64 + 11);
@@ -425,23 +526,23 @@ mod tests {
     #[test]
     fn a_person_after_an_agent_is_an_intrusion_once() {
         let mut trace = InputTrace::default();
-        trace.record(1, InputOrigin::Agent, key("key.keyboard.w"));
-        assert!(trace.record(2, InputOrigin::User, key("key.keyboard.a")));
+        trace.record(1, InputOrigin::Agent, key("key.keyboard.w"), false);
+        assert!(trace.record(2, InputOrigin::User, key("key.keyboard.a"), false));
         // The quiet period keeps a held key from flooding the event log.
-        assert!(!trace.record(3, InputOrigin::User, key("key.keyboard.a")));
+        assert!(!trace.record(3, InputOrigin::User, key("key.keyboard.a"), false));
         assert_eq!(trace.user_since_agent, 2);
         // An agent command resets the count.
-        trace.record(4, InputOrigin::Agent, key("key.keyboard.w"));
+        trace.record(4, InputOrigin::Agent, key("key.keyboard.w"), false);
         assert_eq!(trace.user_since_agent, 0);
     }
 
     #[test]
     fn no_intrusion_without_an_agent() {
         let mut trace = InputTrace::default();
-        assert!(!trace.record(1, InputOrigin::User, key("key.keyboard.w")));
+        assert!(!trace.record(1, InputOrigin::User, key("key.keyboard.w"), false));
         // The game's own input is not a person either.
-        trace.record(2, InputOrigin::Agent, key("key"));
-        assert!(!trace.record(3, InputOrigin::Game, key("key.keyboard.w")));
+        trace.record(2, InputOrigin::Agent, key("key"), false);
+        assert!(!trace.record(3, InputOrigin::Game, key("key.keyboard.w"), false));
     }
 
     #[test]
@@ -456,7 +557,7 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            trace.record(i as u64, origin, key("key.keyboard.w"));
+            trace.record(i as u64, origin, key("key.keyboard.w"), false);
         }
         let all = trace.command(&["input-log"]).unwrap().unwrap();
         assert_eq!(all["events"].as_array().unwrap().len(), 4);
@@ -489,8 +590,8 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut trace = InputTrace::default();
         trace.start_file(tx);
-        trace.record(7, InputOrigin::User, key("key.keyboard.w"));
-        trace.record(8, InputOrigin::Agent, key("key.keyboard.s"));
+        trace.record(7, InputOrigin::User, key("key.keyboard.w"), false);
+        trace.record(8, InputOrigin::Agent, key("key.keyboard.s"), false);
         assert_eq!(trace.stop_file(), 2);
         let lines: Vec<String> = rx.try_iter().collect();
         assert_eq!(lines.len(), 2);
@@ -502,10 +603,61 @@ mod tests {
     }
 
     #[test]
+    fn private_arguments_are_dropped() {
+        assert_eq!(redact_command("chat /login hunter2"), "chat <redacted>");
+        assert_eq!(
+            redact_command("connect friend:ABCD-1234"),
+            "connect <redacted>"
+        );
+        assert_eq!(
+            redact_command("key key.keyboard.w down"),
+            "key key.keyboard.w down"
+        );
+    }
+
+    #[test]
+    fn polls_are_read_only() {
+        for line in [
+            "state",
+            "wait-for event death",
+            "record-status",
+            "input-log --origin user",
+            "ui",
+        ] {
+            assert!(is_read_only(line), "{line}");
+        }
+        for line in ["key w down", "record-start x", "mouse left click"] {
+            assert!(!is_read_only(line), "{line}");
+        }
+    }
+
+    #[test]
+    fn session_commands_are_not_input() {
+        for line in [
+            "record-start x",
+            "record-stop --export",
+            "record-replay x",
+            "repro-export x",
+            "quit",
+        ] {
+            assert!(is_session_command(line), "{line}");
+        }
+        assert!(!is_session_command("key w down"));
+    }
+
+    #[test]
+    fn an_agent_still_watching_makes_a_later_person_an_intrusion() {
+        let mut trace = InputTrace::default();
+        trace.record(1, InputOrigin::Agent, key("key"), false);
+        // The agent is waiting on a task or a wait: no five-second window.
+        assert!(trace.record(2, InputOrigin::User, key("key.keyboard.a"), true));
+    }
+
+    #[test]
     fn a_suppressed_replay_records_nothing() {
         let mut trace = InputTrace::default();
         trace.set_suppress(true);
-        assert!(!trace.record(1, InputOrigin::User, key("key.keyboard.w")));
+        assert!(!trace.record(1, InputOrigin::User, key("key.keyboard.w"), false));
         assert_eq!(trace.seq, 0);
         assert!(trace.summary()["last_origin"].is_null());
     }

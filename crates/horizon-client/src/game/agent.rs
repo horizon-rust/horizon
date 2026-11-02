@@ -1052,6 +1052,11 @@ impl Game<'_> {
         Ok(Handled::Deferred)
     }
 
+    /// A deferred agent action (goto, break, wait...) is still running.
+    pub(super) fn agent_busy(&self) -> bool {
+        self.agent.task.is_some()
+    }
+
     /// Agent commands; `Handled::No` when `words[0]` is not one of them.
     pub(super) fn agent_command(
         &mut self,
