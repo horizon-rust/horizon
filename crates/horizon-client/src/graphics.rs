@@ -293,6 +293,13 @@ pub struct Graphics {
     /// sun with its shadows, the sky and block light with the AO) instead of vanilla's shading.
     /// With Linear Light; off by default.
     pub rt_lighting: bool,
+    /// RT Ray Density: the screen's pixels a ray stands for on each side. 1 a ray a pixel; 2 one
+    /// for 2x2 pixels, the trace kernel and the denoiser a quarter, the terrain reading the masks
+    /// through a depth-aware upsampling (edges and shadows hold, the water's refraction a little
+    /// softer: docs/raytracing.md); 0 by the screen's size (a ray a pixel up to 3440x1440, 2x2
+    /// past it). The Performance and Balanced presets take 2. `horizon-ctl rt-scale` sets the
+    /// same in a running game until the options are applied again.
+    pub rt_rays: u32,
     /// RT lighting's sun, as many times its real size across (1..=20; 1 the real 0.53 degrees):
     /// softer shadows, a bigger disc, the same light.
     pub sun_size: u32,
@@ -366,6 +373,7 @@ impl Default for Graphics {
             ray_traced_shadows: false,
             ray_traced_ao: false,
             rt_lighting: false,
+            rt_rays: 0,
             sun_size: 1,
             moon_size: 2,
             night_vision: true,
@@ -436,6 +444,7 @@ impl Graphics {
                 "rayTracedShadows" => g.ray_traced_shadows = flag(g.ray_traced_shadows),
                 "rayTracedAo" => g.ray_traced_ao = flag(g.ray_traced_ao),
                 "rtLighting" => g.rt_lighting = flag(g.rt_lighting),
+                "rtRays" => g.rt_rays = number(g.rt_rays).min(2),
                 "sunSize" => g.sun_size = number(g.sun_size).clamp(1, 20),
                 "moonSize" => g.moon_size = number(g.moon_size).clamp(1, 20),
                 "nightVision" => g.night_vision = flag(g.night_vision),
@@ -464,7 +473,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nsunSize:{}\nmoonSize:{}\nnightVision:{}\nshootingStars:{}\naerialPerspective:{}\nearthCurvature:{}\nnaturalFog:{}\nsmoothFluids:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nsunPathTilt:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\nparallax:{}\nlinearLight:{}\nrayTracedShadows:{}\nrayTracedAo:{}\nrtLighting:{}\nrtRays:{}\nsunSize:{}\nmoonSize:{}\nnightVision:{}\nshootingStars:{}\naerialPerspective:{}\nearthCurvature:{}\nnaturalFog:{}\nsmoothFluids:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -495,6 +504,7 @@ impl Graphics {
             bool_text(self.ray_traced_shadows),
             bool_text(self.ray_traced_ao),
             bool_text(self.rt_lighting),
+            self.rt_rays,
             self.sun_size,
             self.moon_size,
             bool_text(self.night_vision),
@@ -590,6 +600,9 @@ pub fn apply_preset(preset: Preset, s: &mut crate::settings::Settings) {
     g.ray_traced_shadows = rank >= 1;
     g.ray_traced_ao = rank >= 1;
     g.rt_lighting = rank >= 2;
+    // One ray for 2x2 pixels below Quality (the trace and the denoiser a quarter), the screen's
+    // own choice above.
+    g.rt_rays = if rank <= 1 { 2 } else { 0 };
     g.parallax = rank >= 3;
 }
 
@@ -623,6 +636,7 @@ mod tests {
             ray_traced_shadows: true,
             ray_traced_ao: true,
             rt_lighting: true,
+            rt_rays: 2,
             sun_size: 7,
             moon_size: 3,
             night_vision: false,

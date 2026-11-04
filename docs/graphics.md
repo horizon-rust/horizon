@@ -76,7 +76,8 @@ pass for every view. Measured on an RTX 4090: +1.2 ms of GPU a frame at 3440x144
 the noise at noon; about +0.3 ms for the two 4096x3288 eyes of the fake VR runtime. Not yet: entities, water and
 glass neither cast nor receive, plants cast nothing, shadows are hard (no penumbra) and end at 8 chunks.
 Past 3440x1440 the screen traces one ray for 2x2 pixels (a 4K screen 1920x1080 rays, read back through a depth-aware
-upsampling); `HORIZON_RT_SCALE=N` or `horizon-ctl rt-scale N` traces one ray for NxN pixels on the screen; `HORIZON_RT_DEBUG=1` shows the light the rays
+upsampling); **RT Ray Density** (Auto, Full, Half: `rtRays` 0, 1, 2; Half for the Performance and Balanced presets) chooses
+it in the menu, `HORIZON_RT_SCALE=N` or `horizon-ctl rt-scale N` traces one ray for NxN pixels on the screen; `HORIZON_RT_DEBUG=1` shows the light the rays
 found, `2` the share the terrain keeps in the shadow, `6` the ambient occlusion.
 
 **Ray-Traced AO** (Quality, off by default, `rayTracedAo`, with Linear Light on) adds ambient occlusion over

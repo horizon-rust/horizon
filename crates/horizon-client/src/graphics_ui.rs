@@ -43,6 +43,7 @@ pub enum H {
     RayTracedShadows,
     RayTracedAo,
     RtLighting,
+    RtRays,
     SunSize,
     MoonSize,
     NightVision,
@@ -253,6 +254,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 H::RtLighting,
                 High,
                 "Terrain lit by rays alone, not vanilla's shading (Linear Light).",
+            ),
+            h(
+                H::RtRays,
+                None,
+                "Half: one ray for 2x2 pixels, a quarter of the trace. Auto: by screen size.",
             ),
             h(
                 H::SunSize,
@@ -515,6 +521,14 @@ impl H {
             H::RayTracedShadows => labelled("Ray-Traced Shadows", on_off(g.ray_traced_shadows)),
             H::RayTracedAo => labelled("Ray-Traced AO", on_off(g.ray_traced_ao)),
             H::RtLighting => labelled("RT Lighting", on_off(g.rt_lighting)),
+            H::RtRays => labelled(
+                "RT Ray Density",
+                match g.rt_rays {
+                    0 => "Auto",
+                    1 => "Full",
+                    _ => "Half",
+                },
+            ),
             H::EarthCurvature => labelled("Earth Curvature", on_off(g.earth_curvature)),
             H::SmoothFluids => labelled("Smooth Fluids", on_off(g.smooth_fluids)),
             H::Hdr => labelled("HDR", on_off(g.hdr)),
@@ -589,6 +603,7 @@ impl H {
             H::RayTracedShadows => g.ray_traced_shadows = !g.ray_traced_shadows,
             H::RayTracedAo => g.ray_traced_ao = !g.ray_traced_ao,
             H::RtLighting => g.rt_lighting = !g.rt_lighting,
+            H::RtRays => g.rt_rays = (g.rt_rays + if back { 2 } else { 1 }) % 3,
             H::NightVision => g.night_vision = !g.night_vision,
             H::ShootingStars => {
                 g.shooting_stars = (g.shooting_stars + if back { 2 } else { 1 }) % 3

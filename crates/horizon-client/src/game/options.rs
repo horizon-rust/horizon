@@ -285,6 +285,7 @@ impl Game<'_> {
                 s.horizon.ray_traced_ao,
                 s.horizon.rt_lighting,
             );
+            r.set_rt_scale(s.horizon.rt_rays);
             r.set_rt_sky(
                 s.horizon.sun_size,
                 s.horizon.moon_size,
