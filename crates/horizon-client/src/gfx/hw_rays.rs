@@ -51,8 +51,10 @@ const MAX_DYNAMIC_VERTICES: usize = 1 << 19;
 /// How far the clouds drift before their instances are placed again, in blocks (a shadow a block
 /// off, 700 blocks up, is far under what the eye sees).
 const CLOUD_DRIFT: f64 = 1.0;
-/// Bottom-level structures built a frame at most, so arriving in a new place spreads them out.
-const BUILDS_PER_FRAME: usize = 128;
+/// Bottom-level structures built a frame at most (the nearest first, gfx.rs `hw_update`), so
+/// arriving in a new place spreads them out: about 25 µs of CPU each (docs/raytracing.md), a
+/// chunk border crossed in flight brings 384 to 744 sections.
+const BUILDS_PER_FRAME: usize = 64;
 
 /// A section's structure and where its quads were when it was built: its page, first vertex,
 /// solid quads, and which of its geometries is the translucent one (2: none).

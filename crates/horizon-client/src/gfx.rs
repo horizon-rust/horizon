@@ -4153,21 +4153,29 @@ impl Renderer {
             (camera.x.floor() as i32) >> 4,
             (camera.z.floor() as i32) >> 4,
         );
-        let mut todo = Vec::new();
+        // The sections lacking a structure, the nearest the camera first: a frame's budget of
+        // them (arriving in a new place, the far ring waits a few frames, not the ground underfoot).
+        let mut candidates = Vec::new();
         for (key, s) in self.sections.iter() {
-            if todo.len() >= hw.budget() {
-                break;
-            }
             if s.solid + s.translucent > 0 && hw_rays::HwRays::near(center, key) && !hw.has(key) {
-                todo.push(hw_rays::ToBuild {
-                    key,
-                    page: s.page,
-                    start: s.start,
-                    quads: s.solid,
-                    translucent: s.translucent,
-                });
+                let (dx, dz) = (key.0 - center.0, key.2 - center.1);
+                candidates.push((
+                    dx * dx + dz * dz,
+                    hw_rays::ToBuild {
+                        key,
+                        page: s.page,
+                        start: s.start,
+                        quads: s.solid,
+                        translucent: s.translucent,
+                    },
+                ));
             }
         }
+        if candidates.len() > hw.budget() {
+            candidates.select_nth_unstable_by_key(hw.budget(), |c| c.0);
+            candidates.truncate(hw.budget());
+        }
+        let todo: Vec<_> = candidates.into_iter().map(|c| c.1).collect();
         let arena = &self.arena;
         hw.update(
             &self.device,
@@ -4561,7 +4569,9 @@ impl Renderer {
     /// This frame's ray-traced shadows: the grid written up to date, the light's direction (the
     /// sun by day, the moon by night, on the tilted path) and how strong its shadows are.
     fn ray_traced_shadows(&mut self, frame: &Frame) -> shadow_rays::Rays {
-        let Some([x0, z0, top]) = self.voxels.update(&self.queue, frame.camera) else {
+        let Some([x0, z0, top]) =
+            crate::spans::time("rt_grid", || self.voxels.update(&self.queue, frame.camera))
+        else {
             return shadow_rays::Rays::default();
         };
         let sun = crate::celestial::direction(frame.sky.sun_angle, frame.sun_path_tilt);
@@ -5230,7 +5240,9 @@ impl Renderer {
             rt.aldhani = [t, atmosphere::MOONLIGHT * atmosphere::PAPER_WHITE];
         }
         if rt.any() {
-            self.hw_update(&mut encoder, frame.camera);
+            crate::spans::time("rt_structures", || {
+                self.hw_update(&mut encoder, frame.camera)
+            });
             if let Some(hw) = &self.hw_rays {
                 let [x, y, z] = hw.offset(frame.camera);
                 rt.hw_offset = [x, y, z, 0.0];
@@ -6408,7 +6420,9 @@ impl Renderer {
         if rt.any() && self.eye.is_none_or(|e| e.view_index <= 1) {
             // The entities' vertices are known now: they join the terrain in the rays.
             let clouds = rt_clouds_on && rt_clouds::mode() == rt_clouds::Mode::Mesh;
-            self.hw_finish(&mut encoder, frame, entity_quads, clouds);
+            crate::spans::time("rt_moving", || {
+                self.hw_finish(&mut encoder, frame, entity_quads, clouds)
+            });
             gpu_passes::stamp(&mut encoder, "structures (BLAS, TLAS)");
         }
         if rt_now {

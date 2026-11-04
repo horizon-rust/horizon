@@ -78,7 +78,10 @@ would then share one scene path.
   block, computed by the mesher with the mesh (uniform sections cost nothing).
 - `gfx/voxels.rs`: the grid around the camera, 16x16 chunks and the world's height, toroidal: 512-bit masks per
   8x8x8 brick (solid, cutout) plus brick and 32-block brick occupancy, about 6 MB. A camera chunk border writes
-  only the columns that came in; a block change rewrites its section's 1 KB.
+  only the columns that came in, as runs of sections per column (one copy a texture and run) and at most four
+  columns a frame, the nearest first: a crossing in flight used to write 384 to 744 sections in one frame, five
+  `write_texture` calls each, every call its own staging buffer (the frame spikes of [rtx-4090.md](rtx-4090.md));
+  a block change rewrites its section's 1 KB of masks and 8 KB of colours.
 - `gfx/shadow_rays.rs`: a ray per pixel of the view's depth, after the world pass; the solid terrain writes the
   share of its light it keeps in the shadow into the scene's alpha, the tone mapping (SDR and HDR) applies the mask.
   The same pass for the window and each VR eye, with the foveation the views carry: the screen sharp all over,
@@ -489,7 +492,13 @@ is small (0.84 ms an eye): GI 51 %, the rest 34 %, a floor of 14 % (the accumula
 3. **The raster is now the biggest stage in the headset**: 4.5 of the 9.6 ms of the eyes at 1648x1328, and it grows with the
    pixels (x4 for x5.3 the pixels). The pack's parallax makes the fragments heavy, and nothing is foveated in it.
 4. The structure builds are nothing (0.001 ms in VR: the scene was static), the denoiser runs on the 2x2 mask (0.2 ms an eye)
-   and the radiance cache resolve is 0.03 ms: neither is worth work.
+   and the radiance cache resolve is 0.03 ms: neither is worth work. Measured again on 4 November 2026 on the desktop
+   (3440x1440, 1024 chunks, 934b65a98) with the scene moving: the structures take 0.15 ms a frame standing still, 0.14 in
+   fast flight at 100 blocks/s and 0.35 placing and breaking blocks in bursts, 1.5 to 3 % of the frame; the GPU frame's
+   p99 stays at 12.1 to 12.2 ms. The CPU frame's p99 goes from 14 ms at rest to 38 in flight: the stutter is the main
+   thread's work on arriving sections ([rtx-4090.md](rtx-4090.md), phase 0), not the structures, so DirectX's
+   clustered geometry and partitioned TLAS (their Vulkan forms `VK_NV_cluster_acceleration_structure` and
+   `VK_NV_partitioned_acceleration_structure`) are the last lever here.
 
 ### The levers, ranked (ms of a two-eye frame at 1648x1328 unless said)
 

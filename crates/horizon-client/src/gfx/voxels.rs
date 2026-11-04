@@ -22,6 +22,17 @@ pub const RADIUS: i32 = 8;
 /// The grid's width and depth in blocks.
 pub const WIDTH: u32 = (2 * RADIUS * 16) as u32;
 const HEIGHT: u32 = SECTIONS as u32 * 16;
+/// Sections written a frame at most, nearest columns first. A chunk border crossed marks every
+/// section of 16 columns (31 across a corner), 384 to 744: at four columns a frame they take a
+/// few frames, the far edge of the grid a little late, where the rays' fade already blends it
+/// (docs/raytracing.md). Before this, each crossing wrote them all in one frame, five
+/// `write_texture` calls a section, each making its own staging buffer: the frame spikes in
+/// flight.
+const SECTIONS_PER_FRAME: usize = 4 * SECTIONS;
+/// Frames between two rebuilds of the light cells at most, while lights keep changing (a block
+/// placed or broken, a column come or gone within the grid): the rebuild is a 3 MB table and
+/// as much zeroed cache, so a burst of changes pays it once.
+const LIGHTS_EVERY: u32 = 8;
 
 struct Grid {
     /// The solid and the cutout masks: four `Rgba32Uint` texels a brick along x.
@@ -53,6 +64,149 @@ struct Grid {
     visibility: wgpu::Buffer,
     /// The light sources changed in range: the buffers are made again.
     lights_dirty: bool,
+    /// Frames since the light cells were made (`LIGHTS_EVERY`).
+    lights_age: u32,
+}
+
+/// A run of sections of one column, packed for the grid's textures: the toroidal slot of the
+/// column, its first section and how many, and the texels of each texture in that order, the
+/// sections one after another along y (`pack_run`).
+struct Run {
+    slot: (u32, u32),
+    first: i32,
+    count: u32,
+    masks: [Vec<u8>; 2],
+    albedo: Vec<u8>,
+    bricks: Vec<u8>,
+}
+
+/// Copies section `s`'s texels (`src`, laid out as `layers` of `rows` rows of `row` bytes) into
+/// a run of `n` sections (`dst`, the same layers, each `rows * n` rows): a section's rows go
+/// after the sections below it in every layer, as a 3D copy of the whole run reads them.
+fn interleave(
+    dst: &mut [u8],
+    src: &[u8],
+    layers: usize,
+    rows: usize,
+    row: usize,
+    n: usize,
+    s: usize,
+) {
+    let layer = rows * row;
+    debug_assert_eq!(src.len(), layers * layer);
+    debug_assert_eq!(dst.len(), layers * layer * n);
+    for z in 0..layers {
+        let at = (z * rows * n + rows * s) * row;
+        dst[at..at + layer].copy_from_slice(&src[z * layer..(z + 1) * layer]);
+    }
+}
+
+/// The section mask's texel layout: two layers (bricks along z) of two rows (bricks along y) of
+/// eight `Rgba32Uint` texels (16 bytes each, four a brick along x).
+const MASK_LAYOUT: (usize, usize, usize) = (2, 2, 8 * 16);
+/// The section's block colours: 16 layers of 16 rows of 16 `R16Uint` texels.
+const ALBEDO_LAYOUT: (usize, usize, usize) = (16, 16, 16 * 2);
+/// The section's bricks: two layers of two rows of two bytes.
+const BRICKS_LAYOUT: (usize, usize, usize) = (2, 2, 2);
+
+/// Packs sections `first..first + count` of column (x, z) for one 3D copy per texture.
+fn pack_run(
+    sections: &HashMap<SectionKey, Occupancy>,
+    albedo: &HashMap<SectionKey, Albedo>,
+    (x, z): (i32, i32),
+    first: i32,
+    count: u32,
+) -> Run {
+    let n = count as usize;
+    let size = |(layers, rows, row): (usize, usize, usize)| layers * rows * row * n;
+    let mut run = Run {
+        slot: (
+            x.rem_euclid(2 * RADIUS) as u32,
+            z.rem_euclid(2 * RADIUS) as u32,
+        ),
+        first,
+        count,
+        masks: [vec![0; size(MASK_LAYOUT)], vec![0; size(MASK_LAYOUT)]],
+        albedo: vec![0; size(ALBEDO_LAYOUT)],
+        bricks: vec![0; size(BRICKS_LAYOUT)],
+    };
+    for s in 0..n {
+        let key = (x, first + s as i32, z);
+        let occupancy = sections.get(&key).unwrap_or(&Occupancy::Empty);
+        if *occupancy == Occupancy::Empty && !albedo.contains_key(&key) {
+            // Already zero.
+            continue;
+        }
+        let (layers, rows, row) = MASK_LAYOUT;
+        for (dst, mask) in run.masks.iter_mut().zip(occupancy.brick_masks()) {
+            interleave(dst, bytemuck::cast_slice(&mask), layers, rows, row, n, s);
+        }
+        let (layers, rows, row) = BRICKS_LAYOUT;
+        interleave(
+            &mut run.bricks,
+            &occupancy.bricks(),
+            layers,
+            rows,
+            row,
+            n,
+            s,
+        );
+        if let Some(colours) = albedo.get(&key) {
+            let (layers, rows, row) = ALBEDO_LAYOUT;
+            interleave(&mut run.albedo, &colours.decode(), layers, rows, row, n, s);
+        }
+    }
+    run
+}
+
+/// The dirty sections in range as runs of consecutive sections per column, the nearest columns
+/// to `center` first, up to `budget` sections; the rest stay dirty for the next frame.
+fn plan_runs(
+    dirty: &mut HashSet<SectionKey>,
+    center: (i32, i32),
+    budget: usize,
+) -> Vec<((i32, i32), i32, u32)> {
+    let mut columns: HashMap<(i32, i32), Vec<i32>> = HashMap::new();
+    for &(x, sy, z) in dirty.iter() {
+        if in_range(center, x, z) {
+            columns.entry((x, z)).or_default().push(sy);
+        }
+    }
+    let mut order: Vec<_> = columns.keys().copied().collect();
+    order.sort_by_key(|&(x, z)| {
+        let (dx, dz) = (x - center.0, z - center.1);
+        (dx * dx + dz * dz, x, z)
+    });
+    let mut runs = Vec::new();
+    let mut written = 0;
+    let mut kept = HashSet::new();
+    for column in order {
+        let mut sys = columns.remove(&column).expect("the column's sections");
+        sys.sort_unstable();
+        if written >= budget {
+            kept.extend(sys.iter().map(|&sy| (column.0, sy, column.1)));
+            continue;
+        }
+        written += sys.len();
+        let mut run: Option<(i32, u32)> = None;
+        for sy in sys {
+            match &mut run {
+                Some((first, count)) if *first + *count as i32 == sy => *count += 1,
+                _ => {
+                    if let Some((first, count)) = run.take() {
+                        runs.push((column, first, count));
+                    }
+                    run = Some((sy, 1));
+                }
+            }
+        }
+        if let Some((first, count)) = run {
+            runs.push((column, first, count));
+        }
+    }
+    // What was out of range is dropped: the next recentre marks it again if it comes back.
+    *dirty = kept;
+    runs
 }
 
 /// At most this many light sources in range: the nearest to the camera are kept.
@@ -102,7 +256,12 @@ impl Voxels {
         } else {
             self.lights.insert(key, lights.to_vec()).as_deref() != Some(lights)
         };
-        if changed && let Some(grid) = &mut self.grid {
+        // A light beyond the grid changes nothing in it: the recentre that brings it in marks
+        // the cells dirty itself.
+        if changed
+            && self.in_grid(key)
+            && let Some(grid) = &mut self.grid
+        {
             grid.lights_dirty = true;
         }
     }
@@ -165,6 +324,7 @@ impl Voxels {
         for sy in 0..SECTIONS as i32 {
             let key = (x, sy, z);
             if self.lights.remove(&key).is_some()
+                && self.in_grid(key)
                 && let Some(grid) = &mut self.grid
             {
                 grid.lights_dirty = true;
@@ -279,9 +439,17 @@ impl Voxels {
                     mapped_at_creation: false,
                 }),
                 lights_dirty: true,
+                lights_age: 0,
             }
         });
         true
+    }
+
+    /// Whether section `key` lies in the grid's range (anywhere, before it is centred).
+    fn in_grid(&self, key: SectionKey) -> bool {
+        self.grid
+            .as_ref()
+            .is_some_and(|g| g.center.is_none_or(|c| in_range(c, key.0, key.2)))
     }
 
     /// RT lighting's light sources and cells, and the blocks' shapes, while the grid runs.
@@ -316,7 +484,8 @@ impl Voxels {
             (camera.x.floor() as i32) >> 4,
             (camera.z.floor() as i32) >> 4,
         );
-        if grid.center != Some(center) {
+        let recentred = grid.center != Some(center);
+        if recentred {
             for x in center.0 - RADIUS..center.0 + RADIUS {
                 for z in center.1 - RADIUS..center.1 + RADIUS {
                     if grid.center.is_none_or(|old| !in_range(old, x, z)) {
@@ -335,120 +504,88 @@ impl Voxels {
                 }
             }
         }
-        let width = 2 * RADIUS;
-        let mut supers = HashSet::new();
-        for key @ (x, sy, z) in std::mem::take(&mut grid.dirty) {
-            if !in_range(center, x, z) {
-                continue;
+        // The dirty sections as runs per column, one copy a texture and run, a frame's budget
+        // of them (`SECTIONS_PER_FRAME`).
+        let runs = plan_runs(&mut grid.dirty, center, SECTIONS_PER_FRAME);
+        let mut super_columns = HashSet::new();
+        for (column, first, count) in runs {
+            let (x, z) = column;
+            for sy in first..first + count as i32 {
+                if self.sections.contains_key(&(x, sy, z)) {
+                    grid.top = grid.top.max(crate::chunk::MIN_Y + sy * 16 + 16);
+                }
             }
-            supers.insert((x >> 1, sy >> 1, z >> 1));
-            let occupancy = self.sections.get(&key).unwrap_or(&Occupancy::Empty);
-            if *occupancy != Occupancy::Empty {
-                grid.top = grid.top.max(crate::chunk::MIN_Y + sy * 16 + 16);
-            }
-            let (sx, sz) = (x.rem_euclid(width) as u32, z.rem_euclid(width) as u32);
-            for (texture, mask) in grid.masks.iter().zip(occupancy.brick_masks()) {
+            super_columns.insert((x >> 1, z >> 1));
+            let run = pack_run(&self.sections, &self.albedo, column, first, count);
+            let (sx, sz) = run.slot;
+            // One 3D copy a texture: a section is `w` texels across, `r` rows and `l` layers of
+            // `row` bytes a row; the run's sections follow one another along y.
+            let copy = |texture: &wgpu::Texture,
+                        data: &[u8],
+                        (l, r, row): (usize, usize, usize),
+                        w: u32| {
+                let (l, r, row) = (l as u32, r as u32, row as u32);
                 queue.write_texture(
                     wgpu::TexelCopyTextureInfo {
                         texture,
                         mip_level: 0,
                         origin: wgpu::Origin3d {
-                            x: sx * 8,
-                            y: (sy * 2) as u32,
-                            z: sz * 2,
+                            x: sx * w,
+                            y: run.first as u32 * r,
+                            z: sz * l,
                         },
                         aspect: wgpu::TextureAspect::All,
                     },
-                    bytemuck::cast_slice(&mask),
+                    data,
                     wgpu::TexelCopyBufferLayout {
                         offset: 0,
-                        bytes_per_row: Some(8 * 16),
-                        rows_per_image: Some(2),
+                        bytes_per_row: Some(row),
+                        rows_per_image: Some(r * run.count),
                     },
                     wgpu::Extent3d {
-                        width: 8,
-                        height: 2,
-                        depth_or_array_layers: 2,
+                        width: w,
+                        height: r * run.count,
+                        depth_or_array_layers: l,
                     },
                 );
+            };
+            for (texture, data) in grid.masks.iter().zip(&run.masks) {
+                copy(texture, data, MASK_LAYOUT, 8);
             }
-            let colours = self
-                .albedo
-                .get(&key)
-                .map_or_else(|| vec![0; 8192], Albedo::decode);
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &grid.albedo,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: sx * 16,
-                        y: (sy * 16) as u32,
-                        z: sz * 16,
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &colours,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(32),
-                    rows_per_image: Some(16),
-                },
-                wgpu::Extent3d {
-                    width: 16,
-                    height: 16,
-                    depth_or_array_layers: 16,
-                },
-            );
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &grid.bricks,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: sx * 2,
-                        y: (sy * 2) as u32,
-                        z: sz * 2,
-                    },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &occupancy.bricks(),
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(2),
-                    rows_per_image: Some(2),
-                },
-                wgpu::Extent3d {
-                    width: 2,
-                    height: 2,
-                    depth_or_array_layers: 2,
-                },
-            );
+            copy(&grid.albedo, &run.albedo, ALBEDO_LAYOUT, 16);
+            copy(&grid.bricks, &run.bricks, BRICKS_LAYOUT, 2);
         }
-        // A 32-block brick holds 2x2x2 sections: anything in any of them.
-        for (bx, by, bz) in supers {
-            let any = (0..8).any(|i| {
-                let key = (bx * 2 + (i & 1), by * 2 + ((i >> 1) & 1), bz * 2 + (i >> 2));
-                self.sections.contains_key(&key)
-            });
+        // A 32-block brick holds 2x2x2 sections: anything in any of them; a column of bricks (two
+        // columns of sections each way) in one copy.
+        for (bx, bz) in super_columns {
+            let column: Vec<u8> = (0..(SECTIONS / 2) as i32)
+                .map(|by| {
+                    u8::from((0..8).any(|i| {
+                        let key = (bx * 2 + (i & 1), by * 2 + ((i >> 1) & 1), bz * 2 + (i >> 2));
+                        self.sections.contains_key(&key)
+                    }))
+                })
+                .collect();
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &grid.supers,
                     mip_level: 0,
                     origin: wgpu::Origin3d {
                         x: bx.rem_euclid(RADIUS) as u32,
-                        y: by as u32,
+                        y: 0,
                         z: bz.rem_euclid(RADIUS) as u32,
                     },
                     aspect: wgpu::TextureAspect::All,
                 },
-                &[u8::from(any)],
+                &column,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(1),
-                    rows_per_image: Some(1),
+                    rows_per_image: Some(column.len() as u32),
                 },
                 wgpu::Extent3d {
                     width: 1,
-                    height: 1,
+                    height: column.len() as u32,
                     depth_or_array_layers: 1,
                 },
             );
@@ -460,7 +597,10 @@ impl Voxels {
             grid.shapes_written = shapes.len();
         }
         let origin = [(center.0 - RADIUS) * 16, (center.1 - RADIUS) * 16];
-        if std::mem::take(&mut grid.lights_dirty) {
+        grid.lights_age = grid.lights_age.saturating_add(1);
+        if grid.lights_dirty && (recentred || grid.lights_age >= LIGHTS_EVERY) {
+            grid.lights_dirty = false;
+            grid.lights_age = 0;
             let (lights, cells) = light_cells(&self.lights, center, origin, camera);
             log::debug!("Horizon: {} light sources in the rays' grid", lights.len());
             queue.write_buffer(&grid.lights, 0, bytemuck::cast_slice(&lights));
@@ -573,6 +713,88 @@ mod tests {
         // A chunk keeps its toroidal slot as the grid moves.
         let slot = |x: i32| x.rem_euclid(2 * RADIUS);
         assert_eq!(slot(-1), slot(2 * RADIUS - 1));
+    }
+
+    #[test]
+    fn a_run_packs_its_sections_one_above_the_other_in_every_layer() {
+        use crate::occupancy::{CUTOUT, EMPTY, SOLID};
+        // Two sections of one column: the lower one solid at one block, the upper one cutout at
+        // another and coloured; a third, empty, above them.
+        let mut sections = HashMap::new();
+        let lower =
+            Occupancy::from_fn(|x, y, z| if (x, y, z) == (1, 2, 3) { SOLID } else { EMPTY });
+        let upper = Occupancy::from_fn(|x, y, z| {
+            if (x, y, z) == (9, 9, 9) {
+                CUTOUT
+            } else {
+                EMPTY
+            }
+        });
+        sections.insert((0, 3, 0), lower.clone());
+        sections.insert((0, 4, 0), upper.clone());
+        let mut albedo = HashMap::new();
+        let colours = Albedo::from_fn(|x, y, z| (x + y * 16 + z * 256) as u16);
+        albedo.insert((0, 4, 0), colours.clone());
+        let run = pack_run(&sections, &albedo, (0, 0), 3, 3);
+        assert_eq!((run.slot, run.first, run.count), ((0, 0), 3, 3));
+        // The masks: in each of the two layers, the run's rows are the sections' two rows each,
+        // one section after the other, 128 bytes a row.
+        let (lower_masks, upper_masks) = (lower.brick_masks(), upper.brick_masks());
+        for (i, packed) in run.masks.iter().enumerate() {
+            assert_eq!(packed.len(), 3 * 512);
+            let (lo, up): (&[u8], &[u8]) = (
+                bytemuck::cast_slice(&lower_masks[i]),
+                bytemuck::cast_slice(&upper_masks[i]),
+            );
+            for z in 0..2 {
+                let rows = |first: usize, n: usize| {
+                    &packed[(z * 6 + first) * 128..(z * 6 + first + n) * 128]
+                };
+                assert_eq!(rows(0, 2), &lo[z * 256..(z + 1) * 256]);
+                assert_eq!(rows(2, 2), &up[z * 256..(z + 1) * 256]);
+                assert!(rows(4, 2).iter().all(|&b| b == 0));
+            }
+        }
+        // The colours: zero for the lower and the empty section, the upper's decoded, layer by
+        // layer (16 rows of 32 bytes a section).
+        let decoded = colours.decode();
+        assert_eq!(run.albedo.len(), 3 * 8192);
+        for z in 0..16 {
+            let rows = |first: usize, n: usize| {
+                &run.albedo[(z * 48 + first) * 32..(z * 48 + first + n) * 32]
+            };
+            assert!(rows(0, 16).iter().all(|&b| b == 0));
+            assert_eq!(rows(16, 16), &decoded[z * 512..(z + 1) * 512]);
+            assert!(rows(32, 16).iter().all(|&b| b == 0));
+        }
+        // The bricks: two rows of two bytes a layer a section; the lower section's block is in
+        // its brick (0, 0, 0), the upper's cutout in its brick (1, 1, 1).
+        assert_eq!(run.bricks.len(), 3 * 8);
+        let brick =
+            |s: usize, x: usize, y: usize, z: usize| run.bricks[(z * 6 + 2 * s + y) * 2 + x];
+        assert_eq!(brick(0, 0, 0, 0), 1);
+        assert_eq!(brick(0, 1, 1, 1), 0);
+        assert_eq!(brick(1, 1, 1, 1), 3);
+        assert_eq!(brick(1, 0, 0, 0), 0);
+        assert_eq!(run.bricks.iter().filter(|&&b| b != 0).count(), 2);
+    }
+
+    #[test]
+    fn runs_take_the_nearest_columns_first_within_the_budget() {
+        let mut dirty: HashSet<SectionKey> = HashSet::new();
+        // A far column whole, a near one with sections 2, 3 and 5, and one out of range.
+        dirty.extend((0..SECTIONS as i32).map(|sy| (5, sy, 0)));
+        dirty.extend([(1, 2, 0), (1, 3, 0), (1, 5, 0)]);
+        dirty.insert((RADIUS + 3, 0, 0));
+        let runs = plan_runs(&mut dirty, (0, 0), 3);
+        assert_eq!(runs, vec![((1, 0), 2, 2), ((1, 0), 5, 1)]);
+        // The far column waits for the next frame (the budget was spent); the one out of range
+        // is dropped.
+        assert_eq!(dirty.len(), SECTIONS);
+        assert!(dirty.iter().all(|&(x, _, _)| x == 5));
+        let runs = plan_runs(&mut dirty, (0, 0), SECTIONS);
+        assert_eq!(runs, vec![((5, 0), 0, SECTIONS as u32)]);
+        assert!(dirty.is_empty());
     }
 
     #[test]
