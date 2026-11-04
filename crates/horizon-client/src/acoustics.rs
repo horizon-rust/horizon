@@ -360,13 +360,15 @@ fn run(
                     &mut cache,
                 );
                 let took = started.elapsed();
-                sink.environment(channel, environment);
-                pending.fetch_sub(1, Ordering::Relaxed);
+                // Counted before it is delivered: whoever receives the result sees it counted
+                // (the test did not, under load, when the count came after).
                 if let Ok(mut s) = stats.lock() {
                     s.evaluated += 1;
                     s.evaluate_total += took;
                     s.evaluate_max = s.evaluate_max.max(took);
                 }
+                sink.environment(channel, environment);
+                pending.fetch_sub(1, Ordering::Relaxed);
             }
         }
     }
