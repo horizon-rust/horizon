@@ -3185,6 +3185,12 @@ impl crate::Device for super::Device {
     }
 
     fn tlas_instance_to_bytes(&self, instance: TlasInstance) -> Vec<u8> {
+        let mut out = Vec::with_capacity(size_of::<RawTlasInstance>());
+        self.tlas_instance_write_bytes(instance, &mut out);
+        out
+    }
+
+    fn tlas_instance_write_bytes(&self, instance: TlasInstance, out: &mut Vec<u8>) {
         const MAX_U24: u32 = (1u32 << 24u32) - 1u32;
         let temp = RawTlasInstance {
             transform: instance.transform,
@@ -3195,7 +3201,7 @@ impl crate::Device for super::Device {
                 & MAX_U24),
             acceleration_structure_reference: instance.blas_address,
         };
-        bytemuck::bytes_of(&temp).to_vec()
+        out.extend_from_slice(bytemuck::bytes_of(&temp));
     }
 
     fn check_if_oom(&self) -> Result<(), crate::DeviceError> {

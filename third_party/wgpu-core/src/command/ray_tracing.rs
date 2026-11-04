@@ -232,6 +232,12 @@ pub(crate) fn build_acceleration_structures(
         let mut dependencies = Vec::new();
 
         let mut instance_count = 0;
+        // Horizon: the instances' bytes appended in place (one allocation for the package, not
+        // one an instance: a frame's terrain holds thousands).
+        instance_buffer_staging_source.reserve(
+            package.instances.len() * usize::try_from(state.device.alignments.raw_tlas_instance_size).unwrap_or(64),
+        );
+        dependencies.reserve(package.instances.len());
         for instance in package.instances.iter().flatten() {
             if instance.custom_data >= (1u32 << 24u32) {
                 return Err(BuildAccelerationStructureError::TlasInvalidCustomIndex(
@@ -241,7 +247,7 @@ pub(crate) fn build_acceleration_structures(
             let blas = &instance.blas;
             state.tracker.blas_s.insert_single(blas.clone());
 
-            instance_buffer_staging_source.extend(state.device.raw().tlas_instance_to_bytes(
+            state.device.raw().tlas_instance_write_bytes(
                 hal::TlasInstance {
                     transform: instance.transform,
                     custom_data: instance.custom_data,
@@ -249,7 +255,8 @@ pub(crate) fn build_acceleration_structures(
                     blas_address: blas.handle,
                     pipeline_intersection_data_offset: 0,
                 },
-            ));
+                &mut instance_buffer_staging_source,
+            );
 
             if tlas
                 .flags
@@ -473,9 +480,14 @@ impl CommandBufferMutable {
         command_index_guard: &mut RwLockWriteGuard<CommandIndices>,
     ) -> Result<(), ValidateAsActionsError> {
         profiling::scope!("CommandEncoder::[submission]::validate_as_actions");
+        // Horizon: a top-level structure used by several passes of one encoder is validated
+        // once, until a build in the same encoder could change what it depends on (its
+        // dependencies run to thousands of bottom-level structures a frame).
+        let mut validated: Vec<*const Tlas> = Vec::new();
         for action in &self.as_actions {
             match action {
                 AsAction::Build(build) => {
+                    validated.clear();
                     let build_command_index = NonZeroU64::new(
                         command_index_guard.next_acceleration_structure_build_command_index,
                     )
@@ -513,6 +525,10 @@ impl CommandBufferMutable {
                     }
                 }
                 AsAction::UseTlas(tlas) => {
+                    if validated.contains(&Arc::as_ptr(tlas)) {
+                        continue;
+                    }
+                    validated.push(Arc::as_ptr(tlas));
                     let tlas_build_index = tlas.built_index.read();
                     let dependencies = tlas.dependencies.read();
 
@@ -556,9 +572,14 @@ impl CommandBufferMutable {
             .collect();
         let mut tlas_dependencies_lock_iter = tlas_dependencies_locks.iter();
         let mut dependencies = Vec::new();
+        // Horizon: a top-level structure's dependencies are listed once per stretch of uses
+        // between builds, not once per pass that binds it (see
+        // `validate_acceleration_structure_actions`).
+        let mut listed: Vec<*const Tlas> = Vec::new();
         for action in &self.as_actions {
             match action {
                 AsAction::Build(build) => {
+                    listed.clear();
                     for tlas_build in build.tlas_s_built.iter() {
                         for dependency in &tlas_build.dependencies {
                             if let Some(dependency) = dependency.raw(snatch_guard) {
@@ -567,8 +588,12 @@ impl CommandBufferMutable {
                         }
                     }
                 }
-                AsAction::UseTlas(_tlas) => {
+                AsAction::UseTlas(tlas) => {
                     let tlas_dependencies = tlas_dependencies_lock_iter.next().unwrap(); // _tlas.dependencies.read();
+                    if listed.contains(&Arc::as_ptr(tlas)) {
+                        continue;
+                    }
+                    listed.push(Arc::as_ptr(tlas));
                     for dependency in tlas_dependencies.iter() {
                         if let Some(dependency) = dependency.raw(snatch_guard) {
                             dependencies.push(dependency);
