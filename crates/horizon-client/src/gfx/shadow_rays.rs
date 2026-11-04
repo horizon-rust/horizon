@@ -109,6 +109,7 @@ struct Uniform {
     water: [f32; 4],
     hw_offset: [f32; 4],
     held: [f32; 4],
+    far: [f32; 4],
     moving: [[f32; 4]; MOVING_LIGHTS],
     rain: [f32; 4],
     rain_sun: [f32; 4],
@@ -156,6 +157,9 @@ pub struct Rays {
     /// reflections turn off.
     pub rain: [f32; 4],
     pub rain_sun: [f32; 4],
+    /// The far field (`far_heights::FarHeights::update`): the window's first texel, 1 once built,
+    /// the highest top.
+    pub far: [f32; 4],
 }
 
 impl Rays {
@@ -293,6 +297,8 @@ pub struct ShadowRays {
     /// The pass VR's first eye (view 1) ran in last (`frame` then): the second eye's, right after
     /// it, takes its light where both see the surface (shadow_rays.wgsl `from_first`).
     first_eye: Option<u32>,
+    /// The far field's stand-ins until it is built (`Rays::far` z 0).
+    no_far: [wgpu::TextureView; 3],
 }
 
 /// VR's second eye takes the first eye's light (`ShadowRays::run`); off, it traces its own
@@ -512,6 +518,9 @@ impl ShadowRays {
                 entry(55, last),
                 entry(56, last_uint),
                 entry(57, first_depth),
+                entry(58, last),
+                entry(59, last),
+                entry(60, last),
             ]
             .into_iter()
             .chain(
@@ -692,6 +701,29 @@ impl ShadowRays {
             views: Vec::new(),
             frame: 0,
             first_eye: None,
+            no_far: [
+                wgpu::TextureFormat::Rg32Float,
+                wgpu::TextureFormat::Rgba8Unorm,
+                wgpu::TextureFormat::Rgba8Unorm,
+            ]
+            .map(|format| {
+                device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("No far field"),
+                        size: wgpu::Extent3d {
+                            width: 1,
+                            height: 1,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    })
+                    .create_view(&Default::default())
+            }),
         }
     }
 
@@ -822,6 +854,7 @@ impl ShadowRays {
         lights: [&wgpu::Buffer; 3],
         visibility: &wgpu::Buffer,
         sky: &wgpu::TextureView,
+        far: Option<[&wgpu::TextureView; 3]>,
         hardware: Option<Hardware<'_>>,
         first_depth: Option<&wgpu::TextureView>,
     ) -> [wgpu::TextureView; 5] {
@@ -920,6 +953,7 @@ impl ShadowRays {
                 rays.aldhani[1],
                 0.0,
             ],
+            far: rays.far,
             moving: rays.moving,
             rain: rays.rain,
             rain_sun: rays.rain_sun,
@@ -1022,6 +1056,9 @@ impl ShadowRays {
                 binding: 48,
                 resource: self.rain.as_entire_binding(),
             },
+            view(58, far.map_or(&self.no_far[0], |f| f[0])),
+            view(59, far.map_or(&self.no_far[1], |f| f[1])),
+            view(60, far.map_or(&self.no_far[2], |f| f[2])),
         ];
         entries.extend(
             (49..)

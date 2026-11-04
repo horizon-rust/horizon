@@ -75,6 +75,7 @@ mod bloom;
 mod cull;
 mod end_sky;
 mod exposure;
+mod far_heights;
 mod flat;
 mod hdr;
 // Heat haze above the flames, for RT lighting (gfx/haze.rs).
@@ -680,6 +681,8 @@ pub struct Renderer {
     /// VR's two eyes' prepass in one multiview pass, where the device has it.
     eye_depths: Option<EyeDepths>,
     voxels: voxels::Voxels,
+    /// The rays' far field: the terrain's heights past the grid (`far_heights`).
+    far_heights: far_heights::FarHeights,
     shadow_rays: shadow_rays::ShadowRays,
     /// Froxel volumetrics (froxels.rs): hook 2, the pass and its settings.
     froxels: froxels::Froxels,
@@ -3461,6 +3464,7 @@ impl Renderer {
             rt_depths: Vec::new(),
             eye_depths,
             voxels: voxels::Voxels::default(),
+            far_heights: far_heights::FarHeights::default(),
             shadow_rays,
             froxels, // hook 4
             world_format,
@@ -3729,6 +3733,7 @@ impl Renderer {
     pub fn upload(&mut self, key: SectionKey, mesh: &SectionMesh) {
         self.occlusion.set(key, mesh.visibility);
         self.voxels.set(key, &mesh.occupancy);
+        self.far_heights.changed(key.0, key.2);
         self.voxels.set_lights(key, &mesh.lights);
         self.voxels.set_albedo(key, &mesh.albedo);
         let changed = if mesh.block_entities.is_empty() {
@@ -3927,6 +3932,7 @@ impl Renderer {
     }
     pub fn clear_sections(&mut self) {
         self.voxels.clear();
+        self.far_heights.clear();
         self.block_entities.clear();
         self.block_entity_revision = next_block_entity_revision();
         self.sections.clear();
@@ -3983,6 +3989,7 @@ impl Renderer {
             }
             self.occlusion.remove_column(x, z);
             self.voxels.remove_column(x, z);
+            self.far_heights.changed(x, z);
             let retiring = !self.lod_cutout.is_empty() && self.lod_cutout.contains(&(x, z));
             for sy in 0..crate::chunk::SECTIONS as i32 {
                 let key = (x, sy, z);
@@ -4090,6 +4097,12 @@ impl Renderer {
     /// surface (`shadow_rays`).
     /// `lighting`: RT lighting, the terrain lit by the rays alone (the mesher must agree:
     /// `Streaming::rt_lighting`).
+    /// The distant terrain's drawn tiles, for the rays' far field (`far_heights`): call after
+    /// `Lod::update`; cheap unless they changed.
+    pub fn set_far_terrain(&mut self, lod: &crate::lod::Lod) {
+        self.far_heights
+            .set_far(lod.revision(), lod.drawn_columns());
+    }
     pub fn set_ray_traced(&mut self, shadows: bool, ambient: bool, lighting: bool) {
         let linear = self.tonemap.is_some();
         self.rt_shadows = shadows && linear;
@@ -4308,6 +4321,12 @@ impl Renderer {
         };
         let grid = self.voxels.views().expect("the grid runs");
         let lights = self.voxels.light_buffers().expect("the grid runs");
+        self.far_heights.prepare(
+            &self.device,
+            &self.queue,
+            encoder,
+            [rt.light[0], rt.light[1], rt.light[2]],
+        );
         let hw = self.hw_bindings();
         let [mask, blocks, sun, reflection, refraction] = self.shadow_rays.run(
             &self.device,
@@ -4324,6 +4343,7 @@ impl Renderer {
             lights,
             self.voxels.light_visibility().expect("the grid runs"),
             &self.atmosphere.view,
+            self.far_heights.views(),
             hw.as_ref().map(hw_rays::Bindings::hardware),
             first_depth.as_ref(),
         );
@@ -4558,7 +4578,11 @@ impl Renderer {
             && !(frame.title || frame.end_sky || frame.nether_lighting);
         let block = frame.camera.floor();
         let fraction = (frame.camera - block).as_vec3();
+        let far = self
+            .far_heights
+            .update(&self.device, &self.queue, frame.camera, &self.voxels);
         shadow_rays::Rays {
+            far,
             light: [
                 light.x,
                 light.y,
@@ -6898,6 +6922,14 @@ impl Renderer {
         );
         // Ray-traced shadows: a ray a pixel of the world's depth, before the resolve (RT lighting
         // traced its rays before the world).
+        if shadows && !rt_now {
+            self.far_heights.prepare(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                [rt.light[0], rt.light[1], rt.light[2]],
+            );
+        }
         let hw = self.hw_bindings();
         let shadow_mask = (shadows && !rt_now)
             .then(|| self.voxels.views())
@@ -6925,6 +6957,7 @@ impl Renderer {
                     self.voxels.light_buffers().expect("the grid runs"),
                     self.voxels.light_visibility().expect("the grid runs"),
                     &self.atmosphere.view,
+                    self.far_heights.views(),
                     hw.as_ref().map(hw_rays::Bindings::hardware),
                     None,
                 )[0]

@@ -639,6 +639,8 @@ pub struct Lod {
     saved: Saved,
     reduced: Reduced,
     saved_order: VecDeque<(i32, i32)>,
+    /// Mesh jobs finished: the drawn tiles changed (`revision`).
+    revision: u64,
 }
 impl Lod {
     pub fn new(source: Arc<dyn LodSource>, context: Arc<WorkerContext>) -> Self {
@@ -833,6 +835,7 @@ impl Lod {
             saved: FxHashMap::default(),
             reduced: FxHashMap::default(),
             saved_order: VecDeque::new(),
+            revision: 0,
         }
     }
     /// The solid ground at block column (x, z): its top face's height and
@@ -857,6 +860,17 @@ impl Lod {
             let cell = key.stride();
             let (cx, cz) = ((x - key.x * size) / cell, (z - key.z * size) / cell);
             columns[cz as usize * cells + cx as usize].surface
+        })
+    }
+    /// Changes whenever the drawn tiles do (a mesh job finished).
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+    /// Each drawn tile and its cells' columns, for the rays' far field (gfx/heightmap.rs).
+    pub fn drawn_columns(&self) -> impl Iterator<Item = (TileKey, &[Column])> {
+        self.active.iter().filter_map(|&key| {
+            let columns = self.ready.get(&key)?;
+            (columns.len() == key.cells() * key.cells()).then_some((key, columns.as_slice()))
         })
     }
     pub fn stats(&self) -> (usize, usize) {
@@ -1204,6 +1218,7 @@ impl Lod {
                     self.removed
                         .extend(self.active.difference(&active).copied());
                     self.active = active;
+                    self.revision += 1;
                     self.meshing = false;
                     self.reselect = true;
                     for (x, z) in std::mem::take(&mut self.invalidated) {
