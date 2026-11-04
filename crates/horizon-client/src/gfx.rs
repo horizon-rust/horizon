@@ -244,7 +244,8 @@ struct Globals {
     /// RT lighting's moon (terrain.wgsl `rt_moon_disc`): toward it, and its angular radius.
     rt_moon: [f32; 4],
     /// The Earth's curvature (`Renderer::earth_curvature`): x the square of the radius it starts
-    /// at (`lod::earth_drop`; -1 off), y how far the sea's horizon dips (`lod::horizon_dip`).
+    /// at (`lod::earth_drop`; -1 off), y how far the sea's horizon dips (`lod::horizon_dip`); w
+    /// the block textures' anisotropic taps (`Renderer::anisotropy`), where `time.w` is taken.
     earth: [f32; 4],
     /// The shooting stars' shower (terrain.wgsl `meteor_make`, `sky_stars::Meteors`): its radiant
     /// and zenithal hourly rate; its meteors' speed and population index, and the sporadic rate.
@@ -743,6 +744,9 @@ pub struct Renderer {
     /// The Earth's curvature on the distant terrain, the clouds and the sky's horizon (Horizon
     /// setting; terrain.wgsl `earth_drop`): drawn only, the world stays flat.
     pub earth_curvature: bool,
+    /// Samples the block textures average at a grazing angle (Texture Filtering Anisotropic:
+    /// 2, 4 or 8, from Max Anisotropy; 0 off), done in terrain.wgsl's `sprite_anisotropic`.
+    pub anisotropy: u32,
     present_modes: Vec<wgpu::PresentMode>,
 }
 /// Every layer's mip levels, layer major (`first` is the first layer's
@@ -2281,7 +2285,10 @@ impl Renderer {
             address_mode_v: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            // Blended between the two mip levels around a texel's size, as vanilla's
+            // GL_NEAREST_MIPMAP_LINEAR: one level alone drew a line, sharp before it and
+            // blurred after, across rails and other fine textures at a few blocks.
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
         let lightmap = device.create_texture(&wgpu::TextureDescriptor {
@@ -3496,6 +3503,7 @@ impl Renderer {
             fullbright: false,
             animated_textures: true,
             earth_curvature: true,
+            anisotropy: 0,
             present_modes,
         })
     }
@@ -5489,9 +5497,9 @@ impl Renderer {
                     (r * r) as f32,
                     lod::horizon_dip(frame.camera.y) as f32,
                     0.0,
-                    0.0,
+                    self.anisotropy as f32,
                 ],
-                None => [-1.0, 0.0, 0.0, 0.0],
+                None => [-1.0, 0.0, 0.0, self.anisotropy as f32],
             },
             rt_shower: meteors.radiant,
             rt_stream: meteors.stream,

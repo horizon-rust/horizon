@@ -14,8 +14,36 @@ pub(super) const HELP: &[&str] = &[
     "servers                        the multiplayer server list (servers.dat): name and address",
 ];
 
-fn saves() -> Result<PathBuf> {
+pub(super) fn saves() -> Result<PathBuf> {
     Ok(std::env::current_dir()?.join("saves"))
+}
+
+/// The world folder that `rest` (the line after the command's name) starts with, and the
+/// words after it. A folder may hold spaces ("New World" is vanilla's default) while the
+/// socket's commands are words, and horizon-ctl joins its arguments with spaces: a folder
+/// in double quotes is taken whole; else the longest run of words that names a folder for
+/// which `exists` is true; else the first word (a world `open` is about to create).
+pub(super) fn split_folder(
+    rest: &str,
+    exists: impl Fn(&str) -> bool,
+) -> Option<(String, Vec<&str>)> {
+    let rest = rest.trim_start();
+    if let Some(quoted) = rest.strip_prefix('"') {
+        let (folder, after) = quoted.split_once('"')?;
+        return Some((folder.to_owned(), after.split_whitespace().collect()));
+    }
+    let words: Vec<&str> = rest.split_whitespace().collect();
+    let taken = (2..=words.len())
+        .rev()
+        .find(|&n| exists(&words[..n].join(" ")))
+        .unwrap_or(1);
+    let first = words.first()?;
+    let folder = if taken == 1 {
+        (*first).to_owned()
+    } else {
+        words[..taken].join(" ")
+    };
+    Some((folder, words[taken..].to_vec()))
 }
 
 impl Game<'_> {
@@ -26,11 +54,12 @@ impl Game<'_> {
         line: &str,
         reply: &Sender<String>,
     ) -> Result<Option<Option<Value>>> {
-        let folder = || {
-            words
-                .get(1)
-                .copied()
-                .ok_or_else(|| format!("{} FOLDER: the folder from worlds", words[0]))
+        // The folder and the words after it (world-rename's name, world-delete's --confirm).
+        let folder = || -> Result<(String, Vec<&str>)> {
+            let rest = line.trim_start().strip_prefix(words[0]).unwrap_or("");
+            let saves = saves()?;
+            split_folder(rest, |f| saves.join(f).is_dir())
+                .ok_or_else(|| format!("{} FOLDER: the folder from worlds", words[0]).into())
         };
         let on_title = || {
             if self.title.is_some() {
@@ -61,15 +90,12 @@ impl Game<'_> {
             }
             "world-rename" => {
                 on_title()?;
-                let folder = folder()?;
-                let name = line
-                    .trim_start()
-                    .strip_prefix("world-rename")
-                    .and_then(|rest| rest.trim_start().strip_prefix(folder))
-                    .map(str::trim)
-                    .filter(|n| !n.is_empty())
-                    .ok_or("world-rename FOLDER NAME: missing the new name")?;
-                title::world_management::rename(&saves()?, folder, name)?;
+                let (folder, after) = folder()?;
+                let name = after.join(" ");
+                if name.is_empty() {
+                    return Err("world-rename FOLDER NAME: missing the new name".into());
+                }
+                title::world_management::rename(&saves()?, &folder, &name)?;
                 if let Some(title) = self.title.as_mut() {
                     title.worlds_changed();
                 }
@@ -77,14 +103,14 @@ impl Game<'_> {
             }
             "world-delete" => {
                 on_title()?;
-                let folder = folder()?;
-                if !words.contains(&"--confirm") {
+                let (folder, after) = folder()?;
+                if !after.contains(&"--confirm") {
                     return Err(format!(
                         "world-delete deletes {folder} for good: ask the player, then add --confirm"
                     )
                     .into());
                 }
-                title::world_management::delete(&saves()?, folder)?;
+                title::world_management::delete(&saves()?, &folder)?;
                 if let Some(title) = self.title.as_mut() {
                     title.worlds_changed();
                 }
@@ -92,7 +118,7 @@ impl Game<'_> {
             }
             "world-backup" => {
                 on_title()?;
-                let folder = folder()?.to_owned();
+                let (folder, _) = folder()?;
                 let saves = saves()?;
                 let backups = title::world_management::backups_path(&saves);
                 // A big world takes a while to zip: off the game thread, as Make Backup does.
@@ -119,5 +145,51 @@ impl Game<'_> {
             _ => return Ok(None),
         };
         Ok(Some(Some(value)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_folder;
+
+    fn split(rest: &str, folders: &[&str]) -> Option<(String, Vec<String>)> {
+        split_folder(rest, |f| folders.contains(&f))
+            .map(|(folder, after)| (folder, after.iter().map(|w| (*w).to_owned()).collect()))
+    }
+
+    fn owned(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| (*w).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_folder_with_spaces_that_exists() {
+        let worlds = ["New World", "New"];
+        assert_eq!(
+            split(" New World", &worlds),
+            Some(("New World".into(), vec![]))
+        );
+        assert_eq!(
+            split(" New World 42 creative", &worlds),
+            Some(("New World".into(), owned(&["42", "creative"])))
+        );
+        assert_eq!(
+            split(" New World My Base", &worlds),
+            Some(("New World".into(), owned(&["My", "Base"])))
+        );
+        assert_eq!(
+            split(" New --confirm", &worlds),
+            Some(("New".into(), owned(&["--confirm"])))
+        );
+    }
+
+    #[test]
+    fn quoted_folders_and_new_ones() {
+        assert_eq!(
+            split(r#" "My New World" 7 creative"#, &[]),
+            Some(("My New World".into(), owned(&["7", "creative"])))
+        );
+        assert_eq!(split(r#" "unclosed"#, &[]), None);
+        assert_eq!(split(" Test 3", &[]), Some(("Test".into(), owned(&["3"]))));
+        assert_eq!(split("  ", &[]), None);
     }
 }

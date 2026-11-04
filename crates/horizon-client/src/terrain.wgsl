@@ -55,7 +55,8 @@ struct Globals {
     // RT lighting's moon: toward it (xyz) and its angular radius (w); its phase in rt_stars.x.
     rt_moon: vec4<f32>,
     // The Earth's curvature (`earth_drop`): x the square of the radius it starts at (below 0 off),
-    // y how far the sea's horizon dips under the horizontal, in radians.
+    // y how far the sea's horizon dips under the horizontal, in radians; w the block textures'
+    // anisotropic taps (Texture Filtering Anisotropic: 2 to 8; 0 off).
     earth: vec4<f32>,
     // The shooting stars' shower (`meteor_make`): its radiant (equatorial, xyz) and zenithal hourly
     // rate (w); its meteors' speed (km/s, x) and population index (y), the sporadic rate (z).
@@ -188,12 +189,40 @@ fn rt_screen_reflection(pos: vec3<f32>, dir: vec3<f32>) -> vec4<f32> {
 override SPRITE_ARRAYS: u32 = 1u;
 override SPRITE_SPLIT: u32 = 2048u;
 fn sprite(uv: vec2<f32>, layer: u32) -> vec4<f32> {
-    if SPRITE_ARRAYS == 1u {
-        return textureSample(sprites, sprite_sampler, uv, i32(layer));
-    }
     // The array is chosen per fragment: sample with the derivatives taken here.
     let dx = dpdx(uv);
     let dy = dpdy(uv);
+    if globals.earth.w > 1.0 {
+        return sprite_anisotropic(uv, layer, dx, dy, globals.earth.w);
+    }
+    if SPRITE_ARRAYS == 1u {
+        return textureSample(sprites, sprite_sampler, uv, i32(layer));
+    }
+    return sprite_grad(uv, layer, dx, dy);
+}
+// Texture Filtering Anisotropic, in the shader: wgpu's anisotropic filtering needs linear
+// magnification, which would blur close blocks. Seen at a grazing angle a texture shrinks
+// much more along one screen axis than the other, and one mip level for the larger shrink
+// blurs it across as well (a rail turning from sharp to blurred a few blocks away). Up to
+// `taps` samples spread along that axis, each at the mip level of the smaller shrink, are
+// averaged instead; close up and face on there is one, as without the option.
+fn sprite_anisotropic(uv: vec2<f32>, layer: u32, dx: vec2<f32>, dy: vec2<f32>, taps: f32)
+    -> vec4<f32> {
+    var major = dx;
+    var minor = dy;
+    if dot(dy, dy) > dot(dx, dx) {
+        major = dy;
+        minor = dx;
+    }
+    let n = clamp(ceil(length(major) / max(length(minor), 1e-8)), 1.0, taps);
+    let step = major / n;
+    var color = vec4(0.0);
+    for (var i = 0.0; i < n; i += 1.0) {
+        color += sprite_grad(uv + major * ((i + 0.5) / n - 0.5), layer, step, minor);
+    }
+    return color / n;
+}
+fn sprite_grad(uv: vec2<f32>, layer: u32, dx: vec2<f32>, dy: vec2<f32>) -> vec4<f32> {
     let l = i32(layer % SPRITE_SPLIT);
     switch layer / SPRITE_SPLIT {
         case 0u: { return textureSampleGrad(sprites, sprite_sampler, uv, l, dx, dy); }

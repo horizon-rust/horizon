@@ -270,6 +270,13 @@ impl Game<'_> {
             r.animated_textures = s.horizon.animated_textures;
             r.earth_curvature = s.horizon.earth_curvature;
             r.set_mipmap_levels(s.mipmap_levels.max(0) as u32);
+            // Texture Filtering (0 None, 1 RGSS, 2 Anisotropic) and Max Anisotropy (2^bit
+            // samples). RGSS isn't done yet and samples as None.
+            r.anisotropy = if s.file.int("textureFiltering") == 2 {
+                1 << s.file.int("maxAnisotropyBit").clamp(1, 3)
+            } else {
+                0
+            };
             r.set_world_post(s.horizon.resolution_scale as f32 / 100.0, s.horizon.fxaa);
             r.set_parallax(s.horizon.parallax);
             rebuild = r.linear() != s.horizon.linear_light;

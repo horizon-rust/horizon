@@ -235,6 +235,7 @@ impl Session {
                     }
                 }
                 absolute_paths(&mut words);
+                quote_folder(&mut words);
                 self.game(&words.join(" "))
             }
         }
@@ -320,6 +321,23 @@ fn absolute_paths(words: &mut [String]) {
         && let Ok(cwd) = std::env::current_dir()
     {
         *path = cwd.join(&*path).display().to_string();
+    }
+}
+
+/// The commands whose first argument is a world folder: a folder may hold spaces ("New
+/// World", vanilla's default), and the game reads one in double quotes whole
+/// (`saves_control::split_folder`), so it goes quoted. A folder never holds a quote: Windows
+/// forbids it in file names and vanilla's Create World replaces it.
+const FOLDER_COMMANDS: &[&str] = &["open", "world-rename", "world-backup", "world-delete"];
+
+fn quote_folder(words: &mut [String]) {
+    if words
+        .first()
+        .is_some_and(|w| FOLDER_COMMANDS.contains(&w.as_str()))
+        && let Some(folder) = words.get_mut(1)
+        && folder.contains(char::is_whitespace)
+    {
+        *folder = format!("\"{folder}\"");
     }
 }
 
@@ -642,6 +660,20 @@ mod tests {
             assert_eq!(f.reply["error"], horizon_core::no_ai::REFUSAL);
         }
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn world_folders_with_spaces_go_quoted() {
+        let words = |w: &[&str]| w.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        let mut open = words(&["open", "New World", "0", "creative"]);
+        quote_folder(&mut open);
+        assert_eq!(open.join(" "), "open \"New World\" 0 creative");
+        let mut plain = words(&["world-backup", "Test"]);
+        quote_folder(&mut plain);
+        assert_eq!(plain.join(" "), "world-backup Test");
+        let mut chat = words(&["chat", "hello there"]);
+        quote_folder(&mut chat);
+        assert_eq!(chat.join(" "), "chat hello there");
     }
 
     #[test]
