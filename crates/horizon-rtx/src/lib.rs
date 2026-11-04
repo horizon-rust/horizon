@@ -165,6 +165,11 @@ mod vulkan {
             })
         }
 
+        /// The structure's handle, for the passes that bind it raw (`sun`).
+        pub(crate) fn raw_handle(&self) -> vk::AccelerationStructureKHR {
+            self.tlas
+        }
+
         /// The device address of `blas`, for its instances; `None` on another backend.
         pub fn blas_address(&self, blas: &mut wgpu::Blas) -> Option<u64> {
             // Safety: the structure's own handle; the address stays valid as long as it lives.
@@ -287,6 +292,45 @@ mod vulkan {
 
 #[cfg(not(target_os = "macos"))]
 pub use vulkan::RawTlas;
+
+#[cfg(not(target_os = "macos"))]
+pub mod sun;
+#[cfg(not(target_os = "macos"))]
+pub use sun::{SunInputs, SunPass};
+
+/// No raw Vulkan on macOS: the kernel traces its own sun.
+#[cfg(target_os = "macos")]
+pub mod sun {
+    pub const ARENA_PAGES: usize = 8;
+    pub struct SunInputs<'a> {
+        pub uniform: &'a wgpu::Buffer,
+        pub depth: &'a wgpu::TextureView,
+        pub mask_size: [u32; 2],
+        pub tlas: &'a super::RawTlas,
+        pub arena: &'a [wgpu::Buffer; ARENA_PAGES],
+        pub sprites: &'a wgpu::TextureView,
+        pub instances: &'a wgpu::Buffer,
+        pub dynamics: &'a wgpu::Buffer,
+        pub atlas: &'a wgpu::TextureView,
+        pub sprite_split: u32,
+    }
+    pub struct SunPass;
+    impl SunPass {
+        pub fn new(_: &wgpu::Device) -> Option<Self> {
+            None
+        }
+        pub fn run(
+            &mut self,
+            _: &wgpu::Device,
+            _: &mut wgpu::CommandEncoder,
+            _: SunInputs<'_>,
+        ) -> wgpu::TextureView {
+            unreachable!("never made")
+        }
+    }
+}
+#[cfg(target_os = "macos")]
+pub use sun::{SunInputs, SunPass};
 
 /// No raw Vulkan on macOS: the structure is wgpu's to build.
 #[cfg(target_os = "macos")]

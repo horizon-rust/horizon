@@ -17,15 +17,28 @@ pub fn open_vulkan_device(
         let hal = unsafe { adapter.as_hal::<Vulkan>() }?;
         let instance = hal.shared_instance().raw_instance();
         // Safety: the adapter's own physical device on its own instance.
-        let offered =
+        let extensions =
             unsafe { instance.enumerate_device_extension_properties(hal.raw_physical_device()) }
-                .ok()?
+                .ok()?;
+        let offers = |name: &std::ffi::CStr| {
+            extensions
                 .iter()
-                .any(|e| e.extension_name_as_c_str() == Ok(ash::ext::hdr_metadata::NAME));
-        if !offered {
+                .any(|e| e.extension_name_as_c_str() == Ok(name))
+        };
+        if !offers(ash::ext::hdr_metadata::NAME) {
             return None;
         }
-        // Safety: what wgpu's own request_device does, with one more extension.
+        // The RTX 4090 build's shader execution reordering (horizon-rtx `sun`,
+        // docs/rtx-4090.md): the extension and its feature where the driver offers them and the
+        // device gets ray tracing pipelines (wgpu's EXPERIMENTAL_RAY_TRACING_PIPELINES).
+        let reorder = offers(ash::nv::ray_tracing_invocation_reorder::NAME)
+            && desc
+                .required_features
+                .contains(wgpu::Features::EXPERIMENTAL_RAY_TRACING_PIPELINES);
+        let mut reorder_features =
+            ash::vk::PhysicalDeviceRayTracingInvocationReorderFeaturesNV::default()
+                .ray_tracing_invocation_reorder(true);
+        // Safety: what wgpu's own request_device does, with one or two more extensions.
         unsafe {
             hal.open_with_callback(
                 desc.required_features,
@@ -34,6 +47,11 @@ pub fn open_vulkan_device(
                 Some(Box::new(
                     |args: wgpu::hal::vulkan::CreateDeviceCallbackArgs| {
                         args.extensions.push(ash::ext::hdr_metadata::NAME);
+                        if reorder {
+                            args.extensions
+                                .push(ash::nv::ray_tracing_invocation_reorder::NAME);
+                            *args.create_info = args.create_info.push_next(&mut reorder_features);
+                        }
                     },
                 )),
             )

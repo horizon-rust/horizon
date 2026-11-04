@@ -60,6 +60,13 @@ struct Rt {
     first_inverse_view_proj: mat4x4<f32>,
 }
 @group(0) @binding(0) var<uniform> rt: Rt;
+// The RTX 4090 build's sun pass (horizon-rtx `sun`, docs/rtx-4090.md): the sun's light through, a
+// texel a ray, traced by a ray tracing pipeline before this kernel, read in place of
+// `sun_disc_ray` for the primary surface where `rt.mode.w` says it was (1x1 otherwise).
+@group(0) @binding(61) var sun_pass: texture_2d<f32>;
+// Whether this thread's `trace` is for the sun pass's own texel (the sharp zone: `cs_shadow`),
+// not a sparse block's corner traced for its neighbours (`cs_sparse`).
+var<private> sun_from_pass: bool = false;
 @group(0) @binding(1) var depth: texture_depth_2d;
 // 512 bits an 8x8x8 brick in four texels along x, the solid blocks and the cutout ones; one texel
 // a brick (bit 0 any block, bit 1 cutout ones); one texel a 32x32x32 brick (1: any block).
@@ -1645,8 +1652,13 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         // distance to recognise the surface by.
         var sun_through = vec3(1.0);
         if rt.mode.y > 0.5 && rt.light.w > 0.0 && (SKIP & 1u) == 0u {
-            sun_through = mix(vec3(far_sun), sun_disc_ray(lifted, random2(texel, 2u)) * beyond,
-                edge);
+            var disc = vec3(1.0);
+            if rt.mode.w > 0.5 && sun_from_pass {
+                disc = textureLoad(sun_pass, texel, 0).rgb;
+            } else {
+                disc = sun_disc_ray(lifted, random2(texel, 2u));
+            }
+            sun_through = mix(vec3(far_sun), disc * beyond, edge);
         }
         let v = max(sun_through.r, max(sun_through.g, sun_through.b));
         // The sky's and the light sources' light; it fades out toward the grid's edge into the
@@ -1954,7 +1966,9 @@ var<workgroup> quad_refracted: array<vec4<f32>, 16>;
         v = seen.v;
     }
     if fine && !taken {
+        sun_from_pass = true;
         v = trace(pixel_of(texel), texel);
+        sun_from_pass = false;
     } else if !fine {
         let s = sparse[(corner.y / 4) * blocks_across() + corner.x / 4];
         v = Traced(s.rays, s.blocks, s.direct, s.sun, s.reservoir);

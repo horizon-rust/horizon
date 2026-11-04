@@ -1,0 +1,124 @@
+#version 460
+// The sun pass's any-hit: the alpha test of the trace kernel's hybrid (gfx/shadow_rays_hw.wgsl
+// `hw_opaque`, ported one for one), for the cutout quads and the entities; the quads whose sprite
+// has no transparent texel are in opaque geometries, whose hits the hardware confirms without
+// this shader (gfx/hw_rays.rs). The translucent geometry (stained glass, water, ice) lets the
+// light through untinted here: the kernel's tint (`hw_tint`, the water's caustics) is not in this
+// pass yet.
+#extension GL_EXT_ray_tracing : require
+#extension GL_EXT_samplerless_texture_functions : require
+
+// The vertex arena's pages (gfx/arena.rs): `TerrainVertex`, six words each, position, then the
+// texture coordinate (two halves, `UV_STEPS` a unit), then the layer and the light, the colour.
+layout(set = 0, binding = 4) readonly buffer Arena0 { uint w[]; } arena0;
+layout(set = 0, binding = 5) readonly buffer Arena1 { uint w[]; } arena1;
+layout(set = 0, binding = 6) readonly buffer Arena2 { uint w[]; } arena2;
+layout(set = 0, binding = 7) readonly buffer Arena3 { uint w[]; } arena3;
+layout(set = 0, binding = 8) readonly buffer Arena4 { uint w[]; } arena4;
+layout(set = 0, binding = 9) readonly buffer Arena5 { uint w[]; } arena5;
+layout(set = 0, binding = 10) readonly buffer Arena6 { uint w[]; } arena6;
+layout(set = 0, binding = 11) readonly buffer Arena7 { uint w[]; } arena7;
+// The first sprite array, for the alpha test.
+layout(set = 0, binding = 12) uniform texture2DArray sprites;
+// Where each instance's quads are (gfx/hw_rays.rs `row`, `HwInstance`: three vectors a row): the
+// arena page or kind, the solid and translucent quads' first vertices, the translucent geometry's
+// index (none: u32 max), then each solid geometry's first quad, 16 bits each.
+layout(set = 0, binding = 13) readonly buffer Instances { uvec4 rows[]; } instances;
+// The moving geometry's vertices (the entity pipeline's `Vertex`, nine words) and the atlas.
+layout(set = 0, binding = 14) readonly buffer Dynamics { uint w[]; } dynamics;
+layout(set = 0, binding = 15) uniform texture2D entity_atlas;
+// Sprite layers past the first array are taken as opaque (the kernel's `SPRITE_SPLIT`).
+layout(push_constant) uniform Push { uint sprite_split; } push;
+
+hitAttributeEXT vec2 bary;
+layout(location = 0) rayPayloadInEXT float payload;
+
+const uint ARENA_PAGES = 8u;
+const uint DYN_ENTITY = 0xfffffff0u;
+const uint NO_QUAD = 0xffffffffu;
+const float UV_STEPS = 32768.0;
+
+// Word `k` of arena vertex `v`: its page in bits 28 to 30, its vertex in that page below.
+uint arena_at(uint v, uint k) {
+    uint i = (v & 0x0fffffffu) * 6u + k;
+    switch (v >> 28u) {
+        case 0u: return arena0.w[i];
+        case 1u: return arena1.w[i];
+        case 2u: return arena2.w[i];
+        case 3u: return arena3.w[i];
+        case 4u: return arena4.w[i];
+        case 5u: return arena5.w[i];
+        case 6u: return arena6.w[i];
+        default: return arena7.w[i];
+    }
+}
+vec2 hw_uv(uint v) {
+    uint w = arena_at(v, 3u);
+    return vec2(float(w & 0xffffu), float(w >> 16u)) / UV_STEPS;
+}
+uvec4 row_at(uint k) {
+    return instances.rows[uint(gl_InstanceCustomIndexEXT) * 3u + k];
+}
+// The entity or view model quad this hit is on: its first vertex in `dynamics`, or none.
+uint hw_entity_quad() {
+    uvec4 at = row_at(0u);
+    if (at.x != DYN_ENTITY) return NO_QUAD;
+    return at.y + (uint(gl_PrimitiveID) / 2u) * 4u;
+}
+// The texel this hit meets on the entity quad from vertex `base`, times the vertex colour.
+vec4 hw_entity_texel(uint base) {
+    // The quad's triangles: corners 0, 1, 2 and 0, 2, 3 (gfx.rs `quad_indices`).
+    bool second = (uint(gl_PrimitiveID) & 1u) == 1u;
+    vec2 b = bary;
+    uint v1 = base + (second ? 2u : 1u);
+    uint v2 = base + (second ? 3u : 2u);
+    vec2 uv = uintBitsToFloat(uvec2(dynamics.w[base * 9u + 3u], dynamics.w[base * 9u + 4u])) * (1.0 - b.x - b.y)
+        + uintBitsToFloat(uvec2(dynamics.w[v1 * 9u + 3u], dynamics.w[v1 * 9u + 4u])) * b.x
+        + uintBitsToFloat(uvec2(dynamics.w[v2 * 9u + 3u], dynamics.w[v2 * 9u + 4u])) * b.y;
+    ivec2 size = textureSize(entity_atlas, 0);
+    ivec2 texel = clamp(ivec2(uv * vec2(size)), ivec2(0), size - 1);
+    vec4 color = unpackUnorm4x8(dynamics.w[base * 9u + 6u]);
+    return texelFetch(entity_atlas, texel, 0) * color;
+}
+// The quad this hit is on: its first arena vertex, or none on a page past those bound.
+uint hw_quad() {
+    uvec4 at = row_at(0u);
+    if (at.x >= ARENA_PAGES) return NO_QUAD;
+    uint g = uint(gl_GeometryIndexEXT);
+    uvec4 words = row_at(1u + g / 8u);
+    uint w = words[(g / 2u) % 4u];
+    uint first = at.y + ((w >> ((g & 1u) * 16u)) & 0xffffu) * 4u;
+    return (at.x << 28u) | (first + (uint(gl_PrimitiveID) / 2u) * 4u);
+}
+// The texel this hit meets on the quad from arena vertex `base` (past the first sprite array: -1).
+vec4 hw_texel(uint base) {
+    uint layer = arena_at(base, 4u) & 0x7fffu;
+    if (layer >= push.sprite_split) return vec4(-1.0);
+    bool second = (uint(gl_PrimitiveID) & 1u) == 1u;
+    vec2 b = bary;
+    vec2 uv = hw_uv(base) * (1.0 - b.x - b.y) + hw_uv(base + (second ? 2u : 1u)) * b.x
+        + hw_uv(base + (second ? 3u : 2u)) * b.y;
+    ivec2 size = textureSize(sprites, 0).xy;
+    ivec2 texel = clamp(ivec2(uv * vec2(size)), ivec2(0), size - 1);
+    return texelFetch(sprites, ivec3(texel, int(layer)), 0);
+}
+
+void main() {
+    uvec4 at = row_at(0u);
+    if (uint(gl_GeometryIndexEXT) == at.w) {
+        // Translucent: the light passes (untinted, see above).
+        ignoreIntersectionEXT;
+    }
+    uint entity = hw_entity_quad();
+    if (entity != NO_QUAD) {
+        // An entity's texel as entity.wgsl keeps it (under a tenth opaque is discarded).
+        if (hw_entity_texel(entity).a < 0.1) ignoreIntersectionEXT;
+        return;
+    }
+    uint base = hw_quad();
+    // A structure whose vertices went, or opaque leaves (forceOpaque): opaque.
+    if (base == NO_QUAD) return;
+    if ((arena_at(base, 4u) & 0x8000u) != 0u) return;
+    vec4 texel = hw_texel(base);
+    if (!(texel.a < 0.0 || texel.a >= 0.5)) ignoreIntersectionEXT;
+}

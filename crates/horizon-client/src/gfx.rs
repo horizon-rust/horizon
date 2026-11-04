@@ -695,6 +695,9 @@ pub struct Renderer {
     /// RT lighting's hybrid: the terrain in hardware acceleration structures, where the GPU
     /// traces rays.
     hw_rays: Option<hw_rays::HwRays>,
+    /// RT lighting's sun pass as a ray tracing pipeline (horizon-rtx `sun`), when wanted.
+    #[cfg(feature = "rtx")]
+    sun_pass: Option<horizon_rtx::SunPass>,
     /// The world's colour format (the scene's with Linear Light, else the screen's).
     world_format: wgpu::TextureFormat,
     /// HDR output (Horizon setting): `Some` while the swapchain is HDR.
@@ -1420,7 +1423,14 @@ async fn open_device(
         let desc = wgpu::DeviceDescriptor {
             label: Some("Horizon device"),
             required_features: if hw_rt {
-                features | wgpu::Features::EXPERIMENTAL_RAY_QUERY
+                // The RTX 4090 build (the `rtx` feature, docs/rtx-4090.md): ray tracing
+                // pipelines too, for the passes horizon-rtx records raw, where the driver has them.
+                let pipelines = if cfg!(feature = "rtx") {
+                    adapter.features() & wgpu::Features::EXPERIMENTAL_RAY_TRACING_PIPELINES
+                } else {
+                    wgpu::Features::empty()
+                };
+                features | wgpu::Features::EXPERIMENTAL_RAY_QUERY | pipelines
             } else {
                 features
             },
@@ -3296,6 +3306,9 @@ impl Renderer {
         // Froxel volumetrics: hook 3.
         let froxels = froxels::Froxels::new(&device, hw, sprite_split());
         let hw_rays = hw.then(|| hw_rays::HwRays::new(&device));
+        // The sun pass as a ray tracing pipeline (horizon-rtx `sun`, `HORIZON_RT_PIPELINE=1`).
+        #[cfg(feature = "rtx")]
+        let sun_pass = hw.then(|| horizon_rtx::SunPass::new(&device)).flatten();
         if previous.is_none() {
             startup_step(format_args!(
                 "pipelines ready (multi-draw {}, occlusion culling {}, GPU timer {})",
@@ -3394,6 +3407,8 @@ impl Renderer {
             lightmap,
             sprite_textures,
             hw_rays,
+            #[cfg(feature = "rtx")]
+            sun_pass,
             materials: None,
             parallax: None,
             parallax_on: false,
@@ -4376,6 +4391,52 @@ impl Renderer {
             [rt.light[0], rt.light[1], rt.light[2]],
         );
         let hw = self.hw_bindings();
+        // The RTX 4090 build's sun pass (horizon-rtx `sun`): recorded by the kernel's run once
+        // its uniform is written, with the structure built raw and the hybrid's bindings.
+        #[cfg(feature = "rtx")]
+        let mut sun_closure = match (
+            &mut self.sun_pass,
+            self.hw_rays.as_ref().and_then(hw_rays::HwRays::raw),
+            hw.as_ref(),
+        ) {
+            (Some(pass), Some(tlas), Some(bindings)) if rt.lighting => {
+                let device = &self.device;
+                let depth = &depth;
+                Some(
+                    move |encoder: &mut wgpu::CommandEncoder,
+                          uniform: &wgpu::Buffer,
+                          mask_size: [u32; 2]| {
+                        pass.run(
+                            device,
+                            encoder,
+                            horizon_rtx::SunInputs {
+                                uniform,
+                                depth,
+                                mask_size,
+                                tlas,
+                                arena: &bindings.arena,
+                                sprites: &bindings.sprites,
+                                instances: &bindings.instances,
+                                dynamics: &bindings.dynamics,
+                                atlas: &bindings.atlas,
+                                sprite_split: sprite_split(),
+                            },
+                        )
+                    },
+                )
+            }
+            _ => None,
+        };
+        #[cfg(feature = "rtx")]
+        let sun_pass = sun_closure.as_mut().map(|f| {
+            f as &mut dyn FnMut(
+                &mut wgpu::CommandEncoder,
+                &wgpu::Buffer,
+                [u32; 2],
+            ) -> wgpu::TextureView
+        });
+        #[cfg(not(feature = "rtx"))]
+        let sun_pass = None;
         let [mask, blocks, sun, reflection, refraction] = self.shadow_rays.run(
             &self.device,
             &mut self.uploads,
@@ -4394,6 +4455,7 @@ impl Renderer {
             self.far_heights.views(),
             hw.as_ref().map(hw_rays::Bindings::hardware),
             first_depth.as_ref(),
+            sun_pass,
         );
         [mask, blocks, sun, reflection, refraction, depth]
     }
@@ -7013,6 +7075,7 @@ impl Renderer {
                     &self.atmosphere.view,
                     self.far_heights.views(),
                     hw.as_ref().map(hw_rays::Bindings::hardware),
+                    None,
                     None,
                 )[0]
                 .clone()

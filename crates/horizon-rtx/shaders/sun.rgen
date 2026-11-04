@@ -1,0 +1,118 @@
+#version 460
+// RT lighting's sun pass as a ray tracing pipeline (docs/rtx-4090.md, phase 3's second brick):
+// for each mask texel of a view, what the trace kernel (gfx/shadow_rays.wgsl `trace`) computes of
+// the sun for the primary surface: a ray from the surface the depth shows toward a point of the
+// sun's disc (RT lighting) or toward the sun (traced shadows), through the drawn triangles, the
+// cutouts alpha-tested (sun.rahit), and how much light got through. The kernel reads it in place
+// of tracing it (`sun_pass`, `rt.mode.w`), so the picture is to be the same; the difference is
+// where the ray runs: here the hardware reorders the threads by what they hit (shader execution
+// reordering, `reorderThreadNV`) before anything is shaded.
+//
+// The uniform is the kernel's own `Rt` (std140 as WGSL lays it out: vec4s and mat4s only), the
+// helpers are its, ported one for one: `surface_at`, `surface_normal`, `random2`, `sun_disc_ray`.
+#extension GL_EXT_ray_tracing : require
+#extension GL_NV_shader_invocation_reorder : require
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(std140, set = 0, binding = 0) uniform Rt {
+    mat4 inverse_view_proj;
+    vec4 light;
+    vec4 camera;
+    vec4 fraction;
+    vec4 grid;
+    vec4 size;
+    vec4 fovea;
+    vec4 mode;
+    mat4 prev_view_proj;
+    vec4 motion;
+    vec4 sun;
+    vec4 frame;
+    vec4 sun_light;
+    vec4 water;
+    vec4 hw_offset;
+    vec4 held;
+    vec4 far;
+    vec4 moving[8];
+    vec4 rain;
+    vec4 rain_sun;
+    mat4 first_view_proj;
+    mat4 first_inverse_view_proj;
+} rt;
+layout(set = 0, binding = 1) uniform texture2D depth;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D sun_out;
+layout(set = 0, binding = 3) uniform accelerationStructureEXT terrain;
+
+layout(location = 0) rayPayloadEXT float payload;
+
+// The kernel's `surface_at`: the camera-relative position the depth shows at pixel `p`.
+vec3 surface_at(ivec2 p) {
+    vec2 size = rt.size.xy;
+    float d = texelFetch(depth, clamp(p, ivec2(0), ivec2(size) - 1), 0).r;
+    vec2 ndc = vec2((float(p.x) + 0.5) / size.x * 2.0 - 1.0, 1.0 - (float(p.y) + 0.5) / size.y * 2.0);
+    vec4 c = rt.inverse_view_proj * vec4(ndc, d, 1.0);
+    return c.xyz / c.w;
+}
+
+// The kernel's `surface_normal`: from the nearer of the neighbours each way.
+vec3 surface_normal(ivec2 p, vec3 pos) {
+    vec3 r = surface_at(p + ivec2(1, 0)) - pos;
+    vec3 l = pos - surface_at(p - ivec2(1, 0));
+    vec3 d = surface_at(p + ivec2(0, 1)) - pos;
+    vec3 u = pos - surface_at(p - ivec2(0, 1));
+    vec3 dx = dot(r, r) < dot(l, l) ? r : l;
+    vec3 dy = dot(d, d) < dot(u, u) ? d : u;
+    vec3 n = normalize(cross(dx, dy));
+    return dot(n, pos) > 0.0 ? -n : n;
+}
+
+// The kernel's `random2` (PCG, hashed from the texel, the frame and a salt).
+vec2 random2(ivec2 texel, uint salt) {
+    uint v = uint(texel.x) * 1973u + uint(texel.y) * 9277u + uint(rt.frame.x) * 26699u + salt * 7919u;
+    v = v * 747796405u + 2891336453u;
+    uint w = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
+    w = (w >> 22u) ^ w;
+    uint u = w * 747796405u + 2891336453u;
+    u = ((u >> ((u >> 28u) + 4u)) ^ u) * 277803737u;
+    u = (u >> 22u) ^ u;
+    return vec2(float(w >> 8u), float(u >> 8u)) / 16777216.0;
+}
+
+// The kernel's `sun_disc_ray`'s direction: toward a point of the sun's disc.
+vec3 disc_direction(vec2 random) {
+    vec3 l = rt.light.xyz;
+    vec3 t = normalize(abs(l.y) > 0.9 ? cross(l, vec3(1.0, 0.0, 0.0)) : cross(l, vec3(0.0, 1.0, 0.0)));
+    vec3 b = cross(l, t);
+    float r = sqrt(random.x) * rt.sun_light.w;
+    float a = 6.2831853 * random.y;
+    return normalize(l + (t * cos(a) + b * sin(a)) * r);
+}
+
+void main() {
+    ivec2 texel = ivec2(gl_LaunchIDEXT.xy);
+    // The kernel's `pixel_of`.
+    int scale = int(rt.size.z);
+    ivec2 p = texel * scale + scale / 2;
+    vec4 result = vec4(1.0);
+    // Reverse depth: 0 is the sky. Past the grid's edge the kernel takes the far field alone.
+    if (float(p.x) < rt.size.x && float(p.y) < rt.size.y && texelFetch(depth, p, 0).r > 0.0) {
+        vec3 pos = surface_at(p);
+        vec3 n = surface_normal(p, pos);
+        vec3 lifted = pos + n * (0.02 + 0.002 * length(pos));
+        float reach = 0.5 * rt.grid.z;
+        float far_off = max(abs(pos.x), abs(pos.z));
+        float edge = 1.0 - smoothstep(0.75 * reach, reach, far_off);
+        bool shadows = rt.mode.y > 0.5 && rt.light.w > 0.0;
+        if (edge > 0.0 && shadows) {
+            bool lit = rt.mode.x > 0.5;
+            vec3 d = lit ? disc_direction(random2(texel, 2u)) : rt.light.xyz;
+            // The instances stand around their anchor (gfx/hw_rays.rs): the camera's offset.
+            hitObjectNV hit;
+            hitObjectTraceRayNV(hit, terrain,
+                gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT, 0xff,
+                0, 0, 0, lifted + rt.hw_offset.xyz, 0.0, d, 4096.0, 0);
+            reorderThreadNV(hit);
+            result = vec4(vec3(hitObjectIsHitNV(hit) ? 0.0 : 1.0), 1.0);
+        }
+    }
+    imageStore(sun_out, texel, result);
+}

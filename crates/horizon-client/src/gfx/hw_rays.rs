@@ -343,6 +343,13 @@ pub struct ToBuild {
 }
 
 impl HwRays {
+    /// The raw build of the top-level structure, where it runs (the `rtx` feature): what the
+    /// passes that bind the structure raw take (horizon-rtx `sun`).
+    #[cfg_attr(not(feature = "rtx"), allow(dead_code))]
+    pub fn raw(&self) -> Option<&RawTlas> {
+        self.raw.as_ref()
+    }
+
     /// Whether `device` traces hardware rays (and `HORIZON_HW_RT` isn't 0).
     pub fn supported(device: &wgpu::Device) -> bool {
         device
