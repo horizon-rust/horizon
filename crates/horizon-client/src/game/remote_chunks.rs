@@ -250,9 +250,11 @@ impl Game<'_> {
         };
         let (x, z) = (p.x, p.z);
         self.streaming.insert_remote(&mut self.world, chunk);
-        self.world
-            .block_entities
-            .retain(|k, _| (k.0 >> 4, k.2 >> 4) != (x, z));
+        // The packet's block entities replace the column's: removed by
+        // column, as a retain over every block entity of the world for each
+        // of the 25 to 60 columns a chunk border brings was that many passes
+        // over all of them in one frame.
+        self.world.block_entities.remove_column(x, z);
         for info in &p.chunk.block_entities {
             let pos = (
                 x * 16 + i32::from(info.packed_xz as u8 >> 4),

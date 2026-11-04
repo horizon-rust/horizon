@@ -65,6 +65,16 @@ pub struct BlockEntities {
     out: FxHashSet<Pos>,
     /// `Ticking` by block state id; empty until the game builds it.
     states: Vec<Ticking>,
+    /// The positions in `map` by column, so a column's block entities go
+    /// without a pass over the whole world's (`remove_column`): a server's
+    /// chunk packet replaces its column's, one column at a time, and a
+    /// retain over every block entity for each of the 25 to 60 columns a
+    /// chunk border brings was that many passes a frame.
+    columns: FxHashMap<(i32, i32), FxHashSet<Pos>>,
+}
+
+fn column_of(p: &Pos) -> (i32, i32) {
+    (p.0 >> 4, p.2 >> 4)
 }
 
 impl std::ops::Deref for BlockEntities {
@@ -179,9 +189,24 @@ impl BlockEntities {
     pub fn insert(&mut self, pos: Pos, entity: BlockEntity) -> Option<BlockEntity> {
         let old = self.map.insert(pos, entity);
         if old.is_none() {
+            self.indexed(pos);
             self.add(pos);
         }
         old
+    }
+    /// `pos` joined the map.
+    fn indexed(&mut self, pos: Pos) {
+        self.columns.entry(column_of(&pos)).or_default().insert(pos);
+    }
+    /// `pos` left the map.
+    fn unindexed(&mut self, pos: &Pos) {
+        let column = column_of(pos);
+        if let Some(set) = self.columns.get_mut(&column) {
+            set.remove(pos);
+            if set.is_empty() {
+                self.columns.remove(&column);
+            }
+        }
     }
     /// The block entity at `pos`, made by `make` when there is none.
     pub fn get_or_insert_with(
@@ -190,6 +215,7 @@ impl BlockEntities {
         make: impl FnOnce() -> BlockEntity,
     ) -> &mut BlockEntity {
         if !self.map.contains_key(&pos) {
+            self.indexed(pos);
             self.add(pos);
         }
         self.map.entry(pos).or_insert_with(make)
@@ -197,13 +223,29 @@ impl BlockEntities {
     /// `LevelChunk.removeBlockEntity`: the block entity and its slot.
     pub fn remove(&mut self, pos: &Pos) -> Option<BlockEntity> {
         self.cancel(pos);
-        self.map.remove(pos)
+        let removed = self.map.remove(pos);
+        if removed.is_some() {
+            self.unindexed(pos);
+        }
+        removed
+    }
+    /// The block entities of column (x, z) and their slots, as `retain`
+    /// refusing them would remove them, without visiting any other column's.
+    pub fn remove_column(&mut self, x: i32, z: i32) {
+        let Some(positions) = self.columns.remove(&(x, z)) else {
+            return;
+        };
+        for p in &positions {
+            self.cancel(p);
+            self.map.remove(p);
+        }
     }
     /// The block entity at `pos`, out of the map for a while: its slot stays
     /// for `put` to bring it back (a tick working on it).
     pub fn take(&mut self, pos: &Pos) -> Option<BlockEntity> {
         let taken = self.map.remove(pos);
         if taken.is_some() {
+            self.unindexed(pos);
             self.out.insert(*pos);
         }
         taken
@@ -211,10 +253,11 @@ impl BlockEntities {
     /// Brings back what `take` took, in its slot.
     pub fn put(&mut self, pos: Pos, entity: BlockEntity) {
         self.out.remove(&pos);
-        if self.map.insert(pos, entity).is_none()
-            && !self.live.contains_key(&pos)
-            && !self.pending.contains_key(&pos)
-        {
+        let new = self.map.insert(pos, entity).is_none();
+        if new {
+            self.indexed(pos);
+        }
+        if new && !self.live.contains_key(&pos) && !self.pending.contains_key(&pos) {
             self.add(pos);
         }
     }
@@ -222,17 +265,26 @@ impl BlockEntities {
     /// (`clearAllBlockEntities` of unloaded chunks).
     pub fn retain(&mut self, mut keep: impl FnMut(&Pos, &mut BlockEntity) -> bool) {
         let (live, pending, freed) = (&mut self.live, &mut self.pending, &mut self.freed);
+        let columns = &mut self.columns;
         self.map.retain(|p, e| {
             let kept = keep(p, e);
             if !kept {
                 *freed |= live.remove(p).is_some();
                 pending.remove(p);
+                let column = column_of(p);
+                if let Some(set) = columns.get_mut(&column) {
+                    set.remove(p);
+                    if set.is_empty() {
+                        columns.remove(&column);
+                    }
+                }
             }
             kept
         });
     }
     pub fn clear(&mut self) {
         self.map.clear();
+        self.columns.clear();
         self.tickers.clear();
         self.live.clear();
         self.added.clear();
@@ -246,7 +298,9 @@ impl BlockEntities {
     pub fn load_chunk(&mut self, entities: Vec<(Pos, BlockEntity)>) {
         let order = chunk_map_order(entities.iter().map(|(p, _)| *p));
         for (p, e) in entities {
-            self.map.insert(p, e);
+            if self.map.insert(p, e).is_none() {
+                self.indexed(p);
+            }
         }
         for p in order {
             self.add(p);
@@ -388,5 +442,48 @@ mod tests {
         let many: Vec<Pos> = (0..100).map(|i| (i % 16, i / 16, 3)).collect();
         let order = chunk_map_order(many.iter().copied().chain(many.iter().copied()));
         assert_eq!(order.len(), 100);
+    }
+
+    /// `remove_column` removes what a retain of the column would, slots
+    /// included, through every way into and out of the map.
+    #[test]
+    fn a_column_goes_as_a_retain_would_take_it() {
+        let mut by_column = level();
+        let mut by_retain = level();
+        let mut s = HashMap::new();
+        for b in [&mut by_column, &mut by_retain] {
+            for p in [(0, 0, 0), (15, 3, 15), (16, 0, 0), (-1, 0, 0), (5, 9, 31)] {
+                s.insert(p, 1);
+                b.insert(p, hopper());
+            }
+            b.get_or_insert_with((7, 1, 7), hopper);
+            s.insert((7, 1, 7), 1);
+            b.load_chunk(vec![((3, 2, 1), hopper()), ((17, 0, 1), hopper())]);
+            s.insert((3, 2, 1), 1);
+            s.insert((17, 0, 1), 1);
+            b.tickers(|p| s.get(&p).copied().unwrap_or(0));
+            // Out and back in, and out for good.
+            let e = b.take(&(15, 3, 15)).unwrap();
+            b.put((15, 3, 15), e);
+            b.remove(&(7, 1, 7));
+            b.retain(|p, _| *p != (5, 9, 31));
+        }
+        by_column.remove_column(0, 0);
+        by_retain.retain(|p, _| (p.0 >> 4, p.2 >> 4) != (0, 0));
+        let keys = |b: &BlockEntities| {
+            let mut k: Vec<Pos> = b.keys().copied().collect();
+            k.sort();
+            k
+        };
+        assert_eq!(keys(&by_column), [(-1, 0, 0), (16, 0, 0), (17, 0, 1)]);
+        assert_eq!(keys(&by_column), keys(&by_retain));
+        assert_eq!(order(&mut by_column, &s), order(&mut by_retain, &s));
+        // Nothing is left indexed for the column, and other columns still are.
+        assert!(!by_column.columns.contains_key(&(0, 0)));
+        assert!(!by_column.columns.contains_key(&(0, 1)));
+        by_column.remove_column(1, 0);
+        assert_eq!(keys(&by_column), [(-1, 0, 0)]);
+        by_column.clear();
+        assert!(by_column.columns.is_empty());
     }
 }

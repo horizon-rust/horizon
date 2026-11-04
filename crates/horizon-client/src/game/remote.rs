@@ -216,10 +216,9 @@ pub(super) struct Remote {
     clock_game_time: i64,
     /// `ClientChunkCache.Storage`'s view centre (ClientboundSetChunkCacheCenterPacket).
     chunk_center: (i32, i32),
-    /// Received events a frame left for the next one, in order, and when
-    /// the oldest of them first waited (`poll_remote`).
-    backlog: VecDeque<Received>,
-    backlog_since: Option<Instant>,
+    /// Received events a frame left for the next one, in order, each with
+    /// the frame it arrived in (`poll_remote`).
+    backlog: VecDeque<(Instant, Received)>,
     /// `ClientboundTransferPacket`'s target: when the connection ends the
     /// game connects here, the stored cookies carried over (`TransferState`).
     transfer: Option<String>,
@@ -234,10 +233,34 @@ pub(super) struct Remote {
 /// time the player crossed a chunk border at 32 chunks; they decode on the
 /// chunk decoder's thread now, and the frame only inserts them.
 const CHUNK_PACKETS_PER_FRAME: Duration = Duration::from_millis(1);
-/// Events that have waited this long are all handled in the next frame,
-/// whatever inserting their columns costs, up to a column still decoding:
-/// the packets after a slow machine's chunks don't wait on its frames.
+/// Each time the oldest waiting event has waited this long again, the
+/// frame's time for chunk packets doubles, up to `CATCH_UP_CEILING`.
 const BACKLOG_LIMIT: Duration = Duration::from_millis(50);
+/// The most a frame spends on chunk packets while catching up: 40 columns at
+/// 0.1 ms, 2400 a second at 60 frames, six times what flying at 100 blocks/s
+/// at 32 chunks brings (6 chunk borders a second, 65 columns each). Before,
+/// a backlog older than `BACKLOG_LIMIT` went all in one frame, and in
+/// sustained flight that was a burst of every waiting column every 50 ms.
+const CATCH_UP_CEILING: Duration = Duration::from_millis(4);
+/// A backlog this old means the frames do not keep up even at the ceiling:
+/// everything waiting goes in the next frame, as the packets behind the
+/// chunks (block changes, entities) cannot wait any longer.
+const BACKLOG_STALL: Duration = Duration::from_secs(1);
+
+/// The time a frame spends inserting chunk columns when the oldest event
+/// still waiting arrived `waited` ago (`None`: no backlog): 1 ms, doubled for
+/// each `BACKLOG_LIMIT` it has waited, up to `CATCH_UP_CEILING`; no limit
+/// once it has waited `BACKLOG_STALL`.
+fn chunk_budget(waited: Option<Duration>) -> Option<Duration> {
+    let Some(waited) = waited else {
+        return Some(CHUNK_PACKETS_PER_FRAME);
+    };
+    if waited >= BACKLOG_STALL {
+        return None;
+    }
+    let doublings = (waited.as_millis() / BACKLOG_LIMIT.as_millis()).min(8) as u32;
+    Some((CHUNK_PACKETS_PER_FRAME * (1 << doublings)).min(CATCH_UP_CEILING))
+}
 /// The open menu name of a server's horse inventory, then its chest's
 /// columns (the packet names no `MenuType`).
 const MOUNT_MENU: &str = "horizon:mount";
@@ -505,7 +528,6 @@ impl Game<'_> {
             clock_game_time: 0,
             chunk_center: (0, 0),
             backlog: VecDeque::new(),
-            backlog_since: None,
             server_links: Vec::new(),
             transfer: None,
         });
@@ -773,36 +795,41 @@ impl Game<'_> {
 
     /// Process what the network thread received (once per frame, like the
     /// client's packet processor), in order. Chunk packets get
-    /// `CHUNK_PACKETS_PER_FRAME`: once a frame has spent it, the events from
-    /// the next chunk packet on wait for the next frame, unless they have
-    /// already waited `BACKLOG_LIMIT`. A chunk packet still decoding holds
-    /// back what follows it.
+    /// `chunk_budget`: once a frame has spent it, the events from the next
+    /// chunk packet on wait for the next frame. A chunk packet still
+    /// decoding holds back what follows it.
     pub(super) fn poll_remote(&mut self) -> Result<()> {
         let Some(r) = self.remote.as_mut() else {
             return Ok(());
         };
         let mut events = std::mem::take(&mut r.backlog);
+        let now = Instant::now();
+        // How long the oldest event left by earlier frames has waited: the
+        // budget catches up with it gradually, as the columns' order is the
+        // server's (`PlayerChunkSender` sends the nearest first) and the
+        // packets after a column must find it inserted.
+        let budget = chunk_budget(events.front().map(|(at, _)| now - *at));
         // Chunk packets start decoding now; the frame that reaches one in
         // order inserts its column.
         for event in r.session.poll() {
-            events.push_back(match event {
-                Event::Packet(p) if matches!(*p, C::LevelChunkWithLight(_)) => {
-                    match r.decoder.submit(r.chunk_format.clone(), p) {
-                        None => Received::Chunk(r.chunk_format.clone()),
-                        Some(p) => Received::Event(Event::Packet(p)),
+            events.push_back((
+                now,
+                match event {
+                    Event::Packet(p) if matches!(*p, C::LevelChunkWithLight(_)) => {
+                        match r.decoder.submit(r.chunk_format.clone(), p) {
+                            None => Received::Chunk(r.chunk_format.clone()),
+                            Some(p) => Received::Event(Event::Packet(p)),
+                        }
                     }
-                }
-                event => Received::Event(event),
-            });
+                    event => Received::Event(event),
+                },
+            ));
         }
-        let overdue = r
-            .backlog_since
-            .is_some_and(|since| since.elapsed() >= BACKLOG_LIMIT);
         let mut chunks = Duration::ZERO;
-        while let Some(item) = events.pop_front() {
+        while let Some((arrived, item)) = events.pop_front() {
             let chunk = matches!(item, Received::Chunk(_));
-            if chunk && !overdue && chunks >= CHUNK_PACKETS_PER_FRAME {
-                events.push_front(item);
+            if chunk && budget.is_some_and(|budget| chunks >= budget) {
+                events.push_front((arrived, item));
                 break;
             }
             let started = chunk.then(Instant::now);
@@ -817,7 +844,7 @@ impl Game<'_> {
                     let (packet, column) = match next {
                         Next::Ready(decoded) => decoded,
                         Next::Decoding => {
-                            events.push_front(Received::Chunk(format));
+                            events.push_front((arrived, Received::Chunk(format)));
                             break;
                         }
                         Next::Lost => {
@@ -930,11 +957,6 @@ impl Game<'_> {
             }
         }
         if let Some(r) = self.remote.as_mut() {
-            r.backlog_since = if events.is_empty() {
-                None
-            } else {
-                Some(r.backlog_since.unwrap_or_else(Instant::now))
-            };
             r.backlog = events;
         }
         self.send_suggestion_request();
@@ -1107,10 +1129,10 @@ impl Game<'_> {
             renderer.remove_columns(gone.iter().copied());
         }
         horizon_client::chunk::free_columns(freed, gone.len());
-        // One pass for all of them.
-        self.world
-            .block_entities
-            .retain(|k, _| !gone.contains(&(k.0 >> 4, k.2 >> 4)));
+        // By column, without a pass over the rest of the world's.
+        for &(x, z) in &gone {
+            self.world.block_entities.remove_column(x, z);
+        }
     }
     /// `handleBlockEntityData`: the block entity at `pos`, when it is of the
     /// packet's type, loads the tag (`loadWithComponents`); an empty tag
@@ -1709,9 +1731,8 @@ impl Game<'_> {
             C::ForgetLevelChunk(p) => {
                 let [x, z] = p.pos;
                 self.streaming.forget(&mut self.world, x, z);
-                self.world
-                    .block_entities
-                    .retain(|k, _| (k.0 >> 4, k.2 >> 4) != (x, z));
+                // By column: a frame of flight forgets a ring of them.
+                self.world.block_entities.remove_column(x, z);
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.remove_columns([(x, z)]);
                 }
@@ -5929,6 +5950,35 @@ impl Remote {
 #[cfg(test)]
 mod tests {
     use super::Game;
+
+    /// The chunk budget catches up with an old backlog by doubling, never
+    /// past the ceiling, until the backlog stalls.
+    #[test]
+    fn the_chunk_budget_catches_up_gradually() {
+        use super::{
+            BACKLOG_LIMIT, BACKLOG_STALL, CATCH_UP_CEILING, CHUNK_PACKETS_PER_FRAME, chunk_budget,
+        };
+        use std::time::Duration;
+        let ms = Duration::from_millis;
+        assert_eq!(chunk_budget(None), Some(CHUNK_PACKETS_PER_FRAME));
+        assert_eq!(chunk_budget(Some(ms(0))), Some(ms(1)));
+        assert_eq!(chunk_budget(Some(ms(49))), Some(ms(1)));
+        assert_eq!(chunk_budget(Some(BACKLOG_LIMIT)), Some(ms(2)));
+        assert_eq!(chunk_budget(Some(ms(120))), Some(ms(4)));
+        assert_eq!(chunk_budget(Some(ms(900))), Some(CATCH_UP_CEILING));
+        assert_eq!(
+            chunk_budget(Some(BACKLOG_STALL - ms(1))),
+            Some(CATCH_UP_CEILING)
+        );
+        assert_eq!(chunk_budget(Some(BACKLOG_STALL)), None);
+        // Never shrinks as the backlog ages, until it is unbounded.
+        let mut last = Duration::ZERO;
+        for t in (0..1000).step_by(7) {
+            let b = chunk_budget(Some(ms(t))).unwrap();
+            assert!(b >= last && b <= CATCH_UP_CEILING);
+            last = b;
+        }
+    }
 
     #[test]
     fn placement_preview_checks_obstruction_without_changing_the_level() {

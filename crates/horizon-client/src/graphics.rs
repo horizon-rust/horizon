@@ -247,9 +247,14 @@ pub struct Graphics {
     pub cave_culling: bool,
     /// Skip drawing entities hidden behind opaque terrain.
     pub entity_culling: bool,
-    /// Meshed sections uploaded per frame; 0 uploads all that are ready.
+    /// Meshed sections uploaded per frame at most, nearest the camera first;
+    /// 0 is no count limit. Whatever it is, a frame stops uploading after
+    /// `streaming::uploads::time_budget` (2 ms, up to 8 ms after a frame that
+    /// waited on the GPU) except for the sections around the camera, so the
+    /// rest wait for later frames.
     pub chunk_updates: u32,
-    /// Section mesh bytes uploaded per frame, in KiB; 0 is unlimited.
+    /// Section mesh bytes uploaded per frame, in KiB (one section always
+    /// goes); 0 is no byte limit, the time ceiling above still holds.
     pub upload_budget_kib: u32,
     pub sky: bool,
     /// How far the sun's and moon's path leans toward the south, in degrees (-60..=60, steps of

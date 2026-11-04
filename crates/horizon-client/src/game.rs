@@ -1700,8 +1700,9 @@ struct Game<'a> {
     mods: mods::ModsState,
     /// Horizon's own shader pack, while one is picked (`game/native_shaders.rs`).
     native_shaders: native_shaders::NativeShaders,
-    /// Meshed sections waiting for an upload budget (Horizon settings).
-    pending_uploads: Vec<((i32, i32, i32), horizon_client::mesher::SectionMesh)>,
+    /// Meshed sections waiting for their upload, nearest first: past the
+    /// frame's time ceiling or the player's upload budgets (`update_world`).
+    pending_uploads: horizon_client::streaming::uploads::UploadQueue,
     /// This frame's view frustum, for culling entities and block entities.
     view_frustum: Option<horizon_client::gfx::Frustum>,
     entity_culler: Option<horizon_client::entity_culling::Culler>,
@@ -12030,9 +12031,11 @@ impl Game<'_> {
         if !unloaded.is_empty() {
             let gone: horizon_client::fast_hash::FxHashSet<(i32, i32)> =
                 unloaded.iter().map(|c| (c.x, c.z)).collect();
-            self.world
-                .block_entities
-                .retain(|p, _| !gone.contains(&(p.0 >> 4, p.2 >> 4)));
+            // By column: a frame of flight unloads a ring of columns, and a
+            // pass over every block entity of the world for it is wasted.
+            for &(x, z) in &gone {
+                self.world.block_entities.remove_column(x, z);
+            }
             self.world
                 .block_names
                 .retain(|p, _| !gone.contains(&(p.0 >> 4, p.2 >> 4)));
@@ -12047,56 +12050,49 @@ impl Game<'_> {
         }
         let (far_distance, far_reduced) = self.far_terrain_choice();
         if let Some(renderer) = self.renderer.as_mut() {
+            // Uploads wait in a queue nearest the camera's section first,
+            // and a frame takes what its budget allows: the player's Chunk
+            // Updates and Upload Budget (0 is no limit), and in any case
+            // `uploads::time_budget` of the main thread (2 ms, more after a
+            // frame that waited on the GPU), past which only the sections
+            // around the camera still go. Without the ceiling a burst of ~230
+            // meshes in fast flight at 32 chunks cost one frame 1 to 4 ms. A
+            // newer mesh of a waiting section replaces it, and the sections
+            // of unloaded columns are dropped.
             let g = &self.settings.horizon;
-            let budgeted = g.chunk_updates > 0 || g.upload_budget_kib > 0;
-            if !budgeted && self.pending_uploads.is_empty() {
-                horizon_client::spans::time("upload", || {
-                    for (key, mesh) in uploads {
-                        renderer.upload(key, &mesh);
-                    }
-                });
-            } else {
-                // Horizon's chunk-update and upload budgets: the nearest
-                // sections go first, the rest wait for later frames; a newer
-                // mesh of a waiting section replaces it, and sections of
-                // chunks no longer loaded are dropped.
-                let pending = &mut self.pending_uploads;
-                let fresh: horizon_client::fast_hash::FxHashSet<(i32, i32, i32)> =
-                    uploads.iter().map(|(k, _)| *k).collect();
+            // `renderer.last_wait` is the last frame's wait on the GPU or the
+            // display: idle main-thread time the uploads may take (up to 8 ms).
+            let budget = horizon_client::streaming::uploads::Budget::new(
+                g.chunk_updates,
+                g.upload_budget_kib,
+                renderer.last_wait,
+            );
+            let pending = &mut self.pending_uploads;
+            // Columns leave by `unloaded` and by a server's forget packets
+            // (`Streaming::forget`): a lookup per waiting section, a few µs.
+            if !pending.is_empty() {
                 let chunks = &self.world.chunks;
-                pending.retain(|(k, _)| !fresh.contains(k) && chunks.contains_key(&(k.0, k.2)));
-                pending.extend(
-                    uploads
-                        .into_iter()
-                        .filter(|(k, _)| chunks.contains_key(&(k.0, k.2))),
-                );
-                let centre = self.streaming.center;
-                let far = |k: &(i32, i32, i32)| (k.0 - centre.0).pow(2) + (k.2 - centre.1).pow(2);
-                pending.sort_unstable_by_key(|(k, _)| std::cmp::Reverse(far(k)));
-                let (limit, budget) = if budgeted {
-                    (
-                        g.chunk_updates as usize,
-                        u64::from(g.upload_budget_kib) * 1024,
-                    )
-                } else {
-                    (0, 0)
-                };
-                let (mut count, mut bytes) = (0, 0u64);
-                while let Some((_, mesh)) = pending.last() {
-                    let size = ((mesh.solid.len() + mesh.translucent.len())
-                        * std::mem::size_of::<horizon_client::mesher::TerrainVertex>())
-                        as u64;
-                    if (limit > 0 && count >= limit)
-                        || (budget > 0 && bytes > 0 && bytes + size > budget)
-                    {
-                        break;
-                    }
-                    let (key, mesh) = pending.pop().expect("checked above");
-                    renderer.upload(key, &mesh);
-                    count += 1;
-                    bytes += size;
+                pending.retain_columns(|x, z| chunks.contains_key(&(x, z)));
+            }
+            let camera = match &self.player {
+                Some(p) => (
+                    (p.position.x.floor() as i32) >> 4,
+                    (p.position.y.floor() as i32 - horizon_client::chunk::MIN_Y) >> 4,
+                    (p.position.z.floor() as i32) >> 4,
+                ),
+                None => (self.streaming.center.0, 0, self.streaming.center.1),
+            };
+            pending.set_centre(camera);
+            for (key, mesh) in uploads {
+                // `Streaming::update` hands over meshes of resident columns
+                // only; a column gone since cannot remove an uploaded one.
+                if self.world.chunks.contains_key(&(key.0, key.2)) {
+                    pending.push(key, mesh);
                 }
             }
+            horizon_client::spans::time("upload", || {
+                pending.drain(&budget, |key, mesh| renderer.upload(key, &mesh));
+            });
             renderer.remove_columns(unloaded.iter().map(|c| (c.x, c.z)));
             if let (Some(lod), Some(player)) = (&mut self.lod, &self.player) {
                 let lod_distance =
@@ -13493,7 +13489,7 @@ impl<'a> Game<'a> {
             view_frustum: None,
             entity_culler: None,
             pack_shadow_casters: (false, false),
-            pending_uploads: Vec::new(),
+            pending_uploads: Default::default(),
             frame_graph: Default::default(),
             extras: Default::default(),
             mods: Default::default(),

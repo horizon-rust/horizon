@@ -22,6 +22,8 @@ use std::{
     thread,
 };
 
+pub mod uploads;
+
 /// A chunk under generation, opaque to the streamer.
 pub type Proto = Box<dyn std::any::Any + Send>;
 /// Chunk generation in vanilla's stages: a neighbour-independent proto chunk
