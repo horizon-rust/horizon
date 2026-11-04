@@ -15,8 +15,21 @@ pub enum Occupancy {
     #[default]
     Empty,
     Solid,
+    /// Blocks of more than one kind, with what the grid's textures take of them, worked out once
+    /// where the section is meshed (a worker): the frame only copies them.
+    Mixed(Box<Mixed>),
+}
+
+/// A mixed section's blocks and their grid texels (`Occupancy::bricks`, `Occupancy::brick_masks`).
+/// Kept beside the bits because working them out walks the 4096 blocks twice, about 50 µs, and a
+/// chunk border crossed in flight brings hundreds of sections to the grid at once (docs/rtx-4090.md,
+/// phase 0: `rt_grid` 5.8 ms of a slow frame when the frame did this for 96 sections).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mixed {
     /// Index `(z * 16 + y) * 16 + x`, four blocks a byte, the lowest bits first.
-    Mixed(Box<[u8; 1024]>),
+    bits: [u8; 1024],
+    bricks: [u8; 8],
+    masks: [[u32; 128]; 2],
 }
 
 fn index(x: usize, y: usize, z: usize) -> usize {
@@ -26,7 +39,9 @@ fn index(x: usize, y: usize, z: usize) -> usize {
 impl Occupancy {
     /// The section with block `(x, y, z)` (each 0..16) of kind `kind(x, y, z)`.
     pub fn from_fn(mut kind: impl FnMut(usize, usize, usize) -> u8) -> Self {
-        let mut bits = Box::new([0u8; 1024]);
+        let mut bits = [0u8; 1024];
+        let mut bricks = [0u8; 8];
+        let mut masks = [[0u32; 128]; 2];
         let (mut any, mut all_solid) = (false, true);
         for z in 0..16 {
             for y in 0..16 {
@@ -36,13 +51,29 @@ impl Occupancy {
                     all_solid &= k == SOLID;
                     let i = index(x, y, z);
                     bits[i / 4] |= k << ((i % 4) * 2);
+                    if k == EMPTY {
+                        continue;
+                    }
+                    bricks[((z / 8) * 2 + y / 8) * 2 + x / 8] |= 1 | if k == CUTOUT { 2 } else { 0 };
+                    // Word `w` of a brick holds its local rows `z = w / 2`, `y = (w % 2) * 4..+4`,
+                    // bit `(y % 4) * 8 + x`; the texture's 8x2x2 texels, two bricks of four a row,
+                    // x fastest.
+                    let (b, l) = ([x / 8, y / 8, z / 8], [x % 8, y % 8, z % 8]);
+                    let w = l[2] * 2 + l[1] / 4;
+                    let texel = (b[2] * 2 + b[1]) * 8 + b[0] * 4 + w / 4;
+                    let word = texel * 4 + w % 4;
+                    masks[usize::from(k == CUTOUT)][word] |= 1 << ((l[1] % 4) * 8 + l[0]);
                 }
             }
         }
         match (any, all_solid) {
             (false, _) => Self::Empty,
             (true, true) => Self::Solid,
-            _ => Self::Mixed(bits),
+            _ => Self::Mixed(Box::new(Mixed {
+                bits,
+                bricks,
+                masks,
+            })),
         }
     }
 
@@ -50,9 +81,9 @@ impl Occupancy {
         match self {
             Self::Empty => EMPTY,
             Self::Solid => SOLID,
-            Self::Mixed(bits) => {
+            Self::Mixed(mixed) => {
                 let i = index(x, y, z);
-                (bits[i / 4] >> ((i % 4) * 2)) & 3
+                (mixed.bits[i / 4] >> ((i % 4) * 2)) & 3
             }
         }
     }
@@ -64,50 +95,20 @@ impl Occupancy {
         match self {
             Self::Empty => [0; 8],
             Self::Solid => [1; 8],
-            Self::Mixed(_) => {
-                let mut out = [0u8; 8];
-                for z in 0..16 {
-                    for y in 0..16 {
-                        for x in 0..16 {
-                            let kind = self.get(x, y, z);
-                            if kind != EMPTY {
-                                out[((z / 8) * 2 + y / 8) * 2 + x / 8] |=
-                                    1 | if kind == CUTOUT { 2 } else { 0 };
-                            }
-                        }
-                    }
-                }
-                out
-            }
+            Self::Mixed(mixed) => mixed.bricks,
         }
     }
 
     /// The section's eight bricks as bit masks (gfx/voxels.rs): for the solid blocks and for the
-    /// cutout ones, 512 bits a brick in four `Rgba32Uint` texels. Word `k` of a brick holds its
-    /// local rows `z = k / 2`, `y = (k % 2) * 4..+4`, bit `(y % 4) * 8 + x`. Laid out as the
-    /// texture's 8x2x2 texels (two bricks of four texels a row), x fastest.
+    /// cutout ones, 512 bits a brick in four `Rgba32Uint` texels, laid out as the texture's 8x2x2
+    /// texels (`from_fn`).
     pub fn brick_masks(&self) -> [[u32; 128]; 2] {
-        let mut out = [[0u32; 128]; 2];
-        if *self == Self::Empty {
-            return out;
+        match self {
+            Self::Empty => [[0; 128]; 2],
+            // Every block solid: every bit of the solid mask.
+            Self::Solid => [[u32::MAX; 128], [0; 128]],
+            Self::Mixed(mixed) => mixed.masks,
         }
-        for z in 0..16 {
-            for y in 0..16 {
-                for x in 0..16 {
-                    let kind = self.get(x, y, z);
-                    if kind == EMPTY {
-                        continue;
-                    }
-                    let (b, l) = ([x / 8, y / 8, z / 8], [x % 8, y % 8, z % 8]);
-                    let k = l[2] * 2 + l[1] / 4;
-                    let texel = (b[2] * 2 + b[1]) * 8 + b[0] * 4 + k / 4;
-                    let word = texel * 4 + k % 4;
-                    let mask = usize::from(kind == CUTOUT);
-                    out[mask][word] |= 1 << ((l[1] % 4) * 8 + l[0]);
-                }
-            }
-        }
-        out
     }
 }
 
@@ -130,6 +131,19 @@ mod tests {
         assert_eq!(masks[0][4 * 4 + 1], 1 << 15);
         assert_eq!(masks[0].iter().map(|w| w.count_ones()).sum::<u32>(), 1);
         assert_eq!(masks[1], [0; 128]);
+        // A solid section's masks are the ones a nearly solid one has, plus its missing block.
+        let nearly = Occupancy::from_fn(|x, y, z| u8::from((x, y, z) != (15, 5, 0)));
+        let solid = Occupancy::Solid.brick_masks();
+        assert_eq!(solid[1], [0; 128]);
+        assert_eq!(
+            nearly.brick_masks()[0]
+                .iter()
+                .zip(&solid[0])
+                .map(|(n, s)| (s & !n).count_ones())
+                .sum::<u32>(),
+            1
+        );
+        assert_eq!(solid[0].iter().map(|w| w.count_ones()).sum::<u32>(), 4096);
         for z in 0..16 {
             for y in 0..16 {
                 for x in 0..16 {
