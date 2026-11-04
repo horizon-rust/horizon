@@ -24,6 +24,37 @@ use super::rt_cloud_mesh::{CloudTile, TileKey};
 use crate::mesher::Vertex;
 use std::collections::HashMap;
 
+/// The RTX 4090 build's raw top-level build (crate `horizon-rtx`, the game's `rtx` feature,
+/// docs/rtx-4090.md): the instances in a buffer of its own, written where they change, the build
+/// one raw Vulkan command on `tlas`. Without the feature wgpu builds it from `tlas`'s own
+/// instances, every one of them through the CPU every frame.
+#[cfg(feature = "rtx")]
+use horizon_rtx::{Instance as RawInstance, RawTlas};
+#[cfg(not(feature = "rtx"))]
+mod raw_stub {
+    /// Nothing: wgpu's own build (`RawTlas::new` gives `None`).
+    pub struct RawTlas;
+    #[derive(Clone, Copy)]
+    pub struct Instance;
+    impl Instance {
+        pub fn new(_: u64, _: [f32; 12], _: u32, _: u8) -> Self {
+            Self
+        }
+    }
+    impl RawTlas {
+        pub fn new(_: &wgpu::Device, _: &mut wgpu::Tlas, _: u32) -> Option<Self> {
+            None
+        }
+        pub fn blas_address(&self, _: &mut wgpu::Blas) -> Option<u64> {
+            None
+        }
+        pub fn write(&self, _: &wgpu::Queue, _: u32, _: &[Instance]) {}
+        pub fn build(&self, _: &mut wgpu::CommandEncoder, _: &wgpu::Tlas, _: u32) {}
+    }
+}
+#[cfg(not(feature = "rtx"))]
+use raw_stub::{Instance as RawInstance, RawTlas};
+
 /// Sections within this many chunks of the camera's have a structure: the voxel grid's reach,
 /// where the rays run.
 pub const RADIUS: i32 = super::voxels::RADIUS;
@@ -65,10 +96,20 @@ const PAGE_GONE: u32 = u32::MAX;
 const STALE_FRAMES: u32 = 30;
 struct Built {
     blas: wgpu::Blas,
+    /// Its device address, for the raw build's instances (0 without it).
+    address: u64,
     page: u32,
     start: u64,
     solid: u32,
     translucent_geometry: u32,
+}
+
+/// A moving structure (the entities, the view model, a cloud tile): the quads it was made to
+/// hold, and its device address for the raw build's instances (0 without it).
+struct Moving {
+    blas: wgpu::Blas,
+    quads: u32,
+    address: u64,
 }
 
 pub struct HwRays {
@@ -78,6 +119,8 @@ pub struct HwRays {
     /// would let the light through it for a frame, the world flickering as a block is placed).
     stale: HashMap<SectionKey, u32>,
     pub tlas: wgpu::Tlas,
+    /// The raw build of `tlas`, where the `rtx` feature and the device give it.
+    raw: Option<RawTlas>,
     /// Where each instance's quads are, by its custom data (shadow_rays_hw.wgsl `instances`):
     /// the page, the solid quads' first vertex, the translucent ones', the translucent geometry.
     pub instances: wgpu::Buffer,
@@ -97,11 +140,11 @@ pub struct HwRays {
     /// which the shader reads and the structures build from, and how many fit.
     pub dynamics: wgpu::Buffer,
     capacity: usize,
-    /// Structures for the entities and the view model, and the quads each was made to hold.
-    entities: Option<(wgpu::Blas, u32)>,
-    hand: Option<(wgpu::Blas, u32)>,
+    /// Structures for the entities and the view model.
+    entities: Option<Moving>,
+    hand: Option<Moving>,
     /// Each cloud tile's structure, and where the first tile was when the instances were placed.
-    clouds: HashMap<TileKey, wgpu::Blas>,
+    clouds: HashMap<TileKey, Moving>,
     cloud_origin: Option<glam::DVec3>,
     /// Moving instances set in `tlas` last frame, and the view model's vertices moved to the world.
     moving: usize,
@@ -186,15 +229,16 @@ fn moving_entry<'a>(
 /// two, so a growing crowd does not remake it every frame).
 fn ensure_moving(
     device: &wgpu::Device,
-    slot: &mut Option<(wgpu::Blas, u32)>,
+    raw: Option<&RawTlas>,
+    slot: &mut Option<Moving>,
     quads: u32,
     label: &'static str,
 ) {
-    if slot.as_ref().is_some_and(|(_, held)| *held >= quads) {
+    if slot.as_ref().is_some_and(|m| m.quads >= quads) {
         return;
     }
     let held = quads.next_power_of_two().max(64);
-    let blas = device.create_blas(
+    let mut blas = device.create_blas(
         &wgpu::CreateBlasDescriptor {
             label: Some(label),
             // Built again each frame: the fast build, as Remix's dynamic structures.
@@ -208,7 +252,12 @@ fn ensure_moving(
             )],
         },
     );
-    *slot = Some((blas, held));
+    let address = raw.and_then(|r| r.blas_address(&mut blas)).unwrap_or(0);
+    *slot = Some(Moving {
+        blas,
+        quads: held,
+        address,
+    });
 }
 
 /// How far the camera may move from the anchor before the instances are placed again, in blocks
@@ -234,15 +283,18 @@ impl HwRays {
     }
 
     pub fn new(device: &wgpu::Device) -> Self {
+        let mut tlas = device.create_tlas(&wgpu::CreateTlasDescriptor {
+            label: Some("RT lighting's terrain"),
+            max_instances: MAX_INSTANCES,
+            flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
+            update_mode: wgpu::AccelerationStructureUpdateMode::Build,
+        });
+        let raw = RawTlas::new(device, &mut tlas, MAX_INSTANCES);
         Self {
             built: HashMap::new(),
             stale: HashMap::new(),
-            tlas: device.create_tlas(&wgpu::CreateTlasDescriptor {
-                label: Some("RT lighting's terrain"),
-                max_instances: MAX_INSTANCES,
-                flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
-                update_mode: wgpu::AccelerationStructureUpdateMode::Build,
-            }),
+            tlas,
+            raw,
             instances: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("RT lighting's terrain instances"),
                 size: u64::from(MAX_INSTANCES) * 16,
@@ -368,7 +420,7 @@ impl HwRays {
         let buffers: Vec<_> = todo.iter().map(|t| pages(t.page)).collect();
         let mut entries = Vec::with_capacity(todo.len());
         for (t, size) in todo.iter().zip(&sizes) {
-            let blas = device.create_blas(
+            let mut blas = device.create_blas(
                 &wgpu::CreateBlasDescriptor {
                     label: Some("RT lighting's section"),
                     flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
@@ -378,10 +430,16 @@ impl HwRays {
                     descriptors: size.clone(),
                 },
             );
+            let address = self
+                .raw
+                .as_ref()
+                .and_then(|r| r.blas_address(&mut blas))
+                .unwrap_or(0);
             self.built.insert(
                 t.key,
                 Built {
                     blas,
+                    address,
                     page: t.page,
                     start: t.start,
                     solid: t.quads,
@@ -435,6 +493,12 @@ impl HwRays {
         let anchor = self.anchor.unwrap_or(camera);
         let mut n = 0usize;
         let mut table = Vec::with_capacity(self.built.len().min(MAX_INSTANCES as usize));
+        // The raw build's rows, written to its buffer in one go; without it, wgpu's instances.
+        let mut raw_rows = Vec::with_capacity(if self.raw.is_some() {
+            table.capacity()
+        } else {
+            0
+        });
         for (&(x, sy, z), built) in &self.built {
             if n as u32 >= MAX_INSTANCES - DYNAMIC_INSTANCES {
                 break;
@@ -452,16 +516,25 @@ impl HwRays {
                 first + built.solid * 4,
                 built.translucent_geometry,
             ]);
-            self.tlas[n] = Some(wgpu::TlasInstance::new(
-                &built.blas,
-                [1.0, 0.0, 0.0, o.x, 0.0, 1.0, 0.0, o.y, 0.0, 0.0, 1.0, o.z],
-                n as u32,
-                0xff,
-            ));
+            let transform = [1.0, 0.0, 0.0, o.x, 0.0, 1.0, 0.0, o.y, 0.0, 0.0, 1.0, o.z];
+            if self.raw.is_some() {
+                raw_rows.push(RawInstance::new(built.address, transform, n as u32, 0xff));
+            } else {
+                self.tlas[n] = Some(wgpu::TlasInstance::new(
+                    &built.blas,
+                    transform,
+                    n as u32,
+                    0xff,
+                ));
+            }
             n += 1;
         }
-        for i in n..self.used {
-            self.tlas[i] = None;
+        if let Some(raw) = &self.raw {
+            raw.write(queue, 0, &raw_rows);
+        } else {
+            for i in n..self.used {
+                self.tlas[i] = None;
+            }
         }
         self.used = n;
         self.terrain = n;
@@ -555,7 +628,7 @@ impl HwRays {
                 // Opaque for the rays: no alpha test, a hit is a hit.
                 flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
             };
-            let blas = device.create_blas(
+            let mut blas = device.create_blas(
                 &wgpu::CreateBlasDescriptor {
                     label: Some("RT lighting's cloud tile"),
                     flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
@@ -565,7 +638,19 @@ impl HwRays {
                     descriptors: vec![size.clone()],
                 },
             );
-            self.clouds.insert(tile.key, blas);
+            let address = self
+                .raw
+                .as_ref()
+                .and_then(|r| r.blas_address(&mut blas))
+                .unwrap_or(0);
+            self.clouds.insert(
+                tile.key,
+                Moving {
+                    blas,
+                    quads: 0,
+                    address,
+                },
+            );
             fresh.push((tile, size));
             changed = true;
         }
@@ -584,6 +669,7 @@ impl HwRays {
         if entity_quads > 0 {
             ensure_moving(
                 device,
+                self.raw.as_ref(),
                 &mut self.entities,
                 entity_quads,
                 "RT lighting's entities",
@@ -592,6 +678,7 @@ impl HwRays {
         if hand_quads > 0 {
             ensure_moving(
                 device,
+                self.raw.as_ref(),
                 &mut self.hand,
                 hand_quads,
                 "RT lighting's view model",
@@ -601,12 +688,18 @@ impl HwRays {
         let entity_size = quads_geometry(entity_quads, flags);
         let hand_size = quads_geometry(hand_quads, flags);
         let mut entries: Vec<wgpu::BlasBuildEntry<'_>> = Vec::new();
-        if let (true, Some((blas, _))) = (entity_quads > 0, &self.entities) {
-            entries.push(moving_entry(blas, &entity_size, &self.dynamics, indices, 0));
-        }
-        if let (true, Some((blas, _))) = (hand_quads > 0, &self.hand) {
+        if let (true, Some(m)) = (entity_quads > 0, &self.entities) {
             entries.push(moving_entry(
-                blas,
+                &m.blas,
+                &entity_size,
+                &self.dynamics,
+                indices,
+                0,
+            ));
+        }
+        if let (true, Some(m)) = (hand_quads > 0, &self.hand) {
+            entries.push(moving_entry(
+                &m.blas,
                 &hand_size,
                 &self.dynamics,
                 indices,
@@ -615,7 +708,7 @@ impl HwRays {
         }
         for (tile, size) in &fresh {
             entries.push(wgpu::BlasBuildEntry {
-                blas: &self.clouds[&tile.key],
+                blas: &self.clouds[&tile.key].blas,
                 geometry: wgpu::BlasGeometries::TriangleGeometries(vec![
                     wgpu::BlasTriangleGeometry {
                         size,
@@ -636,35 +729,42 @@ impl HwRays {
         // it as a kind where terrain rows hold an arena page), its first vertex, and 2: no
         // translucent geometry.
         let offset = (camera - anchor).as_vec3();
-        let mut slots: Vec<(&wgpu::Blas, glam::Vec3, [u32; 4], u8)> = Vec::new();
-        if let (true, Some((blas, _))) = (entity_quads > 0, &self.entities) {
-            slots.push((blas, offset, [KIND_ENTITY, 0, 0, 2], 0xff));
+        let mut slots: Vec<(&Moving, glam::Vec3, [u32; 4], u8)> = Vec::new();
+        if let (true, Some(m)) = (entity_quads > 0, &self.entities) {
+            slots.push((m, offset, [KIND_ENTITY, 0, 0, 2], 0xff));
         }
-        if let (true, Some((blas, _))) = (hand_quads > 0, &self.hand) {
+        if let (true, Some(m)) = (hand_quads > 0, &self.hand) {
             let first = entities.len() as u32;
-            slots.push((blas, offset, [KIND_ENTITY, first, 0, 2], 0xff));
+            slots.push((m, offset, [KIND_ENTITY, first, 0, 2], 0xff));
         }
         for tile in &dynamic.clouds {
-            if let Some(blas) = self.clouds.get(&tile.key) {
+            if let Some(m) = self.clouds.get(&tile.key) {
                 let at = (tile.origin - anchor).as_vec3();
-                slots.push((blas, at, [KIND_CLOUD, 0, 0, 2], CLOUD_MASK));
+                slots.push((m, at, [KIND_CLOUD, 0, 0, 2], CLOUD_MASK));
             }
         }
         let mut rows = Vec::with_capacity(slots.len());
+        let mut raw_rows = Vec::with_capacity(if self.raw.is_some() { slots.len() } else { 0 });
         let mut n = self.terrain;
-        for (blas, at, row, mask) in slots {
+        for (m, at, row, mask) in slots {
             if n as u32 >= MAX_INSTANCES {
                 break;
             }
             let transform = [
                 1.0, 0.0, 0.0, at.x, 0.0, 1.0, 0.0, at.y, 0.0, 0.0, 1.0, at.z,
             ];
-            self.tlas[n] = Some(wgpu::TlasInstance::new(blas, transform, n as u32, mask));
+            if self.raw.is_some() {
+                raw_rows.push(RawInstance::new(m.address, transform, n as u32, mask));
+            } else {
+                self.tlas[n] = Some(wgpu::TlasInstance::new(&m.blas, transform, n as u32, mask));
+            }
             rows.push(row);
             n += 1;
         }
-        for i in n..self.used {
-            self.tlas[i] = None;
+        if self.raw.is_none() {
+            for i in n..self.used {
+                self.tlas[i] = None;
+            }
         }
         self.moving = n - self.terrain;
         self.used = n;
@@ -677,7 +777,16 @@ impl HwRays {
                 bytemuck::cast_slice(&rows),
             );
         }
-        encoder.build_acceleration_structures(entries.iter(), [&self.tlas]);
+        match &self.raw {
+            // The moving rows after the terrain's, the bottom-level builds through wgpu, then the
+            // raw top-level build of the `n` instances, marked built for wgpu.
+            Some(raw) => {
+                raw.write(queue, self.terrain as u32, &raw_rows);
+                encoder.build_acceleration_structures(entries.iter(), std::iter::empty());
+                raw.build(encoder, &self.tlas, n as u32);
+            }
+            None => encoder.build_acceleration_structures(entries.iter(), [&self.tlas]),
+        }
     }
 }
 

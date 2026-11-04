@@ -1387,6 +1387,7 @@ dependencies = [
  "horizon-hdr",
  "horizon-mods",
  "horizon-protocol",
+ "horizon-rtx",
  "horizon-server-files",
  "horizon-shader-api",
  "horizon-shaders",
@@ -1563,6 +1564,16 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "ring",
+]
+
+[[package]]
+name = "horizon-rtx"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "bytemuck",
+ "log",
+ "wgpu",
 ]
 
 [[package]]
