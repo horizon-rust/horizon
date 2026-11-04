@@ -78,15 +78,21 @@ impl Rain {
     pub fn map(&self) -> &wgpu::Buffer {
         &self.map
     }
-    /// Uploads the map's cells when they changed.
+    /// Uploads the map's words that changed: `changes` is `RainMap::take_upload`'s ranges, each
+    /// written at its place (the buffer's layout is the map's, row by row).
     pub fn prepare(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         uploads: &mut super::upload::Uploads,
-        cells: Option<&[u32]>,
+        changes: Option<&[u32]>,
     ) {
-        if let Some(cells) = cells {
-            uploads.buffer(encoder, &self.map, 0, bytemuck::cast_slice(cells));
+        for (from, words) in changes.into_iter().flat_map(crate::rain::upload_ranges) {
+            uploads.buffer(
+                encoder,
+                &self.map,
+                from as u64 * 4,
+                bytemuck::cast_slice(words),
+            );
         }
     }
     /// The drops, with the terrain's group 0 bound as `group`.

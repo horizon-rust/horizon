@@ -273,16 +273,29 @@ impl Column {
 /// Columns refreshed a frame by the sweep (in whole rows), so that a block placed or broken shows
 /// in the rain within about [`MAP`] / `SWEEP_ROWS` frames.
 const SWEEP_ROWS: i32 = 8;
+/// Changed runs of words this close together go up as one range (a copy command costs more than
+/// a quarter of a kilobyte more of staging), and past `MAX_RANGES` ranges as one covering them
+/// all: a crossing eastward changes a 16-word run in every row, 256 copies otherwise.
+const MERGE_GAP: usize = 64;
+const MAX_RANGES: usize = 16;
 
 /// The rain map: [`MAP`] x [`MAP`] packed [`Column`]s around the camera, wrapped (a column's
 /// texel is its x and z modulo [`MAP`]), its centre moved by whole chunks as the camera moves; the
 /// newly covered strips are filled at once, and a sweep refreshes a few rows every frame.
+///
+/// Only the words that changed are uploaded ([`RainMap::take_upload`]). It used to send the whole
+/// map (256 KB, copied and staged) every frame, the sweep reporting a change whether or not a
+/// column had: standing still, the sweep's rows now go up only when a block in them changed, and a
+/// chunk crossing sends its 16-column strip.
 pub struct RainMap {
     cells: Vec<u32>,
     /// The column the window is centred on (a multiple of 16), once filled.
     centre: Option<(i32, i32)>,
     sweep: i32,
-    changed: bool,
+    /// Each texel row's changed columns since the last upload, `lo..hi` (empty when equal).
+    dirty: Vec<(u16, u16)>,
+    /// The heights of the rectangle being filled and its one-column border, reused.
+    heights: Vec<i32>,
 }
 impl Default for RainMap {
     fn default() -> Self {
@@ -290,7 +303,8 @@ impl Default for RainMap {
             cells: vec![0; (MAP * MAP) as usize],
             centre: None,
             sweep: 0,
-            changed: false,
+            dirty: vec![(0, 0); MAP as usize],
+            heights: Vec::new(),
         }
     }
 }
@@ -299,18 +313,50 @@ impl RainMap {
     pub fn cells(&self) -> &[u32] {
         &self.cells
     }
-    /// Whether the cells changed since the last call (they are then to be uploaded).
-    pub fn take_changed(&mut self) -> bool {
-        std::mem::take(&mut self.changed)
+    /// The words that changed since the last call, as [`upload_ranges`] reads them, or `None`.
+    pub fn take_upload(&mut self) -> Option<Vec<u32>> {
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        for (row, span) in self.dirty.iter_mut().enumerate() {
+            let (lo, hi) = std::mem::take(span);
+            if lo >= hi {
+                continue;
+            }
+            let (from, to) = (
+                row * MAP as usize + lo as usize,
+                row * MAP as usize + hi as usize,
+            );
+            match ranges.last_mut() {
+                Some(last) if from - last.1 <= MERGE_GAP => last.1 = to,
+                _ => ranges.push((from, to)),
+            }
+        }
+        if ranges.len() > MAX_RANGES {
+            ranges = vec![(ranges[0].0, ranges[ranges.len() - 1].1)];
+        }
+        if ranges.is_empty() {
+            return None;
+        }
+        let words: usize = ranges.iter().map(|(a, b)| b - a + 2).sum();
+        let mut out = Vec::with_capacity(words);
+        for (from, to) in ranges {
+            out.extend([from as u32, (to - from) as u32]);
+            out.extend_from_slice(&self.cells[from..to]);
+        }
+        Some(out)
     }
     /// Forgets everything (a new world or dimension).
     pub fn clear(&mut self) {
         self.cells.fill(0);
         self.centre = None;
-        self.changed = true;
+        self.dirty.fill((0, MAP as u16));
     }
     /// Brings the map up to date around the camera's column (`x`, `z`): `height` gives a column's
     /// rain height, `column` the rest of it from its height.
+    ///
+    /// A frame fills either the strips a chunk crossing uncovered (4096 columns a crossing, 7936
+    /// diagonally) or, when there was none, the sweep's rows (2048): each column one `column` and,
+    /// its heights read once for the rectangle and its border, about 1.25 `height` (it was 5, the
+    /// column and its four neighbours each time). Span `rain_map`.
     pub fn update(
         &mut self,
         x: i32,
@@ -318,61 +364,124 @@ impl RainMap {
         height: impl Fn(i32, i32) -> i32,
         column: impl Fn(i32, i32, i32) -> (Surface, u8, bool),
     ) {
+        crate::spans::time("rain_map", || self.update_inner(x, z, &height, &column));
+    }
+    fn update_inner(
+        &mut self,
+        x: i32,
+        z: i32,
+        height: &impl Fn(i32, i32) -> i32,
+        column: &impl Fn(i32, i32, i32) -> (Surface, u8, bool),
+    ) {
         let centre = (x.div_euclid(16) * 16, z.div_euclid(16) * 16);
         let half = MAP / 2;
-        let fill = |cells: &mut Vec<u32>, cx: i32, cz: i32| {
-            let h = height(cx, cz);
-            let (surface, light, rains) = column(cx, cz, h);
-            let higher = [(1, 0), (-1, 0), (0, 1), (0, -1)]
-                .iter()
-                .filter(|(dx, dz)| height(cx + dx, cz + dz) > h)
-                .count() as u8;
-            let packed = Column {
-                height: h,
-                surface,
-                light,
-                rains,
-                higher,
-            }
-            .pack(cx, cz);
-            cells[(cz.rem_euclid(MAP) * MAP + cx.rem_euclid(MAP)) as usize] = packed;
-        };
         let (x0, z0) = (centre.0 - half, centre.1 - half);
+        let mut crossed = true;
         match self.centre {
-            Some(old) if old == centre => {}
+            Some(old) if old == centre => crossed = false,
             Some(old) if (old.0 - centre.0).abs() < MAP && (old.1 - centre.1).abs() < MAP => {
-                // Only the strips the window moved onto.
+                // Only the strips the window moved onto: the rows past the old window's, whole,
+                // then in the rows both share, the columns past its.
                 let (ox0, oz0) = (old.0 - half, old.1 - half);
-                for cz in z0..z0 + MAP {
-                    for cx in x0..x0 + MAP {
-                        let inside_old =
-                            (ox0..ox0 + MAP).contains(&cx) && (oz0..oz0 + MAP).contains(&cz);
-                        if !inside_old {
-                            fill(&mut self.cells, cx, cz);
-                        }
-                    }
+                let (sz0, sz1) = (z0.max(oz0), (z0 + MAP).min(oz0 + MAP));
+                if z0 < sz0 {
+                    self.fill(x0, z0, MAP, sz0 - z0, height, column);
                 }
-                self.changed = true;
-            }
-            _ => {
-                for cz in z0..z0 + MAP {
-                    for cx in x0..x0 + MAP {
-                        fill(&mut self.cells, cx, cz);
-                    }
+                if sz1 < z0 + MAP {
+                    self.fill(x0, sz1, MAP, z0 + MAP - sz1, height, column);
                 }
-                self.changed = true;
+                if x0 < ox0 {
+                    self.fill(x0, sz0, ox0 - x0, sz1 - sz0, height, column);
+                }
+                if ox0 + MAP < x0 + MAP {
+                    self.fill(ox0 + MAP, sz0, x0 - ox0, sz1 - sz0, height, column);
+                }
             }
+            _ => self.fill(x0, z0, MAP, MAP, height, column),
         }
         self.centre = Some(centre);
-        for _ in 0..SWEEP_ROWS {
-            let cz = z0 + self.sweep;
-            for cx in x0..x0 + MAP {
-                fill(&mut self.cells, cx, cz);
-            }
-            self.sweep = (self.sweep + 1) % MAP;
+        // The sweep waits while a crossing fills, so a frame pays for one or the other. MAP is a
+        // multiple of SWEEP_ROWS: its rows never wrap.
+        if !crossed {
+            self.fill(x0, z0 + self.sweep, MAP, SWEEP_ROWS, height, column);
+            self.sweep = (self.sweep + SWEEP_ROWS) % MAP;
         }
-        self.changed = true;
     }
+    /// Fills the `w` x `h` columns from (`x0`, `z0`), marking the words that changed.
+    fn fill(
+        &mut self,
+        x0: i32,
+        z0: i32,
+        w: i32,
+        h: i32,
+        height: &impl Fn(i32, i32) -> i32,
+        column: &impl Fn(i32, i32, i32) -> (Surface, u8, bool),
+    ) {
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        // The rectangle's heights and its border's (not the corners, which no column reads).
+        let stride = (w + 2) as usize;
+        let mut heights = std::mem::take(&mut self.heights);
+        heights.clear();
+        heights.resize(stride * (h + 2) as usize, 0);
+        for dz in -1..=h {
+            for dx in -1..=w {
+                let corner = (dx == -1 || dx == w) && (dz == -1 || dz == h);
+                if !corner {
+                    heights[(dz + 1) as usize * stride + (dx + 1) as usize] =
+                        height(x0 + dx, z0 + dz);
+                }
+            }
+        }
+        let at = |dx: i32, dz: i32| heights[(dz + 1) as usize * stride + (dx + 1) as usize];
+        for dz in 0..h {
+            let cz = z0 + dz;
+            let row = cz.rem_euclid(MAP) as usize;
+            for dx in 0..w {
+                let cx = x0 + dx;
+                let hh = at(dx, dz);
+                let (surface, light, rains) = column(cx, cz, hh);
+                let higher = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                    .iter()
+                    .filter(|&&(ex, ez)| at(dx + ex, dz + ez) > hh)
+                    .count() as u8;
+                let packed = Column {
+                    height: hh,
+                    surface,
+                    light,
+                    rains,
+                    higher,
+                }
+                .pack(cx, cz);
+                let col = cx.rem_euclid(MAP) as usize;
+                let cell = &mut self.cells[row * MAP as usize + col];
+                if *cell != packed {
+                    *cell = packed;
+                    let span = &mut self.dirty[row];
+                    *span = if span.0 >= span.1 {
+                        (col as u16, col as u16 + 1)
+                    } else {
+                        (span.0.min(col as u16), span.1.max(col as u16 + 1))
+                    };
+                }
+            }
+        }
+        self.heights = heights;
+    }
+}
+
+/// The ranges of a [`RainMap::take_upload`]: each its first word's index in the map and its words.
+pub fn upload_ranges(upload: &[u32]) -> impl Iterator<Item = (usize, &[u32])> {
+    let mut rest = upload;
+    std::iter::from_fn(move || {
+        let [from, len, tail @ ..] = rest else {
+            return None;
+        };
+        let (words, tail) = tail.split_at((*len as usize).min(tail.len()));
+        rest = tail;
+        Some((*from as usize, words))
+    })
 }
 
 #[cfg(test)]
@@ -554,6 +663,95 @@ mod tests {
         map.update(160, 0, |x, _| x, column);
         assert_eq!(at(&map, 250, 5) & 4095, 2048 + 250);
         assert_eq!(at(&map, 250, 5) >> 24 & 15, 0);
-        assert!(map.take_changed());
+        assert!(map.take_upload().is_some());
+    }
+
+    /// Applies an upload to a copy of the GPU's buffer.
+    fn apply(gpu: &mut [u32], upload: Option<Vec<u32>>) -> usize {
+        let Some(upload) = upload else { return 0 };
+        let mut words = 0;
+        for (from, cells) in upload_ranges(&upload) {
+            gpu[from..from + cells.len()].copy_from_slice(cells);
+            words += cells.len();
+        }
+        words
+    }
+
+    #[test]
+    fn the_uploads_keep_the_gpu_copy_equal_and_a_fresh_fill_agrees() {
+        let height = |x: i32, z: i32| ((x * 7 + z * 13).rem_euclid(23)) - 5;
+        let column = |x: i32, z: i32, h: i32| {
+            (
+                if (x + z + h) % 3 == 0 {
+                    Surface::Soil
+                } else {
+                    Surface::Stone
+                },
+                (x.rem_euclid(16)) as u8,
+                z % 2 == 0,
+            )
+        };
+        let mut map = RainMap::default();
+        let mut gpu = vec![0; (MAP * MAP) as usize];
+        // Flying east, a jump, then diagonally and back north-west: the strips and the sweep
+        // leave the map as one fill where it ends would.
+        let mut path = Vec::new();
+        for i in 0..200 {
+            path.push((i * 3, 0));
+        }
+        for i in 0..200 {
+            path.push((5000 + i * 2, -3000 + i * 2));
+        }
+        for i in 0..100 {
+            path.push((5400 - i * 5, -2600 - i * 4));
+        }
+        for &(x, z) in &path {
+            map.update(x, z, height, column);
+            apply(&mut gpu, map.take_upload());
+            assert!(gpu == map.cells(), "the GPU's copy at ({x}, {z})");
+        }
+        let (x, z) = path[path.len() - 1];
+        let mut fresh = RainMap::default();
+        fresh.update(x, z, height, column);
+        assert!(map.cells() == fresh.cells());
+    }
+
+    #[test]
+    fn standing_still_uploads_only_what_changed() {
+        let column = |_: i32, _: i32, _: i32| (Surface::Stone, 0, true);
+        let mut map = RainMap::default();
+        let mut gpu = vec![0; (MAP * MAP) as usize];
+        map.update(0, 0, |_, _| 64, column);
+        assert_eq!(apply(&mut gpu, map.take_upload()), (MAP * MAP) as usize);
+        // A whole sweep round, nothing changed: nothing goes up.
+        for _ in 0..MAP / SWEEP_ROWS {
+            map.update(0, 0, |_, _| 64, column);
+            assert!(map.take_upload().is_none());
+        }
+        // A block placed at (10, 20): its column and its four neighbours' "higher" change, in
+        // three rows, within a sweep round, and only those words go up.
+        let placed = |x: i32, z: i32| if (x, z) == (10, 20) { 65 } else { 64 };
+        let mut sent = 0;
+        for _ in 0..MAP / SWEEP_ROWS {
+            map.update(0, 0, placed, column);
+            sent += apply(&mut gpu, map.take_upload());
+        }
+        assert!(gpu == map.cells());
+        assert_eq!(sent, 5, "the column and its four neighbours");
+        assert_eq!(map.cells()[(20 * MAP + 10) as usize] & 4095, 2048 + 65);
+        assert_eq!(map.cells()[(20 * MAP + 11) as usize] >> 21 & 7, 1);
+    }
+
+    #[test]
+    fn a_crossing_uploads_its_strip_not_the_map() {
+        let column = |_: i32, _: i32, _: i32| (Surface::Stone, 0, true);
+        let mut map = RainMap::default();
+        map.update(0, 0, |x, _| x, column);
+        map.take_upload();
+        // One chunk north: 16 new rows, in one or two ranges.
+        map.update(0, -16, |x, _| x, column);
+        let upload = map.take_upload().expect("the new rows");
+        let words: usize = upload_ranges(&upload).map(|(_, w)| w.len()).sum();
+        assert_eq!(words, (16 * MAP) as usize);
     }
 }

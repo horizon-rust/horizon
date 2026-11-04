@@ -16,7 +16,8 @@ pub(super) struct RainState {
     dim: Option<Dim>,
 }
 
-/// What a frame hands the renderer: the rain, the wetness, and the map's cells when they changed.
+/// What a frame hands the renderer: the rain, the wetness, and the map's words that changed
+/// (`RainMap::take_upload`'s ranges, which `gfx/rain.rs` uploads), none when none did.
 pub(super) struct RainFrame {
     pub rain: Rain,
     pub wetness: Wetness,
@@ -82,11 +83,7 @@ impl Game<'_> {
             |x, z, h| self.rain_column(x, z, h),
         );
         self.rain.map = map;
-        let cells = self
-            .rain
-            .map
-            .take_changed()
-            .then(|| self.rain.map.cells().to_vec());
+        let cells = self.rain.map.take_upload();
         // HORIZON_RAIN_DEBUG: the rain, the wetness and the camera's column every 2 s.
         if std::env::var_os("HORIZON_RAIN_DEBUG").is_some() && self.world.game_time % 40 == 0 {
             let w = self.rain.wetness;

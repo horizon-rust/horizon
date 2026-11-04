@@ -199,8 +199,12 @@ counts the blocks right beside a surface.
      grid is, R16 with a pyramid of maxima in its mip levels (2.8 MB). The resident chunks' tops come
      from their sections' occupancy (`Voxels::column_tops`), beyond them the drawn distant tiles' cells
      (`Lod::drawn_columns`). A section meshed again with the same tops writes nothing; one whose tops
-     changed rewrites its 8x8 texels and their maxima up the levels; new distant tiles, a chunk leaving
-     or the camera 128 blocks from the centre rebuild it all (3.3 ms on the CPU), at most twice a second.
+     changed rewrites its 8x8 texels and their maxima up the levels, and so do a chunk leaving and the
+     distant tiles that came, went or changed (the chunk columns under them); the camera 128 blocks
+     from the centre moves the window by whole chunk columns, writing only those it moved onto in the
+     slots of those it left. A pass takes what changed at most twice a second and writes 2048 chunk
+     columns a frame of it (span `far_heights`); a full rebuild, once on opening a world or after a
+     jump, costs 3.3 ms on the CPU and was paid every 500 ms in flight before.
    - `gfx/far_field.wgsl`, once a frame at most and for every view (the screen, each VR eye, foveated or
      not, read the same textures): for each texel the height under which the terrain shades its column
      from the sun or the moon and the caster's distance (the highest top along the light's way, each
