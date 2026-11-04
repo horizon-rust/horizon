@@ -1320,8 +1320,8 @@ struct Game<'a> {
     lod: Option<horizon_client::lod::Lod>,
     lod_source_attempted: bool,
     lod_observe: horizon_client::fast_hash::FxHashSet<(i32, i32)>,
-    /// The detail revision, centre and radius `Lod::update` last had covered for.
-    lod_covered_at: Option<(u64, (i32, i32), i32)>,
+    /// The centre and radius `Lod::update` last had all the covered columns for.
+    lod_covered_at: Option<((i32, i32), i32)>,
     /// RT lighting's natural fogs (game/natural_fog.rs): the relief map being sampled, and the
     /// rain of the last day and a half (a wet morning fogs more).
     fog_maps: horizon_client::gfx::natural_fog::FogMaps,
@@ -12099,24 +12099,40 @@ impl Game<'_> {
                     horizon_client::graphics::lod_distance_capped(far_distance, &renderer.info);
                 lod.set_near_loading(self.streaming.busy());
                 lod.set_reduced_detail(far_reduced);
-                // The covered columns change only with the complete ones and
-                // the render area: rebuilt then, not every frame.
-                let at = (
-                    renderer.lod_detail_revision(),
-                    self.streaming.center,
-                    self.streaming.radius,
-                );
-                let covered = (self.lod_covered_at != Some(at)).then(|| {
-                    self.lod_covered_at = Some(at);
-                    horizon_client::spans::time("lod_covered_set", || {
-                        renderer
-                            .lod_detail_columns()
-                            .filter(|&(x, z)| {
-                                horizon_client::streaming::in_view_distance(at.1, at.2, x, z)
-                            })
-                            .collect()
-                    })
-                });
+                let started = std::time::Instant::now();
+                // The covered columns change with the complete ones and the render area:
+                // all gathered again when the area moves, else only the columns that
+                // completed or stopped being complete (nearly every frame in flight).
+                let at = (self.streaming.center, self.streaming.radius);
+                let changes = renderer.take_lod_detail_changes();
+                let in_view = |(x, z): (i32, i32)| {
+                    horizon_client::streaming::in_view_distance(at.0, at.1, x, z)
+                };
+                let covered = match changes {
+                    Some(changes) if self.lod_covered_at == Some(at) => {
+                        if changes.is_empty() {
+                            horizon_client::lod::Covered::Same
+                        } else {
+                            horizon_client::lod::Covered::Changed(
+                                changes
+                                    .into_iter()
+                                    .map(|c| (c, renderer.lod_detail_complete(c) && in_view(c)))
+                                    .collect(),
+                            )
+                        }
+                    }
+                    _ => {
+                        self.lod_covered_at = Some(at);
+                        horizon_client::spans::time("lod_covered_set", || {
+                            horizon_client::lod::Covered::All(
+                                renderer
+                                    .lod_detail_columns()
+                                    .filter(|&c| in_view(c))
+                                    .collect(),
+                            )
+                        })
+                    }
+                };
                 let meshes = horizon_client::spans::time("lod_update", || {
                     lod.update(
                         [player.position.x, player.position.y, player.position.z],
@@ -12128,11 +12144,10 @@ impl Game<'_> {
                 });
                 renderer.queue_lods(meshes, lod.removed(), lod.take_cutout());
                 renderer.set_far_terrain(lod);
-                // A finished job can hold hundreds of tiles: spread them
-                // over frames rather than stall one.
-                horizon_client::spans::time("lod_upload", || {
-                    renderer.upload_lods(std::time::Duration::from_millis(2))
-                });
+                // A finished job can hold hundreds of tiles: spread them over frames rather
+                // than stall one, in what the update left of the LOD's frame budget.
+                let budget = horizon_client::lod::upload_budget(started.elapsed());
+                horizon_client::spans::time("lod_upload", || renderer.upload_lods(budget));
             }
         }
     }

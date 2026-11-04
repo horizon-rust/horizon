@@ -39,6 +39,18 @@ const HELD_SAMPLE_STEP: std::time::Duration = std::time::Duration::from_millis(5
 /// selection walks the whole quadtree, about a millisecond at a large distance, and samples
 /// arrive nearly every frame while the far terrain fills in. A replan selects at once.
 const SELECT_STEP: std::time::Duration = std::time::Duration::from_millis(50);
+/// The main thread's time a frame for the far terrain, its update and its uploads together
+/// (`upload_budget`). Measured on an RTX 4090 flying at 100 blocks/s with 1024 chunks, the
+/// LOD stages took about 10 ms of a slow frame before the selection, the plan and the
+/// sampling choice left the main thread or became incremental.
+pub const FRAME_BUDGET: std::time::Duration = std::time::Duration::from_millis(2);
+/// What the uploads keep however long the update took: tiles keep arriving.
+pub const UPLOAD_FLOOR: std::time::Duration = std::time::Duration::from_micros(500);
+/// The time `Renderer::upload_lods` may take once `Lod::update` (and gathering the covered
+/// columns) took `spent` of this frame: what remains of `FRAME_BUDGET`, at least `UPLOAD_FLOOR`.
+pub fn upload_budget(spent: std::time::Duration) -> std::time::Duration {
+    FRAME_BUDGET.saturating_sub(spent).max(UPLOAD_FLOOR)
+}
 /// EXPERIMENTAL `HORIZON_LOD_DETAIL=N`: distant cells N times smaller on each side (N squared
 /// as many tiles and cells), for measuring how far distant detail can go; 1 without it.
 fn detail_scale() -> i32 {
@@ -395,7 +407,7 @@ fn touching(tiles: &FxHashSet<TileKey>, changed: &[TileKey]) -> FxHashSet<TileKe
     }
     out
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Plan {
     roots: Vec<TileKey>,
     nodes: FxHashSet<TileKey>,
@@ -495,18 +507,278 @@ impl Plan {
             false
         }
     }
+    fn is_leaf(&self, key: &TileKey) -> bool {
+        self.nodes.contains(key) && !self.split.contains(key)
+    }
+}
+/// What the far plan's thread is asked for at each chunk crossing (`Plan::with_previous`).
+struct PlanRequest {
+    camera: [i32; 2],
+    detail: i32,
+    distance: u32,
+    elevation: i32,
+    reduced: bool,
+}
+/// A new plan and how it differs from the one before it, so the main thread updates what
+/// depends on the plan by the tiles that changed. Building the plan (about 12000 nodes at
+/// 1024 chunks, 0.5 ms) and filtering every sample by it (another 0.5 ms) on the main thread
+/// at each chunk crossing was part of the 1.6 ms `lod_plan` and `lod_select` of a slow frame.
+struct Replan {
+    plan: Arc<Plan>,
+    change: PlanChange,
+}
+#[derive(Debug, Default, PartialEq)]
+struct PlanChange {
+    /// Nodes of the old plan the new one has not.
+    gone: Vec<TileKey>,
+    /// Leaves of the new plan that were not leaves of the old one.
+    leaves: Vec<TileKey>,
+    /// Leaves of the old plan the new one splits.
+    split: Vec<TileKey>,
+}
+impl PlanChange {
+    fn between(old: &Plan, new: &Plan) -> Self {
+        let mut change = Self {
+            gone: old
+                .nodes
+                .iter()
+                .copied()
+                .filter(|key| !new.nodes.contains(key))
+                .collect(),
+            leaves: new
+                .nodes
+                .iter()
+                .copied()
+                .filter(|key| !new.split.contains(key) && !old.is_leaf(key))
+                .collect(),
+            split: old
+                .nodes
+                .iter()
+                .copied()
+                .filter(|key| !old.split.contains(key) && new.split.contains(key))
+                .collect(),
+        };
+        // Hash order means nothing; sorted, the lists compare in tests.
+        change.gone.sort_unstable();
+        change.leaves.sort_unstable();
+        change.split.sort_unstable();
+        change
+    }
+}
+/// The plan's leaves with no samples yet (`Lod::ready`), kept up to date as samples come and
+/// the plan changes: `request_samples` picks among them. It scanned every node of the plan
+/// for them on each frame a sample slot was free (nearly all of them in flight), 2 ms of a
+/// slow frame at 1024 chunks (`lod_wanted`).
+#[derive(Debug, Default, PartialEq)]
+struct Missing(FxHashSet<TileKey>);
+impl Missing {
+    #[cfg(test)]
+    fn new<V>(plan: &Plan, ready: &FxHashMap<TileKey, V>) -> Self {
+        Self(
+            plan.nodes
+                .iter()
+                .copied()
+                .filter(|key| !plan.split.contains(key) && !ready.contains_key(key))
+                .collect(),
+        )
+    }
+    /// After the plan changed by `change`, `ready` already without the gone nodes.
+    fn replan<V>(&mut self, change: &PlanChange, ready: &FxHashMap<TileKey, V>) {
+        for key in change.gone.iter().chain(&change.split) {
+            self.0.remove(key);
+        }
+        self.0.extend(
+            change
+                .leaves
+                .iter()
+                .copied()
+                .filter(|key| !ready.contains_key(key)),
+        );
+    }
+}
+/// The children of `active`'s tiles that `plan` splits: the broad refinement
+/// `request_samples` alternates with nearby leaves. Kept with the plan and the active tiles
+/// they came from (`Lod::fallback`) rather than found on every frame (a lookup per active
+/// tile, about 9000 at 1024 chunks).
+fn fallback_children(plan: &Plan, active: &FxHashSet<TileKey>) -> Vec<TileKey> {
+    let mut children: Vec<_> = active
+        .iter()
+        .filter(|parent| plan.split.contains(parent))
+        .flat_map(|parent| parent.children())
+        .filter(|child| plan.nodes.contains(child))
+        .collect();
+    children.sort_unstable();
+    children
+}
+/// The tiles to draw (`Plan::select`, less the covered finest ones) and those of them to mesh:
+/// `dirty`, the new ones and those touching a tile that came or went. `None` when nothing
+/// changed. On the far terrain's worker: walking the quadtree, comparing the sets and finding
+/// the touching tiles took about 1 ms of the main thread at 1024 chunks.
+fn choose<V>(
+    plan: &Plan,
+    ready: &FxHashMap<TileKey, V>,
+    covered: &FxHashSet<(i32, i32)>,
+    active: &FxHashSet<TileKey>,
+    mut dirty: FxHashSet<TileKey>,
+) -> Option<(FxHashSet<TileKey>, FxHashSet<TileKey>)> {
+    let mut selected = Vec::new();
+    for &key in &plan.roots {
+        plan.select(key, ready, &mut selected);
+    }
+    // Their normal meshes already provide coverage. Empty stand-ins
+    // must not become hundreds of redundant fallback clipping masks.
+    selected.retain(|key| key.level != 0 || !covered.contains(&(key.x, key.z)));
+    let next: FxHashSet<_> = selected.iter().copied().collect();
+    let changed: Vec<_> = active.symmetric_difference(&next).copied().collect();
+    dirty.extend(touching(&next, &changed));
+    dirty.extend(next.difference(active).copied());
+    dirty.retain(|key| next.contains(key));
+    (!dirty.is_empty() || next != *active).then_some((next, dirty))
+}
+/// The bounds in blocks of `covered`'s columns: [x0, z0, x1, z1], half-open.
+fn covered_bounds(covered: &FxHashSet<(i32, i32)>) -> Option<[i32; 4]> {
+    covered
+        .iter()
+        .fold(None, |bounds, &column| Some(extend_bounds(bounds, column)))
+}
+fn extend_bounds(bounds: Option<[i32; 4]>, (x, z): (i32, i32)) -> [i32; 4] {
+    match bounds {
+        None => [x * 16, z * 16, (x + 1) * 16, (z + 1) * 16],
+        Some([x0, z0, x1, z1]) => [
+            x0.min(x * 16),
+            z0.min(z * 16),
+            x1.max((x + 1) * 16),
+            z1.max((z + 1) * 16),
+        ],
+    }
+}
+/// Whether the column lies on an edge of `bounds`: removing it may shrink them.
+fn on_bounds_edge(bounds: Option<[i32; 4]>, (x, z): (i32, i32)) -> bool {
+    bounds.is_none_or(|[x0, z0, x1, z1]| {
+        x * 16 == x0 || z * 16 == z0 || (x + 1) * 16 == x1 || (z + 1) * 16 == z1
+    })
+}
+/// The full-detail columns (`Lod::update`), as the renderer's complete columns in the render
+/// distance change.
+pub enum Covered {
+    /// None changed.
+    Same,
+    /// All of them, after the render area moved.
+    All(FxHashSet<(i32, i32)>),
+    /// Columns that became covered (`true`) or not, with columns unchanged allowed.
+    Changed(Vec<((i32, i32), bool)>),
+}
+/// A finished tile mesh and its bounds, relative to the tile's origin (`mesh_bounds`), found
+/// on the worker: a pass over every vertex of each tile cost the uploads' frame time.
+pub struct TileMesh {
+    pub mesh: SectionMesh,
+    pub bounds: Option<(glam::Vec3, glam::Vec3)>,
+}
+/// The box of a mesh's vertices, `None` for an empty mesh.
+pub fn mesh_bounds(mesh: &SectionMesh) -> Option<(glam::Vec3, glam::Vec3)> {
+    let mut positions = mesh
+        .solid
+        .iter()
+        .chain(&mesh.translucent)
+        .map(|v| glam::Vec3::from(v.pos));
+    let first = positions.next()?;
+    Some(positions.fold((first, first), |(min, max), pos| {
+        (min.min(pos), max.max(pos))
+    }))
 }
 /// Visited chunks' summaries (`Lod::saved`) and their reductions.
 type Saved = FxHashMap<(i32, i32), Arc<[Column; 256]>>;
 type Reduced = FxHashMap<(i32, i32), Arc<ReducedColumns>>;
+/// Each tile's samples (`Lod::ready`).
+type Ready = FxHashMap<TileKey, Arc<Vec<Column>>>;
 /// What a mesh job reads, as it was when the job began: the worker gathers
 /// every tile's inputs from it (gathering on the render thread stalled the
 /// frame, tens of milliseconds for a large job on a 4-thread machine).
 struct Snapshot {
-    active: FxHashSet<TileKey>,
-    samples: FxHashMap<TileKey, Arc<Vec<Column>>>,
-    saved: Saved,
-    reduced: Reduced,
+    active: Arc<FxHashSet<TileKey>>,
+    samples: Ready,
+    saved: Arc<Saved>,
+    reduced: Arc<Reduced>,
+}
+/// A selection and mesh job (`Lod::select`): the main thread's state, shared. The main
+/// thread changes it copy-on-write (`Arc::make_mut`), so sending it costs nothing; cloning
+/// the samples, the visited summaries and the covered columns for each job, and building the
+/// selection, were about 2 ms of the main thread per job at 1024 chunks.
+struct Selection {
+    plan: Arc<Plan>,
+    ready: Arc<Ready>,
+    active: Arc<FxHashSet<TileKey>>,
+    dirty: FxHashSet<TileKey>,
+    covered: Arc<FxHashSet<(i32, i32)>>,
+    bounds: Option<[i32; 4]>,
+    saved: Arc<Saved>,
+    reduced: Arc<Reduced>,
+}
+impl Selection {
+    /// On the worker: `None` when asked to stop.
+    fn run(
+        self,
+        mesher: &mut mesh::Mesher,
+        context: &WorkerContext,
+        stop: &AtomicBool,
+    ) -> Option<Done> {
+        let Self {
+            plan,
+            ready,
+            active,
+            dirty,
+            covered,
+            bounds,
+            saved,
+            reduced,
+        } = self;
+        let Some((next, dirty)) = choose(&plan, &ready, &covered, &active, dirty) else {
+            return Some(Done::Unchanged);
+        };
+        let mut finer = Lod::finer(&next, &dirty);
+        let samples = next
+            .iter()
+            .filter_map(|key| Some((*key, ready.get(key)?.clone())))
+            .collect();
+        // The main thread changes the samples nearly every frame: held during the meshing,
+        // the first change would copy the whole map.
+        drop(ready);
+        let removed = active.difference(&next).copied().collect();
+        let fallback = fallback_children(&plan, &next);
+        let snapshot = Snapshot {
+            active: Arc::new(next),
+            samples,
+            saved,
+            reduced,
+        };
+        let mut meshes = Vec::with_capacity(dirty.len());
+        for key in dirty {
+            if stop.load(Ordering::Relaxed) {
+                return None;
+            }
+            let finer = finer.remove(&key).unwrap_or_default();
+            let input = snapshot.mesh_input(key, finer);
+            let mut mesh = mesher.mesh(
+                input.key,
+                &input.columns(),
+                &covered,
+                bounds,
+                context,
+                &input.neighbors,
+                &input.finer,
+            );
+            mesh.sort_solid();
+            let bounds = mesh_bounds(&mesh);
+            meshes.push((input.key, TileMesh { mesh, bounds }));
+        }
+        Some(Done::Mesh {
+            active: snapshot.active,
+            removed,
+            meshes,
+            covered: (*covered).clone(),
+            fallback: (plan, fallback),
+        })
+    }
 }
 struct MeshInput {
     key: TileKey,
@@ -562,13 +834,7 @@ enum Job {
         chunks: Vec<(i32, i32)>,
         center: [i32; 2],
     },
-    Mesh {
-        snapshot: Snapshot,
-        keys: Vec<TileKey>,
-        finer: FxHashMap<TileKey, Vec<TileKey>>,
-        covered: FxHashSet<(i32, i32)>,
-        bounds: Option<[i32; 4]>,
-    },
+    Select(Box<Selection>),
 }
 enum Done {
     Detail((i32, i32), ReducedColumns),
@@ -579,11 +845,17 @@ enum Done {
         key: TileKey,
         samples: Vec<Column>,
     },
+    /// The selected tiles (`active`), those they replace and the new meshes.
     Mesh {
-        active: FxHashSet<TileKey>,
-        meshes: Vec<(TileKey, SectionMesh)>,
+        active: Arc<FxHashSet<TileKey>>,
+        removed: Vec<TileKey>,
+        meshes: Vec<(TileKey, TileMesh)>,
         covered: FxHashSet<(i32, i32)>,
+        /// `fallback_children` of `active` under this plan.
+        fallback: (Arc<Plan>, Vec<TileKey>),
     },
+    /// A selection that changed nothing.
+    Unchanged,
 }
 struct Shared {
     jobs: Mutex<VecDeque<Job>>,
@@ -609,8 +881,17 @@ pub struct Lod {
     /// The plan or the covered columns changed: covered leaves need stand-ins.
     replanned: bool,
     invalidated: FxHashSet<(i32, i32)>,
+    /// The area last sent to the plan's thread.
     area: Option<([i32; 2], i32, u32, i32, bool)>,
-    plan: Plan,
+    /// The latest plan from its thread (`Replan`).
+    plan: Arc<Plan>,
+    plan_requests: Option<mpsc::Sender<PlanRequest>>,
+    plans: mpsc::Receiver<Replan>,
+    plan_thread: Option<thread::JoinHandle<()>>,
+    /// The plan's leaves without samples.
+    missing: Missing,
+    /// `fallback_children` and the plan and active tiles they are of.
+    fallback: Option<(Arc<Plan>, Arc<FxHashSet<TileKey>>, Vec<TileKey>)>,
     /// Reduced far detail (`set_reduced_detail`).
     reduced_detail: bool,
     pending: FxHashSet<TileKey>,
@@ -626,18 +907,19 @@ pub struct Lod {
     held_sample_at: std::time::Instant,
     /// When `select` last walked the quadtree (`SELECT_STEP`).
     selected_at: std::time::Instant,
-    /// Each tile's samples, shared with mesh jobs in flight.
-    ready: FxHashMap<TileKey, Arc<Vec<Column>>>,
-    active: FxHashSet<TileKey>,
+    /// Each tile's samples, shared with mesh jobs in flight. Changed through
+    /// `insert_ready`, which keeps `missing`.
+    ready: Arc<Ready>,
+    active: Arc<FxHashSet<TileKey>>,
     dirty: FxHashSet<TileKey>,
     removed: Vec<TileKey>,
-    covered: FxHashSet<(i32, i32)>,
+    covered: Arc<FxHashSet<(i32, i32)>>,
     covered_bounds: Option<[i32; 4]>,
     /// The covered columns the active meshes leave out, when a mesh job
     /// has finished since the last `take_cutout`.
     cutout: Option<FxHashSet<(i32, i32)>>,
-    saved: Saved,
-    reduced: Reduced,
+    saved: Arc<Saved>,
+    reduced: Arc<Reduced>,
     saved_order: VecDeque<(i32, i32)>,
     /// Mesh jobs finished: the drawn tiles changed (`revision`).
     revision: u64,
@@ -759,37 +1041,13 @@ impl Lod {
                             let samples = sampler.grid(x, z, key.stride(), key.cells());
                             Done::Sample { key, samples }
                         }
-                        Job::Mesh {
-                            snapshot,
-                            keys,
-                            mut finer,
-                            covered,
-                            bounds,
-                        } => {
-                            let mut meshes = Vec::with_capacity(keys.len());
-                            for key in keys {
-                                if worker.stop.load(Ordering::Relaxed) {
-                                    break 'work;
-                                }
-                                let finer = finer.remove(&key).unwrap_or_default();
-                                let input = snapshot.mesh_input(key, finer);
-                                let mut mesh = mesher.mesh(
-                                    input.key,
-                                    &input.columns(),
-                                    &covered,
-                                    bounds,
-                                    &mesh_context,
-                                    &input.neighbors,
-                                    &input.finer,
-                                );
-                                mesh.sort_solid();
-                                meshes.push((input.key, mesh));
-                            }
-                            Done::Mesh {
-                                active: snapshot.active,
-                                meshes,
-                                covered,
-                            }
+                        Job::Select(selection) => {
+                            let Some(done) =
+                                selection.run(&mut mesher, &mesh_context, &worker.stop)
+                            else {
+                                break 'work;
+                            };
+                            done
                         }
                     };
                     if tx.send(done).is_err() {
@@ -803,6 +1061,32 @@ impl Lod {
                 }
             })
             .expect("far terrain worker");
+        // The plan's own thread: a mesh job can hold the worker for tens of milliseconds, and
+        // a chunk crossing's plan should not wait for it. Every plan is built from the one
+        // before it, in order (`Plan::with_previous` keeps detail across its thresholds).
+        let (plan_requests, requests) = mpsc::channel::<PlanRequest>();
+        let (replans, plans) = mpsc::channel();
+        let plan_thread = thread::Builder::new()
+            .name("Far plan".into())
+            .spawn(move || {
+                let mut previous = Arc::new(Plan::default());
+                while let Ok(r) = requests.recv() {
+                    let plan = Arc::new(Plan::with_previous(
+                        r.camera,
+                        r.detail,
+                        r.distance,
+                        &previous,
+                        r.elevation,
+                        r.reduced,
+                    ));
+                    let change = PlanChange::between(&previous, &plan);
+                    previous = plan.clone();
+                    if replans.send(Replan { plan, change }).is_err() {
+                        return;
+                    }
+                }
+            })
+            .expect("far plan thread");
         Self {
             shared,
             thread: Some(handle),
@@ -815,7 +1099,12 @@ impl Lod {
             invalidated: FxHashSet::default(),
             area: None,
             reduced_detail: false,
-            plan: Plan::default(),
+            plan: Arc::default(),
+            plan_requests: Some(plan_requests),
+            plans,
+            plan_thread: Some(plan_thread),
+            missing: Missing::default(),
+            fallback: None,
             pending: FxHashSet::default(),
             sample_nearby: true,
             detail_masks: FxHashMap::default(),
@@ -825,15 +1114,15 @@ impl Lod {
             near_loading: false,
             held_sample_at: std::time::Instant::now(),
             selected_at: std::time::Instant::now(),
-            ready: FxHashMap::default(),
-            active: FxHashSet::default(),
+            ready: Arc::default(),
+            active: Arc::default(),
             dirty: FxHashSet::default(),
             removed: Vec::new(),
-            covered: FxHashSet::default(),
+            covered: Arc::default(),
             covered_bounds: None,
             cutout: None,
-            saved: FxHashMap::default(),
-            reduced: FxHashMap::default(),
+            saved: Arc::default(),
+            reduced: Arc::default(),
             saved_order: VecDeque::new(),
             revision: 0,
         }
@@ -969,17 +1258,24 @@ impl Lod {
         {
             return;
         }
-        if !self.saved.contains_key(&key) {
-            while self.saved.len() >= MAX_SAVED {
+        // Copied here only if a mesh job still reads them (`Arc::make_mut`): once a job at most.
+        let saved = Arc::make_mut(&mut self.saved);
+        if !saved.contains_key(&key) {
+            while saved.len() >= MAX_SAVED {
                 if let Some(old) = self.saved_order.pop_front() {
-                    self.saved.remove(&old);
-                    self.reduced.remove(&old);
+                    saved.remove(&old);
+                    Arc::make_mut(&mut self.reduced).remove(&old);
                 }
             }
             self.saved_order.push_back(key);
         }
-        self.saved.insert(key, columns.columns.clone());
+        saved.insert(key, columns.columns.clone());
         self.finish_detail(key, columns);
+    }
+    /// Sets a tile's samples; the only way `ready` gains one, so `missing` stays right.
+    fn insert_ready(&mut self, key: TileKey, samples: Arc<Vec<Column>>) {
+        Arc::make_mut(&mut self.ready).insert(key, samples);
+        self.missing.0.remove(&key);
     }
     fn apply_fine(&mut self, (cx, cz): (i32, i32), columns: &[Column; 256]) {
         let fine = TileKey {
@@ -988,7 +1284,7 @@ impl Lod {
             level: 0,
         };
         if self.plan.nodes.contains(&fine) || self.ready.contains_key(&fine) {
-            self.ready.insert(fine, Arc::new(columns.to_vec()));
+            self.insert_ready(fine, Arc::new(columns.to_vec()));
             self.reselect = true;
             self.detail_masks.insert(fine, [u64::MAX; 4]);
         }
@@ -1005,7 +1301,10 @@ impl Lod {
                 z: (cz * 16).div_euclid(size),
                 level,
             };
-            let Some(samples) = self.ready.get_mut(&key) else {
+            if !self.ready.contains_key(&key) {
+                continue;
+            }
+            let Some(samples) = Arc::make_mut(&mut self.ready).get_mut(&key) else {
                 continue;
             };
             let [ox, _, oz] = key.origin();
@@ -1045,7 +1344,7 @@ impl Lod {
                     }
                 }
             }
-            self.ready.insert(key, Arc::new(samples));
+            self.insert_ready(key, Arc::new(samples));
             self.reselect = true;
         }
     }
@@ -1059,7 +1358,7 @@ impl Lod {
         }
         self.apply_detail(key, &columns);
         if self.saved.contains_key(&key) {
-            self.reduced.insert(key, Arc::new(columns));
+            Arc::make_mut(&mut self.reduced).insert(key, Arc::new(columns));
         }
         self.invalidate_chunk(key.0, key.1);
     }
@@ -1144,8 +1443,8 @@ impl Lod {
         yaw: f32,
         detail: i32,
         distance: u32,
-        covered: Option<FxHashSet<(i32, i32)>>,
-    ) -> Vec<(TileKey, SectionMesh)> {
+        covered: Covered,
+    ) -> Vec<(TileKey, TileMesh)> {
         let elevation =
             (((camera[1] - f64::from(MIN_Y + crate::chunk::HEIGHT)).clamp(0., 16384.)) as i32 / 32)
                 * 32;
@@ -1158,7 +1457,8 @@ impl Lod {
             camera[0] - (yaw.sin() * ahead) as i32,
             camera[1] + (yaw.cos() * ahead) as i32,
         ];
-        // Replan at chunk boundaries, not on every camera movement.
+        // Replan at chunk boundaries, not on every camera movement: the plan's thread
+        // builds it, and it is taken in (`replan`) a frame or so later.
         let area = (
             [camera[0].div_euclid(16), camera[1].div_euclid(16)],
             detail,
@@ -1166,25 +1466,26 @@ impl Lod {
             elevation,
             self.reduced_detail,
         );
-        let replan = self.area != Some(area);
-        if replan {
-            crate::spans::time("lod_plan", || {
-                self.area = Some(area);
-                self.plan = Plan::with_previous(
+        if self.area != Some(area) {
+            self.area = Some(area);
+            if let Some(requests) = &self.plan_requests {
+                let _ = requests.send(PlanRequest {
                     camera,
                     detail,
                     distance,
-                    &self.plan,
                     elevation,
-                    self.reduced_detail,
-                );
-                self.ready.retain(|key, _| self.plan.nodes.contains(key));
-                self.detail_masks
-                    .retain(|key, _| self.plan.nodes.contains(key));
-                self.replanned = true;
-                self.reselect = true;
-            });
+                    reduced: self.reduced_detail,
+                });
+            }
         }
+        let replan = crate::spans::time("lod_plan", || {
+            let mut replan = false;
+            while let Ok(next) = self.plans.try_recv() {
+                self.replan(next);
+                replan = true;
+            }
+            replan
+        });
         let mut meshes = Vec::new();
         crate::spans::time("lod_results", || self.receive(&mut meshes));
         crate::spans::time("lod_covered", || self.cover(covered));
@@ -1197,7 +1498,33 @@ impl Lod {
         });
         meshes
     }
-    fn receive(&mut self, meshes: &mut Vec<(TileKey, SectionMesh)>) {
+    /// Takes in a plan from the plan's thread: what depends on the plan changes by the tiles
+    /// that changed (`PlanChange`), not by a pass over every node and sample.
+    fn replan(&mut self, Replan { plan, change }: Replan) {
+        self.plan = plan;
+        // Every sample is of a node of the plan (`finish_sample`, `apply_fine`, `cover`).
+        if change.gone.iter().any(|key| self.ready.contains_key(key)) {
+            let ready = Arc::make_mut(&mut self.ready);
+            for key in &change.gone {
+                ready.remove(key);
+            }
+        }
+        // Not only nodes: `request_detail` marks the active tiles, of an older plan.
+        self.detail_masks
+            .retain(|key, _| self.plan.nodes.contains(key));
+        self.missing.replan(&change, &self.ready);
+        // Complete resident columns need no duplicate noise work.
+        for &key in &change.leaves {
+            if key.level == 0
+                && self.covered.contains(&(key.x, key.z))
+                && !self.ready.contains_key(&key)
+            {
+                self.insert_ready(key, Arc::new(vec![Column::default(); CELLS * CELLS]));
+            }
+        }
+        self.reselect = true;
+    }
+    fn receive(&mut self, meshes: &mut Vec<(TileKey, TileMesh)>) {
         while let Ok(done) = self.results.try_recv() {
             match done {
                 Done::Detail(key, columns) => {
@@ -1210,13 +1537,17 @@ impl Lod {
                 Done::Sample { key, samples } => self.finish_sample(key, samples),
                 Done::Mesh {
                     active,
+                    removed,
                     meshes: completed,
                     covered,
+                    fallback: (plan, fallback),
                 } => {
                     self.cutout = Some(covered);
                     // Retire parents only when the entire replacement is ready.
-                    self.removed
-                        .extend(self.active.difference(&active).copied());
+                    self.removed.extend(removed);
+                    if Arc::ptr_eq(&plan, &self.plan) {
+                        self.fallback = Some((plan, active.clone(), fallback));
+                    }
                     self.active = active;
                     self.revision += 1;
                     self.meshing = false;
@@ -1226,94 +1557,100 @@ impl Lod {
                     }
                     meshes.extend(completed);
                 }
-            }
-        }
-    }
-    /// Takes the new full-detail columns, when they changed (`None`: not).
-    fn cover(&mut self, covered: Option<FxHashSet<(i32, i32)>>) {
-        if let Some(covered) = covered
-            && self.covered != covered
-        {
-            let changes: Vec<_> = self
-                .covered
-                .symmetric_difference(&covered)
-                .copied()
-                .collect();
-            for (x, z) in changes {
-                self.invalidate_chunk(x, z);
-            }
-            self.covered_bounds = covered.iter().fold(None, |bounds, &(x, z)| {
-                Some(match bounds {
-                    None => [x * 16, z * 16, (x + 1) * 16, (z + 1) * 16],
-                    Some([x0, z0, x1, z1]) => [
-                        x0.min(x * 16),
-                        z0.min(z * 16),
-                        x1.max((x + 1) * 16),
-                        z1.max((z + 1) * 16),
-                    ],
-                })
-            });
-            self.covered = covered;
-            self.replanned = true;
-            self.reselect = true;
-        }
-        // Complete resident columns need no duplicate noise work. Their real
-        // summaries are retained when the full-detail chunks leave the view.
-        if std::mem::take(&mut self.replanned) {
-            for &key in &self.plan.nodes {
-                if key.level == 0 && self.covered.contains(&(key.x, key.z)) {
-                    self.ready
-                        .entry(key)
-                        .or_insert_with(|| Arc::new(vec![Column::default(); CELLS * CELLS]));
+                Done::Unchanged => {
+                    self.meshing = false;
+                    for (x, z) in std::mem::take(&mut self.invalidated) {
+                        self.invalidate_chunk(x, z);
+                    }
                 }
             }
         }
     }
+    /// Takes in the full-detail columns that changed. In flight a column completes or leaves
+    /// nearly every frame: the set is changed by those columns, not rebuilt and compared.
+    fn cover(&mut self, covered: Covered) {
+        let changes = match covered {
+            Covered::Same => Vec::new(),
+            Covered::All(all) if all == *self.covered => Vec::new(),
+            Covered::All(all) => self
+                .covered
+                .symmetric_difference(&all)
+                .map(|&column| (column, all.contains(&column)))
+                .collect(),
+            Covered::Changed(changes) => changes,
+        };
+        let mut shrunk = false;
+        for (column, now) in changes {
+            if self.covered.contains(&column) == now {
+                continue;
+            }
+            // Copied only if the mesh job in flight still reads it.
+            let set = Arc::make_mut(&mut self.covered);
+            if now {
+                set.insert(column);
+                self.covered_bounds = Some(extend_bounds(self.covered_bounds, column));
+            } else {
+                set.remove(&column);
+                shrunk |= on_bounds_edge(self.covered_bounds, column);
+            }
+            self.invalidate_chunk(column.0, column.1);
+            // Complete resident columns need no duplicate noise work. Their real
+            // summaries are retained when the full-detail chunks leave the view.
+            let key = TileKey {
+                x: column.0,
+                z: column.1,
+                level: 0,
+            };
+            if now && self.plan.nodes.contains(&key) && !self.ready.contains_key(&key) {
+                self.insert_ready(key, Arc::new(vec![Column::default(); CELLS * CELLS]));
+            }
+            self.reselect = true;
+        }
+        if shrunk {
+            self.covered_bounds = covered_bounds(&self.covered);
+        }
+        if std::mem::take(&mut self.replanned) {
+            let fine: Vec<_> = self
+                .plan
+                .nodes
+                .iter()
+                .copied()
+                .filter(|key| {
+                    key.level == 0
+                        && self.covered.contains(&(key.x, key.z))
+                        && !self.ready.contains_key(key)
+                })
+                .collect();
+            for key in fine {
+                self.insert_ready(key, Arc::new(vec![Column::default(); CELLS * CELLS]));
+            }
+            self.reselect = true;
+        }
+    }
     /// Chooses the tiles to draw and meshes those that changed, when the
-    /// plan, the samples, the covered columns or the active tiles changed.
+    /// plan, the samples, the covered columns or the active tiles changed: both on the
+    /// worker (`Selection`), which answers `Done::Unchanged` when nothing did.
     fn select(&mut self) {
         if !std::mem::take(&mut self.reselect) && self.dirty.is_empty() {
             return;
         }
         self.selected_at = std::time::Instant::now();
-        {
-            let mut selected = Vec::new();
-            for &key in &self.plan.roots {
-                self.plan.select(key, &self.ready, &mut selected);
-            }
-            // Their normal meshes already provide coverage. Empty stand-ins
-            // must not become hundreds of redundant fallback clipping masks.
-            selected.retain(|key| key.level != 0 || !self.covered.contains(&(key.x, key.z)));
-            let next: FxHashSet<_> = selected.iter().copied().collect();
-            let changed: Vec<_> = self.active.symmetric_difference(&next).copied().collect();
-            for tile in touching(&next, &changed) {
-                self.dirty.insert(tile);
-            }
-            self.dirty.extend(next.difference(&self.active).copied());
-            self.dirty.retain(|key| next.contains(key));
-            if !self.dirty.is_empty() || next != self.active {
-                let finer = Self::finer(&next, &self.dirty);
-                let samples = next
-                    .iter()
-                    .filter_map(|key| Some((*key, self.ready.get(key)?.clone())))
-                    .collect();
-                let keys: Vec<_> = self.dirty.drain().collect();
-                self.meshing = true;
-                self.shared.jobs.lock().unwrap().push_front(Job::Mesh {
-                    snapshot: Snapshot {
-                        active: next,
-                        samples,
-                        saved: self.saved.clone(),
-                        reduced: self.reduced.clone(),
-                    },
-                    keys,
-                    finer,
-                    covered: self.covered.clone(),
-                    bounds: self.covered_bounds,
-                });
-                self.shared.wake.notify_all();
-            }
-        }
+        self.meshing = true;
+        self.shared
+            .jobs
+            .lock()
+            .unwrap()
+            .push_front(Job::Select(Box::new(Selection {
+                plan: self.plan.clone(),
+                ready: self.ready.clone(),
+                active: self.active.clone(),
+                dirty: std::mem::take(&mut self.dirty),
+                covered: self.covered.clone(),
+                bounds: self.covered_bounds,
+                saved: self.saved.clone(),
+                reduced: self.reduced.clone(),
+            })));
+        self.shared.wake.notify_all();
     }
     fn request_samples(
         &mut self,
@@ -1345,36 +1682,42 @@ impl Lod {
                 wanted.push((0, 0, root));
             }
         }
-        for &key in &self.plan.nodes {
-            if !self.plan.split.contains(&key) && !self.ready.contains_key(&key) {
-                wanted.push((
-                    if key.in_view(camera, yaw) { 1 } else { 3 },
-                    i64::from(key.distance(focus)) * 4 + i64::from(key.distance(camera)),
-                    key,
-                ));
-            }
+        // The leaves without samples, the same as a pass over the plan's nodes finds.
+        for &key in &self.missing.0 {
+            wanted.push((
+                if key.in_view(camera, yaw) { 1 } else { 3 },
+                i64::from(key.distance(focus)) * 4 + i64::from(key.distance(camera)),
+                key,
+            ));
         }
-        let mut fallback = Vec::new();
-        for &parent in &self.active {
-            if self.plan.split.contains(&parent) {
-                for child in parent.children() {
-                    if self.plan.nodes.contains(&child) && !self.ready.contains_key(&child) {
-                        // Covered near terrain bounds projected error. Using
-                        // zero distance for a parent touching the camera kept
-                        // refining it while huge visible walls waited elsewhere.
-                        let priority =
-                            i64::from(child.distance(camera).max((detail * 16).max(elevation)))
-                                * 1024
-                                / i64::from(child.size());
-                        fallback.push((
-                            if child.in_view(camera, yaw) { 2 } else { 4 },
-                            priority,
-                            child,
-                        ));
-                    }
-                }
-            }
+        let current = self.fallback.as_ref().is_some_and(|(plan, active, _)| {
+            Arc::ptr_eq(plan, &self.plan) && Arc::ptr_eq(active, &self.active)
+        });
+        if !current {
+            self.fallback = Some((
+                self.plan.clone(),
+                self.active.clone(),
+                fallback_children(&self.plan, &self.active),
+            ));
         }
+        let children = self.fallback.as_ref().map_or(&[][..], |(_, _, c)| c);
+        let fallback = children
+            .iter()
+            .filter(|child| !self.ready.contains_key(child) && !self.pending.contains(child))
+            .map(|&child| {
+                // Covered near terrain bounds projected error. Using
+                // zero distance for a parent touching the camera kept
+                // refining it while huge visible walls waited elsewhere.
+                let priority = i64::from(child.distance(camera).max((detail * 16).max(elevation)))
+                    * 1024
+                    / i64::from(child.size());
+                (
+                    if child.in_view(camera, yaw) { 2 } else { 4 },
+                    priority,
+                    child,
+                )
+            })
+            .min();
         // Only the first `free` keys not already pending are taken. A key is
         // listed at most twice (as a root and as a node), so the best
         // `2 * (SAMPLE_JOBS + pending)` entries hold them, in order.
@@ -1385,11 +1728,7 @@ impl Lod {
         }
         wanted.sort_unstable();
         // Alternate one nearby final tile with one broad refinement tile.
-        if let Some(fallback) = fallback
-            .into_iter()
-            .filter(|(_, _, k)| !self.pending.contains(k))
-            .min()
-        {
+        if let Some(fallback) = fallback {
             let index = if self.sample_nearby {
                 wanted
                     .iter()
@@ -1434,11 +1773,16 @@ impl Lod {
         }
         finer
     }
+    /// After a test set the plan or the samples directly: `missing` found again.
+    #[cfg(test)]
+    fn edited(&mut self) {
+        self.missing = Missing::new(&self.plan, &self.ready);
+    }
     #[cfg(test)]
     fn snapshot(&self) -> Snapshot {
         Snapshot {
             active: self.active.clone(),
-            samples: self.ready.clone(),
+            samples: (*self.ready).clone(),
             saved: self.saved.clone(),
             reduced: self.reduced.clone(),
         }
@@ -1557,6 +1901,11 @@ impl Drop for Lod {
         self.shared.stop.store(true, Ordering::Relaxed);
         self.shared.wake.notify_all();
         if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        // Its channel closed, the plan's thread ends.
+        self.plan_requests = None;
+        if let Some(thread) = self.plan_thread.take() {
             let _ = thread.join();
         }
     }
@@ -1797,7 +2146,7 @@ mod tests {
             z: -1,
             level: 5,
         };
-        lod.ready.insert(
+        Arc::make_mut(&mut lod.ready).insert(
             key,
             Arc::new(vec![
                 Column::from_surface(Some(Surface {
@@ -1811,7 +2160,7 @@ mod tests {
         );
         // A chunk covers only one quarter of this parent's 32² cell. Both
         // opaque terrain and water must leave precisely that 16² footprint.
-        lod.covered.insert((-1, -2));
+        Arc::make_mut(&mut lod.covered).insert((-1, -2));
         lod.covered_bounds = Some([-16, -32, 0, -16]);
         let mesh = lod.mesh(key);
         let top_area = |vertices: &[TerrainVertex], y: f32| {
@@ -1919,8 +2268,7 @@ mod tests {
             z: -1,
             level: 0,
         };
-        lod.ready
-            .insert(fine, Arc::new(vec![Column::default(); 256]));
+        Arc::make_mut(&mut lod.ready).insert(fine, Arc::new(vec![Column::default(); 256]));
         lod.finish_detail(
             (-1, -1),
             ReducedColumns::new(Arc::new(std::array::from_fn(|_| Column::default()))),
@@ -1931,7 +2279,7 @@ mod tests {
             "late seed generation cannot overwrite a visited build"
         );
         assert_eq!(lod.detail_masks[&fine], [u64::MAX; 4]);
-        lod.plan.nodes.insert(fine);
+        Arc::make_mut(&mut lod.plan).nodes.insert(fine);
         lod.pending.insert(fine);
         lod.finish_sample(fine, vec![Column::default(); 256]);
         assert_eq!(
@@ -1940,7 +2288,7 @@ mod tests {
             "a late coarse sampling job cannot erase completed detail"
         );
         assert_eq!(lod.detail_masks[&fine], [u64::MAX; 4]);
-        lod.plan.nodes.remove(&fine);
+        Arc::make_mut(&mut lod.plan).nodes.remove(&fine);
 
         // The worker's summary comes with the reusable pyramid; a newer
         // observation replaces both, and an unchanged one changes nothing.
@@ -1975,14 +2323,14 @@ mod tests {
         // until all four child meshes can replace it in the same update.
         let camera = [-256.0, 100.0, -256.0];
         lod.area = Some(([-16, -16], 2, 64, 0, false));
-        lod.plan.roots = vec![key];
-        lod.plan.nodes.insert(key);
+        Arc::make_mut(&mut lod.plan).roots = vec![key];
+        Arc::make_mut(&mut lod.plan).nodes.insert(key);
         // As a replan does (`update` only selects after a change).
         lod.reselect = true;
         let await_meshes = |lod: &mut Lod| {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             loop {
-                let meshes = lod.update(camera, 0.0, 2, 64, None);
+                let meshes = lod.update(camera, 0.0, 2, 64, Covered::Same);
                 if !meshes.is_empty() {
                     return meshes;
                 }
@@ -1994,13 +2342,14 @@ mod tests {
         assert_eq!(uploaded.len(), 1);
         assert_eq!(uploaded[0].0, key);
         assert!(lod.active.contains(&key));
-        lod.plan.split.insert(key);
+        Arc::make_mut(&mut lod.plan).split.insert(key);
         for child in key.children() {
-            lod.plan.nodes.insert(child);
-            lod.ready.insert(child, lod.ready[&key].clone());
+            Arc::make_mut(&mut lod.plan).nodes.insert(child);
+            let samples = lod.ready[&key].clone();
+            Arc::make_mut(&mut lod.ready).insert(child, samples);
         }
         lod.reselect = true;
-        assert!(lod.update(camera, 0.0, 2, 64, None).is_empty());
+        assert!(lod.update(camera, 0.0, 2, 64, Covered::Same).is_empty());
         assert!(
             lod.active.contains(&key),
             "parent retired before child meshes"
@@ -2020,17 +2369,18 @@ mod tests {
             z: -2,
             level: 0,
         };
-        lod.plan = Plan::default();
-        lod.plan.roots.push(covered_fine);
-        lod.plan.nodes.insert(covered_fine);
-        lod.ready
-            .insert(covered_fine, Arc::new(vec![Column::default(); 256]));
-        lod.covered.insert((-1, -2));
+        let mut plan = Plan::default();
+        plan.roots.push(covered_fine);
+        plan.nodes.insert(covered_fine);
+        lod.plan = Arc::new(plan);
+        Arc::make_mut(&mut lod.ready).insert(covered_fine, Arc::new(vec![Column::default(); 256]));
+        Arc::make_mut(&mut lod.covered).insert((-1, -2));
+        lod.edited();
         lod.reselect = true;
         lod.replanned = true;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            lod.update(camera, 0., 2, 64, None);
+            lod.update(camera, 0., 2, 64, Covered::Same);
             if !lod.meshing && lod.active.is_empty() {
                 break;
             }
@@ -2049,17 +2399,18 @@ mod tests {
         lod.thread.take().unwrap().join().unwrap();
         while lod.results.try_recv().is_ok() {}
         lod.shared.jobs.lock().unwrap().clear();
-        lod.plan = Plan::new([-256, -256], 2, 64);
+        let mut plan = Plan::new([-256, -256], 2, 64);
         let parent = TileKey {
             x: -2,
             z: -2,
             level: 3,
         };
-        lod.plan.roots = vec![parent];
-        lod.ready.clear();
-        lod.ready
-            .insert(parent, Arc::new(vec![Column::default(); 256]));
-        lod.active = [parent].into_iter().collect();
+        plan.roots = vec![parent];
+        lod.plan = Arc::new(plan);
+        Arc::make_mut(&mut lod.ready).clear();
+        Arc::make_mut(&mut lod.ready).insert(parent, Arc::new(vec![Column::default(); 256]));
+        lod.active = Arc::new([parent].into_iter().collect());
+        lod.edited();
         lod.pending = (0..SAMPLE_JOBS - 1)
             .map(|i| TileKey {
                 x: 999 + i as i32,
@@ -2070,7 +2421,7 @@ mod tests {
         lod.sample_nearby = true;
         lod.detail_request_pending = true;
         lod.meshing = true;
-        lod.update(camera, 0.0, 2, 64, Some(FxHashSet::default()));
+        lod.update(camera, 0.0, 2, 64, Covered::All(FxHashSet::default()));
         let Some(Job::Sample(nearby)) = lod.shared.jobs.lock().unwrap().pop_front() else {
             panic!("nearby detail was not scheduled");
         };
@@ -2080,14 +2431,14 @@ mod tests {
             "detail should load ahead of the view"
         );
         lod.finish_sample(nearby, vec![Column::default(); 256]);
-        lod.update(camera, 0.0, 2, 64, Some(FxHashSet::default()));
+        lod.update(camera, 0.0, 2, 64, Covered::All(FxHashSet::default()));
         let Some(Job::Sample(fallback)) = lod.shared.jobs.lock().unwrap().pop_front() else {
             panic!("fallback refinement was starved");
         };
         assert!(fallback.level > 0);
         lod.pending.remove(&fallback);
         lod.sample_nearby = true;
-        lod.update(camera, 90.0, 2, 64, Some(FxHashSet::default()));
+        lod.update(camera, 90.0, 2, 64, Covered::All(FxHashSet::default()));
         let Some(Job::Sample(turned)) = lod.shared.jobs.lock().unwrap().pop_front() else {
             panic!("turned view was not scheduled");
         };
@@ -2106,17 +2457,20 @@ mod tests {
             z: 0,
             level: 6,
         };
-        lod.plan = Plan::default();
-        lod.plan.roots = vec![near, far];
-        lod.ready.clear();
+        let mut plan = Plan {
+            roots: vec![near, far],
+            ..Plan::default()
+        };
+        Arc::make_mut(&mut lod.ready).clear();
         for parent in [near, far] {
-            lod.plan.nodes.insert(parent);
-            lod.plan.split.insert(parent);
-            lod.plan.nodes.extend(parent.children());
-            lod.ready
-                .insert(parent, Arc::new(vec![Column::default(); 256]));
+            plan.nodes.insert(parent);
+            plan.split.insert(parent);
+            plan.nodes.extend(parent.children());
+            Arc::make_mut(&mut lod.ready).insert(parent, Arc::new(vec![Column::default(); 256]));
         }
-        lod.active = [near, far].into_iter().collect();
+        lod.plan = Arc::new(plan);
+        lod.active = Arc::new([near, far].into_iter().collect());
+        lod.edited();
         lod.shared.jobs.lock().unwrap().clear();
         lod.pending = (0..SAMPLE_JOBS - 1)
             .map(|i| TileKey {
@@ -2126,7 +2480,7 @@ mod tests {
             })
             .collect();
         lod.sample_nearby = false;
-        lod.update(camera, 0., 2, 64, Some(FxHashSet::default()));
+        lod.update(camera, 0., 2, 64, Covered::All(FxHashSet::default()));
         let Some(Job::Sample(broad)) = lod.shared.jobs.lock().unwrap().pop_front() else {
             panic!("projected-error refinement missing")
         };
@@ -2135,10 +2489,10 @@ mod tests {
             "a near tile touching the camera must not starve a huge visible distant tile"
         );
         lod.shared.jobs.lock().unwrap().clear();
-        lod.active = (0..40).map(|x| TileKey { x, z: 0, level: 0 }).collect();
-        lod.plan.split.clear();
+        lod.active = Arc::new((0..40).map(|x| TileKey { x, z: 0, level: 0 }).collect());
+        Arc::make_mut(&mut lod.plan).split.clear();
         lod.detail_masks.clear();
-        lod.covered = [(0, 0)].into_iter().collect();
+        lod.covered = Arc::new([(0, 0)].into_iter().collect());
         lod.detail_request_pending = false;
         lod.detail_request_at = std::time::Instant::now() - std::time::Duration::from_secs(1);
         lod.request_detail([0, 0]);
@@ -2184,5 +2538,189 @@ mod touching_tests {
             .collect();
         assert_eq!(touching(&tiles, &changed), brute);
         assert!(!brute.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod incremental_tests {
+    use super::*;
+
+    /// A small deterministic generator for the tests' random choices.
+    struct Lcg(u32);
+    impl Lcg {
+        fn next(&mut self) -> u32 {
+            self.0 = self.0.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            self.0 >> 8
+        }
+    }
+
+    #[test]
+    fn plans_applied_by_their_changes_match_rebuilding_along_a_flight() {
+        let mut random = Lcg(7);
+        let mut plan = Plan::default();
+        let mut ready: FxHashMap<TileKey, ()> = FxHashMap::default();
+        let mut missing = Missing::default();
+        // Flying east and climbing, a chunk a step, as `Lod::update` replans.
+        for step in 0..48 {
+            let camera = [step * 16 + 3, -step * 5];
+            let elevation = (step / 8) * 32;
+            let next = Plan::with_previous(camera, 4, 64, &plan, elevation, false);
+            let change = PlanChange::between(&plan, &next);
+            // What `Lod::replan` does with the change, against a pass over everything.
+            let mut kept = ready.clone();
+            kept.retain(|key, _| next.nodes.contains(key));
+            for key in &change.gone {
+                ready.remove(key);
+            }
+            assert_eq!(ready, kept, "step {step}");
+            missing.replan(&change, &ready);
+            plan = next;
+            assert_eq!(missing, Missing::new(&plan, &ready), "step {step}");
+            // Samples arrive for some of the leaves still missing (`insert_ready`).
+            let mut leaves: Vec<_> = missing.0.iter().copied().collect();
+            leaves.sort_unstable();
+            for key in leaves {
+                if random.next().is_multiple_of(3) {
+                    ready.insert(key, ());
+                    missing.0.remove(&key);
+                }
+            }
+            assert_eq!(missing, Missing::new(&plan, &ready), "step {step}");
+        }
+        assert!(ready.len() > 100);
+    }
+
+    #[test]
+    fn fallback_children_are_the_split_active_tiles_children_in_the_plan() {
+        let plan = Plan::new([40, -70], 4, 128);
+        let active: FxHashSet<_> = plan.nodes.iter().copied().step_by(3).collect();
+        let mut brute = Vec::new();
+        for &parent in &active {
+            if plan.split.contains(&parent) {
+                for child in parent.children() {
+                    if plan.nodes.contains(&child) {
+                        brute.push(child);
+                    }
+                }
+            }
+        }
+        brute.sort_unstable();
+        assert!(!brute.is_empty());
+        assert_eq!(fallback_children(&plan, &active), brute);
+    }
+
+    #[test]
+    fn a_selection_meshes_what_changed_and_nothing_when_nothing_did() {
+        let plan = Plan::new([0, 0], 2, 64);
+        let ready: FxHashMap<TileKey, ()> = plan.nodes.iter().map(|&k| (k, ())).collect();
+        let covered = FxHashSet::default();
+        let none = FxHashSet::default();
+        let (active, dirty) = choose(&plan, &ready, &covered, &none, FxHashSet::default())
+            .expect("a first selection");
+        // Every leaf is ready: the leaves are drawn, all of them new.
+        let leaves: FxHashSet<_> = plan
+            .nodes
+            .iter()
+            .copied()
+            .filter(|k| !plan.split.contains(k))
+            .collect();
+        assert_eq!(active, leaves);
+        assert_eq!(dirty, leaves);
+        // The same again: nothing to do, and a dirty tile no longer drawn is dropped.
+        let gone = TileKey {
+            x: 9999,
+            z: 0,
+            level: 0,
+        };
+        assert!(
+            choose(
+                &plan,
+                &ready,
+                &covered,
+                &active,
+                [gone].into_iter().collect()
+            )
+            .is_none()
+        );
+        // A dirty drawn tile is meshed alone.
+        let tile = *leaves.iter().next().unwrap();
+        let (same, dirty) = choose(
+            &plan,
+            &ready,
+            &covered,
+            &active,
+            [tile].into_iter().collect(),
+        )
+        .unwrap();
+        assert_eq!(
+            (same, dirty),
+            (active.clone(), [tile].into_iter().collect())
+        );
+        // A covered finest tile leaves the selection; its neighbours mesh again.
+        let fine = TileKey {
+            x: 0,
+            z: 0,
+            level: 0,
+        };
+        assert!(active.contains(&fine));
+        let covered: FxHashSet<_> = [(0, 0)].into_iter().collect();
+        let (next, dirty) = choose(&plan, &ready, &covered, &active, FxHashSet::default()).unwrap();
+        assert!(!next.contains(&fine));
+        assert_eq!(next.len() + 1, active.len());
+        assert!(dirty.contains(&TileKey { x: 1, ..fine }));
+        assert!(dirty.contains(&TileKey { x: -1, ..fine }));
+        assert!(dirty.iter().all(|key| touches(*key, fine)));
+    }
+
+    #[test]
+    fn covered_bounds_kept_by_change_match_a_full_pass() {
+        let mut random = Lcg(99);
+        let mut covered = FxHashSet::default();
+        let mut bounds = None;
+        for _ in 0..2000 {
+            let column = (
+                (random.next() % 13) as i32 - 6,
+                (random.next() % 9) as i32 - 4,
+            );
+            // As `Lod::cover` does.
+            if random.next().is_multiple_of(2) {
+                if covered.insert(column) {
+                    bounds = Some(extend_bounds(bounds, column));
+                }
+            } else if covered.remove(&column) && on_bounds_edge(bounds, column) {
+                bounds = covered_bounds(&covered);
+            }
+            assert_eq!(bounds, covered_bounds(&covered));
+        }
+    }
+
+    #[test]
+    fn the_uploads_get_what_the_update_leaves() {
+        let ms = std::time::Duration::from_millis;
+        assert_eq!(upload_budget(ms(0)), FRAME_BUDGET);
+        assert_eq!(
+            upload_budget(std::time::Duration::from_micros(300)),
+            ms(2) - std::time::Duration::from_micros(300)
+        );
+        assert_eq!(upload_budget(ms(5)), UPLOAD_FLOOR);
+    }
+
+    #[test]
+    fn mesh_bounds_cover_both_passes() {
+        use crate::mesher::TerrainVertex;
+        let vertex = |pos| TerrainVertex::tiled(pos, [0.0; 2], 0, 0, 0);
+        let mesh = SectionMesh {
+            solid: vec![vertex([3.0, -64.0, 2.0]), vertex([16.0, 70.0, 1.0])],
+            translucent: vec![vertex([8.0, 80.0, 9.0])],
+            ..Default::default()
+        };
+        assert_eq!(
+            mesh_bounds(&mesh),
+            Some((
+                glam::Vec3::new(3.0, -64.0, 1.0),
+                glam::Vec3::new(16.0, 80.0, 9.0)
+            ))
+        );
+        assert_eq!(mesh_bounds(&SectionMesh::default()), None);
     }
 }

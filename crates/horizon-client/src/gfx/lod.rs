@@ -3,8 +3,7 @@
 use super::{Frustum, Renderer, SectionGpu};
 use crate::{
     fast_hash::{FxHashMap, FxHashSet},
-    lod::TileKey,
-    mesher::SectionMesh,
+    lod::{TileKey, TileMesh},
 };
 use glam::{DVec3, Vec3};
 use std::time::{Duration, Instant};
@@ -15,11 +14,52 @@ use std::time::{Duration, Instant};
 /// (no sorting, depth and shadow passes unchanged).
 const FADE: Duration = Duration::from_millis(600);
 
+/// What uploading a tile costs a byte of its vertices, learned from the tiles before it, so
+/// `upload_lods` stops before a tile that would overrun its budget rather than after: it
+/// checked the time after each tile, and a frame paid its budget plus however long the last
+/// tile took (`lod_upload` 2.2 ms on average in a slow frame, flying at 1024 chunks).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct UploadPace {
+    nanos_per_byte: f64,
+}
+
+/// A tile's fixed cost (its allocation, bounds, bookkeeping), counted as this many bytes.
+const TILE_BYTES: u64 = 16 * 1024;
+
+impl Default for UploadPace {
+    /// A staging copy's pace, about 2 GB/s, until tiles measure it.
+    fn default() -> Self {
+        Self {
+            nanos_per_byte: 0.5,
+        }
+    }
+}
+
+impl UploadPace {
+    fn predict(self, bytes: u64) -> Duration {
+        Duration::from_nanos(((bytes + TILE_BYTES) as f64 * self.nanos_per_byte) as u64)
+    }
+
+    /// One tile of `bytes` took `took`. A rare slow one (a new arena page) moves the pace
+    /// at most fourfold, so it does not hold the next frames' tiles back for long.
+    fn learn(&mut self, bytes: u64, took: Duration) {
+        let sample = took.as_nanos() as f64 / (bytes + TILE_BYTES) as f64;
+        self.nanos_per_byte =
+            0.75 * self.nanos_per_byte + 0.25 * sample.min(self.nanos_per_byte * 4.0);
+    }
+}
+
+/// Whether a tile predicted to take `predicted` goes this frame: always the first (tiles
+/// must keep coming however large), others only within `budget`.
+fn fits(elapsed: Duration, predicted: Duration, budget: Duration, uploaded: usize) -> bool {
+    uploaded == 0 || elapsed + predicted <= budget
+}
+
 /// Finished tile meshes not uploaded yet, the tiles they replace (removed
 /// once every mesh is in) and the columns they leave out.
 #[derive(Default)]
 pub(super) struct Pending {
-    meshes: FxHashMap<TileKey, SectionMesh>,
+    meshes: FxHashMap<TileKey, TileMesh>,
     removed: FxHashSet<TileKey>,
     cutout: Option<FxHashSet<(i32, i32)>>,
     /// Tiles uploaded for these meshes, new ones hidden until all are in.
@@ -32,7 +72,7 @@ impl Pending {
     /// removed, and tiles removed now drop their waiting meshes.
     fn add(
         &mut self,
-        meshes: Vec<(TileKey, SectionMesh)>,
+        meshes: Vec<(TileKey, TileMesh)>,
         removed: Vec<TileKey>,
         cutout: Option<FxHashSet<(i32, i32)>>,
     ) {
@@ -95,22 +135,14 @@ struct Bounds {
 }
 
 impl Bounds {
-    fn mesh(mesh: &SectionMesh) -> Option<Self> {
-        let mut positions = mesh
-            .solid
-            .iter()
-            .chain(&mesh.translucent)
-            .map(|v| Vec3::from(v.pos));
-        let first = positions.next()?;
-        let mut bounds = Self {
-            min: first,
-            max: first,
-        };
-        for pos in positions {
-            bounds.min = bounds.min.min(pos);
-            bounds.max = bounds.max.max(pos);
-        }
-        Some(bounds)
+    #[cfg(test)]
+    fn mesh(mesh: &crate::mesher::SectionMesh) -> Option<Self> {
+        Self::of(crate::lod::mesh_bounds(mesh))
+    }
+
+    /// From `TileMesh::bounds`, found on the far terrain's worker.
+    fn of(bounds: Option<(Vec3, Vec3)>) -> Option<Self> {
+        bounds.map(|(min, max)| Self { min, max })
     }
 
     /// With `curved` (the flat radius of `earth_drop`), the box reaches down as far as its
@@ -174,15 +206,15 @@ impl Tile {
 
 impl Renderer {
     /// A tile meshed again keeps showing; a new one waits for `show`.
-    pub fn upload_lod(&mut self, key: TileKey, mesh: &SectionMesh) {
+    pub fn upload_lod(&mut self, key: TileKey, tile: &TileMesh) {
         let shown = self
             .lods
             .get(&key)
             .filter(|t| t.leaving.is_none())
             .and_then(|t| t.shown);
         self.remove_lod(key);
-        if let Some(bounds) = Bounds::mesh(mesh)
-            && let Some(mesh) = self.upload_mesh(mesh)
+        if let Some(bounds) = Bounds::of(tile.bounds)
+            && let Some(mesh) = self.upload_mesh(&tile.mesh)
         {
             self.lods.insert(
                 key,
@@ -215,7 +247,7 @@ impl Renderer {
     /// (`Pending::add`).
     pub fn queue_lods(
         &mut self,
-        meshes: Vec<(TileKey, SectionMesh)>,
+        meshes: Vec<(TileKey, TileMesh)>,
         removed: Vec<TileKey>,
         cutout: Option<FxHashSet<(i32, i32)>>,
     ) {
@@ -227,10 +259,12 @@ impl Renderer {
             .add(meshes, removed, cutout);
     }
 
-    /// Uploads queued tile meshes for about `budget` (at least one), then,
-    /// once all are in, fades them in and the tiles they replace out (`FADE`).
+    /// Uploads queued tile meshes within `budget` (at least one; each next one only if its
+    /// predicted time fits, `UploadPace`), then, once all are in, fades them in and the
+    /// tiles they replace out (`FADE`).
     pub fn upload_lods(&mut self, budget: Duration) {
         let start = Instant::now();
+        let mut uploaded = 0;
         let faded: Vec<_> = self
             .lods
             .iter()
@@ -272,8 +306,20 @@ impl Renderer {
                 }
                 return;
             };
+            let bytes = crate::streaming::uploads::mesh_bytes(&pending.meshes[&key].mesh);
+            if !fits(
+                start.elapsed(),
+                self.lod_pace.predict(bytes),
+                budget,
+                uploaded,
+            ) {
+                return;
+            }
             let mesh = pending.meshes.remove(&key).expect("pending tile");
+            let before = Instant::now();
             self.upload_lod(key, &mesh);
+            self.lod_pace.learn(bytes, before.elapsed());
+            uploaded += 1;
             if let Some(pending) = &mut self.lod_pending {
                 pending.uploaded.push(key);
             }
@@ -303,7 +349,14 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mesher::TerrainVertex;
+    use crate::mesher::{SectionMesh, TerrainVertex};
+
+    fn tile() -> TileMesh {
+        TileMesh {
+            mesh: SectionMesh::default(),
+            bounds: None,
+        }
+    }
 
     #[test]
     fn joined_jobs_apply_as_if_in_turn() {
@@ -311,15 +364,12 @@ mod tests {
         let mut pending = Pending::default();
         // The first job meshes 1 and 2 and retires 3 and 4.
         pending.add(
-            vec![
-                (key(1), SectionMesh::default()),
-                (key(2), SectionMesh::default()),
-            ],
+            vec![(key(1), tile()), (key(2), tile())],
             vec![key(3), key(4)],
             Some([(0, 0)].into_iter().collect()),
         );
         // The second meshes 3 again and retires 2.
-        pending.add(vec![(key(3), SectionMesh::default())], vec![key(2)], None);
+        pending.add(vec![(key(3), tile())], vec![key(2)], None);
         let mut meshes: Vec<_> = pending.meshes.keys().map(|k| k.x).collect();
         meshes.sort_unstable();
         let mut removed: Vec<_> = pending.removed.iter().map(|k| k.x).collect();
@@ -358,6 +408,36 @@ mod tests {
                 .is_none()
         );
         assert!(Bounds::mesh(&SectionMesh::default()).is_none());
+    }
+
+    #[test]
+    fn a_tile_goes_only_if_its_predicted_time_fits() {
+        let ms = Duration::from_millis;
+        // The first always goes, however late or large.
+        assert!(fits(ms(5), ms(9), ms(2), 0));
+        assert!(fits(ms(1), ms(1), ms(2), 3));
+        assert!(!fits(ms(1), Duration::from_micros(1001), ms(2), 3));
+    }
+
+    #[test]
+    fn the_pace_learns_and_a_slow_tile_moves_it_at_most_fourfold() {
+        let mut pace = UploadPace::default();
+        let bytes = 1 << 20;
+        // Steady tiles at 2 ns a byte: the prediction converges on their time.
+        let took = Duration::from_nanos(2 * (bytes + TILE_BYTES));
+        for _ in 0..40 {
+            pace.learn(bytes, took);
+        }
+        let predicted = pace.predict(bytes).as_secs_f64();
+        assert!((predicted / took.as_secs_f64() - 1.0).abs() < 0.01);
+        // One tile 1000 times slower (a page grown) at most doubles the pace (a quarter of
+        // a fourfold sample), and steady tiles bring it back.
+        pace.learn(bytes, took * 1000);
+        assert!(pace.predict(bytes) <= took * 2);
+        for _ in 0..40 {
+            pace.learn(bytes, took);
+        }
+        assert!(pace.predict(bytes) < took + took / 50);
     }
 
     #[test]

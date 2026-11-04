@@ -588,9 +588,14 @@ pub struct Renderer {
     lod_retiring: crate::fast_hash::FxHashSet<SectionKey>,
     /// Finished tile meshes `upload_lods` has yet to upload.
     lod_pending: Option<lod::Pending>,
+    /// What a tile's upload costs (`upload_lods`).
+    lod_pace: lod::UploadPace,
     detail_columns: crate::fast_hash::FxHashMap<(i32, i32), u32>,
     /// Bumped whenever a column becomes or stops being complete.
     detail_revision: u64,
+    /// The columns that became or stopped being complete since `take_lod_detail_changes`;
+    /// `None` once too many or after `clear_sections` (all are to be read again).
+    detail_changes: Option<Vec<(i32, i32)>>,
     arena: arena::Arena,
     sorted_indices: arena::Arena,
     translucent_sorter: translucency::Sorter,
@@ -3418,8 +3423,10 @@ impl Renderer {
             lod_cutout: Default::default(),
             lod_retiring: Default::default(),
             lod_pending: None,
+            lod_pace: Default::default(),
             detail_columns: Default::default(),
             detail_revision: 0,
+            detail_changes: None,
             arena,
             sorted_indices,
             translucent_sorter: translucency::Sorter::default(),
@@ -3950,6 +3957,7 @@ impl Renderer {
         self.lod_pending = None;
         self.detail_columns.clear();
         self.detail_revision += 1;
+        self.detail_changes = None;
         self.arena.clear();
         if let Some(flat) = &mut self.flat {
             flat.clear();
@@ -3967,6 +3975,28 @@ impl Renderer {
     pub fn lod_detail_revision(&self) -> u64 {
         self.detail_revision
     }
+    /// Whether every section of the column has its mesh (one of `lod_detail_columns`).
+    pub fn lod_detail_complete(&self, column: (i32, i32)) -> bool {
+        self.detail_columns.get(&column) == Some(&COMPLETE_COLUMN)
+    }
+    /// The columns that may have become or stopped being complete since the last call
+    /// (`lod_detail_complete` says which), or `None`: read them all (`lod_detail_columns`).
+    /// In flight a column completes nearly every frame, and rebuilding the far terrain's
+    /// covered set from all of them each time was a pass over every resident column.
+    pub fn take_lod_detail_changes(&mut self) -> Option<Vec<(i32, i32)>> {
+        self.detail_changes.replace(Vec::new())
+    }
+    fn detail_changed(&mut self, column: (i32, i32)) {
+        self.detail_revision += 1;
+        // Bounded while nobody reads them (no far terrain): past it, all are read again.
+        if let Some(changes) = &mut self.detail_changes {
+            if changes.len() < 1 << 16 {
+                changes.push(column);
+            } else {
+                self.detail_changes = None;
+            }
+        }
+    }
     /// Whether the section at `key` has its mesh, for `lod_detail_columns`.
     fn set_detail(&mut self, key: SectionKey, meshed: bool) {
         let column = (key.0, key.2);
@@ -3977,7 +4007,7 @@ impl Renderer {
             mask & !(1 << key.1)
         };
         if (mask == COMPLETE_COLUMN) != (next == COMPLETE_COLUMN) {
-            self.detail_revision += 1;
+            self.detail_changed(column);
         }
         if next == 0 {
             self.detail_columns.remove(&column);
@@ -3993,7 +4023,7 @@ impl Renderer {
         let mut block_entities = false;
         for (x, z) in columns {
             if self.detail_columns.remove(&(x, z)) == Some(COMPLETE_COLUMN) {
-                self.detail_revision += 1;
+                self.detail_changed((x, z));
             }
             self.occlusion.remove_column(x, z);
             self.voxels.remove_column(x, z);
@@ -4174,6 +4204,8 @@ impl Renderer {
                         page: s.page,
                         start: s.start,
                         quads: s.solid,
+                        // Its opaque quads and its cutouts, a geometry each run (`hw_rays`).
+                        runs: s.sides.geometries(),
                         translucent: s.translucent,
                     },
                 ));
