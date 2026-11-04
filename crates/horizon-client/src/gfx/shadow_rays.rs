@@ -246,13 +246,32 @@ fn hw_refract(p: vec2<i32>) -> vec4<f32> { return vec4(0.0); }
 /// The pass's shader, with the hybrid's hardware rays or without (`ShadowRays::new`).
 pub fn source(hardware: bool, split: u32) -> String {
     if hardware {
+        let hardware = if force_opaque() {
+            with_forced_opaque(HARDWARE)
+        } else {
+            HARDWARE.to_string()
+        };
         format!(
-            "enable wgpu_ray_query;\nconst SPRITE_SPLIT: u32 = {split}u;\n{}{HARDWARE}",
+            "enable wgpu_ray_query;\nconst SPRITE_SPLIT: u32 = {split}u;\n{}{hardware}",
             include_str!("shadow_rays.wgsl")
         )
     } else {
         format!("{}{NO_HARDWARE}", include_str!("shadow_rays.wgsl"))
     }
+}
+
+/// `HORIZON_RT_FORCE_OPAQUE=1`: every hardware ray is traced with the force-opaque ray flag, so
+/// no candidate hit comes back to the shader for its alpha test (cutouts shadow as squares, glass
+/// and water stop the light). A measurement switch, not a look: the trace kernel's time with it is
+/// the floor the any-hit round trips can be brought down to (opaque geometries, opacity micromaps).
+pub fn force_opaque() -> bool {
+    static FORCED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FORCED.get_or_init(|| std::env::var("HORIZON_RT_FORCE_OPAQUE").is_ok_and(|v| v == "1"))
+}
+
+/// `text`'s ray queries with the force-opaque ray flag (`0x1`) in place of none (`0x0`).
+pub fn with_forced_opaque(text: &str) -> String {
+    text.replace("RayDesc(0x0u,", "RayDesc(0x1u,")
 }
 
 /// RT lighting's radiance cache's cells (a power of two).
@@ -1193,6 +1212,20 @@ mod tests {
                 .find(|(_, t)| t.name.as_deref() == Some("CacheCell"))
                 .expect("the cache's cells");
             assert_eq!(layouter[cell].size, 36);
+        }
+    }
+
+    #[test]
+    fn the_forced_opaque_flag_reaches_every_hardware_ray() {
+        // Every ray query of the hybrid and of the froxels spells its flags `RayDesc(0x0u,`, so
+        // that `HORIZON_RT_FORCE_OPAQUE` turns them all.
+        for text in [super::HARDWARE, include_str!("froxels_hw.wgsl")] {
+            let rays = text.matches("RayDesc(").count();
+            assert!(rays > 0);
+            assert_eq!(text.matches("RayDesc(0x0u,").count(), rays);
+            let forced = super::with_forced_opaque(text);
+            assert_eq!(forced.matches("RayDesc(0x1u,").count(), rays);
+            assert!(!forced.contains("RayDesc(0x0u,"));
         }
     }
 

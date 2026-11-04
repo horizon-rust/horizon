@@ -444,7 +444,11 @@ stages and logs each stage's median every 60 frames, per view (`desktop`, `eye1`
 game.log` sums the reports (`--by-look` one a head pose, `--best 0.25` the shortest-framed ones, for a run that
 shares the GPU). `HORIZON_RT_SKIP` (a mask: 1 the sun's ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR, 64 the far field) leaves parts of the
 trace kernel out to time each alone, `HORIZON_RT_SHARP` (degrees) moves the foveation's sharp zone (0: sparse all over,
-180: sharp all over). The head's sweep is `tools/vr_fake_scripts/gpu_budget.txt`.
+180: sharp all over). `HORIZON_RT_FORCE_OPAQUE=1` traces every hardware ray (the trace kernel's and the froxels') with
+the force-opaque ray flag, so no candidate hit comes back to the shader for its alpha test (cutouts shadow as squares,
+glass and water stop the light: a measurement, not a look): the kernel's time with it is the floor the any-hit round
+trips can be brought down to (opaque quads in an opaque geometry, opacity micromaps). The head's sweep is
+`tools/vr_fake_scripts/gpu_budget.txt`.
 
 **Caveat on the numbers.** The GPU was shared with the player's own running game (86 % of the 3D engine) the whole
 time, which time-slices it. In VR the stages were stable from window to window (the raster 1.9 to 2.6 ms an eye), so those

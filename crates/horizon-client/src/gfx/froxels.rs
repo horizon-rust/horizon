@@ -327,10 +327,16 @@ pub fn source(hardware: bool, sprite_split: u32) -> String {
         .find("// HARDWARE:BEGIN")
         .expect("the hardware section");
     let end = text.find("// HARDWARE:END").expect("the hardware section");
+    // `HORIZON_RT_FORCE_OPAQUE=1` (shadow_rays.rs `force_opaque`): the same measurement switch
+    // for the froxels' rays.
+    let hardware = if super::shadow_rays::force_opaque() {
+        super::shadow_rays::with_forced_opaque(include_str!("froxels_hw.wgsl"))
+    } else {
+        include_str!("froxels_hw.wgsl").to_string()
+    };
     format!(
-        "enable wgpu_ray_query;\nconst SPRITE_SPLIT: u32 = {sprite_split}u;\n{}{}{}",
+        "enable wgpu_ray_query;\nconst SPRITE_SPLIT: u32 = {sprite_split}u;\n{}{hardware}{}",
         &text[..begin],
-        include_str!("froxels_hw.wgsl"),
         &text[end..]
     )
 }
