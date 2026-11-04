@@ -215,7 +215,15 @@ pub struct HwRays {
     /// Moving instances set in `tlas` last frame, and the view model's vertices moved to the world.
     moving: usize,
     hand_scratch: Vec<Vertex>,
+    /// The solid quads built so far in opaque geometries and in alpha-tested ones, logged every
+    /// `STAT_EVERY` sections: whether the pack's sprites let the opaque geometries pay
+    /// (docs/rtx-4090.md, phase 1: the measured gain was 0.3 ms of the 1.3 the any-hit floor
+    /// promised).
+    stat: [u64; 3],
 }
+
+/// Sections between two lines of the opaque share in the log.
+const STAT_EVERY: u64 = 2048;
 
 /// The moving geometry of a frame, as drawn, for `HwRays::finish`.
 pub struct Dynamic<'a> {
@@ -389,6 +397,7 @@ impl HwRays {
             cloud_origin: None,
             moving: 0,
             hand_scratch: Vec::new(),
+            stat: [0; 3],
         }
     }
 
@@ -526,6 +535,19 @@ impl HwRays {
                 .as_ref()
                 .and_then(|r| r.blas_address(&mut blas))
                 .unwrap_or(0);
+            for &(_, count, opaque) in &t.runs {
+                self.stat[usize::from(!opaque)] += u64::from(count);
+            }
+            self.stat[2] += 1;
+            if self.stat[2].is_multiple_of(STAT_EVERY) {
+                let total = (self.stat[0] + self.stat[1]).max(1);
+                log::info!(
+                    "Horizon RT lighting: {} sections' structures built, {:.0} % of their solid quads in opaque geometries, {:.0} % alpha-tested",
+                    self.stat[2],
+                    100.0 * self.stat[0] as f64 / total as f64,
+                    100.0 * self.stat[1] as f64 / total as f64,
+                );
+            }
             self.built.insert(
                 t.key,
                 Built {

@@ -66,6 +66,12 @@ struct Grid {
     lights_dirty: bool,
     /// Frames since the light cells were made (`LIGHTS_EVERY`).
     lights_age: u32,
+    /// The light cells being made on a thread of their own (`light_cells`: up to 8192 lights over
+    /// 343 cells each, 8 ms of a frame when the main thread did it at every chunk crossing, measured
+    /// in `rt_grid`), and the frames since it was asked.
+    lights_job: Option<std::sync::mpsc::Receiver<(Vec<GpuLight>, Vec<[u32; 4]>)>>,
+    /// The NEE cache's zeroes, kept to write them without allocating 3 MB each time.
+    zeroes: Vec<u8>,
 }
 
 /// A run of sections of one column, packed for the grid's textures: the toroidal slot of the
@@ -440,6 +446,8 @@ impl Voxels {
                 }),
                 lights_dirty: true,
                 lights_age: 0,
+                lights_job: None,
+                zeroes: Vec::new(),
             }
         });
         true
@@ -598,15 +606,50 @@ impl Voxels {
         }
         let origin = [(center.0 - RADIUS) * 16, (center.1 - RADIUS) * 16];
         grid.lights_age = grid.lights_age.saturating_add(1);
-        if grid.lights_dirty && (recentred || grid.lights_age >= LIGHTS_EVERY) {
-            grid.lights_dirty = false;
-            grid.lights_age = 0;
-            let (lights, cells) = light_cells(&self.lights, center, origin, camera);
+        // The cells made on a thread of their own: this frame takes what the last request gave,
+        // and asks again when the lights changed and no request is running (one at a time, so a
+        // burst of changes is one rebuild, a frame or two late).
+        if let Some(job) = &grid.lights_job
+            && let Ok((lights, cells)) = job.try_recv()
+        {
+            grid.lights_job = None;
             log::debug!("Horizon: {} light sources in the rays' grid", lights.len());
             queue.write_buffer(&grid.lights, 0, bytemuck::cast_slice(&lights));
             queue.write_buffer(&grid.cells, 0, bytemuck::cast_slice(&cells));
-            let size = u64::from(CELLS[0] * CELLS[1] * CELLS[2]) * 8 * 8;
-            queue.write_buffer(&grid.visibility, 0, &vec![0; size as usize]);
+            let size = (CELLS[0] * CELLS[1] * CELLS[2]) as usize * 8 * 8;
+            if grid.zeroes.len() != size {
+                grid.zeroes = vec![0; size];
+            }
+            queue.write_buffer(&grid.visibility, 0, &grid.zeroes);
+        }
+        if grid.lights_dirty
+            && grid.lights_job.is_none()
+            && (recentred || grid.lights_age >= LIGHTS_EVERY)
+        {
+            grid.lights_dirty = false;
+            grid.lights_age = 0;
+            // The lights in range only: what `light_cells` reads of them.
+            let snapshot: HashMap<SectionKey, Vec<[u8; 10]>> = self
+                .lights
+                .iter()
+                .filter(|(key, _)| in_range(center, key.0, key.2))
+                .map(|(k, v)| (*k, v.clone()))
+                .collect();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let spawned = std::thread::Builder::new()
+                .name("RT lights".into())
+                .spawn(move || {
+                    let _ = sender.send(light_cells(&snapshot, center, origin, camera));
+                });
+            match spawned {
+                Ok(_) => grid.lights_job = Some(receiver),
+                Err(e) => {
+                    log::warn!("Horizon: no thread for the rays' light cells ({e}); on the frame");
+                    let (lights, cells) = light_cells(&self.lights, center, origin, camera);
+                    queue.write_buffer(&grid.lights, 0, bytemuck::cast_slice(&lights));
+                    queue.write_buffer(&grid.cells, 0, bytemuck::cast_slice(&cells));
+                }
+            }
         }
         Some([origin[0], origin[1], grid.top])
     }
