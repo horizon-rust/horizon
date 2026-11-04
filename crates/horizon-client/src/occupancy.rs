@@ -54,7 +54,8 @@ impl Occupancy {
                     if k == EMPTY {
                         continue;
                     }
-                    bricks[((z / 8) * 2 + y / 8) * 2 + x / 8] |= 1 | if k == CUTOUT { 2 } else { 0 };
+                    bricks[((z / 8) * 2 + y / 8) * 2 + x / 8] |=
+                        1 | if k == CUTOUT { 2 } else { 0 };
                     // Word `w` of a brick holds its local rows `z = w / 2`, `y = (w % 2) * 4..+4`,
                     // bit `(y % 4) * 8 + x`; the texture's 8x2x2 texels, two bricks of four a row,
                     // x fastest.
