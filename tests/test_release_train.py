@@ -16,6 +16,13 @@ def pr(number, title="Fix a thing", labels=(), paths=("crates/horizon-client/src
 
 
 class ReleaseTrainTests(unittest.TestCase):
+    def setUp(self):
+        # The notes name the repository the train runs in (GITHUB_REPOSITORY on a runner): the
+        # expectations below are written for the upstream one, whatever fork runs the tests.
+        patcher = mock.patch.object(train, "REPO", "ludovic111/horizon")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_player_facing_paths(self):
         exporters = {"mods/horizon/src/test/java/dev/horizonlab/parity/VanillaMobDataExporter.java"}
         self.assertTrue(train.player_facing("crates/horizon-client/src/game.rs", "game"))
