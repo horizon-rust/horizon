@@ -94,6 +94,9 @@ pub struct RenderAssets {
     pub animations: Vec<crate::sprites::SpriteAnimation>,
     pub sprite_layers: std::collections::BTreeMap<String, u32>,
     pub translucent_layers: Vec<bool>,
+    /// Per layer, whether every texel of every frame is opaque (alpha 255): RT lighting's opaque
+    /// geometry (`mesher::Sides::geometries`).
+    pub opaque_layers: Vec<bool>,
     /// Each layer's `MipmapGenerator` settings.
     pub sprite_mips: Vec<crate::mipmap::Settings>,
     /// The layers' LabPBR normal and specular maps, when the packs have any (`labpbr.rs`).
@@ -243,6 +246,7 @@ impl RenderAssets {
             animations: sprites.animations,
             sprite_layers: sprites.layers,
             translucent_layers: sprites.translucent,
+            opaque_layers: sprites.opaque,
             sprite_mips: sprites.mips,
             materials: sprites.materials,
             ctm,

@@ -223,9 +223,9 @@ fn relit_columns_keep_every_mesh_current() {
             biomes: &context.biomes,
             visibility: context.tables.visibility.clone(),
         };
-        // The workers sort solid quads by side, as uploads expect.
+        // The workers sort solid quads by side, opaque before cutout, as uploads expect.
         let mut fresh = mesher.mesh(&borrow(&region), sy);
-        fresh.sort_solid();
+        fresh.sort_solid_split(&context.tables);
         let bytes = |m: &SectionMesh| {
             [
                 bytemuck::cast_slice::<_, u8>(&m.solid).to_vec(),

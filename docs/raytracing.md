@@ -117,9 +117,18 @@ counts the blocks right beside a surface.
      creates; `HORIZON_HW_RT=0` turns it off), the sun's and the light sources'
      shadow rays meet the drawn triangles themselves. Each section within the grid's reach gets a
      bottom-level structure over its solid quads where they lie in the vertex arena (no copy, the shared
-     quad indices); a top-level one, made each frame, holds them relative to the camera. Every candidate
-     hit is alpha-tested in the shader against the quad's sprite at the hit's texture coordinate, so
-     iron bars, fences, leaves and flowers shadow exactly as drawn. Measured at 3440x1440: 3.0 to 3.7 ms
+     quad indices); a top-level one, made each frame, holds them relative to the camera. The quads
+     whose sprite has no transparent texel in any frame (stone, dirt, logs, planks, sand; leaves with
+     fancy graphics off) are opaque geometries, whose hits the hardware confirms itself; every
+     candidate hit on the others (the cutouts) is alpha-tested in the shader against the quad's
+     sprite at the hit's texture coordinate, so iron bars, fences, leaves and flowers shadow exactly
+     as drawn. The mesher lays each side bucket out opaque quads first, then cutouts (an overlay
+     still draws after its base), so both are runs where the quads lie, as the raster draws them: a
+     section's structure has one geometry a run, 14 at most, each instance's row in `instances` the
+     first quad of each (`hw_rays.rs` `row`). Forcing every ray opaque
+     (`HORIZON_RT_FORCE_OPAQUE=1`) had measured what the alpha test cost on an RTX 4090 at 3440x1440
+     before the split: the trace stage 2.41 ms against 0.75 in open terrain, 4.01 against 2.99 in a
+     forest. Measured at 3440x1440: 3.0 to 3.7 ms
      GPU with RT lighting against 3.9 with the voxel grid's shadow rays. `examples/rt_query_probe.rs`
      checks a machine's hardware rays. Entities, the view model and the cloud tiles are in it too (see the
      table). Next: VR's device, the arena's later pages in the alpha test.

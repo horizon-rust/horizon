@@ -4,12 +4,20 @@
 //! grid (`voxels`) keeps the diffuse light: the sky, global illumination, what the rays bounce off.
 //!
 //! Each section near the camera (`RADIUS`) gets a bottom-level structure over its solid quads,
-//! read where they lie in the vertex arena with the shared quad indices: no copy, and one
-//! geometry left non-opaque so every candidate hit reaches the shader's alpha test (opaque
-//! texels confirm at once), and a second over its translucent quads (stained glass, water, ice),
-//! which tint the light that crosses them. The top-level structure, made again each frame, holds
-//! them relative to the camera, each instance's custom data its row in `instances`: where its
-//! quads are in the arena, for the alpha test and the tint to read their texels.
+//! read where they lie in the vertex arena with the shared quad indices: no copy. The quads whose
+//! sprites have no transparent texel (stone, dirt, logs, planks, sand; forceOpaque leaves) are
+//! opaque geometries, whose hits the hardware confirms itself; the cutouts (leaves, plants,
+//! fences, iron bars, grass's overlays) non-opaque ones, so each of their candidate hits reaches
+//! the shader's alpha test. The mesher lays each side bucket out opaque quads first, then cutouts
+//! (mesher/sides.rs `Sides::geometries`), so both are runs in the arena as they are drawn, a few
+//! geometries a section (14 at most). Measured on the RTX 4090 at 3440x1440 before the split, with
+//! every hit forced opaque (`HORIZON_RT_FORCE_OPAQUE`): the trace stage 0.75 ms against 2.41 in
+//! open terrain, 2.99 against 4.01 in a forest, the alpha test's round trips on quads that were
+//! opaque anyway the most of it. A last geometry holds the translucent quads (stained glass,
+//! water, ice), which tint the light that crosses them. The top-level structure, made again each
+//! frame, holds them relative to the camera, each instance's custom data its row in `instances`
+//! (`row`): where each geometry's quads are in the arena, for the alpha test and the tint to read
+//! their texels and the committed hits their colour and face.
 //!
 //! The moving geometry joins them as Remix's does, made again each frame (`finish`): the entities'
 //! quads as drawn (a dynamic structure over the vertices copied to `dynamics`, rebuilt every frame
@@ -86,14 +94,23 @@ const CLOUD_DRIFT: f64 = 1.0;
 /// arriving in a new place spreads them out: about 25 µs of CPU each (docs/raytracing.md), a
 /// chunk border crossed in flight brings 384 to 744 sections.
 const BUILDS_PER_FRAME: usize = 64;
+/// A row of `instances`, in words (shadow_rays_hw.wgsl `HwInstance`): the page or kind, the solid
+/// quads' first vertex, the translucent ones', the translucent geometry; then each solid
+/// geometry's first quad from the solid ones' first, 16 bits each.
+const ROW_WORDS: usize = 12;
+const ROW_BYTES: u64 = (ROW_WORDS * 4) as u64;
+/// Solid geometries a section's structure has at most (the row's 16-bit slots: 16).
+const MAX_SOLID_GEOMETRIES: usize = 16;
+/// No translucent geometry, in a row's fourth word.
+const NO_GEOMETRY: u32 = u32::MAX;
 
-/// A section's structure and where its quads were when it was built: its page, first vertex,
-/// solid quads, and which of its geometries is the translucent one (2: none).
 /// A stale structure's page (`HwRays::forget`): past every arena page, so the rays find no quads
 /// of it to read (shadow_rays_hw.wgsl `hw_quad`) and take its hits as opaque.
 const PAGE_GONE: u32 = u32::MAX;
 /// How many frames a stale structure stands in for a section's new mesh at most.
 const STALE_FRAMES: u32 = 30;
+/// A section's structure and where its quads were when it was built: its page, first vertex,
+/// solid quads, and its geometries (`row`).
 struct Built {
     blas: wgpu::Blas,
     /// Its device address, for the raw build's instances (0 without it).
@@ -101,7 +118,55 @@ struct Built {
     page: u32,
     start: u64,
     solid: u32,
-    translucent_geometry: u32,
+    /// Its solid geometries' runs (`solid_geometries`) and whether it has translucent quads.
+    geometries: Vec<(u32, u32, bool)>,
+    translucent: bool,
+}
+
+/// The solid geometries of a section of `quads` solid quads laid out in `runs` (`(first, count,
+/// opaque)`, `mesher::Sides::geometries`): those runs, or one non-opaque geometry over them all
+/// where the row can't hold them (more runs than its slots, a first quad past 16 bits) or they
+/// don't cover the quads.
+fn solid_geometries(quads: u32, runs: &[(u32, u32, bool)]) -> Vec<(u32, u32, bool)> {
+    let mut next = 0;
+    let fits = runs.len() <= MAX_SOLID_GEOMETRIES
+        && runs.iter().all(|&(first, count, _)| {
+            let follows = first == next && count > 0 && first <= u32::from(u16::MAX);
+            next = first + count;
+            follows
+        })
+        && next == quads;
+    match (quads, fits) {
+        (0, _) => Vec::new(),
+        (_, true) => runs.to_vec(),
+        (_, false) => vec![(0, quads, false)],
+    }
+}
+
+/// A section's row in `instances` (shadow_rays_hw.wgsl `HwInstance`): its arena `page`, the
+/// first vertex of its `solid` quads (`start`) and of its translucent ones (after them), which
+/// geometry is the translucent one (after the solid ones; `NO_GEOMETRY`: none), and each solid
+/// geometry's first quad from `start`.
+fn row(
+    page: u32,
+    start: u32,
+    solid: u32,
+    geometries: &[(u32, u32, bool)],
+    translucent: bool,
+) -> [u32; ROW_WORDS] {
+    let mut row = [0; ROW_WORDS];
+    row[0] = page;
+    row[1] = start;
+    row[2] = start + solid * 4;
+    row[3] = if translucent {
+        geometries.len() as u32
+    } else {
+        NO_GEOMETRY
+    };
+    for (g, &(first, _, _)) in geometries.iter().enumerate() {
+        row[4 + g / 2] |= (first & 0xffff) << ((g % 2) * 16);
+    }
+    row
 }
 
 /// A moving structure (the entities, the view model, a cloud tile): the quads it was made to
@@ -121,8 +186,9 @@ pub struct HwRays {
     pub tlas: wgpu::Tlas,
     /// The raw build of `tlas`, where the `rtx` feature and the device give it.
     raw: Option<RawTlas>,
-    /// Where each instance's quads are, by its custom data (shadow_rays_hw.wgsl `instances`):
-    /// the page, the solid quads' first vertex, the translucent ones', the translucent geometry.
+    /// Where each instance's quads are, by its custom data (shadow_rays_hw.wgsl `instances`,
+    /// `row`): the page, the solid quads' first vertex, the translucent ones', the translucent
+    /// geometry, each solid geometry's first quad.
     pub instances: wgpu::Buffer,
     /// Instances set in `tlas` last frame.
     used: usize,
@@ -264,13 +330,15 @@ fn ensure_moving(
 /// (the rays' precision stays well under a millimetre this near).
 const ANCHOR_REACH: f64 = 64.0;
 
-/// A section to build: its key, its arena page and first vertex, its solid quads and its
-/// translucent ones (after them).
+/// A section to build: its key, its arena page and first vertex, its solid quads, how they lie
+/// (`mesher::Sides::geometries`: runs of opaque quads and of cutouts) and its translucent ones
+/// (after them).
 pub struct ToBuild {
     pub key: SectionKey,
     pub page: u32,
     pub start: u64,
     pub quads: u32,
+    pub runs: Vec<(u32, u32, bool)>,
     pub translucent: u32,
 }
 
@@ -297,7 +365,7 @@ impl HwRays {
             raw,
             instances: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("RT lighting's terrain instances"),
-                size: u64::from(MAX_INSTANCES) * 16,
+                size: u64::from(MAX_INSTANCES) * ROW_BYTES,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
@@ -394,32 +462,48 @@ impl HwRays {
         }
         self.built.retain(|key, _| Self::near(center, *key));
         self.changed |= self.built.len() != before || !todo.is_empty();
-        // A section's geometries: its solid quads, then its translucent ones (stained glass, water,
-        // ice), which tint the light instead of stopping it; each once a ray (no duplicate any-hit).
-        let geometry = |quads: u32, translucent: bool| wgpu::BlasTriangleGeometrySizeDescriptor {
-            vertex_format: wgpu::VertexFormat::Float32x3,
-            vertex_count: quads * 4,
-            index_format: Some(wgpu::IndexFormat::Uint32),
-            index_count: Some(quads * 6),
-            flags: if translucent {
-                wgpu::AccelerationStructureGeometryFlags::NO_DUPLICATE_ANY_HIT_INVOCATION
-            } else {
-                wgpu::AccelerationStructureGeometryFlags::empty()
-            },
-        };
-        let sizes: Vec<Vec<_>> = todo
+        // A section's geometries: its solid quads, the opaque runs' hits confirmed by the hardware,
+        // the cutouts' alpha-tested; then its translucent ones (stained glass, water, ice), which
+        // tint the light instead of stopping it, each once a ray (no duplicate any-hit). Each is
+        // its first vertex in the arena and its size.
+        use wgpu::AccelerationStructureGeometryFlags as Flags;
+        let layouts: Vec<_> = todo
             .iter()
             .map(|t| {
-                [(t.quads, false), (t.translucent, true)]
-                    .into_iter()
-                    .filter(|(quads, _)| *quads > 0)
-                    .map(|(quads, translucent)| geometry(quads, translucent))
+                let solid = solid_geometries(t.quads, &t.runs);
+                let mut parts: Vec<_> = solid
+                    .iter()
+                    .map(|&(first, count, opaque)| {
+                        let flags = if opaque {
+                            Flags::OPAQUE
+                        } else {
+                            Flags::empty()
+                        };
+                        (t.start + u64::from(first) * 4, count, flags)
+                    })
+                    .collect();
+                if t.translucent > 0 {
+                    parts.push((
+                        t.start + u64::from(t.quads) * 4,
+                        t.translucent,
+                        Flags::NO_DUPLICATE_ANY_HIT_INVOCATION,
+                    ));
+                }
+                (solid, parts)
+            })
+            .collect();
+        let sizes: Vec<Vec<_>> = layouts
+            .iter()
+            .map(|(_, parts)| {
+                parts
+                    .iter()
+                    .map(|&(_, quads, flags)| quads_geometry(quads, flags))
                     .collect()
             })
             .collect();
         let buffers: Vec<_> = todo.iter().map(|t| pages(t.page)).collect();
         let mut entries = Vec::with_capacity(todo.len());
-        for (t, size) in todo.iter().zip(&sizes) {
+        for ((t, size), (solid, _)) in todo.iter().zip(&sizes).zip(&layouts) {
             let mut blas = device.create_blas(
                 &wgpu::CreateBlasDescriptor {
                     label: Some("RT lighting's section"),
@@ -443,26 +527,19 @@ impl HwRays {
                     page: t.page,
                     start: t.start,
                     solid: t.quads,
-                    translucent_geometry: match (t.quads, t.translucent) {
-                        (_, 0) => 2,
-                        (0, _) => 0,
-                        _ => 1,
-                    },
+                    geometries: solid.clone(),
+                    translucent: t.translucent > 0,
                 },
             );
         }
-        for ((t, size), buffer) in todo.iter().zip(&sizes).zip(&buffers) {
-            let firsts = [
-                (t.quads, t.start),
-                (t.translucent, t.start + u64::from(t.quads) * 4),
-            ];
-            let firsts = firsts.into_iter().filter(|(quads, _)| *quads > 0);
+        for (((t, size), buffer), (_, parts)) in todo.iter().zip(&sizes).zip(&buffers).zip(&layouts)
+        {
             entries.push(wgpu::BlasBuildEntry {
                 blas: &self.built[&t.key].blas,
                 geometry: wgpu::BlasGeometries::TriangleGeometries(
                     size.iter()
-                        .zip(firsts)
-                        .map(|(size, (_, first))| wgpu::BlasTriangleGeometry {
+                        .zip(parts)
+                        .map(|(size, &(first, _, _))| wgpu::BlasTriangleGeometry {
                             size,
                             vertex_buffer: buffer,
                             first_vertex: first as u32,
@@ -509,13 +586,13 @@ impl HwRays {
                 f64::from(z * 16),
             ) - anchor;
             let o = origin.as_vec3();
-            let first = built.start as u32;
-            table.push([
+            table.push(row(
                 built.page,
-                first,
-                first + built.solid * 4,
-                built.translucent_geometry,
-            ]);
+                built.start as u32,
+                built.solid,
+                &built.geometries,
+                built.translucent,
+            ));
             let transform = [1.0, 0.0, 0.0, o.x, 0.0, 1.0, 0.0, o.y, 0.0, 0.0, 1.0, o.z];
             if self.raw.is_some() {
                 raw_rows.push(RawInstance::new(built.address, transform, n as u32, 0xff));
@@ -726,21 +803,22 @@ impl HwRays {
         // Their instances follow the terrain's: the entities and the view model where the camera's
         // offset from the anchor puts them (their vertices are relative to the camera), each cloud
         // tile where the wind has taken it. Each row says what the instance is (the shader reads
-        // it as a kind where terrain rows hold an arena page), its first vertex, and 2: no
+        // it as a kind where terrain rows hold an arena page), its first vertex, and no
         // translucent geometry.
         let offset = (camera - anchor).as_vec3();
-        let mut slots: Vec<(&Moving, glam::Vec3, [u32; 4], u8)> = Vec::new();
+        let moving_row = |kind: u32, first: u32| row(kind, first, 0, &[], false);
+        let mut slots: Vec<(&Moving, glam::Vec3, [u32; ROW_WORDS], u8)> = Vec::new();
         if let (true, Some(m)) = (entity_quads > 0, &self.entities) {
-            slots.push((m, offset, [KIND_ENTITY, 0, 0, 2], 0xff));
+            slots.push((m, offset, moving_row(KIND_ENTITY, 0), 0xff));
         }
         if let (true, Some(m)) = (hand_quads > 0, &self.hand) {
             let first = entities.len() as u32;
-            slots.push((m, offset, [KIND_ENTITY, first, 0, 2], 0xff));
+            slots.push((m, offset, moving_row(KIND_ENTITY, first), 0xff));
         }
         for tile in &dynamic.clouds {
             if let Some(m) = self.clouds.get(&tile.key) {
                 let at = (tile.origin - anchor).as_vec3();
-                slots.push((m, at, [KIND_CLOUD, 0, 0, 2], CLOUD_MASK));
+                slots.push((m, at, moving_row(KIND_CLOUD, 0), CLOUD_MASK));
             }
         }
         let mut rows = Vec::with_capacity(slots.len());
@@ -773,7 +851,7 @@ impl HwRays {
         if !rows.is_empty() {
             queue.write_buffer(
                 &self.instances,
-                (self.terrain * 16) as u64,
+                self.terrain as u64 * ROW_BYTES,
                 bytemuck::cast_slice(&rows),
             );
         }
@@ -805,6 +883,85 @@ mod tests {
         let shown = waves(include_str!("../terrain.wgsl"));
         assert_eq!(shown, waves(include_str!("shadow_rays_hw.wgsl")));
         assert_eq!(shown, waves(include_str!("froxels_hw.wgsl")));
+    }
+
+    /// The first arena vertex shadow_rays_hw.wgsl's `hw_quad` finds for quad `primitive / 2` of
+    /// geometry `g` in `row`, as it reads it.
+    fn hw_quad(row: &[u32; ROW_WORDS], g: u32, primitive: u32, translucent: bool) -> u32 {
+        let first = if translucent {
+            row[2]
+        } else {
+            let w = row[4 + (g / 8 * 4 + (g / 2) % 4) as usize];
+            row[1] + ((w >> ((g & 1) * 16)) & 0xffff) * 4
+        };
+        first + primitive / 2 * 4
+    }
+
+    #[test]
+    fn every_geometry_finds_its_quads_in_the_row() {
+        // A section from vertex 4000: stone, grass's overlays, more stone, leaves (as
+        // `Sides::geometries` gives them), then 5 translucent quads.
+        let runs = [
+            (0, 300, true),
+            (300, 20, false),
+            (320, 900, true),
+            (1220, 7, false),
+        ];
+        let geometries = solid_geometries(1227, &runs);
+        assert_eq!(geometries, runs);
+        let r = row(3, 4000, 1227, &geometries, true);
+        assert_eq!(r[0], 3);
+        // The translucent geometry follows the solid ones.
+        assert_eq!(r[3], 4);
+        for (g, &(first, count, _)) in geometries.iter().enumerate() {
+            for quad in [0, count - 1] {
+                let found = hw_quad(&r, g as u32, quad * 2 + 1, false);
+                assert_eq!(found, 4000 + (first + quad) * 4);
+            }
+        }
+        assert_eq!(hw_quad(&r, 4, 8, true), 4000 + (1227 + 4) * 4);
+        // Without translucent quads no geometry matches the test for them.
+        assert_eq!(row(0, 0, 5, &[(0, 5, true)], false)[3], NO_GEOMETRY);
+        // Moving rows: a kind, a first vertex, no translucent geometry.
+        let moving = row(KIND_ENTITY, 96, 0, &[], false);
+        assert_eq!(&moving[..4], &[KIND_ENTITY, 96, 96, NO_GEOMETRY]);
+    }
+
+    #[test]
+    fn rows_the_shader_cannot_hold_fall_back_to_one_alpha_tested_geometry() {
+        // The 16-bit slots: a first quad past them.
+        let far = [(0, 70000, true), (70000, 10, false)];
+        assert_eq!(solid_geometries(70010, &far), [(0, 70010, false)]);
+        // Runs that don't cover the quads (a mesh that was not sorted).
+        assert_eq!(solid_geometries(10, &[(0, 4, true)]), [(0, 10, false)]);
+        assert_eq!(solid_geometries(10, &[]), [(0, 10, false)]);
+        // More runs than slots.
+        let many: Vec<_> = (0..17).map(|i| (i, 1, i % 2 == 0)).collect();
+        assert_eq!(solid_geometries(17, &many), [(0, 17, false)]);
+        assert!(solid_geometries(0, &[]).is_empty());
+        // As many as the mesher makes (7 buckets, opaque then cutout) fit.
+        let fourteen: Vec<_> = (0..14).map(|i| (i * 3, 3, i % 2 == 0)).collect();
+        assert_eq!(solid_geometries(42, &fourteen), fourteen);
+    }
+
+    #[test]
+    fn the_shaders_rows_are_the_rows_written() {
+        // shadow_rays_hw.wgsl's and froxels_hw.wgsl's `HwInstance`, assembled as the passes do.
+        for text in [
+            super::super::shadow_rays::source(true, 2048),
+            super::super::froxels::source(true, 2048),
+        ] {
+            let module = naga::front::wgsl::parse_str(&text)
+                .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&text)));
+            let mut layouter = naga::proc::Layouter::default();
+            layouter.update(module.to_ctx()).expect("its layout");
+            let (instance, _) = module
+                .types
+                .iter()
+                .find(|(_, t)| t.name.as_deref() == Some("HwInstance"))
+                .expect("the rows");
+            assert_eq!(u64::from(layouter[instance].size), ROW_BYTES);
+        }
     }
 
     #[test]

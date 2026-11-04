@@ -545,7 +545,7 @@ impl Streaming {
                                         visibility,
                                     };
                                     let mut mesh = mesher.mesh(&borrow(&region), sy);
-                                    mesh.sort_solid();
+                                    mesh.sort_solid_split(&context.tables);
                                     faces = Some((context.tables.clone(), mesher.visibility));
                                     Done::Meshed(x, sy, z, mesh, seq)
                                 }

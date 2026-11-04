@@ -52,7 +52,7 @@ fn hw_face(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwFace {
     rayQueryInitialize(&q, terrain, RayDesc(0x0u, NO_CLOUDS, 0.0, reach, pos + rt.hw_offset.xyz, l));
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);
-        if c.geometry_index == instances[c.instance_custom_data].w {
+        if c.geometry_index == instances[c.instance_custom_data].at.w {
             if hw_quad(c, true) != NO_QUAD { rayQueryConfirmIntersection(&q); }
         } else if hw_opaque(c) {
             rayQueryConfirmIntersection(&q);
@@ -60,7 +60,7 @@ fn hw_face(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwFace {
     }
     let hit = rayQueryGetCommittedIntersection(&q);
     if hit.kind == RAY_QUERY_INTERSECTION_NONE { return HwFace(-1.0, vec3(0.0), false); }
-    if hit.geometry_index != instances[hit.instance_custom_data].w {
+    if hit.geometry_index != instances[hit.instance_custom_data].at.w {
         return HwFace(hit.t, -l, true);
     }
     let base = hw_quad(hit, true);

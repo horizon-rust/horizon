@@ -38,10 +38,16 @@ fn hw_uv(v: u32) -> vec2<f32> {
     let w = arena_at(v, 3u);
     return vec2(f32(w & 0xffffu), f32(w >> 16u)) / UV_STEPS;
 }
-// Where each instance's quads are (gfx/hw_rays.rs, by `instance_custom_data`): the arena page, the
-// first vertex of its solid quads and of its translucent ones, and which geometry is the
-// translucent one (2: none).
-@group(0) @binding(23) var<storage, read> instances: array<vec4<u32>>;
+// Where each instance's quads are (gfx/hw_rays.rs `row`, by `instance_custom_data`): in `at` the
+// arena page, the first vertex of its solid quads and of its translucent ones, and which geometry
+// is the translucent one (none: u32 max); in `geometries` each solid geometry's first quad from
+// the solid ones' first, 16 bits each (the opaque quads and the cutouts are geometries of their
+// own, a few a section: mesher/sides.rs `Sides::geometries`).
+struct HwInstance {
+    at: vec4<u32>,
+    geometries: array<vec4<u32>, 2>,
+}
+@group(0) @binding(23) var<storage, read> instances: array<HwInstance>;
 // The moving geometry (gfx/hw_rays.rs `finish`): the entities' and the view model's vertices, the
 // entity pipeline's `Vertex` (nine words: position, texture coordinate in the shared atlas, layer,
 // colour, light, normal), and the atlas. An instance whose row starts with `DYN_ENTITY` holds
@@ -58,7 +64,7 @@ fn dyn_position(v: u32) -> vec3<f32> {
 }
 // The entity or view model quad candidate hit `c` is on: its first vertex in `dynamics`, or none.
 fn hw_entity_quad(c: RayIntersection) -> u32 {
-    let at = instances[c.instance_custom_data];
+    let at = instances[c.instance_custom_data].at;
     if at.x != DYN_ENTITY { return NO_QUAD; }
     return at.y + (c.primitive_index / 2u) * 4u;
 }
@@ -81,9 +87,17 @@ fn hw_entity_texel(c: RayIntersection, base: u32) -> vec4<f32> {
 // The quad candidate hit `c` is on: its first arena vertex (`arena_at`), or none (`u32` max) on a
 // page past those bound or on none (moving geometry, a structure whose vertices went).
 fn hw_quad(c: RayIntersection, translucent: bool) -> u32 {
-    let at = instances[c.instance_custom_data];
+    let at = instances[c.instance_custom_data].at;
     if at.x >= ARENA_PAGES { return 0xffffffffu; }
-    return at.x << 28u | (select(at.y, at.z, translucent) + (c.primitive_index / 2u) * 4u);
+    var first = at.z;
+    if !translucent {
+        // The solid geometry's first quad (an opaque geometry's committed hits need it too: their
+        // colour and face in `hw_hit`).
+        let g = c.geometry_index;
+        let w = instances[c.instance_custom_data].geometries[g / 8u][(g / 2u) % 4u];
+        first = at.y + ((w >> ((g & 1u) * 16u)) & 0xffffu) * 4u;
+    }
+    return at.x << 28u | (first + (c.primitive_index / 2u) * 4u);
 }
 // The texel candidate hit `c` meets on the quad from arena vertex `base`, and its sprite layer
 // (past the first array: none, -1).
@@ -100,7 +114,9 @@ fn hw_texel(c: RayIntersection, base: u32) -> vec4<f32> {
     return textureLoad(sprites, texel, i32(layer), 0);
 }
 // Whether candidate hit `c` (a solid quad) meets an opaque texel. Opaque leaves, quads on arena
-// pages past those bound and sprites past the first array are taken as opaque.
+// pages past those bound and sprites past the first array are taken as opaque. Only the cutouts
+// come here: the quads whose sprites have no transparent texel are in an opaque geometry, whose
+// hits the hardware confirms itself (gfx/hw_rays.rs).
 fn hw_opaque(c: RayIntersection) -> bool {
     // An entity's texel as entity.wgsl keeps it (it discards what is under a tenth opaque).
     let entity = hw_entity_quad(c);
@@ -207,7 +223,7 @@ fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     var through = vec3(1.0);
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);
-        if c.geometry_index == instances[c.instance_custom_data].w {
+        if c.geometry_index == instances[c.instance_custom_data].at.w {
             through *= hw_tint(c, pos, l, true);
         } else if hw_opaque(c) {
             rayQueryConfirmIntersection(&q);
@@ -402,7 +418,7 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
     var through = vec3(1.0);
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);
-        if c.geometry_index == instances[c.instance_custom_data].w {
+        if c.geometry_index == instances[c.instance_custom_data].at.w {
             through *= hw_tint(c, pos, l, false);
         } else if hw_opaque(c) {
             rayQueryConfirmIntersection(&q);
@@ -497,14 +513,17 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     rayQueryInitialize(&q, terrain, RayDesc(0x0u, NO_CLOUDS, 0.0, reach, rt.hw_offset.xyz, ray));
     while rayQueryProceed(&q) {
         let h = rayQueryGetCandidateIntersection(&q);
-        if h.geometry_index != instances[h.instance_custom_data].w { continue; }
+        if h.geometry_index != instances[h.instance_custom_data].at.w { continue; }
         if hw_quad(h, true) == 0xffffffffu { continue; }
         rayQueryConfirmIntersection(&q);
     }
     let hit = rayQueryGetCommittedIntersection(&q);
     water_at = vec4(0.0, 0.0, 0.0, -1.0);
     glass_at = vec4(0.0, 0.0, 0.0, -1.0);
-    if hit.kind == RAY_QUERY_INTERSECTION_NONE {
+    // The opaque geometries' hits the hardware commits itself (gfx/hw_rays.rs): the solid terrain
+    // the depth already shows, no water or glass in front of it.
+    if hit.kind == RAY_QUERY_INTERSECTION_NONE
+        || hit.geometry_index != instances[hit.instance_custom_data].at.w {
         // No water or glass in front: maybe a puddle on the solid terrain.
         if solid { return hw_puddle(far, ray); }
         return vec4(0.0);

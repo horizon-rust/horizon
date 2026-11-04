@@ -38,16 +38,30 @@ fn hw_uv(v: u32) -> vec2<f32> {
     let w = arena_at(v, 3u);
     return vec2(f32(w & 0xffffu), f32(w >> 16u)) / UV_STEPS;
 }
-// Where each instance's quads are (gfx/hw_rays.rs, by `instance_custom_data`): the arena page, the
-// first vertex of its solid quads and of its translucent ones, and which geometry is the
-// translucent one (2: none).
-@group(0) @binding(23) var<storage, read> instances: array<vec4<u32>>;
+// Where each instance's quads are (gfx/hw_rays.rs `row`, by `instance_custom_data`): in `at` the
+// arena page, the first vertex of its solid quads and of its translucent ones, and which geometry
+// is the translucent one (none: u32 max); in `geometries` each solid geometry's first quad from
+// the solid ones' first, 16 bits each (the opaque quads and the cutouts are geometries of their
+// own, a few a section: mesher/sides.rs `Sides::geometries`).
+struct HwInstance {
+    at: vec4<u32>,
+    geometries: array<vec4<u32>, 2>,
+}
+@group(0) @binding(23) var<storage, read> instances: array<HwInstance>;
 // The quad candidate hit `c` is on: its first arena vertex (`arena_at`), or none (`u32` max) on a
 // page past those bound or on none (moving geometry, a structure whose vertices went).
 fn hw_quad(c: RayIntersection, translucent: bool) -> u32 {
-    let at = instances[c.instance_custom_data];
+    let at = instances[c.instance_custom_data].at;
     if at.x >= ARENA_PAGES { return 0xffffffffu; }
-    return at.x << 28u | (select(at.y, at.z, translucent) + (c.primitive_index / 2u) * 4u);
+    var first = at.z;
+    if !translucent {
+        // The solid geometry's first quad (an opaque geometry's committed hits need it too: their
+        // colour and face in `hw_hit`).
+        let g = c.geometry_index;
+        let w = instances[c.instance_custom_data].geometries[g / 8u][(g / 2u) % 4u];
+        first = at.y + ((w >> ((g & 1u) * 16u)) & 0xffffu) * 4u;
+    }
+    return at.x << 28u | (first + (c.primitive_index / 2u) * 4u);
 }
 // The texel candidate hit `c` meets on the quad from arena vertex `base`, and its sprite layer
 // (past the first array: none, -1).
@@ -64,7 +78,8 @@ fn hw_texel(c: RayIntersection, base: u32) -> vec4<f32> {
     return textureLoad(sprites, texel, i32(layer), 0);
 }
 // Whether candidate hit `c` (a solid quad) meets an opaque texel. Opaque leaves, quads on arena
-// pages past those bound and sprites past the first array are taken as opaque.
+// pages past those bound and sprites past the first array are taken as opaque. Only the cutouts
+// come here: the opaque geometry's hits the hardware confirms itself (gfx/hw_rays.rs).
 fn hw_opaque(c: RayIntersection) -> bool {
     let base = hw_quad(c, false);
     if base == 0xffffffffu { return true; }
@@ -148,7 +163,7 @@ fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     var through = vec3(1.0);
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);
-        if c.geometry_index == instances[c.instance_custom_data].w {
+        if c.geometry_index == instances[c.instance_custom_data].at.w {
             through *= hw_tint(c, pos, l);
         } else if hw_opaque(c) {
             rayQueryConfirmIntersection(&q);

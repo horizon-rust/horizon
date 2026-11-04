@@ -165,7 +165,13 @@ impl SectionMesh {
     /// Sorts the solid quads by the side they face, for the renderer to
     /// leave out those facing away from the eye (`sides`).
     pub fn sort_solid(&mut self) {
-        self.sides = sides::sort(&mut self.solid);
+        self.sides = sides::sort(&mut self.solid, &[]);
+    }
+    /// The same, each bucket's opaque quads (`MeshTables::opaque_layers`) before its cutouts,
+    /// for RT lighting's opaque geometry (`Sides::geometries`); the order the raster draws is
+    /// unchanged but within a bucket.
+    pub fn sort_solid_split(&mut self, tables: &MeshTables) {
+        self.sides = sides::sort(&mut self.solid, &tables.opaque_layers);
     }
 }
 pub const ALL_VISIBLE: u64 = (1 << 36) - 1;
@@ -562,6 +568,8 @@ pub struct MeshTables {
     water_overlay: u16,
     lava_still: u16,
     lava_flow: u16,
+    /// Per sprite layer, whether every texel of every frame is opaque (`Sprites::opaque`).
+    opaque_layers: Vec<bool>,
 }
 fn redstone_color(power: u8) -> u32 {
     // RedstoneWireBlock.COLORS
@@ -739,6 +747,7 @@ impl MeshTables {
             water_overlay: layer("minecraft:block/water_overlay")?,
             lava_still: layer("minecraft:block/lava_still")?,
             lava_flow: layer("minecraft:block/lava_flow")?,
+            opaque_layers: render.opaque_layers.clone(),
         })
     }
     pub fn facts(&self, state: BlockStateId) -> Option<MeshFacts> {
