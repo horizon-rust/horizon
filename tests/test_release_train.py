@@ -19,9 +19,12 @@ class ReleaseTrainTests(unittest.TestCase):
     def setUp(self):
         # The notes name the repository the train runs in (GITHUB_REPOSITORY on a runner): the
         # expectations below are written for the upstream one, whatever fork runs the tests.
-        patcher = mock.patch.object(train, "REPO", "ludovic111/horizon")
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        upstream = "ludovic111/horizon"
+        players = train.PLAYERS.replace(f"github.com/{train.REPO}/", f"github.com/{upstream}/")
+        for name, value in (("REPO", upstream), ("PLAYERS", players)):
+            patcher = mock.patch.object(train, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def test_player_facing_paths(self):
         exporters = {"mods/horizon/src/test/java/dev/horizonlab/parity/VanillaMobDataExporter.java"}
