@@ -447,6 +447,9 @@ impl<P: FluidPicker, F: PositionalRandom, B: AquiferBlockStates> NoiseBasedAquif
             let n = 3. + edge;
             if n > 0. { n / 3. } else { n / 10. }
         };
+        // Kept as vanilla writes it, not as a range check: a NaN `q` fails both comparisons
+        // and samples the barrier, where `!(-2. ..=2.).contains(&q)` would skip it.
+        #[allow(clippy::manual_range_contains)]
         let barrier = if q < -2. || q > 2. {
             0.
         } else {
