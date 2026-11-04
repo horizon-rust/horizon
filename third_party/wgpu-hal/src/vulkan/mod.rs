@@ -818,6 +818,30 @@ pub struct AccelerationStructure {
     compacted_size_query: Option<vk::QueryPool>,
 }
 
+impl AccelerationStructure {
+    /// The underlying `VkAccelerationStructureKHR`, for commands recorded outside wgpu (a
+    /// top-level structure built from instances a compute pass wrote, extensions wgpu doesn't
+    /// know: gfx-rs/wgpu#10187, backported for Horizon). What is built this way is marked with
+    /// `CommandEncoder::mark_acceleration_structures_built`.
+    ///
+    /// # Safety
+    ///
+    /// - The handle is only valid while this structure lives and must not be destroyed.
+    /// - What is recorded against it must respect wgpu's own use of it.
+    pub unsafe fn raw_handle(&self) -> vk::AccelerationStructureKHR {
+        self.raw
+    }
+
+    /// The buffer the structure lives in (its storage).
+    ///
+    /// # Safety
+    ///
+    /// As `raw_handle`.
+    pub unsafe fn raw_buffer(&self) -> vk::Buffer {
+        self.buffer
+    }
+}
+
 impl crate::DynAccelerationStructure for AccelerationStructure {}
 
 #[derive(Debug)]
