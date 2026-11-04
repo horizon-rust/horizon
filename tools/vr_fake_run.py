@@ -18,7 +18,6 @@ Build first: cargo build --release -p horizon-client -p horizon-xr -p horizon-xr
 
 import argparse
 import json
-import os
 import platform
 import shutil
 import subprocess
@@ -30,6 +29,9 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import lab  # noqa: E402
+
 WINDOWS = platform.system() == "Windows"
 EXE = ".exe" if WINDOWS else ""
 FAKE_LIB = "horizon_xr_fake.dll" if WINDOWS else (
@@ -140,20 +142,19 @@ def main() -> int:
             (home / "saves").mkdir(exist_ok=True)
             link_dir(home / "saves", game / "saves")
 
-        env = dict(os.environ)
-        env.update({
-            "HORIZON_XR": "1",
-            "XR_RUNTIME_JSON": str(game / "horizon-xr-fake.json"),
-            "HORIZON_FAKE_XR_OUT": str(out),
-            "HORIZON_FAKE_XR_SIZE": args.size,
-            "HORIZON_FAKE_XR_HZ": str(args.hz),
-            "HORIZON_FAKE_XR_CAPTURE_EVERY": str(args.capture_every),
-            "HORIZON_HOME": str(home),
-            "HORIZON_NO_AUDIO": "1",
-            "HORIZON_LAUNCHER_NO_SELF_UPDATE": "1",
-            "XDG_DATA_HOME": str(game / "xdg-data"),
-            "XDG_CONFIG_HOME": str(game / "xdg-config"),
-        })
+        # The game's scratch folders and switches (no audio, no self-update, no Discord) come from
+        # lab.game_env, its home and XDG folders kept in the run's own folder.
+        env = lab.game_env(
+            HORIZON_XR="1",
+            XR_RUNTIME_JSON=str(game / "horizon-xr-fake.json"),
+            HORIZON_FAKE_XR_OUT=str(out),
+            HORIZON_FAKE_XR_SIZE=args.size,
+            HORIZON_FAKE_XR_HZ=str(args.hz),
+            HORIZON_FAKE_XR_CAPTURE_EVERY=str(args.capture_every),
+            HORIZON_HOME=str(home),
+            XDG_DATA_HOME=str(game / "xdg-data"),
+            XDG_CONFIG_HOME=str(game / "xdg-config"),
+        )
         if args.script:
             env["HORIZON_FAKE_XR_SCRIPT"] = str(Path(args.script).resolve())
         if args.capture_seconds:

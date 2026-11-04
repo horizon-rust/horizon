@@ -35,7 +35,7 @@ impl End { fn remote_eye_motion(&mut self, _id: u32, _v: [f64; 3]) {} }
 #[derive(Default)]
 struct Game {
     mobs: Vec<Entity>, dropped: Vec<Entity>, falling: Vec<Entity>, tnts: Vec<Entity>,
-    creatures: Creatures, dragon_fireballs: Vec<Entity>, rockets: Vec<Entity>,
+    creatures: Creatures, dragon_fireballs: Vec<Entity>, rockets: Vec<Entity>, carts: Vec<Entity>,
     remote: Option<Remote>,
     potions: Potions, end: End,
 }

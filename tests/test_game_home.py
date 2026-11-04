@@ -31,6 +31,7 @@ EXEMPT = {
     "pr_ready.py": "runs cargo checks and parity.py",
     "test_friends_integration_parity.py": "builds binaries; test_friends.Game isolates every game through integration_env",
     "port_harness.py": "ports Java code, starts no game",
+    "gpu_now.py": "drives a game already running through its horizon-ctl socket, starts none",
 }
 
 
