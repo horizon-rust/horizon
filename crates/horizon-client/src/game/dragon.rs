@@ -6,6 +6,9 @@
 //! the spikes, its parts (head and neck take full damage, the rest a quarter
 //! plus one), wing knockback, block breaking, the death flight and rays, the
 //! exit portal, the egg and the next gateway; and its rendering and boss bar.
+// The phases' distance tests (`dt < 100.0 || dt > 22500.0`) are kept as vanilla writes them: a
+// NaN distance fails both and keeps the phase, where a range check would end it.
+#![allow(clippy::manual_range_contains)]
 use super::{Dim, Game};
 use horizon_client::{
     hud::HudBatch,
