@@ -9,7 +9,7 @@ It is off until you turn it on, so `/help` and the command tree stay vanilla's:
 
 - a server: `horizon-pregen = true` under `[properties]` in `server.toml` (or `horizon-pregen=true` in a
   vanilla folder's `server.properties`), then restart it;
-- single player and LAN: turn on **Options → Horizon Settings... → Extras... → Chunk pregeneration**.
+- single player and LAN: turn on **Options → Enhancements... → Chunk pregeneration**.
   The choice is saved in `horizon-extras.txt` and applies immediately, including in an open world.
   Cheats must still be enabled. `--pregen` also works and keeps the command enabled for that run,
   even when the saved switch is off.

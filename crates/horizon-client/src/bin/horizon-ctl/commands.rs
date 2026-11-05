@@ -266,6 +266,7 @@ const PAGES: Ty = Ty::Enum(&[
     "graphics-advanced",
     "graphics-hdr",
     "extras",
+    "enhancements",
     "horizon",
     "agent",
     "video-vanilla",

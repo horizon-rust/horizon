@@ -20,7 +20,7 @@ again restores vanilla's behaviour completely.
 | Sort order and its clicks | `crates/horizon-client/src/inv_sort.rs` (pure, unit tested) |
 | The music page's rows, and the pools it filters | `options_ui.rs` (`Page::Music`), `crates/horizon-client/src/music.rs` (`track_groups`, `MusicManager::set_off`), `sound_events.rs` (`sound_except`) |
 | Cosmetics (show mine, show others'), off with their flag | `extras.rs`, `crates/horizon-client/src/game/cosmetics.rs` ([cosmetics.md](cosmetics.md)) |
-| The settings page | `options_ui.rs` (`Page::Extras`): **Options → Horizon Settings... → Extras...**; fullbright, dynamic lights and hiding block-break particles change the picture, so they are on the graphics screen's Quality page instead (`graphics_ui.rs`, **Options → Video Settings...**) |
+| The settings page | `options_ui.rs` (`Page::Enhancements`, `Page::Extras`): **Options → Enhancements...** for interaction improvements and PvP & HUD; **Options → Extras...** for additional tools and play modes; fullbright, dynamic lights and hiding block-break particles change the picture, so they are on the graphics screen's Quality page instead (`graphics_ui.rs`, **Options → Video Settings...**) |
 
 The settings are grouped by extra, under a header each, two buttons to a row as
 vanilla's options lists are, and each says what it does in its tooltip. An
@@ -37,7 +37,7 @@ extras stay out of the way of other input and options work.
 the folder. Unknown or broken lines fall back to the defaults.
 
 Extras' keys (the sort key) are Horizon settings stored in that file and bound on
-the Extras page, not in vanilla's Key Binds screen: Horizon has no Horizon category
+the Enhancements page, not in vanilla's Key Binds screen: Horizon has no Horizon category
 in Controls, and adding one would put a non-vanilla mapping into `options.txt`.
 
 ## The extras
@@ -166,7 +166,7 @@ and the container screen tests are unchanged).
 ### Sorting (`sort`, default off; `sortKey`, unbound)
 - A small button right of the container's title (chests, barrels, ender
   chests, shulker boxes) and one right of the "Inventory" line (the main
-  inventory; the hotbar is left alone). The key, when bound on the Extras
+  inventory; the hotbar is left alone). The key, when bound on the Enhancements
   page, sorts the part under the cursor (the container when over no slot).
 - Partial stacks of one item merge, then the stacks go in creative tab order
   (the search tab's), then by name; full stacks before the partial one,
@@ -197,7 +197,7 @@ and the container screen tests are unchanged).
 
 ### Splitscreen (`splitscreen`, default off)
 
-**Options → Horizon Settings... → Splitscreen...** turns local joining on or off at once.
+**Options → Extras... → Splitscreen...** turns local joining on or off at once.
 In P1's single-player world, a controller P1 isn't using can press a button, then A to join
 (or Y to play as P1, while P1 has no controller). Each
 player picks an instance-local profile with its own options and saved progress. LB/RB on

@@ -1304,13 +1304,15 @@ pub enum Page {
     /// Horizon's controller settings and button binds.
     Controller,
     PadBinds,
+    /// Optional improvements to existing game interactions.
+    Enhancements,
+    /// Additional tools and play modes.
     Extras,
     /// PvP & HUD (`pvp`): the extras a PvP player sets, on their own page.
     Pvp,
     /// CreditsAndAttributionScreen.
     Credits,
-    /// Horizon Settings: every page Horizon adds, as a mod's settings
-    /// screen hangs off vanilla's Options.
+    /// Horizon's integrations and agent settings.
     Horizon,
     /// Replay Studio: saved recordings browser and 3D video editor launcher.
     Studio,
@@ -1798,15 +1800,41 @@ fn option_widget(s: &Settings, opt: Opt, x: f32, y: f32, w: f32) -> Widget {
         Kind::Cycle => button(x, y, w, opt.label(s), Act::Cycle(opt)),
     }
 }
-/// The Extras or PvP & HUD page's rows: its items under their headers.
+/// Optional settings grouped by improvements, additional tools, or PvP & HUD.
 fn extras_rows(page: Page) -> Vec<Result<crate::extras::Item, &'static str>> {
-    match page {
-        Page::Pvp => crate::pvp::rows()
+    if page == Page::Pvp {
+        return crate::pvp::rows()
             .into_iter()
             .map(|r| r.map(crate::extras::Item::Pvp))
-            .collect(),
-        _ => crate::extras::rows(),
+            .collect();
     }
+    use crate::extras::Item::*;
+    let mut rows = Vec::new();
+    let mut header = None;
+    for row in crate::extras::rows() {
+        match row {
+            Err(h) => header = Some(h),
+            Ok(item) => {
+                let standalone = matches!(
+                    item,
+                    MusicPage
+                        | CosmeticsMine
+                        | CosmeticsSolo
+                        | CosmeticsOthers
+                        | CosmeticsHideFx
+                        | HorizonMarks
+                        | HorizonMe
+                );
+                if standalone == (page == Page::Extras) {
+                    if let Some(h) = header.take() {
+                        rows.push(Err(h));
+                    }
+                    rows.push(Ok(item));
+                }
+            }
+        }
+    }
+    rows
 }
 /// The items of `page`'s rows whose label, with any of their first values, is wider than a
 /// half-width button holds (`width` measures text with the screen's font): those take the
@@ -1840,6 +1868,7 @@ fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
         Page::Graphics => "horizon.pages.graphics.tooltip",
         Page::GraphicsAdvanced => "horizon.pages.graphics_advanced.tooltip",
         Page::Controller => "horizon.pages.controller.tooltip",
+        Page::Enhancements => "horizon.pages.enhancements.tooltip",
         Page::Extras => "horizon.pages.extras.tooltip",
         Page::Pvp => "horizon.pages.pvp.tooltip",
         Page::Agent => "horizon.pages.agent.tooltip",
@@ -2488,6 +2517,7 @@ impl OptionsUi {
                 "options.videoTitle"
             }
             Page::Controller | Page::PadBinds => "horizon.pages.controller",
+            Page::Enhancements => "horizon.pages.enhancements",
             Page::Extras => "horizon.pages.extras",
             Page::Pvp => "horizon.pages.pvp",
             Page::Credits => "credits_and_attribution.screen.title",
@@ -2725,7 +2755,7 @@ impl OptionsUi {
     fn list_rows(&self, s: &Settings) -> Vec<Row> {
         match self.page() {
             Page::SplitSetup => Vec::new(),
-            Page::Extras | Page::Pvp => {
+            Page::Enhancements | Page::Extras | Page::Pvp => {
                 // Each section's switches two to a row, as vanilla's
                 // OptionsList.addSmall lays out an options screen; one whose label would run
                 // past half a row in this language (`wide_extras`) gets the whole row.
@@ -2753,10 +2783,23 @@ impl OptionsUi {
                         widget
                     }
                 };
-                // PvP & HUD opens with its preset; Extras doesn't repeat it, nor the way there
-                // (Horizon Settings has it).
+                // Dedicated controls stay grouped with their feature category.
                 let preset = button(0.0, 0.0, 150.0, tr("horizon.pvp.preset"), Act::PvpPreset);
                 let mut rows = Vec::new();
+                let open = |key: &str, page| button(0.0, 0.0, 150.0, tr(key), Act::Push(page));
+                if self.page() == Page::Extras {
+                    rows.push(Row::Buttons(
+                        open(
+                            "horizon.pages.open.split_setup",
+                            if self.split_guest {
+                                Page::SplitProfiles
+                            } else {
+                                Page::SplitSetup
+                            },
+                        ),
+                        Some(open("horizon.pages.open.studio", Page::Studio)),
+                    ));
+                }
                 if self.page() == Page::Pvp {
                     rows.push(Row::Buttons(preset, None));
                 }
@@ -2779,6 +2822,15 @@ impl OptionsUi {
                     match row {
                         Err(header) => {
                             flush(&mut rows, &mut section);
+                            if self.page() == Page::Enhancements
+                                && header == "horizon.extras.header.inventory"
+                            {
+                                rows.push(Row::Header("horizon.extras.header.hud"));
+                                rows.push(Row::Buttons(
+                                    open("horizon.pages.open.pvp", Page::Pvp),
+                                    None,
+                                ));
+                            }
                             rows.push(Row::Header(header));
                         }
                         Ok(item) => section.push(item),
@@ -2788,28 +2840,9 @@ impl OptionsUi {
                 rows
             }
             Page::Horizon => {
-                // Two to a row, as vanilla's OptionsList.addSmall lays out
-                // buttons; each opens one of Horizon's settings pages. Each page has
-                // one way in: graphics and shader packs are Video Settings' (the graphics
-                // screen), the controller is Controls', mods are the Options screen's.
                 let open =
                     |key: &str, page: Page| button(0.0, 0.0, 150.0, tr(key), Act::Push(page));
                 vec![
-                    Row::Buttons(
-                        open("horizon.pages.open.extras", Page::Extras),
-                        Some(open("horizon.pages.open.pvp", Page::Pvp)),
-                    ),
-                    Row::Buttons(
-                        open(
-                            "horizon.pages.open.split_setup",
-                            if self.split_guest {
-                                Page::SplitProfiles
-                            } else {
-                                Page::SplitSetup
-                            },
-                        ),
-                        Some(open("horizon.pages.open.studio", Page::Studio)),
-                    ),
                     // No AI hides the AI Agent page and everything AI.
                     Row::Buttons(
                         self.extra_button(s, crate::extras::Item::DiscordPresence),
@@ -3238,24 +3271,44 @@ impl OptionsUi {
                         (!self.split_guest).then_some(Page::Packs),
                     ),
                     ("options.accessibility", Some(Page::Accessibility)),
-                    // Vanilla's Telemetry Data and Credits slots: Horizon's
-                    // settings and its mods, as a mod adds its button here.
-                    // Credits & Attribution (WinScreen's credits) follows them.
-                    ("horizon.pages.open.horizon_settings", Some(Page::Horizon)),
-                    ("horizon.pages.open.mods", Some(Page::Mods)),
+                    // Shader packs replace Telemetry Data; Credits retains its vanilla slot.
+                    ("horizon.pages.open.shader_packs", Some(Page::ShaderPacks)),
                     ("options.credits_and_attribution", Some(Page::Credits)),
+                    ("horizon.pages.open.horizon_settings", Some(Page::Horizon)),
+                    ("horizon.pages.open.enhancements", Some(Page::Enhancements)),
+                    ("horizon.pages.open.mods", Some(Page::Mods)),
+                    ("horizon.pages.open.extras", Some(Page::Extras)),
                 ];
-                let rows = entries.len().div_ceil(2) as f32;
-                let gy = (61.0 + 30.0f32).min(h - 33.0 - rows * 24.0);
+                // Anchor the vanilla five-row grid and separate Horizon's two rows below it.
+                // Short screens scroll the grid while the title, FOV and Done remain fixed.
+                let gy = (61.0 + 30.0f32).min(h - 33.0 - 5.0 * 24.0);
+                let height = entries.len().div_ceil(2) as f32 * 24.0 + 12.0;
+                let overflow = gy + height > bottom;
+                if overflow {
+                    top = gy;
+                    content = height;
+                } else {
+                    top = 0.0;
+                    bottom = 0.0;
+                }
                 for (i, (key, page)) in entries.iter().enumerate() {
                     let x = cx - 158.0 + 4.0 + (i % 2) as f32 * 158.0;
-                    let y = gy + (i / 2) as f32 * 24.0;
-                    let b = button(x, y, 150.0, tr(key), page.map_or(Act::None, Act::Push));
-                    out.push(if page.is_some() { b } else { inactive(b) });
+                    let gap = if i >= 10 { 12.0 } else { 0.0 };
+                    let y = gy + (i / 2) as f32 * 24.0 + gap - self.scroll;
+                    if i % 2 == 0 {
+                        rows.begin(&out, y);
+                    }
+                    let mut b = button(x, y, 150.0, tr(key), page.map_or(Act::None, Act::Push));
+                    if page.is_none() {
+                        b = inactive(b);
+                    }
+                    b.list = overflow;
+                    out.push(b);
+                    if i % 2 == 1 {
+                        rows.end(&mut out, y + 24.0);
+                    }
                 }
                 out.push(done(h - 27.0));
-                top = 0.0;
-                bottom = 0.0;
             }
             Page::Credits => {
                 // CreditsAndAttributionScreen: the title header, three 210-wide
@@ -3826,7 +3879,7 @@ impl OptionsUi {
             crate::screen_draw::paint(batch, atlas, &draws);
             return;
         }
-        if matches!(self.page(), Page::Extras | Page::Pvp) {
+        if matches!(self.page(), Page::Enhancements | Page::Extras | Page::Pvp) {
             self.wide_extras = wide_extras(s, self.page(), |t| atlas.font.width(t));
         }
         let (widgets, top, bottom, content) = self.layout(s, w, h);
@@ -6208,7 +6261,15 @@ mod tests {
     /// "Hotbar: Previous Slot" in every language (#1927).
     #[test]
     fn horizon_option_pages_follow_the_language() {
-        let (texts, missed) = page_texts("de_de", &[Page::Horizon, Page::Extras, Page::PadBinds]);
+        let (texts, missed) = page_texts(
+            "de_de",
+            &[
+                Page::Horizon,
+                Page::Enhancements,
+                Page::Extras,
+                Page::PadBinds,
+            ],
+        );
         for want in [
             "Splitscreen …",
             "Weicher Chat: Aus",
@@ -6227,7 +6288,7 @@ mod tests {
             .filter(|k| k.starts_with("horizon.") || k.contains(' ') || !k.contains('.'))
             .collect();
         assert_eq!(missed, Vec::<String>::new());
-        let (texts, _) = page_texts("pl_pl", &[Page::Extras, Page::PadBinds]);
+        let (texts, _) = page_texts("pl_pl", &[Page::Enhancements, Page::PadBinds]);
         for want in [
             "Płynny czat: Wył.",
             "Pasek szybkiego wyboru: poprzednie pole",
@@ -6567,7 +6628,7 @@ mod tests {
         let atlas = atlas();
         let mut s = Settings::default();
         let mut ui = OptionsUi::default();
-        ui.show(Page::Extras);
+        ui.show(Page::Enhancements);
         let (widgets, _, _, _) = ui.layout(&s, 480.0, 480.0);
         let extra = widgets
             .iter()
@@ -6931,7 +6992,7 @@ mod tests {
     }
 
     #[test]
-    fn extras_from_horizon_settings_edit_shared_settings_and_return() {
+    fn optional_pages_edit_shared_settings_and_return_to_options() {
         let atlas = atlas();
         let mut s = Settings::default();
         let mut ui = OptionsUi::default();
@@ -6955,13 +7016,11 @@ mod tests {
                 false,
             )
         };
-        for page in [Page::Horizon, Page::Extras] {
-            assert_eq!(
-                click(&mut ui, &mut s, Act::Push(page)),
-                vec![Event::ButtonClick]
-            );
-            assert_eq!(ui.page(), page);
-        }
+        assert_eq!(
+            click(&mut ui, &mut s, Act::Push(Page::Enhancements)),
+            vec![Event::ButtonClick]
+        );
+        assert_eq!(ui.page(), Page::Enhancements);
         let (widgets, _, _, _) = ui.layout(&s, size.0, size.1);
         assert_eq!(
             widgets
@@ -6974,7 +7033,10 @@ mod tests {
                     }
                 ))
                 .count(),
-            crate::extras::rows().iter().filter(|r| r.is_ok()).count()
+            extras_rows(Page::Enhancements)
+                .iter()
+                .filter(|r| r.is_ok())
+                .count()
         );
         assert_eq!(
             click(&mut ui, &mut s, Act::Extra(crate::extras::Item::Sort)),
@@ -7010,7 +7072,18 @@ mod tests {
             ui.key(&mut s, &atlas, winit::keyboard::KeyCode::Escape, None),
             vec![Event::Changed]
         );
-        assert_eq!(ui.page(), Page::Horizon);
+        assert_eq!(ui.page(), Page::Main);
+        assert_eq!(
+            click(&mut ui, &mut s, Act::Push(Page::Extras)),
+            vec![Event::ButtonClick]
+        );
+        assert_eq!(
+            click(&mut ui, &mut s, Act::Extra(crate::extras::Item::MusicPage)),
+            vec![Event::ButtonClick, Event::Changed]
+        );
+        assert!(s.extras.music_page);
+        ui.back(&mut s);
+        assert_eq!(ui.page(), Page::Main);
     }
 
     #[test]
@@ -7663,7 +7736,7 @@ mod tests {
         let atlas = atlas();
         let mut s = Settings::default();
         let mut ui = OptionsUi::default();
-        ui.show(Page::Extras);
+        ui.show(Page::Enhancements);
         for (right, expected) in [(false, "key.mouse.left"), (true, "key.mouse.right")] {
             ui.selected_key = Some(crate::extras::SORT_KEY);
             assert_eq!(
@@ -7681,7 +7754,7 @@ mod tests {
             );
             assert_eq!(s.extras.sort_key, expected);
             assert_eq!(ui.selected_key, None);
-            assert_eq!(ui.page(), Page::Extras);
+            assert_eq!(ui.page(), Page::Enhancements);
         }
     }
 
@@ -7838,50 +7911,52 @@ mod tests {
     /// fits its button: "Keep channels for UI sounds: Off" did not.
     #[test]
     fn extras_labels_fit_their_buttons() {
-        // Vanilla's font: 6 px a glyph, a few narrower ones.
-        let width = |t: &str| {
-            t.chars()
-                .map(|c| match c {
-                    'i' | '\'' | ':' | '.' | ',' | '!' => 2.0,
-                    'l' => 3.0,
-                    ' ' | 't' | 'I' => 4.0,
-                    'f' | 'k' => 5.0,
-                    _ => 6.0,
-                })
-                .sum::<f32>()
-        };
-        let s = Settings::default();
-        let mut ui = OptionsUi::default();
-        for page in [Page::Extras, Page::Pvp] {
-            ui.stack = vec![Page::Main, page];
-            ui.wide_extras = wide_extras(&s, page, width);
-            let rows = ui.list_rows(&s);
-            let buttons: Vec<&Widget> = rows
-                .iter()
-                .flat_map(|r| match r {
-                    Row::Buttons(a, b) => std::iter::once(a).chain(b.as_ref()).collect(),
-                    _ => Vec::new(),
-                })
-                .collect();
-            for b in &buttons {
-                let WKind::Button { label, .. } = &b.kind else {
-                    continue;
-                };
-                let label = label.plain();
-                assert!(width(&label) <= b.w - 4.0, "{page:?}: {label} on {}", b.w);
+        lang::scoped(lang::Language::load(&[], "en_us"), || {
+            // Vanilla's font: 6 px a glyph, a few narrower ones.
+            let width = |t: &str| {
+                t.chars()
+                    .map(|c| match c {
+                        'i' | '\'' | ':' | '.' | ',' | '!' => 2.0,
+                        'l' => 3.0,
+                        ' ' | 't' | 'I' => 4.0,
+                        'f' | 'k' => 5.0,
+                        _ => 6.0,
+                    })
+                    .sum::<f32>()
+            };
+            let s = Settings::default();
+            let mut ui = OptionsUi::default();
+            for page in [Page::Enhancements, Page::Extras, Page::Pvp] {
+                ui.stack = vec![Page::Main, page];
+                ui.wide_extras = wide_extras(&s, page, width);
+                let rows = ui.list_rows(&s);
+                let buttons: Vec<&Widget> = rows
+                    .iter()
+                    .flat_map(|r| match r {
+                        Row::Buttons(a, b) => std::iter::once(a).chain(b.as_ref()).collect(),
+                        _ => Vec::new(),
+                    })
+                    .collect();
+                for b in &buttons {
+                    let WKind::Button { label, .. } = &b.kind else {
+                        continue;
+                    };
+                    let label = label.plain();
+                    assert!(width(&label) <= b.w - 4.0, "{page:?}: {label} on {}", b.w);
+                }
+                // Short ones keep vanilla's two to a row.
+                assert!(buttons.iter().any(|b| b.w == 150.0), "{page:?}");
             }
-            // Short ones keep vanilla's two to a row.
-            assert!(buttons.iter().any(|b| b.w == 150.0), "{page:?}");
-        }
-        ui.stack = vec![Page::Main, Page::Extras];
-        ui.wide_extras = wide_extras(&s, Page::Extras, width);
-        for item in [
-            crate::extras::Item::UiSoundReserve,
-            crate::extras::Item::WheelCyclesSettings,
-        ] {
-            assert!(ui.wide_extras.contains(&item), "{item:?}");
-        }
-        assert!(!ui.wide_extras.contains(&crate::extras::Item::AutoReconnect));
+            ui.stack = vec![Page::Main, Page::Enhancements];
+            ui.wide_extras = wide_extras(&s, Page::Enhancements, width);
+            for item in [
+                crate::extras::Item::UiSoundReserve,
+                crate::extras::Item::WheelCyclesSettings,
+            ] {
+                assert!(ui.wide_extras.contains(&item), "{item:?}");
+            }
+            assert!(!ui.wide_extras.contains(&crate::extras::Item::AutoReconnect));
+        });
     }
 
     /// Every setting a player reaches, from the Options screen through every button that opens
@@ -8019,39 +8094,121 @@ mod tests {
         }
     }
 
-    /// Shader packs, both kinds, are on the graphics screen's Shaders page: its Shader
-    /// Packs... opens the pack list, listed afresh, and Done comes back to that page.
     #[test]
-    fn the_graphics_shaders_page_opens_the_shader_pack_list() {
-        use crate::graphics_ui::{H, Item, Target};
+    fn options_opens_shader_packs_and_preserves_settings_on_return() {
         use winit::keyboard::KeyCode;
         let atlas = atlas();
         let mut s = Settings::default();
+        let original = s.clone();
         let mut ui = OptionsUi {
-            size: (427.0, 240.0),
+            size: (640.0, 360.0),
             ..Default::default()
         };
-        ui.show(Page::Graphics);
-        ui.graphics.open(crate::graphics_ui::Page::Shaders);
-        let packs = Target::Item(Item::Horizon(H::ShaderPacks));
-        assert!(
-            (0..40).any(|_| {
-                ui.key(&mut s, &atlas, KeyCode::Tab, None);
-                ui.graphics.focus == Some(packs)
-            }),
-            "{:?}",
-            ui.graphics.focus
-        );
+        assert!((0..24).any(|_| {
+            ui.key(&mut s, &atlas, KeyCode::Tab, None);
+            ui.focus == Some(FocusId::Act(Act::Push(Page::ShaderPacks)))
+        }));
         let events = ui.key(&mut s, &atlas, KeyCode::Enter, None);
         assert_eq!(ui.page(), Page::ShaderPacks);
         assert!(events.contains(&Event::ListShaderPacks), "{events:?}");
         ui.back(&mut s);
-        assert_eq!(ui.page(), Page::Graphics);
-        assert_eq!(ui.graphics.page(), crate::graphics_ui::Page::Shaders);
+        assert_eq!(ui.page(), Page::Main);
+        assert_eq!(s.extras, original.extras);
+        assert_eq!(s.horizon, original.horizon);
     }
 
     #[test]
-    fn horizon_settings_hang_off_options_and_reach_every_horizon_page() {
+    fn options_preserve_vanilla_slots_and_separate_the_horizon_group() {
+        let s = Settings::default();
+        let mut ui = OptionsUi::default();
+        let at = |widgets: &[Widget], page| {
+            widgets
+                .iter()
+                .find_map(|w| {
+                    matches!(w.kind, WKind::Button { act: Act::Push(p), .. } if p == page)
+                        .then_some([w.x, w.y])
+                })
+                .unwrap()
+        };
+        let (widgets, ..) = ui.layout(&s, 640.0, 360.0);
+        for (page, x, y) in [
+            (Page::Skin, 166.0, 91.0),
+            (Page::Sound, 324.0, 91.0),
+            (Page::Graphics, 166.0, 115.0),
+            (Page::Controls, 324.0, 115.0),
+            (Page::Language, 166.0, 139.0),
+            (Page::Chat, 324.0, 139.0),
+            (Page::Packs, 166.0, 163.0),
+            (Page::Accessibility, 324.0, 163.0),
+            (Page::ShaderPacks, 166.0, 187.0),
+            (Page::Credits, 324.0, 187.0),
+            (Page::Horizon, 166.0, 223.0),
+            (Page::Enhancements, 324.0, 223.0),
+            (Page::Mods, 166.0, 247.0),
+            (Page::Extras, 324.0, 247.0),
+        ] {
+            assert_eq!(at(&widgets, page), [x, y], "{page:?}");
+        }
+        let (widgets, top, bottom, content) = ui.layout(&s, 427.0, 240.0);
+        assert_eq!(top, 87.0);
+        assert_eq!(at(&widgets, Page::Credits)[1], 183.0);
+        assert!(content > bottom - top);
+        ui.scroll(&s, (427.0, 240.0), -1000.0);
+        let (scrolled, _, bottom, _) = ui.layout(&s, 427.0, 240.0);
+        assert!(at(&scrolled, Page::Extras)[1] + 20.0 <= bottom);
+        let done_y = |widgets: &[Widget]| {
+            widgets
+                .iter()
+                .find_map(|w| matches!(w.kind, WKind::Button { act: Act::Done, .. }).then_some(w.y))
+                .unwrap()
+        };
+        assert_eq!(done_y(&widgets), done_y(&scrolled));
+    }
+
+    #[test]
+    fn enhancements_and_extras_partition_existing_settings_without_losing_any() {
+        use crate::extras::Item;
+        let s = Settings::default();
+        let mut ui = OptionsUi::default();
+        let mut items = |page| {
+            ui.stack = vec![Page::Main, page];
+            ui.layout(&s, 640.0, 4000.0)
+                .0
+                .into_iter()
+                .filter_map(|w| match w.kind {
+                    WKind::Button {
+                        act: Act::Extra(item),
+                        ..
+                    } => Some(item),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let enhancements = items(Page::Enhancements);
+        let extras = items(Page::Extras);
+        for item in [
+            Item::Sort,
+            Item::SortKey,
+            Item::MouseTweaks,
+            Item::ChatAnimation,
+            Item::AutoReconnect,
+            Item::Pregen,
+        ] {
+            assert!(enhancements.contains(&item), "{item:?}");
+        }
+        assert!(extras.contains(&Item::MusicPage));
+        assert!(enhancements.iter().all(|item| !extras.contains(item)));
+        let all: Vec<_> = enhancements.into_iter().chain(extras).collect();
+        let existing: Vec<_> = crate::extras::rows()
+            .into_iter()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(all.len(), existing.len());
+        assert!(existing.iter().all(|item| all.contains(item)));
+    }
+
+    #[test]
+    fn horizon_groups_reach_each_optional_page_once() {
         let s = Settings::default();
         let mut ui = OptionsUi::default();
         let pushes = |ui: &mut OptionsUi| -> Vec<Page> {
@@ -8068,26 +8225,27 @@ mod tests {
                 })
                 .collect()
         };
-        // Vanilla's Options buttons, Horizon's two in the Telemetry and Credits slots, then
-        // Credits & Attribution (WinScreen's credits).
         let main = pushes(&mut ui);
         assert_eq!(
-            &main[main.len() - 3..],
-            [Page::Horizon, Page::Mods, Page::Credits]
-        );
-        // Video Settings... is the graphics screen, as Sodium's.
-        assert!(main.contains(&Page::Graphics) && !main.contains(&Page::Video));
-        ui.push(Page::Horizon);
-        assert_eq!(
-            pushes(&mut ui),
+            &main[main.len() - 6..],
             [
+                Page::ShaderPacks,
+                Page::Credits,
+                Page::Horizon,
+                Page::Enhancements,
+                Page::Mods,
                 Page::Extras,
-                Page::Pvp,
-                Page::SplitSetup,
-                Page::Studio,
-                Page::Agent,
             ]
         );
+        assert!(main.contains(&Page::Graphics) && !main.contains(&Page::Video));
+        ui.push(Page::Enhancements);
+        assert_eq!(pushes(&mut ui), [Page::Pvp]);
+        ui.back(&mut Settings::default());
+        ui.push(Page::Extras);
+        assert_eq!(pushes(&mut ui), [Page::SplitSetup, Page::Studio]);
+        ui.back(&mut Settings::default());
+        ui.push(Page::Horizon);
+        assert_eq!(pushes(&mut ui), [Page::Agent]);
         // No AI hides the AI Agent page.
         let mut no_ai = Settings::default();
         no_ai.extras.no_ai = true;
@@ -8291,9 +8449,9 @@ mod tests {
         let mut s = Settings::default();
         let mut ui = OptionsUi::default();
 
-        // 1. Extras page: with the wheel extra on, the wheel on the Sort switch cycles it
+        // With the wheel extra on, the wheel over Sort changes its value.
         s.extras.wheel_cycles_settings = true;
-        ui.show(Page::Extras);
+        ui.show(Page::Enhancements);
         let size = (480.0, 600.0);
         let (widgets, _, _, _) = ui.layout(&s, size.0, size.1);
         let sort_wd = widgets
@@ -8792,8 +8950,8 @@ mod tests {
         assert_eq!(s.particles, 0);
         ui.shift = false;
 
-        // Also verify Act::Extra on Page::Extras
-        ui.show(Page::Extras);
+        // Also verify Act::Extra on Page::Enhancements
+        ui.show(Page::Enhancements);
         let (widgets, top, _, _) = ui.layout(&s, size.0, size.1);
         if let Some(extra_btn) = widgets.iter().find(|wd| {
             matches!(

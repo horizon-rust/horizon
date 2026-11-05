@@ -1024,6 +1024,7 @@ impl Game<'_> {
                     "graphics-advanced" => Page::GraphicsAdvanced,
                     "graphics-hdr" => Page::GraphicsHdr,
                     "extras" => Page::Extras,
+                    "enhancements" => Page::Enhancements,
                     "pvp" => Page::Pvp,
                     "credits" => Page::Credits,
                     "horizon" => Page::Horizon,

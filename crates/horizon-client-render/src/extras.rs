@@ -615,8 +615,8 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
     // Fullbright, Dynamic lights and Hide block-break particles change the picture: they
     // are on the graphics screen's Quality page (`graphics_ui::rows`), not here.
     let mut rows = vec![
-        Err("horizon.extras.header.third_person"),
-        Ok(OwnNameTag),
+        Err("horizon.extras.header.world"),
+        Ok(Pregen),
         Err("horizon.extras.header.inventory"),
         Ok(MouseTweaks),
         Ok(MouseTweaksWheel),
@@ -625,8 +625,8 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Err("horizon.extras.header.chat"),
         Ok(ChatAnimation),
         Ok(ChatIndicator),
-        Err("horizon.extras.header.world"),
-        Ok(Pregen),
+        Err("horizon.extras.header.third_person"),
+        Ok(OwnNameTag),
         Err("horizon.extras.header.multiplayer"),
         Ok(AutoReconnect),
         Err("horizon.extras.header.sound"),

@@ -24,7 +24,7 @@ pub enum Page {
     General,
     Quality,
     Performance,
-    /// Shader packs, either kind (`shader_pack_list`), and what they cost.
+    /// Shader rendering controls.
     Shaders,
     Advanced,
     /// HDR output's own settings.
@@ -55,7 +55,7 @@ impl Page {
             Page::General => "How far you see, the window and the HUD.",
             Page::Quality => "The sky and weather, lighting, textures and the image.",
             Page::Performance => "Chunk loading, culling and power use.",
-            Page::Shaders => "Shader packs, Horizon's and shaders/ folder ones, and their options.",
+            Page::Shaders => "horizon.graphics.shaders.tooltip",
             Page::Advanced => "How frames reach the screen, and the performance overlay.",
             Page::Hdr => "Brighter-than-white output on an HDR display.",
         }
@@ -503,18 +503,11 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
             Page::Shaders,
             vec![(
                 "Shader packs",
-                vec![
-                    h(
-                        H::ShaderPacks,
-                        High,
-                        "Picks a shader pack, Horizon's or a shaders/ folder one, and sets its options.",
-                    ),
-                    h(
-                        H::ShadowCache,
-                        Saves,
-                        "Reuses the pack shadow map when sun, view and world match. Off by default.",
-                    ),
-                ],
+                vec![h(
+                    H::ShadowCache,
+                    Saves,
+                    "Reuses the pack shadow map when sun, view and world match. Off by default.",
+                )],
             )],
         ),
         (
