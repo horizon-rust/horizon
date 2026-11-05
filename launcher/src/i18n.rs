@@ -10,6 +10,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::OnceLock;
 
+pub mod arabic;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Language {
     #[default]
@@ -389,7 +391,7 @@ impl Language {
             Self::Turkish => "Türkçe",
             Self::Korean => "한국어",
             Self::Croatian => "Hrvatski",
-            Self::Arabic => "العربية",
+            Self::Arabic => "\u{FE8D}\u{FEDF}\u{FECC}\u{FEAE}\u{FE91}\u{FEF4}\u{FE94}",
             Self::Hindi => "हिन्दी",
             Self::Indonesian => "Bahasa Indonesia",
             Self::Portuguese => "Português (Portugal)",
@@ -406,11 +408,11 @@ impl Language {
             Self::Dutch => "Nederlands",
             Self::Vietnamese => "Tiếng Việt",
             Self::Thai => "ไทย",
-            Self::Urdu => "اردو",
+            Self::Urdu => "\u{FE8D}\u{FEAD}\u{FEA9}\u{FEED}",
             Self::Czech => "Čeština",
             Self::Swedish => "Svenska",
             Self::Greek => "Ελληνικά",
-            Self::Persian => "فارسی",
+            Self::Persian => "\u{FED3}\u{FE8E}\u{FEAD}\u{FEB3}\u{FBFD}",
             Self::Catalan => "Català",
             Self::Estonian => "Eesti",
             Self::Latvian => "Latviešu",
@@ -628,7 +630,17 @@ fn table(language: Language) -> &'static Table {
                 serde_json::from_str::<HashMap<String, String>>(l.source())
                     .unwrap_or_default()
                     .into_iter()
-                    .map(|(en, said)| (en, &*Box::leak(said.into_boxed_str())))
+                    .map(|(en, said)| {
+                        let text = if matches!(
+                            *l,
+                            Language::Arabic | Language::Urdu | Language::Persian
+                        ) {
+                            arabic::reshape(&said)
+                        } else {
+                            said
+                        };
+                        (en, &*Box::leak(text.into_boxed_str()))
+                    })
                     .collect()
             })
             .collect()
@@ -656,7 +668,14 @@ pub fn trf(en: &str, args: &[(&str, &str)]) -> String {
     for (name, value) in args {
         out = out.replace(&format!("{{{name}}}"), value);
     }
-    out
+    if matches!(
+        current(),
+        Language::Arabic | Language::Urdu | Language::Persian
+    ) {
+        arabic::reshape(&out)
+    } else {
+        out
+    }
 }
 
 #[cfg(test)]
