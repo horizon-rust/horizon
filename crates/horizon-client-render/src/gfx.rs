@@ -4142,7 +4142,8 @@ impl Renderer {
             });
         }
         self.origins.clear();
-        self.origins.reserve(visible.len() + visible_lods.len() + shadow_visible.len());
+        self.origins
+            .reserve(visible.len() + visible_lods.len() + shadow_visible.len());
         self.origins.extend(
             visible
                 .iter()

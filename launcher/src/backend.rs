@@ -1381,9 +1381,9 @@ pub fn java_game(
     let mods_dir = instance.home.join("mods");
     let report = horizon_mods::scan_mods_dir(&mods_dir);
     let expected = game.loader.as_ref().map(|l| l.kind.id());
-    report.validate(expected).map_err(|e| {
-        format!("Instance '{}': {e}", instance.name)
-    })?;
+    report
+        .validate(expected)
+        .map_err(|e| format!("Instance '{}': {e}", instance.name))?;
     let player = account::java_player()?;
     let minecraft = data_dir().join("minecraft");
     let id = mojang::relative(&game.minecraft)?;

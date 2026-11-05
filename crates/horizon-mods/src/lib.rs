@@ -9,6 +9,6 @@ pub mod index;
 pub mod manifest;
 pub mod modpack;
 
-pub use compat::{inspect_mod, scan_mods_dir, ModLoaderType, ProfileModsReport};
+pub use compat::{ModLoaderType, ProfileModsReport, inspect_mod, scan_mods_dir};
 pub use content::Content;
 pub use manifest::{Capability, Manifest, Package, Side, find};

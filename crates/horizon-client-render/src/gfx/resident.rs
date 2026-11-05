@@ -232,7 +232,11 @@ impl<T> Resident<T> {
             let low_oy = min_y_base + f64::from(column.low * 16);
             let high_oy = min_y_base + f64::from(column.high * 16);
             let min = Vec3::new(col_ox as f32, low_oy as f32, col_oz as f32);
-            let max = Vec3::new(col_ox as f32 + 16.0, high_oy as f32 + 16.0, col_oz as f32 + 16.0);
+            let max = Vec3::new(
+                col_ox as f32 + 16.0,
+                high_oy as f32 + 16.0,
+                col_oz as f32 + 16.0,
+            );
             let inside = frustum.contains(min, max);
             if !inside && !frustum.intersects(min, max) {
                 continue;

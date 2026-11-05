@@ -30,7 +30,8 @@ impl Sorter {
         self.indices.reserve(self.order.len() * 6);
         for &packed in &self.order {
             let v = (packed as u32) * 4;
-            self.indices.extend_from_slice(&[v, v + 1, v + 2, v + 2, v + 3, v]);
+            self.indices
+                .extend_from_slice(&[v, v + 1, v + 2, v + 2, v + 3, v]);
         }
         &self.indices
     }
