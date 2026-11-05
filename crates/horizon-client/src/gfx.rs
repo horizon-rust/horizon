@@ -245,8 +245,9 @@ struct Globals {
     /// RT lighting's moon (terrain.wgsl `rt_moon_disc`): toward it, and its angular radius.
     rt_moon: [f32; 4],
     /// The Earth's curvature (`Renderer::earth_curvature`): x the square of the radius it starts
-    /// at (`lod::earth_drop`; -1 off), y how far the sea's horizon dips (`lod::horizon_dip`); w
-    /// the block textures' anisotropic taps (`Renderer::anisotropy`), where `time.w` is taken.
+    /// at (`lod::earth_drop`; -1 off), y how far the sea's horizon dips (`lod::horizon_dip`); z
+    /// RT lighting's ice layers (`Renderer::set_ice_layers`); w the block textures' anisotropic
+    /// taps (`Renderer::anisotropy`), where `time.w` is taken.
     earth: [f32; 4],
     /// The shooting stars' shower (terrain.wgsl `meteor_make`, `sky_stars::Meteors`): its radiant
     /// and zenithal hourly rate; its meteors' speed and population index, and the sporadic rate.
@@ -653,6 +654,8 @@ pub struct Renderer {
     lava_layers: f32,
     /// RT lighting's plain glass sprite layers, packed (`set_glass_layers`; -1: none).
     glass_layers: f32,
+    /// RT lighting's ice and packed ice sprite layers, packed (`set_ice_layers`; -1: none).
+    ice_layers: f32,
     /// When the renderer was made: the water's waves' clock.
     water_clock: std::time::Instant,
     /// RT lighting's sun's angular radius (the Sun Size setting) and aerial perspective's air
@@ -3498,6 +3501,7 @@ impl Renderer {
             water_layers: [-1.0; 2],
             lava_layers: -1.0,
             glass_layers: -1.0,
+            ice_layers: -1.0,
             water_clock: std::time::Instant::now(),
             rt_sun_radius: SUN_RADIUS,
             rt_moon_radius: MOON_RADIUS,
@@ -4370,6 +4374,16 @@ impl Renderer {
         self.glass_layers = match (glass, pane) {
             (Some(g), Some(p)) if g < 4096 && p < 4096 => (g + 4096 * p) as f32,
             (Some(g), None) if g < 4096 => (g + 4096 * g) as f32,
+            _ => -1.0,
+        };
+    }
+    /// The ice's and the packed ice's sprite layers, which RT lighting draws as clear and as
+    /// frosted ice (terrain.wgsl `rt_ice`, mesher.rs `rt_ice_kind`): packed as the lava's, ice +
+    /// 4096 packed ice.
+    pub fn set_ice_layers(&mut self, ice: Option<u32>, packed: Option<u32>) {
+        let on = crate::mesher::rt_ice_on();
+        self.ice_layers = match (ice, packed) {
+            (Some(i), Some(p)) if on && i < 4096 && p < 4096 => (i + 4096 * p) as f32,
             _ => -1.0,
         };
     }
@@ -5636,10 +5650,10 @@ impl Renderer {
                 Some(r) => [
                     (r * r) as f32,
                     lod::horizon_dip(frame.camera.y) as f32,
-                    0.0,
+                    self.ice_layers,
                     self.anisotropy as f32,
                 ],
-                None => [-1.0, 0.0, 0.0, self.anisotropy as f32],
+                None => [-1.0, 0.0, self.ice_layers, self.anisotropy as f32],
             },
             rt_shower: meteors.radiant,
             rt_stream: meteors.stream,

@@ -55,7 +55,8 @@ struct Globals {
     // RT lighting's moon: toward it (xyz) and its angular radius (w); its phase in rt_stars.x.
     rt_moon: vec4<f32>,
     // The Earth's curvature (`earth_drop`): x the square of the radius it starts at (below 0 off),
-    // y how far the sea's horizon dips under the horizontal, in radians; w the block textures'
+    // y how far the sea's horizon dips under the horizontal, in radians; z RT lighting's ice and
+    // packed ice sprite layers (`rt_ice`, ice + 4096 packed ice, -1 none); w the block textures'
     // anisotropic taps (Texture Filtering Anisotropic: 2 to 8; 0 off).
     earth: vec4<f32>,
     // The shooting stars' shower (`meteor_make`): its radiant (equatorial, xyz) and zenithal hourly
@@ -2024,6 +2025,22 @@ fn rt_glass_plain(layer: u32) -> bool {
     let pane = floor(packed / 4096.0);
     return l == packed - pane * 4096.0 || l == pane;
 }
+// RT lighting's ice (mesher.rs `rt_ice_kind`, gfx.rs `set_ice_layers`): 1 where sprite `layer`
+// is the ice's, 2 the packed ice's, 0 neither. Both go through the glass's path with ice's own
+// optics: index 1.31 (F0 0.018), the faint tint and the frost a little bubbled lake ice has, and
+// for packed ice (compressed snow, full of air) a rough face and a milky body that hides what
+// lies more than a block or two behind it. Their frost is a diffuse layer lit as the terrain is,
+// brighter on the texture's light streaks, which scatters the sun through it (`subsurface`).
+const ICE_INDEX: f32 = 1.31;
+const ICE_F0: f32 = 0.018;
+fn rt_ice(layer: u32) -> u32 {
+    let packed = globals.earth.z;
+    if packed < 0.0 { return 0u; }
+    let l = f32(layer & 0x7fffu);
+    let p = floor(packed / 4096.0);
+    if l == packed - p * 4096.0 { return 1u; }
+    return select(0u, 2u, l == p);
+}
 // A dielectric's reflectance at index 1.52 (Schlick's, F0 = ((n - 1) / (n + 1))^2), the cosine on
 // the air's side.
 fn rt_glass_fresnel(cosine: f32) -> f32 {
@@ -2066,12 +2083,20 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
     let ray = g.pos / max(distance, 1e-4);
     let view = -ray;
     let plain = rt_glass_plain(g.layer);
+    let ice = rt_ice(g.layer);
+    // Ice's optics (`rt_ice`): its index, a smooth face with a little frost on clear ice, a rough
+    // one on packed ice (unless the pack's specular map says rougher).
+    let index = select(GLASS_INDEX, ICE_INDEX, ice > 0u);
+    let f0 = select(0.0426, ICE_F0, ice > 0u);
+    var roughness = g.roughness;
+    if ice == 1u { roughness = max(roughness, 0.12); }
+    if ice == 2u { roughness = max(roughness, 0.5); }
     // A map's facet turned from the eye is seen edge on: kept just inside the side it can see.
     var n = g.normal;
     let facing = dot(n, view);
     if facing < 0.02 { n = normalize(n + view * (0.02 - facing)); }
     let nv = max(dot(n, view), 1e-3);
-    let fresnel = rt_glass_fresnel(nv);
+    let fresnel = f0 + (1.0 - f0) * pow(1.0 - clamp(nv, 0.0, 1.0), 5.0);
     let v = rt_visibility(g.pos, g.clip);
     let sky_seen = select(rt_sky_level(g.light.x), max(v.z, 0.0),
         v.z >= 0.0);
@@ -2097,15 +2122,15 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
     let l = globals.rt_light.xyz;
     let h = normalize(l + view);
     let nl = max(dot(n, l), 0.0);
-    let alpha = max(g.roughness * g.roughness, 0.02);
+    let alpha = max(roughness * roughness, 0.02);
     let a2 = alpha * alpha;
     let nh = max(dot(n, h), 0.0);
     let dd = nh * nh * (a2 - 1.0) + 1.0;
     let glint = a2 / (RT_PI * dd * dd) * 0.25 / max(nl * nv, 1e-3) * nl * RT_PI;
     reflected += sun * min(glint * smoothstep(0.0, 0.15, dot(g.face, l)), 200.0);
     // Through it: in bent by the facet, out through a flat face parallel to this one.
-    let inward = refract(ray, n, 1.0 / GLASS_INDEX);
-    var outward = refract(inward, g.face, GLASS_INDEX);
+    let inward = refract(ray, n, 1.0 / index);
+    var outward = refract(inward, g.face, index);
     if dot(outward, outward) < 1e-6 { outward = ray; }
     let bottom = rt_bottom(g.clip, ray);
     let behind = clamp(select(8.0, bottom - distance, bottom > 0.0), 0.05, 6.0);
@@ -2127,7 +2152,7 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
             let u = (rt_screen(far + t1 * spread).xy - base.xy) * base.z;
             let w = (rt_screen(far + t2 * spread).xy - base.xy) * base.z;
             var sum = vec4(0.0);
-            let taps = select(1, 4, g.roughness > 0.1 && length(u) + length(w) > 1.0);
+            let taps = select(1, 4, roughness > 0.1 && length(u) + length(w) > 1.0);
             let turn = rt_dither(g.clip) * 6.2831853;
             for (var i = 0; i < taps; i++) {
                 let a = turn + f32(i) * 1.5707963;
@@ -2141,6 +2166,27 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
     }
     var added = fresnel * reflected;
     var shows = vec3(1.0 - fresnel);
+    // Ice's frost (`rt_ice`): its diffuse layer's opacity, more on the texture's light streaks
+    // (bubbles, cracks), and the ice's body over the length the eye sees through (up to what
+    // lies behind, at most 6 blocks of clear ice, 2.5 of packed ice): what its bubbles scatter
+    // adds to the frost, what it absorbs (red most, glacier blue) dims what shows through. A
+    // block of clear ice in the open is about a third frost, of packed ice about three quarters.
+    var frost = 0.0;
+    var body = vec3(1.0);
+    if ice > 0u {
+        let streak = smoothstep(0.3, 0.85, dot(g.albedo, vec3(0.2126, 0.7152, 0.0722)));
+        if ice == 1u {
+            let through = min(behind, 6.0);
+            frost = 0.15 + 0.3 * streak;
+            body = exp(-vec3(0.06, 0.022, 0.01) * through);
+            frost = 1.0 - (1.0 - frost) * exp(-0.05 * through);
+        } else {
+            let through = min(behind, 2.5);
+            frost = 0.35 + 0.3 * streak;
+            body = exp(-vec3(0.1, 0.04, 0.02) * through);
+            frost = 1.0 - (1.0 - frost) * exp(-0.35 * through);
+        }
+    }
     if refracted.a <= 0.0 {
         // Untraced: the glass's colour over its measurement distance along the bent ray.
         let colour = select(clamp(g.albedo, vec3(0.0), vec3(1.0)), vec3(1.0), plain)
@@ -2148,6 +2194,8 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
         let slant = max(dot(inward, -g.face), 0.2);
         shows *= pow(max(colour, vec3(1e-3)), vec3(1.0 / slant));
     }
+    // Ice's body: its absorption on what shows through, its frost in front of it.
+    shows *= body * (1.0 - frost);
     // The air in front, as for the terrain: it dims both and adds the horizon's light.
     let f = rt_fade(g.spherical, g.cylindrical, g.pos) * globals.fog_color.a;
     let toward = normalize(vec3(g.pos.x, 0.0, g.pos.z) + vec3(0.0, 0.05 * length(g.pos.xz), 0.0));
@@ -2163,6 +2211,14 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
         added = mix(added, layer, g.alpha);
         shows *= 1.0 - g.alpha;
     }
+    // Ice's frost, under the face's reflection: a pale blue-white layer, its texel's colour half
+    // way to the white of snow, lit as the terrain is, the sun scattering through it from behind.
+    if frost > 0.0 {
+        let white = mix(clamp(g.albedo, vec3(0.0), vec3(1.0)), vec3(0.86, 0.93, 1.0), 0.5);
+        let layer = rt_material_lit(RtMaterial(white, n, 1.0, 1.0, vec3(0.02), 0.0, 1.0, 0.0),
+            g.face, g.pos, g.clip, g.light, g.spherical, g.cylindrical);
+        added += (1.0 - fresnel) * frost * layer;
+    }
     if refracted.a > 0.0 {
         // The sun behind the glass: its beam through both walls (their colour along the bent ray,
         // the far face's Fresnel and the second diffuse layer; the near face's are in `shows`),
@@ -2175,8 +2231,9 @@ fn rt_glass_at(g: GlassIn) -> WaterLight {
             let colour = select(clamp(g.albedo, vec3(0.0), vec3(1.0)), vec3(1.0 - g.alpha), plain)
                 * GLASS_TRANSMITTANCE;
             let slant = max(dot(inward, -g.face), 0.2);
-            let walls = pow(max(colour, vec3(1e-3)), vec3(1.0 / slant)) * (1.0 - rt_glass_fresnel(nv));
-            let spread = max(alpha * 2.0 * (1.0 - 1.0 / GLASS_INDEX), 0.01);
+            let walls = pow(max(colour, vec3(1e-3)), vec3(1.0 / slant)) * (1.0 - fresnel)
+                * body * (1.0 - frost);
+            let spread = max(alpha * 2.0 * (1.0 - 1.0 / index), 0.01);
             let s2 = spread * spread;
             let c = max(dot(ray, l), 0.0);
             let d = c * c * (s2 - 1.0) + 1.0;
