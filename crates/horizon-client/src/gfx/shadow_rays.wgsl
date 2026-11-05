@@ -552,7 +552,8 @@ override DEBUG: u32 = 0u;
 // docs/raytracing.md): 1 the sun's ray, 2 the sky and bounced light (ReSTIR GI), 4 the light
 // sources' (ReSTIR DI), 8 the mirrors and water (PSR); 16 traces the bounced light every frame
 // instead of in turns (`trace`), to measure what the turns save and what they change; 64 the far
-// field (`far_light`, `far_sky`).
+// field (`far_light`, `far_sky`); 128 the translucent candidates' tint (glass, water, ice pass the
+// light untinted: what their shading costs against the force-opaque floor).
 override SKIP: u32 = 0u;
 
 // Ray-traced shadows (gfx/voxels.rs, docs/raytracing.md): whether world block `v` is in the grid.

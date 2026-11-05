@@ -276,6 +276,9 @@ impl Bindings {
 /// A triangle geometry of `quads` quads (four vertices, two triangles each).
 /// How much larger a section's structure is made for its micromaps: 8/5 its quads.
 const OMM_GROWTH: [u32; 2] = [8, 5];
+/// And this many quads more a geometry: a small section's structure grows more than 8/5 with
+/// its micromap (4352 bytes against 3712 made at 8/5 on the 4090).
+const OMM_SLACK: u32 = 16;
 
 /// A section's structure, for geometries of `sizes`.
 fn section_blas(
@@ -579,7 +582,8 @@ impl HwRays {
                 let larger: Vec<_> = size
                     .iter()
                     .map(|g| {
-                        let quads = (g.vertex_count / 4 * OMM_GROWTH[0]).div_ceil(OMM_GROWTH[1]);
+                        let quads = (g.vertex_count / 4 * OMM_GROWTH[0]).div_ceil(OMM_GROWTH[1])
+                            + OMM_SLACK;
                         quads_geometry(quads, g.flags)
                     })
                     .collect();

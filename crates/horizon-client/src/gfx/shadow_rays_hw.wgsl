@@ -134,7 +134,7 @@ fn hw_opaque(c: RayIntersection) -> bool {
 // caustics' mean, and a ray may cross many water quads, each a sum of sixteen waves.
 fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>, focus: bool) -> vec3<f32> {
     let base = hw_quad(c, true);
-    if base == 0xffffffffu { return vec3(1.0); }
+    if base == 0xffffffffu || (SKIP & 128u) != 0u { return vec3(1.0); }
     // Water: the ray starts under it (`c.t` is the length crossed to reach its surface, so the
     // depth is that times the ray's rise). The sun's light came down through the surface bent by
     // Snell's law, along a steeper line than `l`: the waves' caustics at the floor point (what
