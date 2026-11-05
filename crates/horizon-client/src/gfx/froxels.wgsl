@@ -425,6 +425,8 @@ struct FogAt {
 }
 fn fog_at(pos: vec3<f32>, spacing: f32) -> FogAt {
     var out = FogAt(0.0, 0.0, -1e4);
+    // Neither fog has formed (the weather's): nothing to read of the map, a pixel's 32 steps each.
+    if fx.fog.x <= 0.0 && fx.fog.y <= 0.0 { return out; }
     let m = fog_map_at(pos.xz);
     let y = fx.camera.y + fx.fraction.y + pos.y;
     let ground = m.shape.x;
