@@ -4574,7 +4574,7 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         names.sort();
-        assert_eq!(names, ["horizon-launcher", "new"]);
+        assert_eq!(names, ["horizon-offline-launcher", "new"]);
         let _ = fs::remove_dir_all(&dir);
     }
 
