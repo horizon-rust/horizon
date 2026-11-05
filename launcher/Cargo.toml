@@ -38,6 +38,7 @@ dirs = "5"
 # The system's preferred languages, for the window's language (i18n.rs).
 sys-locale = "0.3"
 unicode-bidi = "0.3.18"
+unicode-segmentation = "1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 horizon-theme = { path = "../crates/horizon-theme" }

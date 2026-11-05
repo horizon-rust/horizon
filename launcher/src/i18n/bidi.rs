@@ -9,6 +9,7 @@ use std::borrow::Cow;
 use unicode_bidi::{
     bidi_class, get_base_direction, BidiClass, Direction, Level, ParagraphBidiInfo,
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Paired mirroring characters from Unicode (UCharacter.getMirror).
 const MIRRORED: &str = "\
@@ -72,25 +73,27 @@ fn reorder_line(line: &str, default_rtl: bool) -> String {
     }
     // Shape Arabic cursive presentation forms first
     let shaped = crate::i18n::arabic::reshape(line);
-    let chars: Vec<char> = shaped.chars().collect();
-    if unchanged(chars.iter().copied(), default_rtl) {
+    if unchanged(shaped.chars(), default_rtl) {
         return shaped;
     }
 
     let level =
         (default_rtl && get_base_direction(shaped.as_str()) == Direction::Mixed).then(Level::rtl);
     let info = ParagraphBidiInfo::new(&shaped, level);
-    let levels = info.reordered_levels_per_char(0..shaped.len());
+    // Keep each extended grapheme intact: reversing individual scalars puts Hebrew
+    // points and Arabic marks before the base they modify, and separates emoji sequences.
+    let clusters: Vec<(usize, &str)> = shaped.grapheme_indices(true).collect();
+    let byte_levels = info.reordered_levels(0..shaped.len());
+    let levels: Vec<Level> = clusters.iter().map(|(i, _)| byte_levels[*i]).collect();
     let visual = ParagraphBidiInfo::reorder_visual(&levels);
 
     let mut out = String::with_capacity(shaped.len());
     for i in visual {
-        let c = if levels[i].is_rtl() {
-            mirror(chars[i])
-        } else {
-            chars[i]
-        };
+        let mut chars = clusters[i].1.chars();
+        let c = chars.next().expect("graphemes are nonempty");
+        let c = if levels[i].is_rtl() { mirror(c) } else { c };
         out.push(c);
+        out.extend(chars);
     }
     out
 }
@@ -155,6 +158,19 @@ mod tests {
     fn preserves_ltr_text_without_rtl() {
         let plain = "Hello, world!";
         assert_eq!(visual_str(plain, false).as_ref(), plain);
+    }
+
+    #[test]
+    fn keeps_combining_marks_with_their_base_in_rtl_text() {
+        assert_eq!(visual_str("בּג", true), "גבּ");
+        assert_eq!(visual_str("בַּג", true), "גבַּ");
+        assert_eq!(visual_str("ייִדיש", true), "שידיִי");
+        assert_eq!(visual_str("بَت", true), "\u{fe96}\u{fe91}َ");
+    }
+
+    #[test]
+    fn keeps_emoji_sequences_intact_in_rtl_text() {
+        assert!(visual_str("אב 👩‍👩‍👧 ג", true).contains("👩‍👩‍👧"));
     }
 
     #[test]
