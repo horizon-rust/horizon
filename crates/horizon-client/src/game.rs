@@ -3599,7 +3599,6 @@ impl Game<'_> {
                 (boundary - origin[i]) / dir[i]
             };
         }
-        let mut face = [0; 3];
         let mut t = 0.0;
         while t <= reach {
             let state = self.world.block(pos[0], pos[1], pos[2]);
@@ -3614,39 +3613,11 @@ impl Game<'_> {
                     "minecraft:water" | "minecraft:lava" | "minecraft:bubble_column"
                 )
             {
-                // The nearest entry into one of the outline's boxes (slab method).
-                let mut best: Option<(f64, [i32; 3])> = None;
-                for b in self.outline_boxes(pos) {
-                    let (mut t0, mut t1, mut axis_in, mut sign) = (0.0f64, f64::INFINITY, None, 0);
-                    let mut miss = false;
-                    for a in 0..3 {
-                        if dir[a] == 0.0 {
-                            miss |= origin[a] < b[a] || origin[a] > b[a + 3];
-                            continue;
-                        }
-                        let (lo, hi) =
-                            ((b[a] - origin[a]) / dir[a], (b[a + 3] - origin[a]) / dir[a]);
-                        let (near, far) = if lo < hi { (lo, hi) } else { (hi, lo) };
-                        if near > t0 {
-                            t0 = near;
-                            axis_in = Some(a);
-                            sign = if dir[a] > 0.0 { -1 } else { 1 };
-                        }
-                        t1 = t1.min(far);
-                    }
-                    if miss || t0 > t1 || t0 > reach {
-                        continue;
-                    }
-                    let mut normal = face;
-                    if let Some(a) = axis_in {
-                        normal = [0; 3];
-                        normal[a] = sign;
-                    }
-                    if best.is_none_or(|(bt, _)| t0 < bt) {
-                        best = Some((t0, normal));
-                    }
-                }
-                if let Some((t, mut face)) = best {
+                // `BlockGetter.clip`: the nearest entry into one of the
+                // outline's boxes.
+                if let Some((t, mut face)) =
+                    interaction_shapes::entry(origin, dir, &self.outline_boxes(pos), reach)
+                {
                     // `BlockGetter.clipWithInteractionOverride`: the hit stays at the
                     // outline's point, with the face of the interaction shape when
                     // the ray enters that first.
@@ -3666,7 +3637,7 @@ impl Game<'_> {
                             .map(|b| std::array::from_fn(|i| at[i % 3] + b[i]))
                             .collect();
                         if let Some((ti, normal)) =
-                            interaction_shapes::entry(origin, dir, &world, reach, face)
+                            interaction_shapes::entry(origin, dir, &world, reach)
                             && ti < t
                         {
                             face = normal;
@@ -3693,8 +3664,6 @@ impl Game<'_> {
             t = t_max[axis];
             t_max[axis] += delta[axis];
             pos[axis] += step[axis];
-            face = [0; 3];
-            face[axis] = -step[axis];
         }
         None
     }
@@ -13222,7 +13191,7 @@ impl Game<'_> {
                     // outline, not its cell; it passes through the empty part
                     // of a torch, a fence or a flower to the water behind.
                     if let Some(hit) =
-                        outline_stop(origin, dir, self.reach(), b, face, || self.outline_boxes(b))
+                        outline_stop(origin, dir, self.reach(), b, || self.outline_boxes(b))
                     {
                         return Some(hit);
                     }
@@ -22316,10 +22285,9 @@ fn outline_stop(
     dir: [f64; 3],
     reach: f64,
     pos: [i32; 3],
-    face: [i32; 3],
     boxes: impl FnOnce() -> Vec<[f64; 6]>,
 ) -> Option<Hit> {
-    let (t, face) = interaction_shapes::entry(origin, dir, &boxes(), reach, face)?;
+    let (t, face) = interaction_shapes::entry(origin, dir, &boxes(), reach)?;
     Some(Hit {
         pos,
         face,
@@ -22584,11 +22552,11 @@ mod tests {
         let torch = || vec![[0.4375, 0.0, 0.4375, 0.5625, 0.625, 0.5625]];
         let dir = [0.0, 0.0, 1.0];
         // Beside the pillar: no hit, the ray goes on to the water behind.
-        assert!(outline_stop([0.1, 0.3, -1.0], dir, 5.0, [0, 0, 0], [0, 0, -1], torch).is_none());
+        assert!(outline_stop([0.1, 0.3, -1.0], dir, 5.0, [0, 0, 0], torch).is_none());
         // Above the pillar (a torch is 10/16 tall): no hit either.
-        assert!(outline_stop([0.5, 0.8, -1.0], dir, 5.0, [0, 0, 0], [0, 0, -1], torch).is_none());
+        assert!(outline_stop([0.5, 0.8, -1.0], dir, 5.0, [0, 0, 0], torch).is_none());
         // Through the pillar: stopped on its front face, not at the cell's edge.
-        let hit = outline_stop([0.5, 0.3, -1.0], dir, 5.0, [0, 0, 0], [0, 0, -1], torch)
+        let hit = outline_stop([0.5, 0.3, -1.0], dir, 5.0, [0, 0, 0], torch)
             .expect("the pillar stops the ray");
         assert_eq!(hit.face, [0, 0, -1]);
         assert!((hit.point[2] - 0.4375).abs() < 1e-9);

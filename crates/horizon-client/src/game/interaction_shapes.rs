@@ -38,14 +38,15 @@ pub(super) fn boxes(name: &str, facing: Option<&str>) -> Vec<[f64; 6]> {
 
 /// The nearest entry of the ray `origin + dir * t` (`t` up to `reach`) into one
 /// of `boxes` (world coordinates): its `t` and the normal of the face it
-/// enters through, `inside` (the face the ray entered the block through) when it
-/// starts in the box.
+/// enters through. A box the ray starts in, or exactly on the border of, gives
+/// no entry: `AABB.clip`'s `getDirection` only takes a face reached at a
+/// positive `t`, so vanilla's pick passes through the shape around the eye (a
+/// web) to what is behind it.
 pub(super) fn entry(
     origin: [f64; 3],
     dir: [f64; 3],
     boxes: &[[f64; 6]],
     reach: f64,
-    inside: [i32; 3],
 ) -> Option<(f64, [i32; 3])> {
     let mut best: Option<(f64, [i32; 3])> = None;
     for b in boxes {
@@ -65,14 +66,16 @@ pub(super) fn entry(
             }
             t1 = t1.min(far);
         }
-        if miss || t0 > t1 || t0 > reach {
+        // `t0` stays 0 while the ray starts inside the box: vanilla asks for
+        // an entry through a face it reaches at t > 0.
+        if miss || t0 <= 0.0 || t0 > t1 || t0 > reach {
             continue;
         }
-        let mut normal = inside;
-        if let Some(a) = axis_in {
-            normal = [0; 3];
-            normal[a] = sign;
-        }
+        let Some(a) = axis_in else {
+            continue;
+        };
+        let mut normal = [0; 3];
+        normal[a] = sign;
         if best.is_none_or(|(bt, _)| t0 < bt) {
             best = Some((t0, normal));
         }
@@ -104,8 +107,35 @@ mod tests {
             .collect();
         let pitch = 7.0f64.to_radians();
         let dir = [0.0, -pitch.sin(), pitch.cos()];
-        let (_, normal) = entry([0.5, 101.27, 0.5], dir, &boxes, 5.0, [0, 0, -1]).unwrap();
+        let (_, normal) = entry([0.5, 101.27, 0.5], dir, &boxes, 5.0).unwrap();
         assert_eq!(normal, [0, 1, 0]);
+    }
+
+    /// `AABB.clip`: a box the ray starts in (or exactly on the border of) has
+    /// no entry face, so a shape around the eye does not stop the pick.
+    #[test]
+    fn a_box_the_ray_starts_in_is_passed_through() {
+        let cube = [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+        // The eye inside a web: the ray goes on to the block behind.
+        assert_eq!(entry([0.5, 0.5, 0.5], [1.0, 0.0, 0.0], &cube, 5.0), None);
+        // Exactly on the border, facing in or out.
+        assert_eq!(entry([0.0, 0.5, 0.5], [1.0, 0.0, 0.0], &cube, 5.0), None);
+        assert_eq!(entry([1.0, 0.5, 0.5], [-1.0, 0.0, 0.0], &cube, 5.0), None);
+        // From outside it still stops on the face the ray enters.
+        assert_eq!(
+            entry([-1.0, 0.5, 0.5], [1.0, 0.0, 0.0], &cube, 5.0),
+            Some((1.0, [-1, 0, 0]))
+        );
+        // Only the box the ray starts in is passed through: another box of
+        // the same shape (a hopper's spout) still stops it.
+        let spout = [
+            [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            [1.5, 0.0, 0.0, 3.0, 1.0, 1.0],
+        ];
+        assert_eq!(
+            entry([0.5, 0.5, 0.5], [1.0, 0.0, 0.0], &spout, 5.0),
+            Some((1.0, [-1, 0, 0]))
+        );
     }
 
     #[test]

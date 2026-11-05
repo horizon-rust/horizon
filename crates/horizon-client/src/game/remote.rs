@@ -7858,7 +7858,10 @@ impl Game<'_> {
                 pos: hit.pos,
                 face: i32::from(face_direction(hit.face)),
                 cursor,
-                inside: hit.face == [0; 3],
+                // `BlockGetter.clipWithInteractionOverride` answers with the
+                // `BlockHitResult` `AABB.clip` builds, always inside false; a
+                // shape the eye starts in gives no hit at all.
+                inside: false,
                 world_border: false,
                 sequence: seq,
             }));
@@ -8308,7 +8311,8 @@ impl Game<'_> {
             clicked_pos: horizon_core::position::BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]),
             face: horizon_core::geometry::Direction::ALL[face_direction(hit.face) as usize],
             hit: Vec3::new(hit.point[0], hit.point[1], hit.point[2]),
-            inside: hit.face == [0; 3],
+            // `UseOnContext.isInside`: the pick's hit result is never inside.
+            inside: false,
             yaw: self.yaw,
             pitch: self.pitch,
             sneaking: self.keys.contains(&KeyCode::ShiftLeft),
