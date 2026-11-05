@@ -547,6 +547,8 @@ pub struct Streaming {
     pub extra: Vec<((i32, i32), i32)>,
     /// `extra`'s squares as a grid, made again when `extra` changes.
     cover: Option<ExtraCover>,
+    prepared_ranges: Option<PreparedRanges>,
+    prepared_ranges_active: bool,
     /// Mesh the sections for drawing (false on a server thread).
     pub mesh: bool,
     /// The pregeneration band (`set_band`).
@@ -555,6 +557,87 @@ pub struct Streaming {
     /// for (`set_band`).
     band_ranked: Option<(i32, i32, i32)>,
 }
+/// Immutable preparation for the next streaming pass. Stale geometry is rejected
+/// before use; membership changes need no invalidation because missing keys fall
+/// back to the original calculation and no world/membership facts are cached.
+pub struct RangePreparation {
+    basis: RangeBasis,
+    coordinates: Vec<(i32, i32)>,
+}
+pub struct PreparedRanges {
+    basis: RangeBasis,
+    answers: FxHashMap<(i32, i32), bool>,
+}
+#[derive(Clone, PartialEq, Eq)]
+struct RangeBasis {
+    center: (i32, i32),
+    radius: i32,
+    extra: Vec<((i32, i32), i32)>,
+    forced: HashSet<(i32, i32)>,
+    mod_forced: HashSet<(i32, i32)>,
+    band: Option<Band>,
+}
+impl RangeBasis {
+    fn of(s: &Streaming) -> Self {
+        Self {
+            center: s.center,
+            radius: s.radius,
+            extra: s.extra.clone(),
+            forced: s.forced.clone(),
+            mod_forced: s.mod_forced.clone(),
+            band: s.band,
+        }
+    }
+
+    fn ranges<'a>(&'a self, cover: Option<&'a ExtraCover>) -> Ranges<'a> {
+        Ranges {
+            center: self.center,
+            radius: self.radius,
+            extra: &self.extra,
+            forced: &self.forced,
+            mod_forced: &self.mod_forced,
+            band: self.band.as_ref(),
+            cover,
+        }
+    }
+}
+impl PreparedRanges {
+    fn validated(self, current: &Ranges<'_>) -> Option<Self> {
+        let valid = self.basis.center == current.center
+            && self.basis.radius == current.radius
+            && self.basis.extra == current.extra
+            && self.basis.forced == *current.forced
+            && self.basis.mod_forced == *current.mod_forced
+            && self.basis.band.as_ref() == current.band;
+        if crate::spans::enabled() {
+            eprintln!(
+                "streaming range preparation: accepted={} coordinates={}",
+                valid,
+                self.answers.len()
+            );
+        }
+        valid.then_some(self)
+    }
+}
+impl RangePreparation {
+    pub fn run(mut self) -> PreparedRanges {
+        let _span = crate::spans::guard("streaming_range_prepare");
+        self.coordinates.sort_unstable();
+        self.coordinates.dedup();
+        let cover = ExtraCover::new(&self.basis.extra);
+        let ranges = self.basis.ranges(cover.as_ref());
+        let answers = self
+            .coordinates
+            .into_iter()
+            .map(|(x, z)| ((x, z), ranges.in_range(x, z, 1)))
+            .collect();
+        PreparedRanges {
+            basis: self.basis,
+            answers,
+        }
+    }
+}
+
 /// Snapshot only after a scan found no missing candidates. Public range fields
 /// and `World::chunks` can change without going through Streaming, so compare
 /// their values and structural membership token rather than a frame timeout.
@@ -1092,6 +1175,8 @@ impl Streaming {
             remote: false,
             extra: Vec::new(),
             cover: None,
+            prepared_ranges: None,
+            prepared_ranges_active: false,
             mesh: true,
             band: None,
             band_ranked: None,
@@ -1607,8 +1692,14 @@ impl Streaming {
     ) -> (Vec<((i32, i32, i32), SectionMesh)>, Vec<Arc<Chunk>>) {
         let mut uploads = Vec::new();
         if self.paused {
+            self.prepared_ranges = None;
             return (uploads, Vec::new());
         }
+        self.prepared_ranges = self
+            .prepared_ranges
+            .take()
+            .and_then(|p| p.validated(&self.ranges()));
+        self.prepared_ranges_active = true;
         let edits = crate::spans::guard("streaming_edits");
         ExtraCover::refresh(&mut self.cover, &self.extra);
         // The sweeps below walk every loaded column and proto chunk. Run them
@@ -2090,6 +2181,8 @@ impl Streaming {
                 );
             }
         }
+        self.prepared_ranges_active = false;
+        self.prepared_ranges = None;
         (uploads, removed)
     }
     fn schedule_generation(&mut self, world: &World, workers: usize) {
@@ -2227,6 +2320,28 @@ impl Streaming {
             world.dirty_sections.insert(section);
         });
     }
+    /// Only geometry and coordinates leave this level, never chunks or world state.
+    /// One scoped job and at most 65,536 coordinates; small/huge views stay serial.
+    pub fn prepare_ranges(&self) -> Option<RangePreparation> {
+        let count = self.protos.len();
+        if !(2..=1024).contains(&self.extra.len())
+            || self.forced.len() + self.mod_forced.len() > 64
+            || !(1024..=65_536).contains(&count)
+        {
+            return None;
+        }
+        Some(RangePreparation {
+            basis: RangeBasis::of(self),
+            coordinates: self.protos.keys().copied().collect(),
+        })
+    }
+    pub fn accept_prepared_ranges(&mut self, prepared: Option<PreparedRanges>) {
+        self.prepared_ranges = prepared;
+    }
+    fn prepared_range(&self, x: i32, z: i32) -> Option<bool> {
+        self.prepared_ranges_active.then_some(())?;
+        self.prepared_ranges.as_ref()?.answers.get(&(x, z)).copied()
+    }
     fn ranges(&self) -> Ranges<'_> {
         Ranges {
             center: self.center,
@@ -2349,6 +2464,11 @@ impl Streaming {
         self.saving == 0
     }
     fn in_range(&self, x: i32, z: i32, margin: i32) -> bool {
+        if margin == 1
+            && let Some(answer) = self.prepared_range(x, z)
+        {
+            return answer;
+        }
         self.ranges().in_range(x, z, margin)
     }
     /// Rank the 3x3 a chunk loaded to FULL decorates, in one generation
@@ -3567,6 +3687,60 @@ mod tests {
         assert!(!arrival.arriving(((1, 0), -1), start, none));
     }
 
+    #[test]
+    fn prepared_ranges_match_uncached_geometry_and_reject_changed_views_and_tickets() {
+        let basis = RangeBasis {
+            center: (-3, 4),
+            radius: 2,
+            extra: vec![((0, 0), 2), ((32, -16), 3)],
+            forced: [(12, 12)].into_iter().collect(),
+            mod_forced: [(-20, 16)].into_iter().collect(),
+            band: Some(Band {
+                x0: 5,
+                x1: 8,
+                z0: -10,
+                z1: -8,
+                circle: Some(((6, -9), 3)),
+            }),
+        };
+        let coords: Vec<_> = (-40..=40)
+            .flat_map(|x| (-30..=30).map(move |z| (x, z)))
+            .collect();
+        let build = || {
+            RangePreparation {
+                basis: basis.clone(),
+                coordinates: coords.clone(),
+            }
+            .run()
+        };
+        let prepared = build().validated(&basis.ranges(None)).unwrap();
+        // The original ordered geometry scans are the reference; the prepared
+        // path uses its spatial index and must preserve every boundary.
+        let original = basis.ranges(None);
+        for &(x, z) in &coords {
+            assert_eq!(prepared.answers[&(x, z)], original.in_range(x, z, 1));
+        }
+        assert!(!prepared.answers.contains_key(&(100, 100))); // newly arrived coordinates fall back
+        for change in 0..6 {
+            let mut changed = basis.clone();
+            match change {
+                0 => changed.center.0 += 1,
+                1 => changed.radius += 1,
+                2 => changed.extra[0].0.0 += 1,
+                3 => {
+                    changed.forced.insert((30, 30));
+                }
+                4 => {
+                    changed.mod_forced.clear();
+                }
+                _ => changed.band = None,
+            }
+            assert!(
+                build().validated(&changed.ranges(None)).is_none(),
+                "change {change}"
+            );
+        }
+    }
     struct GenerationFixture {
         world: World,
         center: (i32, i32),

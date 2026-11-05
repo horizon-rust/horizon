@@ -459,6 +459,42 @@ impl RegionExecutor {
             }
         }
     }
+    // The coordinator runs owned, independent preparation while the pool
+    // predicts. The scope joins all borrowed jobs even when either side panics.
+    fn overlap<A: Send, B: Send>(
+        &self,
+        prediction: impl FnOnce() -> A + Send,
+        prepare: impl FnOnce() -> B + Send,
+    ) -> (A, B) {
+        match &self.pool {
+            Some(pool) => {
+                let mut predicted = None;
+                let mut wait = None;
+                let prepared = pool.in_place_scope(|scope| {
+                    scope.spawn(|_| predicted = Some(prediction()));
+                    let prepared = prepare();
+                    wait = Some(crate::spans::guard("mob_join_wait"));
+                    prepared
+                });
+                drop(wait);
+                (predicted.expect("prediction joined"), prepared)
+            }
+            None => (prediction(), prepare()),
+        }
+    }
+    pub fn predict_with<R: Send>(
+        &self,
+        inputs: Vec<RegionInput<'_>>,
+        tick: &RegionTick<'_>,
+        prepare: impl FnOnce() -> R + Send,
+    ) -> (Vec<Vec<TickPrediction>>, R) {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *ENABLED.get_or_init(|| std::env::var("HORIZON_REGION_OVERLAP").as_deref() != Ok("0")) {
+            self.overlap(|| self.predict(inputs, tick), prepare)
+        } else {
+            (self.predict(inputs, tick), prepare())
+        }
+    }
     pub fn predict(
         &self,
         inputs: Vec<RegionInput<'_>>,
@@ -1452,6 +1488,61 @@ mod tests {
         assert_eq!(executor.map(&items, |slot, n| slot as u32 + n), doubled);
     }
 
+    #[test]
+    fn independent_work_runs_before_prediction_finishes() {
+        use std::sync::mpsc::sync_channel;
+        use std::time::Duration;
+        let executor = RegionExecutor::new(2).unwrap();
+        let (started, receive_started) = sync_channel(1);
+        let (release, receive_release) = sync_channel(1);
+        let (prediction, prepared) = executor.overlap(
+            move || {
+                started.send(()).unwrap();
+                receive_release
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap();
+                17
+            },
+            move || {
+                receive_started
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap();
+                release.send(()).unwrap();
+                23
+            },
+        );
+        assert_eq!((prediction, prepared), (17, 23));
+    }
+    #[test]
+    fn preparation_panic_joins_prediction_before_returning() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let joined = AtomicBool::new(false);
+        let executor = RegionExecutor::new(2).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            executor.overlap(
+                || joined.store(true, Ordering::SeqCst),
+                || panic!("preparation failed"),
+            );
+        }));
+        assert!(result.is_err());
+        assert!(joined.load(Ordering::SeqCst));
+        assert_eq!(executor.overlap(|| 1, || 2), (1, 2));
+    }
+    #[test]
+    fn prediction_panic_joins_preparation_and_pool_remains_usable() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let prepared = AtomicBool::new(false);
+        let executor = RegionExecutor::new(2).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            executor.overlap(
+                || panic!("prediction failed"),
+                || prepared.store(true, Ordering::SeqCst),
+            );
+        }));
+        assert!(result.is_err());
+        assert!(prepared.load(Ordering::SeqCst));
+        assert_eq!(executor.overlap(|| 1, || 2), (1, 2));
+    }
     use super::*;
     use crate::fast_hash::FxHashMap;
     use std::sync::Arc;
@@ -1522,7 +1613,11 @@ mod tests {
                 player_uuid: None,
                 tnt_explodes: true,
             };
-            TickRound::new(owners, executor.predict(inputs, &tick), section_base)
+            TickRound::new(
+                owners,
+                executor.predict_with(inputs, &tick, || ()).0,
+                section_base,
+            )
         });
         let mut events = Vec::new();
         let mut pushes = PendingPushes::default();

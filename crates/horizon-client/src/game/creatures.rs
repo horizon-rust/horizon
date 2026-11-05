@@ -1086,6 +1086,7 @@ impl Game<'_> {
         // The mobs whose bodies go this tick: (id, feet, width, height).
         let mut gone = Vec::new();
         let level_random;
+        let mut prepared_ranges = None;
         let mut retired = Vec::new();
         {
             // The level random, lent to the mobs (brain behaviours draw from
@@ -1214,7 +1215,22 @@ impl Game<'_> {
                     tnt_explodes: self.ui.rules.bool("tnt_explodes"),
                 };
                 laps.lap("mob_inputs");
-                let predicted = executor.predict(inputs, &tick);
+                let work = if inputs.iter().map(|input| input.mobs.len()).sum::<usize>() >= 512 {
+                    horizon_client::spans::time("streaming_range_capture", || {
+                        self.streaming.prepare_ranges()
+                    })
+                } else {
+                    None
+                };
+                let predicted = match work {
+                    Some(work) => {
+                        let (predicted, prepared) =
+                            executor.predict_with(inputs, &tick, || work.run());
+                        prepared_ranges = Some(prepared);
+                        predicted
+                    }
+                    None => executor.predict(inputs, &tick),
+                };
                 laps.lap("mob_predict");
                 TickRound::new(owners, predicted, section_base).with_contexts(contexts)
             });
@@ -1590,6 +1606,7 @@ impl Game<'_> {
         }
         self.handle_mob_events(queued)?;
         laps.lap("mob_rest");
+        self.streaming.accept_prepared_ranges(prepared_ranges);
         Ok(())
     }
     /// `LivingEntity.makePoofParticles` (entity event 60) about a mob's box.

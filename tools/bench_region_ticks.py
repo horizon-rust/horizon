@@ -194,6 +194,10 @@ def run(mode, args, out):
         for _, fallback, reason in commit_rounds:
             if fallback == '1':
                 fallback_reasons[reason] = fallback_reasons.get(reason, 0) + 1
+        preparation_samples = [
+            (match[1] == 'true', int(match[2])) for line in lines
+            if (match := re.search(r'streaming range preparation: accepted=(true|false) coordinates=(\d+)', line))
+        ]
         result = {
             'mode': mode, 'players': args.players, 'mobs': mob_count, 'warmup_ticks': warmup_ticks,
             'ticks': report['ticks'], 'mob_ms': summary(mob_ms),
@@ -203,6 +207,12 @@ def run(mode, args, out):
             'region_mean': dict(zip(('regions', 'predicted', 'committed', 'replayed', 'rng_conflicts', 'read_conflicts'),
                                     map(lambda values: round(statistics.fmean(values), 2),
                                         zip(*region_samples)))) if region_samples else None,
+            'range_preparation': {
+                'log_samples': len(preparation_samples),
+                'accepted': sum(accepted for accepted, _ in preparation_samples),
+                'discarded': sum(not accepted for accepted, _ in preparation_samples),
+                'coordinates_max': max(count for _, count in preparation_samples),
+            } if preparation_samples else None,
             'queues_at_end': report.get('queues_at_end'),
             'network_compression': report.get('network_compression'),
             'commit_rounds': {'clean': sum(int(clean) for clean, _, _ in commit_rounds),
@@ -252,8 +262,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     print(f'Benchmark artifacts: {out}', flush=True)
     modes = args.modes.split(',')
-    if any(mode not in ('legacy', 'control', 'serial', 'parallel') for mode in modes):
-        parser.error('--modes supports legacy,control,serial,parallel')
+    if any(mode not in ('legacy', 'control', 'serial', 'parallel', 'verify') for mode in modes):
+        parser.error('--modes supports legacy,control,serial,parallel,verify')
     results = [run(mode, args, out) for mode in modes]
     (out / 'results.json').write_text(json.dumps({
         'workload': vars(args) | {'bin': str(args.bin), 'before_bin': str(args.before_bin), 'out': str(out)},

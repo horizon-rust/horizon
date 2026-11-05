@@ -120,7 +120,7 @@ the original ordered scan.
 | Explosions, block writes and navigation | Existing explosion, damage, block and event handlers remain coordinated. Navigation sees the same borrowed world and collision-change list during the mob phase. No explosion radius is used as an independence margin. |
 | Spawning and caps | Natural/custom spawning, raids, pack finalization, global/per-player caps, IDs and their shared RNG stay in their existing serial order before entity transactions. Spawn scratch follows its level owner. |
 | Death, despawn and drops | Existing ticket/despawn checks, corpse removal, death effects and loot processing surround the validated mob tick at the original points. Non-ticking despawns invalidate affected observations. |
-| Replication and chunk lifecycle | All workers join before publication, streaming or unload can mutate the borrowed world. Existing event buffers and entity tracking publish committed results, including authoritative replay results. |
+| Replication and chunk lifecycle | All workers join before publication, streaming application or unload can mutate the borrowed world. Existing event buffers and entity tracking publish committed results, including authoritative replay results. |
 
 Sound ID interning uses persistent-thread local caches instead of process-wide
 mutexes in living-entity ticking. There is no global mob-loop lock. Worker
@@ -538,8 +538,9 @@ socket compression is already off-thread and is not attributed to this span.
 The viewer-parallel experiment was removed: a repeated 200-player comparison
 changed 92.28 to 92.05 ms, while 100 players regressed from 41.86 to 42.16 ms.
 The initial baseline itself ranged from 92.28 to 95.90 ms at 200 players. These
-results do not establish a whole-tick benefit. Only profiling and benchmark
-reproducibility changes remain; no new scheduling or publication path ships.
+results do not establish a whole-tick benefit. At `c0b066072`, only profiling and benchmark
+reproducibility changes remained. The subsequent chunk-range overlap below is
+a separate implementation; the rejected visibility path remains removed.
 
 `HORIZON_REGION_PROFILE=1` additionally logs three **sums of worker elapsed
 milliseconds**, once per prediction barrier: input cloning/pending writes
@@ -598,8 +599,8 @@ These are elapsed spans with overlapping parents, not additive costs.
 The new compression/queue counters and per-worker prediction profiler were added
 after the rejected experiment. Those metrics are unavailable for the before/after
 sweep. There is no measured socket delivery latency or window-peak backlog; no
-latency improvement is claimed. No additional mob start/join API, speculative
-replication, queue, thread pool or world/chunk clone remains in this follow-up.
+latency improvement is claimed. That experiment retained no additional mob start/join API, speculative
+replication, queue, thread pool or world/chunk clone at `c0b066072`.
 
 ### Final diagnostics validation
 
@@ -633,3 +634,147 @@ queued/generating/decorating/finishing/lighting/meshing work (7,868 proto chunks
 remained cached). Pending bytes exclude framed lookahead and kernel socket
 queues; zero here does not establish delivery latency or peak backpressure.
 This profiler smoke run is not a claim of performance improvement.
+
+## Overlapping chunk-range preparation with mob prediction
+
+The follow-up after `c0b066072` uses the coordinator's prediction wait to prepare
+full-chunk range predicates. `RegionExecutor::predict_with` dispatches prediction
+into the **existing** pool with `in_place_scope`. The coordinator computes an
+owned `RangePreparation` while the workers simulate mobs, then joins the scope
+before any authoritative commit. `HORIZON_REGION_OVERLAP=0` runs the same
+preparation after prediction for an ablation; it keeps the prepared answers and
+all application/publication points identical.
+
+This is specifically the `in_range(x, z, 1)` predicate used when streaming
+considers finishing proto chunks. Other ranges, priorities, decoration selection,
+world insertion, unload, chunk submission and replication stay at their original
+points. The prepared answers also avoid repeatedly checking the same view
+geometry in the later streaming loop. The whole improvement therefore includes
+both cheaper preparation/application and overlap; the ablation separates them.
+
+The job owns coordinates and integer geometry: centre/radius, extra player view
+areas, forced/mod-forced tickets and the pregeneration band. It owns no world,
+chunk, mob, player or native-callback reference. It does not change RNG, entity
+order or callback state. The snapshot is limited to 1,024–65,536 proto coordinates,
+2–1,024 view areas and at most 64 forced/mod-forced entries, with at least 512
+predicted mobs. Other cases retain the original path. It adds no threads or
+persistent queue: one preparation per level is joined within this tick.
+
+At the existing streaming phase the complete geometry basis is compared with
+current values. Changed player views/tickets/pregeneration invalidate and discard
+all prepared answers. New coordinates use the original predicate; removed chunks
+still pass through current membership and lifecycle checks. No membership or
+world-content fact is cached, so membership changes alone require no stale-world
+retention or whole-world/chunk clone. Lookups are enabled only inside the validated
+streaming pass, and the result is freed at its end (also discarded when paused).
+No speculative state is published and no extra tick of latency is introduced.
+
+`streaming_range_capture` and `streaming_range_prepare` measure coordinator work;
+`mob_join_wait` measures the interval after preparation until the scope joins.
+The latter is elapsed join time, not another cost to add to `mob_predict`.
+When profiling is enabled, `streaming range preparation` log records report
+accepted/discarded results and their coordinate count.
+
+Tests compare prepared predicates against the original unindexed geometry across
+range boundaries, forced tickets and pregeneration bands; reject each changed
+geometry component; and cover missing coordinates. A channel-handshake test
+requires coordinator work to execute before prediction can finish. Both panic
+directions test joining and subsequent pool reuse. Full mob transaction comparisons
+now exercise scoped prediction, including conflict/replay and shared-RNG cases.
+
+API audit: inspected only Rayon-core's `in_place_scope` declaration at
+[`7af20d7`](https://github.com/rayon-rs/rayon/blob/7af20d7692d5decbcb4adcaa079cd607e3e50814/rayon-core/src/thread_pool/mod.rs),
+under its MIT licence. No implementation was copied or adapted.
+
+### Fresh overlap measurements
+
+Baseline is exact PR head `c0b06607260065356dafa22be5f3c60beb91237c`, saved
+before editing. Same `fast` profile, prepared resources, parallel mode and eight
+workers on the six-core Ryzen 5 5600X. Both binaries use fresh seed-12345 flat
+worlds, players 512 blocks apart, 70 persistent invulnerable AI zombies each,
+view/simulation distance 2, exactly 200 warmup ticks and 20-second windows. All
+performance runs are sequential, without compilers or oracles running. Desktop
+applications and an existing game share the host; system load averages are
+recorded. This compares the follow-up to the current PR, not to main or to the
+historical `71aff0ed9` benchmark.
+
+The headline values below are means of per-run tick averages, with two baseline
+runs at each size, two implementation runs at 50/100, and five at 200:
+
+| Players | Baseline ms/tick | Implementation ms/tick | Saved | TPS before → after | Process CPU % before → after | Mean RSS MiB before → after |
+| ---: | ---: | ---: | ---: | --- | --- | --- |
+| 50 | 20.73 | 20.30 | 0.43 ms (2.05%) | 20.03 → 20.03 | 327.88 → 359.85 | 420.73 → 419.76 |
+| 100 | 42.10 | 41.30 | 0.80 ms (1.91%) | 20.00 → 20.01 | 436.02 → 445.88 | 554.94 → 545.93 |
+| 200 | 92.48 | 89.01 | 3.47 ms (3.75%) | 10.80 → 11.23 | 458.58 → 476.40 | 831.54 → 828.95 |
+
+At 200 players, the three same-binary `HORIZON_REGION_OVERLAP=0` runs were
+89.54/89.57/89.65 ms, averaging 89.59 ms versus 89.01 ms with overlap. Bracketing
+each serial-preparation run with the adjacent overlap runs gives differences
+of 0.50/0.72/0.54 ms. Thus the whole change saves about 3.47 ms in this workload,
+with about 0.58 ms observed in the overlap ablation; the remainder must not be
+credited to overlap alone. The coordinator prepared approximately 8,000 predicate
+answers in 0.72 ms during a 31.70 ms prediction interval, then waited 30.94 ms
+for the join (first run). Streaming preparation decreased from about 7.2 ms to
+3.0 ms. These nested/overlapping spans must not be added to parent durations.
+
+CPU is a tradeoff, not a claimed saving. At 50 players both engines keep 20 TPS,
+but process CPU rises about 32 percentage points. Performing the preparation
+serially at 50 players measured 20.63 ms and 359.96% CPU, so disabling overlap
+alone did not remove that increase. No new threads or pools are created. RSS
+varies between runs; the table does not establish a memory improvement.
+
+All performance runs retained expected player/mob counts and committed every
+prediction: zero RNG/read conflicts, replays or fallback rounds. Queue samples
+ended with zero unframed network bytes and no queued/generating/lighting/meshing
+work. They are end samples, not window maxima or delivery-latency measurements.
+The range-preparation log samples were accepted in the steady stationary cases.
+Publication remains in the original tick; no extra tick of delivery latency is
+introduced. Wire latency itself was not measured.
+
+Four connected players/280 zombies changed 5.09 to 4.93 ms; 32 players with
+2,240 mixed zombies/skeletons/spiders changed 13.55 to 13.25 ms. Those are single
+pairs, not statistical equivalence claims. The mixed workload exercises the
+preparation path (more than 1,024 proto coordinates). A live verify-mode run
+with 20 warmup ticks then 20 seconds passed, with 15 complete measured rounds
+of serial/committed-state comparison and no mismatches. Its deliberately slow
+verification cost is not a performance comparison. The preceding attempt with
+200 warmup ticks hit the driver's warmup timeout at about 1.3 seconds per tick;
+that attempt did not complete and is not counted as passed.
+
+Per-run summaries below preserve the tail values. `avg/p50/p95/p99` are the
+individual report values; RSS is mean/peak, not an aggregate percentile:
+
+| Case | Avg/p50/p95/p99 ms | TPS | Process CPU % | RSS mean/peak MiB |
+| --- | --- | ---: | ---: | --- |
+| 50 baseline 1 | 20.90/20.66/23.21/25.97 | 20.03 | 325.40 | 417.02/424.67 |
+| 50 baseline 2 | 20.55/20.37/22.02/23.04 | 20.03 | 330.37 | 424.44/431.79 |
+| 50 overlap 1 | 20.42/20.04/22.30/26.06 | 20.03 | 359.81 | 411.13/419.99 |
+| 50 overlap 2 | 20.18/19.85/21.86/23.53 | 20.03 | 359.88 | 428.40/435.62 |
+| 100 baseline 1 | 42.36/41.83/46.32/50.67 | 20.01 | 438.38 | 550.63/559.20 |
+| 100 baseline 2 | 41.84/41.45/45.92/49.14 | 19.98 | 433.66 | 559.25/571.52 |
+| 100 overlap 1 | 41.36/40.88/44.76/47.83 | 20.01 | 443.48 | 551.35/560.56 |
+| 100 overlap 2 | 41.23/40.96/44.49/47.35 | 20.01 | 448.28 | 540.51/550.86 |
+| 200 baseline 1 | 92.25/91.57/99.64/103.06 | 10.83 | 458.76 | 826.99/860.47 |
+| 200 baseline 2 | 92.71/91.98/99.88/102.00 | 10.78 | 458.40 | 836.09/851.38 |
+| 200 overlap 1 | 89.13/88.29/95.46/100.17 | 11.21 | 477.36 | 824.92/850.11 |
+| 200 overlap 2 | 88.95/88.22/95.99/102.00 | 11.24 | 477.01 | 831.89/850.82 |
+| 200 overlap 3 | 88.76/87.92/95.85/100.45 | 11.26 | 472.33 | 829.18/849.14 |
+| 200 overlap 4 | 88.95/88.14/95.36/100.21 | 11.24 | 477.52 | 827.38/854.04 |
+| 200 overlap 5 | 89.27/88.40/96.08/100.92 | 11.20 | 477.76 | 831.38/854.22 |
+| 200 serial preparation 1 | 89.54/88.42/97.13/109.74 | 11.16 | 472.81 | 833.25/858.02 |
+| 200 serial preparation 2 | 89.57/88.54/96.30/108.72 | 11.16 | 472.79 | 839.90/871.55 |
+| 200 serial preparation 3 | 89.65/88.93/96.83/101.57 | 11.15 | 472.73 | 825.96/850.23 |
+
+Final validation of the retained implementation: `pr_ready.py --quick --base
+c0b06607260065356dafa22be5f3c60beb91237c` passed formatting, clippy, public-tree,
+644 Python tests, 4,100 Rust tests and doc-test checks. The 153 affected broader
+parity cases are explicitly deferred by `--quick`, not reported as passed.
+`tools/ci/region-verify.sh` passed all four focused real-jar verify-mode harnesses,
+18 transaction/lifecycle tests and six resource-backed gameplay tests. Live LAN
+mobs/chest passed; the damage check still reports the baseline armor-order
+mismatch described above. Packet publication and gameplay mutation phases remain unchanged.
+
+The required port-ledger check against `origin/main` exited zero, but reported
+existing stale comment citations and advancement mapping differences in the
+broader PR. It is not a clean ledger audit; the cited comments already exist at
+`c0b066072`, and this follow-up changes no advancement implementation.
