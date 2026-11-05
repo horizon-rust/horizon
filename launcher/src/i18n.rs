@@ -459,7 +459,7 @@ impl Language {
             Self::Igbo => "Igbo",
             Self::Latin => "Latina",
             Self::Tatar => "Татарча",
-            Self::Yiddish => "שידיִ",
+            Self::Yiddish => "שידיִי",
             Self::Yoruba => "Yorùbá",
             Self::Zulu => "isiZulu",
             Self::Bashkir => "Башҡортса",

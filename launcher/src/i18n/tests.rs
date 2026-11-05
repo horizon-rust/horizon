@@ -2,6 +2,12 @@ use super::*;
 use std::collections::BTreeSet;
 use std::path::Path;
 
+#[test]
+fn yiddish_language_name_keeps_all_letters_and_its_vowel_mark() {
+    // Visual order of ייִדיש, with the hiriq still following its yod.
+    assert_eq!(Language::Yiddish.name(), "שידי\u{5b4}י");
+}
+
 /// Every Rust file of the launcher's sources.
 fn sources(dir: &Path, out: &mut Vec<String>) {
     for entry in std::fs::read_dir(dir).unwrap() {
