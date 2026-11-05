@@ -304,6 +304,54 @@ mod vulkan {
 #[cfg(not(target_os = "macos"))]
 pub use vulkan::RawTlas;
 
+/// Which of the ray tracing pipeline's passes run (`sun`): `HORIZON_RT_PIPELINE=1` or `sun` the
+/// sun pass, `gi` the bounce pass (ReSTIR GI's new sample), `all` both; unset, neither.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Kinds {
+    pub sun: bool,
+    pub gi: bool,
+}
+
+impl Kinds {
+    pub fn parse(value: &str) -> Self {
+        match value.trim() {
+            "1" | "sun" => Self {
+                sun: true,
+                gi: false,
+            },
+            "gi" => Self {
+                sun: false,
+                gi: true,
+            },
+            "all" => Self {
+                sun: true,
+                gi: true,
+            },
+            _ => Self::default(),
+        }
+    }
+
+    pub fn wanted() -> Self {
+        std::env::var("HORIZON_RT_PIPELINE").map_or(Self::default(), |v| Self::parse(&v))
+    }
+
+    pub fn any(self) -> bool {
+        self.sun || self.gi
+    }
+
+    /// The trace kernel's `rt.mode.w`: bit 0 the sun pass ran, bit 1 the bounce pass.
+    pub fn bits(self) -> u32 {
+        u32::from(self.sun) | u32::from(self.gi) << 1
+    }
+}
+
+/// What the passes that ran give the kernel: the sun's light through, and the bounce pass's hits
+/// and surfaces.
+pub struct PassViews {
+    pub sun: Option<wgpu::TextureView>,
+    pub gi: Option<[wgpu::TextureView; 2]>,
+}
+
 #[cfg(not(target_os = "macos"))]
 pub mod sun;
 #[cfg(not(target_os = "macos"))]
@@ -336,8 +384,11 @@ pub mod sun {
             _: &mut wgpu::CommandEncoder,
             _: &mut Vec<wgpu::CommandBuffer>,
             _: SunInputs<'_>,
-        ) -> wgpu::TextureView {
+        ) -> super::PassViews {
             unreachable!("never made")
+        }
+        pub fn kinds(&self) -> super::Kinds {
+            super::Kinds::default()
         }
     }
 }
@@ -365,6 +416,16 @@ impl RawTlas {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pipeline_variable_names_the_passes() {
+        assert_eq!(Kinds::parse("1").bits(), 1);
+        assert_eq!(Kinds::parse("sun").bits(), 1);
+        assert_eq!(Kinds::parse("gi").bits(), 2);
+        assert_eq!(Kinds::parse("all").bits(), 3);
+        assert!(!Kinds::parse("0").any());
+        assert!(!Kinds::parse("").any());
+    }
 
     #[test]
     fn an_instance_is_laid_out_as_vulkan_reads_it() {

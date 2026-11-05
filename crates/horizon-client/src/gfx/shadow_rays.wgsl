@@ -62,8 +62,18 @@ struct Rt {
 @group(0) @binding(0) var<uniform> rt: Rt;
 // The RTX 4090 build's sun pass (horizon-rtx `sun`, docs/rtx-4090.md): the sun's light through, a
 // texel a ray, traced by a ray tracing pipeline before this kernel, read in place of
-// `sun_disc_ray` for the primary surface where `rt.mode.w` says it was (1x1 otherwise).
+// `sun_disc_ray` for the primary surface where `rt.mode.w`'s bit 0 says it was (1x1 otherwise).
 @group(0) @binding(61) var sun_pass: texture_2d<f32>;
+// The same pipeline's bounce pass (horizon-rtx `gi.rgen`): ReSTIR GI's new sample, its ray traced
+// and its hit's colour and sun light shaded after the threads were reordered by what they hit,
+// where `rt.mode.w`'s bit 1 says it ran (1x1 otherwise): `gi_pass_a` the hit (camera-relative)
+// and what it is (w: 0 this kernel traces, 1 a hit, 2 the sky, 3 a hit coloured by the block
+// grid), `gi_pass_b` its face (snorm8x4), its colour and the sun's light on it (halves).
+@group(0) @binding(62) var gi_pass_a: texture_2d<f32>;
+@group(0) @binding(63) var gi_pass_b: texture_2d<u32>;
+fn pass_ran(bit: u32) -> bool {
+    return (u32(rt.mode.w) & bit) != 0u;
+}
 // Whether this thread's `trace` is for the sun pass's own texel (the sharp zone: `cs_shadow`),
 // not a sparse block's corner traced for its neighbours (`cs_sparse`).
 var<private> sun_from_pass: bool = false;
@@ -837,17 +847,17 @@ fn cached_on(at: vec3<f32>, n: vec3<f32>) -> vec4<f32> {
 // The light leaving a surface at camera-relative `at` (normal `n`, colour `albedo`) toward where
 // the ray came from; a cache miss traces one more bounce with hardware rays.
 fn bounce_light(at: vec3<f32>, n: vec3<f32>, albedo: vec3<f32>) -> vec3<f32> {
+    return albedo * (sun_on(at + n * 0.02, n) + bounce_rest(at, n));
+}
+// The light other than the sun's reaching a face at camera-relative `at` that a bounce ray hit:
+// the radiance cache's or the last frame's, else a second bounce (hardware rays) or the open
+// sky's guess.
+fn bounce_rest(at: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
     let lifted = at + n * 0.02;
-    var light = sun_on(lifted, n);
     let last = cached_on(at, n);
-    if last.a >= 0.0 {
-        light += last.rgb;
-    } else if HW {
-        light += second_bounce(lifted, n, vec2<i32>(floor(at.xz * 16.0 + at.y * 7.0)));
-    } else {
-        light += open_light(lifted, n, at);
-    }
-    return albedo * light;
+    if last.a >= 0.0 { return last.rgb; }
+    if HW { return second_bounce(lifted, n, vec2<i32>(floor(at.xz * 16.0 + at.y * 7.0))); }
+    return open_light(lifted, n, at);
 }
 // Without a cache cell or a further ray: the sky over the face's open half and the brightest
 // light source.
@@ -943,6 +953,26 @@ fn hit_normal(at: vec3<f32>, cell: vec3<i32>) -> vec3<f32> {
 // This frame's sample at camera-relative `pos` (normal `n`), and whether it is the sky's (w 1).
 fn gi_sample(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>) -> GiSample {
     let d = cosine_dir(n, random2(texel, 1u));
+    // The bounce pass's ray and hit where it took them (the same ray: its texel's random numbers
+    // and the same surface), the rest of the hit's light from here (`bounce_rest`). A ray it left
+    // (water or glass on the way, a texel it did not trace this turn) is traced below.
+    if HW && pass_ran(2u) && sun_from_pass {
+        let a = textureLoad(gi_pass_a, texel, 0);
+        if a.w > 1.5 && a.w < 2.5 { return GiSample(a.xyz, -d, sky_at(d)); }
+        if a.w > 0.5 {
+            let b = textureLoad(gi_pass_b, texel, 0);
+            let normal = normalize(unpack4x8snorm(b.x).xyz);
+            let colour = unpack2x16float(b.z);
+            var albedo = vec3(unpack2x16float(b.y), colour.x);
+            let sun = vec3(colour.y, unpack2x16float(b.w));
+            if a.w > 2.5 {
+                // No sprite's colour: the block grid's, as `hw_hit` falls back to.
+                let cell = vec3<i32>(floor(a.xyz - normal * 0.01 + rt.camera.xyz + rt.fraction.xyz));
+                albedo = max(map_albedo(cell), vec3(0.0));
+            }
+            return GiSample(a.xyz, normal, albedo * (sun + bounce_rest(a.xyz, normal)));
+        }
+    }
     // The hybrid's exact triangles and their textures where the GPU traces rays, as Remix's.
     if HW {
         let h = hw_hit(pos, d, 4096.0);
@@ -1653,7 +1683,7 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         var sun_through = vec3(1.0);
         if rt.mode.y > 0.5 && rt.light.w > 0.0 && (SKIP & 1u) == 0u {
             var disc = vec3(1.0);
-            if rt.mode.w > 0.5 && sun_from_pass {
+            if pass_ran(1u) && sun_from_pass {
                 disc = textureLoad(sun_pass, texel, 0).rgb;
             } else {
                 disc = sun_disc_ray(lifted, random2(texel, 2u));

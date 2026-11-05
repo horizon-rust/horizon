@@ -4398,6 +4398,8 @@ impl Renderer {
         // The RTX 4090 build's sun pass (horizon-rtx `sun`): recorded by the kernel's run once
         // its uniform is written, with the structure built raw and the hybrid's bindings.
         #[cfg(feature = "rtx")]
+        let pass_bits = self.sun_pass.as_ref().map_or(0, |p| p.kinds().bits());
+        #[cfg(feature = "rtx")]
         let mut sun_closure = match (
             &mut self.sun_pass,
             self.hw_rays.as_ref().and_then(hw_rays::HwRays::raw),
@@ -4411,7 +4413,7 @@ impl Renderer {
                     move |encoder: &mut wgpu::CommandEncoder,
                           uniform: &wgpu::Buffer,
                           mask_size: [u32; 2]| {
-                        pass.run(
+                        let views = pass.run(
                             device,
                             encoder,
                             split,
@@ -4427,20 +4429,17 @@ impl Renderer {
                                 atlas: &bindings.atlas,
                                 sprite_split: sprite_split(),
                             },
-                        )
+                        );
+                        (views.sun, views.gi)
                     },
                 )
             }
             _ => None,
         };
         #[cfg(feature = "rtx")]
-        let sun_pass = sun_closure.as_mut().map(|f| {
-            f as &mut dyn FnMut(
-                &mut wgpu::CommandEncoder,
-                &wgpu::Buffer,
-                [u32; 2],
-            ) -> wgpu::TextureView
-        });
+        let sun_pass = sun_closure
+            .as_mut()
+            .map(|f| (pass_bits, f as &mut shadow_rays::PipelinePass<'_>));
         #[cfg(not(feature = "rtx"))]
         let sun_pass = None;
         let [mask, blocks, sun, reflection, refraction] = self.shadow_rays.run(

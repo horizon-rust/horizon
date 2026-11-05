@@ -1,0 +1,280 @@
+#version 460
+// RT lighting's bounced light (ReSTIR GI's new sample) as a ray tracing pipeline
+// (docs/rtx-4090-handoff.md, "Next" 2): for each mask texel of a view, the ray the trace kernel's
+// `gi_sample` (gfx/shadow_rays.wgsl) casts from the primary surface, cosine-weighted, through the
+// drawn triangles (the cutouts alpha-tested by sun.rahit), with the hardware reordering the threads
+// by what they hit (`reorderThreadNV`) before the hit is shaded: the surface's colour from its
+// sprite (`hw_hit`'s `hw_texel`, `hw_entity_texel`) and the sun's light on it through a shadow ray
+// (`sun_on`). The kernel takes this in place of its own ray and finishes the sample's light
+// (the radiance cache, the last frame's screen, a second bounce: `bounce_rest`) and the reservoirs.
+//
+// What this pass leaves to the kernel (`gi_out` w 0), so that the picture stays the kernel's:
+// a ray, or the sun's ray at its hit, that crossed water, stained glass or ice (their tint and
+// caustics, `hw_tint`); the texels the kernel rests this frame and those it does not know it
+// rests (a surface just seen in a tile not traced this turn: it reads its last frame's mask).
+//
+// Outputs, a texel a ray: `gi_a` the hit point (camera-relative, xyz) and what it is (w: 0 the
+// kernel traces, 1 a hit, 2 the sky, 3 a hit whose colour the kernel takes from its block grid);
+// `gi_b` the face's normal (snorm8x4), the colour (rgb, halves) and the sun's light on it (rgb).
+#extension GL_EXT_ray_tracing : require
+#extension GL_NV_shader_invocation_reorder : require
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(std140, set = 0, binding = 0) uniform Rt {
+    mat4 inverse_view_proj;
+    vec4 light;
+    vec4 camera;
+    vec4 fraction;
+    vec4 grid;
+    vec4 size;
+    vec4 fovea;
+    vec4 mode;
+    mat4 prev_view_proj;
+    vec4 motion;
+    vec4 sun;
+    vec4 frame;
+    vec4 sun_light;
+    vec4 water;
+    vec4 hw_offset;
+    vec4 held;
+    vec4 far;
+    vec4 moving[8];
+    vec4 rain;
+    vec4 rain_sun;
+    mat4 first_view_proj;
+    mat4 first_inverse_view_proj;
+} rt;
+layout(set = 0, binding = 1) uniform texture2D depth;
+layout(set = 0, binding = 3) uniform accelerationStructureEXT terrain;
+layout(set = 0, binding = 4) readonly buffer Arena0 { uint w[]; } arena0;
+layout(set = 0, binding = 5) readonly buffer Arena1 { uint w[]; } arena1;
+layout(set = 0, binding = 6) readonly buffer Arena2 { uint w[]; } arena2;
+layout(set = 0, binding = 7) readonly buffer Arena3 { uint w[]; } arena3;
+layout(set = 0, binding = 8) readonly buffer Arena4 { uint w[]; } arena4;
+layout(set = 0, binding = 9) readonly buffer Arena5 { uint w[]; } arena5;
+layout(set = 0, binding = 10) readonly buffer Arena6 { uint w[]; } arena6;
+layout(set = 0, binding = 11) readonly buffer Arena7 { uint w[]; } arena7;
+layout(set = 0, binding = 12) uniform texture2DArray sprites;
+layout(set = 0, binding = 13) readonly buffer Instances { uvec4 rows[]; } instances;
+layout(set = 0, binding = 14) readonly buffer Dynamics { uint w[]; } dynamics;
+layout(set = 0, binding = 15) uniform texture2D entity_atlas;
+layout(set = 0, binding = 16, rgba32f) uniform writeonly image2D gi_a;
+layout(set = 0, binding = 17, rgba32ui) uniform writeonly uimage2D gi_b;
+// `sprite_split` as sun.rahit's; `flags` bit 0: reorder the threads (`HORIZON_RT_SER=0` clears it,
+// to time what the reordering gives).
+layout(push_constant) uniform Push { uint sprite_split; uint flags; } push;
+
+// sun.rahit sets it below 0 when a ray met a translucent quad (and let it through).
+layout(location = 0) rayPayloadEXT float payload;
+layout(location = 0) hitObjectAttributeNV vec2 bary;
+
+const uint ARENA_PAGES = 8u;
+const uint DYN_ENTITY = 0xfffffff0u;
+const uint NO_QUAD = 0xffffffffu;
+const uint NO_CLOUDS = 0xfbu;
+const float UV_STEPS = 32768.0;
+const float REACH = 4096.0;
+
+// The kernel's `arena_at`, `hw_uv`, `hw_position`.
+uint arena_at(uint v, uint k) {
+    uint i = (v & 0x0fffffffu) * 6u + k;
+    switch (v >> 28u) {
+        case 0u: return arena0.w[i];
+        case 1u: return arena1.w[i];
+        case 2u: return arena2.w[i];
+        case 3u: return arena3.w[i];
+        case 4u: return arena4.w[i];
+        case 5u: return arena5.w[i];
+        case 6u: return arena6.w[i];
+        default: return arena7.w[i];
+    }
+}
+vec2 hw_uv(uint v) {
+    uint w = arena_at(v, 3u);
+    return vec2(float(w & 0xffffu), float(w >> 16u)) / UV_STEPS;
+}
+vec3 hw_position(uint v) {
+    return uintBitsToFloat(uvec3(arena_at(v, 0u), arena_at(v, 1u), arena_at(v, 2u)));
+}
+vec3 dyn_position(uint v) {
+    return uintBitsToFloat(uvec3(dynamics.w[v * 9u], dynamics.w[v * 9u + 1u], dynamics.w[v * 9u + 2u]));
+}
+
+// The hit's place in the structures (`RayIntersection`'s fields the kernel reads).
+struct Hit {
+    uint instance;
+    uint primitive;
+    uint geometry;
+    vec2 b;
+};
+uvec4 row_at(Hit h, uint k) {
+    return instances.rows[h.instance * 3u + k];
+}
+// The kernel's `hw_entity_quad`, `hw_entity_texel`, `hw_quad` (solid), `hw_texel`.
+uint hw_entity_quad(Hit h) {
+    uvec4 at = row_at(h, 0u);
+    if (at.x != DYN_ENTITY) return NO_QUAD;
+    return at.y + (h.primitive / 2u) * 4u;
+}
+vec4 hw_entity_texel(Hit h, uint base) {
+    bool second = (h.primitive & 1u) == 1u;
+    uint v1 = base + (second ? 2u : 1u);
+    uint v2 = base + (second ? 3u : 2u);
+    vec2 uv = uintBitsToFloat(uvec2(dynamics.w[base * 9u + 3u], dynamics.w[base * 9u + 4u])) * (1.0 - h.b.x - h.b.y)
+        + uintBitsToFloat(uvec2(dynamics.w[v1 * 9u + 3u], dynamics.w[v1 * 9u + 4u])) * h.b.x
+        + uintBitsToFloat(uvec2(dynamics.w[v2 * 9u + 3u], dynamics.w[v2 * 9u + 4u])) * h.b.y;
+    ivec2 size = textureSize(entity_atlas, 0);
+    ivec2 texel = clamp(ivec2(uv * vec2(size)), ivec2(0), size - 1);
+    vec4 color = unpackUnorm4x8(dynamics.w[base * 9u + 6u]);
+    return texelFetch(entity_atlas, texel, 0) * color;
+}
+uint hw_quad(Hit h) {
+    uvec4 at = row_at(h, 0u);
+    if (at.x >= ARENA_PAGES) return NO_QUAD;
+    uint g = h.geometry;
+    uvec4 words = row_at(h, 1u + g / 8u);
+    uint w = words[(g / 2u) % 4u];
+    uint first = at.y + ((w >> ((g & 1u) * 16u)) & 0xffffu) * 4u;
+    return (at.x << 28u) | (first + (h.primitive / 2u) * 4u);
+}
+vec4 hw_texel(Hit h, uint base) {
+    uint layer = arena_at(base, 4u) & 0x7fffu;
+    if (layer >= push.sprite_split) return vec4(-1.0);
+    bool second = (h.primitive & 1u) == 1u;
+    vec2 uv = hw_uv(base) * (1.0 - h.b.x - h.b.y) + hw_uv(base + (second ? 2u : 1u)) * h.b.x
+        + hw_uv(base + (second ? 3u : 2u)) * h.b.y;
+    ivec2 size = textureSize(sprites, 0).xy;
+    ivec2 texel = clamp(ivec2(uv * vec2(size)), ivec2(0), size - 1);
+    return texelFetch(sprites, ivec3(texel, int(layer)), 0);
+}
+
+// The kernel's `surface_at`, `surface_normal`, `random2`, `cosine_dir`, `tile_of`.
+vec3 surface_at(ivec2 p) {
+    vec2 size = rt.size.xy;
+    float d = texelFetch(depth, clamp(p, ivec2(0), ivec2(size) - 1), 0).r;
+    vec2 ndc = vec2((float(p.x) + 0.5) / size.x * 2.0 - 1.0, 1.0 - (float(p.y) + 0.5) / size.y * 2.0);
+    vec4 c = rt.inverse_view_proj * vec4(ndc, d, 1.0);
+    return c.xyz / c.w;
+}
+vec3 surface_normal(ivec2 p, vec3 pos) {
+    vec3 r = surface_at(p + ivec2(1, 0)) - pos;
+    vec3 l = pos - surface_at(p - ivec2(1, 0));
+    vec3 d = surface_at(p + ivec2(0, 1)) - pos;
+    vec3 u = pos - surface_at(p - ivec2(0, 1));
+    vec3 dx = dot(r, r) < dot(l, l) ? r : l;
+    vec3 dy = dot(d, d) < dot(u, u) ? d : u;
+    vec3 n = normalize(cross(dx, dy));
+    return dot(n, pos) > 0.0 ? -n : n;
+}
+vec2 random2(ivec2 texel, uint salt) {
+    uint v = uint(texel.x) * 1973u + uint(texel.y) * 9277u + uint(rt.frame.x) * 26699u + salt * 7919u;
+    v = v * 747796405u + 2891336453u;
+    uint w = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
+    w = (w >> 22u) ^ w;
+    uint u = w * 747796405u + 2891336453u;
+    u = ((u >> ((u >> 28u) + 4u)) ^ u) * 277803737u;
+    u = (u >> 22u) ^ u;
+    return vec2(float(w >> 8u), float(u >> 8u)) / 16777216.0;
+}
+vec3 cosine_dir(vec3 n, vec2 u) {
+    vec3 t = normalize(abs(n.y) > 0.9 ? cross(n, vec3(1.0, 0.0, 0.0)) : cross(n, vec3(0.0, 1.0, 0.0)));
+    vec3 b = cross(n, t);
+    float r = sqrt(u.x);
+    float a = 6.2831853 * u.y;
+    return normalize((t * cos(a) + b * sin(a)) * r + n * sqrt(max(1.0 - u.x, 0.0)));
+}
+uint tile_of(uvec2 t, uint bits) {
+    uint k = (t.x & 1u) | ((t.y & 1u) << 1u) | (((t.x >> 1u) & 1u) << 2u);
+    return k & ((1u << bits) - 1u);
+}
+
+void main() {
+    ivec2 texel = ivec2(gl_LaunchIDEXT.xy);
+    int scale = int(rt.size.z);
+    ivec2 p = texel * scale + scale / 2;
+    // The kernel traces (w 0) unless a sample is found below.
+    vec4 a = vec4(0.0);
+    uvec4 b = uvec4(0u);
+    bool lit = rt.mode.x > 0.5;
+    // The kernel's turns (`trace`): a tile traces its bounced light one frame in four; the frames
+    // between it rests where the last frame showed the surface (else it traces it itself).
+    uvec2 tile = uvec2(texel) >> uvec2(3u);
+    bool turn = tile_of(tile, 2u) == (uint(rt.frame.z) & 3u);
+    if (lit && turn && float(p.x) < rt.size.x && float(p.y) < rt.size.y && texelFetch(depth, p, 0).r > 0.0) {
+        vec3 pos = surface_at(p);
+        vec3 n = surface_normal(p, pos);
+        float reach = 0.5 * rt.grid.z;
+        float edge = 1.0 - smoothstep(0.75 * reach, reach, max(abs(pos.x), abs(pos.z)));
+        if (edge > 0.0) {
+            // `restir_gi`'s `pos`: the surface lifted as `trace` lifts it.
+            vec3 from = pos + n * (0.02 + 0.002 * length(pos));
+            vec3 d = cosine_dir(n, random2(texel, 1u));
+            payload = 0.0;
+            hitObjectNV hit;
+            hitObjectTraceRayNV(hit, terrain, 0u, NO_CLOUDS, 0, 0, 0, from + rt.hw_offset.xyz, 0.0, d,
+                REACH, 0);
+            if ((push.flags & 1u) != 0u) reorderThreadNV(hit);
+            bool crossed = payload < 0.0;
+            if (!crossed && !hitObjectIsHitNV(hit)) {
+                // The sky, as a point far along the ray (the kernel's `sky_at(d)` its light).
+                a = vec4(from + d * REACH, 2.0);
+            } else if (!crossed) {
+                hitObjectGetAttributesNV(hit, 0);
+                Hit h = Hit(uint(hitObjectGetInstanceCustomIndexNV(hit)),
+                    uint(hitObjectGetPrimitiveIndexNV(hit)), uint(hitObjectGetGeometryIndexNV(hit)), bary);
+                float t = hitObjectGetRayTMaxNV(hit);
+                vec3 at = from + d * t;
+                // `hw_hit`: the face from the quad's corners, the colour from its texel.
+                vec3 normal = -d;
+                vec3 albedo = vec3(-1.0);
+                uint entity = hw_entity_quad(h);
+                uint base = entity == NO_QUAD ? hw_quad(h) : NO_QUAD;
+                if (entity != NO_QUAD) {
+                    vec3 p0 = dyn_position(entity);
+                    vec3 f = cross(dyn_position(entity + 1u) - p0, dyn_position(entity + 2u) - p0);
+                    if (dot(f, f) > 1e-12) normal = normalize(f);
+                    albedo = pow(max(hw_entity_texel(h, entity).rgb, vec3(0.0)), vec3(2.2));
+                } else if (base != NO_QUAD) {
+                    vec3 p0 = hw_position(base);
+                    vec3 f = cross(hw_position(base + 1u) - p0, hw_position(base + 2u) - p0);
+                    if (dot(f, f) > 1e-12) normal = normalize(f);
+                    vec4 c = hw_texel(h, base);
+                    if (c.a >= 0.0) {
+                        uint w = arena_at(base, 5u);
+                        vec3 tint = vec3(float(w & 255u), float((w >> 8u) & 255u), float((w >> 16u) & 255u)) / 255.0;
+                        albedo = pow(max(c.rgb * tint, vec3(0.0)), vec3(2.2));
+                    }
+                }
+                if (dot(normal, d) > 0.0) normal = -normal;
+                // `sun_on` at the hit: a shadow ray toward the light, any opaque hit stops it.
+                vec3 sun = vec3(0.0);
+                float facing = dot(normal, rt.light.xyz);
+                bool sun_crossed = false;
+                if (facing > 0.0 && rt.light.w > 0.0) {
+                    vec3 lifted = at + normal * 0.02;
+                    payload = 0.0;
+                    hitObjectNV shadow;
+                    hitObjectTraceRayNV(shadow, terrain,
+                        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT, 0xffu,
+                        0, 0, 0, lifted + rt.hw_offset.xyz, 0.0, rt.light.xyz, REACH, 0);
+                    if (!hitObjectIsHitNV(shadow)) {
+                        // Through water or glass the kernel's tint is wanted.
+                        sun_crossed = payload < 0.0;
+                        sun = rt.sun_light.rgb * (rt.light.w * facing);
+                    }
+                }
+                if (!sun_crossed) {
+                    // No colour from the sprite (a page past those bound, a sprite past the
+                    // first array): the kernel takes the block grid's (w 3).
+                    a = vec4(at, albedo.x < 0.0 ? 3.0 : 1.0);
+                    albedo = min(max(albedo, vec3(0.0)), vec3(60000.0));
+                    sun = min(sun, vec3(60000.0));
+                    b = uvec4(packSnorm4x8(vec4(normal, 0.0)), packHalf2x16(albedo.rg),
+                        packHalf2x16(vec2(albedo.b, sun.r)), packHalf2x16(sun.gb));
+                }
+            }
+        }
+    }
+    imageStore(gi_a, texel, a);
+    imageStore(gi_b, texel, b);
+}

@@ -281,6 +281,16 @@ const CACHE_CELLS: usize = 1 << 20;
 /// passes of 5x5 did, for 45 taps a pixel rather than 100.
 const DENOISE_STEPS: [i32; 5] = [1, 2, 4, 8, 16];
 
+/// The RTX 4090 build's pipeline passes for a view (`ShadowRays::run`'s `sun_pass`): given the
+/// encoder, the kernel's uniform and the mask's size, the sun pass's texture and the bounce pass's
+/// two, for those that ran.
+pub type PipelinePass<'a> = dyn FnMut(
+        &mut wgpu::CommandEncoder,
+        &wgpu::Buffer,
+        [u32; 2],
+    ) -> (Option<wgpu::TextureView>, Option<[wgpu::TextureView; 2]>)
+    + 'a;
+
 pub struct ShadowRays {
     /// RT lighting's denoiser (denoise.wgsl): its pipeline and layout, a uniform a pass.
     denoise: wgpu::ComputePipeline,
@@ -320,6 +330,8 @@ pub struct ShadowRays {
     no_far: [wgpu::TextureView; 3],
     /// The sun pass's stand-in when it does not run (`sun_pass`, bound at 61).
     no_sun_pass: wgpu::TextureView,
+    /// The bounce pass's stand-ins (`gi_pass_a`, `gi_pass_b`, bound at 62 and 63).
+    no_gi_pass: [wgpu::TextureView; 2],
 }
 
 /// VR's second eye takes the first eye's light (`ShadowRays::run`); off, it traces its own
@@ -543,6 +555,8 @@ impl ShadowRays {
                 entry(59, last),
                 entry(60, last),
                 entry(61, last),
+                entry(62, last),
+                entry(63, last_uint),
             ]
             .into_iter()
             .chain(
@@ -746,6 +760,28 @@ impl ShadowRays {
                     })
                     .create_view(&Default::default())
             }),
+            no_gi_pass: [
+                wgpu::TextureFormat::Rgba32Float,
+                wgpu::TextureFormat::Rgba32Uint,
+            ]
+            .map(|format| {
+                device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("No bounce pass"),
+                        size: wgpu::Extent3d {
+                            width: 1,
+                            height: 1,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    })
+                    .create_view(&Default::default())
+            }),
             no_sun_pass: device
                 .create_texture(&wgpu::TextureDescriptor {
                     label: Some("No sun pass"),
@@ -895,12 +931,11 @@ impl ShadowRays {
         far: Option<[&wgpu::TextureView; 3]>,
         hardware: Option<Hardware<'_>>,
         first_depth: Option<&wgpu::TextureView>,
-        // The RTX 4090 build's sun pass (horizon-rtx `sun`): records it for this view once the
-        // uniform is written, given the encoder, the uniform and the mask's size, and gives the
-        // texture the kernel reads in place of its own sun ray.
-        sun_pass: Option<
-            &mut dyn FnMut(&mut wgpu::CommandEncoder, &wgpu::Buffer, [u32; 2]) -> wgpu::TextureView,
-        >,
+        // The RTX 4090 build's ray tracing pipeline (horizon-rtx `sun`): which of its passes run
+        // (`rt.mode.w`'s bits: 1 the sun, 2 the bounce), and what records them for this view once
+        // the uniform is written, given the encoder, the uniform and the mask's size, giving the
+        // textures the kernel reads in place of its own rays.
+        sun_pass: Option<(u32, &mut PipelinePass<'_>)>,
     ) -> [wgpu::TextureView; 5] {
         let scale = foveation.scale;
         let mask_size = size.map(|v| v.div_ceil(scale));
@@ -976,7 +1011,7 @@ impl ShadowRays {
                 f32::from(u8::from(rays.lighting)),
                 f32::from(u8::from(rays.shadows)),
                 f32::from(u8::from(first.is_some())),
-                f32::from(u8::from(sun_pass.is_some())),
+                sun_pass.as_ref().map_or(0.0, |(bits, _)| *bits as f32),
             ],
             prev_view_proj: last.map_or([[0.0; 4]; 4], |l| l.0.to_cols_array_2d()),
             motion: match last {
@@ -1010,7 +1045,9 @@ impl ShadowRays {
         };
         uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));
         // The sun pass, after the uniform it reads is written and before the kernel reads it.
-        let sun_view = sun_pass.map(|pass| pass(encoder, &self.uniform, mask_size));
+        let (sun_view, gi_views) = sun_pass.map_or((None, None), |(_, pass)| {
+            pass(encoder, &self.uniform, mask_size)
+        });
         let view = |binding, view| wgpu::BindGroupEntry {
             binding,
             resource: wgpu::BindingResource::TextureView(view),
@@ -1106,6 +1143,8 @@ impl ShadowRays {
             view(59, far.map_or(&self.no_far[1], |f| f[1])),
             view(60, far.map_or(&self.no_far[2], |f| f[2])),
             view(61, sun_view.as_ref().unwrap_or(&self.no_sun_pass)),
+            view(62, gi_views.as_ref().map_or(&self.no_gi_pass[0], |v| &v[0])),
+            view(63, gi_views.as_ref().map_or(&self.no_gi_pass[1], |v| &v[1])),
         ];
         entries.extend(
             (49..)

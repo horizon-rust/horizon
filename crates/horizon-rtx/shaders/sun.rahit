@@ -1,5 +1,5 @@
 #version 460
-// The sun pass's any-hit: the alpha test of the trace kernel's hybrid (gfx/shadow_rays_hw.wgsl
+// The sun pass's and the bounce pass's any-hit: the alpha test of the trace kernel's hybrid (gfx/shadow_rays_hw.wgsl
 // `hw_opaque`, ported one for one), for the cutout quads and the entities; the quads whose sprite
 // has no transparent texel are in opaque geometries, whose hits the hardware confirms without
 // this shader (gfx/hw_rays.rs). The translucent geometry (stained glass, water, ice) lets the
@@ -106,7 +106,9 @@ vec4 hw_texel(uint base) {
 void main() {
     uvec4 at = row_at(0u);
     if (uint(gl_GeometryIndexEXT) == at.w) {
-        // Translucent: the light passes (untinted, see above).
+        // Translucent: the light passes (untinted, see above); the bounce pass (gi.rgen) leaves
+        // such a ray to the kernel, which tints it, so it is told one was met.
+        payload = -1.0;
         ignoreIntersectionEXT;
     }
     uint entity = hw_entity_quad();

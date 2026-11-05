@@ -2,7 +2,11 @@
 //! `shaders/sun.rgen` traces, for each mask texel of a view, the trace kernel's sun ray for the
 //! primary surface, with the hardware reordering the threads by what they hit (shader execution
 //! reordering, `VK_NV_ray_tracing_invocation_reorder`) and `sun.rahit` doing the kernel's alpha
-//! test; the kernel reads the result in place of tracing it (`HORIZON_RT_PIPELINE=1`). The
+//! test; the kernel reads the result in place of tracing it (`HORIZON_RT_PIPELINE=1` or `sun`).
+//! The same pipeline's second ray generation, `shaders/gi.rgen`, is the bounce pass
+//! (docs/rtx-4090-handoff.md, "Next" 2): ReSTIR GI's new sample, the bounce ray and its hit's
+//! colour and sun light shaded after the reordering (`HORIZON_RT_PIPELINE=gi`, or `all` for
+//! both; `HORIZON_RT_SER=0` traces without reordering, to time what it gives). The
 //! pipeline, its shader binding table and its descriptor sets are raw Vulkan on wgpu's device;
 //! the resources are wgpu's, transitioned by wgpu to the states the pass reads them in
 //! (`CommandEncoder::transition_resources`), bound through their raw handles.
@@ -36,10 +40,11 @@ pub struct SunInputs<'a> {
     pub sprite_split: u32,
 }
 
-/// Whether the pass is wanted: `HORIZON_RT_PIPELINE=1` (off by default while it is validated
-/// against the kernel's own sun).
-pub fn wanted() -> bool {
-    std::env::var("HORIZON_RT_PIPELINE").is_ok_and(|v| v == "1")
+pub use crate::{Kinds, PassViews};
+
+/// Whether the threads are reordered by their hits (`HORIZON_RT_SER=0` turns it off).
+fn reorder() -> bool {
+    !std::env::var("HORIZON_RT_SER").is_ok_and(|v| v == "0")
 }
 
 /// The pipeline, its table and its sets, and the texture it writes.
@@ -52,10 +57,22 @@ pub struct SunPass {
     pool: vk::DescriptorPool,
     sets: [vk::DescriptorSet; FRAMES],
     frame: usize,
-    modules: [vk::ShaderModule; 3],
+    modules: [vk::ShaderModule; 4],
     sbt: Sbt,
-    /// The sun's light through, a texel a ray, the mask's size (`Rgba16Float`).
-    output: Option<(wgpu::Texture, wgpu::TextureView, [u32; 2])>,
+    /// Which ray generations run.
+    kinds: Kinds,
+    /// The push constants' flags (bit 0: reorder).
+    flags: u32,
+    /// The outputs, a texel a ray, the mask's size: the sun's light through (`Rgba16Float`), the
+    /// bounce pass's hit and what it is (`Rgba32Float`) and its face, colour and sun light
+    /// (`Rgba32Uint`). All are bound whichever generations run (the pipeline holds both).
+    output: Option<(Outputs, [u32; 2])>,
+}
+
+struct Outputs {
+    sun: (wgpu::Texture, wgpu::TextureView),
+    gi_a: (wgpu::Texture, wgpu::TextureView),
+    gi_b: (wgpu::Texture, wgpu::TextureView),
 }
 
 /// The shader binding table: one buffer, the ray generation, miss and hit group handles each at
@@ -66,6 +83,8 @@ struct Sbt {
     raygen: vk::StridedDeviceAddressRegionKHR,
     miss: vk::StridedDeviceAddressRegionKHR,
     hit: vk::StridedDeviceAddressRegionKHR,
+    /// The bounce pass's ray generation.
+    raygen_gi: vk::StridedDeviceAddressRegionKHR,
 }
 
 // Plain Vulkan handles on a device wgpu keeps alive longer than the renderer that holds this.
@@ -75,13 +94,15 @@ unsafe impl Sync for SunPass {}
 const RAYGEN: &[u8] = include_bytes!("../shaders/sun.rgen.spv");
 const MISS: &[u8] = include_bytes!("../shaders/sun.rmiss.spv");
 const ANY_HIT: &[u8] = include_bytes!("../shaders/sun.rahit.spv");
+const RAYGEN_GI: &[u8] = include_bytes!("../shaders/gi.rgen.spv");
 
 impl SunPass {
     /// The pass on `device`, where it is a Vulkan device with the ray tracing pipeline and the
     /// invocation reorder extensions (asked for at its creation: gfx.rs, horizon-hdr); `None`
     /// otherwise, with the reason logged.
     pub fn new(device: &wgpu::Device) -> Option<Self> {
-        if !wanted() {
+        let kinds = Kinds::wanted();
+        if !kinds.any() {
             return None;
         }
         let (raw_device, instance, physical) = {
@@ -118,6 +139,7 @@ impl SunPass {
         // Safety for what follows: handles made on this device, destroyed in `drop`, used only
         // between wgpu's commands on its own command buffers.
         unsafe {
+            // The bounce pass reads the hit's quad, sprite and entity in its ray generation.
             let stages_all = vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::ANY_HIT_KHR;
             let binding = |b: u32, ty: vk::DescriptorType, stages: vk::ShaderStageFlags| {
                 vk::DescriptorSetLayoutBinding::default()
@@ -152,42 +174,36 @@ impl SunPass {
                 bindings.push(binding(
                     4 + page,
                     vk::DescriptorType::STORAGE_BUFFER,
-                    vk::ShaderStageFlags::ANY_HIT_KHR,
+                    stages_all,
                 ));
             }
             bindings.extend([
+                binding(12, vk::DescriptorType::SAMPLED_IMAGE, stages_all),
+                binding(13, vk::DescriptorType::STORAGE_BUFFER, stages_all),
+                binding(14, vk::DescriptorType::STORAGE_BUFFER, stages_all),
+                binding(15, vk::DescriptorType::SAMPLED_IMAGE, stages_all),
                 binding(
-                    12,
-                    vk::DescriptorType::SAMPLED_IMAGE,
-                    vk::ShaderStageFlags::ANY_HIT_KHR,
+                    16,
+                    vk::DescriptorType::STORAGE_IMAGE,
+                    vk::ShaderStageFlags::RAYGEN_KHR,
                 ),
                 binding(
-                    13,
-                    vk::DescriptorType::STORAGE_BUFFER,
-                    vk::ShaderStageFlags::ANY_HIT_KHR,
-                ),
-                binding(
-                    14,
-                    vk::DescriptorType::STORAGE_BUFFER,
-                    vk::ShaderStageFlags::ANY_HIT_KHR,
-                ),
-                binding(
-                    15,
-                    vk::DescriptorType::SAMPLED_IMAGE,
-                    vk::ShaderStageFlags::ANY_HIT_KHR,
+                    17,
+                    vk::DescriptorType::STORAGE_IMAGE,
+                    vk::ShaderStageFlags::RAYGEN_KHR,
                 ),
             ]);
-            let _ = stages_all;
             let set_layout = raw_device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
                     None,
                 )
                 .ok()?;
+            // The sprite split (both stages) and the flags (the bounce pass).
             let push = [vk::PushConstantRange::default()
-                .stage_flags(vk::ShaderStageFlags::ANY_HIT_KHR)
+                .stage_flags(stages_all)
                 .offset(0)
-                .size(4)];
+                .size(8)];
             let set_layouts = [set_layout];
             let layout = raw_device
                 .create_pipeline_layout(
@@ -203,7 +219,12 @@ impl SunPass {
                     .create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&words), None)
                     .ok()
             };
-            let modules = [module(RAYGEN)?, module(MISS)?, module(ANY_HIT)?];
+            let modules = [
+                module(RAYGEN)?,
+                module(MISS)?,
+                module(ANY_HIT)?,
+                module(RAYGEN_GI)?,
+            ];
             let entry: &CStr = c"main";
             let stages = [
                 vk::PipelineShaderStageCreateInfo::default()
@@ -217,6 +238,10 @@ impl SunPass {
                 vk::PipelineShaderStageCreateInfo::default()
                     .stage(vk::ShaderStageFlags::ANY_HIT_KHR)
                     .module(modules[2])
+                    .name(entry),
+                vk::PipelineShaderStageCreateInfo::default()
+                    .stage(vk::ShaderStageFlags::RAYGEN_KHR)
+                    .module(modules[3])
                     .name(entry),
             ];
             let general = |shader: u32| {
@@ -237,6 +262,8 @@ impl SunPass {
                     .closest_hit_shader(vk::SHADER_UNUSED_KHR)
                     .any_hit_shader(2)
                     .intersection_shader(vk::SHADER_UNUSED_KHR),
+                // The bounce pass's ray generation (its rays use the same miss and hit group).
+                general(3),
             ];
             let info = vk::RayTracingPipelineCreateInfoKHR::default()
                 .stages(&stages)
@@ -274,7 +301,7 @@ impl SunPass {
                     .descriptor_count(3 * count),
                 vk::DescriptorPoolSize::default()
                     .ty(vk::DescriptorType::STORAGE_IMAGE)
-                    .descriptor_count(count),
+                    .descriptor_count(3 * count),
                 vk::DescriptorPoolSize::default()
                     .ty(vk::DescriptorType::ACCELERATION_STRUCTURE_KHR)
                     .descriptor_count(count),
@@ -298,8 +325,13 @@ impl SunPass {
                         .set_layouts(&layouts),
                 )
                 .ok()?;
+            let flags = u32::from(reorder());
             log::info!(
-                "Horizon RTX: the sun pass as a ray tracing pipeline with shader execution reordering"
+                "Horizon RTX: a ray tracing pipeline for {}{}{}, shader execution reordering {}",
+                if kinds.sun { "the sun pass" } else { "" },
+                if kinds.sun && kinds.gi { " and " } else { "" },
+                if kinds.gi { "the bounce pass" } else { "" },
+                if flags & 1 != 0 { "on" } else { "off" },
             );
             Some(Self {
                 device: raw_device,
@@ -312,6 +344,8 @@ impl SunPass {
                 frame: 0,
                 modules,
                 sbt,
+                kinds,
+                flags,
                 output: None,
             })
         }
@@ -404,37 +438,58 @@ impl SunPass {
             raygen: region(0),
             miss: region(1),
             hit: region(2),
+            raygen_gi: region(3),
         })
     }
 
-    /// The pass's output of `size` texels, made when the size changes.
-    fn output(&mut self, device: &wgpu::Device, size: [u32; 2]) -> wgpu::TextureView {
-        if let Some((_, view, have)) = &self.output
-            && *have == size
-        {
-            return view.clone();
+    /// The passes' outputs of `size` texels, made when the size changes.
+    fn outputs(&mut self, device: &wgpu::Device, size: [u32; 2]) -> &Outputs {
+        if self.output.as_ref().is_none_or(|(_, have)| *have != size) {
+            let make = |label, format| {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width: size[0].max(1),
+                        height: size[1].max(1),
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::STORAGE_BINDING
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&Default::default());
+                (texture, view)
+            };
+            self.output = Some((
+                Outputs {
+                    sun: make("RT lighting's sun pass", wgpu::TextureFormat::Rgba16Float),
+                    gi_a: make(
+                        "RT lighting's bounce pass, hits",
+                        wgpu::TextureFormat::Rgba32Float,
+                    ),
+                    gi_b: make(
+                        "RT lighting's bounce pass, surfaces",
+                        wgpu::TextureFormat::Rgba32Uint,
+                    ),
+                },
+                size,
+            ));
         }
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("RT lighting's sun pass"),
-            size: wgpu::Extent3d {
-                width: size[0].max(1),
-                height: size[1].max(1),
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&Default::default());
-        self.output = Some((texture, view.clone(), size));
-        view
+        &self.output.as_ref().expect("made above").0
     }
 
-    /// Records the pass for a view, after the kernel's uniform was written for it and before the
-    /// kernel runs, and gives the texture the kernel reads (`sun_pass`). Raw commands can't share
+    /// Which ray generations run (the kernel's `rt.mode.w` bits).
+    pub fn kinds(&self) -> Kinds {
+        self.kinds
+    }
+
+    /// Records the passes for a view, after the kernel's uniform was written for it and before
+    /// the kernel runs, and gives the textures the kernel reads (`sun_pass`, `gi_pass_a`,
+    /// `gi_pass_b`) for the passes that ran. Raw commands can't share
     /// an encoder with wgpu's (wgpu records its own when the encoder finishes): `encoder` gets the
     /// resources' transitions and is finished into `split`, the pass follows in a command buffer
     /// of its own, and `encoder` is a new one for the rest of the frame. Submit `split` in order
@@ -445,9 +500,16 @@ impl SunPass {
         encoder: &mut wgpu::CommandEncoder,
         split: &mut Vec<wgpu::CommandBuffer>,
         inputs: SunInputs<'_>,
-    ) -> wgpu::TextureView {
-        let view = self.output(device, inputs.mask_size);
-        let output_texture = self.output.as_ref().expect("made above").0.clone();
+    ) -> PassViews {
+        let outputs = self.outputs(device, inputs.mask_size);
+        let (sun_texture, view) = outputs.sun.clone();
+        let (gi_a_texture, gi_a) = outputs.gi_a.clone();
+        let (gi_b_texture, gi_b) = outputs.gi_b.clone();
+        let written = |texture| wgpu::TextureTransition {
+            texture,
+            selector: None,
+            state: wgpu::TextureUses::STORAGE_READ_WRITE,
+        };
         // wgpu puts the resources in the states the pass reads them in (and knows it did).
         fn storage(b: &wgpu::Buffer) -> wgpu::BufferTransition<&wgpu::Buffer> {
             wgpu::BufferTransition {
@@ -476,11 +538,9 @@ impl SunPass {
             sampled(inputs.depth.texture()),
             sampled(inputs.sprites.texture()),
             sampled(inputs.atlas.texture()),
-            wgpu::TextureTransition {
-                texture: &output_texture,
-                selector: None,
-                state: wgpu::TextureUses::STORAGE_READ_WRITE,
-            },
+            written(&sun_texture),
+            written(&gi_a_texture),
+            written(&gi_b_texture),
         ];
         encoder.transition_resources(buffers.into_iter(), textures.into_iter());
         let before = std::mem::replace(
@@ -567,6 +627,13 @@ impl SunPass {
                 image_view: image(inputs.sprites).unwrap_or_default(),
                 image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             }];
+            let gi_infos = [&gi_a, &gi_b].map(|v| {
+                [vk::DescriptorImageInfo {
+                    sampler: vk::Sampler::null(),
+                    image_view: image(v).unwrap_or_default(),
+                    image_layout: vk::ImageLayout::GENERAL,
+                }]
+            });
             let atlas_info = [vk::DescriptorImageInfo {
                 sampler: vk::Sampler::null(),
                 image_view: image(inputs.atlas).unwrap_or_default(),
@@ -602,10 +669,22 @@ impl SunPass {
                     .dst_binding(15)
                     .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                     .image_info(&atlas_info),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(16)
+                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                    .image_info(&gi_infos[0]),
+                vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(17)
+                    .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                    .image_info(&gi_infos[1]),
             ]);
             self.device.update_descriptor_sets(&descriptor_writes, &[]);
 
             let [width, height] = inputs.mask_size;
+            let kinds = self.kinds;
+            let push: [u32; 2] = [inputs.sprite_split, self.flags];
             raw.as_hal_mut::<Vulkan, _, _>(|hal| {
                 let Some(hal) = hal else {
                     return;
@@ -627,20 +706,28 @@ impl SunPass {
                 self.device.cmd_push_constants(
                     cb,
                     self.layout,
-                    vk::ShaderStageFlags::ANY_HIT_KHR,
+                    vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::ANY_HIT_KHR,
                     0,
-                    &inputs.sprite_split.to_le_bytes(),
+                    bytemuck::cast_slice(&push),
                 );
-                self.rt.cmd_trace_rays(
-                    cb,
-                    &self.sbt.raygen,
-                    &self.sbt.miss,
-                    &self.sbt.hit,
-                    &vk::StridedDeviceAddressRegionKHR::default(),
-                    width.max(1),
-                    height.max(1),
-                    1,
-                );
+                // The two generations write textures of their own: no barrier between them.
+                for (on, raygen) in [
+                    (kinds.sun, &self.sbt.raygen),
+                    (kinds.gi, &self.sbt.raygen_gi),
+                ] {
+                    if on {
+                        self.rt.cmd_trace_rays(
+                            cb,
+                            raygen,
+                            &self.sbt.miss,
+                            &self.sbt.hit,
+                            &vk::StridedDeviceAddressRegionKHR::default(),
+                            width.max(1),
+                            height.max(1),
+                            1,
+                        );
+                    }
+                }
                 // The kernel (a compute pass) reads what the rays wrote; wgpu's own barrier for
                 // the texture knows nothing of the ray tracing stage.
                 let after = [vk::MemoryBarrier::default()
@@ -659,7 +746,10 @@ impl SunPass {
             });
         }
         split.push(raw.finish());
-        view
+        PassViews {
+            sun: self.kinds.sun.then_some(view),
+            gi: self.kinds.gi.then_some([gi_a, gi_b]),
+        }
     }
 }
 

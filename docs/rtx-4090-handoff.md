@@ -46,6 +46,22 @@ RTX-Remix-Materials pack); nothing here has run on a GPU in the agent's session.
    `EXPERIMENTAL_RAY_TRACING_PIPELINES` (gfx.rs) and the reorder extension through `horizon-hdr`'s device hook.
    Descriptor sets are a ring of four; resources are put in state by `transition_resources`.
 
+3. **The bounce pass: ReSTIR GI's new sample in the pipeline** (`horizon-rtx/shaders/gi.rgen`, a second ray
+   generation of the same pipeline, its set and its hit group): `HORIZON_RT_PIPELINE=gi` (or `all` with the sun
+   pass), `HORIZON_RT_SER=0` to trace without reordering and time what it gives. For each mask texel on its
+   bounce turn (`tile_of`, the kernel's 2x2 pattern), the kernel's cosine-weighted ray from the lifted surface
+   (`gi_sample`'s, same random numbers), `reorderThreadNV`, then the hit shaded in the ray generation: the face
+   from the quad's corners, the colour from its sprite or the entity atlas (`hw_hit`), the sun's light on it
+   through a terminate-on-first-hit shadow ray (`sun_on`). Outputs `gi_a` (hit, kind) and `gi_b` (face, colour,
+   sun light), read by the kernel at bindings 62 and 63 (`gi_sample`, `rt.mode.w` bit 1); the kernel finishes the
+   hit's light (`bounce_rest`: the radiance cache, the last frame's screen, the second bounce) and the
+   reservoirs. Left to the kernel, so the picture stays its own: a ray or its sun ray that crossed water, glass
+   or ice (`sun.rahit` sets the payload below 0 on a translucent candidate), texels just seen in a tile off its
+   turn, a hit with no sprite colour (the kernel takes the block grid's, kind 3). Gap: VR's second eye still runs
+   the pass where it takes the first eye's light. Expected: the kernel's GI ray and its hit's shading out of the
+   WGSL loop (GI was 70 % of the trace); at stake about 1 ms of the 2.2 in open terrain, against the pass's own
+   cost (the sun pass showed 0.4 to 0.7 ms more than its ray in the kernel, for a coherent ray SER can't help).
+
 **First runs:** with the Vulkan validation layers (`VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`), log lines
 "Horizon RTX: the top-level structure built by raw Vulkan commands" and "the sun pass as a ray tracing pipeline".
 Likely trouble spots if validation complains: the scratch alignment (`SCRATCH_ALIGN` 256, rounded address), the image
@@ -70,7 +86,8 @@ barriers' stages, a buffer whose usage lacks what the transition needs.
 
 1. **Validate bricks 1 and 2 on the GPU** (above). Fix what the layers report. Then the picture with and without
    `HORIZON_RT_PIPELINE=1` (same, outside glass and water), then `rays: trace` in `gpu-passes`.
-2. **Port ReSTIR GI into the pipeline** (`shadow_rays.wgsl` `restir_gi`, `hw_hit`, the radiance cache reads and
+2. **Port ReSTIR GI into the pipeline** (started: the bounce pass, above; measure it with `HORIZON_RT_SER` on
+   and off, against the kernel alone, before porting more) (`shadow_rays.wgsl` `restir_gi`, `hw_hit`, the radiance cache reads and
    writes), the real target of shader execution reordering: the bounce rays' hits shaded after the reorder. The sun
    pass is the template: same descriptor set (extend it with the kernel's other bindings: masks, reservoirs, cache,
    lights, cells), same `Rt` uniform, one more raygen. Keep the WGSL kernel as the fallback and compare captures.
