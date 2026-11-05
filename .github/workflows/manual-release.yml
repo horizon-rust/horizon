@@ -1,46 +1,31 @@
 # Manual Release Workflow
-# Triggered manually (workflow_dispatch). Tags the current main and publishes a GitHub Release.
+# Triggered manually (workflow_dispatch). Dispatches the full cross-platform build and release pipeline.
 
 name: Manual Release on Upstream Changes
 
 on:
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Optional tag name (e.g. v0.2.32-offline)'
+        required: false
+        default: ''
 
 permissions:
+  actions: write
   contents: write
 
 jobs:
-  release:
+  trigger-build-release:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository (full history)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Create timestamped tag
-        id: tag
+      - name: Trigger Build and Release Horizon Offline
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_INPUT: ${{ github.event.inputs.tag_name }}
         run: |
-          short_sha=$(git rev-parse --short HEAD)
-          tag_name="v$(date -u +%Y.%m.%d-%H%M)-${short_sha}"
-          echo "tag=$tag_name" >> "$GITHUB_OUTPUT"
-
-      - name: Generate release notes
-        run: |
-          prev_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          echo "## Changes" > body.md
-          if [ -z "$prev_tag" ]; then
-            git log -n 50 --pretty=format:"- %s" >> body.md
+          if [ -n "$TAG_INPUT" ]; then
+            gh workflow run build-releases.yml --repo "$GITHUB_REPOSITORY" --ref main -f tag_name="$TAG_INPUT"
           else
-            git log --pretty=format:"- %s" "$prev_tag"..HEAD >> body.md
+            gh workflow run build-releases.yml --repo "$GITHUB_REPOSITORY" --ref main
           fi
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          name: "Release ${{ steps.tag.outputs.tag }}"
-          body_path: body.md
-          draft: false
-          prerelease: false

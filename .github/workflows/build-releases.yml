@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - '.github/workflows/manual-release.yml'
+      - '.github/workflows/auto-release.yml'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -182,10 +185,10 @@ jobs:
           echo "### Changes in this Release" >> notes.md
           if [ -n "$PREV_TAG" ]; then
             echo "Commits since \`$PREV_TAG\`:" >> notes.md
-            git log "${PREV_TAG}..HEAD" --pretty=format:"* %s (%h by @%an)" >> notes.md
+            git log "${PREV_TAG}..HEAD" --invert-grep --grep="manual release workflow" --grep="auto-release" --pretty=format:"* %s (%h by @%an)" >> notes.md
           else
             echo "Recent commits:" >> notes.md
-            git log -n 20 --pretty=format:"* %s (%h by @%an)" >> notes.md
+            git log -n 20 --invert-grep --grep="manual release workflow" --grep="auto-release" --pretty=format:"* %s (%h by @%an)" >> notes.md
           fi
           echo "" >> notes.md
 
