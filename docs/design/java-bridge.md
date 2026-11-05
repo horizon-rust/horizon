@@ -19,7 +19,7 @@ Its own files, all new:
 |---|---|---|
 | `crates/horizon-jvm/src/` | Rust core: JVM start (libjvm loaded at run time, JNI), events, mods' content as Horizon content, the headless client's GPU device | ~9,600 |
 | `crates/horizon-jvm/java/platform/` | The platform: a Fabric mod (`horizon`) that mirrors Horizon's world to the mods' server and client. Compiled on the player's machine against their own game jar | ~30,700 |
-| `crates/horizon-jvm/java/dev/`, `build.rs` | Boot (`horizon-bridge.jar`, embedded in the binary) | ~900 |
+| `crates/horizon-jvm/java/dev/`, `build.rs` | Boot (`horizon-bridge.jar`; a release build carries its sources and compiles them on the player's machine, as the platform's) | ~900 |
 | `crates/horizon-jvm/{fabric-libs,fabric-api}.tsv` | Fabric Loader, its libraries and Fabric API: URLs and SHA-256 pins | 10 |
 | `crates/horizon-jvm/java/fixtures/`, `tests/` | Test mods built from source, integration tests | ~4,400 |
 | `crates/horizon-client/src/game/java_*.rs` | Gameplay side: the server tick, actions, screens, entities, worldgen, guests | ~9,900 |
@@ -40,7 +40,7 @@ Their loaders are LGPL; they stay in the fork unless agreed separately.
 
 ## 2. The PR split
 
-Under ~500 lines each, in this order. Every PR builds, passes clippy and tests **without** `java-mods`; from the
+Under ~500 lines each (the `horizon-jvm` subsystem PRs excepted, below), in this order. Every PR builds, passes clippy and tests **without** `java-mods`; from the
 crate PR on, CI also builds with it.
 
 1. **This note.**
@@ -50,20 +50,48 @@ crate PR on, CI also builds with it.
    templates and noise seeds from data packs, wide frames on the in-memory connection, small fixes, the ReplayMod
    viewer (`--replay`). Any of these upstream doesn't want stays in the fork.
 3. **Generic hook points in the lower crates**, no Java, named `mod_*` rather than `java_*` where generic (~400).
-4. **`horizon-jvm`, behind the `java-mods` feature:** Cargo feature and CI job first, then the Rust core by file
-   (JNI and start · events · content · GPU device).
-5. **The Java platform**, by subsystem (server mirror · client · screens and graphics · entities · worldgen · mixin
-   table · GPU), each in dependency order so every PR compiles. ~31,000 lines is ~60 PRs at 500: Ludovic decides
-   whether new files under `crates/horizon-jvm/`, never linked into the plain build, may come in bigger PRs with
-   CODEOWNERS `@iaxivers`.
-6. **Fixtures and tests.**
-7. **Gameplay**, by area, each with its own hooks: server tick and actions · screens and HUD · entities · worldgen
+4. **`horizon-jvm`, behind the `java-mods` feature**, in the subsystem PRs of the table below (Rust core and Java
+   platform together, each a few thousand lines at most, in dependency order so every one compiles and passes its
+   tests). New files only, never linked into the plain build; Ludovic decides whether these may be bigger than the
+   usual 500 lines, with CODEOWNERS `@iaxivers`.
+5. **Gameplay**, by area, each with its own hooks: server tick and actions · screens and HUD · entities · worldgen
    · LAN guests · remote client · device mods.
-8. **Launcher:** the switch, the Java mods tab, the `-java` build's install, 7 `tr()` keys in each language.
-9. **CI:** Java 25, the `java_mods` input of `game-build.yml`, headless cases from `regress.py` with the fixture
+6. **Launcher:** the switch, the Java mods tab, the `-java` build's install, 7 `tr()` keys in each language.
+7. **CI:** Java 25, the `java_mods` input of `game-build.yml`, headless cases from `regress.py` with the fixture
    mods, the no-mod-code check (section 5).
-10. **Docs:** `docs/java-bridge.md` (without the fork's task history), the testers' guide, a README section with
+8. **Docs:** `docs/java-bridge.md` (without the fork's task history), the testers' guide, a README section with
     the credits line: "Fabric mods bridge by iaxivers (Windows support by martipops), maintained by iaxivers."
+
+### `crates/horizon-jvm` by subsystem
+
+Lines counted on the fork's `java-bridge` (2026-11-05), Rust and Java; the fixture mods and integration tests go
+with the PR they test. `P/` is `java/platform/dev/horizonlab/platform/`. Tests marked *(game)* need a prepared 26.3
+and run on a developer's machine or `regress.py`, not on CI.
+
+| # | Subsystem | Files | Lines | Tests |
+|---|---|---|---|---|
+| J1 | Crate, build, Fabric's pins, ownership gate, player-side compile | `Cargo.toml`, `build.rs`, `fabric-{libs,api}.tsv`, `src/{libs,runtime,gate,platform}.rs`, `java/dev/` (boot, game provider), `java/platform/*.json` | 2,049 | unit `gate::`, `runtime::`; `tests/boot.rs` (JVM up, the bridge compiled from its sources); `check_no_fabric.py --tree` |
+| J2 | JVM start, natives, Fabric start | `src/lib.rs`, `P/HorizonLog`, `HorizonServices`, `HorizonFailures`, `HorizonProfile`, `HorizonJson`, `mixin/PlatformPlugin`, `mixin/mods/ModsPlugin` | 2,824 | `tests/fabric.rs` (fixtures `loadermod`, `failmod`, `hellomod`) |
+| J3 | Rust→Java calls, the world view, facades | `src/events.rs`, `src/world.rs`, `src/facade.rs` | 3,792 | unit `world::`, `facade::`; `tests/facade.rs`, `facade_stress.rs` (fixture `testmod`) |
+| J4 | Server mirror | `P/HorizonServer.java`, the server accessors (`mixin/*Access.java`) | 3,810 | *(game)* `tests/real_game.rs`; regress `pot`, `terminal` |
+| J5 | Server mirror's mixins | `mixin/` server, level, chunk map, player list, game mode (`MinecraftServerMixin`, `ServerLevelMixin`, `LevelMixin`, `ServerChunkCacheMixin`…) | 1,207 | regress `placed`, `lost`; fixture `eventsmod` |
+| J6 | World state | `P/HorizonBlockEntities`, `Ticks`, `Light`, `Chunks`, `ChunkLoads`, `Tickets`, `Items`, `Hoppers`, `Fluids`, `Neighbours`, `VanillaActions`, `SavedData`, `Functions`, `Combat`, `Data`, `DataFixer` + their mixins | 3,969 | regress block entity, hopper, ticket cases; fixture `dev` |
+| J7 | Mods' hooks and the mixin table | `P/HorizonHooks`, `HorizonMixinTable`, `HorizonMixinInit` | 2,317 | fixture `mixinmod`; regress `--code-check` (no mod's packages) |
+| J8 | Mods' content as Horizon content | `src/content.rs`, `src/renderers.rs`, `P/HorizonContent` | 869 | `tests/content.rs`, `tests/modrinth.rs` (offline), unit `renderers::` |
+| J9 | Headless client | `P/HorizonClient.java` | 4,144 | `tests/client_side.rs`; fixture `keysmod` |
+| J10 | Client state and its mixins | `P/HorizonClientState`, `ClientBlockEntities`, `ClientCommands`, client mixins (`ClientLevelMixin`, `CameraMixin`, `MouseHandlerMixin`…) | 933 | fixture `configmod`; regress client cases |
+| J11 | Mods' networking | `P/HorizonLoop`, `HorizonPacketTap`, `HorizonConfiguration`, networking mixins | 1,835 | fixture `joinmod`; regress LAN and server cases |
+| J12 | Screens, HUD, textures | `P/HorizonGraphics`, `ScreenEvents`, `Textures`, `Sprites`, `ItemModels`, `LazyModels`, `ClientConfig`, `ModMenuApi`… + GUI mixins | 3,539 | regress screen cases (`pot`, recipe viewers) |
+| J13 | Mods' entities | `P/HorizonEntities`, `HorizonEntityRender`, `HorizonSpawner`, `HorizonPackets`, `Particles`, `Sounds` + mixins | 3,357 | fixtures `crittermod`, `cartmod`, `geckomod`; regress `entity`, `spit` |
+| J14 | Mods' worldgen | `P/HorizonWorldgen`, `NoiseExport`, `Surface`, `Biomes`, `BiomeMemo`, `Tints` + worldgen mixins | 2,497 | fixture `geomod`; regress worldgen cases |
+| J15 | Mods' GPU device | `src/gpu/` (`mod.rs`, `spirv.rs`), `P/HorizonGpu` | 3,223 | unit `gpu::`; fixture `kineticmod` |
+| J16 | Device mods (voice chat) | `src/device.rs`, `P/HorizonDeviceMods`, `HorizonDeviceClient` | 1,008 | unit `device::`; `tools/java_bridge/voice_test.sh` |
+
+About 41,400 lines in 16 PRs, plus 2,634 lines of fixture mods and 1,745 of integration tests spread over them
+(counted on the fork's `bridge-ownership-1`). J4 and
+J9 are one file each, past 3,000 lines; if that's too big, they are split into classes first, on the fork. Not
+included: `src/{neoforge,boot112}.rs` and `java/{neoforge,platform112}` (the NeoForge and Forge 1.12 prototypes stay
+in the fork).
 
 Commits carry `Co-Authored-By: iaxivers` when someone else lands them. The fork merges main daily; a bridge failure
 never blocks another merge.
@@ -75,20 +103,53 @@ never blocks another merge.
   build.
 - **Launcher switch**, per instance, off by default: "Fabric 26.3 mods (beta)" on Home's play row. Off: the plain
   build, no Java mods tab, `--java-mods` never passed, whatever `mods-java/` holds.
-- **Even the `-java` build** starts no Java without `--java-mods` (or `HORIZON_JAVA_MODS=1` for developers' scripts);
-  the log says "Java mods: off (N jars in mods-java)".
-- **Microsoft sign-in required.** Play with the switch on goes through the launcher's strict owner gate; the
-  developer option `dev_offline` lets no Fabric instance through. **No offline path:** the fork's Prism wrapper
-  and offline `--instance` play were removed.
-- **No downloads before sign-in.** The `-java` build, Mojang's Java 25 runtime and Fabric's jars come only for a
-  signed-in owner. The game itself downloads no Java. Mojang's files come from the player's install, as in main.
-- **No cost when off**, to be measured before the gameplay PRs merge, on one machine, with
-  `horizon-client --benchmark standard --render-distance 16` ([docs/benchmark.md](../benchmark.md), 5 repeats) for:
-  main; the branch without the feature; the branch with the feature and the switch off. Compared: startup to the
-  title screen and to in-world, average FPS, 1% and 0.1% lows, p99 frame time, resident memory, binary size.
-  Differences must sit inside the 95% intervals. Also checked: no `libjvm` mapped in the process, no `.local/bridge`
-  created (`tools/java_bridge/install_test.sh` with `OFF=1` already does both). Hot-path hooks (mesher, block
-  writes) post their own before/after with their PR.
+- **Even the `-java` build** starts no Java unless the launcher started it past its owner gate, or a developer
+  opted in (`HORIZON_JAVA_MODS=1`, the harnesses); the log says "Java mods: off (N jars in mods-java)".
+
+### Ownership, in plain words
+
+The maintainers' conditions (a) and (b), and what the fork does about them (fork `bridge-ownership-1`):
+
+- **You can't play Fabric mods in Horizon without owning Minecraft.** They run only when Horizon's launcher starts
+  the game for a signed-in Microsoft account that owns Java Edition. The launcher checks that before Play (its
+  owner gate, the same check plain Horizon uses), and only then tells the game to run the mods.
+- **Starting the game by hand runs no mods and downloads nothing.** `horizon-client --java-mods` without the
+  launcher says "Fabric 26.3 mods run only when Horizon's launcher starts the game for a signed-in account that
+  owns Minecraft: Java Edition…" and starts without them. Nothing is fetched: no Fabric, no Java, nothing of
+  Mojang's.
+- **The game never downloads anything of Mojang's.** No Java runtime, no game jar, no assets, with or without mods.
+  The game jar is the one the player's own install prepared, as in main.
+- **The launcher downloads only after the owner gate passes**: the `-java` game build, Mojang's Java 25 runtime
+  (for the mods) and, through the game it starts, Fabric's jars. With no owner signed in, the switch and Play say
+  "Sign in…" and nothing is downloaded.
+- **Developers keep their harnesses**: `HORIZON_JAVA_MODS=1` is an explicit opt-in for the bridge's test scripts,
+  as Horizon's own harnesses run the plain game without the launcher.
+- **Horizon never ships, copies or reads Fabric Loader, Mixin, Sat4j, ASM or Fabric API.** None of their files is
+  in the repository or a release. The release build carries only Horizon's own Java sources (the bridge and its
+  platform mod) and compiles nothing against Fabric there: the build machine fetches none of Fabric's files. On the
+  player's machine, after the gate, the game fetches them from Fabric's own server (`maven.fabricmc.net`), checks
+  their pinned SHA-256, runs them unchanged and compiles Horizon's sources against them there.
+- **These are checks, not DRM.** As in every launcher, they keep Horizon from offering a way around ownership;
+  they can't stop someone who edits the program.
+
+How it's checked: unit tests of the game's decision (`horizon_jvm::gate`: by hand → no mods; the launcher's word →
+mods; the developer's opt-in) and of the launcher's command (the word only on Play's command after the gate);
+`launcher_switch_test.py` (no owner: nothing downloaded, Play refuses); regress `direct` (a scratch install started
+by hand with `--java-mods`: the message, no Fabric or Java fetched, no JVM in the process, the world plays) and
+`owner` (as the launcher: Fabric fetched there, the mod loads); `check_no_fabric.py` on the repository and on every
+release archive, and the release job fails if Fabric's files appear on its machine.
+
+### The cost when off (condition c)
+
+Measured with `tools/java_bridge/perf_off.sh` (`--benchmark standard`, release builds, alternating runs, one
+machine): upstream main; the fork built without `java-mods`; the fork built with it as the release builds it, the
+switch off and a jar in `mods-java/`. Compared: startup to the title screen and to in-world, average FPS, frame p50
+and p99, 1% lows, peak memory, binary size. With the switch off, the game reads its arguments once and lists
+`mods-java/` once; no JVM, thread or library is loaded.
+
+**Numbers: pending.** They need a machine with a prepared 26.3 (the fork's cloud workers have none: Mojang's files
+aren't downloaded there). They go here and in the fork's `docs/java-bridge-perf.md` once run. Hot-path hooks
+(mesher, block writes) post their own before/after with their PR.
 
 ## 4. Licences
 
@@ -110,7 +171,8 @@ launcher runs it. Nobody reads, copies or modifies it, and Horizon doesn't ship 
 acceptable.
 
 **Nothing in this list is in the repository or in a release.** The loader, its libraries and Fabric API are
-downloaded on the player's machine after sign-in, from `maven.fabricmc.net`, and checked against the pins. The
+downloaded on the player's machine after sign-in, from `maven.fabricmc.net`, and checked against the pins; the
+release build machine fetches and reads none of them (section 3, "Ownership"). The
 bridge's own code is original (MIT, as Horizon). **Mods keep their own licences and are never shipped**: the player
 adds the jars, the bridge runs them as Fabric does, and nobody reads their source.
 
