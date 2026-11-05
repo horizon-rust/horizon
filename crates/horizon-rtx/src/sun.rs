@@ -433,12 +433,17 @@ impl SunPass {
         view
     }
 
-    /// Records the pass for a view into `encoder`, after the kernel's uniform was written for it
-    /// and before the kernel runs, and gives the texture the kernel reads (`sun_pass`).
+    /// Records the pass for a view, after the kernel's uniform was written for it and before the
+    /// kernel runs, and gives the texture the kernel reads (`sun_pass`). Raw commands can't share
+    /// an encoder with wgpu's (wgpu records its own when the encoder finishes): `encoder` gets the
+    /// resources' transitions and is finished into `split`, the pass follows in a command buffer
+    /// of its own, and `encoder` is a new one for the rest of the frame. Submit `split` in order
+    /// before it.
     pub fn run(
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
+        split: &mut Vec<wgpu::CommandBuffer>,
         inputs: SunInputs<'_>,
     ) -> wgpu::TextureView {
         let view = self.output(device, inputs.mask_size);
@@ -478,6 +483,16 @@ impl SunPass {
             },
         ];
         encoder.transition_resources(buffers.into_iter(), textures.into_iter());
+        let before = std::mem::replace(
+            encoder,
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Horizon frame, after the sun pass"),
+            }),
+        );
+        split.push(before.finish());
+        let mut raw = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Horizon RTX: the sun pass"),
+        });
 
         let set = self.sets[self.frame % FRAMES];
         self.frame = self.frame.wrapping_add(1);
@@ -591,7 +606,7 @@ impl SunPass {
             self.device.update_descriptor_sets(&descriptor_writes, &[]);
 
             let [width, height] = inputs.mask_size;
-            encoder.as_hal_mut::<Vulkan, _, _>(|hal| {
+            raw.as_hal_mut::<Vulkan, _, _>(|hal| {
                 let Some(hal) = hal else {
                     return;
                 };
@@ -643,6 +658,7 @@ impl SunPass {
                 );
             });
         }
+        split.push(raw.finish());
         view
     }
 }

@@ -57,7 +57,9 @@ mod raw_stub {
             None
         }
         pub fn write(&self, _: &wgpu::Queue, _: u32, _: &[Instance]) {}
-        pub fn build(&self, _: &mut wgpu::CommandEncoder, _: &wgpu::Tlas, _: u32) {}
+        pub fn build(&self, _: &wgpu::Device, _: &wgpu::Tlas, _: u32) -> wgpu::CommandBuffer {
+            unreachable!("no raw build without the rtx feature")
+        }
     }
 }
 #[cfg(not(feature = "rtx"))]
@@ -186,6 +188,9 @@ pub struct HwRays {
     pub tlas: wgpu::Tlas,
     /// The raw build of `tlas`, where the `rtx` feature and the device give it.
     raw: Option<RawTlas>,
+    /// This frame's raw top-level build (`RawTlas::build`), for the renderer to submit between
+    /// the commands before it and after (`take_raw_build`).
+    raw_build: Option<wgpu::CommandBuffer>,
     /// Where each instance's quads are, by its custom data (shadow_rays_hw.wgsl `instances`,
     /// `row`): the page, the solid quads' first vertex, the translucent ones', the translucent
     /// geometry, each solid geometry's first quad.
@@ -357,6 +362,11 @@ impl HwRays {
     pub fn raw(&self) -> Option<&RawTlas> {
         self.raw.as_ref()
     }
+    /// This frame's raw top-level build, once: submit it after the encoder `finish` recorded
+    /// into and before the commands that read the structure.
+    pub fn take_raw_build(&mut self) -> Option<wgpu::CommandBuffer> {
+        self.raw_build.take()
+    }
 
     /// Whether `device` traces hardware rays (and `HORIZON_HW_RT` isn't 0).
     pub fn supported(device: &wgpu::Device) -> bool {
@@ -378,6 +388,7 @@ impl HwRays {
             stale: HashMap::new(),
             tlas,
             raw,
+            raw_build: None,
             instances: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("RT lighting's terrain instances"),
                 size: u64::from(MAX_INSTANCES) * ROW_BYTES,
@@ -890,7 +901,7 @@ impl HwRays {
             Some(raw) => {
                 raw.write(queue, self.terrain as u32, &raw_rows);
                 encoder.build_acceleration_structures(entries.iter(), std::iter::empty());
-                raw.build(encoder, &self.tlas, n as u32);
+                self.raw_build = Some(raw.build(device, &self.tlas, n as u32));
             }
             None => encoder.build_acceleration_structures(entries.iter(), [&self.tlas]),
         }

@@ -695,6 +695,9 @@ pub struct Renderer {
     /// RT lighting's hybrid: the terrain in hardware acceleration structures, where the GPU
     /// traces rays.
     hw_rays: Option<hw_rays::HwRays>,
+    /// The frame's commands finished before its encoder's, to submit first and in order: the
+    /// encoder up to the raw top-level build, then that build (`HwRays::take_raw_build`).
+    split_commands: Vec<wgpu::CommandBuffer>,
     /// RT lighting's sun pass as a ray tracing pipeline (horizon-rtx `sun`), when wanted.
     #[cfg(feature = "rtx")]
     sun_pass: Option<horizon_rtx::SunPass>,
@@ -3407,6 +3410,7 @@ impl Renderer {
             lightmap,
             sprite_textures,
             hw_rays,
+            split_commands: Vec::new(),
             #[cfg(feature = "rtx")]
             sun_pass,
             materials: None,
@@ -4402,6 +4406,7 @@ impl Renderer {
             (Some(pass), Some(tlas), Some(bindings)) if rt.lighting => {
                 let device = &self.device;
                 let depth = &depth;
+                let split = &mut self.split_commands;
                 Some(
                     move |encoder: &mut wgpu::CommandEncoder,
                           uniform: &wgpu::Buffer,
@@ -4409,6 +4414,7 @@ impl Renderer {
                         pass.run(
                             device,
                             encoder,
+                            split,
                             horizon_rtx::SunInputs {
                                 uniform,
                                 depth,
@@ -6525,6 +6531,19 @@ impl Renderer {
             crate::spans::time("rt_moving", || {
                 self.hw_finish(&mut encoder, frame, entity_quads, clouds)
             });
+            // The raw top-level build can't share the encoder with wgpu's commands: the encoder
+            // so far goes first, the build next, the rest of the frame in a new encoder.
+            if let Some(build) = self.hw_rays.as_mut().and_then(|hw| hw.take_raw_build()) {
+                let before = std::mem::replace(
+                    &mut encoder,
+                    self.device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("Horizon frame, after the raw top-level build"),
+                        }),
+                );
+                self.split_commands.push(before.finish());
+                self.split_commands.push(build);
+            }
             gpu_passes::stamp(&mut encoder, "structures (BLAS, TLAS)");
         }
         if rt_now {
@@ -7623,7 +7642,10 @@ impl Renderer {
             startup_step(format_args!("submitting the first frame"));
             self.first_frame = FirstFrame::Drawn;
         }
-        let submission = crate::spans::time("submit", || self.queue.submit([commands]));
+        let split = std::mem::take(&mut self.split_commands);
+        let submission = crate::spans::time("submit", || {
+            self.queue.submit(split.into_iter().chain([commands]))
+        });
         if let Some(cull) = &mut self.cull {
             cull.submitted();
         }

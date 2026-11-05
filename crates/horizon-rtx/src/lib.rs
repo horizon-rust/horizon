@@ -224,11 +224,21 @@ mod vulkan {
                 })
         }
 
-        /// Records the build of the first `count` instances into `tlas` (the structure given to
-        /// `new`), after wgpu's own commands so far in `encoder` (the bottom-level builds and the
-        /// instance writes among them), and marks it built for wgpu.
-        pub fn build(&self, encoder: &mut wgpu::CommandEncoder, tlas: &wgpu::Tlas, count: u32) {
+        /// The build of the first `count` instances into `tlas` (the structure given to `new`),
+        /// marked built for wgpu, in a command buffer of its own: wgpu records its commands when
+        /// an encoder finishes, so raw commands can't share an encoder with them (wgpu-core panics
+        /// at the mix). Submit it after the encoder holding the bottom-level builds and before the
+        /// one whose shaders read the structure.
+        pub fn build(
+            &self,
+            device: &wgpu::Device,
+            tlas: &wgpu::Tlas,
+            count: u32,
+        ) -> wgpu::CommandBuffer {
             let count = count.min(self.max_instances);
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Horizon RTX: the top-level build"),
+            });
             // Safety: raw commands on the encoder's own command buffer, between wgpu's commands:
             // the barriers below order them against the transfer of the instances, the
             // bottom-level builds before and the shaders after.
@@ -286,6 +296,7 @@ mod vulkan {
                 // Built, with nothing for wgpu to walk at submission.
                 encoder.mark_acceleration_structures_built(&[], [tlas]);
             }
+            encoder.finish()
         }
     }
 }
@@ -323,6 +334,7 @@ pub mod sun {
             &mut self,
             _: &wgpu::Device,
             _: &mut wgpu::CommandEncoder,
+            _: &mut Vec<wgpu::CommandBuffer>,
             _: SunInputs<'_>,
         ) -> wgpu::TextureView {
             unreachable!("never made")
