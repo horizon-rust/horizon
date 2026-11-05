@@ -332,6 +332,10 @@ pub struct Frame<'a> {
     pub nether_lighting: bool,
     /// Camera-relative entity geometry textured from the shared atlas.
     pub entities: &'a [Vertex],
+    /// Where the particles' quads begin in `entities` (a vertex index; past its end none): RT
+    /// lighting's rays leave them out (`hw_finish`). Small, many and short-lived, they would
+    /// shadow the walls behind them, a trail in the light's history wherever they flew.
+    pub particles_at: u32,
     /// The glowing entities' silhouettes in their team colours (`OutlineBufferSource`),
     /// outlined through walls after the hand.
     pub glowing: &'a [Vertex],
@@ -4282,7 +4286,8 @@ impl Renderer {
             .entity_batch
             .combined
             .len()
-            .min(solid_quads as usize * 4);
+            .min(solid_quads as usize * 4)
+            .min(self.entity_batch.before_particles * 4);
         let ratio = (frame.hand_fov_degrees.to_radians() / 2.0).tan()
             / (frame.fov_degrees.to_radians() / 2.0).tan();
         let view = crate::camera::view_matrix(frame.yaw, frame.pitch);
@@ -6189,6 +6194,7 @@ impl Renderer {
         // While a shader pack draws entities, the runs of `entity_spans` its programs draw are
         // left out of Horizon's own entity draw.
         let mut entities = frame.entities;
+        let mut particles_at = frame.particles_at;
         if !frame.title
             && let Some((_, Some(post))) = &mut self.pack_post
             && post.has_entities()
@@ -6201,6 +6207,8 @@ impl Renderer {
                 &mut self.pack_entity_rest,
             );
             entities = &self.pack_entity_rest;
+            // Reordered by the pack's runs: the particles can't be told apart there.
+            particles_at = u32::MAX;
         }
         let [
             entity_quads,
@@ -6211,9 +6219,13 @@ impl Renderer {
             shadow_quads,
             translucent_particle_quads,
             translucent_item_quads,
-        ] = self
-            .entity_batch
-            .update(entities, frame.additive, frame.hand, frame.see_through);
+        ] = self.entity_batch.update(
+            entities,
+            particles_at,
+            frame.additive,
+            frame.hand,
+            frame.see_through,
+        );
         let weather_quads = frame.weather.len() as u32 / 4;
         let world_quads = entity_quads
             + crumbling_quads
@@ -8155,7 +8167,7 @@ mod tests {
         .flat_map(|(layer, id)| quad(layer, id))
         .collect();
         let mut batch = super::EntityBatch::default();
-        let counts = batch.update(&entities, &quad(3, 5), &quad(0, 6), &quad(0, 8));
+        let counts = batch.update(&entities, u32::MAX, &quad(3, 5), &quad(0, 6), &quad(0, 8));
         let vertices = &batch.combined;
         assert_eq!(counts, [4, 1, 1, 0, 0, 1, 1, 0]);
         assert_eq!(
