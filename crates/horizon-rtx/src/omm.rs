@@ -17,9 +17,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use wgpu::hal::api::Vulkan;
 
-/// Whether the micromaps are asked for (`HORIZON_RT_OMM=1`; off by default until measured).
+/// Whether the micromaps are wanted: on with the crate (the `rtx` feature), unless `HORIZON_RT_OMM=0`.
 pub fn wanted() -> bool {
-    std::env::var("HORIZON_RT_OMM").is_ok_and(|v| v == "1")
+    !std::env::var("HORIZON_RT_OMM").is_ok_and(|v| v == "0")
 }
 
 /// The micromaps' pool.
@@ -305,7 +305,7 @@ impl RawSections {
             .contains(&ash::ext::opacity_micromap::NAME)
         {
             log::warn!(
-                "Horizon RTX: HORIZON_RT_OMM=1, but the device has no VK_EXT_opacity_micromap: the sections' structures stay wgpu's"
+                "Horizon RTX: no opacity micromaps, the device lacks VK_EXT_opacity_micromap: the sections' structures stay wgpu's"
             );
             return None;
         }

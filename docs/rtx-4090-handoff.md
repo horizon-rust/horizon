@@ -64,7 +64,8 @@ RTX-Remix-Materials pack); nothing here has run on a GPU in the agent's session.
    pass, a coherent ray SER can't help, cost 0.4 to 0.7 ms more than its ray in the kernel) and what a ray
    generation can't do that the kernel does (workgroup tiles skipped whole, shared rays in VR's periphery).
 
-4. **Opacity micromaps on the cutout sections** (`HORIZON_RT_OMM=1`, off by default; `horizon-rtx/src/micromap.rs`
+4. **Opacity micromaps on the cutout sections** (on with `rtx`, `HORIZON_RT_OMM=0` turns them off; measured 5 November,
+   below; `horizon-rtx/src/micromap.rs`
    the CPU side, `omm.rs` the raw builds, `gfx/hw_micromaps.rs` the game's side): `VK_EXT_opacity_micromap`, the
    Vulkan side of DXR 1.2's opacity micromaps (CLAS, PTLAS and the other new builds target BLAS rebuilds, 0.12 to
    0.35 ms here). When a section is meshed, each triangle of its alpha-tested geometries gets a 4-state micromap from
@@ -80,6 +81,14 @@ RTX-Remix-Materials pack); nothing here has run on a GPU in the agent's session.
    Measure the forest (`rays: trace`, with and without the variable, pipeline on and off): the any-hits and the
    kernel's candidate loop on leaves should mostly go. Risks without validation: the full barriers
    (`ALL_COMMANDS`), the ring slot reuse four frames later, the 4-state index type `UINT32`.
+   **Measured (FIXE01, 5 November, `HORIZON_RT_PIPELINE=all`):** the structure with its micromap takes 35 to 45 %
+   more than wgpu makes for the quads (more on small sections), so these sections' structures are made for 8/5 their
+   quads plus 16 a geometry. Then 4627 sections carry micromaps (173 left to wgpu), 5 % of their alpha-tested
+   triangles left to the shader, 56 of the 64 MB of pool used. Forest `rays: trace` 3.86 to 2.59 ms, 0.14 ms from
+   the force-opaque floor (2.45); the frame median moves less than its 0.7 ms spread between sessions. Without the
+   pipeline the kernel's ray queries gained nothing in the first (overflowing) run: remeasure. Open terrain: the
+   translucent tint (`HORIZON_RT_SKIP=128` passes glass, water and ice untinted) costs 0.55 ms, 1.0 ms to the floor:
+   the water's sixteen waves per candidate are the next target.
 
 **First runs:** with the Vulkan validation layers (`VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`), log lines
 "Horizon RTX: the top-level structure built by raw Vulkan commands" and "the sun pass as a ray tracing pipeline".

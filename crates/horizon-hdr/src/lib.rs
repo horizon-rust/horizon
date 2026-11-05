@@ -41,7 +41,7 @@ pub fn open_vulkan_device(
         // The RTX 4090 build's opacity micromaps (horizon-rtx `omm`, `HORIZON_RT_OMM=1`): the
         // extension, its feature and what it builds on, where the driver offers them and the
         // device traces rays.
-        let micromaps = std::env::var("HORIZON_RT_OMM").is_ok_and(|v| v == "1")
+        let micromaps = !std::env::var("HORIZON_RT_OMM").is_ok_and(|v| v == "0")
             && offers(ash::ext::opacity_micromap::NAME)
             && desc
                 .required_features
