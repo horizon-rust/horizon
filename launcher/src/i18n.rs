@@ -10,6 +10,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::OnceLock;
 
+pub mod arabic;
+pub mod bidi;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Language {
     #[default]
@@ -280,6 +283,14 @@ impl Language {
         Self::Venetian,
     ];
 
+    /// Whether this language reads right-to-left.
+    pub fn is_rtl(self) -> bool {
+        matches!(
+            self,
+            Self::Arabic | Self::Urdu | Self::Persian | Self::Hebrew | Self::Yiddish
+        )
+    }
+
     /// Its code in `settings.json` and on the command line.
     pub fn code(self) -> &'static str {
         match self {
@@ -389,11 +400,11 @@ impl Language {
             Self::Turkish => "Türkçe",
             Self::Korean => "한국어",
             Self::Croatian => "Hrvatski",
-            Self::Arabic => "العربية",
+            Self::Arabic => "\u{FE94}\u{FEF4}\u{FE91}\u{FEAE}\u{FECC}\u{FEDF}\u{FE8D}",
             Self::Hindi => "हिन्दी",
             Self::Indonesian => "Bahasa Indonesia",
             Self::Portuguese => "Português (Portugal)",
-            Self::Hebrew => "עברית",
+            Self::Hebrew => "תירבע",
             Self::Hungarian => "Magyar",
             Self::Romanian => "Română",
             Self::Danish => "Dansk",
@@ -406,11 +417,11 @@ impl Language {
             Self::Dutch => "Nederlands",
             Self::Vietnamese => "Tiếng Việt",
             Self::Thai => "ไทย",
-            Self::Urdu => "اردو",
+            Self::Urdu => "\u{FEED}\u{FEA9}\u{FEAD}\u{FE8D}",
             Self::Czech => "Čeština",
             Self::Swedish => "Svenska",
             Self::Greek => "Ελληνικά",
-            Self::Persian => "فارسی",
+            Self::Persian => "\u{FBFD}\u{FEB3}\u{FEAD}\u{FE8E}\u{FED3}",
             Self::Catalan => "Català",
             Self::Estonian => "Eesti",
             Self::Latvian => "Latviešu",
@@ -448,7 +459,7 @@ impl Language {
             Self::Igbo => "Igbo",
             Self::Latin => "Latina",
             Self::Tatar => "Татарча",
-            Self::Yiddish => "ייִדיש",
+            Self::Yiddish => "שידיִ",
             Self::Yoruba => "Yorùbá",
             Self::Zulu => "isiZulu",
             Self::Bashkir => "Башҡортса",
@@ -628,7 +639,18 @@ fn table(language: Language) -> &'static Table {
                 serde_json::from_str::<HashMap<String, String>>(l.source())
                     .unwrap_or_default()
                     .into_iter()
-                    .map(|(en, said)| (en, &*Box::leak(said.into_boxed_str())))
+                    .map(|(en, said)| {
+                        let text = if l.is_rtl() {
+                            if said.contains('{') {
+                                said
+                            } else {
+                                bidi::visual_str(&said, true).into_owned()
+                            }
+                        } else {
+                            said
+                        };
+                        (en, &*Box::leak(text.into_boxed_str()))
+                    })
                     .collect()
             })
             .collect()
@@ -656,7 +678,11 @@ pub fn trf(en: &str, args: &[(&str, &str)]) -> String {
     for (name, value) in args {
         out = out.replace(&format!("{{{name}}}"), value);
     }
-    out
+    if current().is_rtl() {
+        bidi::visual_str(&out, true).into_owned()
+    } else {
+        out
+    }
 }
 
 #[cfg(test)]

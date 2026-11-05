@@ -2732,6 +2732,7 @@ dependencies = [
  "tar",
  "toml 1.1.8+spec-1.1.0",
  "trash",
+ "unicode-bidi",
  "ureq",
  "windows 0.62.2",
  "windows-sys 0.61.2",

@@ -235,3 +235,22 @@ fn polish_entries_are_valid_and_keep_placeholders() {
         assert_eq!(holes(en), holes(said), "Polish: {en:?}");
     }
 }
+
+#[test]
+fn arabic_entries_are_reshaped_and_keep_placeholders() {
+    let (_, all) = strings();
+    let table: HashMap<String, String> = serde_json::from_str(Language::Arabic.source()).unwrap();
+    for (en, said) in &table {
+        assert!(all.contains(en), "unused Arabic string: {en:?}");
+        assert!(!said.trim().is_empty(), "empty Arabic string: {en:?}");
+        assert_eq!(holes(en), holes(said), "Arabic: {en:?}");
+    }
+    assert_eq!(
+        tr_in(Language::Arabic, "Language"),
+        "\u{FE94}\u{FED0}\u{FEE0}\u{FEDF}\u{FE8D}"
+    );
+    assert_eq!(
+        Language::Arabic.name(),
+        "\u{FE94}\u{FEF4}\u{FE91}\u{FEAE}\u{FECC}\u{FEDF}\u{FE8D}"
+    );
+}
