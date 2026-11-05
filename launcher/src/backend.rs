@@ -1454,7 +1454,6 @@ pub fn java_game(
 /// What [`download_for_owner`] does with the owner gate's answer: Mojang's files only for its
 /// `owner`, an account the services said owns the game just now.
 #[allow(dead_code)]
-#[allow(dead_code)]
 fn download_for(
     pins: &sources::Pins,
     dir: &Path,

@@ -148,7 +148,7 @@ thread_local! {
 }
 
 /// Reorders `solid`'s quads by bucket, keeping their order inside each.
-pub fn sort(solid: &mut Vec<TerrainVertex>) -> Sides {
+pub fn sort(solid: &mut [TerrainVertex]) -> Sides {
     if solid.is_empty() {
         return Sides::default();
     }
