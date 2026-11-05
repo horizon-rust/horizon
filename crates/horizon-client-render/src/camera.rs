@@ -288,11 +288,21 @@ pub mod joml {
 }
 use joml::{Mat4, Quat};
 
-/// Camera-relative world view used by terrain, sky and the first-person hand.
+/// `Axis.YP.rotateDegrees`: an axis rotation, including JOML's exact right-angle cosine.
+pub fn rotation_y_degrees(degrees: f32) -> glam::Mat4 {
+    let mut matrix = Mat4::IDENTITY;
+    matrix.rotate_y(degrees * DEG_TO_RAD);
+    glam::Mat4::from_cols_array(&matrix.m)
+}
+
+/// `Camera.getViewRotationMatrix`: camera-relative world view for terrain, sky and the hand.
 pub fn view_matrix(yaw: f32, pitch: f32) -> glam::Mat4 {
     // Vanilla uses the conjugate of Camera.rotation, not a world-up look-at.
     let q = Quat::rotation_yxz(PI - yaw * DEG_TO_RAD, -pitch * DEG_TO_RAD, 0.0);
-    glam::Mat4::from_quat(glam::Quat::from_xyzw(-q.x, -q.y, -q.z, q.w))
+    // Matrix4f.rotation retains the rounded quaternion length. A unit-quaternion
+    // shortcut changes the projection of coplanar entity and terrain faces.
+    let matrix = horizon_assets::math::Mat4::IDENTITY.rotate([-q.x, -q.y, -q.z, q.w]);
+    glam::Mat4::from_cols_array_2d(&matrix.0)
 }
 
 /// `CameraType`.

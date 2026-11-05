@@ -302,8 +302,11 @@ public final class VanillaCameraOracle {
                     // Camera.setupPerspective and GameRenderer.render3dHud's hudProjection:
                     // Projection.getMatrix's setPerspective (planes reversed, zero-to-one depth).
                     float w = f(op.get(4)), h = f(op.get(5)), far = f(op.get(6));
+                    out.println("view" + matrix(camera.getViewRotationMatrix(new Matrix4f())));
                     out.println("projection" + matrix(new Matrix4f().setPerspective(fv * (float) (Math.PI / 180.0), w / h, far, 0.05F, true))
                         + matrix(new Matrix4f().setPerspective(hv * (float) (Math.PI / 180.0), w / h, far, 0.05F, true)));
+                    out.println("renderer_projection" + matrix(new Matrix4f().setPerspective(
+                        fv * (float) (Math.PI / 180.0), w / h, far, 0.05F, true)));
                 }
                 default -> throw new IllegalArgumentException(op.toString());
             }

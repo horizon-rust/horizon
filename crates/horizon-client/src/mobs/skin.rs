@@ -434,13 +434,12 @@ impl Walk<'_> {
         let index = self.index;
         let stored = self.stored.parts[index as usize];
         let p = self.poses.pose(part);
-        let m = super::render::posed(base, p);
+        let (m, normals) = super::model_part_transform(base, normals, p);
         if self.poses.is_hidden(part) || p[6] == 0.0 && p[7] == 0.0 && p[8] == 0.0 {
             // The whole subtree is left out.
             self.index = stored.end;
             return;
         }
-        let normals = normals.part(p);
         let n = if normals.trusted {
             normals.matrix
         } else {
