@@ -147,9 +147,28 @@ switch off and a jar in `mods-java/`. Compared: startup to the title screen and 
 and p99, 1% lows, peak memory, binary size. With the switch off, the game reads its arguments once and lists
 `mods-java/` once; no JVM, thread or library is loaded.
 
-**Numbers: pending.** They need a machine with a prepared 26.3 (the fork's cloud workers have none: Mojang's files
-aren't downloaded there). They go here and in the fork's `docs/java-bridge-perf.md` once run. Hot-path hooks
-(mesher, block writes) post their own before/after with their PR.
+Machine: AMD Ryzen 5 9600X, AMD Radeon RX 9070 XT (RADV, Vulkan), Fedora 43 (kernel 6.19.12). Upstream
+a27b7f20f, fork 8cff8dbc4. `--benchmark standard`, mean ± stdev over 5 runs each (frames: over every scene's
+flight). Measured 2026-11-05 with `tools/java_bridge/perf_off.sh 5`.
+
+| | Upstream main | java-bridge, no feature | java-mods build, switch off |
+|---|---|---|---|
+| Runs | 5 | 5 | 5 |
+| Start to title (ms) | 772 ± 259 | 687 ± 8 | 676 ± 22 |
+| Start to in-world (ms) | 2678 ± 300 | 2492 ± 68 | 2462 ± 110 |
+| Average FPS | 3699 ± 338 | 3707 ± 383 | 3597 ± 379 |
+| Frame p50 (ms) | 0.25 ± 0.02 | 0.25 ± 0.02 | 0.25 ± 0.02 |
+| Frame p99 (ms) | 0.74 ± 0.13 | 0.74 ± 0.16 | 0.77 ± 0.16 |
+| 1% low FPS | 856 ± 161 | 847 ± 161 | 827 ± 169 |
+| Peak RSS (MB) | 1119 ± 11 | 1116 ± 15 | 1114 ± 12 |
+| Binary (MB) | 89.9 | 87.9 | 93.4 |
+
+**Reading it:** every difference is inside one standard deviation, so with the switch off the bridge costs
+nothing measurable in start time, frame time or memory. The only real cost is the binary: +3.5 MB for the
+`java-mods` build (the bridge's code and its Java sources). The plain build (no feature), which is what upstream
+releases ship, is the same as main.
+
+Hot-path hooks (mesher, block writes) post their own before/after with their PR.
 
 ## 4. Licences
 
