@@ -554,10 +554,11 @@ override DEBUG: u32 = 0u;
 // `HORIZON_RT_SKIP`, a mask of what the kernel leaves out, to time each part alone (the GPU budget,
 // docs/raytracing.md): 1 the sun's ray, 2 the sky and bounced light (ReSTIR GI), 4 the light
 // sources' (ReSTIR DI), 8 the mirrors and water (PSR); 16 traces the bounced light every frame
-// instead of in turns (`trace`), to measure what the turns save and what they change; 32 leaves the
-// denoiser's anti-lag out (`accumulate`), to see what it changes; 64 the far
+// instead of in turns (`trace`), to measure what the turns save and what they change; 64 the far
 // field (`far_light`, `far_sky`); 128 the translucent candidates' tint (glass, water, ice pass the
-// light untinted: what their shading costs against the force-opaque floor).
+// light untinted: what their shading costs against the force-opaque floor); 256 leaves the
+// denoiser's anti-lag out (`accumulate`), to see what it changes. (32, VR's second eye's own
+// light, never reaches the kernel: shadow_rays.rs `set_skip`.)
 override SKIP: u32 = 0u;
 
 // Ray-traced shadows (gfx/voxels.rs, docs/raytracing.md): whether world block `v` is in the grid.
@@ -1889,7 +1890,7 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
         slow_mask.b = seen_bound;
         lag = lag || abs(seen_bound - seen_held) > ANTILAG_VISIBILITY;
     }
-    if lag && (SKIP & 32u) == 0u { n = min(n, ANTILAG_HISTORY); }
+    if lag && (SKIP & 256u) == 0u { n = min(n, ANTILAG_HISTORY); }
     let k = 1.0 / (n + 1.0);
     return Traced(vec4(mix(slow_mask, v.rays.rgb, k), v.rays.a),
         vec4(mix(slow_blocks, v.blocks.rgb, k), v.blocks.a),
