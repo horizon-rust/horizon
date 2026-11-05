@@ -274,6 +274,24 @@ impl Bindings {
 }
 
 /// A triangle geometry of `quads` quads (four vertices, two triangles each).
+/// How much larger a section's structure is made for its micromaps: 8/5 its quads.
+const OMM_GROWTH: [u32; 2] = [8, 5];
+
+/// A section's structure, for geometries of `sizes`.
+fn section_blas(
+    device: &wgpu::Device,
+    sizes: Vec<wgpu::BlasTriangleGeometrySizeDescriptor>,
+) -> wgpu::Blas {
+    device.create_blas(
+        &wgpu::CreateBlasDescriptor {
+            label: Some("RT lighting's section"),
+            flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
+            update_mode: wgpu::AccelerationStructureUpdateMode::Build,
+        },
+        wgpu::BlasGeometrySizeDescriptors::Triangles { descriptors: sizes },
+    )
+}
+
 fn quads_geometry(
     quads: u32,
     flags: wgpu::AccelerationStructureGeometryFlags,
@@ -547,19 +565,28 @@ impl HwRays {
             })
             .collect();
         let buffers: Vec<_> = todo.iter().map(|t| pages(t.page)).collect();
+        // The cutout sections with micromaps (`hw_micromaps`), with the raw top-level build: their
+        // structure is made larger than wgpu's own for its quads (a micromap's structure takes
+        // 35 to 45 % more on the 4090), then built by raw commands, the micromaps attached.
+        let plans: Vec<_> = todo
+            .iter()
+            .map(|t| self.micromaps.take(t.key).filter(|_| self.raw.is_some()))
+            .collect();
         let mut entries = Vec::with_capacity(todo.len());
         let mut made = Vec::with_capacity(todo.len());
-        for (t, size) in todo.iter().zip(&sizes) {
-            let mut blas = device.create_blas(
-                &wgpu::CreateBlasDescriptor {
-                    label: Some("RT lighting's section"),
-                    flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
-                    update_mode: wgpu::AccelerationStructureUpdateMode::Build,
-                },
-                wgpu::BlasGeometrySizeDescriptors::Triangles {
-                    descriptors: size.clone(),
-                },
-            );
+        for ((t, size), plan) in todo.iter().zip(&sizes).zip(&plans) {
+            let mut blas = if plan.is_some() {
+                let larger: Vec<_> = size
+                    .iter()
+                    .map(|g| {
+                        let quads = (g.vertex_count / 4 * OMM_GROWTH[0]).div_ceil(OMM_GROWTH[1]);
+                        quads_geometry(quads, g.flags)
+                    })
+                    .collect();
+                section_blas(device, larger)
+            } else {
+                section_blas(device, size.clone())
+            };
             let address = self
                 .raw
                 .as_ref()
@@ -580,12 +607,7 @@ impl HwRays {
             }
             made.push((blas, address));
         }
-        // The cutout sections with micromaps (`hw_micromaps`), with the raw top-level build:
-        // built by raw commands, the micromaps attached; those that don't fit, through wgpu.
-        let plans: Vec<_> = todo
-            .iter()
-            .map(|t| self.micromaps.take(t.key).filter(|_| self.raw.is_some()))
-            .collect();
+        // Those that don't fit after all go through wgpu, in a structure of their own size.
         let mut holds: Vec<Option<super::hw_micromaps::Hold>> =
             (0..todo.len()).map(|_| None).collect();
         if plans.iter().any(Option::is_some) {
@@ -620,6 +642,16 @@ impl HwRays {
                 holds[i] = hold;
             }
             self.raw_sections = commands;
+            for (i, ((blas, address), size)) in made.iter_mut().zip(&sizes).enumerate() {
+                if plans[i].is_some() && holds[i].is_none() {
+                    *blas = section_blas(device, size.clone());
+                    *address = self
+                        .raw
+                        .as_ref()
+                        .and_then(|r| r.blas_address(blas))
+                        .unwrap_or(0);
+                }
+            }
         }
         let raw_built: Vec<bool> = holds.iter().map(Option::is_some).collect();
         for (((t, (blas, address)), (solid, _)), hold) in
