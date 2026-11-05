@@ -1,4 +1,4 @@
-//! The cutout sections' bottom-level structures with opacity micromaps (`HORIZON_RT_OMM=1`,
+//! The cutout sections' bottom-level structures with opacity micromaps (on with `rtx`, `HORIZON_RT_OMM=0` off,
 //! docs/rtx-4090-handoff.md): `VK_EXT_opacity_micromap`, the Vulkan side of DXR 1.2's opacity
 //! micromaps. A section whose alpha-tested geometries gain from them (`micromap::Cache::section`)
 //! has its micromap built here, in a pool of Horizon's own, and its structure (wgpu's, made by
@@ -292,7 +292,7 @@ impl RawSections {
     }
 
     /// The raw builds, on a Vulkan device with `VK_EXT_opacity_micromap` enabled
-    /// (horizon-hdr's device) and `HORIZON_RT_OMM=1`; `None` otherwise.
+    /// (horizon-hdr's device) unless `HORIZON_RT_OMM=0`; `None` otherwise.
     pub fn new(device: &wgpu::Device) -> Option<Self> {
         if !wanted() {
             return None;

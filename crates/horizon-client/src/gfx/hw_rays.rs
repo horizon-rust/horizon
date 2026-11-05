@@ -195,7 +195,7 @@ pub struct HwRays {
     raw_build: Option<wgpu::CommandBuffer>,
     /// This frame's raw builds of sections with opacity micromaps, submitted before it.
     raw_sections: Option<wgpu::CommandBuffer>,
-    /// The cutout sections' opacity micromaps (the `rtx` feature, `HORIZON_RT_OMM=1`).
+    /// The cutout sections' opacity micromaps (the `rtx` feature, `HORIZON_RT_OMM=0` turns them off).
     pub micromaps: super::hw_micromaps::Micromaps,
     /// Where each instance's quads are, by its custom data (shadow_rays_hw.wgsl `instances`,
     /// `row`): the page, the solid quads' first vertex, the translucent ones', the translucent

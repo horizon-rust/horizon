@@ -1,4 +1,4 @@
-//! RT lighting's opacity micromaps (the RTX 4090 build, `rtx` feature, `HORIZON_RT_OMM=1`;
+//! RT lighting's opacity micromaps (the RTX 4090 build, `rtx` feature, `HORIZON_RT_OMM=0` turns them off;
 //! horizon-rtx `micromap` and `omm`): each cutout section's micromaps, worked out on the CPU when
 //! it is meshed from its quads' sprites and texture coordinates, for the raw build of its
 //! structure (`hw_rays`). Without the feature, or the device's extension, nothing: wgpu builds
