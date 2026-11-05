@@ -155,8 +155,16 @@ fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>, focus: bool) -> vec
         if !focus { return dimmed; }
         let footprint = length(pos) * 1.5 / rt.size.y;
         // How open the water lies, in its colour's alpha (mesher.rs `with_sea`).
-        return dimmed * water_caustics(floor_at.xz, depth, l, rt.water.z, footprint,
-            f32(w >> 28u) / 15.0);
+        let sea = f32(w >> 28u) / 15.0;
+        // The first water a shadow ray crosses keeps its caustics for when the ray is known to
+        // reach the light (`hw_light`): a floor in shadow costs no waves.
+        if !hw_caustic_on {
+            hw_caustic_on = true;
+            hw_caustic = vec4(floor_at.xz, depth, footprint);
+            hw_caustic_sea = sea;
+            return dimmed;
+        }
+        return dimmed * water_caustics(floor_at.xz, depth, l, rt.water.z, footprint, sea);
     }
     // Glass, and every other translucent block: each face it crosses is a wall (`glass_wall`).
     let p0 = hw_position(base);
@@ -216,11 +224,17 @@ fn hw_glass(c: RayIntersection, base: u32) -> vec4<f32> {
 // The light the drawn terrain lets through from camera-relative `pos` along `l` (unit) for
 // `reach`: none once a triangle's opaque texel is met, otherwise what the translucent ones it
 // crosses let through, in colour.
+// The caustics of the first water a shadow ray crosses (`hw_tint`), worked out once the ray is
+// known to reach the light: the floor point (x, z), the depth, the pixel's footprint; the sea.
+var<private> hw_caustic_on: bool;
+var<private> hw_caustic: vec4<f32>;
+var<private> hw_caustic_sea: f32;
 fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     var q: ray_query;
     // The instances stand around their anchor (gfx/hw_rays.rs): the camera's offset from it.
     rayQueryInitialize(&q, terrain, RayDesc(0x0u, 0xffu, 0.0, reach, pos + rt.hw_offset.xyz, l));
     var through = vec3(1.0);
+    hw_caustic_on = false;
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);
         if c.geometry_index == instances[c.instance_custom_data].at.w {
@@ -232,7 +246,12 @@ fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
         }
     }
     let hit = rayQueryGetCommittedIntersection(&q);
-    return select(through, vec3(0.0), hit.kind != RAY_QUERY_INTERSECTION_NONE);
+    if hit.kind != RAY_QUERY_INTERSECTION_NONE { return vec3(0.0); }
+    if hw_caustic_on {
+        through *= water_caustics(hw_caustic.xy, hw_caustic.z, l, rt.water.z, hw_caustic.w,
+            hw_caustic_sea);
+    }
+    return through;
 }
 // RT lighting's water (terrain.wgsl `rt_water`, shadow_rays_hw.wgsl `hw_tint` and `hw_reflect`): the
 // surface's waves at world `p` (x, z) and `t` seconds, a sum of sixteen plane waves of every
@@ -388,8 +407,9 @@ fn water_mean(d: f32) -> f32 {
 // eye it blurs to its mean, rather than shimmer.
 fn water_caustics(p: vec2<f32>, depth: f32, l: vec3<f32>, t: f32, footprint: f32, sea: f32)
     -> vec3<f32> {
-    // Deep down the network is washed out and finer than a pixel: nothing to compute.
-    if depth > 14.0 { return vec3(1.0); }
+    // Deep down the network is washed out and finer than a pixel, and past a quarter block a
+    // pixel it is blurred to its mean (`keeps` below is 0): nothing to compute.
+    if depth > 14.0 || footprint >= 0.25 { return vec3(1.0); }
     let x = p - depth * water_bent(vec2(0.0), l, WATER_INDEX_RGB.y);
     let w = water_surface(x, t, footprint, sea);
     let det = vec3(water_area(w.slope, w.curvature, depth, l, WATER_INDEX_RGB.x),
