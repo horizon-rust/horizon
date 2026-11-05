@@ -288,8 +288,21 @@ pub type PipelinePass<'a> = dyn FnMut(
         &mut wgpu::CommandEncoder,
         &wgpu::Buffer,
         [u32; 2],
+        &PassReads<'_>,
     ) -> (Option<wgpu::TextureView>, Option<[wgpu::TextureView; 2]>)
     + 'a;
+
+/// What of the kernel's own the bounce pass reads (horizon-rtx `KernelReads`): the sky table, the
+/// view's last masks and reservoirs, the radiance cache.
+#[cfg_attr(not(feature = "rtx"), allow(dead_code))]
+pub struct PassReads<'a> {
+    pub sky: &'a wgpu::TextureView,
+    pub last_mask: &'a wgpu::TextureView,
+    pub last_light: &'a wgpu::TextureView,
+    pub last_direct: &'a wgpu::TextureView,
+    pub last_gi: [&'a wgpu::TextureView; 2],
+    pub cache: &'a wgpu::Buffer,
+}
 
 pub struct ShadowRays {
     /// RT lighting's denoiser (denoise.wgsl): its pipeline and layout, a uniform a pass.
@@ -1046,7 +1059,15 @@ impl ShadowRays {
         uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));
         // The sun pass, after the uniform it reads is written and before the kernel reads it.
         let (sun_view, gi_views) = sun_pass.map_or((None, None), |(_, pass)| {
-            pass(encoder, &self.uniform, mask_size)
+            let reads = PassReads {
+                sky,
+                last_mask: &last_mask,
+                last_light: &last_light,
+                last_direct: &last_direct,
+                last_gi: [&last_gi[0], &last_gi[1]],
+                cache: &self.cache,
+            };
+            pass(encoder, &self.uniform, mask_size, &reads)
         });
         let view = |binding, view| wgpu::BindGroupEntry {
             binding,

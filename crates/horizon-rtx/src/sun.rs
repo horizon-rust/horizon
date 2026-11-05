@@ -38,6 +38,20 @@ pub struct SunInputs<'a> {
     pub atlas: &'a wgpu::TextureView,
     /// Sprite layers past the first array are taken as opaque (the kernel's `SPRITE_SPLIT`).
     pub sprite_split: u32,
+    /// What the bounce pass reads of the kernel's own (`KernelReads`).
+    pub kernel: KernelReads<'a>,
+}
+
+/// The trace kernel's resources the bounce pass reads (gi.rgen): the sky table, the view's last
+/// masks (`last_mask`, `last_light_mask`, `last_direct`), its last reservoirs (`last_gi_a`,
+/// `last_gi_b`) and the radiance cache.
+pub struct KernelReads<'a> {
+    pub sky: &'a wgpu::TextureView,
+    pub last_mask: &'a wgpu::TextureView,
+    pub last_light: &'a wgpu::TextureView,
+    pub last_direct: &'a wgpu::TextureView,
+    pub last_gi: [&'a wgpu::TextureView; 2],
+    pub cache: &'a wgpu::Buffer,
 }
 
 pub use crate::{Kinds, PassViews};
@@ -193,6 +207,19 @@ impl SunPass {
                     vk::ShaderStageFlags::RAYGEN_KHR,
                 ),
             ]);
+            // The kernel's own the bounce pass reads: six textures, the radiance cache.
+            for b in 18..24 {
+                bindings.push(binding(
+                    b,
+                    vk::DescriptorType::SAMPLED_IMAGE,
+                    vk::ShaderStageFlags::RAYGEN_KHR,
+                ));
+            }
+            bindings.push(binding(
+                24,
+                vk::DescriptorType::STORAGE_BUFFER,
+                vk::ShaderStageFlags::RAYGEN_KHR,
+            ));
             let set_layout = raw_device
                 .create_descriptor_set_layout(
                     &vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings),
@@ -298,7 +325,7 @@ impl SunPass {
                     .descriptor_count(count),
                 vk::DescriptorPoolSize::default()
                     .ty(vk::DescriptorType::SAMPLED_IMAGE)
-                    .descriptor_count(3 * count),
+                    .descriptor_count(9 * count),
                 vk::DescriptorPoolSize::default()
                     .ty(vk::DescriptorType::STORAGE_IMAGE)
                     .descriptor_count(3 * count),
@@ -307,7 +334,7 @@ impl SunPass {
                     .descriptor_count(count),
                 vk::DescriptorPoolSize::default()
                     .ty(vk::DescriptorType::STORAGE_BUFFER)
-                    .descriptor_count((ARENA_PAGES as u32 + 2) * count),
+                    .descriptor_count((ARENA_PAGES as u32 + 3) * count),
             ];
             let pool = raw_device
                 .create_descriptor_pool(
@@ -521,7 +548,11 @@ impl SunPass {
             .arena
             .iter()
             .map(storage)
-            .chain([storage(inputs.instances), storage(inputs.dynamics)])
+            .chain([
+                storage(inputs.instances),
+                storage(inputs.dynamics),
+                storage(inputs.kernel.cache),
+            ])
             .chain([wgpu::BufferTransition {
                 buffer: inputs.uniform,
                 state: wgpu::BufferUses::UNIFORM,
@@ -538,6 +569,12 @@ impl SunPass {
             sampled(inputs.depth.texture()),
             sampled(inputs.sprites.texture()),
             sampled(inputs.atlas.texture()),
+            sampled(inputs.kernel.sky.texture()),
+            sampled(inputs.kernel.last_mask.texture()),
+            sampled(inputs.kernel.last_light.texture()),
+            sampled(inputs.kernel.last_direct.texture()),
+            sampled(inputs.kernel.last_gi[0].texture()),
+            sampled(inputs.kernel.last_gi[1].texture()),
             written(&sun_texture),
             written(&gi_a_texture),
             written(&gi_b_texture),
@@ -601,6 +638,11 @@ impl SunPass {
                 vk::DescriptorType::STORAGE_BUFFER,
                 buffer(inputs.dynamics),
             );
+            buffer_write(
+                24,
+                vk::DescriptorType::STORAGE_BUFFER,
+                buffer(inputs.kernel.cache),
+            );
             let mut descriptor_writes: Vec<vk::WriteDescriptorSet> = writes
                 .iter()
                 .map(|&(binding, ty, i)| {
@@ -632,6 +674,22 @@ impl SunPass {
                     sampler: vk::Sampler::null(),
                     image_view: image(v).unwrap_or_default(),
                     image_layout: vk::ImageLayout::GENERAL,
+                }]
+            });
+            let kernel = &inputs.kernel;
+            let read_infos = [
+                kernel.sky,
+                kernel.last_mask,
+                kernel.last_light,
+                kernel.last_direct,
+                kernel.last_gi[0],
+                kernel.last_gi[1],
+            ]
+            .map(|v| {
+                [vk::DescriptorImageInfo {
+                    sampler: vk::Sampler::null(),
+                    image_view: image(v).unwrap_or_default(),
+                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 }]
             });
             let atlas_info = [vk::DescriptorImageInfo {
@@ -680,6 +738,13 @@ impl SunPass {
                     .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                     .image_info(&gi_infos[1]),
             ]);
+            descriptor_writes.extend((18..).zip(&read_infos).map(|(binding, info)| {
+                vk::WriteDescriptorSet::default()
+                    .dst_set(set)
+                    .dst_binding(binding)
+                    .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                    .image_info(info)
+            }));
             self.device.update_descriptor_sets(&descriptor_writes, &[]);
 
             let [width, height] = inputs.mask_size;

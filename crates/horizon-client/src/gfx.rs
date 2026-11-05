@@ -4412,7 +4412,8 @@ impl Renderer {
                 Some(
                     move |encoder: &mut wgpu::CommandEncoder,
                           uniform: &wgpu::Buffer,
-                          mask_size: [u32; 2]| {
+                          mask_size: [u32; 2],
+                          reads: &shadow_rays::PassReads<'_>| {
                         let views = pass.run(
                             device,
                             encoder,
@@ -4428,6 +4429,14 @@ impl Renderer {
                                 dynamics: &bindings.dynamics,
                                 atlas: &bindings.atlas,
                                 sprite_split: sprite_split(),
+                                kernel: horizon_rtx::KernelReads {
+                                    sky: reads.sky,
+                                    last_mask: reads.last_mask,
+                                    last_light: reads.last_light,
+                                    last_direct: reads.last_direct,
+                                    last_gi: reads.last_gi,
+                                    cache: reads.cache,
+                                },
                             },
                         );
                         (views.sun, views.gi)

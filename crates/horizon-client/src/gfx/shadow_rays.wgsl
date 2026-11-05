@@ -64,11 +64,12 @@ struct Rt {
 // texel a ray, traced by a ray tracing pipeline before this kernel, read in place of
 // `sun_disc_ray` for the primary surface where `rt.mode.w`'s bit 0 says it was (1x1 otherwise).
 @group(0) @binding(61) var sun_pass: texture_2d<f32>;
-// The same pipeline's bounce pass (horizon-rtx `gi.rgen`): ReSTIR GI's new sample, its ray traced
-// and its hit's colour and sun light shaded after the threads were reordered by what they hit,
-// where `rt.mode.w`'s bit 1 says it ran (1x1 otherwise): `gi_pass_a` the hit (camera-relative)
-// and what it is (w: 0 this kernel traces, 1 a hit, 2 the sky, 3 a hit coloured by the block
-// grid), `gi_pass_b` its face (snorm8x4), its colour and the sun's light on it (halves).
+// The same pipeline's bounce pass (horizon-rtx `gi.rgen`): this kernel's ReSTIR GI (`restir_gi`)
+// ported whole, each hit shaded after the threads were reordered by what they hit, where
+// `rt.mode.w`'s bit 1 says it ran (1x1 otherwise): the reservoir as `gi_out_a` and `gi_out_b`
+// store it, `gi_pass_b`'s w 0 where this kernel is to trace (water or glass on a ray's way, a
+// second bounce lit by neither cache, the Eye of Aldhani), 1 the pass's, 2 the same and the
+// pixel's own ray reached the sky.
 @group(0) @binding(62) var gi_pass_a: texture_2d<f32>;
 @group(0) @binding(63) var gi_pass_b: texture_2d<u32>;
 fn pass_ran(bit: u32) -> bool {
@@ -953,26 +954,6 @@ fn hit_normal(at: vec3<f32>, cell: vec3<i32>) -> vec3<f32> {
 // This frame's sample at camera-relative `pos` (normal `n`), and whether it is the sky's (w 1).
 fn gi_sample(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>) -> GiSample {
     let d = cosine_dir(n, random2(texel, 1u));
-    // The bounce pass's ray and hit where it took them (the same ray: its texel's random numbers
-    // and the same surface), the rest of the hit's light from here (`bounce_rest`). A ray it left
-    // (water or glass on the way, a texel it did not trace this turn) is traced below.
-    if HW && pass_ran(2u) && sun_from_pass {
-        let a = textureLoad(gi_pass_a, texel, 0);
-        if a.w > 1.5 && a.w < 2.5 { return GiSample(a.xyz, -d, sky_at(d)); }
-        if a.w > 0.5 {
-            let b = textureLoad(gi_pass_b, texel, 0);
-            let normal = normalize(unpack4x8snorm(b.x).xyz);
-            let colour = unpack2x16float(b.z);
-            var albedo = vec3(unpack2x16float(b.y), colour.x);
-            let sun = vec3(colour.y, unpack2x16float(b.w));
-            if a.w > 2.5 {
-                // No sprite's colour: the block grid's, as `hw_hit` falls back to.
-                let cell = vec3<i32>(floor(a.xyz - normal * 0.01 + rt.camera.xyz + rt.fraction.xyz));
-                albedo = max(map_albedo(cell), vec3(0.0));
-            }
-            return GiSample(a.xyz, normal, albedo * (sun + bounce_rest(a.xyz, normal)));
-        }
-    }
     // The hybrid's exact triangles and their textures where the GPU traces rays, as Remix's.
     if HW {
         let h = hw_hit(pos, d, 4096.0);
@@ -1016,6 +997,19 @@ fn last_gi(at: vec2<i32>) -> GiReservoir {
 const GI_HISTORY: f32 = 20.0;
 fn restir_gi(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>, last_at: vec2<i32>, has_last: bool)
     -> vec4<f32> {
+    // The bounce pass's reservoir where it made one: the light it stands for, as below.
+    if HW && pass_ran(2u) && sun_from_pass {
+        let b = textureLoad(gi_pass_b, texel, 0);
+        if b.w != 0u {
+            let a = textureLoad(gi_pass_a, texel, 0);
+            gi_out_a = a;
+            gi_out_b = vec4(b.xyz, 0u);
+            let rg = unpack2x16float(b.x);
+            let bm = unpack2x16float(b.y);
+            let cosine = max(dot(n, normalize(a.xyz - pos)), 0.0);
+            return vec4(vec3(rg, bm.x) * cosine * a.w / 3.14159265, select(0.0, 1.0, b.w == 2u));
+        }
+    }
     let own = gi_sample(pos, n, texel);
     // The new candidate, drawn by the cosine: its weight its aim over that chance (pi cancels
     // the cosine, Lambert's 1/pi is in the light's units).

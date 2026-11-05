@@ -355,7 +355,7 @@ pub struct PassViews {
 #[cfg(not(target_os = "macos"))]
 pub mod sun;
 #[cfg(not(target_os = "macos"))]
-pub use sun::{SunInputs, SunPass};
+pub use sun::{KernelReads, SunInputs, SunPass};
 
 /// No raw Vulkan on macOS: the kernel traces its own sun.
 #[cfg(target_os = "macos")]
@@ -372,6 +372,15 @@ pub mod sun {
         pub dynamics: &'a wgpu::Buffer,
         pub atlas: &'a wgpu::TextureView,
         pub sprite_split: u32,
+        pub kernel: KernelReads<'a>,
+    }
+    pub struct KernelReads<'a> {
+        pub sky: &'a wgpu::TextureView,
+        pub last_mask: &'a wgpu::TextureView,
+        pub last_light: &'a wgpu::TextureView,
+        pub last_direct: &'a wgpu::TextureView,
+        pub last_gi: [&'a wgpu::TextureView; 2],
+        pub cache: &'a wgpu::Buffer,
     }
     pub struct SunPass;
     impl SunPass {
@@ -393,7 +402,7 @@ pub mod sun {
     }
 }
 #[cfg(target_os = "macos")]
-pub use sun::{SunInputs, SunPass};
+pub use sun::{KernelReads, SunInputs, SunPass};
 
 /// No raw Vulkan on macOS: the structure is wgpu's to build.
 #[cfg(target_os = "macos")]

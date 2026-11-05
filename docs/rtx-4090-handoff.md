@@ -46,21 +46,23 @@ RTX-Remix-Materials pack); nothing here has run on a GPU in the agent's session.
    `EXPERIMENTAL_RAY_TRACING_PIPELINES` (gfx.rs) and the reorder extension through `horizon-hdr`'s device hook.
    Descriptor sets are a ring of four; resources are put in state by `transition_resources`.
 
-3. **The bounce pass: ReSTIR GI's new sample in the pipeline** (`horizon-rtx/shaders/gi.rgen`, a second ray
-   generation of the same pipeline, its set and its hit group): `HORIZON_RT_PIPELINE=gi` (or `all` with the sun
-   pass), `HORIZON_RT_SER=0` to trace without reordering and time what it gives. For each mask texel on its
-   bounce turn (`tile_of`, the kernel's 2x2 pattern), the kernel's cosine-weighted ray from the lifted surface
-   (`gi_sample`'s, same random numbers), `reorderThreadNV`, then the hit shaded in the ray generation: the face
-   from the quad's corners, the colour from its sprite or the entity atlas (`hw_hit`), the sun's light on it
-   through a terminate-on-first-hit shadow ray (`sun_on`). Outputs `gi_a` (hit, kind) and `gi_b` (face, colour,
-   sun light), read by the kernel at bindings 62 and 63 (`gi_sample`, `rt.mode.w` bit 1); the kernel finishes the
-   hit's light (`bounce_rest`: the radiance cache, the last frame's screen, the second bounce) and the
-   reservoirs. Left to the kernel, so the picture stays its own: a ray or its sun ray that crossed water, glass
-   or ice (`sun.rahit` sets the payload below 0 on a translucent candidate), texels just seen in a tile off its
-   turn, a hit with no sprite colour (the kernel takes the block grid's, kind 3). Gap: VR's second eye still runs
-   the pass where it takes the first eye's light. Expected: the kernel's GI ray and its hit's shading out of the
-   WGSL loop (GI was 70 % of the trace); at stake about 1 ms of the 2.2 in open terrain, against the pass's own
-   cost (the sun pass showed 0.4 to 0.7 ms more than its ray in the kernel, for a coherent ray SER can't help).
+3. **The bounce pass: ReSTIR GI whole in the pipeline** (`horizon-rtx/shaders/gi.rgen`, a second ray generation
+   of the sun pass's pipeline, its set and its hit group): `HORIZON_RT_PIPELINE=gi` (or `all` with the sun pass),
+   `HORIZON_RT_SER=0` to trace without reordering and time what it gives. The kernel's `restir_gi` ported one for
+   one, each hit shaded after `reorderThreadNV`: the new sample (cosine-weighted ray, the hit's colour from its
+   sprite or the entity atlas, its sun through a shadow ray, the rest from the radiance cache or the last frame's
+   screen, else a second bounce lit the same way), then the reuse (the last reservoir where the surface was and two
+   neighbours', the visibility ray) and the kernel's turns (`tile_of`, `restir_last`). It reads the kernel's sky
+   table, last masks, last reservoirs and cache (set bindings 18 to 24) and writes the reservoir as the kernel
+   stores it (`gi_a`, `gi_b`), which the kernel takes at bindings 62 and 63 (`restir_gi`, `rt.mode.w` bit 1).
+   Left to the kernel (`gi_b` w 0) so the picture stays its own: a ray (or a sun ray at a hit) that crossed water,
+   glass or ice (`sun.rahit` sets the payload below 0 on a translucent candidate); a hit with no sprite colour; a
+   second bounce lit by neither cache (`open_light`); the Eye of Aldhani; texels the kernel rests. **One
+   difference:** the reuse's visibility ray meets the drawn triangles, where the kernel's marches the voxel grid
+   (`ray`): compare captures. Gap: VR's second eye still runs the pass where it takes the first eye's light.
+   At stake: GI was 70 % of the trace (about 1.5 of 2.2 ms in open terrain), against the pass's own cost (the sun
+   pass, a coherent ray SER can't help, cost 0.4 to 0.7 ms more than its ray in the kernel) and what a ray
+   generation can't do that the kernel does (workgroup tiles skipped whole, shared rays in VR's periphery).
 
 **First runs:** with the Vulkan validation layers (`VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`), log lines
 "Horizon RTX: the top-level structure built by raw Vulkan commands" and "the sun pass as a ray tracing pipeline".
@@ -86,8 +88,8 @@ barriers' stages, a buffer whose usage lacks what the transition needs.
 
 1. **Validate bricks 1 and 2 on the GPU** (above). Fix what the layers report. Then the picture with and without
    `HORIZON_RT_PIPELINE=1` (same, outside glass and water), then `rays: trace` in `gpu-passes`.
-2. **Port ReSTIR GI into the pipeline** (started: the bounce pass, above; measure it with `HORIZON_RT_SER` on
-   and off, against the kernel alone, before porting more) (`shadow_rays.wgsl` `restir_gi`, `hw_hit`, the radiance cache reads and
+2. **Port ReSTIR GI into the pipeline** (done, untested: the bounce pass, above; measure it with
+   `HORIZON_RT_SER` on and off, against the kernel alone) (`shadow_rays.wgsl` `restir_gi`, `hw_hit`, the radiance cache reads and
    writes), the real target of shader execution reordering: the bounce rays' hits shaded after the reorder. The sun
    pass is the template: same descriptor set (extend it with the kernel's other bindings: masks, reservoirs, cache,
    lights, cells), same `Rt` uniform, one more raygen. Keep the WGSL kernel as the fallback and compare captures.

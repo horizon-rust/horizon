@@ -1,21 +1,27 @@
 #version 460
-// RT lighting's bounced light (ReSTIR GI's new sample) as a ray tracing pipeline
-// (docs/rtx-4090-handoff.md, "Next" 2): for each mask texel of a view, the ray the trace kernel's
-// `gi_sample` (gfx/shadow_rays.wgsl) casts from the primary surface, cosine-weighted, through the
-// drawn triangles (the cutouts alpha-tested by sun.rahit), with the hardware reordering the threads
-// by what they hit (`reorderThreadNV`) before the hit is shaded: the surface's colour from its
-// sprite (`hw_hit`'s `hw_texel`, `hw_entity_texel`) and the sun's light on it through a shadow ray
-// (`sun_on`). The kernel takes this in place of its own ray and finishes the sample's light
-// (the radiance cache, the last frame's screen, a second bounce: `bounce_rest`) and the reservoirs.
+// RT lighting's bounced light, ReSTIR GI (gfx/shadow_rays.wgsl `restir_gi`), as a ray tracing
+// pipeline (docs/rtx-4090-handoff.md, "Next" 2): for each mask texel of a view, the trace kernel's
+// whole GI, ported one for one, with the hardware reordering the threads by what they hit
+// (`reorderThreadNV`) before each hit is shaded:
+// - the new sample (`gi_sample`): a cosine-weighted ray from the primary surface; at its hit the
+//   surface's colour (`hw_hit`), the sun's light through a shadow ray (`sun_on`) and the rest
+//   (`bounce_rest`: the radiance cache, the last frame's screen, else a second bounce, its own hit
+//   lit the same way);
+// - the reuse (`restir_gi`): the last frame's reservoir where the surface was and two neighbours'
+//   there, a sample taken from elsewhere kept only if this pixel sees it (a visibility ray).
+// The kernel takes the reservoir and the light from here (`gi_pass_a`, `gi_pass_b`).
 //
-// What this pass leaves to the kernel (`gi_out` w 0), so that the picture stays the kernel's:
-// a ray, or the sun's ray at its hit, that crossed water, stained glass or ice (their tint and
-// caustics, `hw_tint`); the texels the kernel rests this frame and those it does not know it
-// rests (a surface just seen in a tile not traced this turn: it reads its last frame's mask).
+// What this pass leaves to the kernel (`gi_b` w 0), so that the picture stays the kernel's: a
+// ray (the bounces', their sun rays) that crossed water, stained glass or ice (their tint and
+// caustics, `hw_tint`); a hit with no sprite colour (the block grid's); a second bounce lit by
+// neither the cache nor the last frame (`open_light`'s light sources); the Eye of Aldhani (its
+// glow in the sky); the texels the kernel rests this frame. One difference, measured apart: the
+// visibility ray meets the drawn triangles (the kernel's marches its voxel grid).
 //
-// Outputs, a texel a ray: `gi_a` the hit point (camera-relative, xyz) and what it is (w: 0 the
-// kernel traces, 1 a hit, 2 the sky, 3 a hit whose colour the kernel takes from its block grid);
-// `gi_b` the face's normal (snorm8x4), the colour (rgb, halves) and the sun's light on it (rgb).
+// Outputs, a texel a ray, the kernel's reservoir as it stores it (`gi_out_a`, `gi_out_b`): `gi_a`
+// the chosen sample's point (camera-relative) and its weight; `gi_b` its light (halves: r g, b
+// and the candidates seen), its face (snorm8x4), and w: 0 the kernel traces, 1 the pass's
+// reservoir, 2 the same and this frame's own ray reached the sky.
 #extension GL_EXT_ray_tracing : require
 #extension GL_NV_shader_invocation_reorder : require
 #extension GL_EXT_samplerless_texture_functions : require
@@ -60,6 +66,16 @@ layout(set = 0, binding = 14) readonly buffer Dynamics { uint w[]; } dynamics;
 layout(set = 0, binding = 15) uniform texture2D entity_atlas;
 layout(set = 0, binding = 16, rgba32f) uniform writeonly image2D gi_a;
 layout(set = 0, binding = 17, rgba32ui) uniform writeonly uimage2D gi_b;
+// The kernel's: the sky table, the last frame's masks (distance in `last_mask`'s a, the light
+// other than the sun's in `last_light_mask`, the face in `last_direct`'s a), its reservoirs, and
+// the radiance cache (nine words a cell, `CacheCell`).
+layout(set = 0, binding = 18) uniform texture2D sky_view;
+layout(set = 0, binding = 19) uniform texture2D last_mask;
+layout(set = 0, binding = 20) uniform texture2D last_light_mask;
+layout(set = 0, binding = 21) uniform texture2D last_direct;
+layout(set = 0, binding = 22) uniform texture2D last_gi_a;
+layout(set = 0, binding = 23) uniform utexture2D last_gi_b;
+layout(set = 0, binding = 24) readonly buffer Cache { uint w[]; } cache;
 // `sprite_split` as sun.rahit's; `flags` bit 0: reorder the threads (`HORIZON_RT_SER=0` clears it,
 // to time what the reordering gives).
 layout(push_constant) uniform Push { uint sprite_split; uint flags; } push;
@@ -188,90 +204,335 @@ uint tile_of(uvec2 t, uint bits) {
     return k & ((1u << bits) - 1u);
 }
 
+
+float luminance(vec3 c) {
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+// The kernel's `finite`: NaNs and infinities as 0, by their bits.
+float finite(float x) {
+    return (floatBitsToUint(x) & 0x7f800000u) == 0x7f800000u ? 0.0 : x;
+}
+vec3 finite3(vec3 v) {
+    return vec3(finite(v.x), finite(v.y), finite(v.z));
+}
+float face_of(vec3 n) {
+    vec3 a = abs(n);
+    float axis = 2.0;
+    if (a.x >= a.y && a.x >= a.z) {
+        axis = 0.0;
+    } else if (a.y >= a.z) {
+        axis = 1.0;
+    }
+    float s = axis < 2.0 ? (axis == 0.0 ? n.x : n.y) : n.z;
+    return axis * 2.0 + (s < 0.0 ? 1.0 : 0.0);
+}
+float face_in(float a) {
+    return a - 8.0 * floor(a / 8.0);
+}
+
+// The kernel's `sky_table` (`sky_at` but for the Eye of Aldhani, which this pass leaves to it).
+vec3 sky_texel(ivec2 at, ivec2 top) {
+    return texelFetch(sky_view, clamp(at, ivec2(0), top), 0).rgb;
+}
+vec3 sky_at(vec3 d) {
+    vec2 flat_d = d.xz / max(length(d.xz), 1e-5);
+    vec2 sun = rt.sun.xz / max(length(rt.sun.xz), 1e-5);
+    float azimuth = acos(clamp(dot(flat_d, sun), -1.0, 1.0)) / 3.14159265;
+    float e = asin(clamp(d.y, -1.0, 1.0)) / 1.5707963;
+    vec2 size = vec2(textureSize(sky_view, 0));
+    vec2 p = vec2(azimuth, 0.5 + 0.5 * sign(e) * sqrt(abs(e))) * size - 0.5;
+    ivec2 base = ivec2(floor(p));
+    vec2 f = p - floor(p);
+    ivec2 top = ivec2(size) - 1;
+    vec3 low = mix(sky_texel(base, top), sky_texel(base + ivec2(1, 0), top), f.x);
+    vec3 high = mix(sky_texel(base + ivec2(0, 1), top), sky_texel(base + ivec2(1, 1), top), f.x);
+    return mix(low, high, f.y);
+}
+
+// The kernel's radiance cache, read: `cache_key`, `cache_slot` (no insert), `cache_light`.
+const uint CACHE_PROBES = 8u;
+const uint CACHE_WORDS = 9u;
+uint cache_key(vec3 pos, vec3 n) {
+    float d = max(length(pos), 1.0);
+    uint level = uint(clamp(floor(log2(d / 8.0)), 0.0, 9.0));
+    float size = 0.5 * exp2(float(level));
+    vec3 world = pos + rt.camera.xyz + rt.fraction.xyz;
+    ivec3 c = ivec3(floor(world / size));
+    uint h = uint(c.x) * 73856093u ^ uint(c.y) * 19349663u ^ uint(c.z) * 83492791u;
+    h ^= (level * 2654435761u) ^ (uint(face_of(n)) * 2246822519u);
+    h = (h ^ (h >> 15u)) * 2246822519u;
+    h = (h ^ (h >> 13u)) * 3266489917u;
+    h ^= h >> 16u;
+    return max(h, 1u);
+}
+vec4 cache_light(vec3 pos, vec3 n) {
+    uint key = cache_key(pos, n);
+    uint mask = uint(cache.w.length()) / CACHE_WORDS - 1u;
+    for (uint i = 0u; i < CACHE_PROBES; i++) {
+        uint slot = (key + i * i) & mask;
+        uint held = cache.w[slot * CACHE_WORDS];
+        if (held == key) {
+            uint r = cache.w[slot * CACHE_WORDS + 5u];
+            if (r == 0xffffffffu) return vec4(0.0, 0.0, 0.0, -1.0);
+            return vec4(uintBitsToFloat(r), uintBitsToFloat(cache.w[slot * CACHE_WORDS + 6u]),
+                uintBitsToFloat(cache.w[slot * CACHE_WORDS + 7u]), 1.0);
+        }
+        if (held == 0u) break;
+    }
+    return vec4(0.0, 0.0, 0.0, -1.0);
+}
+// The kernel's `last_light`: the last frame's light other than the sun's where it showed `at`.
+vec4 last_light(vec3 at) {
+    if (rt.motion.w < 0.5) return vec4(0.0, 0.0, 0.0, -1.0);
+    vec3 q = at + rt.motion.xyz;
+    vec4 c = rt.prev_view_proj * vec4(q, 1.0);
+    if (c.w <= 0.0) return vec4(0.0, 0.0, 0.0, -1.0);
+    vec2 ndc = c.xy / c.w;
+    if (any(greaterThan(abs(ndc), vec2(1.0)))) return vec4(0.0, 0.0, 0.0, -1.0);
+    vec2 size = vec2(textureSize(last_mask, 0));
+    ivec2 texel = clamp(ivec2(vec2((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y)),
+        ivec2(0), ivec2(size) - 1);
+    float d = length(q);
+    float shown = texelFetch(last_mask, texel, 0).a;
+    if (shown < 0.0 || abs(shown - d) > 0.1 + 0.03 * d) return vec4(0.0, 0.0, 0.0, -1.0);
+    vec4 light = texelFetch(last_light_mask, texel, 0);
+    if (light.a < 0.0) return vec4(0.0, 0.0, 0.0, -1.0);
+    return vec4(light.rgb, 1.0);
+}
+vec4 cached_on(vec3 at, vec3 n) {
+    vec4 cached = cache_light(at, n);
+    if (cached.a >= 0.0) return cached;
+    return last_light(at);
+}
+// The kernel's `restir_last`: where camera-relative `pos` was in the last frame's masks (xy), z 1
+// when it showed it there.
+ivec3 restir_last(vec3 pos) {
+    if (rt.motion.w < 0.5) return ivec3(0);
+    vec3 q = pos + rt.motion.xyz;
+    vec4 c = rt.prev_view_proj * vec4(q, 1.0);
+    if (c.w <= 0.0) return ivec3(0);
+    vec2 ndc = c.xy / c.w;
+    if (any(greaterThan(abs(ndc), vec2(1.0)))) return ivec3(0);
+    vec2 size = vec2(textureSize(last_mask, 0));
+    ivec2 at = ivec2(vec2((ndc.x * 0.5 + 0.5) * size.x, (0.5 - ndc.y * 0.5) * size.y));
+    vec4 last = texelFetch(last_mask, clamp(at, ivec2(0), ivec2(size) - 1), 0);
+    float d = length(q);
+    if (last.a < 0.0 || abs(last.a - d) > 0.05 + 0.02 * d) return ivec3(at, 0);
+    return ivec3(at, 1);
+}
+
+// A ray's hit, shaded after the reorder (`hw_hit` without its tint): false when the ray met a
+// translucent quad or a hit has no sprite colour (the kernel's then). `t` below 0: no hit.
+bool trace_hit(vec3 from, vec3 d, float reach, out float t, out vec3 normal, out vec3 albedo) {
+    t = -1.0;
+    normal = -d;
+    albedo = vec3(0.0);
+    payload = 0.0;
+    hitObjectNV hit;
+    hitObjectTraceRayNV(hit, terrain, 0u, NO_CLOUDS, 0, 0, 0, from + rt.hw_offset.xyz, 0.0, d, reach, 0);
+    if ((push.flags & 1u) != 0u) reorderThreadNV(hit);
+    if (payload < 0.0) return false;
+    if (!hitObjectIsHitNV(hit)) return true;
+    hitObjectGetAttributesNV(hit, 0);
+    Hit h = Hit(uint(hitObjectGetInstanceCustomIndexNV(hit)), uint(hitObjectGetPrimitiveIndexNV(hit)),
+        uint(hitObjectGetGeometryIndexNV(hit)), bary);
+    t = hitObjectGetRayTMaxNV(hit);
+    vec3 colour = vec3(-1.0);
+    uint entity = hw_entity_quad(h);
+    uint base = entity == NO_QUAD ? hw_quad(h) : NO_QUAD;
+    if (entity != NO_QUAD) {
+        vec3 p0 = dyn_position(entity);
+        vec3 f = cross(dyn_position(entity + 1u) - p0, dyn_position(entity + 2u) - p0);
+        if (dot(f, f) > 1e-12) normal = normalize(f);
+        colour = pow(max(hw_entity_texel(h, entity).rgb, vec3(0.0)), vec3(2.2));
+    } else if (base != NO_QUAD) {
+        vec3 p0 = hw_position(base);
+        vec3 f = cross(hw_position(base + 1u) - p0, hw_position(base + 2u) - p0);
+        if (dot(f, f) > 1e-12) normal = normalize(f);
+        vec4 c = hw_texel(h, base);
+        if (c.a >= 0.0) {
+            uint w = arena_at(base, 5u);
+            vec3 tint = vec3(float(w & 255u), float((w >> 8u) & 255u), float((w >> 16u) & 255u)) / 255.0;
+            colour = pow(max(c.rgb * tint, vec3(0.0)), vec3(2.2));
+        }
+    }
+    if (dot(normal, d) > 0.0) normal = -normal;
+    albedo = colour;
+    return colour.x >= 0.0;
+}
+// Whether a ray from `from` along `d` meets anything opaque within `reach`.
+bool blocked(vec3 from, vec3 d, float reach) {
+    payload = 0.0;
+    hitObjectNV shadow;
+    hitObjectTraceRayNV(shadow, terrain,
+        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT, 0xffu,
+        0, 0, 0, from + rt.hw_offset.xyz, 0.0, d, reach, 0);
+    return hitObjectIsHitNV(shadow);
+}
+// The kernel's `sun_on`: false when the light crossed water or glass unblocked (its tint).
+bool sun_on(vec3 lifted, vec3 n, out vec3 sun) {
+    sun = vec3(0.0);
+    float facing = dot(n, rt.light.xyz);
+    if (facing <= 0.0 || rt.light.w <= 0.0) return true;
+    if (blocked(lifted, rt.light.xyz, REACH)) return true;
+    if (payload < 0.0) return false;
+    sun = rt.sun_light.rgb * (rt.light.w * facing);
+    return true;
+}
+// The kernel's `second_bounce`: the light along one more cosine-weighted ray, or false.
+bool second_bounce(vec3 pos, vec3 n, ivec2 salt, out vec3 light) {
+    light = vec3(0.0);
+    vec3 d = cosine_dir(n, random2(salt, 3u));
+    float t;
+    vec3 normal, albedo;
+    if (!trace_hit(pos, d, 256.0, t, normal, albedo)) return false;
+    if (t < 0.0) {
+        light = sky_at(d);
+        return true;
+    }
+    vec3 at = pos + d * t;
+    vec3 lifted = at + normal * 0.02;
+    vec3 sun;
+    if (!sun_on(lifted, normal, sun)) return false;
+    vec4 last = cached_on(at, normal);
+    // Neither: the kernel's `open_light` (the light sources' cells).
+    if (last.a < 0.0) return false;
+    light = albedo * (sun + last.rgb);
+    return true;
+}
+// The kernel's `bounce_light`: the light leaving a hit toward the ray, or false.
+bool bounce_light(vec3 at, vec3 n, vec3 albedo, out vec3 light) {
+    light = vec3(0.0);
+    vec3 lifted = at + n * 0.02;
+    vec3 sun;
+    if (!sun_on(lifted, n, sun)) return false;
+    vec4 last = cached_on(at, n);
+    vec3 rest = last.rgb;
+    if (last.a < 0.0 && !second_bounce(lifted, n, ivec2(floor(at.xz * 16.0 + at.y * 7.0)), rest)) {
+        return false;
+    }
+    light = albedo * (sun + rest);
+    return true;
+}
+
+struct GiSample {
+    vec3 at;
+    vec3 normal;
+    vec3 light;
+};
+// The kernel's `gi_sample`, or false.
+bool gi_sample(vec3 pos, vec3 n, ivec2 texel, out GiSample s) {
+    vec3 d = cosine_dir(n, random2(texel, 1u));
+    s = GiSample(pos + d * REACH, -d, vec3(0.0));
+    float t;
+    vec3 normal, albedo;
+    if (!trace_hit(pos, d, REACH, t, normal, albedo)) return false;
+    if (t < 0.0) {
+        s.light = sky_at(d);
+        return true;
+    }
+    vec3 at = pos + d * t;
+    vec3 light;
+    if (!bounce_light(at, normal, albedo, light)) return false;
+    s = GiSample(at, normal, light);
+    return true;
+}
+float gi_target(GiSample s, vec3 pos, vec3 n) {
+    return luminance(s.light) * max(dot(n, normalize(s.at - pos)), 0.0);
+}
+GiSample last_gi(ivec2 at, out float weight, out float seen) {
+    ivec2 size = textureSize(last_gi_a, 0);
+    ivec2 c = clamp(at, ivec2(0), size - 1);
+    vec4 a = texelFetch(last_gi_a, c, 0);
+    uvec4 b = texelFetch(last_gi_b, c, 0);
+    vec2 rg = unpackHalf2x16(b.x);
+    vec2 bm = unpackHalf2x16(b.y);
+    vec3 normal = unpackSnorm4x8(b.z).xyz;
+    weight = a.w;
+    seen = bm.y;
+    return GiSample(a.xyz - rt.motion.xyz, normal, vec3(rg, bm.x));
+}
+const float GI_HISTORY = 20.0;
+
 void main() {
     ivec2 texel = ivec2(gl_LaunchIDEXT.xy);
     int scale = int(rt.size.z);
     ivec2 p = texel * scale + scale / 2;
-    // The kernel traces (w 0) unless a sample is found below.
+    // The kernel traces (w 0) unless the pass's reservoir is found below.
     vec4 a = vec4(0.0);
     uvec4 b = uvec4(0u);
     bool lit = rt.mode.x > 0.5;
-    // The kernel's turns (`trace`): a tile traces its bounced light one frame in four; the frames
-    // between it rests where the last frame showed the surface (else it traces it itself).
-    uvec2 tile = uvec2(texel) >> uvec2(3u);
-    bool turn = tile_of(tile, 2u) == (uint(rt.frame.z) & 3u);
-    if (lit && turn && float(p.x) < rt.size.x && float(p.y) < rt.size.y && texelFetch(depth, p, 0).r > 0.0) {
+    // The Eye of Aldhani lights the sky with its glow: the kernel's.
+    bool aldhani = rt.held.y >= 0.0;
+    if (lit && !aldhani && float(p.x) < rt.size.x && float(p.y) < rt.size.y && texelFetch(depth, p, 0).r > 0.0) {
         vec3 pos = surface_at(p);
         vec3 n = surface_normal(p, pos);
         float reach = 0.5 * rt.grid.z;
         float edge = 1.0 - smoothstep(0.75 * reach, reach, max(abs(pos.x), abs(pos.z)));
-        if (edge > 0.0) {
+        ivec3 back = restir_last(pos);
+        bool has_last = back.z == 1;
+        // The kernel's turns (`trace`): a tile traces its bounced light one frame in four; the
+        // frames between it rests where the last frame showed the surface.
+        uvec2 tile = uvec2(texel) >> uvec2(3u);
+        bool rests = tile_of(tile, 2u) != (uint(rt.frame.z) & 3u) && has_last;
+        if (edge > 0.0 && !rests) {
             // `restir_gi`'s `pos`: the surface lifted as `trace` lifts it.
             vec3 from = pos + n * (0.02 + 0.002 * length(pos));
-            vec3 d = cosine_dir(n, random2(texel, 1u));
-            payload = 0.0;
-            hitObjectNV hit;
-            hitObjectTraceRayNV(hit, terrain, 0u, NO_CLOUDS, 0, 0, 0, from + rt.hw_offset.xyz, 0.0, d,
-                REACH, 0);
-            if ((push.flags & 1u) != 0u) reorderThreadNV(hit);
-            bool crossed = payload < 0.0;
-            if (!crossed && !hitObjectIsHitNV(hit)) {
-                // The sky, as a point far along the ray (the kernel's `sky_at(d)` its light).
-                a = vec4(from + d * REACH, 2.0);
-            } else if (!crossed) {
-                hitObjectGetAttributesNV(hit, 0);
-                Hit h = Hit(uint(hitObjectGetInstanceCustomIndexNV(hit)),
-                    uint(hitObjectGetPrimitiveIndexNV(hit)), uint(hitObjectGetGeometryIndexNV(hit)), bary);
-                float t = hitObjectGetRayTMaxNV(hit);
-                vec3 at = from + d * t;
-                // `hw_hit`: the face from the quad's corners, the colour from its texel.
-                vec3 normal = -d;
-                vec3 albedo = vec3(-1.0);
-                uint entity = hw_entity_quad(h);
-                uint base = entity == NO_QUAD ? hw_quad(h) : NO_QUAD;
-                if (entity != NO_QUAD) {
-                    vec3 p0 = dyn_position(entity);
-                    vec3 f = cross(dyn_position(entity + 1u) - p0, dyn_position(entity + 2u) - p0);
-                    if (dot(f, f) > 1e-12) normal = normalize(f);
-                    albedo = pow(max(hw_entity_texel(h, entity).rgb, vec3(0.0)), vec3(2.2));
-                } else if (base != NO_QUAD) {
-                    vec3 p0 = hw_position(base);
-                    vec3 f = cross(hw_position(base + 1u) - p0, hw_position(base + 2u) - p0);
-                    if (dot(f, f) > 1e-12) normal = normalize(f);
-                    vec4 c = hw_texel(h, base);
-                    if (c.a >= 0.0) {
-                        uint w = arena_at(base, 5u);
-                        vec3 tint = vec3(float(w & 255u), float((w >> 8u) & 255u), float((w >> 16u) & 255u)) / 255.0;
-                        albedo = pow(max(c.rgb * tint, vec3(0.0)), vec3(2.2));
+            GiSample own;
+            if (gi_sample(from, n, texel, own)) {
+                GiSample chosen = own;
+                float aim = gi_target(own, from, n);
+                float sum = luminance(own.light) * 3.14159265;
+                float seen = 1.0;
+                bool reused = false;
+                vec2 u = random2(texel, 70u);
+                if (has_last) {
+                    for (int j = 0; j < 3; j++) {
+                        vec2 jitter = random2(texel, 80u + uint(j));
+                        ivec2 off = j == 0 ? ivec2(0) : ivec2((jitter * 2.0 - 1.0) * 8.0);
+                        float q_weight, q_seen;
+                        GiSample q = last_gi(back.xy + off, q_weight, q_seen);
+                        if (q_seen <= 0.0 || q_weight <= 0.0) continue;
+                        if (j > 0) {
+                            ivec2 size = textureSize(last_mask, 0);
+                            ivec2 c = clamp(back.xy + off, ivec2(0), size - 1);
+                            float depth_here = length(from);
+                            if (abs(face_in(texelFetch(last_direct, c, 0).a) - face_of(n)) > 0.5
+                                || abs(texelFetch(last_mask, c, 0).a - depth_here) > 0.05 * depth_here + 0.1) {
+                                continue;
+                            }
+                        }
+                        float pt = gi_target(q, from, n);
+                        float m = min(q_seen, j == 0 ? GI_HISTORY : GI_HISTORY / 4.0);
+                        float w = pt * q_weight * m;
+                        sum += w;
+                        seen += m;
+                        u = fract(u + vec2(0.618034, 0.754878));
+                        if (w > 0.0 && u.x * sum < w) {
+                            chosen = q;
+                            aim = pt;
+                            reused = true;
+                        }
                     }
                 }
-                if (dot(normal, d) > 0.0) normal = -normal;
-                // `sun_on` at the hit: a shadow ray toward the light, any opaque hit stops it.
-                vec3 sun = vec3(0.0);
-                float facing = dot(normal, rt.light.xyz);
-                bool sun_crossed = false;
-                if (facing > 0.0 && rt.light.w > 0.0) {
-                    vec3 lifted = at + normal * 0.02;
-                    payload = 0.0;
-                    hitObjectNV shadow;
-                    hitObjectTraceRayNV(shadow, terrain,
-                        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT, 0xffu,
-                        0, 0, 0, lifted + rt.hw_offset.xyz, 0.0, rt.light.xyz, REACH, 0);
-                    if (!hitObjectIsHitNV(shadow)) {
-                        // Through water or glass the kernel's tint is wanted.
-                        sun_crossed = payload < 0.0;
-                        sun = rt.sun_light.rgb * (rt.light.w * facing);
+                float weight = aim > 0.0 ? sum / (seen * aim) : 0.0;
+                if (reused && aim > 0.0) {
+                    vec3 to = chosen.at - from;
+                    float d = length(to);
+                    float far = d > 4000.0 ? REACH : d - 0.05;
+                    if (blocked(from, to / d, far)) {
+                        chosen = own;
+                        aim = gi_target(own, from, n);
+                        weight = aim > 0.0 ? 3.14159265 * luminance(own.light) / aim : 0.0;
+                        seen = 1.0;
                     }
                 }
-                if (!sun_crossed) {
-                    // No colour from the sprite (a page past those bound, a sprite past the
-                    // first array): the kernel takes the block grid's (w 3).
-                    a = vec4(at, albedo.x < 0.0 ? 3.0 : 1.0);
-                    albedo = min(max(albedo, vec3(0.0)), vec3(60000.0));
-                    sun = min(sun, vec3(60000.0));
-                    b = uvec4(packSnorm4x8(vec4(normal, 0.0)), packHalf2x16(albedo.rg),
-                        packHalf2x16(vec2(albedo.b, sun.r)), packHalf2x16(sun.gb));
-                }
+                chosen.light = min(finite3(chosen.light), vec3(60000.0));
+                weight = min(finite(weight), 1e6);
+                a = vec4(finite3(chosen.at), weight);
+                bool sky = length(own.at - from) > 4000.0;
+                b = uvec4(packHalf2x16(chosen.light.rg), packHalf2x16(vec2(chosen.light.b, seen)),
+                    packSnorm4x8(vec4(chosen.normal, 0.0)), sky ? 2u : 1u);
             }
         }
     }
