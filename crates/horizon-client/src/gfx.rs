@@ -4188,6 +4188,13 @@ impl Renderer {
         self.far_heights
             .set_far(lod.revision(), lod.drawn_columns());
     }
+    /// Whether the entities cast ray-traced shadows: ray-traced shadows or RT lighting (both with
+    /// Linear Light) on hardware rays, which trace the entities' quads (`hw_finish`); the voxel
+    /// grid alone has no entities. The game then drops vanilla's round blob under them
+    /// (`EntityRenderer.extractShadow`).
+    pub fn rt_entity_shadows(&self) -> bool {
+        (self.rt_shadows || self.rt_lighting) && self.hw_rays.is_some()
+    }
     pub fn set_ray_traced(&mut self, shadows: bool, ambient: bool, lighting: bool) {
         let linear = self.tonemap.is_some();
         self.rt_shadows = shadows && linear;
