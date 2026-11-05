@@ -1783,6 +1783,10 @@ const ANTILAG_HISTORY: f32 = 3.0;
 // visibility and the sky seen (0 to 1), for the anti-lag to cut the history.
 const ANTILAG_LIGHT: f32 = 0.25;
 const ANTILAG_VISIBILITY: f32 = 0.15;
+// The fast history's frames while the light falls, and how far under the slow history the fast
+// mean must be (with this frame under twice that) for the light to count as gone (`accumulate`).
+const DARKEN_HISTORY: f32 = 3.0;
+const DARKEN_RATIO: f32 = 0.35;
 // Below this many frames of history the bounced light is traced every frame (`trace`'s turns).
 const RESTED_HISTORY: f32 = 8.0;
 // The face (0..5) and the history length packed in the direct light's alpha (`face + 8 n`, exact in
@@ -1856,6 +1860,14 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
     var n = min(floor(history / weight + 0.5) + 1.0, MAX_HISTORY);
     let quick_mean = quick / weight;
     fast_out = mix(quick_mean, fast_out, max(1.0 / (n + 1.0), 1.0 / FAST_HISTORY));
+    // A light going out shows faster than one coming on (a lamp switched off, a torch put away):
+    // when this frame is darker than the fast history, its light's mean and moment follow it over
+    // DARKEN_HISTORY frames instead.
+    if lum_now < quick_mean.x {
+        let quick_dark = mix(quick_mean.xy, vec2(lum_now, lum_now * lum_now),
+            max(1.0 / (n + 1.0), 1.0 / DARKEN_HISTORY));
+        fast_out = vec4(quick_dark, fast_out.zw);
+    }
     // On a frame that kept the last frame's sky, the sky seen is the slow history's own: the fast
     // history keeps its own instead.
     if sky_rested { fast_out.w = quick_mean.w; }
@@ -1868,8 +1880,15 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
     let mean = fast_out.x;
     let sigma = sqrt(max(fast_out.y - mean * mean, 0.0));
     let held = luminance(slow_blocks + slow_direct);
-    let bound = clamp(held, mean - CLAMP_SIGMA * sigma, mean + CLAMP_SIGMA * sigma);
+    var bound = clamp(held, mean - CLAMP_SIGMA * sigma, mean + CLAMP_SIGMA * sigma);
     var lag = false;
+    // The clamp can't see a light going out: the fast history's spread grows as its mean falls
+    // (its moment still holds the light's square), so mean + 2 sigma stays above the old light
+    // for a dozen frames. A fast mean and a frame both far under the slow history are a light
+    // gone: the slow history drops to the fast mean at once.
+    if held > 1e-4 && mean < DARKEN_RATIO * held && lum_now < 2.0 * DARKEN_RATIO * held {
+        bound = mean;
+    }
     if held > 1e-5 && bound != held {
         slow_blocks *= bound / held;
         slow_direct *= bound / held;
