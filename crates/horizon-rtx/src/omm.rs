@@ -33,7 +33,7 @@ const KEEP_FRAMES: u64 = SLOTS + 1;
 /// A micromap's offset in its buffer (the specification: a multiple of 256), and the inputs'.
 const ALIGN: u64 = 256;
 /// How many sections between two lines of the log.
-const STAT_EVERY: u64 = 500;
+const STAT_EVERY: u64 = 200;
 
 /// One geometry of a section's structure: its first vertex in the section's vertex buffer, its
 /// quads (two triangles each through the quad indices), and its flags.
@@ -276,6 +276,21 @@ struct Plan {
 }
 
 impl RawSections {
+    /// A section left to wgpu, and why: the first few in the log, all in the count.
+    fn left(&mut self, why: &str) {
+        self.stat[1] += 1;
+        if self.stat[1] <= 5 {
+            log::warn!("Horizon RTX: a section's structure left to wgpu, without micromaps: {why}");
+        }
+        if (self.stat[0] + self.stat[1]) % STAT_EVERY == 0 {
+            log::info!(
+                "Horizon RTX: {} sections built with opacity micromaps, {} left to wgpu",
+                self.stat[0],
+                self.stat[1]
+            );
+        }
+    }
+
     /// The raw builds, on a Vulkan device with `VK_EXT_opacity_micromap` enabled
     /// (horizon-hdr's device) and `HORIZON_RT_OMM=1`; `None` otherwise.
     pub fn new(device: &wgpu::Device) -> Option<Self> {
@@ -459,7 +474,14 @@ impl RawSections {
                 + ALIGN * m.geometries.len() as u64;
             let level_ok = m.triangles.iter().all(|t| t[1] & 0xffff <= self.max_level);
             if m.triangles.is_empty() || !level_ok || written + need > SLOT_BYTES {
-                self.stat[1] += 1;
+                let why = if m.triangles.is_empty() {
+                    "no micromap of its own (special indices only)".to_owned()
+                } else if !level_ok {
+                    format!("a level past the device's {}", self.max_level)
+                } else {
+                    format!("this frame's ring slot full ({written} + {need} bytes)")
+                };
+                self.left(&why);
                 continue;
             }
             let Some(vertices) = address(&self.device, section.vertices) else {
@@ -533,7 +555,10 @@ impl RawSections {
                 );
             }
             let Some(offset) = take(&mut self.free, sizes.micromap_size) else {
-                self.stat[1] += 1;
+                self.left(&format!(
+                    "the pool full ({} bytes asked)",
+                    sizes.micromap_size
+                ));
                 continue;
             };
             let range = (offset, sizes.micromap_size);
@@ -549,7 +574,7 @@ impl RawSections {
                 )
             }) else {
                 give(&mut self.free, range);
-                self.stat[1] += 1;
+                self.left("vkCreateMicromapEXT failed");
                 continue;
             };
             // The structure's size with the micromap: it must fit in what wgpu made.
@@ -613,7 +638,10 @@ impl RawSections {
                 // Safety: just made, never used.
                 unsafe { self.micromaps.destroy_micromap(micromap, None) };
                 give(&mut self.free, range);
-                self.stat[1] += 1;
+                self.left(&format!(
+                    "its structure with the micromap takes {} bytes, wgpu made {made}",
+                    as_sizes.acceleration_structure_size
+                ));
                 continue;
             }
             plans.push(Plan {
@@ -810,7 +838,7 @@ impl RawSections {
                 gone: self.gone.clone(),
             });
             self.stat[0] += 1;
-            if self.stat[0] % STAT_EVERY == 0 {
+            if self.stat[0] == 1 || (self.stat[0] + self.stat[1]) % STAT_EVERY == 0 {
                 log::info!(
                     "Horizon RTX: {} sections built with opacity micromaps ({} left to wgpu), {:.0} % of their alpha-tested triangles left to the shader, {} KB of the pool free",
                     self.stat[0],

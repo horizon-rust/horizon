@@ -32,6 +32,8 @@ mod on {
         split: u32,
         /// The sections meshed since their structure was built, and their micromaps.
         meshed: HashMap<SectionKey, Arc<SectionMicromaps>>,
+        /// Sections with alpha-tested geometries meshed, and those given micromaps (for the log).
+        seen: [u64; 2],
     }
 
     pub struct Micromaps(Option<Inner>);
@@ -49,6 +51,7 @@ mod on {
                 layers: Vec::new(),
                 split: 0,
                 meshed: HashMap::new(),
+                seen: [0; 2],
             }))
         }
 
@@ -84,6 +87,20 @@ mod on {
                     }
                 })
                 .collect();
+            let masks = inner
+                .layers
+                .iter()
+                .filter(|l| matches!(l, Alpha::Mask(_)))
+                .count();
+            let changing = inner
+                .layers
+                .iter()
+                .filter(|l| matches!(l, Alpha::Changing))
+                .count();
+            log::info!(
+                "Horizon RTX: micromaps from {layers} sprite layers ({size}x{size}, {} bytes of pixels): {masks} cutouts, {changing} animated or missing, the rest opaque",
+                pixels.len()
+            );
             inner.split = split;
             inner.cache.clear();
             inner.meshed.clear();
@@ -136,8 +153,18 @@ mod on {
             if solid.len() < quads as usize * 4 {
                 return;
             }
-            if let Some(m) = inner.cache.section(&alpha_tested, quad, layer) {
+            let planned = inner.cache.section(&alpha_tested, quad, layer);
+            inner.seen[0] += 1;
+            if let Some(m) = planned {
+                inner.seen[1] += 1;
                 inner.meshed.insert(key, Arc::new(m));
+            }
+            if inner.seen[0] % 500 == 1 {
+                log::info!(
+                    "Horizon RTX: {} sections with alpha-tested quads meshed, {} given micromaps",
+                    inner.seen[0],
+                    inner.seen[1]
+                );
             }
         }
 
