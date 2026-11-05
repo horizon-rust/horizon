@@ -70,8 +70,9 @@ struct Grid {
     /// 343 cells each, 8 ms of a frame when the main thread did it at every chunk crossing, measured
     /// in `rt_grid`), and the frames since it was asked.
     lights_job: Option<std::sync::mpsc::Receiver<(Vec<GpuLight>, Vec<[u32; 4]>)>>,
-    /// The NEE cache's zeroes, kept to write them without allocating 3 MB each time.
-    zeroes: Vec<u8>,
+    /// The NEE cache is to be emptied by the frame's commands (`take_visibility_clear`): a GPU
+    /// clear, where writing its 3 MB of zeroes from the CPU cost the frame that took new cells.
+    clear_visibility: bool,
 }
 
 /// A run of sections of one column, packed for the grid's textures: the toroidal slot of the
@@ -447,7 +448,7 @@ impl Voxels {
                 lights_dirty: true,
                 lights_age: 0,
                 lights_job: None,
-                zeroes: Vec::new(),
+                clear_visibility: true,
             }
         });
         true
@@ -463,6 +464,13 @@ impl Voxels {
     /// RT lighting's light sources and cells, and the blocks' shapes, while the grid runs.
     pub fn light_buffers(&self) -> Option<[&wgpu::Buffer; 3]> {
         self.grid.as_ref().map(|g| [&g.lights, &g.cells, &g.shapes])
+    }
+
+    /// RT lighting's NEE cache when the cells were made again since the last call: the frame's
+    /// encoder clears it (`clear_buffer`) before the rays read it.
+    pub fn take_visibility_clear(&mut self) -> Option<&wgpu::Buffer> {
+        let grid = self.grid.as_mut()?;
+        std::mem::take(&mut grid.clear_visibility).then_some(&grid.visibility)
     }
 
     /// RT lighting's NEE cache (`Grid::visibility`), while the grid runs.
@@ -493,6 +501,7 @@ impl Voxels {
             (camera.z.floor() as i32) >> 4,
         );
         let recentred = grid.center != Some(center);
+        let started = std::time::Instant::now();
         if recentred {
             for x in center.0 - RADIUS..center.0 + RADIUS {
                 for z in center.1 - RADIUS..center.1 + RADIUS {
@@ -504,14 +513,22 @@ impl Voxels {
             grid.center = Some(center);
             grid.lights_dirty = true;
             // The highest section in range: kept up to date as sections come, never lowered
-            // until the grid moves again.
+            // until the grid moves again. Looked up over the range's 16x16 columns, top down,
+            // rather than over every section the world holds (the whole render distance).
             grid.top = crate::chunk::MIN_Y;
-            for (x, sy, z) in self.sections.keys() {
-                if in_range(center, *x, *z) {
-                    grid.top = grid.top.max(crate::chunk::MIN_Y + sy * 16 + 16);
+            for x in center.0 - RADIUS..center.0 + RADIUS {
+                for z in center.1 - RADIUS..center.1 + RADIUS {
+                    if let Some(sy) = (0..SECTIONS as i32)
+                        .rev()
+                        .find(|&sy| self.sections.contains_key(&(x, sy, z)))
+                    {
+                        grid.top = grid.top.max(crate::chunk::MIN_Y + sy * 16 + 16);
+                    }
                 }
             }
+            crate::spans::mark("rt_grid recentre", started);
         }
+        let runs_started = std::time::Instant::now();
         // The dirty sections as runs per column, one copy a texture and run, a frame's budget
         // of them (`SECTIONS_PER_FRAME`).
         let runs = plan_runs(&mut grid.dirty, center, SECTIONS_PER_FRAME);
@@ -598,6 +615,8 @@ impl Voxels {
                 },
             );
         }
+        crate::spans::mark("rt_grid runs", runs_started);
+        let lights_started = std::time::Instant::now();
         // The shapes met since: the table only grows.
         let shapes = crate::occupancy::shapes();
         if shapes.len() > grid.shapes_written {
@@ -616,11 +635,7 @@ impl Voxels {
             log::debug!("Horizon: {} light sources in the rays' grid", lights.len());
             queue.write_buffer(&grid.lights, 0, bytemuck::cast_slice(&lights));
             queue.write_buffer(&grid.cells, 0, bytemuck::cast_slice(&cells));
-            let size = (CELLS[0] * CELLS[1] * CELLS[2]) as usize * 8 * 8;
-            if grid.zeroes.len() != size {
-                grid.zeroes = vec![0; size];
-            }
-            queue.write_buffer(&grid.visibility, 0, &grid.zeroes);
+            grid.clear_visibility = true;
         }
         if grid.lights_dirty
             && grid.lights_job.is_none()
@@ -648,9 +663,11 @@ impl Voxels {
                     let (lights, cells) = light_cells(&self.lights, center, origin, camera);
                     queue.write_buffer(&grid.lights, 0, bytemuck::cast_slice(&lights));
                     queue.write_buffer(&grid.cells, 0, bytemuck::cast_slice(&cells));
+                    grid.clear_visibility = true;
                 }
             }
         }
+        crate::spans::mark("rt_grid lights", lights_started);
         Some([origin[0], origin[1], grid.top])
     }
 }

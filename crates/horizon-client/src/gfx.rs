@@ -5337,6 +5337,10 @@ impl Renderer {
             fog
         };
         let mut rt = self.ray_traced_shadows(frame);
+        // New light cells empty the NEE cache on the GPU, before the rays learn into it again.
+        if let Some(visibility) = self.voxels.take_visibility_clear() {
+            encoder.clear_buffer(visibility, 0, None);
+        }
         // RT lighting's Eye of Aldhani: the seconds into it (none: -1); its field is made at the
         // start of the frame's passes, before the rays light with it and the sky draws it.
         rt.aldhani = [-1.0, 0.0];
