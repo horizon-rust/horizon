@@ -225,3 +225,24 @@ not to Horizon's queue), with:
 - **The Microsoft sign-in client ID**: the fork's launcher already uses Horizon's Azure app
   (`HORIZON_MSA_CLIENT_ID`, the repository variable `launcher.yml` reads), with Ludovic's OK. Upstream keeps
   providing it; nothing new is registered.
+
+## 8. The ask: an open beta in Horizon's launcher
+
+The bridge needs testers to find what fails, and testers come from Horizon's own launcher, not from a fork's
+download page. So the proposal is to put the **launcher's switch** in early, before the game code:
+
+1. **First code PR: the launcher side** (`launcher/src/java_variant.rs`, `java_release.rs`, `java_mods_page.rs`,
+   the switch on Home's play row, `launcher/java-mods-keys.txt`). Off by default, labelled beta. It downloads
+   nothing and starts no Java before the owner gate (section 3).
+2. **With it in a release**, a player turns on "Fabric 26.3 mods (beta)" and the launcher installs the fork's
+   signed `-java` build, as `java_release.rs` already does. That build includes the owner check for a game
+   started directly (regress `direct`). Upstream releases ship no `-java` build until the code is in main, as
+   point 4 of the maintainers' plan asks.
+3. **An announcement**: "Fabric 26.3 mods are in the launcher as an open beta: turn them on, play your mods,
+   report bugs." Reports go to the fork's issues (section 6), not to Horizon's queue.
+4. **The game code follows** (section 2, hooks first, then J1…J16), and upstream's own `-java` build replaces the
+   fork's once it is in main. The launcher then stops reading the fork's release.
+
+What upstream would accept by merging step 1: the launcher trusts one more signing key (the fork's, for the
+`-java` build only) until its own releases carry that build. The key, the signed manifest and the checks are in
+`java_release.rs`, with tests.
