@@ -163,7 +163,12 @@ and the container screen tests are unchanged).
 - Partial stacks of one item merge, then the stacks go in creative tab order
   (the search tab's), then by name; full stacks before the partial one,
   empty slots last. It needs an empty hand.
-- Done with ordinary left clicks planned by `inv_sort::plan`, so a vanilla
+- Bundles stay in place. Compatible stacks merge first, then a bounded search
+  places whole stacks in bundles to free inventory slots, preferring more
+  different kinds when the number of freed slots is equal. A full stack can
+  move if it fits whole; remaining space can take part of a partial stack.
+  The bounded search does not guarantee a globally optimal allocation.
+- Done with ordinary left clicks planned by `inv_sort`, so a vanilla
   server accepts it; a unit test replays the planned clicks through the menu
   engine on random chests.
 

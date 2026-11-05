@@ -10508,6 +10508,7 @@ impl Game<'_> {
             return;
         }
         if !right && self.sort_press() {
+            self.inv_clicks.skip_release();
             return;
         }
         if self.native_screen_press(right) {
@@ -18429,7 +18430,13 @@ impl Game<'_> {
                         // Neither edge of a bound button is an ordinary slot click.
                         return Ok(());
                     }
-                    if pressed && (self.sort_mouse_press(button) || self.hdr_mouse_press(button)) {
+                    if pressed && self.sort_mouse_press(button) {
+                        if matches!(button, MouseButton::Left | MouseButton::Right) {
+                            self.inv_clicks.skip_release();
+                        }
+                        return Ok(());
+                    }
+                    if pressed && self.hdr_mouse_press(button) {
                         return Ok(());
                     }
                     match self.screen {

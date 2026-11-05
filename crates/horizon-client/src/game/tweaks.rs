@@ -501,7 +501,7 @@ impl Game<'_> {
                 (order, hover_name(&names, s))
             };
             let max = |s: &ItemStack| self.max_stack(s);
-            inv_sort::plan(&views, &rank, &max)
+            inv_sort::plan_with_bundles(&views, self.items(), &rank, &max)
         };
         for i in clicks {
             self.tweak_click(slots[i], 0, Input::Pickup);
