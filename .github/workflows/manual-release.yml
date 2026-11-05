@@ -1,5 +1,5 @@
 # Manual Release Workflow
-# This workflow is triggered manually (workflow_dispatch) and creates a release when upstream has new commits.
+# Triggered manually (workflow_dispatch). Tags the current main and publishes a GitHub Release.
 
 name: Manual Release on Upstream Changes
 
@@ -7,8 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # needed to create tags and releases
-  packages: read
+  contents: write
 
 jobs:
   release:
@@ -19,67 +18,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Git user
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-
-      - name: Add upstream remote and fetch tags
-        run: |
-          git remote add upstream https://github.com/ludovic111/horizon.git || true
-          git fetch upstream --tags
-
-      - name: Determine if upstream main has new commits
-        id: diff
-        run: |
-          upstream_hash=$(git rev-parse upstream/main)
-          local_hash=$(git rev-parse origin/main)
-          echo "upstream=$upstream_hash" >> $GITHUB_OUTPUT
-          echo "local=$local_hash" >> $GITHUB_OUTPUT
-          if [ "$upstream_hash" != "$local_hash" ]; then
-            echo "needs_release=true" >> $GITHUB_OUTPUT
-          else
-            echo "needs_release=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Fast‑forward merge upstream if needed
-        if: steps.diff.outputs.needs_release == 'true'
-        run: |
-          git checkout main
-          git merge --ff-only upstream/main
-
       - name: Create timestamped tag
-        if: steps.diff.outputs.needs_release == 'true'
         id: tag
         run: |
           short_sha=$(git rev-parse --short HEAD)
           tag_name="v$(date -u +%Y.%m.%d-%H%M)-${short_sha}"
-          git tag -a "$tag_name" -m "Manual release for upstream changes"
-          echo "tag=$tag_name" >> $GITHUB_OUTPUT
+          echo "tag=$tag_name" >> "$GITHUB_OUTPUT"
 
-      - name: Push tag to origin
-        if: steps.diff.outputs.needs_release == 'true'
-        run: git push origin "${{ steps.tag.outputs.tag }}"
-
-      - name: Generate custom release notes
-        if: steps.diff.outputs.needs_release == 'true'
-        id: notes
+      - name: Generate release notes
         run: |
-          # Get previous tag (if any) and list commit messages
-          prev_tag=$(git describe --tags --abbrev=0 ${{ steps.tag.outputs.tag }}^ 2>/dev/null || echo "")
+          prev_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          echo "## Changes" > body.md
           if [ -z "$prev_tag" ]; then
-            git log --pretty=format:"- %s" > notes.md
+            git log -n 50 --pretty=format:"- %s" >> body.md
           else
-            git log --pretty=format:"- %s" $prev_tag..HEAD > notes.md
+            git log --pretty=format:"- %s" "$prev_tag"..HEAD >> body.md
           fi
-          echo "## Changes since last release" > header.md
-          cat header.md notes.md > body.md
 
       - name: Create GitHub Release
-        if: steps.diff.outputs.needs_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           name: "Release ${{ steps.tag.outputs.tag }}"
           body_path: body.md
           draft: false
