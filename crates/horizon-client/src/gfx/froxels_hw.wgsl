@@ -100,6 +100,14 @@ fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>) -> vec3<f32> {
     // reflected of it (Fresnel). A ray that grazes the surface or goes down gets no caustics.
     let layer = f32(arena_at(base, 4u) & 0x7fffu);
     if layer == fx.water.x || layer == fx.water.y {
+        // The top's backward face (mesher/fluid.rs, what shows the surface from under it) lies
+        // on the top itself: a ray up crosses both, and the surface dims and focuses its light
+        // once, not twice (the caustics were squared, the depth's absorption doubled).
+        let q0 = hw_position(base);
+        let up = cross(hw_position(base + 1u) - q0, hw_position(base + 2u) - q0);
+        if up.y < 0.0 && up.y * up.y > 0.25 * dot(up, up) {
+            return vec3(1.0);
+        }
         let w = arena_at(base, 5u);
         let tint = vec3(f32(w & 255u), f32((w >> 8u) & 255u), f32((w >> 16u) & 255u)) / 255.0;
         let absorption = WATER_ABSORPTION + WATER_PURE_ABSORPTION + WATER_TINT_ABSORPTION * (1.0 - pow(tint, vec3(2.2)));

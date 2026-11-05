@@ -106,12 +106,17 @@ void main() {
             bool lit = rt.mode.x > 0.5;
             vec3 d = lit ? disc_direction(random2(texel, 2u)) : rt.light.xyz;
             // The instances stand around their anchor (gfx/hw_rays.rs): the camera's offset.
+            // The any-hit (sun.rahit) lets water and glass through untinted and says so in the
+            // payload: such a ray is left to the kernel (alpha -1), which traces it with the
+            // tint, the depth's absorption and the water's caustics (`hw_light`).
+            payload = 0.0;
             hitObjectNV hit;
             hitObjectTraceRayNV(hit, terrain,
                 gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT, 0xff,
                 0, 0, 0, lifted + rt.hw_offset.xyz, 0.0, d, 4096.0, 0);
             reorderThreadNV(hit);
-            result = vec4(vec3(hitObjectIsHitNV(hit) ? 0.0 : 1.0), 1.0);
+            bool blocked = hitObjectIsHitNV(hit);
+            result = vec4(vec3(blocked ? 0.0 : 1.0), !blocked && payload < 0.0 ? -1.0 : 1.0);
         }
     }
     imageStore(sun_out, texel, result);

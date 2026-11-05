@@ -78,6 +78,14 @@ fn pass_ran(bit: u32) -> bool {
 // Whether this thread's `trace` is for the sun pass's own texel (the sharp zone: `cs_shadow`),
 // not a sparse block's corner traced for its neighbours (`cs_sparse`).
 var<private> sun_from_pass: bool = false;
+// Whether the sun's shadow rays (`hw_light`) take the water's caustics (`hw_tint`'s focus): the
+// primary surface's and the mirrors' and refraction's do; the bounces (`restir_gi`) take their
+// mean, as the other rays do (a bounce's light is many rays' mean, and a caustic that moves on
+// would stay in its reservoir and its 30 frames' history, smeared over the surface).
+var<private> hw_focus: bool = true;
+// Whether this texel's sun ray crossed water on its way to the light (its caustics move with the
+// waves): `accumulate` keeps a short history of its sun there.
+var<private> sun_caustic: bool = false;
 @group(0) @binding(1) var depth: texture_depth_2d;
 // 512 bits an 8x8x8 brick in four texels along x, the solid blocks and the cutout ones; one texel
 // a brick (bit 0 any block, bit 1 cutout ones); one texel a 32x32x32 brick (1: any block).
@@ -557,7 +565,10 @@ override DEBUG: u32 = 0u;
 // instead of in turns (`trace`), to measure what the turns save and what they change; 64 the far
 // field (`far_light`, `far_sky`); 128 the translucent candidates' tint (glass, water, ice pass the
 // light untinted: what their shading costs against the force-opaque floor); 256 leaves the
-// denoiser's anti-lag out (`accumulate`), to see what it changes. (32, VR's second eye's own
+// denoiser's anti-lag out (`accumulate`), to see what it changes; 512 the water's fixes of the
+// camera under it (the sun pass's rays through water and glass traced again here with their tint
+// and caustics, the surface's backward face tinting a second time, the caustics' short history in
+// `accumulate`, the bounces' caustics' mean), to compare with before. (32, VR's second eye's own
 // light, never reaches the kernel: shadow_rays.rs `set_skip`.)
 override SKIP: u32 = 0u;
 
@@ -1683,10 +1694,19 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         var sun_through = vec3(1.0);
         if rt.mode.y > 0.5 && rt.light.w > 0.0 && (SKIP & 1u) == 0u {
             var disc = vec3(1.0);
+            var traced = false;
             if pass_ran(1u) && sun_from_pass {
-                disc = textureLoad(sun_pass, texel, 0).rgb;
-            } else {
+                let from_pass = textureLoad(sun_pass, texel, 0);
+                disc = from_pass.rgb;
+                // The pass lets the light through water and glass untinted (sun.rahit): where
+                // its ray crossed one (alpha below 0) the same ray is traced here, with the
+                // tint, the depth's absorption and the caustics, so the floor seen from under
+                // the water is lit as the refraction shows it from above.
+                traced = from_pass.a < 0.0 && (SKIP & 512u) == 0u;
+            }
+            if traced || !(pass_ran(1u) && sun_from_pass) {
                 disc = sun_disc_ray(lifted, random2(texel, 2u));
+                sun_caustic = HW && hw_caustic_on && (SKIP & 512u) == 0u;
             }
             sun_through = mix(vec3(far_sun), disc * beyond, edge);
         }
@@ -1724,7 +1744,9 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
             gi_out_a = textureLoad(last_gi_a, back.xy, 0);
             gi_out_b = textureLoad(last_gi_b, back.xy, 0);
         } else if (SKIP & 2u) == 0u {
+            hw_focus = (SKIP & 512u) != 0u;
             sky = restir_gi(lifted, n, texel, back.xy, back.z == 1);
+            hw_focus = true;
         }
         let blocks = vec4(sky.rgb, select(edge, -1.0, edge < 0.5));
         var direct = vec4(0.0, 0.0, 0.0, face_of(n));
@@ -1788,6 +1810,10 @@ const ANTILAG_VISIBILITY: f32 = 0.15;
 // mean must be (with this frame under twice that) for the light to count as gone (`accumulate`).
 const DARKEN_HISTORY: f32 = 3.0;
 const DARKEN_RATIO: f32 = 0.35;
+// The frames the sun's light keeps where its ray crossed water (`sun_caustic`): the caustics move
+// with the waves, and over 30 frames (and the bilinear reprojection each frame) they smeared into
+// trails that spread over the face until it was even.
+const CAUSTIC_HISTORY: f32 = 3.0;
 // Below this many frames of history a surface the anti-lag cut traces its bounced light every
 // frame (`trace`'s turns).
 const RESTED_HISTORY: f32 = 8.0;
@@ -1934,10 +1960,15 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
         flag = true;
     }
     let k = 1.0 / (n + 1.0);
-    return Traced(vec4(mix(slow_mask, v.rays.rgb, k), v.rays.a),
+    // Under water the sun's visibility and colour (the caustics) keep a few frames only.
+    let k_sun = select(k, max(k, 1.0 / (CAUSTIC_HISTORY + 1.0)), sun_caustic);
+    var rays = mix(slow_mask, v.rays.rgb, k);
+    rays.r = mix(slow_mask.r, v.rays.r, k_sun);
+    let sun_now = mix(slow_sun, v.sun, k_sun);
+    return Traced(vec4(rays, v.rays.a),
         vec4(mix(slow_blocks, v.blocks.rgb, k), v.blocks.a),
         vec4(mix(slow_direct, v.direct.rgb, k), face + 8.0 * (n + select(0.0, 32.0, flag))),
-        mix(slow_sun, v.sun, k),
+        vec4(sun_now.rgb, mix(slow_sun.a, v.sun.a, k)),
         v.reservoir);
 }
 // VR's second eye: the first eye's depth (its layer of the prepass both eyes share) and masks of
@@ -2093,6 +2124,7 @@ var<workgroup> quad_refracted: array<vec4<f32>, 16>;
         taken = seen.found;
         v = seen.v;
     }
+    sun_caustic = false;
     if fine && !taken {
         sun_from_pass = true;
         v = trace(pixel_of(texel), texel);
