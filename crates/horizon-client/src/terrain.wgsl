@@ -919,7 +919,7 @@ fn rt_traced(pixel: vec2<f32>) -> vec4<f32> {
 // - Light sources (torches, lava, glowstone): traced, each its colour falling off as the inverse
 //   square of the distance with a shadow ray toward it (`traced`, shadow_rays.wgsl `block_light`);
 //   past the grid or on a frame without this frame's rays, warm light from the block light level
-//   (one level a block).
+//   (one level a block). A metal takes them through its specular lobe (it has no diffuse light).
 // - The material's own emission (LabPBR's), added.
 const BLOCK_LIGHT: vec3<f32> = vec3(3.0, 1.9, 0.9);
 // A LabPBR emission of 1, in paper whites.
@@ -1029,6 +1029,15 @@ fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: 
     var reflected = rt_sky(r) * seen * m.ao * ambient_f * (horizon * horizon);
     // Water and glass: what the rays found that way (Remix's primary surface replacement).
     if rt_mirror.a > 0.5 { reflected = rt_mirror.rgb * ambient_f; }
+    // A metal has no diffuse light to take the light sources' (`around`: the torches, lava,
+    // glowstone and the held lights, traced and denoised, with the sky's and the bounced light):
+    // its specular lobe gathers them instead. The rougher, the wider the lobe, the more it reflects
+    // the light around as a whole (a rough metal's reflection is its Fresnel times the light it
+    // receives, as a diffuse surface's is its albedo times it); a polished one keeps more of the
+    // sky's mirror image, but still a third of the light around, so a torch beside a gold block
+    // lights it up at night.
+    let lobe = mix(0.35, 1.0, m.roughness) * m.metal;
+    reflected = mix(reflected, rt_fresnel(m.f0, nv) * around, lobe);
     // The rain's impacts (`rt_spray`): their broken crests scatter the sky's light.
     let spray = rt_sky(vec3(0.0, 1.0, 0.0)) * seen * (RAIN_SPRAY * rt_spray);
     return sun * (direct + through) + highlight + diffuse * (1.0 - ambient_f) * around + reflected
