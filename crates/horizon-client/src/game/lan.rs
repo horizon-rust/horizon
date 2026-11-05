@@ -2394,7 +2394,7 @@ impl Game<'_> {
         // this tick to their clients. Otherwise a newly broken block and its
         // drops remain absent from the snapshot until the following tick.
         if !paused {
-            self.tick_guests(&mut host);
+            horizon_client::spans::time("lan_player_gameplay", || self.tick_guests(&mut host));
             // The vehicles the guests just moved enter their portals now.
             let ridden: Vec<u32> = host.hub.guests.iter().filter_map(|g| g.vehicle).collect();
             self.find_ridden_vehicle_portals(&ridden);
@@ -2411,7 +2411,9 @@ impl Game<'_> {
                     .filter_map(|g| Some((g.vehicle?, g.entity_id)))
                     .collect();
                 self.lan_riding(&guests, &mut host.hub.riding);
-                self.lan_entities(&host.mob_players, &mut host.hub, &mut states, true, 0);
+                horizon_client::spans::time("lan_entity_snapshot", || {
+                    self.lan_entities(&host.mob_players, &mut host.hub, &mut states, true, 0)
+                });
                 self.lan_hook_states(&host.play, &host.hub, &mut states);
                 self.lan_entity_uuids(&mut states);
                 host.states_next_entity = Some(self.simulation_server.next_entity);

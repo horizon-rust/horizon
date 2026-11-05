@@ -1100,6 +1100,7 @@ impl Entities {
         viewers: &mut [Viewer],
         mut kind: impl FnMut(&str) -> Option<i32>,
     ) {
+        let prepare = crate::spans::guard("tracking_prepare");
         self.tick = self.tick.wrapping_add(1);
         let now = self.tick;
         self.probes.clear();
@@ -1184,6 +1185,8 @@ impl Entities {
                 .range_percent
                 .map_or(range * 16, |p| p * (range * 16) / 100);
         }
+        drop(prepare);
+        let visibility = crate::spans::guard("tracking_visibility");
         self.flags.resize_with(viewers.len(), Visibility::default);
         self.pairs.clear();
         self.pairs.resize(entities.len(), false);
@@ -1327,6 +1330,8 @@ impl Entities {
                 );
             }
         }
+        drop(visibility);
+        let _encoding = crate::spans::guard("tracking_encode");
         self.watched.clear();
         self.watched.resize(entities.len(), false);
         for flags in &self.flags {

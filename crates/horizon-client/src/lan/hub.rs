@@ -2144,10 +2144,13 @@ impl Hub {
                 (i, taken, far, bodies)
             })
             .collect();
+        let preparation = crate::spans::guard("chunk_output_prepare");
         self.encoder.warm(&columns.chunks);
         let mut encoded = self.encoder.bodies_with(&columns.chunks, world, &|x, z| {
             ctx.streaming.and_then(|s| s.proto_sections(x, z))
         });
+        drop(preparation);
+        let _queue = crate::spans::guard("chunk_output_queue");
         let uses = &mut columns.uses;
         let chunks = &columns.chunks;
         for (i, taken, far, batch) in batches {

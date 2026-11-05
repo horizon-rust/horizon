@@ -204,7 +204,19 @@ pub struct RegionTick<'a> {
 }
 impl RegionTick<'_> {
     fn predict(&self, input: RegionInput<'_>) -> Vec<TickPrediction> {
-        use std::cell::RefCell;
+        self.predict_inner::<false>(input).0
+    }
+    // The ordinary instantiation has no clock reads. Profile sums describe
+    // worker work, not elapsed tick time, and never enter the span hierarchy.
+    fn predict_inner<const PROFILE: bool>(
+        &self,
+        input: RegionInput<'_>,
+    ) -> (Vec<TickPrediction>, [std::time::Duration; 3]) {
+        use std::{
+            cell::RefCell,
+            time::{Duration, Instant},
+        };
+        let mut times = [Duration::ZERO; 3];
         // This rule was historically thread-local. Set it per level job, not
         // just when a persistent worker starts (different levels may differ).
         sulfur_cube::set_tnt_explodes(self.tnt_explodes);
@@ -226,6 +238,7 @@ impl RegionTick<'_> {
             if raider::is_raider(original.species()) || original.extra.raider.is_some() {
                 break;
             }
+            let prepare = PROFILE.then(Instant::now);
             let mut mob = original.clone();
             if let Some(mut events) = pending_brains.remove(&mob.id) {
                 apply_brain_events(std::slice::from_mut(&mut mob), &mut events, 0);
@@ -238,6 +251,10 @@ impl RegionTick<'_> {
             let mut events = Vec::new();
             let random_before = random.clone();
             random.clear_usage();
+            if let Some(start) = prepare {
+                times[0] += start.elapsed();
+            }
+            let simulate = PROFILE.then(Instant::now);
             let (kept, conn) = {
                 let context = &self.contexts[slot];
                 let conn = self
@@ -261,6 +278,10 @@ impl RegionTick<'_> {
                     mob.tick_with_order(&world, &mut random, &mut events, context.section_order);
                 (kept, conn)
             };
+            if let Some(start) = simulate {
+                times[1] += start.elapsed();
+            }
+            let output = PROFILE.then(Instant::now);
             // Preserve push order while keeping the original events intact for
             // the coordinator's authoritative global-order application.
             for event in &events {
@@ -308,11 +329,14 @@ impl RegionTick<'_> {
                 #[cfg(debug_assertions)]
                 input: mob_input,
             });
+            if let Some(start) = output {
+                times[2] += start.elapsed();
+            }
             if global_conflict {
                 break;
             }
         }
-        out
+        (out, times)
     }
 }
 
@@ -441,6 +465,28 @@ impl RegionExecutor {
         tick: &RegionTick<'_>,
     ) -> Vec<Vec<TickPrediction>> {
         use rayon::prelude::*;
+        static PROFILE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *PROFILE.get_or_init(|| std::env::var("HORIZON_REGION_PROFILE").is_ok_and(|v| v == "1"))
+        {
+            let run = |input| tick.predict_inner::<true>(input);
+            let jobs: Vec<_> = match &self.pool {
+                Some(pool) => pool.install(|| inputs.into_par_iter().map(run).collect()),
+                None => inputs.into_iter().map(run).collect(),
+            };
+            let mut sums = [0.0; 3];
+            let mut predictions = Vec::with_capacity(jobs.len());
+            for (predicted, times) in jobs {
+                for (sum, time) in sums.iter_mut().zip(times) {
+                    *sum += time.as_secs_f64() * 1000.0;
+                }
+                predictions.push(predicted);
+            }
+            eprintln!(
+                "region worker sums (ms): prepare={:.3} simulate={:.3} observations={:.3}",
+                sums[0], sums[1], sums[2]
+            );
+            return predictions;
+        }
         match &self.pool {
             Some(pool) => pool.install(|| {
                 inputs

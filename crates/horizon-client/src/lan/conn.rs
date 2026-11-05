@@ -328,6 +328,7 @@ impl PlayerSender {
 /// the rest of the core's time slice. Each player's packets keep their order,
 /// also with what is sent to it next.
 pub fn flush_all<'a>(senders: impl IntoIterator<Item = &'a PlayerSender>) {
+    let _queue = crate::spans::guard("lan_output_queue");
     let mut wake: Vec<&Arc<io_pool::Worker>> = Vec::new();
     for s in senders {
         let held = std::mem::take(&mut *s.held());
@@ -1522,7 +1523,7 @@ impl SharedFrames {
         };
         let contents = frame
             .get_or_init(|| {
-                horizon_protocol::frame::contents(body, Some(threshold))
+                frame_contents(body, Some(threshold))
                     .map(Arc::from)
                     .map_err(|e| e.to_string())
             })
@@ -1551,6 +1552,31 @@ impl SharedFrames {
     }
 }
 
+static COMPRESSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static COMPRESSION_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Process-wide compression samples while spans are enabled. Shared-frame
+/// cache hits do not compress again. Snapshot boundaries are approximate.
+pub fn compression_totals() -> (u64, u64) {
+    (
+        COMPRESSIONS.load(Ordering::Relaxed),
+        COMPRESSION_NS.load(Ordering::Relaxed),
+    )
+}
+fn frame_contents(body: &[u8], threshold: Option<usize>) -> horizon_protocol::Result<Vec<u8>> {
+    let start = (threshold.is_some_and(|t| body.len() >= t) && crate::spans::enabled())
+        .then(std::time::Instant::now);
+    let result = horizon_protocol::frame::contents(body, threshold);
+    if let Some(start) = start {
+        COMPRESSION_NS.fetch_add(
+            start.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
+        COMPRESSIONS.fetch_add(1, Ordering::Relaxed);
+    }
+    result
+}
+
 /// Frame one packet body into `out`: a large one compressed through
 /// [`SharedFrames`], so a chunk column sent to fifty players is compressed
 /// once, not fifty times. The bytes on the wire are the same.
@@ -1563,7 +1589,7 @@ pub(super) fn frame_body(
         Some(t) if body.len() >= t.max(SHARED_FRAME_MIN) => {
             writer.frame_into(&SharedFrames::get().contents(body, t)?, out);
         }
-        threshold => writer.frame_into(&horizon_protocol::frame::contents(body, threshold)?, out),
+        threshold => writer.frame_into(&frame_contents(body, threshold)?, out),
     }
     Ok(())
 }

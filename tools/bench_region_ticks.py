@@ -135,8 +135,8 @@ def run(mode, args, out):
         commands = ['effect give @a minecraft:resistance infinite 4 true']
         side = math.ceil(math.sqrt(args.players))
         for player in range(args.players):
-            commands.append(f'tp RegionBot{player} {1024 + player % side * 512} -60 '
-                            f'{1024 + player // side * 512}')
+            commands.append(f'tp RegionBot{player} {1024 + player % side * args.spacing} -60 '
+                            f'{1024 + player // side * args.spacing}')
         command_barrier(server, commands)
         time.sleep(args.settle)
         # Each wave inserts one mob at every player, preserving interleaved
@@ -165,6 +165,7 @@ def run(mode, args, out):
         start = time.monotonic()
         last_time = start
         _, last_cpu = bench.tree_usage(server.process.pid)
+        load_start = os.getloadavg()
         cpu, rss = [], []
         while time.monotonic() - start < args.seconds:
             time.sleep(1)
@@ -196,11 +197,14 @@ def run(mode, args, out):
         result = {
             'mode': mode, 'players': args.players, 'mobs': mob_count, 'warmup_ticks': warmup_ticks,
             'ticks': report['ticks'], 'mob_ms': summary(mob_ms),
+            'load_average_start': load_start, 'load_average_end': os.getloadavg(),
             'cpu_percent': round(statistics.fmean(cpu), 2),
             'rss_mib_mean': round(statistics.fmean(rss), 2), 'rss_mib_max': round(max(rss), 2),
             'region_mean': dict(zip(('regions', 'predicted', 'committed', 'replayed', 'rng_conflicts', 'read_conflicts'),
                                     map(lambda values: round(statistics.fmean(values), 2),
                                         zip(*region_samples)))) if region_samples else None,
+            'queues_at_end': report.get('queues_at_end'),
+            'network_compression': report.get('network_compression'),
             'commit_rounds': {'clean': sum(int(clean) for clean, _, _ in commit_rounds),
                               'fallback': sum(int(fallback) for _, fallback, _ in commit_rounds),
                               'fallback_reasons': fallback_reasons},
@@ -233,6 +237,7 @@ def main():
     parser.add_argument('--players', type=int, default=100)
     parser.add_argument('--mobs-per-player', type=int, default=70)
     parser.add_argument('--species', default='zombie', help='comma-separated: a mixed population takes turns')
+    parser.add_argument('--spacing', type=int, default=512)
     parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--settle', type=int, default=20)
     parser.add_argument('--warmup', type=int, default=15, help='simulation seconds, stepped as exactly N*20 frozen ticks')

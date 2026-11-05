@@ -497,3 +497,139 @@ on the commit before this merge, so when it began to fail is not known.
 **Not run.** No control run of this binary, no second run, and no workload with
 mixed species, moving players or mobs outside the entity-ticking area. `lan_e2e`
 was not run.
+
+## Output preparation audit (PR #8666 follow-up)
+
+The mob barrier protects borrowed world data. `tick_lan` is not a replication-only
+phase: `tick_guests` finishes mining, item use, pickups and vehicle portals before
+`lan_entities` describes the committed state. Moving that phase ahead of mob
+commit changes which mob/world state player actions observe. Moving streaming
+insertion or unload across prediction changes the borrowed collision/navigation
+world. Neither is an independent job.
+
+Networking already overlaps simulation: `lan/io_pool.rs` owns a fixed socket pool
+and performs framing, shared compression, encryption and writes. Each connection
+stays on one worker, with a 96 MiB pending-byte disconnect limit and 256 KiB framed
+lookahead. `PlayerSender` holds ordered packet bodies until the existing flush.
+Chunk section/heightmap warm-up and body encoding already use the chunk encoder's
+workers; generation, lighting and meshing use streaming workers. Mob entity
+snapshot construction and entity change/pairing encoding already use the region
+pool. Adding another encoder pool would compete with these workers on six cores.
+
+The rejected follow-up experiment moved viewer visibility selection to the
+existing pool.
+Each viewer owned its tracker, removal-event list, packet buffer and chunk-test
+scratch; jobs only read the committed entity probes, section changes and chunk
+membership. They joined before reducing new-pair flags and encoding entity sends.
+The per-viewer removal packet still preceded pairing and movement packets, and
+actual queuing/publication stayed at the existing phase. The scoped pool call
+bounded outstanding work by that tick's viewers, propagated panics after joining,
+and retained no world, generation or pending result across ticks. Serial mode and
+duplicate entity IDs retained the serial path. It used no speculative replication.
+
+New elapsed spans separate `lan_player_gameplay`, `lan_entity_snapshot`,
+`tracking_prepare`, `tracking_visibility`, `tracking_encode`, `lan_output_queue`,
+`chunk_output_prepare` and `chunk_output_queue`. Streaming separates application
+of completed jobs, unloading and preparation of new jobs. These are nested spans;
+add neither children to parents nor asynchronous worker CPU to wall time.
+`tracking_encode` includes its scoped wait and per-viewer buffer distribution;
+socket compression is already off-thread and is not attributed to this span.
+
+The viewer-parallel experiment was removed: a repeated 200-player comparison
+changed 92.28 to 92.05 ms, while 100 players regressed from 41.86 to 42.16 ms.
+The initial baseline itself ranged from 92.28 to 95.90 ms at 200 players. These
+results do not establish a whole-tick benefit. Only profiling and benchmark
+reproducibility changes remain; no new scheduling or publication path ships.
+
+`HORIZON_REGION_PROFILE=1` additionally logs three **sums of worker elapsed
+milliseconds**, once per prediction barrier: input cloning/pending writes
+(`prepare`), player/world-view construction and the mob tick (`simulate`), and
+push/brain-write classification plus snapshot/grid/result construction
+(`observations`). These sums can exceed tick duration because jobs overlap;
+they are not CPU times or new children to add to `mob_predict`. Profiling adds
+clock reads per mob only when explicitly enabled. Normal execution instantiates
+the same loop without those clock reads. No worker-local span buffers accumulate.
+
+Dedicated reports now include `queues_at_end`: pending network bytes (total and
+largest connection) and the active level's streaming-stage counts. They are end
+samples, **not** window peaks or backpressure-event counts. `network_compression`
+reports actual compression calls (shared-frame cache hits excluded) and summed
+worker elapsed milliseconds while spans were enabled. Counter snapshots at the
+window boundaries are approximate; compression includes building frame contents,
+not socket delivery latency. The ordinary disabled path adds no clock reads.
+
+### Rejected visibility experiment: fresh measurements
+
+Baseline: exact PR head `71aff0ed91f158bbcc5574f2fc854f35d73d25a5`.
+Both binaries used the optimised `fast` profile, the same prepared 26.3 resources,
+forced parallel simulation and eight region workers on a Ryzen 5 5600X (six
+physical cores). Each run used a fresh seed-12345 flat world, view/simulation
+radius 2, stationary players 512 blocks apart, 70 persistent invulnerable AI
+zombies each, 200 fixed warmup ticks and a 20-second measurement. Runs were
+sequential, without active compilation or oracle execution. Desktop applications
+and an existing game process shared the machine; this was not an isolated host.
+The benchmark now records load averages as well as process CPU/RSS.
+
+Initial baseline averages at 50/100/200 players were 22.92/43.07/95.90 ms;
+initial candidate averages were 20.67/41.27/91.50 ms. Repeating each untouched
+baseline immediately before its candidate removed that apparent improvement:
+
+| Players | Baseline avg/p50/p95/p99 ms | Rejected candidate avg/p50/p95/p99 ms | TPS before → candidate | CPU % before → candidate | Mean RSS MiB before → candidate |
+| ---: | --- | --- | --- | --- | --- |
+| 50 | 20.58/20.15/22.66/24.27 | 20.65/20.41/22.99/25.28 | 20.03 → 20.03 | 330.34 → 330.34 | 412.29 → 413.51 |
+| 100 | 41.86/41.41/45.72/48.15 | 42.16/41.82/45.55/48.31 | 20.01 → 20.01 | 438.46 → 438.44 | 520.24 → 527.09 |
+| 200 | 92.28/91.36/98.56/105.75 | 92.05/91.28/98.28/101.87 | 10.83 → 10.86 | 462.65 → 467.54 | 774.4 → 813.8 |
+
+Every spread-out run committed all predictions: zero replays, RNG/read conflicts
+and fallback rounds. The connected four-player/280-zombie case (32-block spacing)
+changed 4.92 to 4.98 ms; twelve players with 840 zombies/skeletons/spiders changed
+5.23 to 5.28 ms. Both also kept expected counts and zero replays. These are two
+runs per binary at each large size and one per binary in the extra cases, not a
+statistical demonstration of equivalence. The negative/near-zero repeated
+results do not justify retaining the extra parallel visibility path.
+
+The first 200-player candidate report separated player gameplay (4.55 ms), entity
+snapshots (2.98 ms), tracking preparation (1.35 ms), visibility (0.21 ms), entity
+encoding/distribution plus its wait (2.46 ms), chunk output (0.06 ms) and output
+queuing (0.03 ms). Mob prediction still waited 31.51 ms. Streaming preparation
+was 7.19 ms; application and unloading retained their existing world ordering.
+These are elapsed spans with overlapping parents, not additive costs.
+
+The new compression/queue counters and per-worker prediction profiler were added
+after the rejected experiment. Those metrics are unavailable for the before/after
+sweep. There is no measured socket delivery latency or window-peak backlog; no
+latency improvement is claimed. No additional mob start/join API, speculative
+replication, queue, thread pool or world/chunk clone remains in this follow-up.
+
+### Final diagnostics validation
+
+`pr_ready.py --quick --base 71aff0ed91f158bbcc5574f2fc854f35d73d25a5` passed
+formatting, clippy, public-tree checks, 644 Python tests and 4,096 Rust tests.
+The quick run explicitly deferred parity. An earlier broad sweep was interrupted
+after nine completed passes; it was not a complete pass. The final quick report
+lists 153 affected harness cases for the broader CI scope.
+
+`tools/ci/region-verify.sh` passed all four real-jar verify-mode harnesses
+(`dedicated_server`, `server_entities`, `server_player_damage`, `natural_spawn`),
+15 transaction tests and six resource-backed gameplay tests, including clean
+commit versus serial and guest damage attribution. Separately, the 15 transaction
+tests also passed with `HORIZON_REGION_PROFILE=1`.
+
+Live server-thread LAN mobs/chest checks passed. The damage harness exits zero
+but reports same-hit armor ordering as 999.04 health versus vanilla's 996.0.
+The untouched baseline reproduced that mismatch on a fresh retry; the baseline's
+first attempt failed earlier on its fall-damage assertion. These observations
+are not a clean armor-parity pass and are not fixed by this diagnostics change.
+
+A final profiling-enabled 200-player smoke run retained all 14,000 mobs and
+committed every prediction without replay/fallback. Per-round worker elapsed
+sums were approximately 60 ms preparing inputs, 153 ms simulating and 29 ms
+building observations/results; these overlapped within a 31.55 ms prediction
+barrier and must not be added to elapsed tick time. Entity snapshots took
+2.96 ms, encoding/distribution 2.50 ms and serial visibility 0.67 ms. The report
+recorded 200 actual compression calls and 20.06 ms summed compression-worker
+time across the window. End samples had zero unframed network bytes and no
+queued/generating/decorating/finishing/lighting/meshing work (7,868 proto chunks
+remained cached). Pending bytes exclude framed lookahead and kernel socket
+queues; zero here does not establish delivery latency or peak backpressure.
+This profiler smoke run is not a claim of performance improvement.

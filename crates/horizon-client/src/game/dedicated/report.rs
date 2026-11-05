@@ -32,6 +32,7 @@ pub(super) struct Recording {
     /// Whether spans were on before (`HORIZON_SPIKES`): they stay on after.
     spans_were_on: bool,
     ticks: Vec<Tick>,
+    compression_start: (u64, u64),
 }
 
 impl Recording {
@@ -44,6 +45,7 @@ impl Recording {
             cpu_s: horizon_bench::cpu_seconds(std::process::id()),
             spans_were_on,
             ticks: Vec::with_capacity(seconds as usize * 20),
+            compression_start: horizon_client::lan::conn::compression_totals(),
         }
     }
     pub(super) fn add(&mut self, wall_ms: f32, cpu_ms: Option<f32>, spans: Vec<Span>) {
@@ -180,6 +182,20 @@ impl Game<'_> {
             .zip(r.cpu_s)
             .map(|(end, start)| round((end - start) / window_s.max(1e-9)));
         let players = self.lan.as_ref().map_or(0, |h| h.hub.guests.len());
+        // End-of-window samples, not peaks or counts of backpressure events.
+        let pending: Vec<usize> = self.lan.as_ref().map_or_else(Vec::new, |host| {
+            host.hub
+                .guests
+                .iter()
+                .map(|g| g.sender.pending.load(std::sync::atomic::Ordering::Relaxed))
+                .collect()
+        });
+        let compression = horizon_client::lan::conn::compression_totals();
+        let queues_at_end = json!({
+            "network_pending_bytes": pending.iter().sum::<usize>(),
+            "network_pending_bytes_largest_connection": pending.iter().max().copied().unwrap_or(0),
+            "active_level_streaming": self.streaming.stages().into_iter().collect::<BTreeMap<_, _>>(),
+        });
         let report = json!({
             "format": 1,
             "horizon": horizon_client::crash::version(),
@@ -188,6 +204,11 @@ impl Game<'_> {
             "ticks": ticks,
             "spans": spans,
             "worst_ticks": worst,
+            "queues_at_end": queues_at_end,
+            "network_compression": {
+                "calls": compression.0.saturating_sub(r.compression_start.0),
+                "worker_ms_sum": compression.1.saturating_sub(r.compression_start.1) as f64 / 1_000_000.0,
+            },
             "players": players,
             "levels": self.report_levels(),
             "memory": { "rss_mb": horizon_bench::rss_bytes(std::process::id()).map(|b| b >> 20) },
@@ -340,6 +361,7 @@ mod tests {
             cpu_s: None,
             spans_were_on: true,
             ticks: Vec::new(),
+            compression_start: (0, 0),
         };
         for i in 0..20 {
             let wall = if i == 7 { 120.0 } else { 10.0 };

@@ -1609,6 +1609,7 @@ impl Streaming {
         if self.paused {
             return (uploads, Vec::new());
         }
+        let edits = crate::spans::guard("streaming_edits");
         ExtraCover::refresh(&mut self.cover, &self.extra);
         // The sweeps below walk every loaded column and proto chunk. Run them
         // at once when the view moves and every eighth tick otherwise: a
@@ -1619,6 +1620,8 @@ impl Streaming {
         self.scan_age = if sweep { 0 } else { self.scan_age + 1 };
         self.requeue();
         self.relight_edits(world);
+        drop(edits);
+        let apply = crate::spans::guard("streaming_apply");
         let deferred = std::mem::take(&mut self.deferred);
         let received = self.shared.done.take();
         // Meshes made stale meanwhile, freed with the uploaded ones (`free`).
@@ -1701,6 +1704,8 @@ impl Streaming {
             }
         }
         self.free(stale);
+        drop(apply);
+        let unload = crate::spans::guard("streaming_unload");
         let mut removed = Vec::new();
         if sweep {
             // Unload far columns.
@@ -1773,6 +1778,8 @@ impl Streaming {
         self.decorated.retain(|k| {
             protos.contains_key(k) || finishing.contains(k) || world.chunks.contains_key(k)
         });
+        drop(unload);
+        let _prepare = crate::spans::guard("streaming_prepare");
         // Finalize chunks whose neighbourhood is decorated.
         let candidates: Vec<(i32, i32)> = self.protos.keys().copied().collect();
         for (x, z) in candidates {
