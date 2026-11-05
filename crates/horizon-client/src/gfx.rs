@@ -684,6 +684,8 @@ pub struct Renderer {
     rt_cloud_mesh: Option<rt_cloud_mesh::RtCloudMesh>,
     /// RT lighting's depth prepass: its pipeline and a depth per view size.
     solid_depth: wgpu::RenderPipeline,
+    /// Whether the log said the world starts from the rays' prepass (`world_prepass`).
+    world_prepass_logged: bool,
     rt_depths: Vec<([u32; 2], wgpu::TextureView)>,
     /// VR's two eyes' prepass in one multiview pass, where the device has it.
     eye_depths: Option<EyeDepths>,
@@ -767,6 +769,12 @@ pub struct Renderer {
 /// `max_texture_array_layers` of the GPUs Horizon runs on. Mods add sprites
 /// past it into more arrays (terrain.wgsl's `sprite`).
 pub(crate) const SPRITE_SPLIT: u32 = 2048;
+/// `HORIZON_WORLD_PREPASS=1`: the world's depth starts from the rays' prepass (`Renderer::render`),
+/// to time what shading the hidden faces costs; off by default until measured.
+fn world_prepass() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_WORLD_PREPASS").is_ok_and(|v| v == "1"))
+}
 /// [`SPRITE_SPLIT`], or a smaller split from `HORIZON_SPRITE_SPLIT` (dev
 /// only: vanilla's sprites drawn from several arrays must look the same).
 fn sprite_split() -> u32 {
@@ -3506,6 +3514,7 @@ impl Renderer {
             rt_clouds: None,
             rt_cloud_mesh: None,
             solid_depth,
+            world_prepass_logged: false,
             rt_depths: Vec::new(),
             eye_depths,
             voxels: voxels::Voxels::default(),
@@ -3646,9 +3655,12 @@ impl Renderer {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Depth32Float,
-                // Occlusion culling's in-shader test and ray-traced shadows read it.
+                // Occlusion culling's in-shader test and ray-traced shadows read it; the rays'
+                // prepass's is copied into the world's (`HORIZON_WORLD_PREPASS`).
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             })
             .create_view(&Default::default())
@@ -6579,6 +6591,8 @@ impl Renderer {
             }
             gpu_passes::stamp(&mut encoder, "structures (BLAS, TLAS)");
         }
+        // The rays' depth prepass, which the world may start from (`world_prepass`).
+        let mut prepass_depth: Option<wgpu::TextureView> = None;
         if rt_now {
             // The rays work on the still frame, not the TAA's jittered one: a thin contact shadow
             // then falls on the same mask texels every frame. Their depth prepass draws with the
@@ -6609,6 +6623,7 @@ impl Renderer {
                     bytemuck::cast_slice(&view_proj.to_cols_array()),
                 );
             }
+            prepass_depth = Some(depth.clone());
             let scene = self.taa.last_color(rt_view);
             self.terrain_groups_with(
                 Some(&mask),
@@ -6745,13 +6760,45 @@ impl Renderer {
                     store: wgpu::StoreOp::Store,
                 },
             })];
+            // `HORIZON_WORLD_PREPASS=1`: the world starts from the rays' depth prepass of the
+            // same solid terrain (the same vertex shader and alpha test, `fs_depth`), so each
+            // pixel's solid terrain is shaded once, the faces behind it rejected before their
+            // fragment shader. Only where both were drawn with one matrix (the TAA's jitter off,
+            // `HORIZON_TAA_JITTER=0`), at one size, with Horizon's own terrain pipelines.
+            let reuse = prepass_depth.as_ref().filter(|d| {
+                world_prepass()
+                    && self.eye.is_none()
+                    && material.is_none()
+                    && !native_sky_pass
+                    && clean_view_proj == view_proj
+                    && d.texture().size() == world_depth.texture().size()
+                    && world_depth
+                        .texture()
+                        .usage()
+                        .contains(wgpu::TextureUsages::COPY_DST)
+            });
+            if let Some(depth) = reuse {
+                encoder.copy_texture_to_texture(
+                    depth.texture().as_image_copy(),
+                    world_depth.texture().as_image_copy(),
+                    depth.texture().size(),
+                );
+                if !self.world_prepass_logged {
+                    self.world_prepass_logged = true;
+                    log::info!("Horizon: the world drawn from the rays' depth prepass");
+                }
+            }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Horizon world"),
                 color_attachments: &attachments,
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: world_depth,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0.0),
+                        load: if reuse.is_some() {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(0.0)
+                        },
                         // Phase 2 of occlusion culling draws over it; a shader pack, the ray-traced
                         // shadows and the TAA read it.
                         store: if cull.is_some()
