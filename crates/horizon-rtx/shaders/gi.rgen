@@ -472,9 +472,14 @@ void main() {
         ivec3 back = restir_last(pos);
         bool has_last = back.z == 1;
         // The kernel's turns (`trace`): a tile traces its bounced light one frame in four; the
-        // frames between it rests where the last frame showed the surface.
+        // frames between it rests where the last frame showed the surface, unless that surface's
+        // history is short (under the kernel's RESTED_HISTORY, 8 frames: just seen, or cut by the
+        // anti-lag). Both must agree: a texel the kernel traces and this pass rested would be
+        // traced again by the kernel's own, far slower, bounce rays.
         uvec2 tile = uvec2(texel) >> uvec2(3u);
-        bool rests = tile_of(tile, 2u) != (uint(rt.frame.z) & 3u) && has_last;
+        float rested_history = has_last ? floor(texelFetch(last_direct, back.xy, 0).a / 8.0) : 0.0;
+        bool rests = tile_of(tile, 2u) != (uint(rt.frame.z) & 3u) && has_last
+            && rested_history >= 8.0;
         if (edge > 0.0 && !rests) {
             // `restir_gi`'s `pos`: the surface lifted as `trace` lifts it.
             vec3 from = pos + n * (0.02 + 0.002 * length(pos));
