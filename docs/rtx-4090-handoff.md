@@ -64,6 +64,23 @@ RTX-Remix-Materials pack); nothing here has run on a GPU in the agent's session.
    pass, a coherent ray SER can't help, cost 0.4 to 0.7 ms more than its ray in the kernel) and what a ray
    generation can't do that the kernel does (workgroup tiles skipped whole, shared rays in VR's periphery).
 
+4. **Opacity micromaps on the cutout sections** (`HORIZON_RT_OMM=1`, off by default; `horizon-rtx/src/micromap.rs`
+   the CPU side, `omm.rs` the raw builds, `gfx/hw_micromaps.rs` the game's side): `VK_EXT_opacity_micromap`, the
+   Vulkan side of DXR 1.2's opacity micromaps (CLAS, PTLAS and the other new builds target BLAS rebuilds, 0.12 to
+   0.35 ms here). When a section is meshed, each triangle of its alpha-tested geometries gets a 4-state micromap from
+   its sprite's alpha (the array's top level, `>= 128` opaque as `hw_opaque`) and its texture coordinates: about a
+   micro-triangle a texel (level 4 on a 16x16 face), two levels finer when a quarter is left unknown; uniform
+   triangles take a special index (opaque leaves, sprites past `SPRITE_SPLIT`: fully opaque; animated ones: unknown).
+   Identical triangles share their micromap (a cache by layer and UVs, then per section). The section's structure
+   (wgpu's) is then built by a raw command with the micromap attached (only with the raw TLAS), after the size check
+   against wgpu's (`wgpu-hal` patch: `AccelerationStructure::size`); what doesn't fit (pool 64 MB, ring slot 4 MB a
+   frame, the size) is built by wgpu as before. horizon-hdr enables the extension and its feature; the sun/GI pipeline
+   gets `RAY_TRACING_OPACITY_MICROMAP`. Log lines: "built with opacity micromaps, ... MB of pool" at start, then every
+   500 sections the count, those left to wgpu and the share of alpha-tested triangles still left to the shader.
+   Measure the forest (`rays: trace`, with and without the variable, pipeline on and off): the any-hits and the
+   kernel's candidate loop on leaves should mostly go. Risks without validation: the full barriers
+   (`ALL_COMMANDS`), the ring slot reuse four frames later, the 4-state index type `UINT32`.
+
 **First runs:** with the Vulkan validation layers (`VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`), log lines
 "Horizon RTX: the top-level structure built by raw Vulkan commands" and "the sun pass as a ray tracing pipeline".
 Likely trouble spots if validation complains: the scratch alignment (`SCRATCH_ALIGN` 256, rounded address), the image
@@ -93,7 +110,7 @@ barriers' stages, a buffer whose usage lacks what the transition needs.
    writes), the real target of shader execution reordering: the bounce rays' hits shaded after the reorder. The sun
    pass is the template: same descriptor set (extend it with the kernel's other bindings: masks, reservoirs, cache,
    lights, cells), same `Rt` uniform, one more raygen. Keep the WGSL kernel as the fallback and compare captures.
-3. **Opacity micromaps for the cutouts** (`VK_EXT_opacity_micromap`): per cutout sprite a 2-state or 4-state micromap
+3. **Opacity micromaps for the cutouts** (done, untested: item 4 above, `HORIZON_RT_OMM=1`). Was: per cutout sprite a 2-state or 4-state micromap
    (level 4: 256 microtriangles a triangle, a texel each on 16x16 sprites, "unknown" where a microtriangle mixes),
    referenced per triangle by the sprite layer. Needs the section BLAS built raw too (wgpu's build takes no pNext), which
    the raw TLAS already allows (any device address works as an instance). Worth up to the forest's 1 to 2 ms.

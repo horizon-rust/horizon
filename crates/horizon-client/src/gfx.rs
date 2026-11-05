@@ -80,6 +80,7 @@ mod flat;
 mod hdr;
 // Heat haze above the flames, for RT lighting (gfx/haze.rs).
 mod haze;
+mod hw_micromaps;
 mod hw_rays;
 pub mod lightning;
 mod lod;
@@ -1547,6 +1548,8 @@ impl Renderer {
         linear: bool,
     ) -> Result<Self> {
         let split = sprite_split();
+        // The animated layers, for the micromaps (`hw_micromaps`), before `animations` is shadowed.
+        let animated_layers: Vec<u32> = animations.iter().map(|a| a.layer).collect();
         if layers > split * SPRITE_ARRAYS {
             return Err(format!(
                 "{layers} block textures; Horizon draws at most {}",
@@ -3308,7 +3311,16 @@ impl Renderer {
             shadow_rays::ShadowRays::new(&device, hw, sprite_split(), aldhani.field(), rain.map());
         // Froxel volumetrics: hook 3.
         let froxels = froxels::Froxels::new(&device, hw, sprite_split());
-        let hw_rays = hw.then(|| hw_rays::HwRays::new(&device));
+        let mut hw_rays = hw.then(|| hw_rays::HwRays::new(&device));
+        if let Some(hw) = &mut hw_rays {
+            hw.micromaps.set_sprites(
+                sprite_pixels,
+                sprite_size,
+                layers,
+                animated_layers.into_iter(),
+                sprite_split(),
+            );
+        }
         // The sun pass as a ray tracing pipeline (horizon-rtx `sun`, `HORIZON_RT_PIPELINE=1`).
         #[cfg(feature = "rtx")]
         let sun_pass = hw.then(|| horizon_rtx::SunPass::new(&device)).flatten();
@@ -3789,6 +3801,10 @@ impl Renderer {
             section.is_some() || (mesh.solid.is_empty() && mesh.translucent.is_empty()),
         );
         if let Some(section) = section {
+            if let Some(hw) = &mut self.hw_rays {
+                hw.micromaps
+                    .meshed(key, &mesh.solid, section.solid, &section.sides.geometries());
+            }
             self.sections.insert(key, section);
         }
     }
@@ -6545,7 +6561,12 @@ impl Renderer {
             });
             // The raw top-level build can't share the encoder with wgpu's commands: the encoder
             // so far goes first, the build next, the rest of the frame in a new encoder.
-            if let Some(build) = self.hw_rays.as_mut().and_then(|hw| hw.take_raw_build()) {
+            let builds = self
+                .hw_rays
+                .as_mut()
+                .map(|hw| hw.take_raw_build())
+                .unwrap_or_default();
+            if !builds.is_empty() {
                 let before = std::mem::replace(
                     &mut encoder,
                     self.device
@@ -6554,7 +6575,7 @@ impl Renderer {
                         }),
                 );
                 self.split_commands.push(before.finish());
-                self.split_commands.push(build);
+                self.split_commands.extend(builds);
             }
             gpu_passes::stamp(&mut encoder, "structures (BLAS, TLAS)");
         }

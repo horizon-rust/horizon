@@ -301,6 +301,10 @@ mod vulkan {
     }
 }
 
+pub mod micromap;
+#[cfg(not(target_os = "macos"))]
+pub mod omm;
+
 #[cfg(not(target_os = "macos"))]
 pub use vulkan::RawTlas;
 

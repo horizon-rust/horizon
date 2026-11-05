@@ -3108,6 +3108,7 @@ impl crate::Device for super::Device {
                 buffer: raw_buffer,
                 allocation,
                 compacted_size_query: pool,
+                size: desc.size,
             })
         }
     }

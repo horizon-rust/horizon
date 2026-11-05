@@ -123,13 +123,15 @@ struct Built {
     /// Its solid geometries' runs (`solid_geometries`) and whether it has translucent quads.
     geometries: Vec<(u32, u32, bool)>,
     translucent: bool,
+    /// Its opacity micromap, where its structure has one (`hw_micromaps`).
+    _micromap: Option<super::hw_micromaps::Hold>,
 }
 
 /// The solid geometries of a section of `quads` solid quads laid out in `runs` (`(first, count,
 /// opaque)`, `mesher::Sides::geometries`): those runs, or one non-opaque geometry over them all
 /// where the row can't hold them (more runs than its slots, a first quad past 16 bits) or they
 /// don't cover the quads.
-fn solid_geometries(quads: u32, runs: &[(u32, u32, bool)]) -> Vec<(u32, u32, bool)> {
+pub(super) fn solid_geometries(quads: u32, runs: &[(u32, u32, bool)]) -> Vec<(u32, u32, bool)> {
     let mut next = 0;
     let fits = runs.len() <= MAX_SOLID_GEOMETRIES
         && runs.iter().all(|&(first, count, _)| {
@@ -191,6 +193,10 @@ pub struct HwRays {
     /// This frame's raw top-level build (`RawTlas::build`), for the renderer to submit between
     /// the commands before it and after (`take_raw_build`).
     raw_build: Option<wgpu::CommandBuffer>,
+    /// This frame's raw builds of sections with opacity micromaps, submitted before it.
+    raw_sections: Option<wgpu::CommandBuffer>,
+    /// The cutout sections' opacity micromaps (the `rtx` feature, `HORIZON_RT_OMM=1`).
+    pub micromaps: super::hw_micromaps::Micromaps,
     /// Where each instance's quads are, by its custom data (shadow_rays_hw.wgsl `instances`,
     /// `row`): the page, the solid quads' first vertex, the translucent ones', the translucent
     /// geometry, each solid geometry's first quad.
@@ -362,10 +368,18 @@ impl HwRays {
     pub fn raw(&self) -> Option<&RawTlas> {
         self.raw.as_ref()
     }
-    /// This frame's raw top-level build, once: submit it after the encoder `finish` recorded
-    /// into and before the commands that read the structure.
-    pub fn take_raw_build(&mut self) -> Option<wgpu::CommandBuffer> {
-        self.raw_build.take()
+    /// This frame's raw builds, once, in their order (the sections' with micromaps, then the
+    /// top-level one): submit them after the encoder `update` and `finish` recorded into and
+    /// before the commands that read the structure.
+    pub fn take_raw_build(&mut self) -> Vec<wgpu::CommandBuffer> {
+        let top = self.raw_build.take();
+        let sections = self.raw_sections.take();
+        match top {
+            Some(top) => sections.into_iter().chain([top]).collect(),
+            // No top-level build this frame: the sections' still go (none were built raw then,
+            // `update` builds them raw only with the raw top-level build).
+            None => sections.into_iter().collect(),
+        }
     }
 
     /// Whether `device` traces hardware rays (and `HORIZON_HW_RT` isn't 0).
@@ -389,6 +403,8 @@ impl HwRays {
             tlas,
             raw,
             raw_build: None,
+            raw_sections: None,
+            micromaps: super::hw_micromaps::Micromaps::new(device),
             instances: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("RT lighting's terrain instances"),
                 size: u64::from(MAX_INSTANCES) * ROW_BYTES,
@@ -488,6 +504,8 @@ impl HwRays {
             self.stale.remove(&t.key);
         }
         self.built.retain(|key, _| Self::near(center, *key));
+        self.micromaps.frame();
+        self.micromaps.retain(|key| Self::near(center, key));
         self.changed |= self.built.len() != before || !todo.is_empty();
         // A section's geometries: its solid quads, the opaque runs' hits confirmed by the hardware,
         // the cutouts' alpha-tested; then its translucent ones (stained glass, water, ice), which
@@ -530,7 +548,8 @@ impl HwRays {
             .collect();
         let buffers: Vec<_> = todo.iter().map(|t| pages(t.page)).collect();
         let mut entries = Vec::with_capacity(todo.len());
-        for ((t, size), (solid, _)) in todo.iter().zip(&sizes).zip(&layouts) {
+        let mut made = Vec::with_capacity(todo.len());
+        for (t, size) in todo.iter().zip(&sizes) {
             let mut blas = device.create_blas(
                 &wgpu::CreateBlasDescriptor {
                     label: Some("RT lighting's section"),
@@ -559,6 +578,53 @@ impl HwRays {
                     100.0 * self.stat[1] as f64 / total as f64,
                 );
             }
+            made.push((blas, address));
+        }
+        // The cutout sections with micromaps (`hw_micromaps`), with the raw top-level build:
+        // built by raw commands, the micromaps attached; those that don't fit, through wgpu.
+        let plans: Vec<_> = todo
+            .iter()
+            .map(|t| self.micromaps.take(t.key).filter(|_| self.raw.is_some()))
+            .collect();
+        let mut holds: Vec<Option<super::hw_micromaps::Hold>> =
+            (0..todo.len()).map(|_| None).collect();
+        if plans.iter().any(Option::is_some) {
+            let mut which = Vec::new();
+            let mut jobs = Vec::new();
+            for (i, (((blas, _), plan), (_, parts))) in
+                made.iter_mut().zip(&plans).zip(&layouts).enumerate()
+            {
+                let Some(plan) = plan else {
+                    continue;
+                };
+                which.push(i);
+                jobs.push((
+                    blas,
+                    &buffers[i],
+                    parts
+                        .iter()
+                        .map(|&(first, quads, flags)| {
+                            (
+                                first,
+                                quads,
+                                flags.contains(Flags::OPAQUE),
+                                flags.contains(Flags::NO_DUPLICATE_ANY_HIT_INVOCATION),
+                            )
+                        })
+                        .collect(),
+                    plan,
+                ));
+            }
+            let (built, commands) = self.micromaps.build(device, indices, jobs);
+            for (i, hold) in which.into_iter().zip(built) {
+                holds[i] = hold;
+            }
+            self.raw_sections = commands;
+        }
+        let raw_built: Vec<bool> = holds.iter().map(Option::is_some).collect();
+        for (((t, (blas, address)), (solid, _)), hold) in
+            todo.iter().zip(made).zip(&layouts).zip(&mut holds)
+        {
             self.built.insert(
                 t.key,
                 Built {
@@ -569,11 +635,20 @@ impl HwRays {
                     solid: t.quads,
                     geometries: solid.clone(),
                     translucent: t.translucent > 0,
+                    _micromap: hold.take(),
                 },
             );
         }
-        for (((t, size), buffer), (_, parts)) in todo.iter().zip(&sizes).zip(&buffers).zip(&layouts)
+        for ((((t, size), buffer), (_, parts)), raw) in todo
+            .iter()
+            .zip(&sizes)
+            .zip(&buffers)
+            .zip(&layouts)
+            .zip(&raw_built)
         {
+            if *raw {
+                continue;
+            }
             entries.push(wgpu::BlasBuildEntry {
                 blas: &self.built[&t.key].blas,
                 geometry: wgpu::BlasGeometries::TriangleGeometries(

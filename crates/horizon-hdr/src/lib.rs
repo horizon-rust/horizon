@@ -38,6 +38,17 @@ pub fn open_vulkan_device(
         let mut reorder_features =
             ash::vk::PhysicalDeviceRayTracingInvocationReorderFeaturesNV::default()
                 .ray_tracing_invocation_reorder(true);
+        // The RTX 4090 build's opacity micromaps (horizon-rtx `omm`, `HORIZON_RT_OMM=1`): the
+        // extension, its feature and what it builds on, where the driver offers them and the
+        // device traces rays.
+        let micromaps = std::env::var("HORIZON_RT_OMM").is_ok_and(|v| v == "1")
+            && offers(ash::ext::opacity_micromap::NAME)
+            && desc
+                .required_features
+                .contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY);
+        let synchronization2 = micromaps && offers(ash::khr::synchronization2::NAME);
+        let mut micromap_features =
+            ash::vk::PhysicalDeviceOpacityMicromapFeaturesEXT::default().micromap(true);
         // Safety: what wgpu's own request_device does, with one or two more extensions.
         unsafe {
             hal.open_with_callback(
@@ -51,6 +62,15 @@ pub fn open_vulkan_device(
                             args.extensions
                                 .push(ash::nv::ray_tracing_invocation_reorder::NAME);
                             *args.create_info = args.create_info.push_next(&mut reorder_features);
+                        }
+                        if micromaps {
+                            args.extensions.push(ash::ext::opacity_micromap::NAME);
+                            if synchronization2
+                                && !args.extensions.contains(&ash::khr::synchronization2::NAME)
+                            {
+                                args.extensions.push(ash::khr::synchronization2::NAME);
+                            }
+                            *args.create_info = args.create_info.push_next(&mut micromap_features);
                         }
                     },
                 )),

@@ -816,6 +816,8 @@ pub struct AccelerationStructure {
     buffer: vk::Buffer,
     allocation: gpu_allocator::vulkan::Allocation,
     compacted_size_query: Option<vk::QueryPool>,
+    /// The size it was created with, for builds recorded outside wgpu.
+    size: wgt::BufferAddress,
 }
 
 impl AccelerationStructure {
@@ -839,6 +841,12 @@ impl AccelerationStructure {
     /// As `raw_handle`.
     pub unsafe fn raw_buffer(&self) -> vk::Buffer {
         self.buffer
+    }
+
+    /// The size the structure was created with: a build recorded outside wgpu (with an opacity
+    /// micromap, an extension wgpu doesn't know) must fit in it.
+    pub fn size(&self) -> wgt::BufferAddress {
+        self.size
     }
 }
 

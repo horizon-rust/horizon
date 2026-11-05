@@ -119,7 +119,7 @@ impl SunPass {
         if !kinds.any() {
             return None;
         }
-        let (raw_device, instance, physical) = {
+        let (micromaps, raw_device, instance, physical) = {
             // Safety: read and cloned (the handles and function tables); dropped before wgpu
             // takes the device back.
             let hal = unsafe { device.as_hal::<Vulkan>() }?;
@@ -136,7 +136,11 @@ impl SunPass {
                     return None;
                 }
             }
+            // The sections' structures may carry opacity micromaps (`omm`): a ray tracing
+            // pipeline must say it reads them.
+            let micromaps = extensions.contains(&ash::ext::opacity_micromap::NAME);
             (
+                micromaps,
                 hal.raw_device().clone(),
                 hal.shared_instance().raw_instance().clone(),
                 hal.raw_physical_device(),
@@ -296,6 +300,11 @@ impl SunPass {
                 .stages(&stages)
                 .groups(&groups)
                 .max_pipeline_ray_recursion_depth(1)
+                .flags(if micromaps {
+                    vk::PipelineCreateFlags::RAY_TRACING_OPACITY_MICROMAP_EXT
+                } else {
+                    vk::PipelineCreateFlags::empty()
+                })
                 .layout(layout);
             let pipeline = match rt.create_ray_tracing_pipelines(
                 vk::DeferredOperationKHR::null(),
