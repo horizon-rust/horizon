@@ -1290,8 +1290,16 @@ mod tests {
         for source in [
             include_str!("radiance_cache.wgsl"),
             &super::source(false, 2048),
+            &super::source(true, 2048),
         ] {
             let module = naga::front::wgsl::parse_str(source).expect("the shader");
+            // Validated too, so a type error in the kernel shows here rather than on the GPU.
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .expect("a valid shader");
             let mut layouter = naga::proc::Layouter::default();
             layouter.update(module.to_ctx()).expect("its layout");
             let (cell, _) = module
