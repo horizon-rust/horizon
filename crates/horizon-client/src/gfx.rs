@@ -5426,7 +5426,10 @@ impl Renderer {
         {
             rt.aldhani = [t, atmosphere::MOONLIGHT * atmosphere::PAPER_WHITE];
         }
-        if rt.any() {
+        // In VR the first eye alone updates the structures, as it alone submits their raw builds
+        // and builds the top level (below): the second eye's sections built raw with opacity
+        // micromaps were never submitted, the device lost once the top level took them.
+        if rt.any() && self.eye.is_none_or(|e| e.view_index <= 1) {
             crate::spans::time("rt_structures", || {
                 self.hw_update(&mut encoder, frame.camera)
             });
