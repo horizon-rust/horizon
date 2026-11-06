@@ -22,6 +22,8 @@ pub(super) struct PrimedTnt {
     pub(super) join: horizon_client::join_seq::JoinSeq,
     /// The entity id a server tracks it by (0 until it is tracked).
     pub id: u32,
+    /// `PrimedTnt.usedPortal`: set by teleport, never saved.
+    pub used_portal: bool,
     pub position: Vec3,
     pub previous: Vec3,
     pub velocity: Vec3,
@@ -238,6 +240,7 @@ impl Game<'_> {
         // An id from the entity counter at once, so a command can name it.
         self.next_entity += 1;
         self.tnts.push(PrimedTnt {
+            used_portal: false,
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -283,7 +286,8 @@ impl Game<'_> {
                 t.position.z,
             ];
             let bounds = t.bounds();
-            let (id, owner, guest, power) = (t.id, t.owner, t.guest, t.power);
+            let (id, owner, guest, power, used_portal) =
+                (t.id, t.owner, t.guest, t.power, t.used_portal);
             let (owner, guest) = match owner {
                 Some(_) => (owner, guest),
                 None => self
@@ -312,7 +316,7 @@ impl Game<'_> {
                 |id| self.mob_display_name(id),
             );
             let result = self
-                .with_hive_emptying_blast(|g| g.server_explode(center, power, interaction, false));
+                .with_hive_emptying_blast(|g| g.server_explode_from(center, power, interaction, false, super::explosion::ExplosionSource::default().with_portal_proof(used_portal)));
             self.combat.blast_owner = None;
             self.combat.blast_guest = None;
             self.combat.explosion_in_water = false;
@@ -622,6 +626,7 @@ mod tests {
         ]))
         .unwrap();
         let mut tnt = PrimedTnt {
+            used_portal: false,
             rotation: [0.0, 0.0],
             join: Default::default(),
             id: 1,
@@ -685,6 +690,7 @@ mod tests {
         use horizon_core::geometry::Direction;
         use horizon_world::piston_push::bounce_velocity;
         let mut tnt = PrimedTnt {
+            used_portal: false,
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -728,6 +734,7 @@ mod tests {
         for bordered in [false, true] {
             let at = Vec3::new(24.0, 4.0, 20.5);
             let mut tnt = PrimedTnt {
+                used_portal: false,
                 rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: false,
@@ -790,6 +797,7 @@ mod tests {
             }
             let at = Vec3::new(19.5, top, 20.5);
             let mut tnt = PrimedTnt {
+                used_portal: false,
                 rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: false,
@@ -856,6 +864,7 @@ mod tests {
         world.set(21, 4, 20, flowing).unwrap();
         let at = Vec3::new(20.5, 4.0, 20.5);
         let mut tnt = PrimedTnt {
+            used_portal: false,
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -961,6 +970,7 @@ mod tests {
         // (Entity.handleOnInsideBubbleColumn / handleOnAboveBubbleColumn).
         let at = Vec3::new(20.5, 6.0, 20.5);
         let mut tnt = PrimedTnt {
+            used_portal: false,
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -1042,6 +1052,7 @@ mod tests {
         world.set(20, 2, 20, soul_sand).unwrap();
         let at = Vec3::new(20.5, 6.0, 20.5);
         let primed = || PrimedTnt {
+            used_portal: false,
             rotation: [0.0, 0.0],
             join: Default::default(),
             no_gravity: false,
@@ -1129,6 +1140,135 @@ mod tests {
         );
         game.streaming.forced.insert((0, 0));
         Some(game)
+    }
+
+    /// PrimedTnt.teleport selects USED_PORTAL_DAMAGE_CALCULATOR even in the
+    /// same dimension; ordinary TNT still destroys portal blocks.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn portal_blast_tnt_survives_teleport_but_not_save_reload() {
+        let mut game = server_game().expect("set HORIZON_TEST_RESOURCES");
+        let portal = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:nether_portal")
+            .unwrap();
+        let at = BlockPos::new(8, 64, 8);
+        let detonate = |game: &mut Game<'_>| {
+            game.world.set(at.x, at.y, at.z, portal).unwrap();
+            game.tnts[0].position = Vec3::new(8.5, 64.0, 8.5);
+            game.tnts[0].previous = game.tnts[0].position;
+            game.tnts[0].velocity = Vec3::ZERO;
+            game.tnts[0].no_gravity = true;
+            game.tnts[0].fuse = 1;
+            game.tick_one_tnt(0).unwrap();
+            game.world.block(at.x, at.y, at.z) == portal
+        };
+        game.add_primed_tnt(at, 0.0, 80, None, None);
+        assert!(!detonate(&mut game), "ordinary TNT destroys the portal");
+        game.add_primed_tnt(at, 0.0, 80, None, None);
+        // Exercise the actual command teleport path rather than setting its flag.
+        let id = game.tnts[0].id;
+        game.teleport_to_in_level(
+            super::super::commands::Target::Tnt(id),
+            [8.5, 64.0, 8.5],
+            None,
+            false,
+        );
+        assert!(detonate(&mut game), "teleported TNT protects the portal");
+        game.add_primed_tnt(at, 0.0, 80, None, None);
+        let id = game.tnts[0].id;
+        game.teleport_to_in_level(
+            super::super::commands::Target::Tnt(id),
+            [8.5, 64.0, 8.5],
+            None,
+            false,
+        );
+        let saved = game.tnt_nbt(0);
+        game.tnts.clear();
+        game.load_tnt(saved, None);
+        assert!(!detonate(&mut game), "usedPortal is not saved");
+        // The runtime arrival handoff is consumed before retaining the NBT.
+        game.add_primed_tnt(at, 0.0, 80, None, None);
+        let mut transfer = game.tnt_nbt(0);
+        super::super::persist::mark_tnt_used_portal(&mut transfer);
+        game.tnts.clear();
+        game.load_tnt(transfer, None);
+        let kept = game.tnt_nbt(0);
+        assert!(kept.get("horizon:tnt_used_portal").is_none());
+        assert!(detonate(&mut game), "arrival preserves runtime immunity");
+    }
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn portal_blast_sulfur_cube_uses_only_positive_cooldown() {
+        use horizon_client::mobs::Mob;
+        use horizon_client::nether_portal::PortalState;
+        let mut game = server_game().expect("set HORIZON_TEST_RESOURCES");
+        let portal = game.pack.assets.registry.default_state("minecraft:nether_portal").unwrap();
+        for cooldown in [1, 0, -1] {
+            game.world.set(8, 64, 8, portal).unwrap();
+            let kind = game.res.mob_types().get("minecraft:sulfur_cube").unwrap().clone();
+            let mut cube = Mob::new(9123, kind, Vec3::new(8.5, 64.0, 8.5), 0.0);
+            cube.extra.body = Some("minecraft:tnt".into());
+            cube.extra.counter2 = 2; // fuse 1: explodes on this tick.
+            game.mobs.push(cube);
+            game.portals.entities.insert(9123, PortalState { cooldown, process: None });
+            // The actual level tick orders the portal pass before the mob pass.
+            game.handle_entity_portals();
+            game.tick_creatures().unwrap();
+            assert_eq!(game.world.block(8, 64, 8) == portal, cooldown > 0, "cooldown {cooldown}");
+        }
+        // An unrelated native/sourceless blast never inherits the cube's calculator.
+        game.world.set(8, 64, 8, portal).unwrap();
+        game.server_explode([8.5, 64.0625, 8.5], 4.0, super::super::explosion::BlockInteraction::Destroy, false).unwrap();
+        assert_ne!(game.world.block(8, 64, 8), portal);
+    }
+
+    /// Optional.empty resistance means the rays behave exactly as through air,
+    /// not like a zero-resistance solid (which still costs 0.09 per step).
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn portal_blast_rays_pass_through_without_resistance() {
+        use super::super::explosion::{BlockInteraction, ExplosionSource};
+        use horizon_core::random::LegacyRandom;
+        let mut game = server_game().expect("set HORIZON_TEST_RESOURCES");
+        let registry = game.pack.assets.registry;
+        let portal = registry.default_state("minecraft:nether_portal").unwrap();
+        let glass = registry.default_state("minecraft:glass").unwrap();
+        let air = game.world.air;
+        for seed in [0, 1, 19, 314159] {
+            let mut outcomes = Vec::new();
+            for center in [air, portal] {
+                for x in -4i32..=4 {
+                    for y in -4i32..=4 {
+                        for z in -4i32..=4 {
+                            let distance = x.abs().max(y.abs()).max(z.abs());
+                            let state = if distance <= 1 { center } else if distance == 3 { glass } else { air };
+                            game.world.set(8 + x, 64 + y, 8 + z, state).unwrap();
+                        }
+                    }
+                }
+                game.world.random = LegacyRandom::new(seed);
+                game.server_explode_from([8.5, 64.5, 8.5], 2.0, BlockInteraction::Destroy, false,
+                    ExplosionSource::default().with_portal_proof(true)).unwrap();
+                let mut remaining = Vec::new();
+                for x in -3i32..=3 {
+                    for y in -3i32..=3 {
+                        for z in -3i32..=3 {
+                            if x.abs().max(y.abs()).max(z.abs()) == 3 {
+                                remaining.push(game.world.block(8 + x, 64 + y, 8 + z) == glass);
+                            }
+                        }
+                    }
+                }
+                outcomes.push(remaining);
+            }
+            assert!(outcomes[0].iter().any(|&solid| !solid), "blast reaches the shell");
+            assert!(outcomes[0].iter().any(|&solid| solid), "shell also extends beyond the blast");
+            assert_eq!(outcomes[0], outcomes[1], "seed {seed}: portal must not attenuate rays");
+        }
     }
 
     /// #10063: TNT lit between level ticks (flint and steel, a command) has its

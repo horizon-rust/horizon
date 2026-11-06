@@ -209,6 +209,18 @@ pub(super) fn client_float() -> f32 {
     CLIENT_RANDOM.with(|r| r.borrow_mut().next_float())
 }
 
+/// Per-explosion properties, never inherited by a nested explosion.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct ExplosionSource {
+    pub(super) portal_proof: bool,
+}
+impl ExplosionSource {
+    pub(super) fn with_portal_proof(mut self, portal_proof: bool) -> Self {
+        self.portal_proof = portal_proof;
+        self
+    }
+}
+
 impl Game<'_> {
     /// `blast_cause` for the blast going off now.
     pub(super) fn blast_attacker(&self) -> Option<(u32, Text)> {
@@ -291,6 +303,7 @@ impl Game<'_> {
         center: [f64; 3],
         radius: f32,
         resists: Option<([i32; 3], f32)>,
+        portal_proof: bool,
     ) -> Vec<[i32; 3]> {
         let (min_y, max_y) = self.with_level(|_, level, _| {
             use horizon_world::level::LevelAccess;
@@ -343,7 +356,11 @@ impl Game<'_> {
                         let spared = self.combat.rail_proof_blast
                             && (self.rail(pos[0], pos[1], pos[2]).is_some()
                                 || self.rail(pos[0], pos[1] + 1, pos[2]).is_some());
+                        // Optional.empty skips even the base resistance deduction.
+                        let portal =
+                            portal_proof && &*f.name == "minecraft:nether_portal";
                         match resists {
+                            _ if portal => {}
                             Some((at, resistance)) if at == pos => {
                                 power -= (resistance + 0.3) * 0.3;
                             }
@@ -359,7 +376,7 @@ impl Game<'_> {
                             }
                             _ => {}
                         }
-                        if power > 0.0 && !spared {
+                        if power > 0.0 && !spared && !portal {
                             set.put(Key(pos), ());
                         }
                         xp += xd * f64::from(0.3f32);
@@ -868,6 +885,34 @@ impl Game<'_> {
         damage_type: &str,
         resists: Option<([i32; 3], f32)>,
     ) -> Result<()> {
+        self.server_explode_as_source(center, radius, interaction, fire, damage_type, resists, ExplosionSource::default())
+    }
+    /// `PrimedTnt.USED_PORTAL_DAMAGE_CALCULATOR`, selected for this call only.
+    pub(super) fn server_explode_from(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        interaction: BlockInteraction,
+        fire: bool,
+        source: ExplosionSource,
+    ) -> Result<()> {
+        let damage_type = super::creatures::damage_type(
+            horizon_client::mobs::DamageKind::Explosion,
+            self.blast_attacker().is_some(),
+        );
+        self.server_explode_as_source(center, radius, interaction, fire, damage_type, None, source)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn server_explode_as_source(
+        &mut self,
+        center: [f64; 3],
+        radius: f32,
+        interaction: BlockInteraction,
+        fire: bool,
+        damage_type: &str,
+        resists: Option<([i32; 3], f32)>,
+        source: ExplosionSource,
+    ) -> Result<()> {
         if self.serving.is_some() || self.options.dedicated.is_some() {
             self.native_explosion_prime(center, radius);
         }
@@ -883,7 +928,7 @@ impl Game<'_> {
         // Explosion.explode: the blast is heard.
         let ctx = horizon_client::sculk::Context::default();
         self.post_game_event("minecraft:explode", center, ctx);
-        let mut targets = self.exploded_positions(center, radius, resists);
+        let mut targets = self.exploded_positions(center, radius, resists, source.portal_proof);
         let dimension = self.dim.id();
         self.native_explosion_detonate(dimension, center, &mut targets);
         let pushed =

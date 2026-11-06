@@ -68,6 +68,22 @@ impl EntityMemory {
 /// is kept or saved.
 const FRESH_ADD: &str = "horizon:fresh_add";
 
+const TNT_USED_PORTAL: &str = "horizon:tnt_used_portal";
+
+/// Runtime transfer metadata, consumed before the compound is retained.
+pub(super) fn mark_tnt_used_portal(tag: &mut Tag) {
+    if let Tag::Compound(c) = tag {
+        c.insert(TNT_USED_PORTAL.into(), Tag::Byte(1));
+    }
+}
+
+fn take_tnt_used_portal(tag: &mut Tag) -> bool {
+    match tag {
+        Tag::Compound(c) => c.remove(&TNT_USED_PORTAL.into()).is_some(),
+        _ => false,
+    }
+}
+
 /// Queue `tag` with the chunk loads as a fresh add.
 pub(super) fn mark_fresh(tag: &mut Tag) {
     if let Tag::Compound(c) = tag {
@@ -636,6 +652,7 @@ impl Game<'_> {
     // Its Passengers ride it (EntityType.loadEntityRecursive forces them on).
     pub(super) fn load_tnt(&mut self, tag: Tag, uuid: Option<[i32; 4]>) {
         let mut tag = tag;
+        let used_portal = take_tnt_used_portal(&mut tag);
         let riders = self.take_mob_passengers(&mut tag);
         if let Some(position) = entity_nbt::position(&tag) {
             self.next_entity += 1;
@@ -645,6 +662,7 @@ impl Game<'_> {
                 _ => 80,
             };
             self.tnts.push(super::tnt::PrimedTnt {
+                used_portal,
                 rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: entity_nbt::flag(&tag, "NoGravity"),
