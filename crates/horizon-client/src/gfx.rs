@@ -1313,21 +1313,48 @@ fn surface_format(
 /// that no longer fit in video memory go to system memory. Shader packs' 16-bit normalized
 /// buffers (render targets with the adapter's own format features) and R11F_G11F_B10F: a
 /// float stand-in neither clamps nor drops NaN.
+/// terrain.wgsl, its clip position `@invariant` where the world tests against a depth prepass
+/// for equality (`world_prepass`) or `HORIZON_TERRAIN_INVARIANT=1` asks. b19c0339b made it
+/// invariant always, the only change to the terrain's shaders between b5b5252a7 and 482620a06,
+/// over which the RTX 4090's "world: phase 1" took 0.9 to 1.1 ms more and the rays' prepass 0.33
+/// (one session, the time of day fixed); the variable tells whether it was that.
+fn terrain_source() -> std::borrow::Cow<'static, str> {
+    static INVARIANT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let invariant = *INVARIANT.get_or_init(|| {
+        world_prepass() != WorldPrepass::Off
+            || std::env::var("HORIZON_TERRAIN_INVARIANT").is_ok_and(|v| v != "0")
+    });
+    let source = include_str!("terrain.wgsl");
+    if invariant {
+        invariant_terrain(source).into()
+    } else {
+        source.into()
+    }
+}
+/// `source` (terrain.wgsl) with `TerrainOut`'s clip position `@invariant`.
+fn invariant_terrain(source: &str) -> String {
+    let at = source
+        .find("struct TerrainOut {")
+        .expect("terrain.wgsl has TerrainOut");
+    let (head, tail) = source.split_at(at);
+    let field = "@builtin(position) clip: vec4<f32>,";
+    debug_assert!(tail.contains(field));
+    format!(
+        "{head}{}",
+        tail.replacen(field, "@builtin(position) @invariant clip: vec4<f32>,", 1)
+    )
+}
 /// terrain.wgsl with the translucent terrain's dual-source entry (`fs_translucent_dual`).
 fn dual_source_terrain() -> String {
     format!(
         "enable dual_source_blending;\n{}{}",
-        include_str!("terrain.wgsl"),
+        terrain_source(),
         include_str!("terrain_dual.wgsl")
     )
 }
 /// terrain.wgsl with VR's two-view depth prepass entry (`vs_terrain_views`, `EyeDepths`).
 fn terrain_views() -> String {
-    format!(
-        "{}{}",
-        include_str!("terrain.wgsl"),
-        include_str!("terrain_views.wgsl")
-    )
+    format!("{}{}", terrain_source(), include_str!("terrain_views.wgsl"))
 }
 fn device_features(adapter: &wgpu::Adapter) -> wgpu::Features {
     timing::GpuTimer::features(adapter)
@@ -1719,7 +1746,7 @@ impl Renderer {
         let linear_constants = [("LINEAR", f64::from(u8::from(linear)))];
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon terrain"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("terrain.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(terrain_source()),
         });
         let entry = |binding, visibility, ty| wgpu::BindGroupLayoutEntry {
             binding,
@@ -8548,6 +8575,23 @@ mod tests {
             .validate(&module)
             .unwrap_or_else(|e| panic!("dual-source froxels: {e:?}"));
         }
+        // The terrain with its clip position invariant (`terrain_source`, for the world's depth
+        // prepasses): the field is there to mark, once.
+        let plain = include_str!("terrain.wgsl");
+        let invariant = super::invariant_terrain(plain);
+        let out = &invariant[invariant.find("struct TerrainOut {").unwrap()..];
+        let out = &out[..out.find('}').unwrap()];
+        assert!(out.contains("@builtin(position) @invariant clip"));
+        assert_eq!(invariant.matches("@invariant").count(), 1);
+        assert!(!plain.contains("@invariant"));
+        let module = naga::front::wgsl::parse_str(&invariant)
+            .unwrap_or_else(|e| panic!("invariant terrain: {}", e.emit_to_string(&invariant)));
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("invariant terrain: {e:?}"));
         // The translucent terrain's dual-source entry and VR's two-view prepass come after
         // terrain.wgsl (gfx.rs).
         files.retain(|p| !named(p, "terrain_dual.wgsl") && !named(p, "terrain_views.wgsl"));
