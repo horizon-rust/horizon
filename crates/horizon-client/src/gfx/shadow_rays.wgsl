@@ -1710,13 +1710,14 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         let frame = u32(rt.frame.z);
         var rest = tile_of(t, 2u) != (frame & 3u);
         if behind_psr { rest = tile_of(t, 3u) != (frame & 7u); }
-        // A surface whose history is short (just seen, or cut short by a change of its light,
-        // `accumulate`'s anti-lag) traces every frame until its history is long again, so a
-        // light switched on, a torch drawn or a mob's shadow passing by settles within a few
-        // frames rather than a few frames in four (the metals show the sky seen whole, there it
-        // showed most).
-        let rested_history = history_in(textureLoad(last_direct, back.xy, 0).a);
-        rest = rest && back.z == 1 && rested_history >= RESTED_HISTORY && (SKIP & 16u) == 0u;
+        // A surface whose history the anti-lag cut (`accumulate`: its light changed) traces every
+        // frame until its history is long again, so a light switched on, a torch drawn or a
+        // mob's shadow passing by settles within a few frames rather than a few frames in four
+        // (the metals show the sky seen whole, there it showed most). Only those: a surface just
+        // seen, or past the grid's band, rests in turns as before (each frame's GI is most of
+        // the kernel's cost).
+        let cut = antilag_in(textureLoad(last_direct, back.xy, 0).a);
+        rest = rest && back.z == 1 && !cut && (SKIP & 16u) == 0u;
         sky_rested = rest;
         if rest {
             sky = vec4(textureLoad(last_blocks, back.xy, 0).rgb, textureLoad(last_mask, back.xy, 0).b);
@@ -1787,15 +1788,22 @@ const ANTILAG_VISIBILITY: f32 = 0.15;
 // mean must be (with this frame under twice that) for the light to count as gone (`accumulate`).
 const DARKEN_HISTORY: f32 = 3.0;
 const DARKEN_RATIO: f32 = 0.35;
-// Below this many frames of history the bounced light is traced every frame (`trace`'s turns).
+// Below this many frames of history a surface the anti-lag cut traces its bounced light every
+// frame (`trace`'s turns).
 const RESTED_HISTORY: f32 = 8.0;
 // The face (0..5) and the history length packed in the direct light's alpha (`face + 8 n`, exact in
 // a half float), for the denoiser and the reuse's checks.
 fn face_in(a: f32) -> f32 {
     return a - 8.0 * floor(a / 8.0);
 }
+// The history length (0..30) and whether the anti-lag cut it and the surface still traces every
+// frame for it (`trace`): `n + 32` in place of n while it does.
 fn history_in(a: f32) -> f32 {
-    return floor(a / 8.0);
+    let n = floor(a / 8.0);
+    return n - 32.0 * floor(n / 32.0);
+}
+fn antilag_in(a: f32) -> bool {
+    return floor(a / 8.0) >= 32.0;
 }
 // A visibility's slow history `held` clamped to its fast mean `mean` give or take its noise: a
 // visibility is a few rays' share each frame, about a coin toss's noise (m(1 - m)), which the fast
@@ -1845,6 +1853,7 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
     var sun = vec4(0.0);
     var quick = vec4(0.0);
     var history = 0.0;
+    var cut = 0.0;
     var weight = 0.0;
     for (var i = 0; i < 4; i++) {
         let o = vec2(i & 1, i >> 1u);
@@ -1862,6 +1871,7 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
         sun += textureLoad(last_sun, t, 0) * w;
         quick += textureLoad(last_fast, t, 0) * w;
         history += history_in(l.a) * w;
+        cut += select(0.0, w, antilag_in(l.a));
         weight += w;
     }
     if weight < 1e-3 { return v; }
@@ -1917,11 +1927,16 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
         slow_mask.b = seen_bound;
         lag = lag || abs(seen_bound - seen_held) > ANTILAG_VISIBILITY;
     }
-    if lag && (SKIP & 256u) == 0u { n = min(n, ANTILAG_HISTORY); }
+    // The anti-lag's flag: set where it cuts the history, kept until the history is long again.
+    var flag = cut > 0.5 * weight && n < RESTED_HISTORY;
+    if lag && (SKIP & 256u) == 0u {
+        n = min(n, ANTILAG_HISTORY);
+        flag = true;
+    }
     let k = 1.0 / (n + 1.0);
     return Traced(vec4(mix(slow_mask, v.rays.rgb, k), v.rays.a),
         vec4(mix(slow_blocks, v.blocks.rgb, k), v.blocks.a),
-        vec4(mix(slow_direct, v.direct.rgb, k), face + 8.0 * n),
+        vec4(mix(slow_direct, v.direct.rgb, k), face + 8.0 * (n + select(0.0, 32.0, flag))),
         mix(slow_sun, v.sun, k),
         v.reservoir);
 }
