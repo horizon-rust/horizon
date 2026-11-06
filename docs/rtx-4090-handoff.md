@@ -154,10 +154,18 @@ the first fake-runtime runs used 3132x3016). PR #2 (`claude/project-thread-tb0ay
   dd9002142 (`pr2-dd90.txt`): 8.31 ms a frame (eye 1 5.38, eye 2 2.82); the TAA 0.38 to 0.25 ms an eye while no
   vignette shows; the first hit about 0.05 ms; the visibility within the noise. Two runs of the defaults differ by
   0.6 ms at one clock: the fake world's spawn moves from launch to launch, so captures at a fixed pose need a
-  teleport (`spreadplayers 0 0`).
+  teleport to fixed coordinates (`spreadplayers` failed there).
 - **The vignette in the tone mapping's pass, over the finished frame as vanilla draws it** (item 15,
-  `HORIZON_VIGNETTE_CURVE=0` for the old): its quad was 0.087 ms an eye and kept the TAA's copy back. Not yet
-  measured.
+  `HORIZON_VIGNETTE_CURVE=0` for the old): its quad was 0.087 ms an eye and kept the TAA's copy back. Measured on
+  68218d890 at a fixed pose (a platform at 160 120 160, the vignette forced with `/worldborder warning distance
+  2147483647`): 9.18 and 9.30 ms a frame against 9.66, the screen effects' stage 0.081 to 0.001 ms. The old look was
+  redder at the edges than vanilla's. At the same pose `HORIZON_RT_GI_DDA=1` costs the same as the default, and
+  `HORIZON_RT_SHARE_DENOISED=0` 9.44 against 9.19.
+- **The shared denoised light, checked texel by texel** (docs/raytracing.md item 10, `HORIZON_RT_SHARE_CHECK=0` for
+  the old): with 68218d890 a block at the right eye's right edge, which the left eye doesn't see, came out black
+  with the shared light on and lit with `HORIZON_RT_SHARE_DENOISED=0`. The periphery's blocks shifted their centre's
+  first-eye texel onto all sixteen texels, unchecked, so a texel past an edge took the sky's light. Each texel now
+  takes the first eye's texel showing its own surface, or is filtered from its own light. Not yet measured.
 - **Ideas weighed and left:** the second eye skipping the exposure meter (the grading's local tone mapping reads the
   meter's chain, level 2, so the eye needs its own); a conservative depth reuse across the TAA jitter (holes through
   cutout gaps); the TAA's blit folded into its resolve (the hand and the rain draw over the resolved scene, so the

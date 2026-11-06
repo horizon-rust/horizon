@@ -1930,6 +1930,31 @@ fn from_first(p: vec2<i32>) -> FromFirst {
     gi_out_b = textureLoad(first_gi_b, t, 0);
     return out;
 }
+// VR's second eye away from the sharp zone, in a 4x4 block that took the first eye's light from
+// its centre (`cs_sparse`): the first eye's mask texel showing mask texel `texel`'s own surface
+// (`pack_texel`), 0 where the first eye doesn't show it (out of its view, past an edge): the
+// denoiser then filters the texel from this eye's light (the block's), as without
+// `taken_out`. The block's centre shifted onto every texel (`HORIZON_RT_SHARE_CHECK=0`) put the
+// light of whatever the first eye shows there on a texel past an edge: a block standing out of
+// the first eye's view against the sky took the sky's black.
+fn first_texel_of(texel: vec2<i32>) -> u32 {
+    let p = pixel_of(texel);
+    if f32(p.x) >= rt.size.x || f32(p.y) >= rt.size.y { return 0u; }
+    if textureLoad(depth, p, 0) <= 0.0 { return 0u; }
+    let pos = surface_at(p);
+    let c = rt.first_view_proj * vec4(pos, 1.0);
+    if c.w <= 0.0 { return 0u; }
+    let ndc = c.xy / c.w;
+    if any(abs(ndc) >= vec2(1.0)) { return 0u; }
+    let q = vec2<i32>(vec2((ndc.x * 0.5 + 0.5) * rt.size.x, (0.5 - ndc.y * 0.5) * rt.size.y));
+    let t = q / i32(rt.size.z);
+    // The first eye's mask holds the distance from the camera both eyes share (`trace`).
+    let d = length(pos);
+    let m = textureLoad(first_mask, t, 0);
+    if m.a < 0.0 || abs(m.a - d) > 0.05 + 0.02 * d { return 0u; }
+    if textureLoad(first_blocks, t, 0).a < 0.0 { return 0u; }
+    return pack_texel(t);
+}
 // The depth pixel at the centre of mask texel `texel`.
 fn pixel_of(texel: vec2<i32>) -> vec2<i32> {
     let scale = i32(rt.size.z);
@@ -2045,10 +2070,14 @@ var<workgroup> quad_refracted: array<vec4<f32>, 16>;
         taken = s.taken.x == 1u;
         if taken {
             fast_out = s.fast;
-            // The block's texels shifted as its centre is from the first eye's.
-            let centre = vec2<i32>(i32(s.taken.y & 0xffffu) - 1, i32(s.taken.y >> 16u));
-            let size = vec2<i32>(textureDimensions(mask));
-            taken_from = pack_texel(clamp(centre + texel - (corner + 2), vec2(0), size - 1));
+            if rt.mode.z > 1.5 && SHARE_CHECK {
+                taken_from = first_texel_of(texel);
+            } else {
+                // The block's texels shifted as its centre is from the first eye's.
+                let centre = vec2<i32>(i32(s.taken.y & 0xffffu) - 1, i32(s.taken.y >> 16u));
+                let size = vec2<i32>(textureDimensions(mask));
+                taken_from = pack_texel(clamp(centre + texel - (corner + 2), vec2(0), size - 1));
+            }
         }
         // The block's GI reservoir is its corner's; the other texels keep none.
         if all(texel == corner) {

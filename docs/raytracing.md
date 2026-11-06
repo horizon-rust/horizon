@@ -622,12 +622,17 @@ wind):
    edges in the captures. It needs 8's multiview.
 10. **The second eye takes the first eye's denoised light too** (shadow_rays.wgsl `taken_out`, denoise.wgsl `taken`,
    `HORIZON_RT_SHARE_DENOISED=0` for the old): where 9 took a texel's light, the kernel writes the first eye's texel
-   there (in the periphery the block's centre's, each texel shifted as the centre is), and the second eye's denoiser
+   there (in the periphery, where a block took its centre's light, the first eye's texel showing each texel's own
+   surface, `first_texel_of`; none where the first eye doesn't show it), and the second eye's denoiser
    copies the first eye's light as its five passes left it on the first pass, into the other texture they write on
    the second, and leaves those texels be on the three after. Only what the second eye traced itself is filtered,
    the copied light among its taps. A surface's diffuse light being the same from either eye, both eyes then show the
    same denoised light; before, the second eye filtered the taken light again. Its denoiser 0.59 to 0.25 ms at
-   4400x3520 on the RTX 4090 (109a15996).
+   4400x3520 on the RTX 4090 (109a15996), the frame 9.44 to 9.19 ms (68218d890). The periphery's blocks first shifted
+   their centre's texel onto all sixteen (`HORIZON_RT_SHARE_CHECK=0`): a texel past an edge took the light of
+   whatever the first eye showed there, and a block at the second eye's edge, standing out of the first eye's view
+   against the sky, came out black. The denoiser also keeps its light finite and within half floats
+   (`usable`): one texel of infinity would spread NaNs through every pass after.
 11. **The mirrors and the refraction look for water or glass only where the raster finds some** (gfx.rs `draw_cover`,
    shadow_rays_hw.wgsl `psr_covered`, `HORIZON_RT_PSR_COVER=0` for the old): each texel of the sharp zone, and each 2x2
    quad of the periphery, traced a ray from the camera to its surface to find the water or glass before it, a primary
@@ -649,7 +654,8 @@ wind):
    through the voxel grid (24 bricks of budget, a long cave's taken as stopped) though the sample was found on the
    hardware's triangles. It goes against those now, translucent surfaces letting it through, cutouts alpha-tested,
    ended by the first opaque hit. ReSTIR GI was 0.27 ms of the first eye's 0.76 ms trace at 4400x3520
-   (`HORIZON_RT_SKIP=2`, 109a15996).
+   (`HORIZON_RT_SKIP=2`, 109a15996). Back to back at one pose (68218d890) the two cost the same, and the captures
+   are the same in the open; kept for its triangles.
 14. **Shadow rays end on their first hit** (`FIRST_HIT`, the ray flag `0x4`; `HORIZON_RT_FIRST_HIT=0` for the old): the
    sun's, the light sources', the froxels' and GI's visibility rays let the hardware commit the first opaque triangle
    they meet and stop, where it went on looking for a nearer one no shadow needs. What they return is the same.
@@ -662,7 +668,10 @@ wind):
    night, underground). When the grading and the curve draw in one pass and the vignette is the last screen effect
    (vanilla's other camera overlays draw after it), that pass multiplies its output by 1 - the sprite times its
    colour: vanilla's own blend, over the frame as the screen shows it, where the quad darkened the light before the
-   curve.
+   curve. Measured on 68218d890 with the vignette forced (`/worldborder warning distance 2147483647`, its red at
+   once whatever the light): the frame 9.66 ms with the old, 9.18 and 9.30 with the new, the stage `hand, outline, screen effects` 0.081 to
+   0.001. The two looks differ: darkened before the ACES curve, the old one's edges came out more saturated and
+   redder (9 to 14 levels of 255 on average) than vanilla's blend over the finished frame.
 
 **Kept, though measured:** the second bounce on a radiance cache miss (3 ms of 12 in the RTX Demo's interior, which
 loses 1 % of its light without it) and the reuse's visibility ray (1.3 ms; without it a neighbour's sample leaks

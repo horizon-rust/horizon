@@ -258,13 +258,19 @@ pub fn source(hardware: bool, split: u32) -> String {
         };
         format!(
             "enable wgpu_ray_query;\nconst SPRITE_SPLIT: u32 = {split}u;\n\
-             const FIRST_HIT: u32 = {}u;\nconst GI_HW_VISIBILITY: bool = {};\n{}{hardware}",
+             const FIRST_HIT: u32 = {}u;\nconst GI_HW_VISIBILITY: bool = {};\n\
+             const SHARE_CHECK: bool = {};\n{}{hardware}",
             first_hit_flag(),
             !gi_dda(),
+            share_check(),
             include_str!("shadow_rays.wgsl")
         )
     } else {
-        format!("{}{NO_HARDWARE}", include_str!("shadow_rays.wgsl"))
+        format!(
+            "const SHARE_CHECK: bool = {};\n{}{NO_HARDWARE}",
+            share_check(),
+            include_str!("shadow_rays.wgsl")
+        )
     }
 }
 
@@ -327,6 +333,17 @@ fn denoise_fovea() -> bool {
 fn share_denoised() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("HORIZON_RT_SHARE_DENOISED").map_or(true, |v| v != "0"))
+}
+
+/// Whether VR's second eye, where a block of its periphery takes the first eye's denoised light
+/// (`share_denoised`), takes each texel's from where the first eye shows that texel's own surface
+/// (shadow_rays.wgsl `first_texel_of`), and filters the texels the first eye doesn't show from its
+/// own light. On unless `HORIZON_RT_SHARE_CHECK=0`, which shifts the block's centre's texel onto
+/// all sixteen unchecked, as before (a block standing out of the first eye's view at the second
+/// eye's edge came out black).
+fn share_check() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_SHARE_CHECK").map_or(true, |v| v != "0"))
 }
 
 /// The RTX 4090 build's pipeline passes for a view (`ShadowRays::run`'s `sun_pass`): given the

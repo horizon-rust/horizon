@@ -69,8 +69,18 @@ const SHORT_HISTORY: f32 = 4.0;
 const FIREFLY: f32 = 4.0;
 // The light a tap filters: on the first pass the accumulated indirect light plus the direct.
 fn signal(c: vec4<f32>, q: vec2<i32>, first: bool) -> vec3<f32> {
-    if first { return c.rgb + max(textureLoad(direct, q, 0).rgb, vec3(0.0)); }
-    return c.rgb;
+    if first { return usable(c.rgb + max(textureLoad(direct, q, 0).rgb, vec3(0.0))); }
+    return usable(c.rgb);
+}
+// A value with its NaNs and infinities as 0 (by their bits, as shadow_rays.wgsl `finite`).
+fn finite(x: f32) -> f32 {
+    return select(x, 0.0, (bitcast<u32>(x) & 0x7f800000u) == 0x7f800000u);
+}
+// Light as the passes hold it: finite and within half floats (a sum past 65504 would be stored as
+// infinity, and a tap of infinity weighted 0 is a NaN): one bad texel would spread through every
+// pass after, and across VR's eyes where the second takes the first's light (`taken`).
+fn usable(c: vec3<f32>) -> vec3<f32> {
+    return min(vec3(finite(c.r), finite(c.g), finite(c.b)), vec3(65000.0));
 }
 
 // The filter's kernel, the linear B-spline's weights.
@@ -97,7 +107,8 @@ fn sharp_block(p: vec2<i32>) -> bool {
         if taken_at != 0u {
             if params.step.x == 1 {
                 let t = vec2<i32>(i32(taken_at & 0xffffu) - 1, i32(taken_at >> 16u));
-                textureStore(output, p, textureLoad(first_light, t, 0));
+                let l = textureLoad(first_light, t, 0);
+                textureStore(output, p, vec4(usable(l.rgb), l.a));
             } else if params.step.x == 2 {
                 textureStore(output, p, textureLoad(input, p, 0));
             }
@@ -168,5 +179,5 @@ fn sharp_block(p: vec2<i32>) -> bool {
         }
         if weight > 1e-5 { light = sum / weight; }
     }
-    textureStore(output, p, vec4(light, centre.a));
+    textureStore(output, p, vec4(usable(light), centre.a));
 }
