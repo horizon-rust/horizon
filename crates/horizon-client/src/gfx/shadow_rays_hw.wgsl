@@ -519,6 +519,21 @@ fn hw_position(v: u32) -> vec3<f32> {
 // glass, ice), turns off it (off the waves on water's top) and meets what it reflects,
 // lit by the sun's shadow ray and the radiance cache (or the last frame's screen) there; rgb that
 // light, a 1, or a 0 where the reflection reaches the sky or no water is met.
+// The translucent terrain's cover over the depth (gfx.rs `draw_cover`), at its size: 1 where
+// water or glass lies in front of the solid terrain, when `rt.frame.w` says it is bound.
+@group(0) @binding(64) var psr_cover: texture_2d<f32>;
+// Whether water or glass may lie in front of depth pixel `p` (`psr_cover`), or of the pixel before
+// it on either axis: VR's periphery traces a 2x2 quad's from its last pixel (`cs_shadow`).
+fn psr_covered(p: vec2<i32>) -> bool {
+    if rt.frame.w < 0.5 { return true; }
+    let top = vec2<i32>(rt.size.xy) - 1;
+    var seen = 0.0;
+    for (var i = 0; i < 4; i++) {
+        let q = clamp(p - vec2(i & 1, i >> 1u), vec2(0), top);
+        seen = max(seen, textureLoad(psr_cover, q, 0).r);
+    }
+    return seen > 0.5;
+}
 fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     let size = rt.size.xy;
     var d = textureLoad(depth, clamp(p, vec2(0), vec2<i32>(size) - 1), 0);
@@ -528,6 +543,13 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     let c = rt.inverse_view_proj * vec4(ndc, d, 1.0);
     let far = c.xyz / c.w;
     let ray = normalize(far);
+    // No water or glass in front by the cover: no ray to look for it (maybe a puddle).
+    if !psr_covered(p) {
+        water_at = vec4(0.0, 0.0, 0.0, -1.0);
+        glass_at = vec4(0.0, 0.0, 0.0, -1.0);
+        if solid { return hw_puddle(far, ray); }
+        return vec4(0.0);
+    }
     let reach = select(4096.0, length(far), solid);
     var q: ray_query;
     rayQueryInitialize(&q, terrain, RayDesc(0x0u, NO_CLOUDS, 0.0, reach, rt.hw_offset.xyz, ray));

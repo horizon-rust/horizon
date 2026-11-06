@@ -33,7 +33,7 @@ struct Rt {
     sun: vec4<f32>,
     // x: this frame's number (the rays' directions change with it), y: the plain glass's sprite
     // layers, packed (shadow_rays_hw.wgsl `hw_glass`), z: this view's own frame number (what rests
-    // in turn, `trace`).
+    // in turn, `trace`), w: 1 when the translucent terrain's cover is bound (`psr_cover`).
     frame: vec4<f32>,
     // rgb: the light the rays trace toward (the sun's through the atmosphere, or the moon's), in
     // paper whites, for the light bouncing off what the rays hit; w its disc's angular radius.

@@ -628,6 +628,13 @@ wind):
    the copied light among its taps. A surface's diffuse light being the same from either eye, both eyes then show the
    same denoised light; before, the second eye filtered the taken light again (0.53 to 0.63 ms of its 3.2 to 3.7 at
    4400x3520 on the RTX 4090).
+11. **The mirrors and the refraction look for water or glass only where the raster finds some** (gfx.rs `draw_cover`,
+   shadow_rays_hw.wgsl `psr_covered`, `HORIZON_RT_PSR_COVER=0` for the old): each texel of the sharp zone, and each 2x2
+   quad of the periphery, traced a ray from the camera to its surface to find the water or glass before it, a primary
+   ray over the whole structure, though most of a view has none. After the rays' prepass the translucent terrain's
+   draws (every quad whole, back faces culled as the world draws them) are drawn into a cover of the prepass's size
+   (one pass for both eyes in VR), tested against its depth; where the cover and its neighbours on the quad's side are
+   empty, the kernel skips that ray (a puddle still reflects). The GPU stage `rays: translucent cover` times it.
 
 **Kept, though measured:** the second bounce on a radiance cache miss (3 ms of 12 in the RTX Demo's interior, which
 loses 1 % of its light without it) and the reuse's visibility ray (1.3 ms; without it a neighbour's sample leaks

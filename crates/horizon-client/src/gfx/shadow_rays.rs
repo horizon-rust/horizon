@@ -600,6 +600,7 @@ impl ShadowRays {
                 entry(55, last),
                 entry(56, last_uint),
                 entry(57, first_depth),
+                entry(64, last),
                 entry(58, last),
                 entry(59, last),
                 entry(60, last),
@@ -1001,6 +1002,9 @@ impl ShadowRays {
         far: Option<[&wgpu::TextureView; 3]>,
         hardware: Option<Hardware<'_>>,
         first_depth: Option<&wgpu::TextureView>,
+        // The translucent terrain's cover over `depth` (gfx.rs `draw_cover`): where water or glass
+        // lies in front, the only texels whose mirrors and refraction look for it.
+        cover: Option<&wgpu::TextureView>,
         // The RTX 4090 build's ray tracing pipeline (horizon-rtx `sun`): which of its passes run
         // (`rt.mode.w`'s bits: 1 the sun, 2 the bounce), and what records them for this view once
         // the uniform is written, given the encoder, the uniform and the mask's size, giving the
@@ -1103,7 +1107,12 @@ impl ShadowRays {
                 None => [0.0; 4],
             },
             sun: rays.sun,
-            frame: [(self.frame % 65536) as f32, rays.glass, view_frame, 0.0],
+            frame: [
+                (self.frame % 65536) as f32,
+                rays.glass,
+                view_frame,
+                f32::from(u8::from(cover.is_some())),
+            ],
             sun_light: rays.sun_light,
             water: rays.water,
             hw_offset: rays.hw_offset,
@@ -1213,6 +1222,8 @@ impl ShadowRays {
             view(33, &reflection),
             view(34, &refraction),
             view(35, &taken),
+            // Unread without a cover (`frame.w` 0): the sun pass's stand-in.
+            view(64, cover.unwrap_or(&self.no_sun_pass)),
             wgpu::BindGroupEntry {
                 binding: 38,
                 resource: visibility.as_entire_binding(),

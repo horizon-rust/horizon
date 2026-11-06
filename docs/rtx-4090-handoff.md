@@ -136,6 +136,10 @@ the first fake-runtime runs used 3132x3016). PR #2 (`claude/project-thread-tb0ay
 - **The grading and the ACES curve in one pass** when nothing reads the graded light after (no HDR output,
   screenshot or video): one full-size float target written and read less an eye; the stages `grading` and
   `tone curve` become `grading and tone curve (ACES)` (`HORIZON_GRADE_FUSED=0` for the old). Not yet measured.
+- **The mirrors' search ray only where water or glass lies in front** (docs/raytracing.md item 11): a cover of the
+  translucent terrain over the rays' prepass, and the kernel skips the camera ray that looked for water or glass
+  elsewhere (`HORIZON_RT_PSR_COVER=0` for the old; `HORIZON_RT_SKIP=8` drops the mirrors whole, the upper bound).
+  Not yet measured.
 - **Ideas weighed and left:** the second eye skipping the exposure meter (the grading's local tone mapping reads the
   meter's chain, level 2, so the eye needs its own); a conservative depth reuse across the TAA jitter (holes through
   cutout gaps); the TAA's blit folded into its resolve (the hand and the rain draw over the resolved scene, so the
