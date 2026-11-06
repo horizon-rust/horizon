@@ -133,6 +133,9 @@ the first fake-runtime runs used 3132x3016). PR #2 (`claude/project-thread-tb0ay
 - **The second eye's denoiser** (0.53 to 0.63 ms) filters only what that eye traced itself: where it took the first
   eye's light, it copies the first eye's denoised light (`HORIZON_RT_SHARE_DENOISED=0` for the old, docs/raytracing.md
   item 10). Not yet measured.
+- **The grading and the ACES curve in one pass** when nothing reads the graded light after (no HDR output,
+  screenshot or video): one full-size float target written and read less an eye; the stages `grading` and
+  `tone curve` become `grading and tone curve (ACES)` (`HORIZON_GRADE_FUSED=0` for the old). Not yet measured.
 - **Ideas weighed and left:** the second eye skipping the exposure meter (the grading's local tone mapping reads the
   meter's chain, level 2, so the eye needs its own); a conservative depth reuse across the TAA jitter (holes through
   cutout gaps); the TAA's blit folded into its resolve (the hand and the rain draw over the resolved scene, so the

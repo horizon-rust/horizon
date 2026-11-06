@@ -7903,12 +7903,18 @@ impl Renderer {
         }
         gpu_passes::stamp(&mut encoder, "hand, outline, screen effects");
         if let Some(t) = &self.tonemap {
+            // The graded light is read after when HDR output presents it, or a screenshot or a
+            // video frame keeps it (below): else the curve draws in the grading's pass.
+            let keep_graded = self.hdr.is_some()
+                || self.screenshot.is_some()
+                || self.recording.as_ref().is_some_and(|r| r.wants());
             t.run(
                 &self.device,
                 &mut encoder,
                 target_size,
                 &view_target,
                 shadow_mask.as_ref(),
+                keep_graded,
             );
             if let Some(hdr) = &self.hdr {
                 hdr.keep_world(&mut encoder);
