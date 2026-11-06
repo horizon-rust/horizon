@@ -281,6 +281,14 @@ const CACHE_CELLS: usize = 1 << 20;
 /// passes of 5x5 did, for 45 taps a pixel rather than 100.
 const DENOISE_STEPS: [i32; 5] = [1, 2, 4, 8, 16];
 
+/// Whether the denoiser filters VR's periphery by its 4x4 blocks of texels sharing a ray, from
+/// the passes of 4 on (denoise.wgsl `span`): on unless `HORIZON_RT_DENOISE_FOVEA=0`. The screen's
+/// rays are sharp all over, untouched either way.
+fn denoise_fovea() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_DENOISE_FOVEA").map_or(true, |v| v != "0"))
+}
+
 /// The RTX 4090 build's pipeline passes for a view (`ShadowRays::run`'s `sun_pass`): given the
 /// encoder, the kernel's uniform and the mask's size, the sun pass's texture and the bounce pass's
 /// two, for those that ran.
@@ -669,6 +677,15 @@ impl ShadowRays {
                 entry(4, output),
                 entry(5, read),
                 entry(6, read),
+                // The rays' uniform, for where VR's periphery shares a ray a block.
+                entry(
+                    7,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
             ],
         });
         let denoise = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -688,9 +705,10 @@ impl ShadowRays {
         let denoise_params = std::array::from_fn(|i| {
             use wgpu::util::DeviceExt;
             let last = i32::from(i == DENOISE_STEPS.len() - 1);
+            let fovea = i32::from(denoise_fovea());
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("RT lighting's denoiser"),
-                contents: bytemuck::cast_slice(&[DENOISE_STEPS[i], last, 0, 0]),
+                contents: bytemuck::cast_slice(&[DENOISE_STEPS[i], last, fovea, 0]),
                 usage: wgpu::BufferUsages::UNIFORM,
             })
         });
@@ -1273,6 +1291,10 @@ impl ShadowRays {
                     view(4, to),
                     view(5, &blocks),
                     view(6, &sun),
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: self.uniform.as_entire_binding(),
+                    },
                 ],
             });
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -1308,6 +1330,45 @@ mod tests {
                 .expect("the cache's cells");
             assert_eq!(layouter[cell].size, 36);
         }
+    }
+
+    #[test]
+    fn the_denoiser_reads_the_rays_uniform_as_it_is_laid_out() {
+        // denoise.wgsl's `Rt` is the uniform's start, as far as the fovea (`sharp_block`).
+        let source = include_str!("denoise.wgsl");
+        let module = naga::front::wgsl::parse_str(source).expect("the denoiser");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("the denoiser: {e:?}"));
+        let (_, rt) = module
+            .types
+            .iter()
+            .find(|(_, t)| t.name.as_deref() == Some("Rt"))
+            .expect("the rays' uniform");
+        let naga::TypeInner::Struct { members, .. } = &rt.inner else {
+            panic!("Rt is a struct");
+        };
+        let offsets: Vec<(String, u32)> = members
+            .iter()
+            .map(|m| (m.name.clone().unwrap_or_default(), m.offset))
+            .collect();
+        let expected = [
+            (
+                "inverse_view_proj",
+                std::mem::offset_of!(super::Uniform, inverse_view_proj),
+            ),
+            ("light", std::mem::offset_of!(super::Uniform, light)),
+            ("camera", std::mem::offset_of!(super::Uniform, camera)),
+            ("fraction", std::mem::offset_of!(super::Uniform, fraction)),
+            ("grid", std::mem::offset_of!(super::Uniform, grid)),
+            ("size", std::mem::offset_of!(super::Uniform, size)),
+            ("fovea", std::mem::offset_of!(super::Uniform, fovea)),
+        ]
+        .map(|(name, offset)| (name.to_string(), offset as u32));
+        assert_eq!(offsets, expected);
     }
 
     #[test]

@@ -13,7 +13,8 @@
 // pass a pixel far brighter than every neighbour on its face is brought down to them (ReLAX's
 // anti-firefly): one lucky ray toward a bright light would otherwise bloom into a blob.
 struct Params {
-    // x: the taps' spacing in pixels, y: 1 on the last pass.
+    // x: the taps' spacing in pixels, y: 1 on the last pass, z: 1 to filter VR's periphery by its
+    // blocks (`span`).
     step: vec4<i32>,
 }
 @group(0) @binding(0) var<uniform> params: Params;
@@ -27,6 +28,20 @@ struct Params {
 // The accumulated light before any pass, and its second moment (the sun mask's alpha).
 @group(0) @binding(5) var accumulated: texture_2d<f32>;
 @group(0) @binding(6) var moments: texture_2d<f32>;
+// The rays' uniform (shadow_rays.wgsl `Rt`) as far as its fovea, for where a block shares a ray.
+struct Rt {
+    inverse_view_proj: mat4x4<f32>,
+    light: vec4<f32>,
+    camera: vec4<f32>,
+    fraction: vec4<f32>,
+    grid: vec4<f32>,
+    // x, y: the depth's size, z: its pixels a mask texel stands for on each side.
+    size: vec4<f32>,
+    // xyz: where the eyes look, w: the cosine of the sharp zone's half angle (below -1: no
+    // foveation).
+    fovea: vec4<f32>,
+}
+@group(0) @binding(7) var<uniform> rt: Rt;
 // How many standard deviations of the pixel's noise a neighbour's light may differ by.
 const LIGHT_SIGMA: f32 = 6.0;
 fn luminance(c: vec3<f32>) -> f32 {
@@ -50,26 +65,49 @@ fn signal(c: vec4<f32>, q: vec2<i32>, first: bool) -> vec3<f32> {
 // The filter's kernel, the linear B-spline's weights.
 const KERNEL: array<f32, 3> = array<f32, 3>(0.25, 0.5, 0.25);
 
+// Whether mask texel `p`'s 4x4 block is in VR's sharp zone, as the rays decided it
+// (shadow_rays.wgsl `cs_shadow`: `sharp` at the block's centre texel).
+fn sharp_block(p: vec2<i32>) -> bool {
+    if rt.fovea.w < -1.0 { return true; }
+    let scale = i32(rt.size.z);
+    let pixel = ((p / 4) * 4 + 2) * scale + scale / 2;
+    let ndc = vec2((f32(pixel.x) + 0.5) / rt.size.x * 2.0 - 1.0,
+        1.0 - (f32(pixel.y) + 0.5) / rt.size.y * 2.0);
+    let c = rt.inverse_view_proj * vec4(ndc, 1.0, 1.0);
+    return dot(normalize(c.xyz / c.w), rt.fovea.xyz) >= rt.fovea.w;
+}
+
 @compute @workgroup_size(8, 8) fn cs_denoise(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = vec2<i32>(textureDimensions(input));
     let p = vec2<i32>(id.xy);
     if any(p >= size) { return; }
     let centre = textureLoad(input, p, 0);
+    let first = params.step.x == 1;
+    // Away from VR's sharp zone a 4x4 block of texels shares one ray (shadow_rays.wgsl
+    // `cs_sparse`): the passes spaced within a block (1 and 2) would blur copies of it. There the
+    // filter starts at a block's spacing, its passes of 4, 8 and 16 being the sharp zone's of 1,
+    // 2 and 4 counted in blocks (the anti-firefly against the neighbouring blocks, the variance
+    // scaled as theirs); the passes before it pass the light on, the direct added on the first.
+    // `HORIZON_RT_DENOISE_FOVEA=0` filters the periphery as the sharp zone.
+    let span = select(1, 4, params.step.z == 1 && !sharp_block(p));
+    if params.step.x < span {
+        textureStore(output, p, vec4(signal(centre, p, first), centre.a));
+        return;
+    }
     let d0 = textureLoad(mask, p, 0).a;
     let here = textureLoad(direct, p, 0);
-    let first = params.step.x == 1;
     let face = face_in(here.a);
     var light = signal(centre, p, first);
-    if first && d0 >= 0.0 && centre.a >= 0.0 {
+    if params.step.x == span && d0 >= 0.0 && centre.a >= 0.0 {
         var brightest = 0.0;
         for (var y = -1; y <= 1; y++) {
             for (var x = -1; x <= 1; x++) {
                 if x == 0 && y == 0 { continue; }
-                let q = clamp(p + vec2(x, y), vec2(0), size - 1);
+                let q = clamp(p + vec2(x, y) * span, vec2(0), size - 1);
                 let c = textureLoad(input, q, 0);
                 if c.a < 0.0 || textureLoad(mask, q, 0).a < 0.0 { continue; }
                 if abs(face_in(textureLoad(direct, q, 0).a) - face_in(here.a)) > 0.5 { continue; }
-                brightest = max(brightest, luminance(signal(c, q, true)));
+                brightest = max(brightest, luminance(signal(c, q, first)));
             }
         }
         let l = luminance(light);
@@ -87,7 +125,7 @@ const KERNEL: array<f32, 3> = array<f32, 3>(0.25, 0.5, 0.25);
             variance = max(variance, mean * mean * (SHORT_HISTORY - history) / SHORT_HISTORY);
         }
         // Coarser passes see less noise (each already averaged some), as SVGF's filtered variance.
-        let spread = LIGHT_SIGMA * sqrt(variance) / f32(step) + 0.02 * mean + 1e-3;
+        let spread = LIGHT_SIGMA * sqrt(variance) / f32(step / span) + 0.02 * mean + 1e-3;
         let l0 = luminance(light);
         var sum = vec3(0.0);
         var weight = 0.0;
