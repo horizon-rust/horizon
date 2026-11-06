@@ -98,6 +98,16 @@ impl TerrainVertex {
 mod vertex_tests {
     use super::TerrainVertex;
     #[test]
+    fn a_pinned_corner_moves_by_nothing_visible() {
+        for y in [0.0f32, 0.0625, 1.0, 7.5, 16.0] {
+            let pinned = super::wind_pin(y);
+            assert!((pinned - y).abs() < 1e-5, "{y}");
+            // terrain.wgsl `wind_pinned`.
+            assert!(pinned.to_bits() & 0x8000_0001 != 0, "{y}");
+            assert!(y.to_bits() & 0x8000_0001 == 0, "{y}");
+        }
+    }
+    #[test]
     fn model_uvs_pack_exactly() {
         for i in 0..=32 {
             let u = i as f32 / 32.0;
@@ -402,6 +412,9 @@ struct Info {
     /// id there (`ray_shape`).
     ray: u8,
     ray_shape: u16,
+    /// What a leaf block's corners touching it stay pinned to in the wind (`wind_pin`): a full
+    /// block that is not leaves (a log, the ground) or snow lying on it.
+    wind_anchor: bool,
 }
 /// What a block is to the rays (`occupancy`): its kind and its shape's id, from its model's faces
 /// where their texels are opaque (`voxelize`: iron bars' gaps, leaves' holes and plants' stems
@@ -740,6 +753,8 @@ impl MeshTables {
                 map_color: s.map_color,
                 ray,
                 ray_shape,
+                wind_anchor: !s.has_class("LeavesBlock")
+                    && (s.full_collision || s.has_class("SnowLayerBlock")),
             });
         }
         Ok(Self {
@@ -1161,6 +1176,18 @@ impl Mesher<'_> {
         }
         out
     }
+    /// Whether a leaf block's vertex at `p` (block-relative) of the block at `pos` stays put in
+    /// the wind: one of the eight blocks around the corner nearest it is a `wind_anchor` (a
+    /// trunk, the ground, snow on the leaves). The same for every leaf block sharing the corner,
+    /// so the leaves keep their joins.
+    fn pinned(&self, pad: &Padded, pos: [i32; 3], p: [f32; 3]) -> bool {
+        let info = &self.tables.info;
+        let c = [0, 1, 2].map(|k| pos[k] + p[k].round() as i32);
+        (0..8).any(|n| {
+            let (dx, dy, dz) = (n & 1, (n >> 1) & 1, (n >> 2) & 1);
+            info[pad.blocks[pi(c[0] - dx, c[1] - dy, c[2] - dz)] as usize].wind_anchor
+        })
+    }
     /// `BlockColors` tint source `index`, or `None` for an untinted (-1) layer.
     fn tint(state: &Info, index: i32, tints: &mut Tints, [x, y, z]: [i32; 3]) -> Option<u32> {
         if index < 0 || index >= i32::from(state.tint_count) {
@@ -1235,8 +1262,12 @@ impl Mesher<'_> {
                 u32::MAX
             };
             let p = q.positions[i];
+            let mut at = [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]];
+            if state.leaves && self.pinned(pad, pos, p) {
+                at[1] = wind_pin(at[1]);
+            }
             target.push(TerrainVertex::new(
-                [p[0] + origin[0], p[1] + origin[1], p[2] + origin[2]],
+                at,
                 q.uv[i],
                 // Opaque leaves (forceOpaque) draw in the solid layer: no alpha cutout.
                 if !self.cutout_leaves && state.leaves {
@@ -1266,6 +1297,15 @@ pub fn rt_ice_kind(name: &str) -> u8 {
 pub fn rt_ice_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("HORIZON_RT_ICE").map_or(true, |v| v != "0"))
+}
+/// A section-relative height `y` (not below 0) marked as a pinned leaf corner (terrain.wgsl
+/// `wind_pinned`): its float's last bit set, or -0 for 0. A ten-millionth of a block at most.
+pub fn wind_pin(y: f32) -> f32 {
+    if y == 0.0 {
+        -0.0
+    } else {
+        f32::from_bits(y.to_bits() | 1)
+    }
 }
 /// Snapshot of the 3x3 chunk neighbourhood used by a worker job.
 pub type Region = [[Option<Arc<Chunk>>; 3]; 3];

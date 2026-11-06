@@ -75,7 +75,7 @@ pub struct SunPass {
     sbt: Sbt,
     /// Which ray generations run.
     kinds: Kinds,
-    /// The push constants' flags (bit 0: reorder).
+    /// The push constants' flags (bit 0: reorder, bit 1: the wind).
     flags: u32,
     /// The outputs, a texel a ray, the mask's size: the sun's light through (`Rgba16Float`), the
     /// bounce pass's hit and what it is (`Rgba32Float`) and its face, colour and sun light
@@ -361,7 +361,9 @@ impl SunPass {
                         .set_layouts(&layouts),
                 )
                 .ok()?;
-            let flags = u32::from(reorder());
+            // Bit 1: the wind sways the foliage (HORIZON_RT_SKIP bit 4096 clear), so sun.rahit
+            // ignores a cutout quad met right at the ray's start.
+            let flags = u32::from(reorder()) | if wind_skipped() { 0 } else { 2 };
             log::info!(
                 "Horizon RTX: a ray tracing pipeline for {}{}{}, shader execution reordering {}",
                 if kinds.sun { "the sun pass" } else { "" },
@@ -849,3 +851,11 @@ impl Drop for SunPass {
 
 /// The instance buffer's row size, re-exported for the pass's callers' checks.
 pub const ROW: u64 = INSTANCE_SIZE;
+
+/// Whether `HORIZON_RT_SKIP` has the wind's bit (4096, horizon-client gfx/wind.rs).
+fn wind_skipped() -> bool {
+    std::env::var("HORIZON_RT_SKIP")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .is_some_and(|s| s & 4096 != 0)
+}

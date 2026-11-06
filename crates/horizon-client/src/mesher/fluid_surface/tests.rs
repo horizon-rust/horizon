@@ -47,6 +47,7 @@ fn info() -> Vec<Info> {
         map_color: 0,
         ray: 0,
         ray_shape: 0,
+        wind_anchor: false,
     };
     let stone = Info {
         solid: true,

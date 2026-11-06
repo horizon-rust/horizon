@@ -271,6 +271,8 @@ pub struct Bindings {
     pub instances: wgpu::Buffer,
     pub dynamics: wgpu::Buffer,
     pub atlas: wgpu::TextureView,
+    /// The wind's buffer (`wind::Wind`).
+    pub wind: wgpu::Buffer,
 }
 
 impl Bindings {
@@ -282,6 +284,7 @@ impl Bindings {
             instances: &self.instances,
             dynamics: &self.dynamics,
             atlas: &self.atlas,
+            wind: &self.wind,
         }
     }
 }

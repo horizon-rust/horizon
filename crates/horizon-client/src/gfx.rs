@@ -128,6 +128,7 @@ pub mod transmission;
 pub(crate) mod upload;
 mod voxels;
 mod wgsl_prefix;
+pub mod wind;
 mod world_post;
 mod xr;
 pub use xr::{XrLook, XrPointer};
@@ -722,6 +723,8 @@ pub struct Renderer {
     voxels: voxels::Voxels,
     /// The rays' far field: the terrain's heights past the grid (`far_heights`).
     far_heights: far_heights::FarHeights,
+    /// The wind's map and the foliage's swaying (`wind`).
+    wind: wind::Wind,
     shadow_rays: shadow_rays::ShadowRays,
     /// Froxel volumetrics (froxels.rs): hook 2, the pass and its settings.
     froxels: froxels::Froxels,
@@ -918,6 +921,7 @@ fn terrain_group(
     aldhani: &aldhani::Aldhani,
     rain: &wgpu::Buffer,
     scene: &wgpu::TextureView,
+    wind: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     let view = |binding, view| wgpu::BindGroupEntry {
         binding,
@@ -970,6 +974,10 @@ fn terrain_group(
                 resource: rain.as_entire_binding(),
             },
             view(24, scene),
+            wgpu::BindGroupEntry {
+                binding: 25,
+                resource: wind.as_entire_binding(),
+            },
         ],
     })
 }
@@ -1911,6 +1919,8 @@ impl Renderer {
                 entry(22, wgpu::ShaderStages::VERTEX_FRAGMENT, aldhani_storage),
                 // RT lighting's rain map (`rain`): the drops, the wet surfaces and the puddles.
                 entry(23, vf, aldhani_storage),
+                // The wind's map and the sprite layers' ways of swaying (`wind`).
+                entry(25, vf, aldhani_storage),
                 // The view's last resolved frame (taa.rs `last_color`), for the screen-space
                 // reflections where the rays have none (terrain.wgsl `rt_screen_reflection`).
                 entry(
@@ -2590,6 +2600,7 @@ impl Renderer {
         // Bound in place of RT lighting's last light while there is none.
         let moon_map = moon_map(&device, &queue);
         let milky_way_map = milky_way_map(&device, &queue);
+        let wind = wind::Wind::new(&device);
         let rt_history_unused = device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("No RT light"),
@@ -2627,6 +2638,7 @@ impl Renderer {
             &aldhani,
             rain.map(),
             &rt_history_unused,
+            &wind.buffer,
         );
         let crosshair_group = terrain_group(
             &device,
@@ -2649,6 +2661,7 @@ impl Renderer {
             &aldhani,
             rain.map(),
             &rt_history_unused,
+            &wind.buffer,
         );
         let index_quads = 1 << 16;
         let indices = Self::quad_indices(&device, index_quads);
@@ -3747,6 +3760,7 @@ impl Renderer {
             eye_depths,
             voxels: voxels::Voxels::default(),
             far_heights: far_heights::FarHeights::default(),
+            wind,
             shadow_rays,
             froxels, // hook 4
             world_format,
@@ -4613,7 +4627,12 @@ impl Renderer {
             instances: hw.instances.clone(),
             dynamics: hw.dynamics.clone(),
             atlas,
+            wind: self.wind.buffer.clone(),
         })
+    }
+    /// The sprite layers' ways of swaying in the wind (`wind::wind_layers`).
+    pub fn set_wind_layers(&self, classes: &[u8]) {
+        self.wind.set_layers(&self.queue, classes);
     }
     /// RT lighting's sun as `size` times its real size across, and the aerial perspective's air
     /// as `aerial` times as dense as real air.
@@ -5074,6 +5093,7 @@ impl Renderer {
             &self.aldhani,
             self.rain.map(),
             scene,
+            &self.wind.buffer,
         );
         self.crosshair_group = terrain_group(
             &self.device,
@@ -5096,6 +5116,7 @@ impl Renderer {
             &self.aldhani,
             self.rain.map(),
             scene,
+            &self.wind.buffer,
         );
     }
     /// This frame's ray-traced shadows: the grid written up to date, the light's direction (the
@@ -5123,6 +5144,8 @@ impl Renderer {
         let far = self
             .far_heights
             .update(&self.device, &self.queue, frame.camera, &self.voxels);
+        self.wind
+            .update(&self.queue, self.far_heights.level(wind::LEVEL));
         shadow_rays::Rays {
             far,
             light: [
@@ -5173,6 +5196,7 @@ impl Renderer {
     /// What RT lighting's kernel leaves out, to time its parts alone in a running game
     /// (`shadow_rays::ShadowRays::set_skip`, `horizon-ctl rt-skip`).
     pub fn set_rt_skip(&mut self, skip: u32) {
+        self.wind.skipped = skip & wind::SKIP_BIT != 0;
         self.shadow_rays.set_skip(&self.device, skip);
     }
     /// The screen's pixels an RT lighting ray stands for on each side, 0 by its size
@@ -6049,6 +6073,18 @@ impl Renderer {
         };
         self.uploads
             .buffer(&mut encoder, &self.globals, 0, bytemuck::bytes_of(&globals));
+        let wind = self.wind.header(&wind::Frame {
+            camera: frame.camera,
+            seconds: self.water_clock.elapsed().as_secs_f32() % 3600.0,
+            wind: frame.rain.wind,
+            on: self.rt_lighting && !(frame.title || frame.end_sky || frame.nether_lighting),
+        });
+        self.uploads.buffer(
+            &mut encoder,
+            &self.wind.buffer,
+            0,
+            bytemuck::cast_slice(&wind),
+        );
         rt.rain = globals.rain;
         rt.rain_sun = globals.rain_sun;
         // The planets move against the stars by up to a degree or two a day (Mercury, Venus):

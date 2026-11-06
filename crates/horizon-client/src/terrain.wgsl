@@ -344,9 +344,163 @@ fn earth_curved(pos: vec3<f32>, w: f32) -> vec3<f32> {
     out.fade = terrain_fade(origin.w);
     return out;
 }
+// The wind (gfx/wind.rs): a header (`wind_f`), two maps of the wind the terrain makes around the
+// camera, the newer fading in over the older (`wind_terrain`), and each sprite layer's way of
+// swaying (`wind_class`), for the leaves, plants and vines to move in it (`wind_offset`), every
+// terrain vertex the same in every pass (the depth prepass, the colour pass, the eyes'), so they
+// keep meeting the same depths.
+@group(0) @binding(25) var<storage, read> wind_buf: array<u32>;
+// WIND-BEGIN: the text up to WIND-END is also the rays' (gfx/shadow_rays.rs `source` appends it
+// after shadow_rays_hw.wgsl's own `wind_buf`), for the shadows to sway with what casts them.
+const WIND_MAP: u32 = 32u;
+const WIND_MAP_WORDS: u32 = 131072u;
+const WIND_SIDE: i32 = 256;
+const WIND_CELL: f32 = 8.0;
+const WIND_LAYERS: u32 = 262176u;
+fn wind_f(i: u32) -> f32 { return bitcast<f32>(wind_buf[i]); }
+fn wind_class(layer: u32) -> u32 {
+    let l = layer & 0x7fffu;
+    return (wind_buf[WIND_LAYERS + (l >> 2u)] >> ((l & 3u) * 8u)) & 255u;
+}
+// mesher.rs `wind_pin`: the height's float's last bit, or -0.
+fn wind_pinned(y: f32) -> bool { return (bitcast<u32>(y) & 0x80000001u) != 0u; }
+// Map `m`'s texel `c` of its window (outside it, flat open ground), weighed by `w`: (exposure,
+// slope x, slope z, how much a valley confines the wind) and (the valley's axis x, z).
+fn wind_texel(m: u32, c: vec2<i32>, a: ptr<function, vec4<f32>>, b: ptr<function, vec2<f32>>,
+    w: f32) {
+    let h = 12u * m;
+    if any(c < vec2(0)) || any(c >= vec2(WIND_SIDE)) || wind_buf[h + 11u] == 0u { return; }
+    let o = vec2(i32(wind_buf[h + 2u]), i32(wind_buf[h + 3u]));
+    let s = (o + c) & vec2(WIND_SIDE - 1);
+    let at = WIND_MAP + m * WIND_MAP_WORDS + 2u * u32(s.y * WIND_SIDE + s.x);
+    *a += w * unpack4x8snorm(wind_buf[at]);
+    *b += w * unpack4x8snorm(wind_buf[at + 1u]).xy;
+}
+// Map `m` at camera-relative `p` (x, z), bilinear, weighed by `w`.
+fn wind_map(m: u32, p: vec2<f32>, a: ptr<function, vec4<f32>>, b: ptr<function, vec2<f32>>,
+    w: f32) {
+    if w <= 0.0 { return; }
+    let h = 12u * m;
+    let u = (p - vec2(wind_f(h), wind_f(h + 1u))) / WIND_CELL - 0.5;
+    let i = vec2<i32>(floor(u));
+    let f = u - floor(u);
+    wind_texel(m, i, a, b, w * (1.0 - f.x) * (1.0 - f.y));
+    wind_texel(m, i + vec2(1, 0), a, b, w * f.x * (1.0 - f.y));
+    wind_texel(m, i + vec2(0, 1), a, b, w * (1.0 - f.x) * f.y);
+    wind_texel(m, i + vec2(1, 1), a, b, w * f.x * f.y);
+}
+fn wind_hash(c: vec2<f32>) -> f32 {
+    var h = (u32(i32(c.x)) * 0x8da6b343u) ^ (u32(i32(c.y)) * 0xd8163841u);
+    h = (h ^ (h >> 15u)) * 0x2c1b3c6du;
+    h = (h ^ (h >> 12u)) * 0x297a2d39u;
+    return f32((h ^ (h >> 15u)) & 0xffffu) / 65535.0;
+}
+fn wind_noise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = p - i;
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(wind_hash(i), wind_hash(i + vec2(1.0, 0.0)), u.x),
+        mix(wind_hash(i + vec2(0.0, 1.0)), wind_hash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+// The world position (wrapped every 4096 blocks) of camera-relative `pos`.
+fn wind_world(pos: vec3<f32>) -> vec3<f32> { return pos + vec3(wind_f(4u), wind_f(5u), wind_f(6u)); }
+// The wind at camera-relative `pos` (world `world`): xz its velocity in m/s, y the gust passing
+// there (0 to 1). The prevailing wind bent by the terrain: faster on ridges and up the windward
+// slopes, calm in hollows and in the lee, turned along a valley and faster through its narrows,
+// faster with the altitude; the gusts a noise blown along it. gfx/wind.rs `bend` is its CPU copy.
+fn wind_at(pos: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
+    let base = vec2(wind_f(8u), wind_f(9u));
+    let calm = length(base);
+    var dir = base / max(calm, 1e-3);
+    if calm < 1e-3 { dir = vec2(1.0, 0.0); }
+    var a = vec4(0.0);
+    var b = vec2(0.0);
+    let fade = clamp(wind_f(28u), 0.0, 1.0);
+    wind_map(0u, pos.xz, &a, &b, 1.0 - fade);
+    wind_map(1u, pos.xz, &a, &b, fade);
+    let exposure = a.x;
+    let slope = a.yz;
+    let confined = clamp(a.w, 0.0, 1.0);
+    let axis = b / max(length(b), 1e-3);
+    let along = dot(dir, axis);
+    let turned = normalize(mix(dir, axis * select(-1.0, 1.0, along >= 0.0), 0.75 * confined) + 1e-4);
+    var speed = calm * clamp(1.0 + 0.6 * exposure, 0.25, 1.8);
+    speed *= clamp(1.0 + 1.5 * dot(dir, slope), 0.4, 1.6);
+    speed *= 1.0 + confined * (0.8 * abs(along) - 0.4 * (1.0 - abs(along)));
+    speed *= clamp(1.0 + (world.y - 63.0) / 192.0, 0.7, 1.8);
+    let t = wind_f(7u);
+    // The gusts drift with the prevailing wind's speed alone: a drift that followed the bent
+    // speed would jump wherever the map changes.
+    let g = (world.xz - turned * t * (2.0 + calm)) / 20.0;
+    let gust = smoothstep(0.3, 0.85, 0.7 * wind_noise(g) + 0.3 * wind_noise(g * 2.7 + 17.0));
+    return vec3(turned.x * speed, gust, turned.y * speed);
+}
+// How far a vertex of class `kind` (`wind_class`, not 0) at world `world` moves in wind `w`
+// (`wind_at`), its sprite UV `uv`, `pinned` (`wind_pinned`), `open` how much the sky and the
+// distance let it move (0 to 1). Leaves and vines flutter, every vertex the same at a corner the
+// blocks share; a leaf corner touching a trunk, the ground or snow stays put, so the leaves hold
+// to the wood and the snow on them stays on. A plant is anchored at its sprite's foot (v = 1) and
+// bends most at its top (v = 0); a tall plant's lower half reaches half the bend at its top, the
+// upper half the whole at its own. Every oscillation keeps a fixed frequency (the gusts change
+// the amplitudes only): a frequency that followed the gust turns its phase, t times the change,
+// into jumps.
+fn wind_shape(kind: u32, world: vec3<f32>, w: vec3<f32>, uv: vec2<f32>, pinned: bool, open: f32)
+    -> vec3<f32> {
+    if kind == 0u || (kind == 1u && pinned) || open <= 0.0 { return vec3(0.0); }
+    let speed = length(w.xz);
+    let dir = w.xz / max(speed, 1e-3);
+    let gust = w.y;
+    let strength = clamp(speed / 4.0, 0.0, 1.6) * open;
+    let t = wind_f(7u);
+    if kind == 1u || kind == 5u {
+        let phase = dot(world, vec3(0.37, 0.23, 0.31)) * 6.2831853;
+        let amp = select(0.045, 0.06, kind == 5u) * strength;
+        let flutter = vec3(sin(t * 2.3 + phase), 0.5 * sin(t * 3.1 + phase * 1.7),
+            sin(t * 2.7 + phase * 1.3));
+        return (flutter * (0.4 + 0.6 * gust) + vec3(dir.x, 0.0, dir.y) * gust) * amp;
+    }
+    // A slow phase across the world (a quarter radian a block): a plant's corners, under a block
+    // apart, swing together instead of shearing its quads, and a field sways in waves.
+    let slow = dot(world.xz, vec2(0.15, 0.2));
+    let v = 1.0 - clamp(uv.y, 0.0, 1.0);
+    var reach = v;
+    if kind == 3u { reach = 0.5 * v; }
+    if kind == 4u { reach = 0.5 + 0.5 * v; }
+    let bend = reach * reach;
+    let lean = 0.08 + 0.2 * gust;
+    let sway = 0.06 * (0.5 + gust) * sin(t * 2.1 + slow);
+    let side = 0.02 * (0.5 + gust) * sin(t * 2.9 + slow * 1.3);
+    var h = (dir * (lean + sway) + vec2(-dir.y, dir.x) * side) * strength * bend;
+    h *= min(1.0, 0.4 / max(length(h), 1e-4));
+    // The stem keeps its length: its top comes down as it leans.
+    return vec3(h.x, -0.5 * dot(h, h), h.y);
+}
+// How much the sky light `sky` (0 to 1) and the distance from the camera `d` let the wind move a
+// vertex: nothing under a roof (as packs read `lmcoord.y`), fading out from 64 to 96 blocks.
+fn wind_open(sky: f32, d: f32) -> f32 {
+    if wind_f(10u) <= 0.0 { return 0.0; }
+    return sky * sky * (1.0 - smoothstep(64.0, 96.0, d));
+}
+// How far the terrain vertex at camera-relative `pos` (sprite UV `uv`, sprite `layer`, sky light
+// `sky` 0 to 1, `pinned`) moves in the wind; 0 with the wind off (HORIZON_RT_SKIP 4096).
+fn wind_offset(pos: vec3<f32>, uv: vec2<f32>, layer: u32, sky: f32, pinned: bool) -> vec3<f32> {
+    let kind = wind_class(layer);
+    if kind == 0u { return vec3(0.0); }
+    let open = wind_open(sky, length(pos));
+    if open <= 0.0 { return vec3(0.0); }
+    let world = wind_world(pos);
+    return wind_shape(kind, world, wind_at(pos, world), uv, pinned, open);
+}
+// WIND-END
 fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>,
     light: vec2<u32>, origin: vec4<f32>) -> TerrainOut {
-    let pos = earth_curved(position + origin.xyz, origin.w);
+    var local = position + origin.xyz;
+    // The sections' vertices (not the distant terrain's tiles, whose UVs repeat by block) sway.
+    if origin.w < 1.0 {
+        local += wind_offset(local, uv, layer, clamp(f32(light.x) / 240.0, 0.0, 1.0),
+            wind_pinned(position.y));
+    }
+    let pos = earth_curved(local, origin.w);
     var out: TerrainOut;
     out.clip = globals.view_proj * vec4(pos, 1.0);
     out.uv = uv;

@@ -28,7 +28,8 @@ layout(set = 0, binding = 13) readonly buffer Instances { uvec4 rows[]; } instan
 layout(set = 0, binding = 14) readonly buffer Dynamics { uint w[]; } dynamics;
 layout(set = 0, binding = 15) uniform texture2D entity_atlas;
 // Sprite layers past the first array are taken as opaque (the kernel's `SPRITE_SPLIT`).
-layout(push_constant) uniform Push { uint sprite_split; } push;
+// `flags` bit 1: the wind sways the foliage (horizon-client gfx/wind.rs).
+layout(push_constant) uniform Push { uint sprite_split; uint flags; } push;
 
 hitAttributeEXT vec2 bary;
 layout(location = 0) rayPayloadInEXT float payload;
@@ -121,6 +122,9 @@ void main() {
     // A structure whose vertices went, or opaque leaves (forceOpaque): opaque.
     if (base == NO_QUAD) return;
     if ((arena_at(base, 4u) & 0x8000u) != 0u) return;
+    // The wind: a cutout quad this near the ray's start is the swaying surface's own unmoved
+    // copy (gfx/wind.rs `SELF_REACH`).
+    if ((push.flags & 2u) != 0u && gl_HitTEXT < 0.1) ignoreIntersectionEXT;
     vec4 texel = hw_texel(base);
     if (!(texel.a < 0.0 || texel.a >= 0.5)) ignoreIntersectionEXT;
 }

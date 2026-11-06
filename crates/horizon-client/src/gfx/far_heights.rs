@@ -184,6 +184,8 @@ pub struct FarHeights {
     uploaded: bool,
     /// The light the pass last ran for.
     lit_for: Option<[f32; 3]>,
+    /// Counts the uploads (the wind's map is made again when it changes, `wind`).
+    generation: u64,
 }
 
 /// far_field.wgsl's pipelines, its uniform, its outputs (the light's shadow heights, the sky
@@ -333,6 +335,7 @@ impl FarHeights {
         crate::spans::time("far_heights", || {
             let writes = self.advance(camera, Instant::now(), |x, z| voxels.column_tops(x, z));
             if writes.whole || !writes.rects.is_empty() {
+                self.generation += 1;
                 self.upload(device, queue, &writes);
             }
         });
@@ -501,6 +504,18 @@ impl FarHeights {
             }
         }
         self.top = self.levels[LEVELS as usize - 1][0];
+    }
+
+    /// Level `level`'s heights (slots toroidal), its window's first texel in that level's world
+    /// texels, and the uploads' generation, once built (the wind's map, `wind::terrain_map`).
+    pub fn level(&self, level: usize) -> Option<([i32; 2], &[i16], u64)> {
+        let origin = self.origin?;
+        let heights = self.levels.get(level)?;
+        Some((
+            [origin[0] >> level, origin[1] >> level],
+            heights,
+            self.generation,
+        ))
     }
 
     /// The far field's textures (shadow_rays.wgsl `far_light_map`, `far_sky_map`,

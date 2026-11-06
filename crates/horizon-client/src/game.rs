@@ -1211,6 +1211,8 @@ pub struct PackResources {
     forcefield: Arc<(u32, u32, Vec<u8>)>,
     /// The sprite layers of thin blocks (leaves, plants), for the light through them.
     thin_layers: Arc<Vec<u32>>,
+    /// The sprite layers' ways of swaying in the wind (`gfx::wind::wind_layers`).
+    wind_layers: Arc<Vec<u8>>,
 }
 impl PackResources {
     /// Everything a pack overlay at `root` provides, over `assets` and `render`
@@ -1229,15 +1231,14 @@ impl PackResources {
             root,
             render.model_library.clone(),
         )?;
-        let thin_layers = horizon_client::gfx::transmission::thin_layers(
-            facts,
-            &render,
-            render
-                .sprite_layers
-                .values()
-                .max()
-                .map_or(0, |l| *l as usize + 1),
-        );
+        let layer_count = render
+            .sprite_layers
+            .values()
+            .max()
+            .map_or(0, |l| *l as usize + 1);
+        let thin_layers =
+            horizon_client::gfx::transmission::thin_layers(facts, &render, layer_count);
+        let wind_layers = horizon_client::gfx::wind::wind_layers(facts, &render, layer_count);
         Ok(Self {
             layer_names: Arc::new(
                 render
@@ -1260,6 +1261,7 @@ impl PackResources {
             clouds: Arc::new(load_clouds(root)),
             forcefield: Arc::new(load_forcefield(root)),
             thin_layers: Arc::new(thin_layers),
+            wind_layers: Arc::new(wind_layers),
         })
     }
 }
@@ -14256,6 +14258,7 @@ fn build_renderer(
         &assets.animations,
         &pack.thin_layers,
     );
+    renderer.set_wind_layers(&pack.wind_layers);
     renderer.set_water_layers(
         assets
             .sprite_layers
