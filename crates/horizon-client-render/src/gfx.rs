@@ -9871,7 +9871,7 @@ impl Renderer {
         } else {
             fog
         };
-        let mut rt = self.ray_traced_shadows(frame);
+        let mut rt = crate::spans::time("rt_shadows_setup", || self.ray_traced_shadows(frame));
         // New light cells empty the NEE cache on the GPU, before the rays learn into it again.
         if let Some(visibility) = self.voxels.take_visibility_clear() {
             encoder.clear_buffer(visibility, 0, None);
@@ -9933,7 +9933,9 @@ impl Renderer {
         };
         if self.rt_lighting {
             let mask = rt_history.as_ref().map(|h| h.2.clone());
-            self.terrain_groups_with(mask.as_ref(), None, None, None, None, None, None);
+            crate::spans::time("rt_terrain_groups", || {
+                self.terrain_groups_with(mask.as_ref(), None, None, None, None, None, None)
+            });
         }
         let rt_history = rt_history.map(|(view_proj, camera, _)| (view_proj, camera));
         // RT lighting's real sun and sky: the sky table follows the sun; the light traced toward is
