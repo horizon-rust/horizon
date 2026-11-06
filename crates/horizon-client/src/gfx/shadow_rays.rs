@@ -396,7 +396,8 @@ fn kernel(
 impl ShadowRays {
     /// Makes the kernel again leaving out what `skip` says (shadow_rays.wgsl `SKIP`: 1 the sun's
     /// ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR, 16 the bounced light's turns; 32 VR's second
-    /// eye's own light, `SHARE_EYES`; 64 the far field, 128 the translucent tint), in a running game, to time each part alone
+    /// eye's own light, `SHARE_EYES`; 64 the far field, 128 the translucent tint, 32768 a dark history
+    /// left to climb by itself), in a running game, to time each part alone
     /// (`horizon-ctl rt-skip`); 0 traces it all again.
     pub fn set_skip(&mut self, device: &wgpu::Device, skip: u32) {
         SHARE_EYES.store(skip & 32 == 0, std::sync::atomic::Ordering::Relaxed);

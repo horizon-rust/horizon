@@ -553,7 +553,8 @@ override DEBUG: u32 = 0u;
 // sources' (ReSTIR DI), 8 the mirrors and water (PSR); 16 traces the bounced light every frame
 // instead of in turns (`trace`), to measure what the turns save and what they change; 64 the far
 // field (`far_light`, `far_sky`); 128 the translucent candidates' tint (glass, water, ice pass the
-// light untinted: what their shading costs against the force-opaque floor).
+// light untinted: what their shading costs against the force-opaque floor); 32768 leaves a dark
+// history to climb by itself when the light comes on (`accumulate`), as it did before.
 override SKIP: u32 = 0u;
 // `HORIZON_RT_SUN_CENTRE=1`: RT lighting traces the ray toward the sun's centre too, which it
 // never reads (`trace`), as before 8121f258f, to tell what leaving it out changed.
@@ -1833,7 +1834,20 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
     let sigma = sqrt(max(fast_out.a - mean * mean, 0.0));
     let held = luminance(slow_blocks + slow_direct);
     let bound = clamp(held, mean - CLAMP_SIGMA * sigma, mean + CLAMP_SIGMA * sigma);
-    if held > 1e-5 && bound != held {
+    if bound > held && (SKIP & 32768u) == 0u {
+        // Darker than the last frames saw: a light come on, or a torch carried onto rock the
+        // history holds black. No factor lifts a black history (it was left to climb by 1/31 a
+        // frame, the lit patch's leading edge trailing half a second behind a torch in a cave);
+        // the light it lacks is added in this frame's colours, the new light's.
+        let lacking = bound - held;
+        let lit_blocks = max(v.blocks.rgb, vec3(0.0));
+        let lit_direct = max(v.direct.rgb, vec3(0.0));
+        let lit = luminance(lit_blocks + lit_direct);
+        if lit > 1e-6 {
+            slow_blocks += lit_blocks * (lacking / lit);
+            slow_direct += lit_direct * (lacking / lit);
+        }
+    } else if held > 1e-5 && bound != held {
         slow_blocks *= bound / held;
         slow_direct *= bound / held;
     }
