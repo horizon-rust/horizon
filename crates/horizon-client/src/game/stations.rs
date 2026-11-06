@@ -37,6 +37,9 @@ use horizon_client::{
 };
 use horizon_core::random::{LegacyRandom, RandomSource};
 
+#[cfg(test)]
+mod anvil_level_rng_tests;
+
 /// The book above the enchanting table's offers: `EnchantmentScreen`'s
 /// `time`, `flip`, `oFlip`, `flipT`, `flipA`, `open`, `oOpen` and `last`.
 pub(super) struct EnchantBook {

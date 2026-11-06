@@ -48,12 +48,15 @@ def main():
                    and row.get('executable') and row.get('profile', {}).get('test')]
     assert len(executables) == 1, executables
     with tempfile.TemporaryDirectory(prefix='horizon-anvil-rng-') as scratch:
-        result = subprocess.run([executables[0], 'game::lan_stations::anvil_rng_tests::anvil_wear_draws_only_from_the_acting_player',
-                                 '--ignored', '--exact', '--nocapture'], cwd=scratch, env=env,
-                                capture_output=True, text=True, timeout=180)
-        print(result.stdout + result.stderr)
-        result.check_returncode()
-        assert 'test result: ok. 1 passed; 0 failed;' in result.stdout, 'regression test did not run'
+        for test in [
+            'game::stations::anvil_level_rng_tests::anvil_wear_leaves_the_level_random_stream_untouched',
+            'game::lan_stations::anvil_rng_tests::anvil_wear_draws_only_from_the_acting_player',
+        ]:
+            result = subprocess.run([executables[0], test, '--ignored', '--exact', '--nocapture'],
+                                    cwd=scratch, env=env, capture_output=True, text=True, timeout=180)
+            print(result.stdout + result.stderr)
+            result.check_returncode()
+            assert 'test result: ok. 1 passed; 0 failed;' in result.stdout, 'regression test did not run'
     print('48 native owner/guest anvil cases match, including all three RNG streams.')
 
 
