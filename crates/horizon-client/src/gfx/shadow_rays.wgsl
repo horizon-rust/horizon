@@ -1701,8 +1701,11 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
                 // The pass lets the light through water and glass untinted (sun.rahit): where
                 // its ray crossed one (alpha below 0) the same ray is traced here, with the
                 // tint, the depth's absorption and the caustics, so the floor seen from under
-                // the water is lit as the refraction shows it from above.
-                traced = from_pass.a < 0.0 && (SKIP & 512u) == 0u;
+                // the water is lit as the refraction shows it from above. Not behind water or
+                // glass whose refraction replaces this surface (`behind_psr`, the sea seen from
+                // above): its light never shows there (the refraction's own ray lights what the
+                // bent ray meets), and the whole sea would trace its caustics for nothing.
+                traced = from_pass.a < 0.0 && !behind_psr && (SKIP & 512u) == 0u;
             }
             if traced || !(pass_ran(1u) && sun_from_pass) {
                 disc = sun_disc_ray(lifted, random2(texel, 2u));
