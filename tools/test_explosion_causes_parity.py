@@ -61,9 +61,9 @@ def main():
     want, got = expected.read_text().splitlines(), actual.read_text().splitlines()
     if want != got:
         raise AssertionError('\n'.join(difflib.unified_diff(want, got, fromfile='vanilla', tofile='horizon')))
-    assert len(got) == 32, 'all player/mob/ownerless and persistence cases must run'
+    assert len(got) == 36, 'all player/mob/ownerless and persistence cases must run'
     report.write_text(json.dumps({'passed': True, 'cases': len(got)}, indent=2) + '\n')
-    print('explosion causes: 32 actual crystal/cart cases match vanilla; server kill credit checked')
+    print('explosion causes: 36 actual crystal/cart cases match vanilla; server kill credit checked')
 
 
 if __name__ == '__main__':

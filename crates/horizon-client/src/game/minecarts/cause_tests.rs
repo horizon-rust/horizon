@@ -40,6 +40,7 @@ fn explosion_causing_entities_parity_fixture() {
         "crystal_named",
         "cart",
         "cart_named",
+        "cart_command",
         "cart_removed",
         "cart_reloaded",
     ] {
@@ -169,14 +170,27 @@ fn explosion_causing_entities_parity_fixture() {
                 cart.no_gravity = true;
                 cart.velocity.x = 0.2;
                 game.carts.push(cart);
-                if cause.is_some() {
+                if mode == "cart_command" {
+                    let by = match owner {
+                        "player" | "guest" => " by @s",
+                        "mob" => " by @e[type=husk,name=Igniter,limit=1]",
+                        _ => "",
+                    };
+                    assert!(game.run_command(&format!(
+                        "damage @e[type=tnt_minecart,limit=1] 1 in_fire{by}"
+                    )));
+                } else if cause.is_some() {
                     let arrow = shot(arrow_kind.clone(), shooter, guest);
                     hit(&mut game, &arrow, 7);
                 } else {
                     game.hurt_cart(0, 1.0, false, true);
                 }
                 // Even a live NBT fuse reset cannot replace the first ignition source.
-                game.carts[0].fuse = -1;
+                let mut reset = game.carts[0].to_nbt([1, 2, 3, 4], None);
+                if let horizon_world::nbt::Tag::Compound(tag) = &mut reset {
+                    tag.insert("fuse".into(), horizon_world::nbt::Tag::Int(-1));
+                }
+                game.carts[0].load(&reset).unwrap();
                 let later = shot(arrow_kind, Some(Who::Mob(43)), None);
                 hit(&mut game, &later, 7);
                 assert!(game.carts[0].fuse >= 0, "the attack primed the moving cart");
@@ -184,6 +198,8 @@ fn explosion_causing_entities_parity_fixture() {
                 game.carts[0].velocity = Vec3::ZERO;
                 if mode == "cart_removed" {
                     game.mobs.retain(|m| m.id != 43);
+                    game.lan_acting_entity = None;
+                    game.lan_acting_name = Some("Victim".into());
                 }
                 if mode == "cart_reloaded" {
                     let saved = game.carts[0].to_nbt([1, 2, 3, 4], None);
@@ -219,17 +235,24 @@ fn explosion_causing_entities_parity_fixture() {
             let (damage, id) = game.combat.last_blow().unwrap();
             let damage = damage.to_owned();
             let credit = game.combat.kill_credit(game.world.game_time).unwrap_or(0);
-            assert_eq!(credit, if id == 41 || id == 43 { id } else { 0 });
+            assert_eq!(
+                credit,
+                if mode != "cart_removed" && (id == 41 || id == 43) {
+                    id
+                } else {
+                    0
+                }
+            );
             assert_eq!(
                 game.armor_stands.iter().any(|a| a.id == 46),
-                credit == 43,
+                id == 43,
                 "decoration hurt reads the explicit damage cause, unlike vehicle ignoreExplosion"
             );
             let mob = game.mobs.iter().find(|m| m.id == 44).unwrap();
             assert!(!mob.alive());
             assert_eq!(
                 mob.ai.last_hurt_by,
-                match credit {
+                match id {
                     41 => Some(Who::Player),
                     43 => Some(Who::Mob(43)),
                     _ => None,
@@ -237,8 +260,14 @@ fn explosion_causing_entities_parity_fixture() {
             );
             assert_eq!(
                 game.last_hurt_by_player.get(&44).copied(),
-                (credit == 41).then_some((owner == "guest").then_some(11))
+                (id == 41).then_some((owner == "guest").then_some(11))
             );
+            if mode == "cart_removed" && owner == "mob" {
+                assert!(
+                    !game.combat.exploded_kinds.iter().any(|(id, _)| *id == 43),
+                    "a removed ignition owner is not an early-removed current exploder"
+                );
+            }
             let death = game.combat_death_message_for(Text::literal("Victim"));
             let component = death.component();
             let named = component

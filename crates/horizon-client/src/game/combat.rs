@@ -32,6 +32,7 @@ struct PendingAttacker {
     attacker: (u32, Text),
     item: Option<Text>,
     living: bool,
+    credit: bool,
 }
 
 /// What is stuck in a player's body: `LivingEntity.DATA_ARROW_COUNT_ID` and
@@ -163,6 +164,9 @@ pub(super) struct CombatTracker {
     /// (`MobEvent::ExplosionSource`): their names, for the death messages of
     /// the mobs the blast killed.
     pub(super) exploded: Vec<(u32, Text)>,
+    /// The entity types of `exploded`: a player their blast killed is still
+    /// credited to them (`LivingEntity.getKillCredit` during the explosion).
+    pub(super) exploded_kinds: Vec<(u32, String)>,
     /// The player's fall distance before this tick's movement (as of the
     /// end of the last one).
     fall_before: f64,
@@ -278,16 +282,26 @@ impl Game<'_> {
             attacker: (id, name),
             item,
             living: true,
+            credit: true,
         });
     }
-    /// A non-living cause is named by the damage source but is no kill credit.
-    pub(super) fn note_nonliving_attacker(&mut self, damage_type: &str, id: u32, name: Text) {
+    /// A non-living or already removed cause remains in the damage source,
+    /// but cannot resolve as an EntityReference for kill credit.
+    pub(super) fn note_uncredited_attacker(
+        &mut self,
+        damage_type: &str,
+        id: u32,
+        name: Text,
+        item: Option<Text>,
+        living: bool,
+    ) {
         self.combat.mark();
         self.combat.pending.push(PendingAttacker {
             damage_type: damage_type.to_owned(),
             attacker: (id, name),
-            item: None,
-            living: false,
+            item,
+            living,
+            credit: false,
         });
     }
     /// The `DamageSource.directEntity` of the next `damage_type` damage when
@@ -325,7 +339,7 @@ impl Game<'_> {
                 }
                 _ => continue,
             };
-            let (attacker, item, living) = self
+            let (attacker, item, living, credit) = self
                 .combat
                 .pending
                 .iter()
@@ -335,9 +349,10 @@ impl Game<'_> {
                         attacker,
                         item,
                         living,
+                        credit,
                         ..
                     } = self.combat.pending.remove(i);
-                    (Some(attacker), item, living)
+                    (Some(attacker), item, living, credit)
                 })
                 .unwrap_or_default();
             let direct = match attacker {
@@ -351,16 +366,17 @@ impl Game<'_> {
             };
             let (fall_location, fall_distance) = self.fall_location();
             let now = self.world.game_time;
-            if let Some(a) = &attacker
-                && living
-            {
-                self.combat.last_hurt_by = Some((a.clone(), now));
-                if !self.combat.in_combat {
+            if let Some(a) = &attacker {
+                if living {
+                    self.combat.last_hurt_by = credit.then(|| (a.clone(), now));
+                }
+                if living && !self.combat.in_combat {
                     self.combat.in_combat = true;
                 }
             }
-            // Player.actuallyHurt: damage_taken in tenths.
-            self.award_custom_stat("damage_taken", (amount * 10.0).round() as i32);
+            if let Some(tenths) = damage_taken_award(amount) {
+                self.award_custom_stat("damage_taken", tenths);
+            }
             self.combat.entries.push(Entry {
                 damage_type: name,
                 damage: amount,
@@ -727,6 +743,32 @@ fn mob_name(m: &Mob) -> Text {
     }
 }
 
+/// `Player.actuallyHurt`'s DAMAGE_TAKEN award: `dmg * 10.0F` rounded as Java
+/// rounds a float (`jmath::round_f32`), only for damage under 3.4028235E37F.
+/// A huge hit (`/damage @s 3.4e38`) awards nothing, not a saturated count
+/// (#11339).
+fn damage_taken_award(amount: f32) -> Option<i32> {
+    (amount < 3.402_823_5e37).then(|| horizon_core::jmath::round_f32(amount * 10.0))
+}
+
+#[cfg(test)]
+mod damage_taken_tests {
+    use super::damage_taken_award;
+
+    #[test]
+    fn tenths_rounded_as_java_does_and_nothing_for_a_huge_hit() {
+        assert_eq!(damage_taken_award(2.0), Some(20));
+        // Java rounds 0.5F up to 1: ties go up.
+        assert_eq!(damage_taken_award(0.05), Some(1));
+        assert_eq!(damage_taken_award(0.04), Some(0));
+        // Below the threshold the count saturates, as Java's float rounding does.
+        assert_eq!(damage_taken_award(3.4e37), Some(i32::MAX));
+        assert_eq!(damage_taken_award(3.402_823_5e37), None);
+        assert_eq!(damage_taken_award(3.4e38), None);
+        assert_eq!(damage_taken_award(f32::INFINITY), None);
+    }
+}
+
 #[cfg(test)]
 mod held_item_tests {
     use super::has_custom_name;
@@ -767,6 +809,7 @@ mod noted_tests {
                 attacker: (id, Text::literal("skeleton")),
                 item: None,
                 living: true,
+                credit: true,
             });
         };
         arrow(&mut c, 1);

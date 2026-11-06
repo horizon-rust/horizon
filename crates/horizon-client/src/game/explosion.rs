@@ -168,6 +168,7 @@ struct ExplosionHookContext<'a> {
     explicit_cause: Option<Option<ExplosionCause>>,
     direct_name: Option<Text>,
     held_item: Option<Text>,
+    credit: bool,
 }
 
 /// An entity in the blast's reach: how far (as a share of the blast's
@@ -299,17 +300,50 @@ impl Game<'_> {
         if let Some(cause) = &self.combat.explicit_explosion_cause {
             return cause.clone();
         }
-        self.blast_attacker().map(|entity| ExplosionCause {
-            species: self
+        self.blast_attacker().map(|entity| {
+            let kind = self
                 .mobs
                 .iter()
                 .find(|m| m.id == entity.0)
-                .map(|m| m.species()),
-            player: self.combat.blast_owner.is_some()
-                && !self.mobs.iter().any(|m| m.id == entity.0),
-            entity,
-            guest: self.combat.blast_guest,
+                .map(|m| m.kind.id.clone())
+                .or_else(|| {
+                    self.combat
+                        .exploded_kinds
+                        .iter()
+                        .rfind(|(id, _)| *id == entity.0)
+                        .map(|(_, kind)| kind.clone())
+                });
+            let species = kind
+                .as_ref()
+                .and_then(|kind| self.res.mob_types().get(kind))
+                .map(|kind| kind.species);
+            let player = self.combat.blast_owner.is_some() && species.is_none();
+            ExplosionCause {
+                entity,
+                player,
+                guest: self.combat.blast_guest,
+                species,
+            }
         })
+    }
+
+    fn explosion_cause_resolves(&self, cause: &ExplosionCause) -> bool {
+        if !cause.player {
+            return self
+                .mobs
+                .iter()
+                .any(|m| m.id == cause.entity.0 && !m.removed);
+        }
+        let acting = self
+            .lan_acting_entity
+            .or_else(|| self.player.as_ref().map(|p| p.entity_id as u32));
+        acting == Some(cause.entity.0)
+            || self.lan.as_ref().is_some_and(|host| {
+                host.hub
+                    .guests
+                    .iter()
+                    .any(|g| g.entity_id as u32 == cause.entity.0)
+            })
     }
 
     /// An explicit DamageSource must not inherit an enclosing blast's cause.
@@ -319,6 +353,20 @@ impl Game<'_> {
         direct_source: (u32, Text),
         run: impl FnOnce(&mut Self) -> R,
     ) -> R {
+        // The DamageSource retains the removed mob's display name. This is
+        // deliberately not added to exploded_kinds: its EntityReference no
+        // longer resolves for kill credit, unlike Horizon's early exploders.
+        if let Some(cause) = &cause
+            && cause.species.is_some()
+            && !self.mobs.iter().any(|m| m.id == cause.entity.0)
+            && !self
+                .combat
+                .exploded
+                .iter()
+                .any(|(id, _)| *id == cause.entity.0)
+        {
+            self.combat.exploded.push(cause.entity.clone());
+        }
         let source = self.combat.explosion_source.take();
         let owner = self.combat.explosion_owner.take();
         let player = self.combat.blast_owner.take();
@@ -608,7 +656,7 @@ impl Game<'_> {
         // The death message names the blast's causing entity. It goes to this
         // player's tracker, the host's or a guest's.
         if let Some((id, name)) = attacker.filter(|_| !creative && !spectator && hurtable) {
-            if living_attacker {
+            if living_attacker && context.credit {
                 self.note_player_attacker(
                     damage_type,
                     *id,
@@ -616,7 +664,13 @@ impl Game<'_> {
                     context.held_item.clone(),
                 );
             } else {
-                self.note_nonliving_attacker(damage_type, *id, name.clone());
+                self.note_uncredited_attacker(
+                    damage_type,
+                    *id,
+                    name.clone(),
+                    context.held_item.clone(),
+                    living_attacker,
+                );
             }
         } else if !creative
             && !spectator
@@ -751,6 +805,15 @@ impl Game<'_> {
             blocks,
             explicit_cause: self.combat.explicit_explosion_cause.clone(),
             direct_name: self.combat.explicit_explosion_direct.clone(),
+            credit: self
+                .combat
+                .explicit_explosion_cause
+                .as_ref()
+                .map_or(true, |cause| {
+                    cause
+                        .as_ref()
+                        .is_some_and(|cause| self.explosion_cause_resolves(cause))
+                }),
             held_item: self
                 .combat
                 .explicit_explosion_cause
@@ -905,10 +968,18 @@ impl Game<'_> {
                             self.resolve_player_responsible(victim, source);
                         }
                     }
-                    // 5 health, destroyed by the explosion damage (nether stars resist).
+                    // `ItemEntity.hurtServer`: the damage comes off `Health`
+                    // (5 to start) in f32 and the item is destroyed at zero, so
+                    // a survivor keeps the health the blast left it. The nether
+                    // star is `ItemStack.canBeHurtBy`'s explosion exception, and
+                    // a blast with a source entity under `mobGriefing` off never
+                    // reaches here (`items_ignore`).
                     EntityHandle::Item(i) => {
-                        destroyed = &*self.dropped[i].stack.item != "minecraft:nether_star"
-                            && amount >= 5.0;
+                        let item = &mut self.dropped[i];
+                        if &*item.stack.item != "minecraft:nether_star" {
+                            item.health = (item.health as f32 - amount) as i32;
+                            destroyed = item.health <= 0;
+                        }
                     }
                     // `ExperienceOrb.hurtServer` takes the damage off their 5 health.
                     EntityHandle::Orb(i) => {

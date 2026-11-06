@@ -31,6 +31,8 @@ public final class VanillaExplosionCausesOracle {
     }
     static class CaptureLevel extends ServerLevel {
         CaptureLevel() { super(null, null, null, null, null, null, false, 0L, List.of(), false); }
+        @Override public Entity getEntityInAnyDimension(UUID uuid) { return null; }
+        @Override public net.minecraft.world.entity.player.Player getPlayerInAnyDimension(UUID uuid) { return null; }
         @Override public GameRules getGameRules() { return new GameRules(net.minecraft.world.flag.FeatureFlagSet.of()); }
         @Override public void broadcastEntityEvent(Entity entity, byte event) {}
         @Override public void explode(Entity source, DamageSource damage, ExplosionDamageCalculator calculator,
@@ -62,6 +64,13 @@ public final class VanillaExplosionCausesOracle {
             defineSynchedData(builder);
             field(Entity.class, "entityData").set(this, builder.build());
         }
+        void resetFuse() throws Exception {
+            var out = net.minecraft.world.level.storage.TagValueOutput.createWithContext(net.minecraft.util.ProblemReporter.DISCARDING, ParityData.access);
+            super.addAdditionalSaveData(out);
+            var tag = out.buildResult();
+            tag.putInt("fuse", -1);
+            super.readAdditionalSaveData(net.minecraft.world.level.storage.TagValueInput.create(net.minecraft.util.ProblemReporter.DISCARDING, ParityData.lookup, tag));
+        }
         Cart reload() throws Exception {
             var out = net.minecraft.world.level.storage.TagValueOutput.createWithContext(net.minecraft.util.ProblemReporter.DISCARDING, ParityData.access);
             super.addAdditionalSaveData(out);
@@ -84,7 +93,6 @@ public final class VanillaExplosionCausesOracle {
             var stack = new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.DIAMOND_SWORD);
             stack.set(net.minecraft.core.component.DataComponents.CUSTOM_NAME, Component.literal("Sword"));
             return stack; }
-        @Override public LivingEntity getKillCredit() { return null; }
         @Override public ServerLevel level() { return level; }
     }
     static class Mob extends net.minecraft.world.entity.monster.zombie.Husk {
@@ -95,12 +103,12 @@ public final class VanillaExplosionCausesOracle {
             var stack = new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.DIAMOND_SWORD);
             stack.set(net.minecraft.core.component.DataComponents.CUSTOM_NAME, Component.literal("Sword"));
             return stack; }
-        @Override public LivingEntity getKillCredit() { return null; }
         @Override public Level level() { return level; }
     }
     static <T extends Entity> T entity(Class<T> type, int id) throws Exception {
         T entity = make(type);
         field(Entity.class, "id").setInt(entity, id);
+        field(Entity.class, "uuid").set(entity, new UUID(0L, id));
         field(Entity.class, "position").set(entity, new Vec3(8.5, 64, 8.5));
         field(Entity.class, "random").set(entity, RandomSource.create(42));
         if (entity instanceof Cart cart) cart.data();
@@ -114,7 +122,7 @@ public final class VanillaExplosionCausesOracle {
         sources = new DamageSources(ParityData.access);
         level = make(CaptureLevel.class);
         var output = new ArrayList<String>();
-        for (String mode : List.of("crystal", "crystal_snowball", "crystal_arrow", "crystal_named", "cart", "cart_named", "cart_removed", "cart_reloaded")) {
+        for (String mode : List.of("crystal", "crystal_snowball", "crystal_arrow", "crystal_named", "cart", "cart_named", "cart_command", "cart_removed", "cart_reloaded")) {
             for (String owner : List.of("player", "guest", "mob", "none")) {
                 Entity cause = switch (owner) {
                     case "player", "guest" -> entity(Human.class, 41);
@@ -134,7 +142,8 @@ public final class VanillaExplosionCausesOracle {
                     field(MinecartTNT.class, "fuse").setInt(cart, -1);
                     field(MinecartTNT.class, "explosionPowerBase").setFloat(cart, 4);
                     cart.primeFuse(hit);
-                    // Repriming must preserve the first non-null ignition source.
+                    // A live NBT update/reprime preserves the first ignition source.
+                    cart.resetFuse();
                     cart.primeFuse(sources.mobAttack(entity(Mob.class, 99)));
                     if (mode.equals("cart_removed") && cause != null)
                         field(Entity.class, "removalReason").set(cause, Entity.RemovalReason.KILLED);
@@ -144,10 +153,13 @@ public final class VanillaExplosionCausesOracle {
                 }
                 Entity actual = captured.getEntity();
                 var victim = entity(Human.class, 42);
+                if (actual instanceof LivingEntity living) victim.setLastHurtByMob(living);
+                if (actual instanceof net.minecraft.world.entity.player.Player player) victim.setLastHurtByPlayer(player, 100);
+                LivingEntity credited = victim.getKillCredit();
                 var death = captured.getLocalizedDeathMessage(victim);
                 String key = ((TranslatableContents)death.getContents()).getKey();
                 String damage = captured.typeHolder().unwrapKey().orElseThrow().identifier().toString();
-                output.add(mode + "/" + owner + " " + damage + " " + (actual == null ? 0 : actual.getId()) + " " + (actual instanceof LivingEntity ? actual.getId() : 0) + " " + key + " " + ((Component)((TranslatableContents)death.getContents()).getArgs()[1]).getString());
+                output.add(mode + "/" + owner + " " + damage + " " + (actual == null ? 0 : actual.getId()) + " " + (credited == null ? 0 : credited.getId()) + " " + key + " " + ((Component)((TranslatableContents)death.getContents()).getArgs()[1]).getString());
                 if (direct == null || direct.getId() != 7) throw new AssertionError("direct explosion source");
                 if (Explosion.getIndirectSourceEntity(direct) != null) throw new AssertionError("crystal/cart indirect source");
             }
