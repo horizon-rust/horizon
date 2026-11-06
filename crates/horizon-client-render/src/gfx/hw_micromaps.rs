@@ -40,10 +40,21 @@ mod on {
         split: u32,
     }
 
-    /// The sprites the workers read, with their generation: set by `set_sprites`, none without
-    /// a renderer whose device builds micromaps.
+    /// The sprites the workers read, with their fingerprint (`fingerprint`): set by
+    /// `set_sprites`, none without a renderer whose device builds micromaps. Another renderer
+    /// (a splitscreen player's, a reload's) sets the same sprites with the same fingerprint, so
+    /// the meshes either one is given are of its sprites.
     static SPRITES: RwLock<Option<(u64, Arc<Sprites>)>> = RwLock::new(None);
-    static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+    /// What the alpha test reads of the sprites, hashed: their pixels, size, layers, the
+    /// animated ones and the split.
+    fn fingerprint(pixels: &[u8], size: u32, layers: u32, animated: &[u32], split: u32) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (pixels, size, layers, animated, split).hash(&mut h);
+        // Never 0, the workers' empty cache's.
+        h.finish().max(1)
+    }
     /// The chunk the rays' structures are centred on (`set_center`), x in the high half: the
     /// workers leave out sections too far to get a structure.
     static CENTER: AtomicU64 = AtomicU64::new(u64::MAX);
@@ -67,6 +78,7 @@ mod on {
     /// A section's micromaps as a worker found them: the sprites' generation they are of, and
     /// none where no triangle helps.
     pub struct Worked {
+        /// The sprites' fingerprint.
         generation: u64,
         planned: Option<Planned>,
     }
@@ -157,8 +169,10 @@ mod on {
         cache: Cache,
         /// The sections meshed since their structure was built, and their micromaps.
         meshed: HashMap<SectionKey, Arc<SectionMicromaps>>,
-        /// Sections with alpha-tested geometries meshed, and those given micromaps (for the log).
-        seen: [u64; 2],
+        /// For the log: the sections uploaded, those given micromaps, those the workers found
+        /// none for (no cutouts, or no triangle helps), and those that came without the workers'
+        /// (out of their reach then, or of other sprites).
+        seen: [u64; 4],
     }
 
     pub struct Micromaps(Option<Inner>);
@@ -176,7 +190,7 @@ mod on {
                 generation: 0,
                 cache: Cache::default(),
                 meshed: HashMap::new(),
-                seen: [0; 2],
+                seen: [0; 4],
             }))
         }
 
@@ -195,7 +209,10 @@ mod on {
                 return;
             };
             let texels = (size * size) as usize;
-            let animated: std::collections::HashSet<u32> = animated.collect();
+            let mut animated: Vec<u32> = animated.collect();
+            animated.sort_unstable();
+            animated.dedup();
+            let generation = fingerprint(pixels, size, layers, &animated, split);
             let layers: Vec<Alpha> = (0..layers)
                 .map(|l| {
                     let Some(rgba) =
@@ -203,7 +220,7 @@ mod on {
                     else {
                         return Alpha::Changing;
                     };
-                    if animated.contains(&l) {
+                    if animated.binary_search(&l).is_ok() {
                         Alpha::Changing
                     } else if rgba.chunks_exact(4).all(|p| p[3] >= 128) {
                         Alpha::Opaque
@@ -227,8 +244,7 @@ mod on {
             );
             let given = !layers.is_empty();
             let sprites = Arc::new(Sprites { layers, split });
-            // Meshes worked out with the old sprites come with the old generation: not kept.
-            let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+            // Meshes worked out with other sprites come with another fingerprint: not kept.
             inner.generation = generation;
             inner.cache.clear();
             inner.meshed.clear();
@@ -264,13 +280,18 @@ mod on {
             let Some(sprites) = &inner.sprites else {
                 return;
             };
+            inner.seen[0] += 1;
+            if inner.seen[0] % 500 == 1 {
+                log::info!(
+                    "Horizon RTX: {} sections uploaded: {} given micromaps, {} needing none, {} without the workers'",
+                    inner.seen[0],
+                    inner.seen[1],
+                    inner.seen[2],
+                    inner.seen[3]
+                );
+            }
             let planned = match worked {
-                Some(w) if w.generation == inner.generation => {
-                    if w.planned.is_none() {
-                        return;
-                    }
-                    w.planned.clone()
-                }
+                Some(w) if w.generation == inner.generation => w.planned.clone(),
                 // Out of the workers' reach then, or older sprites: worked out here with
                 // `inline` alone, else built without (its cutouts alpha-tested by the shader).
                 _ if inline() && solid.len() >= quads as usize * 4 => {
@@ -280,19 +301,17 @@ mod on {
                     }
                     plan(&mut inner.cache, sprites, &geometries, solid).map(Arc::new)
                 }
-                _ => return,
+                _ => {
+                    inner.seen[3] += 1;
+                    return;
+                }
             };
-            inner.seen[0] += 1;
-            if let Some(m) = planned {
-                inner.seen[1] += 1;
-                inner.meshed.insert(key, m);
-            }
-            if inner.seen[0] % 500 == 1 {
-                log::info!(
-                    "Horizon RTX: {} sections with alpha-tested quads meshed, {} given micromaps",
-                    inner.seen[0],
-                    inner.seen[1]
-                );
+            match planned {
+                Some(m) => {
+                    inner.seen[1] += 1;
+                    inner.meshed.insert(key, m);
+                }
+                None => inner.seen[2] += 1,
             }
         }
 
