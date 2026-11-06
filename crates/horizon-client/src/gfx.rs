@@ -7309,7 +7309,10 @@ impl Renderer {
             }
         }
         if rt_clouds_on
-            && rt_clouds::mode() == rt_clouds::Mode::March
+            && matches!(
+                rt_clouds::mode(),
+                rt_clouds::Mode::March | rt_clouds::Mode::Dome
+            )
             && let Some(input) = &frame.clouds
         {
             let clouds = self
@@ -7317,27 +7320,55 @@ impl Renderer {
                 .get_or_insert_with(|| rt_clouds::RtClouds::new(&self.device, &self.queue));
             let to_light = if rt_sun.y > 0.0 { rt_sun } else { -rt_sun };
             let light = rt_sun_light;
-            clouds.draw(
-                &self.device,
-                &mut self.uploads,
-                &mut encoder,
-                rt_view,
-                world_depth,
-                world_view,
-                world_size,
-                view_proj,
-                frame.camera,
-                &rt_clouds::Params {
-                    light: to_light,
-                    light_color: [light[0], light[1], light[2]],
-                    sun: rt_sun,
-                    time: (input.time as f64 + input.partial_tick) / 20.0,
-                    thick: 0.0,
-                    curvature: earth_bend,
-                },
-                &self.atmosphere.view,
-            );
-            gpu_passes::stamp(&mut encoder, "clouds: march");
+            let params = rt_clouds::Params {
+                light: to_light,
+                light_color: [light[0], light[1], light[2]],
+                sun: rt_sun,
+                time: (input.time as f64 + input.partial_tick) / 20.0,
+                thick: rain_level.clamp(0.0, 1.0),
+                curvature: earth_bend,
+            };
+            if rt_clouds::mode() == rt_clouds::Mode::Dome && rt_clouds::dome_sees(frame.camera) {
+                // One march a frame for every view (both eyes see clouds alike): the first view
+                // updates the dome, each view looks it up.
+                if self.eye.is_none_or(|e| e.view_index <= 1) {
+                    clouds.update_dome(
+                        &self.device,
+                        &mut self.uploads,
+                        &mut encoder,
+                        world_depth,
+                        frame.camera,
+                        &params,
+                        &self.atmosphere.view,
+                    );
+                    gpu_passes::stamp(&mut encoder, "clouds: dome march");
+                }
+                clouds.draw_dome(
+                    &self.device,
+                    &mut self.uploads,
+                    &mut encoder,
+                    world_depth,
+                    world_view,
+                    world_size,
+                    view_proj,
+                );
+                gpu_passes::stamp(&mut encoder, "clouds: dome");
+            } else {
+                clouds.draw(
+                    &self.device,
+                    &mut self.uploads,
+                    &mut encoder,
+                    rt_view,
+                    world_depth,
+                    world_view,
+                    world_size,
+                    view_proj,
+                    frame.camera,
+                    &params,
+                    &self.atmosphere.view,
+                );
+                gpu_passes::stamp(&mut encoder, "clouds: march");
+            }
         }
         // Froxel volumetrics (froxels.rs, hook 7): this view's medium on the world drawn, before
         // the tone mapping. `Frame::underwater` says the water; the sky light and the weather come
