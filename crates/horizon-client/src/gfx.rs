@@ -1319,11 +1319,20 @@ fn hw_rt_features() -> wgpu::Features {
 /// EXPERIMENTAL VR: the device through the OpenXR runtime (`xr`), with a surface for the
 /// window on the same instance. `None` when the runtime, the headset or the surface is missing.
 fn open_xr_device(window: &Arc<Window>, offscreen: bool, layers: u32) -> Option<Opened> {
-    // RT lighting's hardware rays in the headset as on the screen, where the adapter has them.
+    // RT lighting's hardware rays in the headset as on the screen, where the adapter has them,
+    // with the RTX build's ray tracing pipelines (horizon-xr adds the build's extensions).
     let xr = xr::open(|adapter| {
+        let pipelines = if cfg!(feature = "rtx")
+            && !hw_rt_features().is_empty()
+            && adapter.features().contains(hw_rt_features())
+        {
+            wgpu::Features::EXPERIMENTAL_RAY_TRACING_PIPELINES
+        } else {
+            wgpu::Features::empty()
+        };
         (
             device_features(adapter)
-                | (adapter.features() & (hw_rt_features() | wgpu::Features::MULTIVIEW)),
+                | (adapter.features() & (hw_rt_features() | wgpu::Features::MULTIVIEW | pipelines)),
             adapter.limits(),
         )
     })?;
