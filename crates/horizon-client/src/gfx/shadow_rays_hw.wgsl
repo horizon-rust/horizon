@@ -247,7 +247,7 @@ fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);
         if c.geometry_index == instances[c.instance_custom_data].at.w {
-            through *= hw_tint(c, pos, l, hw_focus);
+            through *= hw_tint(c, pos, l, true);
         } else if hw_opaque(c) {
             rayQueryConfirmIntersection(&q);
             // A shadow ray needs no nearer hit.
