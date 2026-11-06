@@ -523,6 +523,16 @@ impl Game<'_> {
     /// the held stack and the item it started using, as
     /// `VanillaDispenserOracle.useItem` prints them.
     fn fixture_use_item(&mut self, pos: BlockPos, op: &Value) -> Result<Vec<String>> {
+        let sleep_probe = op["sleep_probe"].as_bool().unwrap_or(false);
+        if sleep_probe {
+            self.sleeping = None;
+            self.sleep_timer = 0;
+            self.player_beds.clear();
+            self.world.day_time = op["day_time"].as_i64().unwrap_or(18000);
+            self.ui.rules.set("players_sleeping_percentage", RuleValue::Int(101));
+        }
+        let sleep_stats = ["sleep_in_bed", "sleep_in_straw_bed"];
+        let sleep_before = sleep_stats.map(|name| self.stats.get("custom", &format!("minecraft:{name}")));
         let stack = parse_stack(op["item"].as_str().unwrap_or("-"))?;
         self.mode = if op["creative"].as_bool().unwrap_or(false) {
             GameMode::Creative
@@ -595,6 +605,32 @@ impl Game<'_> {
         used?;
         self.process_level_events()?;
         let mut out = Vec::new();
+        if sleep_probe {
+            out.push(format!("sleep admitted {}", self.sleeping.is_some()));
+            for (name, before) in sleep_stats.iter().zip(sleep_before) {
+                let value = self.stats.get("custom", &format!("minecraft:{name}")) - before;
+                out.push(format!("sleep stat {name} {value}"));
+                if value != 0 {
+                    out.push(format!("stat minecraft:{name} minecraft:custom {value}"));
+                }
+            }
+            if op["wake_day"].as_bool().unwrap_or(false) {
+                self.world.day_time = 6000;
+                self.tick_sleep();
+                out.push(format!("sleep after_day {}", self.sleeping.is_some()));
+            }
+            if let Some(amount) = op["hurt"].as_f64() {
+                self.hurt_player_by("minecraft:generic", amount as f32);
+                out.push(format!("sleep after_hurt {}", self.sleeping.is_some()));
+            }
+            if op.get("wake_day").is_some() || op.get("hurt").is_some() {
+                // The server's end-of-player-tick bed cleanup, not an immediate
+                // damage-callback timing assertion.
+                self.free_left_beds();
+                let bed = self.world.block(pos.x, pos.y, pos.z);
+                out.push(format!("sleep bed_after {}", self.is_bed(bed)));
+            }
+        }
         for m in messages {
             let key = m.component()["translate"]
                 .as_str()

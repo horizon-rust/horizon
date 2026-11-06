@@ -3828,6 +3828,9 @@ impl Game<'_> {
                 self.thorns(a);
             }
         }
+        if outcome.stopped_sleeping {
+            self.wake_up();
+        }
         // LivingEntity.hurtServer: ENTITY_HURT_PLAYER, unless it returned
         // early (invulnerable, or inside the hurt cooldown).
         // A hit a native mod canceled records no damage (hurtServer never ran).
@@ -3927,6 +3930,7 @@ impl Game<'_> {
     }
     pub(super) fn hurt_player_by(&mut self, damage_type: &str, amount: f32) {
         let mut canceled = false;
+        let mut stopped_sleeping = false;
         if !self.creative
             && let Some(player) = self.player.as_mut()
             && let Some(id) = self.health_resources.damage.id(damage_type)
@@ -3939,6 +3943,10 @@ impl Game<'_> {
             )
         {
             canceled = o.canceled;
+            stopped_sleeping = o.stopped_sleeping;
+        }
+        if stopped_sleeping {
+            self.wake_up();
         }
         self.combat.forget_noted(canceled);
     }

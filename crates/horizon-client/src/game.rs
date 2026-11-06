@@ -15262,11 +15262,19 @@ impl Game<'_> {
         // blocks above the head and the foot, as `in_wall` reads suffocating.
         let blocked = problem.is_none()
             && [head, foot].iter().any(|bed| {
-                let f = self
-                    .res
-                    .facts()
-                    .get(self.world.block(bed[0], bed[1] + 1, bed[2]));
-                f.full_collision && f.solid_render
+                let pos = [bed[0], bed[1] + 1, bed[2]];
+                let state = self.world.block(pos[0], pos[1], pos[2]);
+                let mut scene = horizon_client::collisions::SceneCollisions {
+                    world: &self.world,
+                    binding: self.mob_suffocation().collisions(),
+                    subject: None,
+                };
+                self.mob_suffocation()
+                    .is_suffocating(&mut scene, state, pos)
+                    .unwrap_or_else(|error| {
+                        log::warn!("could not check bed obstruction at {pos:?}: {error}");
+                        true
+                    })
             });
         if blocked {
             problem = Some("obstructed");
@@ -15329,9 +15337,10 @@ impl Game<'_> {
                     && (m.species() != horizon_client::mobs::Species::ZombifiedPiglin
                         || (m.extra.anger > 0 && m.ai.target.is_some()))
                     && m.alive()
-                    && (m.position.x - position.x).abs() < 8.0
-                    && (m.position.y - position.y).abs() < 5.0
-                    && (m.position.z - position.z).abs() < 8.0
+                    && m.bounds().intersects(horizon_core::geometry::Aabb::new(
+                        Vec3::new(f64::from(head[0]) + 0.5 - 8.0, f64::from(head[1]) - 5.0, f64::from(head[2]) + 0.5 - 8.0),
+                        Vec3::new(f64::from(head[0]) + 0.5 + 8.0, f64::from(head[1]) + 5.0, f64::from(head[2]) + 0.5 + 8.0),
+                    ))
             })
         {
             problem = Some("not_safe");
@@ -15406,6 +15415,7 @@ impl Game<'_> {
             p.velocity = Vec3::ZERO;
             p.pitch = 0.0;
             p.teleported = true;
+            let _ = p.set_sleeping(true);
         }
         self.pitch = 0.0;
         if self.lan_acting.is_none() {
@@ -15413,8 +15423,11 @@ impl Game<'_> {
             self.snap_player_model_pitch();
         }
         self.occupy_bed(head);
-        self.award_custom_stat("sleep_in_bed", 1);
-        self.trigger_player("minecraft:slept_in_bed");
+        let straw = &*self.res.facts().get(state).name == "minecraft:straw_bed";
+        self.award_custom_stat(if straw { "sleep_in_straw_bed" } else { "sleep_in_bed" }, 1);
+        if self.bed_sets_spawn(state) {
+            self.trigger_player("minecraft:slept_in_bed");
+        }
         self.stats.reset("custom", "minecraft:time_since_rest");
     }
     fn wake_up(&mut self) {
@@ -15458,10 +15471,11 @@ impl Game<'_> {
             // not get the sleeper up.
             if (self.screen != Screen::Chat && self.keys.held(Mapping::Sneak))
                 || bed_gone
+                || !(self.dim == Dim::Overworld && self.sky_darken() >= 4)
                 || self
                     .player
                     .as_ref()
-                    .is_none_or(|p| p.health.dead_or_dying())
+                    .is_none_or(|p| p.health.dead_or_dying() || !p.sleeping)
             {
                 self.wake_up();
                 return;

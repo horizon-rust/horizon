@@ -70,6 +70,7 @@ impl PlayerMotion {
         if self.client_side {
             return Ok(());
         }
+        let was_sleeping = self.sleeping;
         let h = &mut self.health;
         let mut world = TickWorld {
             entity: self.entity_id,
@@ -86,8 +87,13 @@ impl PlayerMotion {
             sync_velocity: &mut h.sync_velocity,
             game_time: h.game_time,
             events: &mut self.events,
+            sleeping: &mut self.sleeping,
         };
-        h.food.tick(&mut world)
+        let result = h.food.tick(&mut world);
+        if was_sleeping && !self.sleeping {
+            self.set_pose(crate::pose::Pose::Standing)?;
+        }
+        result
     }
 }
 struct TickWorld<'a> {
@@ -105,6 +111,7 @@ struct TickWorld<'a> {
     sync_velocity: &'a mut bool,
     game_time: i64,
     events: &'a mut Vec<MotionEvent>,
+    sleeping: &'a mut bool,
 }
 impl FoodWorld for TickWorld<'_> {
     type Error = Box<dyn std::error::Error>;
@@ -189,11 +196,16 @@ impl FoodWorld for TickWorld<'_> {
             totem: false,
             totem_fired: false,
             canceled: false,
+            sleeping: *self.sleeping,
+            stopped_sleeping: false,
         };
         if ServerPlayerCombat::new(self.attributes, self.data, food, self.ids, &mut environment)?
             .hurt(self.hurt, amount)?
         {
             *self.hurt_animation_time = self.hurt.hurt_time;
+        }
+        if environment.stopped_sleeping {
+            *self.sleeping = false;
         }
         Ok(())
     }

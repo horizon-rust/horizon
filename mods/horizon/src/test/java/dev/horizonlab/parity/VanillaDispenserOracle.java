@@ -549,6 +549,19 @@ public final class VanillaDispenserOracle {
         ItemStack hand, offhand;
         List<String> stats;
         String using;
+        boolean sleepProbe, stopAfterSleepTick, stopAfterWake;
+        static final class SleepBoundary extends RuntimeException { }
+        @Override protected boolean updateIsUnderwater() {
+            if (stopAfterSleepTick) throw new SleepBoundary();
+            return super.updateIsUnderwater();
+        }
+        @Override public boolean isInvulnerableTo(ServerLevel level, net.minecraft.world.damagesource.DamageSource source) {
+            return sleepProbe ? false : super.isInvulnerableTo(level, source);
+        }
+        @Override public void stopSleeping() {
+            super.stopSleeping();
+            if (stopAfterWake) throw new SleepBoundary();
+        }
         Clicker() {
             super(null, null, null, null);
         }
@@ -578,6 +591,7 @@ public final class VanillaDispenserOracle {
             else onEquipItem(slot, ItemStack.EMPTY, stack);
         }
         @Override public boolean isSilent() { return false; }
+        @Override public void resetStat(net.minecraft.stats.Stat<?> stat) { }
         // A book's screen needs a connection; nothing of it is printed.
         @Override public void openItemGui(ItemStack stack, net.minecraft.world.InteractionHand h) { }
         @Override public void startUsingItem(net.minecraft.world.InteractionHand h) {
@@ -664,6 +678,23 @@ public final class VanillaDispenserOracle {
         VanillaBlockUpdateOracle.set(Entity.class, player, "bb", EntityTypes.PLAYER.getDimensions().makeBoundingBox(at));
         VanillaBlockUpdateOracle.set(net.minecraft.world.entity.player.Player.class, player, "inventoryMenu",
             VanillaBlockUpdateOracle.allocate.invoke(VanillaBlockUpdateOracle.unsafe, QuietMenu.class));
+        if (use.has("sleep_probe") && use.get("sleep_probe").getAsBoolean()) {
+            // The real sleep methods need the entity storage normally installed
+            // by its constructor. No sleep method is replaced by this fixture.
+            player.sleepProbe = true;
+            defineData(player);
+            player.setHealth(20.0F);
+            var dimensions = EntityTypes.PLAYER.getDimensions();
+            VanillaBlockUpdateOracle.set(Entity.class, player, "dimensions", dimensions);
+            VanillaBlockUpdateOracle.set(Entity.class, player, "chunkPosition", new net.minecraft.world.level.ChunkPos(BlockPos.containing(at)));
+            VanillaBlockUpdateOracle.set(Entity.class, player, "levelCallback", net.minecraft.world.level.entity.EntityInLevelCallback.NULL);
+            VanillaBlockUpdateOracle.set(Entity.class, player, "passengers", com.google.common.collect.ImmutableList.of());
+            VanillaBlockUpdateOracle.set(Entity.class, player, "deltaMovement", net.minecraft.world.phys.Vec3.ZERO);
+            VanillaBlockUpdateOracle.set(LivingEntity.class, player, "activeEffects", new HashMap<>());
+            VanillaBlockUpdateOracle.set(net.minecraft.server.level.ServerLevel.class, w, "players", new ArrayList<>());
+            w.rules.set(GameRules.PLAYERS_SLEEPING_PERCENTAGE, 101, null);
+            VanillaBlockUpdateOracle.set(Level.class, w, "skyDarken", 15);
+        }
         // The top face, or the case's `face`, clicked at its centre.
         var face = use.has("face") ? net.minecraft.core.Direction.byName(use.get("face").getAsString()) : net.minecraft.core.Direction.UP;
         var hit = new net.minecraft.world.phys.BlockHitResult(net.minecraft.world.phys.Vec3.atCenterOf(pos)
@@ -678,6 +709,38 @@ public final class VanillaDispenserOracle {
             if (!held.isEmpty() && gameMode.useItem(player, w, held, hand) instanceof net.minecraft.world.InteractionResult.Success) break;
         }
         List<String> out = new ArrayList<>(player.stats);
+        if (use.has("sleep_probe") && use.get("sleep_probe").getAsBoolean()) {
+            out.add("sleep admitted " + player.isSleeping());
+            for (String name : List.of("sleep_in_bed", "sleep_in_straw_bed")) {
+                String stat = "stat minecraft:" + name + " minecraft:custom 1";
+                out.add("sleep stat " + name + " " + Collections.frequency(player.stats, stat));
+            }
+            if (use.has("wake_day") && use.get("wake_day").getAsBoolean()) {
+                VanillaBlockUpdateOracle.set(Level.class, w, "skyDarken", 0);
+                player.stopAfterSleepTick = true;
+                // Invoke Player.tick itself: stop at its next subsystem boundary,
+                // after its real sleep-counter/rule/wake code has completed.
+                var lookup = java.lang.invoke.MethodHandles.privateLookupIn(net.minecraft.world.entity.player.Player.class, java.lang.invoke.MethodHandles.lookup());
+                try {
+                    lookup.findSpecial(net.minecraft.world.entity.player.Player.class, "tick",
+                        java.lang.invoke.MethodType.methodType(void.class), net.minecraft.world.entity.player.Player.class).bindTo(player).invoke();
+                } catch (Clicker.SleepBoundary expected) { }
+                catch (Throwable error) { throw new RuntimeException(error); }
+                out.add("sleep after_day " + player.isSleeping());
+            }
+            if (use.has("hurt")) {
+                player.stopAfterWake = true;
+                // The real hurtServer admission and wake run before the rest of
+                // damage. Its stopSleeping override only cuts the later work.
+                try {
+                    player.hurtServer(w, w.damageSources().generic(), use.get("hurt").getAsFloat());
+                } catch (Clicker.SleepBoundary expected) { }
+                out.add("sleep after_hurt " + player.isSleeping());
+            }
+            if (use.has("wake_day") || use.has("hurt")) {
+                out.add("sleep bed_after " + (w.getBlockState(pos).getBlock() instanceof net.minecraft.world.level.block.AbstractBedBlock));
+            }
+        }
         out.add("held " + ParityData.canon(player.hand) + " offhand " + ParityData.canon(player.offhand)
             + " using " + (player.using == null ? "-" : player.using));
         var respawn = player.getRespawnConfig();
