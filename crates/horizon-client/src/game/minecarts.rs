@@ -138,6 +138,9 @@ pub(super) struct Minecart {
     pub push: Vec3,
     /// TNT minecarts: ticks until the explosion, -1 when not primed.
     pub fuse: i32,
+    /// Runtime-only `MinecartTNT.ignitionSource`; vanilla does not save it.
+    /// Some(None) retains an ignition DamageSource with no causing entity.
+    pub ignition_source: Option<Option<super::explosion::ExplosionCause>>,
     /// Hopper minecarts: an unpowered activator rail enables them.
     pub enabled: bool,
     /// Chest minecarts: the loot table rolled into `items` on load, saved
@@ -412,6 +415,7 @@ impl Minecart {
             fuel: 0,
             push: Vec3::ZERO,
             fuse: -1,
+            ignition_source: None,
             enabled: true,
             loot: None,
             first_tick: true,
@@ -1514,7 +1518,10 @@ impl Game<'_> {
         // fell unprimed blows rails up like any blast.
         self.combat.rail_proof_blast = c.fuse >= 0;
         self.combat.explosion_in_water = self.bounds_in_water(c.bounds());
-        let _ = self.with_hive_emptying_blast(|g| g.server_explode(at, power, interaction, false));
+        let source = (c.id, self.explosion_entity_name(c.id, c.kind.id()));
+        let _ = self.with_explosion_cause(c.ignition_source.clone().flatten(), source, |g| {
+            g.with_hive_emptying_blast(|g| g.server_explode(at, power, interaction, false))
+        });
         self.combat.explosion_in_water = false;
         self.combat.rail_proof_blast = false;
     }
@@ -2319,7 +2326,13 @@ impl Game<'_> {
         // Player.attack's full damage against the cart's entity type.
         let id = self.carts[i].id as i32;
         let (damage, _, _, magic) = self.melee_damage(self.carts[i].kind.id(), false);
-        self.hurt_cart(i, damage, self.creative, burning);
+        self.hurt_cart_from(
+            i,
+            damage,
+            self.creative,
+            burning,
+            self.explosion_cause(super::commands::Target::Player),
+        );
         self.vehicle_attack_sounds(area, magic.then_some(id));
         // Player.onAttack: the hit starts the attack strength again.
         self.attack_ticks = 0;
@@ -2335,6 +2348,7 @@ impl Game<'_> {
         arrow_velocity: Vec3,
         burning: bool,
         creative: bool,
+        cause: Option<super::explosion::ExplosionCause>,
     ) {
         if i >= self.carts.len() {
             return;
@@ -2343,16 +2357,28 @@ impl Game<'_> {
             self.eject_cart_mobs(i);
             let id = self.carts[i].id;
             self.release_vehicle_container(id);
-            let c = self.carts.remove(i);
+            let mut c = self.carts.remove(i);
+            c.ignition_source = Some(cause);
             self.explode_cart(&c, arrow_velocity.length_squared());
             return;
         }
-        self.hurt_cart(i, damage, creative, false);
+        self.hurt_cart_from(i, damage, creative, false, cause);
     }
     /// `VehicleEntity.hurtServer`: shake, add the damage, break past 40 (at
     /// once for creative players); TNT minecarts prime instead when moving
     /// or hurt by fire or an explosion (`damageSourceIgnitesTnt`).
-    pub(super) fn hurt_cart(&mut self, i: usize, mut damage: f32, creative: bool, fire: bool) {
+    pub(super) fn hurt_cart(&mut self, i: usize, damage: f32, creative: bool, fire: bool) {
+        self.hurt_cart_from(i, damage, creative, fire, None);
+    }
+
+    pub(super) fn hurt_cart_from(
+        &mut self,
+        i: usize,
+        mut damage: f32,
+        creative: bool,
+        fire: bool,
+        cause: Option<super::explosion::ExplosionCause>,
+    ) {
         let kind = self.carts[i].kind.id();
         let mut cancel = false;
         self.native_vehicle_damage(kind, &mut damage, &mut cancel);
@@ -2392,6 +2418,10 @@ impl Game<'_> {
             if c.kind == CartKind::Tnt && (fire || speed >= f64::from(0.01f32)) {
                 // MinecartTNT.destroy: prime instead of breaking.
                 if c.fuse < 0 {
+                    // primeFuse records only the first source-bearing ignition.
+                    if c.ignition_source.is_none() {
+                        c.ignition_source = Some(cause);
+                    }
                     self.prime_cart(&mut c);
                     let r = &mut self.world.random;
                     c.fuse = r.next_int_bound(20).unwrap_or(0) + r.next_int_bound(20).unwrap_or(0);
@@ -3360,3 +3390,6 @@ mod tests {
     }
 }
 horizon_client::impl_joined!(Minecart);
+
+#[cfg(test)]
+mod cause_tests;

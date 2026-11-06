@@ -809,7 +809,17 @@ impl Game<'_> {
                         if let Some(i) = self.boats.iter().position(|b| b.id == id) {
                             self.hurt_boat(i, damage, creative);
                         } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
-                            self.hurt_cart(i, damage, creative, false);
+                            let owner = t.guest.map_or(
+                                super::commands::Target::Player,
+                                super::commands::Target::Guest,
+                            );
+                            self.hurt_cart_from(
+                                i,
+                                damage,
+                                creative,
+                                false,
+                                self.explosion_cause(owner),
+                            );
                         }
                         // `minecraft:post_attack` of Channeling, on the victim.
                         if let Some(at) = hurt_at

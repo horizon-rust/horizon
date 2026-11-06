@@ -1312,7 +1312,13 @@ impl Game<'_> {
     }
     /// `EndCrystal.hurtServer`: remove it, blast only for non-explosion damage,
     /// then notify the dragon fight even when no blast was created.
-    fn destroy_crystal(&mut self, index: usize, by: Option<FightWho>, damage: CrystalDamage) {
+    fn destroy_crystal(
+        &mut self,
+        index: usize,
+        by: Option<FightWho>,
+        damage: CrystalDamage,
+        cause: Option<super::explosion::ExplosionCause>,
+    ) {
         if index >= self.crystals.len() || self.crystals[index].invulnerable {
             return;
         }
@@ -1337,7 +1343,13 @@ impl Game<'_> {
                 Vec3::new(x - 1.0, y, z - 1.0),
                 Vec3::new(x + 1.0, y + 2.0, z + 1.0),
             ));
-            let _ = self.server_explode(at, 6.0, interaction, false);
+            let source = (
+                c.id,
+                self.explosion_entity_name(c.id, "minecraft:end_crystal"),
+            );
+            let _ = self.with_explosion_cause(cause, source, |g| {
+                g.server_explode(at, 6.0, interaction, false)
+            });
             self.combat.explosion_in_water = false;
             self.fight.blast_by = None;
         }
@@ -1425,6 +1437,7 @@ impl Game<'_> {
         by_player: bool,
         kind: DamageKind,
         direct: Option<&ProjectileKind>,
+        cause: Option<super::explosion::ExplosionCause>,
     ) -> Hurt {
         if id >= CRYSTAL_IDS {
             // EndCrystal.hurtServer: false while invulnerable and for fire
@@ -1434,7 +1447,7 @@ impl Game<'_> {
                 return Hurt::Refused;
             }
             let by = by_player.then(|| self.acting_player());
-            self.destroy_crystal(index, by, CrystalDamage::Direct);
+            self.destroy_crystal(index, by, CrystalDamage::Direct, cause);
             Hurt::Landed { full: true }
         } else if id >= SPECIAL {
             let by = by_player.then(|| self.acting_player());
@@ -1534,7 +1547,8 @@ impl Game<'_> {
             CrystalDamage::Direct
         };
         let player = self.command_player(cause);
-        self.destroy_crystal(index, player, damage);
+        let cause = cause.and_then(|t| self.explosion_cause(t));
+        self.destroy_crystal(index, player, damage, cause);
         true
     }
     /// `hurt_dragon_part` with no projectile behind the hit.
@@ -1734,7 +1748,14 @@ impl Game<'_> {
             .into_iter()
             .find(|(part, _)| *part == id)
             .map(|(_, b)| b);
-        let hurt = self.hit_special(id, amount, true, DamageKind::PlayerAttack, None);
+        let hurt = self.hit_special(
+            id,
+            amount,
+            true,
+            DamageKind::PlayerAttack,
+            None,
+            self.explosion_cause(Target::Player),
+        );
         // The sweep and the sounds read the charge, which the hit then spends.
         if let (Some(area), Hurt::Landed { .. }) = (area, hurt) {
             self.attack_effects(area, None, false, super::mace::Spared::Nothing, None);
@@ -3726,7 +3747,7 @@ impl Game<'_> {
         for at in crystals {
             // Look up the current index after each removal.
             if let Some(i) = self.crystals.iter().position(|c| c.position == at) {
-                self.destroy_crystal(i, by, CrystalDamage::Explosion);
+                self.destroy_crystal(i, by, CrystalDamage::Explosion, None);
             }
         }
         let Some(d) = self.dragon.as_ref() else {
@@ -3913,7 +3934,7 @@ impl Game<'_> {
     /// (`Entity.kill` does not hurt it).
     pub(super) fn kill_crystal(&mut self, id: u32) {
         if let Some(i) = self.crystals.iter().position(|c| c.id == id) {
-            self.destroy_crystal(i, None, CrystalDamage::Explosion);
+            self.destroy_crystal(i, None, CrystalDamage::Explosion, None);
         }
     }
     /// `EnderDragon.kill` (`/kill`): `Entity.kill` removes the entity, it

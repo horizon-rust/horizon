@@ -4413,7 +4413,13 @@ impl Game<'_> {
         if let Some(i) = self.boats.iter().position(|b| b.id == id) {
             self.hurt_boat(i, amount, creative);
         } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
-            self.hurt_cart(i, amount, creative, false);
+            self.hurt_cart_from(
+                i,
+                amount,
+                creative,
+                false,
+                self.projectile_explosion_cause(p),
+            );
         }
     }
     /// `BellBlock.onProjectileHit`: a projectile that strikes the bell proper
@@ -4766,6 +4772,7 @@ impl Game<'_> {
                     by_player,
                     horizon_client::mobs::DamageKind::Arrow,
                     Some(&p.kind),
+                    self.projectile_explosion_cause(p),
                 ) {
                     super::dragon::Hurt::Landed { .. } => EntityHit::Hurt,
                     super::dragon::Hurt::Refused => EntityHit::Refused,
@@ -4791,7 +4798,14 @@ impl Game<'_> {
                 }
                 _ => horizon_client::mobs::DamageKind::Thrown,
             };
-            self.hit_special(id, amount, by_player, kind, Some(&p.kind));
+            self.hit_special(
+                id,
+                amount,
+                by_player,
+                kind,
+                Some(&p.kind),
+                self.projectile_explosion_cause(p),
+            );
             // ThrowableProjectile.onHit goes on after onHitEntity: a pearl
             // still takes its owner to where it broke (into the crystal's
             // blast), an egg still hatches, a snowball still breaks. A large
@@ -4820,7 +4834,14 @@ impl Game<'_> {
             let amount = self.shot_damage(&mut arrow, None);
             let burning = p.arrow.as_ref().is_some_and(|a| a.on_fire());
             let creative = p.owner == Some(Who::Player) && self.creative;
-            self.arrow_hits_cart(i, amount, p.velocity, burning, creative);
+            self.arrow_hits_cart(
+                i,
+                amount,
+                p.velocity,
+                burning,
+                creative,
+                self.projectile_explosion_cause(p),
+            );
             self.finish_arrow_hit(arrow, EntityHit::Hurt);
             return Ok(());
         }

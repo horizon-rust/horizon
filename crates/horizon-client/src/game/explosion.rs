@@ -4,8 +4,10 @@
 //! merged drops and TNT chain priming, and optional fire.
 use super::{
     Game,
+    commands::Target,
     entity::{Blast, Entity, EntityHandle, with_entity, with_entity_mut},
 };
+
 use horizon_client::{
     Result, blocks::Fluid, collisions::SceneCollisions, items::ItemStack, mobs::Who, text::Text,
 };
@@ -22,6 +24,16 @@ use horizon_world::{
     world_ray::{RayBlockMode, RayFluidMode, RayWorld, clip_world},
 };
 use std::{cmp::Ordering, io};
+
+/// The causing entity of an explicit explosion damage source. Minecart ignition
+/// keeps this in memory only, just like `MinecartTNT.ignitionSource`.
+#[derive(Clone, Debug)]
+pub(super) struct ExplosionCause {
+    pub entity: (u32, Text),
+    pub player: bool,
+    pub guest: Option<u32>,
+    pub species: Option<horizon_client::mobs::Species>,
+}
 
 /// `Level.clip` with `ClipContext.Block.COLLIDER`, no fluids and the
 /// collision context of the entity whose exposure is measured.
@@ -153,6 +165,9 @@ fn blast_direction(center: [f64; 3], origin: [f64; 3]) -> [f64; 3] {
 struct ExplosionHookContext<'a> {
     center: [f64; 3],
     blocks: &'a [[i32; 3]],
+    explicit_cause: Option<Option<ExplosionCause>>,
+    direct_name: Option<Text>,
+    held_item: Option<Text>,
 }
 
 /// An entity in the blast's reach: how far (as a share of the blast's
@@ -169,12 +184,10 @@ fn hurt_mob(
     hurtable: bool,
     cause: Option<horizon_client::mobs::Species>,
     (amount, source): (f32, horizon_client::mobs::Damage),
-) {
+) -> bool {
     let shielded =
         cause.is_some_and(|c| horizon_client::mobs::wither::shielded_from(m.species(), c));
-    if hurtable && !shielded {
-        m.damage(amount, source);
-    }
+    hurtable && !shielded && m.damage(amount, source)
 }
 
 /// A blast's causing entity and its name (`Explosion.getIndirectSourceEntity`):
@@ -210,8 +223,144 @@ pub(super) fn client_float() -> f32 {
 }
 
 impl Game<'_> {
-    /// `blast_cause` for the blast going off now.
+    pub(super) fn explosion_entity_name(&self, id: u32, kind: &str) -> Text {
+        self.persist_raw(id)
+            .and_then(|r| r.get("CustomName"))
+            .map_or_else(
+                || Text::translate(&format!("entity.{}", kind.replace(':', ".")), &[]),
+                |name| {
+                    horizon_client::scoreboard::comp_text(&horizon_client::scoreboard::tag_to_json(
+                        name,
+                    ))
+                },
+            )
+    }
+
+    /// Projectile damage factories preserve null owners for thrown items;
+    /// arrows, tridents and unattributed fireballs name themselves instead.
+    pub(super) fn projectile_explosion_cause(
+        &self,
+        p: &horizon_client::projectiles::Projectile,
+    ) -> Option<ExplosionCause> {
+        let target = match p.owner {
+            Some(Who::Player) => p.guest.map_or(Target::Player, Target::Guest),
+            Some(Who::Mob(id)) => Target::Mob(id),
+            None if matches!(
+                p.kind,
+                horizon_client::projectiles::ProjectileKind::Arrow { .. }
+                    | horizon_client::projectiles::ProjectileKind::Trident
+                    | horizon_client::projectiles::ProjectileKind::SmallFireball
+                    | horizon_client::projectiles::ProjectileKind::LargeFireball { .. }
+            ) =>
+            {
+                return Some(ExplosionCause {
+                    entity: (p.id, self.explosion_entity_name(p.id, p.kind.id())),
+                    player: false,
+                    guest: None,
+                    species: None,
+                });
+            }
+            None => return None,
+        };
+        self.explosion_cause(target)
+    }
+
+    pub(super) fn explosion_cause(&self, target: Target) -> Option<ExplosionCause> {
+        let id = match target {
+            Target::Player => self
+                .lan_acting_entity
+                .or_else(|| self.player.as_ref().map(|p| p.entity_id as u32)),
+            Target::Guest(conn) if self.lan_acting == Some(conn) => self.lan_acting_entity,
+            _ => self.network_entity_id(target).map(|id| id as u32),
+        }?;
+        Some(ExplosionCause {
+            entity: (
+                id,
+                self.target_name(match target {
+                    Target::Guest(conn) if self.lan_acting == Some(conn) => Target::Player,
+                    other => other,
+                }),
+            ),
+            player: matches!(target, Target::Player | Target::Guest(_)),
+            guest: match target {
+                Target::Player => self.lan_acting,
+                Target::Guest(conn) => Some(conn),
+                _ => None,
+            },
+            species: match target {
+                Target::Mob(id) => self.mobs.iter().find(|m| m.id == id).map(|m| m.species()),
+                _ => None,
+            },
+        })
+    }
+
+    /// The DamageSource passed to a cart struck by this explosion.
+    pub(super) fn current_explosion_cause(&self) -> Option<ExplosionCause> {
+        if let Some(cause) = &self.combat.explicit_explosion_cause {
+            return cause.clone();
+        }
+        self.blast_attacker().map(|entity| ExplosionCause {
+            species: self
+                .mobs
+                .iter()
+                .find(|m| m.id == entity.0)
+                .map(|m| m.species()),
+            player: self.combat.blast_owner.is_some()
+                && !self.mobs.iter().any(|m| m.id == entity.0),
+            entity,
+            guest: self.combat.blast_guest,
+        })
+    }
+
+    /// An explicit DamageSource must not inherit an enclosing blast's cause.
+    pub(super) fn with_explosion_cause<R>(
+        &mut self,
+        cause: Option<ExplosionCause>,
+        direct_source: (u32, Text),
+        run: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let source = self.combat.explosion_source.take();
+        let owner = self.combat.explosion_owner.take();
+        let player = self.combat.blast_owner.take();
+        let guest = self.combat.blast_guest.take();
+        let direct = self.combat.explosion_cause.take();
+        self.combat.explosion_source = Some(direct_source.0);
+        let outer_direct = self
+            .combat
+            .explicit_explosion_direct
+            .replace(direct_source.1);
+        if let Some(cause) = &cause {
+            if cause.player {
+                self.combat.blast_owner = Some(cause.entity.clone());
+                self.combat.blast_guest = cause.guest;
+            } else {
+                self.combat.explosion_owner = Some(cause.entity.0);
+            }
+        }
+        let outer = self.combat.explicit_explosion_cause.replace(cause);
+        let result = run(self);
+        self.combat.explicit_explosion_cause = outer;
+        self.combat.explosion_source = source;
+        self.combat.explosion_owner = owner;
+        self.combat.blast_owner = player;
+        self.combat.blast_guest = guest;
+        self.combat.explosion_cause = direct;
+        self.combat.explicit_explosion_direct = outer_direct;
+        result
+    }
+
+    /// The blast damage's cause. An explicit crystal/cart DamageSource may
+    /// differ from the explosion's own indirect source.
     pub(super) fn blast_attacker(&self) -> Option<(u32, Text)> {
+        if let Some(cause) = &self.combat.explicit_explosion_cause {
+            return cause.as_ref().map(|c| {
+                let name = (!c.player)
+                    .then(|| self.mob_display_name(c.entity.0))
+                    .flatten()
+                    .unwrap_or_else(|| c.entity.1.clone());
+                (c.entity.0, name)
+            });
+        }
         // `Explosion.getIndirectSourceEntity`: a primed TNT's owner names the
         // blast before any mob does, which makes the damage type
         // `minecraft:player_explosion` (`server_explode` asks this).
@@ -395,7 +544,7 @@ impl Game<'_> {
         attacker: Option<&(u32, Text)>,
         cause: Option<&horizon_client::advancements::EntityView>,
     ) -> Option<[f64; 3]> {
-        let ExplosionHookContext { center, blocks } = *context;
+        let ExplosionHookContext { center, blocks, .. } = *context;
         let diameter = f64::from(radius * 2.0);
         // Blast protection: `EXPLOSION_KNOCKBACK_RESISTANCE` (0.15 per level and
         // piece, so two Blast Protection IV pieces cancel it).
@@ -448,10 +597,33 @@ impl Game<'_> {
         let flying = self.player.as_ref().is_some_and(|p| p.flying);
         let mut outcome = horizon_client::health::BlockOutcome::default();
         let mut pushed = None;
+        let explicit = context.explicit_cause.as_ref().and_then(|c| c.as_ref());
+        let living_attacker = explicit.is_none_or(|c| c.player || c.species.is_some());
+        let living_non_player = context
+            .explicit_cause
+            .as_ref()
+            .map_or(attacker.is_some(), |c| {
+                c.as_ref().is_some_and(|c| !c.player && c.species.is_some())
+            });
         // The death message names the blast's causing entity. It goes to this
         // player's tracker, the host's or a guest's.
         if let Some((id, name)) = attacker.filter(|_| !creative && !spectator && hurtable) {
-            self.note_named_attacker(damage_type, *id, name.clone());
+            if living_attacker {
+                self.note_player_attacker(
+                    damage_type,
+                    *id,
+                    name.clone(),
+                    context.held_item.clone(),
+                );
+            } else {
+                self.note_nonliving_attacker(damage_type, *id, name.clone());
+            }
+        } else if !creative
+            && !spectator
+            && hurtable
+            && let Some(direct) = context.direct_name.clone()
+        {
+            self.note_direct_entity(damage_type, direct);
         }
         if let Some(p) = self.player.as_mut()
             && let Some(id) = self.health_resources.damage.id(damage_type)
@@ -466,7 +638,7 @@ impl Game<'_> {
                     id,
                     amount,
                     blocking,
-                    attacker.is_some(),
+                    living_non_player,
                     // The blast's causing entity.
                     attacker.map_or(0, |(id, _)| *id as i32),
                 )
@@ -574,7 +746,24 @@ impl Game<'_> {
         // same for all of them (`onExplosionHit(this.source)`).
         let attacker = self.blast_attacker();
         let blast_source = self.combat.explosion_cause.clone();
-        let context = ExplosionHookContext { center, blocks };
+        let context = ExplosionHookContext {
+            center,
+            blocks,
+            explicit_cause: self.combat.explicit_explosion_cause.clone(),
+            direct_name: self.combat.explicit_explosion_direct.clone(),
+            held_item: self
+                .combat
+                .explicit_explosion_cause
+                .as_ref()
+                .and_then(|c| c.as_ref())
+                .and_then(|c| {
+                    if c.player {
+                        self.player_main_hand_custom_name(c.guest)
+                    } else {
+                        self.mob_main_hand_name(c.entity.0)
+                    }
+                }),
+        };
         let own = self.explosion_hurt_player(
             &context,
             radius,
@@ -612,10 +801,17 @@ impl Game<'_> {
         // Mobs. `WitherBoss.hurtServer`: a wither shrugs off an undead cause.
         let cause = self
             .combat
-            .explosion_owner
-            .or(exploding)
-            .and_then(|id| self.mobs.iter().find(|m| m.id == id))
-            .map(|m| m.species());
+            .explicit_explosion_cause
+            .as_ref()
+            .and_then(|c| c.as_ref())
+            .and_then(|c| c.species)
+            .or_else(|| {
+                self.combat
+                    .explosion_owner
+                    .or(exploding)
+                    .and_then(|id| self.mobs.iter().find(|m| m.id == id))
+                    .map(|m| m.species())
+            });
         // `ServerExplosion.hurtEntities`: every entity in reach, on the walk. Each
         // answers `ignoreExplosion` itself (`Entity::ignores_explosion`); the rest
         // is the same for all, and only what a blast does to a kind differs. The
@@ -624,7 +820,8 @@ impl Game<'_> {
         // (as `retain` does), and a destroyed boat or cart shifts its list, so
         // `gone` counts how far.
         let blast = Blast {
-            vehicles_ignore: self.combat.blast_owner.is_none()
+            vehicles_ignore: self.combat.explicit_explosion_cause.is_none()
+                && self.combat.blast_owner.is_none()
                 && self.blast_attacker().is_some()
                 && !self.ui.rules.bool("mob_griefing"),
             items_ignore: items_ignore_explosion(self.ui.rules.bool("mob_griefing"), interaction),
@@ -660,18 +857,53 @@ impl Game<'_> {
                             kind: horizon_client::mobs::DamageKind::Explosion,
                             // A projectile's owner (`getIndirectSourceEntity`),
                             // else the exploding mob itself.
-                            attacker: attacker
+                            attacker: self
+                                .combat
+                                .explicit_explosion_cause
                                 .as_ref()
-                                .map(|&(id, _)| id)
-                                .filter(|&o| o != m.id)
-                                .map(horizon_client::mobs::Who::Mob),
+                                .and_then(|c| c.as_ref())
+                                .filter(|c| c.player)
+                                .map(|_| Who::Player)
+                                .or_else(|| {
+                                    attacker
+                                        .as_ref()
+                                        .map(|&(id, _)| id)
+                                        .filter(|&o| o != m.id)
+                                        .filter(|_| {
+                                            self.combat
+                                                .explicit_explosion_cause
+                                                .as_ref()
+                                                .is_none_or(|c| {
+                                                    c.as_ref().is_some_and(|c| c.species.is_some())
+                                                })
+                                        })
+                                        .map(horizon_client::mobs::Who::Mob)
+                                }),
                             from: Some(center),
                             attacker_species: cause,
                         };
                         // `EXPLOSION_KNOCKBACK_RESISTANCE`, not `KNOCKBACK_RESISTANCE`:
                         // its base is 0 for every mob type, so iron golems and
                         // ravagers are pushed.
-                        hurt_mob(m, hurtable, cause, (amount, source));
+                        let victim = m.id;
+                        let hurt = hurt_mob(m, hurtable, cause, (amount, source));
+                        if hurt {
+                            if source.attacker == Some(Who::Player) {
+                                let guest = self.combat.blast_guest;
+                                self.last_hurt_by_player.insert(victim, guest);
+                                if let Some(host) = self.lan.as_mut() {
+                                    match guest {
+                                        Some(conn) => {
+                                            host.mob_players.insert(victim, conn);
+                                        }
+                                        None => {
+                                            host.mob_players.remove(&victim);
+                                        }
+                                    }
+                                }
+                            }
+                            self.resolve_player_responsible(victim, source);
+                        }
                     }
                     // 5 health, destroyed by the explosion damage (nether stars resist).
                     EntityHandle::Item(i) => {
@@ -686,7 +918,8 @@ impl Game<'_> {
                     // a destroyed one is gone before the push.
                     EntityHandle::Cart(i) => {
                         let len = self.carts.len();
-                        self.hurt_cart(i, amount, false, true);
+                        let cause = self.current_explosion_cause();
+                        self.hurt_cart_from(i, amount, false, true, cause);
                         carts_gone += len - self.carts.len();
                     }
                     // `VehicleEntity.hurtServer`: damage * 10, broken past 40.
@@ -744,10 +977,17 @@ impl Game<'_> {
         self.explosion_breaks_decorations(center, diameter, interaction);
         pushed
     }
-    /// `blast_spares_decorations` for the blast going off now: its causing
-    /// mob (`blast_attacker`) is the source's entity.
+    fn blast_damage_caused_by_mob(&self) -> bool {
+        self.combat.explicit_explosion_cause.as_ref().map_or_else(
+            || self.blast_attacker().is_some(),
+            |cause| cause.as_ref().is_some_and(|c| c.species.is_some()),
+        )
+    }
+
+    /// Decoration hurt checks use the damage source's cause (`instanceof Mob`),
+    /// unlike vehicles, which use the explosion's indirect source.
     pub(super) fn blast_spares_decorations(&self, interaction: BlockInteraction) -> bool {
-        let by_mob = self.blast_attacker().is_some();
+        let by_mob = self.blast_damage_caused_by_mob();
         blast_spares_decorations(
             self.ui.rules.bool("mob_griefing"),
             interaction,
@@ -775,7 +1015,7 @@ impl Game<'_> {
         interaction: BlockInteraction,
     ) {
         // An armour stand is no `BlockAttachedEntity`: a source in water does not spare it.
-        let by_mob = self.blast_attacker().is_some();
+        let by_mob = self.blast_damage_caused_by_mob();
         let spares_stands = blast_spares_decorations(
             self.ui.rules.bool("mob_griefing"),
             interaction,
@@ -1031,9 +1271,14 @@ impl Game<'_> {
             let fuse = r.next_int_bound(20).unwrap_or(0) + 10;
             // TntBlock.wasExploded hands the new TNT the blast's indirect
             // source, so a chain reaction keeps the player who started it.
-            let (owner, guest) = match &self.combat.blast_owner {
-                Some(_) => (Some(Who::Player), self.combat.blast_guest),
-                None => (None, None),
+            let (owner, guest) = match &self.combat.explicit_explosion_cause {
+                // A crystal/cart's explicit DamageSource does not change
+                // Explosion.getIndirectSourceEntity, which is null for them.
+                Some(_) => (None, None),
+                None => match &self.combat.blast_owner {
+                    Some(_) => (Some(Who::Player), self.combat.blast_guest),
+                    None => (None, None),
+                },
             };
             self.add_primed_tnt(
                 BlockPos::new(pos[0], pos[1], pos[2]),
