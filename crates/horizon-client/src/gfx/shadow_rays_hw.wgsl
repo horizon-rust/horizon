@@ -577,7 +577,8 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
             hit.t * 1.5 / rt.size.y / max(abs(n.y * ray.y), 0.03), f32(arena_at(base, 5u) >> 28u) / 15.0);
         // And the rain's ripples, as the water's shader has them (terrain.wgsl `rt_rain_ripples`).
         let r = hw_rain_ripples(world, hit.t);
-        n = normalize(vec3(-w.y - r.x, 1.0, -w.z - r.y));
+        let calm = shore_calm(world);
+        n = normalize(vec3(-w.y - r.x, 1.0, -w.z - r.y) * vec3(calm, 1.0, calm));
     }
     // Under the water, looking up at its top: the waves seen from below.
     if n.y < -0.5 && (layer == rt.water.x || layer == rt.water.y) {
@@ -585,7 +586,8 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
         // The pixel's footprint stretched by the slant (terrain.wgsl `water_footprint`).
         let w = water_waves(world.xz, rt.water.z,
             hit.t * 1.5 / rt.size.y / max(abs(n.y * ray.y), 0.03), f32(arena_at(base, 5u) >> 28u) / 15.0);
-        n = -normalize(vec3(-w.y, 1.0, -w.z));
+        let calm = shore_calm(world);
+        n = -normalize(vec3(-w.y * calm, 1.0, -w.z * calm));
     }
     // Its top (seen from above or below) refracts; its sides blend as before. Glass refracts on
     // every face (shadow_rays_psr.wgsl `hw_refract_glass`).
@@ -597,6 +599,23 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     var r = reflect(ray, n);
     if dot(r, n) < 0.0 { r = normalize(r - n * 2.0 * dot(r, n)); }
     return hw_mirror(at + n * 0.02, r);
+}
+// How far the waves' slopes stand at world `world` on the water's top: 1 in open water, down to 0
+// against a solid block beside it (the bank, a block's edge), over a third of a block. The
+// surface itself is flat (the waves are its normal only), so where a slope leaned at the bank the
+// refraction bent the ray away from the bank's foot and the reflection off it, and a gap of sky or
+// deep water showed between the water and the shore.
+fn shore_calm(world: vec3<f32>) -> f32 {
+    let c = vec3<i32>(floor(world - vec3(0.0, 0.05, 0.0)));
+    let f = world.xz - floor(world.xz);
+    var near = 1.0;
+    for (var dy = 0; dy <= 1; dy++) {
+        if solid_at(c + vec3(-1, dy, 0)) { near = min(near, f.x); }
+        if solid_at(c + vec3(1, dy, 0)) { near = min(near, 1.0 - f.x); }
+        if solid_at(c + vec3(0, dy, -1)) { near = min(near, f.y); }
+        if solid_at(c + vec3(0, dy, 1)) { near = min(near, 1.0 - f.y); }
+    }
+    return smoothstep(0.0, 0.35, near);
 }
 // What a mirror at camera-relative `start` reflects along `r`: the surface met, lit by the sun's
 // shadow ray and the radiance cache (or the last frame's screen) there; a 0 at the sky.
