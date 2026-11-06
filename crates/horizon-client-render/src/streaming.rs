@@ -1019,6 +1019,7 @@ impl<G: ChunkGenerator> Jobs<G> {
                 let recycled = shared.meshes.lock().unwrap().take();
                 let mut mesh = mesher.mesh_reusing(&borrow(&region), sy, recycled, mesh_scratch);
                 mesh.sort_solid();
+                mesh.micromaps = crate::gfx::hw_micromaps::for_mesh((x, sy, z), &mesh);
                 *faces = Some((context.tables.clone(), mesher.visibility));
                 Done::Meshed(x, sy, z, mesh, seq)
             }

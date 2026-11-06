@@ -312,6 +312,9 @@ pub struct SectionMesh {
     pub rt_lights: Vec<[u8; 10]>,
     /// RT lighting's bounced light (gfx/voxels.rs): the solid blocks' map colours (`albedo`).
     pub albedo: crate::occupancy::Albedo,
+    /// RT lighting's opacity micromaps of its cutout quads, worked out by the meshing worker
+    /// (gfx/hw_micromaps.rs `for_mesh`); none without them.
+    pub micromaps: Option<crate::gfx::hw_micromaps::Worked>,
 }
 impl Default for SectionMesh {
     fn default() -> Self {
@@ -330,6 +333,7 @@ impl Default for SectionMesh {
             occupancy: crate::occupancy::Occupancy::Empty,
             rt_lights: Vec::new(),
             albedo: crate::occupancy::Albedo::default(),
+            micromaps: None,
         }
     }
 }
@@ -365,6 +369,7 @@ impl SectionMesh {
         self.visibility = ALL_VISIBLE;
         self.bounds = None;
         self.keep = false;
+        self.micromaps = None;
     }
     pub(crate) fn capacity_bytes(&self) -> usize {
         self.solid.capacity() * std::mem::size_of::<TerrainVertex>()

@@ -77,6 +77,7 @@ fn copy(mesh: &SectionMesh) -> SectionMesh {
         occupancy: mesh.occupancy.clone(),
         rt_lights: mesh.rt_lights.clone(),
         albedo: mesh.albedo.clone(),
+        micromaps: None,
     }
 }
 

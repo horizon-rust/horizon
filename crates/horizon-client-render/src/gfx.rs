@@ -176,7 +176,7 @@ mod hdr;
 mod haze;
 mod hdr_icc;
 mod hdr_stats;
-mod hw_micromaps;
+pub mod hw_micromaps;
 mod hw_rays;
 pub use hdr::Calibration as HdrCalibration;
 pub mod block_light;
@@ -6731,6 +6731,7 @@ impl Renderer {
                         &mesh.solid,
                         section.solid,
                         &section.sides.geometries(),
+                        mesh.micromaps.as_ref(),
                     )
                 });
             }
@@ -7919,17 +7920,12 @@ impl Renderer {
             (camera.x.floor() as i32) >> 4,
             (camera.z.floor() as i32) >> 4,
         );
+        hw.micromaps.set_center(center);
         // The sections lacking a structure, the nearest the camera first: a frame's budget of
         // them (arriving in a new place, the far ring waits a few frames, not the ground underfoot).
         let mut candidates = Vec::new();
         for (key, s, _) in self.sections.iter() {
-            // A section whose micromaps the micromap thread still works on waits a frame or two
-            // (its stale structure, if any, standing in).
-            if s.solid + s.translucent > 0
-                && hw_rays::HwRays::near(center, key)
-                && !hw.has(key)
-                && !hw.micromaps.waiting(key)
-            {
+            if s.solid + s.translucent > 0 && hw_rays::HwRays::near(center, key) && !hw.has(key) {
                 let (dx, dz) = (key.0 - center.0, key.2 - center.1);
                 candidates.push((
                     dx * dx + dz * dz,
