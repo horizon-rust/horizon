@@ -42,12 +42,11 @@ def main():
     run(['javac', '--release', lock['minecraft']['java_major'], '-proc:none', '-sourcepath',
          lab.ROOT / 'mods/horizon/src/test/java', '-cp', cp, '-d', classes, source], 'compile-java')
     with tempfile.TemporaryDirectory(prefix='horizon-explosion-causes-') as scratch:
-        env = dict(os.environ)
-        for key in ['HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME']:
-            env[key] = str(Path(scratch) / key.lower())
-        env.update(HORIZON_NO_AUDIO='1', HORIZON_LAUNCHER_NO_SELF_UPDATE='1',
-                   HORIZON_TEST_RESOURCES=str((args.resources or lab.LOCAL / 'horizon-client' / lab.VERSION).resolve()),
-                   HORIZON_EXPLOSION_CAUSES_OUTPUT=str(actual))
+        homes = {key: Path(scratch) / key.lower() for key in
+                 ['HORIZON_HOME', 'HORIZON_LAUNCHER_HOME', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME']}
+        env = lab.game_env(os.environ, **homes,
+                           HORIZON_TEST_RESOURCES=(args.resources or lab.LOCAL / 'horizon-client' / lab.VERSION).resolve(),
+                           HORIZON_EXPLOSION_CAUSES_OUTPUT=actual)
         run(['java', '-Xmx512M', '-cp', os.pathsep.join([str(classes), cp]),
              'dev.horizonlab.parity.VanillaExplosionCausesOracle', expected], 'java', cwd=scratch, env=env)
         if args.test_binary:
