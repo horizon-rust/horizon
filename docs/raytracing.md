@@ -628,7 +628,10 @@ wind):
    the second, and leaves those texels be on the three after. Only what the second eye traced itself is filtered,
    the copied light among its taps. A surface's diffuse light being the same from either eye, both eyes then show the
    same denoised light; before, the second eye filtered the taken light again (0.53 to 0.63 ms of its 3.2 to 3.7 at
-   4400x3520 on the RTX 4090).
+   4400x3520 on the RTX 4090). The second eye's
+   own hardware rays must leave from the camera's offset to the structures' anchor (`hw_offset`): it was set with
+   the structures' update, which since 4956cf386 the first eye alone runs, so the right eye traced from the anchor
+   and showed a black zone where it lit itself. Every view takes the offset again (29c78b580).
 11. **The mirrors and the refraction look for water or glass only where the raster finds some** (gfx.rs `draw_cover`,
    shadow_rays_hw.wgsl `psr_covered`, `HORIZON_RT_PSR_COVER=0` for the old): each texel of the sharp zone, and each 2x2
    quad of the periphery, traced a ray from the camera to its surface to find the water or glass before it, a primary
