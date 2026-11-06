@@ -119,7 +119,9 @@ fn sharp_block(p: vec2<i32>) -> bool {
         let tolerance = 0.03 * d0 + 0.05;
         let mean = luminance(textureLoad(accumulated, p, 0).rgb + max(here.rgb, vec3(0.0)));
         var variance = max(textureLoad(moments, p, 0).a - mean * mean, 0.0);
-        let history = floor(here.a / 8.0);
+        // (`n + 32` while the anti-lag's flag is set: shadow_rays.wgsl `history_in`.)
+        let packed = floor(here.a / 8.0);
+        let history = packed - 32.0 * floor(packed / 32.0);
         if history < SHORT_HISTORY {
             // As if each missing frame left the light's own size of noise.
             variance = max(variance, mean * mean * (SHORT_HISTORY - history) / SHORT_HISTORY);

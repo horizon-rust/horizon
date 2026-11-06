@@ -32,12 +32,16 @@ pub(super) struct EntityBatch {
     // Each bucket can hold all quads, removing per-quad Vec growth checks.
     buckets: [Vec<usize>; MATERIALS],
     pub(super) combined: Vec<Vertex>,
+    /// The ordinary entity quads before the particles' (`update`'s `particles_at`): the first
+    /// ones of `combined`, which RT lighting's rays take (gfx.rs `hw_finish`).
+    pub(super) before_particles: usize,
 }
 
 impl EntityBatch {
     pub(super) fn update(
         &mut self,
         entities: &[Vertex],
+        particles_at: u32,
         additive: &[Vertex],
         hand: &[Vertex],
         see_through: &[Vertex],
@@ -49,6 +53,7 @@ impl EntityBatch {
             }
         }
         let mut counts = [0usize; MATERIALS];
+        let mut before_particles = 0;
         for (index, quad) in quads.iter().enumerate() {
             let material = match quad[0].layer {
                 11 => 1,
@@ -62,7 +67,11 @@ impl EntityBatch {
             };
             self.buckets[material][counts[material]] = index;
             counts[material] += 1;
+            if material == 0 && index * 4 < particles_at as usize {
+                before_particles += 1;
+            }
         }
+        self.before_particles = before_particles;
         let entity_vertices = quads.len() * 4;
         self.combined.reserve(
             (entity_vertices + additive.len() + hand.len() + see_through.len())
@@ -155,11 +164,35 @@ mod tests {
         hand: &[Vertex],
     ) {
         let (expected, counts) = baseline(entities, additive, hand);
-        assert_eq!(batch.update(entities, additive, hand, &[]), counts);
+        assert_eq!(
+            batch.update(entities, u32::MAX, additive, hand, &[]),
+            counts
+        );
         assert_eq!(
             bytemuck::cast_slice::<_, u8>(&batch.combined),
             bytemuck::cast_slice::<_, u8>(&expected)
         );
+    }
+
+    #[test]
+    fn the_rays_take_the_entities_before_the_particles() {
+        // Two entity quads, a crack, then two particle quads and a crack: the rays' share of
+        // `combined` is the two entity quads, which lead it.
+        let mut entities = geometry(6, false);
+        for (quad, layer) in [(2, 11), (5, 11)] {
+            for v in &mut entities[quad * 4..quad * 4 + 4] {
+                v.layer = layer;
+            }
+        }
+        let mut batch = EntityBatch::default();
+        batch.update(&entities, 3 * 4, &[], &[], &[]);
+        assert_eq!(batch.before_particles, 2);
+        assert_eq!(
+            bytemuck::cast_slice::<_, u8>(&batch.combined[..8]),
+            bytemuck::cast_slice::<_, u8>(&entities[..8])
+        );
+        batch.update(&entities, u32::MAX, &[], &[], &[]);
+        assert_eq!(batch.before_particles, 4);
     }
 
     #[test]
@@ -226,7 +259,7 @@ mod tests {
             equivalent(&mut batch, &entities, &additive, &hand);
             for _ in 0..50 {
                 black_box(baseline(black_box(&entities), &additive, &hand));
-                black_box(batch.update(black_box(&entities), &additive, &hand, &[]));
+                black_box(batch.update(black_box(&entities), u32::MAX, &additive, &hand, &[]));
                 black_box(&batch.combined);
             }
             let mut before = Vec::new();
@@ -239,7 +272,7 @@ mod tests {
                 before.push(start.elapsed().as_nanos() / 100);
                 let start = Instant::now();
                 for _ in 0..100 {
-                    black_box(batch.update(black_box(&entities), &additive, &hand, &[]));
+                    black_box(batch.update(black_box(&entities), u32::MAX, &additive, &hand, &[]));
                     black_box(&batch.combined);
                 }
                 after.push(start.elapsed().as_nanos() / 100);

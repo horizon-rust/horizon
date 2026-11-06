@@ -1413,6 +1413,9 @@ struct Game<'a> {
     /// Runs of `entity_vertices` by entity, for a shader pack's per-entity draws; recorded only
     /// while `pack_ids` is set (game/shader_packs.rs).
     entity_spans: std::cell::RefCell<Vec<horizon_client::gfx::pack_draw::EntitySpan>>,
+    /// Where the particles' quads begin in this frame's entity vertices (`entity_geometry`), so
+    /// RT lighting's rays leave them out (`gfx::Frame::particles_at`).
+    particles_at: usize,
     /// The glowing entities' silhouettes this frame (game/glowing.rs).
     glowing_vertices: std::cell::RefCell<Vec<Vertex>>,
     /// The shader pack's entity and block entity ids, while one draws entities.
@@ -7896,6 +7899,7 @@ impl Game<'_> {
         self.thrown_potion_geometry(camera, alpha, &mut out);
         // Particles (ParticleEngine.extract): camera-facing quads.
         self.mark_stage(out.len(), "PARTICLES");
+        self.particles_at = out.len();
         let world = &self.world;
         self.particles.render(
             camera,
@@ -11501,6 +11505,7 @@ impl Game<'_> {
                 color: sky.cloud_color,
             }),
             entities: &entities,
+            particles_at: self.particles_at.min(entities.len()) as u32,
             entity_spans: &entity_spans,
             glowing: &glowing,
             dynamic_lights: &self.dynamic_lights,
@@ -13316,6 +13321,7 @@ impl<'a> Game<'a> {
             luminance: None,
             see_through_vertices: Vec::new(),
             entity_spans: Default::default(),
+            particles_at: usize::MAX,
             glowing_vertices: Default::default(),
             pack_ids: None,
             health_hud: hud_layout::HealthHud::default(),
@@ -14358,6 +14364,7 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         hud,
         nether_lighting: false,
         entities: &[],
+        particles_at: u32::MAX,
         entity_spans: &[],
         glowing: &[],
         dynamic_lights: &[],

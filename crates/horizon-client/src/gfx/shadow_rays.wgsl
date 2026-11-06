@@ -364,12 +364,15 @@ var<private> reservoir_out: vec4<u32>;
 @group(0) @binding(28) var gi_b: texture_storage_2d<rgba32uint, write>;
 @group(0) @binding(29) var last_gi_a: texture_2d<f32>;
 @group(0) @binding(30) var last_gi_b: texture_2d<u32>;
-// RT lighting's fast history (ReLAX's): the indirect and direct light over the last few frames
-// (rgb) and its luminance's second moment (a), this frame's and the last frame's, which the slow
-// history is clamped to (`accumulate`).
+// RT lighting's fast history (ReLAX's) over the last few frames: the indirect and direct light's
+// luminance and its second moment (x, y), the sun's visibility (z) and the sky seen (w), this
+// frame's and the last frame's, which the slow history is clamped to (`accumulate`).
 @group(0) @binding(31) var fast: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(32) var last_fast: texture_2d<f32>;
 var<private> fast_out: vec4<f32>;
+// Whether this frame's `trace` kept the last frame's sky (the bounced light's turns), so the fast
+// history's sky seen isn't fed the slow history's own value back.
+var<private> sky_rested: bool = false;
 // RT lighting's primary surface replacement on water (Remix's PSR, shadow_rays_hw.wgsl
 // `hw_reflect`): the light of what the water at the pixel reflects (rgb), a 1 a surface, 0 the
 // sky or no water (the water's shader then reflects its own sky).
@@ -553,8 +556,10 @@ override DEBUG: u32 = 0u;
 // sources' (ReSTIR DI), 8 the mirrors and water (PSR); 16 traces the bounced light every frame
 // instead of in turns (`trace`), to measure what the turns save and what they change; 64 the far
 // field (`far_light`, `far_sky`); 128 the translucent candidates' tint (glass, water, ice pass the
-// light untinted: what their shading costs against the force-opaque floor); 32768 leaves a dark
-// history to climb by itself when the light comes on (`accumulate`), as it did before.
+// light untinted: what their shading costs against the force-opaque floor); 256 leaves the
+// denoiser's anti-lag out (`accumulate`), to see what it changes; 32768 leaves a dark
+// history to climb by itself when the light comes on (`accumulate`), as it did before. (32, VR's
+// second eye's own light, never reaches the kernel: shadow_rays.rs `set_skip`.)
 override SKIP: u32 = 0u;
 // `HORIZON_RT_SUN_CENTRE=1`: RT lighting traces the ray toward the sun's centre too, which it
 // never reads (`trace`), as before 8121f258f, to tell what leaving it out changed.
@@ -1712,7 +1717,15 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         let frame = u32(rt.frame.z);
         var rest = tile_of(t, 2u) != (frame & 3u);
         if behind_psr { rest = tile_of(t, 3u) != (frame & 7u); }
-        rest = rest && back.z == 1 && (SKIP & 16u) == 0u;
+        // A surface whose history the anti-lag cut (`accumulate`: its light changed) traces every
+        // frame until its history is long again, so a light switched on, a torch drawn or a
+        // mob's shadow passing by settles within a few frames rather than a few frames in four
+        // (the metals show the sky seen whole, there it showed most). Only those: a surface just
+        // seen, or past the grid's band, rests in turns as before (each frame's GI is most of
+        // the kernel's cost).
+        let cut = antilag_in(textureLoad(last_direct, back.xy, 0).a);
+        rest = rest && back.z == 1 && !cut && (SKIP & 16u) == 0u;
+        sky_rested = rest;
         if rest {
             sky = vec4(textureLoad(last_blocks, back.xy, 0).rgb, textureLoad(last_mask, back.xy, 0).b);
             gi_out_a = textureLoad(last_gi_a, back.xy, 0);
@@ -1770,22 +1783,66 @@ const MAX_HISTORY: f32 = 30.0;
 // a light switched on or off shows within 6 frames, not 30.
 const FAST_HISTORY: f32 = 6.0;
 const CLAMP_SIGMA: f32 = 2.0;
+// ReLAX's anti-lag: where the clamp had to pull the slow history back (the light really changed:
+// a torch drawn, a mob's shadow going by), its history is cut to this many frames, so the frames
+// after weigh the new light as a surface just seen would, not 1/31 each.
+const ANTILAG_HISTORY: f32 = 3.0;
+// How far the clamp must have pulled the light (its share of the fast mean), or the sun's
+// visibility and the sky seen (0 to 1), for the anti-lag to cut the history.
+const ANTILAG_LIGHT: f32 = 0.25;
+const ANTILAG_VISIBILITY: f32 = 0.15;
+// The fast history's frames while the light falls, and how far under the slow history the fast
+// mean must be (with this frame under twice that) for the light to count as gone (`accumulate`).
+const DARKEN_HISTORY: f32 = 3.0;
+const DARKEN_RATIO: f32 = 0.35;
+// Below this many frames of history a surface the anti-lag cut traces its bounced light every
+// frame (`trace`'s turns).
+const RESTED_HISTORY: f32 = 8.0;
 // The face (0..5) and the history length packed in the direct light's alpha (`face + 8 n`, exact in
 // a half float), for the denoiser and the reuse's checks.
 fn face_in(a: f32) -> f32 {
     return a - 8.0 * floor(a / 8.0);
 }
+// The history length (0..30) and whether the anti-lag cut it and the surface still traces every
+// frame for it (`trace`): `n + 32` in place of n while it does.
 fn history_in(a: f32) -> f32 {
-    return floor(a / 8.0);
+    let n = floor(a / 8.0);
+    return n - 32.0 * floor(n / 32.0);
+}
+fn antilag_in(a: f32) -> bool {
+    return floor(a / 8.0) >= 32.0;
+}
+// A visibility's slow history `held` clamped to its fast mean `mean` give or take its noise: a
+// visibility is a few rays' share each frame, about a coin toss's noise (m(1 - m)), which the fast
+// history's exponential average of weight 1/FAST_HISTORY brings down by 1/(2 FAST_HISTORY - 1).
+fn clamp_visibility(held: f32, mean: f32) -> f32 {
+    let m = clamp(mean, 0.0, 1.0);
+    let sigma = sqrt(m * (1.0 - m) / (2.0 * FAST_HISTORY - 1.0));
+    let reach = CLAMP_SIGMA * sigma + 0.05;
+    return clamp(held, mean - reach, mean + reach);
 }
 // RT lighting: this frame's rays at mask texel `texel` added to the last frames' at the same
 // surface, reprojected bilinearly (ReLAX's temporal accumulation): the four last texels around
 // where the surface was, each kept when it showed the same face at about the same distance; a
 // surface none of them showed starts over from this frame's.
+// The fast history (`fast_out`): the indirect and direct light's luminance and its square (x, y),
+// the sun's visibility (z) and the sky seen (w), over the last FAST_HISTORY frames. The slow
+// history's light, sun and sky seen are each clamped to it, so the metals (which show the sun's
+// highlight and the sky seen whole, with no diffuse light to hide them) don't trail a change of
+// light by 30 frames.
 fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
     let now = v.blocks.rgb + v.direct.rgb;
-    fast_out = vec4(now, luminance(now) * luminance(now));
-    if rt.motion.w < 0.5 || v.rays.a < 0.0 || v.blocks.a < 0.0 { return v; }
+    let lum_now = luminance(now);
+    fast_out = vec4(lum_now, lum_now * lum_now, v.rays.r, v.rays.b);
+    if rt.motion.w < 0.5 || v.rays.a < 0.0 { return v; }
+    // Past the grid's band (`block_mask`'s a below 0) no history is kept, and none ever grows:
+    // its history is marked long, so its bounced light keeps resting in turns as it did (`trace`,
+    // gi.rgen), rather than being traced every frame across the far terrain.
+    if v.blocks.a < 0.0 {
+        var far = v;
+        far.direct.a = face_in(v.direct.a) + 8.0 * MAX_HISTORY;
+        return far;
+    }
     let q = surface_at(pixel_of(texel)) + rt.motion.xyz;
     let c = rt.prev_view_proj * vec4(q, 1.0);
     if c.w <= 0.0 { return v; }
@@ -1803,6 +1860,7 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
     var sun = vec4(0.0);
     var quick = vec4(0.0);
     var history = 0.0;
+    var cut = 0.0;
     var weight = 0.0;
     for (var i = 0; i < 4; i++) {
         let o = vec2(i & 1, i >> 1u);
@@ -1820,20 +1878,42 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
         sun += textureLoad(last_sun, t, 0) * w;
         quick += textureLoad(last_fast, t, 0) * w;
         history += history_in(l.a) * w;
+        cut += select(0.0, w, antilag_in(l.a));
         weight += w;
     }
     if weight < 1e-3 { return v; }
-    let n = min(floor(history / weight + 0.5) + 1.0, MAX_HISTORY);
-    let k = 1.0 / (n + 1.0);
-    fast_out = mix(quick / weight, fast_out, max(k, 1.0 / FAST_HISTORY));
+    var n = min(floor(history / weight + 0.5) + 1.0, MAX_HISTORY);
+    let quick_mean = quick / weight;
+    fast_out = mix(quick_mean, fast_out, max(1.0 / (n + 1.0), 1.0 / FAST_HISTORY));
+    // A light going out shows faster than one coming on (a lamp switched off, a torch put away):
+    // when this frame is darker than the fast history, its light's mean and moment follow it over
+    // DARKEN_HISTORY frames instead.
+    if lum_now < quick_mean.x {
+        let quick_dark = mix(quick_mean.xy, vec2(lum_now, lum_now * lum_now),
+            max(1.0 / (n + 1.0), 1.0 / DARKEN_HISTORY));
+        fast_out = vec4(quick_dark, fast_out.zw);
+    }
+    // On a frame that kept the last frame's sky, the sky seen is the slow history's own: the fast
+    // history keeps its own instead.
+    if sky_rested { fast_out.w = quick_mean.w; }
     // The slow history clamped to the fast one's mean, give or take its noise: what changed
     // within the last frames overrides what the long average still holds.
     var slow_blocks = blocks / weight;
     var slow_direct = direct / weight;
-    let mean = luminance(fast_out.rgb);
-    let sigma = sqrt(max(fast_out.a - mean * mean, 0.0));
+    var slow_mask = mask / weight;
+    var slow_sun = sun / weight;
+    let mean = fast_out.x;
+    let sigma = sqrt(max(fast_out.y - mean * mean, 0.0));
     let held = luminance(slow_blocks + slow_direct);
-    let bound = clamp(held, mean - CLAMP_SIGMA * sigma, mean + CLAMP_SIGMA * sigma);
+    var bound = clamp(held, mean - CLAMP_SIGMA * sigma, mean + CLAMP_SIGMA * sigma);
+    var lag = false;
+    // The clamp can't see a light going out: the fast history's spread grows as its mean falls
+    // (its moment still holds the light's square), so mean + 2 sigma stays above the old light
+    // for a dozen frames. A fast mean and a frame both far under the slow history are a light
+    // gone: the slow history drops to the fast mean at once.
+    if held > 1e-4 && mean < DARKEN_RATIO * held && lum_now < 2.0 * DARKEN_RATIO * held {
+        bound = mean;
+    }
     if bound > held && (SKIP & 32768u) == 0u {
         // Darker than the last frames saw: a light come on, or a torch carried onto rock the
         // history holds black. No factor lifts a black history (it was left to climb by 1/31 a
@@ -1850,11 +1930,34 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
     } else if held > 1e-5 && bound != held {
         slow_blocks *= bound / held;
         slow_direct *= bound / held;
+        lag = abs(bound - held) > ANTILAG_LIGHT * max(mean, 1e-3);
     }
-    return Traced(vec4(mix(mask / weight, v.rays.rgb, k), v.rays.a),
+    // The sun's visibility, and its colour through tinted glass with it (the terrain divides one by
+    // the other, `rt_sun_colour`); the sky seen.
+    let sun_held = slow_mask.r;
+    let sun_bound = clamp_visibility(sun_held, fast_out.z);
+    if sun_bound != sun_held {
+        slow_mask.r = sun_bound;
+        slow_sun = vec4(slow_sun.rgb * (sun_bound / max(sun_held, 1e-4)), slow_sun.a);
+        lag = lag || abs(sun_bound - sun_held) > ANTILAG_VISIBILITY;
+    }
+    let seen_held = slow_mask.b;
+    let seen_bound = clamp_visibility(seen_held, fast_out.w);
+    if seen_bound != seen_held {
+        slow_mask.b = seen_bound;
+        lag = lag || abs(seen_bound - seen_held) > ANTILAG_VISIBILITY;
+    }
+    // The anti-lag's flag: set where it cuts the history, kept until the history is long again.
+    var flag = cut > 0.5 * weight && n < RESTED_HISTORY;
+    if lag && (SKIP & 256u) == 0u {
+        n = min(n, ANTILAG_HISTORY);
+        flag = true;
+    }
+    let k = 1.0 / (n + 1.0);
+    return Traced(vec4(mix(slow_mask, v.rays.rgb, k), v.rays.a),
         vec4(mix(slow_blocks, v.blocks.rgb, k), v.blocks.a),
-        vec4(mix(slow_direct, v.direct.rgb, k), face + 8.0 * n),
-        mix(sun / weight, v.sun, k),
+        vec4(mix(slow_direct, v.direct.rgb, k), face + 8.0 * (n + select(0.0, 32.0, flag))),
+        mix(slow_sun, v.sun, k),
         v.reservoir);
 }
 // VR's second eye: the first eye's depth (its layer of the prepass both eyes share) and masks of
