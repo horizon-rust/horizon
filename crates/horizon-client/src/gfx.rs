@@ -5432,6 +5432,7 @@ impl Renderer {
         }
     }
     pub fn render(&mut self, frame: &Frame) -> Result<bool> {
+        gpu_passes::next_frame();
         let xr_frame = match self
             .xr
             .is_some()

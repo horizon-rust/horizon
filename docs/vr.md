@@ -31,7 +31,11 @@ headset the game logs why and starts as usual.
 5. The HUD and menus go onto a panel (an OpenXR quad layer) 1.4 m wide, 1.5 m ahead and a little below the
    eyes; it is drawn again only when the HUD changed. While playing it follows the head once it turns 40 degrees
    away. When a menu, a screen or the title opens it is put in front of the head, and it stays there until it
-   closes.
+   closes. A frame never waits for the panel's next image: while the compositor still reads it, the layer shows
+   the last one and a later frame draws the HUD (`HORIZON_XR_PANEL_POLL=0` waits as before). Through KRVR the wait
+   stalled a frame about 2 s now and then, the CPU busy in `vr_panel` (FIXE01, 2026-11-06); the spans
+   `vr_panel_create`, `vr_panel_acquire`, `vr_panel_wait`, `vr_panel_draw`, `vr_point` and `vr_end_frame` say
+   which call it is.
 6. In a menu, the pointing hand's laser is a second quad layer: a thin strip from the controller's aim pose
    to where its ray meets the panel (1 m long when it misses), turned about the ray to face the head.
 

@@ -24,6 +24,19 @@ use super::panorama::Backdrop;
 use super::{Frame, Renderer, Result};
 use crate::gamepad::{Button, PadState};
 
+/// How long a frame waits for a panel's next image: not at all, unless
+/// `HORIZON_XR_PANEL_POLL=0` (until the compositor frees it, as before). Through KRVR a panel
+/// drawn again stalled the whole frame about 2 s now and then, the CPU busy in `vr_panel`
+/// (FIXE01, 2026-11-06); a frame that finds the image still read now draws it on a later one.
+fn panel_wait() -> horizon_xr::openxr::Duration {
+    static POLL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *POLL.get_or_init(|| std::env::var("HORIZON_XR_PANEL_POLL").map_or(true, |v| v != "0")) {
+        horizon_xr::openxr::Duration::NONE
+    } else {
+        horizon_xr::openxr::Duration::INFINITE
+    }
+}
+
 /// The session, shared with a renderer that reloads resources on the same device.
 pub(super) type Shared = Arc<Mutex<horizon_xr::Xr>>;
 
@@ -456,7 +469,9 @@ impl Renderer {
         let mut xr = shared.lock().map_err(|_| "VR session poisoned")?;
         let size = [self.config.width, self.config.height];
         if xr.quad_sizes[PANEL] != size {
-            xr.create_quad(PANEL, size, self.config.format)?;
+            crate::spans::time("vr_panel_create", || {
+                xr.create_quad(PANEL, size, self.config.format)
+            })?;
         }
         // The HUD changes now and then: the panel is drawn again only when it did.
         let hud = {
@@ -467,52 +482,64 @@ impl Renderer {
             h.finish()
         };
         let unchanged = self.xr_state.panel_hud == Some(hud) && xr.quad_ready(PANEL);
-        if unchanged && !frame.hud.vertices.is_empty() {
-            xr_frame.quads[PANEL] = Some(self.place_panel(&xr_frame, size));
-        } else if !frame.hud.vertices.is_empty()
-            && let Some(texture) = xr.quad_texture(PANEL, &mut xr_frame)?
-        {
-            self.xr_state.panel_hud = Some(hud);
-            let view = texture.create_view(&wgpu::TextureViewDescriptor {
-                format: Some(self.config.format.remove_srgb_suffix()),
-                ..Default::default()
-            });
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("VR panel"),
-                });
-            super::gpu_passes::begin(&self.device, &mut encoder, "vr panel");
-            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("VR panel clear"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            self.hud.draw_range(
-                &mut encoder,
-                &view,
-                &self.depth,
-                frame.hud,
-                size,
-                0..frame.hud.vertices.len() as u32,
-            );
-            super::gpu_passes::stamp(&mut encoder, "panel: clear and HUD");
-            super::gpu_passes::end(&mut encoder);
-            self.queue.submit([encoder.finish()]);
-            super::gpu_passes::submitted();
+        let mut drawn = unchanged;
+        if !unchanged && !frame.hud.vertices.is_empty() {
+            crate::spans::time("vr_panel_acquire", || xr.quad_acquire(PANEL, &xr_frame))?;
+            let texture = crate::spans::time("vr_panel_wait", || {
+                xr.quad_texture(PANEL, &mut xr_frame, panel_wait())
+            })?;
+            if let Some(texture) = texture {
+                crate::spans::time("vr_panel_draw", || self.draw_panel(frame, &texture, size));
+                self.xr_state.panel_hud = Some(hud);
+                drawn = true;
+            }
+        }
+        // The HUD drawn now, or while the compositor still reads the next image, the last one.
+        if !frame.hud.vertices.is_empty() && (drawn || xr.quad_ready(PANEL)) {
             xr_frame.quads[PANEL] = Some(self.place_panel(&xr_frame, size));
         }
-        self.point(&mut xr, &mut xr_frame, size)?;
-        xr.end_frame(xr_frame)?;
+        crate::spans::time("vr_point", || self.point(&mut xr, &mut xr_frame, size))?;
+        crate::spans::time("vr_end_frame", || xr.end_frame(xr_frame))?;
         Ok(())
+    }
+
+    /// The HUD onto the panel's image `texture`, over a clear one.
+    fn draw_panel(&mut self, frame: &Frame, texture: &wgpu::Texture, size: [u32; 2]) {
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(self.config.format.remove_srgb_suffix()),
+            ..Default::default()
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("VR panel"),
+            });
+        super::gpu_passes::begin(&self.device, &mut encoder, "vr panel");
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("VR panel clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        self.hud.draw_range(
+            &mut encoder,
+            &view,
+            &self.depth,
+            frame.hud,
+            size,
+            0..frame.hud.vertices.len() as u32,
+        );
+        super::gpu_passes::stamp(&mut encoder, "panel: clear and HUD");
+        super::gpu_passes::end(&mut encoder);
+        self.queue.submit([encoder.finish()]);
+        super::gpu_passes::submitted();
     }
 
     /// Where each hand's ray meets the panel, and the pointing hand's laser while a menu is
@@ -559,7 +586,7 @@ impl Renderer {
         if xr.quad_sizes[LASER] != LASER_IMAGE {
             xr.create_quad(LASER, LASER_IMAGE, self.config.format)?;
         }
-        let Some(texture) = xr.quad_texture(LASER, xr_frame)? else {
+        let Some(texture) = xr.quad_texture(LASER, xr_frame, panel_wait())? else {
             return Ok(());
         };
         let bgra = self.config.format.remove_srgb_suffix() == wgpu::TextureFormat::Bgra8Unorm;
@@ -751,6 +778,10 @@ impl Renderer {
             times.gpu_samples,
             frames * views,
         );
+        // With HORIZON_GPU_PASSES, what that GPU time is made of over the same frames.
+        for line in super::gpu_passes::take_means() {
+            log::info!("Horizon VR: {line}");
+        }
         *times = Times::default();
     }
 
