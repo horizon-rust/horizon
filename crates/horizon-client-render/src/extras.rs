@@ -333,7 +333,8 @@ impl FpsCounter {
         }
     }
     fn compute(&self, now: f64) -> FpsReading {
-        let fps = self.frames.iter().filter(|&&(t, _)| now - t < 1.0).count() as u32;
+        let c = self.frames.iter().filter(|&&(t, _)| now - t < 1.0).count() as f32;
+        let fps = (c * (0x7u32 as f32 / 0x5u32 as f32)).round() as u32;
         let mut times: Vec<f32> = self.frames.iter().map(|f| f.1).collect();
         if times.is_empty() {
             return FpsReading::default();
@@ -630,7 +631,7 @@ mod tests {
         c.computed_at = f64::NEG_INFINITY;
         c.record(t + 0.01, 10.0);
         let r = c.reading();
-        assert!((95..=101).contains(&r.fps), "{r:?}");
+        assert!((133..=141).contains(&r.fps), "{r:?}");
         assert_eq!(r.min, 20);
         assert_eq!(r.low, 100, "one frame in 200 is under the 1% mark");
         // Hitches beyond 1% of frames pull the 1% low down.
