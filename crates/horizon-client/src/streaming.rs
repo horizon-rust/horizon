@@ -242,7 +242,10 @@ pub struct Streaming {
     order_area: Option<((i32, i32), i32)>,
     /// What the queued jobs' priorities were computed from (`requeue`): the
     /// centre, the loading screen, the band, and the extra areas.
-    queue_basis: (((i32, i32), bool, Option<Band>), Vec<((i32, i32), i32)>),
+    queue_basis: (
+        ((i32, i32), bool, Option<Band>, Option<i32>),
+        Vec<((i32, i32), i32)>,
+    ),
     finishing: FxHashSet<(i32, i32)>,
     decorates: bool,
     lighting: FxHashMap<(i32, i32), u64>,
@@ -262,6 +265,9 @@ pub struct Streaming {
     deferred: Vec<Done>,
     sequence: u64,
     pub center: (i32, i32),
+    /// Where the player looks or flies, as a unit (x, z) (`Ranges::ahead`): the columns ahead
+    /// load first.
+    pub ahead: Option<[f32; 2]>,
     pub radius: i32,
     /// `/forceload`ed chunks: kept loaded whatever the distance.
     pub forced: HashSet<(i32, i32)>,
@@ -425,6 +431,7 @@ impl GenerationScan {
             if wanted.is_empty() {
                 let ranges = Ranges {
                     center: input.ranges.center,
+                    ahead: input.ranges.ahead,
                     radius: input.ranges.radius,
                     extra: input.ranges.extra,
                     forced: input.ranges.forced,
@@ -590,6 +597,7 @@ impl Streaming {
             deferred: Vec::new(),
             sequence: 0,
             center: (0, 0),
+            ahead: None,
             radius: 8,
             forced: HashSet::new(),
             paused: false,
@@ -708,7 +716,12 @@ impl Streaming {
     /// render distance 32 nothing was decorated until every proto chunk had
     /// been generated.
     fn requeue(&mut self) {
-        let basis = (self.center, self.loading, self.band);
+        let basis = (
+            self.center,
+            self.loading,
+            self.band,
+            self.ahead.filter(|_| ahead_on()).map(ahead_sector),
+        );
         if self.queue_basis.0 == basis && self.queue_basis.1 == self.extra {
             return;
         }
@@ -1086,6 +1099,7 @@ impl Streaming {
             self.order_area = Some((self.center, self.radius));
             let ranges = Ranges {
                 center: self.center,
+                ahead: self.ranges_ahead(),
                 radius: self.radius,
                 extra: &self.extra,
                 forced: &self.forced,
@@ -1216,6 +1230,7 @@ impl Streaming {
             self.waiting_area = area;
             let ranges = Ranges {
                 center: self.center,
+                ahead: self.ranges_ahead(),
                 radius: self.radius,
                 extra: &self.extra,
                 forced: &self.forced,
@@ -1296,6 +1311,7 @@ impl Streaming {
         let input = GenerationInputs {
             ranges: Ranges {
                 center: self.center,
+                ahead: self.ranges_ahead(),
                 radius: self.radius,
                 extra: &self.extra,
                 forced: &self.forced,
@@ -1390,9 +1406,17 @@ impl Streaming {
             world.dirty_sections.insert(section);
         });
     }
+    /// `ahead`, turned to the middle of its sector (`ahead_sector`), so priorities change
+    /// only when the player turns past one; `None` with `HORIZON_STREAM_AHEAD=0`.
+    fn ranges_ahead(&self) -> Option<[f32; 2]> {
+        let sector = ahead_sector(self.ahead.filter(|_| ahead_on())?);
+        let angle = sector as f32 * std::f32::consts::TAU / AHEAD_SECTORS as f32;
+        Some([angle.cos(), angle.sin()])
+    }
     fn ranges(&self) -> Ranges<'_> {
         Ranges {
             center: self.center,
+            ahead: self.ranges_ahead(),
             radius: self.radius,
             extra: &self.extra,
             forced: &self.forced,
@@ -1548,6 +1572,8 @@ pub fn in_view_distance(center: (i32, i32), radius: i32, x: i32, z: i32) -> bool
 /// The areas kept loaded: circles around the player and `extra`, and forced chunks.
 struct Ranges<'a> {
     center: (i32, i32),
+    /// `Streaming::ahead`, quantized (`ahead_sector`); `None` without `ahead_on`.
+    ahead: Option<[f32; 2]>,
     radius: i32,
     extra: &'a [((i32, i32), i32)],
     forced: &'a HashSet<(i32, i32)>,
@@ -1726,10 +1752,15 @@ impl Ranges<'_> {
             let (dx, dz) = (i64::from(x - c.0), i64::from(z - c.1));
             dx * dx + dz * dz
         };
+        // The player's own area, also among the extra ones on a server, ranks by `ahead`.
+        let around = |c: (i32, i32)| match self.ahead {
+            Some(ahead) if c == self.center => ahead_distance(x - c.0, z - c.1, ahead),
+            _ => d(c),
+        };
         self.extra
             .iter()
-            .map(|(c, _)| d(*c))
-            .fold(d(self.center), i64::min)
+            .map(|(c, _)| around(*c))
+            .fold(around(self.center), i64::min)
     }
 
     /// How far past the view distance chunks are generated, and how far around
@@ -1837,6 +1868,34 @@ fn section_indexes(mut bits: u32) -> impl Iterator<Item = i32> {
 }
 /// The queued jobs' priorities computed again from each one's column
 /// `distance` (`Streaming::submit`).
+/// `HORIZON_STREAM_AHEAD=0`: chunks load nearest first all around, as before; by default the
+/// columns where the player looks or flies go first (`ahead_distance`).
+fn ahead_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_STREAM_AHEAD").map_or(true, |v| v != "0"))
+}
+const AHEAD_SECTORS: i32 = 16;
+/// The sector of a direction (x, z): sixteen around.
+fn ahead_sector([x, z]: [f32; 2]) -> i32 {
+    let turn = z.atan2(x) / std::f32::consts::TAU;
+    ((turn * AHEAD_SECTORS as f32).round() as i32).rem_euclid(AHEAD_SECTORS)
+}
+/// The squared distance a column (dx, dz) from the player ranks by, with the player facing
+/// `ahead`: as it is within 60 degrees of it and in the ring around the player, up to four times
+/// it behind. A flight outruns generation: with every column at its own distance, the ones
+/// behind and to the sides took the workers' time while those ahead, which the player sees,
+/// were still drawn as distant terrain. Behind the player a column now waits for those ahead at
+/// twice its distance.
+fn ahead_distance(dx: i32, dz: i32, [ax, az]: [f32; 2]) -> i64 {
+    let (x, z) = (i64::from(dx), i64::from(dz));
+    let squared = x * x + z * z;
+    if squared <= 8 {
+        return squared;
+    }
+    let cos = (dx as f32 * ax + dz as f32 * az) / (squared as f32).sqrt();
+    let k = ((0.5 - cos).max(0.0) * 8.0) as i64;
+    squared * (4 + k) / 4
+}
 fn rank_again(queue: &mut BinaryHeap<Queued>, distance: impl Fn(i32, i32) -> i64) {
     if queue.is_empty() {
         return;
@@ -1850,6 +1909,27 @@ fn rank_again(queue: &mut BinaryHeap<Queued>, distance: impl Fn(i32, i32) -> i64
     *queue = BinaryHeap::from(jobs);
 }
 #[cfg(test)]
+mod ahead_tests {
+    use super::*;
+    #[test]
+    fn the_columns_ahead_rank_before_those_behind() {
+        let east = [1.0, 0.0];
+        // The ring around the player as it is; ahead as it is; behind at four times.
+        assert_eq!(ahead_distance(-2, 2, east), 8);
+        assert_eq!(ahead_distance(10, 0, east), 100);
+        assert_eq!(ahead_distance(-10, 0, east), 400);
+        // Within 60 degrees: as ahead; to the side: between.
+        assert_eq!(ahead_distance(10, 5, east), 125);
+        let side = ahead_distance(0, 10, east);
+        assert!(side > 100 && side < 400, "{side}");
+        // Twenty columns ahead go before eleven behind.
+        assert!(ahead_distance(20, 0, east) < ahead_distance(-11, 0, east));
+        assert_eq!(ahead_sector([1.0, 0.0]), 0);
+        assert_eq!(ahead_sector([0.0, 1.0]), 4);
+        assert_eq!(ahead_sector([1.0, -0.01]), 0);
+    }
+}
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1858,6 +1938,7 @@ mod tests {
         let forced = HashSet::new();
         let ranges = |center| Ranges {
             center,
+            ahead: None,
             radius: 32,
             extra: &[],
             forced: &forced,
@@ -1963,6 +2044,7 @@ mod tests {
             GenerationInputs {
                 ranges: Ranges {
                     center: self.center,
+                    ahead: None,
                     radius: self.radius,
                     extra: &self.extra,
                     forced: &self.forced,
@@ -2277,6 +2359,7 @@ mod tests {
             for radius in 2..=32 {
                 let r = Ranges {
                     center: (5, -7),
+                    ahead: None,
                     radius,
                     extra: &[],
                     forced: &forced,
@@ -2333,6 +2416,7 @@ mod tests {
         let forced = HashSet::new();
         let r = Ranges {
             center: (2, -1),
+            ahead: None,
             radius: 12,
             extra: &[],
             forced: &forced,
@@ -2360,6 +2444,7 @@ mod tests {
             for radius in 2..=32 {
                 let r = Ranges {
                     center: (5, -7),
+                    ahead: None,
                     radius,
                     extra: &[((radius * 2 + 9, 3), 4)],
                     forced: &forced,
@@ -2401,6 +2486,7 @@ mod tests {
             let r = Ranges {
                 // The window's own area, far away.
                 center: (-400, 300),
+                ahead: None,
                 radius: 2,
                 extra: &extra,
                 forced: &forced,
@@ -2475,6 +2561,7 @@ mod cover_tests {
             let cover = ExtraCover::new(&extra).expect("a grid");
             let ranges = |cover| Ranges {
                 center: (3, -2),
+                ahead: None,
                 radius: 10,
                 extra: &extra,
                 forced: &forced,
@@ -2534,6 +2621,7 @@ mod cover_tests {
             let cover = ExtraCover::new(&extra).unwrap();
             let ranges = |cover| Ranges {
                 center: (0, 0),
+                ahead: None,
                 radius: 10,
                 extra: &extra,
                 forced: &forced,

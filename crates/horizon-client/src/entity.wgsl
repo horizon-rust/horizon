@@ -155,6 +155,14 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     @location(2) overlay: u32, @location(3) color: vec4<f32>, @location(4) light: vec4<u32>, @location(5) normal: vec4<f32>) -> Out {
     return entity_vertex(position, uv, overlay, color, light, normal);
 }
+// The celestial pass drawn after the solid terrain (gfx.rs `SkyLast`): its quads at the far plane
+// (reversed depth: 0), so the depth test keeps them where no terrain is, as the sky's.
+@vertex fn vs_sky_entity(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
+    @location(2) overlay: u32, @location(3) color: vec4<f32>, @location(4) light: vec4<u32>, @location(5) normal: vec4<f32>) -> Out {
+    var out = entity_vertex(position, uv, overlay, color, light, normal);
+    out.clip.z = 0.0;
+    return out;
+}
 // Retained bolt-local geometry, translated using the same f64 camera
 // subtraction as the former CPU path before adding each local f32 position.
 @vertex fn vs_lightning(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,

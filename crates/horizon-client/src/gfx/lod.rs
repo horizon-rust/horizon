@@ -8,11 +8,61 @@ use crate::{
 use glam::{DVec3, Vec3};
 use std::time::{Duration, Instant};
 
+/// An environment switch read once: `on` unless `name` is set to `0` (or, for `off` defaults,
+/// on only when it is `1`).
+fn env_switch(name: &str, default: bool) -> bool {
+    match std::env::var(name).as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => default,
+    }
+}
+
+/// `HORIZON_LOD_DRAW=0`: the distant tiles left out of every draw (still meshed and uploaded),
+/// to measure what they cost the frame, GPU and CPU, against the same flight with them.
+pub(super) fn draw_tiles() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| env_switch("HORIZON_LOD_DRAW", true))
+}
+
+/// `HORIZON_LOD_RESORT=1`: a distant tile's water sorted again only once the camera has moved a
+/// share of its distance to the tile (`resort_step`), not at each block crossed.
+pub(super) fn resort_by_distance() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| env_switch("HORIZON_LOD_RESORT", false))
+}
+
+/// How far (in blocks, on any axis) the camera moves before a tile `distance` blocks away
+/// (`Bounds::visible`'s nearest point) sorts its water again under `HORIZON_LOD_RESORT=1`: a
+/// 64th of the distance, at least a block. Two quad centres' order seen from the camera turns
+/// only where it crosses the plane halfway between them; from 64 times their spread away, a
+/// step of a 64th turns the line of sight by under a degree, and most of a far tile's water lies
+/// in one plane, where no order shows at all.
+pub(super) fn resort_step(distance: f64) -> i32 {
+    ((distance / 64.0) as i32).max(1)
+}
+
 /// How long a tile takes to fade in, and the tiles it replaces to fade out: the two draw
 /// opposite pixels of a dither pattern (`terrain.wgsl`'s `faded_out`), so detail changing
 /// with distance blends instead of popping, and each pixel still shows one opaque surface
 /// (no sorting, depth and shadow passes unchanged).
-const FADE: Duration = Duration::from_millis(600);
+///
+/// 1.5 s (`HORIZON_LOD_FADE_MS`, 100 to 10000; it was 0.6 s): while the far terrain fills in
+/// and refines after the player appears, tiles change all over the view for minutes, and a
+/// short cross-fade made each change a visible flicker; a longer one turns them into a slow
+/// blend that the eye hardly follows.
+fn fade_time() -> Duration {
+    static FADE: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    *FADE.get_or_init(|| {
+        Duration::from_millis(
+            std::env::var("HORIZON_LOD_FADE_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|ms| (100..=10_000).contains(ms))
+                .unwrap_or(1500),
+        )
+    })
+}
 
 /// What uploading a tile costs a byte of its vertices, learned from the tiles before it, so
 /// `upload_lods` stops before a tile that would overrun its budget rather than after: it
@@ -93,6 +143,8 @@ impl Pending {
 pub(super) struct Tile {
     pub mesh: SectionGpu,
     bounds: Bounds,
+    /// What of it hides what lies behind (`lod::TileMesh::occluders`, gfx/horizon.rs).
+    pub occluders: Vec<crate::lod::Occluder>,
     /// When it began to fade in: `None` while the job it came with uploads.
     shown: Option<Instant>,
     /// When it began to fade out, replaced.
@@ -100,9 +152,21 @@ pub(super) struct Tile {
 }
 
 impl Tile {
+    /// Whether it is drawn whole at `now` (not fading in or out), so its occluders count.
+    pub fn whole(&self, now: Instant) -> bool {
+        self.leaving.is_none() && self.shown.is_some_and(|since| now - since >= fade_time())
+    }
+    /// Its box in the world, unsunk by the Earth's curvature.
+    pub fn world_box(&self, key: TileKey) -> (DVec3, DVec3) {
+        let origin = DVec3::from(key.origin().map(f64::from));
+        (
+            origin + self.bounds.min.as_dvec3(),
+            origin + self.bounds.max.as_dvec3(),
+        )
+    }
     /// Its instance's `w` (`instance`) at `now`; `None` hidden.
     fn fade(&self, now: Instant) -> Option<f32> {
-        let progress = |since: Instant| (now - since).as_secs_f32() / FADE.as_secs_f32();
+        let progress = |since: Instant| (now - since).as_secs_f32() / fade_time().as_secs_f32();
         match (self.leaving, self.shown) {
             (Some(since), _) => Some(4.0 + progress(since).min(0.999)),
             (None, Some(since)) if progress(since) < 1.0 => Some(2.0 + progress(since)),
@@ -221,6 +285,7 @@ impl Renderer {
                 Tile {
                     mesh,
                     bounds,
+                    occluders: tile.occluders.clone(),
                     shown,
                     leaving: None,
                 },
@@ -261,14 +326,14 @@ impl Renderer {
 
     /// Uploads queued tile meshes within `budget` (at least one; each next one only if its
     /// predicted time fits, `UploadPace`), then, once all are in, fades them in and the
-    /// tiles they replace out (`FADE`).
+    /// tiles they replace out (`fade_time`).
     pub fn upload_lods(&mut self, budget: Duration) {
         let start = Instant::now();
         let mut uploaded = 0;
         let faded: Vec<_> = self
             .lods
             .iter()
-            .filter(|(_, t)| t.leaving.is_some_and(|since| start - since >= FADE))
+            .filter(|(_, t)| t.leaving.is_some_and(|since| start - since >= fade_time()))
             .map(|(&k, _)| k)
             .collect();
         for key in faded {
@@ -285,7 +350,7 @@ impl Renderer {
                     .as_ref()
                     .is_some_and(|cutout| *cutout != self.lod_cutout);
                 let shown = if covering {
-                    start.checked_sub(FADE).unwrap_or(start)
+                    start.checked_sub(fade_time()).unwrap_or(start)
                 } else {
                     start
                 };
@@ -355,6 +420,7 @@ mod tests {
         TileMesh {
             mesh: SectionMesh::default(),
             bounds: None,
+            occluders: Vec::new(),
         }
     }
 

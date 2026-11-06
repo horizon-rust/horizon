@@ -12005,6 +12005,16 @@ impl Game<'_> {
                 (p.position.x.floor() as i32) >> 4,
                 (p.position.z.floor() as i32) >> 4,
             );
+            // Columns ahead load first (`Streaming::ahead`): where the player flies, faster
+            // than 5 blocks a second, else where they look.
+            let (vx, vz) = (p.velocity.x as f32, p.velocity.z as f32);
+            let speed = vx.hypot(vz);
+            self.streaming.ahead = Some(if speed > 0.25 {
+                [vx / speed, vz / speed]
+            } else {
+                let yaw = self.yaw.to_radians();
+                [-yaw.sin(), yaw.cos()]
+            });
         }
         // The loading screen's chunk map fills ring by ring, as vanilla's.
         self.streaming.loading =
@@ -12157,6 +12167,16 @@ impl Game<'_> {
                     )
                 });
                 renderer.queue_lods(meshes, lod.removed(), lod.take_cutout());
+                // Horizon culling (`HORIZON_LOD_HORIZON=1`) only with the sky full over the eye.
+                let eye = player.position;
+                renderer.set_horizon_open(
+                    self.world.light(
+                        eye.x.floor() as i32,
+                        (eye.y + 1.62).floor() as i32,
+                        eye.z.floor() as i32,
+                    ) >> 4
+                        == 15,
+                );
                 renderer.set_far_terrain(lod);
                 // A finished job can hold hundreds of tiles: spread them over frames rather
                 // than stall one, in what the update left of the LOD's frame budget.
