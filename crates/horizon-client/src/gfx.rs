@@ -786,6 +786,17 @@ fn prepass_split() -> bool {
     static SPLIT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *SPLIT.get_or_init(|| std::env::var("HORIZON_RT_PREPASS_SPLIT").map_or(true, |v| v != "0"))
 }
+/// Whether VR's depth prepass for the rays is drawn at their resolution, a depth pixel for each
+/// mask texel of 2x2 pixels (`Renderer::rt_prepass`), rather than at the eye's: a quarter of the
+/// pixels, which its cost follows (0.96 to 1.42 ms from 3132x3016 to 4400x3520 an eye). The rays
+/// read one depth pixel a texel either way (shadow_rays.wgsl `pixel_of`), now the surface at the
+/// texel's centre, and its normal from the neighbours two pixels away; the terrain's screen-space
+/// reflections and water depth read the prepass at that resolution. On unless
+/// `HORIZON_RT_PREPASS_HALF=0`.
+fn half_prepass() -> bool {
+    static HALF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HALF.get_or_init(|| std::env::var("HORIZON_RT_PREPASS_HALF").map_or(true, |v| v != "0"))
+}
 /// How the world's solid terrain starts its depth (`Renderer::render`), to time what shading the
 /// hidden faces costs; off by default until measured. `HORIZON_WORLD_PREPASS=1`: from the rays'
 /// prepass (only with the TAA's jitter off); `2`: from a depth pass of its own before it, with the
@@ -4534,15 +4545,26 @@ impl Renderer {
         phase1: u32,
         draws: u32,
     ) -> [wgpu::TextureView; 6] {
+        let foveation = match &self.eye {
+            Some(eye) => eye.foveation,
+            None => shadow_rays::Foveation::screen(size),
+        };
+        // VR's prepass at the rays' resolution (`half_prepass`): a depth pixel a mask texel.
+        let (size, foveation) = match self.eye {
+            Some(_) if foveation.scale == 2 && half_prepass() => (
+                size.map(|v| v.div_ceil(2)),
+                shadow_rays::Foveation {
+                    scale: 1,
+                    ..foveation
+                },
+            ),
+            _ => (size, foveation),
+        };
         let (depth, first_depth) = match self.eye_prepass(encoder, size, view_proj, phase1, draws) {
             Some(d) => d,
             None => (self.view_prepass(encoder, size, phase1, draws), None),
         };
         let view = self.eye.map_or(0, |e| e.view_index);
-        let foveation = match &self.eye {
-            Some(eye) => eye.foveation,
-            None => shadow_rays::Foveation::screen(size),
-        };
         let grid = self.voxels.views().expect("the grid runs");
         let lights = self.voxels.light_buffers().expect("the grid runs");
         self.far_heights.prepare(
