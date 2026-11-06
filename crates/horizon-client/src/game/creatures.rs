@@ -1174,6 +1174,10 @@ impl Game<'_> {
                     MobContext, RegionInput, RegionTick, TickResources, TickRound,
                 };
                 let world = &self.simulation.world;
+                // A passenger may tick on its vehicle's navigation
+                // (`riders::tick`), which a worker's copy of one mob can't do.
+                let vehicles: horizon_client::fast_hash::FxHashSet<u32> =
+                    mobs.iter().filter_map(|m| m.extra.mount).collect();
                 // Each mob's context, whether its tick is due, and whether a
                 // region's run of mobs can go on past it.
                 let (contexts, gates): (Vec<_>, Vec<(bool, bool)>) = executor
@@ -1194,7 +1198,9 @@ impl Game<'_> {
                             (
                                 world.loaded(x, z) && ticking(x, z),
                                 !horizon_client::mobs::raider::is_raider(mob.species())
-                                    && mob.extra.raider.is_none(),
+                                    && mob.extra.raider.is_none()
+                                    && mob.extra.mount.is_none()
+                                    && !vehicles.contains(&mob.id),
                             ),
                         )
                     })
