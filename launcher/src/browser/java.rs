@@ -8,7 +8,10 @@
 //! Installing copies the carried-over folder mod into `horizon-mods/<mod id>/` beside
 //! `options.txt` and turns it on in `horizon-mods.txt`, where the game's Options > Mods reads it.
 use super::{installed::Entry, pick, FileRef, Kind, Project, Source, Support, Version};
+use crate::i18n::{self, Language};
 use horizon_port_pack::check::{self, Check, Verdict};
+use horizon_port_pack::classes::Feature;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -23,6 +26,222 @@ const MAX_DEPTH: usize = 3;
 
 /// The loaders whose jars port-pack reads.
 pub const LOADERS: [&str; 4] = ["neoforge", "fabric", "forge", "quilt"];
+
+/// A message or path on one line, cut to a player-sized length.
+fn bounded(text: &str) -> String {
+    const MAX_DETAIL: usize = 240;
+    let mut detail = text.replace(['\n', '\r'], " ");
+    if detail.chars().count() > MAX_DETAIL {
+        detail = detail.chars().take(MAX_DETAIL - 1).collect();
+        detail.push('…');
+    }
+    detail
+}
+
+/// The schema of the game's `java-runtime.json` (crates/horizon-client/src/game/java_runtime_file.rs).
+/// A newer schema is ignored rather than guessed at.
+const RUNTIME_SCHEMA: u32 = 1;
+const RUNTIME_MAX_BYTES: usize = 256 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeReport {
+    schema_version: u32,
+    jars: Vec<RuntimeJar>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RuntimeJar {
+    file: String,
+    #[serde(default)]
+    loader: String,
+    #[serde(default)]
+    engine: String,
+    #[serde(default)]
+    woven: usize,
+    #[serde(default)]
+    skipped: usize,
+    #[serde(default)]
+    first_skip_reason: Option<String>,
+    #[serde(default)]
+    registrations: usize,
+    #[serde(default)]
+    opaque: usize,
+    /// Later games report declared channels; older ones leave them out.
+    #[serde(default)]
+    payload_channels: Vec<String>,
+    #[serde(default)]
+    isolation_failure: Option<String>,
+}
+
+/// Where a jar's code runs in Horizon's hybrid path, in the vocabulary of the server ledger
+/// (`tools/java_mod_server_ledger.py`) and `tools/hybrid_pack.py`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// The native half runs it, and every plan it skipped stayed inside the jar.
+    Native,
+    /// It runs natively, but the plans it skipped target game classes: only a real loader
+    /// applies those.
+    Loader,
+    /// Native execution refuses it.
+    Gap,
+}
+
+impl Route {
+    /// The label the ledger and the `hybrid_pack` tool print.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Native => "native-ok",
+            Self::Loader => "needs-loader",
+            Self::Gap => "native-gap",
+        }
+    }
+}
+
+/// One installed jar's runtime lines, and how relevant they are to the panel: whether the
+/// runtime failed to isolate it, and how many classes it skipped.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RuntimeLines {
+    pub lines: Vec<String>,
+    pub failed: bool,
+    pub skipped: usize,
+    /// The ledger label the report alone supports (`None` for a defaulted row with no report).
+    pub route: Option<Route>,
+}
+
+/// Reads the game's bounded runtime report, if one was written for this game folder. A file
+/// larger than the game writes, or one of another schema, is ignored.
+pub fn runtime_report(home: &Path) -> Option<RuntimeReport> {
+    let bytes = fs::read(home.join("java-runtime.json")).ok()?;
+    if bytes.len() > RUNTIME_MAX_BYTES {
+        return None;
+    }
+    let report: RuntimeReport = serde_json::from_slice(&bytes).ok()?;
+    (report.schema_version == RUNTIME_SCHEMA).then_some(report)
+}
+
+/// The report's row for `file_name`. An installed Java mod is a folder named for its mod id,
+/// while the runtime reports the jar's file name: match the file name, the whole path, or the
+/// name without `.jar`.
+fn jar_in<'a>(report: &'a RuntimeReport, file_name: &str) -> Option<&'a RuntimeJar> {
+    report.jars.iter().find(|jar| {
+        let path = Path::new(&jar.file);
+        path.file_name().is_some_and(|name| name == file_name)
+            || path.file_stem().is_some_and(|stem| stem == file_name)
+            || jar.file == file_name
+    })
+}
+
+/// Bounded runtime lines for one installed jar, matched by its file name. Every reported
+/// string is cut to [`bounded`], so a hostile report can't grow the panel.
+pub fn runtime_lines_in(
+    language: Language,
+    report: &RuntimeReport,
+    file_name: &str,
+) -> Option<RuntimeLines> {
+    let jar = jar_in(report, file_name)?;
+    let woven = jar.woven.to_string();
+    let skipped = jar.skipped.to_string();
+    let registrations = jar.registrations.to_string();
+    let opaque = jar.opaque.to_string();
+    let payloads = jar.payload_channels.len().to_string();
+    let mut lines = vec![say(
+        language,
+        "Runtime: {engine} · loader: {loader} · woven: {woven} · skipped: {skipped} · registrations: {registrations} · opaque: {opaque} · payloads: {payloads}",
+        &[
+            ("engine", &bounded(&jar.engine)),
+            ("loader", &bounded(&jar.loader)),
+            ("woven", &woven),
+            ("skipped", &skipped),
+            ("registrations", &registrations),
+            ("opaque", &opaque),
+            ("payloads", &payloads),
+        ],
+    )];
+    if let Some(reason) = jar.first_skip_reason.as_deref() {
+        lines.push(say(
+            language,
+            "Runtime skipped: {reason}",
+            &[("reason", &bounded(reason))],
+        ));
+    }
+    if let Some(error) = jar.isolation_failure.as_deref() {
+        lines.push(say(
+            language,
+            "Runtime isolation: {error}",
+            &[("error", &bounded(error))],
+        ));
+    }
+    Some(RuntimeLines {
+        lines,
+        failed: jar.isolation_failure.is_some(),
+        skipped: jar.skipped,
+        route: Some(route_of_jar(jar)),
+    })
+}
+
+/// Skip reasons that name a plan whose target is a game class (`net/minecraft`): the weaver
+/// only rewrites classes inside the jar, so such a plan needs the real loader to apply.
+const GAME_TARGET_SKIPS: [&str; 3] = ["target-outside-jar", "game-class", "net/minecraft/"];
+
+/// The ledger label for one reported jar: a refused engine or a failed isolation is a gap;
+/// a game-class plan in the first skip reason needs the loader; anything else runs natively.
+fn route_of_jar(jar: &RuntimeJar) -> Route {
+    if jar.engine.eq_ignore_ascii_case("refused") || jar.isolation_failure.is_some() {
+        return Route::Gap;
+    }
+    match jar.first_skip_reason.as_deref() {
+        Some(reason) if GAME_TARGET_SKIPS.iter().any(|mark| reason.contains(mark)) => Route::Loader,
+        _ => Route::Native,
+    }
+}
+
+/// One installed jar's ledger label from `report`, when it has a row.
+pub fn runtime_route_in(report: &RuntimeReport, file_name: &str) -> Option<Route> {
+    jar_in(report, file_name).map(route_of_jar)
+}
+
+/// The label a cached port check alone supports, when no runtime report says more: a jar with
+/// nothing to carry can't run natively; one whose classes patch the game (Mixins) needs the
+/// loader for those plans; content the native path carries is `native-ok`.
+pub fn route_of_check(check: &Check) -> Route {
+    if check.verdict == Verdict::No {
+        return Route::Gap;
+    }
+    match check.code.features.get(&Feature::Mixin) {
+        Some(n) if *n > 0 => Route::Loader,
+        _ => Route::Native,
+    }
+}
+
+/// Whether a pack's routes use both halves: at least one jar runs natively and at least one
+/// needs the loader. It then runs as a hybrid (docs/java-mod-compat.md).
+pub fn hybrid(routes: impl IntoIterator<Item = Option<Route>>) -> bool {
+    let (mut native, mut loader) = (false, false);
+    for route in routes.into_iter().flatten() {
+        native |= route == Route::Native;
+        loader |= route == Route::Loader;
+    }
+    native && loader
+}
+
+/// One summary line when the report has no jar the page listed.
+pub fn runtime_summary_in(language: Language, report: &RuntimeReport) -> String {
+    let count = report.jars.len().to_string();
+    say(
+        language,
+        "Runtime: {count} jar(s) reported",
+        &[("count", &count)],
+    )
+}
+
+/// `key` as `language` says it, its `{name}` holes filled with `args`.
+fn say(language: Language, key: &str, args: &[(&str, &str)]) -> String {
+    let mut out = i18n::tr_in(language, key).to_string();
+    for (name, value) in args {
+        out = out.replace(&format!("{{{name}}}"), value);
+    }
+    out
+}
 
 /// How well a checked mod runs.
 pub fn support_of(check: &Check) -> Support {
@@ -40,12 +259,26 @@ fn checks(home: &Path) -> PathBuf {
 /// The folder a file's check is kept in, by its checksum.
 fn checked_dir(home: &Path, file: &FileRef) -> Option<PathBuf> {
     let (_, hash) = file.checksum()?;
+    checked_dir_of(home, hash)
+}
+
+/// The folder for a checksum's hex digits. Only hex survives and the name is cut to 40 digits,
+/// so a hostile value can't leave the checks folder.
+fn checked_dir_of(home: &Path, hash: &str) -> Option<PathBuf> {
     let hash: String = hash
         .chars()
         .filter(char::is_ascii_hexdigit)
         .take(40)
         .collect();
     (hash.len() >= 32).then(|| checks(home).join(hash))
+}
+
+/// The folder for an installed entry's `ALGO:hex` checksum (`installed::Entry::checksum`).
+fn checked_dir_for_entry(home: &Path, checksum: &str) -> Option<PathBuf> {
+    checked_dir_of(
+        home,
+        checksum.split_once(':').map_or(checksum, |(_, hex)| hex),
+    )
 }
 
 fn read_check(dir: &Path) -> Option<Check> {
@@ -55,6 +288,28 @@ fn read_check(dir: &Path) -> Option<Check> {
 /// The check of `file` if it was made before.
 pub fn cached(home: &Path, file: &FileRef) -> Option<Check> {
     read_check(&checked_dir(home, file)?)
+}
+
+/// The cached check of an installed mod, by the `ALGO:hex` checksum its entry keeps.
+pub fn cached_for_entry(home: &Path, checksum: &str) -> Option<Check> {
+    read_check(&checked_dir_for_entry(home, checksum)?)
+}
+
+/// Forgets one installed mod's cached check (and any half-written copy of it) so the next
+/// check of that jar reads it again. Only that checksum's folder goes; every other mod's
+/// check, and the `.downloads` scratch folder, stay. Returns whether anything was removed.
+pub fn clear_check(home: &Path, checksum: &str) -> Result<bool, String> {
+    let dir = checked_dir_for_entry(home, checksum)
+        .ok_or_else(|| format!("{checksum} isn't a checksum a check is kept under."))?;
+    let mut removed = false;
+    for path in [dir.clone(), dir.with_extension("part")] {
+        match fs::remove_dir_all(&path) {
+            Ok(()) => removed = true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
+    }
+    Ok(removed)
 }
 
 /// Checks `file`: the cached answer, else its jar downloaded, carried over and read. The jar
@@ -352,5 +607,164 @@ mod tests {
         );
         assert!(checked_dir(home, &file(None, Some("../../etc"))).is_none());
         assert!(checked_dir(home, &file(None, None)).is_none());
+    }
+
+    fn demo_check() -> Check {
+        Check {
+            mod_id: "demo".into(),
+            name: "Demo".into(),
+            version: "1".into(),
+            loader: "fabric".into(),
+            license: "MIT".into(),
+            verdict: Verdict::Works,
+            summary: String::new(),
+            ports: Vec::new(),
+            skipped: Vec::new(),
+            depends: Vec::new(),
+            namespaces: Vec::new(),
+            code: Default::default(),
+        }
+    }
+
+    /// A cached port check alone routes a jar: nothing to carry is a gap, Mixins patch the game
+    /// so they need the loader, and content the native path carries is `native-ok`.
+    #[test]
+    fn a_cached_check_gives_the_label_it_can() {
+        let mut check = demo_check();
+        assert_eq!(route_of_check(&check), Route::Native);
+        check.verdict = Verdict::No;
+        assert_eq!(route_of_check(&check), Route::Gap);
+        let mut check = demo_check();
+        check.code.features.insert(Feature::Mixin, 2);
+        assert_eq!(route_of_check(&check), Route::Loader);
+        check.code.features.insert(Feature::BlockBehaviour, 1);
+        assert_eq!(route_of_check(&check), Route::Loader);
+    }
+
+    /// A pack is a hybrid only when it has both halves: a jar that runs natively and a jar that
+    /// needs the loader. A gap, or only one side, doesn't make one.
+    #[test]
+    fn a_pack_is_hybrid_only_with_both_halves() {
+        assert!(hybrid([Some(Route::Native), Some(Route::Loader)]));
+        assert!(!hybrid([Some(Route::Native), Some(Route::Native)]));
+        assert!(!hybrid([Some(Route::Loader), Some(Route::Gap)]));
+        assert!(!hybrid([Some(Route::Loader), None]));
+        assert!(!hybrid([]));
+    }
+
+    /// The runtime report is read from the game folder, matched by a jar's file name, and its
+    /// strings are cut to one bounded line. A newer schema or an oversized file is ignored.
+    #[test]
+    fn runtime_report_is_read_bounded_and_matched_by_file_name() {
+        let home = std::env::temp_dir().join(format!("horizon-runtime-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        let report = serde_json::json!({
+            "schema_version": 1,
+            "jars": [{
+                "file": "mods/demo.jar", "loader": "fabric", "engine": "native",
+                "woven": 2, "skipped": 1, "first_skip_reason": "bad target",
+                "registrations": 4, "opaque": 1, "payload_channels": ["play"],
+                "isolation_failure": null
+            }, {
+                "file": "other.jar", "loader": "forge", "engine": "native",
+                "woven": 0, "skipped": 0, "first_skip_reason": null,
+                "registrations": 0, "opaque": 0, "payload_channels": [],
+                "isolation_failure": "class loader\nescaped"
+            }, {
+                "file": "game.jar", "loader": "fabric", "engine": "native",
+                "woven": 0, "skipped": 12,
+                "first_skip_reason": "target-outside-jar HEAD net/minecraft/world/level/Level#tick",
+                "registrations": 3, "opaque": 0, "payload_channels": [],
+                "isolation_failure": null
+            }, {
+                "file": "refused.jar", "loader": "forge", "engine": "refused",
+                "woven": 0, "skipped": 0, "first_skip_reason": null,
+                "registrations": 0, "opaque": 0, "payload_channels": [],
+                "isolation_failure": null
+            }]
+        });
+        fs::write(
+            home.join("java-runtime.json"),
+            serde_json::to_vec(&report).unwrap(),
+        )
+        .unwrap();
+        let read = runtime_report(&home).unwrap();
+        let lines = runtime_lines_in(Language::English, &read, "demo.jar").unwrap();
+        assert!(lines.lines[0].contains("native"));
+        assert!(lines.lines[0].contains("payloads: 1"));
+        assert!(lines.lines[1].contains("bad target"));
+        assert_eq!((lines.failed, lines.skipped), (false, 1));
+        // A skip that names no game class leaves the jar on the native path.
+        assert_eq!(lines.route, Some(Route::Native));
+        // An installed mod's entry names its folder, not the jar inside it.
+        assert!(runtime_lines_in(Language::English, &read, "demo").is_some());
+        assert!(runtime_lines_in(Language::English, &read, "missing.jar").is_none());
+        assert_eq!(
+            runtime_route_in(&read, "demo"),
+            Some(Route::Native),
+            "the entry's folder name matches the report's jar"
+        );
+
+        let failed = runtime_lines_in(Language::English, &read, "other.jar").unwrap();
+        assert!(failed.failed);
+        assert!(!failed.lines.last().unwrap().contains('\n'));
+        assert_eq!(failed.route, Some(Route::Gap));
+        // A game-class plan needs the loader; a refused engine is a native gap.
+        assert_eq!(runtime_route_in(&read, "game.jar"), Some(Route::Loader));
+        assert_eq!(
+            runtime_lines_in(Language::English, &read, "game.jar")
+                .unwrap()
+                .route,
+            Some(Route::Loader)
+        );
+        assert_eq!(runtime_route_in(&read, "refused.jar"), Some(Route::Gap));
+        assert_eq!(
+            runtime_summary_in(Language::English, &read),
+            "Runtime: 4 jar(s) reported"
+        );
+
+        fs::write(
+            home.join("java-runtime.json"),
+            serde_json::json!({"schema_version": 2, "jars": []}).to_string(),
+        )
+        .unwrap();
+        assert!(runtime_report(&home).is_none());
+        fs::write(
+            home.join("java-runtime.json"),
+            "x".repeat(RUNTIME_MAX_BYTES + 1),
+        )
+        .unwrap();
+        assert!(runtime_report(&home).is_none());
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// Clearing one mod's check leaves the others (and the download scratch folder) alone, and
+    /// the cache still answers for what remains.
+    #[test]
+    fn clearing_a_check_keeps_the_others() {
+        let home = std::env::temp_dir().join(format!("horizon-java-clear-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let (a, b) = ("ab".repeat(64), "cd".repeat(64));
+        let check = demo_check();
+        for hex in [&a, &b] {
+            let dir = checked_dir_of(&home, hex).unwrap();
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("check.json"), serde_json::to_vec(&check).unwrap()).unwrap();
+        }
+        fs::create_dir_all(checks(&home).join(".downloads")).unwrap();
+        let (key_a, key_b) = (format!("SHA-512:{a}"), format!("SHA-512:{b}"));
+        assert_eq!(cached_for_entry(&home, &key_a), Some(check.clone()));
+
+        assert_eq!(clear_check(&home, &key_a), Ok(true));
+        assert_eq!(cached_for_entry(&home, &key_a), None);
+        assert_eq!(cached_for_entry(&home, &key_b), Some(check));
+        assert!(checks(&home).join(".downloads").exists());
+        // Already gone: nothing to remove, and not an error.
+        assert_eq!(clear_check(&home, &key_a), Ok(false));
+        // A value that isn't a checksum never reaches the file system.
+        assert!(clear_check(&home, "SHA-512:../..").is_err());
+        assert!(checks(&home).exists());
+        fs::remove_dir_all(&home).unwrap();
     }
 }

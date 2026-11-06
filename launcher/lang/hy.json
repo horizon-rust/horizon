@@ -1,4 +1,5 @@
 {
+  "Needs the loader: its plans target the game": "Պահանջվում է բեռնիչը՝ դրա ծրագրերը ուղղված են խաղին",
   "Its blocks and items came over and passed Horizon's checks; the mod's own code is not run.": "Its blocks and items came over and passed Horizon's checks; the mod's own code is not run.",
   "Part of it came over, but something is left out, differs from the original or has not been checked yet; the technical detail says what.": "Part of it came over, but something is left out, differs from the original or has not been checked yet; the technical detail says what.",
   "It does not come over yet.": "It does not come over yet.",
@@ -1223,5 +1224,15 @@
   "{name} was left out: it needs {other}, which was left out": "{name}-ը բաց թողնվեց. նրան պետք է {other}-ը, որը բաց թողնվեց",
   "Doesn't build on the Horizon you play ({code}): a build leaves it out until its author updates it": "Չի կառուցվում քո խաղացած Horizon-ի վրա ({code}). կառուցումը բաց է թողնում այն, մինչև հեղինակը թարմացնի",
   "Where you are, the founder set is claimed through a free checkout on playhorizon.dev. Claim it from the Shop: it opens the checkout for you.": "Այնտեղ, որտեղ դուք եք, հիմնադիրների հավաքածուն ստացվում է playhorizon.dev-ում անվճար վճարման միջոցով։ Ստացեք այն Խանութից․ այն կբացի վճարումը ձեզ համար։",
-  "The founder set can't be claimed from your country.": "Հիմնադիրների հավաքածուն հնարավոր չէ ստանալ ձեր երկրից։"
+  "The founder set can't be claimed from your country.": "Հիմնադիրների հավաքածուն հնարավոր չէ ստանալ ձեր երկրից։",
+  "Java runtime": "Java կատարման միջավայր",
+  "No runtime report": "Կատարման հաշվետվություն չկա",
+  "Runtime: {engine} · loader: {loader} · woven: {woven} · skipped: {skipped} · registrations: {registrations} · opaque: {opaque} · payloads: {payloads}": "Կատարում: {engine} · բեռնիչ: {loader} · հյուսված: {woven} · բաց թողնված: {skipped} · գրանցումներ: {registrations} · անթափանց: {opaque} · ծանրաբեռնվածություններ: {payloads}",
+  "Runtime skipped: {reason}": "Կատարումը բաց թողեց՝ {reason}",
+  "Runtime isolation: {error}": "Կատարման մեկուսացում: {error}",
+  "Runtime: {count} jar(s) reported": "Կատարում: հաղորդվել է {count} jar ֆայլ",
+  "Clear compatibility cache": "Մաքրել համատեղելիության քեշը",
+  "Cleared the compatibility cache for {name}. It is checked again the next time it is installed, updated or listed in a search.": "{name}-ի համատեղելիության քեշը մաքրվել է։ Այն կրկին կստուգվի հաջորդ տեղադրման, թարմացման կամ որոնման ժամանակ։",
+  "(+{count} more)": "(+{count} ավելի)",
+  "Hybrid: native + loader": "Հիբրիդ՝ բնիկ + բեռնիչ"
 }
