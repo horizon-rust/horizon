@@ -644,7 +644,7 @@ wind):
    (a light below 0 would blacken the terrain past its sun, as the zone is); `HORIZON_RT_DEBUG=8` shows the light
    the terrain reads, untouched. On cd49cc97e the zone stays black, its sun included, though 8 shows its light grey
    there: the black comes from another of the terrain's inputs, and a NaN in the lit colour turns black at the TAA
-   (`load_scene`). `HORIZON_RT_DEBUG=13` (terrain.wgsl `rt_lit_checked`) shows the lit colour, or red where the
+   (`load_scene`). `HORIZON_RT_DEBUG=13` (terrain.wgsl `rt_checked`) shows the lit colour, or red where the
    sun's mask isn't finite, blue the traced light, green the sun's tint, yellow the colour though its inputs are,
    cyan a colour below 0 and magenta a black one.
 11. **The mirrors and the refraction look for water or glass only where the raster finds some** (gfx.rs `draw_cover`,

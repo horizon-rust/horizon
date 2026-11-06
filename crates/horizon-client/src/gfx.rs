@@ -6070,7 +6070,7 @@ impl Renderer {
                     10 => 4.0,
                     11 => 5.0,
                     // 13: the RT lit colour, or which of its inputs isn't finite (terrain.wgsl
-                    // `rt_lit_checked`).
+                    // `rt_checked`).
                     13 => 6.0,
                     _ => 0.0,
                 },

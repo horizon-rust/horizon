@@ -1889,14 +1889,14 @@ fn rt_finite4(v: vec4<f32>) -> bool {
     let bits = bitcast<vec4<u32>>(v) & vec4(0x7f800000u);
     return all(bits != vec4(0x7f800000u));
 }
-// HORIZON_RT_DEBUG=13: the RT lit colour, or which of its inputs is not a finite number: red the
-// rays' mask (`rt_visibility`), blue the denoised light (`rt_traced`), green the sun's tint; yellow
-// the colour itself from finite inputs, cyan the colour below 0, magenta the colour black.
-fn rt_lit_checked(albedo: vec3<f32>, in: TerrainOut, n: vec3<f32>) -> vec3<f32> {
-    let v = rt_visibility(in.pos, in.clip.xy);
-    let traced = rt_traced(in.clip.xy);
-    let tint = rt_sun_colour(in.clip.xy, v.x);
-    let c = rt_lit(albedo, in, n);
+// HORIZON_RT_DEBUG=13: the RT lit colour `c` at the fragment at `pixel` (camera-relative `pos`),
+// or which of its inputs is not a finite number, read as the colour read them (`rt_taps`): red
+// the rays' mask (`rt_visibility`), blue the denoised light (`rt_traced`), green the sun's tint;
+// yellow the colour itself from finite inputs, cyan the colour below 0, magenta the colour black.
+fn rt_checked(c: vec3<f32>, pos: vec3<f32>, pixel: vec2<f32>) -> vec3<f32> {
+    let v = rt_visibility(pos, pixel);
+    let traced = rt_traced(pixel);
+    let tint = rt_sun_colour(pixel, v.x);
     if !rt_finite4(vec4(v, 0.0)) { return vec3(4.0, 0.0, 0.0); }
     if !rt_finite4(traced) { return vec3(0.0, 0.0, 4.0); }
     if !rt_finite4(vec4(tint, 0.0)) { return vec3(0.0, 4.0, 0.0); }
@@ -1930,10 +1930,11 @@ fn face_normal(pos: vec3<f32>) -> vec3<f32> {
         if globals.rt_mode.y > 0.5 && globals.rt_mode.y < 1.5 {
             return vec4(max(rt_visibility(in.pos, in.clip.xy), vec3(0.0)), 1.0);
         }
+        let lit = rt_lit(texel.rgb * in.tint, in, n);
         if globals.rt_mode.y > 5.5 && globals.rt_mode.y < 6.5 {
-            return vec4(rt_lit_checked(texel.rgb * in.tint, in, n), 1.0);
+            return vec4(rt_checked(lit, in.pos, in.clip.xy), 1.0);
         }
-        return vec4(rt_lit(texel.rgb * in.tint, in, n), 1.0);
+        return vec4(lit, 1.0);
     }
     // RT lighting: a light-emitting block is lit as any other, and only its burning texels
     // shine (a torch's flame and embers, not its stick: `rt_burning`).
