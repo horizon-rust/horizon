@@ -17990,7 +17990,9 @@ impl Game<'_> {
                 // Columns leave by `unloaded` and by a server's forget packets
                 // (`Streaming::forget`): a lookup per waiting section.
                 if !pending.is_empty() {
-                    pending.retain_columns(|x, z| chunks.contains_key(&(x, z)));
+                    horizon_client::spans::time("uw_queue_retain", || {
+                        pending.retain_columns(|x, z| chunks.contains_key(&(x, z)), &mut spent)
+                    });
                 }
                 let camera = match &self.player {
                     Some(p) => (
@@ -18000,10 +18002,13 @@ impl Game<'_> {
                     ),
                     None => (self.streaming.center.0, 0, self.streaming.center.1),
                 };
-                pending.set_centre(camera);
+                horizon_client::spans::time("uw_queue_centre", || pending.set_centre(camera));
+                let _push = horizon_client::spans::guard("uw_queue_push");
                 for (key, mesh) in uploads {
                     if chunks.contains_key(&(key.0, key.2)) {
-                        pending.push(key, mesh);
+                        if let Some(old) = pending.push(key, mesh) {
+                            spent.push((key, old));
+                        }
                     } else {
                         spent.push((key, mesh));
                     }
@@ -18015,7 +18020,7 @@ impl Game<'_> {
                     spent.push((key, mesh));
                 });
             });
-            self.streaming.free(spent);
+            horizon_client::spans::time("uw_free", || self.streaming.free(spent));
             horizon_client::spans::time("uw_remove_columns", || {
                 renderer.remove_columns(unloaded.iter().map(|c| (c.x, c.z)));
             });

@@ -6655,11 +6655,13 @@ impl Renderer {
         if let Some(copies) = &mut self.capture_copies {
             copies.section(key, mesh);
         }
-        self.occlusion.set(key, mesh.visibility);
-        self.voxels.set(key, &mesh.occupancy);
-        self.far_heights.changed(key.0, key.2);
-        self.voxels.set_lights(key, &mesh.rt_lights);
-        self.voxels.set_albedo(key, &mesh.albedo);
+        crate::spans::time("u_voxels", || {
+            self.occlusion.set(key, mesh.visibility);
+            self.voxels.set(key, &mesh.occupancy);
+            self.far_heights.changed(key.0, key.2);
+            self.voxels.set_lights(key, &mesh.rt_lights);
+            self.voxels.set_albedo(key, &mesh.albedo);
+        });
         let changed = if mesh.block_entities.is_empty() {
             self.block_entities.remove(&key).is_some()
         } else {
@@ -6710,9 +6712,8 @@ impl Renderer {
             self.section_uploaded.insert(key, now);
             self.newest_upload = Some(now);
         }
-        self.release_section(key);
-        let section = self
-            .upload_mesh(mesh)
+        crate::spans::time("u_release", || self.release_section(key));
+        let section = crate::spans::time("u_mesh", || self.upload_mesh(mesh))
             .map(|section| SectionGpu { fading, ..section });
         self.set_detail(
             key,
@@ -6720,8 +6721,14 @@ impl Renderer {
         );
         if let Some(mut section) = section {
             if let Some(hw) = &mut self.hw_rays {
-                hw.micromaps
-                    .meshed(key, &mesh.solid, section.solid, &section.sides.geometries());
+                crate::spans::time("u_micromaps", || {
+                    hw.micromaps.meshed(
+                        key,
+                        &mesh.solid,
+                        section.solid,
+                        &section.sides.geometries(),
+                    )
+                });
             }
             let sections = self.layout.sections();
             if let Some(gpu) = &mut self.gpu_culling
@@ -13459,6 +13466,7 @@ impl Renderer {
             &mut encoder,
             "world: raster (rest of the solid, entities, water)",
         );
+        laps.lap("rp_world");
         // Ray-traced shadows: a ray a pixel of the world's depth, before the resolve (RT lighting
         // traced its rays before the world).
         if shadows && !rt_now {
@@ -13506,6 +13514,7 @@ impl Renderer {
             });
         // With RT lighting the terrain lit itself from the mask: the tone mapping leaves it.
         let shadow_mask = shadow_mask.filter(|_| !rt.lighting);
+        laps.lap("rp_rt_shadows");
         // RT lighting's volumetric clouds, over the world's sky before the tone mapping, bent by
         // the Earth's curvature as the distant terrain.
         let earth_bend = if self.earth_curvature {
@@ -13604,6 +13613,7 @@ impl Renderer {
                 gpu_passes::stamp(&mut encoder, "clouds: march");
             }
         }
+        laps.lap("rp_clouds");
         // Froxel volumetrics (froxels.rs, hook 7): this view's medium on the world drawn, before
         // the tone mapping. `Frame::underwater` says the water; the sky light and the weather come
         // from `set_volumetrics` (`frame.pack`'s are only filled with a shader pack picked).
@@ -13639,6 +13649,7 @@ impl Renderer {
             self.froxels.camera = saved;
             gpu_passes::stamp(&mut encoder, "froxels: apply");
         }
+        laps.lap("rp_froxels");
         // Temporal anti-aliasing (taa.rs): the world and its media resolved against the history,
         // before the tone mapping's exposure and bloom read them (the hand and the HUD come after).
         if taa_now {
@@ -13704,6 +13715,7 @@ impl Renderer {
             }
             gpu_passes::stamp(&mut encoder, "rain drops");
         }
+        laps.lap("rp_taa_rain");
         // Heat haze above the flames in view (haze.rs), on the resolved scene; nothing is recorded
         // with no flame in range.
         if rt.lighting && world_linear && self.world_format == tonemap::SCENE_FORMAT {
@@ -13965,6 +13977,7 @@ impl Renderer {
             hand_drawn: !pack_draws_hand,
             hand_view_proj,
         };
+        laps.lap("rp_post");
         // With Linear Light the hand, the outlines, the screen effects and the crosshair draw
         // into the scene, tone mapped onto the target under the HUD.
         let scene_overlay = scene

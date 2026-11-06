@@ -166,18 +166,29 @@ impl UploadQueue {
             .collect();
     }
 
-    /// A meshed section: it replaces any mesh of the section still waiting.
-    pub fn push(&mut self, key: SectionKey, mesh: SectionMesh) {
+    /// A meshed section: it replaces any mesh of the section still waiting,
+    /// which it returns (to be freed off the main thread, `Streaming::free`).
+    pub fn push(&mut self, key: SectionKey, mesh: SectionMesh) -> Option<SectionMesh> {
         let n = self.next;
         self.next += 1;
-        self.meshes.insert(key, (n, mesh));
+        let old = self.meshes.insert(key, (n, mesh)).map(|(_, mesh)| mesh);
         self.heap
             .push(Reverse((distance(self.centre, key), n, key)));
+        old
     }
 
-    /// Drops the sections of the columns `keep` refuses (unloaded ones).
-    pub fn retain_columns(&mut self, mut keep: impl FnMut(i32, i32) -> bool) {
-        self.meshes.retain(|k, _| keep(k.0, k.2));
+    /// Takes out the sections of the columns `keep` refuses (unloaded ones)
+    /// into `gone`, to be freed off the main thread (`Streaming::free`).
+    pub fn retain_columns(
+        &mut self,
+        mut keep: impl FnMut(i32, i32) -> bool,
+        gone: &mut Vec<(SectionKey, SectionMesh)>,
+    ) {
+        gone.extend(
+            self.meshes
+                .extract_if(|k, _| !keep(k.0, k.2))
+                .map(|(k, (_, mesh))| (k, mesh)),
+        );
         // Stale entries leave the heap as they reach its top; one that
         // holds many more of them than live ones is rebuilt.
         if self.heap.len() > 2 * self.meshes.len() + 64 {
@@ -312,7 +323,7 @@ mod tests {
         for x in 0..1000 {
             q.push((x, 0, 0), mesh(1));
         }
-        q.retain_columns(|x, _| x % 100 == 0);
+        q.retain_columns(|x, _| x % 100 == 0, &mut Vec::new());
         assert_eq!(q.len(), 10);
         assert!(q.heap.len() <= 2 * q.len() + 64);
         assert!(q.contains(&(300, 0, 0)) && !q.contains(&(301, 0, 0)));
