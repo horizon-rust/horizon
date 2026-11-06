@@ -283,6 +283,10 @@ impl<'a> PlayerDirectory<'a> {
             .get(&conn)
             .map(|&index| &self.guests[index].1)
     }
+    /// Where a guest stands in the list this directory was built from.
+    pub fn guest_slot(&self, conn: u32) -> Option<usize> {
+        self.connections.get(&conn).copied()
+    }
     fn connection(&self, slot: usize) -> Option<u32> {
         if self.host.is_some() && slot == 0 {
             None

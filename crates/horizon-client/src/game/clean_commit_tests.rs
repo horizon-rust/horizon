@@ -423,6 +423,75 @@ fn clean_commit_matches_the_serial_walk() {
     );
     assert!(clean.clean_rounds() > 0);
 
+    // A jockey chasing a guest, with a hunter in another region. A passenger
+    // runs on its vehicle's navigation, which a worker's copy of one mob can't
+    // do, so both stay on the walk; Verify replays any commit of them through
+    // that loan. The hunter's commit is replayed after they had the guest's
+    // view, so one they failed to give back would show too.
+    fn zombie_rides(m: &mut Mob) {
+        m.extra.mount = Some(2);
+        m.ai.target = Some(horizon_client::mobs::Who::Player);
+    }
+    fn carries_zombie(m: &mut Mob) {
+        m.extra.rider = Some(1);
+    }
+    let jockey = Scene {
+        name: "jockey",
+        chunks: three_regions,
+        ticks: 30,
+        mobs: vec![
+            ("minecraft:zombie", [8.0, 64.0, 8.0], zombie_rides),
+            ("minecraft:chicken", [8.0, 64.0, 8.0], carries_zombie),
+            ("minecraft:zombie", [136.0, 64.0, 8.0], hunting),
+        ],
+        died: &[],
+        guest_at: Some([14.0, 64.0, 8.0]),
+    };
+    let (clean, walk) = both_paths(game, &jockey);
+    assert_eq!(clean.clean_rounds(), 0);
+    assert!(clean.fell_back_for(NotClean::Unpredicted));
+    assert!(
+        walk.stats
+            .iter()
+            .all(|s| s.replayed == 2 && s.committed == 1),
+        "{:?}",
+        walk.stats.iter().map(|s| s.outcome()).collect::<Vec<_>>()
+    );
+
+    // `horizon-report`'s cost by type counts each mob's tick once, wherever it
+    // ran: a commit on the walk, a clean round, or a replay. The jockey's two
+    // replay, and the other zombie commits.
+    let crowd = Scene {
+        name: "mob costs, clean",
+        chunks: three_regions,
+        ticks: 10,
+        mobs: crowds(),
+        died: &[],
+        guest_at: None,
+    };
+    let counted = [
+        (&jockey, "minecraft:zombie", 60),
+        (&jockey, "minecraft:chicken", 30),
+        (&crowd, "minecraft:zombie", 120),
+    ];
+    for path in [Path::Walk, Path::Clean, Path::Verify] {
+        for &(scene, kind, mob_ticks) in &counted {
+            super::tick_profile::take();
+            super::tick_profile::set_sampling(true);
+            run(game, scene, path);
+            super::tick_profile::set_sampling(false);
+            let costs = super::tick_profile::take();
+            let cost = costs.iter().find(|c| c.kind == kind);
+            assert_eq!(
+                cost.map(|c| c.mob_ticks),
+                Some(mob_ticks),
+                "{}: {costs:?}",
+                scene.name
+            );
+            assert!(cost.is_some_and(|c| c.nanos > 0), "{costs:?}");
+        }
+    }
+
     // A round that falls back: a mob outside every region has no prediction.
     let scene = Scene {
         name: "fallback",

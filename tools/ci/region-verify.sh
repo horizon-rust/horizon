@@ -12,4 +12,4 @@ export HORIZON_TEST_RESOURCES="$PWD/.local/horizon-client/$version" HORIZON_REQU
 export CARGO_TARGET_DIR="$PWD/.local/parity-target"
 cargo test --locked -p horizon-client-lib --lib mobs::region_tick
 cargo test --locked -p horizon-client --lib -- --include-ignored \
-  pool_and_serial entity_hurt_player_reads_riders wardens_hear_events_however an_effect_hit_on_a_guest clean_commit
+  pool_and_serial entity_hurt_player_reads_riders an_effect_hit_on_a_guest clean_commit

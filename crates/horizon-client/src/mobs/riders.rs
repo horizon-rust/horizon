@@ -428,6 +428,18 @@ pub fn tick(
 ) -> bool {
     tick_ordered(mobs, index, w, random, events, None)
 }
+/// `mob` first, then copies of the vehicles it rides, top down: all of the list
+/// [`tick_with_order`] reads when it runs a copy of `mob` away from `mobs`.
+pub fn with_vehicles(mob: Mob, mobs: &[Mob]) -> Vec<Mob> {
+    let mut chain = vec![mob];
+    while let Some(vehicle) = chain[chain.len() - 1].extra.mount
+        && !chain.iter().any(|m| m.id == vehicle)
+        && let Some(vehicle) = mobs.iter().find(|m| m.id == vehicle)
+    {
+        chain.push(vehicle.clone());
+    }
+    chain
+}
 /// [`tick`] with the section-insertion number the level coordinator reserved
 /// for this mob (`Mob::tick_with_order`), independent of who runs it.
 pub fn tick_with_order(

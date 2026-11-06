@@ -1,7 +1,9 @@
 //! What each kind of mob costs the server tick, for `horizon-report` (dedicated/report.rs): while
 //! a report records, one tick in [`SAMPLE_EVERY`] times every mob's own tick and adds it up by
 //! level and mob type. Off, a mob costs one thread-local read; sampled, two clock reads and a
-//! map update. A mob's riders tick inside its own tick, so they count for it.
+//! map update. A mob's riders tick inside its own tick, so they count for it. A prediction that
+//! commits was timed on its worker and counts here when it commits; one that doesn't counts as the
+//! mob's replay, so each mob's tick counts once.
 use horizon_client::{fast_hash::FxHashMap, mobs::MobType};
 use std::{
     cell::{Cell, RefCell},
@@ -34,15 +36,29 @@ pub(super) fn start() -> Option<Instant> {
     SAMPLING.with(Cell::get).then(Instant::now)
 }
 
+/// Whether this thread's mob ticks are being timed.
+#[inline]
+pub(super) fn sampling() -> bool {
+    SAMPLING.with(Cell::get)
+}
+
 /// A sampled mob of type `kind` in level `dim` ticked since `started`.
 #[inline]
 pub(super) fn add(dim: &'static str, kind: &MobType, started: Instant) {
     add_kind(dim, std::ptr::from_ref(kind) as usize, &kind.id, started);
 }
 
+/// A mob of type `kind` in level `dim` ticked for `nanos` on a worker.
+pub(super) fn add_nanos(dim: &'static str, kind: &MobType, nanos: u64) {
+    add_kind_nanos(dim, std::ptr::from_ref(kind) as usize, &kind.id, nanos);
+}
+
 /// [`add`] for the type at address `key` named `id`.
 fn add_kind(dim: &'static str, key: usize, id: &str, started: Instant) {
-    let nanos = started.elapsed().as_nanos() as u64;
+    add_kind_nanos(dim, key, id, started.elapsed().as_nanos() as u64);
+}
+
+fn add_kind_nanos(dim: &'static str, key: usize, id: &str, nanos: u64) {
     COSTS.with(|c| {
         let mut costs = c.borrow_mut();
         let cost = costs.entry((dim, key)).or_insert_with(|| Cost {

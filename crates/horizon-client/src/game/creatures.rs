@@ -104,6 +104,9 @@ pub(super) struct Creatures {
     pub lan_explosions: Vec<([f64; 3], bool, f32, usize, Vec<(u32, [f64; 3])>)>,
     /// Ticks left of the elder guardian's apparition (MobAppearanceParticle).
     pub elder_apparition: i32,
+    /// The serial snapshot's buffer between ticks, empty: ~400 bytes a mob, so
+    /// thousands of mobs would allocate and free megabytes every tick.
+    seen_buf: Vec<Seen>,
     /// The mobs whose own tick ran in the last `tick_creature_entities`:
     /// `ServerLevel.tick` ticks only the entities in entity-ticking range, so
     /// what the passes after the loop do for a mob's `aiStep`, goals or brain
@@ -1065,7 +1068,11 @@ impl Game<'_> {
             .executor(self.simulation.regions.regions().len(), mob_count)
         {
             Some(executor) => executor.map(&self.simulation.mobs, |_, m| seen(m, uuid)),
-            None => self.simulation.mobs.iter().map(|m| seen(m, uuid)).collect(),
+            None => {
+                let mut snapshot = std::mem::take(&mut self.creatures.seen_buf);
+                snapshot.extend(self.simulation.mobs.iter().map(|m| seen(m, uuid)));
+                snapshot
+            }
         };
         let species_index = horizon_client::mobs::snapshot::SpeciesIndex::new(&snapshot);
         laps.lap("mob_snapshot");
@@ -1246,6 +1253,7 @@ impl Game<'_> {
                     random: &scratch,
                     player_uuid: uuid,
                     tnt_explodes: self.ui.rules.bool("tnt_explodes"),
+                    time_mobs: super::tick_profile::sampling(),
                 };
                 laps.lap("mob_inputs");
                 let work = if inputs.iter().map(|input| input.mobs.len()).sum::<usize>() >= 512 {
@@ -1267,52 +1275,6 @@ impl Game<'_> {
                 laps.lap("mob_predict");
                 TickRound::new(owners, predicted, section_base).with_contexts(contexts)
             });
-            // What a mob reads of the level, and the guest it sees (which binds
-            // it). A prediction that commits read all this on its worker, so
-            // the walk builds it only for the mobs that run here.
-            macro_rules! mob_view {
-                ($m:expr) => {{
-                    let m: &Mob = $m;
-                    let mut w = MobWorld {
-                        others: horizon_client::mobs::snapshot::SeenView::from(&snapshot)
-                            .with_species(&species_index),
-                        others_grid: Some(&grid),
-                        others_index: Some(&index),
-                        ..base.clone()
-                    };
-                    w.controlling_player_movement = player_directory.controlling_movement(m);
-                    // getCurrentDifficultyAt(blockPosition()): the mob's own chunk,
-                    // not the local player's (a server thread has no player).
-                    w.difficulty =
-                        self.local_difficulty([m.position.x, m.position.y, m.position.z]);
-                    w.nearest_player = nearest
-                        .nearest(m.position.x, m.position.y, m.position.z)
-                        .map(|p| p.position);
-                    let seen_guest = if guests.is_empty() {
-                        None
-                    } else {
-                        let bound = bindings.get(&m.id).copied();
-                        let owner = self
-                            .simulation
-                            .regions
-                            .owner(chunk_at(m.position))
-                            .and_then(|id| player_regions.get(&id).copied())
-                            .unwrap_or(usize::MAX);
-                        let conn = player_directory.player_for(owner, m, bound);
-                        match conn {
-                            Some(conn) => {
-                                bindings.insert(m.id, conn);
-                                w.player = player_directory.guest(conn).cloned();
-                            }
-                            None => {
-                                bindings.remove(&m.id);
-                            }
-                        }
-                        conn
-                    };
-                    (w, seen_guest)
-                }};
-            }
             // A clean round has nothing left for the walk to decide: it is applied
             // on the workers, and any other round walks, untouched by this.
             let mut rehearsal = None;
@@ -1361,37 +1323,133 @@ impl Game<'_> {
                             bindings: &mut bindings,
                         },
                     );
+                    for (kind, nanos) in transaction.tick_costs() {
+                        super::tick_profile::add_nanos(level_id, kind, nanos);
+                    }
                     walked = 0;
                 }
             }
             laps.lap("mob_classify");
+            // The guest a mob sees, which binds it.
+            macro_rules! bind_guest {
+                ($m:expr) => {{
+                    let m: &Mob = $m;
+                    if guests.is_empty() {
+                        None
+                    } else {
+                        let bound = bindings.get(&m.id).copied();
+                        let owner = self
+                            .simulation
+                            .regions
+                            .owner(chunk_at(m.position))
+                            .and_then(|id| player_regions.get(&id).copied())
+                            .unwrap_or(usize::MAX);
+                        let conn = player_directory.player_for(owner, m, bound);
+                        match conn {
+                            Some(conn) => {
+                                bindings.insert(m.id, conn);
+                            }
+                            None => {
+                                bindings.remove(&m.id);
+                            }
+                        }
+                        conn
+                    }
+                }};
+            }
+            // The view of the player a mob sees is lent to it for its tick, not
+            // copied: the tick only reads it (`&MobWorld`), and the directory
+            // keeps answering who is where from its own.
+            let (mut host_view, mut guest_views): (_, Vec<_>) = if walked > 0 {
+                (
+                    base.player.clone(),
+                    guests.iter().map(|g| Some(g.1.clone())).collect(),
+                )
+            } else {
+                (None, Vec::new())
+            };
+            // getCurrentDifficultyAt(blockPosition()): the mob's own chunk, not
+            // the local player's (a server thread has no player). Mobs of a
+            // chunk tend to sit side by side in the list.
+            let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
+            let mut difficulty_at = |m: &Mob| {
+                let chunk = chunk_at(m.position);
+                match cached_difficulty {
+                    Some((key, difficulty)) if key == chunk => difficulty,
+                    _ => {
+                        let difficulty =
+                            self.local_difficulty([m.position.x, m.position.y, m.position.z]);
+                        cached_difficulty = Some((chunk, difficulty));
+                        difficulty
+                    }
+                }
+            };
+            // What a mob reads of the level, for a tick. A prediction that
+            // commits read all this on its worker, so the walk builds it only
+            // for the mobs that run here. Goes with `return_view!`.
+            macro_rules! mob_view {
+                ($m:expr) => {{
+                    let m: &Mob = $m;
+                    let seen_guest = bind_guest!(m);
+                    let lent = seen_guest.and_then(|conn| player_directory.guest_slot(conn));
+                    let player = match (seen_guest, lent) {
+                        (None, _) => host_view.take(),
+                        (Some(_), Some(slot)) => guest_views[slot].take(),
+                        (Some(_), None) => None,
+                    };
+                    let w = MobWorld {
+                        others: horizon_client::mobs::snapshot::SeenView::from(&snapshot)
+                            .with_species(&species_index),
+                        others_grid: Some(&grid),
+                        others_index: Some(&index),
+                        controlling_player_movement: player_directory.controlling_movement(m),
+                        difficulty: difficulty_at(m),
+                        nearest_player: nearest
+                            .nearest(m.position.x, m.position.y, m.position.z)
+                            .map(|p| p.position),
+                        player,
+                        teams: std::sync::Arc::clone(&base.teams),
+                        ..base
+                    };
+                    (w, seen_guest, lent)
+                }};
+            }
+            macro_rules! return_view {
+                ($w:expr, $seen_guest:expr, $lent:expr) => {
+                    match ($seen_guest, $lent) {
+                        (None, _) => host_view = $w.player,
+                        (Some(_), Some(slot)) => guest_views[slot] = $w.player,
+                        (Some(_), None) => {}
+                    }
+                };
+            }
             for i in 0..walked {
                 let m = &mut mobs[i];
                 let (x, z) = (m.position.x.floor() as i32, m.position.z.floor() as i32);
                 if !base.world.loaded(x, z) {
-                    mob_view!(m);
+                    bind_guest!(m);
                     keep.push(!m.hostile() || m.persistent);
                     continue;
                 }
-                let nearest_player = nearest
-                    .nearest(m.position.x, m.position.y, m.position.z)
-                    .map(|p| p.position);
                 // ServerLevel.tick: every loaded entity checks despawning, but
                 // only those in entity-ticking chunks (within the simulation
                 // distance) tick. The despawn check reads the nearest player
                 // and the difficulty, not the player the mob sees.
                 if !ticking(x, z) {
-                    let mut w = MobWorld {
+                    bind_guest!(m);
+                    let w = MobWorld {
                         others: horizon_client::mobs::snapshot::SeenView::from(&snapshot)
                             .with_species(&species_index),
                         others_grid: Some(&grid),
                         others_index: Some(&index),
-                        nearest_player,
+                        nearest_player: nearest
+                            .nearest(m.position.x, m.position.y, m.position.z)
+                            .map(|p| p.position),
+                        difficulty: difficulty_at(m),
                         player: None,
-                        ..base.clone()
+                        teams: std::sync::Arc::clone(&base.teams),
+                        ..base
                     };
-                    w.difficulty =
-                        self.local_difficulty([m.position.x, m.position.y, m.position.z]);
                     let kept = horizon_client::mobs::ai::despawn_check(m, &w);
                     if !kept {
                         died.remove(&m.id);
@@ -1405,7 +1463,7 @@ impl Game<'_> {
                 }
                 // A mod canceled its tick: it stays as it is.
                 if round.canceled(m.id) {
-                    mob_view!(m);
+                    bind_guest!(m);
                     keep.push(true);
                     continue;
                 }
@@ -1419,37 +1477,53 @@ impl Game<'_> {
                 });
                 let mut seen_after = None;
                 let (kept, seen_guest) = match committed {
-                    Some(horizon_client::mobs::region_tick::Committed { kept, conn, seen }) => {
-                        if let Some((mut replayed, mut random)) = before_commit {
-                            let (w, _) = mob_view!(&replayed);
+                    Some(horizon_client::mobs::region_tick::Committed {
+                        kept,
+                        conn,
+                        seen,
+                        tick_nanos,
+                    }) => {
+                        if let Some(nanos) = tick_nanos {
+                            super::tick_profile::add_nanos(level_id, &m.kind, nanos);
+                        }
+                        if let Some((replayed, mut random)) = before_commit {
+                            let (w, replay_guest, lent) = mob_view!(&replayed);
                             let mut replayed_events = Vec::new();
-                            let replayed_kept = replayed.tick_with_order(
+                            // As the walk would tick it: a passenger on its
+                            // vehicle's navigation (`riders::tick`).
+                            let mut chain =
+                                horizon_client::mobs::riders::with_vehicles(replayed, mobs);
+                            let replayed_kept = horizon_client::mobs::riders::tick_with_order(
+                                &mut chain,
+                                0,
                                 &w,
                                 &mut random,
                                 &mut replayed_events,
                                 section_base.wrapping_add(i as u64),
                             );
+                            return_view!(w, replay_guest, lent);
                             horizon_client::mobs::region_tick::verify_commit(
                                 i,
-                                (m, kept, &events[from..], &scratch),
-                                (&replayed, replayed_kept, &replayed_events, &random),
+                                (&mobs[i], kept, &events[from..], &scratch),
+                                (&chain[0], replayed_kept, &replayed_events, &random),
                             );
                         }
                         seen_after = Some(seen);
+                        let id = mobs[i].id;
                         if !guests.is_empty() {
                             match conn {
                                 Some(conn) => {
-                                    bindings.insert(m.id, conn);
+                                    bindings.insert(id, conn);
                                 }
                                 None => {
-                                    bindings.remove(&m.id);
+                                    bindings.remove(&id);
                                 }
                             }
                         }
                         (kept, conn)
                     }
                     None => {
-                        let (w, seen_guest) = mob_view!(m);
+                        let (w, seen_guest, lent) = mob_view!(m);
                         // `horizon-report`'s cost by mob type (tick_profile.rs).
                         let sampled = super::tick_profile::start().map(|t| (t, m.kind.clone()));
                         let mut run = |order: u64| {
@@ -1469,6 +1543,7 @@ impl Game<'_> {
                         if let Some((started, kind)) = sampled {
                             super::tick_profile::add(level_id, &kind, started);
                         }
+                        return_view!(w, seen_guest, lent);
                         (kept, seen_guest)
                     }
                 };
@@ -1618,6 +1693,8 @@ impl Game<'_> {
         }
         self.simulation.died = std::mem::take(died);
         self.creatures.ticked = ticked;
+        snapshot.clear();
+        self.creatures.seen_buf = snapshot;
         self.native_tick_post_batch(round);
         // ... and entity event 60 goes out as it is: the poof.
         for (id, at, width, height) in gone {

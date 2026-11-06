@@ -170,6 +170,8 @@ pub struct TickPrediction {
     pub reads: snapshot::ReadSet,
     pub random_before: LegacyRandom,
     pub random_after: LegacyRandom,
+    /// How long its tick took, when the round is timed (`RegionTick::time_mobs`).
+    pub tick_nanos: Option<u64>,
     /// The mob this ticked from, to check a commit replaces nothing newer.
     #[cfg(debug_assertions)]
     pub input: String,
@@ -187,6 +189,8 @@ pub struct Committed {
     pub conn: Option<u32>,
     /// How it looks to the others now (`Seen::alive` already knows `kept`).
     pub seen: Seen,
+    /// How long its tick took on the worker, when the round is timed.
+    pub tick_nanos: Option<u64>,
 }
 
 pub struct RegionTick<'a> {
@@ -201,6 +205,8 @@ pub struct RegionTick<'a> {
     pub random: &'a LegacyRandom,
     pub player_uuid: Option<[i32; 4]>,
     pub tnt_explodes: bool,
+    /// Time each mob's tick, for `horizon-report`'s cost by mob type.
+    pub time_mobs: bool,
 }
 impl RegionTick<'_> {
     fn predict(&self, input: RegionInput<'_>) -> Vec<TickPrediction> {
@@ -255,6 +261,7 @@ impl RegionTick<'_> {
                 times[0] += start.elapsed();
             }
             let simulate = PROFILE.then(Instant::now);
+            let timed = self.time_mobs.then(Instant::now);
             let (kept, conn) = {
                 let context = &self.contexts[slot];
                 let conn = self
@@ -278,6 +285,7 @@ impl RegionTick<'_> {
                     mob.tick_with_order(&world, &mut random, &mut events, context.section_order);
                 (kept, conn)
             };
+            let tick_nanos = timed.map(|start| start.elapsed().as_nanos() as u64);
             if let Some(start) = simulate {
                 times[1] += start.elapsed();
             }
@@ -326,6 +334,7 @@ impl RegionTick<'_> {
                 reads: reads.into_inner(),
                 random_before,
                 random_after: random.clone(),
+                tick_nanos,
                 #[cfg(debug_assertions)]
                 input: mob_input,
             });
@@ -1097,6 +1106,7 @@ impl TickRound {
                     kept: prediction.kept,
                     conn: prediction.conn,
                     seen: prediction.seen.clone(),
+                    tick_nanos: prediction.tick_nanos,
                 });
             }
             self.stats.rng_conflicts += usize::from(!rng_valid);
@@ -1133,6 +1143,14 @@ impl TickRound {
         self.failed[self.owners[slot]] = true;
         self.stats.replayed += 1;
         tick(self.section_base.wrapping_add(slot as u64))
+    }
+    /// Each timed prediction's mob type and tick time, for a clean round: every
+    /// prediction committed.
+    pub fn tick_costs(&self) -> impl Iterator<Item = (&MobType, u64)> + '_ {
+        self.predictions
+            .iter()
+            .flatten()
+            .filter_map(|p| Some((&*p.mob.kind, p.tick_nanos?)))
     }
     /// Each owner that predicted anything: its slot, what it predicted, and how
     /// much of that committed.
@@ -1614,6 +1632,7 @@ mod tests {
                 random,
                 player_uuid: None,
                 tnt_explodes: true,
+                time_mobs: false,
             };
             TickRound::new(
                 owners,
@@ -1897,6 +1916,7 @@ mod tests {
             reads: Default::default(),
             random_before: random.clone(),
             random_after: random,
+            tick_nanos: None,
             #[cfg(debug_assertions)]
             input: format!("{mob:?}"),
         };
@@ -1943,6 +1963,7 @@ mod tests {
             reads: Default::default(),
             random_before: LegacyRandom::new(1),
             random_after: LegacyRandom::new(1),
+            tick_nanos: None,
             #[cfg(debug_assertions)]
             input: format!("{mob:?}"),
         };

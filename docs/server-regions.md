@@ -421,11 +421,12 @@ What changed, with gameplay meant to stay the same. Without workers
   built. A quiet mob only stores its new `Steps`; the rest run the existing code
   in list order. After a block write or a chunk membership change
   (`World::revision`, `ChunkMap::membership_revision`), every remaining mob runs
-  the existing code.
+  the existing code. Main's game-event rework (`6b826d204a`), merged here on
+  2026-11-06, replaced that pass: `tick_mob_sculk_events` is serial again, and
+  this classification and its test are gone.
 
 The pool-against-serial tests need prepared resources, so they are `#[ignore]`d:
-`pool_and_serial_find_the_same_portals_in_the_same_order`,
-`pool_and_serial_raise_the_same_events_and_keep_the_same_steps` and
+`pool_and_serial_find_the_same_portals_in_the_same_order` and
 `entity_hurt_player_reads_riders_only_when_a_criterion_can`. Set
 `HORIZON_TEST_RESOURCES` and run them with `--include-ignored`.
 
@@ -490,8 +491,8 @@ jump's `chosen`. `optimal_jump_vector` follows vanilla's `Collections.shuffle`
 with no seeded random, so a commit and its replay can pick different angles for
 the same frog or goat. It failed 3 of 3 runs with `HORIZON_PARALLEL_COMMIT=0`. With
 the shuffle temporarily pinned, a local change that was not committed, all four
-verify harnesses passed, so this draw is the only cause there. It has not been
-fixed. The script's other tests pass when run on their own. It has not been run
+verify harnesses passed, so this draw is the only cause there. `0e72b76331` later
+fixed it: verify mode repeats the shuffle. The script's other tests pass when run on their own. It has not been run
 on the commit before this merge, so when it began to fail is not known.
 
 **Not run.** No control run of this binary, no second run, and no workload with
