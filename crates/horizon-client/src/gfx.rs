@@ -460,6 +460,8 @@ pub struct Renderer {
     pub queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
     solid: wgpu::RenderPipeline,
+    /// The solid terrain over a depth prepass of it (`world_prepass`): tested, not written.
+    solid_on_depth: Option<wgpu::RenderPipeline>,
     translucent: wgpu::RenderPipeline,
     /// Flat section draws (`flat`), where multi-draw is emulated.
     flat: Option<flat::Flat>,
@@ -769,11 +771,25 @@ pub struct Renderer {
 /// `max_texture_array_layers` of the GPUs Horizon runs on. Mods add sprites
 /// past it into more arrays (terrain.wgsl's `sprite`).
 pub(crate) const SPRITE_SPLIT: u32 = 2048;
-/// `HORIZON_WORLD_PREPASS=1`: the world's depth starts from the rays' prepass (`Renderer::render`),
-/// to time what shading the hidden faces costs; off by default until measured.
-fn world_prepass() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("HORIZON_WORLD_PREPASS").is_ok_and(|v| v == "1"))
+/// How the world's solid terrain starts its depth (`Renderer::render`), to time what shading the
+/// hidden faces costs; off by default until measured. `HORIZON_WORLD_PREPASS=1`: from the rays'
+/// prepass (only with the TAA's jitter off); `2`: from a depth pass of its own before it, with the
+/// world's own (jittered) matrix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorldPrepass {
+    Off,
+    Rays,
+    Own,
+}
+fn world_prepass() -> WorldPrepass {
+    static MODE: std::sync::OnceLock<WorldPrepass> = std::sync::OnceLock::new();
+    *MODE.get_or_init(
+        || match std::env::var("HORIZON_WORLD_PREPASS").ok().as_deref() {
+            Some("1") => WorldPrepass::Rays,
+            Some("2") => WorldPrepass::Own,
+            _ => WorldPrepass::Off,
+        },
+    )
 }
 /// [`SPRITE_SPLIT`], or a smaller split from `HORIZON_SPRITE_SPLIT` (dev
 /// only: vanilla's sprites drawn from several arrays must look the same).
@@ -1939,6 +1955,19 @@ impl Renderer {
             true,
             None,
         );
+        let solid_on_depth = (world_prepass() != WorldPrepass::Off).then(|| {
+            pipeline(
+                "Terrain solid over its depth prepass",
+                "vs_terrain",
+                "fs_solid",
+                &terrain_buffers,
+                tri,
+                Some(wgpu::Face::Back),
+                false,
+                true,
+                None,
+            )
+        });
         // RT lighting's depth prepass: the solid terrain into a depth of its own, colour-less.
         let depth_prepass =
             |layout: &wgpu::PipelineLayout,
@@ -3376,6 +3405,7 @@ impl Renderer {
             queue,
             config,
             solid,
+            solid_on_depth,
             translucent,
             flat_on: flat.is_some(),
             cull_on: cull.is_some(),
@@ -6769,16 +6799,23 @@ impl Renderer {
                     store: wgpu::StoreOp::Store,
                 },
             })];
-            // `HORIZON_WORLD_PREPASS=1`: the world starts from the rays' depth prepass of the
-            // same solid terrain (the same vertex shader and alpha test, `fs_depth`), so each
-            // pixel's solid terrain is shaded once, the faces behind it rejected before their
-            // fragment shader. Only where both were drawn with one matrix (the TAA's jitter off,
-            // `HORIZON_TAA_JITTER=0`), at one size, with Horizon's own terrain pipelines.
-            let reuse = prepass_depth.as_ref().filter(|d| {
-                world_prepass()
-                    && self.eye.is_none()
-                    && material.is_none()
-                    && !native_sky_pass
+            // `HORIZON_WORLD_PREPASS` (`world_prepass`): the world's solid terrain over a depth
+            // prepass of the same terrain (the same vertex shader, invariant, and alpha test,
+            // `fs_depth`), so each pixel's solid terrain is shaded once, the faces behind it
+            // rejected before their fragment shader. `1` takes the rays' prepass, only where
+            // both were drawn with one matrix (the TAA's jitter off, `HORIZON_TAA_JITTER=0`) at
+            // one size; `2` draws one of its own with the world's matrix. With Horizon's own
+            // terrain pipelines and section draws only.
+            let mode = world_prepass();
+            let plain = self.eye.is_none()
+                && material.is_none()
+                && !native_sky_pass
+                && !pack_draws_terrain
+                && !(flat_frame && self.flat.is_some())
+                && solid_draws > 0;
+            let rays_depth = prepass_depth.as_ref().filter(|d| {
+                mode == WorldPrepass::Rays
+                    && plain
                     && clean_view_proj == view_proj
                     && d.texture().size() == world_depth.texture().size()
                     && world_depth
@@ -6786,24 +6823,66 @@ impl Renderer {
                         .usage()
                         .contains(wgpu::TextureUsages::COPY_DST)
             });
-            if let Some(depth) = reuse {
+            if let Some(depth) = rays_depth {
                 encoder.copy_texture_to_texture(
                     depth.texture().as_image_copy(),
                     world_depth.texture().as_image_copy(),
                     depth.texture().size(),
                 );
-                if !self.world_prepass_logged {
-                    self.world_prepass_logged = true;
-                    log::info!("Horizon: the world drawn from the rays' depth prepass");
-                }
             }
+            let own_depth = mode == WorldPrepass::Own && plain;
+            if own_depth {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Horizon world's depth prepass"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: world_depth,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    ..Default::default()
+                });
+                pass.set_pipeline(&self.solid_depth);
+                pass.set_bind_group(0, &self.group, &[]);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_vertex_buffer(1, self.instances.slice(..));
+                // What the world's first phase draws (all of it without occlusion culling).
+                let first = if cull.is_some() {
+                    phase1_draws
+                } else {
+                    solid_draws
+                };
+                self.draw_sections(&mut pass, &self.indirect, 0, 0, first);
+                drop(pass);
+                gpu_passes::stamp(&mut encoder, "world: depth prepass");
+            }
+            let reuse = rays_depth.is_some() || own_depth;
+            if reuse && !self.world_prepass_logged {
+                self.world_prepass_logged = true;
+                log::info!(
+                    "Horizon: the world drawn over {}",
+                    if own_depth {
+                        "a depth prepass of its own (HORIZON_WORLD_PREPASS=2)"
+                    } else {
+                        "the rays' depth prepass (HORIZON_WORLD_PREPASS=1)"
+                    }
+                );
+            }
+            // Its first phase over that depth, tested and not written again.
+            let phase1_pipeline = match &self.solid_on_depth {
+                Some(p) if reuse => p,
+                _ => solid_pipeline,
+            };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Horizon world"),
                 color_attachments: &attachments,
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: world_depth,
                     depth_ops: Some(wgpu::Operations {
-                        load: if reuse.is_some() {
+                        load: if reuse {
                             wgpu::LoadOp::Load
                         } else {
                             wgpu::LoadOp::Clear(0.0)
@@ -6913,7 +6992,7 @@ impl Renderer {
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
                 None => {
-                    pass.set_pipeline(solid_pipeline);
+                    pass.set_pipeline(phase1_pipeline);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
                     match cull {
