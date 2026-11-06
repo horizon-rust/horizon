@@ -809,7 +809,7 @@ impl Game<'_> {
                 .combat
                 .explicit_explosion_cause
                 .as_ref()
-                .map_or(true, |cause| {
+                .is_none_or(|cause| {
                     cause
                         .as_ref()
                         .is_some_and(|cause| self.explosion_cause_resolves(cause))

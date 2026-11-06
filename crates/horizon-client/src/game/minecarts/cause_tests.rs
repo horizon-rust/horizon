@@ -32,6 +32,7 @@ fn hit(game: &mut Game<'_>, projectile: &Projectile, id: u32) {
 fn explosion_causing_entities_parity_fixture() {
     let mut output = Vec::new();
     let mut game = crate::game::native_machines::tests::server_game();
+    game.build_registries();
     game.next_entity = 100;
     for mode in [
         "crystal",
@@ -176,9 +177,17 @@ fn explosion_causing_entities_parity_fixture() {
                         "mob" => " by @e[type=husk,name=Igniter,limit=1]",
                         _ => "",
                     };
-                    assert!(game.run_command(&format!(
-                        "damage @e[type=tnt_minecart,limit=1] 1 in_fire{by}"
-                    )));
+                    let command = format!("damage @e[type=tnt_minecart,limit=1] 1 in_fire{by}");
+                    game.chat_capture = Some(Vec::new());
+                    let accepted = game.as_console(|g| g.run_command(&command));
+                    let feedback: Vec<_> = game
+                        .chat_capture
+                        .take()
+                        .unwrap()
+                        .into_iter()
+                        .map(|m| m.component())
+                        .collect();
+                    assert!(accepted, "{mode}/{owner}: {feedback:?}");
                 } else if cause.is_some() {
                     let arrow = shot(arrow_kind.clone(), shooter, guest);
                     hit(&mut game, &arrow, 7);

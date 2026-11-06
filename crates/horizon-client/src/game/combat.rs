@@ -794,7 +794,7 @@ mod held_item_tests {
 }
 #[cfg(test)]
 mod noted_tests {
-    use super::CombatTracker;
+    use super::{CombatTracker, PendingAttacker};
     use horizon_client::text::Text;
 
     /// A canceled hit forgets what was noted for it, also before its hurt
