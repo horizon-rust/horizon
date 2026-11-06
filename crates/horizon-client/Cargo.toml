@@ -65,6 +65,7 @@ log = "0.4"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
 flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs", "runtime_detection"] }
 horizon-theme = { path = "../horizon-theme" }
+rayon = "1.10"
 # Opt-in data collection: the game keeps, the launcher sends (docs/telemetry.md); `live` is
 # the anonymous "I'm playing" ping the game sends itself (`heartbeat.rs`).
 horizon-telemetry = { path = "../horizon-telemetry", default-features = false, features = ["live"] }

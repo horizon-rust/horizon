@@ -2634,6 +2634,16 @@ impl PendingPushes {
         }
         self.by_mob.entry(id).or_default().push(v);
     }
+    pub fn merge(&mut self, mut other: PendingPushes) {
+        for (id, v) in other.list.drain(..) {
+            self.push(id, v);
+        }
+        for (id, mut vec) in other.by_mob {
+            for v in vec.drain(..) {
+                self.push(id, v);
+            }
+        }
+    }
 }
 /// `ServerLevel.sendBlockUpdated`: for each write that changed a block's collision
 /// shape, a mob whose path runs near it re-paths (`PathNavigation.shouldRecomputePath`).
@@ -2972,7 +2982,6 @@ pub struct MobWorld<'a> {
     /// `ChestBlockEntity.getOpenCount`: the players with each chest open.
     pub lid_openers: &'a HashMap<(i32, i32, i32), i32>,
     /// What a content mod's effects do, on a server (None on a client).
-    pub mod_effects: Option<&'a dyn ModEffectTicks>,
     /// The level's world border, whose walls stop a mob's moves
     /// (`Entity.collectColliders`); None: nothing stops them there.
     pub border: Option<&'a horizon_core::geometry::border::BorderGeometry>,
@@ -2980,7 +2989,10 @@ pub struct MobWorld<'a> {
 /// `MobEffectInstance.tickServer` for a content mod's effect: its
 /// `shouldApplyEffectTickThisTick` and `applyEffectTick`, which the game's
 /// native mods answer. False removes the effect.
+
+
 pub trait ModEffectTicks {
+
     fn tick_mod_effect(&self, effect: &str, mob: u32, tick_count: i32, amplifier: i32) -> bool;
 }
 /// `Entity.getTeam` of the player and of the mobs on a team.
@@ -5754,3 +5766,4 @@ mod visibility_percent_tests {
         );
     }
 }
+

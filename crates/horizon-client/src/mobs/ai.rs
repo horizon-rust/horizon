@@ -1248,7 +1248,7 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         m.invulnerable -= 1;
     }
     // LivingEntity.baseTick runs tickEffects after the timers count down.
-    tick_effects(m, w.mod_effects);
+    tick_effects(m);
     // Entity.applyEffectsFromBlocks runs in LivingEntity.aiStep, after
     // baseTick has counted the fire and the hurt timers down: a fire block or
     // lava ignites to the full 160 / 300 ticks and its hit lands after the
@@ -2853,7 +2853,7 @@ fn flower_contact_effects(m: &mut Mob, w: &MobWorld) {
 
 /// MobEffect ticking for the effects mobs receive (poison, wither,
 /// regeneration), and a content mod's on a server.
-fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
+fn tick_effects(m: &mut Mob) {
     // LivingEntity.tickEffects ticks each active effect with the mob's list
     // still in place: the damage a Poison or Wither tick deals reads the
     // list it finds (Resistance softens the hit, Infested spawns silverfish,
@@ -2879,7 +2879,7 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
         };
         let interval = |base: i32| (base >> amp.max(0)).max(1);
         // A refused mod effect is left at 0 ticks for the retain below.
-        let mut expired = false;
+        let expired = false;
         match effect {
             "minecraft:poison"
                 if count % interval(25) == 0 && !m.kind.flags.undead && m.health > 1.0 =>
@@ -2912,12 +2912,7 @@ fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
                     i += 1;
                     continue;
                 }
-                if let Some(mods) = mods
-                    && !mods.tick_mod_effect(id, m.id, count, amp)
-                {
-                    // Removed before it counts down.
-                    expired = true;
-                }
+
             }
             _ => {}
         }

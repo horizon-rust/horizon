@@ -256,7 +256,6 @@ mod tests {
             sea_level: 63,
             items: Some(&items),
             lid_openers: &lid_openers,
-            mod_effects: None,
             border: None,
         };
         for no_ai in [false, true] {

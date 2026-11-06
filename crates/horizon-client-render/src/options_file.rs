@@ -120,6 +120,7 @@ static TABLE: LazyLock<Vec<Def>> = LazyLock::new(|| {
     let id = |key: &str, count: i32, d: i32| def(key, O(Id(count)), V::Int(d));
     let pb = |key: &str, d: bool| def(key, PB, V::Bool(d));
     let mut t = vec![
+        pb("multicoreTick", true),
         b("ao", true),
         i("biomeBlendRadius", 0, 7, 2),
         def(

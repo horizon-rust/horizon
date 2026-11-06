@@ -520,7 +520,6 @@ pub(crate) fn with_resource_test_world(
         sea_level: 63,
         items: Some(&items),
         lid_openers: &lid_openers,
-        mod_effects: None,
         border: None,
     };
     f(&w, &types);

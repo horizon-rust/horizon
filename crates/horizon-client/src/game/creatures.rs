@@ -9,6 +9,7 @@ use super::{
     native_mob_draw::NativePlayerRender, native_projectiles::Impact, view_vector,
 };
 use horizon_assets::item_model::DisplayContext;
+use rayon::prelude::*;
 use horizon_client::actions::Action;
 use horizon_client::{
     Result,
@@ -871,11 +872,6 @@ impl Game<'_> {
             teams: std::sync::Arc::new(self.mob_teams()),
             items: Some(self.items()),
             lid_openers: &self.lid_openers,
-            mod_effects: if self.remote.is_none() {
-                Some(self)
-            } else {
-                None
-            },
             border: Some(self.border.geometry()),
             // The first player in the level: a server has no player of its own.
             difficulty: self.local_difficulty(
@@ -1065,7 +1061,240 @@ impl Game<'_> {
                 }
             }
             laps.lap("creature_prepare");
-            let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
+            // RAFW (Rayon-Accelerated Fanout Worker) tuning:
+            // - RAFW_MIN_ENTITIES: minimum mob threshold before parallel work-stealing dispatch
+            // - RAFW_LCG_STEP: decorrelation multiplier for thread-local mob RNG state
+            const RAFW_MIN_ENTITIES: usize = 2;
+            const RAFW_LCG_STEP: u64 = 0x7261_6677;
+
+            let use_parallel = mobs.len() >= RAFW_MIN_ENTITIES && self.settings.file.get("multicoreTick").map_or(true, |v| matches!(v, horizon_client::options_file::V::Bool(true)));
+            if use_parallel {
+                struct MobTickOutput {
+                    kept: bool,
+                    events: Vec<MobEvent>,
+                    guest_events: Vec<(u32, MobEvent)>,
+                    pushes: horizon_client::mobs::PendingPushes,
+                    corpses: Vec<Mob>,
+                    gone: Option<(u32, Vec3, f64, f64)>,
+                    dead: Option<Mob>,
+                    seen: Seen,
+                    seen_guest: Option<(u32, u32)>,
+                }
+
+                let base_parallel = MobWorld {
+                    ..base.clone()
+                };
+
+                let seed_base = base.game_time as u64;
+
+                let outputs: Vec<MobTickOutput> = mobs.as_mut_slice().par_iter_mut().enumerate().map(|(_i, m)| {
+                    let (bx, bz) = (m.position.x.floor() as i32, m.position.z.floor() as i32);
+                    if !base_parallel.world.loaded(bx, bz) {
+                        return MobTickOutput {
+                            kept: !m.hostile() || m.persistent,
+                            events: Vec::new(),
+                            guest_events: Vec::new(),
+                            pushes: Default::default(),
+                            corpses: Vec::new(),
+                            gone: None,
+                            dead: None,
+                            seen: seen(m, uuid),
+                            seen_guest: None,
+                        };
+                    }
+
+                    let bound = bindings.get(&m.id).copied();
+                    let seen_guest = if guests.is_empty() {
+                        None
+                    } else {
+                        super::lan_mobs::player_for(m, base_parallel.player.as_ref(), &guests, bound)
+                    };
+                    let active_player = match seen_guest {
+                        Some(conn) => guests.iter().find(|g| g.0 == conn).map(|g| g.1.clone()),
+                        None => base_parallel.player.clone(),
+                    };
+
+                    let nearest_player = nearest
+                        .nearest(m.position.x, m.position.y, m.position.z)
+                        .map(|p| p.position);
+                    let controlling_player_movement = horizon_client::mobs::equine::controlled(m)
+                        .then(|| {
+                            active_player
+                                .as_ref()
+                                .filter(|p| p.riding_vehicle == Some(m.id))
+                                .map(|p| p.velocity)
+                        })
+                        .flatten();
+
+                    let mut local_events = Vec::new();
+                    let mut local_guest_events = Vec::new();
+                    let mut local_pushes = horizon_client::mobs::PendingPushes::default();
+                    let mut corpses = Vec::new();
+                    let mut gone = None;
+
+                    if !ticking(bx, bz) {
+                        let w = MobWorld {
+                            others: &snapshot,
+                            others_grid: Some(&grid),
+                            others_index: Some(&index),
+                            others_villagers: Some(&villager_slots),
+                            nearest_player,
+                            player: active_player,
+                            teams: std::sync::Arc::clone(&base_parallel.teams),
+                            ..base_parallel.clone()
+                        };
+                        let kept = horizon_client::mobs::ai::despawn_check(m, &w);
+                        let mut s = seen(m, uuid);
+                        s.alive &= kept;
+                        return MobTickOutput {
+                            kept,
+                            events: Vec::new(),
+                            guest_events: Vec::new(),
+                            pushes: Default::default(),
+                            corpses: Vec::new(),
+                            gone: None,
+                            dead: None,
+                            seen: s,
+                            seen_guest: seen_guest.map(|conn| (m.id, conn)),
+                        };
+                    }
+
+                    if round.canceled(m.id) {
+                        return MobTickOutput {
+                            kept: true,
+                            events: Vec::new(),
+                            guest_events: Vec::new(),
+                            pushes: Default::default(),
+                            corpses: Vec::new(),
+                            gone: None,
+                            dead: None,
+                            seen: seen(m, uuid),
+                            seen_guest: seen_guest.map(|conn| (m.id, conn)),
+                        };
+                    }
+
+                    let chunk_key = (bx >> 4, bz >> 4);
+                    let difficulty = {
+                        use horizon_world::food::Difficulty;
+                        let base_diff = match base_parallel.world.health_rules.difficulty {
+                            Difficulty::Peaceful => 0,
+                            Difficulty::Easy => 1,
+                            Difficulty::Normal => 2,
+                            Difficulty::Hard => 3,
+                        };
+                        let (inhabited, moon) = if base_parallel.world.chunks.contains_key(&chunk_key) {
+                            let phase = base_parallel.world.day_time.div_euclid(24000).rem_euclid(8) as usize;
+                            (
+                                base_parallel.world.inhabited.get(&chunk_key).copied().unwrap_or(0),
+                                spawning::MOON_BRIGHTNESS[phase],
+                            )
+                        } else {
+                            (0, 0.0)
+                        };
+                        spawning::LocalDifficulty::new(base_diff, base_parallel.world.day_time, inhabited, moon)
+                    };
+
+                    let mut w = MobWorld {
+                        others: &snapshot,
+                        others_grid: Some(&grid),
+                        others_index: Some(&index),
+                        others_villagers: Some(&villager_slots),
+                        difficulty,
+                        nearest_player,
+                        player: active_player,
+                        teams: std::sync::Arc::clone(&base_parallel.teams),
+                        ..base_parallel.clone()
+                    };
+                    w.controlling_player_movement = controlling_player_movement;
+
+                    let mut mob_random = horizon_core::random::LegacyRandom::new(
+                        (seed_base.wrapping_mul(RAFW_LCG_STEP).wrapping_add(m.id as u64)) as i64
+                    );
+
+                    let kept = m.tick(&w, &mut mob_random, &mut local_events);
+
+                    if !kept && !m.alive() && !m.removed && !m.extra.effects.is_empty() {
+                        corpses.push(m.clone());
+                    }
+                    horizon_client::mobs::take_mob_pushes(&mut local_events, 0, &mut local_pushes);
+
+                    if !kept && !m.removed && !m.alive() && m.death_time >= 20 {
+                        let (width, height) = (f64::from(m.width()), f64::from(m.height()));
+                        gone = Some((m.id, m.position, width, height));
+                    }
+
+                    if let Some(conn) = seen_guest {
+                        if let Some(&(_, id)) = guest_ids.iter().find(|g| g.0 == conn) {
+                            for e in &mut local_events {
+                                if let MobEvent::Projectile(p) = e
+                                    && let ProjectileKind::ShulkerBullet { target, .. } = &mut p.kind
+                                    && *target == Some(Who::Player)
+                                {
+                                    *target = Some(Who::Mob(id));
+                                }
+                            }
+                        }
+                        let mut k = 0;
+                        while k < local_events.len() {
+                            if super::lan_mobs::acts_on_player(&local_events[k]) {
+                                local_guest_events.push((conn, local_events.remove(k)));
+                            } else {
+                                k += 1;
+                            }
+                        }
+                    }
+
+                    let dead = if !m.alive() && !m.removed {
+                        Some(m.clone())
+                    } else {
+                        None
+                    };
+
+                    let mut s = seen(m, uuid);
+                    s.alive &= kept;
+
+                    MobTickOutput {
+                        kept,
+                        events: local_events,
+                        guest_events: local_guest_events,
+                        pushes: local_pushes,
+                        corpses,
+                        gone,
+                        dead,
+                        seen: s,
+                        seen_guest: seen_guest.map(|conn| (m.id, conn)),
+                    }
+                }).collect();
+
+                for (i, out) in outputs.into_iter().enumerate() {
+                    events.extend(out.events);
+                    guest_events.extend(out.guest_events);
+                    pushes.merge(out.pushes);
+                    corpses.extend(out.corpses);
+                    if let Some(g) = out.gone {
+                        gone.push(g);
+                    }
+                    if let Some(d) = out.dead {
+                        if died.insert(d.id) {
+                            dead.push(d);
+                        }
+                    }
+                    if let Some((mob_id, conn)) = out.seen_guest {
+                        bindings.insert(mob_id, conn);
+                    } else {
+                        bindings.remove(&mobs[i].id);
+                    }
+                    if !out.kept {
+                        died.remove(&mobs[i].id);
+                    }
+                    keep.push(out.kept);
+                    snapshot[i] = out.seen;
+                    snapshot[i].alive &= out.kept;
+                    grid.update(i, snapshot[i].bounds);
+                }
+                horizon_client::mobs::apply_brain_events(&mut mobs, &mut events, 0);
+            } else {
+                let mut cached_difficulty: Option<((i32, i32), spawning::LocalDifficulty)> = None;
             for i in 0..mobs.len() {
                 let m = &mut mobs[i];
                 let (bx, bz) = (m.position.x.floor() as i32, m.position.z.floor() as i32);
@@ -1232,6 +1461,7 @@ impl Game<'_> {
                 snapshot[i].alive &= kept;
                 grid.update(i, snapshot[i].bounds);
                 horizon_client::mobs::apply_brain_events(&mut mobs, &mut events, from);
+            }
             }
             laps.lap("creature_loop");
             let mut flags = keep.into_iter();

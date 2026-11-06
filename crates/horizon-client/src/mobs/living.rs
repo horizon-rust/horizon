@@ -1998,7 +1998,6 @@ mod tests {
                 sea_level: 63,
                 items: Some(&items),
                 lid_openers: &lid_openers,
-                mod_effects: None,
                 border: None,
             };
             let kind = std::sync::Arc::new(types.types["minecraft:pig"].clone());
@@ -2115,7 +2114,6 @@ mod tests {
             sea_level: 63,
             items: Some(&items),
             lid_openers: &lid_openers,
-            mod_effects: None,
             border: None,
         };
         let kind = std::sync::Arc::new(types.types["minecraft:horse"].clone());
