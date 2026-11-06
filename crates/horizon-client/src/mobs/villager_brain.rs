@@ -1736,7 +1736,7 @@ impl B {
                         pos: site,
                     });
                 }
-                restock_if_due(m, cx.w);
+                restock_if_due(m, cx.w, cx.events);
                 true
             }
             B::HarvestFarmland {
@@ -3490,12 +3490,19 @@ fn play_work_sound(m: &mut Mob, cx: &mut Bx) {
     }
 }
 /// `WorkAtPoi.start`'s restock.
-fn restock_if_due(m: &mut Mob, w: &MobWorld) {
+fn restock_if_due(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     let day = w.day_time.div_euclid(24000);
-    if let Some(t) = m.extra.trade.as_mut()
-        && t.should_restock(w.game_time, day)
-    {
-        t.restock(w.game_time);
+    if let Some(t) = m.extra.trade.as_mut() {
+        let before = t.offers.clone();
+        let before_restock = (t.last_restock, t.restocks_today);
+        let restock = t.should_restock(w.game_time, day);
+        if restock {
+            t.restock(w.game_time);
+        }
+        // shouldRestock also catches up missed demand on a new day.
+        if restock || t.offers != before || (t.last_restock, t.restocks_today) != before_restock {
+            events.push(MobEvent::VillagerRestocked { mob: m.id });
+        }
     }
 }
 #[cfg(test)]

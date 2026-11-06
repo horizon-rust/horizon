@@ -36,6 +36,38 @@ fn uuid_words(uuid: u128) -> [i32; 4] {
 }
 
 impl Game<'_> {
+    /// Development oracle: observe the actual open guest merchant, never a synthetic menu.
+    pub(super) fn harness_merchant(
+        &self,
+        host: &LanHost,
+        conn: u32,
+    ) -> Option<(i32, i32, serde_json::Value)> {
+        use serde_json::json;
+        let gm = host.play.get(&conn)?.merchant.as_ref()?;
+        let guest = host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.conn == conn && g.placed)?;
+        let id = gm.merchant.mob?;
+        self.mobs
+            .iter()
+            .find(|m| m.id == id && m.alive() && !m.removed)?;
+        let stack = |s: &Option<ItemStack>| s.as_ref().map(|s| json!([s.item.as_ref(), s.count]));
+        let session = &gm.merchant.session;
+        Some((
+            gm.window,
+            gm.state,
+            json!({"window":gm.window,"merchant":self.persist.uuids.get(&id)?,
+            "player":uuid_words(guest.uuid),"slots":gm.slots.iter().map(stack).collect::<Vec<_>>(),
+            "carried":stack(&guest.carried),"xp":session.xp,
+            "sent_offers":gm.sent.iter().map(|o|json!({"uses":o.uses,
+                "special":o.special_price_diff,"demand":o.demand,"cost":o.cost_a_count(self.items())})).collect::<Vec<_>>(),
+            "offers":session.offers.iter().map(|o|json!({"uses":o.uses,
+                "special":o.special_price_diff,"demand":o.demand,"cost":o.cost_a_count(self.items())})).collect::<Vec<_>>()}),
+        ))
+    }
+
     /// A trading screen the guest's interaction opened (it opened as a
     /// station while the guest acted): handed to the guest.
     pub(super) fn lan_open_merchant(
@@ -55,6 +87,12 @@ impl Game<'_> {
             // captured their Hero effect while they acted as the player.
             state.session.reputation = self.villager_reputation_of(id, uuid);
             state.session.update_special_prices();
+        }
+        if let Some(mob) = state
+            .mob
+            .and_then(|id| self.mobs.iter_mut().find(|m| m.id == id))
+        {
+            mob.extra.trade.get_or_insert_default().offers = state.session.offers.clone();
         }
         let title = self.merchant_display_name(&state);
         if !self.guest_may_open(host, conn, "minecraft:merchant", None) {

@@ -144,6 +144,7 @@ def main():
     parser.add_argument("--stand-fall-fixture", action="store_true")
     parser.add_argument('--orb-uuid-fixture', action='store_true')
     parser.add_argument("--mob-pickup-save-fixture", action="store_true")
+    parser.add_argument('--merchant-restock-fixture', action='store_true')
     args = parser.parse_args()
     build = args.work_dir.resolve() if args.work_dir else lab.LOCAL / 'command-exec-parity'
     build.mkdir(parents=True, exist_ok=True)
@@ -310,6 +311,9 @@ def main():
     if args.selector_bounds_fixture:
         from selector_bounds_corpus import selector_bounds
         groups = [("setup", corpus_module.group_setup()), ("selector entity bounds", selector_bounds())]
+    if args.merchant_restock_fixture:
+        from merchant_restock_corpus import cases
+        groups = [('merchant live restock', cases())]
     script = []
     for _, lines in groups:
         script.extend(lines)
@@ -351,6 +355,8 @@ def main():
         direct_input = build / 'orb-water-inputs.json'
         direct_input.write_text(json.dumps(arithmetic_inputs()), encoding='utf-8')
         java_options = ['-Dhorizon.orbWaterArithmetic=' + str(direct_input)]
+    if args.merchant_restock_fixture:
+        java_options += ['-Dhorizon.merchantFixture=true']
     run(['java', '-Xmx3G', '-Duser.timezone=UTC', *(['-Dhorizon.loadedFixture=true'] if args.loaded_fixture else []), *java_options, '-cp', os.pathsep.join([str(classes), str(jars['server']), dependency_path]),
          'dev.horizonlab.parity.VanillaCommandExecOracle', vanilla_dir / 'universe', script_path, build / 'vanilla.jsonl', SEED], 'java', cwd=vanilla_dir)
 
@@ -366,7 +372,7 @@ def main():
             sys.exit('Java direct underwater reference prerequisite failed')
     if args.reference_only:
         reference = [json.loads(line) for line in (build / 'vanilla.jsonl').read_text().splitlines()]
-        recorded = [op for op in script if op['op'] in ('player_state', 'player_loop', 'map_state', 'frame_map_state', 'mob_anger', 'raid_state', 'menu_state') or
+        recorded = [op for op in script if op['op'] in ('player_state', 'player_loop', 'map_state', 'frame_map_state', 'mob_anger', 'raid_state', 'menu_state', 'merchant_state') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
         if len(recorded) != len(reference):
@@ -410,7 +416,7 @@ def main():
     if args.loaded_fixture:
         env['HORIZON_HARNESS_LOADED_FIXTURE'] = '1'
         env['HORIZON_HARNESS_CLIENT_CONFIG'] = str(build / 'rust-client-config.json')
-    run([binary, '--resources', lab.RESOURCES, '--world', 'harness', '--seed', SEED, '--radius', 2 if args.loaded_fixture else 4], 'rust', game=True, cwd=rust_dir, env=env)
+    run([binary, '--resources', Path(os.environ.get('HORIZON_TEST_RESOURCES', lab.RESOURCES)), '--world', 'harness', '--seed', SEED, '--radius', 2 if args.loaded_fixture else 4], 'rust', game=True, cwd=rust_dir, env=env)
 
     if any(op['op'] == 'raid_state' for op in script):
         from raid_village_corpus import validate_native_inputs
@@ -439,7 +445,7 @@ def main():
     rust = [json.loads(l) for l in (build / 'rust.jsonl').open(encoding='utf-8')]
     if len(vanilla) != len(rust):
         sys.exit(f'record count differs: vanilla {len(vanilla)} rust {len(rust)}')
-    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'raid_state', 'menu_state') or
+    recorded_ops = [op for op in script if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'raid_state', 'menu_state', 'merchant_state') or
                     (op['op'] == 'cmd' and op.get('record', True)) or
                     (op['op'] == 'tick' and op.get('record'))]
     if len(recorded_ops) != len(vanilla):
@@ -465,14 +471,14 @@ def main():
     commands_by_group = []
     index = 0
     for name, lines in groups:
-        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'raid_state', 'menu_state') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
+        n = sum(1 for op in lines if op['op'] in ('falling', 'destroy_progress', 'weather_state', 'chunk_ready', 'server_distances', 'map_state', 'frame_map_state', 'light', 'player_state', 'player_loop', 'mob_anger', 'raid_state', 'menu_state', 'merchant_state') or (op['op'] == 'cmd' and op.get('record', True)) or (op['op'] == 'tick' and op.get('record')))
         commands_by_group.append((name, index, index + n))
         index += n
     mismatches = []
     failed_positions = set()
     for position, (v, r) in enumerate(zip(vanilla, rust)):
         assert v['cmd'] == r['cmd'], (v['cmd'], r['cmd'])
-        kind = compare(v, r, recorded_ops[position].get('comparison'))
+        kind = ('strict_record' if v != r else None) if args.merchant_restock_fixture else compare(v, r, recorded_ops[position].get('comparison'))
         if kind:
             failed_positions.add(position)
             mismatches.append({'kind': kind, 'cmd': v['cmd'], 'vanilla': v, 'rust': r})
