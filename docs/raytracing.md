@@ -654,7 +654,8 @@ wind):
    the light around lower. The second eye's own hardware rays left from the structures' anchor, not from the
    camera's offset to it (`hw_offset`, set with the structures' update, which since 4956cf386 the first eye alone
    runs): wherever the second eye traced itself, its rays started from the wrong place. Every view takes the offset
-   again.
+   again (29c78b580). Measured there at the fixed pose: the zone as the left eye shows it, 0.16 of 255 from
+   `HORIZON_RT_SHARE_DENOISED=0`; 9.51 ms a frame against 9.88 without the shared light.
 11. **The mirrors and the refraction look for water or glass only where the raster finds some** (gfx.rs `draw_cover`,
    shadow_rays_hw.wgsl `psr_covered`, `HORIZON_RT_PSR_COVER=0` for the old): each texel of the sharp zone, and each 2x2
    quad of the periphery, traced a ray from the camera to its surface to find the water or glass before it, a primary

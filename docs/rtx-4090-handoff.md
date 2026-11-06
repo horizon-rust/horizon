@@ -169,6 +169,13 @@ the first fake-runtime runs used 3132x3016). PR #2 (`claude/project-thread-tb0ay
   cost, but the black zone stays (nearly the same with `HORIZON_RT_SHARE_CHECK=0`), so it is not the periphery's
   shift. `HORIZON_RT_DEBUG=12` shows what the second eye took, and `HORIZON_RT_SHARE_GUARD=1` is a trial guard
   (docs/raytracing.md item 10).
+- **The right eye's black zone, fixed** (29c78b580): since 4956cf386 the camera's offset to the ray structures' anchor
+  (`hw_offset`) was set only with the structures' update, which the first eye alone runs, so the second eye's own
+  hardware rays left from the wrong place: its sun shadowed, its light around low, wherever the left eye doesn't
+  show the surface. The shared light only hid it. `HORIZON_RT_DEBUG=14` (the lit colour's parts) found it; 13
+  checks the colour's inputs. Measured on 29c78b580 at the fixed pose: the zone as the left eye (64 62 60), 0.16 of
+  255 from `HORIZON_RT_SHARE_DENOISED=0`; 9.510 and 9.517 ms a frame against 9.880 without the shared light (eye 2's
+  denoiser 0.209 against 0.454 ms; tables in the project files' `pr2-29c7-means.txt`).
 - **Ideas weighed and left:** the second eye skipping the exposure meter (the grading's local tone mapping reads the
   meter's chain, level 2, so the eye needs its own); a conservative depth reuse across the TAA jitter (holes through
   cutout gaps); the TAA's blit folded into its resolve (the hand and the rain draw over the resolved scene, so the
