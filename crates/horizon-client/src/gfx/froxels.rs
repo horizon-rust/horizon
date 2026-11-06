@@ -40,17 +40,25 @@ use glam::{DVec3, Mat4, Vec3};
 /// Pixels a froxel spans on each side (Remix's `froxelGridResolutionScale` is 16).
 pub const TILE: u32 = 16;
 
-/// The pixels a froxel spans on each side: `TILE`, or `HORIZON_FROXEL_TILE` (8 to 64) to weigh
-/// the grid's cost against its detail. The inject, the blend and the integration go by the
-/// froxels, a VR eye's 3132x3016 pixels holding 1.9 times the 3440x1440 screen's.
-pub fn tile() -> u32 {
-    static TILE_SET: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *TILE_SET.get_or_init(|| {
+/// Pixels a froxel spans on each side in a VR view: a 4400x3520 eye over about 100 degrees has
+/// some 44 pixels a degree where a 3440x1440 screen has some 30, so 24 of them span the angle 16
+/// span on the screen, with 2.3 times fewer froxels than 16 (11.85 to 11.16 ms a VR frame on the
+/// RTX 4090, KRVR's fake runtime).
+pub const EYE_TILE: u32 = 24;
+
+/// The pixels a froxel spans on each side in view `view` (0 the window, from 1 the VR views):
+/// `TILE` on the screen, `EYE_TILE` in VR, or `HORIZON_FROXEL_TILE`'s (8 to 64) in both, to
+/// weigh the grid's cost against its detail. The inject, the blend and the integration go by
+/// the froxels.
+pub fn tile(view: usize) -> u32 {
+    static TILE_SET: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    let set = *TILE_SET.get_or_init(|| {
         std::env::var("HORIZON_FROXEL_TILE")
             .ok()
             .and_then(|v| v.trim().parse::<u32>().ok())
-            .map_or(TILE, |t| t.clamp(8, 64))
-    })
+            .map(|t| t.clamp(8, 64))
+    });
+    set.unwrap_or(if view == 0 { TILE } else { EYE_TILE })
 }
 /// Slices along the rays.
 pub const SLICES: u32 = 96;
@@ -768,8 +776,8 @@ impl Froxels {
     /// The view's froxels, made (and its history dropped) when its size changed.
     fn view_froxels(&mut self, device: &wgpu::Device, view: usize, size: [u32; 2]) -> usize {
         let dims = [
-            size[0].div_ceil(tile()).max(1),
-            size[1].div_ceil(tile()).max(1),
+            size[0].div_ceil(tile(view)).max(1),
+            size[1].div_ceil(tile(view)).max(1),
             SLICES,
         ];
         if let Some(i) = self.views.iter().position(|v| v.view == view) {
