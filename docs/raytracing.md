@@ -642,7 +642,11 @@ wind):
    red (the second eye's own light, lit at the last pass's input) and the guard changes nothing; but 12 writes its
    colours into the light the next frame's bounces read. The kernel and the denoiser now keep their light from going below 0
    (a light below 0 would blacken the terrain past its sun, as the zone is); `HORIZON_RT_DEBUG=8` shows the light
-   the terrain reads, untouched.
+   the terrain reads, untouched. On cd49cc97e the zone stays black, its sun included, though 8 shows its light grey
+   there: the black comes from another of the terrain's inputs, and a NaN in the lit colour turns black at the TAA
+   (`load_scene`). `HORIZON_RT_DEBUG=13` (terrain.wgsl `rt_lit_checked`) shows the lit colour, or red where the
+   sun's mask isn't finite, blue the traced light, green the sun's tint, yellow the colour though its inputs are,
+   cyan a colour below 0 and magenta a black one.
 11. **The mirrors and the refraction look for water or glass only where the raster finds some** (gfx.rs `draw_cover`,
    shadow_rays_hw.wgsl `psr_covered`, `HORIZON_RT_PSR_COVER=0` for the old): each texel of the sharp zone, and each 2x2
    quad of the periphery, traced a ray from the camera to its surface to find the water or glass before it, a primary
