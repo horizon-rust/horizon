@@ -5729,7 +5729,10 @@ impl Renderer {
             &device,
             std::mem::size_of::<TerrainVertex>() as u64,
             flat.is_some(),
-            translucent_split(translucent_batching, flat.is_some(), shader_pack, false),
+            // RT lighting's hardware rays read a section's translucent quads after its solid
+            // ones, in the same range (`hw_rays`): no arena of their own then.
+            translucent_split(translucent_batching, flat.is_some(), shader_pack, false)
+                && !hw_rays::HwRays::supported(&device),
         );
         if let (Some(flat), Some(arena)) = (&mut flat, &translucent_arena) {
             flat.set_translucent_page_vertices(arena.page_vertices());
@@ -7366,7 +7369,7 @@ impl Renderer {
             pack.is_some_and(pack_post::PackPost::has_terrain),
             // One of Horizon's own packs with `[shadow]` draws from the same lists (`shadow_view`).
             pack.is_some_and(pack_post::PackPost::has_shadow) || self.native_shadow(),
-        );
+        ) && self.hw_rays.is_none();
         if split == self.translucent_arena.is_some() {
             return;
         }
