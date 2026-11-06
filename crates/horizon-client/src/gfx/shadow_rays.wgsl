@@ -1819,7 +1819,15 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
     let now = v.blocks.rgb + v.direct.rgb;
     let lum_now = luminance(now);
     fast_out = vec4(lum_now, lum_now * lum_now, v.rays.r, v.rays.b);
-    if rt.motion.w < 0.5 || v.rays.a < 0.0 || v.blocks.a < 0.0 { return v; }
+    if rt.motion.w < 0.5 || v.rays.a < 0.0 { return v; }
+    // Past the grid's band (`block_mask`'s a below 0) no history is kept, and none ever grows:
+    // its history is marked long, so its bounced light keeps resting in turns as it did (`trace`,
+    // gi.rgen), rather than being traced every frame across the far terrain.
+    if v.blocks.a < 0.0 {
+        var far = v;
+        far.direct.a = face_in(v.direct.a) + 8.0 * MAX_HISTORY;
+        return far;
+    }
     let q = surface_at(pixel_of(texel)) + rt.motion.xyz;
     let c = rt.prev_view_proj * vec4(q, 1.0);
     if c.w <= 0.0 { return v; }
