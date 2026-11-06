@@ -130,6 +130,9 @@ the first fake-runtime runs used 3132x3016). PR #2 (`claude/project-thread-tb0ay
   1635 MHz for f05270165 against 2200 to 2300 for b5b5252a7: at the same clock the prepass is 0.06 ms more.
   integ-final's trace read 0.9 ms more at 1905 MHz, not yet compared at one clock. Compare uncapped, or with the
   clocks locked and logged.
+- **The second eye's denoiser** (0.53 to 0.63 ms) filters only what that eye traced itself: where it took the first
+  eye's light, it copies the first eye's denoised light (`HORIZON_RT_SHARE_DENOISED=0` for the old, docs/raytracing.md
+  item 10). Not yet measured.
 - **Ideas weighed and left:** the second eye skipping the exposure meter (the grading's local tone mapping reads the
   meter's chain, level 2, so the eye needs its own); a conservative depth reuse across the TAA jitter (holes through
   cutout gaps); the TAA's blit folded into its resolve (the hand and the rain draw over the resolved scene, so the

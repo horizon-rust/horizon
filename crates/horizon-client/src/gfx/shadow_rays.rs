@@ -202,6 +202,9 @@ struct ViewMasks {
     reflection: wgpu::TextureView,
     refraction: wgpu::TextureView,
     light: [wgpu::TextureView; 2],
+    /// VR's second eye: where its light is the first eye's, the first eye's texel
+    /// (shadow_rays.wgsl `taken_out`), for its denoiser.
+    taken: wgpu::TextureView,
     /// The mask the next pass writes.
     next: usize,
     /// The last pass's view projection and camera.
@@ -287,6 +290,15 @@ const DENOISE_STEPS: [i32; 5] = [1, 2, 4, 8, 16];
 fn denoise_fovea() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("HORIZON_RT_DENOISE_FOVEA").map_or(true, |v| v != "0"))
+}
+
+/// Whether VR's second eye takes the first eye's denoised light where it takes its light
+/// (shadow_rays.wgsl `taken_out`, denoise.wgsl `taken`): the denoiser then filters only what the
+/// second eye traced itself. On unless `HORIZON_RT_SHARE_DENOISED=0`, which denoises the second eye
+/// whole again, its taken light as the first eye accumulated it.
+fn share_denoised() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_SHARE_DENOISED").map_or(true, |v| v != "0"))
 }
 
 /// The RTX 4090 build's pipeline passes for a view (`ShadowRays::run`'s `sun_pass`): given the
@@ -567,6 +579,14 @@ impl ShadowRays {
                 entry(32, last),
                 entry(33, output),
                 entry(34, output),
+                entry(
+                    35,
+                    wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::R32Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                ),
                 entry(38, cache_binding),
                 entry(39, storage),
                 entry(47, cache_binding),
@@ -687,6 +707,16 @@ impl ShadowRays {
                         min_binding_size: None,
                     },
                 ),
+                // VR's second eye: where it took the first eye's light, and that eye's denoised.
+                entry(
+                    8,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(9, read),
             ],
         });
         let denoise = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -880,6 +910,7 @@ impl ShadowRays {
                     reflection: mask(),
                     refraction: mask(),
                     light: [mask(), mask()],
+                    taken: Self::texture(device, size, wgpu::TextureFormat::R32Uint),
                     next: 0,
                     last: None,
                     frame: 0,
@@ -1005,8 +1036,14 @@ impl ShadowRays {
                     v.gi[i][0].clone(),
                     v.gi[i][1].clone(),
                 ],
+                v.light[i].clone(),
             ))
         });
+        // The first eye's denoised light, where the second eye takes it whole (`share_denoised`).
+        let first_light = first
+            .as_ref()
+            .filter(|_| share_denoised())
+            .map(|(_, _, light)| light.clone());
         let masks = self.masks(device, view, mask_size);
         let mask = masks.masks[masks.next].clone();
         let blocks = masks.blocks[masks.next].clone();
@@ -1027,6 +1064,7 @@ impl ShadowRays {
         let scratch = masks.scratch.clone();
         let light = masks.light[masks.next].clone();
         let last_light = masks.light[1 - masks.next].clone();
+        let taken = masks.taken.clone();
         let last = masks.last.replace((view_proj, camera));
         masks.next = 1 - masks.next;
         masks.frame = masks.frame.wrapping_add(1);
@@ -1049,7 +1087,11 @@ impl ShadowRays {
             mode: [
                 f32::from(u8::from(rays.lighting)),
                 f32::from(u8::from(rays.shadows)),
-                f32::from(u8::from(first.is_some())),
+                match (&first, &first_light) {
+                    (Some(_), Some(_)) => 2.0,
+                    (Some(_), None) => 1.0,
+                    (None, _) => 0.0,
+                },
                 sun_pass.as_ref().map_or(0.0, |(bits, _)| *bits as f32),
             ],
             prev_view_proj: last.map_or([[0.0; 4]; 4], |l| l.0.to_cols_array_2d()),
@@ -1077,10 +1119,10 @@ impl ShadowRays {
             rain_sun: rays.rain_sun,
             first_view_proj: first
                 .as_ref()
-                .map_or([[0.0; 4]; 4], |(m, _)| m.to_cols_array_2d()),
+                .map_or([[0.0; 4]; 4], |(m, _, _)| m.to_cols_array_2d()),
             first_inverse_view_proj: first
                 .as_ref()
-                .map_or([[0.0; 4]; 4], |(m, _)| m.inverse().to_cols_array_2d()),
+                .map_or([[0.0; 4]; 4], |(m, _, _)| m.inverse().to_cols_array_2d()),
         };
         uploads.buffer(encoder, &self.uniform, 0, bytemuck::bytes_of(&uniform));
         // The sun pass, after the uniform it reads is written and before the kernel reads it.
@@ -1110,7 +1152,7 @@ impl ShadowRays {
             self.sparse = Self::sparse_rays(device, needed);
         }
         // Without the first eye's, this view's own last masks stand in, unread.
-        let first_views = first.map(|(_, t)| t).unwrap_or_else(|| {
+        let first_views = first.map(|(_, t, _)| t).unwrap_or_else(|| {
             [
                 last_mask.clone(),
                 last_blocks.clone(),
@@ -1170,6 +1212,7 @@ impl ShadowRays {
             view(32, &last_fast),
             view(33, &reflection),
             view(34, &refraction),
+            view(35, &taken),
             wgpu::BindGroupEntry {
                 binding: 38,
                 resource: visibility.as_entire_binding(),
@@ -1296,6 +1339,10 @@ impl ShadowRays {
                         binding: 7,
                         resource: self.uniform.as_entire_binding(),
                     },
+                    view(8, &taken),
+                    // Unread unless the second eye takes it (`mode.z` 2): this view's last light
+                    // stands in, which no pass writes.
+                    view(9, first_light.as_ref().unwrap_or(&last_light)),
                 ],
             });
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -1335,7 +1382,8 @@ mod tests {
 
     #[test]
     fn the_denoiser_reads_the_rays_uniform_as_it_is_laid_out() {
-        // denoise.wgsl's `Rt` is the uniform's start, as far as the fovea (`sharp_block`).
+        // denoise.wgsl's `Rt` is the uniform's start, as far as the fovea (`sharp_block`) and the
+        // mode (`taken`).
         let source = include_str!("denoise.wgsl");
         let module = naga::front::wgsl::parse_str(source).expect("the denoiser");
         naga::valid::Validator::new(
@@ -1367,6 +1415,7 @@ mod tests {
             ("grid", std::mem::offset_of!(super::Uniform, grid)),
             ("size", std::mem::offset_of!(super::Uniform, size)),
             ("fovea", std::mem::offset_of!(super::Uniform, fovea)),
+            ("mode", std::mem::offset_of!(super::Uniform, mode)),
         ]
         .map(|(name, offset)| (name.to_string(), offset as u32));
         assert_eq!(offsets, expected);

@@ -620,6 +620,14 @@ wind):
    frustum) and, for each eye, the mirrors and the refraction. Both eyes' grain is then the same. The second eye's
    trace 4.9 to 2.7 ms (3.3 to 1.2 without the mirrors), its frame 9.45 to 7.35; no light bleeds at the near
    edges in the captures. It needs 8's multiview.
+10. **The second eye takes the first eye's denoised light too** (shadow_rays.wgsl `taken_out`, denoise.wgsl `taken`,
+   `HORIZON_RT_SHARE_DENOISED=0` for the old): where 9 took a texel's light, the kernel writes the first eye's texel
+   there (in the periphery the block's centre's, each texel shifted as the centre is), and the second eye's denoiser
+   copies the first eye's light as its five passes left it on the first pass, into the other texture they write on
+   the second, and leaves those texels be on the three after. Only what the second eye traced itself is filtered,
+   the copied light among its taps. A surface's diffuse light being the same from either eye, both eyes then show the
+   same denoised light; before, the second eye filtered the taken light again (0.53 to 0.63 ms of its 3.2 to 3.7 at
+   4400x3520 on the RTX 4090).
 
 **Kept, though measured:** the second bounce on a radiance cache miss (3 ms of 12 in the RTX Demo's interior, which
 loses 1 % of its light without it) and the reuse's visibility ray (1.3 ms; without it a neighbour's sample leaks
