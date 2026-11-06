@@ -11392,6 +11392,11 @@ impl Game<'_> {
         } else {
             self.hand_geometry(camera_alpha)
         };
+        // RT lighting: the player's body in first person, for the hardware rays alone.
+        let mut rt_body = Vec::new();
+        if !title && self.renderer.as_ref().is_some_and(|r| r.hw_rays_on()) {
+            self.rt_body_geometry(camera, self.clock.camera_fraction(), &mut rt_body);
+        }
         let screen = if title {
             Vec::new()
         } else {
@@ -11526,6 +11531,7 @@ impl Game<'_> {
             stars: stars.filter(|_| self.settings.horizon.sky || title),
             sun_path_tilt: self.settings.horizon.sun_path_tilt as f32,
             hand: &hand,
+            rt_body: &rt_body,
             hand_fov_degrees: self.hud_fov_degrees(camera_alpha as f32, camera.to_array()),
             screen: &screen,
             pack: pack_inputs,
@@ -14376,6 +14382,7 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         stars: None,
         sun_path_tilt: 0.0,
         hand: &[],
+        rt_body: &[],
         hand_fov_degrees: 70.0,
         screen: &[],
         pack: Default::default(),

@@ -231,7 +231,8 @@ pub struct Hardware<'a> {
 /// voxel grid's.
 const HARDWARE: &str = concat!(
     include_str!("shadow_rays_hw.wgsl"),
-    include_str!("shadow_rays_psr.wgsl")
+    include_str!("shadow_rays_psr.wgsl"),
+    include_str!("shadow_rays_moving.wgsl")
 );
 const NO_HARDWARE: &str = "
 const HW: bool = false;
@@ -242,6 +243,7 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
 }
 fn hw_reflect(p: vec2<i32>) -> vec4<f32> { return vec4(0.0); }
 fn hw_refract(p: vec2<i32>) -> vec4<f32> { return vec4(0.0); }
+fn hw_moving_shadow(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> bool { return false; }
 ";
 
 /// The lava's look (terrain.wgsl `lava_look`): the very text the terrain's shader draws lava with,

@@ -85,6 +85,13 @@ const KIND_CLOUD: u32 = 0xffff_fff1;
 /// The clouds' ray mask bit: the bounce rays leave it out (shadow_rays_hw.wgsl `NO_CLOUDS`), since
 /// what they hit is lit from the voxel grid and the cache, which know nothing of the sky's slab.
 const CLOUD_MASK: u8 = 0x04;
+/// The moving geometry's own ray mask bit (the entities, the player's body, the view model): the
+/// terrain's instances leave it out, so a ray masked to it meets the moving geometry alone
+/// (shadow_rays_moving.wgsl `MOVING_MASK`: which shadows a moving caster throws, for the
+/// accumulation to keep their history short). Every other ray's mask has it.
+const MOVING_MASK: u8 = 0x08;
+/// The terrain sections' mask: every bit but the moving geometry's.
+const TERRAIN_MASK: u8 = !MOVING_MASK;
 /// Cloud structures built a frame at most.
 const CLOUDS_PER_FRAME: usize = 32;
 /// Entity vertices the dynamic structures take at most, so a crowd stays bounded.
@@ -243,6 +250,9 @@ const STAT_EVERY: u64 = 2048;
 pub struct Dynamic<'a> {
     /// The entities' quads, four vertices each, relative to the camera.
     pub entities: &'a [Vertex],
+    /// The player's own body in first person, relative to the camera as the entities are: drawn
+    /// in the rays only (its shadow, its reflection), the camera never sees it.
+    pub body: &'a [Vertex],
     /// The view model's quads, relative to the camera as the hand's own projection sees them.
     pub hand: &'a [Vertex],
     /// Takes the view model's vertices to where the world's projection shows what the hand's
@@ -746,13 +756,18 @@ impl HwRays {
             ));
             let transform = [1.0, 0.0, 0.0, o.x, 0.0, 1.0, 0.0, o.y, 0.0, 0.0, 1.0, o.z];
             if self.raw.is_some() {
-                raw_rows.push(RawInstance::new(built.address, transform, n as u32, 0xff));
+                raw_rows.push(RawInstance::new(
+                    built.address,
+                    transform,
+                    n as u32,
+                    TERRAIN_MASK,
+                ));
             } else {
                 self.tlas[n] = Some(wgpu::TlasInstance::new(
                     &built.blas,
                     transform,
                     n as u32,
-                    0xff,
+                    TERRAIN_MASK,
                 ));
             }
             n += 1;
@@ -793,15 +808,20 @@ impl HwRays {
             *ENABLED.get_or_init(|| std::env::var("HORIZON_HW_DYNAMIC").map_or(true, |v| v != "0"));
         let none = Dynamic {
             entities: &[],
+            body: &[],
             hand: &[],
             hand_to_world: dynamic.hand_to_world,
             clouds: Vec::new(),
         };
         let dynamic = if enabled { dynamic } else { &none };
-        // The vertices: the entities', then the view model's moved to where the world sees them.
+        // The vertices: the entities', the player's body (one structure with the entities'), then
+        // the view model's moved to where the world sees them.
         let entities =
             &dynamic.entities[..dynamic.entities.len().min(MAX_DYNAMIC_VERTICES) / 4 * 4];
-        let hand_room = MAX_DYNAMIC_VERTICES - entities.len();
+        let body_room = MAX_DYNAMIC_VERTICES - entities.len();
+        let body = &dynamic.body[..dynamic.body.len().min(body_room) / 4 * 4];
+        let solid = entities.len() + body.len();
+        let hand_room = MAX_DYNAMIC_VERTICES - solid;
         let hand = &dynamic.hand[..dynamic.hand.len().min(hand_room) / 4 * 4];
         self.hand_scratch.clear();
         self.hand_scratch.extend(hand.iter().map(|v| {
@@ -822,7 +842,7 @@ impl HwRays {
                 ..*v
             }
         }));
-        let total = entities.len() + self.hand_scratch.len();
+        let total = solid + self.hand_scratch.len();
         if total > self.capacity {
             self.capacity = total.next_power_of_two();
             self.dynamics = Self::dynamics_buffer(device, self.capacity);
@@ -830,10 +850,17 @@ impl HwRays {
         if !entities.is_empty() {
             queue.write_buffer(&self.dynamics, 0, bytemuck::cast_slice(entities));
         }
-        if !self.hand_scratch.is_empty() {
+        if !body.is_empty() {
             queue.write_buffer(
                 &self.dynamics,
                 std::mem::size_of_val(entities) as u64,
+                bytemuck::cast_slice(body),
+            );
+        }
+        if !self.hand_scratch.is_empty() {
+            queue.write_buffer(
+                &self.dynamics,
+                (solid * std::mem::size_of::<Vertex>()) as u64,
                 bytemuck::cast_slice(&self.hand_scratch),
             );
         }
@@ -888,7 +915,7 @@ impl HwRays {
         {
             changed = true;
         }
-        let entity_quads = (entities.len() / 4) as u32;
+        let entity_quads = (solid / 4) as u32;
         let hand_quads = (self.hand_scratch.len() / 4) as u32;
         if !(changed || entity_quads + hand_quads > 0 || self.moving > 0 || self.terrain_changed) {
             return;
@@ -931,7 +958,7 @@ impl HwRays {
                 &hand_size,
                 &self.dynamics,
                 indices,
-                entities.len() as u32,
+                solid as u32,
             ));
         }
         for (tile, size) in &fresh {
@@ -963,7 +990,7 @@ impl HwRays {
             slots.push((m, offset, moving_row(KIND_ENTITY, 0), 0xff));
         }
         if let (true, Some(m)) = (hand_quads > 0, &self.hand) {
-            let first = entities.len() as u32;
+            let first = solid as u32;
             slots.push((m, offset, moving_row(KIND_ENTITY, first), 0xff));
         }
         for tile in &dynamic.clouds {

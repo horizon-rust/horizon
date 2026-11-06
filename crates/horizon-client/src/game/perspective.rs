@@ -422,8 +422,11 @@ impl Game<'_> {
     /// Whether the player's own model shows in the world view.
     fn player_model_shown(&self) -> bool {
         // A shader pack's shadow pass draws the player in first person too (shadowPlayer).
-        (!self.camera_type.first_person() || self.pack_shadow_casters.1)
-            && self.sleeping.is_none()
+        (!self.camera_type.first_person() || self.pack_shadow_casters.1) && self.player_body_shown()
+    }
+    /// Whether the player has a body to show at all: awake, alive, not a spectator, visible.
+    fn player_body_shown(&self) -> bool {
+        self.sleeping.is_none()
             && !self.spectator()
             && self.potions.effects.get("minecraft:invisibility").is_none()
             && self
@@ -444,6 +447,49 @@ impl Game<'_> {
         let Some(m) = self.player_model.as_ref() else {
             return;
         };
+        let start = out.len();
+        let packed = self.player_body_into(m, camera, alpha, out);
+        self.held_item_geometry(m, camera, alpha, packed, true, out);
+        // LivingEntity.isCurrentlyGlowing: the Glowing effect. A server's client is
+        // in its team by its profile name.
+        if self.potions.effects.get("glowing").is_some() {
+            let team = match &self.remote {
+                Some(r) => self.score.board.players_team(&r.profile_name),
+                None => self.player_team(),
+            };
+            self.mark_outline(&out[start..], super::glowing::team_color(team));
+        }
+    }
+    /// RT lighting (Horizon-only): the player's body in first person, for the hardware rays alone
+    /// (`Frame::rt_body`), so the player throws a shadow and shows in the water and the mirrors as
+    /// a shader pack's shadow pass would have it (shadowPlayer). Without what the hands hold: the
+    /// view model is in the rays already, its shadow the one the eye expects. Nothing in third
+    /// person (the entities hold the model) or while a pack's shadow pass builds it.
+    pub(super) fn rt_body_geometry(
+        &self,
+        camera: glam::DVec3,
+        alpha: f64,
+        out: &mut Vec<horizon_client::mesher::Vertex>,
+    ) {
+        if !self.camera_type.first_person()
+            || self.pack_shadow_casters.1
+            || !self.player_body_shown()
+        {
+            return;
+        }
+        if let Some(m) = self.player_model.as_ref() {
+            self.player_body_into(m, camera, alpha, out);
+        }
+    }
+    /// The player's model `m` (its armour, elytra and spin attack, not what it holds) into `out`;
+    /// returns the packed light it was lit with.
+    fn player_body_into(
+        &self,
+        m: &Mob,
+        camera: glam::DVec3,
+        alpha: f64,
+        out: &mut Vec<horizon_client::mesher::Vertex>,
+    ) -> u32 {
         let light = self.world.light(
             m.position.x.floor() as i32,
             (m.position.y + 1.62).floor() as i32,
@@ -452,7 +498,6 @@ impl Game<'_> {
         let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
-        let start = out.len();
         horizon_client::mobs::render::render_with(
             m,
             alpha as f32,
@@ -465,16 +510,7 @@ impl Game<'_> {
         );
         self.player_elytra_geometry(m, camera, alpha as f32, packed, out);
         self.spin_attack_geometry(m, camera, alpha as f32, packed, out);
-        self.held_item_geometry(m, camera, alpha, packed, true, out);
-        // LivingEntity.isCurrentlyGlowing: the Glowing effect. A server's client is
-        // in its team by its profile name.
-        if self.potions.effects.get("glowing").is_some() {
-            let team = match &self.remote {
-                Some(r) => self.score.board.players_team(&r.profile_name),
-                None => self.player_team(),
-            };
-            self.mark_outline(&out[start..], super::glowing::team_color(team));
-        }
+        packed
     }
     /// `extractEntityInInventoryFollowsMouse`: the player in the box
     /// `[x0, x1) x [y0, y1)`, `size` pixels per block, turned toward the
