@@ -117,8 +117,6 @@ struct EyeChain {
     images: Vec<wgpu::Texture>,
     /// An image has been released: a layer may show it again without a new one.
     released: bool,
-    /// A panel's image acquired whose wait ran out (`Xr::quad_texture`): waited for again.
-    acquired: Option<usize>,
 }
 
 pub struct Xr {
@@ -459,7 +457,6 @@ impl Xr {
             swapchain,
             images,
             released: false,
-            acquired: None,
         })
     }
 
@@ -676,60 +673,30 @@ impl Xr {
         self.quads[index].as_ref().is_some_and(|c| c.released)
     }
 
-    /// Acquires panel `index`'s next image for `frame`, unless it holds one (`quad_texture`
-    /// waits for it): apart, so that each can be timed.
-    pub fn quad_acquire(&mut self, index: usize, frame: &Frame) -> Result<(), Error> {
-        if let Some(chain) = &mut self.quads[index]
-            && frame.quad_images[index].is_none()
-            && chain.acquired.is_none()
-        {
-            let image = chain
-                .swapchain
-                .acquire_image()
-                .map_err(err("xrAcquireSwapchainImage"))?;
-            chain.acquired = Some(image as usize);
-        }
-        Ok(())
-    }
-
-    /// Panel `index`'s image for `frame` once the compositor has done reading it: acquired on
-    /// the first call (`quad_acquire`), then waited for up to `timeout`. `None` when the panel
-    /// was not made, or when the wait ran out: the image stays acquired, the next call waits
-    /// for it again (OpenXR waits on the same image), and the layer shows the image released
-    /// last meanwhile.
+    /// Panel `index`'s image for `frame` (acquired on the first call), when it was made.
     pub fn quad_texture(
         &mut self,
         index: usize,
         frame: &mut Frame,
-        timeout: xr::Duration,
     ) -> Result<Option<wgpu::Texture>, Error> {
-        self.quad_acquire(index, frame)?;
         let Some(chain) = &mut self.quads[index] else {
             return Ok(None);
         };
-        if let Some(image) = frame.quad_images[index] {
-            return Ok(Some(chain.images[image].clone()));
-        }
-        let Some(image) = chain.acquired else {
-            return Ok(None);
+        let image = match frame.quad_images[index] {
+            Some(image) => image,
+            None => {
+                let image = chain
+                    .swapchain
+                    .acquire_image()
+                    .map_err(err("xrAcquireSwapchainImage"))? as usize;
+                chain
+                    .swapchain
+                    .wait_image(xr::Duration::INFINITE)
+                    .map_err(err("xrWaitSwapchainImage"))?;
+                frame.quad_images[index] = Some(image);
+                image
+            }
         };
-        // Called raw: the binding's `wait_image` takes a timeout for a success.
-        let info = xr::sys::SwapchainImageWaitInfo {
-            ty: xr::sys::SwapchainImageWaitInfo::TYPE,
-            next: std::ptr::null(),
-            timeout,
-        };
-        // SAFETY: the swapchain is alive, and its image acquired above is not yet waited for.
-        let result =
-            unsafe { (self.xr.fp().wait_swapchain_image)(chain.swapchain.as_raw(), &info) };
-        if result == xr::sys::Result::TIMEOUT_EXPIRED {
-            return Ok(None);
-        }
-        if result.into_raw() < 0 {
-            return Err(err("xrWaitSwapchainImage")(result));
-        }
-        chain.acquired = None;
-        frame.quad_images[index] = Some(image);
         Ok(Some(chain.images[image].clone()))
     }
 
@@ -761,17 +728,10 @@ impl Xr {
         // A panel not drawn this frame shows the image released last (OpenXR keeps it).
         for (chain, image) in self.quads.iter_mut().zip(frame.quad_images) {
             if let (Some(chain), Some(_)) = (chain, image) {
-                // Raw, as its wait was (`quad_texture`).
-                // SAFETY: the swapchain is alive, and its image was acquired and waited for.
-                let result = unsafe {
-                    (self.xr.fp().release_swapchain_image)(
-                        chain.swapchain.as_raw(),
-                        std::ptr::null(),
-                    )
-                };
-                if result.into_raw() < 0 {
-                    return Err(err("xrReleaseSwapchainImage")(result));
-                }
+                chain
+                    .swapchain
+                    .release_image()
+                    .map_err(err("xrReleaseSwapchainImage"))?;
                 chain.released = true;
             }
         }

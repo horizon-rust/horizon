@@ -24,19 +24,6 @@ use super::panorama::Backdrop;
 use super::{Frame, Renderer, Result};
 use crate::gamepad::{Button, PadState};
 
-/// How long a frame waits for a panel's next image: not at all, unless
-/// `HORIZON_XR_PANEL_POLL=0` (until the compositor frees it, as before). Through KRVR a panel
-/// drawn again stalled the whole frame about 2 s now and then, the CPU busy in `vr_panel`
-/// (FIXE01, 2026-11-06); a frame that finds the image still read now draws it on a later one.
-fn panel_wait() -> horizon_xr::openxr::Duration {
-    static POLL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *POLL.get_or_init(|| std::env::var("HORIZON_XR_PANEL_POLL").map_or(true, |v| v != "0")) {
-        horizon_xr::openxr::Duration::NONE
-    } else {
-        horizon_xr::openxr::Duration::INFINITE
-    }
-}
-
 /// The session, shared with a renderer that reloads resources on the same device.
 pub(super) type Shared = Arc<Mutex<horizon_xr::Xr>>;
 
@@ -482,20 +469,14 @@ impl Renderer {
             h.finish()
         };
         let unchanged = self.xr_state.panel_hud == Some(hud) && xr.quad_ready(PANEL);
-        let mut drawn = unchanged;
-        if !unchanged && !frame.hud.vertices.is_empty() {
-            crate::spans::time("vr_panel_acquire", || xr.quad_acquire(PANEL, &xr_frame))?;
-            let texture = crate::spans::time("vr_panel_wait", || {
-                xr.quad_texture(PANEL, &mut xr_frame, panel_wait())
-            })?;
-            if let Some(texture) = texture {
-                crate::spans::time("vr_panel_draw", || self.draw_panel(frame, &texture, size));
-                self.xr_state.panel_hud = Some(hud);
-                drawn = true;
-            }
-        }
-        // The HUD drawn now, or while the compositor still reads the next image, the last one.
-        if !frame.hud.vertices.is_empty() && (drawn || xr.quad_ready(PANEL)) {
+        if unchanged && !frame.hud.vertices.is_empty() {
+            xr_frame.quads[PANEL] = Some(self.place_panel(&xr_frame, size));
+        } else if !frame.hud.vertices.is_empty()
+            && let Some(texture) =
+                crate::spans::time("vr_panel_image", || xr.quad_texture(PANEL, &mut xr_frame))?
+        {
+            crate::spans::time("vr_panel_draw", || self.draw_panel(frame, &texture, size));
+            self.xr_state.panel_hud = Some(hud);
             xr_frame.quads[PANEL] = Some(self.place_panel(&xr_frame, size));
         }
         crate::spans::time("vr_point", || self.point(&mut xr, &mut xr_frame, size))?;
@@ -586,7 +567,7 @@ impl Renderer {
         if xr.quad_sizes[LASER] != LASER_IMAGE {
             xr.create_quad(LASER, LASER_IMAGE, self.config.format)?;
         }
-        let Some(texture) = xr.quad_texture(LASER, xr_frame, panel_wait())? else {
+        let Some(texture) = xr.quad_texture(LASER, xr_frame)? else {
             return Ok(());
         };
         let bgra = self.config.format.remove_srgb_suffix() == wgpu::TextureFormat::Bgra8Unorm;

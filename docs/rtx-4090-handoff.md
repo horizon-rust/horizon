@@ -122,9 +122,9 @@ the first fake-runtime runs used 3132x3016). PR #2 (`claude/project-thread-tb0ay
 - **Measured on integ-final** (PRs #2 to #12 merged, 4400x3520): 11.14 ms a frame. The denoiser filtering VR's
   periphery by its 4x4 blocks (2db53a830, `HORIZON_RT_DENOISE_FOVEA=0` for the old) gives 0.11 ms; VR's rays' prepass
   at the rays' resolution, 2200x1760 an eye (486eb379a, `HORIZON_RT_PREPASS_HALF=0` for the old), gives 0.76 ms.
-- **VR stalls:** every VR run so far froze about 2 s every 2 s or so, the CPU busy in `vr_panel`, where the panel's
-  next image was waited for without a timeout. It is polled now (a847b9f34, `HORIZON_XR_PANEL_POLL=0` for the old),
-  with spans for each of the panel's calls; not yet measured.
+- **VR stalls, closed:** the fake runtime froze a frame about 2.5 s every 180 frames, writing its captures inside
+  `xrEndFrame`; it writes them on a thread of its own now. KRVR's own log shows no such waits. Without them, integ-final
+  is at 10.10 ms a frame (eye 1 6.37, eye 2 3.67), the means of `Horizon VR: GPU means` over the same frames.
 - **Desktop, closed:** between b5b5252a7 and 482620a06 the rays' prepass read 0.33 ms more, `world: phase 1` 0.9 to
   1.1, the forest's trace 0.65. An A-B-A run with the clocks logged found the game capped at 30 fps, the GPU down to
   1635 MHz for f05270165 against 2200 to 2300 for b5b5252a7: at the same clock the prepass is 0.06 ms more.
