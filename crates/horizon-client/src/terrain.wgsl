@@ -971,6 +971,9 @@ fn rt_sky_level(level: f32) -> f32 {
 // The material `m` (on a face of normal `geo`, camera-relative `pos`) lit, before the fog; `light`
 // its sky and block light levels (0 to 15), `v` the rays' visibility, `traced` the light sources'.
 const FIREFLY_LUMINANCE: f32 = 5.0;
+// HORIZON_RT_DEBUG=14 (`rt_terms_view`): the last `rt_shade`'s sun (with its highlight), its light
+// around, how much of that is traced (`traced`'s alpha), its reflection; luminances.
+var<private> rt_terms: vec4<f32>;
 fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: vec3<f32>,
     traced: vec4<f32>, tint: vec3<f32>) -> vec3<f32> {
     let n = m.normal;
@@ -1034,6 +1037,11 @@ fn rt_shade(m: RtMaterial, geo: vec3<f32>, pos: vec3<f32>, light: vec2<f32>, v: 
     if rt_mirror.a > 0.5 { reflected = rt_mirror.rgb * ambient_f; }
     // The rain's impacts (`rt_spray`): their broken crests scatter the sky's light.
     let spray = rt_sky(vec3(0.0, 1.0, 0.0)) * seen * (RAIN_SPRAY * rt_spray);
+    if globals.rt_mode.y > 6.5 && globals.rt_mode.y < 7.5 {
+        let y = vec3(0.2126, 0.7152, 0.0722);
+        rt_terms = vec4(dot(sun * (direct + through) + highlight, y),
+            dot(diffuse * (1.0 - ambient_f) * around, y), traced.a, dot(reflected, y));
+    }
     return sun * (direct + through) + highlight + diffuse * (1.0 - ambient_f) * around + reflected
         + m.albedo * m.emission * MATERIAL_EMISSION + spray;
 }
@@ -1892,7 +1900,8 @@ fn rt_finite4(v: vec4<f32>) -> bool {
 // HORIZON_RT_DEBUG=13: the RT lit colour `c` at the fragment at `pixel` (camera-relative `pos`),
 // or which of its inputs is not a finite number, read as the colour read them (`rt_taps`): red
 // the rays' mask (`rt_visibility`), blue the denoised light (`rt_traced`), green the sun's tint;
-// yellow the colour itself from finite inputs, cyan the colour below 0, magenta the colour black.
+// yellow the colour itself from finite inputs, cyan the colour below 0, magenta the colour too dark
+// to show (under 1e-3 paper white).
 fn rt_checked(c: vec3<f32>, pos: vec3<f32>, pixel: vec2<f32>) -> vec3<f32> {
     let v = rt_visibility(pos, pixel);
     let traced = rt_traced(pixel);
@@ -1902,8 +1911,18 @@ fn rt_checked(c: vec3<f32>, pos: vec3<f32>, pixel: vec2<f32>) -> vec3<f32> {
     if !rt_finite4(vec4(tint, 0.0)) { return vec3(0.0, 4.0, 0.0); }
     if !rt_finite4(vec4(c, 0.0)) { return vec3(4.0, 4.0, 0.0); }
     if any(c < vec3(0.0)) { return vec3(0.0, 4.0, 4.0); }
-    if dot(c, vec3(0.2126, 0.7152, 0.0722)) < 1e-6 { return vec3(4.0, 0.0, 4.0); }
+    if dot(c, vec3(0.2126, 0.7152, 0.0722)) < 1e-3 { return vec3(4.0, 0.0, 4.0); }
     return c;
+}
+// A luminance on a log scale for the debug views: 1e-4 paper white and less 0, 1 and more 1.
+fn rt_log(x: f32) -> f32 {
+    return clamp(1.0 + 0.0752575 * log2(max(x, 1e-12)), 0.0, 1.0);
+}
+// HORIZON_RT_DEBUG=14: the parts of the lit colour (`rt_terms`), red the sun's and green the light
+// around's on a log scale (1e-4 to 1 paper white), blue how much of the light around is traced (the
+// denoised light's alpha: 0 the light levels alone, as past the grid).
+fn rt_terms_view() -> vec3<f32> {
+    return vec3(rt_log(rt_terms.x), rt_log(rt_terms.y), clamp(rt_terms.z, 0.0, 1.0));
 }
 // The face's normal toward the camera, from the fragment's position (faces are flat: exact).
 fn face_normal(pos: vec3<f32>) -> vec3<f32> {
@@ -1934,6 +1953,7 @@ fn face_normal(pos: vec3<f32>) -> vec3<f32> {
         if globals.rt_mode.y > 5.5 && globals.rt_mode.y < 6.5 {
             return vec4(rt_checked(lit, in.pos, in.clip.xy), 1.0);
         }
+        if globals.rt_mode.y > 6.5 && globals.rt_mode.y < 7.5 { return vec4(rt_terms_view(), 1.0); }
         return vec4(lit, 1.0);
     }
     // RT lighting: a light-emitting block is lit as any other, and only its burning texels

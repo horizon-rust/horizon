@@ -6072,6 +6072,8 @@ impl Renderer {
                     // 13: the RT lit colour, or which of its inputs isn't finite (terrain.wgsl
                     // `rt_checked`).
                     13 => 6.0,
+                    // 14: the parts of the RT lit colour (terrain.wgsl `rt_terms_view`).
+                    14 => 7.0,
                     _ => 0.0,
                 },
                 // The light the rays trace toward is the moon's.

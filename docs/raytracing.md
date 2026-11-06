@@ -646,7 +646,11 @@ wind):
    there: the black comes from another of the terrain's inputs, and a NaN in the lit colour turns black at the TAA
    (`load_scene`). `HORIZON_RT_DEBUG=13` (terrain.wgsl `rt_checked`) shows the lit colour, or red where the
    sun's mask isn't finite, blue the traced light, green the sun's tint, yellow the colour though its inputs are,
-   cyan a colour below 0 and magenta a black one.
+   cyan a colour below 0 and magenta one too dark to show (under 1e-3 paper white: ACES's toe turns it black).
+   On e8b54293e (threshold 1e-6 then) the zone shows none of these, still black. `HORIZON_RT_DEBUG=14`
+   (`rt_terms_view`) shows the lit colour's parts: red the sun's and green the light around's, on a log scale from
+   1e-4 to 1 paper white, blue the denoised light's alpha (how much of the light around is traced, the light
+   levels standing in for the rest).
 11. **The mirrors and the refraction look for water or glass only where the raster finds some** (gfx.rs `draw_cover`,
    shadow_rays_hw.wgsl `psr_covered`, `HORIZON_RT_PSR_COVER=0` for the old): each texel of the sharp zone, and each 2x2
    quad of the periphery, traced a ray from the camera to its surface to find the water or glass before it, a primary
