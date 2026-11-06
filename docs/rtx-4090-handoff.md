@@ -97,6 +97,28 @@ layouts in the descriptor writes (`DEPTH_STENCIL_READ_ONLY_OPTIMAL` for the dept
 sprites and atlas, `GENERAL` for the output: what wgpu-hal's `derive_image_layout` gives the states asked for), the
 barriers' stages, a buffer whose usage lacks what the transition needs.
 
+## Update, 6 November: toward 90 fps in the headset (PR #2)
+
+The target is now 90 fps in VR, both eyes at 4400x3520 (KRVR's RenderResolution 4400 on the user's Apple Vision Pro;
+the first fake-runtime runs used 3132x3016). PR #2 (`claude/project-thread-tb0ay4`, based on this branch) holds:
+
+- **VR's device gets the RTX extensions** (micromaps, SER, ray tracing pipelines: `horizon-xr` `rtx_extensions`).
+- **In VR only the first eye touches `hw_rays`' state** (`hw_update`, raw builds, the TLAS): the second eye's raw BLAS
+  builds used to replace the first's before submission, which lost the device with micromaps (4956cf386). Keep it so.
+- **Measured at 3132x3016** (fake runtime, `--hz 1000`, look_around, ~9000 frames): GPU 8.60 ms a frame with micromaps,
+  9.01 without; CPU median 6.3. First eye 4.75 ms: both eyes' depth prepass 0.96, raster 0.60, structures 0.59,
+  trace 0.49, froxels inject 0.41, denoiser 0.40, integrate 0.31, TAA 0.26. Second eye 2.23 ms. The per-eye tables are
+  in the project files (`vr-4956-report.txt`).
+- **Switches added for the A/B** (each gain on by default, the variable restores the old behaviour):
+  `HORIZON_RT_FAR_EVERY_FRAME=1` (the far field reran every frame, twice a VR frame: now when a shadow would move),
+  `HORIZON_RT_PREPASS_SPLIT=0` (the rays' prepass drew every quad through the alpha test: now the opaque ones without a
+  fragment shader), `HORIZON_FROXEL_TILE` (16 by default; the VR eye has 3.1 times the screen's froxels at 4400x3520),
+  `HORIZON_WORLD_PREPASS=1|2` (the world over a depth prepass, off by default until measured).
+- **Ideas weighed and left:** the second eye skipping the exposure meter (the grading's local tone mapping reads the
+  meter's chain, level 2, so the eye needs its own); a conservative depth reuse across the TAA jitter (holes through
+  cutout gaps). **Still open:** the rays' prepass at the rays' resolution in VR (one ray for 2x2 pixels), VR's world
+  raster over the prepass (needs one matrix for both, the jitter), occlusion culling in the eyes.
+
 ## Open questions, with the way to answer them
 
 1. **Why did the opaque geometries give 0.3 ms of the 1.3 to 1.7 the floor promised?** The log line "Horizon RT
