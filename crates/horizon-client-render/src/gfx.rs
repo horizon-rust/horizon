@@ -1268,6 +1268,8 @@ pub struct Renderer {
     static_entity_frame_stats: StaticCacheFrameStats,
     hdr_mark_pipeline: wgpu::RenderPipeline,
     hdr_hand_unmark_pipeline: wgpu::RenderPipeline,
+    /// `hdr_mark_pipeline` in the frame's format, for the hand's marks on HDR output's kept frame.
+    hdr_hand_mark_pipeline: wgpu::RenderPipeline,
     hdr_mark_lightning_pipeline: wgpu::RenderPipeline,
     weather: weather::Weather,
     crumbling_pipeline: wgpu::RenderPipeline,
@@ -3263,7 +3265,14 @@ impl Renderer {
             adapter.get_texture_format_features(WIDE_FRAME),
         );
         crate::graphics::offer_smooth_gradients(wide_ok);
-        let frame_format = frame_format(wide_frame, hdr_output.is_some(), wide_ok, config.format);
+        // VR's eyes and panel are the runtime's 8-bit images (`xr`), drawn in the swapchain's
+        // format: the 16-bit frame is the window's HDR output's alone.
+        let frame_format = frame_format(
+            wide_frame && xr.is_none(),
+            hdr_output.is_some(),
+            wide_ok,
+            config.format,
+        );
         if previous.is_none() {
             startup_step(format_args!("creating the pipelines"));
         }
@@ -4816,15 +4825,16 @@ impl Renderer {
             }),
         ];
         #[allow(clippy::too_many_arguments)]
-        let entity_pipeline_with = |label,
-                                    cull_mode,
-                                    depth_write,
-                                    compare,
-                                    bias,
-                                    blend,
-                                    clouds,
-                                    fragment: &str,
-                                    write_mask| {
+        let entity_pipeline_for = |target_format: wgpu::TextureFormat,
+                                   label,
+                                   cull_mode,
+                                   depth_write,
+                                   compare,
+                                   bias,
+                                   blend,
+                                   clouds,
+                                   fragment: &str,
+                                   write_mask| {
             kept.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(if clouds {
@@ -4855,7 +4865,7 @@ impl Renderer {
                     entry_point: Some(fragment),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: world_format,
+                        format: target_format,
                         blend: Some(blend),
                         write_mask,
                     })],
@@ -4864,6 +4874,21 @@ impl Renderer {
                 cache: None,
             })
         };
+        let entity_pipeline_with =
+            |label, cull_mode, depth_write, compare, bias, blend, clouds, fragment: &str, mask| {
+                entity_pipeline_for(
+                    world_format,
+                    label,
+                    cull_mode,
+                    depth_write,
+                    compare,
+                    bias,
+                    blend,
+                    clouds,
+                    fragment,
+                    mask,
+                )
+            };
         let entity_pipeline = |label, cull_mode, depth_write, compare, bias, blend, clouds| {
             entity_pipeline_with(
                 label,
@@ -5081,7 +5106,22 @@ impl Renderer {
             "fs_hdr_mark",
             wgpu::ColorWrites::ALPHA,
         );
-        let hdr_hand_unmark_pipeline = entity_pipeline_with(
+        // The hand's marks go onto HDR output's kept frame (`Hdr::hand_light_view`), in the
+        // frame's format, which under Linear Light is not the world's.
+        let hdr_hand_mark_pipeline = entity_pipeline_for(
+            frame_format,
+            "HDR hand mark",
+            None,
+            false,
+            wgpu::CompareFunction::GreaterEqual,
+            Default::default(),
+            wgpu::BlendState::REPLACE,
+            false,
+            "fs_hdr_mark",
+            wgpu::ColorWrites::ALPHA,
+        );
+        let hdr_hand_unmark_pipeline = entity_pipeline_for(
+            frame_format,
             "HDR hand unmark",
             None,
             false,
@@ -5860,6 +5900,7 @@ impl Renderer {
             static_entity_pipeline,
             hdr_mark_pipeline,
             hdr_hand_unmark_pipeline,
+            hdr_hand_mark_pipeline,
             hdr_mark_lightning_pipeline,
             weather,
             crumbling_pipeline,
@@ -14323,7 +14364,7 @@ impl Renderer {
                     let quads = 0..overlay.hand_quads * 6;
                     pass.set_pipeline(&self.hdr_hand_unmark_pipeline);
                     pass.draw_indexed(quads.clone(), overlay.first_hand_vertex, 0..1);
-                    pass.set_pipeline(&self.hdr_mark_pipeline);
+                    pass.set_pipeline(&self.hdr_hand_mark_pipeline);
                     pass.draw_indexed(quads, overlay.first_hand_vertex, 0..1);
                 }
             }
