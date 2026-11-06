@@ -46,7 +46,23 @@ pub(super) fn resort_step(distance: f64) -> i32 {
 /// opposite pixels of a dither pattern (`terrain.wgsl`'s `faded_out`), so detail changing
 /// with distance blends instead of popping, and each pixel still shows one opaque surface
 /// (no sorting, depth and shadow passes unchanged).
-const FADE: Duration = Duration::from_millis(600);
+///
+/// 1.5 s (`HORIZON_LOD_FADE_MS`, 100 to 10000; it was 0.6 s): while the far terrain fills in
+/// and refines after the player appears, tiles change all over the view for minutes, and a
+/// short cross-fade made each change a visible flicker; a longer one turns them into a slow
+/// blend that the eye hardly follows.
+fn fade_time() -> Duration {
+    static FADE: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    *FADE.get_or_init(|| {
+        Duration::from_millis(
+            std::env::var("HORIZON_LOD_FADE_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|ms| (100..=10_000).contains(ms))
+                .unwrap_or(1500),
+        )
+    })
+}
 
 /// What uploading a tile costs a byte of its vertices, learned from the tiles before it, so
 /// `upload_lods` stops before a tile that would overrun its budget rather than after: it
@@ -138,7 +154,7 @@ pub(super) struct Tile {
 impl Tile {
     /// Whether it is drawn whole at `now` (not fading in or out), so its occluders count.
     pub fn whole(&self, now: Instant) -> bool {
-        self.leaving.is_none() && self.shown.is_some_and(|since| now - since >= FADE)
+        self.leaving.is_none() && self.shown.is_some_and(|since| now - since >= fade_time())
     }
     /// Its box in the world, unsunk by the Earth's curvature.
     pub fn world_box(&self, key: TileKey) -> (DVec3, DVec3) {
@@ -150,7 +166,7 @@ impl Tile {
     }
     /// Its instance's `w` (`instance`) at `now`; `None` hidden.
     fn fade(&self, now: Instant) -> Option<f32> {
-        let progress = |since: Instant| (now - since).as_secs_f32() / FADE.as_secs_f32();
+        let progress = |since: Instant| (now - since).as_secs_f32() / fade_time().as_secs_f32();
         match (self.leaving, self.shown) {
             (Some(since), _) => Some(4.0 + progress(since).min(0.999)),
             (None, Some(since)) if progress(since) < 1.0 => Some(2.0 + progress(since)),
@@ -310,14 +326,14 @@ impl Renderer {
 
     /// Uploads queued tile meshes within `budget` (at least one; each next one only if its
     /// predicted time fits, `UploadPace`), then, once all are in, fades them in and the
-    /// tiles they replace out (`FADE`).
+    /// tiles they replace out (`fade_time`).
     pub fn upload_lods(&mut self, budget: Duration) {
         let start = Instant::now();
         let mut uploaded = 0;
         let faded: Vec<_> = self
             .lods
             .iter()
-            .filter(|(_, t)| t.leaving.is_some_and(|since| start - since >= FADE))
+            .filter(|(_, t)| t.leaving.is_some_and(|since| start - since >= fade_time()))
             .map(|(&k, _)| k)
             .collect();
         for key in faded {
@@ -334,7 +350,7 @@ impl Renderer {
                     .as_ref()
                     .is_some_and(|cutout| *cutout != self.lod_cutout);
                 let shown = if covering {
-                    start.checked_sub(FADE).unwrap_or(start)
+                    start.checked_sub(fade_time()).unwrap_or(start)
                 } else {
                     start
                 };

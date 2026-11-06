@@ -753,6 +753,22 @@ impl Game<'_> {
     /// The chunks to keep loaded: the players' (lan_update_streaming), or
     /// the spawn chunk while nobody is online.
     pub(super) fn update_dedicated_streaming(&mut self) {
+        // The first player's columns ahead load first (`Streaming::ahead`): where they fly,
+        // faster than 5 blocks a second, else where they look.
+        self.streaming.ahead = self.lan.as_ref().and_then(|h| {
+            let g = h.hub.guests.iter().find(|g| h.hub.here(g))?;
+            let (vx, vz) = g
+                .motion
+                .as_ref()
+                .map_or((0.0, 0.0), |m| (m.velocity.x as f32, m.velocity.z as f32));
+            let speed = vx.hypot(vz);
+            Some(if speed > 0.25 {
+                [vx / speed, vz / speed]
+            } else {
+                let yaw = g.yaw.to_radians();
+                [-yaw.sin(), yaw.cos()]
+            })
+        });
         let center = self
             .lan
             .as_ref()
