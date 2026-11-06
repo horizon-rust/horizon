@@ -98,13 +98,52 @@ fn sharp_block(p: vec2<i32>) -> bool {
     return dot(normalize(c.xyz / c.w), rt.fovea.xyz) >= rt.fovea.w;
 }
 
+// `HORIZON_RT_DEBUG=12`: VR's second eye's light, where it takes the first eye's denoised light
+// (`rt.mode.z` 2), as what it took. Taken from the first eye: green lit, cyan black though the
+// accumulated light there isn't, blue both black. Its own: red lit, yellow black from the
+// filter though the accumulated light isn't, magenta both black.
+override DEBUG: u32 = 0u;
+fn debug_share(p: vec2<i32>, taken_at: u32) -> vec4<f32> {
+    let here = textureLoad(input, p, 0);
+    let fed = luminance(usable(textureLoad(accumulated, p, 0).rgb
+        + max(textureLoad(direct, p, 0).rgb, vec3(0.0)))) > 0.01;
+    var lit = luminance(usable(here.rgb)) > 0.01;
+    var colour = vec3(4.0, select(0.0, 4.0, fed), select(4.0, 0.0, fed));
+    if lit { colour = vec3(4.0, 0.0, 0.0); }
+    if taken_at != 0u {
+        let t = vec2<i32>(i32(taken_at & 0xffffu) - 1, i32(taken_at >> 16u));
+        lit = luminance(usable(textureLoad(first_light, t, 0).rgb)) > 0.01;
+        colour = select(vec3(0.0, select(0.0, 4.0, fed), 4.0), vec3(0.0, 4.0, 0.0), lit);
+    }
+    return vec4(colour, max(here.a, 1.0));
+}
+
+// `HORIZON_RT_SHARE_GUARD=1`, a trial: VR's second eye takes the first eye's light only where it
+// isn't far darker (under a quarter) than the light accumulated at the texel, the first eye's
+// own before its filter; elsewhere it filters the texel as its own. The same in every pass (from
+// what no pass writes), so a texel is copied or filtered throughout.
+override SHARE_GUARD: bool = false;
+fn takes(p: vec2<i32>, taken_at: u32) -> bool {
+    if taken_at == 0u { return false; }
+    if !SHARE_GUARD { return true; }
+    let t = vec2<i32>(i32(taken_at & 0xffffu) - 1, i32(taken_at >> 16u));
+    let copied = luminance(usable(textureLoad(first_light, t, 0).rgb));
+    let own = luminance(usable(textureLoad(accumulated, p, 0).rgb
+        + max(textureLoad(direct, p, 0).rgb, vec3(0.0))));
+    return copied >= 0.25 * own;
+}
+
 @compute @workgroup_size(8, 8) fn cs_denoise(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = vec2<i32>(textureDimensions(input));
     let p = vec2<i32>(id.xy);
     if any(p >= size) { return; }
     if rt.mode.z > 1.5 {
         let taken_at = textureLoad(taken, p, 0).r;
-        if taken_at != 0u {
+        if DEBUG == 12u && params.step.y == 1 {
+            textureStore(output, p, debug_share(p, taken_at));
+            return;
+        }
+        if takes(p, taken_at) {
             if params.step.x == 1 {
                 let t = vec2<i32>(i32(taken_at & 0xffffu) - 1, i32(taken_at >> 16u));
                 let l = textureLoad(first_light, t, 0);

@@ -632,7 +632,13 @@ wind):
    their centre's texel onto all sixteen (`HORIZON_RT_SHARE_CHECK=0`): a texel past an edge took the light of
    whatever the first eye showed there, and a block at the second eye's edge, standing out of the first eye's view
    against the sky, came out black. The denoiser also keeps its light finite and within half floats
-   (`usable`): one texel of infinity would spread NaNs through every pass after.
+   (`usable`): one texel of infinity would spread NaNs through every pass after. Measured on 93137e0d4: the check
+   costs nothing (9.13 and 9.20 ms a frame against 9.16 without it), but a large zone at the right eye's right edge
+   stays black where `HORIZON_RT_SHARE_DENOISED=0` shows stone and a leaf shadow (38 levels of 255). Being looked
+   into: `HORIZON_RT_DEBUG=12` colours the second eye's light by what it took (taken from the first eye: green lit,
+   cyan black though the accumulated light there isn't, blue both; its own: red lit, yellow black from the filter
+   though its accumulated light isn't, magenta both), and `HORIZON_RT_SHARE_GUARD=1` is a trial that copies the
+   first eye's light only where it isn't under a quarter of the texel's accumulated light.
 11. **The mirrors and the refraction look for water or glass only where the raster finds some** (gfx.rs `draw_cover`,
    shadow_rays_hw.wgsl `psr_covered`, `HORIZON_RT_PSR_COVER=0` for the old): each texel of the sharp zone, and each 2x2
    quad of the periphery, traced a ray from the camera to its surface to find the water or glass before it, a primary

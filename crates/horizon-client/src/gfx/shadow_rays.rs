@@ -776,7 +776,26 @@ impl ShadowRays {
             ),
             module: &denoise_shader,
             entry_point: Some("cs_denoise"),
-            compilation_options: Default::default(),
+            // `HORIZON_RT_DEBUG=12`: what VR's second eye took (denoise.wgsl `debug_share`).
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &[
+                    (
+                        "DEBUG",
+                        std::env::var("HORIZON_RT_DEBUG")
+                            .ok()
+                            .and_then(|v| v.parse::<u32>().ok())
+                            .map_or(0.0, f64::from),
+                    ),
+                    // `HORIZON_RT_SHARE_GUARD=1`, a trial (denoise.wgsl `takes`).
+                    (
+                        "SHARE_GUARD",
+                        f64::from(u8::from(
+                            std::env::var("HORIZON_RT_SHARE_GUARD").is_ok_and(|v| v == "1"),
+                        )),
+                    ),
+                ],
+                ..Default::default()
+            },
             cache: None,
         });
         let denoise_params = std::array::from_fn(|i| {

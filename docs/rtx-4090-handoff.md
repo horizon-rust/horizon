@@ -165,7 +165,10 @@ the first fake-runtime runs used 3132x3016). PR #2 (`claude/project-thread-tb0ay
   the old): with 68218d890 a block at the right eye's right edge, which the left eye doesn't see, came out black
   with the shared light on and lit with `HORIZON_RT_SHARE_DENOISED=0`. The periphery's blocks shifted their centre's
   first-eye texel onto all sixteen texels, unchecked, so a texel past an edge took the sky's light. Each texel now
-  takes the first eye's texel showing its own surface, or is filtered from its own light. Not yet measured.
+  takes the first eye's texel showing its own surface, or is filtered from its own light. Measured on 93137e0d4: no
+  cost, but the black zone stays (nearly the same with `HORIZON_RT_SHARE_CHECK=0`), so it is not the periphery's
+  shift. `HORIZON_RT_DEBUG=12` shows what the second eye took, and `HORIZON_RT_SHARE_GUARD=1` is a trial guard
+  (docs/raytracing.md item 10).
 - **Ideas weighed and left:** the second eye skipping the exposure meter (the grading's local tone mapping reads the
   meter's chain, level 2, so the eye needs its own); a conservative depth reuse across the TAA jitter (holes through
   cutout gaps); the TAA's blit folded into its resolve (the hand and the rain draw over the resolved scene, so the
