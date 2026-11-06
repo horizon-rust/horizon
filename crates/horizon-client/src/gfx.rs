@@ -5861,10 +5861,15 @@ impl Renderer {
             crate::spans::time("rt_structures", || {
                 self.hw_update(&mut encoder, frame.camera)
             });
-            if let Some(hw) = &self.hw_rays {
-                let [x, y, z] = hw.offset(frame.camera);
-                rt.hw_offset = [x, y, z, 0.0];
-            }
+        }
+        // Every view's rays go from the camera's offset to the structures' anchor, the second
+        // eye's too: without it they left from the anchor itself, each of its own rays (where the
+        // first eye doesn't show its surface) from the wrong place, the sun's shadowed.
+        if rt.any()
+            && let Some(hw) = &self.hw_rays
+        {
+            let [x, y, z] = hw.offset(frame.camera);
+            rt.hw_offset = [x, y, z, 0.0];
         }
         let pack_post = !frame.title && self.pack_post.as_ref().is_some_and(|p| p.1.is_some());
         // One of Horizon's own packs reads the same world target.

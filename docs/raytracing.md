@@ -650,7 +650,11 @@ wind):
    On e8b54293e (threshold 1e-6 then) the zone shows none of these, still black. `HORIZON_RT_DEBUG=14`
    (`rt_terms_view`) shows the lit colour's parts: red the sun's and green the light around's, on a log scale from
    1e-4 to 1 paper white, blue the denoised light's alpha (how much of the light around is traced, the light
-   levels standing in for the rest).
+   levels standing in for the rest). On 3aec3cf47, 14 showed the cause: the sun's part 0 in the zone in both modes,
+   the light around lower. The second eye's own hardware rays left from the structures' anchor, not from the
+   camera's offset to it (`hw_offset`, set with the structures' update, which since 4956cf386 the first eye alone
+   runs): wherever the second eye traced itself, its rays started from the wrong place. Every view takes the offset
+   again.
 11. **The mirrors and the refraction look for water or glass only where the raster finds some** (gfx.rs `draw_cover`,
    shadow_rays_hw.wgsl `psr_covered`, `HORIZON_RT_PSR_COVER=0` for the old): each texel of the sharp zone, and each 2x2
    quad of the periphery, traced a ray from the camera to its surface to find the water or glass before it, a primary
