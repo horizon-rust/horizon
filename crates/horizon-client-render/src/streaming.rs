@@ -2074,6 +2074,8 @@ impl Streaming {
         // A server draws nothing: its sections are never meshed.
         if !self.mesh {
             world.dirty_sections.clear();
+            self.prepared_ranges_active = false;
+            self.prepared_ranges = None;
             return (uploads, removed);
         }
         // Meshing once the column and its neighbours are lit, and the column
@@ -3785,6 +3787,67 @@ mod tests {
                 "change {change}"
             );
         }
+    }
+    /// A server takes `update`'s early return, and calls `in_range` between
+    /// updates (`tick_pregen`'s `set_band` then `unstick_light`): answers prepared
+    /// for that update must not outlive it.
+    #[test]
+    #[ignore = "requires prepared resources in HORIZON_TEST_RESOURCES"]
+    fn in_range_follows_geometry_changed_after_an_update_without_meshing() -> crate::Result<()> {
+        use crate::{
+            assets::Assets, biome::Biomes, blocks::BlockFacts, light::LightTables,
+            mesher::MeshTables, testgen::TestTerrain,
+        };
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("HORIZON_TEST_RESOURCES"),
+        );
+        let assets = Arc::new(Assets::load(&root)?);
+        let render = Arc::new(assets.reload(&root)?);
+        let facts = BlockFacts::load(&root, assets.registry)?;
+        let biomes = Arc::new(Biomes::load(&root)?);
+        let tables = Arc::new(MeshTables::new(
+            &assets,
+            &render,
+            &facts,
+            crate::models::load_visibility(&root, assets.registry)?,
+        )?);
+        let context = Arc::new(WorkerContext {
+            light: Arc::new(LightTables::load(&root, assets.registry, &facts)?),
+            tables,
+            assets: assets.clone(),
+            render,
+            biomes: biomes.clone(),
+        });
+        let terrain = Arc::new(TestTerrain::new(assets.registry, &biomes)?);
+        let mut streaming = Streaming::new(terrain, context, 1);
+        streaming.mesh = false;
+        streaming.center = (0, 0);
+        streaming.radius = 2;
+        let (near, far) = ((0, 0), (100, 100));
+        let prepared = RangePreparation {
+            basis: RangeBasis::of(&streaming),
+            coordinates: vec![near, far],
+        }
+        .run();
+        assert_eq!(
+            (prepared.answers[&near], prepared.answers[&far]),
+            (true, false)
+        );
+        streaming.accept_prepared_ranges(Some(prepared));
+        let mut world = World::new(facts.air, 0);
+        let _ = streaming.update(&mut world);
+
+        streaming.set_band(Some(Band {
+            x0: far.0,
+            x1: far.0,
+            z0: far.1,
+            z1: far.1,
+            circle: None,
+        }));
+        assert!(streaming.in_range(far.0, far.1, 1), "the band now holds it");
+        streaming.center = (500, 500);
+        assert!(!streaming.in_range(near.0, near.1, 1), "the view left it");
+        Ok(())
     }
     struct GenerationFixture {
         world: World,

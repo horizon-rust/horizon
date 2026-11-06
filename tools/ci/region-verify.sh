@@ -11,5 +11,6 @@ HORIZON_SIMULATION_MODE=verify PARITY_HOSTS='' python3 tools/parity.py \
 export HORIZON_TEST_RESOURCES="$PWD/.local/horizon-client/$version" HORIZON_REQUIRE_TEST_RESOURCES=1
 export CARGO_TARGET_DIR="$PWD/.local/parity-target"
 cargo test --locked -p horizon-client-lib --lib mobs::region_tick
+cargo test --locked -p horizon-client-render --lib -- --include-ignored in_range_follows_geometry
 cargo test --locked -p horizon-client --lib -- --include-ignored \
   pool_and_serial entity_hurt_player_reads_riders an_effect_hit_on_a_guest clean_commit
