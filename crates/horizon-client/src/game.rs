@@ -494,6 +494,12 @@ use winit::{
 /// A frame's finished meshes up to this many upload at once, unqueued (main's
 /// `AUTO_UPLOADS_AT_ONCE`).
 const UPLOADS_AT_ONCE: usize = 8;
+/// The squared distance in sections past which a section already drawn and
+/// meshed again waits its turn among `FAR_REMESHES_PER_FRAME` a frame: ten
+/// sections, past the ray structures' reach (8 chunks) and two.
+const FAR_REMESH_FROM: i64 = 100;
+/// Far sections meshed again that a frame uploads at most (see `FAR_REMESH_FROM`).
+const FAR_REMESHES_PER_FRAME: usize = 8;
 
 #[derive(Clone)]
 struct Options {
@@ -18034,10 +18040,18 @@ impl Game<'_> {
                 }
             });
             horizon_client::spans::time("upload", || {
-                pending.drain(&budget, |key, mesh| {
-                    renderer.upload(key, &mesh);
-                    spent.push((key, mesh));
-                });
+                // Far sections already drawn and meshed again: a few a frame
+                // (`UploadQueue::drain_remeshes`), the newest mesh replacing a waiting one.
+                pending.drain_remeshes(
+                    &budget,
+                    Some((FAR_REMESH_FROM, FAR_REMESHES_PER_FRAME)),
+                    renderer,
+                    |renderer, key| renderer.has_section(key),
+                    |renderer, key, mesh| {
+                        renderer.upload(key, &mesh);
+                        spent.push((key, mesh));
+                    },
+                );
             });
             horizon_client::spans::time("uw_free", || self.streaming.free(spent));
             horizon_client::spans::time("uw_remove_columns", || {

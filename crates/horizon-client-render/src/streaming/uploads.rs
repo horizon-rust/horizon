@@ -197,15 +197,15 @@ impl UploadQueue {
     }
 
     /// The nearest waiting section and its mesh, when `take` accepts it
-    /// (given the mesh and its squared distance); otherwise it stays.
+    /// (given the section, its mesh and its squared distance); otherwise it stays.
     pub fn pop_if(
         &mut self,
-        mut take: impl FnMut(&SectionMesh, i64) -> bool,
+        mut take: impl FnMut(SectionKey, &SectionMesh, i64) -> bool,
     ) -> Option<(SectionKey, SectionMesh)> {
         while let Some(&Reverse((far, n, key))) = self.heap.peek() {
             match self.meshes.get(&key) {
                 Some((m, mesh)) if *m == n => {
-                    if !take(mesh, far) {
+                    if !take(key, mesh, far) {
                         return None;
                     }
                     self.heap.pop();
@@ -222,20 +222,68 @@ impl UploadQueue {
 
     /// Uploads with `upload` the nearest waiting sections a frame's `budget`
     /// allows, timing them; returns what the frame spent.
-    pub fn drain(
+    pub fn drain(&mut self, budget: &Budget, upload: impl FnMut(SectionKey, SectionMesh)) -> Spent {
+        let mut upload = upload;
+        self.drain_remeshes(
+            budget,
+            None,
+            &mut (),
+            |_, _| false,
+            |_, key, mesh| upload(key, mesh),
+        )
+    }
+
+    /// `drain`, with at most `remeshes.1` sections a frame past squared
+    /// distance `remeshes.0` that `shown` says `target` already draws: a far
+    /// section meshed again (its neighbours arrived, its light settled) keeps
+    /// its drawn mesh a few frames longer, and a newer mesh replaces the
+    /// waiting one. Without it, cheap uploads let every intermediate mesh of
+    /// the far rings through: 2.8 times the uploads of a fast flight on FIXE01,
+    /// each one work for the renderer after.
+    pub fn drain_remeshes<C>(
         &mut self,
         budget: &Budget,
-        mut upload: impl FnMut(SectionKey, SectionMesh),
+        remeshes: Option<(i64, usize)>,
+        target: &mut C,
+        shown: impl Fn(&C, SectionKey) -> bool,
+        mut upload: impl FnMut(&mut C, SectionKey, SectionMesh),
     ) -> Spent {
         let started = Instant::now();
         let mut spent = Spent::default();
-        while let Some((key, mesh)) = self.pop_if(|mesh, far| {
-            spent.time = started.elapsed();
-            may_upload(budget, &spent, mesh_bytes(mesh), far)
-        }) {
+        let mut far_remeshes = 0;
+        let mut held = Vec::new();
+        loop {
+            let mut hold = false;
+            let next = self.pop_if(|key, mesh, far| {
+                spent.time = started.elapsed();
+                if !may_upload(budget, &spent, mesh_bytes(mesh), far) {
+                    return false;
+                }
+                if let Some((from, most)) = remeshes
+                    && far > from
+                    && shown(target, key)
+                {
+                    if far_remeshes >= most {
+                        hold = true;
+                    } else {
+                        far_remeshes += 1;
+                    }
+                }
+                true
+            });
+            let Some((key, mesh)) = next else {
+                break;
+            };
+            if hold {
+                held.push((key, mesh));
+                continue;
+            }
             spent.count += 1;
             spent.bytes += mesh_bytes(&mesh);
-            upload(key, mesh);
+            upload(target, key, mesh);
+        }
+        for (key, mesh) in held {
+            self.push(key, mesh);
         }
         spent.time = started.elapsed();
         spent
@@ -426,5 +474,47 @@ mod tests {
         assert_eq!(got, [(0, 4, 0), (-1, 4, 0), (1, 4, 0)]);
         // A later frame with only far ones left uploads one of them.
         assert_eq!(order(&mut q, &budget).len(), 1);
+    }
+
+    /// Far sections already drawn wait past the frame's remesh cap; new ones
+    /// and near ones still go, and the held ones stay queued for later frames.
+    #[test]
+    fn far_remeshes_of_drawn_sections_are_capped_a_frame() {
+        let mut q = UploadQueue::default();
+        q.set_centre((0, 0, 0));
+        // Near and drawn, far and drawn (x 20 to 23), far and new (x 30).
+        for key in [
+            (1, 0, 0),
+            (20, 0, 0),
+            (21, 0, 0),
+            (22, 0, 0),
+            (23, 0, 0),
+            (30, 0, 0),
+        ] {
+            q.push(key, mesh(1));
+        }
+        let mut drawn: std::collections::HashSet<SectionKey> =
+            [(1, 0, 0), (20, 0, 0), (21, 0, 0), (22, 0, 0), (23, 0, 0)].into();
+        let frame = |q: &mut UploadQueue, drawn: &mut std::collections::HashSet<SectionKey>| {
+            let mut got = Vec::new();
+            q.drain_remeshes(
+                &unlimited(),
+                Some((100, 2)),
+                drawn,
+                |d, k| d.contains(&k),
+                |d, k, _| {
+                    d.insert(k);
+                    got.push(k);
+                },
+            );
+            got
+        };
+        assert_eq!(
+            frame(&mut q, &mut drawn),
+            [(1, 0, 0), (20, 0, 0), (21, 0, 0), (30, 0, 0)]
+        );
+        assert_eq!(q.len(), 2);
+        assert_eq!(frame(&mut q, &mut drawn), [(22, 0, 0), (23, 0, 0)]);
+        assert!(q.is_empty());
     }
 }
