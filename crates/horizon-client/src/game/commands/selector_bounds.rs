@@ -26,41 +26,86 @@ impl Game<'_> {
         match target {
             Target::Player => self.player.as_ref().map(|p| p.bounds()),
             Target::Guest(conn) => self.command_guest(conn).map(|p| p.bounds()),
-            Target::Mob(id) => self.mobs.iter().find(|e| e.id == id).map(Entity::bounds),
-            Target::Item(id) => self.dropped.iter().find(|e| e.id == id).map(Entity::bounds),
-            Target::Orb(id) => self.orbs.iter().find(|e| e.id == id).map(Entity::bounds),
+            Target::Mob(id) => self
+                .simulation
+                .mobs
+                .iter()
+                .find(|e| e.id == id)
+                .map(Entity::bounds),
+            Target::Item(id) => self
+                .simulation
+                .dropped
+                .iter()
+                .find(|e| e.id == id)
+                .map(Entity::bounds),
+            Target::Orb(id) => self
+                .simulation
+                .orbs
+                .iter()
+                .find(|e| e.id == id)
+                .map(Entity::bounds),
             Target::Projectile(id) => self
-                .creatures
+                .simulation
                 .projectiles
                 .iter()
                 .find(|e| e.id == id)
                 .map(Entity::bounds),
             Target::Stand(id) => self
+                .simulation
                 .armor_stands
                 .iter()
                 .find(|e| e.id == id)
                 .map(Entity::bounds),
-            Target::Boat(id) => self.boats.iter().find(|e| e.id == id).map(Entity::bounds),
-            Target::Cart(id) => self.carts.iter().find(|e| e.id == id).map(Entity::bounds),
-            Target::Tnt(id) => self.tnts.iter().find(|e| e.id == id).map(Entity::bounds),
-            Target::Falling(id) => self.falling.iter().find(|e| e.id == id).map(Entity::bounds),
-            Target::Rocket(id) => self.rockets.iter().find(|e| e.id == id).map(Entity::bounds),
+            Target::Boat(id) => self
+                .simulation
+                .boats
+                .iter()
+                .find(|e| e.id == id)
+                .map(Entity::bounds),
+            Target::Cart(id) => self
+                .simulation
+                .carts
+                .iter()
+                .find(|e| e.id == id)
+                .map(Entity::bounds),
+            Target::Tnt(id) => self
+                .simulation
+                .tnts
+                .iter()
+                .find(|e| e.id == id)
+                .map(Entity::bounds),
+            Target::Falling(id) => self
+                .simulation
+                .falling
+                .iter()
+                .find(|e| e.id == id)
+                .map(Entity::bounds),
+            Target::Rocket(id) => self
+                .simulation
+                .rockets
+                .iter()
+                .find(|e| e.id == id)
+                .map(Entity::bounds),
             Target::Trident(id) => self
+                .simulation
                 .tridents
                 .iter()
                 .find(|e| e.id == id)
                 .map(Entity::bounds),
             Target::Frame(id) => self
+                .simulation
                 .item_frames
                 .iter()
                 .find(|e| e.id == id)
                 .map(|e| extents(e.bounds())),
             Target::Painting(id) => self
+                .simulation
                 .paintings
                 .iter()
                 .find(|e| e.id == id)
                 .map(|e| extents(e.bounds())),
             Target::Crystal(id) => self
+                .simulation
                 .crystals
                 .iter()
                 .find(|e| e.id == id)

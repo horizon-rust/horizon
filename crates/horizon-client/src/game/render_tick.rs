@@ -108,7 +108,12 @@ impl Game<'_> {
     ) -> FogData {
         let forward = self.forward();
         let at = [camera.x, camera.y, camera.z];
-        let fog_type = fog_type(&self.world, self.res.facts(), at, &self.near_plane());
+        let fog_type = fog_type(
+            &self.simulation.world,
+            self.res.facts(),
+            at,
+            &self.near_plane(),
+        );
         let (rain, thunder) = self.view_weather(self.clock.fraction() as f32);
         let title_fog = horizon_client::fog::FogTables::default();
         let tables = if self.title.is_some() {
@@ -232,7 +237,7 @@ impl Game<'_> {
     fn level_min_y(&self) -> i32 {
         match self.remote.as_ref() {
             Some(r) => r.dimension.min_y,
-            None => self.world.shape.min_y,
+            None => self.simulation.world.shape.min_y,
         }
     }
     /// `SkyRenderer.shouldRenderDarkDisc`: eye below the horizon and not under
@@ -247,7 +252,7 @@ impl Game<'_> {
         self.dim == Dim::Overworld
             && camera.y < horizon
             && fog_type(
-                &self.world,
+                &self.simulation.world,
                 self.res.facts(),
                 [camera.x, camera.y, camera.z],
                 &self.near_plane(),
@@ -311,7 +316,7 @@ impl Game<'_> {
                     t[1].floor() as i32,
                     t[2].floor() as i32,
                 ];
-                let state = self.world.block(pos[0], pos[1], pos[2]);
+                let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
                 if self.res.facts().get(state).render_shape
                     != horizon_client::blocks::RenderShape::Invisible
                     && self.state_view_blocking(state, pos, near_plane)
@@ -322,8 +327,12 @@ impl Game<'_> {
                 }
             }
         }
-        let in_water =
-            fog_type(&self.world, self.res.facts(), eye, &self.near_plane()) == FogType::Water;
+        let in_water = fog_type(
+            &self.simulation.world,
+            self.res.facts(),
+            eye,
+            &self.near_plane(),
+        ) == FogType::Water;
         let water =
             (in_water && !spectator).then(|| (self.eye_brightness(eye), self.yaw, self.pitch));
         // Hud.extractCameraOverlays; the spyglass scope (and its easing) is
@@ -374,7 +383,7 @@ impl Game<'_> {
             eye[1].floor() as i32,
             eye[2].floor() as i32,
         ];
-        let packed = self.world.light(b[0], b[1], b[2]);
+        let packed = self.simulation.world.light(b[0], b[1], b[2]);
         let sky = i32::from(packed >> 4) - self.sky_darken();
         let raw = sky.max(i32::from(packed & 15)).clamp(0, 15) as u8;
         lightmap_brightness(if self.dim == Dim::Nether { 0.1 } else { 0.0 }, raw)
@@ -404,8 +413,12 @@ impl Game<'_> {
             let nausea = self.potions.effects.get("nausea").map(nausea_has_effect);
             self.screen_fx.tick_spinning(nausea);
             // LocalPlayer water vision and AtmosphericFogEnvironment rain fog.
-            let in_water =
-                fog_type(&self.world, self.res.facts(), e, &self.near_plane()) == FogType::Water;
+            let in_water = fog_type(
+                &self.simulation.world,
+                self.res.facts(),
+                e,
+                &self.near_plane(),
+            ) == FogType::Water;
             self.fog.tick(in_water);
             let b = [
                 e[0].floor() as i32,
@@ -414,6 +427,7 @@ impl Game<'_> {
             ];
             let rain = self.view_weather(1.0).0;
             let biome = self
+                .simulation
                 .world
                 .chunks
                 .get(&(b[0] >> 4, b[2] >> 4))
@@ -422,7 +436,7 @@ impl Game<'_> {
             update_rain_fog(
                 &mut self.fog,
                 rain,
-                self.world.light(b[0], b[1], b[2]) >> 4,
+                self.simulation.world.light(b[0], b[1], b[2]) >> 4,
                 rains,
                 1.0,
             );
@@ -442,7 +456,7 @@ impl Game<'_> {
                 0xFFFFFF,
             ))
         };
-        let world = &self.world;
+        let world = &self.simulation.world;
         let facts = self.res.facts();
         let biomes = world_biomes!(self);
         let properties = &self.pack.assets.properties;
@@ -456,10 +470,10 @@ impl Game<'_> {
             |p: [i32; 3]| motion_blocking_leaves(world, facts, p[0], p[2], i32::MAX, false);
         // The day timeline: firefly bush sounds from 12600 to 23400.
         let firefly_bush_sounds = self.dim == Dim::Overworld
-            && (12600..23401).contains(&self.world.day_time.rem_euclid(24000));
+            && (12600..23401).contains(&self.simulation.world.day_time.rem_euclid(24000));
         // EnvironmentAttributes.CREAKING_ACTIVE: the same overworld night.
         let creaking_active = self.dim == Dim::Overworld
-            && (12600..23401).contains(&self.world.day_time.rem_euclid(24000));
+            && (12600..23401).contains(&self.simulation.world.day_time.rem_euclid(24000));
         let tables = &self.pack.context.tables;
         let model_offset = |state, x, z| tables.offset(state, x, z);
         let gateway_particles = |state, p| {
@@ -498,7 +512,8 @@ impl Game<'_> {
             if rain > 0.0 && self.settings.horizon.weather {
                 // ClientLevel.tickWeatherEffects: rain splashes within the weather
                 // radius, and the rain sound.
-                let mut random = LegacyRandom::new(self.world.game_time.wrapping_mul(312_987_231));
+                let mut random =
+                    LegacyRandom::new(self.simulation.world.game_time.wrapping_mul(312_987_231));
                 let radius = self.settings.weather_radius;
                 let diameter = 2 * radius + 1;
                 let count = (0.225 * (diameter * diameter) as f32 * rain * rain) as i32
@@ -578,7 +593,12 @@ impl Game<'_> {
                 &mut self.particles,
                 &ctx,
                 r.block_entities(),
-                &|pos| match self.world.block_entities.get(&(pos[0], pos[1], pos[2])) {
+                &|pos| match self
+                    .simulation
+                    .world
+                    .block_entities
+                    .get(&(pos[0], pos[1], pos[2]))
+                {
                     Some(BlockEntity::Campfire(c)) => c.items.each_ref().map(Option::is_some),
                     _ => [false; 4],
                 },

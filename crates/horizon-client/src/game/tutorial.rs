@@ -348,7 +348,11 @@ impl super::Game<'_> {
             let name = &self
                 .res
                 .facts()
-                .get(self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]))
+                .get(
+                    self.simulation
+                        .world
+                        .block(hit.pos[0], hit.pos[1], hit.pos[2]),
+                )
                 .name;
             if self.tutorial_tagged(false, "minecraft:completes_find_tree_tutorial", name)
                 && self.tutorial.look_at_tree()

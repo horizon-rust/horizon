@@ -120,7 +120,7 @@ impl Game<'_> {
         if g.spectator()
             || g.dead
             || menu.drag.is_some()
-            || !menu.slots.still_valid(&self.world, g, menu.pos)
+            || !menu.slots.still_valid(&self.simulation.world, g, menu.pos)
         {
             return false;
         }
@@ -138,7 +138,7 @@ impl Game<'_> {
             return false;
         }
         if !matches!(
-            self.world.block_entities.get(&pos),
+            self.simulation.world.block_entities.get(&pos),
             Some(BlockEntity::Mod(m)) if !m.id.is_empty()
         ) {
             return false;
@@ -165,10 +165,10 @@ impl Game<'_> {
         // that removed its own block leaves no menu to send: it closes, and
         // the inventory goes out on its own.
         if matches!(
-            self.world.block_entities.get(&pos),
+            self.simulation.world.block_entities.get(&pos),
             Some(BlockEntity::Mod(_))
         ) {
-            host.hub.resend_menu(conn, window, &self.world);
+            host.hub.resend_menu(conn, window, &self.simulation.world);
         } else if let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) {
             host.hub.close_container(conn);
             host.hub.send_inventory(gi);
@@ -182,7 +182,7 @@ impl Game<'_> {
     /// one took it, the slot then holding what is left of its stack. The
     /// block entity is out of the world during the call.
     fn mod_menu_quick_move(&mut self, pos: Pos, size: usize, slot: usize, at: MenuSlot) -> bool {
-        let Some(BlockEntity::Mod(m)) = self.world.block_entities.get_mut(&pos) else {
+        let Some(BlockEntity::Mod(m)) = self.simulation.world.block_entities.get_mut(&pos) else {
             return false;
         };
         let held = match at {

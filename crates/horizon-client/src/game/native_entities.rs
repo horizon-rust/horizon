@@ -149,7 +149,7 @@ impl Game<'_> {
             return None;
         }
         let chunk = ((pos[0].floor() as i32) >> 4, (pos[2].floor() as i32) >> 4);
-        if !self.world.chunks.contains_key(&chunk) {
+        if !self.simulation.world.chunks.contains_key(&chunk) {
             return None;
         }
         let mut tag = nbt;
@@ -158,19 +158,33 @@ impl Game<'_> {
         // stands at `pos`.
         let mut tag = Tag::Compound(tag);
         place_summoned(&mut tag, pos);
-        let from = self.mobs.len();
-        let first = self.next_entity + 1;
-        let deferred = (self.tnts.len(), self.falling.len(), self.rockets.len());
+        let from = self.simulation.mobs.len();
+        let first = self.simulation_server.next_entity + 1;
+        let deferred = (
+            self.simulation.tnts.len(),
+            self.simulation.falling.len(),
+            self.simulation.rockets.len(),
+        );
         let target = self.spawn_entity_from_nbt(tag);
         // These roots take their id as they load, and a rocket has no command
         // Target variant. Select the newly appended root, never an older waiting entity.
         let root = match kind {
-            "minecraft:tnt" => self.tnts.get_mut(deferred.0).map(|e| &mut e.id),
-            "minecraft:falling_block" => self.falling.get_mut(deferred.1).map(|e| &mut e.id),
-            "minecraft:firework_rocket" => self.rockets.get_mut(deferred.2).map(|e| &mut e.id),
+            "minecraft:tnt" => self.simulation.tnts.get_mut(deferred.0).map(|e| &mut e.id),
+            "minecraft:falling_block" => self
+                .simulation
+                .falling
+                .get_mut(deferred.1)
+                .map(|e| &mut e.id),
+            "minecraft:firework_rocket" => self
+                .simulation
+                .rockets
+                .get_mut(deferred.2)
+                .map(|e| &mut e.id),
             _ => None,
         };
-        let root = root.map(|id| super::lan_entities::assign_entity_id(&mut self.next_entity, id));
+        let root = root.map(|id| {
+            super::lan_entities::assign_entity_id(&mut self.simulation_server.next_entity, id)
+        });
         self.native_mobs_joined(from, false);
         // Otherwise the root is the first entity spawned, also for kinds no
         // command target stands for (experience orbs, end crystals, cushions). An id handed out to an
@@ -178,9 +192,9 @@ impl Game<'_> {
         // there.
         root.or_else(|| {
             root_id(target, first, |id| {
-                self.orbs.iter().any(|o| o.id == id)
-                    || self.crystals.iter().any(|c| c.id == id)
-                    || self.cushions.iter().any(|c| c.id == id)
+                self.simulation.orbs.iter().any(|o| o.id == id)
+                    || self.simulation.crystals.iter().any(|c| c.id == id)
+                    || self.simulation.cushions.iter().any(|c| c.id == id)
             })
         })
     }
@@ -204,7 +218,7 @@ impl Game<'_> {
         {
             return false;
         }
-        let Some(o) = self.others.iter_mut().find(|o| o.id == id) else {
+        let Some(o) = self.simulation.others.iter_mut().find(|o| o.id == id) else {
             return false;
         };
         o.position = Vec3::new(pos[0], pos[1], pos[2]);
@@ -226,7 +240,7 @@ impl Game<'_> {
         if !self.native_simulates_level(dimension) || !display.valid() {
             return false;
         }
-        let is_display = self.others.iter().any(|o| {
+        let is_display = self.simulation.others.iter().any(|o| {
             o.id == id
                 && matches!(
                     o.kind.as_str(),
@@ -237,6 +251,7 @@ impl Game<'_> {
             return false;
         }
         let tag = self
+            .simulation
             .persist
             .raw
             .entry(id)
@@ -252,11 +267,13 @@ impl Game<'_> {
     /// another dimension. Mobs go with `native_remove_mob`. API
     /// 59.
     pub(super) fn native_remove_entity(&mut self, dimension: &str, id: u32) -> bool {
-        if !self.native_simulates_level(dimension) || !self.others.iter().any(|o| o.id == id) {
+        if !self.native_simulates_level(dimension)
+            || !self.simulation.others.iter().any(|o| o.id == id)
+        {
             return false;
         }
-        self.others.retain(|o| o.id != id);
-        self.persist.raw.remove(&id);
+        self.simulation.others.retain(|o| o.id != id);
+        self.simulation.persist.raw.remove(&id);
         true
     }
 }
@@ -286,12 +303,12 @@ impl Game<'_> {
     /// the last announced, or one of the kinds that take their id late and
     /// have none. Reads a counter and five lists' ids; no walk.
     fn joins_pending(&self) -> bool {
-        self.next_entity > self.persist.joined_mark
-            || self.tnts.iter().any(|t| t.id == 0)
-            || self.falling.iter().any(|f| f.id == 0)
-            || self.creatures.projectiles.iter().any(|p| p.id == 0)
-            || self.tridents.iter().any(|t| t.id == 0)
-            || self.rockets.iter().any(|r| r.id == 0)
+        self.simulation_server.next_entity > self.simulation.persist.joined_mark
+            || self.simulation.tnts.iter().any(|t| t.id == 0)
+            || self.simulation.falling.iter().any(|f| f.id == 0)
+            || self.simulation.projectiles.iter().any(|p| p.id == 0)
+            || self.simulation.tridents.iter().any(|t| t.id == 0)
+            || self.simulation.rockets.iter().any(|r| r.id == 0)
     }
     /// Tells `native_entity_join_level` once for every entity added since the
     /// last call, of any kind, in the order they were created (ids count up
@@ -306,24 +323,39 @@ impl Game<'_> {
         if self.remote.is_some() || crate::mod_api::mods().is_empty() || !self.joins_pending() {
             return true;
         }
-        for t in &mut self.tnts {
-            super::lan_entities::assign_entity_id(&mut self.next_entity, &mut t.id);
+        for t in &mut self.simulation.tnts {
+            super::lan_entities::assign_entity_id(
+                &mut self.simulation_server.next_entity,
+                &mut t.id,
+            );
         }
-        for f in &mut self.falling {
-            super::lan_entities::assign_entity_id(&mut self.next_entity, &mut f.id);
+        for f in &mut self.simulation.falling {
+            super::lan_entities::assign_entity_id(
+                &mut self.simulation_server.next_entity,
+                &mut f.id,
+            );
         }
-        for p in &mut self.creatures.projectiles {
-            super::lan_entities::assign_entity_id(&mut self.next_entity, &mut p.id);
+        for p in &mut self.simulation.projectiles {
+            super::lan_entities::assign_entity_id(
+                &mut self.simulation_server.next_entity,
+                &mut p.id,
+            );
         }
-        for t in &mut self.tridents {
-            super::lan_entities::assign_entity_id(&mut self.next_entity, &mut t.id);
+        for t in &mut self.simulation.tridents {
+            super::lan_entities::assign_entity_id(
+                &mut self.simulation_server.next_entity,
+                &mut t.id,
+            );
         }
-        for r in &mut self.rockets {
-            super::lan_entities::assign_entity_id(&mut self.next_entity, &mut r.id);
+        for r in &mut self.simulation.rockets {
+            super::lan_entities::assign_entity_id(
+                &mut self.simulation_server.next_entity,
+                &mut r.id,
+            );
         }
         let mut kept = true;
         while let Some((slot, id)) = self.next_unannounced() {
-            self.persist.joined_mark = id;
+            self.simulation.persist.joined_mark = id;
             let (kind, at) = self.slot_kind_and_position(slot);
             let mut canceled = false;
             let dimension = self.dim.id();
@@ -336,25 +368,32 @@ impl Game<'_> {
                 &mut canceled,
             );
             if canceled {
-                self.persist.joins_canceled += 1;
+                self.simulation.persist.joins_canceled += 1;
                 self.forget_entity(id);
                 // Handles are indexes: the entity is taken out before any
                 // other change to its list.
                 self.discard_slot(slot);
                 kept &= id != watch;
             } else {
-                self.persist.live.push((id, kind.into_owned(), true));
+                self.simulation
+                    .persist
+                    .live
+                    .push((id, kind.into_owned(), true));
             }
         }
         // Ids taken and never announced (the dragon's parts, another level's
         // entities) must not keep the next flush walking.
-        self.persist.joined_mark = self.persist.joined_mark.max(self.next_entity);
+        self.simulation.persist.joined_mark = self
+            .simulation
+            .persist
+            .joined_mark
+            .max(self.simulation_server.next_entity);
         kept
     }
     /// The entity with the lowest id above the last one announced.
     fn next_unannounced(&self) -> Option<(Slot, u32)> {
         use super::entity::Entity;
-        let mark = self.persist.joined_mark;
+        let mark = self.simulation.persist.joined_mark;
         let mut best: Option<(Slot, u32)> = None;
         let mut offer = |slot: Slot, id: u32| {
             if id > mark && best.is_none_or(|(_, b)| id < b) {
@@ -367,19 +406,19 @@ impl Game<'_> {
                 super::entity::with_entity!(self, handle, e => e.id()),
             );
         }
-        for (i, c) in self.crystals.iter().enumerate() {
+        for (i, c) in self.simulation.crystals.iter().enumerate() {
             offer(Slot::Apart(Apart::Crystal(i)), c.id);
         }
-        for (i, c) in self.cushions.iter().enumerate() {
+        for (i, c) in self.simulation.cushions.iter().enumerate() {
             offer(Slot::Apart(Apart::Cushion(i)), c.id);
         }
-        for (i, p) in self.paintings.iter().enumerate() {
+        for (i, p) in self.simulation.paintings.iter().enumerate() {
             offer(Slot::Apart(Apart::Painting(i)), p.id);
         }
-        for (i, f) in self.item_frames.iter().enumerate() {
+        for (i, f) in self.simulation.item_frames.iter().enumerate() {
             offer(Slot::Apart(Apart::Frame(i)), f.id);
         }
-        if let Some(d) = &self.dragon {
+        if let Some(d) = &self.simulation.dragon {
             offer(Slot::Apart(Apart::Dragon), d.id);
         }
         best
@@ -398,17 +437,20 @@ impl Game<'_> {
             Slot::Walk(h) => {
                 super::entity::with_entity!(self, h, e => (e.native_type(), e.position()))
             }
-            Slot::Apart(Apart::Crystal(i)) => {
-                ("minecraft:end_crystal".into(), self.crystals[i].position)
-            }
-            Slot::Apart(Apart::Cushion(i)) => {
-                ("minecraft:cushion".into(), self.cushions[i].position)
-            }
-            Slot::Apart(Apart::Painting(i)) => {
-                ("minecraft:painting".into(), block(self.paintings[i].pos))
-            }
+            Slot::Apart(Apart::Crystal(i)) => (
+                "minecraft:end_crystal".into(),
+                self.simulation.crystals[i].position,
+            ),
+            Slot::Apart(Apart::Cushion(i)) => (
+                "minecraft:cushion".into(),
+                self.simulation.cushions[i].position,
+            ),
+            Slot::Apart(Apart::Painting(i)) => (
+                "minecraft:painting".into(),
+                block(self.simulation.paintings[i].pos),
+            ),
             Slot::Apart(Apart::Frame(i)) => {
-                let f = &self.item_frames[i];
+                let f = &self.simulation.item_frames[i];
                 let kind = if f.glow {
                     "minecraft:glow_item_frame"
                 } else {
@@ -418,7 +460,10 @@ impl Game<'_> {
             }
             Slot::Apart(Apart::Dragon) => (
                 "minecraft:ender_dragon".into(),
-                self.dragon.as_ref().map_or(Vec3::ZERO, |d| d.position),
+                self.simulation
+                    .dragon
+                    .as_ref()
+                    .map_or(Vec3::ZERO, |d| d.position),
             ),
         }
     }
@@ -426,11 +471,11 @@ impl Game<'_> {
     fn discard_slot(&mut self, slot: Slot) {
         match slot {
             Slot::Walk(h) => self.discard_entity(h),
-            Slot::Apart(Apart::Crystal(i)) => drop(self.crystals.remove(i)),
-            Slot::Apart(Apart::Cushion(i)) => drop(self.cushions.remove(i)),
-            Slot::Apart(Apart::Painting(i)) => drop(self.paintings.remove(i)),
-            Slot::Apart(Apart::Frame(i)) => drop(self.item_frames.remove(i)),
-            Slot::Apart(Apart::Dragon) => self.dragon = None,
+            Slot::Apart(Apart::Crystal(i)) => drop(self.simulation.crystals.remove(i)),
+            Slot::Apart(Apart::Cushion(i)) => drop(self.simulation.cushions.remove(i)),
+            Slot::Apart(Apart::Painting(i)) => drop(self.simulation.paintings.remove(i)),
+            Slot::Apart(Apart::Frame(i)) => drop(self.simulation.item_frames.remove(i)),
+            Slot::Apart(Apart::Dragon) => self.simulation.dragon = None,
         }
     }
     /// Entities that were moved, not added (a portal's arrival keeps being
@@ -439,18 +484,27 @@ impl Game<'_> {
     pub(super) fn native_joins_skip(&mut self) {
         if self.remote.is_none() && !crate::mod_api::mods().is_empty() {
             while let Some((slot, id)) = self.next_unannounced() {
-                self.persist.joined_mark = id;
+                self.simulation.persist.joined_mark = id;
                 let kind = self.slot_kind_and_position(slot).0.into_owned();
-                self.persist.live.push((id, kind, true));
+                self.simulation.persist.live.push((id, kind, true));
             }
         }
-        self.persist.joined_mark = self.persist.joined_mark.max(self.next_entity);
+        self.simulation.persist.joined_mark = self
+            .simulation
+            .persist
+            .joined_mark
+            .max(self.simulation_server.next_entity);
     }
     /// An entity taken out of the level without leaving it (an item through
     /// an End gateway): forgotten, not told of.
     pub(super) fn native_leave_skip(&mut self, id: u32) {
-        if let Ok(i) = self.persist.live.binary_search_by_key(&id, |l| l.0) {
-            self.persist.live.remove(i);
+        if let Ok(i) = self
+            .simulation
+            .persist
+            .live
+            .binary_search_by_key(&id, |l| l.0)
+        {
+            self.simulation.persist.live.remove(i);
         }
     }
     /// Entity `id` has left the level: told once, if mods were told it joined.
@@ -458,8 +512,13 @@ impl Game<'_> {
         if self.remote.is_some() {
             return;
         }
-        if let Ok(i) = self.persist.live.binary_search_by_key(&id, |l| l.0) {
-            let (id, kind, _) = self.persist.live.remove(i);
+        if let Ok(i) = self
+            .simulation
+            .persist
+            .live
+            .binary_search_by_key(&id, |l| l.0)
+        {
+            let (id, kind, _) = self.simulation.persist.live.remove(i);
             let dimension = self.dim.id();
             self.native_entity_leave_level(dimension, id, &kind);
         }
@@ -471,13 +530,13 @@ impl Game<'_> {
     /// runs when no mod is loaded or none was announced.
     pub(super) fn native_leaves_flush(&mut self) {
         use super::entity::Entity;
-        if self.persist.live.is_empty() || self.remote.is_some() {
+        if self.simulation.persist.live.is_empty() || self.remote.is_some() {
             return;
         }
-        for l in &mut self.persist.live {
+        for l in &mut self.simulation.persist.live {
             l.2 = false;
         }
-        let live = &mut self.persist.live;
+        let live = &mut self.simulation.persist.live;
         let mut seen = |id: u32| {
             if let Ok(i) = live.binary_search_by_key(&id, |l| l.0) {
                 live[i].2 = true;
@@ -486,15 +545,15 @@ impl Game<'_> {
         super::entity::for_each_entity!(super::entity::entity_lists_of!(self), e => {
             seen(e.id());
         });
-        self.crystals.iter().for_each(|c| seen(c.id));
-        self.cushions.iter().for_each(|c| seen(c.id));
-        self.paintings.iter().for_each(|p| seen(p.id));
-        self.item_frames.iter().for_each(|f| seen(f.id));
-        if let Some(d) = &self.dragon {
+        self.simulation.crystals.iter().for_each(|c| seen(c.id));
+        self.simulation.cushions.iter().for_each(|c| seen(c.id));
+        self.simulation.paintings.iter().for_each(|p| seen(p.id));
+        self.simulation.item_frames.iter().for_each(|f| seen(f.id));
+        if let Some(d) = &self.simulation.dragon {
             seen(d.id);
         }
-        while let Some(i) = self.persist.live.iter().position(|l| !l.2) {
-            let (id, kind, _) = self.persist.live.remove(i);
+        while let Some(i) = self.simulation.persist.live.iter().position(|l| !l.2) {
+            let (id, kind, _) = self.simulation.persist.live.remove(i);
             let dimension = self.dim.id();
             self.native_entity_leave_level(dimension, id, &kind);
         }

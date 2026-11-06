@@ -273,7 +273,11 @@ impl Game<'_> {
                     .get(&s, seed)
                     .next_int_between_inclusive(min, max)
             }
-            _ => self.world.random.next_int_between_inclusive(min, max),
+            _ => self
+                .simulation
+                .world
+                .random
+                .next_int_between_inclusive(min, max),
         }
         .unwrap_or(min);
         if id == "random.roll" {

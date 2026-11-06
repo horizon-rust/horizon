@@ -338,7 +338,12 @@ impl Game<'_> {
             return;
         }
         let snow = horizon_client::powder_snow::contacts(previous, position, bounds, living, |p| {
-            &*self.res.facts().get(self.world.block(p.x, p.y, p.z)).name == "minecraft:powder_snow"
+            &*self
+                .res
+                .facts()
+                .get(self.simulation.world.block(p.x, p.y, p.z))
+                .name
+                == "minecraft:powder_snow"
         });
         for block in snow {
             self.powder_snow_particle(block, position, known_movement);
@@ -355,7 +360,9 @@ impl Game<'_> {
         if self.remote.is_some() {
             return;
         }
-        let Some(velocity) = powder_snow_velocity(known_movement, &mut self.world.random) else {
+        let Some(velocity) =
+            powder_snow_velocity(known_movement, &mut self.simulation.world.random)
+        else {
             return;
         };
         self.snowflake_particle([position.x, f64::from(block.y + 1), position.z], velocity);
@@ -519,7 +526,8 @@ impl Game<'_> {
             ]),
             PositionSource::Entity { id, y_offset } => {
                 let id = u32::try_from(*id).ok()?;
-                self.mobs
+                self.simulation
+                    .mobs
                     .iter()
                     .find(|m| m.id == id && !m.removed)
                     .map(|m| {

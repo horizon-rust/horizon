@@ -67,11 +67,22 @@ jobs:
         run: |
           rm -rf .local/parity-main-logs && cp -R .local/parity-runner/logs .local/parity-main-logs 2>/dev/null || true
           python3 tools/parity_main.py bisect "$BASE_SHA" --comment
+      - name: The region simulation, each commit against a replay
+        id: regions
+        run: bash tools/ci/region-verify.sh
       - name: Logs of the failed harnesses
         if: steps.harnesses.outcome == 'failure'
         uses: actions/upload-artifact@v7
         with:
           name: parity-main-logs
           path: .local/parity-main-logs/
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Logs of the region simulation's harnesses
+        if: failure() && steps.regions.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-main-region-logs
+          path: .local/parity-runner/logs/
           if-no-files-found: ignore
           retention-days: 7

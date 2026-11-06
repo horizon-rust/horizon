@@ -184,14 +184,14 @@ impl Game<'_> {
     }
     /// `AbstractVillager.getOffers`: generated on first use.
     pub(super) fn ensure_offers(&mut self, index: usize) {
-        let species = self.mobs[index].species();
-        let unset = self.mobs[index]
+        let species = self.simulation.mobs[index].species();
+        let unset = self.simulation.mobs[index]
             .extra
             .trade
             .as_ref()
             .is_none_or(|t| t.unset);
         if unset {
-            let m = &self.mobs[index];
+            let m = &self.simulation.mobs[index];
             let variant = format!(
                 "minecraft:{}",
                 VILLAGER_TYPES[m.extra.variant as usize % VILLAGER_TYPES.len()]
@@ -217,7 +217,10 @@ impl Game<'_> {
                     Vec::new()
                 }
             };
-            let trade = self.mobs[index].extra.trade.get_or_insert_default();
+            let trade = self.simulation.mobs[index]
+                .extra
+                .trade
+                .get_or_insert_default();
             trade.offers = offers;
             trade.unset = false;
         }
@@ -229,7 +232,7 @@ impl Game<'_> {
         index: usize,
         item: &str,
     ) -> horizon_client::Result<bool> {
-        let m = &self.mobs[index];
+        let m = &self.simulation.mobs[index];
         let species = m.species();
         if !matches!(species, Species::Villager | Species::WanderingTrader)
             || !m.alive()
@@ -247,18 +250,18 @@ impl Game<'_> {
                 return Ok(false);
             }
             let mut events = Vec::new();
-            villager::set_unhappy(&mut self.mobs[index], &mut events);
+            villager::set_unhappy(&mut self.simulation.mobs[index], &mut events);
             self.handle_mob_events(events)?;
             return Ok(true);
         }
         self.award_custom_stat("talked_to_villager", 1);
         self.ensure_offers(index);
-        let m = &self.mobs[index];
+        let m = &self.simulation.mobs[index];
         let trade = m.extra.trade.as_deref().cloned().unwrap_or_default();
         if trade.offers.is_empty() {
             if species == Species::Villager {
                 let mut events = Vec::new();
-                villager::set_unhappy(&mut self.mobs[index], &mut events);
+                villager::set_unhappy(&mut self.simulation.mobs[index], &mut events);
                 self.handle_mob_events(events)?;
             }
             return Ok(true);
@@ -303,7 +306,7 @@ impl Game<'_> {
         // setTradingPlayer: a wandering trader stands still while trading, a
         // villager's brain follows and looks at the player
         // (LookAndFollowTradingPlayerSink).
-        self.mobs[index].extra.flag2 = true;
+        self.simulation.mobs[index].extra.flag2 = true;
         self.open_merchant_state(MerchantState {
             session: Box::new(session),
             scroll: 0,
@@ -323,7 +326,7 @@ impl Game<'_> {
         }
         let traded = std::mem::take(&mut session.last_traded);
         let Some(id) = state.mob else { return };
-        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+        let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) else {
             return;
         };
         if session.villager {
@@ -393,7 +396,7 @@ impl Game<'_> {
     }
     /// The trading mob's random before a menu click (it ticks meanwhile).
     pub(super) fn merchant_sync_in(&self, session: &mut merchant::Session, mob: Option<u32>) {
-        if let Some(m) = mob.and_then(|id| self.mobs.iter().find(|m| m.id == id)) {
+        if let Some(m) = mob.and_then(|id| self.simulation.mobs.iter().find(|m| m.id == id)) {
             session.random = m.random.clone();
             session.ambient_sound_time = m.ambient_timer;
             session.origin = [m.position.x, m.position.y, m.position.z];
@@ -425,7 +428,7 @@ impl Game<'_> {
         let events = std::mem::take(&mut session.events);
         let mut traded = Vec::new();
         let (villager, origin) = (session.villager, session.origin);
-        if let Some(m) = mob.and_then(|id| self.mobs.iter_mut().find(|m| m.id == id)) {
+        if let Some(m) = mob.and_then(|id| self.simulation.mobs.iter_mut().find(|m| m.id == id)) {
             m.random = session.random.clone();
             m.ambient_timer = session.ambient_sound_time;
             if villager {
@@ -438,7 +441,9 @@ impl Game<'_> {
                     self.add_orb([origin[0], origin[1] + 0.5, origin[2]], v as u32)
                 }
                 merchant::Event::LevelUp(_) => {
-                    if let Some(m) = mob.and_then(|id| self.mobs.iter_mut().find(|m| m.id == id)) {
+                    if let Some(m) =
+                        mob.and_then(|id| self.simulation.mobs.iter_mut().find(|m| m.id == id))
+                    {
                         m.add_effect("minecraft:regeneration", 200, 0);
                     }
                 }
@@ -454,7 +459,7 @@ impl Game<'_> {
                 merchant::Event::Traded(index, offer) => {
                     // The mods may change the live offer (Bukkit's PlayerTradeEvent#getTrade).
                     let trader = mob.and_then(|id| {
-                        let m = self.mobs.iter().find(|m| m.id == id)?;
+                        let m = self.simulation.mobs.iter().find(|m| m.id == id)?;
                         Some((id, super::native_hooks::mob_kind(m)))
                     });
                     if let (Some((id, kind)), Some(live)) = (trader, session.offers.get_mut(index))
@@ -482,7 +487,7 @@ impl Game<'_> {
     pub(super) fn merchant_traded(&mut self, mob: Option<u32>, offers: &[MerchantOffer]) {
         for offer in offers {
             self.award_custom_stat("traded_with_villager", 1);
-            let merchant = mob.and_then(|id| self.mobs.iter().find(|m| m.id == id));
+            let merchant = mob.and_then(|id| self.simulation.mobs.iter().find(|m| m.id == id));
             let kind = merchant.map(super::native_hooks::mob_kind);
             let villager = merchant.map(|m| self.mob_entity(m));
             if let Some(villager) = villager {

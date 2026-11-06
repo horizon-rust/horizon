@@ -68,7 +68,7 @@ impl Game<'_> {
         let bounds = p.bounds().inflate(Vec3::new(6.0, 6.0, 6.0));
         let (lo, hi) = (bounds.min_position(), bounds.max_position());
         let mut scene = horizon_client::collisions::SceneCollisions {
-            world: &self.world,
+            world: &self.simulation.world,
             binding: self.collision,
             subject: None,
         };
@@ -77,7 +77,7 @@ impl Game<'_> {
                 for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
                     let Ok(shape) = self.collision.collision_shape_with_context(
                         &mut scene,
-                        self.world.block(x, y, z),
+                        self.simulation.world.block(x, y, z),
                         BlockPos::new(x, y, z),
                         &CollisionContext::empty(false),
                     ) else {
@@ -183,7 +183,7 @@ impl Game<'_> {
             let f = self
                 .res
                 .facts()
-                .get(self.world.block(pos[0], pos[1], pos[2]));
+                .get(self.simulation.world.block(pos[0], pos[1], pos[2]));
             if f.fluid != Fluid::Water {
                 continue;
             }
@@ -212,7 +212,12 @@ impl Game<'_> {
         let (cx, cz) = (eye[0] >> 4, eye[2] >> 4);
         for chunk_x in cx - 2..=cx + 2 {
             for chunk_z in cz - 2..=cz + 2 {
-                if !self.world.chunks.contains_key(&(chunk_x, chunk_z)) {
+                if !self
+                    .simulation
+                    .world
+                    .chunks
+                    .contains_key(&(chunk_x, chunk_z))
+                {
                     continue;
                 }
                 for kind in HeightmapType::ALL
@@ -246,7 +251,7 @@ impl Game<'_> {
         // the Direction ordinal and the side's quad in `cuboid_fill_quads`.
         const SIDES: [(u8, usize); 6] = [(4, 1), (3, 3), (5, 0), (2, 2), (0, 5), (1, 4)];
         for pos in cube(eye, 6) {
-            let state = self.world.block(pos[0], pos[1], pos[2]);
+            let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
             let f = self.res.facts().get(state);
             if &*f.name == "minecraft:air" || f.sturdy_full == 0 {
                 continue;
@@ -277,7 +282,7 @@ fn light_level_texts(
     texts: &mut Vec<([f64; 3], String, u32)>,
 ) {
     for pos in cube(eye, 10) {
-        let light = game.world.light(pos[0], pos[1], pos[2]);
+        let light = game.simulation.world.light(pos[0], pos[1], pos[2]);
         let (sky_light, block_light) = (light >> 4, light & 15);
         let [x, y, z] = pos.map(f64::from);
         if sky_light != 15 && sky {

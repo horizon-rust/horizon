@@ -68,9 +68,9 @@ impl Game<'_> {
         position: [f64; 3],
         delay: i32,
     ) {
-        self.next_entity += 1;
-        self.ominous_spawners.push(OminousItemSpawner {
-            id: self.next_entity,
+        self.simulation_server.next_entity += 1;
+        self.simulation.ominous_spawners.push(OminousItemSpawner {
+            id: self.simulation_server.next_entity,
             item,
             position,
             spawn_item_after: i64::from(delay),
@@ -87,13 +87,13 @@ impl Game<'_> {
         else {
             return;
         };
-        self.next_entity += 1;
-        let id = self.next_entity;
+        self.simulation_server.next_entity += 1;
+        let id = self.simulation_server.next_entity;
         let saved = horizon_client::entity_nbt::uuid(&tag);
         // Its saved UUID and the attachments saved under it (#7398).
         self.remember_uuid(id, saved, &tag);
         let uuid = self.uuid_for(id);
-        self.ominous_spawners.push(OminousItemSpawner {
+        self.simulation.ominous_spawners.push(OminousItemSpawner {
             id,
             item,
             position: [at.x, at.y, at.z],
@@ -107,7 +107,7 @@ impl Game<'_> {
     /// warning sound, then the item) and `tickClient` (particles every 5
     /// game ticks).
     pub(super) fn tick_ominous_item_spawners(&mut self) {
-        let spawners = std::mem::take(&mut self.ominous_spawners);
+        let spawners = std::mem::take(&mut self.simulation.ominous_spawners);
         let mut kept = Vec::with_capacity(spawners.len());
         for mut s in spawners {
             s.tick_count += 1;
@@ -126,18 +126,18 @@ impl Game<'_> {
                 self.spawn_ominous_item(&s);
                 continue;
             }
-            if self.world.game_time % 5 == 0 {
+            if self.simulation.world.game_time % 5 == 0 {
                 self.ominous_spawner_particles(s.position);
             }
             kept.push(s);
         }
-        kept.append(&mut self.ominous_spawners);
-        self.ominous_spawners = kept;
+        kept.append(&mut self.simulation.ominous_spawners);
+        self.simulation.ominous_spawners = kept;
     }
     /// `handleAddEntity` for a spawner a server sent: its item comes with the
     /// entity data (`ItemStack.EMPTY` until then, which draws nothing).
     pub(super) fn add_remote_ominous_item_spawner(&mut self, id: u32, position: [f64; 3]) {
-        self.ominous_spawners.push(OminousItemSpawner {
+        self.simulation.ominous_spawners.push(OminousItemSpawner {
             id,
             item: ItemStack::new("minecraft:air", 1),
             position,
@@ -150,11 +150,16 @@ impl Game<'_> {
     /// `OminousItemSpawner.tick` on a client: `tickCount` and `tickClient`,
     /// the particles every 5 game ticks; only the server spawns the item.
     pub(super) fn tick_remote_ominous_item_spawners(&mut self) {
-        let at: Vec<[f64; 3]> = self.ominous_spawners.iter().map(|s| s.position).collect();
-        for s in &mut self.ominous_spawners {
+        let at: Vec<[f64; 3]> = self
+            .simulation
+            .ominous_spawners
+            .iter()
+            .map(|s| s.position)
+            .collect();
+        for s in &mut self.simulation.ominous_spawners {
             s.tick_count += 1;
         }
-        if self.world.game_time % 5 == 0 {
+        if self.simulation.world.game_time % 5 == 0 {
             for position in at {
                 self.ominous_spawner_particles(position);
             }
@@ -206,7 +211,7 @@ impl Game<'_> {
         alpha: f64,
         out: &mut Vec<Vertex>,
     ) {
-        for s in &self.ominous_spawners {
+        for s in &self.simulation.ominous_spawners {
             let at = glam::DVec3::from_array(s.position);
             if at.distance_squared(camera) >= 64.0 * 64.0 {
                 continue;

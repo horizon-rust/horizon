@@ -87,7 +87,7 @@ impl Game<'_> {
         {
             // Player.enchantmentSeed, made when first needed.
             if g.xp_seed == 0 {
-                g.xp_seed = self.world.random.next_int();
+                g.xp_seed = self.simulation.world.random.next_int();
             }
             menu.data[3] = g.xp_seed;
         }
@@ -250,7 +250,7 @@ impl Game<'_> {
         let Some(gl) = host.play.get_mut(&conn).and_then(|p| p.lectern.as_mut()) else {
             return;
         };
-        let (book, page) = match self.world.block_entities.get(&gl.key) {
+        let (book, page) = match self.simulation.world.block_entities.get(&gl.key) {
             Some(BlockEntity::Lectern(l)) => (l.book.clone(), l.page),
             _ => (None, 0),
         };
@@ -438,7 +438,7 @@ impl Game<'_> {
             // CriteriaTriggers.ENCHANTED_ITEM, with the levels it cost.
             game.trigger_enchanted_item(&enchanted, need);
         });
-        host.hub.guests[gi].xp_seed = self.world.random.next_int();
+        host.hub.guests[gi].xp_seed = self.simulation.world.random.next_int();
         let env = self.menu_env();
         let lapis = gs.menu.slot(1).cloned().filter(|_| !creative).map(|mut l| {
             l.count = l.count.saturating_sub(need as u32);
@@ -450,7 +450,7 @@ impl Game<'_> {
         }
         gs.menu.enchant_changed = false;
         self.lan_enchant_offers(host, gi, gs);
-        let pitch = self.world.random.next_float() * 0.1 + 0.9;
+        let pitch = self.simulation.world.random.next_float() * 0.1 + 0.9;
         let at = gs.pos.map(|v| f64::from(v) + 0.5);
         self.audio.play(
             "minecraft:block.enchantment_table.use",
@@ -526,7 +526,7 @@ impl Game<'_> {
             && let Some(pos) = menu.pos
             && self.mod_menu_at(pos).is_some()
         {
-            if !g.spectator() && menu.slots.still_valid(&self.world, g, menu.pos) {
+            if !g.spectator() && menu.slots.still_valid(&self.simulation.world, g, menu.pos) {
                 // The clicking player's cursor stack (`clickMenuButton`'s
                 // other half). Single player's own player is a guest of
                 // its own host too (`lan.rs:165`), so this one path covers
@@ -675,7 +675,11 @@ impl Game<'_> {
     /// `BeaconBlockEntity.dataAccess`: the pyramid's levels and the powers
     /// (`BeaconMenu.encodeEffect`: the `mob_effect` id + 1, 0 for none).
     fn beacon_data(&self, host: &LanHost, pos: [i32; 3]) -> [i32; 3] {
-        let Some(BlockEntity::Beacon(b)) = self.world.block_entities.get(&(pos[0], pos[1], pos[2]))
+        let Some(BlockEntity::Beacon(b)) = self
+            .simulation
+            .world
+            .block_entities
+            .get(&(pos[0], pos[1], pos[2]))
         else {
             return [0; 3];
         };
@@ -755,8 +759,11 @@ impl Game<'_> {
         }
         let [primary, secondary] = powers.map(|p| p.map(|(_, n)| n));
         let mut select_sound = false;
-        if let Some(BlockEntity::Beacon(b)) =
-            self.world.block_entities.get_mut(&(pos[0], pos[1], pos[2]))
+        if let Some(BlockEntity::Beacon(b)) = self
+            .simulation
+            .world
+            .block_entities
+            .get_mut(&(pos[0], pos[1], pos[2]))
         {
             b.primary = primary.clone();
             b.secondary = secondary.clone();
@@ -772,7 +779,10 @@ impl Game<'_> {
         if select_sound {
             self.beacon_sound(pos, "minecraft:block.beacon.power_select");
         }
-        self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+        self.simulation
+            .world
+            .modified
+            .insert((pos[0] >> 4, pos[2] >> 4));
     }
 
     /// `ServerPlayer.doTick`'s `stillValid`: a guest's station closes once its
@@ -825,7 +835,11 @@ impl Game<'_> {
         gs: &GuestStation,
     ) -> bool {
         let [x, y, z] = gs.pos;
-        let name = &self.res.facts().get(self.world.block(x, y, z)).name;
+        let name = &self
+            .res
+            .facts()
+            .get(self.simulation.world.block(x, y, z))
+            .name;
         StationKind::from_block(name) == Some(gs.kind) && g.within_block_range(gs.pos, 4.0)
     }
 
@@ -838,7 +852,7 @@ impl Game<'_> {
         key: (i32, i32, i32),
     ) -> bool {
         matches!(
-            self.world.block_entities.get(&key),
+            self.simulation.world.block_entities.get(&key),
             Some(BlockEntity::Lectern(l)) if l.book.is_some()
         ) && g.within_block_range([key.0, key.1, key.2], 4.0)
     }

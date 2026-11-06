@@ -12,6 +12,12 @@ Gameplay tests run in its library test target, separately from the reusable libr
 There is no copy of gameplay in the executable's test target. Tools and probes depend only
 on the reusable library, so gameplay edits do not invalidate their builds.
 
+Server level ownership and the region execution barrier are described in
+[server-regions.md](server-regions.md). Mutable world/entity/tick state lives in
+`game/simulation.rs::LevelSimulation`; `ServerCoordination` supplies the shared
+bounded pool. Region jobs borrow immutable resources and commit validated mob
+updates in the original global order through `mobs/region_tick.rs`.
+
 Paths: `L/` = `crates/horizon-client/src/`, `G/` = `crates/horizon-client/src/game/`, `W/` =
 `crates/horizon-world/src/`, `K/` = `crates/horizon-client-core/src/`, `C/` = `crates/horizon-command/src/`,
 `I/` = `crates/horizon-items/src/`, `R/` = `crates/horizon-client-render/src/`, `N/` = `crates/horizon-client-input/src/`.
@@ -28,7 +34,7 @@ command above to inspect the selection rather than relying on historical counts.
 | # | Area (commits) | Files | Checks |
 |---|---|---|---|
 | 1 | Game loop, tick order, frame pacing (554) | `L/game.rs` (`fn tick`, `fn tick_world`, `fn render`, `about_to_wait`), `L/clock.rs`, `N/window.rs`, `R/spans.rs` | game_loop, frame_limiter, interaction_input, tick |
-| 2 | Mobs in the game loop, spawning (166) | `G/creatures.rs`, `G/natural_spawning.rs`, `L/mobs/spawning.rs`, `L/mobs/spawn_rules.rs`, `L/mobs/spawn_selection.rs`, `L/mobs/finalize.rs`, `G/spawner.rs`, `G/trial_spawner.rs` | natural_spawn, spawn_rules, finalize_spawn, spawner, trial_spawner, mob_ai |
+| 2 | Mobs in the game loop, spawning (166) | `G/creatures.rs`, `G/simulation.rs`, `L/server_regions.rs`, `L/mobs/region_tick.rs`, `L/mobs/snapshot.rs`, `L/mobs/players.rs`, `G/natural_spawning.rs`, `L/mobs/spawning.rs`, `L/mobs/spawn_rules.rs`, `L/mobs/spawn_selection.rs`, `L/mobs/finalize.rs`, `G/spawner.rs`, `G/trial_spawner.rs` | natural_spawn, spawn_rules, finalize_spawn, spawner, trial_spawner, mob_ai; region transaction/topology/index unit tests |
 | 3 | World save and load (163) | `L/save.rs`, `G/saving.rs`, `G/persist.rs` (entities), `L/entity_nbt.rs`, `K/block_entity_nbt.rs`, `W/region.rs`, `W/nbt.rs` | save_roundtrip, world_reopen, world, datafix |
 | 4 | World generation (153) | `W/worldgen.rs`, `W/worldgen/` (`generator*.rs`, `feature_graph.rs`, `structure/`, `placement/`), `L/vanillagen.rs` | chunk_generation, worldgen, server_world_gen, world_spawn, feature_graph, feature_placement, decoration and the other worldgen harnesses |
 | 5 | Multiplayer client, packets in (145) | `G/remote.rs` (`fn handle_packet`, `fn tick_remote`), `G/remote_*.rs`, `L/net.rs` | dedicated_server, server_entities, lan_e2e (all) |
@@ -63,7 +69,7 @@ command above to inspect the selection rather than relying on historical counts.
 | 34 | Multiplayer and LAN screens, friends (44) | `L/multiplayer.rs`, `G/lan_screen.rs`, `G/friends.rs`, `L/friends_screen.rs`, `crates/horizon-friends/`, `crates/horizon-relay/` | lan, world_options; `python3 tools/test_friends.py` |
 | 35 | Dispensers (43) | `G/dispenser.rs`, `G/dispense_fixture.rs` (the harness side) | dispenser |
 | 36 | Audio and music (38) | `R/audio.rs`, `R/sound_engine.rs`, `R/sound_events.rs`, `L/music.rs`, `G/music.rs`, `L/ambience.rs`, `G/subtitle_hud.rs` | sound_engine, sound_event, music, situational_music, ambient_sound, subtitle |
-| 37 | Integrated server and levels (34) | `G/integrated.rs`, `G/levels.rs`, `G/server_travel.rs` | server_dimension_players, `lan_e2e` (server-thread by default; portals, levels, distance, lava) |
+| 37 | Integrated server and levels (34) | `G/integrated.rs`, `G/levels.rs`, `G/simulation.rs`, `G/server_travel.rs` | server_dimension_players, dedicated_server, server_entities, `lan_e2e` (server-thread by default; portals, levels, distance, lava) |
 | 38 | Command parsing (34) | `C/` (`args.rs`, `selector.rs`, `tree_*.rs`, `vanilla.rs`); `cargo test -p horizon-command` | command_parse (corpus `tools/command_parse_corpus.py`) |
 | 39 | Benchmarks and telemetry (34) | `L/benchmark.rs`, `tools/perf_bench.py`, `R/telemetry.rs`, `crates/horizon-telemetry*/`, `crates/horizon-bench/` | `python3 -m unittest tests.test_perf_bench`; [benchmark.md](benchmark.md) |
 | 40 | Explosions and TNT (31) | `G/explosion.rs`, `G/tnt.rs` | lan_e2e blast; no dedicated harness yet |

@@ -67,25 +67,32 @@ impl Game<'_> {
     pub(super) fn tick_thunder(&mut self) {
         // isRaining (rain level > 0.2) and isThundering (> 0.9) both need
         // Level.canHaveWeather: sky light, no ceiling and not the End.
-        let (rain, thunder) = self.world.weather.levels(1.0);
-        let weather = self.world.shape.sky_light
-            && !self.world.shape.has_ceiling
+        let (rain, thunder) = self.simulation.world.weather.levels(1.0);
+        let weather = self.simulation.world.shape.sky_light
+            && !self.simulation.world.shape.has_ceiling
             && self.dim != super::Dim::End;
         if rain <= 0.2 || thunder <= 0.9 || !weather || self.world_debug {
             return;
         }
-        let mut scratch = std::mem::take(&mut self.spawn_scratch);
+        let mut scratch = std::mem::take(&mut self.simulation.spawn_scratch);
         self.spawning_chunks(&self.level_players(), &mut scratch);
-        let levels = self.tickets.levels();
+        let levels = self.simulation.tickets.levels();
         scratch
             .candidates
             .retain(|&(x, z)| levels.random_ticking(x, z));
         for (cx, cz) in scratch.candidates.drain(..) {
-            if self.world.random.next_int_bound(100_000).unwrap_or(1) != 0 {
+            if self
+                .simulation
+                .world
+                .random
+                .next_int_bound(100_000)
+                .unwrap_or(1)
+                != 0
+            {
                 continue;
             }
             // getBlockRandomPos(minX, 0, minZ, 15)
-            let r = self.world.random.next_int();
+            let r = self.simulation.world.random.next_int();
             let (x, z) = (cx * 16 + (r & 15), cz * 16 + (r >> 16 & 15));
             let Some(pos) = self.lightning_target(x, z) else {
                 continue;
@@ -103,10 +110,10 @@ impl Game<'_> {
             let below = &self
                 .res
                 .facts()
-                .get(self.world.block(pos[0], pos[1] - 1, pos[2]))
+                .get(self.simulation.world.block(pos[0], pos[1] - 1, pos[2]))
                 .name;
             let trap = self.ui.rules.bool("spawn_mobs")
-                && self.world.random.next_double() < difficulty * 0.01
+                && self.simulation.world.random.next_double() < difficulty * 0.01
                 && !below.ends_with("lightning_rod");
             if !self.lightning_strike_allowed(None, pos, "weather") {
                 continue;
@@ -115,7 +122,7 @@ impl Game<'_> {
                 let at = [f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2])];
                 // ServerLevel.tickChunk: a trap horse waits for a player.
                 if let Some(id) = self.spawn_mob("minecraft:skeleton_horse", at, false)
-                    && let Some(h) = self.mobs.iter_mut().find(|m| m.id == id)
+                    && let Some(h) = self.simulation.mobs.iter_mut().find(|m| m.id == id)
                 {
                     h.extra.trap = true;
                     h.extra.age = 0;
@@ -128,7 +135,7 @@ impl Game<'_> {
             ];
             self.spawn_bolt(at, trap);
         }
-        self.spawn_scratch = scratch;
+        self.simulation.spawn_scratch = scratch;
     }
     /// `ServerLevel.findLightningRod`: `PoiManager.findClosest` over the
     /// lightning rod points of interest within 128 blocks of `center` whose
@@ -144,7 +151,7 @@ impl Game<'_> {
         let (cx1, cz1) = ((center[0] + RANGE) >> 4, (center[2] + RANGE) >> 4);
         for cx in cx0..=cx1 {
             for cz in cz0..=cz1 {
-                let Some(chunk) = self.world.chunks.get(&(cx, cz)) else {
+                let Some(chunk) = self.simulation.world.chunks.get(&(cx, cz)) else {
                     continue;
                 };
                 for (i, section) in chunk.sections.iter().enumerate() {
@@ -159,7 +166,7 @@ impl Game<'_> {
                     if !section.blocks.maybe_has(&mut rod) {
                         continue;
                     }
-                    let base_y = self.world.bottom_y() + 16 * i as i32;
+                    let base_y = self.simulation.world.bottom_y() + 16 * i as i32;
                     for j in 0..4096 {
                         if !rod(section.get(j)) {
                             continue;
@@ -176,7 +183,10 @@ impl Game<'_> {
                         if d > i64::from(RANGE * RANGE) || best.is_some_and(|(b, _)| d >= b) {
                             continue;
                         }
-                        let surface = self.world.world_surface(p[0], p[2], |s| facts.is_air(s));
+                        let surface = self
+                            .simulation
+                            .world
+                            .world_surface(p[0], p[2], |s| facts.is_air(s));
                         if p[1] == surface - 1 {
                             best = Some((d, p));
                         }
@@ -190,7 +200,7 @@ impl Game<'_> {
     /// entity under open sky in the column (3 blocks around), else the top of
     /// the column.
     fn lightning_target(&mut self, x: i32, z: i32) -> Option<[i32; 3]> {
-        if !self.world.loaded(x, z) {
+        if !self.simulation.world.loaded(x, z) {
             return None;
         }
         let top =
@@ -198,8 +208,10 @@ impl Game<'_> {
         if let Some(rod) = self.find_lightning_rod([x, top.y, z]) {
             return Some(rod);
         }
-        let sees_sky = |g: &Self, p: [i32; 3]| g.world.light(p[0], p[1], p[2]) >> 4 == 15;
+        let sees_sky =
+            |g: &Self, p: [i32; 3]| g.simulation.world.light(p[0], p[1], p[2]) >> 4 == 15;
         let mut candidates: Vec<[i32; 3]> = self
+            .simulation
             .mobs
             .iter()
             .filter(|m| m.alive())
@@ -233,6 +245,7 @@ impl Game<'_> {
         }
         if !candidates.is_empty() {
             let i = self
+                .simulation
                 .world
                 .random
                 .next_int_bound(candidates.len() as i32)
@@ -246,12 +259,12 @@ impl Game<'_> {
             let ctx = horizon_client::sculk::Context::default();
             self.post_game_event("minecraft:lightning_strike", at, ctx);
         }
-        let r = &mut self.world.random;
+        let r = &mut self.simulation.world.random;
         let seed = r.next_long();
         let flashes = r.next_int_bound(3).unwrap_or(0) + 1;
         self.lightning_seen[0] += 1;
         let id = self.take_entity_id();
-        self.bolts.push(Bolt {
+        self.simulation.bolts.push(Bolt {
             id,
             at,
             life: 2,
@@ -279,12 +292,12 @@ impl Game<'_> {
     /// `ClientLevel.addEntity` for a server's lightning bolt: on a client it
     /// only flashes, sounds and draws (`LightningBolt.tick` off the server).
     pub(super) fn spawn_remote_bolt(&mut self, id: u32, at: [f64; 3]) {
-        self.bolts.retain(|b| b.id != id);
-        let r = &mut self.world.random;
+        self.simulation.bolts.retain(|b| b.id != id);
+        let r = &mut self.simulation.world.random;
         let seed = r.next_long();
         let flashes = r.next_int_bound(3).unwrap_or(0) + 1;
         self.lightning_seen[0] += 1;
-        self.bolts.push(Bolt {
+        self.simulation.bolts.push(Bolt {
             id,
             at,
             life: 2,
@@ -311,12 +324,12 @@ impl Game<'_> {
         ];
         let mut spots = vec![base];
         for _ in 0..extra {
-            let r = &mut self.world.random;
+            let r = &mut self.simulation.world.random;
             let mut d = || r.next_int_bound(3).unwrap_or(1) - 1;
             spots.push([base[0] + d(), base[1] + d(), base[2] + d()]);
         }
         for p in spots {
-            let state = self.world.block(p[0], p[1], p[2]);
+            let state = self.simulation.world.block(p[0], p[1], p[2]);
             if !self.res.facts().is_air(state) {
                 continue;
             }
@@ -338,17 +351,17 @@ impl Game<'_> {
     }
     /// `LightningBolt.tick` for every bolt.
     pub(super) fn tick_bolts(&mut self) {
-        let mut bolts = std::mem::take(&mut self.bolts);
+        let mut bolts = std::mem::take(&mut self.simulation.bolts);
         bolts.retain_mut(|b| {
             if b.life == 2 {
-                let pitch = 0.8 + self.world.random.next_float() * 0.2;
+                let pitch = 0.8 + self.simulation.world.random.next_float() * 0.2;
                 self.audio.play(
                     "minecraft:entity.lightning_bolt.thunder",
                     Some(b.at),
                     10000.0,
                     pitch,
                 );
-                let pitch = 0.5 + self.world.random.next_float() * 0.2;
+                let pitch = 0.5 + self.simulation.world.random.next_float() * 0.2;
                 self.audio.play(
                     "minecraft:entity.lightning_bolt.impact",
                     Some(b.at),
@@ -376,10 +389,10 @@ impl Game<'_> {
                     self.lightning_strike_triggers(b);
                     return false;
                 }
-                if b.life < -self.world.random.next_int_bound(10).unwrap_or(0) {
+                if b.life < -self.simulation.world.random.next_int_bound(10).unwrap_or(0) {
                     b.flashes -= 1;
                     b.life = 1;
-                    b.seed = self.world.random.next_long();
+                    b.seed = self.simulation.world.random.next_long();
                     if !b.visual_only {
                         b.fires += self.bolt_fire(b.at, 0);
                     }
@@ -400,8 +413,8 @@ impl Game<'_> {
             }
             true
         });
-        bolts.append(&mut self.bolts);
-        self.bolts = bolts;
+        bolts.append(&mut self.simulation.bolts);
+        self.simulation.bolts = bolts;
     }
     /// `LightningRodBlock.onLightningStrike`: powered for 8 ticks.
     fn strike_rod(&mut self, at: [f64; 3]) {
@@ -410,7 +423,7 @@ impl Game<'_> {
             (at[1] - 1.0e-6).floor() as i32,
             at[2].floor() as i32,
         ];
-        let state = self.world.block(p[0], p[1], p[2]);
+        let state = self.simulation.world.block(p[0], p[1], p[2]);
         if !self.res.facts().get(state).name.ends_with("lightning_rod") {
             return;
         }
@@ -464,6 +477,7 @@ impl Game<'_> {
             ..Default::default()
         };
         let viewers: Vec<EntityView> = self
+            .simulation
             .mobs
             .iter()
             .filter(|m| m.alive() && !b.hit.contains(&m.id))
@@ -473,7 +487,8 @@ impl Game<'_> {
         // The item entities in the box are viewers too (`getEntities` is every entity).
         let mut viewers = viewers;
         viewers.extend(
-            self.dropped
+            self.simulation
+                .dropped
                 .iter()
                 .filter(|e| !b.hit_items.contains(&e.id))
                 .filter(|e| in_viewer_box(at, [e.position.x, e.position.y, e.position.z]))
@@ -563,10 +578,10 @@ impl Game<'_> {
                 continue;
             }
             left -= 1;
-            struck.push(self.mob_entity(&self.mobs[i]));
+            struck.push(self.mob_entity(&self.simulation.mobs[i]));
             // LivingConversionEvent.Pre: a canceled conversion leaves the
             // mob to the lightning's fire and damage, as `super.thunderHit`.
-            let outcome = match self.mobs[i].species() {
+            let outcome = match self.simulation.mobs[i].species() {
                 Species::Pig if !peaceful => Some("minecraft:zombified_piglin"),
                 Species::Villager if !peaceful => Some("minecraft:witch"),
                 _ => None,
@@ -574,12 +589,12 @@ impl Game<'_> {
             let mut keep = false;
             if let Some(outcome) = outcome {
                 let (id, kind) = (
-                    self.mobs[i].id,
-                    super::native_hooks::mob_kind(&self.mobs[i]),
+                    self.simulation.mobs[i].id,
+                    super::native_hooks::mob_kind(&self.simulation.mobs[i]),
                 );
                 self.native_living_conversion_pre(id, &kind, outcome, &mut keep);
             }
-            let m = &mut self.mobs[i];
+            let m = &mut self.simulation.mobs[i];
             b.hit.push(m.id);
             let setup = thunder_mob_spawn_setup;
             let at = [m.position.x, m.position.y, m.position.z];
@@ -649,15 +664,16 @@ impl Game<'_> {
         // Cushion.thunderHit: a cushion whose box meets the strike box breaks and drops its item
         // (the bolt is no player, so no creative spare). Last first, since
         // break_cushion removes the entry.
-        for i in (0..self.cushions.len()).rev() {
-            let (lo, hi) = self.cushions[i].bounds();
+        for i in (0..self.simulation.cushions.len()).rev() {
+            let (lo, hi) = self.simulation.cushions[i].bounds();
             if strike.intersects(Aabb::new(
                 Vec3::new(lo[0], lo[1], lo[2]),
                 Vec3::new(hi[0], hi[1], hi[2]),
             )) {
-                let before = self.dropped.len();
+                let before = self.simulation.dropped.len();
                 self.break_cushion(i, false);
-                b.spared.extend(self.dropped[before..].iter().map(|e| e.id));
+                b.spared
+                    .extend(self.simulation.dropped[before..].iter().map(|e| e.id));
             }
         }
         // Vehicles, then orbs: `VehicleEntity.hurtServer` for 5 damage (x 10
@@ -681,8 +697,8 @@ impl Game<'_> {
                     self.hurt_boat(i, 5.0, false);
                 }
                 EntityHandle::Cart(i) => self.hurt_cart(i, 5.0, false, false),
-                EntityHandle::Orb(i) if self.orbs[i].hurt(5.0) => {
-                    self.orbs.remove(i);
+                EntityHandle::Orb(i) if self.simulation.orbs[i].hurt(5.0) => {
+                    self.simulation.orbs.remove(i);
                 }
                 _ => {}
             }
@@ -717,10 +733,10 @@ impl Game<'_> {
                 continue;
             }
             left -= 1;
-            let e = &self.dropped[i];
+            let e = &self.simulation.dropped[i];
             b.hit_items.push(e.id);
             if !(e.stack.item.contains("netherite") || (e.age < 20 && b.spared.contains(&e.id))) {
-                self.dropped.remove(i);
+                self.simulation.dropped.remove(i);
             }
         }
         self.native_leaves_flush();
@@ -735,7 +751,8 @@ impl Game<'_> {
         camera: glam::DVec3,
     ) -> Vec<horizon_client::gfx::lightning::Bolt> {
         let range = 64.0 * self.view_scale();
-        self.bolts
+        self.simulation
+            .bolts
             .iter()
             .filter(|b| {
                 let at = glam::DVec3::new(b.at[0], b.at[1], b.at[2]);

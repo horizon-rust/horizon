@@ -14,14 +14,15 @@ impl Game<'_> {
             return None;
         }
         if level.dimension() == self.dim.id() {
-            return Some(&self.world);
+            return Some(&self.simulation.world);
         }
         let dim = self
+            .simulation_server
             .levels
             .parked_dims()
             .into_iter()
             .find(|d| d.id() == level.dimension())?;
-        self.levels.parked_world(dim)
+        self.simulation_server.levels.parked_world(dim)
     }
     /// The state at `pos`, if its chunk is loaded and `y` is inside the world.
     fn native_level_state(
@@ -89,12 +90,12 @@ impl Game<'_> {
     /// level as in vanilla. API 381.
     pub(super) fn native_level_game_time(&self, level: LevelRef) -> Option<i64> {
         self.native_level_world(level)?;
-        Some(self.world.game_time)
+        Some(self.simulation.world.game_time)
     }
     /// The time of day in ticks (`Level.getOverworldClockTime`), shared by
     /// every level; it keeps counting past 24000. API 381.
     pub(super) fn native_level_day_time(&self, level: LevelRef) -> Option<i64> {
         self.native_level_world(level)?;
-        Some(self.world.day_time)
+        Some(self.simulation.world.day_time)
     }
 }

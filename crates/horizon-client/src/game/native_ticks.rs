@@ -34,6 +34,10 @@ pub(super) struct TickRound {
 }
 
 impl TickRound {
+    /// Whether no mod canceled any tick.
+    pub(super) fn none_canceled(&self) -> bool {
+        self.canceled.is_empty()
+    }
     /// Whether a mod canceled the tick of entity `id`.
     pub(super) fn canceled(&self, id: u32) -> bool {
         !self.canceled.is_empty() && self.canceled.contains(&id)

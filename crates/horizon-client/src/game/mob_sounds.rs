@@ -16,7 +16,12 @@ impl Game<'_> {
     pub(super) fn start_riding_sound(&mut self) -> Option<RiddenSound> {
         let ridden = self
             .riding
-            .and_then(|id| self.mobs.iter().find(|m| m.id == id && !m.removed))
+            .and_then(|id| {
+                self.simulation
+                    .mobs
+                    .iter()
+                    .find(|m| m.id == id && !m.removed)
+            })
             .map(|m| {
                 let species = m.species();
                 let sound = RiddenSound {
@@ -59,8 +64,9 @@ impl Game<'_> {
     /// swaps the flying loop for the aggressive one and back), forget the mobs
     /// that are gone, and read what the instances follow.
     pub(super) fn start_mob_sounds(&mut self) -> Vec<MobSound> {
-        let game_time = self.world.game_time;
+        let game_time = self.simulation.world.game_time;
         let mobs: Vec<MobSound> = self
+            .simulation
             .mobs
             .iter()
             .filter(|m| {
@@ -96,6 +102,7 @@ impl Game<'_> {
             .retain(|id, _| mobs.iter().any(|m| m.id == *id));
         for sound in &mobs {
             let is_bee = self
+                .simulation
                 .mobs
                 .iter()
                 .any(|m| m.id == sound.id && m.species() == Species::Bee);
@@ -112,7 +119,7 @@ impl Game<'_> {
     /// hum starts (one loop per guardian; the loops of its earlier beams are
     /// the same loop, as each one follows the guardian's charge).
     pub(super) fn start_guardian_sound(&mut self, id: u32) {
-        let Some(m) = self.mobs.iter().find(|m| {
+        let Some(m) = self.simulation.mobs.iter().find(|m| {
             m.id == id && matches!(m.species(), Species::Guardian | Species::ElderGuardian)
         }) else {
             return;
@@ -138,6 +145,7 @@ impl Game<'_> {
     /// sound loop starts (`SnifferSoundInstance`).
     pub(super) fn start_sniffer_digging_sound(&mut self, id: u32) {
         let Some(m) = self
+            .simulation
             .mobs
             .iter()
             .find(|m| m.id == id && m.species() == Species::Sniffer)

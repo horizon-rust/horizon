@@ -803,7 +803,8 @@ impl Game<'_> {
         {
             return Vec::new();
         }
-        self.orbs
+        self.simulation
+            .orbs
             .iter()
             .filter(|o| o.count > 0)
             .map(|o| NativeExperienceOrb {
@@ -835,7 +836,7 @@ impl Game<'_> {
         {
             return false;
         }
-        let Some(orb) = self.orbs.iter_mut().find(|o| o.id == id) else {
+        let Some(orb) = self.simulation.orbs.iter_mut().find(|o| o.id == id) else {
             return false;
         };
         orb.value = value.unwrap_or(orb.value);

@@ -11,8 +11,8 @@ impl Game<'_> {
         let Some(camera) = self.player.as_ref().map(|p| p.position) else {
             return;
         };
-        for i in 0..self.mobs.len() {
-            let m = &self.mobs[i];
+        for i in 0..self.simulation.mobs.len() {
+            let m = &self.simulation.mobs[i];
             if m.species() != Species::Breeze
                 || !m.alive()
                 || m.position.distance_squared(camera) > 32.0 * 32.0
@@ -26,24 +26,24 @@ impl Game<'_> {
                 _ => (1, false),
             };
             if jump_trail {
-                self.mobs[i].extra.scratch[1] += 1;
-                if self.mobs[i].extra.scratch[1] > 5 {
+                self.simulation.mobs[i].extra.scratch[1] += 1;
+                if self.simulation.mobs[i].extra.scratch[1] > 5 {
                     continue;
                 }
             } else {
-                self.mobs[i].extra.scratch[1] = 0;
+                self.simulation.mobs[i].extra.scratch[1] = 0;
             }
-            let m = &self.mobs[i];
+            let m = &self.simulation.mobs[i];
             let (x, y, z) = (
                 m.position.x.floor() as i32,
                 m.position.y.floor() as i32,
                 m.position.z.floor() as i32,
             );
             let mut at = [x, y, z];
-            let mut state = self.world.block(x, y, z);
+            let mut state = self.simulation.world.block(x, y, z);
             if self.res.facts().is_air(state) {
                 at[1] = (m.position.y - 0.2).floor() as i32;
-                state = self.world.block(x, at[1], z);
+                state = self.simulation.world.block(x, at[1], z);
             }
             let Some((sprite, tint)) = self.particle_sprite(state, at) else {
                 continue;
@@ -58,8 +58,13 @@ impl Game<'_> {
                 [m.position.x, m.position.y, m.position.z]
             };
             for _ in 0..amount {
-                let particle =
-                    Particle::terrain(&mut self.world.random, at, [0.0; 3], sprite.clone(), tint);
+                let particle = Particle::terrain(
+                    &mut self.simulation.world.random,
+                    at,
+                    [0.0; 3],
+                    sprite.clone(),
+                    tint,
+                );
                 self.particles.push(particle);
             }
         }

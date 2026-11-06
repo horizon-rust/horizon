@@ -63,7 +63,7 @@ impl Game<'_> {
             (center[0].floor() as i32) >> 4,
             (center[2].floor() as i32) >> 4,
         );
-        if !self.world.chunks.contains_key(&chunk) {
+        if !self.simulation.world.chunks.contains_key(&chunk) {
             return false;
         }
         let interaction = match blast {

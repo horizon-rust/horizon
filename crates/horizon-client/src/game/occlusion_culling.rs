@@ -2050,9 +2050,12 @@ impl Game<'_> {
         }
         let at = camera.to_array().map(|v| v.floor() as i32);
         self.entity_section_camera = at[1]
-            .checked_sub(self.world.bottom_y())
+            .checked_sub(self.simulation.world.bottom_y())
             .map(|y| (at[0] >> 4, y >> 4, at[2] >> 4));
-        let camera_facts = self.res.facts().get(self.world.block(at[0], at[1], at[2]));
+        let camera_facts = self
+            .res
+            .facts()
+            .get(self.simulation.world.block(at[0], at[1], at[2]));
         if opaque(camera_facts) {
             self.sync_occlusion_culler = None;
             self.async_occlusion_culler = None;
@@ -2076,7 +2079,7 @@ impl Game<'_> {
                 }
             }
             if let Some(culler) = &mut self.async_occlusion_culler {
-                culler.begin_frame(camera, &self.world);
+                culler.begin_frame(camera, &self.simulation.world);
             }
         } else {
             self.async_occlusion_culler = None;
@@ -2090,7 +2093,7 @@ impl Game<'_> {
 
     pub(super) fn finish_async_occlusion_culling(&mut self) {
         if let Some(culler) = &mut self.async_occlusion_culler {
-            culler.finish_frame(&self.world, self.res.facts());
+            culler.finish_frame(&self.simulation.world, self.res.facts());
         }
     }
 }

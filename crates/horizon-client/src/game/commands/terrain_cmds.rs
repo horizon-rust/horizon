@@ -49,8 +49,9 @@ impl Game<'_> {
     /// `/forceload add` (`/place`, `/setblock`) finds the chunks loaded.
     fn wait_for_forced_chunks(&mut self, min: [i32; 2], max: [i32; 2]) {
         let missing = |g: &Self| {
-            (min[0]..=max[0])
-                .any(|x| (min[1]..=max[1]).any(|z| !g.world.chunks.contains_key(&(x, z))))
+            (min[0]..=max[0]).any(|x| {
+                (min[1]..=max[1]).any(|z| !g.simulation.world.chunks.contains_key(&(x, z)))
+            })
         };
         let deadline = std::time::Instant::now() + FORCED_CHUNK_WAIT;
         while missing(self) {
@@ -58,7 +59,7 @@ impl Game<'_> {
                 log::warn!("Horizon: /forceload: chunks {min:?}..{max:?} are not loaded yet");
                 return;
             }
-            let _ = self.streaming.update(&mut self.world);
+            let _ = self.streaming.update(&mut self.simulation.world);
             self.streaming.wait(std::time::Duration::from_millis(5));
         }
     }
@@ -220,7 +221,7 @@ impl Game<'_> {
         };
         for cz in (lo[2] >> 4)..=(hi[2] >> 4) {
             for cx in (lo[0] >> 4)..=(hi[0] >> 4) {
-                if !self.world.chunks.contains_key(&(cx, cz)) {
+                if !self.simulation.world.chunks.contains_key(&(cx, cz)) {
                     return Err(err("argument.pos.unloaded", &[]));
                 }
             }
@@ -231,7 +232,7 @@ impl Game<'_> {
             for y in (lo[1]..=hi[1]).step_by(4) {
                 for x in (lo[0]..=hi[0]).step_by(4) {
                     let key = (x >> 4, z >> 4);
-                    let Some(chunk) = self.world.chunks.get(&key) else {
+                    let Some(chunk) = self.simulation.world.chunks.get(&key) else {
                         continue;
                     };
                     let current = chunk.biome(x, y, z);
@@ -244,9 +245,9 @@ impl Game<'_> {
                     if usize::from(current) == target {
                         continue;
                     }
-                    let qy = ((y - self.world.bottom_y()) >> 2)
-                        .clamp(0, self.world.layout().height() / 4 - 1);
-                    if let Some(chunk) = self.world.chunks.get_mut(&key) {
+                    let qy = ((y - self.simulation.world.bottom_y()) >> 2)
+                        .clamp(0, self.simulation.world.layout().height() / 4 - 1);
+                    if let Some(chunk) = self.simulation.world.chunks.get_mut(&key) {
                         let chunk = std::sync::Arc::make_mut(chunk);
                         chunk.set_biome_cell((x & 15) >> 2, qy, (z & 15) >> 2, target as u16);
                     }
@@ -259,9 +260,12 @@ impl Game<'_> {
             return Err(err("commands.fillbiome.no_changes", &[]));
         }
         for key in &touched {
-            self.world.modified.insert(*key);
-            for sy in 0..self.world.layout().sections() as i32 {
-                self.world.dirty_sections.insert((key.0, sy, key.1));
+            self.simulation.world.modified.insert(*key);
+            for sy in 0..self.simulation.world.layout().sections() as i32 {
+                self.simulation
+                    .world
+                    .dirty_sections
+                    .insert((key.0, sy, key.1));
             }
         }
         // ChunkMap.resendBiomesForChunks: the players who see the changed
@@ -272,7 +276,7 @@ impl Game<'_> {
                 .flat_map(|cz| ((lo[0] >> 4)..=(hi[0] >> 4)).map(move |cx| (cx, cz)))
                 .filter(|key| touched.contains(key))
                 .collect();
-            host.hub.resend_biomes(&self.world, &columns);
+            host.hub.resend_biomes(&self.simulation.world, &columns);
         }
         self.feedback(Text::translate(
             "commands.fillbiome.success.count",
@@ -559,7 +563,7 @@ impl Game<'_> {
                         None => world_items!(self).inline_loot_table_with_tool(
                             &json,
                             held.as_ref(),
-                            &mut self.world.random,
+                            &mut self.simulation.world.random,
                         ),
                     };
                     (drops, None)
@@ -581,7 +585,7 @@ impl Game<'_> {
                             &table,
                             false,
                             held.as_ref(),
-                            &mut self.world.random,
+                            &mut self.simulation.world.random,
                         ),
                     };
                     (drops, None)
@@ -616,7 +620,7 @@ impl Game<'_> {
                         &ty,
                         by_player,
                         held.as_ref(),
-                        &mut self.world.random,
+                        &mut self.simulation.world.random,
                     ),
                 };
                 (drops, Some(table))
@@ -624,7 +628,7 @@ impl Game<'_> {
             _ => {
                 // loot mine
                 let p = self.block_pos_arg(ctx, "pos")?;
-                let state = self.world.block(p[0], p[1], p[2]);
+                let state = self.simulation.world.block(p[0], p[1], p[2]);
                 let name = self.data_block_name(p);
                 let Some(table) =
                     world_items!(self).block_loot_table(self.pack.assets.registry, state)
@@ -646,7 +650,7 @@ impl Game<'_> {
                         self.pack.assets.registry,
                         state,
                         tool.as_ref(),
-                        &mut self.world.random,
+                        &mut self.simulation.world.random,
                     ),
                 };
                 (drops, Some(table))
@@ -674,7 +678,7 @@ impl Game<'_> {
                 .position_arg(ctx, "targetPos")
                 .unwrap_or_else(|| self.source_position());
             for d in &drops {
-                let r = &mut self.world.random;
+                let r = &mut self.simulation.world.random;
                 let v = [
                     r.next_double() * 0.2 - 0.1,
                     0.2,

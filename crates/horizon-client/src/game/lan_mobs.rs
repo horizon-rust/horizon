@@ -5,107 +5,18 @@
 //! (hits, pushes, fire, its projectiles) runs with that guest swapped in.
 use super::{Game, lan::LanHost};
 use horizon_client::{
-    mobs::{Mob, MobEvent, PlayerView, Species, Who},
+    mobs::{MobEvent, PlayerView, Who},
     projectiles::{Hit, Projectile},
 };
 use horizon_core::geometry::{Aabb, Vec3};
 use horizon_protocol::packets::play::{self, Clientbound as C};
 
-/// The guests mobs can see this tick, by connection.
-pub(super) type GuestViews = Vec<(u32, PlayerView)>;
-
-/// The player a mob sees this tick: `None` for the host, else a guest.
-/// A mob that targets a guest, or that a guest hurt in the last 100 ticks
-/// (`LivingEntity.getLastHurtByMob`), keeps them while they are still a
-/// valid target; otherwise it sees the nearest player
-/// (`TargetingConditions`: alive, neither creative nor spectator), or the
-/// nearest one that is not a spectator if none qualifies.
-pub(super) fn player_for(
-    m: &Mob,
-    host: Option<&PlayerView>,
-    guests: &GuestViews,
-    bound: Option<u32>,
-) -> Option<u32> {
-    // A tame cat reads its owner wherever they are while they sleep, or just
-    // woke up (`CatRelaxOnOwnerGoal` uses `getOwner`, not the nearest player).
-    if m.species() == Species::Cat
-        && m.extra.tame
-        && let Some(owner) = m.extra.owner
-    {
-        let asleep = |v: &PlayerView| v.uuid == owner && (v.sleeping || v.sleep_timer > 0);
-        if host.is_some_and(asleep) {
-            return None;
-        }
-        if let Some((conn, _)) = guests.iter().find(|(_, v)| asleep(v)) {
-            return Some(*conn);
-        }
-    }
-    // An iron golem's anger is for the player who hit it (`NeutralMob` keeps
-    // the angry-at UUID), and outlasts the 100 ticks of `getLastHurtByMob`:
-    // while it lasts, the golem keeps that player, not whoever is nearest.
-    let angry = m.species() == Species::IronGolem && m.extra.anger > 0;
-    let targeting = m.ai.target == Some(Who::Player)
-        || angry
-        || m.ai.last_hurt_by == Some(Who::Player) && m.age as i32 - m.ai.last_hurt_by_time <= 100;
-    // A tame wolf, cat or parrot sees its owner (`TamableAnimal.getOwner`), while they
-    // are in play, whoever is nearer. Not while it targets or was just hurt by
-    // a player: then `Who::Player` is that attacker, whoever it is, and the
-    // owner goals ignore it until the wolf lets go.
-    if !targeting
-        && matches!(m.species(), Species::Wolf | Species::Cat | Species::Parrot)
-        && m.extra.tame
-        && let Some(owner) = m.extra.owner
-    {
-        if host.is_some_and(|v| v.alive && v.uuid == owner) {
-            return None;
-        }
-        if let Some((conn, _)) = guests.iter().find(|(_, v)| v.alive && v.uuid == owner) {
-            return Some(*conn);
-        }
-    }
-    // A mob on a player's lead follows and measures its rope against the
-    // player who holds it, not whoever is nearest or in survival mode.
-    if m.extra.leash == Some(horizon_client::mobs::leash::Holder::Player)
-        && let Some(holder) = m.extra.leash_player
-    {
-        if host.is_some_and(|v| v.uuid == holder) {
-            return None;
-        }
-        if let Some((conn, _)) = guests.iter().find(|(_, v)| v.uuid == holder) {
-            return Some(*conn);
-        }
-    }
-    choose(m.position, targeting, host, guests, bound)
-}
-
-fn choose(
-    at: Vec3,
-    targeting: bool,
-    host: Option<&PlayerView>,
-    guests: &GuestViews,
-    bound: Option<u32>,
-) -> Option<u32> {
-    let targetable = |v: &PlayerView| v.alive && !v.creative && !v.spectator;
-    if targeting
-        && let Some(conn) = bound
-        && guests.iter().any(|(c, v)| *c == conn && targetable(v))
-    {
-        return Some(conn);
-    }
-    let d = |v: &PlayerView| at.distance_squared(v.position);
-    let nearest = |ok: &dyn Fn(&PlayerView) -> bool| {
-        let mut best = host.filter(|v| ok(v)).map(|v| (None, d(v)));
-        for (conn, v) in guests.iter().filter(|(_, v)| ok(v)) {
-            if best.is_none_or(|(_, b)| d(v) < b) {
-                best = Some((Some(*conn), d(v)));
-            }
-        }
-        best
-    };
-    nearest(&targetable)
-        .or_else(|| nearest(&|v: &PlayerView| v.alive && !v.spectator))
-        .and_then(|(conn, _)| conn)
-}
+pub(super) use horizon_client::mobs::players::GuestViews;
+#[cfg(test)]
+use horizon_client::mobs::{
+    Mob,
+    players::{choose, player_for},
+};
 
 /// The events of a mob's tick that act on the player it sees.
 pub(super) fn acts_on_player(e: &MobEvent) -> bool {
@@ -215,19 +126,31 @@ impl Game<'_> {
     }
 
     /// Mob events aimed at a guest, run as that guest (`guest_hit_by`).
-    pub(super) fn lan_guest_mob_events(&mut self, events: Vec<(u32, MobEvent)>) {
+    pub(super) fn lan_guest_mob_events(&mut self, events: Vec<(u32, u32, MobEvent)>) {
         if events.is_empty() {
             return;
         }
         let Some(mut host) = self.lan.take() else {
             return;
         };
-        for (conn, e) in events {
-            self.guest_hit_by(&mut host, conn, |g| {
-                let _ = g.handle_mob_events(vec![e]);
-            });
+        for (conn, mob, e) in events {
+            self.guest_hit_by(&mut host, conn, |g| g.guest_mob_event(mob, e));
         }
         self.lan = Some(host);
+    }
+
+    /// One mob event, with the guest swapped in. A hit knows the mob that swung,
+    /// so nothing guesses it from where the hit came from.
+    pub(super) fn guest_mob_event(&mut self, mob: u32, e: MobEvent) {
+        if matches!(
+            e,
+            MobEvent::AttackPlayer(..)
+                | MobEvent::AttackPlayerWithEffect { .. }
+                | MobEvent::StingPlayer { .. }
+        ) {
+            self.combat.melee_mob = Some(mob);
+        }
+        let _ = self.handle_mob_events(vec![e]);
     }
 
     /// The guests' boxes for the blocks entities trigger (pressure plates,
@@ -541,10 +464,7 @@ mod tests {
         cow.extra.leash_player = Some(holder.uuid);
         let guests = vec![(7, holder.clone()), (8, nearby.clone())];
         assert_eq!(player_for(&cow, None, &guests, None), Some(7));
-        assert_eq!(
-            player_for(&cow, Some(&holder), &vec![(8, nearby)], None),
-            None
-        );
+        assert_eq!(player_for(&cow, Some(&holder), &[(8, nearby)], None), None);
     }
 
     /// The mob of the prepared resources' type `kind` (None without them).

@@ -611,17 +611,17 @@ macro_rules! entity_lists {
     ($then:ident, $($args:tt)*) => {
         $crate::game::entity::$then! {
             ($($args)*)
-            Mob(Mob) mobs: mobs,
-            Item(ItemEntity) dropped: dropped,
-            Boat(Boat) boats: boats,
-            Cart(Minecart) carts: carts,
-            ArmorStand(ArmorStand) armor_stands: armor_stands,
-            Tnt(PrimedTnt) tnts: tnts,
-            Falling(FallingBlock) falling: falling,
-            Orb(ExperienceOrb) orbs: orbs,
-            Projectile(Projectile) projectiles: creatures.projectiles,
-            Rocket(Rocket) rockets: rockets,
-            Trident(ThrownTrident) tridents: tridents,
+            Mob(Mob) mobs: simulation.mobs,
+            Item(ItemEntity) dropped: simulation.dropped,
+            Boat(Boat) boats: simulation.boats,
+            Cart(Minecart) carts: simulation.carts,
+            ArmorStand(ArmorStand) armor_stands: simulation.armor_stands,
+            Tnt(PrimedTnt) tnts: simulation.tnts,
+            Falling(FallingBlock) falling: simulation.falling,
+            Orb(ExperienceOrb) orbs: simulation.orbs,
+            Projectile(Projectile) projectiles: simulation.projectiles,
+            Rocket(Rocket) rockets: simulation.rockets,
+            Trident(ThrownTrident) tridents: simulation.tridents,
         }
     };
 }
@@ -932,17 +932,18 @@ impl Game<'_> {
     }
     /// The ids of the entities that are not on the walk of `entity_lists!`.
     pub(super) fn entity_ids_off_walk(&self) -> impl Iterator<Item = u32> + '_ {
-        self.cushions
+        self.simulation
+            .cushions
             .iter()
             .map(|e| e.id)
-            .chain(self.item_frames.iter().map(|e| e.id))
-            .chain(self.paintings.iter().map(|e| e.id))
-            .chain(self.others.iter().map(|e| e.id))
-            .chain(self.breath_clouds.iter().map(|e| e.id))
-            .chain(self.fangs.list.iter().map(|e| e.id))
-            .chain(self.crystals.iter().map(|e| e.id))
-            .chain(self.dragon.iter().map(|e| e.id))
-            .chain(self.ominous_spawners.iter().map(|e| e.id))
+            .chain(self.simulation.item_frames.iter().map(|e| e.id))
+            .chain(self.simulation.paintings.iter().map(|e| e.id))
+            .chain(self.simulation.others.iter().map(|e| e.id))
+            .chain(self.simulation.breath_clouds.iter().map(|e| e.id))
+            .chain(self.simulation.fangs.list.iter().map(|e| e.id))
+            .chain(self.simulation.crystals.iter().map(|e| e.id))
+            .chain(self.simulation.dragon.iter().map(|e| e.id))
+            .chain(self.simulation.ominous_spawners.iter().map(|e| e.id))
     }
     /// Saves every entity of every kind that lies in `keys` into `out`, by chunk.
     pub(super) fn save_every_entity(

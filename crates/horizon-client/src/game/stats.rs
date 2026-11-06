@@ -279,7 +279,7 @@ impl Game<'_> {
             p.position.y.floor() as i32,
             p.position.z.floor() as i32,
         ];
-        let eye_in_water = self.res.facts().get(self.world.block(
+        let eye_in_water = self.res.facts().get(self.simulation.world.block(
             feet[0],
             (p.position.y + f64::from(p.dimensions.eye_height)).floor() as i32,
             feet[2],
@@ -287,7 +287,7 @@ impl Game<'_> {
         let in_water = self
             .res
             .facts()
-            .get(self.world.block(feet[0], feet[1], feet[2]))
+            .get(self.simulation.world.block(feet[0], feet[1], feet[2]))
             .fluid
             == horizon_client::blocks::Fluid::Water;
         let on_ground = p.ground.on_ground;
@@ -298,7 +298,8 @@ impl Game<'_> {
         );
         let climbing = p.last_climbable.is_some() && d.y > 0.0;
         let riding = self.riding.map(|id| {
-            self.mobs
+            self.simulation
+                .mobs
                 .iter()
                 .find(|m| m.id == id)
                 .map(|m| m.species())
@@ -323,9 +324,19 @@ impl Game<'_> {
                 }
             }
             Some(Err(())) => {
-                if self.boats.iter().any(|b| Some(b.id) == self.riding) {
+                if self
+                    .simulation
+                    .boats
+                    .iter()
+                    .any(|b| Some(b.id) == self.riding)
+                {
                     self.award_custom_stat("boat_one_cm", total)
-                } else if self.carts.iter().any(|c| Some(c.id) == self.riding) {
+                } else if self
+                    .simulation
+                    .carts
+                    .iter()
+                    .any(|c| Some(c.id) == self.riding)
+                {
                     self.award_custom_stat("minecart_one_cm", total)
                 }
             }
@@ -378,7 +389,7 @@ impl Game<'_> {
         if self.stats.phantom_tick > 0 {
             return;
         }
-        let r = &mut self.world.random;
+        let r = &mut self.simulation.world.random;
         self.stats.phantom_tick += (60 + r.next_int_bound(60).unwrap_or(0)) * 20;
         if self.sky_darken() < 5 {
             return;
@@ -422,7 +433,7 @@ impl Game<'_> {
         }
         // `getCurrentDifficultyAt(playerPos).isHarderThan(random * 3)`.
         let difficulty = self.local_difficulty([position.x, position.y, position.z]);
-        let r = &mut self.world.random;
+        let r = &mut self.simulation.world.random;
         if difficulty.effective <= r.next_float() * 3.0 {
             return;
         }
@@ -438,12 +449,12 @@ impl Game<'_> {
         if !self
             .res
             .facts()
-            .is_air(self.world.block(at[0], at[1], at[2]))
+            .is_air(self.simulation.world.block(at[0], at[1], at[2]))
         {
             return;
         }
         let difficulty_id = self.difficulty_id();
-        let group = phantom_group_size(&mut self.world.random, difficulty_id);
+        let group = phantom_group_size(&mut self.simulation.world.random, difficulty_id);
         for _ in 0..group {
             let _ = self.spawn_mob(
                 "minecraft:phantom",
@@ -458,7 +469,10 @@ impl Game<'_> {
     }
     fn can_see_sky(&self, pos: [i32; 3]) -> bool {
         (pos[1] + 1..pos[1] + 256).all(|y| {
-            let f = self.res.facts().get(self.world.block(pos[0], y, pos[2]));
+            let f = self
+                .res
+                .facts()
+                .get(self.simulation.world.block(pos[0], y, pos[2]));
             !f.full_collision && f.fluid == horizon_client::blocks::Fluid::None
         })
     }

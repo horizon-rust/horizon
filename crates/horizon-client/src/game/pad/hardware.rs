@@ -515,7 +515,7 @@ impl Game<'_> {
         // Creative breaks at once; blocks that can't be broken have a negative hardness.
         let attacking = match &self.mining {
             Some(m) if !self.creative => {
-                let state = self.world.block(m.pos[0], m.pos[1], m.pos[2]);
+                let state = self.simulation.world.block(m.pos[0], m.pos[1], m.pos[2]);
                 TriggerFeel::Texture(self.res.facts().get(state).hardness)
             }
             _ => TriggerFeel::Free,
@@ -530,7 +530,7 @@ impl Game<'_> {
         let gliding = self.player.as_ref().is_some_and(|p| p.fall_flying);
         let mount = self
             .riding
-            .and_then(|id| self.mobs.iter().find(|m| m.id == id));
+            .and_then(|id| self.simulation.mobs.iter().find(|m| m.id == id));
         let mount = mount.map_or("", |m| m.kind.id.as_str());
         let feel = |stack: Option<&horizon_client::items::ItemStack>| match stack
             .map(|s| (s, &*s.item))

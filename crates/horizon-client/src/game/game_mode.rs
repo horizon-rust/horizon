@@ -89,7 +89,7 @@ impl Game<'_> {
             && let Some(bounds) = flying
         {
             let mut scene = SceneCollisions {
-                world: &self.world,
+                world: &self.simulation.world,
                 binding: self.collision,
                 subject: None,
             };
@@ -119,7 +119,7 @@ impl Game<'_> {
         else {
             return false;
         };
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         let name = &self.res.facts().get(state).name;
         let properties = self
             .pack
@@ -209,9 +209,9 @@ impl Game<'_> {
         let Some(id) = self.riding else {
             return;
         };
-        if let Some(i) = self.boats.iter().position(|b| b.id == id) {
+        if let Some(i) = self.simulation.boats.iter().position(|b| b.id == id) {
             self.dismount(i);
-        } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
+        } else if let Some(i) = self.simulation.carts.iter().position(|c| c.id == id) {
             self.dismount_cart(i);
         } else {
             self.riding = None;

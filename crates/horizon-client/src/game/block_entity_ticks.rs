@@ -21,36 +21,39 @@ impl Game<'_> {
         self.tick_craft_table();
         self.tick_container_reach();
         self.load_entity_types();
-        if !self.world.block_entities.has_states() {
+        if !self.simulation.world.block_entities.has_states() {
             let states = self.ticking_states();
-            self.world.block_entities.set_states(states);
+            self.simulation.world.block_entities.set_states(states);
             let containers = self.native_containers();
-            self.world.block_entities.set_mod_containers(containers);
+            self.simulation
+                .world
+                .block_entities
+                .set_mod_containers(containers);
             let fluids = self.native_fluid_tables();
-            self.world.block_entities.set_mod_fluids(fluids);
+            self.simulation.world.block_entities.set_mod_fluids(fluids);
             let energy = self.native_energy_tables();
-            self.world.block_entities.set_mod_energy(energy);
+            self.simulation.world.block_entities.set_mod_energy(energy);
         }
         // Only lingering cooldowns are dropped; a hopper that ticks checks
         // its own block. Once a second is soon enough for the rest.
-        if self.world.game_time % 20 == 0 {
+        if self.simulation.world.game_time % 20 == 0 {
             self.forget_gone_hoppers();
         }
         let ticking = self.block_ticking_area();
         let mut spawners = Vec::new();
         let mut trial_spawners = Vec::new();
         self.item_columns = Some(Default::default());
-        for slot in self.world.block_entity_tickers().iter().copied() {
+        for slot in self.simulation.world.block_entity_tickers().iter().copied() {
             let pos = slot.0;
             // Ticks before this one can remove it (`TickingBlockEntity.isRemoved`).
-            if self.world.block_entities.is_asleep(&pos)
-                || !self.world.block_entities.is_live(slot)
+            if self.simulation.world.block_entities.is_asleep(&pos)
+                || !self.simulation.world.block_entities.is_live(slot)
                 || !ticking(pos.0, pos.2)
                 || !self.border.contains(f64::from(pos.0), f64::from(pos.2))
             {
                 continue;
             }
-            match self.world.block_entities.get(&pos) {
+            match self.simulation.world.block_entities.get(&pos) {
                 Some(BlockEntity::Chest(items)) if items.len() == HOPPER_SLOTS => {
                     self.tick_hopper(pos)
                 }
@@ -117,7 +120,7 @@ impl Game<'_> {
         let mut gone = Vec::new();
         let positions: Vec<[i32; 3]> = self.be_anims.shulkers.keys().copied().collect();
         for pos in positions {
-            let state = self.world.block(pos[0], pos[1], pos[2]);
+            let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
             let Some(Ticker::Shulker { facing }) = self.be_anims.ticker(state.0) else {
                 gone.push(pos);
                 continue;
@@ -145,8 +148,9 @@ impl Game<'_> {
     /// read them (`SceneCollisions::shulker_collision_state`), as
     /// `sync_moving_pistons` does for pistons.
     pub(super) fn sync_shulkers(&mut self) {
-        self.world.shulkers.clear();
-        self.world
+        self.simulation.world.shulkers.clear();
+        self.simulation
+            .world
             .shulkers
             .extend(self.be_anims.shulkers.iter().map(|(p, s)| (*p, s.clone())));
     }
@@ -200,13 +204,13 @@ impl Game<'_> {
     /// (`LevelChunk.isTicking`, block coordinates), from every player's
     /// tickets (`update_chunk_tickets`).
     fn block_ticking_area(&self) -> impl Fn(i32, i32) -> bool + use<> {
-        let levels = self.tickets.levels();
+        let levels = self.simulation.tickets.levels();
         move |x, z| levels.block_ticking_at(x, z)
     }
     /// `DaylightDetectorBlock.tickEntity` of the detector at `pos`.
     fn tick_daylight_detector(&mut self, pos: Pos) {
         // It updates every 20 game ticks (the behaviour checks this too).
-        if self.world.game_time % 20 != 0 {
+        if self.simulation.world.game_time % 20 != 0 {
             return;
         }
         let at = BlockPos::new(pos.0, pos.1, pos.2);
@@ -219,7 +223,7 @@ impl Game<'_> {
         // What the hooks need from before the tick, without cloning stacks: the
         // fuel's id only while the furnace is out (it can light this tick), the
         // input's id (a last item is gone after it smelts) and the result count.
-        let before = match self.world.block_entities.get(&pos) {
+        let before = match self.simulation.world.block_entities.get(&pos) {
             Some(BlockEntity::Furnace(f)) => (
                 f.cooking_timer,
                 (f.lit_remaining == 0)
@@ -232,7 +236,8 @@ impl Game<'_> {
         };
         let mut drops = Vec::new();
         let (lit, burning, smelted, smelting) = {
-            let Some(BlockEntity::Furnace(f)) = self.world.block_entities.get_mut(&pos) else {
+            let Some(BlockEntity::Furnace(f)) = self.simulation.world.block_entities.get_mut(&pos)
+            else {
                 return Ok(());
             };
             let lit = f.tick(
@@ -265,13 +270,13 @@ impl Game<'_> {
             self.campfire_drop(pos, stack);
         }
         let Some(lit) = lit else {
-            if matches!(self.world.block_entities.get(&pos), Some(BlockEntity::Furnace(f)) if f.idle())
+            if matches!(self.simulation.world.block_entities.get(&pos), Some(BlockEntity::Furnace(f)) if f.idle())
             {
-                self.world.block_entities.sleep(pos);
+                self.simulation.world.block_entities.sleep(pos);
             }
             return Ok(());
         };
-        let state = self.world.block(pos.0, pos.1, pos.2);
+        let state = self.simulation.world.block(pos.0, pos.1, pos.2);
         if let Some(mut s) = self.pack.assets.registry.state(state).cloned()
             && s.properties.contains_key("lit")
         {

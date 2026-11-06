@@ -14,14 +14,16 @@ const POSTPROCESS_FLAGS: i32 = 276;
 impl Game<'_> {
     pub(super) fn postprocess_chunks(&mut self) -> Result<()> {
         let ready: Vec<(i32, i32)> = self
+            .simulation
             .world
             .chunks
             .iter()
             .filter(|(_, c)| c.lit && !c.postprocess.is_empty())
             .map(|(k, _)| *k)
             .filter(|&(x, z)| {
-                (-1..=1)
-                    .all(|dz| (-1..=1).all(|dx| self.world.chunks.contains_key(&(x + dx, z + dz))))
+                (-1..=1).all(|dz| {
+                    (-1..=1).all(|dx| self.simulation.world.chunks.contains_key(&(x + dx, z + dz)))
+                })
             })
             .collect();
         if ready.is_empty() {
@@ -33,7 +35,7 @@ impl Game<'_> {
         // `postProcessGeneration`).
         self.sync_tick_chunks();
         for key in ready {
-            let Some(chunk) = self.world.chunks.get_mut(&key) else {
+            let Some(chunk) = self.simulation.world.chunks.get_mut(&key) else {
                 continue;
             };
             let marks = std::mem::take(&mut Arc::make_mut(chunk).postprocess);

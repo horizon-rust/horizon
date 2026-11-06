@@ -138,7 +138,7 @@ impl Game<'_> {
         if outcome.sound
             && let Some(sound) = &component.block_sound
         {
-            let pitch = 0.8 + self.world.random.next_float() * 0.4;
+            let pitch = 0.8 + self.simulation.world.random.next_float() * 0.4;
             self.audio.play(sound, at, 1.0, pitch);
         }
         if outcome.blocked <= 0.0 {
@@ -191,7 +191,7 @@ impl Game<'_> {
             return;
         };
         let fully = outcome.fully_blocked;
-        let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
+        let Some(m) = self.simulation.mobs.iter().find(|m| m.id == id) else {
             return;
         };
         let (mx, mz) = (m.position.x, m.position.z);
@@ -212,6 +212,7 @@ impl Game<'_> {
             let mut events = Vec::new();
             let roaring = m.extra.anim_ticks != 0;
             let stunned = self
+                .simulation
                 .mobs
                 .iter_mut()
                 .find(|m| m.id == id)
@@ -280,7 +281,7 @@ impl Game<'_> {
             }
             self.using = None;
             if let Some(sound) = &component.disabled_sound {
-                let pitch = 0.8 + self.world.random.next_float() * 0.4;
+                let pitch = 0.8 + self.simulation.world.random.next_float() * 0.4;
                 self.audio.play(sound, at, 0.8, pitch);
             }
         }

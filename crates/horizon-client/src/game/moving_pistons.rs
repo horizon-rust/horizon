@@ -15,6 +15,7 @@ impl Game<'_> {
     ) {
         let partial = alpha as f32;
         let live = self
+            .simulation
             .world
             .moving_pistons
             .iter()
@@ -22,6 +23,7 @@ impl Game<'_> {
         // A piston that just finished bridges the frames until the chunk mesh
         // shows the block it placed; drawn over that mesh, it z-fights (#3002).
         let finished = self
+            .simulation
             .world
             .moving_piston_fallback
             .iter()
@@ -57,7 +59,7 @@ impl Game<'_> {
     }
     /// The section holding the block at `p` (`SectionPos.blockToSection`).
     pub(super) fn section_of(&self, p: [i32; 3]) -> Option<(i32, i32, i32)> {
-        let y = p[1].checked_sub(self.world.layout().min_y())?;
+        let y = p[1].checked_sub(self.simulation.world.layout().min_y())?;
         Some((p[0] >> 4, y.div_euclid(16), p[2] >> 4))
     }
     /// Whether the chunk mesh doesn't show the blocks at `p` yet (edited,
@@ -66,7 +68,7 @@ impl Game<'_> {
         let Some(section) = self.section_of(p) else {
             return false;
         };
-        self.world.dirty_sections.contains(&section)
+        self.simulation.world.dirty_sections.contains(&section)
             || self.streaming.is_meshing(section)
             || self.section_upload_pending(section)
     }
@@ -129,7 +131,7 @@ impl Game<'_> {
         at: glam::DVec3,
         out: &mut Vec<Vertex>,
     ) {
-        let chunks = &self.world.chunks;
+        let chunks = &self.simulation.world.chunks;
         let (cx, cz) = (seed.x >> 4, seed.z >> 4);
         let region: [[Option<&horizon_client::chunk::Chunk>; 3]; 3] = std::array::from_fn(|dz| {
             std::array::from_fn(|dx| {
@@ -149,7 +151,7 @@ impl Game<'_> {
         let tables = &self.pack.context.tables;
         let light = |quad: &horizon_assets::bake::ModelQuad| {
             let coords = tables.flat_light(state, [seed.x, seed.y, seed.z], quad, |p| {
-                self.world.light(p[0], p[1], p[2])
+                self.simulation.world.light(p[0], p[1], p[2])
             });
             // Light coords (block << 4 | sky << 20) as the vertex packs them.
             (coords >> 16 & 0xF0) | ((coords & 0xF0) << 8)

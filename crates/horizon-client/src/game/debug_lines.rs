@@ -54,7 +54,10 @@ impl Game<'_> {
                 "chunk_source_stats" => self.debug_chunk_source_lines(d, server.as_ref()),
                 "day_count" => {
                     if self.player.is_some() {
-                        d.line(format!("Day #{}", self.world.day_time.div_euclid(24000)));
+                        d.line(format!(
+                            "Day #{}",
+                            self.simulation.world.day_time.div_euclid(24000)
+                        ));
                     }
                 }
                 "entity_render_stats" => self.debug_entity_render_line(d),
@@ -72,7 +75,7 @@ impl Game<'_> {
                 "heightmap" => self.debug_heightmap_lines(d, server.as_ref()),
                 "light_levels" => {
                     if let Some(feet) = self.debug_feet() {
-                        let light = self.world.light(feet[0], feet[1], feet[2]);
+                        let light = self.simulation.world.light(feet[0], feet[1], feet[2]);
                         d.group("light", [overlay::light_line(light >> 4, light & 15)]);
                     }
                 }
@@ -235,10 +238,10 @@ impl Game<'_> {
         let Some([x, y, z]) = self.debug_feet() else {
             return;
         };
-        if y < self.world.bottom_y() || y >= self.world.top_y() {
+        if y < self.simulation.world.bottom_y() || y >= self.simulation.world.top_y() {
             return;
         }
-        if let Some(chunk) = self.world.chunks.get(&(x >> 4, z >> 4))
+        if let Some(chunk) = self.simulation.world.chunks.get(&(x >> 4, z >> 4))
             && let Some(biome) = self.res.biomes().list.get(chunk.biome(x, y, z) as usize)
         {
             d.line(format!("Biome: {}", biome.name));
@@ -255,7 +258,7 @@ impl Game<'_> {
         };
         let distance = self.settings.render_distance;
         let side = (distance * 2 + 1) as usize;
-        let total = side * side * (self.world.layout().height() / 16) as usize;
+        let total = side * side * (self.simulation.world.layout().height() / 16) as usize;
         d.line(format!(
             "C: {}/{total} (s) D: {distance}, pC: {:03}, aB: {:02}",
             r.drawn_sections,
@@ -283,33 +286,36 @@ impl Game<'_> {
 
     /// `Level.getEntityCount` over the entities Horizon keeps.
     fn debug_entity_count(&self) -> usize {
-        self.mobs.iter().filter(|m| !m.removed).count()
-            + self.dropped.len()
-            + self.orbs.len()
-            + self.paintings.len()
-            + self.item_frames.len()
-            + self.armor_stands.len()
-            + self.boats.len()
-            + self.carts.len()
-            + self.crystals.len()
-            + self.creatures.projectiles.len()
+        self.simulation.mobs.iter().filter(|m| !m.removed).count()
+            + self.simulation.dropped.len()
+            + self.simulation.orbs.len()
+            + self.simulation.paintings.len()
+            + self.simulation.item_frames.len()
+            + self.simulation.armor_stands.len()
+            + self.simulation.boats.len()
+            + self.simulation.carts.len()
+            + self.simulation.crystals.len()
+            + self.simulation.projectiles.len()
     }
 
     /// The sections holding a mob, an item or an orb
     /// (`EntitySectionStorage.count`).
     fn debug_entity_sections(&self) -> usize {
         let sections: HashSet<[i32; 3]> = self
+            .simulation
             .mobs
             .iter()
             .filter(|m| !m.removed)
             .map(|m| [m.position.x, m.position.y, m.position.z])
             .chain(
-                self.dropped
+                self.simulation
+                    .dropped
                     .iter()
                     .map(|i| [i.position.x, i.position.y, i.position.z]),
             )
             .chain(
-                self.orbs
+                self.simulation
+                    .orbs
                     .iter()
                     .map(|o| [o.position.x, o.position.y, o.position.z]),
             )
@@ -331,7 +337,7 @@ impl Game<'_> {
             .as_ref()
             .map_or(self.settings.render_distance, |r| r.view_distance);
         let side = (2 * (range.max(2) + 3) + 1) as usize;
-        let loaded = self.world.chunks.len();
+        let loaded = self.simulation.world.chunks.len();
         d.line(format!(
             "Chunks[C] W: {}, {loaded} E: {},{},{loaded}",
             side * side,
@@ -349,7 +355,7 @@ impl Game<'_> {
         let Some([x, _, z]) = self.debug_feet() else {
             return;
         };
-        if !self.world.loaded(x, z) {
+        if !self.simulation.world.loaded(x, z) {
             return;
         }
         let heights = server.and_then(|s| s.heights);
@@ -380,15 +386,18 @@ impl Game<'_> {
     pub(super) fn column_height(&self, kind: HeightmapType, x: i32, z: i32) -> i32 {
         let properties = &self.pack.assets.properties;
         let surface = self
+            .simulation
             .world
             .world_surface(x, z, |s| properties.heightmap_state(s).is_air());
         if kind == HeightmapType::WorldSurface {
             return surface;
         }
-        (self.world.bottom_y()..surface)
+        (self.simulation.world.bottom_y()..surface)
             .rev()
-            .find(|&y| kind.is_opaque(properties.heightmap_state(self.world.block(x, y, z))))
-            .map_or(self.world.bottom_y(), |y| y + 1)
+            .find(|&y| {
+                kind.is_opaque(properties.heightmap_state(self.simulation.world.block(x, y, z)))
+            })
+            .map_or(self.simulation.world.bottom_y(), |y| y + 1)
     }
 
     /// `Entity.pick(20, 0, false)` from the camera: the block outline hit.
@@ -402,7 +411,7 @@ impl Game<'_> {
         let Some(pos) = self.debug_block_hit() else {
             return Vec::new();
         };
-        let id = self.world.block(pos[0], pos[1], pos[2]);
+        let id = self.simulation.world.block(pos[0], pos[1], pos[2]);
         let Some(s) = self.pack.assets.registry.state(id) else {
             return Vec::new();
         };
@@ -450,7 +459,7 @@ impl Game<'_> {
         let f = self
             .res
             .facts()
-            .get(self.world.block(pos[0], pos[1], pos[2]));
+            .get(self.simulation.world.block(pos[0], pos[1], pos[2]));
         let kind = match f.fluid {
             Fluid::None => return ("minecraft:empty".into(), Vec::new()),
             Fluid::Water => "water",
@@ -499,15 +508,15 @@ impl Game<'_> {
         };
         offer(
             self.mob_hit()
-                .map(|(i, d, _)| (d, self.mobs[i].kind.id.to_string())),
+                .map(|(i, d, _)| (d, self.simulation.mobs[i].kind.id.to_string())),
         );
         offer(
             self.boat_hit()
-                .map(|(i, d)| (d, self.boats[i].entity_type())),
+                .map(|(i, d)| (d, self.simulation.boats[i].entity_type())),
         );
         offer(
             self.cart_hit()
-                .map(|(i, d)| (d, self.carts[i].kind.id().to_owned())),
+                .map(|(i, d)| (d, self.simulation.carts[i].kind.id().to_owned())),
         );
         offer(
             self.armor_stand_hit()
@@ -515,7 +524,7 @@ impl Game<'_> {
         );
         offer(
             self.frame_hit()
-                .map(|(i, d)| (d, self.item_frames[i].kind().to_owned())),
+                .map(|(i, d)| (d, self.simulation.item_frames[i].kind().to_owned())),
         );
         offer(
             self.painting_hit()
@@ -534,8 +543,8 @@ impl Game<'_> {
     pub(super) fn server_debug_lines(&self, feet: [i32; 3]) -> ServerDebug {
         let [x, y, z] = feet;
         let key = (x >> 4, z >> 4);
-        let loaded = self.world.chunks.contains_key(&key);
-        let inside = y >= self.world.bottom_y() && y < self.world.top_y();
+        let loaded = self.simulation.world.chunks.contains_key(&key);
+        let inside = y >= self.simulation.world.bottom_y() && y < self.simulation.world.top_y();
         let heights = loaded.then(|| {
             [
                 HeightmapType::WorldSurface,
@@ -557,7 +566,10 @@ impl Game<'_> {
         // PersistentEntitySectionManager's known and visible entities, its
         // sections, the chunks it loaded and sees, and its two queues
         // (Horizon loads a chunk's entities with it: both stay empty).
-        let (entities, loaded) = (self.debug_entity_count(), self.world.chunks.len());
+        let (entities, loaded) = (
+            self.debug_entity_count(),
+            self.simulation.world.chunks.len(),
+        );
         let chunks = Some(format!(
             "Chunks[S] W: {loaded} E: {entities},{entities},{},{loaded},{loaded},0,0",
             self.debug_entity_sections()

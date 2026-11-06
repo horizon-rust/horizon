@@ -31,14 +31,15 @@ impl Game<'_> {
             return;
         }
         let pick = self
+            .simulation
             .world
             .random
             .next_int_bound(alive.len() as i32)
             .unwrap_or(0);
         let p = alive[pick as usize];
         let mut offset = || {
-            let n = 8 + self.world.random.next_int_bound(24).unwrap_or(0);
-            if self.world.random.next_boolean() {
+            let n = 8 + self.simulation.world.random.next_int_bound(24).unwrap_or(0);
+            if self.simulation.world.random.next_boolean() {
                 -n
             } else {
                 n
@@ -54,7 +55,7 @@ impl Game<'_> {
         // hasChunksAt(pos +- 10)
         let loaded = ((pos[0] - 10) >> 4..=(pos[0] + 10) >> 4).all(|cx| {
             ((pos[2] - 10) >> 4..=(pos[2] + 10) >> 4)
-                .all(|cz| self.world.chunks.contains_key(&(cx, cz)))
+                .all(|cz| self.simulation.world.chunks.contains_key(&(cx, cz)))
         });
         if !loaded {
             return;
@@ -83,6 +84,7 @@ impl Game<'_> {
     fn spawn_cat_in_village(&mut self, pos: [i32; 3]) {
         // PoiManager.getCountInRange(HOME, IS_OCCUPIED): beds villagers have claimed.
         let mut beds: Vec<[i32; 3]> = self
+            .simulation
             .mobs
             .iter()
             .filter(|m| m.species() == Species::Villager && m.alive())
@@ -111,7 +113,8 @@ impl Game<'_> {
         let [x, y, z] = pos.map(f64::from);
         let min = Vec3::new(x - radius, y - 8.0, z - radius);
         let max = Vec3::new(x + 1.0 + radius, y + 9.0, z + 1.0 + radius);
-        self.mobs
+        self.simulation
+            .mobs
             .iter()
             .filter(|m| {
                 m.species() == Species::Cat && m.alive() && m.bounds().intersects_corners(min, max)
@@ -131,7 +134,7 @@ impl Game<'_> {
         };
         let black = self.structure_tag("minecraft:cats_spawn_as_black");
         let in_black = self.structures_at(pos).iter().any(|s| black.contains(s));
-        if in_black && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+        if in_black && let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
             m.extra.variant = 10;
         }
     }

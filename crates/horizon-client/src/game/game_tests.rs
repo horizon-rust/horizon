@@ -838,7 +838,8 @@ impl Game<'_> {
     pub(super) fn load_test_chunks(&mut self, area: &BoundingBox) {
         let missing = |g: &Self| -> bool {
             (area.min[0] >> 4..=area.max[0] >> 4).any(|x| {
-                (area.min[2] >> 4..=area.max[2] >> 4).any(|z| !g.world.chunks.contains_key(&(x, z)))
+                (area.min[2] >> 4..=area.max[2] >> 4)
+                    .any(|z| !g.simulation.world.chunks.contains_key(&(x, z)))
             })
         };
         if !missing(self) {
@@ -847,7 +848,7 @@ impl Game<'_> {
         self.force_load_test_chunks(area);
         let deadline = Instant::now() + std::time::Duration::from_secs(120);
         while missing(self) && Instant::now() < deadline {
-            let _ = self.streaming.update(&mut self.world);
+            let _ = self.streaming.update(&mut self.simulation.world);
             self.streaming.wait(std::time::Duration::from_millis(5));
         }
     }
@@ -869,7 +870,7 @@ impl Game<'_> {
         ));
         self.set_test_block_state(pos, "minecraft:test_instance_block", flags::UPDATE_ALL);
         if self.test_instance_at(pos).is_none() {
-            self.world.block_entities.insert(
+            self.simulation.world.block_entities.insert(
                 pos,
                 BlockEntity::TestInstanceBlock(Box::<TestInstanceBlock>::default()),
             );
@@ -923,7 +924,7 @@ impl Game<'_> {
             .registry
             .default_state("minecraft:test_instance_block");
         for at in self.structure_boundary(pos) {
-            if Some(self.world.block(at.0, at.1, at.2)) != block {
+            if Some(self.simulation.world.block(at.0, at.1, at.2)) != block {
                 self.set_test_block_state(at, "minecraft:barrier", flags::UPDATE_ALL);
             }
         }
@@ -964,7 +965,8 @@ impl Game<'_> {
             return true;
         };
         (b.min[0] >> 4..=b.max[0] >> 4).all(|cx| {
-            (b.min[2] >> 4..=b.max[2] >> 4).all(|cz| self.world.chunks.contains_key(&(cx, cz)))
+            (b.min[2] >> 4..=b.max[2] >> 4)
+                .all(|cz| self.simulation.world.chunks.contains_key(&(cx, cz)))
         })
     }
 
@@ -1074,7 +1076,7 @@ impl Game<'_> {
     /// the test block.
     fn test_block_entity(&self, info: &Info, relative: Pos) -> Result<Pos, TestError> {
         let absolute = self.test_absolute_pos(info, relative);
-        match self.world.block_entities.get(&absolute) {
+        match self.simulation.world.block_entities.get(&absolute) {
             None => Err(self.pos_assertion(
                 info,
                 relative,
@@ -1126,7 +1128,7 @@ impl Game<'_> {
             .filter(|&relative| {
                 let at = self.test_absolute_pos(info, relative);
                 registry
-                    .state(self.world.block(at.0, at.1, at.2))
+                    .state(self.simulation.world.block(at.0, at.1, at.2))
                     .is_some_and(|s| {
                         &*s.name == "minecraft:test_block"
                             && s.properties.get("mode").map(String::as_str)

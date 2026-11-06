@@ -552,7 +552,7 @@ impl Game<'_> {
             return false;
         };
         if self.level.xp_seed == 0 {
-            self.level.xp_seed = self.world.random.next_int();
+            self.level.xp_seed = self.simulation.world.random.next_int();
         }
         self.station = Some(Station::new(kind, pos));
         self.station_changed();
@@ -665,7 +665,7 @@ impl Game<'_> {
             let name = &self
                 .res
                 .facts()
-                .get(self.world.block(p[0], p[1], p[2]))
+                .get(self.simulation.world.block(p[0], p[1], p[2]))
                 .name;
             tags.get(tag).is_some_and(|t| t.contains(&**name))
         };
@@ -934,13 +934,13 @@ impl Game<'_> {
     /// (`AnvilBlock.damage`) to wear the anvil a stage, or break a damaged one
     /// (level event 1029); otherwise level event 1030. True when it broke.
     pub(super) fn anvil_used(&mut self, pos: [i32; 3], creative: bool) -> bool {
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         let name = self.res.facts().get(state).name.clone();
         let anvil = matches!(
             &*name,
             "minecraft:anvil" | "minecraft:chipped_anvil" | "minecraft:damaged_anvil"
         );
-        if !creative && anvil && self.world.random.next_float() < 0.12 {
+        if !creative && anvil && self.simulation.world.random.next_float() < 0.12 {
             match &*name {
                 "minecraft:anvil" => {
                     let _ = self.set_state_named(pos, "minecraft:chipped_anvil", &["facing"]);
@@ -951,8 +951,16 @@ impl Game<'_> {
                     self.native_anvil_damaged(self.dim.id(), pos, &name, "minecraft:damaged_anvil");
                 }
                 _ => {
-                    let _ = self.world.set(pos[0], pos[1], pos[2], self.world.air);
-                    self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+                    let _ = self.simulation.world.set(
+                        pos[0],
+                        pos[1],
+                        pos[2],
+                        self.simulation.world.air,
+                    );
+                    self.simulation
+                        .world
+                        .modified
+                        .insert((pos[0] >> 4, pos[2] >> 4));
                     self.native_anvil_damaged(self.dim.id(), pos, &name, "minecraft:air");
                     self.level_event_at(1029, pos, 0);
                     return true;
@@ -967,7 +975,7 @@ impl Game<'_> {
     /// (`ExperienceOrb.award`), then level event 1042, the grindstone's sound
     /// for everyone around.
     pub(super) fn grindstone_taken(&mut self, pos: [i32; 3], amount: i32) {
-        let xp = stations::grindstone_xp_roll(amount, &mut self.world.random);
+        let xp = stations::grindstone_xp_roll(amount, &mut self.simulation.world.random);
         if xp > 0 {
             self.spawn_orbs(pos.map(|v| f64::from(v) + 0.5), xp);
         }
@@ -1065,7 +1073,7 @@ impl Game<'_> {
         let enchanted_item = enchanted.clone();
         // Player.onEnchantmentPerformed
         self.give_levels(-(lapis_needed as i32));
-        self.level.xp_seed = self.world.random.next_int();
+        self.level.xp_seed = self.simulation.world.random.next_int();
         if let Some(s) = self.station.as_mut() {
             s.inputs[0] = Some(enchanted);
             if !self.creative
@@ -1077,7 +1085,7 @@ impl Game<'_> {
                 }
             }
         }
-        let pitch = self.world.random.next_float() * 0.1 + 0.9;
+        let pitch = self.simulation.world.random.next_float() * 0.1 + 0.9;
         self.award_custom_stat("enchant_item", 1);
         self.trigger_enchanted_item(&enchanted_item, lapis_needed as i32);
         self.play_at("minecraft:block.enchantment_table.use", pos, 1.0, pitch);
@@ -1569,10 +1577,12 @@ impl Game<'_> {
             }
             let default = self.translate("container.brewing", "Brewing Stand");
             let title = self.remote_menu_title().unwrap_or_else(|| {
-                let named = self
-                    .station
-                    .as_ref()
-                    .and_then(|s| self.world.block_names.get(&(s.pos[0], s.pos[1], s.pos[2])));
+                let named = self.station.as_ref().and_then(|s| {
+                    self.simulation
+                        .world
+                        .block_names
+                        .get(&(s.pos[0], s.pos[1], s.pos[2]))
+                });
                 Text::literal(named.cloned().unwrap_or(default)).resolve_legacy()
             });
             super::screen_info::name_container(|| title.plain());
@@ -2953,7 +2963,8 @@ impl Game<'_> {
         &mut self,
         pos: (i32, i32, i32),
     ) -> horizon_client::Result<()> {
-        let Some(BlockEntity::Brewing(b)) = self.world.block_entities.get_mut(&pos) else {
+        let Some(BlockEntity::Brewing(b)) = self.simulation.world.block_entities.get_mut(&pos)
+        else {
             return Ok(());
         };
         let was_idle = b.brew_time <= 0;
@@ -2979,7 +2990,7 @@ impl Game<'_> {
         }
         if out != brewing::BrewTick::default() {
             let (x, y, z) = pos;
-            self.world.modified.insert((x >> 4, z >> 4));
+            self.simulation.world.modified.insert((x >> 4, z >> 4));
             if out.brewed {
                 self.native_brewing_complete([x, y, z]);
                 self.play_at("minecraft:block.brewing_stand.brew", [x, y, z], 1.0, 1.0);
@@ -2988,7 +2999,7 @@ impl Game<'_> {
                 self.pop_resource([x, y, z], d);
             }
             if let Some(bottles) = out.bottles {
-                let state = self.world.block(x, y, z);
+                let state = self.simulation.world.block(x, y, z);
                 if let Some(mut s) = self.pack.assets.registry.state(state).cloned()
                     && AsRef::<str>::as_ref(&s.name) == "minecraft:brewing_stand"
                 {
@@ -3006,9 +3017,9 @@ impl Game<'_> {
                 }
             }
         }
-        if matches!(self.world.block_entities.get(&pos), Some(BlockEntity::Brewing(b)) if b.idle())
+        if matches!(self.simulation.world.block_entities.get(&pos), Some(BlockEntity::Brewing(b)) if b.idle())
         {
-            self.world.block_entities.sleep(pos);
+            self.simulation.world.block_entities.sleep(pos);
         }
         Ok(())
     }

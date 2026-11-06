@@ -76,7 +76,7 @@ impl Game<'_> {
         let dimension = self.command_source.map_or(self.dim, |s| s.dimension);
         for cx in min[0]..=max[0] {
             for cz in min[1]..=max[1] {
-                if dimension != self.dim || !self.world.chunks.contains_key(&(cx, cz)) {
+                if dimension != self.dim || !self.simulation.world.chunks.contains_key(&(cx, cz)) {
                     return Err(err("argument.pos.unloaded", &[]));
                 }
             }

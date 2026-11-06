@@ -55,12 +55,12 @@ impl Game<'_> {
             // knot's id (handleEntityLinkPacket's delayed holder); now it can
             // be tied to the fence.
             self.remote_knots.insert(id, block);
-            for m in &mut self.mobs {
+            for m in &mut self.simulation.mobs {
                 if m.extra.leash == Some(Holder::Mob(id)) {
                     m.extra.leash = Some(Holder::Knot(block));
                 }
             }
-            for b in &mut self.boats {
+            for b in &mut self.simulation.boats {
                 if b.leash == Some(Holder::Mob(id)) {
                     b.leash = Some(Holder::Knot(block));
                 }
@@ -89,7 +89,7 @@ impl Game<'_> {
             c.previous_yaw = yaw;
             c.pitch = pitch;
             c.previous_pitch = pitch;
-            self.carts.push(c);
+            self.simulation.carts.push(c);
         } else if let Some((wood, chest)) = super::boats::any_boat_wood(kind)
             && self.boat_models.has(wood, chest)
         {
@@ -97,11 +97,13 @@ impl Game<'_> {
             if chest {
                 b = b.with_chest();
             }
-            self.boats.push(b);
+            self.simulation.boats.push(b);
         } else if kind == "minecraft:armor_stand" {
-            self.armor_stands.push(ArmorStand::new(id, at, yaw));
+            self.simulation
+                .armor_stands
+                .push(ArmorStand::new(id, at, yaw));
         } else if kind == "minecraft:item_frame" || kind == "minecraft:glow_item_frame" {
-            self.item_frames.push(ItemFrame {
+            self.simulation.item_frames.push(ItemFrame {
                 id,
                 pos: block,
                 facing: data.clamp(0, 5) as u8,
@@ -116,7 +118,7 @@ impl Game<'_> {
             });
         } else if kind == "minecraft:cushion" {
             // BlockAttachedEntity.pos: `BlockPos.containing` of the spawn.
-            self.cushions.push(Cushion {
+            self.simulation.cushions.push(Cushion {
                 id,
                 position: at,
                 pos: block,
@@ -142,7 +144,7 @@ impl Game<'_> {
                 5 => 3,
                 _ => 0,
             };
-            self.paintings.push(Painting {
+            self.simulation.paintings.push(Painting {
                 id,
                 pos: block,
                 facing,
@@ -186,22 +188,25 @@ impl Game<'_> {
         let id = id as u32;
         for (index, _, value) in values {
             if let (8, Value::Item(stack)) = (index, value)
-                && self.ominous_spawners.iter().any(|s| s.id == id)
+                && self.simulation.ominous_spawners.iter().any(|s| s.id == id)
             {
                 // OminousItemSpawner.DATA_ITEM.
                 if let (Some(item), Some(s)) = (
                     self.to_stack(stack),
-                    self.ominous_spawners.iter_mut().find(|s| s.id == id),
+                    self.simulation
+                        .ominous_spawners
+                        .iter_mut()
+                        .find(|s| s.id == id),
                 ) {
                     s.item = item;
                 }
-            } else if self.item_frames.iter().any(|f| f.id == id) {
+            } else if self.simulation.item_frames.iter().any(|f| f.id == id) {
                 // HangingEntity.DATA_DIRECTION, ItemFrame.DATA_ITEM and DATA_ROTATION.
                 let item = match (index, value) {
                     (9, Value::Item(stack)) => Some(self.to_stack(stack)),
                     _ => None,
                 };
-                let Some(f) = self.item_frames.iter_mut().find(|f| f.id == id) else {
+                let Some(f) = self.simulation.item_frames.iter_mut().find(|f| f.id == id) else {
                     continue;
                 };
                 match (index, value) {
@@ -213,17 +218,17 @@ impl Game<'_> {
                 if let Some(item) = item {
                     f.item = item;
                 }
-            } else if self.paintings.iter().any(|p| p.id == id) {
+            } else if self.simulation.paintings.iter().any(|p| p.id == id) {
                 // Painting.DATA_PAINTING_VARIANT_ID: a registry holder (id + 1).
                 if let (9, Value::Id(holder)) = (index, value)
                     && let Some(v) = self.remote_painting_variant(holder - 1)
-                    && let Some(p) = self.paintings.iter_mut().find(|p| p.id == id)
+                    && let Some(p) = self.simulation.paintings.iter_mut().find(|p| p.id == id)
                 {
                     p.variant = v.id;
                     p.width = v.width;
                     p.height = v.height;
                 }
-            } else if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) {
+            } else if let Some(a) = self.simulation.armor_stands.iter_mut().find(|a| a.id == id) {
                 match (index, value) {
                     (0, Value::Byte(flags)) => a.invisible = flags & 0x20 != 0,
                     // Entity.DATA_CUSTOM_NAME and DATA_CUSTOM_NAME_VISIBLE.
@@ -248,12 +253,12 @@ impl Game<'_> {
                     }
                     _ => {}
                 }
-            } else if let Some(c) = self.cushions.iter_mut().find(|c| c.id == id) {
+            } else if let Some(c) = self.simulation.cushions.iter_mut().find(|c| c.id == id) {
                 // Cushion.DATA_COLOR (DyeColor, a byte-backed id).
                 if let (8, Value::Id(color)) = (index, value) {
                     c.color = (*color).clamp(0, 15) as u8;
                 }
-            } else if let Some(b) = self.boats.iter_mut().find(|b| b.id == id) {
+            } else if let Some(b) = self.simulation.boats.iter_mut().find(|b| b.id == id) {
                 // VehicleEntity's hurt, direction and damage; the paddles and
                 // the bubble time.
                 match (index, value) {
@@ -266,7 +271,7 @@ impl Game<'_> {
                     (13, Value::Int(v)) => b.bubble_time = *v,
                     _ => {}
                 }
-            } else if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
+            } else if let Some(c) = self.simulation.carts.iter_mut().find(|c| c.id == id) {
                 match (index, value) {
                     (8, Value::Int(v)) => c.hurt_time = *v,
                     (9, Value::Int(v)) => c.hurt_dir = *v,
@@ -312,14 +317,24 @@ impl Game<'_> {
         id: i32,
         slots: &[(u8, Option<horizon_protocol::item::Stack>)],
     ) {
-        if !self.armor_stands.iter().any(|a| a.id == id as u32) {
+        if !self
+            .simulation
+            .armor_stands
+            .iter()
+            .any(|a| a.id == id as u32)
+        {
             return;
         }
         let items: Vec<_> = slots
             .iter()
             .map(|(slot, stack)| (usize::from(*slot), self.to_stack(stack)))
             .collect();
-        if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id as u32) {
+        if let Some(a) = self
+            .simulation
+            .armor_stands
+            .iter_mut()
+            .find(|a| a.id == id as u32)
+        {
             for (slot, item) in items {
                 if let Some(s) = a.equipment.get_mut(slot) {
                     *s = item;
@@ -333,7 +348,7 @@ impl Game<'_> {
         let id = id as u32;
         // The boat the player drives turns here (isLocalInstanceAuthoritative).
         let driven = self.riding.filter(|&id| self.controls_boat(id));
-        if let Some(b) = self.boats.iter_mut().find(|b| b.id == id) {
+        if let Some(b) = self.simulation.boats.iter_mut().find(|b| b.id == id) {
             if Some(id) == driven {
                 return;
             }
@@ -342,7 +357,7 @@ impl Game<'_> {
             // the boat's yaw at once.
             let _ = yaw;
             b.on_ground = on_ground;
-        } else if let Some(c) = self.carts.iter_mut().find(|c| c.id == id)
+        } else if let Some(c) = self.simulation.carts.iter_mut().find(|c| c.id == id)
             && let Some(yaw) = yaw
         {
             c.yaw = yaw;
@@ -359,7 +374,7 @@ impl Game<'_> {
         mut turn: impl FnMut(u32, f32) -> f32,
         mut lerp_cart: impl FnMut(&mut super::minecarts::Minecart) -> bool,
     ) {
-        for c in &mut self.carts {
+        for c in &mut self.simulation.carts {
             c.previous = c.position;
             c.previous_yaw = c.yaw;
             c.previous_pitch = c.pitch;
@@ -369,7 +384,7 @@ impl Game<'_> {
             c.accumulate_rotation();
             if c.kind == super::minecarts::CartKind::Furnace
                 && c.fuel > 0
-                && self.world.random.next_int_bound(4).unwrap_or(1) == 0
+                && self.simulation.world.random.next_int_bound(4).unwrap_or(1) == 0
             {
                 self.particles.add(
                     &ParticleOptions::simple(ParticleType::LargeSmoke),
@@ -391,7 +406,7 @@ impl Game<'_> {
         }
         // The boat the player drives moves here, not where the server says.
         let driven = self.riding.filter(|&id| self.controls_boat(id));
-        for b in &mut self.boats {
+        for b in &mut self.simulation.boats {
             if Some(b.id) == driven {
                 continue;
             }
@@ -402,7 +417,7 @@ impl Game<'_> {
             b.yaw = turn(b.id, b.yaw);
             b.position = step(b.id, b.position);
         }
-        for a in &mut self.armor_stands {
+        for a in &mut self.simulation.armor_stands {
             a.position = step(a.id, a.position);
         }
         self.tick_remote_boat_bubbles();
@@ -414,15 +429,15 @@ impl Game<'_> {
         use serde_json::json;
         let at = |p: Vec3| [p.x, p.y, p.z];
         let mut out = Vec::new();
-        for b in &self.boats {
+        for b in &self.simulation.boats {
             out.push(json!({"id": b.id, "kind": b.entity_type(), "position": at(b.position), "yaw": b.yaw}));
         }
-        for c in &self.carts {
+        for c in &self.simulation.carts {
             out.push(
                 json!({"id": c.id, "kind": c.kind.id(), "position": at(c.position), "yaw": c.yaw}),
             );
         }
-        for a in &self.armor_stands {
+        for a in &self.simulation.armor_stands {
             let items: Vec<_> = a
                 .equipment
                 .iter()
@@ -431,7 +446,7 @@ impl Game<'_> {
             out.push(json!({"id": a.id, "kind": "minecraft:armor_stand", "position": at(a.position), "yaw": a.yaw,
                 "small": a.small, "arms": a.show_arms, "no_base_plate": a.no_base_plate, "equipment": items}));
         }
-        for c in &self.cushions {
+        for c in &self.simulation.cushions {
             out.push(
                 json!({"id": c.id, "kind": "minecraft:cushion", "position": at(c.position),
                 "yaw": c.yaw, "color": c.color_name()}),
@@ -442,13 +457,13 @@ impl Game<'_> {
                 "position": at(i.position), "width": i.width, "height": i.height,
                 "response": i.response}));
         }
-        for f in &self.item_frames {
+        for f in &self.simulation.item_frames {
             out.push(
                 json!({"id": f.id, "kind": f.kind(), "position": f.pos, "facing": f.facing,
                 "item": f.item.as_ref().map(|i| &*i.item), "rotation": f.rotation}),
             );
         }
-        for p in &self.paintings {
+        for p in &self.simulation.paintings {
             out.push(json!({"id": p.id, "kind": "minecraft:painting", "position": p.pos, "facing": p.facing,
                 "variant": &*p.variant}));
         }
@@ -464,29 +479,30 @@ impl Game<'_> {
     pub(super) fn clear_remote_objects(&mut self) {
         self.text_displays.clear();
         self.interactions.clear();
-        self.ominous_spawners.clear();
+        self.simulation.ominous_spawners.clear();
         self.remote_knots.clear();
-        self.carts.clear();
-        self.boats.clear();
-        self.armor_stands.clear();
-        self.cushions.clear();
-        self.item_frames.clear();
-        self.paintings.clear();
-        self.orbs.clear();
+        self.simulation.carts.clear();
+        self.simulation.boats.clear();
+        self.simulation.armor_stands.clear();
+        self.simulation.cushions.clear();
+        self.simulation.item_frames.clear();
+        self.simulation.paintings.clear();
+        self.simulation.orbs.clear();
     }
 
     pub(super) fn remove_remote_object(&mut self, id: u32) {
         self.text_displays.remove(&(id as i32));
         self.interactions.remove(&(id as i32));
-        self.ominous_spawners.retain(|s| s.id != id);
+        self.simulation.ominous_spawners.retain(|s| s.id != id);
         self.remote_knots.remove(&id);
-        self.carts.retain(|c| c.id != id);
-        self.boats.retain(|b| b.id != id);
-        self.armor_stands.retain(|a| a.id != id);
+        self.simulation.carts.retain(|c| c.id != id);
+        self.simulation.boats.retain(|b| b.id != id);
+        self.simulation.armor_stands.retain(|a| a.id != id);
         // `Entity.setRemoved`: the cushion's rider gets off where it sat
         // (`LivingEntity.dismountVehicle`), not inside the block below.
         if self.riding == Some(id)
             && let Some(y) = self
+                .simulation
                 .cushions
                 .iter()
                 .find(|c| c.id == id)
@@ -494,10 +510,10 @@ impl Game<'_> {
         {
             self.dismount_removed_vehicle(y);
         }
-        self.cushions.retain(|c| c.id != id);
-        self.item_frames.retain(|f| f.id != id);
-        self.paintings.retain(|p| p.id != id);
-        self.bolts.retain(|b| b.id != id);
+        self.simulation.cushions.retain(|c| c.id != id);
+        self.simulation.item_frames.retain(|f| f.id != id);
+        self.simulation.paintings.retain(|p| p.id != id);
+        self.simulation.bolts.retain(|b| b.id != id);
     }
 }
 

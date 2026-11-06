@@ -101,9 +101,10 @@ impl Game<'_> {
             return Err("a world save is already in progress".into());
         }
         if all {
-            self.world
+            self.simulation
+                .world
                 .modified
-                .extend(self.world.chunks.keys().copied());
+                .extend(self.simulation.world.chunks.keys().copied());
         }
         self.keys.clear();
         self.physical_keys.clear();
@@ -149,8 +150,9 @@ impl Game<'_> {
                     if save.started.elapsed() > Duration::from_secs(30) {
                         return Err("chunk generation did not finish before saving".into());
                     }
-                    if self.streaming.poll_save(&mut self.world) {
-                        save.stage = Stage::Chunks(self.world.modified.iter().copied().collect());
+                    if self.streaming.poll_save(&mut self.simulation.world) {
+                        save.stage =
+                            Stage::Chunks(self.simulation.world.modified.iter().copied().collect());
                     }
                     Ok(false)
                 }
@@ -158,13 +160,13 @@ impl Game<'_> {
                     let started = Instant::now();
                     for _ in 0..SNAPSHOTS_PER_FRAME {
                         let Some(&key) = keys.front() else { break };
-                        let chunks = self.with_entities(self.world.chunks.get(&key));
+                        let chunks = self.with_entities(self.simulation.world.chunks.get(&key));
                         self.save.save_later(
                             &chunks,
                             self.pack.assets.registry,
                             world_biomes!(self),
                         )?;
-                        self.world.modified.remove(&key);
+                        self.simulation.world.modified.remove(&key);
                         keys.pop_front();
                         if started.elapsed() >= SNAPSHOT_BUDGET {
                             break;
@@ -172,7 +174,8 @@ impl Game<'_> {
                     }
                     if keys.is_empty() {
                         self.spawn_loaded_entities();
-                        save.stage = Stage::Entities(self.world.chunks.keys().copied().collect());
+                        save.stage =
+                            Stage::Entities(self.simulation.world.chunks.keys().copied().collect());
                     }
                     Ok(false)
                 }
@@ -190,7 +193,8 @@ impl Game<'_> {
                     if keys.is_empty() {
                         self.prune_entity_memory();
                         self.save_raids();
-                        self.save.save_attachments(&self.world.attachments)?;
+                        self.save
+                            .save_attachments(&self.simulation.world.attachments)?;
                         self.save.save_forced_chunks(&self.streaming.forced)?;
                         self.save_game_metadata()?;
                         save.stage = Stage::Writes;

@@ -24,13 +24,13 @@ impl Game<'_> {
 
     /// The type of the vehicle with entity id `id`.
     fn native_vehicle_kind(&self, id: u32) -> String {
-        if let Some(b) = self.boats.iter().find(|b| b.id == id) {
+        if let Some(b) = self.simulation.boats.iter().find(|b| b.id == id) {
             b.entity_type()
-        } else if let Some(c) = self.carts.iter().find(|c| c.id == id) {
+        } else if let Some(c) = self.simulation.carts.iter().find(|c| c.id == id) {
             c.kind.id().into()
-        } else if self.cushions.iter().any(|c| c.id == id) {
+        } else if self.simulation.cushions.iter().any(|c| c.id == id) {
             "minecraft:cushion".into()
-        } else if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
+        } else if let Some(m) = self.simulation.mobs.iter().find(|m| m.id == id) {
             mob_kind(m)
         } else {
             String::new()
@@ -46,7 +46,8 @@ impl Game<'_> {
         let (entity, kind) = match rider {
             Some(id) => (
                 id,
-                self.mobs
+                self.simulation
+                    .mobs
                     .iter()
                     .find(|m| m.id == id)
                     .map_or_else(String::new, mob_kind),

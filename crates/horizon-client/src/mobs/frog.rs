@@ -833,11 +833,36 @@ fn candidates([x, y, z]: [i32; 3], width: i32, height: i32) -> Vec<Candidate> {
     }
     out
 }
+/// Set by `HORIZON_SIMULATION_MODE=verify`, which replays each commit and needs
+/// the replay to shuffle a jump's angles as the commit did.
+static REPEAT_JUMP_SHUFFLES: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+pub fn repeat_jump_shuffles() {
+    REPEAT_JUMP_SHUFFLES.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+/// What a jump's angles are shuffled with. `Collections.shuffle` without a random
+/// draws from an unseeded one, not the mob's or the level's. A repeated shuffle
+/// is seeded by what a commit and its replay share.
+fn jump_shuffle_random(repeat: bool, id: u32, target: Vec3) -> LegacyRandom {
+    if !repeat {
+        return crate::sound_engine::SoundEngine::unseeded();
+    }
+    let block = |at: f64| at.floor() as i64;
+    LegacyRandom::new(
+        block(target.x).wrapping_mul(3_129_871)
+            ^ block(target.z).wrapping_mul(116_129_781)
+            ^ block(target.y)
+            ^ i64::from(id) << 32,
+    )
+}
 /// `LongJumpToRandomPos.calculateOptimalJumpVector`: the angles shuffled, the
-/// first arc that reaches the target clear of blocks. `Collections.shuffle`
-/// without a random draws from an unseeded one, not the mob's or the level's.
+/// first arc that reaches the target clear of blocks.
 fn optimal_jump_vector(m: &Mob, w: &MobWorld, target: Vec3) -> Option<Vec3> {
-    let mut random = crate::sound_engine::SoundEngine::unseeded();
+    let mut random = jump_shuffle_random(
+        REPEAT_JUMP_SHUFFLES.load(std::sync::atomic::Ordering::Relaxed),
+        m.id,
+        target,
+    );
     let mut angles = ALLOWED_ANGLES;
     for i in (2..=angles.len()).rev() {
         let j = random.next_int_bound(i as i32).unwrap_or(0) as usize;
@@ -981,6 +1006,25 @@ impl Goal for LongJump {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_repeated_jump_shuffle_draws_the_same_twice() {
+        let draws = |repeat, id, target| {
+            let mut random = super::jump_shuffle_random(repeat, id, target);
+            (0..8)
+                .map(|_| random.next_int_bound(1 << 30).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let target = Vec3::new(10.5, 64.5, -3.5);
+        assert_eq!(draws(true, 7, target), draws(true, 7, target));
+        assert_ne!(draws(true, 7, target), draws(true, 8, target));
+        assert_ne!(
+            draws(true, 7, target),
+            draws(true, 7, Vec3::new(11.5, 64.5, -3.5))
+        );
+        // What players run: vanilla's unseeded shuffle, different every time.
+        assert_ne!(draws(false, 7, target), draws(false, 7, target));
+    }
+
     use super::*;
     use horizon_core::random::LegacyRandom;
 

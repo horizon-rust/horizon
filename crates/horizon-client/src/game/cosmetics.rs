@@ -567,7 +567,7 @@ impl Game<'_> {
             let Some(first) = self.owned_emotes().first().cloned() else {
                 return;
             };
-            for m in self.mobs.iter_mut() {
+            for m in self.simulation.mobs.iter_mut() {
                 let age = m.age as f32;
                 if &*m.kind.id == "minecraft:mannequin"
                     && m.emote.as_ref().is_none_or(|p| p.at(age).is_none())
@@ -587,14 +587,14 @@ impl Game<'_> {
         };
         if !shown {
             feed.ask([]);
-            for m in self.mobs.iter_mut() {
+            for m in self.simulation.mobs.iter_mut() {
                 m.emote = None;
             }
             return;
         }
         let mut frame = client.frame();
         let mut horizon = Vec::new();
-        for m in self.mobs.iter() {
+        for m in self.simulation.mobs.iter() {
             if &*m.kind.id == "minecraft:player"
                 && let Some(uuid) = self.remote_player_uuid(m.id)
                 && frame.horizon(uuid)
@@ -607,7 +607,7 @@ impl Game<'_> {
         let now = Instant::now();
         for (id, uuid) in horizon {
             let seen = feed.playing(uuid);
-            let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+            let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) else {
                 continue;
             };
             let age = m.age as f32;

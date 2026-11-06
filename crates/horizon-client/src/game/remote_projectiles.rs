@@ -177,7 +177,7 @@ impl Game<'_> {
     /// position while flying.
     fn arrow_effect_particles(&mut self) {
         let mut puffs: Vec<(Vec3, i32, u32)> = Vec::new();
-        for p in &self.creatures.projectiles {
+        for p in &self.simulation.projectiles {
             let Some(a) = p.arrow.as_ref().filter(|_| p.is_arrow()) else {
                 continue;
             };
@@ -229,7 +229,7 @@ impl Game<'_> {
     /// into twenty particles in its colour. The server turns it into a plain
     /// arrow and does not send the colour again, so it stops here.
     pub(super) fn remote_arrow_puff(&mut self, id: u32) {
-        let Some(p) = self.creatures.projectiles.iter_mut().find(|p| p.id == id) else {
+        let Some(p) = self.simulation.projectiles.iter_mut().find(|p| p.id == id) else {
             return;
         };
         let Some(a) = p.arrow.as_mut() else {
@@ -261,7 +261,7 @@ impl Game<'_> {
     /// 0.3125 box (`getRandomX(0.5)`, `getRandomY`, `getRandomZ(0.5)`).
     pub(super) fn shulker_bullet_trails(&mut self) {
         let bullets: Vec<Vec3> = self
-            .creatures
+            .simulation
             .projectiles
             .iter()
             .filter(|p| matches!(p.kind, ProjectileKind::ShulkerBullet { .. }))
@@ -293,7 +293,7 @@ impl Game<'_> {
         self.remove_remote_projectile(id);
         match kind {
             "minecraft:evoker_fangs" => self.insert_fangs(id, position, yaw, 0, 0),
-            "minecraft:tnt" => self.tnts.push(super::tnt::PrimedTnt {
+            "minecraft:tnt" => self.simulation.tnts.push(super::tnt::PrimedTnt {
                 rotation: [0.0, 0.0],
                 join: Default::default(),
                 no_gravity: false,
@@ -309,7 +309,7 @@ impl Game<'_> {
                 block_state: None,
             }),
             // FallingBlockEntity.recreateFromPacket: the block state is the data.
-            "minecraft:falling_block" => self.falling.push(FallingBlock {
+            "minecraft:falling_block" => self.simulation.falling.push(FallingBlock {
                 rotation: [0.0, 0.0],
                 join: Default::default(),
                 id,
@@ -332,10 +332,11 @@ impl Game<'_> {
                 t.velocity = velocity;
                 // Projectile.getAddEntityPacket: the owner's id is the data.
                 t.owner = data as u32;
-                self.tridents.push(t);
+                self.simulation.tridents.push(t);
             }
             "minecraft:firework_rocket" => {
-                self.rockets
+                self.simulation
+                    .rockets
                     .push(super::fireworks::Rocket::remote(id, at, velocity));
             }
             "minecraft:splash_potion"
@@ -344,6 +345,7 @@ impl Game<'_> {
                 self.potions.add_remote_thrown(id, kind, at, velocity);
             }
             "minecraft:dragon_fireball" => self
+                .simulation
                 .dragon_fireballs
                 .push(super::dragon::DragonFireball::remote(id, at, velocity)),
             "minecraft:area_effect_cloud" => self.potions.clouds.push(RemoteCloud {
@@ -365,7 +367,7 @@ impl Game<'_> {
                 let time = horizon_client::mobs::entity_random(id, at)
                     .next_int_bound(100_000)
                     .unwrap_or(0);
-                self.crystals.push(super::dragon::Crystal {
+                self.simulation.crystals.push(super::dragon::Crystal {
                     id,
                     position: at,
                     show_bottom: true,
@@ -428,14 +430,14 @@ impl Game<'_> {
             }
             return;
         }
-        if self.rockets.iter().any(|r| r.id == id) {
+        if self.simulation.rockets.iter().any(|r| r.id == id) {
             for (index, _, value) in values {
                 match (index, value) {
                     // FireworkRocketEntity.DATA_ID_FIREWORKS_ITEM: its
                     // explosions for `createFireworks`.
                     (8, Value::Item(stack)) => {
                         if let Some(stack) = self.to_stack(stack)
-                            && let Some(r) = self.rockets.iter_mut().find(|r| r.id == id)
+                            && let Some(r) = self.simulation.rockets.iter_mut().find(|r| r.id == id)
                         {
                             let (_, explosions) = fireworks_of(&stack);
                             r.explosions = explosions;
@@ -445,13 +447,13 @@ impl Game<'_> {
                     // DATA_ATTACHED_TO_TARGET (OptionalInt: the id plus 1).
                     (9, Value::Id(v)) => {
                         let v = (*v > 0).then(|| (*v - 1) as u32);
-                        if let Some(r) = self.rockets.iter_mut().find(|r| r.id == id) {
+                        if let Some(r) = self.simulation.rockets.iter_mut().find(|r| r.id == id) {
                             r.attached_to = v;
                         }
                     }
                     // DATA_SHOT_AT_ANGLE.
                     (10, Value::Bool(a)) => {
-                        if let Some(r) = self.rockets.iter_mut().find(|r| r.id == id) {
+                        if let Some(r) = self.simulation.rockets.iter_mut().find(|r| r.id == id) {
                             r.angled = *a;
                         }
                     }
@@ -479,27 +481,27 @@ impl Game<'_> {
             })
             && let Some(stack) = self.to_stack(stack)
         {
-            remote_projectile_item(&mut self.creatures.projectiles, id, stack);
+            remote_projectile_item(&mut self.simulation.projectiles, id, stack);
         }
         for (index, _, value) in values {
-            if let Some(t) = self.tnts.iter_mut().find(|t| t.id == id) {
+            if let Some(t) = self.simulation.tnts.iter_mut().find(|t| t.id == id) {
                 // PrimedTnt.DATA_FUSE_ID.
                 if let (8, Value::Int(fuse)) = (index, value) {
                     t.fuse = *fuse;
                 }
-            } else if let Some(f) = self.falling.iter_mut().find(|f| f.id == id) {
+            } else if let Some(f) = self.simulation.falling.iter_mut().find(|f| f.id == id) {
                 // FallingBlockEntity.DATA_START_POS (the model's seed).
                 if let (8, Value::Pos(p)) = (index, value) {
                     f.start_pos = BlockPos::new(p[0], p[1], p[2]);
                 }
-            } else if let Some(c) = self.crystals.iter_mut().find(|c| c.id == id) {
+            } else if let Some(c) = self.simulation.crystals.iter_mut().find(|c| c.id == id) {
                 // EndCrystal.DATA_BEAM_TARGET and DATA_SHOW_BOTTOM.
                 match (index, value) {
                     (8, Value::OptPos(beam)) => c.beam = *beam,
                     (9, Value::Bool(show)) => c.show_bottom = *show,
                     _ => {}
                 }
-            } else if let Some(t) = self.tridents.iter_mut().find(|t| t.id == id) {
+            } else if let Some(t) = self.simulation.tridents.iter_mut().find(|t| t.id == id) {
                 // AbstractArrow.ID_FLAGS (no physics) and IN_GROUND, and
                 // ThrownTrident.ID_LOYALTY.
                 match (index, value) {
@@ -510,7 +512,7 @@ impl Game<'_> {
                     (11, Value::Byte(loyalty)) => t.loyalty = u32::from(*loyalty as u8),
                     _ => {}
                 }
-            } else if let Some(p) = self.creatures.projectiles.iter_mut().find(|p| p.id == id) {
+            } else if let Some(p) = self.simulation.projectiles.iter_mut().find(|p| p.id == id) {
                 match (&mut p.kind, index, value) {
                     // Entity.DATA_SHARED_FLAGS_ID's FLAG_ONFIRE: Entity.isOnFire on
                     // a client, which draws the flames. A client doesn't count the
@@ -567,10 +569,10 @@ impl Game<'_> {
         let (id, Some((yaw, pitch))) = (id as u32, rotation) else {
             return;
         };
-        if let Some(p) = self.creatures.projectiles.iter_mut().find(|p| p.id == id) {
+        if let Some(p) = self.simulation.projectiles.iter_mut().find(|p| p.id == id) {
             p.yaw = yaw;
             p.pitch = pitch;
-        } else if let Some(t) = self.tridents.iter_mut().find(|t| t.id == id) {
+        } else if let Some(t) = self.simulation.tridents.iter_mut().find(|t| t.id == id) {
             t.yaw = yaw;
             t.pitch = pitch;
         }
@@ -583,7 +585,7 @@ impl Game<'_> {
             let eye = self.eye_position()?;
             return Some(Vec3::new(eye[0], eye[1], eye[2]));
         }
-        let m = self.mobs.iter().find(|m| m.id == id)?;
+        let m = self.simulation.mobs.iter().find(|m| m.id == id)?;
         Some(Vec3::new(
             m.position.x,
             m.position.y + m.eye_height(),
@@ -607,16 +609,20 @@ impl Game<'_> {
         };
         if !self.clock.runs_normally()
             || self.player.is_none()
-            || !self.rockets.iter().any(|r| r.attached_to == Some(me))
+            || !self
+                .simulation
+                .rockets
+                .iter()
+                .any(|r| r.attached_to == Some(me))
         {
             return;
         }
-        let mut rockets = std::mem::take(&mut self.rockets);
+        let mut rockets = std::mem::take(&mut self.simulation.rockets);
         for r in rockets.iter_mut().filter(|r| r.attached_to == Some(me)) {
             self.follow_own_player(r);
             self.rocket_spark(r);
         }
-        self.rockets = rockets;
+        self.simulation.rockets = rockets;
     }
 
     /// One tick of interpolation, as `tick_remote_objects`.
@@ -627,7 +633,7 @@ impl Game<'_> {
         // updates (every 10 ticks), and a client discards it when the fuse
         // runs out; only the server explodes it.
         let (world, collision, assets, facts, fluids, border, blocks) = (
-            &self.world,
+            &self.simulation.world,
             self.collision,
             &self.pack.assets,
             self.res.facts(),
@@ -635,7 +641,7 @@ impl Game<'_> {
             Some(self.border.geometry()),
             Some(&self.res.motion().blocks),
         );
-        self.tnts.retain_mut(|t| {
+        self.simulation.tnts.retain_mut(|t| {
             // A fluid lookup that fails leaves it where its move put it.
             let _ = t.tick(world, collision, assets, facts, fluids, border, blocks);
             t.fuse > 0
@@ -643,7 +649,7 @@ impl Game<'_> {
         // PrimedTnt.tick: while the fuse is still lit, a client adds one SMOKE
         // particle at (x, y + 0.5, z). The server's Level.addParticle never
         // reaches this window.
-        let smoking: Vec<Vec3> = self.tnts.iter().map(|t| t.position).collect();
+        let smoking: Vec<Vec3> = self.simulation.tnts.iter().map(|t| t.position).collect();
         let smoke = ParticleOptions::simple(ParticleType::Smoke);
         for p in smoking {
             self.particles.add(&smoke, [p.x, p.y + 0.5, p.z], [0.0; 3]);
@@ -651,23 +657,23 @@ impl Game<'_> {
         // FallingBlockEntity.tick runs on a client too: the block falls by
         // itself between the server's updates (every 20 ticks), then waits
         // where it lands for the server to place it and remove it.
-        let mut falling = std::mem::take(&mut self.falling);
+        let mut falling = std::mem::take(&mut self.simulation.falling);
         for f in &mut falling {
             if let Ok(FallStep::Landed(_)) = self.fall_step(f, false) {
                 // Block.updateEntityMovementAfterFallOn, then the air drag.
                 f.velocity = Vec3::new(f.velocity.x * 0.98, 0.0, f.velocity.z * 0.98);
             }
         }
-        self.falling = falling;
+        self.simulation.falling = falling;
         // Projectiles tick on the client too and fly on between the tracker's
         // updates (10 to 20 ticks apart); a block stops them there, and only
         // the server decides what they hit.
-        let mut projectiles = std::mem::take(&mut self.creatures.projectiles);
+        let mut projectiles = std::mem::take(&mut self.simulation.projectiles);
         let bubbles: Vec<_> = projectiles
             .iter()
             .filter_map(Projectile::water_bubbles)
             .collect();
-        let mut tridents = std::mem::take(&mut self.tridents);
+        let mut tridents = std::mem::take(&mut self.simulation.tridents);
         let mut arrow_events = Vec::new();
         let rain = self.arrow_rain();
         let arrow_scene = self.arrow_scene(&rain);
@@ -704,14 +710,14 @@ impl Game<'_> {
             }
         }
         drop(rain);
-        self.creatures.projectiles = projectiles;
-        self.tridents = tridents;
+        self.simulation.projectiles = projectiles;
+        self.simulation.tridents = tridents;
         for (at, event) in arrow_events {
             self.arrow_event(at, event);
         }
         self.arrow_effect_particles();
         let trails: Vec<Vec3> = self
-            .creatures
+            .simulation
             .projectiles
             .iter()
             .filter(|p| has_smoke_trail(&p.kind))
@@ -724,10 +730,10 @@ impl Game<'_> {
         // follows it, and every rocket leaves its spark trail on a client. One
         // boosting this client's own player ticks after it (`tick_own_rockets`).
         let me = self.remote_player_id();
-        let mut rockets = std::mem::take(&mut self.rockets);
+        let mut rockets = std::mem::take(&mut self.simulation.rockets);
         for r in &mut rockets {
             r.remote_step(&mut SceneCollisions {
-                world: &self.world,
+                world: &self.simulation.world,
                 binding: self.collision,
                 subject: None,
             });
@@ -735,7 +741,7 @@ impl Game<'_> {
                 if me == Some(target) {
                     continue;
                 }
-                if let Some(m) = self.mobs.iter().find(|m| m.id == target) {
+                if let Some(m) = self.simulation.mobs.iter().find(|m| m.id == target) {
                     // Another player's motion is not known here: its step.
                     r.velocity = Vec3::new(
                         m.position.x - r.previous.x,
@@ -747,8 +753,8 @@ impl Game<'_> {
             }
             self.rocket_spark(r);
         }
-        self.rockets = rockets;
-        for c in &mut self.crystals {
+        self.simulation.rockets = rockets;
+        for c in &mut self.simulation.crystals {
             c.time += 1;
             c.position = step(c.id, c.position);
         }
@@ -759,12 +765,12 @@ impl Game<'_> {
         // The dragon's fireballs fly on between the tracker's updates, with
         // their dragon_breath trail (`AbstractHurtingProjectile.getTrailParticle`).
         let trail = ParticleOptions::simple(ParticleType::DragonBreath);
-        for b in &mut self.dragon_fireballs {
+        for b in &mut self.simulation.dragon_fireballs {
             let at = b.position;
             let water = self
                 .res
                 .facts()
-                .get(self.world.block(
+                .get(self.simulation.world.block(
                     at.x.floor() as i32,
                     at.y.floor() as i32,
                     at.z.floor() as i32,
@@ -797,34 +803,34 @@ impl Game<'_> {
     }
 
     pub(super) fn remove_remote_projectile(&mut self, id: u32) {
-        self.fangs.list.retain(|f| f.id != id);
-        self.tnts.retain(|t| t.id != id);
-        self.falling.retain(|f| f.id != id);
-        self.creatures.projectiles.retain(|p| p.id != id);
-        self.tridents.retain(|t| t.id != id);
-        self.rockets.retain(|r| r.id != id);
-        self.crystals.retain(|c| c.id != id);
+        self.simulation.fangs.list.retain(|f| f.id != id);
+        self.simulation.tnts.retain(|t| t.id != id);
+        self.simulation.falling.retain(|f| f.id != id);
+        self.simulation.projectiles.retain(|p| p.id != id);
+        self.simulation.tridents.retain(|t| t.id != id);
+        self.simulation.rockets.retain(|r| r.id != id);
+        self.simulation.crystals.retain(|c| c.id != id);
         self.potions.remove_remote_thrown(id);
         self.potions.clouds.retain(|c| c.id != id);
-        self.dragon_fireballs.retain(|b| b.id != id);
+        self.simulation.dragon_fireballs.retain(|b| b.id != id);
         self.end.remove_remote_eye(id);
         self.remove_remote_hook(id);
     }
 
     /// Every one a server sent (a new connection, level or dimension).
     pub(super) fn clear_remote_projectiles(&mut self) {
-        self.fangs.list.clear();
-        self.tnts.clear();
-        self.falling.clear();
-        self.creatures.projectiles.clear();
-        self.tridents.clear();
-        self.rockets.clear();
-        self.crystals.clear();
+        self.simulation.fangs.list.clear();
+        self.simulation.tnts.clear();
+        self.simulation.falling.clear();
+        self.simulation.projectiles.clear();
+        self.simulation.tridents.clear();
+        self.simulation.rockets.clear();
+        self.simulation.crystals.clear();
         // The dragon a server sent goes with its crystals.
-        self.dragon = None;
+        self.simulation.dragon = None;
         self.potions.clear_thrown();
         self.potions.clouds.clear();
-        self.dragon_fireballs.clear();
+        self.simulation.dragon_fireballs.clear();
         self.end.clear_remote_eyes();
         self.clear_remote_hooks();
     }
@@ -834,34 +840,34 @@ impl Game<'_> {
         use serde_json::json;
         let at = |p: Vec3| [p.x, p.y, p.z];
         let mut out = Vec::new();
-        for f in &self.fangs.list {
+        for f in &self.simulation.fangs.list {
             out.push(
                 json!({"id": f.id, "kind": "minecraft:evoker_fangs", "position": f.pos,
                 "yaw": f.yaw, "started": f.started, "life": f.life}),
             );
         }
-        for t in &self.tnts {
+        for t in &self.simulation.tnts {
             out.push(json!({"id": t.id, "kind": "minecraft:tnt", "position": at(t.position), "fuse": t.fuse}));
         }
-        for f in &self.falling {
+        for f in &self.simulation.falling {
             out.push(json!({"id": f.id, "kind": "minecraft:falling_block", "position": at(f.position), "velocity": at(f.velocity), "state": f.state.0}));
         }
-        for b in &self.boats {
+        for b in &self.simulation.boats {
             out.push(json!({"id": b.id, "kind": "minecraft:boat", "position": at(b.position), "velocity": at(b.velocity)}));
         }
-        for c in &self.carts {
+        for c in &self.simulation.carts {
             out.push(json!({"id": c.id, "kind": "minecraft:minecart", "position": at(c.position), "velocity": at(c.velocity)}));
         }
-        for c in &self.crystals {
+        for c in &self.simulation.crystals {
             out.push(json!({"id": c.id, "kind": "minecraft:end_crystal", "position": at(c.position), "show_bottom": c.show_bottom}));
         }
-        for t in &self.tridents {
+        for t in &self.simulation.tridents {
             out.push(json!({"id": t.id, "kind": "minecraft:trident", "position": at(t.position), "velocity": at(t.velocity), "on_fire": t.fire_ticks > 0}));
         }
-        for r in &self.rockets {
+        for r in &self.simulation.rockets {
             out.push(json!({"id": r.id, "kind": "minecraft:firework_rocket", "position": at(r.position), "velocity": at(r.velocity)}));
         }
-        for p in &self.creatures.projectiles {
+        for p in &self.simulation.projectiles {
             out.push(json!({"id": p.id, "kind": format!("{:?}", p.kind).split([' ', '{']).next().unwrap_or(""), "position": at(p.position), "velocity": at(p.velocity),
                 "player_owned": p.owner == Some(horizon_client::mobs::Who::Player),
                 "on_fire": p.arrow.as_ref().is_some_and(|a| a.on_fire())}));

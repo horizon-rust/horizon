@@ -65,6 +65,9 @@ pub struct Tree {
     /// The triggers with a criterion that may test what the player looks at
     /// (`index_looking_at`).
     looking_at_triggers: BTreeSet<String>,
+    /// The triggers with a criterion that may test an entity's passengers
+    /// (`index_passengers`).
+    passenger_triggers: BTreeSet<String>,
     /// The triggers with a criterion that may test an entity's `nbt`
     /// (`index_nbt`).
     nbt_triggers: BTreeSet<String>,
@@ -218,6 +221,7 @@ impl Tree {
         }
         tree.index_recipes();
         tree.index_looking_at();
+        tree.index_passengers();
         tree.index_nbt();
         tree.index_player_facts();
         tree
@@ -249,18 +253,35 @@ impl Tree {
     /// `minecraft:reference` to a predicate file that might: the text is
     /// searched, nothing is read.
     pub fn index_looking_at(&mut self) {
-        let reference = ["\"minecraft:reference\"", "\"reference\""];
-        self.looking_at_triggers = (self.list.iter().flat_map(|a| &a.criteria))
-            .filter(|c| {
-                let json = c.conditions.json();
-                json.contains("\"looking_at\"") || reference.iter().any(|r| json.contains(r))
-            })
-            .map(|c| c.trigger.clone())
-            .collect();
+        self.looking_at_triggers = self.triggers_naming(&["\"looking_at\""]);
     }
     /// Whether a criterion of `trigger` may test what the player looks at.
     pub fn may_look(&self, trigger: &str) -> bool {
         self.looking_at_triggers.contains(trigger)
+    }
+    /// Index the triggers whose criteria name `passenger` at any depth (in a
+    /// damage's source or direct entity, a vehicle, what the player looks
+    /// at), or a `minecraft:reference` to a predicate file that might.
+    pub fn index_passengers(&mut self) {
+        self.passenger_triggers =
+            self.triggers_naming(&["\"passenger\"", "\"minecraft:passenger\""]);
+    }
+    /// Whether a criterion of `trigger` may test an entity's passengers.
+    pub fn may_read_passengers(&self, trigger: &str) -> bool {
+        self.passenger_triggers.contains(trigger)
+    }
+    /// The triggers with a criterion whose JSON holds one of `names` or a
+    /// `minecraft:reference`. `LazyJson` writes its text from the parsed value,
+    /// so no escape in a pack's file can hide a key from this search.
+    fn triggers_naming(&self, names: &[&str]) -> BTreeSet<String> {
+        let reference = ["\"minecraft:reference\"", "\"reference\""];
+        (self.list.iter().flat_map(|a| &a.criteria))
+            .filter(|c| {
+                let json = c.conditions.json();
+                names.iter().chain(&reference).any(|n| json.contains(n))
+            })
+            .map(|c| c.trigger.clone())
+            .collect()
     }
     /// Index the triggers whose criteria name `nbt`, or a
     /// `minecraft:reference` to a predicate file that might: the text is

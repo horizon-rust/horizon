@@ -137,7 +137,7 @@ impl Game<'_> {
     }
 
     fn fixture_reset(&mut self, seed: i64) {
-        self.world = World::new(self.res.facts().air, seed);
+        self.simulation.world = World::new(self.res.facts().air, seed);
         // The oracle level is plains everywhere (bone meal's flowers, freezing).
         let plains = u32::from(world_biomes!(self).id("minecraft:plains"));
         for cx in -2..=2 {
@@ -149,30 +149,33 @@ impl Game<'_> {
                         plains,
                     );
                 }
-                self.world.chunks.insert((cx, cz), Arc::new(chunk));
+                self.simulation
+                    .world
+                    .chunks
+                    .insert((cx, cz), Arc::new(chunk));
             }
         }
-        self.block_ticks = Ticks::new(0);
-        self.tick_chunks.clear();
+        self.simulation.block_ticks = Ticks::new(0);
+        self.simulation.tick_chunks.clear();
         self.sync_tick_chunks();
-        self.mobs.clear();
-        self.dragon = None;
-        self.dropped.clear();
-        self.creatures.projectiles.clear();
-        self.tnts.clear();
-        self.boats.clear();
-        self.carts.clear();
-        self.armor_stands.clear();
-        self.crystals.clear();
-        self.paintings.clear();
-        self.item_frames.clear();
-        self.rockets.clear();
+        self.simulation.mobs.clear();
+        self.simulation.dragon = None;
+        self.simulation.dropped.clear();
+        self.simulation.projectiles.clear();
+        self.simulation.tnts.clear();
+        self.simulation.boats.clear();
+        self.simulation.carts.clear();
+        self.simulation.armor_stands.clear();
+        self.simulation.crystals.clear();
+        self.simulation.paintings.clear();
+        self.simulation.item_frames.clear();
+        self.simulation.rockets.clear();
         self.potions.clear_thrown();
-        self.level_events.clear();
-        self.orbs.clear();
-        self.falling.clear();
+        self.simulation.level_events.clear();
+        self.simulation.orbs.clear();
+        self.simulation.falling.clear();
         // Hopper cooldowns of an earlier case.
-        self.hoppers.clear();
+        self.simulation.hoppers.clear();
         self.ui.rules = Default::default();
         self.dim = super::Dim::Overworld;
         self.respawn_config = None;
@@ -195,21 +198,21 @@ impl Game<'_> {
                 .unwrap_or(default) as u8
         };
         let packed = (level(0, 15) << 4) | level(1, 0);
-        for chunk in self.world.chunks.values_mut() {
+        for chunk in self.simulation.world.chunks.values_mut() {
             for section in &mut Arc::make_mut(chunk).sections {
                 Arc::make_mut(section).light = horizon_client::chunk::Light::Uniform(packed);
             }
         }
-        self.world.game_time = case["time"].as_i64().unwrap_or(0);
+        self.simulation.world.game_time = case["time"].as_i64().unwrap_or(0);
         match case["dim"].as_str() {
             Some("nether") => self.dim = super::Dim::Nether,
             Some("end") => self.dim = super::Dim::End,
             _ => {}
         }
         // The level's build range follows its dimension, as `enter_dimension` sets it.
-        self.world.shape = self.dim.shape();
+        self.simulation.world.shape = self.dim.shape();
         // The oracle level's clock stands at day time 6000.
-        self.world.day_time = 6000;
+        self.simulation.world.day_time = 6000;
         if let Some(rules) = case["rules"].as_object() {
             for (name, value) in rules {
                 if let Some(b) = value.as_bool() {
@@ -225,10 +228,10 @@ impl Game<'_> {
                 cell[2].as_i64().unwrap_or(0) as i32,
             );
             let state = BlockStateId(cell[3].as_u64().unwrap_or(0) as u32);
-            self.world.set(p.0, p.1, p.2, state)?;
+            self.simulation.world.set(p.0, p.1, p.2, state)?;
             before.insert(p, state.0);
             if let Some(entity) = BlockEntity::for_block(&self.res.facts().get(state).name) {
-                self.world.block_entities.insert(p, entity);
+                self.simulation.world.block_entities.insert(p, entity);
             }
         }
         for item in case["items"].as_array().into_iter().flatten() {
@@ -244,6 +247,7 @@ impl Game<'_> {
         // CrafterBlock.newBlockEntity copies the state's triggered flag;
         // CrafterBlockEntity.setSlotState disables only empty slots.
         let crafter_positions: Vec<(i32, i32, i32)> = self
+            .simulation
             .world
             .block_entities
             .iter()
@@ -251,7 +255,7 @@ impl Game<'_> {
             .map(|(p, _)| *p)
             .collect();
         for p in crafter_positions {
-            let state = self.world.block(p.0, p.1, p.2);
+            let state = self.simulation.world.block(p.0, p.1, p.2);
             let triggered = self
                 .pack
                 .assets
@@ -259,7 +263,8 @@ impl Game<'_> {
                 .state(state)
                 .and_then(|s| s.properties.get("triggered"))
                 .is_some_and(|v| v == "true");
-            if let Some(BlockEntity::Crafter(c)) = self.world.block_entities.get_mut(&p) {
+            if let Some(BlockEntity::Crafter(c)) = self.simulation.world.block_entities.get_mut(&p)
+            {
                 c.triggered = triggered;
                 c.state_triggered = Some(triggered);
             }
@@ -270,7 +275,8 @@ impl Game<'_> {
                 d[1].as_i64().unwrap_or(0) as i32,
                 d[2].as_i64().unwrap_or(0) as i32,
             );
-            if let Some(BlockEntity::Crafter(c)) = self.world.block_entities.get_mut(&p) {
+            if let Some(BlockEntity::Crafter(c)) = self.simulation.world.block_entities.get_mut(&p)
+            {
                 c.set_slot_state(d[3].as_u64().unwrap_or(0) as usize, false);
             }
         }
@@ -292,17 +298,17 @@ impl Game<'_> {
                 Some(Target::Mob(h)) => horizon_client::mobs::leash::Holder::Mob(*h),
                 _ => continue,
             };
-            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == *id) {
+            if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == *id) {
                 m.extra.leash = Some(holder);
             }
         }
         // Creating the targets must not move the stream the dispenser draws from.
-        self.world.random = LegacyRandom::new(seed);
-        self.world.block_log = Some(Vec::new());
+        self.simulation.world.random = LegacyRandom::new(seed);
+        self.simulation.world.block_log = Some(Vec::new());
         self.audio.capture = Some(Vec::new());
         LOG.with(|log| *log.borrow_mut() = Some(Vec::new()));
-        let old_mobs: Vec<u32> = self.mobs.iter().map(|m| m.id).collect();
-        let old_stands: Vec<u32> = self.armor_stands.iter().map(|s| s.id).collect();
+        let old_mobs: Vec<u32> = self.simulation.mobs.iter().map(|m| m.id).collect();
+        let old_stands: Vec<u32> = self.simulation.armor_stands.iter().map(|s| s.id).collect();
 
         let pos = &case["pos"];
         let origin = BlockPos::new(
@@ -310,7 +316,7 @@ impl Game<'_> {
             pos[1].as_i64().unwrap_or(0) as i32,
             pos[2].as_i64().unwrap_or(0) as i32,
         );
-        let state = self.world.block(origin.x, origin.y, origin.z);
+        let state = self.simulation.world.block(origin.x, origin.y, origin.z);
         let mut used = Vec::new();
         if let Some(op) = case.get("remove") {
             used = self.fixture_remove(origin, op)?;
@@ -350,6 +356,7 @@ impl Game<'_> {
             self.dispense_from(origin, state)?;
             // CrafterBlockEntity.serverTick, the crafting animation running down.
             let mut crafters: Vec<(i32, i32, i32)> = self
+                .simulation
                 .world
                 .block_entities
                 .iter()
@@ -365,19 +372,26 @@ impl Game<'_> {
         }
 
         let mut out = Vec::new();
-        let mut changed: Vec<(i32, i32, i32)> = self.world.block_log.take().unwrap_or_default();
+        let mut changed: Vec<(i32, i32, i32)> =
+            self.simulation.world.block_log.take().unwrap_or_default();
         changed.sort_unstable();
         changed.dedup();
         for p in changed {
-            let now = self.world.block(p.0, p.1, p.2).0;
+            let now = self.simulation.world.block(p.0, p.1, p.2).0;
             if before.get(&p).copied().unwrap_or(self.res.facts().air.0) != now {
                 out.push(format!("set {},{},{} {now}", p.0, p.1, p.2));
             }
         }
-        let mut containers: Vec<_> = self.world.block_entities.keys().copied().collect();
+        let mut containers: Vec<_> = self
+            .simulation
+            .world
+            .block_entities
+            .keys()
+            .copied()
+            .collect();
         containers.sort_unstable();
         for p in containers {
-            let entity = &self.world.block_entities[&p];
+            let entity = &self.simulation.world.block_entities[&p];
             let single = match entity {
                 BlockEntity::Jukebox(j) => &j.items,
                 _ => entity.slots(),
@@ -395,6 +409,7 @@ impl Game<'_> {
             }
         }
         let mut crafters: Vec<_> = self
+            .simulation
             .world
             .block_entities
             .iter()
@@ -422,6 +437,7 @@ impl Game<'_> {
         }
         // A spawner's next spawn data (its id and number of keys), potentials and delay.
         let mut spawners: Vec<_> = self
+            .simulation
             .world
             .block_entities
             .iter()
@@ -460,7 +476,7 @@ impl Game<'_> {
             out.push(format!("S {} {}", floor_pos(sound.position), sound.event));
         }
         out.extend(used);
-        out.push(format!("rng {}", self.world.random.next_long()));
+        out.push(format!("rng {}", self.simulation.world.random.next_long()));
         Ok(out)
     }
 
@@ -675,15 +691,16 @@ impl Game<'_> {
         let (bonus, hurt) = match targets.first() {
             Some(&Target::Mob(id)) => {
                 let index = self
+                    .simulation
                     .mobs
                     .iter()
                     .position(|m| m.id == id)
                     .ok_or("the target is gone")?;
-                let kind = self.mobs[index].kind.id.clone();
+                let kind = self.simulation.mobs[index].kind.id.clone();
                 let bonus = self.smash_damage_bonus(&kind);
                 let hurt = self.hurt_by_player(index, base + bonus, source);
                 // The hurt sound the mob raised, where it stands.
-                for event in std::mem::take(&mut self.mobs[index].outbox) {
+                for event in std::mem::take(&mut self.simulation.mobs[index].outbox) {
                     if let horizon_client::mobs::MobEvent::Sound(s, at, volume, pitch) = event {
                         self.audio
                             .play(&format!("minecraft:{s}"), Some(at), volume, pitch);
@@ -696,6 +713,7 @@ impl Game<'_> {
             }
             Some(&Target::Stand(id)) => {
                 let index = self
+                    .simulation
                     .armor_stands
                     .iter()
                     .position(|s| s.id == id)
@@ -724,11 +742,12 @@ impl Game<'_> {
         ));
         for (i, t) in targets.iter().enumerate() {
             let (health, v) = match *t {
-                Target::Mob(id) => match self.mobs.iter().find(|m| m.id == id) {
+                Target::Mob(id) => match self.simulation.mobs.iter().find(|m| m.id == id) {
                     Some(m) => (num(f64::from(m.health)), m.velocity),
                     None => continue,
                 },
-                Target::Stand(id) => match self.armor_stands.iter().find(|s| s.id == id) {
+                Target::Stand(id) => match self.simulation.armor_stands.iter().find(|s| s.id == id)
+                {
                     Some(s) => ("-".to_owned(), s.velocity),
                     None => {
                         out.push(format!("V {i} gone"));
@@ -767,9 +786,13 @@ impl Game<'_> {
     /// A stack in a block entity's slot: a container's, a jukebox's record, a
     /// lectern's book, or the items of a block entity Horizon keeps as saved.
     fn fixture_fill(&mut self, p: (i32, i32, i32), slot: usize, stack: Option<ItemStack>) {
-        let jukebox =
-            &*self.res.facts().get(self.world.block(p.0, p.1, p.2)).name == "minecraft:jukebox";
-        match self.world.block_entities.get_mut(&p) {
+        let jukebox = &*self
+            .res
+            .facts()
+            .get(self.simulation.world.block(p.0, p.1, p.2))
+            .name
+            == "minecraft:jukebox";
+        match self.simulation.world.block_entities.get_mut(&p) {
             Some(BlockEntity::Jukebox(j)) => j.items[0] = stack,
             Some(BlockEntity::Lectern(l)) => l.book = stack,
             Some(BlockEntity::Campfire(c)) => {
@@ -784,7 +807,7 @@ impl Game<'_> {
             }
             None if jukebox => {
                 // JukeboxBlockEntity holding its record (setSongItemWithoutPlaying).
-                self.world.block_entities.insert(
+                self.simulation.world.block_entities.insert(
                     p,
                     BlockEntity::Jukebox(horizon_client::containers::Jukebox {
                         items: [stack],
@@ -803,7 +826,7 @@ impl Game<'_> {
         let name = self
             .res
             .facts()
-            .get(self.world.block(p.0, p.1, p.2))
+            .get(self.simulation.world.block(p.0, p.1, p.2))
             .name
             .clone();
         let id = match name.strip_prefix("minecraft:").unwrap_or(&name) {
@@ -813,7 +836,7 @@ impl Game<'_> {
             n if n.ends_with("_shelf") => "minecraft:shelf",
             _ => return,
         };
-        let Some(chunk) = self.world.chunks.get_mut(&(p.0 >> 4, p.2 >> 4)) else {
+        let Some(chunk) = self.simulation.world.chunks.get_mut(&(p.0 >> 4, p.2 >> 4)) else {
             return;
         };
         let chunk = Arc::make_mut(chunk);
@@ -899,7 +922,7 @@ impl Game<'_> {
         self.keys.clear();
         self.inventory[self.selected] = stack.clone();
         self.offhand = None;
-        let state = self.world.block(pos.x, pos.y, pos.z);
+        let state = self.simulation.world.block(pos.x, pos.y, pos.z);
         let block = self.res.facts().get(state).name.clone();
         let item = stack.as_ref().map(|s| s.item.clone());
         let before = |game: &Self| {
@@ -969,8 +992,8 @@ impl Game<'_> {
             p[2].as_f64().unwrap_or(0.0),
         );
         let yaw = e["yaw"].as_f64().unwrap_or(0.0) as f32;
-        self.next_entity += 1;
-        let id = self.next_entity;
+        self.simulation_server.next_entity += 1;
+        let id = self.simulation_server.next_entity;
         if kind == "minecraft:armor_stand" {
             let mut stand = horizon_client::entities::ArmorStand::new(id, at, yaw);
             stand.marker = e["marker"].as_bool().unwrap_or(false);
@@ -978,7 +1001,7 @@ impl Game<'_> {
             if let Some(last_hit) = e["last_hit"].as_i64() {
                 stand.last_hit = last_hit;
             }
-            self.armor_stands.push(stand);
+            self.simulation.armor_stands.push(stand);
             return Ok(Target::Stand(id));
         }
         let t = self
@@ -1047,7 +1070,7 @@ impl Game<'_> {
                 mob_set_slot(&mut mob, slot, stack);
             }
         }
-        self.mobs.push(mob);
+        self.simulation.mobs.push(mob);
         Ok(Target::Mob(id))
     }
 
@@ -1057,7 +1080,7 @@ impl Game<'_> {
         match *target {
             Target::Stand(id) => {
                 line.push_str("minecraft:armor_stand");
-                let Some(stand) = self.armor_stands.iter().find(|s| s.id == id) else {
+                let Some(stand) = self.simulation.armor_stands.iter().find(|s| s.id == id) else {
                     line.push_str(" removed");
                     return line;
                 };
@@ -1075,7 +1098,7 @@ impl Game<'_> {
                 }
             }
             Target::Mob(id) => {
-                let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
+                let Some(m) = self.simulation.mobs.iter().find(|m| m.id == id) else {
                     return line + "removed";
                 };
                 line.push_str(&m.kind.id);
@@ -1098,17 +1121,22 @@ impl Game<'_> {
                         let _ = write!(line, " {name}={item}x1");
                     }
                 }
-                let ready =
-                    match s {
-                        Species::Sheep => Some(!x.sheared && !m.is_baby()),
-                        Species::Mooshroom => Some(!m.is_baby()),
-                        Species::Bogged => Some(!x.sheared),
-                        Species::SnowGolem => Some(!x.sheared),
-                        Species::CopperGolem => Some(self.golem_shearable(
-                            self.mobs.iter().position(|o| o.id == id).unwrap_or(0),
-                        )),
-                        _ => None,
-                    };
+                let ready = match s {
+                    Species::Sheep => Some(!x.sheared && !m.is_baby()),
+                    Species::Mooshroom => Some(!m.is_baby()),
+                    Species::Bogged => Some(!x.sheared),
+                    Species::SnowGolem => Some(!x.sheared),
+                    Species::CopperGolem => Some(
+                        self.golem_shearable(
+                            self.simulation
+                                .mobs
+                                .iter()
+                                .position(|o| o.id == id)
+                                .unwrap_or(0),
+                        ),
+                    ),
+                    _ => None,
+                };
                 if let Some(r) = ready {
                     line.push_str(if r { " ready" } else { " unready" });
                 }
@@ -1146,11 +1174,16 @@ impl Game<'_> {
             }
             l
         };
-        for m in self.mobs.iter().filter(|m| !old_mobs.contains(&m.id)) {
+        for m in self
+            .simulation
+            .mobs
+            .iter()
+            .filter(|m| !old_mobs.contains(&m.id))
+        {
             let (p, v) = (m.position, m.velocity);
             out.push(line(&m.kind.id, [p.x, p.y, p.z], [v.x, v.y, v.z], ""));
         }
-        if let Some(d) = &self.dragon {
+        if let Some(d) = &self.simulation.dragon {
             let p = d.position;
             out.push(line(
                 "minecraft:ender_dragon",
@@ -1160,6 +1193,7 @@ impl Game<'_> {
             ));
         }
         for s in self
+            .simulation
             .armor_stands
             .iter()
             .filter(|s| !old_stands.contains(&s.id))
@@ -1172,7 +1206,7 @@ impl Game<'_> {
                 "",
             ));
         }
-        for d in &self.dropped {
+        for d in &self.simulation.dropped {
             let (p, v) = (d.position, d.velocity);
             out.push(line(
                 "minecraft:item",
@@ -1181,7 +1215,7 @@ impl Game<'_> {
                 &canon_stack(Some(&d.stack)),
             ));
         }
-        for shot in &self.creatures.projectiles {
+        for shot in &self.simulation.projectiles {
             let kind = match &shot.kind {
                 ProjectileKind::Arrow {
                     effect: Some(("minecraft:glowing", 200)),
@@ -1200,7 +1234,7 @@ impl Game<'_> {
         for (kind, p, v) in self.potions.thrown_entities() {
             out.push(line(kind, [p.x, p.y, p.z], [v.x, v.y, v.z], ""));
         }
-        for (p, v) in self.rockets.iter().map(|r| r.motion()) {
+        for (p, v) in self.simulation.rockets.iter().map(|r| r.motion()) {
             out.push(line(
                 "minecraft:firework_rocket",
                 [p.x, p.y, p.z],
@@ -1208,7 +1242,7 @@ impl Game<'_> {
                 "",
             ));
         }
-        for t in &self.tnts {
+        for t in &self.simulation.tnts {
             let (p, v) = (t.position, t.velocity);
             out.push(line(
                 "minecraft:tnt",
@@ -1217,14 +1251,14 @@ impl Game<'_> {
                 &format!("fuse={}", t.fuse),
             ));
         }
-        for b in &self.boats {
+        for b in &self.simulation.boats {
             let kind = b.entity_type();
             let (p, v) = (b.position, b.velocity);
             out.push(line(&kind, [p.x, p.y, p.z], [v.x, v.y, v.z], ""));
         }
         // A merged orb prints once per count, as the oracle does: whether orbs
         // merge depends on entity ids, which differ from vanilla's.
-        for o in &self.orbs {
+        for o in &self.simulation.orbs {
             let (p, v) = (o.position, o.velocity);
             for _ in 0..o.count.max(1) {
                 out.push(line(
@@ -1235,21 +1269,21 @@ impl Game<'_> {
                 ));
             }
         }
-        for c in &self.carts {
+        for c in &self.simulation.carts {
             let (p, v) = (c.position, c.velocity);
             out.push(line(c.kind.id(), [p.x, p.y, p.z], [v.x, v.y, v.z], ""));
         }
-        for c in &self.crystals {
+        for c in &self.simulation.crystals {
             let p = c.position;
             out.push(line("minecraft:end_crystal", [p.x, p.y, p.z], [0.0; 3], ""));
         }
         // A hanging entity's position is its box's centre (HangingEntity.recalculateBoundingBox).
         let centre =
             |(lo, hi): ([f64; 3], [f64; 3])| std::array::from_fn(|i| (lo[i] + hi[i]) / 2.0);
-        for p in &self.paintings {
+        for p in &self.simulation.paintings {
             out.push(line("minecraft:painting", centre(p.bounds()), [0.0; 3], ""));
         }
-        for f in &self.item_frames {
+        for f in &self.simulation.item_frames {
             let kind = if f.glow {
                 "minecraft:glow_item_frame"
             } else {

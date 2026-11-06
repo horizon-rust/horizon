@@ -19,7 +19,7 @@ impl Game<'_> {
         let by_wither = m.ai.last_hurt_by_player <= 0
             && m.age as i32 - m.ai.last_hurt_by_time <= 100
             && matches!(m.ai.last_hurt_by, Some(Who::Mob(id))
-                if self.mobs.iter().any(|o| o.id == id && o.alive() && o.species() == Species::Wither));
+                if self.simulation.mobs.iter().any(|o| o.id == id && o.alive() && o.species() == Species::Wither));
         if !by_wither {
             return;
         }
@@ -35,7 +35,7 @@ impl Game<'_> {
             && self
                 .res
                 .facts()
-                .is_air(self.world.block(pos[0], pos[1], pos[2]))
+                .is_air(self.simulation.world.block(pos[0], pos[1], pos[2]))
             && self.with_level(|b, level, ticks| {
                 b.can_survive(level, ticks, BlockPos::new(pos[0], pos[1], pos[2]), rose)
             })
@@ -54,7 +54,7 @@ impl Game<'_> {
         let name = &*self
             .res
             .facts()
-            .get(self.world.block(p[0], p[1], p[2]))
+            .get(self.simulation.world.block(p[0], p[1], p[2]))
             .name;
         matches!(
             name,
@@ -66,7 +66,7 @@ impl Game<'_> {
         let name = &*self
             .res
             .facts()
-            .get(self.world.block(p[0], p[1], p[2]))
+            .get(self.simulation.world.block(p[0], p[1], p[2]))
             .name;
         self.res
             .items()
@@ -84,7 +84,10 @@ impl Game<'_> {
         pattern.find(pos, |key, p| match key {
             '^' => self.is_wither_skull(p),
             '#' => self.is_soul_base(p),
-            _ => self.res.facts().is_air(self.world.block(p[0], p[1], p[2])),
+            _ => self
+                .res
+                .facts()
+                .is_air(self.simulation.world.block(p[0], p[1], p[2])),
         })
     }
     /// `WitherSkullBlock.checkSpawn`, after a wither skeleton skull is
@@ -114,7 +117,7 @@ impl Game<'_> {
             90.0
         };
         let id = self.create_triggered("minecraft:wither", at, yaw);
-        if let Some(m) = id.and_then(|id| self.mobs.iter_mut().find(|m| m.id == id)) {
+        if let Some(m) = id.and_then(|id| self.simulation.mobs.iter_mut().find(|m| m.id == id)) {
             m.persistent = true;
             horizon_client::mobs::wither::make_invulnerable(m);
         }
@@ -134,7 +137,13 @@ impl Game<'_> {
     ) -> horizon_client::Result<()> {
         // Projectile.getOwner: none once the owner is gone.
         let live_owner = match p.owner {
-            Some(Who::Mob(id)) if self.mobs.iter().any(|m| m.id == id && !m.removed) => {
+            Some(Who::Mob(id))
+                if self
+                    .simulation
+                    .mobs
+                    .iter()
+                    .any(|m| m.id == id && !m.removed) =>
+            {
                 Some(Who::Mob(id))
             }
             Some(Who::Mob(_)) => None,
@@ -193,7 +202,7 @@ impl Game<'_> {
             }
             Some(Who::Mob(id)) => {
                 let owner_species = owner
-                    .and_then(|o| self.mobs.iter().find(|m| m.id == o))
+                    .and_then(|o| self.simulation.mobs.iter().find(|m| m.id == o))
                     .map(|m| m.species());
                 let source = Damage {
                     kind,
@@ -201,7 +210,7 @@ impl Game<'_> {
                     from: skull.from,
                     attacker_species: owner_species,
                 };
-                let killed = match self.mobs.iter_mut().find(|m| m.id == id) {
+                let killed = match self.simulation.mobs.iter_mut().find(|m| m.id == id) {
                     // `WitherBoss.hurtServer`: nothing from a wither friend.
                     Some(m)
                         if owner_species.is_some_and(|o| {
@@ -249,7 +258,12 @@ impl Game<'_> {
     fn heal_skull_owner(&mut self, p: &Projectile, owner: Option<Who>) {
         match owner {
             Some(Who::Mob(id)) => {
-                if let Some(w) = self.mobs.iter_mut().find(|m| m.id == id && m.alive()) {
+                if let Some(w) = self
+                    .simulation
+                    .mobs
+                    .iter_mut()
+                    .find(|m| m.id == id && m.alive())
+                {
                     w.heal(5.0);
                 }
             }

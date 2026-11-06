@@ -229,7 +229,15 @@ impl Game<'_> {
         };
         // A source entity that is gone reads as none (VibrationInfo.getEntity).
         let alive = |w: Option<Who>| match w {
-            Some(Who::Mob(id)) if !self.mobs.iter().any(|m| m.id == id && !m.removed) => None,
+            Some(Who::Mob(id))
+                if !self
+                    .simulation
+                    .mobs
+                    .iter()
+                    .any(|m| m.id == id && !m.removed) =>
+            {
+                None
+            }
             other => other,
         };
         format!(
@@ -245,9 +253,14 @@ impl Game<'_> {
     }
 
     fn sculk_describe(&self, p: [i32; 3], names: &HashMap<u32, String>) -> String {
-        let state = self.world.block(p[0], p[1], p[2]);
+        let state = self.simulation.world.block(p[0], p[1], p[2]);
         let mut line = self.fixture_state_text(state);
-        if let Some(BlockEntity::Sculk(e)) = self.world.block_entities.get(&(p[0], p[1], p[2])) {
+        if let Some(BlockEntity::Sculk(e)) = self
+            .simulation
+            .world
+            .block_entities
+            .get(&(p[0], p[1], p[2]))
+        {
             let vibration = |line: &mut String| {
                 let v = &e.vibration;
                 let _ = write!(
@@ -309,7 +322,7 @@ impl Game<'_> {
     }
 
     fn sculk_fixture_reset(&mut self, s: &Scenario) -> Result<()> {
-        self.world = World::new(self.res.facts().air, 0);
+        self.simulation.world = World::new(self.res.facts().air, 0);
         let plains = u32::from(world_biomes!(self).id("minecraft:plains"));
         let layers = [
             self.fixture_state("minecraft:bedrock")?,
@@ -328,27 +341,34 @@ impl Game<'_> {
                     );
                 }
                 chunk.lit = true;
-                self.world.chunks.insert((cx, cz), Arc::new(chunk));
+                self.simulation
+                    .world
+                    .chunks
+                    .insert((cx, cz), Arc::new(chunk));
                 for x in 0..16 {
                     for z in 0..16 {
                         for (y, layer) in layers.iter().enumerate() {
-                            self.world
-                                .set(cx * 16 + x, MIN_Y + y as i32, cz * 16 + z, *layer)?;
+                            self.simulation.world.set(
+                                cx * 16 + x,
+                                MIN_Y + y as i32,
+                                cz * 16 + z,
+                                *layer,
+                            )?;
                         }
                     }
                 }
             }
         }
-        self.block_ticks = Ticks::new(0);
-        self.tick_chunks.clear();
+        self.simulation.block_ticks = Ticks::new(0);
+        self.simulation.tick_chunks.clear();
         self.sync_tick_chunks();
-        self.mobs.clear();
+        self.simulation.mobs.clear();
         if s.trace_events {
-            self.creatures.projectiles.clear();
+            self.simulation.projectiles.clear();
         }
-        self.dropped.clear();
-        self.orbs.clear();
-        self.level_events.clear();
+        self.simulation.dropped.clear();
+        self.simulation.orbs.clear();
+        self.simulation.level_events.clear();
         self.ui.rules = Default::default();
         for (rule, value) in [
             ("spawn_mobs", false),
@@ -376,7 +396,7 @@ impl Game<'_> {
             "hard" => Difficulty::Hard,
             _ => Difficulty::Normal,
         };
-        self.world.health_rules.difficulty = difficulty;
+        self.simulation.world.health_rules.difficulty = difficulty;
         self.ui.difficulty = match difficulty {
             Difficulty::Peaceful => 0,
             Difficulty::Easy => 1,
@@ -421,7 +441,7 @@ impl Game<'_> {
         }
         // The blocks, in order (sculk block entities tick in the order they
         // were placed), with `Level.setBlock(pos, state, 2 | 16)` at game time 1000.
-        self.world.game_time = 1000;
+        self.simulation.world.game_time = 1000;
         let mut cells = Vec::new();
         for b in &s.blocks {
             let n = |i: usize| b[i].parse::<i32>().unwrap_or(0);
@@ -443,9 +463,9 @@ impl Game<'_> {
                 b.set_block(level, ticks, pos, state, 2 | 16);
             }
         });
-        self.level_events.clear();
-        self.sculk.known = self.world.chunks.keys().copied().collect();
-        self.sculk.known_revision = Some(self.world.chunks.membership_revision());
+        self.simulation.level_events.clear();
+        self.sculk.known = self.simulation.world.chunks.keys().copied().collect();
+        self.sculk.known_revision = Some(self.simulation.world.chunks.membership_revision());
         self.sculk_sync_index();
         let mut names: HashMap<u32, String> = HashMap::new();
         let mut sources: Vec<u32> = Vec::new();
@@ -487,21 +507,21 @@ impl Game<'_> {
             }
             names.insert(id, format!("m{}", sources.len()));
             sources.push(id);
-            self.mobs.push(m);
+            self.simulation.mobs.push(m);
         }
-        self.next_entity = self.next_entity.max(200_000);
-        self.world.day_time = 6000;
-        self.world.random = LegacyRandom::new(s.level_seed);
+        self.simulation_server.next_entity = self.simulation_server.next_entity.max(200_000);
+        self.simulation.world.day_time = 6000;
+        self.simulation.world.random = LegacyRandom::new(s.level_seed);
         self.audio.capture = Some(Vec::new());
-        let mut known: HashSet<u32> = self.mobs.iter().map(|m| m.id).collect();
+        let mut known: HashSet<u32> = self.simulation.mobs.iter().map(|m| m.id).collect();
         let mut seeded: HashSet<u32> = HashSet::new();
-        let mut known_items = self.dropped.len();
-        let mut known_orbs = self.orbs.len();
+        let mut known_items = self.simulation.dropped.len();
+        let mut known_orbs = self.simulation.orbs.len();
         let mut last: HashMap<[i32; 3], String> = HashMap::new();
         let mut region_last: HashMap<[i32; 3], String> = HashMap::new();
         let (mut last_player, mut last_rng) = (String::new(), String::new());
         let mut out = String::new();
-        self.lan_entity_events.clear();
+        self.simulation.lan_entity_events.clear();
         for t in 0..=s.ticks {
             dispense_fixture::start_recording();
             if t > 0 {
@@ -520,7 +540,8 @@ impl Game<'_> {
                 for x in r[0]..=r[3] {
                     for y in r[1]..=r[4] {
                         for z in r[2]..=r[5] {
-                            let state = self.fixture_state_text(self.world.block(x, y, z));
+                            let state =
+                                self.fixture_state_text(self.simulation.world.block(x, y, z));
                             let before = region_last.insert([x, y, z], state.clone());
                             if t > 0 && before.as_ref() != Some(&state) {
                                 lines.push(format!("set {x},{y},{z} {state}"));
@@ -544,6 +565,7 @@ impl Game<'_> {
                 lines.push(now);
             }
             let mut fresh: Vec<&Mob> = self
+                .simulation
                 .mobs
                 .iter()
                 .filter(|m| !known.contains(&m.id))
@@ -569,14 +591,14 @@ impl Game<'_> {
                 names.insert(id, format!("n{}", names.len()));
                 let seed = 0x5eed + names.len() as i64;
                 if seeded.insert(id)
-                    && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+                    && let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id)
                 {
                     seed_fresh(m, seed);
                 }
                 lines.push(line);
             }
-            for i in known_items..self.dropped.len() {
-                let d = &self.dropped[i];
+            for i in known_items..self.simulation.dropped.len() {
+                let d = &self.simulation.dropped[i];
                 names.insert(u32::MAX - i as u32, format!("n{}", names.len()));
                 lines.push(format!(
                     "new minecraft:item {},{},{}",
@@ -585,14 +607,14 @@ impl Game<'_> {
                     self::d(d.position.z)
                 ));
             }
-            known_items = self.dropped.len();
+            known_items = self.simulation.dropped.len();
             // Where an orb flies comes from its own random: its value only.
-            for orb in &self.orbs[known_orbs.min(self.orbs.len())..] {
+            for orb in &self.simulation.orbs[known_orbs.min(self.simulation.orbs.len())..] {
                 lines.push(format!("new minecraft:experience_orb value={}", orb.value));
             }
-            known_orbs = self.orbs.len();
+            known_orbs = self.simulation.orbs.len();
             if s.trace_events {
-                for m in &self.mobs {
+                for m in &self.simulation.mobs {
                     if let Some(st) = &m.extra.warden {
                         let selected = st.vibration.selector.current().map(|(i, _)| {
                             serde_json::json!({"event": i.event, "pos": i.pos, "distance": i.distance})
@@ -603,14 +625,14 @@ impl Game<'_> {
                         ));
                     }
                 }
-                for p in &self.creatures.projectiles {
+                for p in &self.simulation.projectiles {
                     lines.push(format!(
                         "projectile {}",
                         serde_json::json!({"kind": p.kind.id(),
                         "pos": [p.position.x, p.position.y, p.position.z]})
                     ));
                 }
-                for (_, event, _) in self.lan_entity_events.drain(..) {
+                for (_, event, _) in self.simulation.lan_entity_events.drain(..) {
                     lines.push(format!("entity_event {event}"));
                 }
             }
@@ -643,7 +665,7 @@ impl Game<'_> {
                     f(pitch)
                 ));
             }
-            let rng = format!("rng {:x}", self.world.random.state());
+            let rng = format!("rng {:x}", self.simulation.world.random.state());
             if rng != last_rng {
                 last_rng = rng.clone();
                 lines.push(rng);
@@ -666,7 +688,7 @@ impl Game<'_> {
         named: usize,
         seeded: &mut HashSet<u32>,
     ) -> Result<()> {
-        self.world.game_time += 1;
+        self.simulation.world.game_time += 1;
         // Scheduled block and fluid ticks, then block events.
         self.tick_scheduled()?;
         self.with_level(|b, level, ticks| b.run_block_events(level, ticks));
@@ -687,10 +709,10 @@ impl Game<'_> {
                     let nbt = words[1..]
                         .join(" ")
                         .replace("$owner", &format!("[I;{owner}]"));
-                    let before = self.creatures.projectiles.len();
+                    let before = self.simulation.projectiles.len();
                     self.summon_with_nbt("minecraft:snowball", [30.5, 205.0, 10.5], &nbt)
                         .map_err(|_| "fixture summon failed")?;
-                    if self.creatures.projectiles.len() != before + 1 {
+                    if self.simulation.projectiles.len() != before + 1 {
                         return Err("fixture summon created no projectile".into());
                     }
                 }
@@ -744,7 +766,7 @@ impl Game<'_> {
                         .as_ref()
                         .map(|p| [p.position.x, p.position.y, p.position.z])
                         .unwrap_or_default();
-                    if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                    if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
                         m.damage(amount, horizon_client::mobs::Damage::player(at));
                     }
                     self.last_hurt_by_player.insert(id, self.lan_acting);
@@ -756,7 +778,7 @@ impl Game<'_> {
                         .copied()
                         .ok_or("no such mob")?;
                     let mut events = Vec::new();
-                    if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                    if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
                         if words[0] == "ignite" {
                             m.extra.flag = true;
                         } else {
@@ -782,6 +804,7 @@ impl Game<'_> {
         // in this tick's entity phase: seed them now, as they are seeded
         // after the tick.
         let mut born: Vec<u32> = self
+            .simulation
             .mobs
             .iter()
             .map(|m| m.id)
@@ -790,7 +813,7 @@ impl Game<'_> {
         born.sort_unstable();
         for (i, id) in born.into_iter().enumerate() {
             if seeded.insert(id)
-                && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+                && let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id)
             {
                 seed_fresh(m, 0x5eed + (named + i + 1) as i64);
             }

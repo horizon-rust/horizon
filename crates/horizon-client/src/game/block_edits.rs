@@ -66,8 +66,8 @@ impl Game<'_> {
         };
         let tags = [&self.res.items().block_tags, &world_items.block_tags];
         let facts = self.res.facts();
-        let watched = std::mem::take(&mut self.world.watched);
-        let out = self.world.edit_runs(
+        let watched = std::mem::take(&mut self.simulation.world.watched);
+        let out = self.simulation.world.edit_runs(
             &runs,
             |f, s| {
                 super::commands::block_input_matches(
@@ -84,7 +84,7 @@ impl Game<'_> {
                     || BlockEntity::for_block(&f.name).is_some()
             },
         );
-        self.world.watched = watched;
+        self.simulation.world.watched = watched;
         // The block entities the new blocks bring, as `native_set_block` makes them (a mod block's own, API 15,
         // included), in the order `replace_block_entities` takes them: the positions needing a fresh entity.
         let name = |s: u32| self.res.facts().get(BlockStateId(s)).name.clone();
@@ -94,6 +94,7 @@ impl Game<'_> {
             .filter(|&&((x, y, z), old, new)| {
                 name(old) != name(new)
                     || !self
+                        .simulation
                         .world
                         .block_entities
                         .get(&(x, y, z))
@@ -104,7 +105,7 @@ impl Game<'_> {
         let mut made = make_block_entities(&wanted, |n| self.new_block_entity(n)).into_iter();
         let facts = self.res.facts();
         let removed = replace_block_entities(
-            &mut self.world,
+            &mut self.simulation.world,
             &out.tracked,
             |s| facts.get(BlockStateId(s)).name.clone(),
             |_| made.next().flatten(),
@@ -117,7 +118,9 @@ impl Game<'_> {
 
     /// Each column's height on `h` as `edit_height` reads it, none where its chunk is not loaded.
     pub(super) fn surface_heights(&self, columns: &[(i32, i32)], h: Heightmap) -> Vec<Option<i32>> {
-        loaded_heights(&self.world, columns, |x, z| self.edit_height(h, x, z))
+        loaded_heights(&self.simulation.world, columns, |x, z| {
+            self.edit_height(h, x, z)
+        })
     }
 
     /// Each column's height on `h` (none where its chunk is not loaded) and its blocks from `below` under it to
@@ -132,19 +135,26 @@ impl Game<'_> {
         below: u32,
         above: u32,
     ) -> Result<ColumnBlocks, String> {
-        read_size(columns.len(), below, above, self.world.layout().height())?;
+        read_size(
+            columns.len(),
+            below,
+            above,
+            self.simulation.world.layout().height(),
+        )?;
         let bases = self.surface_heights(columns, h);
         let facts = self.res.facts();
-        let (palette, blocks) = column_blocks(&self.world, columns, &bases, below, above, |s| {
-            facts.get(s).name.clone()
-        })
-        .ok_or("the read is too big")?;
+        let (palette, blocks) =
+            column_blocks(&self.simulation.world, columns, &bases, below, above, |s| {
+                facts.get(s).name.clone()
+            })
+            .ok_or("the read is too big")?;
         let biomes = self.res.biomes();
         let mut tints = Vec::with_capacity(columns.len() * 3);
         for (&(x, z), base) in columns.iter().zip(&bases) {
             // (the biome tints at the column's top, as the block there is tinted)
             match base.and_then(|b| {
-                self.world
+                self.simulation
+                    .world
                     .chunks
                     .get(&(x >> 4, z >> 4))
                     .map(|c| c.biome(x, b - 1, z))
@@ -173,7 +183,7 @@ impl Game<'_> {
     fn edit_height(&self, h: Heightmap, x: i32, z: i32) -> i32 {
         let properties = &self.pack.assets.properties;
         column_height(
-            &self.world,
+            &self.simulation.world,
             h,
             (x, z),
             |s| self.res.facts().is_air(s),

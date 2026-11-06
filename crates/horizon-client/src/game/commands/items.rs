@@ -183,6 +183,7 @@ impl Game<'_> {
             // `getChestVehicleSlot` takes any index below `getContainerSize`.
             Owner::Entity(Target::Cart(id)) => {
                 let size = self
+                    .simulation
                     .carts
                     .iter()
                     .find(|c| c.id == *id)
@@ -386,7 +387,7 @@ impl Game<'_> {
             Slot::Offhand => self.offhand.clone(),
             Slot::Ender(i) => self.ender_items.get(*i).cloned().flatten(),
             Slot::Mob(id, key) => {
-                let m = self.mobs.iter().find(|m| m.id == *id)?;
+                let m = self.simulation.mobs.iter().find(|m| m.id == *id)?;
                 let item = match *key {
                     "mainhand" => &m.extra.main_hand,
                     "offhand" => &m.extra.off_hand,
@@ -405,6 +406,7 @@ impl Game<'_> {
                 })
             }
             Slot::Stand(id, i) => self
+                .simulation
                 .armor_stands
                 .iter()
                 .find(|a| a.id == *id)?
@@ -412,9 +414,16 @@ impl Game<'_> {
                 .get(*i)
                 .cloned()
                 .flatten(),
-            Slot::Frame(id) => self.item_frames.iter().find(|f| f.id == *id)?.item.clone(),
+            Slot::Frame(id) => self
+                .simulation
+                .item_frames
+                .iter()
+                .find(|f| f.id == *id)?
+                .item
+                .clone(),
             Slot::Cart(id, i) => self.cart_slots(*id)?.get(*i).cloned().flatten(),
             Slot::Block(p, i) => self
+                .simulation
                 .world
                 .block_entities
                 .get(&(p[0], p[1], p[2]))?
@@ -437,12 +446,18 @@ impl Game<'_> {
         self.block_can_place(*p, *i, stack.unwrap_or(&air))
     }
     fn block_container_size(&self, p: [i32; 3]) -> Option<usize> {
-        let size = match self.world.block_entities.get(&(p[0], p[1], p[2]))? {
+        let size = match self
+            .simulation
+            .world
+            .block_entities
+            .get(&(p[0], p[1], p[2]))?
+        {
             BlockEntity::Mod(m) if m.id.is_empty() => 0,
             BlockEntity::Mod(_) => self
+                .simulation
                 .world
                 .block_entities
-                .mod_container(self.world.block(p[0], p[1], p[2]).0)
+                .mod_container(self.simulation.world.block(p[0], p[1], p[2]).0)
                 .map_or(0, |c| c.slots),
             entity => entity.slots().len(),
         };
@@ -460,11 +475,14 @@ impl Game<'_> {
                 .is_some_and(|m| m.contains(&*s.item))
         });
         let recipes = world_recipes!(self);
-        match self.world.block_entities.get_mut(&key) {
+        match self.simulation.world.block_entities.get_mut(&key) {
             Some(BlockEntity::Furnace(f)) if i == 0 => f.set_input(recipes, stack),
             Some(BlockEntity::Furnace(f)) => {
                 f.items[i] = stack;
-                self.world.modified.insert((p[0] >> 4, p[2] >> 4));
+                self.simulation
+                    .world
+                    .modified
+                    .insert((p[0] >> 4, p[2] >> 4));
                 return true;
             }
             Some(BlockEntity::ChiseledBookshelf(_)) if !book => return true,
@@ -564,7 +582,7 @@ impl Game<'_> {
                 None => false,
             },
             Slot::Mob(id, key) => {
-                let Some(m) = self.mobs.iter_mut().find(|m| m.id == *id) else {
+                let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == *id) else {
                     return false;
                 };
                 let item = stack.as_ref().map(|s| s.item.clone());
@@ -604,7 +622,12 @@ impl Game<'_> {
                                 .get(&s.item)
                                 .is_some_and(|i| i.equip_slot.is_some()))
                 });
-                let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == *id) else {
+                let Some(a) = self
+                    .simulation
+                    .armor_stands
+                    .iter_mut()
+                    .find(|a| a.id == *id)
+                else {
                     return false;
                 };
                 let Some(slot) = a.equipment.get_mut(*i) else {
@@ -635,7 +658,7 @@ impl Game<'_> {
                 }
                 true
             }
-            Slot::Frame(id) => match self.item_frames.iter().position(|f| f.id == *id) {
+            Slot::Frame(id) => match self.simulation.item_frames.iter().position(|f| f.id == *id) {
                 Some(i) => {
                     self.set_frame_item(i, stack);
                     true
@@ -1430,7 +1453,9 @@ mod stand_equip_event_tests {
     use std::sync::Arc;
 
     fn candidate(game: &Game<'_>) -> Option<Info> {
-        let Some(BlockEntity::Sculk(sensor)) = game.world.block_entities.get(&(9, 200, 10)) else {
+        let Some(BlockEntity::Sculk(sensor)) =
+            game.simulation.world.block_entities.get(&(9, 200, 10))
+        else {
             panic!("actual sensor must be registered")
         };
         sensor.vibration.selector.current.map(|(info, _)| info)
@@ -1474,16 +1499,17 @@ mod stand_equip_event_tests {
         let sensor = registry.default_state("minecraft:sculk_sensor").unwrap();
         let mut chunk = Chunk::empty(0, 0);
         chunk.set(9, 200, 10, sensor.0);
-        game.world.chunks.insert((0, 0), Arc::new(chunk));
-        game.block_ticks
+        game.simulation.world.chunks.insert((0, 0), Arc::new(chunk));
+        game.simulation
+            .block_ticks
             .add_empty_chunk(ChunkPos::new(0, 0))
             .unwrap();
         assert!(game.run_command("forceload add 0 0"));
         assert!(game.run_command("summon armor_stand 6.5 200 10.5 {UUID:[I;130,0,0,1],NoGravity:1b,attributes:[{id:\"minecraft:movement_speed\",base:0.1d}]}"));
-        let id = game.armor_stands[0].id;
+        let id = game.simulation.armor_stands[0].id;
         assert_eq!(game.uuid_for(id), [130, 0, 0, 1]);
         assert!(
-            game.armor_stands[0].speed_instance,
+            game.simulation.armor_stands[0].speed_instance,
             "a loaded attribute is not firstTick"
         );
         game.sculk_prepare();
@@ -1507,7 +1533,8 @@ mod stand_equip_event_tests {
             ("armor.head", "air", None),
             ("weapon.mainhand", "stick", Some("minecraft:unequip")),
         ] {
-            let Some(BlockEntity::Sculk(sensor)) = game.world.block_entities.get_mut(&(9, 200, 10))
+            let Some(BlockEntity::Sculk(sensor)) =
+                game.simulation.world.block_entities.get_mut(&(9, 200, 10))
             else {
                 unreachable!()
             };

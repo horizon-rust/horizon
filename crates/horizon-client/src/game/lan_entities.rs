@@ -24,8 +24,8 @@ pub(super) fn assign_entity_id(next: &mut u32, id: &mut u32) -> u32 {
 impl Game<'_> {
     /// `Entity.nextEntityId`: the id a new entity takes from the one counter.
     pub(super) fn take_entity_id(&mut self) -> u32 {
-        self.next_entity += 1;
-        self.next_entity
+        self.simulation_server.next_entity += 1;
+        self.simulation_server.next_entity
     }
 }
 
@@ -163,13 +163,15 @@ impl Game<'_> {
         for &(vehicle, guest) in guests {
             riding.add(vehicle as i32, guest);
         }
-        for m in self.mobs.iter().filter(|m| !m.removed) {
+        for slot in self.mob_slots(|m| !m.removed && m.extra.mount.is_some()) {
+            let m = &self.simulation.mobs[slot];
             if let Some(vehicle) = m.extra.mount {
                 riding.add(vehicle as i32, m.id as i32);
             }
         }
         for (&vehicle, pass) in &mut riding.passengers {
             if let Some(driver) = self
+                .simulation
                 .mobs
                 .iter()
                 .find(|m| m.id as i32 == vehicle)
@@ -198,7 +200,7 @@ impl Game<'_> {
             .filter(|g| hub.here(g))
             .map(|g| (g.uuid, g.entity_id))
             .collect();
-        for b in self.boats.iter().filter(|b| b.id > after) {
+        for b in self.simulation.boats.iter().filter(|b| b.id > after) {
             let p = b.position;
             let mut e = state(b.id, &b.entity_type(), [p.x, p.y, p.z], b.yaw, b.on_ground);
             // Leashable.setLeashedTo / dropLeash: who holds the boat's lead.
@@ -226,7 +228,7 @@ impl Game<'_> {
             out.push(e);
         }
         let improvements = self.minecart_improvements();
-        for c in self.carts.iter_mut().filter(|c| c.id > after) {
+        for c in self.simulation.carts.iter_mut().filter(|c| c.id > after) {
             let p = c.position;
             let mut e = state(c.id, c.kind.id(), [p.x, p.y, p.z], c.yaw, c.on_ground());
             e.pitch = c.pitch;
@@ -282,7 +284,7 @@ impl Game<'_> {
             }
             out.push(e);
         }
-        for a in self.armor_stands.iter().filter(|a| a.id > after) {
+        for a in self.simulation.armor_stands.iter().filter(|a| a.id > after) {
             let p = a.position;
             let mut e = state(
                 a.id,
@@ -353,7 +355,7 @@ impl Game<'_> {
             e.attributes = self.stand_attributes(a.id, &a.equipment);
             out.push(e);
         }
-        for f in self.item_frames.iter().filter(|f| f.id > after) {
+        for f in self.simulation.item_frames.iter().filter(|f| f.id > after) {
             // ItemFrame.getAddEntityPacket: the block it hangs in and its direction.
             let mut e = state(f.id, f.kind(), f.pos.map(f64::from), 0.0, false);
             e.pitch = match f.facing {
@@ -386,7 +388,12 @@ impl Game<'_> {
             }
             out.push(e);
         }
-        for (p, &id) in self.knot_ids.iter().filter(|&(_, &id)| id > after) {
+        for (p, &id) in self
+            .simulation
+            .knot_ids
+            .iter()
+            .filter(|&(_, &id)| id > after)
+        {
             // LeashFenceKnotEntity.getAddEntityPacket: the fence's block.
             out.push(state(
                 id,
@@ -396,7 +403,7 @@ impl Game<'_> {
                 false,
             ));
         }
-        for p in self.paintings.iter().filter(|p| p.id > after) {
+        for p in self.simulation.paintings.iter().filter(|p| p.id > after) {
             let mut e = state(p.id, "minecraft:painting", p.pos.map(f64::from), 0.0, false);
             // Direction.get2DDataValue (south 0, west 1, north 2, east 3) to its
             // 3D data value and yaw.
@@ -416,7 +423,7 @@ impl Game<'_> {
             }
             out.push(e);
         }
-        for c in self.cushions.iter().filter(|c| c.id > after) {
+        for c in self.simulation.cushions.iter().filter(|c| c.id > after) {
             let p = c.position;
             let mut e = state(c.id, "minecraft:cushion", [p.x, p.y, p.z], c.yaw, false);
             // Cushion.DATA_COLOR, set unless it is the default white.
@@ -427,7 +434,12 @@ impl Game<'_> {
             out.push(e);
         }
         // DATA_ITEM, `ItemStack.EMPTY` by default.
-        for o in self.ominous_spawners.iter().filter(|o| o.id > after) {
+        for o in self
+            .simulation
+            .ominous_spawners
+            .iter()
+            .filter(|o| o.id > after)
+        {
             let mut e = state(
                 o.id,
                 "minecraft:ominous_item_spawner",
@@ -445,12 +457,12 @@ impl Game<'_> {
             out.push(e);
         }
         self.lan_projectile_states(hub, out, after);
-        for o in self.others.iter().filter(|o| o.id > after) {
+        for o in self.simulation.others.iter().filter(|o| o.id > after) {
             let p = o.position;
             let mut e = state(o.id, &o.kind, [p.x, p.y, p.z], o.yaw, false);
             e.pitch = o.pitch;
             e.head_yaw = o.yaw;
-            if let Some(tag) = self.persist.raw.get(&o.id) {
+            if let Some(tag) = self.simulation.persist.raw.get(&o.id) {
                 self.lan_display_data(tag, hub, &mut e);
             }
             out.push(e);
@@ -539,46 +551,68 @@ impl Game<'_> {
         // LeashFenceKnotEntity: one per fence post with a lead on it
         // (`notifyLeasheeRemoved` discards it once the last lead is gone).
         let knots: Vec<[i32; 3]> = self
-            .mobs
-            .iter()
-            .filter(|m| !m.removed)
-            .filter_map(|m| match m.extra.leash {
+            .mob_slots(|m| !m.removed && m.extra.leash.is_some())
+            .into_iter()
+            .filter_map(|slot| match self.simulation.mobs[slot].extra.leash {
                 Some(horizon_client::mobs::leash::Holder::Knot(p)) => Some(p),
                 _ => None,
             })
-            .chain(self.boats.iter().filter_map(|b| match b.leash {
+            .chain(self.simulation.boats.iter().filter_map(|b| match b.leash {
                 Some(horizon_client::mobs::leash::Holder::Knot(p)) => Some(p),
                 _ => None,
             }))
             .collect();
-        self.knot_ids.retain(|p, _| knots.contains(p));
+        self.simulation.knot_ids.retain(|p, _| knots.contains(p));
         for p in knots {
-            self.knot_ids.entry(p).or_insert_with(|| {
-                self.next_entity += 1;
-                self.next_entity
+            self.simulation.knot_ids.entry(p).or_insert_with(|| {
+                self.simulation_server.next_entity += 1;
+                self.simulation_server.next_entity
             });
         }
-        let next = &mut self.next_entity;
+        let next = &mut self.simulation_server.next_entity;
         let mut give = |id: &mut u32| {
             assign_entity_id(next, id);
         };
-        self.tnts.iter_mut().for_each(|t| give(&mut t.id));
-        self.falling.iter_mut().for_each(|f| give(&mut f.id));
-        self.creatures
+        self.simulation
+            .tnts
+            .iter_mut()
+            .for_each(|t| give(&mut t.id));
+        self.simulation
+            .falling
+            .iter_mut()
+            .for_each(|f| give(&mut f.id));
+        self.simulation
             .projectiles
             .iter_mut()
             .for_each(|p| give(&mut p.id));
-        self.tridents.iter_mut().for_each(|t| give(&mut t.id));
-        self.rockets.iter_mut().for_each(|r| give(&mut r.id));
-        self.crystals.iter_mut().for_each(|c| give(&mut c.id));
-        self.bolts.iter_mut().for_each(|b| give(&mut b.id));
-        self.ominous_spawners
+        self.simulation
+            .tridents
+            .iter_mut()
+            .for_each(|t| give(&mut t.id));
+        self.simulation
+            .rockets
+            .iter_mut()
+            .for_each(|r| give(&mut r.id));
+        self.simulation
+            .crystals
+            .iter_mut()
+            .for_each(|c| give(&mut c.id));
+        self.simulation
+            .bolts
+            .iter_mut()
+            .for_each(|b| give(&mut b.id));
+        self.simulation
+            .ominous_spawners
             .iter_mut()
             .for_each(|o| give(&mut o.id));
         self.potions.thrown_ids().for_each(&mut give);
         self.end.eye_ids().for_each(&mut give);
-        self.breath_clouds.iter_mut().for_each(|b| give(&mut b.id));
-        self.dragon_fireballs
+        self.simulation
+            .breath_clouds
+            .iter_mut()
+            .for_each(|b| give(&mut b.id));
+        self.simulation
+            .dragon_fireballs
             .iter_mut()
             .for_each(|b| give(&mut b.id));
     }
@@ -591,14 +625,14 @@ impl Game<'_> {
             Some(horizon_client::mobs::Who::Player) | None => 0,
         };
         let at = |p: horizon_core::geometry::Vec3| [p.x, p.y, p.z];
-        for f in self.fangs.list.iter().filter(|f| f.id > after) {
+        for f in self.simulation.fangs.list.iter().filter(|f| f.id > after) {
             out.push(state(f.id, "minecraft:evoker_fangs", f.pos, f.yaw, false));
         }
         // LightningBolt: each client draws and flashes its own.
-        for b in self.bolts.iter().filter(|b| b.id > after) {
+        for b in self.simulation.bolts.iter().filter(|b| b.id > after) {
             out.push(state(b.id, "minecraft:lightning_bolt", b.at, 0.0, false));
         }
-        for t in self.tnts.iter().filter(|t| t.id > after) {
+        for t in self.simulation.tnts.iter().filter(|t| t.id > after) {
             let mut e = state(t.id, "minecraft:tnt", at(t.position), 0.0, t.on_ground);
             e.velocity = at(t.velocity);
             // PrimedTnt.DATA_FUSE_ID, 80 by default; requiresPrecisePosition
@@ -609,7 +643,7 @@ impl Game<'_> {
             e.precise = t.on_ground;
             out.push(e);
         }
-        for f in self.falling.iter().filter(|f| f.id > after) {
+        for f in self.simulation.falling.iter().filter(|f| f.id > after) {
             let mut e = state(f.id, "minecraft:falling_block", at(f.position), 0.0, false);
             e.velocity = at(f.velocity);
             // getAddEntityPacket: the block state; DATA_START_POS.
@@ -623,7 +657,7 @@ impl Game<'_> {
             }
             out.push(e);
         }
-        for p in self.creatures.projectiles.iter().filter(|p| p.id > after) {
+        for p in self.simulation.projectiles.iter().filter(|p| p.id > after) {
             use horizon_client::projectiles::ProjectileKind as K;
             // A spectral arrow is its own entity type.
             let kind = if p.is_spectral_arrow() {
@@ -769,7 +803,7 @@ impl Game<'_> {
             e.velocity = velocity;
             out.push(e);
         }
-        for t in self.tridents.iter().filter(|t| t.id > after) {
+        for t in self.simulation.tridents.iter().filter(|t| t.id > after) {
             let mut e = state(t.id, "minecraft:trident", at(t.position), t.yaw, false);
             e.pitch = t.pitch;
             e.velocity = at(t.velocity);
@@ -794,7 +828,7 @@ impl Game<'_> {
             }
             out.push(e);
         }
-        for r in self.rockets.iter().filter(|r| r.id > after) {
+        for r in self.simulation.rockets.iter().filter(|r| r.id > after) {
             let mut e = state(
                 r.id,
                 "minecraft:firework_rocket",
@@ -834,7 +868,7 @@ impl Game<'_> {
             }
             out.push(e);
         }
-        for c in self.crystals.iter().filter(|c| c.id > after) {
+        for c in self.simulation.crystals.iter().filter(|c| c.id > after) {
             let mut e = state(c.id, "minecraft:end_crystal", at(c.position), 0.0, false);
             // EndCrystal.DATA_BEAM_TARGET and DATA_SHOW_BOTTOM (true by default).
             // The beam's default is listed so that clearing it (the respawn
@@ -860,13 +894,23 @@ impl Game<'_> {
             ),
             None,
         );
-        for b in self.dragon_fireballs.iter().filter(|b| b.id > after) {
+        for b in self
+            .simulation
+            .dragon_fireballs
+            .iter()
+            .filter(|b| b.id > after)
+        {
             let p = b.position;
             let mut e = state(b.id, "minecraft:dragon_fireball", at(p), 0.0, false);
             e.velocity = [b.velocity.x, b.velocity.y, b.velocity.z];
             out.push(e);
         }
-        for b in self.breath_clouds.iter().filter(|b| b.id > after) {
+        for b in self
+            .simulation
+            .breath_clouds
+            .iter()
+            .filter(|b| b.id > after)
+        {
             let mut e = state(b.id, "minecraft:area_effect_cloud", b.at, 0.0, false);
             e.meta.push((8, serializer::FLOAT, Value::Float(b.radius)));
             if b.waiting() {

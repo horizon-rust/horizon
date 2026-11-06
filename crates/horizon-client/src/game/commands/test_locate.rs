@@ -310,7 +310,7 @@ impl Game<'_> {
             horizon_world::level::flags::UPDATE_ALL,
         );
         if self.test_instance_at(at).is_none() {
-            self.world.block_entities.insert(
+            self.simulation.world.block_entities.insert(
                 at,
                 BlockEntity::TestInstanceBlock(Box::<TestInstanceBlock>::default()),
             );

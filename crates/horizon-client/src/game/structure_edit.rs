@@ -418,7 +418,8 @@ impl Editor for StructureEditor {
 impl Game<'_> {
     /// `LocalPlayer.openStructureBlock`.
     pub(super) fn open_structure_block(&mut self, pos: Pos) {
-        let Some(BlockEntity::StructureBlock(b)) = self.world.block_entities.get(&pos) else {
+        let Some(BlockEntity::StructureBlock(b)) = self.simulation.world.block_entities.get(&pos)
+        else {
             return;
         };
         let editor = StructureEditor::new(b);

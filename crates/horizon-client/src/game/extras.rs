@@ -177,7 +177,7 @@ impl Game<'_> {
         let head = (p.position.y + f64::from(p.dimensions.eye_height)).floor() as i32;
         let (bx, bz) = (view.x.floor() as i32, view.z.floor() as i32);
         // Underground, under a roof or in the Nether: the floor around the player.
-        let covered = self.world.light(bx, head, bz) >> 4 == 0;
+        let covered = self.simulation.world.light(bx, head, bz) >> 4 == 0;
         let layer = if self.dim == Dim::Nether || covered {
             Layer::Below(head)
         } else {
@@ -187,7 +187,7 @@ impl Game<'_> {
         let reach = minimap::SIZE as f32 / 2.0 * view.blocks_per_pixel * std::f32::consts::SQRT_2;
         let radius = ((reach / 16.0).ceil() as i32 + 1).min(self.settings.render_distance.max(2));
         self.extras.minimap.update(
-            &self.world,
+            &self.simulation.world,
             self.res.facts(),
             (bx >> 4, bz >> 4),
             radius,

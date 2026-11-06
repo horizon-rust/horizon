@@ -363,6 +363,7 @@ impl GameLevel<'_, '_> {
         if asked <= SCANNED_QUERIES && self.boxes.get().is_none() {
             return Box::new(
                 self.game
+                    .simulation
                     .mobs
                     .iter()
                     .enumerate()
@@ -372,12 +373,12 @@ impl GameLevel<'_, '_> {
         }
         Box::new(
             self.boxes
-                .get_or_init(|| MobBoxes::new(&self.game.mobs))
+                .get_or_init(|| MobBoxes::new(&self.game.simulation.mobs))
                 .near(area),
         )
     }
     fn biome(&self, x: i32, y: i32, z: i32) -> Option<&BiomeInfo> {
-        let chunk = self.game.world.chunks.get(&(x >> 4, z >> 4))?;
+        let chunk = self.game.simulation.world.chunks.get(&(x >> 4, z >> 4))?;
         Some(world_biomes!(self.game).get(chunk.biome(x, y, z)))
     }
     /// The block whose noise cell `BiomeManager.getBiome` reads.
@@ -539,11 +540,11 @@ impl NaturalLevel for GameLevel<'_, '_> {
         })
     }
     fn can_spawn_in_chunk(&self, cx: i32, cz: i32) -> bool {
-        self.game.world.chunks.contains_key(&(cx, cz))
+        self.game.simulation.world.chunks.contains_key(&(cx, cz))
     }
     fn no_collision(&self, bounds: Aabb) -> bool {
         let mut scene = SceneCollisions {
-            world: &self.game.world,
+            world: &self.game.simulation.world,
             binding: self.w.collision,
             subject: None,
         };
@@ -609,7 +610,9 @@ impl horizon_client::mobs::spawner::SpawnerLevel for GameLevel<'_, '_> {
     fn count_entities(&self, id: &str, bounds: Aabb) -> usize {
         let mobs = self
             .mobs_near(bounds)
-            .filter(|&(i, b, ..)| self.game.mobs[i].kind.id == id && b.intersects(bounds))
+            .filter(|&(i, b, ..)| {
+                self.game.simulation.mobs[i].kind.id == id && b.intersects(bounds)
+            })
             .count();
         let pending = self
             .pending_ids
@@ -673,12 +676,12 @@ impl<'a> Game<'a> {
     /// Adds the mobs a spawn pass created: ids, enchanted gear and jockeys.
     fn add_spawned(&mut self, pending: Vec<Mob>, persistent: bool) {
         for mut mob in pending {
-            self.next_entity += 1;
-            mob.id = self.next_entity;
+            self.simulation_server.next_entity += 1;
+            mob.id = self.simulation_server.next_entity;
             mob.persistent = persistent;
             let id = mob.id;
-            self.mobs.push(mob);
-            self.native_mobs_joined(self.mobs.len() - 1, true);
+            self.simulation.mobs.push(mob);
+            self.native_mobs_joined(self.simulation.mobs.len() - 1, true);
             self.enchant_spawn_equipment(id);
             self.halloween_spawn_head(id);
             if !persistent {
@@ -735,9 +738,9 @@ impl<'a> Game<'a> {
         players: &[LevelPlayer],
         scratch: &mut SpawnScratch,
     ) -> i32 {
-        let levels = self.tickets.levels();
+        let levels = self.simulation.tickets.levels();
         scratch.collect(players, |(cx, cz)| {
-            levels.loaded_ticking(cx, cz) && super::ticking_chunk(&self.world, cx, cz)
+            levels.loaded_ticking(cx, cz) && super::ticking_chunk(&self.simulation.world, cx, cz)
         })
     }
     /// `ServerChunkCache.tickChunks`: the spawn state over the loaded mobs,
@@ -754,22 +757,23 @@ impl<'a> Game<'a> {
         if players.is_empty() {
             return;
         }
-        let mut scratch = std::mem::take(&mut self.spawn_scratch);
+        let mut scratch = std::mem::take(&mut self.simulation.spawn_scratch);
         let spawnable = self.spawning_chunks(&players, &mut scratch);
         laps.lap("sn_candidates");
         for &key in &scratch.candidates {
-            *self.world.inhabited.entry(key).or_insert(0) += 1;
+            *self.simulation.world.inhabited.entry(key).or_insert(0) += 1;
         }
         laps.lap("sn_inhabited");
         let spawn_mobs = self.ui.rules.bool("spawn_mobs");
         let spawn_enemies = self.ui.rules.bool("spawn_monsters");
-        let mut random = std::mem::replace(&mut self.world.random, LegacyRandom::new(0));
+        let mut random = std::mem::replace(&mut self.simulation.world.random, LegacyRandom::new(0));
         let mut pending = Vec::new();
         let last_state;
         {
             let level = self.natural_level();
             laps.lap("sn_level");
             let counted: Vec<Counted> = self
+                .simulation
                 .mobs
                 .iter()
                 .map(|m| Counted {
@@ -794,12 +798,12 @@ impl<'a> Game<'a> {
                 .collect();
             laps.lap("sn_materialize");
             let mut state = SpawnState::new(&level, spawnable, players, &counted, |cx, cz| {
-                self.world.chunks.contains_key(&(cx, cz))
+                self.simulation.world.chunks.contains_key(&(cx, cz))
             });
             laps.lap("sn_state");
             last_state = state.counts();
             let categories = if spawn_mobs {
-                state.filtered_categories(spawn_enemies, self.world.game_time % 400 == 0)
+                state.filtered_categories(spawn_enemies, self.simulation.world.game_time % 400 == 0)
             } else {
                 Vec::new()
             };
@@ -834,11 +838,11 @@ impl<'a> Game<'a> {
         }
         spawn_selection::attempt_counters(true);
         laps.lap("sn_attempts");
-        self.world.random = random;
+        self.simulation.world.random = random;
         // ServerChunkCache.lastSpawnState, for the debug overlay.
         self.spawn_counts.insert(self.dim, last_state);
         self.add_spawned(pending, false);
-        self.spawn_scratch = scratch;
+        self.simulation.spawn_scratch = scratch;
         laps.lap("sn_finalize");
     }
     /// `NoiseBasedChunkGenerator.spawnOriginalMobs`: creature packs for a
@@ -849,7 +853,7 @@ impl<'a> Game<'a> {
     /// keeps its chunks empty (the dimension is also checked, as before, so a
     /// preset that fails to load cannot start filling the End).
     pub(super) fn spawn_generation_creatures(&mut self, cx: i32, cz: i32) {
-        if !self.world.chunks.contains_key(&(cx, cz)) || self.dim == Dim::End {
+        if !self.simulation.world.chunks.contains_key(&(cx, cz)) || self.dim == Dim::End {
             return;
         }
         let Some(terrain) = self.end.locator() else {

@@ -37,10 +37,12 @@ fn leave_block_goal_uses_real_neighbor_shapes_and_keeps_air_placement() {
         None,
     )
     .unwrap();
-    game.world
+    game.simulation
+        .world
         .chunks
         .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
-    game.block_ticks
+    game.simulation
+        .block_ticks
         .add_empty_chunk(ChunkPos::new(0, 0))
         .unwrap();
     let registry = game.pack.assets.registry;
@@ -56,26 +58,27 @@ fn leave_block_goal_uses_real_neighbor_shapes_and_keeps_air_placement() {
         for x in 0..8 {
             for z in 0..8 {
                 for y in 3..7 {
-                    game.world
+                    game.simulation
+                        .world
                         .set(x, y, z, if y == 3 { stone } else { air })
                         .unwrap();
                 }
             }
         }
-        game.mobs.clear();
+        game.simulation.mobs.clear();
         let carried = registry
             .default_state(&format!("minecraft:{name}"))
             .unwrap();
         let mut mob = Mob::new(325, kind.clone(), Vec3::new(3.5, 4.0, 3.5), 0.0);
         mob.random = LegacyRandom::new(325);
         mob.extra.carried = Some(carried);
-        game.mobs.push(mob);
+        game.simulation.mobs.push(mob);
         for _ in 0..48_000 {
-            let mut mob = game.mobs.pop().unwrap();
+            let mut mob = game.simulation.mobs.pop().unwrap();
             let mut goals = std::mem::take(&mut mob.ai.goals);
             let snapshot = [super::creatures::seen(&mob, None)];
             let mut events = Vec::<MobEvent>::new();
-            let mut lr = game.world.random.clone();
+            let mut lr = game.simulation.world.random.clone();
             {
                 let world = game.mob_world_base(&snapshot);
                 goals.tick(
@@ -87,23 +90,23 @@ fn leave_block_goal_uses_real_neighbor_shapes_and_keeps_air_placement() {
                     },
                 );
             }
-            game.world.random = lr;
+            game.simulation.world.random = lr;
             mob.ai.goals = goals;
-            game.mobs.push(mob);
+            game.simulation.mobs.push(mob);
             game.handle_mob_events(events).unwrap();
-            if game.mobs[0].extra.carried.is_none() {
+            if game.simulation.mobs[0].extra.carried.is_none() {
                 break;
             }
         }
         assert_eq!(
-            game.mobs[0].extra.carried, None,
+            game.simulation.mobs[0].extra.carried, None,
             "eligible {name} must empty its hand"
         );
         let mut states = Vec::new();
         for x in 0..8 {
             for z in 0..8 {
                 for y in 4..7 {
-                    let state = game.world.block(x, y, z);
+                    let state = game.simulation.world.block(x, y, z);
                     if state != air {
                         states.push(registry.state(state).unwrap());
                     }
@@ -135,15 +138,15 @@ fn leave_block_goal_uses_real_neighbor_shapes_and_keeps_air_placement() {
     let mut mob = Mob::new(326, kind, Vec3::new(3.5, 4.0, 3.5), 0.0);
     mob.random = LegacyRandom::new(325);
     mob.extra.carried = Some(fence);
-    game.mobs.clear();
-    game.mobs.push(mob);
+    game.simulation.mobs.clear();
+    game.simulation.mobs.push(mob);
     let mut attempt = None;
     for _ in 0..48_000 {
-        let mut mob = game.mobs.pop().unwrap();
+        let mut mob = game.simulation.mobs.pop().unwrap();
         let mut goals = std::mem::take(&mut mob.ai.goals);
         let snapshot = [super::creatures::seen(&mob, None)];
         let mut events = Vec::new();
-        let mut lr = game.world.random.clone();
+        let mut lr = game.simulation.world.random.clone();
         goals.tick(
             &mut mob,
             &mut Cx {
@@ -152,9 +155,9 @@ fn leave_block_goal_uses_real_neighbor_shapes_and_keeps_air_placement() {
                 events: &mut events,
             },
         );
-        game.world.random = lr;
+        game.simulation.world.random = lr;
         mob.ai.goals = goals;
-        game.mobs.push(mob);
+        game.simulation.mobs.push(mob);
         if let Some(event) = events
             .into_iter()
             .find(|e| matches!(e, MobEvent::EndermanPlaceBlock { .. }))
@@ -168,16 +171,19 @@ fn leave_block_goal_uses_real_neighbor_shapes_and_keeps_air_placement() {
         unreachable!()
     };
     assert_eq!(*mob, 326);
-    game.world.set(pos[0], pos[1], pos[2], stone).unwrap();
-    let before = game.block_ticks.fluids.count();
+    game.simulation
+        .world
+        .set(pos[0], pos[1], pos[2], stone)
+        .unwrap();
+    let before = game.simulation.block_ticks.fluids.count();
     // A stale carried-state identity cannot mutate the world or clear a new hand.
-    game.mobs[0].extra.carried = Some(stone);
+    game.simulation.mobs[0].extra.carried = Some(stone);
     game.handle_mob_events(vec![attempt.clone()]).unwrap();
-    assert_eq!(game.block_ticks.fluids.count(), before);
-    assert_eq!(game.mobs[0].extra.carried, Some(stone));
-    game.mobs[0].extra.carried = Some(fence);
+    assert_eq!(game.simulation.block_ticks.fluids.count(), before);
+    assert_eq!(game.simulation.mobs[0].extra.carried, Some(stone));
+    game.simulation.mobs[0].extra.carried = Some(fence);
     game.handle_mob_events(vec![attempt.clone()]).unwrap();
-    assert!(game.block_ticks.fluids.count() > before);
-    assert_eq!(game.world.block(pos[0], pos[1], pos[2]), stone);
-    assert_eq!(game.mobs[0].extra.carried, Some(fence));
+    assert!(game.simulation.block_ticks.fluids.count() > before);
+    assert_eq!(game.simulation.world.block(pos[0], pos[1], pos[2]), stone);
+    assert_eq!(game.simulation.mobs[0].extra.carried, Some(fence));
 }

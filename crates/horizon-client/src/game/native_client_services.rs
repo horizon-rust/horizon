@@ -93,7 +93,8 @@ impl Game<'_> {
         if !self.native_window() || self.remote.is_none() {
             return Vec::new();
         }
-        self.mobs
+        self.simulation
+            .mobs
             .iter()
             .filter(|m| !m.removed)
             .map(|m| {
@@ -132,7 +133,8 @@ impl Game<'_> {
         } else {
             self.client_name_tag_widths(glam::DVec3::from_array(self.view.position), partial)
         };
-        self.mobs
+        self.simulation
+            .mobs
             .iter()
             .filter(|m| !m.removed && ids.contains(&m.id))
             .map(|m| {
@@ -196,7 +198,7 @@ impl Game<'_> {
             return false;
         }
         let mut scene = SceneCollisions {
-            world: &self.world,
+            world: &self.simulation.world,
             binding: self.collision,
             subject: None,
         };
@@ -204,20 +206,20 @@ impl Game<'_> {
             self.res.facts(),
             self.collision,
             &mut scene,
-            &|x, y, z| self.world.block(x, y, z),
+            &|x, y, z| self.simulation.world.block(x, y, z),
             Vec3::new(from[0], from[1], from[2]),
             Vec3::new(to[0], to[1], to[2]),
         ) == Some(None)
     }
     /// Loaded block's full-collision and render-occlusion facts, in that order.
     pub(super) fn native_client_block_obstruction(&self, pos: [i32; 3]) -> Option<(bool, bool)> {
-        if !self.native_window() || !self.world.loaded(pos[0], pos[2]) {
+        if !self.native_window() || !self.simulation.world.loaded(pos[0], pos[2]) {
             return None;
         }
         let f = self
             .res
             .facts()
-            .get(self.world.block(pos[0], pos[1], pos[2]));
+            .get(self.simulation.world.block(pos[0], pos[1], pos[2]));
         Some((f.full_collision, f.can_occlude))
     }
     /// Paint GUI extraction calls through this window's atlas, including player faces.

@@ -36,7 +36,8 @@ impl ExperienceOrb {
 }
 struct Dim;
 impl Dim { fn id(&self) -> &'static str { "minecraft:overworld" } }
-struct Game { orbs: Vec<ExperienceOrb>, remote: Option<()>, dim: Dim, added: Vec<u32>,
+struct Simulation { orbs: Vec<ExperienceOrb> }
+struct Game { simulation: Simulation, remote: Option<()>, dim: Dim, added: Vec<u32>,
               flip: bool, cancel: bool, asked: Vec<(u32, u32, u32, u32)>, merged: Vec<(u32, u32)> }
 impl Game {
     fn native_experience_orb_can_merge(&mut self, _: &str, into: u32, from: u32, iv: u32, fv: u32,
@@ -58,56 +59,56 @@ fn orb(id: u32, x: f64, value: u32, ticks: u32) -> ExperienceOrb {
     ExperienceOrb { id, x, value, count: 1, age: 10, ticks }
 }
 fn game(orbs: Vec<ExperienceOrb>, flip: bool, cancel: bool) -> Game {
-    Game { orbs, remote: None, dim: Dim, added: vec![], flip, cancel, asked: vec![], merged: vec![] }
+    Game { simulation: Simulation { orbs }, remote: None, dim: Dim, added: vec![], flip, cancel, asked: vec![], merged: vec![] }
 }
 #[test]
 fn spawn_merge_is_vanilla_unless_a_mod_decides() {
     // vanilla: same value, ids 40 apart -> merges
     let mut g = game(vec![orb(41, 0.0, 3, 0)], false, false);
     g.award_orb([0.0, 0.0, 0.0], 3, 1);
-    assert_eq!((g.orbs[0].count, g.orbs[0].age, g.added.len()), (2, 0, 0));
+    assert_eq!((g.simulation.orbs[0].count, g.simulation.orbs[0].age, g.added.len()), (2, 0, 0));
     assert_eq!(g.asked, [(41, 0, 3, 3)]);
     // different value: vanilla refuses, a mod flips it
     let mut g = game(vec![orb(41, 0.0, 3, 0)], true, false);
     g.award_orb([0.0, 0.0, 0.0], 7, 1);
-    assert_eq!(g.orbs[0].count, 2);
+    assert_eq!(g.simulation.orbs[0].count, 2);
     // vanilla yes, a mod flips to no -> fresh orb
     let mut g = game(vec![orb(41, 0.0, 3, 0)], true, false);
     g.award_orb([0.0, 0.0, 0.0], 3, 1);
-    assert_eq!((g.orbs[0].count, g.added.clone()), (1, vec![3]));
+    assert_eq!((g.simulation.orbs[0].count, g.added.clone()), (1, vec![3]));
     // canceled -> fresh orb; out of reach is not asked
     let mut g = game(vec![orb(41, 0.0, 3, 0), orb(81, 5.0, 3, 0)], false, true);
     g.award_orb([0.0, 0.0, 0.0], 3, 1);
-    assert_eq!((g.orbs[0].count, g.added.clone(), g.merged.clone()), (1, vec![3], vec![(41, 0)]));
+    assert_eq!((g.simulation.orbs[0].count, g.added.clone(), g.merged.clone()), (1, vec![3], vec![(41, 0)]));
     // a client of a server never merges or asks
     let mut g = game(vec![orb(41, 0.0, 3, 0)], false, false);
     g.remote = Some(());
     g.award_orb([0.0, 0.0, 0.0], 3, 1);
-    assert_eq!((g.orbs[0].count, g.added.clone(), g.asked.len()), (1, vec![3], 0));
+    assert_eq!((g.simulation.orbs[0].count, g.added.clone(), g.asked.len()), (1, vec![3], 0));
 }
 #[test]
 fn tick_merge_is_vanilla_unless_a_mod_decides() {
     let two = |a, b| vec![orb(1, 0.0, 3, a), orb(41, 0.2, 3, b)];
     let mut g = game(two(1, 0), false, false);
     g.merge_orbs();
-    assert_eq!((g.orbs.len(), g.orbs[0].count, g.orbs[0].age), (1, 2, 10));
+    assert_eq!((g.simulation.orbs.len(), g.simulation.orbs[0].count, g.simulation.orbs[0].age), (1, 2, 10));
     assert_eq!(g.asked, [(1, 41, 3, 3)]);
     // only an orb on its scan tick asks
     let mut g = game(two(0, 0), false, false);
     g.merge_orbs();
-    assert_eq!((g.orbs.len(), g.asked.len()), (2, 0));
+    assert_eq!((g.simulation.orbs.len(), g.asked.len()), (2, 0));
     // vanilla yes, mod no
     let mut g = game(two(1, 0), true, false);
     g.merge_orbs();
-    assert_eq!(g.orbs.len(), 2);
+    assert_eq!(g.simulation.orbs.len(), 2);
     // different ids: vanilla no, mod yes
     let mut g = game(vec![orb(1, 0.0, 3, 1), orb(2, 0.2, 3, 0)], true, false);
     g.merge_orbs();
-    assert_eq!((g.orbs.len(), g.orbs[0].count), (1, 2));
+    assert_eq!((g.simulation.orbs.len(), g.simulation.orbs[0].count), (1, 2));
     // canceled merge keeps both
     let mut g = game(two(1, 0), false, true);
     g.merge_orbs();
-    assert_eq!((g.orbs.len(), g.merged.clone()), (2, vec![(1, 41)]));
+    assert_eq!((g.simulation.orbs.len(), g.merged.clone()), (2, vec![(1, 41)]));
 }
 """
 

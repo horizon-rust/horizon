@@ -21,7 +21,12 @@ impl Game<'_> {
     /// the clients see the block event (`openerCountChanged`).
     pub(super) fn golem_chest_open(&mut self, chest: [i32; 3], open: bool) {
         let key = (chest[0], chest[1], chest[2]);
-        let entry = self.world.chest_openers.entry(key).or_insert((0, 0.0));
+        let entry = self
+            .simulation
+            .world
+            .chest_openers
+            .entry(key)
+            .or_insert((0, 0.0));
         if open {
             entry.0 += 1;
             entry.1 = entry.1.max(3.0);
@@ -33,7 +38,7 @@ impl Game<'_> {
         }
         let count = entry.0;
         if count <= 0 {
-            self.world.chest_openers.remove(&key);
+            self.simulation.world.chest_openers.remove(&key);
         }
         self.block_entity_event(chest, 1, count.max(0));
         // The guests get the same `ClientboundBlockEventPacket` (the lid).
@@ -47,7 +52,7 @@ impl Game<'_> {
         stack: Option<ItemStack>,
     ) {
         let key = (chest[0], chest[1], chest[2]);
-        if let Some(e) = self.world.block_entities.get_mut(&key)
+        if let Some(e) = self.simulation.world.block_entities.get_mut(&key)
             && let Some(s) = e.slots_mut().get_mut(slot)
         {
             *s = stack;
@@ -59,14 +64,26 @@ impl Game<'_> {
     /// whose opened chest is this one, within its range plus 4; when none
     /// is left the chest closes (a double chest the golem left open).
     pub(super) fn recheck_golem_openers(&mut self) {
-        if self.world.game_time % RECHECK_TICKS != 0 {
+        if self.simulation.world.game_time % RECHECK_TICKS != 0 {
             return;
         }
-        let open: Vec<(i32, i32, i32)> = self.world.chest_openers.keys().copied().collect();
+        let open: Vec<(i32, i32, i32)> = self
+            .simulation
+            .world
+            .chest_openers
+            .keys()
+            .copied()
+            .collect();
         for key in open {
             let p = [key.0, key.1, key.2];
             let other = self.chest_other_half(key).map(|o| [o.0, o.1, o.2]);
-            let range = self.world.chest_openers.get(&key).map_or(0.0, |o| o.1) + 4.0;
+            let range = self
+                .simulation
+                .world
+                .chest_openers
+                .get(&key)
+                .map_or(0.0, |o| o.1)
+                + 4.0;
             let area = horizon_core::geometry::Aabb::new(
                 horizon_core::geometry::Vec3::new(
                     f64::from(p[0]) - range,
@@ -80,6 +97,7 @@ impl Game<'_> {
                 ),
             );
             let count = self
+                .simulation
                 .mobs
                 .iter()
                 .filter(|m| {
@@ -91,14 +109,19 @@ impl Game<'_> {
                         && m.bounds().intersects(area)
                 })
                 .count() as i32;
-            let before = self.world.chest_openers.get(&key).map_or(0, |o| o.0);
+            let before = self
+                .simulation
+                .world
+                .chest_openers
+                .get(&key)
+                .map_or(0, |o| o.0);
             if count == before {
                 continue;
             }
             if count == 0 {
-                self.world.chest_openers.remove(&key);
+                self.simulation.world.chest_openers.remove(&key);
                 self.golem_chest_sound(p, false);
-            } else if let Some(o) = self.world.chest_openers.get_mut(&key) {
+            } else if let Some(o) = self.simulation.world.chest_openers.get_mut(&key) {
                 o.0 = count;
             }
             self.block_entity_event(p, 1, count);
@@ -110,7 +133,7 @@ impl Game<'_> {
         let name = self
             .res
             .facts()
-            .get(self.world.block(p[0], p[1], p[2]))
+            .get(self.simulation.world.block(p[0], p[1], p[2]))
             .name
             .clone();
         let base = name
@@ -131,7 +154,7 @@ impl Game<'_> {
             f64::from(p[1]) + 0.5,
             f64::from(p[2]) + 0.5,
         ];
-        let pitch = self.world.random.next_float() * 0.1 + 0.9;
+        let pitch = self.simulation.world.random.next_float() * 0.1 + 0.9;
         self.audio.play(
             &format!("minecraft:block.{kind}.{side}"),
             Some(at),
@@ -141,13 +164,13 @@ impl Game<'_> {
     }
     /// `CopperGolem.turnToStatue`, which its weathering asked for.
     pub(super) fn golem_become_statue(&mut self, id: u32) {
-        let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
+        let Some(i) = self.simulation.mobs.iter().position(|m| m.id == id) else {
             return;
         };
-        let mut m = self.mobs[i].clone();
+        let mut m = self.simulation.mobs[i].clone();
         self.golem_turn_to_statue(&mut m);
-        if let Some(i) = self.mobs.iter().position(|x| x.id == id) {
-            self.mobs[i] = m;
+        if let Some(i) = self.simulation.mobs.iter().position(|x| x.id == id) {
+            self.simulation.mobs[i] = m;
         }
     }
     fn golem_turn_to_statue(&mut self, m: &mut Mob) {
@@ -216,7 +239,8 @@ impl Game<'_> {
             return false;
         }
         let registry = self.pack.assets.registry;
-        let Some(state) = registry.state(self.world.block(pos[0], pos[1], pos[2])) else {
+        let Some(state) = registry.state(self.simulation.world.block(pos[0], pos[1], pos[2]))
+        else {
             return false;
         };
         if state.name != "minecraft:copper_golem_statue" {
@@ -242,7 +266,7 @@ impl Game<'_> {
         let Some(id) = self.spawn_mob("minecraft:copper_golem", at, true) else {
             return false;
         };
-        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+        if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
             m.yaw = yaw;
             m.previous_yaw = yaw;
             m.body_yaw = yaw;
@@ -262,28 +286,33 @@ impl Game<'_> {
         if let Some(replacement) = replacement {
             let _ = self.level_set(pos, replacement);
         }
-        self.world.block_entities.remove(&(pos[0], pos[1], pos[2]));
+        self.simulation
+            .world
+            .block_entities
+            .remove(&(pos[0], pos[1], pos[2]));
         true
     }
     /// `CopperGolem.mobInteract`; true when handled.
     pub(super) fn interact_copper_golem(&mut self, index: usize, item: &str) -> bool {
-        if self.mobs[index].species() != Species::CopperGolem || !self.mobs[index].alive() {
+        if self.simulation.mobs[index].species() != Species::CopperGolem
+            || !self.simulation.mobs[index].alive()
+        {
             return false;
         }
         let at = {
-            let m = &self.mobs[index];
+            let m = &self.simulation.mobs[index];
             [m.position.x, m.position.y, m.position.z]
         };
         if item.is_empty() {
             // Empty hand: the golem throws what it carries back.
-            let Some(h) = held(&self.mobs[index]).cloned() else {
+            let Some(h) = held(&self.simulation.mobs[index]).cloned() else {
                 return false;
             };
-            set_held(&mut self.mobs[index], None);
+            set_held(&mut self.simulation.mobs[index], None);
             // BehaviorUtils.throwItem: from 0.3 below the golem's eyes towards
             // the player's feet at 0.3 blocks a tick, default pickup delay.
             let p = self.player.as_ref().map(|p| p.position);
-            let eye = self.mobs[index].eye_height();
+            let eye = self.simulation.mobs[index].eye_height();
             let from = [at[0], at[1] + eye - f64::from(0.3f32), at[2]];
             let v = p.map_or([0.0; 3], |p| {
                 let d = [p.x - at[0], p.y - at[1], p.z - at[2]];
@@ -299,7 +328,7 @@ impl Game<'_> {
         }
         let name = item;
         let is_axe = name.ends_with("_axe");
-        let waxed = self.mobs[index].extra.vector[0] as i64 == -2;
+        let waxed = self.simulation.mobs[index].extra.vector[0] as i64 == -2;
         if name == "minecraft:shears" && self.golem_shearable(index) {
             // CopperGolem.shear: the sound, the antenna slot emptied (an
             // unequip) and the flower dropped 1.5 up.
@@ -311,24 +340,24 @@ impl Game<'_> {
                 1.0,
                 false,
             );
-            let antenna = self.mobs[index].saddle_item();
-            self.mobs[index].set_saddle(None);
-            let id = self.mobs[index].id;
+            let antenna = self.simulation.mobs[index].saddle_item();
+            self.simulation.mobs[index].set_saddle(None);
+            let id = self.simulation.mobs[index].id;
             let ctx = self.who_context(Some(horizon_client::mobs::Who::Mob(id)), None);
             self.post_game_event("minecraft:unequip", at, ctx);
             if let Some(a) = antenna {
-                let p = self.mobs[index].position;
+                let p = self.simulation.mobs[index].position;
                 self.spawn_at_location(p, 1.5, a);
             }
             self.damage_held_tool();
             return true;
         }
         let block = {
-            let p = self.mobs[index].position;
+            let p = self.simulation.mobs[index].position;
             [p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32]
         };
         if name == "minecraft:honeycomb" && !waxed {
-            self.mobs[index].extra.vector[0] = -2.0;
+            self.simulation.mobs[index].extra.vector[0] = -2.0;
             self.level_event_at(3003, block, 0);
             self.audio
                 .play("minecraft:item.honeycomb.wax_on", Some(at), 1.0, 1.0);
@@ -336,14 +365,14 @@ impl Game<'_> {
             return true;
         }
         if is_axe && waxed {
-            self.mobs[index].extra.vector[0] = -1.0;
+            self.simulation.mobs[index].extra.vector[0] = -1.0;
             self.play_mob_bound_sound(index, "minecraft:item.axe.scrape", 6, 1.0, 1.0, false);
             self.level_event_at(3004, block, 0);
             self.damage_held_tool();
             return true;
         }
-        if is_axe && self.mobs[index].extra.variant > 0 {
-            let m = &mut self.mobs[index];
+        if is_axe && self.simulation.mobs[index].extra.variant > 0 {
+            let m = &mut self.simulation.mobs[index];
             m.extra.vector[0] = -1.0;
             m.extra.variant = horizon_client::mobs::copper_golem::weather_previous(m.extra.variant);
             self.play_mob_bound_sound(index, "minecraft:item.axe.scrape", 6, 1.0, 1.0, false);
@@ -355,7 +384,7 @@ impl Game<'_> {
     }
     /// `readyForShearing`: the antenna holds a flower shears take.
     pub(super) fn golem_shearable(&self, index: usize) -> bool {
-        self.mobs[index].saddle_item().is_some_and(|a| {
+        self.simulation.mobs[index].saddle_item().is_some_and(|a| {
             self.res
                 .items()
                 .item_tags

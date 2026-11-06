@@ -407,10 +407,16 @@ impl Game<'_> {
     /// `mod_block_entity_geometry`. From the per-chunk list of
     /// `BlockEntities::mods_near`, not a scan of every block entity.
     pub(super) fn untemplated_mod_block_entities(&self, camera: DVec3) -> Vec<([i32; 3], u32)> {
-        self.world
+        self.simulation
+            .world
             .block_entities
             .mods_near(camera.x, camera.z, VIEW_DISTANCE)
-            .map(|p| ([p.0, p.1, p.2], self.world.block(p.0, p.1, p.2).0))
+            .map(|p| {
+                (
+                    [p.0, p.1, p.2],
+                    self.simulation.world.block(p.0, p.1, p.2).0,
+                )
+            })
             .filter(|&(_, state)| !self.res.facts().get(BlockStateId(state)).block_entity)
             .collect()
     }
@@ -429,7 +435,7 @@ impl Game<'_> {
     ) {
         let mut draw = BlockEntityDraw {
             partial,
-            game_time: self.world.game_time,
+            game_time: self.simulation.world.game_time,
             light: 0,
             block: [0; 3],
             poses: Vec::new(),
@@ -438,7 +444,7 @@ impl Game<'_> {
             kept: false,
             spins: Vec::new(),
         };
-        let now = self.world.game_time;
+        let now = self.simulation.world.game_time;
         let mut kept = self.kept_block_entities.borrow_mut();
         kept.sweep(now);
         for &(pos, state) in blocks {
@@ -447,13 +453,16 @@ impl Game<'_> {
             if (corner + 0.5).distance_squared(camera) >= VIEW_DISTANCE * VIEW_DISTANCE {
                 continue;
             }
-            let Some(BlockEntity::Mod(entity)) =
-                self.world.block_entities.get(&(pos[0], pos[1], pos[2]))
+            let Some(BlockEntity::Mod(entity)) = self
+                .simulation
+                .world
+                .block_entities
+                .get(&(pos[0], pos[1], pos[2]))
             else {
                 continue;
             };
             let origin = (corner - camera).as_vec3();
-            let light = vertex_light(self.world.light(pos[0], pos[1], pos[2]));
+            let light = vertex_light(self.simulation.world.light(pos[0], pos[1], pos[2]));
             let key = KeptKey {
                 dim: self.dim,
                 state,

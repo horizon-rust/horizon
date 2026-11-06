@@ -16,7 +16,7 @@ impl RayWorld for BoatItemRay<'_, '_> {
     type Block = BlockStateId;
     type Fluid = Option<(f32, bool, Fluid)>;
     fn block_state(&mut self, p: BlockPos) -> io::Result<BlockStateId> {
-        Ok(self.0.world.block(p.x, p.y, p.z))
+        Ok(self.0.simulation.world.block(p.x, p.y, p.z))
     }
     fn fluid_state(&mut self, p: BlockPos) -> io::Result<Self::Fluid> {
         Ok(self
@@ -29,7 +29,7 @@ impl RayWorld for BoatItemRay<'_, '_> {
                     self.0
                         .res
                         .facts()
-                        .get(self.0.world.block(p.x, p.y, p.z))
+                        .get(self.0.simulation.world.block(p.x, p.y, p.z))
                         .fluid,
                 )
             }))

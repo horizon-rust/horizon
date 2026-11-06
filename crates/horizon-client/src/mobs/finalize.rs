@@ -2276,7 +2276,7 @@ pub fn sound_variants(s: Species) -> &'static [&'static str] {
 /// footsteps that every variant shares (not the cow's). None for a species
 /// without sound variants.
 pub fn variant_sound(m: &Mob, kind: &str) -> Option<&'static str> {
-    use std::{collections::HashMap, sync::Mutex};
+    use std::collections::HashMap;
     let species = m.species();
     let name = match species {
         Species::Pig => "pig",
@@ -2300,13 +2300,13 @@ pub fn variant_sound(m: &Mob, kind: &str) -> Option<&'static str> {
         format!("entity.{name}_{variant}.{kind}")
     };
     // A handful of ids in all: keep each one as a `&'static str`.
-    static IDS: Mutex<Option<HashMap<String, &'static str>>> = Mutex::new(None);
-    let mut ids = IDS.lock().ok()?;
-    let ids = ids.get_or_insert_with(HashMap::new);
-    Some(
+    thread_local! {
+        static IDS: std::cell::RefCell<HashMap<String, &'static str>> = Default::default();
+    }
+    Some(IDS.with_borrow_mut(|ids| {
         *ids.entry(id)
-            .or_insert_with_key(|k| Box::leak(k.clone().into_boxed_str())),
-    )
+            .or_insert_with_key(|key| Box::leak(key.clone().into_boxed_str()))
+    }))
 }
 /// The registry name of the game's variant index.
 pub fn variant_name(s: Species, index: u8) -> &'static str {

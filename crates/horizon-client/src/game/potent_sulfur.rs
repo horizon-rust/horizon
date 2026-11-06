@@ -99,7 +99,7 @@ fn apply_nausea_effect_to_mob(
 impl Game<'_> {
     /// The `potent_sulfur_state` of the block at `pos`, with its block state.
     fn potent_sulfur_state(&self, pos: Pos) -> Option<(BlockStateId, Geyser)> {
-        let state = self.world.block(pos.0, pos.1, pos.2);
+        let state = self.simulation.world.block(pos.0, pos.1, pos.2);
         let value = self
             .pack
             .assets
@@ -122,7 +122,7 @@ impl Game<'_> {
     /// `pos`.
     fn potent_sulfur_source(&self, pos: Pos) -> Option<[i32; 3]> {
         let level = ParticleLevel {
-            world: &self.world,
+            world: &self.simulation.world,
             facts: self.res.facts(),
             collision: self.collision,
             player: None,
@@ -158,7 +158,7 @@ impl Game<'_> {
     /// the living entities near the source block that its gas reaches (at
     /// their eyes) get nausea for 4 seconds.
     fn server_nausea_effect_ticker(&mut self, pos: Pos) {
-        if self.world.game_time % EFFECT_APPLICATION_FREQUENCY_TICKS != 0 {
+        if self.simulation.world.game_time % EFFECT_APPLICATION_FREQUENCY_TICKS != 0 {
             return;
         }
         let Some(source) = self.potent_sulfur_source(pos) else {
@@ -173,13 +173,14 @@ impl Game<'_> {
             self.as_fight_player(player.who, |g| g.apply_nausea_effect_to_player(source));
         }
         let level = ParticleLevel {
-            world: &self.world,
+            world: &self.simulation.world,
             facts: self.res.facts(),
             collision: self.collision,
             player: None,
         };
         let tags = &self.res.stations().enchantments.entity_tags;
         for mob in self
+            .simulation
             .mobs
             .iter_mut()
             .filter(|m| m.alive() && m.bounds().intersects(area))
@@ -208,7 +209,7 @@ impl Game<'_> {
         ];
         let reached = {
             let level = ParticleLevel {
-                world: &self.world,
+                world: &self.simulation.world,
                 facts: self.res.facts(),
                 collision: self.collision,
                 player: None,
@@ -234,13 +235,14 @@ impl Game<'_> {
         state: BlockStateId,
         geyser: Geyser,
     ) -> Result<()> {
-        if self.world.game_time % 20 != 0 {
+        if self.simulation.world.game_time % 20 != 0 {
             return Ok(());
         }
         let Some(source) = self.potent_sulfur_source(pos) else {
             return Ok(());
         };
-        let Some(BlockEntity::PotentSulfur(sulfur)) = self.world.block_entities.get_mut(&pos)
+        let Some(BlockEntity::PotentSulfur(sulfur)) =
+            self.simulation.world.block_entities.get_mut(&pos)
         else {
             return Ok(());
         };
@@ -277,7 +279,10 @@ impl Game<'_> {
         };
         let at = BlockPos::new(pos.0, pos.1, pos.2);
         self.with_level(|b, level, ticks| b.set_block(level, ticks, at, next, flags::UPDATE_ALL));
-        self.world.modified.insert((pos.0 >> 4, pos.2 >> 4));
+        self.simulation
+            .world
+            .modified
+            .insert((pos.0 >> 4, pos.2 >> 4));
         if to_set == "dormant" {
             self.post_block_game_event(
                 "minecraft:block_deactivate",
@@ -300,7 +305,7 @@ impl Game<'_> {
         };
         let water_blocks = source[1] - pos.1 - 1;
         let level = ParticleLevel {
-            world: &self.world,
+            world: &self.simulation.world,
             facts: self.res.facts(),
             collision: self.collision,
             player: None,
@@ -312,6 +317,7 @@ impl Game<'_> {
         let tags = &self.res.stations().enchantments.entity_tags;
         let immune = tags.get("minecraft:not_affected_by_geysers");
         for mob in self
+            .simulation
             .mobs
             .iter_mut()
             .filter(|m| m.alive() && m.bounds().intersects(area))
@@ -328,6 +334,7 @@ impl Game<'_> {
             }
         }
         for item in self
+            .simulation
             .dropped
             .iter_mut()
             .filter(|i| i.bounds().intersects(area))
@@ -336,7 +343,12 @@ impl Game<'_> {
                 item.velocity.y += push;
             }
         }
-        for tnt in self.tnts.iter_mut().filter(|t| t.bounds().intersects(area)) {
+        for tnt in self
+            .simulation
+            .tnts
+            .iter_mut()
+            .filter(|t| t.bounds().intersects(area))
+        {
             if tnt.velocity.y < limit {
                 tnt.velocity.y += push;
             }
@@ -352,7 +364,7 @@ impl Game<'_> {
         let water_blocks = source[1] - pos.1 - 1;
         let height = {
             let level = ParticleLevel {
-                world: &self.world,
+                world: &self.simulation.world,
                 facts: self.res.facts(),
                 collision: self.collision,
                 player: None,
@@ -411,9 +423,9 @@ impl Game<'_> {
         let Some((_, geyser)) = self.potent_sulfur_state(pos) else {
             return;
         };
-        let time = self.world.game_time;
+        let time = self.simulation.world.game_time;
         // PotentSulfurBlockEntity.setLevel.
-        let eruption_tick = match self.world.block_entities.get_mut(&pos) {
+        let eruption_tick = match self.simulation.world.block_entities.get_mut(&pos) {
             Some(BlockEntity::PotentSulfur(sulfur)) => {
                 if sulfur.eruption_tick == -1 {
                     sulfur.eruption_tick = time;
@@ -459,6 +471,7 @@ impl Game<'_> {
     /// level: every one the client knows ticks.
     pub(super) fn tick_remote_potent_sulfur(&mut self) {
         let keys: Vec<Pos> = self
+            .simulation
             .world
             .block_entities
             .iter()
@@ -473,8 +486,8 @@ impl Game<'_> {
     /// game time the plume counts from; false when `pos` holds no potent
     /// sulfur block entity.
     pub(super) fn potent_sulfur_eruption_event(&mut self, pos: Pos) -> bool {
-        let time = self.world.game_time;
-        match self.world.block_entities.get_mut(&pos) {
+        let time = self.simulation.world.game_time;
+        match self.simulation.world.block_entities.get_mut(&pos) {
             Some(BlockEntity::PotentSulfur(sulfur)) => {
                 sulfur.eruption_tick = time;
                 true

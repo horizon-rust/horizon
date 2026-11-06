@@ -235,8 +235,8 @@ impl Game<'_> {
         };
         let key = (
             self.frames,
-            self.world.game_time,
-            self.world.day_time,
+            self.simulation.world.game_time,
+            self.simulation.world.day_time,
             dimension,
         );
         let mut cached = self.item_level_cache.borrow_mut();
@@ -252,12 +252,12 @@ impl Game<'_> {
     fn level_state_now(&self, dimension: &'static str) -> LevelState {
         let sky = self
             .dim_environment()
-            .sample(self.world.day_time, None, None);
+            .sample(self.simulation.world.day_time, None, None);
         LevelState {
             dimension: dimension.to_owned(),
-            game_time: self.world.game_time,
+            game_time: self.simulation.world.game_time,
             sun_angle: sky.sun_angle,
-            moon_phase: (self.world.day_time.div_euclid(24_000)).rem_euclid(8) as i32,
+            moon_phase: (self.simulation.world.day_time.div_euclid(24_000)).rem_euclid(8) as i32,
             respawn: self.spawn.map(|s| GlobalPos {
                 dimension: "minecraft:overworld".to_owned(),
                 pos: [s.x.floor() as i32, s.y.floor() as i32, s.z.floor() as i32],
@@ -554,7 +554,7 @@ impl Game<'_> {
         alpha: f64,
         out: &mut Vec<Vertex>,
     ) {
-        let live = self.dropped.iter().map(|item| {
+        let live = self.simulation.dropped.iter().map(|item| {
             let (p, q) = (item.previous, item.position);
             let at = [
                 p.x + (q.x - p.x) * alpha,
@@ -626,13 +626,13 @@ impl Game<'_> {
             // the cell it is drawn in.
             let packed = if entity {
                 let probe = item.light_probe(alpha);
-                item.render_light(self.world.light(
+                item.render_light(self.simulation.world.light(
                     probe[0].floor() as i32,
                     probe[1].floor() as i32,
                     probe[2].floor() as i32,
                 ))
             } else {
-                vertex_light(self.world.light(
+                vertex_light(self.simulation.world.light(
                     q.x.floor() as i32,
                     (q.y + 0.1).floor() as i32,
                     q.z.floor() as i32,

@@ -608,7 +608,7 @@ impl Game<'_> {
                             mob.extra
                                 .mount
                                 .or(if local_player { self.riding } else { None }),
-                            &self.mobs,
+                            &self.simulation.mobs,
                             alpha as f32,
                         ),
                     }

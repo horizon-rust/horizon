@@ -135,7 +135,7 @@ impl Editor for TestBlockEditor {
 impl Game<'_> {
     /// `LocalPlayer.openTestBlock`.
     pub(super) fn open_test_block(&mut self, pos: Pos) {
-        let Some(BlockEntity::TestBlock(b)) = self.world.block_entities.get(&pos) else {
+        let Some(BlockEntity::TestBlock(b)) = self.simulation.world.block_entities.get(&pos) else {
             return;
         };
         let editor = TestBlockEditor::new(b);

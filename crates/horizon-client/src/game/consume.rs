@@ -54,7 +54,7 @@ impl Game<'_> {
         // FoodProperties.onConsume, the player's one ConsumableListener.
         if let Some((nutrition, saturation)) = info.food {
             let at = self.feet();
-            let pitch = self.world.random.triangle_float(1.0, 0.4);
+            let pitch = self.simulation.world.random.triangle_float(1.0, 0.4);
             self.audio.play(&consumable.sound, at, 1.0, pitch);
             if let Some(p) = self.player.as_mut() {
                 // FoodData.eat(nutrition, saturation)
@@ -63,7 +63,7 @@ impl Game<'_> {
                 food.saturation = (food.saturation + saturation).clamp(0.0, food.food as f32);
             }
             // Mth.randomBetween(random, 0.9, 1.0)
-            let pitch = self.world.random.next_float() * (1.0f32 - 0.9f32) + 0.9;
+            let pitch = self.simulation.world.random.next_float() * (1.0f32 - 0.9f32) + 0.9;
             self.audio
                 .play("minecraft:entity.player.burp", self.feet(), 0.5, pitch);
         }
@@ -125,12 +125,12 @@ impl Game<'_> {
         let z = clamp(target.z, min_z, max_z - f64::from(1.0e-5_f32));
         let mut y = target.y;
         let mut pos = BlockPos::containing(Vec3::new(x, y, z));
-        if !self.world.loaded(pos.x, pos.z) {
+        if !self.simulation.world.loaded(pos.x, pos.z) {
             return false;
         }
-        while pos.y > self.world.shape.min_y {
+        while pos.y > self.simulation.world.shape.min_y {
             pos.y -= 1;
-            let state = self.world.block(pos.x, pos.y, pos.z);
+            let state = self.simulation.world.block(pos.x, pos.y, pos.z);
             if self.state_in_tag("minecraft:entities_can_teleport_to", state) {
                 return self.check_position_and_teleport(Vec3::new(x, y, z), state, avoid);
             }
@@ -157,7 +157,7 @@ impl Game<'_> {
         let free = horizon_client::motion::MotionWorld {
             entities: &entities,
             player,
-            scene: &mut self.world,
+            scene: &mut self.simulation.world,
             assets: &self.pack.assets,
             collision_binding: self.collision,
             resources: self.motion,
@@ -173,7 +173,9 @@ impl Game<'_> {
         );
         let blocks = (lo.x..=hi.x)
             .flat_map(|x| (lo.y..=hi.y).flat_map(move |y| (lo.z..=hi.z).map(move |z| (x, y, z))));
-        let states: Vec<_> = blocks.map(|(x, y, z)| self.world.block(x, y, z)).collect();
+        let states: Vec<_> = blocks
+            .map(|(x, y, z)| self.simulation.world.block(x, y, z))
+            .collect();
         let liquid = states
             .iter()
             .any(|&s| self.res.facts().get(s).fluid != horizon_client::blocks::Fluid::None);
@@ -231,7 +233,7 @@ impl Game<'_> {
             return;
         }
         let spawned = {
-            let Some(m) = self.mobs.iter_mut().find(|m| m.id == id as u32) else {
+            let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id as u32) else {
                 return;
             };
             let from = [m.previous.x, m.previous.y, m.previous.z];
@@ -273,11 +275,17 @@ impl Game<'_> {
         let Some(id) = self.riding else {
             return;
         };
-        if let Some(i) = self.boats.iter().position(|b| b.id == id) {
+        if let Some(i) = self.simulation.boats.iter().position(|b| b.id == id) {
             self.dismount(i);
-        } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
+        } else if let Some(i) = self.simulation.carts.iter().position(|c| c.id == id) {
             self.dismount_cart(i);
-        } else if let Some(c) = self.cushions.iter().find(|c| c.id == id).cloned() {
+        } else if let Some(c) = self
+            .simulation
+            .cushions
+            .iter()
+            .find(|c| c.id == id)
+            .cloned()
+        {
             self.get_up_from_cushion(&c);
         } else {
             self.dismount_mount();
@@ -294,7 +302,7 @@ impl EmissionWorld for Emitter<'_, '_> {
     type Random = ();
     type Source = LegacyRandom;
     fn random_source(&mut self, (): ()) -> &mut LegacyRandom {
-        &mut self.0.world.random
+        &mut self.0.simulation.world.random
     }
     /// `LivingEntity.spawnItemParticles`.
     fn spawn_item_particles(&mut self, stack: ItemStack, count: i32) -> Result<(), Infallible> {
@@ -343,7 +351,7 @@ impl TeleportConsumeWorld for Teleporter<'_, '_> {
         Ok(())
     }
     fn random_source(&mut self, (): ()) -> &mut LegacyRandom {
-        &mut self.0.world.random
+        &mut self.0.simulation.world.random
     }
     fn min_y(&mut self, level: Dim) -> Result<i32, Infallible> {
         Ok(self.0.level_shapes.get(level.id()).min_y)

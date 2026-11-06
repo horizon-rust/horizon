@@ -36,7 +36,7 @@ fn infects(difficulty: Difficulty, coin: impl FnOnce() -> bool) -> bool {
 impl Game<'_> {
     /// `ZombieVillager.handleEntityEvent(16)`: only the client plays the cure sound.
     pub(super) fn zombie_villager_cure_sound(&mut self, id: u32) {
-        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+        if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id)
             && let Some(horizon_client::mobs::MobEvent::Sound(name, at, volume, pitch)) =
                 zombie_villager::cure_sound(m)
         {
@@ -48,43 +48,43 @@ impl Game<'_> {
     /// `Zombie.killedEntity`: a villager killed by a zombie may rise as a
     /// zombie villager keeping its profession, trades and gossip.
     pub(super) fn zombie_killed(&mut self, killer: u32, victim: u32) {
-        let Some(k) = self.mobs.iter().position(|m| m.id == killer) else {
+        let Some(k) = self.simulation.mobs.iter().position(|m| m.id == killer) else {
             return;
         };
-        let Some(v) = self.mobs.iter().position(|m| m.id == victim) else {
+        let Some(v) = self.simulation.mobs.iter().position(|m| m.id == victim) else {
             return;
         };
-        if !is_zombie(self.mobs[k].species())
-            || self.mobs[v].species() != Species::Villager
-            || self.mobs[v].alive()
-            || self.mobs[v].removed
+        if !is_zombie(self.simulation.mobs[k].species())
+            || self.simulation.mobs[v].species() != Species::Villager
+            || self.simulation.mobs[v].alive()
+            || self.simulation.mobs[v].removed
         {
             return;
         }
-        let difficulty = self.world.health_rules.difficulty;
-        let random = &mut self.mobs[k].random;
+        let difficulty = self.simulation.world.health_rules.difficulty;
+        let random = &mut self.simulation.mobs[k].random;
         if !infects(difficulty, || random.next_boolean()) {
             return;
         }
         // The villager is gone without dying: no drops, no death animation.
-        let old = self.mobs[v].clone();
-        self.mobs[v].removed = true;
-        self.mobs[v].health = 0.0;
+        let old = self.simulation.mobs[v].clone();
+        self.simulation.mobs[v].removed = true;
+        self.simulation.mobs[v].health = 0.0;
         let at = [old.position.x, old.position.y, old.position.z];
         let Some(id) = self.spawn_mob("minecraft:zombie_villager", at, old.persistent) else {
             return;
         };
-        let ensure = self.mobs.iter().position(|m| m.id == victim);
+        let ensure = self.simulation.mobs.iter().position(|m| m.id == victim);
         if let Some(i) = ensure {
             self.ensure_offers(i);
         }
-        let old = ensure.map_or(old, |i| self.mobs[i].clone());
-        let Some(z) = self.mobs.iter_mut().find(|m| m.id == id) else {
+        let old = ensure.map_or(old, |i| self.simulation.mobs[i].clone());
+        let Some(z) = self.simulation.mobs.iter_mut().find(|m| m.id == id) else {
             return;
         };
         convert_to_zombie_villager(&old, z);
-        if !self.mobs[k].silent {
-            let at = self.mobs[k].position;
+        if !self.simulation.mobs[k].silent {
+            let at = self.simulation.mobs[k].position;
             self.level_event_at(
                 1026,
                 [
@@ -101,7 +101,7 @@ impl Game<'_> {
     /// villager starts the cure and is eaten; without weakness it does
     /// nothing. Returns whether the click was used.
     pub(super) fn interact_zombie_villager(&mut self, index: usize, item: &str) -> bool {
-        let m = &self.mobs[index];
+        let m = &self.simulation.mobs[index];
         if m.species() != Species::ZombieVillager || item != "minecraft:golden_apple" {
             return false;
         }
@@ -113,12 +113,18 @@ impl Game<'_> {
         let starter = Some(self.acting_player_uuid());
         let time = zombie_villager::WAIT_MIN
             + self
+                .simulation
                 .world
                 .random
                 .next_int_bound(zombie_villager::WAIT_SPREAD)
                 .unwrap_or(0);
         let mut events = Vec::new();
-        zombie_villager::start_converting(&mut self.mobs[index], starter, time, &mut events);
+        zombie_villager::start_converting(
+            &mut self.simulation.mobs[index],
+            starter,
+            time,
+            &mut events,
+        );
         let _ = self.handle_mob_events(events);
         self.swing_arm();
         true
@@ -128,19 +134,21 @@ impl Game<'_> {
     /// data, trades, experience and gossip, and the curing player earns the
     /// village's trust.
     pub(super) fn cure_zombie_villager(&mut self, id: u32) {
-        let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
+        let Some(i) = self.simulation.mobs.iter().position(|m| m.id == id) else {
             return;
         };
-        if self.mobs[i].removed || zombie_villager::cure(&self.mobs[i]).is_none() {
+        if self.simulation.mobs[i].removed
+            || zombie_villager::cure(&self.simulation.mobs[i]).is_none()
+        {
             return;
         }
-        let old = self.mobs[i].clone();
-        self.mobs[i].removed = true;
+        let old = self.simulation.mobs[i].clone();
+        self.simulation.mobs[i].removed = true;
         let at = [old.position.x, old.position.y, old.position.z];
         let Some(vid) = self.spawn_mob("minecraft:villager", at, old.persistent) else {
             return;
         };
-        let Some(v) = self.mobs.iter_mut().find(|m| m.id == vid) else {
+        let Some(v) = self.simulation.mobs.iter_mut().find(|m| m.id == vid) else {
             return;
         };
         convert_to_villager(&old, v);
@@ -149,7 +157,7 @@ impl Game<'_> {
         let starter = zombie_villager::cure(&old).and_then(|c| c.starter);
         let curer = starter.and_then(|uuid| Some((uuid, self.player_here(uuid)?)));
         // `Villager.onReputationEventFrom(ZOMBIE_VILLAGER_CURED)`.
-        let Some(v) = self.mobs.iter_mut().find(|m| m.id == vid) else {
+        let Some(v) = self.simulation.mobs.iter_mut().find(|m| m.id == vid) else {
             return;
         };
         if let Some((uuid, _)) = curer {

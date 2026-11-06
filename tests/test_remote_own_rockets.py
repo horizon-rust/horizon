@@ -81,10 +81,11 @@ struct Settings { main_hand_left: bool }
 struct Player { position: Vec3, velocity: Vec3, fall_flying: bool }
 #[derive(Default)]
 struct Rocket { attached_to: Option<u32>, position: Vec3, velocity: Vec3 }
+struct Simulation { rockets: Vec<Rocket>, world: World }
 struct Game {
     remote: Option<Remote>, clock: Clock, player: Option<Player>, settings: Settings,
     hotbar: Option<ItemStack>, offhand: Option<ItemStack>, selected: usize,
-    rockets: Vec<Rocket>, yaw: f32, pitch: f32, world: World, particles: Particles,
+    simulation: Simulation, yaw: f32, pitch: f32, particles: Particles,
 }
 impl Game {
 fn stack_in(&self, slot: usize) -> Option<&ItemStack> { self.hotbar.as_ref().filter(|_| slot == 3) }
@@ -103,13 +104,13 @@ fn game(runs: bool) -> Game {
         }),
         settings: Settings { main_hand_left: false },
         hotbar: rocket(), offhand: None, selected: 3,
-        rockets: vec![
+        simulation: Simulation { rockets: vec![
             Rocket { attached_to: Some(7), ..Rocket::default() },
             Rocket { attached_to: Some(8), position: Vec3::new(1.0, 2.0, 3.0), ..Rocket::default() },
             Rocket { attached_to: None, position: Vec3::new(4.0, 5.0, 6.0), ..Rocket::default() },
         ],
+        world: World { random: horizon_core::random::LegacyRandom(vec![3.0, -2.0, 3.0, -2.0]) } },
         yaw: 90.0, pitch: 0.0,
-        world: World { random: horizon_core::random::LegacyRandom(vec![3.0, -2.0, 3.0, -2.0]) },
         particles: Particles::default(),
     }
 }
@@ -122,7 +123,7 @@ fn hand(main_hand_left: bool, main: Option<ItemStack>, offhand: Option<ItemStack
     g.hotbar = main;
     g.offhand = offhand;
     g.tick_own_rockets();
-    at(g.rockets[0].position)
+    at(g.simulation.rockets[0].position)
 }
 fn main() {
     let mut g = game(true);
@@ -133,16 +134,16 @@ fn main() {
     assert_eq!(g.player.as_ref().unwrap().position, Vec3::new(10.0, 70.0, 20.0));
     // Facing west the right hand is north: half a block out at yaw + 80.
     let right = [10.0 - 0.0868, 70.0, 20.0 - 0.4924];
-    assert!(near(at(g.rockets[0].position), right), "{:?}", g.rockets[0].position);
-    assert!(near(at(g.rockets[0].velocity), boosted));
+    assert!(near(at(g.simulation.rockets[0].position), right), "{:?}", g.simulation.rockets[0].position);
+    assert!(near(at(g.simulation.rockets[0].velocity), boosted));
     // One firework spark at the rocket, drifting against the boosted motion
     // with a gaussian spread of 0.05 across it.
     let sparks = &g.particles.added;
     assert_eq!(sparks.len(), 1);
     assert!(near(sparks[0].0, right) && near(sparks[0].1, [0.15, 0.05, -0.1]), "{:?}", sparks);
     // Rockets of another entity, or free ones, tick with the other entities.
-    assert_eq!(g.rockets[1].position, Vec3::new(1.0, 2.0, 3.0));
-    assert_eq!(g.rockets[2].position, Vec3::new(4.0, 5.0, 6.0));
+    assert_eq!(g.simulation.rockets[1].position, Vec3::new(1.0, 2.0, 3.0));
+    assert_eq!(g.simulation.rockets[2].position, Vec3::new(4.0, 5.0, 6.0));
 
     // The other arm: a left main arm, or a rocket only in the offhand.
     let left = [10.0 - 0.0868, 70.0, 20.0 + 0.4924];
@@ -156,7 +157,7 @@ fn main() {
     g.player.as_mut().unwrap().fall_flying = false;
     g.tick_own_rockets();
     assert_eq!(g.player.as_ref().unwrap().velocity, Vec3::new(0.0, -0.2, 1.0));
-    assert_eq!(g.rockets[0].position, Vec3::new(10.0, 70.0, 20.0));
+    assert_eq!(g.simulation.rockets[0].position, Vec3::new(10.0, 70.0, 20.0));
     assert_eq!(g.particles.added.len(), 1);
 
     // A frozen level ticks no entities.

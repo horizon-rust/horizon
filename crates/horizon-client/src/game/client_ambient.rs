@@ -23,7 +23,7 @@ impl Game<'_> {
         let following = self.remote.is_some();
         let mut events = Vec::new();
         let random = self.particles.level_random();
-        for m in self.mobs.iter_mut().filter(|m| !m.removed) {
+        for m in self.simulation.mobs.iter_mut().filter(|m| !m.removed) {
             ambient::client_ai_step(m, &mut events);
             ambient::client_particles(m, random, &mut events);
             if following && m.species() == horizon_client::mobs::Species::Wither {
@@ -92,7 +92,7 @@ impl Game<'_> {
         // IronGolem.canSpawnSprintParticle replaces the sprinting test: one
         // tick in five while it moves at all, in water or not, drawn from the
         // golem's own random as its client copy's Entity.baseTick does.
-        for (i, m) in self.mobs.iter_mut().enumerate() {
+        for (i, m) in self.simulation.mobs.iter_mut().enumerate() {
             if &*m.kind.id != "minecraft:iron_golem" {
                 continue;
             }
@@ -103,7 +103,7 @@ impl Game<'_> {
                 runners.push((m.position, movement, None, f64::from(m.width()), Some(i)));
             }
         }
-        for (i, m) in self.mobs.iter().enumerate() {
+        for (i, m) in self.simulation.mobs.iter().enumerate() {
             // Another player's fluids aren't known here: none where they stand.
             let feet = [
                 m.position.x.floor() as i32,
@@ -121,7 +121,7 @@ impl Game<'_> {
                 && self
                     .res
                     .facts()
-                    .get(self.world.block(feet[0], feet[1], feet[2]))
+                    .get(self.simulation.world.block(feet[0], feet[1], feet[2]))
                     .fluid_level
                     == 0
             {
@@ -134,7 +134,7 @@ impl Game<'_> {
                 // the particles' random alone. The window's player has none of
                 // its own here; the particles' random stands in for it.
                 let r = match mob {
-                    Some(i) => &mut game.mobs.get_mut(i)?.random,
+                    Some(i) => &mut game.simulation.mobs.get_mut(i)?.random,
                     None => game.particles.random(),
                 };
                 Some((r.next_double(), r.next_double()))
@@ -171,7 +171,7 @@ impl Game<'_> {
             Some(s) => [s[0], below, s[2]],
             None => [position.x.floor() as i32, below, position.z.floor() as i32],
         };
-        let state = self.world.block(at[0], at[1], at[2]);
+        let state = self.simulation.world.block(at[0], at[1], at[2]);
         if self.res.facts().get(state).render_shape == RenderShape::Invisible {
             return;
         }
@@ -225,7 +225,7 @@ impl Game<'_> {
                 invisible,
             );
         }
-        for m in self.mobs.iter() {
+        for m in self.simulation.mobs.iter() {
             if !m.alive() {
                 continue;
             }

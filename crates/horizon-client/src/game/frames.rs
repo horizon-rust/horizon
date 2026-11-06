@@ -101,7 +101,7 @@ impl Game<'_> {
             Vec3::new(hi[0], hi[1], hi[2]),
         );
         let mut scene = horizon_client::collisions::SceneCollisions {
-            world: &self.world,
+            world: &self.simulation.world,
             binding: self.collision,
             subject: None,
         };
@@ -109,7 +109,7 @@ impl Game<'_> {
             return false;
         }
         let s = f.step();
-        let behind = self.res.facts().get(self.world.block(
+        let behind = self.res.facts().get(self.simulation.world.block(
             f.pos[0] - s[0],
             f.pos[1] - s[1],
             f.pos[2] - s[2],
@@ -119,6 +119,7 @@ impl Game<'_> {
         let overlaps = |o: ([f64; 3], [f64; 3])| (0..3).all(|i| o.0[i] < hi[i] && lo[i] < o.1[i]);
         supported
             && !self
+                .simulation
                 .item_frames
                 .iter()
                 .any(|o| o.id != f.id && o.facing == f.facing && overlaps(o.bounds()))
@@ -190,7 +191,7 @@ impl Game<'_> {
             return true;
         }
         let frame = ItemFrame {
-            id: self.next_entity + 1,
+            id: self.simulation_server.next_entity + 1,
             pos,
             facing: facing_of(hit.face),
             glow,
@@ -215,15 +216,18 @@ impl Game<'_> {
         if self.hanging_place_cancelled(kind, pos) {
             return true;
         }
-        self.next_entity += 1;
+        self.simulation_server.next_entity += 1;
         self.audio
             .play(&sound(&frame, "place"), Some(center(&frame)), 1.0, 1.0);
         // HangingEntityItem.useOn: ENTITY_PLACE at the frame, by the player, before it is
         // added; ItemStack.useOn then counts the use.
         let ctx = self.player_context(None);
         self.post_game_event("minecraft:entity_place", center(&frame), ctx);
-        self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
-        self.item_frames.push(frame);
+        self.simulation
+            .world
+            .modified
+            .insert((pos[0] >> 4, pos[2] >> 4));
+        self.simulation.item_frames.push(frame);
         if !self.creative {
             self.consume_held();
         }
@@ -235,7 +239,7 @@ impl Game<'_> {
         let (eye, dir) = self.aim()?;
         let reach: f64 = self.entity_reach;
         let mut best: Option<(usize, f64)> = None;
-        for (i, f) in self.item_frames.iter().enumerate() {
+        for (i, f) in self.simulation.item_frames.iter().enumerate() {
             let (lo, hi) = f.bounds();
             let (mut t0, mut t1) = (0.0f64, reach);
             let mut hit = true;
@@ -272,41 +276,54 @@ impl Game<'_> {
     /// guest's interact packet named.
     pub(super) fn interact_frame(&mut self, target: Option<InteractTarget>) -> bool {
         let Some((i, d)) = (match target {
-            Some(t) => Self::named_entity(&self.item_frames, t.id, |f| f.id).map(|i| (i, 0.0)),
+            Some(t) => {
+                Self::named_entity(&self.simulation.item_frames, t.id, |f| f.id).map(|i| (i, 0.0))
+            }
             None => self.frame_hit(),
         }) else {
             return false;
         };
         // Only a client's own pick is stopped by a block: the range check passed.
-        if (target.is_none() && !self.before_block(d)) || self.item_frames[i].fixed {
+        if (target.is_none() && !self.before_block(d)) || self.simulation.item_frames[i].fixed {
             return false;
         }
-        let at = center(&self.item_frames[i]);
-        let entity_id = self.item_frames[i].id;
+        let at = center(&self.simulation.item_frames[i]);
+        let entity_id = self.simulation.item_frames[i].id;
         let action;
-        if self.item_frames[i].item.is_none() {
+        if self.simulation.item_frames[i].item.is_none() {
             let Some(held) = self.held().cloned() else {
                 return false;
             };
-            self.item_frames[i].item = Some(ItemStack { count: 1, ..held });
+            self.simulation.item_frames[i].item = Some(ItemStack { count: 1, ..held });
             action = "put";
-            self.audio
-                .play(&sound(&self.item_frames[i], "add_item"), Some(at), 1.0, 1.0);
+            self.audio.play(
+                &sound(&self.simulation.item_frames[i], "add_item"),
+                Some(at),
+                1.0,
+                1.0,
+            );
             if !self.creative {
                 self.consume_held();
             }
         } else {
-            let f = &mut self.item_frames[i];
+            let f = &mut self.simulation.item_frames[i];
             f.rotation = (f.rotation + 1) % 8;
             action = "rotate";
             let s = sound(f, "rotate_item");
             self.audio.play(&s, Some(at), 1.0, 1.0);
         }
-        let p = self.item_frames[i].pos;
-        self.world.modified.insert((p[0] >> 4, p[2] >> 4));
+        let p = self.simulation.item_frames[i].pos;
+        self.simulation
+            .world
+            .modified
+            .insert((p[0] >> 4, p[2] >> 4));
         self.frame_output_changed(p);
         if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
-            let frame = self.item_frames.iter().find(|f| f.id == entity_id);
+            let frame = self
+                .simulation
+                .item_frames
+                .iter()
+                .find(|f| f.id == entity_id);
             let item = frame
                 .and_then(|f| f.item.as_ref())
                 .map_or_else(String::new, |s| s.item.to_string());
@@ -324,7 +341,7 @@ impl Game<'_> {
         if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
             return false;
         }
-        if self.item_frames[i].fixed {
+        if self.simulation.item_frames[i].fixed {
             // A fixed frame refuses the hit of a player who isn't in creative
             // (canHurtWhenFixed), so skipAttackInteraction is false and
             // Player.attack goes on to onAttack.
@@ -333,25 +350,28 @@ impl Game<'_> {
             }
             return true;
         }
-        let with_frame = self.item_frames[i].item.is_none();
-        let entity_id = self.item_frames[i].id;
+        let with_frame = self.simulation.item_frames[i].item.is_none();
+        let entity_id = self.simulation.item_frames[i].id;
         if with_frame {
-            let (kind, pos) = (self.item_frames[i].kind(), self.item_frames[i].pos);
+            let (kind, pos) = (
+                self.simulation.item_frames[i].kind(),
+                self.simulation.item_frames[i].pos,
+            );
             if self.hanging_break_cancelled(kind, pos, true) {
                 return true;
             }
         }
-        let old_item = self.item_frames[i]
+        let old_item = self.simulation.item_frames[i]
             .item
             .as_ref()
             .map_or("", |s| &*s.item)
             .to_owned();
-        let rotation = self.item_frames[i].rotation;
-        let at = center(&self.item_frames[i]);
+        let rotation = self.simulation.item_frames[i].rotation;
+        let at = center(&self.simulation.item_frames[i]);
         let f = if with_frame {
-            self.item_frames.remove(i)
+            self.simulation.item_frames.remove(i)
         } else {
-            self.item_frames[i].clone()
+            self.simulation.item_frames[i].clone()
         };
         self.audio.play(
             &sound(&f, if with_frame { "break" } else { "remove_item" }),
@@ -360,10 +380,13 @@ impl Game<'_> {
             1.0,
         );
         if !with_frame {
-            self.item_frames[i].item = None;
+            self.simulation.item_frames[i].item = None;
         }
         self.drop_frame_items(&f, with_frame, true);
-        self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
+        self.simulation
+            .world
+            .modified
+            .insert((f.pos[0] >> 4, f.pos[2] >> 4));
         if f.item.is_some() {
             self.frame_output_changed(f.pos);
         }
@@ -382,13 +405,13 @@ impl Game<'_> {
     /// `ItemFrame.setItem(stack, true)`: keeps one item, plays the add sound
     /// for a non-empty stack and updates the comparators.
     pub(super) fn set_frame_item(&mut self, i: usize, stack: Option<ItemStack>) {
-        let f = &mut self.item_frames[i];
+        let f = &mut self.simulation.item_frames[i];
         f.item = stack.map(|s| ItemStack { count: 1, ..s });
         let (pos, filled) = (f.pos, f.item.is_some());
         if filled {
             let (name, at) = (
-                sound(&self.item_frames[i], "add_item"),
-                center(&self.item_frames[i]),
+                sound(&self.simulation.item_frames[i], "add_item"),
+                center(&self.simulation.item_frames[i]),
             );
             self.audio.play(&name, Some(at), 1.0, 1.0);
         }
@@ -420,7 +443,7 @@ impl Game<'_> {
             drops.push(f.item_stack_with_data());
         }
         if let Some(item) = f.item.clone()
-            && self.world.random.next_float() < f.drop_chance
+            && self.simulation.world.random.next_float() < f.drop_chance
         {
             drops.push(item);
         }
@@ -453,25 +476,31 @@ impl Game<'_> {
             return;
         }
         let mut i = 0;
-        while i < self.item_frames.len() {
-            let c = center(&self.item_frames[i]);
+        while i < self.simulation.item_frames.len() {
+            let c = center(&self.simulation.item_frames[i]);
             let dist =
                 ((c[0] - blast[0]).powi(2) + (c[1] - blast[1]).powi(2) + (c[2] - blast[2]).powi(2))
                     .sqrt()
                     / diameter;
-            let (kind, pos) = (self.item_frames[i].kind(), self.item_frames[i].pos);
+            let (kind, pos) = (
+                self.simulation.item_frames[i].kind(),
+                self.simulation.item_frames[i].pos,
+            );
             if dist > 1.0
-                || self.item_frames[i].fixed
+                || self.simulation.item_frames[i].fixed
                 || self.hanging_break_cancelled(kind, pos, false)
             {
                 i += 1;
                 continue;
             }
-            let f = self.item_frames.remove(i);
+            let f = self.simulation.item_frames.remove(i);
             self.audio
                 .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
             self.drop_frame_items(&f, true, false);
-            self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
+            self.simulation
+                .world
+                .modified
+                .insert((f.pos[0] >> 4, f.pos[2] >> 4));
             if f.item.is_some() {
                 self.frame_output_changed(f.pos);
             }
@@ -482,19 +511,19 @@ impl Game<'_> {
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
         let mut i = 0;
-        while i < self.item_frames.len() {
-            let at = center(&self.item_frames[i]);
+        while i < self.simulation.item_frames.len() {
+            let at = center(&self.simulation.item_frames[i]);
             if !ticking(at[0].floor() as i32, at[2].floor() as i32) {
                 i += 1;
                 continue;
             }
-            self.item_frames[i].check_interval += 1;
-            if self.item_frames[i].check_interval >= 100 {
-                self.item_frames[i].check_interval = 0;
-                let f = self.item_frames[i].clone();
+            self.simulation.item_frames[i].check_interval += 1;
+            if self.simulation.item_frames[i].check_interval >= 100 {
+                self.simulation.item_frames[i].check_interval = 0;
+                let f = self.simulation.item_frames[i].clone();
                 if !self.frame_survives(&f) && !self.hanging_break_cancelled(f.kind(), f.pos, false)
                 {
-                    self.item_frames.remove(i);
+                    self.simulation.item_frames.remove(i);
                     self.audio
                         .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
                     self.drop_frame_items(&f, true, false);
@@ -517,7 +546,7 @@ impl Game<'_> {
         // ItemFrame.shouldRenderAtSqrDistance: 1024 blocks at a view scale
         // of 1.
         let range = 16.0 * 64.0 * self.view_scale();
-        for f in &self.item_frames {
+        for f in &self.simulation.item_frames {
             let entity_start = out.len();
             self.mark_entity(entity_start, f.kind());
             let map = f.item.as_ref().and_then(super::maps::map_id);
@@ -563,7 +592,7 @@ impl Game<'_> {
                 ) - camera,
             ) * glam::DMat4::from_rotation_x(x_rot.to_radians())
                 * glam::DMat4::from_rotation_y(y_rot.to_radians());
-            let light = self.world.light(f.pos[0], f.pos[1], f.pos[2]);
+            let light = self.simulation.world.light(f.pos[0], f.pos[1], f.pos[2]);
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             // ItemFrameRenderer.getBlockLightLevel: a glow frame's model is at least 5 bright.
             let frame_light = if f.glow {

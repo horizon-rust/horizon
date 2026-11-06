@@ -8,7 +8,7 @@ impl Game<'_> {
         let Some(mut stack) = self.with_hand(hand, |g| g.held().cloned()) else {
             return false;
         };
-        if !sheep_dye::interact(&mut self.mobs[index], &mut stack, client) {
+        if !sheep_dye::interact(&mut self.simulation.mobs[index], &mut stack, client) {
             return false;
         }
         self.play_mob_bound_sound(index, "minecraft:item.dye.use", 7, 1.0, 1.0, !client);

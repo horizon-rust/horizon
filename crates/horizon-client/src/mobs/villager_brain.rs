@@ -899,7 +899,7 @@ pub(super) fn others_tickets(
     w: &MobWorld,
 ) -> crate::fast_hash::FxHashMap<[i32; 3], usize> {
     let mut taken = crate::fast_hash::FxHashMap::default();
-    for o in w.others {
+    for o in w.others.of_species(Species::Villager) {
         if o.id != m.id && o.alive && o.species == Species::Villager {
             for q in [o.job, o.bed, o.potential_job, o.meeting]
                 .into_iter()
@@ -1046,7 +1046,7 @@ pub(super) fn village_sections(m: &Mob, w: &MobWorld) -> Vec<[i32; 3]> {
             }
         }
     }
-    let mut villager = |o: &super::Seen| {
+    for o in w.others.of_species(Species::Villager) {
         if o.alive && o.species == Species::Villager {
             for p in [o.job, o.bed, o.potential_job, o.meeting]
                 .into_iter()
@@ -1057,10 +1057,6 @@ pub(super) fn village_sections(m: &Mob, w: &MobWorld) -> Vec<[i32; 3]> {
                 }
             }
         }
-    };
-    match w.others_villagers {
-        Some(slots) => slots.iter().for_each(|&i| villager(&w.others[i as usize])),
-        None => w.others.iter().for_each(villager),
     }
     out
 }

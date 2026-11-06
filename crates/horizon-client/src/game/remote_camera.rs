@@ -68,7 +68,11 @@ pub(super) fn entity_post_effect(kind: &str) -> Option<&'static str> {
 impl Game<'_> {
     /// `ClientPacketListener.handleSetCamera`.
     pub(super) fn remote_set_camera(&mut self, camera_id: i32) {
-        let in_level = self.mobs.iter().any(|m| m.id == camera_id as u32);
+        let in_level = self
+            .simulation
+            .mobs
+            .iter()
+            .any(|m| m.id == camera_id as u32);
         let player = self
             .remote
             .as_ref()
@@ -100,12 +104,14 @@ impl Game<'_> {
     /// The mob the view follows, while the level still holds it.
     pub(super) fn camera_mob(&self) -> Option<&Mob> {
         let id = self.remote_camera_id()?;
-        self.mobs.iter().find(|m| m.id == id)
+        self.simulation.mobs.iter().find(|m| m.id == id)
     }
     /// The entity under a spectator's crosshair (`Minecraft.hitResult` as an
     /// `EntityHitResult`): the nearest mob or object before any block.
     pub(super) fn spectator_click_target(&self) -> Option<i32> {
-        let mob = self.mob_hit().map(|(i, d, _)| (self.mobs[i].id as i32, d));
+        let mob = self
+            .mob_hit()
+            .map(|(i, d, _)| (self.simulation.mobs[i].id as i32, d));
         let object = self.remote_object_hit(false).map(|h| (h.id, h.distance));
         [mob, object]
             .into_iter()

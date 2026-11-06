@@ -91,11 +91,16 @@ impl RaidLevel for Lvl<'_, '_> {
         self.difficulty
     }
     fn has_chunk_at(&self, p: [i32; 3]) -> bool {
-        self.game.world.chunks.contains_key(&(p[0] >> 4, p[2] >> 4))
+        self.game
+            .simulation
+            .world
+            .chunks
+            .contains_key(&(p[0] >> 4, p[2] >> 4))
     }
     fn has_chunks_at(&self, x0: i32, z0: i32, x1: i32, z1: i32) -> bool {
-        (x0 >> 4..=x1 >> 4)
-            .all(|cx| (z0 >> 4..=z1 >> 4).all(|cz| self.game.world.chunks.contains_key(&(cx, cz))))
+        (x0 >> 4..=x1 >> 4).all(|cx| {
+            (z0 >> 4..=z1 >> 4).all(|cz| self.game.simulation.world.chunks.contains_key(&(cx, cz)))
+        })
     }
     fn sections_to_village(&self, p: [i32; 3]) -> i32 {
         sections_to_village(self.centers, section(p))
@@ -111,7 +116,7 @@ impl RaidLevel for Lvl<'_, '_> {
         let w = g.mob_world_base(&[]);
         spawn_rules::is_spawn_position_ok(Species::Ravager, &w, x, y, z)
             || w.block_name(x, y - 1, z) == "minecraft:snow"
-                && g.res.facts().is_air(g.world.block(x, y, z))
+                && g.res.facts().is_air(g.simulation.world.block(x, y, z))
     }
     fn player(&self) -> Option<RaidPlayer> {
         // The first player in the level: a server has no player of its own.
@@ -200,7 +205,12 @@ impl PatrolLevel for PatrolCx<'_, '_, '_> {
         sections_to_village(&self.centers, section(pos))
     }
     fn has_chunk(&self, cx: i32, cz: i32) -> bool {
-        self.level.game.world.chunks.contains_key(&(cx, cz))
+        self.level
+            .game
+            .simulation
+            .world
+            .chunks
+            .contains_key(&(cx, cz))
     }
     fn can_pillager_patrol_spawn(&self, pos: [i32; 3]) -> bool {
         (self.can_spawn)(self.level.game, pos)
@@ -226,15 +236,20 @@ impl Game<'_> {
     /// highest non-air one.
     pub(super) fn surface_height(&self, x: i32, z: i32) -> i32 {
         let top = if self.dim == Dim::Nether { 127 } else { 319 };
-        (self.world.bottom_y()..=top)
+        (self.simulation.world.bottom_y()..=top)
             .rev()
-            .find(|&y| !self.res.facts().is_air(self.world.block(x, y, z)))
-            .map_or(self.world.bottom_y(), |y| y + 1)
+            .find(|&y| {
+                !self
+                    .res
+                    .facts()
+                    .is_air(self.simulation.world.block(x, y, z))
+            })
+            .map_or(self.simulation.world.bottom_y(), |y| y + 1)
     }
     /// Every claimed village point of interest (job sites, beds, bells).
     fn village_pois(&self) -> Vec<[i32; 3]> {
         let mut out: Vec<[i32; 3]> = Vec::new();
-        for m in &self.mobs {
+        for m in &self.simulation.mobs {
             if m.species() != Species::Villager || !m.alive() {
                 continue;
             }
@@ -251,7 +266,7 @@ impl Game<'_> {
     }
     pub(super) fn difficulty_id(&self) -> i32 {
         use horizon_world::food::Difficulty;
-        match self.world.health_rules.difficulty {
+        match self.simulation.world.health_rules.difficulty {
             Difficulty::Peaceful => 0,
             Difficulty::Easy => 1,
             Difficulty::Normal => 2,
@@ -278,7 +293,7 @@ impl Game<'_> {
         self.raiding.loaded = Some(self.dim);
         self.raiding.bar_hurts.clear();
         self.raiding.homes.clear();
-        let seed = self.world.random.next_long();
+        let seed = self.simulation.world.random.next_long();
         self.raiding.raids = match horizon_client::save::read_dat(&self.raids_path(self.dim))
             .and_then(|tag| tag.get("data").cloned())
         {
@@ -358,6 +373,7 @@ impl Game<'_> {
     fn gameplay_attribute(&mut self, key: &str, at: [i32; 3]) -> bool {
         let attributes = self.gameplay_attributes();
         let biome = self
+            .simulation
             .world
             .chunks
             .get(&(at[0] >> 4, at[2] >> 4))
@@ -369,7 +385,7 @@ impl Game<'_> {
                     .clone()
             })
             .unwrap_or_default();
-        attributes.value(key, self.dim.id(), &biome, self.world.day_time)
+        attributes.value(key, self.dim.id(), &biome, self.simulation.world.day_time)
     }
 
     /// `BadOmenMobEffect` and `RaidOmenMobEffect.applyEffectTick` for the
@@ -427,7 +443,7 @@ impl Game<'_> {
         }
         self.load_raids();
         let center = raid::raid_center(at, &self.village_pois());
-        let seed = self.world.random.next_long();
+        let seed = self.simulation.world.random.next_long();
         let difficulty = self.difficulty_id();
         let (id, triggered) = self
             .raiding
@@ -473,7 +489,7 @@ impl Game<'_> {
         std::mem::replace(&mut r.omen_level, level)
     }
     pub(super) fn raid_glow(&mut self, id: i32) {
-        for m in &mut self.mobs {
+        for m in &mut self.simulation.mobs {
             if raider::state(m).is_some_and(|s| s.raid_id == Some(id)) {
                 m.add_effect("glowing", 1000, 1);
             }
@@ -497,7 +513,7 @@ impl Game<'_> {
     }
     /// A raid's members (`groupRaiderMap`): the living raiders it counts.
     fn raid_members(&self, id: i32) -> impl Iterator<Item = &Mob> {
-        self.mobs.iter().filter(move |m| {
+        self.simulation.mobs.iter().filter(move |m| {
             m.alive() && !m.removed && raider::state(m).is_some_and(|s| s.raid_id == Some(id))
         })
     }
@@ -529,7 +545,7 @@ impl Game<'_> {
     /// The members of every raid, for `Raids.tick`.
     fn raider_infos(&self) -> HashMap<i32, Vec<RaiderInfo>> {
         let mut out: HashMap<i32, Vec<RaiderInfo>> = HashMap::new();
-        for m in &self.mobs {
+        for m in &self.simulation.mobs {
             if !m.alive() || m.removed {
                 continue;
             }
@@ -557,6 +573,7 @@ impl Game<'_> {
     /// the wave's leader).
     fn register_loaded_raiders(&mut self) {
         let pending: Vec<(u32, i32, i32, f32, bool)> = self
+            .simulation
             .mobs
             .iter()
             .filter(|m| m.alive() && !m.removed)
@@ -579,7 +596,7 @@ impl Game<'_> {
                 }
                 None => false,
             };
-            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
+            if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == mob) {
                 let s = raider::state_mut(m);
                 s.registered = true;
                 if !known {
@@ -642,14 +659,14 @@ impl Game<'_> {
             Action::Spawn { pos, wave, spawns } => self.spawn_wave(id, pos, wave, &spawns),
             Action::Horn { pos, seed } => self.raid_horn(id, pos, seed),
             Action::Remove { id: mob } => {
-                if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
+                if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == mob) {
                     let s = raider::state_mut(m);
                     s.raid_id = None;
                     s.active_raid = false;
                 }
             }
             Action::SetOutside { id: mob, ticks } => {
-                if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
+                if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == mob) {
                     raider::state_mut(m).ticks_outside_raid = ticks;
                 }
             }
@@ -765,7 +782,7 @@ impl Game<'_> {
             f64::from(pos[2]) + 0.5,
         ];
         let id = self.spawn_event_mob(kind.entity(), at, leader, raider::Reason::Event)?;
-        let m = self.mobs.iter_mut().find(|m| m.id == id)?;
+        let m = self.simulation.mobs.iter_mut().find(|m| m.id == id)?;
         let s = raider::state_mut(m);
         s.raid_id = Some(raid_id);
         s.wave = wave;
@@ -788,8 +805,13 @@ impl Game<'_> {
         reason: raider::Reason,
     ) -> Option<u32> {
         let t = self.res.mob_types().get(kind).cloned()?;
-        self.next_entity += 1;
-        let mut mob = Mob::new(self.next_entity, t, Vec3::new(at[0], at[1], at[2]), 0.0);
+        self.simulation_server.next_entity += 1;
+        let mut mob = Mob::new(
+            self.simulation_server.next_entity,
+            t,
+            Vec3::new(at[0], at[1], at[2]),
+            0.0,
+        );
         if leader {
             raider::set_patrol_leader(&mut mob, true);
             if reason == raider::Reason::Patrol {
@@ -807,8 +829,8 @@ impl Game<'_> {
         spawning::finalize(&mut mob, &facts, &difficulty);
         raider::finalize(&mut mob, reason);
         let id = mob.id;
-        self.mobs.push(mob);
-        self.native_mobs_joined(self.mobs.len() - 1, false);
+        self.simulation.mobs.push(mob);
+        self.native_mobs_joined(self.simulation.mobs.len() - 1, false);
         self.enchant_spawn_equipment(id);
         self.halloween_spawn_head(id);
         Some(id)
@@ -818,8 +840,9 @@ impl Game<'_> {
     /// ride): the raid's state for the goals, joining and recruiting,
     /// the banner of a fallen captain, idle time.
     fn sync_raiders(&mut self, centers: &HashSet<(i32, i32, i32)>) {
-        let now = self.world.game_time;
+        let now = self.simulation.world.game_time;
         let golems: HashSet<u32> = self
+            .simulation
             .mobs
             .iter()
             .filter(|m| m.species() == Species::IronGolem)
@@ -829,7 +852,7 @@ impl Game<'_> {
         let mut leaders: HashSet<(i32, i32)> = HashSet::new();
         let mut ridden: HashSet<u32> = HashSet::new();
         let mut positions: Vec<(u32, Vec3, bool)> = Vec::new();
-        for m in &self.mobs {
+        for m in &self.simulation.mobs {
             let Some(s) = raider::state(m) else { continue };
             if !m.alive() {
                 continue;
@@ -843,6 +866,7 @@ impl Game<'_> {
             positions.push((m.id, m.position, s.active_raid));
         }
         let banners: Vec<(usize, u32, Vec3)> = self
+            .simulation
             .dropped
             .iter()
             .enumerate()
@@ -859,7 +883,7 @@ impl Game<'_> {
         let mut joins: Vec<(u32, i32, f32)> = Vec::new();
         let mut new_leaders: Vec<(i32, i32, u32)> = Vec::new();
         let homes = self.raid_homes();
-        for m in &mut self.mobs {
+        for m in &mut self.simulation.mobs {
             let species = m.species();
             if !raider::is_raider(species) {
                 continue;
@@ -976,7 +1000,7 @@ impl Game<'_> {
             }
         }
         for (i, mob) in collectors {
-            let item = self.dropped[i].clone();
+            let item = self.simulation.dropped[i].clone();
             self.add_pickup(
                 super::pickups::Taken::Item(Box::new(item)),
                 super::pickups::Collector::Mob(mob),
@@ -999,7 +1023,7 @@ impl Game<'_> {
                     && (p.x - at.x).abs() <= 16.0
                     && (p.y - at.y).abs() <= 16.0
                     && (p.z - at.z).abs() <= 16.0
-                    && let Some(m) = self.mobs.iter().find(|m| m.id == *mid)
+                    && let Some(m) = self.simulation.mobs.iter().find(|m| m.id == *mid)
                     && raider::state(m).is_some_and(|s| s.can_join_raid && s.raid_id != Some(id))
                     && m.alive()
                     && m.ai.no_action_time <= 2400
@@ -1018,7 +1042,7 @@ impl Game<'_> {
         let Some(wave) = self.raiding.raids.get(id).map(|r| r.groups_spawned) else {
             return;
         };
-        let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) else {
+        let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == mob) else {
             return;
         };
         let s = raider::state_mut(m);
@@ -1039,7 +1063,7 @@ impl Game<'_> {
     /// Beds within 64 blocks of each raid's centre (the `HOME` points of
     /// interest), rescanned every five seconds.
     fn raid_homes(&mut self) -> HashMap<i32, std::sync::Arc<Vec<[i32; 3]>>> {
-        let now = self.world.game_time;
+        let now = self.simulation.world.game_time;
         let ids: Vec<(i32, [i32; 3])> = self
             .raiding
             .raids
@@ -1065,7 +1089,7 @@ impl Game<'_> {
             for y in c[1] - 32..=c[1] + 32 {
                 for z in c[2] - 64..=c[2] + 64 {
                     for x in c[0] - 64..=c[0] + 64 {
-                        let state = self.world.block(x, y, z);
+                        let state = self.simulation.world.block(x, y, z);
                         if self.res.facts().is_air(state) {
                             continue;
                         }
@@ -1115,7 +1139,7 @@ impl Game<'_> {
             r.remove_from_raid(m.health, false, living);
             self.raiding.raids.dirty = true;
         }
-        if let Some(dead) = self.mobs.iter_mut().find(|x| x.id == m.id) {
+        if let Some(dead) = self.simulation.mobs.iter_mut().find(|x| x.id == m.id) {
             raider::state_mut(dead).raid_id = None;
         }
     }
@@ -1126,7 +1150,7 @@ impl Game<'_> {
     fn sync_villager_raids(&mut self, infos: &HashMap<i32, Vec<RaiderInfo>>) {
         let raids = &self.raiding.raids;
         let mut ongoing = Vec::new();
-        for m in &mut self.mobs {
+        for m in &mut self.simulation.mobs {
             if m.species() != Species::Villager {
                 continue;
             }
@@ -1166,7 +1190,7 @@ impl Game<'_> {
     /// Entity event 42 for villager `id`: the guests get the byte, and this
     /// game draws `AbstractVillager.addParticlesAroundSelf(SPLASH)` itself.
     fn mob_raid_splash(&mut self, id: u32) {
-        let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
+        let Some(m) = self.simulation.mobs.iter().find(|m| m.id == id) else {
             return;
         };
         let at = [m.position.x, m.position.y, m.position.z];
@@ -1201,14 +1225,14 @@ impl Game<'_> {
             }],
         ));
         let rocket = self.new_rocket(Vec3::new(at[0], at[1], at[2]), &stack, false);
-        self.rockets.push(rocket);
+        self.simulation.rockets.push(rocket);
     }
     /// `BehaviorUtils.throwItem`: a hero's gift tossed toward the player.
     pub(super) fn throw_gift(&mut self, table: &str, from: [f64; 3], to: [f64; 3]) {
-        let drops = self
-            .res
-            .items()
-            .loot_table(table, false, None, &mut self.world.random);
+        let drops =
+            self.res
+                .items()
+                .loot_table(table, false, None, &mut self.simulation.world.random);
         let d = Vec3::new(to[0] - from[0], to[1] - from[1], to[2] - from[2]).normalize();
         for stack in drops {
             self.spawn_item(stack, from, [d.x * 0.3, d.y * 0.3, d.z * 0.3], 10);
@@ -1222,14 +1246,14 @@ impl Game<'_> {
     pub(super) fn village_centers(&self) -> HashSet<(i32, i32, i32)> {
         let mut out = HashSet::new();
         let world = self.mob_world_base(&[]);
-        for m in &self.mobs {
+        for m in &self.simulation.mobs {
             if m.species() != Species::Villager || !m.alive() {
                 continue;
             }
             // A remembered HOME is no longer an occupied village POI once its
             // loaded bed head disappears. An unavailable chunk remains unknown.
             let bed = m.extra.bed.filter(|&[x, y, z]| {
-                !self.world.loaded(x, z)
+                !self.simulation.world.loaded(x, z)
                     || horizon_client::mobs::villager_brain::poi_at(&world, x, y, z)
                         == Some(horizon_client::mobs::villager_brain::Poi::Home)
             });
@@ -1249,6 +1273,7 @@ impl Game<'_> {
         let attributes = self.gameplay_attributes();
         let biome_ok = |game: &Game, at: [i32; 3]| {
             let biome = game
+                .simulation
                 .world
                 .chunks
                 .get(&(at[0] >> 4, at[2] >> 4))
@@ -1264,12 +1289,12 @@ impl Game<'_> {
                 horizon_client::patrol::CAN_PILLAGER_PATROL_SPAWN,
                 game.dim.id(),
                 &biome,
-                game.world.day_time,
+                game.simulation.world.day_time,
             )
         };
         let enemies = self.ui.rules.bool("spawn_mobs") && self.ui.rules.bool("spawn_monsters");
         let mut random = std::mem::replace(
-            &mut self.world.random,
+            &mut self.simulation.world.random,
             horizon_core::random::LegacyRandom::new(0),
         );
         let mut members: Vec<Member> = Vec::new();
@@ -1292,7 +1317,7 @@ impl Game<'_> {
             spawner.tick(&level, enemies, &mut random, &mut spawn);
         }
         self.raiding.patrol = spawner;
-        self.world.random = random;
+        self.simulation.world.random = random;
         for m in members {
             let at = [
                 f64::from(m.pos[0]),
@@ -1315,8 +1340,9 @@ impl Game<'_> {
             return;
         }
         // ClockTimeMarkers.ROLL_VILLAGE_SIEGE: tick 18000 of the 24000 tick day.
-        if self.world.day_time.rem_euclid(24000) == 18000 {
-            self.raiding.siege.tonight = self.world.random.next_int_bound(10).unwrap_or(1) == 0;
+        if self.simulation.world.day_time.rem_euclid(24000) == 18000 {
+            self.raiding.siege.tonight =
+                self.simulation.world.random.next_int_bound(10).unwrap_or(1) == 0;
         }
         if !self.raiding.siege.tonight {
             return;
@@ -1364,7 +1390,7 @@ impl Game<'_> {
                 continue;
             }
             for _ in 0..10 {
-                let angle = self.world.random.next_float() * std::f32::consts::TAU;
+                let angle = self.simulation.world.random.next_float() * std::f32::consts::TAU;
                 let spot = [
                     center[0] + (angle.cos() * 32.0).floor() as i32,
                     center[1],
@@ -1402,8 +1428,8 @@ impl Game<'_> {
         else {
             return;
         };
-        let yaw = self.world.random.next_float() * 360.0;
-        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+        let yaw = self.simulation.world.random.next_float() * 360.0;
+        if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
             (m.yaw, m.previous_yaw, m.body_yaw, m.previous_body_yaw) = (yaw, yaw, yaw, yaw);
             (m.head_yaw, m.previous_head_yaw) = (yaw, yaw);
         }
@@ -1417,14 +1443,14 @@ impl Game<'_> {
         spot: [i32; 3],
     ) -> Option<[f64; 3]> {
         let mut random = std::mem::replace(
-            &mut self.world.random,
+            &mut self.simulation.world.random,
             horizon_core::random::LegacyRandom::new(0),
         );
         let mut found = None;
         for _ in 0..10 {
             let x = spot[0] + random.next_int_bound(16).unwrap_or(0) - 8;
             let z = spot[2] + random.next_int_bound(16).unwrap_or(0) - 8;
-            if !self.world.chunks.contains_key(&(x >> 4, z >> 4)) {
+            if !self.simulation.world.chunks.contains_key(&(x >> 4, z >> 4)) {
                 continue;
             }
             let y = self.surface_height(x, z);
@@ -1443,7 +1469,7 @@ impl Game<'_> {
                 break;
             }
         }
-        self.world.random = random;
+        self.simulation.world.random = random;
         found
     }
     /// A raider's ominous banner (drop chance 2.0: always dropped) and a
@@ -1587,6 +1613,7 @@ impl Game<'_> {
                 return Err("raid observation: villager UUID missing/wrong type".into());
             };
             let m = self
+                .simulation
                 .mobs
                 .iter()
                 .find(|m| m.id == id && m.species() == Species::Villager)
@@ -1595,7 +1622,7 @@ impl Game<'_> {
         }
         let pos: [i32; 3] =
             std::array::from_fn(|i| op["poi"][i].as_i64().unwrap_or(i64::MIN) as i32);
-        let loaded = self.world.loaded(pos[0], pos[2]);
+        let loaded = self.simulation.world.loaded(pos[0], pos[2]);
         let live_poi = loaded.then(|| {
             let w = self.mob_world_base(&[]);
             format!(

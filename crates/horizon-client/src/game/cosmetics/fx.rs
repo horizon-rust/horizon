@@ -308,7 +308,10 @@ impl Game<'_> {
         };
         // Lit where it floats.
         let p = (camera + matrix.w_axis.truncate().as_dvec3()).floor();
-        let light = self.world.light(p.x as i32, p.y as i32, p.z as i32);
+        let light = self
+            .simulation
+            .world
+            .light(p.x as i32, p.y as i32, p.z as i32);
         let mut light = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
         if item.companion.as_ref().is_some_and(|c| c.glow) {
             light = FULL_LIGHT;

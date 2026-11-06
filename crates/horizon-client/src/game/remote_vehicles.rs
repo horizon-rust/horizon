@@ -80,30 +80,30 @@ impl Game<'_> {
         };
         let mut hits: Vec<(i32, f64, [f64; 3])> = Vec::new();
         if let Some((i, d)) = self.painting_hit() {
-            let p = &self.paintings[i];
+            let p = &self.simulation.paintings[i];
             hits.push((p.id as i32, d, block_centre(p.pos)));
         }
         if let Some((i, d)) = self.frame_hit() {
-            let f = &self.item_frames[i];
+            let f = &self.simulation.item_frames[i];
             hits.push((f.id as i32, d, block_centre(f.pos)));
         }
         if let Some((i, d, _)) = self.armor_stand_hit() {
-            let a = &self.armor_stands[i];
+            let a = &self.simulation.armor_stands[i];
             let p = a.position;
             hits.push((a.id as i32, d, [p.x, p.y, p.z]));
         }
         if let Some((i, d, _)) = self.cushion_hit() {
-            let c = &self.cushions[i];
+            let c = &self.simulation.cushions[i];
             let p = c.position;
             hits.push((c.id as i32, d, [p.x, p.y, p.z]));
         }
         if let Some((i, d)) = self.boat_hit() {
-            let p = self.boats[i].position;
-            hits.push((self.boats[i].id as i32, d, [p.x, p.y, p.z]));
+            let p = self.simulation.boats[i].position;
+            hits.push((self.simulation.boats[i].id as i32, d, [p.x, p.y, p.z]));
         }
         if let Some((i, d)) = self.cart_hit() {
-            let p = self.carts[i].position;
-            hits.push((self.carts[i].id as i32, d, [p.x, p.y, p.z]));
+            let p = self.simulation.carts[i].position;
+            hits.push((self.simulation.carts[i].id as i32, d, [p.x, p.y, p.z]));
         }
         // Interaction.isPickable: an invisible box the server clicks through
         // to its scripts, for both uses and attacks.
@@ -122,7 +122,7 @@ impl Game<'_> {
             // id, not special_targets' local projectile target id.
             // Entity.interact passes on a crystal, so right clicks use the item.
             let reach = self.entity_reach;
-            for c in self.crystals.iter().filter(|c| c.id != 0) {
+            for c in self.simulation.crystals.iter().filter(|c| c.id != 0) {
                 let p = c.position;
                 let bounds = Aabb::new(
                     Vec3::new(p.x - 1.0, p.y, p.z - 1.0),
@@ -162,11 +162,16 @@ impl Game<'_> {
                 .as_ref()
                 .is_some_and(|r| r.level_player(id).is_some())
         });
-        if let Some(boat) = self.boats.iter_mut().find(|b| b.id == vehicle_id) {
+        if let Some(boat) = self
+            .simulation
+            .boats
+            .iter_mut()
+            .find(|b| b.id == vehicle_id)
+        {
             boat.paddle_controller = player_controls;
         }
 
-        for m in &mut self.mobs {
+        for m in &mut self.simulation.mobs {
             // `Entity.isVehicle` (the saddle reins of a ridden horse): the
             // server sends no rider on the mob itself, only this list.
             if m.id == vehicle_id {
@@ -187,7 +192,7 @@ impl Game<'_> {
                 display.vehicle = None;
             }
         }
-        for a in &mut self.armor_stands {
+        for a in &mut self.simulation.armor_stands {
             if passengers.contains(&(a.id as i32)) {
                 a.vehicle = Some(vehicle_id);
             } else if a.vehicle == Some(vehicle_id) {
@@ -210,7 +215,12 @@ impl Game<'_> {
         if passengers.contains(&me) {
             if self.riding != Some(vehicle_id) {
                 self.riding = Some(vehicle_id);
-                if let Some(c) = self.carts.iter_mut().find(|c| c.id == vehicle_id) {
+                if let Some(c) = self
+                    .simulation
+                    .carts
+                    .iter_mut()
+                    .find(|c| c.id == vehicle_id)
+                {
                     c.passenger_yaw_delta = 0.0;
                 }
                 if let Some(p) = self.player.as_mut() {
@@ -221,13 +231,17 @@ impl Game<'_> {
         } else if self.riding == Some(vehicle_id) {
             // The server takes the player out, then teleports it.
             self.riding = None;
-            if let Some(m) = self.mob_index.get_mut(&mut self.mobs, vehicle_id) {
+            if let Some(m) = self
+                .simulation
+                .mob_index
+                .get_mut(&mut self.simulation.mobs, vehicle_id)
+            {
                 m.rider = None;
             }
             // HappyGhast.removePassenger: a still timeout of 10 (the server's
             // STAYS_STILL confirms it), and the rider lands on top of the ghast
             // (`place_ghast_under`).
-            if let Some(m) = self.mobs.iter_mut().find(|m| {
+            if let Some(m) = self.simulation.mobs.iter_mut().find(|m| {
                 m.id == vehicle_id && m.species() == horizon_client::mobs::Species::HappyGhast
             }) {
                 m.extra.counter = 10;
@@ -246,7 +260,8 @@ impl Game<'_> {
             return None;
         }
         let id = self.riding?;
-        self.carts
+        self.simulation
+            .carts
             .iter()
             .find(|c| c.id == id && c.kind == super::minecarts::CartKind::Rideable)?;
         let (mut position, _, _) = self.remote_minecart_lerp(id, partial)?;
@@ -274,10 +289,10 @@ impl Game<'_> {
         if let Some(p) = self.player.as_mut() {
             p.sprint_input_tick_riding(keys, sprint_window, can_sprint, local)?;
         }
-        if let Some(i) = self.mobs.iter().position(|m| m.id == id) {
+        if let Some(i) = self.simulation.mobs.iter().position(|m| m.id == id) {
             // LocalPlayer.aiStep: the jump bar charges while jump is held.
             let jump = self.charge_mount_jump(i, keys);
-            if self.drives(&self.mobs[i]) {
+            if self.drives(&self.simulation.mobs[i]) {
                 self.drive_mount(i, keys, jump);
             }
             // Another animal moves on the server with the rider's input
@@ -285,15 +300,15 @@ impl Game<'_> {
             self.position_rider();
             return Ok(true);
         }
-        let seat = if let Some(c) = self.cushions.iter().find(|c| c.id == id) {
+        let seat = if let Some(c) = self.simulation.cushions.iter().find(|c| c.id == id) {
             // The seat does not move; the rider sits on the cushion.
             Some(c.seat())
-        } else if let Some(i) = self.boats.iter().position(|b| b.id == id) {
+        } else if let Some(i) = self.simulation.boats.iter().position(|b| b.id == id) {
             // AbstractBoat.tick on the controlling client: steer and move.
             // It steers with the input `LocalPlayer.rideTick` latched on the
             // previous tick, so the paddle packet describes the motion the
             // server is sent; this tick's keys are latched after it ticked.
-            let mut b = self.boats[i].clone();
+            let mut b = self.simulation.boats[i].clone();
             if self.controls_boat(id) {
                 b = self.tick_boat(b, true);
                 b.input = [keys.left, keys.right, keys.forward, keys.backward];
@@ -302,7 +317,7 @@ impl Game<'_> {
             self.yaw += b.delta_rotation;
             let delta = (self.yaw - b.yaw + 180.0).rem_euclid(360.0) - 180.0;
             self.yaw += delta.clamp(-105.0, 105.0) - delta;
-            self.boats[i] = b;
+            self.simulation.boats[i] = b;
             // In front of a mob that shares the boat.
             Some(self.player_boat_seat(i))
         } else {
@@ -311,14 +326,14 @@ impl Game<'_> {
             // transfer the previous vehicle's pending turn.
             let rotate =
                 self.minecart_improvements() && self.settings.file.bool("rotateWithMinecart");
-            if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
+            if let Some(c) = self.simulation.carts.iter_mut().find(|c| c.id == id) {
                 c.passenger_yaw_delta = 0.0;
                 if rotate && c.kind == super::minecarts::CartKind::Rideable {
                     c.rotate_passenger(&mut self.yaw);
                 }
             }
             // A minecart: the server moves it, the rider sits in it.
-            let cart = self.carts.iter().find(|c| c.id == id).map(|c| {
+            let cart = self.simulation.carts.iter().find(|c| c.id == id).map(|c| {
                 c.position
                     .add_vector(Vec3::new(0.0, super::minecarts::SEAT, 0.0))
             });
@@ -359,7 +374,7 @@ impl Game<'_> {
         let Some(b) = self
             .riding
             .filter(|&id| self.controls_boat(id))
-            .and_then(|id| self.boats.iter().find(|b| b.id == id))
+            .and_then(|id| self.simulation.boats.iter().find(|b| b.id == id))
         else {
             return Vec::new();
         };
@@ -382,7 +397,10 @@ impl Game<'_> {
     pub(super) fn remote_move_vehicle(&mut self, position: [f64; 3], yaw: f32) {
         let at = Vec3::new(position[0], position[1], position[2]);
         if let Some(id) = self.driven_mount().map(|m| m.id)
-            && let Some(m) = self.mob_index.get_mut(&mut self.mobs, id)
+            && let Some(m) = self
+                .simulation
+                .mob_index
+                .get_mut(&mut self.simulation.mobs, id)
         {
             m.previous = at;
             m.position = at;
@@ -394,7 +412,7 @@ impl Game<'_> {
         let Some(b) = self
             .riding
             .filter(|&id| self.controls_boat(id))
-            .and_then(|id| self.boats.iter_mut().find(|b| b.id == id))
+            .and_then(|id| self.simulation.boats.iter_mut().find(|b| b.id == id))
         else {
             return;
         };
@@ -413,7 +431,7 @@ impl Game<'_> {
         if !drag_down && event != super::boats::BUBBLE_UP_EVENT {
             return;
         }
-        if let Some(i) = self.boats.iter().position(|b| b.id == id as u32) {
+        if let Some(i) = self.simulation.boats.iter().position(|b| b.id == id as u32) {
             self.handle_bubble_column_effect(i, drag_down);
         }
     }
@@ -424,13 +442,13 @@ impl Game<'_> {
     /// dragged by a column it is inside) and `tickBubbleColumn`'s wobble from
     /// the synched bubble time, followed by the oars on boats this client does not drive.
     pub(super) fn tick_remote_boat_bubbles(&mut self) {
-        for i in 0..self.boats.len() {
-            let driven = self.controls_boat(self.boats[i].id);
+        for i in 0..self.simulation.boats.len() {
+            let driven = self.controls_boat(self.simulation.boats[i].id);
             if !driven {
                 // `AbstractBoat.tick`: the non-authoritative copy carries no
                 // cached motion into the next time this player drives it.
-                self.boats[i].velocity = Vec3::ZERO;
-                self.boats[i].delta_rotation = 0.0;
+                self.simulation.boats[i].velocity = Vec3::ZERO;
+                self.simulation.boats[i].delta_rotation = 0.0;
                 self.refresh_boat_status(i);
             }
             let touches = self.boat_bubble_columns(i);
@@ -445,12 +463,12 @@ impl Game<'_> {
                     }
                 }
             }
-            self.boats[i].tick_bubble_wobble();
+            self.simulation.boats[i].tick_bubble_wobble();
             if !driven {
                 Self::tick_boat_paddles(
-                    &mut self.boats[i],
+                    &mut self.simulation.boats[i],
                     &mut self.audio,
-                    &mut self.world.random,
+                    &mut self.simulation.world.random,
                 );
             }
         }
@@ -479,7 +497,10 @@ impl Game<'_> {
     /// The mount this client moves, if the player rides one.
     pub(super) fn driven_mount(&self) -> Option<&Mob> {
         let id = self.riding?;
-        self.mobs.iter().find(|m| m.id == id && self.drives(m))
+        self.simulation
+            .mobs
+            .iter()
+            .find(|m| m.id == id && self.drives(m))
     }
 
     /// `LocalPlayer.aiStep` and `LivingEntity.travelRidden` on the
@@ -494,8 +515,8 @@ impl Game<'_> {
         }
         let strafe = f32::from(u8::from(keys.left)) - f32::from(u8::from(keys.right));
         let forward = f32::from(u8::from(keys.forward)) - f32::from(u8::from(keys.backward));
-        let steer = self.steers_mount(&self.mobs[i]);
-        let m = &mut self.mobs[i];
+        let steer = self.steers_mount(&self.simulation.mobs[i]);
+        let m = &mut self.simulation.mobs[i];
         if jump > 0.0 && equine::is_equine(m.species()) {
             // LocalPlayer.aiStep also runs `onPlayerJump` here: the mount slides
             // on the rider's keys and rears while the server does the same.
@@ -518,8 +539,8 @@ impl Game<'_> {
             jumping: keys.jump,
             client: false,
         });
-        let mut mob = self.mobs.remove(i);
-        let mut random = self.world.random.clone();
+        let mut mob = self.simulation.mobs.remove(i);
+        let mut random = self.simulation.world.random.clone();
         let mut events = Vec::new();
         {
             let world = self.mob_world_base(&[]);
@@ -527,8 +548,8 @@ impl Game<'_> {
         }
         // Only the server's packets take the mount away.
         mob.removed = false;
-        self.world.random = random;
-        self.mobs.insert(i, mob);
+        self.simulation.world.random = random;
+        self.simulation.mobs.insert(i, mob);
         // #4821: footstep, gallop, breathe, splash and landing sounds from mob.tick
         let _ = self.handle_mob_events(events);
     }
@@ -650,8 +671,8 @@ mod tests {
                 _ => None,
             };
             game.offhand = (hand == "off").then(|| ItemStack::new(stick, 1));
-            game.mobs.clear();
-            game.mobs.push(m);
+            game.simulation.mobs.clear();
+            game.simulation.mobs.push(m);
             game.riding = Some(7);
             game.remote.as_mut().unwrap().first_passenger = row["first"].as_bool().unwrap();
             let controlled = row["controlled"].as_bool().unwrap();
@@ -660,9 +681,9 @@ mod tests {
             assert_eq!(packets.len(), usize::from(controlled), "{row}");
             if controlled {
                 assert!(matches!(packets[0], S::MoveVehicle(_)), "{row}");
-                let before = game.mobs[0].position;
+                let before = game.simulation.mobs[0].position;
                 assert!(game.remote_ride(Keys::default(), 0).unwrap());
-                let m = &game.mobs[0];
+                let m = &game.simulation.mobs[0];
                 assert_eq!(
                     f64::from(m.ai.zza),
                     row["forward"].as_f64().unwrap(),
@@ -682,19 +703,19 @@ mod tests {
             // this controlling client's MoveVehicle rather than traveling twice.
             if row["first"].as_bool().unwrap() {
                 assert!(game.tick_mount_riding(Keys::default()));
-                game.mobs[0].rider.as_mut().unwrap().client = true;
+                game.simulation.mobs[0].rider.as_mut().unwrap().client = true;
             } else {
-                game.mobs[0].rider = None;
+                game.simulation.mobs[0].rider = None;
             }
             assert_eq!(
-                equine::moved_by_client(&game.mobs[0]),
+                equine::moved_by_client(&game.simulation.mobs[0]),
                 !row["server_simulates"].as_bool().unwrap(),
                 "{row}"
             );
             if controlled {
-                let mut server_mount = game.mobs[0].clone();
+                let mut server_mount = game.simulation.mobs[0].clone();
                 let before = server_mount.position;
-                let mut random = game.world.random.clone();
+                let mut random = game.simulation.world.random.clone();
                 let mut events = Vec::new();
                 server_mount.tick(&game.mob_world_base(&[]), &mut random, &mut events);
                 assert_eq!(

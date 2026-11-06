@@ -27,7 +27,7 @@ impl Game<'_> {
         });
         let actor = self.acting_uuid();
         let Some(result) = predict(
-            &mut self.mobs[index],
+            &mut self.simulation.mobs[index],
             offered.as_ref(),
             hand == Hand::Main,
             duplicates,
@@ -54,17 +54,18 @@ impl Game<'_> {
         // The playing jukeboxes, found at the first allay: no allay starts
         // or stops one, and the block entities run into the thousands.
         let mut jukeboxes: Option<Vec<(i32, i32, i32)>> = None;
-        for i in 0..self.mobs.len() {
-            if self.mobs[i].species() != Species::Allay
-                || !self.mobs[i].alive()
-                || !self.creatures.ticked.contains(&self.mobs[i].id)
+        for i in 0..self.simulation.mobs.len() {
+            if self.simulation.mobs[i].species() != Species::Allay
+                || !self.simulation.mobs[i].alive()
+                || !self.creatures.ticked.contains(&self.simulation.mobs[i].id)
             {
                 continue;
             }
-            let pos = self.mobs[i].position;
+            let pos = self.simulation.mobs[i].position;
             // Dancing: a playing jukebox within 10 blocks.
             let jukeboxes = jukeboxes.get_or_insert_with(|| {
-                self.world
+                self.simulation
+                    .world
                     .block_entities
                     .iter()
                     .filter(|(_, e)| matches!(e, BlockEntity::Jukebox(j) if j.playing))
@@ -80,29 +81,37 @@ impl Game<'_> {
                 })
                 .fold(f64::INFINITY, f64::min);
             // `Allay.setDancing` wants effective AI: a `NoAI` allay never dances.
-            let panicking = horizon_client::mobs::goals::should_panic(&self.mobs[i]);
-            self.mobs[i].extra.flag = allay::dances(self.mobs[i].no_ai, panicking, nearest);
-            let Some(held) = self.mobs[i].extra.main_hand_stack().cloned() else {
-                self.mobs[i].extra.point = None;
+            let panicking = horizon_client::mobs::goals::should_panic(&self.simulation.mobs[i]);
+            self.simulation.mobs[i].extra.flag =
+                allay::dances(self.simulation.mobs[i].no_ai, panicking, nearest);
+            let Some(held) = self.simulation.mobs[i].extra.main_hand_stack().cloned() else {
+                self.simulation.mobs[i].extra.point = None;
                 continue;
             };
             // The held filter chooses item types; the pocket independently
             // decides whether the candidate's full components can fit.
-            let wants = self.mobs[i].can_pick_up_loot() && griefing;
+            let wants = self.simulation.mobs[i].can_pick_up_loot() && griefing;
             let room = |stack: &ItemStack| {
-                self.mobs[i].extra.allay.as_ref().map_or(0, |st| {
-                    st.room(stack, self.mobs[i].kind.inventory_stack_limit(stack))
-                })
+                self.simulation.mobs[i]
+                    .extra
+                    .allay
+                    .as_ref()
+                    .map_or(0, |st| {
+                        st.room(
+                            stack,
+                            self.simulation.mobs[i].kind.inventory_stack_limit(stack),
+                        )
+                    })
             };
-            let reach = allay::pickup_reach(self.mobs[i].bounds());
+            let reach = allay::pickup_reach(self.simulation.mobs[i].bounds());
             // GoToWantedItem: a stack it considers equal within 32 that the
             // allay sees (NearestItemSensor's hasLineOfSight, eye to eye). The
             // sensor is the brain's, so without AI only `Mob.aiStep`'s looting
             // loop runs: it takes an equal drop already in `getPickupReach`.
             let wanted = if !wants {
                 None
-            } else if self.mobs[i].no_ai {
-                self.dropped.iter().position(|e| {
+            } else if self.simulation.mobs[i].no_ai {
+                self.simulation.dropped.iter().position(|e| {
                     e.pickup_delay == 0
                         && allay::considers_item_equal(&held, &e.stack)
                         && room(&e.stack) > 0
@@ -110,11 +119,16 @@ impl Game<'_> {
                 })
             } else {
                 let w = self.mob_world_base(&[]);
-                let eye = horizon_core::geometry::Vec3::new(pos.x, self.mobs[i].eye_y(), pos.z);
+                let eye = horizon_core::geometry::Vec3::new(
+                    pos.x,
+                    self.simulation.mobs[i].eye_y(),
+                    pos.z,
+                );
                 // The sensor looks in the allay's box grown by (32, 16, 32).
-                let b = self.mobs[i].bounds();
+                let b = self.simulation.mobs[i].bounds();
                 let (low, high) = (b.min_position().y - 16.0, b.max_position().y + 16.0);
-                self.dropped
+                self.simulation
+                    .dropped
                     .iter()
                     .enumerate()
                     .filter(|(_, e)| {
@@ -125,12 +139,12 @@ impl Game<'_> {
                     .map(|(j, e)| (j, e.position.distance_squared(pos)))
                     .filter(|(_, d)| *d < 32.0 * 32.0)
                     .filter(|(j, _)| {
-                        let y = self.dropped[*j].position.y;
+                        let y = self.simulation.dropped[*j].position.y;
                         y <= high && y + 0.25 >= low
                     })
                     .filter(|(j, _)| {
                         // ItemEntity's eye height is 0.2125.
-                        let e = &self.dropped[*j];
+                        let e = &self.simulation.dropped[*j];
                         let at = horizon_core::geometry::Vec3::new(
                             e.position.x,
                             e.position.y + 0.2125,
@@ -142,18 +156,18 @@ impl Game<'_> {
                     .map(|(j, _)| j)
             };
             let Some(j) = wanted else {
-                self.mobs[i].extra.point = None;
+                self.simulation.mobs[i].extra.point = None;
                 // `GiveInventoryToLookTargetPlayer` is the brain's too.
-                if !self.mobs[i].no_ai {
+                if !self.simulation.mobs[i].no_ai {
                     self.allay_deliver(i);
                 }
                 continue;
             };
-            let e = &self.dropped[j];
+            let e = &self.simulation.dropped[j];
             if reach.contains(e.position) {
-                let (item, id) = (e.clone(), self.mobs[i].id);
-                let max = self.mobs[i].kind.inventory_stack_limit(&e.stack);
-                let take = self.mobs[i]
+                let (item, id) = (e.clone(), self.simulation.mobs[i].id);
+                let max = self.simulation.mobs[i].kind.inventory_stack_limit(&e.stack);
+                let take = self.simulation.mobs[i]
                     .extra
                     .allay
                     .as_mut()
@@ -163,26 +177,29 @@ impl Game<'_> {
                     super::pickups::Taken::Item(Box::new(item)),
                     super::pickups::Collector::Mob(id),
                 );
-                let e = &mut self.dropped[j];
+                let e = &mut self.simulation.dropped[j];
                 e.stack.count -= take;
                 if e.stack.count == 0 {
                     self.remove_dropped(j);
                 }
                 let at = [pos.x, pos.y, pos.z];
-                let pitch =
-                    (self.world.random.next_float() - self.world.random.next_float()) * 1.4 + 2.0;
+                let pitch = (self.simulation.world.random.next_float()
+                    - self.simulation.world.random.next_float())
+                    * 1.4
+                    + 2.0;
                 self.audio
                     .play("minecraft:entity.item.pickup", Some(at), 0.2, pitch);
-                self.mobs[i].extra.point = None;
+                self.simulation.mobs[i].extra.point = None;
             } else {
-                self.mobs[i].extra.point = Some([e.position.x, e.position.y, e.position.z]);
+                self.simulation.mobs[i].extra.point =
+                    Some([e.position.x, e.position.y, e.position.z]);
             }
         }
     }
     /// The UUID of the player an allay likes (`LIKED_PLAYER`).
     fn allay_liked_uuid(&self, i: usize) -> [i32; 4] {
         // An allay saved before its player was kept belongs to the host.
-        self.mobs[i]
+        self.simulation.mobs[i]
             .extra
             .owner
             .filter(|u| *u != [0, 0, 0, 1])
@@ -194,7 +211,7 @@ impl Game<'_> {
     /// is a guest on the server thread), when they are not a spectator and
     /// within 64 blocks.
     fn allay_liked_player(&self, i: usize) -> Option<horizon_core::geometry::Vec3> {
-        let m = &self.mobs[i];
+        let m = &self.simulation.mobs[i];
         if !m.extra.tame {
             return None;
         }
@@ -228,22 +245,22 @@ impl Game<'_> {
     /// the deposit, one item a tick, each restarting the three-second pause
     /// before it picks anything up again.
     fn allay_deliver(&mut self, i: usize) {
-        let m = &self.mobs[i];
+        let m = &self.simulation.mobs[i];
         if allay::inventory(m).is_none() {
             return;
         }
         // AllayAi.getItemDepositPosition: the liked note block, else the player.
         let dimension = self.dim.id();
-        let noteblock = allay::noteblock_deposit(&mut self.mobs[i], dimension, |p| {
+        let noteblock = allay::noteblock_deposit(&mut self.simulation.mobs[i], dimension, |p| {
             &*self
                 .res
                 .facts()
-                .get(self.world.block(p[0], p[1], p[2]))
+                .get(self.simulation.world.block(p[0], p[1], p[2]))
                 .name
                 == "minecraft:note_block"
         });
         let player = self.allay_liked_player(i);
-        let m = &self.mobs[i];
+        let m = &self.simulation.mobs[i];
         let target = match noteblock {
             Some(p) => horizon_core::geometry::Vec3::new(p[0], p[1], p[2]),
             None => match player.filter(|_| m.extra.tame) {
@@ -285,22 +302,25 @@ impl Game<'_> {
                 g.trigger_block("minecraft:allay_drop_item_on_block", below, &stack);
             }
         });
-        let m = &mut self.mobs[i];
+        let m = &mut self.simulation.mobs[i];
         m.extra.allay.as_mut().unwrap().take(1);
         m.extra.ints[3] = 60;
         // ItemEntity.setDefaultPickUpDelay.
         self.spawn_item(stack, from, v, 10);
         // BehaviorUtils.throwItem: ItemEntity.setThrower(the allay).
-        let allay = self.mob_uuid(self.mobs[i].id);
+        let allay = self.mob_uuid(self.simulation.mobs[i].id);
         if let Some(thrown) = self.just_spawned_item() {
             thrown.thrower = Some(allay);
         }
-        if self.world.game_time % 7 == 0 && self.world.random.next_double() < 0.9 {
+        if self.simulation.world.game_time % 7 == 0
+            && self.simulation.world.random.next_double() < 0.9
+        {
             const PITCHES: [f32; 16] = [
                 0.5625, 0.625, 0.75, 0.9375, 1.0, 1.0, 1.125, 1.25, 1.5, 1.875, 2.0, 2.25, 2.5,
                 3.0, 3.75, 4.0,
             ];
-            let pitch = PITCHES[self.world.random.next_int_bound(16).unwrap_or(4) as usize];
+            let pitch =
+                PITCHES[self.simulation.world.random.next_int_bound(16).unwrap_or(4) as usize];
             self.play_mob_bound_sound(
                 i,
                 "minecraft:entity.allay.item_thrown",
@@ -314,7 +334,7 @@ impl Game<'_> {
     /// `Allay.mobInteract`: duplicate when dancing with an amethyst shard,
     /// take the held item, or hand back what it holds.
     pub(super) fn interact_allay(&mut self, index: usize, item: Option<&ItemStack>) -> bool {
-        let m = &self.mobs[index];
+        let m = &self.simulation.mobs[index];
         if m.species() != Species::Allay || !m.alive() {
             return false;
         }
@@ -327,14 +347,14 @@ impl Game<'_> {
         });
         if m.extra.flag && shard && m.extra.egg_time == 0 {
             let pos = at;
-            self.mobs[index].extra.egg_time = 6000;
+            self.simulation.mobs[index].extra.egg_time = 6000;
             if let Some(id) = self.spawn_mob("minecraft:allay", pos, true)
-                && let Some(c) = self.mobs.iter_mut().find(|m| m.id == id)
+                && let Some(c) = self.simulation.mobs.iter_mut().find(|m| m.id == id)
             {
                 c.extra.egg_time = 6000;
             }
             // Allay.duplicateAllay: entity event 18, three spawnHeartParticle.
-            let id = self.mobs[index].id;
+            let id = self.simulation.mobs[index].id;
             self.mob_event_particles(id, 18);
             self.play_mob_bound_sound(
                 index,
@@ -350,7 +370,7 @@ impl Game<'_> {
         let acting = self.acting_uuid();
         let holds = m.extra.main_hand.is_some();
         if !holds && let Some(mut given) = item.cloned() {
-            let m = &mut self.mobs[index];
+            let m = &mut self.simulation.mobs[index];
             // `Allay.mobInteract` hands over one item, its components and all.
             given.count = 1;
             m.extra.set_main_hand_stack(Some(given));
@@ -370,7 +390,7 @@ impl Game<'_> {
         }
         // Allay.mobInteract takes the item back only through an empty main hand.
         if holds && item.is_none() && self.hand == Hand::Main {
-            let m = &mut self.mobs[index];
+            let m = &mut self.simulation.mobs[index];
             // The hand's stack keeps the components (a potion) the items came with.
             let held = m
                 .extra
@@ -390,7 +410,7 @@ impl Game<'_> {
                 true,
             );
             // Allay.mobInteract ends with swing(MAIN_HAND, ...).
-            self.mobs[index].swing();
+            self.simulation.mobs[index].swing();
             if let Some(stack) = carried {
                 self.spawn_item(stack, at, [0.0, 0.2, 0.0], 40);
             }

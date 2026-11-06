@@ -80,8 +80,8 @@ impl Game<'_> {
     /// `AbstractMinecart.getDismountLocationForPassenger` for a standing mob.
     pub(super) fn cart_dismount_point(&self, vehicle: u32, rider: usize) -> Option<Vec3> {
         use horizon_core::geometry::Aabb;
-        let cart = self.carts.iter().find(|c| c.id == vehicle)?;
-        let rider = &self.mobs[rider];
+        let cart = self.simulation.carts.iter().find(|c| c.id == vehicle)?;
+        let rider = &self.simulation.mobs[rider];
         let direction =
             (f64::from(cart.yaw) / 90.0 + 0.5).floor() as i32 + if cart.flipped { 3 } else { 1 };
         let (fx, fz) = [(0, 1), (-1, 0), (0, -1), (1, 0)][(direction & 3) as usize];
@@ -133,10 +133,11 @@ impl Game<'_> {
     pub(super) fn horse_dismount_point(&self, vehicle: u32, rider: usize) -> Option<Vec3> {
         use horizon_core::geometry::{Aabb, trig};
         let mount = self
+            .simulation
             .mobs
             .iter()
             .find(|m| m.id == vehicle && is_horse(m.species()))?;
-        let rider = &self.mobs[rider];
+        let rider = &self.simulation.mobs[rider];
         let turn = if rider.main_arm_left() { -90.0 } else { 90.0 };
         let reach =
             (f64::from(mount.width()) + f64::from(rider.width()) + f64::from(1e-5_f32)) / 2.0;
@@ -180,6 +181,7 @@ impl Game<'_> {
     /// their transitions. Dismounting also seats their own passengers again.
     fn prepare_vehicle_transition(&mut self, root: u32) {
         let riders: Vec<_> = self
+            .simulation
             .mobs
             .iter()
             .filter(|m| m.extra.mount == Some(root))
@@ -191,7 +193,7 @@ impl Game<'_> {
         }
         for rider in riders {
             self.prepare_vehicle_transition(rider);
-            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == rider) {
+            if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == rider) {
                 // Preserve the tree for serialization after all transitions
                 // have used the positions left by ejectPassengers.
                 m.extra.mount = Some(root);
@@ -203,7 +205,7 @@ impl Game<'_> {
     /// `Entity.teleportPassengers` on a mob dismounted during a transition.
     fn snap_mob_passengers(&mut self, root: u32) {
         use horizon_client::mobs::riders;
-        let Some(vehicle) = self.mobs.iter().find(|m| m.id == root) else {
+        let Some(vehicle) = self.simulation.mobs.iter().find(|m| m.id == root) else {
             return;
         };
         let (position, yaw, width, attachment) = (
@@ -213,7 +215,12 @@ impl Game<'_> {
             riders::passenger_attachment(vehicle),
         );
         let mut children = Vec::new();
-        for m in self.mobs.iter_mut().filter(|m| m.extra.mount == Some(root)) {
+        for m in self
+            .simulation
+            .mobs
+            .iter_mut()
+            .filter(|m| m.extra.mount == Some(root))
+        {
             m.position = riders::seat(
                 attachment,
                 riders::vehicle_attachment(m, width),
@@ -250,6 +257,7 @@ impl Game<'_> {
             game.enter_level(None, destination)?;
             game.enter_level(None, source)?;
             if game
+                .simulation
                 .mobs
                 .iter()
                 .any(|m| m.id == root && m.extra.mount.is_some())
@@ -259,7 +267,12 @@ impl Game<'_> {
             }
             game.prepare_vehicle_transition(root);
             game.teleport_to_in_level(target, at, rotation, turn_riders);
-            let mounts: Vec<_> = game.mobs.iter().map(|m| (m.id, m.extra.mount)).collect();
+            let mounts: Vec<_> = game
+                .simulation
+                .mobs
+                .iter()
+                .map(|m| (m.id, m.extra.mount))
+                .collect();
             let tree = super::persist::vehicle_tree(root, &mounts);
             let tag = game.vehicle_tree_nbt(root).ok_or("missing vehicle tree")?;
             let kind = horizon_client::entity_nbt::kind(&tag).ok_or("missing vehicle type")?;
@@ -294,9 +307,9 @@ impl Game<'_> {
                 .into_iter()
                 .map(|(conn, at, rotation, mount)| (conn, at, rotation, game.uuid_for(mount)))
                 .collect();
-            game.mobs.retain(|m| !tree.contains(&m.id));
-            game.boats.retain(|b| !tree.contains(&b.id));
-            game.carts.retain(|c| !tree.contains(&c.id));
+            game.simulation.mobs.retain(|m| !tree.contains(&m.id));
+            game.simulation.boats.retain(|b| !tree.contains(&b.id));
+            game.simulation.carts.retain(|c| !tree.contains(&c.id));
             for id in tree {
                 game.release_vehicle_container(id);
                 game.detach_entity(id);
@@ -313,9 +326,15 @@ impl Game<'_> {
             let new_root = uuid
                 .and_then(|uuid| game.vehicle_by_uuid(uuid))
                 .ok_or("restored vehicle is missing")?;
-            let mounts: Vec<_> = game.mobs.iter().map(|m| (m.id, m.extra.mount)).collect();
+            let mounts: Vec<_> = game
+                .simulation
+                .mobs
+                .iter()
+                .map(|m| (m.id, m.extra.mount))
+                .collect();
             let restored = super::persist::vehicle_tree(new_root, &mounts);
             let horses: Vec<_> = game
+                .simulation
                 .mobs
                 .iter()
                 .filter(|m| restored.contains(&m.id) && is_horse(m.species()))
@@ -323,6 +342,7 @@ impl Game<'_> {
                 .collect();
             for (horse, pitch) in horses {
                 for rider in game
+                    .simulation
                     .mobs
                     .iter_mut()
                     .filter(|m| m.extra.mount == Some(horse))
@@ -380,13 +400,14 @@ impl Game<'_> {
         rotation: Option<PlacedRotation>,
     ) {
         let riders: Vec<u32> = self
+            .simulation
             .mobs
             .iter()
             .filter(|m| m.extra.mount == Some(vehicle))
             .map(|m| m.id)
             .collect();
         for id in riders {
-            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+            if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
                 m.position = passenger_destination(old, new, m.position);
                 m.previous = m.position;
                 // Entity.calculatePassengerTransition turns the rider with the
@@ -465,11 +486,11 @@ impl Game<'_> {
 
     /// A vehicle's yaw and pitch, for the riders' teleport packet.
     fn vehicle_rotation(&self, id: u32) -> [f32; 2] {
-        if let Some(b) = self.boats.iter().find(|b| b.id == id) {
+        if let Some(b) = self.simulation.boats.iter().find(|b| b.id == id) {
             [b.yaw, b.pitch]
-        } else if let Some(c) = self.carts.iter().find(|c| c.id == id) {
+        } else if let Some(c) = self.simulation.carts.iter().find(|c| c.id == id) {
             [c.yaw, c.pitch]
-        } else if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
+        } else if let Some(m) = self.simulation.mobs.iter().find(|m| m.id == id) {
             [m.yaw, m.head_pitch]
         } else {
             [0.0, 0.0]
@@ -500,7 +521,7 @@ impl Game<'_> {
                 self.rotation_forced = self.lan_acting.is_some();
             }
             Target::Mob(id) => {
-                if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
                     if yaw.is_finite() {
                         m.yaw = yaw;
                         m.body_yaw = yaw;
@@ -514,7 +535,7 @@ impl Game<'_> {
                 }
             }
             Target::Other(id) => {
-                if let Some(o) = self.others.iter_mut().find(|o| o.id == id) {
+                if let Some(o) = self.simulation.others.iter_mut().find(|o| o.id == id) {
                     if yaw.is_finite() {
                         o.yaw = yaw;
                     }
@@ -524,12 +545,12 @@ impl Game<'_> {
                 }
             }
             Target::Stand(id) if yaw.is_finite() => {
-                if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) {
+                if let Some(a) = self.simulation.armor_stands.iter_mut().find(|a| a.id == id) {
                     a.yaw = yaw;
                 }
             }
             Target::Boat(id) if yaw.is_finite() => {
-                if let Some(b) = self.boats.iter_mut().find(|b| b.id == id) {
+                if let Some(b) = self.simulation.boats.iter_mut().find(|b| b.id == id) {
                     b.yaw = yaw;
                     if let Some(pitch) = pitch {
                         b.pitch = pitch;
@@ -537,7 +558,7 @@ impl Game<'_> {
                 }
             }
             Target::Cart(id) if yaw.is_finite() => {
-                if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
+                if let Some(c) = self.simulation.carts.iter_mut().find(|c| c.id == id) {
                     c.yaw = yaw;
                     if let Some(pitch) = pitch {
                         c.pitch = pitch;
@@ -545,7 +566,7 @@ impl Game<'_> {
                 }
             }
             Target::Fangs(id) if yaw.is_finite() => {
-                if let Some(f) = self.fangs.list.iter_mut().find(|f| f.id == id) {
+                if let Some(f) = self.simulation.fangs.list.iter_mut().find(|f| f.id == id) {
                     f.yaw = yaw;
                 }
             }

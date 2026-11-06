@@ -44,14 +44,17 @@ impl Game<'_> {
         }
         self.with_level(|b, level, ticks| b.destroy_block(level, ticks, pos, false));
         let _ = self.process_level_events();
-        self.world.modified.insert((at[0] >> 4, at[2] >> 4));
+        self.simulation
+            .world
+            .modified
+            .insert((at[0] >> 4, at[2] >> 4));
     }
     /// Whether the block at `pos` is powder snow.
     pub(super) fn is_powder_snow(&self, pos: [i32; 3]) -> bool {
         &*self
             .res
             .facts()
-            .get(self.world.block(pos[0], pos[1], pos[2]))
+            .get(self.simulation.world.block(pos[0], pos[1], pos[2]))
             .name
             == "minecraft:powder_snow"
     }
@@ -67,7 +70,10 @@ impl Game<'_> {
         let Some(filled) = picked else {
             return Ok(());
         };
-        self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+        self.simulation
+            .world
+            .modified
+            .insert((pos[0] >> 4, pos[2] >> 4));
         self.award_stat("used", "minecraft:bucket", 1);
         if let Some(eye) = self
             .player

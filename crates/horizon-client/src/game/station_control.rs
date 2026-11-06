@@ -95,11 +95,15 @@ impl Game<'_> {
                     return Err(format!("cannot place {name}").into());
                 }
                 if let Some(entity) = horizon_client::containers::BlockEntity::for_block(&name) {
-                    self.world
+                    self.simulation
+                        .world
                         .block_entities
                         .insert((pos[0], pos[1], pos[2]), entity);
                 }
-                self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+                self.simulation
+                    .world
+                    .modified
+                    .insert((pos[0] >> 4, pos[2] >> 4));
                 ok()
             }
             "use" => {
@@ -206,11 +210,13 @@ impl Game<'_> {
             )),
             "mount-menu" => {
                 let eye = self.eye_position().ok_or("no player")?;
-                let index = (0..self.mobs.len())
-                    .filter(|&i| horizon_client::mobs::equine::is_equine(self.mobs[i].species()))
+                let index = (0..self.simulation.mobs.len())
+                    .filter(|&i| {
+                        horizon_client::mobs::equine::is_equine(self.simulation.mobs[i].species())
+                    })
                     .min_by(|&a, &b| {
                         let d = |i: usize| {
-                            let c = self.mobs[i].center();
+                            let c = self.simulation.mobs[i].center();
                             (c[0] - eye[0]).powi(2)
                                 + (c[1] - eye[1]).powi(2)
                                 + (c[2] - eye[2]).powi(2)
@@ -219,10 +225,10 @@ impl Game<'_> {
                     })
                     .ok_or("no horse around")?;
                 if flag("tame") {
-                    self.mobs[index].extra.tame = true;
+                    self.simulation.mobs[index].extra.tame = true;
                 }
                 if flag("chest") {
-                    self.mobs[index].extra.chested = true;
+                    self.simulation.mobs[index].extra.chested = true;
                 }
                 self.open_mount_menu(index);
                 ok()

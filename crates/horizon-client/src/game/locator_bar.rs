@@ -72,7 +72,7 @@ impl Game<'_> {
         };
         if let Some(r) = &self.remote {
             let entity = r.player_entity(id)?;
-            let m = self.mobs.iter().find(|m| m.id == entity)?;
+            let m = self.simulation.mobs.iter().find(|m| m.id == entity)?;
             let v = |v: horizon_core::geometry::Vec3| [v.x, v.y, v.z];
             return Some(at(v(m.position), v(m.previous), m.eye_height()));
         }

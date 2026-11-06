@@ -19,7 +19,8 @@ impl Game<'_> {
         let Some(p) = &self.player else {
             return Vec::new();
         };
-        self.mobs
+        self.simulation
+            .mobs
             .iter()
             .filter(|m| {
                 (m.species() == horizon_client::mobs::Species::HappyGhast
@@ -29,7 +30,8 @@ impl Game<'_> {
             })
             .map(|m| m.bounds())
             .chain(
-                self.boats
+                self.simulation
+                    .boats
                     .iter()
                     .filter(|b| Some(b.id) != self.riding)
                     .map(super::boats::Boat::bounds),
@@ -41,7 +43,8 @@ impl Game<'_> {
     /// and a happy ghast only while it is held still (`isOnStillTimeout`): a player on its
     /// back keeps it still, so an item dropped there stays on top.
     pub(super) fn item_entity_collisions(&self) -> Vec<Aabb> {
-        self.mobs
+        self.simulation
+            .mobs
             .iter()
             .filter(|m| {
                 (m.species() == horizon_client::mobs::Species::HappyGhast
@@ -51,13 +54,13 @@ impl Game<'_> {
                     || (m.species() == horizon_client::mobs::Species::Shulker && m.alive())
             })
             .map(|m| m.bounds())
-            .chain(self.boats.iter().map(super::boats::Boat::bounds))
-            .chain(self.carts.iter().map(|c| c.bounds()))
+            .chain(self.simulation.boats.iter().map(super::boats::Boat::bounds))
+            .chain(self.simulation.carts.iter().map(|c| c.bounds()))
             .collect()
     }
     /// `HappyGhast.mobInteract`. Returns whether the click was used.
     pub(super) fn interact_happy_ghast(&mut self, index: usize, item: &str) -> bool {
-        let m = &self.mobs[index];
+        let m = &self.simulation.mobs[index];
         if !m.alive() || Some(m.id) == self.riding {
             return false;
         }
@@ -70,7 +73,7 @@ impl Game<'_> {
         let harnessed = m.extra.body.is_some();
         // Equippable.equipOnInteract: a harness goes on a bare adult.
         if item.ends_with("_harness") && item.starts_with("minecraft:") && !harnessed {
-            self.mobs[index].extra.body = Some(item.into());
+            self.simulation.mobs[index].extra.body = Some(item.into());
             self.audio
                 .play("minecraft:entity.happy_ghast.equip", Some(at), 1.0, 1.0);
             self.consume_held();
@@ -80,7 +83,7 @@ impl Game<'_> {
         if item == "minecraft:shears"
             && harnessed
             && !sneaking
-            && let Some(harness) = self.mobs[index].extra.body.take()
+            && let Some(harness) = self.simulation.mobs[index].extra.body.take()
         {
             self.audio
                 .play("minecraft:entity.happy_ghast.unequip", Some(at), 1.0, 1.0);
@@ -90,19 +93,19 @@ impl Game<'_> {
         }
         if harnessed && !sneaking {
             // doPlayerRide.
-            let id = self.mobs[index].id;
+            let id = self.simulation.mobs[index].id;
             if !self.may_board() || !self.native_may_board(id) {
                 return true;
             }
             self.break_leash(id, true, false);
-            let was_empty = self.mobs[index].rider.is_none();
+            let was_empty = self.simulation.mobs[index].rider.is_none();
             // addPassenger: the rider is not standing on top, so no still
             // timeout.
-            self.mobs[index].extra.counter = 0;
-            self.yaw = self.mobs[index].yaw;
+            self.simulation.mobs[index].extra.counter = 0;
+            self.yaw = self.simulation.mobs[index].yaw;
             self.mount.reset_jump();
             if was_empty {
-                let down = happy_ghast::goggles(true, &self.mobs[index]);
+                let down = happy_ghast::goggles(true, &self.simulation.mobs[index]);
                 let _ = self.handle_mob_events(vec![down]);
             }
             self.start_riding(id);
@@ -114,11 +117,11 @@ impl Game<'_> {
     pub(super) fn dismount_happy_ghast(&mut self, id: u32) {
         // removePassenger: held still for half a second, and with no one
         // aboard the ghast forgets its home.
-        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+        if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
             m.extra.counter = 10;
             m.ai.clear_home();
         }
-        let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
+        let Some(m) = self.simulation.mobs.iter().find(|m| m.id == id) else {
             return;
         };
         let top = Vec3::new(
@@ -153,7 +156,7 @@ impl Game<'_> {
             _ => 0.0,
         };
         if let Some(id) = self.spawn_mob("minecraft:happy_ghast", at, true)
-            && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+            && let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id)
         {
             // DriedGhastBlock.spawnGhastling sets the baby age before
             // addFreshEntity, so ageBoundaryReached runs the ghastling setup

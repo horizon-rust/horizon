@@ -12,7 +12,7 @@ type Pos = (i32, i32, i32);
 
 impl Game<'_> {
     fn test_block_mut(&mut self, pos: Pos) -> Option<&mut TestBlock> {
-        match self.world.block_entities.get_mut(&pos)? {
+        match self.simulation.world.block_entities.get_mut(&pos)? {
             BlockEntity::TestBlock(b) => Some(b),
             _ => None,
         }
@@ -20,7 +20,7 @@ impl Game<'_> {
 
     /// The `mode` of the block state at `pos`.
     pub(super) fn test_block_state_mode(&self, pos: Pos) -> Option<TestBlockMode> {
-        let state = self.world.block(pos.0, pos.1, pos.2);
+        let state = self.simulation.world.block(pos.0, pos.1, pos.2);
         let mode = self
             .pack
             .assets
@@ -42,7 +42,7 @@ impl Game<'_> {
     }
 
     fn test_block_at(&self, pos: Pos) -> Option<&TestBlock> {
-        match self.world.block_entities.get(&pos)? {
+        match self.simulation.world.block_entities.get(&pos)? {
             BlockEntity::TestBlock(b) => Some(b),
             _ => None,
         }
@@ -64,7 +64,7 @@ impl Game<'_> {
     fn apply_test_block_effects(&mut self, pos: Pos, effects: Effects) {
         if effects.update_neighbors {
             let at = BlockPos::new(pos.0, pos.1, pos.2);
-            let state = self.world.block(pos.0, pos.1, pos.2);
+            let state = self.simulation.world.block(pos.0, pos.1, pos.2);
             self.with_level(|b, level, ticks| {
                 let block = b.block(state);
                 b.update_neighbors_at(level, ticks, at, block);

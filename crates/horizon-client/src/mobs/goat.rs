@@ -463,7 +463,7 @@ fn rammed(m: &Mob, w: &MobWorld) -> Option<Who> {
     {
         return Some(Who::Player);
     }
-    w.others_near(bounds)
+    w.others_intersecting(bounds)
         .find(|s| {
             s.id != m.id
                 && s.alive

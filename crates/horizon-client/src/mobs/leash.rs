@@ -811,7 +811,7 @@ mod tests {
                 let holder = new(2, holder_kind, Vec3::new(0.5, 104.0, 0.5), 30.0);
                 let others = [holder.seen(None)];
                 let mut w = world.clone();
-                w.others = &others;
+                w.others = (&others).into();
                 mob.extra.leash = Some(Holder::Mob(holder.id));
                 let state = holder_state(&w, Holder::Mob(holder.id)).unwrap();
                 let (force, torque) = elastic_pull(

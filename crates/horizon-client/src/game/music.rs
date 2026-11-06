@@ -259,7 +259,8 @@ impl Game<'_> {
             p[1].floor() as i32,
             p[2].floor() as i32,
         );
-        self.world
+        self.simulation
+            .world
             .chunks
             .get(&(x >> 4, z >> 4))
             .map_or("minecraft:plains", |c| {
@@ -271,11 +272,17 @@ impl Game<'_> {
     /// `isEyeInFluid(WATER)`: the eye inside the water of its block column.
     pub(super) fn eye_in_water(&self, x: f64, eye_y: f64, z: f64) -> bool {
         let (bx, by, bz) = (x.floor() as i32, eye_y.floor() as i32, z.floor() as i32);
-        let f = self.res.facts().get(self.world.block(bx, by, bz));
+        let f = self
+            .res
+            .facts()
+            .get(self.simulation.world.block(bx, by, bz));
         if f.fluid != Fluid::Water {
             return false;
         }
-        let above = self.res.facts().get(self.world.block(bx, by + 1, bz));
+        let above = self
+            .res
+            .facts()
+            .get(self.simulation.world.block(bx, by + 1, bz));
         let height = if above.fluid == Fluid::Water {
             1.0
         } else {
@@ -295,7 +302,7 @@ impl Game<'_> {
         let eye_y = feet[1] + f64::from(p.dimensions.eye_height);
         let sounds = self.res.ambient().get(self.dim.id(), self.biome_at(feet));
         let underwater = self.eye_in_water(feet[0], eye_y, feet[2]);
-        let world = &self.world;
+        let world = &self.simulation.world;
         let light = |b: [i32; 3]| {
             let l = world.light(b[0], b[1], b[2]);
             (l >> 4, l & 15)

@@ -76,7 +76,7 @@ impl Game<'_> {
         let [x, y, z] = velocity;
         with_entity_mut!(self, h, e => *e.velocity_mut() = Vec3::new(x, y, z));
         if let EntityHandle::Mob(i) = h {
-            self.mobs[i].needs_sync = true;
+            self.simulation.mobs[i].needs_sync = true;
         }
         true
     }
@@ -110,8 +110,18 @@ impl Game<'_> {
             return Some(corners(with_entity!(self, h, e => e.bounds())));
         }
         let (lo, hi) = match t {
-            Target::Frame(id) => self.item_frames.iter().find(|f| f.id == id)?.bounds(),
-            Target::Painting(id) => self.paintings.iter().find(|p| p.id == id)?.bounds(),
+            Target::Frame(id) => self
+                .simulation
+                .item_frames
+                .iter()
+                .find(|f| f.id == id)?
+                .bounds(),
+            Target::Painting(id) => self
+                .simulation
+                .paintings
+                .iter()
+                .find(|p| p.id == id)?
+                .bounds(),
             _ => return None,
         };
         Some([lo, hi])

@@ -21,7 +21,9 @@ pub struct Cx<'a, 'w> {
     pub lr: &'a mut LegacyRandom,
     pub events: &'a mut Vec<MobEvent>,
 }
-pub trait Goal: std::fmt::Debug {
+// Snapshot workers borrow mobs immutably. Goals may mutate only through
+// their exclusive mob tick, and must not hide thread-affine interior state.
+pub trait Goal: std::fmt::Debug + Send + Sync {
     fn flags(&self) -> u8;
     /// A goal that draws its first start delay in its constructor (a schooling fish's
     /// `FollowFlockLeaderGoal`): the delay again, when the mob's random is seeded afterwards.
@@ -1247,7 +1249,7 @@ impl Goal for LookAtPlayer {
         let (id, only) = (m.id, self.only);
         let at = Vec3::new(m.position.x, m.eye_y(), m.position.z);
         let candidates: Vec<(u32, Vec3)> =
-            cx.w.others_near(area)
+            cx.w.others_intersecting(area)
                 .filter(|s| s.id != id && s.alive && s.bounds.intersects(area))
                 .filter(|s| only.is_none_or(|o| s.species == o))
                 .map(|s| (s.id, s.position))
@@ -2463,7 +2465,7 @@ impl Goal for FollowMob {
             .inflate(Vec3::new(self.area, self.area, self.area));
         let found = cx
             .w
-            .others_near(area)
+            .others_intersecting(area)
             .find(|s| {
                 s.species != species && s.bounds.intersects(area) && !s.has_effect("invisibility")
             })

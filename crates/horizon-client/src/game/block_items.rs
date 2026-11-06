@@ -71,14 +71,16 @@ fn picked_item<'a>(
 impl Game<'_> {
     /// The block entity at `key` as vanilla saves it, with its custom name.
     fn saved_block_entity(&self, key: (i32, i32, i32)) -> Option<Tag> {
-        let entity = self.world.block_entities.get(&key)?;
+        let entity = self.simulation.world.block_entities.get(&key)?;
         let block = &self
             .res
             .facts()
-            .get(self.world.block(key.0, key.1, key.2))
+            .get(self.simulation.world.block(key.0, key.1, key.2))
             .name;
         let mut tag = save::encode_block_entity(key, entity, block);
-        if let (Some(name), Tag::Compound(map)) = (self.world.block_names.get(&key), &mut tag) {
+        if let (Some(name), Tag::Compound(map)) =
+            (self.simulation.world.block_names.get(&key), &mut tag)
+        {
             map.insert("CustomName".into(), Tag::String(name.as_str().into()));
         }
         block_entity_nbt::canonical(&tag)
@@ -98,12 +100,12 @@ impl Game<'_> {
             return false;
         }
         let name = save::text(tag.get("CustomName"));
-        if self.world.block_names.get(&key) == name.as_ref() {
+        if self.simulation.world.block_names.get(&key) == name.as_ref() {
             return false;
         }
         match name {
-            Some(name) => self.world.block_names.insert(key, name),
-            None => self.world.block_names.remove(&key),
+            Some(name) => self.simulation.world.block_names.insert(key, name),
+            None => self.simulation.world.block_names.remove(&key),
         };
         true
     }
@@ -112,7 +114,7 @@ impl Game<'_> {
     /// `include_data`, `ServerGamePacketListenerImpl.addBlockDataToItem`.
     pub(super) fn picked_stack(&self, pos: [i32; 3], include_data: bool) -> Option<ItemStack> {
         let key = (pos[0], pos[1], pos[2]);
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         let facts = self.res.facts().get(state);
         // PistonHeadBlock.getCloneItemStack: the piston the head belongs to.
         let head = self
@@ -179,7 +181,7 @@ impl Game<'_> {
         // AbstractBannerBlock.getCloneItemStack: the banner's own item
         // (BannerBlockEntity.getItem), data or not.
         let banner = matches!(
-            self.world.block_entities.get(&key),
+            self.simulation.world.block_entities.get(&key),
             Some(BlockEntity::Banner(_))
         );
         // DecoratedPotBlock.getCloneItemStack: createDecoratedPotInstance, the
@@ -207,7 +209,7 @@ impl Game<'_> {
     /// This direct spawn intentionally does not use the block_drops gamerule.
     pub(super) fn drop_creative_shulker(&mut self, pos: [i32; 3]) {
         let key = (pos[0], pos[1], pos[2]);
-        let filled = matches!(self.world.block_entities.get(&key), Some(BlockEntity::Chest(items))
+        let filled = matches!(self.simulation.world.block_entities.get(&key), Some(BlockEntity::Chest(items))
             if items.iter().flatten().any(|s| s.count > 0));
         if !filled {
             return;
@@ -215,7 +217,7 @@ impl Game<'_> {
         let Some(saved) = self.saved_block_entity(key) else {
             return;
         };
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         let mut stack = ItemStack::new(&self.res.facts().get(state).item, 1);
         let patch = block_entity_item::collected_components(&saved);
         (stack.damage, stack.extra) = item_data::decode_components(Some(&Tag::Compound(patch)));
@@ -301,12 +303,12 @@ impl Game<'_> {
         // The new crafter's state flag (CrafterBlock.newBlockEntity), which
         // its saved data has no part of.
         if let (BlockEntity::Crafter(new), Some(BlockEntity::Crafter(old))) =
-            (&mut entity, self.world.block_entities.get(&key))
+            (&mut entity, self.simulation.world.block_entities.get(&key))
         {
             new.state_triggered = old.state_triggered;
         }
         self.load_block_name(key, &entity, &placed);
-        self.world.block_entities.insert(key, entity);
+        self.simulation.world.block_entities.insert(key, entity);
         self.update_spawner_display(key);
     }
 }

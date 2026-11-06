@@ -126,17 +126,17 @@ impl Game<'_> {
     fn native_impact_entity(&self, id: u32) -> (u32, String) {
         if id >= SPECIAL {
             return if id < CRYSTAL_IDS {
-                let dragon = self.dragon.as_ref().map_or(0, |d| d.id);
+                let dragon = self.simulation.dragon.as_ref().map_or(0, |d| d.id);
                 (dragon, "minecraft:ender_dragon".into())
             } else {
-                let crystal = self.crystals.get((id - CRYSTAL_IDS) as usize);
+                let crystal = self.simulation.crystals.get((id - CRYSTAL_IDS) as usize);
                 (crystal.map_or(0, |c| c.id), "minecraft:end_crystal".into())
             };
         }
-        if let Some(mob) = self.mobs.iter().find(|m| m.id == id) {
+        if let Some(mob) = self.simulation.mobs.iter().find(|m| m.id == id) {
             return (id, mob_kind(mob));
         }
-        if let Some(cart) = self.carts.iter().find(|c| c.id == id) {
+        if let Some(cart) = self.simulation.carts.iter().find(|c| c.id == id) {
             return (id, cart.kind.id().into());
         }
         if self.lan_guest_entities().iter().any(|&(_, e)| e == id) {
@@ -211,9 +211,9 @@ impl Game<'_> {
         arrow_events: &mut Vec<(Vec3, ArrowEvent)>,
     ) {
         // The mods see the projectiles where they will be, as `projectile_hit` does.
-        self.creatures.projectiles = std::mem::take(projectiles).into();
+        self.simulation.projectiles = std::mem::take(projectiles).into();
         let canceled = self.native_projectile_impacts(&impacts);
-        *projectiles = std::mem::take(&mut self.creatures.projectiles).into();
+        *projectiles = std::mem::take(&mut self.simulation.projectiles).into();
         if !canceled.contains(&true) {
             return;
         }

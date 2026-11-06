@@ -266,7 +266,12 @@ impl Game<'_> {
                         if lo >= hi {
                             lo
                         } else {
-                            self.world.random.next_int_bound(hi - lo + 1).unwrap_or(0) + lo
+                            self.simulation
+                                .world
+                                .random
+                                .next_int_bound(hi - lo + 1)
+                                .unwrap_or(0)
+                                + lo
                         }
                     }
                     "binomial" => {
@@ -276,7 +281,7 @@ impl Game<'_> {
                             None => 0.0,
                         };
                         (0..n.max(0))
-                            .filter(|_| self.world.random.next_float() < p)
+                            .filter(|_| self.simulation.world.random.next_float() < p)
                             .count() as i32
                     }
                     "conditional" | "number_dispatcher" | "weighted_list" => {
@@ -377,7 +382,7 @@ impl Game<'_> {
                         if lo >= hi {
                             lo
                         } else {
-                            self.world.random.next_float() * (hi - lo) + lo
+                            self.simulation.world.random.next_float() * (hi - lo) + lo
                         }
                     }
                     "conditional" | "number_dispatcher" | "weighted_list" => {
@@ -447,7 +452,12 @@ impl Game<'_> {
                 if total <= 0 {
                     return Ok(None);
                 }
-                let mut pick = self.world.random.next_int_bound(total).unwrap_or(0);
+                let mut pick = self
+                    .simulation
+                    .world
+                    .random
+                    .next_int_bound(total)
+                    .unwrap_or(0);
                 for (v, w) in list {
                     pick -= w;
                     if pick < 0 {
@@ -492,7 +502,7 @@ impl Game<'_> {
                         let Some(p) = c.block else {
                             return false;
                         };
-                        let state = self.world.block(p[0], p[1], p[2]);
+                        let state = self.simulation.world.block(p[0], p[1], p[2]);
                         let Some(s) = self.pack.assets.registry.state(state) else {
                             return false;
                         };
@@ -526,7 +536,7 @@ impl Game<'_> {
                     }
                     "random_chance" => {
                         let chance = o.get("chance").and_then(Value::as_f64).unwrap_or(0.0) as f32;
-                        self.world.random.next_float() < chance
+                        self.simulation.world.random.next_float() < chance
                     }
                     _ => {
                         let source = self.command_source.unwrap_or_else(|| self.player_source());

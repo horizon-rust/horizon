@@ -279,14 +279,17 @@ impl Game<'_> {
         };
         let (x, z) = (p.x, p.z);
         // A column sent again while it is resident (a bulk edit): only what changed is lit and meshed again.
-        if self.world.chunks.contains_key(&(x, z)) {
+        if self.simulation.world.chunks.contains_key(&(x, z)) {
             horizon_client::spans::time("replace_remote", || {
-                self.streaming.replace_remote(&mut self.world, chunk)
+                self.streaming
+                    .replace_remote(&mut self.simulation.world, chunk)
             });
         } else {
-            self.streaming.insert_remote(&mut self.world, chunk);
+            self.streaming
+                .insert_remote(&mut self.simulation.world, chunk);
         }
-        self.world
+        self.simulation
+            .world
             .block_entities
             .retain(|k, _| (k.0 >> 4, k.2 >> 4) != (x, z));
         for info in &p.chunk.block_entities {
@@ -295,7 +298,7 @@ impl Game<'_> {
                 i32::from(info.y),
                 z * 16 + i32::from(info.packed_xz as u8 & 15),
             );
-            let state = self.world.block(pos.0, pos.1, pos.2);
+            let state = self.simulation.world.block(pos.0, pos.1, pos.2);
             self.sync_block_entity(pos, None, state);
             // LevelChunk.replaceWithPacketData: the block entity loads its update tag.
             self.remote_block_entity_data([pos.0, pos.1, pos.2], info.kind, &info.tag);
@@ -304,7 +307,11 @@ impl Game<'_> {
             r.attachments.retain(|holder, _| match *holder {
                 Holder::BlockEntity([bx, by, bz]) => {
                     (bx >> 4, bz >> 4) != (x, z)
-                        || self.world.block_entities.contains_key(&(bx, by, bz))
+                        || self
+                            .simulation
+                            .world
+                            .block_entities
+                            .contains_key(&(bx, by, bz))
                 }
                 _ => true,
             });
@@ -325,7 +332,7 @@ impl Game<'_> {
                 log::warn!("Ignoring chunk since it's not in the view range: {x}, {z}");
                 continue;
             }
-            let Some(chunk) = self.world.chunks.get_mut(&(x, z)) else {
+            let Some(chunk) = self.simulation.world.chunks.get_mut(&(x, z)) else {
                 log::warn!("Ignoring chunk since it's not present: {x}, {z}");
                 continue;
             };
@@ -337,11 +344,14 @@ impl Game<'_> {
             let [x, z] = data.pos;
             for dz in -1..=1 {
                 for dx in -1..=1 {
-                    if !self.world.chunks.contains_key(&(x + dx, z + dz)) {
+                    if !self.simulation.world.chunks.contains_key(&(x + dx, z + dz)) {
                         continue;
                     }
-                    for sy in 0..self.world.layout().sections() as i32 {
-                        self.world.dirty_sections.insert((x + dx, sy, z + dz));
+                    for sy in 0..self.simulation.world.layout().sections() as i32 {
+                        self.simulation
+                            .world
+                            .dirty_sections
+                            .insert((x + dx, sy, z + dz));
                     }
                 }
             }
@@ -353,11 +363,11 @@ impl Game<'_> {
         let Some(format) = self.remote.as_ref().map(|r| r.chunk_format.clone()) else {
             return;
         };
-        if !self.world.chunks.contains_key(&(p.x, p.z)) {
+        if !self.simulation.world.chunks.contains_key(&(p.x, p.z)) {
             return;
         }
         let (layers, _) = format.light(&p.light);
-        let Some(chunk) = self.world.chunks.get_mut(&(p.x, p.z)) else {
+        let Some(chunk) = self.simulation.world.chunks.get_mut(&(p.x, p.z)) else {
             return;
         };
         let changed = horizon_client::light::update_light_layers(
@@ -365,7 +375,7 @@ impl Game<'_> {
             &layers,
             format.has_skylight,
         );
-        Streaming::light_updated(&mut self.world, p.x, p.z, &changed);
+        Streaming::light_updated(&mut self.simulation.world, p.x, p.z, &changed);
     }
 }
 

@@ -20,7 +20,7 @@ struct GameHive<'g, 'a> {
 }
 impl HiveHost for GameHive<'_, '_> {
     fn random(&mut self) -> &mut LegacyRandom {
-        &mut self.game.world.random
+        &mut self.game.simulation.world.random
     }
     fn bees_stay_in_hive(&self, _at: [i32; 3]) -> bool {
         bee::bees_stay_in_hive(&self.game.mob_world_base(&[]))
@@ -33,7 +33,7 @@ impl HiveHost for GameHive<'_, '_> {
             .is_empty()
     }
     fn set_honey_level(&mut self, at: [i32; 3], level: i32) {
-        let state = self.game.world.block(at[0], at[1], at[2]);
+        let state = self.game.simulation.world.block(at[0], at[1], at[2]);
         if let Some(state) = self.game.hive_with_honey(state, level) {
             let _ = self.game.level_set(at, state);
         }
@@ -49,11 +49,11 @@ impl HiveHost for GameHive<'_, '_> {
             return None;
         }
         let id = self.game.load_mob(tag.clone(), None)?;
-        let i = self.game.mobs.iter().position(|m| m.id == id)?;
-        Some(self.game.mobs.remove(i))
+        let i = self.game.simulation.mobs.iter().position(|m| m.id == id)?;
+        Some(self.game.simulation.mobs.remove(i))
     }
     fn add(&mut self, m: Mob) -> bool {
-        self.game.mobs.push(m);
+        self.game.simulation.mobs.push(m);
         true
     }
     fn sound(&mut self, name: &'static str, at: [f64; 3]) {
@@ -73,7 +73,7 @@ impl Game<'_> {
     }
     /// The hive's honey level and front, from its block state.
     pub(super) fn hive_state(&self, at: [i32; 3]) -> Option<(Option<i32>, [i32; 2])> {
-        let state = self.world.block(at[0], at[1], at[2]);
+        let state = self.simulation.world.block(at[0], at[1], at[2]);
         let name = &self.res.facts().get(state).name;
         if !self
             .res
@@ -96,7 +96,8 @@ impl Game<'_> {
         let Some((honey, facing)) = self.hive_state(at) else {
             return;
         };
-        let Some(BlockEntity::Beehive(mut hive)) = self.world.block_entities.take(&key) else {
+        let Some(BlockEntity::Beehive(mut hive)) = self.simulation.world.block_entities.take(&key)
+        else {
             return;
         };
         let fire = [
@@ -109,7 +110,10 @@ impl Game<'_> {
         ]
         .iter()
         .any(|d| {
-            let state = self.world.block(at[0] + d[0], at[1] + d[1], at[2] + d[2]);
+            let state = self
+                .simulation
+                .world
+                .block(at[0] + d[0], at[1] + d[1], at[2] + d[2]);
             &*self.res.facts().get(state).name == "minecraft:fire"
         });
         let mut host = GameHive { game: self };
@@ -117,7 +121,8 @@ impl Game<'_> {
             hive.release_all(at, facing, honey, Release::Emergency, &mut host);
         }
         hive.server_tick(at, facing, honey, &mut host);
-        self.world
+        self.simulation
+            .world
             .block_entities
             .put(key, BlockEntity::Beehive(hive));
     }
@@ -126,39 +131,42 @@ impl Game<'_> {
     pub(super) fn bee_enter_hive(&mut self, mob: u32, at: [i32; 3]) {
         let key = (at[0], at[1], at[2]);
         let Some(i) = self
+            .simulation
             .mobs
             .iter()
             .position(|m| m.id == mob && m.alive() && !m.removed)
         else {
             return;
         };
-        if !matches!(self.world.block_entities.get(&key), Some(BlockEntity::Beehive(h)) if !h.full())
+        if !matches!(self.simulation.world.block_entities.get(&key), Some(BlockEntity::Beehive(h)) if !h.full())
         {
             return;
         }
-        if self.mobs[i].extra.leash.is_some() {
+        if self.simulation.mobs[i].extra.leash.is_some() {
             self.break_leash(mob, true, false);
-            self.mobs[i].extra.leash = None;
+            self.simulation.mobs[i].extra.leash = None;
         }
-        self.mobs[i].extra.mount = None;
+        self.simulation.mobs[i].extra.mount = None;
         let tag = self.mob_tree_nbt(i);
-        let flower = bee::get(&self.mobs[i]).and_then(|b| b.flower);
-        let Some(BlockEntity::Beehive(mut hive)) = self.world.block_entities.take(&key) else {
+        let flower = bee::get(&self.simulation.mobs[i]).and_then(|b| b.flower);
+        let Some(BlockEntity::Beehive(mut hive)) = self.simulation.world.block_entities.take(&key)
+        else {
             return;
         };
         let stored = hive.add_occupant(at, tag, flower, &mut GameHive { game: self });
-        self.world
+        self.simulation
+            .world
             .block_entities
             .put(key, BlockEntity::Beehive(hive));
         if stored {
-            let kind = self.mobs[i].kind.id.clone();
+            let kind = self.simulation.mobs[i].kind.id.clone();
             let block = self
                 .res
                 .facts()
-                .get(self.world.block(at[0], at[1], at[2]))
+                .get(self.simulation.world.block(at[0], at[1], at[2]))
                 .name
                 .clone();
-            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) {
+            if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == mob) {
                 m.removed = true;
             }
             self.native_entity_enter_block(mob, &kind, at, &block);
@@ -167,11 +175,13 @@ impl Game<'_> {
     /// `BeehiveBlockEntity.emptyAllLivingFromHive` with no player about.
     pub(super) fn empty_hive(&mut self, at: [i32; 3], facing: [i32; 2], status: Release) {
         let key = (at[0], at[1], at[2]);
-        let Some(BlockEntity::Beehive(mut hive)) = self.world.block_entities.take(&key) else {
+        let Some(BlockEntity::Beehive(mut hive)) = self.simulation.world.block_entities.take(&key)
+        else {
             return;
         };
         hive.release_all(at, facing, None, status, &mut GameHive { game: self });
-        self.world
+        self.simulation
+            .world
             .block_entities
             .put(key, BlockEntity::Beehive(hive));
     }
@@ -194,7 +204,12 @@ impl Game<'_> {
         );
         let sedated = beehive::smokey(&self.mob_world_base(&[]), at);
         if let Some(p) = self.player_view().map(|p| p.position) {
-            for m in self.mobs.iter_mut().filter(|m| released.contains(&m.id)) {
+            for m in self
+                .simulation
+                .mobs
+                .iter_mut()
+                .filter(|m| released.contains(&m.id))
+            {
                 if m.distance_sqr(p) <= 16.0 {
                     if sedated {
                         bee::set_stay_out_of_hive_countdown(m);
@@ -216,7 +231,7 @@ impl Game<'_> {
         if !shears && &*held.item != "minecraft:glass_bottle" {
             return Ok(false);
         }
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         if !matches!(
             &*self.res.facts().get(state).name,
             "minecraft:beehive" | "minecraft:bee_nest"
@@ -276,7 +291,7 @@ impl Game<'_> {
         let smokey = beehive::smokey(&self.mob_world_base(&[]), pos);
         let key = (pos[0], pos[1], pos[2]);
         if !smokey
-            && matches!(self.world.block_entities.get(&key), Some(BlockEntity::Beehive(h)) if !h.bees.is_empty())
+            && matches!(self.simulation.world.block_entities.get(&key), Some(BlockEntity::Beehive(h)) if !h.bees.is_empty())
         {
             self.anger_nearby_bees(pos);
         }
@@ -285,7 +300,8 @@ impl Game<'_> {
             self.level_set(pos, reset)?;
         }
         if !smokey
-            && let Some(BlockEntity::Beehive(mut hive)) = self.world.block_entities.take(&key)
+            && let Some(BlockEntity::Beehive(mut hive)) =
+                self.simulation.world.block_entities.take(&key)
         {
             // emptyAllLivingFromHive: the bees within 4 blocks of the player
             // go for them.
@@ -296,11 +312,17 @@ impl Game<'_> {
                 Release::Emergency,
                 &mut GameHive { game: self },
             );
-            self.world
+            self.simulation
+                .world
                 .block_entities
                 .put(key, BlockEntity::Beehive(hive));
             if let Some(p) = self.player_view().map(|p| p.position) {
-                for m in self.mobs.iter_mut().filter(|m| released.contains(&m.id)) {
+                for m in self
+                    .simulation
+                    .mobs
+                    .iter_mut()
+                    .filter(|m| released.contains(&m.id))
+                {
                     if m.distance_sqr(p) <= 16.0 {
                         m.ai.target = Some(Who::Player);
                     }
@@ -341,28 +363,29 @@ impl Game<'_> {
         if players.is_empty() {
             return;
         }
-        let mut bees: Vec<usize> = (0..self.mobs.len())
+        let mut bees: Vec<usize> = (0..self.simulation.mobs.len())
             .filter(|&i| {
-                let m = &self.mobs[i];
+                let m = &self.simulation.mobs[i];
                 m.species() == horizon_client::mobs::Species::Bee
                     && !m.removed
                     && m.bounds().intersects(area)
             })
             .collect();
-        bees.retain(|&i| self.mobs[i].ai.target.is_none());
+        bees.retain(|&i| self.simulation.mobs[i].ai.target.is_none());
         for i in bees {
             // Util.getRandom over the players.
             let pick = self
+                .simulation
                 .world
                 .random
                 .next_int_bound(players.len() as i32)
                 .unwrap_or(0) as usize;
-            self.mobs[i].ai.target = Some(Who::Player);
+            self.simulation.mobs[i].ai.target = Some(Who::Player);
             // The player a mob sees is its guest binding, else the window's.
             if let Some(host) = self.lan.as_mut() {
                 match players[pick] {
-                    Some(conn) => host.mob_players.insert(self.mobs[i].id, conn),
-                    None => host.mob_players.remove(&self.mobs[i].id),
+                    Some(conn) => host.mob_players.insert(self.simulation.mobs[i].id, conn),
+                    None => host.mob_players.remove(&self.simulation.mobs[i].id),
                 };
             }
         }

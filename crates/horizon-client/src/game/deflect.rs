@@ -91,7 +91,7 @@ impl Game<'_> {
     pub(super) fn redirectable_hit(&self) -> Option<(usize, f64)> {
         let (eye, dir) = self.aim()?;
         let reach: f64 = self.entity_reach;
-        self.creatures
+        self.simulation
             .projectiles
             .iter()
             .enumerate()
@@ -122,7 +122,7 @@ impl Game<'_> {
             }
         }
         if matches!(
-            self.creatures.projectiles[i].kind,
+            self.simulation.projectiles[i].kind,
             ProjectileKind::ShulkerBullet { .. }
         ) {
             self.hit_shulker_bullet(None, i);
@@ -136,7 +136,7 @@ impl Game<'_> {
     /// particles (`sendParticles`, spread 0.2) and `destroy`. The blow is
     /// `Player.attack` on a target that is not a mob: its sounds, then the swing.
     pub(super) fn hit_shulker_bullet(&mut self, host: Option<&LanHost>, i: usize) {
-        let p = self.creatures.projectiles.remove(i);
+        let p = self.simulation.projectiles.remove(i);
         let at = [p.position.x, p.position.y, p.position.z];
         self.audio
             .play("minecraft:entity.shulker_bullet.hurt", Some(at), 1.0, 1.0);
@@ -155,12 +155,12 @@ impl Game<'_> {
     /// `Player.canInteractWithEntity(box, 3.0)` as the server checks an
     /// attack packet: the projectile's box within the reach plus 3 of the eyes.
     pub(super) fn within_interaction_range(&self, i: usize) -> bool {
-        let (Some(eye), Some(p)) = (self.eye_position(), self.creatures.projectiles.get(i)) else {
+        let (Some(eye), Some(p)) = (self.eye_position(), self.simulation.projectiles.get(i)) else {
             return false;
         };
         let b = pick_box(p);
         let (lo, hi) = (b.min_position(), b.max_position());
-        let r = pick_radius(&self.creatures.projectiles[i]);
+        let r = pick_radius(&self.simulation.projectiles[i]);
         let (lo, hi) = (
             [lo.x + r, lo.y + r, lo.z + r],
             [hi.x - r, hi.y - r, hi.z - r],
@@ -186,7 +186,7 @@ impl Game<'_> {
                 (self.pitch, self.yaw)
             }
             (Who::Mob(id), _) => {
-                let m = self.mobs.iter().find(|m| m.id == id)?;
+                let m = self.simulation.mobs.iter().find(|m| m.id == id)?;
                 (m.head_pitch, m.yaw)
             }
         };
@@ -197,7 +197,7 @@ impl Game<'_> {
     pub(super) fn deflect(&mut self, i: usize) {
         let dir = view_vector(self.yaw, self.pitch);
         let (guest, owner_uuid) = (self.lan_acting, Some(self.acting_player_uuid()));
-        let p = &mut self.creatures.projectiles[i];
+        let p = &mut self.simulation.projectiles[i];
         p.velocity = Vec3::new(dir[0], dir[1], dir[2]);
         p.yaw = dir[0].atan2(dir[2]).to_degrees() as f32;
         p.pitch = dir[1].atan2(dir[0].hypot(dir[2])).to_degrees() as f32;

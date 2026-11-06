@@ -61,7 +61,7 @@ impl Game<'_> {
     pub(super) fn bounding_box_gizmos(&self, camera: [f64; 3], g: &mut Gizmos) {
         let game_master = self.can_use_game_master_blocks() || self.spectator();
         let facts = self.res.facts();
-        for (pos, entity) in self.world.block_entities.boxes() {
+        for (pos, entity) in self.simulation.world.block_entities.boxes() {
             let centre = [pos.0, pos.1, pos.2].map(|v| f64::from(v) + 0.5);
             let dist: f64 = (0..3).map(|i| (centre[i] - camera[i]).powi(2)).sum();
             let block = [pos.0, pos.1, pos.2];
@@ -93,7 +93,7 @@ impl Game<'_> {
                     for y in 0..sy {
                         for z in 0..sz {
                             let at = [0, 1, 2].map(|i| block[i] + area.offset[i] + [x, y, z][i]);
-                            let state = self.world.block(at[0], at[1], at[2]);
+                            let state = self.simulation.world.block(at[0], at[1], at[2]);
                             let kind = if facts.is_air(state) {
                                 Some(InvisibleBlock::Air)
                             } else {
@@ -117,13 +117,13 @@ impl Game<'_> {
     }
 
     fn structure_block_at(&self, pos: Pos) -> Option<&StructureBlock> {
-        match self.world.block_entities.get(&pos)? {
+        match self.simulation.world.block_entities.get(&pos)? {
             BlockEntity::StructureBlock(b) => Some(b),
             _ => None,
         }
     }
     fn structure_block_mut(&mut self, pos: Pos) -> Option<&mut StructureBlock> {
-        match self.world.block_entities.get_mut(&pos)? {
+        match self.simulation.world.block_entities.get_mut(&pos)? {
             BlockEntity::StructureBlock(b) => Some(b),
             _ => None,
         }
@@ -204,11 +204,11 @@ impl Game<'_> {
             for z in 0..size[2] {
                 for x in 0..size[0] {
                     let at = (origin[0] + x, origin[1] + y, origin[2] + z);
-                    let state = self.world.block(at.0, at.1, at.2);
+                    let state = self.simulation.world.block(at.0, at.1, at.2);
                     if Some(state) == void || Some(state) == air {
                         continue;
                     }
-                    let nbt = self.world.block_entities.get(&at).map(|entity| {
+                    let nbt = self.simulation.world.block_entities.get(&at).map(|entity| {
                         let name = &*self.res.facts().get(state).name;
                         let Tag::Compound(mut c) = save::encode_block_entity(at, entity, name)
                         else {
@@ -401,6 +401,7 @@ impl Game<'_> {
         // The block entities the template loaded reach the clients.
         let area = template.bounding_box([at.x, at.y, at.z], rotation, [0; 3], mirror);
         let keys: Vec<Pos> = self
+            .simulation
             .world
             .block_entities
             .keys()
@@ -454,7 +455,7 @@ impl Game<'_> {
         }
         let name = b.name.clone();
         let range = SCAN_CORNER_BLOCKS_RANGE;
-        let corners: Vec<[i32; 3]> = (&self.world.block_entities)
+        let corners: Vec<[i32; 3]> = (&self.simulation.world.block_entities)
             .into_iter()
             .filter(|((x, _, z), _)| (x - pos.0).abs() <= range && (z - pos.2).abs() <= range)
             .filter_map(|(k, e)| match e {
@@ -492,7 +493,7 @@ impl Game<'_> {
     /// `UPDATE_CLIENTS` and the block entity kept.
     pub(super) fn set_mode_property(&mut self, pos: Pos, block: &str, mode: &str) {
         let registry = self.pack.assets.registry;
-        let current = registry.state(self.world.block(pos.0, pos.1, pos.2));
+        let current = registry.state(self.simulation.world.block(pos.0, pos.1, pos.2));
         let Some(current) = current.filter(|s| s.name == block) else {
             return;
         };
@@ -503,13 +504,13 @@ impl Game<'_> {
         }
         if let Ok(id) = registry.resolve(&wanted) {
             // The block entity stays through the state change.
-            let entity = self.world.block_entities.take(&pos);
+            let entity = self.simulation.world.block_entities.take(&pos);
             let at = BlockPos::new(pos.0, pos.1, pos.2);
             self.with_level(|b, level, ticks| {
                 b.set_block(level, ticks, at, id, flags::UPDATE_CLIENTS)
             });
             if let Some(entity) = entity {
-                self.world.block_entities.put(pos, entity);
+                self.simulation.world.block_entities.put(pos, entity);
             }
             let _ = self.process_level_events();
         }

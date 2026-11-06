@@ -17,7 +17,7 @@ impl Game<'_> {
         let Some(shears) = held.filter(|s| &*s.item == "minecraft:shears") else {
             return Ok(false);
         };
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         if &*self.res.facts().get(state).name != "minecraft:pumpkin" {
             return Ok(false);
         }
@@ -59,7 +59,7 @@ impl Game<'_> {
                 f64::from(pos[1]) + 0.1,
                 f64::from(pos[2]) + 0.5 + dz * 0.65,
             ];
-            let r = &mut self.world.random;
+            let r = &mut self.simulation.world.random;
             let vx = 0.05 * dx + r.next_double() * 0.02;
             let vz = 0.05 * dz + r.next_double() * 0.02;
             self.spawn_item(seeds, at, [vx, 0.05, vz], 0);

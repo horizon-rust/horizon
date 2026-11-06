@@ -30,13 +30,13 @@ impl Game<'_> {
     /// and monsters spawning, a copy of it appears out of sight and takes
     /// `target`; both then call less often.
     pub(super) fn call_reinforcements(&mut self, caller: u32, target: Who) {
-        let Some(index) = self.mobs.iter().position(|m| m.id == caller) else {
+        let Some(index) = self.simulation.mobs.iter().position(|m| m.id == caller) else {
             return;
         };
-        if self.world.health_rules.difficulty != Difficulty::Hard {
+        if self.simulation.world.health_rules.difficulty != Difficulty::Hard {
             return;
         }
-        let zombie = &mut self.mobs[index];
+        let zombie = &mut self.simulation.mobs[index];
         if f64::from(zombie.random.next_float()) >= zombie.attrs.spawn_reinforcements {
             return;
         }
@@ -51,10 +51,10 @@ impl Game<'_> {
             zombie.position.z.floor() as i32,
         ];
         let mut own = std::mem::replace(&mut zombie.random, LegacyRandom::new(0));
-        let mut rules = std::mem::replace(&mut self.world.random, LegacyRandom::new(0));
+        let mut rules = std::mem::replace(&mut self.simulation.world.random, LegacyRandom::new(0));
         let spot = self.reinforcement_spot(&kind, from, &mut own, &mut rules);
-        self.mobs[index].random = own;
-        self.world.random = rules;
+        self.simulation.mobs[index].random = own;
+        self.simulation.world.random = rules;
         let Some(spot) = spot else {
             return;
         };
@@ -62,7 +62,7 @@ impl Game<'_> {
         else {
             return;
         };
-        if let Some(reinforcement) = self.mobs.iter_mut().find(|m| m.id == id) {
+        if let Some(reinforcement) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
             reinforcement.ai.target = Some(target);
             // ZOMBIE_REINFORCEMENT_CALLEE_CHARGE.
             finalize::add_modifier(
@@ -74,7 +74,7 @@ impl Game<'_> {
             );
         }
         // The caller's charge grows by 0.05 each time it calls.
-        let caller = &mut self.mobs[index];
+        let caller = &mut self.simulation.mobs[index];
         let charged = finalize::modifier_amount(
             caller,
             Attr::SpawnReinforcements,

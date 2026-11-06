@@ -72,11 +72,11 @@ impl Game<'_> {
         };
         let mut run = |body: &mut PlayerMotion, keys, sprinting| {
             // Game.sync_player_body's part that depends on the blocks.
-            body.nudge = super::closest_space_nudge(body, &self.world, self.res.facts());
+            body.nudge = super::closest_space_nudge(body, &self.simulation.world, self.res.facts());
             MotionWorld {
                 entities: &[],
                 player: body,
-                scene: &mut self.world,
+                scene: &mut self.simulation.world,
                 assets: &self.pack.assets,
                 collision_binding: self.collision,
                 resources: self.motion,
@@ -125,7 +125,14 @@ impl Game<'_> {
         // doesn't move (the server stopped waiting for it after 60 ticks): the replay falls or drifts
         // where it stands. Its first move counts as any other.
         let loading = g.loading && !over.moved;
-        if loading || excused(g, &self.world, host.states.as_slice(), &host.hub.guests) {
+        if loading
+            || excused(
+                g,
+                &self.simulation.world,
+                host.states.as_slice(),
+                &host.hub.guests,
+            )
+        {
             if let Some(replay) = host
                 .hub
                 .guest_mut(conn)

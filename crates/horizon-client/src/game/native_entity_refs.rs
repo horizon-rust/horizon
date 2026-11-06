@@ -41,7 +41,15 @@ impl Game<'_> {
             });
         }
         match self.level_entity(id)? {
-            Target::Mob(id) if !self.mobs.iter().any(|m| m.id == id && !m.removed) => None,
+            Target::Mob(id)
+                if !self
+                    .simulation
+                    .mobs
+                    .iter()
+                    .any(|m| m.id == id && !m.removed) =>
+            {
+                None
+            }
             t => Some(t),
         }
     }
@@ -79,7 +87,7 @@ impl Game<'_> {
         }
         let epoch = self.native_lifecycle.epoch()?;
         let dim = std::iter::once(self.dim)
-            .chain(self.levels.parked_dims())
+            .chain(self.simulation_server.levels.parked_dims())
             .find(|d| d.id() == dimension)?;
         Some(LevelRef::new(epoch, dim.id()))
     }

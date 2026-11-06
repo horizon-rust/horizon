@@ -40,10 +40,10 @@ impl Game<'_> {
         tool: Option<&ItemStack>,
         collect: bool,
     ) -> Option<Vec<ItemStack>> {
-        if !self.native_authoritative() || !self.world.loaded(pos[0], pos[2]) {
+        if !self.native_authoritative() || !self.simulation.world.loaded(pos[0], pos[2]) {
             return None;
         }
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         if self.res.behaviours().is_air(state) {
             return None;
         }
@@ -248,7 +248,8 @@ impl Game<'_> {
         self.hook = hook;
         (self.respawn_config, self.spawn, self.level.spawn) = respawn;
         if let Some(key) = ender_open {
-            self.world
+            self.simulation
+                .world
                 .block_entities
                 .insert(key, BlockEntity::Chest(self.ender_items.clone()));
             self.ender_open = Some(key);
@@ -311,7 +312,8 @@ pub(crate) mod tests {
         )
         .unwrap();
         game.options.dedicated = Some(Vec::new());
-        game.world
+        game.simulation
+            .world
             .chunks
             .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
         game
@@ -356,7 +358,10 @@ pub(crate) mod tests {
             .registry
             .default_state(block)
             .expect("a vanilla block");
-        game.world.set(pos[0], pos[1], pos[2], state).unwrap();
+        game.simulation
+            .world
+            .set(pos[0], pos[1], pos[2], state)
+            .unwrap();
         click(game, pos)
     }
 
@@ -368,7 +373,7 @@ pub(crate) mod tests {
             .spawn_mob("minecraft:wandering_trader", [8.5, 65.0, 8.5], true)
             .expect("a wandering trader");
         assert!(fake_use(&mut game, on_entity(id), false).consumed);
-        let trader = game.mobs.iter().find(|m| m.id == id).unwrap();
+        let trader = game.simulation.mobs.iter().find(|m| m.id == id).unwrap();
         // With no offers the menu never opens, and this test would say nothing.
         let offers = trader.extra.trade.as_ref().map_or(0, |t| t.offers.len());
         assert!(offers > 0, "a wandering trader has offers");
@@ -391,18 +396,19 @@ pub(crate) mod tests {
         let diamonds = Some(ItemStack::new("minecraft:diamond", 5));
         let mut vehicles = Vec::new();
         for kind in [CartKind::Chest, CartKind::Hopper] {
-            game.next_entity += 1;
-            let mut cart = Minecart::new(game.next_entity, kind, at);
+            game.simulation_server.next_entity += 1;
+            let mut cart = Minecart::new(game.simulation_server.next_entity, kind, at);
             cart.items[3] = diamonds.clone();
-            vehicles.push((game.next_entity, false));
-            game.carts.push(cart);
+            vehicles.push((game.simulation_server.next_entity, false));
+            game.simulation.carts.push(cart);
         }
-        game.next_entity += 1;
-        let mut boat = Boat::new(game.next_entity, "oak".into(), at, 0.0).with_chest();
+        game.simulation_server.next_entity += 1;
+        let mut boat =
+            Boat::new(game.simulation_server.next_entity, "oak".into(), at, 0.0).with_chest();
         boat.items[3] = diamonds.clone();
         // ChestBoat.interact opens the chest for a sneaking player.
-        vehicles.push((game.next_entity, true));
-        game.boats.push(boat);
+        vehicles.push((game.simulation_server.next_entity, true));
+        game.simulation.boats.push(boat);
 
         for (id, sneaking) in vehicles {
             // Twice: the second use is the next one finding it as it was.
@@ -410,16 +416,23 @@ pub(crate) mod tests {
                 assert!(fake_use(&mut game, on_entity(id), sneaking).consumed);
                 let key = (i32::MAX - 15, CART_KEY_Y, id as i32);
                 assert!(
-                    game.world.block_entities.get(&key).is_none(),
+                    game.simulation.world.block_entities.get(&key).is_none(),
                     "vehicle {id} left a stand-in",
                 );
                 assert!(game.container.is_none());
                 let items = game
+                    .simulation
                     .carts
                     .iter()
                     .find(|c| c.id == id)
                     .map(|c| &c.items)
-                    .or_else(|| game.boats.iter().find(|b| b.id == id).map(|b| &b.items))
+                    .or_else(|| {
+                        game.simulation
+                            .boats
+                            .iter()
+                            .find(|b| b.id == id)
+                            .map(|b| &b.items)
+                    })
                     .unwrap();
                 assert_eq!(items[3], diamonds, "vehicle {id} lost its items");
             }
@@ -443,10 +456,13 @@ pub(crate) mod tests {
         assert!(click_new(&mut game, "minecraft:ender_chest", ender).consumed);
         assert!(game.ender_open.is_none());
         assert!(
-            game.world.block_entities.get(&key).is_none(),
+            game.simulation.world.block_entities.get(&key).is_none(),
             "a stand-in chest stayed",
         );
-        assert!(!game.lid_openers.contains_key(&key), "its lid stayed open");
+        assert!(
+            !game.simulation.lid_openers.contains_key(&key),
+            "its lid stayed open"
+        );
     }
 
     /// Each field holds a value the use can't have written, so a swap that
@@ -481,7 +497,13 @@ pub(crate) mod tests {
         assert_eq!(game.respawn_config, Some(config));
         assert_eq!(game.spawn, Some(spawn));
         assert_eq!(game.ender_open, Some(stand_in));
-        assert!(game.world.block_entities.get(&stand_in).is_some());
+        assert!(
+            game.simulation
+                .world
+                .block_entities
+                .get(&stand_in)
+                .is_some()
+        );
 
         let rod = game
             .native_use_as_player(

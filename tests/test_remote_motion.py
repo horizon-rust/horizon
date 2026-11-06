@@ -25,7 +25,7 @@ struct Entity { id: u32, velocity: Vec3 }
 #[derive(Default)]
 struct Remote { pending_items: HashMap<i32, ((), Vec3)> }
 #[derive(Default)]
-struct Creatures { projectiles: Vec<Entity> }
+struct Creatures;
 #[derive(Default)]
 struct Potions;
 impl Potions { fn remote_thrown_motion(&mut self, _id: u32, _v: Vec3) -> bool { false } }
@@ -41,10 +41,15 @@ impl MobIndex {
     }
 }
 #[derive(Default)]
+struct Simulation {
+    mobs: Vec<Entity>, mob_index: MobIndex,
+    dropped: Vec<Entity>, falling: Vec<Entity>, tnts: Vec<Entity>, orbs: Vec<Entity>,
+    dragon_fireballs: Vec<Entity>, tridents: Vec<Entity>, rockets: Vec<Entity>, carts: Vec<Entity>,
+    projectiles: Vec<Entity>,
+}
+#[derive(Default)]
 struct Game {
-    mobs: Vec<Entity>, mob_index: MobIndex, dropped: Vec<Entity>, falling: Vec<Entity>, tnts: Vec<Entity>, orbs: Vec<Entity>,
-    creatures: Creatures, dragon_fireballs: Vec<Entity>, tridents: Vec<Entity>,
-    rockets: Vec<Entity>, carts: Vec<Entity>, remote: Option<Remote>,
+    simulation: Simulation, creatures: Creatures, remote: Option<Remote>,
     potions: Potions, end: End,
 }
 impl Game {
@@ -54,16 +59,16 @@ METHOD
 }
 fn main() {
     let mut game = Game::default();
-    game.mobs.push(Entity { id: 42, ..Entity::default() });
-    game.dropped.push(Entity { id: 43, ..Entity::default() });
+    game.simulation.mobs.push(Entity { id: 42, ..Entity::default() });
+    game.simulation.dropped.push(Entity { id: 43, ..Entity::default() });
     // AddEntity initial motion and subsequent SetEntityMotion share this handler.
     for motion in [[0.12, -0.04, 0.08], [-0.05, 0.03, 0.2], [0.0; 3]] {
         game.remote_motion(42, motion);
-        assert_eq!(game.mobs[0].velocity, Vec3::new(motion[0], motion[1], motion[2]));
-        assert_eq!(game.dropped[0].velocity, Vec3::default());
+        assert_eq!(game.simulation.mobs[0].velocity, Vec3::new(motion[0], motion[1], motion[2]));
+        assert_eq!(game.simulation.dropped[0].velocity, Vec3::default());
     }
     game.remote_motion(43, [0.1, 0.2, 0.3]);
-    assert_eq!(game.dropped[0].velocity, Vec3::new(0.1, 0.2, 0.3));
+    assert_eq!(game.simulation.dropped[0].velocity, Vec3::new(0.1, 0.2, 0.3));
     game.remote_motion(999, [1.0; 3]); // Untracked entity is harmless.
 }
 '''.replace("METHOD", source[start:end])

@@ -16,7 +16,7 @@ impl Game<'_> {
     pub(super) fn set_bed_occupied(&mut self, head: [i32; 3], occupied: bool) {
         let registry = &self.pack.assets.registry;
         let Some(mut state) = registry
-            .state(self.world.block(head[0], head[1], head[2]))
+            .state(self.simulation.world.block(head[0], head[1], head[2]))
             .cloned()
         else {
             return;
@@ -71,7 +71,7 @@ impl Game<'_> {
             self.set_bed_occupied(head, false);
             // AbstractBedBlock.onStopSleeping: the Overworld's straw_bed_rule
             // has destroy_on_leave, so a straw bed breaks when its sleeper gets up.
-            let bed = self.world.block(head[0], head[1], head[2]);
+            let bed = self.simulation.world.block(head[0], head[1], head[2]);
             let straw = &*self.res.facts().get(bed).name == "minecraft:straw_bed";
             if dim == Dim::Overworld
                 && straw
@@ -173,12 +173,15 @@ impl Game<'_> {
     /// foot's - or `None` when there is no such shape, in which case the
     /// player does not lie down at all.
     pub(super) fn sleep_height(&self, head: [i32; 3]) -> Option<f64> {
-        let state = self.world.block(head[0], head[1], head[2]);
+        let state = self.simulation.world.block(head[0], head[1], head[2]);
         let name = self.res.facts().get(state).name.to_owned();
         let part = self.bed_part(state);
         let step = self.bed_forward(state);
         let foot_at = [head[0] - step[0], head[1], head[2] - step[2]];
-        let foot_state = self.world.block(foot_at[0], foot_at[1], foot_at[2]);
+        let foot_state = self
+            .simulation
+            .world
+            .block(foot_at[0], foot_at[1], foot_at[2]);
         let foot_name = self.res.facts().get(foot_state).name.to_owned();
         let foot_part = self.bed_part(foot_state);
         let on = slept_on(

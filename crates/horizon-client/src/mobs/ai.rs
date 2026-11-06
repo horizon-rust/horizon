@@ -1730,7 +1730,7 @@ fn push_entities(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         targets.push((Who::Player, p.position, p.passenger, false, false));
     }
     let root = root_vehicle(w, m.id, m.extra.mount);
-    for o in w.others_near(bounds) {
+    for o in w.others_intersecting(bounds) {
         if o.id != m.id && o.alive && o.pushable && o.bounds.intersects(bounds) {
             let same = root_vehicle(w, o.id, o.vehicle) == root;
             targets.push((Who::Mob(o.id), o.position, o.passenger, same, o.is_vehicle));
@@ -3113,18 +3113,22 @@ pub fn step_sound(
 }
 /// A block sound id as a static string (the block facts intern them).
 pub fn intern_sound(s: &std::sync::Arc<str>) -> &'static str {
-    use std::{collections::HashSet, sync::Mutex};
-    static NAMES: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
-    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
-    let set = names.get_or_insert_with(HashSet::new);
-    let key = s.strip_prefix("minecraft:").unwrap_or(s);
-    if let Some(found) = set.get(key) {
-        return found;
+    // Worker threads persist, so each distinct sound is interned at most once
+    // per worker. There is no process-wide lock in the living-entity tick.
+    thread_local! {
+        static NAMES: std::cell::RefCell<crate::fast_hash::FxHashSet<&'static str>> = Default::default();
     }
-    let leaked: &'static str = Box::leak(key.to_owned().into_boxed_str());
-    set.insert(leaked);
-    leaked
+    NAMES.with_borrow_mut(|names| {
+        let key = s.strip_prefix("minecraft:").unwrap_or(s);
+        if let Some(&found) = names.get(key) {
+            return found;
+        }
+        let leaked: &'static str = Box::leak(key.to_owned().into_boxed_str());
+        names.insert(leaked);
+        leaked
+    })
 }
+
 /// `getSwimSound`. A skeleton horse's own override counts the steps it takes
 /// through the water, so it needs the mob, not just its species.
 pub fn swim_sound(m: &mut Mob) -> &'static str {
@@ -3824,7 +3828,7 @@ mod warden_push_tests {
                 let mut cow = mob(2, "minecraft:cow", 1.0);
                 let others = [cow.seen(None)];
                 let mut w = world.clone();
-                w.others = &others;
+                w.others = (&others).into();
                 let mut events = Vec::new();
                 push_entities(&mut warden, &w, &mut events);
                 assert_eq!(warden.velocity.x != 0.0, standing, "mob: {pose:?}");
@@ -3839,7 +3843,7 @@ mod warden_push_tests {
 
                 // The other mob's tick: the warden's Seen must exclude it.
                 let others = [warden.seen(None)];
-                w.others = &others;
+                w.others = (&others).into();
                 events.clear();
                 push_entities(&mut cow, &w, &mut events);
                 let pushes_warden = events.iter().any(|e| {
@@ -3854,7 +3858,7 @@ mod warden_push_tests {
                 assert_eq!(pushes_warden, standing, "other tick: {pose:?}");
 
                 // The player branch of the warden's tick has its own target path.
-                w.others = &[];
+                w.others = (&[] as &[crate::mobs::Seen]).into();
                 w.player = Some(test_player(Vec3::new(1.0, 64.0, 0.5)));
                 warden.velocity = Vec3::ZERO;
                 events.clear();

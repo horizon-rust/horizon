@@ -379,7 +379,8 @@ impl Game<'_> {
         g: &horizon_client::lan::guest::Guest,
         id: u32,
     ) -> bool {
-        self.mobs
+        self.simulation
+            .mobs
             .iter()
             .find(|m| m.id == id)
             .is_some_and(|m| m.alive() && guest_within_entity_range(g, &m.bounds(), 4.0))

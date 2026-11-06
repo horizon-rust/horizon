@@ -26,7 +26,7 @@ type Pos = (i32, i32, i32);
 
 impl TrialSpawnerLevel for GameLevel<'_, '_> {
     fn game_time(&self) -> i64 {
-        self.game.world.game_time
+        self.game.simulation.world.game_time
     }
     fn mob_spawning(&self) -> bool {
         self.game.ui.rules.bool("spawn_mobs")
@@ -64,14 +64,26 @@ impl TrialSpawnerLevel for GameLevel<'_, '_> {
         self.w.visual_hit(v(from), v(to))
     }
     fn entity_block(&self, uuid: Uuid) -> Option<[i32; 3]> {
-        let (id, _) = self.game.persist.uuids.iter().find(|(_, u)| **u == uuid)?;
-        let m = self.game.mobs.iter().find(|m| m.id == *id)?;
+        let (id, _) = self
+            .game
+            .simulation
+            .persist
+            .uuids
+            .iter()
+            .find(|(_, u)| **u == uuid)?;
+        let m = self.game.simulation.mobs.iter().find(|m| m.id == *id)?;
         (!m.removed && m.alive())
             .then(|| [m.position.x, m.position.y, m.position.z].map(|v| v.floor() as i32))
     }
     fn entity_box(&self, uuid: Uuid) -> Option<([f64; 3], f32)> {
-        let (id, _) = self.game.persist.uuids.iter().find(|(_, u)| **u == uuid)?;
-        let m = self.game.mobs.iter().find(|m| m.id == *id)?;
+        let (id, _) = self
+            .game
+            .simulation
+            .persist
+            .uuids
+            .iter()
+            .find(|(_, u)| **u == uuid)?;
+        let m = self.game.simulation.mobs.iter().find(|m| m.id == *id)?;
         let b = m.bounds();
         (!m.removed && m.alive()).then(|| {
             (
@@ -109,12 +121,14 @@ impl Game<'_> {
         let Some((current, ominous)) = self.trial_spawner_block(key) else {
             return Ok(());
         };
-        let Some(BlockEntity::TrialSpawner(mut spawner)) = self.world.block_entities.take(&key)
+        let Some(BlockEntity::TrialSpawner(mut spawner)) =
+            self.simulation.world.block_entities.take(&key)
         else {
             return Ok(());
         };
         let result = self.server_tick_trial_spawner(key, &mut spawner, current, ominous);
-        self.world
+        self.simulation
+            .world
             .block_entities
             .put(key, BlockEntity::TrialSpawner(spawner));
         result
@@ -125,7 +139,7 @@ impl Game<'_> {
             .pack
             .assets
             .registry
-            .state(self.world.block(key.0, key.1, key.2))?;
+            .state(self.simulation.world.block(key.0, key.1, key.2))?;
         if block.name != "minecraft:trial_spawner" {
             return None;
         }
@@ -147,7 +161,7 @@ impl Game<'_> {
         ominous: bool,
     ) -> Result<()> {
         let pos = [key.0, key.1, key.2];
-        let mut random = std::mem::replace(&mut self.world.random, LegacyRandom::new(0));
+        let mut random = std::mem::replace(&mut self.simulation.world.random, LegacyRandom::new(0));
         let mut sequences = std::mem::take(&mut self.rand_sequences);
         let mut events = Vec::new();
         let mut planned: Vec<Planned> = Vec::new();
@@ -214,13 +228,13 @@ impl Game<'_> {
                 &mut events,
             )
         };
-        self.world.random = random;
+        self.simulation.world.random = random;
         self.rand_sequences = sequences;
         let ids = self.add_planned(planned);
         let mut by_uuid = HashMap::new();
         for (provisional, uuid) in uuids {
             if let Some(id) = ids.get(&provisional) {
-                self.persist.uuids.insert(*id, uuid);
+                self.simulation.persist.uuids.insert(*id, uuid);
                 by_uuid.insert(uuid, *id);
             }
         }
@@ -249,9 +263,14 @@ impl Game<'_> {
                 }
                 TrialEvent::TrialOmen(uuid) => self.bad_omen_to_trial_omen(uuid),
                 TrialEvent::Discard(uuid) => {
-                    let id = self.persist.uuids.iter().find(|(_, u)| **u == uuid);
+                    let id = self
+                        .simulation
+                        .persist
+                        .uuids
+                        .iter()
+                        .find(|(_, u)| **u == uuid);
                     if let Some((id, _)) = id
-                        && let Some(m) = self.mobs.iter_mut().find(|m| m.id == *id)
+                        && let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == *id)
                     {
                         m.removed = true;
                     }
@@ -278,7 +297,7 @@ impl Game<'_> {
         state: TrialState,
         ominous: bool,
     ) -> Result<()> {
-        let current = self.world.block(key.0, key.1, key.2);
+        let current = self.simulation.world.block(key.0, key.1, key.2);
         let Some(mut block) = self.pack.assets.registry.state(current).cloned() else {
             return Ok(());
         };
@@ -319,10 +338,13 @@ impl Game<'_> {
     }
     /// `sendBlockUpdated` of a block entity: the clients load its new update tag.
     pub(super) fn mark_block_entity_updated(&mut self, key: Pos) {
-        if let Some(log) = self.world.block_log.as_mut() {
+        if let Some(log) = self.simulation.world.block_log.as_mut() {
             log.push(key);
         }
-        self.world.modified.insert((key.0 >> 4, key.2 >> 4));
+        self.simulation
+            .world
+            .modified
+            .insert((key.0 >> 4, key.2 >> 4));
     }
 }
 

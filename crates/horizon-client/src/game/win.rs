@@ -79,7 +79,7 @@ impl Game<'_> {
                 sprite("environment/end_sky"),
                 sprite("entity/end_portal/end_portal"),
             ],
-            game_time: (self.world.game_time % 24000) as f32 / 24000.0,
+            game_time: (self.simulation.world.game_time % 24000) as f32 / 24000.0,
         };
         win.screen.draw(batch, &self.gui.atlas, delta_ticks, fill);
     }

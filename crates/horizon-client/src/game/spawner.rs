@@ -72,11 +72,14 @@ impl Game<'_> {
     /// the block removes or replaces that entity, so the block is not read
     /// again here.
     pub(super) fn tick_spawner(&mut self, key: Pos) -> Result<()> {
-        let Some(BlockEntity::Spawner(mut spawner)) = self.world.block_entities.take(&key) else {
+        let Some(BlockEntity::Spawner(mut spawner)) =
+            self.simulation.world.block_entities.take(&key)
+        else {
             return Ok(());
         };
         let result = self.server_tick_spawner(key, &mut spawner);
-        self.world
+        self.simulation
+            .world
             .block_entities
             .put(key, BlockEntity::Spawner(spawner));
         result
@@ -87,7 +90,7 @@ impl Game<'_> {
         for &key in keys {
             self.client_tick_spawner(key);
         }
-        let entities = &self.world.block_entities;
+        let entities = &self.simulation.world.block_entities;
         self.spawners.displays.retain(|k, _| {
             matches!(
                 entities.get(k),
@@ -117,7 +120,7 @@ impl Game<'_> {
         }
         let pos = [key.0, key.1, key.2];
         let mut random = std::mem::replace(
-            &mut self.world.random,
+            &mut self.simulation.world.random,
             horizon_core::random::LegacyRandom::new(0),
         );
         let mut events = Vec::new();
@@ -129,7 +132,7 @@ impl Game<'_> {
             };
             spawner.server_tick(&level, &mut random, pos, &mut spawn, &mut events);
         }
-        self.world.random = random;
+        self.simulation.world.random = random;
         let ids = self.add_planned(planned);
         self.apply_spawner_events(key, events, &ids, cart)
     }
@@ -141,11 +144,11 @@ impl Game<'_> {
             let provisional = u32::MAX - i as u32;
             let id = match plan {
                 Planned::Finalized(mut mob, equipment) => {
-                    self.next_entity += 1;
-                    mob.id = self.next_entity;
+                    self.simulation_server.next_entity += 1;
+                    mob.id = self.simulation_server.next_entity;
                     let id = mob.id;
-                    self.mobs.push(mob);
-                    self.native_mobs_joined(self.mobs.len() - 1, false);
+                    self.simulation.mobs.push(mob);
+                    self.native_mobs_joined(self.simulation.mobs.len() - 1, false);
                     self.enchant_spawn_equipment(id);
                     self.halloween_spawn_head(id);
                     self.spawn_jockeys(id, false);
@@ -203,7 +206,7 @@ impl Game<'_> {
             // A UUID already in the level is refused.
             let mut tag = r.entity.clone();
             if let Some(uuid) = horizon_client::entity_nbt::uuid(&Tag::Compound(tag.clone()))
-                && self.persist.uuids.values().any(|u| *u == uuid)
+                && self.simulation.persist.uuids.values().any(|u| *u == uuid)
             {
                 return None;
             }
@@ -266,7 +269,9 @@ impl Game<'_> {
                 SpawnerEvent::BlockEvent(id) => {
                     self.lan_block_event(pos, id, 0);
                     // The client copy's onEventTriggered.
-                    if let Some(BlockEntity::Spawner(s)) = self.world.block_entities.get_mut(&key) {
+                    if let Some(BlockEntity::Spawner(s)) =
+                        self.simulation.world.block_entities.get_mut(&key)
+                    {
                         s.client_event(id);
                     }
                 }
@@ -287,18 +292,21 @@ impl Game<'_> {
     /// `sendBlockUpdated`: the clients load the new update tag (the client
     /// copy's delay follows it, its display mob is made again).
     fn spawner_block_updated(&mut self, key: Pos) {
-        if let Some(BlockEntity::Spawner(s)) = self.world.block_entities.get_mut(&key) {
+        if let Some(BlockEntity::Spawner(s)) = self.simulation.world.block_entities.get_mut(&key) {
             s.client_loaded();
         }
         self.spawners.displays.remove(&key);
-        if let Some(log) = self.world.block_log.as_mut() {
+        if let Some(log) = self.simulation.world.block_log.as_mut() {
             log.push(key);
         }
-        self.world.modified.insert((key.0 >> 4, key.2 >> 4));
+        self.simulation
+            .world
+            .modified
+            .insert((key.0 >> 4, key.2 >> 4));
     }
     /// `LivingEntity.makePoofParticles` (entity event 20) for a mob.
     pub(super) fn mob_poof(&mut self, id: u32) {
-        let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
+        let Some(m) = self.simulation.mobs.iter().find(|m| m.id == id) else {
             return;
         };
         let at = m.position;
@@ -308,7 +316,7 @@ impl Game<'_> {
     /// `Mob.handleEntityEvent` 20 (`spawnAnim` on a client): the poof about
     /// mob `id`.
     pub(super) fn poof_particles(&mut self, id: u32) {
-        let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
+        let Some(m) = self.simulation.mobs.iter().find(|m| m.id == id) else {
             return;
         };
         let (at, w, h) = (m.position, f64::from(m.width()), f64::from(m.height()));
@@ -342,7 +350,8 @@ impl Game<'_> {
     /// The client copy's tick: particles and the spin while a player is near.
     fn client_tick_spawner(&mut self, key: Pos) {
         let near = {
-            let Some(BlockEntity::Spawner(s)) = self.world.block_entities.get(&key) else {
+            let Some(BlockEntity::Spawner(s)) = self.simulation.world.block_entities.get(&key)
+            else {
                 return;
             };
             let range = f64::from(s.required_player_range);
@@ -361,7 +370,8 @@ impl Game<'_> {
         let display = self.update_spawner_display(key);
         let pos = [key.0, key.1, key.2];
         let random = self.particles.level_random();
-        let Some(BlockEntity::Spawner(s)) = self.world.block_entities.get_mut(&key) else {
+        let Some(BlockEntity::Spawner(s)) = self.simulation.world.block_entities.get_mut(&key)
+        else {
             return;
         };
         if let Some(p) = s.client_tick(near, display, random, pos) {
@@ -396,7 +406,7 @@ impl Game<'_> {
     /// knows the mob.
     /// A trial spawner shows one only in the states with a spinning mob.
     fn spawner_display_kind(&self, key: Pos) -> Option<String> {
-        let id = match self.world.block_entities.get(&key)? {
+        let id = match self.simulation.world.block_entities.get(&key)? {
             BlockEntity::Spawner(s) => s.next_data()?.id()?,
             BlockEntity::TrialSpawner(s) => {
                 self.trial_spawner_block(key)?.0.spinning_mob_speed()?;
@@ -416,7 +426,7 @@ impl Game<'_> {
         data: Option<&horizon_world::nbt::Compound>,
     ) -> Option<bool> {
         let key = (pos[0], pos[1], pos[2]);
-        let trial = match self.world.block_entities.get(&key) {
+        let trial = match self.simulation.world.block_entities.get(&key) {
             Some(BlockEntity::Spawner(_)) => false,
             Some(BlockEntity::TrialSpawner(_)) => true,
             _ => return None,
@@ -431,7 +441,9 @@ impl Game<'_> {
         if trial {
             // TrialSpawnerBlockEntity.setEntityId and setEntityData:
             // overrideEntityToSpawn, which ends in setState(INACTIVE).
-            if let Some(BlockEntity::TrialSpawner(t)) = self.world.block_entities.get_mut(&key) {
+            if let Some(BlockEntity::TrialSpawner(t)) =
+                self.simulation.world.block_entities.get_mut(&key)
+            {
                 match data {
                     Some(data) => t.override_entity_data(kind, data),
                     None => t.override_entity(kind),
@@ -442,16 +454,18 @@ impl Game<'_> {
         } else {
             let mut events = Vec::new();
             let mut random = std::mem::replace(
-                &mut self.world.random,
+                &mut self.simulation.world.random,
                 horizon_core::random::LegacyRandom::new(0),
             );
-            if let Some(BlockEntity::Spawner(s)) = self.world.block_entities.get_mut(&key) {
+            if let Some(BlockEntity::Spawner(s)) =
+                self.simulation.world.block_entities.get_mut(&key)
+            {
                 match data {
                     Some(data) => s.set_entity_data(kind, data, &mut random, &mut events),
                     None => s.set_entity_id(kind, &mut random, &mut events),
                 }
             }
-            self.world.random = random;
+            self.simulation.world.random = random;
             let _ = self.apply_spawner_events(key, events, &HashMap::new(), None);
         }
         // sendBlockUpdated(3) and the player's block_change game event.
@@ -479,7 +493,7 @@ impl Game<'_> {
             p.position.z.floor() as i32,
         ];
         let (keys, trial_keys, vault_keys) =
-            nearby_remote_spawner_keys(&self.world.block_entities, center);
+            nearby_remote_spawner_keys(&self.simulation.world.block_entities, center);
         self.client_tick_spawners(&keys);
         for key in trial_keys {
             self.client_tick_trial_spawner(key);
@@ -520,7 +534,7 @@ impl Game<'_> {
             {
                 continue;
             }
-            let (spin, scale) = match self.world.block_entities.get(key) {
+            let (spin, scale) = match self.simulation.world.block_entities.get(key) {
                 Some(BlockEntity::Spawner(s)) => {
                     s.display_pose(alpha as f32, mob.width(), mob.height())
                 }
@@ -539,7 +553,7 @@ impl Game<'_> {
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, -0.2, 0.0))
                 * glam::Mat4::from_rotation_x((-30.0_f32).to_radians())
                 * glam::Mat4::from_scale(glam::Vec3::splat(scale));
-            let light = self.world.light(key.0, key.1, key.2);
+            let light = self.simulation.world.light(key.0, key.1, key.2);
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             if mob.species() == horizon_client::mobs::Species::SulfurCube {
                 self.sulfur_cube_body_geometry(

@@ -188,8 +188,8 @@ fn who_uuid(who: Who, uuid_of: &mut impl FnMut(u32) -> Option<[i32; 4]>) -> Opti
 /// of the pair [`who_uuid`] and `mob_to_nbt`'s `uuid_of` form. A UUID nothing
 /// loaded has, or one naming a kind `Who` cannot carry (an item, a projectile, a
 /// guest), is `None` - never some other entity as a stand-in.
-pub fn who_by_uuid(
-    uuids: &HashMap<u32, [i32; 4]>,
+pub fn who_by_uuid<S>(
+    uuids: &HashMap<u32, [i32; 4], S>,
     mobs: &[Mob],
     player: Option<[i32; 4]>,
     uuid: [i32; 4],

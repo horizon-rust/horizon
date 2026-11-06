@@ -53,6 +53,7 @@ impl Game<'_> {
     pub(super) fn find_test_instance_blocks(&self, center: Pos, radius: i32) -> Vec<Pos> {
         let limit = i64::from(radius) * i64::from(radius);
         let mut found: Vec<Pos> = self
+            .simulation
             .world
             .block_entities
             .iter()
@@ -244,7 +245,10 @@ impl Game<'_> {
     pub(in crate::game) fn test_position_in_level(&mut self, (x, z): (i32, i32)) -> Pos {
         self.load_test_chunks(&BoundingBox::new([x, 0, z], [x, 0, z]));
         let facts = self.res.facts();
-        let surface = self.world.world_surface(x, z, |s| facts.is_air(s));
+        let surface = self
+            .simulation
+            .world
+            .world_surface(x, z, |s| facts.is_air(s));
         (x, surface, z + 3)
     }
 

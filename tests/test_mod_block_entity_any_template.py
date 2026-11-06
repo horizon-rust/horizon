@@ -44,7 +44,8 @@ struct GameLevel { world: World }
 impl GameLevel {
     HAS_MOD
 }
-struct Game { world: World, res: Res }
+struct Simulation { world: World }
+struct Game { simulation: Simulation, res: Res }
 impl Game {
     UNTEMPLATED
 }
@@ -88,8 +89,8 @@ fn a_mod_block_entity_on_a_template_without_one_is_removed_and_not_pushed() {
 #[test]
 fn the_render_list_holds_mod_entities_of_templates_without_one() {
     let game = Game {
-        world: World { block_entities: Entities([((0, 64, 0), BlockEntity::Mod(0)), ((1, 64, 0), BlockEntity::Mod(0)),
-                                        ((2, 64, 0), BlockEntity::Chest(0))].into_iter().collect()) },
+        simulation: Simulation { world: World { block_entities: Entities([((0, 64, 0), BlockEntity::Mod(0)), ((1, 64, 0), BlockEntity::Mod(0)),
+                                        ((2, 64, 0), BlockEntity::Chest(0))].into_iter().collect()) } },
         res: Res,
     };
     // x == 0 gives state 0 (template without an entity); x != 0 state 1 (has one: the mesher lists it)

@@ -232,7 +232,7 @@ fn block_space<'w, 'r>(m: &Mob, w: &'w MobWorld<'r>) -> BlockSpace<'w, 'r> {
 }
 fn entities_clear(m: &Mob, w: &MobWorld, bounds: Aabb) -> bool {
     let grown = bounds.inflate(Vec3::new(1.0e-7, 1.0e-7, 1.0e-7));
-    !w.others_near(grown).any(|s| {
+    !w.others_intersecting(grown).any(|s| {
         s.id != m.id
             && s.alive
             && (s.species == Species::Shulker || (s.species == Species::HappyGhast && !s.baby))
@@ -416,7 +416,7 @@ fn on_peek_change(m: &Mob, w: &MobWorld, old: f32, new: f32, events: &mut Vec<Mo
             delta,
         });
     }
-    for seen in w.others_near(area) {
+    for seen in w.others_intersecting(area) {
         if seen.id == m.id
             || !seen.alive
             || seen.species == Species::Shulker
@@ -574,7 +574,7 @@ fn hit_by_shulker_bullet(
     let area = old_box.inflate(Vec3::new(8.0, 8.0, 8.0));
     // The shulker itself stands within reach of its old box, so it counts.
     let others = w
-        .others_near(area)
+        .others_intersecting(area)
         .filter(|s| {
             s.alive && s.species == Species::Shulker && s.id != m.id && s.bounds.intersects(area)
         })

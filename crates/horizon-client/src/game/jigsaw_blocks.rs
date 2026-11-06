@@ -13,7 +13,7 @@ type Pos = (i32, i32, i32);
 
 impl Game<'_> {
     fn jigsaw_block_mut(&mut self, pos: Pos) -> Option<&mut JigsawBlock> {
-        match self.world.block_entities.get_mut(&pos)? {
+        match self.simulation.world.block_entities.get_mut(&pos)? {
             BlockEntity::JigsawBlock(b) => Some(b),
             _ => None,
         }
@@ -21,7 +21,7 @@ impl Game<'_> {
 
     /// The block's front facing, from its `orientation` (`JigsawBlock.getFrontFacing`).
     pub(super) fn jigsaw_front(&self, pos: Pos) -> Option<String> {
-        let state = self.world.block(pos.0, pos.1, pos.2);
+        let state = self.simulation.world.block(pos.0, pos.1, pos.2);
         let orientation = self
             .pack
             .assets
@@ -100,7 +100,8 @@ impl Game<'_> {
     /// front neighbour, `levels` deep.
     fn generate_jigsaw_block(&mut self, p: &play::JigsawGenerate) {
         let pos = (p.pos[0], p.pos[1], p.pos[2]);
-        let Some(BlockEntity::JigsawBlock(b)) = self.world.block_entities.get(&pos) else {
+        let Some(BlockEntity::JigsawBlock(b)) = self.simulation.world.block_entities.get(&pos)
+        else {
             return;
         };
         let (pool, target) = (b.pool.clone(), b.target.clone());

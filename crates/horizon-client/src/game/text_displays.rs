@@ -295,7 +295,7 @@ impl Game<'_> {
                 if !matrix.is_finite() {
                     continue;
                 }
-                let light = Self::display_light(&self.world, &d, position);
+                let light = Self::display_light(&self.simulation.world, &d, position);
                 if let Some(state) = display.block {
                     // BlockModelResolver.update: model seed 42.
                     self.block_model_vertices(state, 42, matrix, light, true, out);
@@ -371,7 +371,7 @@ impl Game<'_> {
             }
             let mut batch = HudBatch::new([1, 1]);
             text_display::draw(&mut batch, &self.gui.atlas, &d, lines, background);
-            let light = Self::display_light(&self.world, &d, position);
+            let light = Self::display_light(&self.simulation.world, &d, position);
             // Font.DisplayMode: SEE_THROUGH over everything, else POLYGON_OFFSET.
             let through = d.flags & 2 != 0;
             let (out, layer) = if through {

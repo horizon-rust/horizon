@@ -25,7 +25,8 @@ struct Hit { pos: [i32; 3] }
 struct BlockStateId(u32);
 struct World;
 impl World { fn block(&self, x: i32, y: i32, z: i32) -> BlockStateId { assert_eq!([x,y,z], [1,2,3]); BlockStateId(42) } }
-struct Game { world: World, cancel: bool, calls: Cell<usize> }
+struct Simulation { world: World }
+struct Game { simulation: Simulation, cancel: bool, calls: Cell<usize> }
 impl Game {
     fn native_block_highlight(&self, pos: [i32; 3], state: BlockStateId, partial: f32, canceled: &mut bool) {
         assert_eq!(pos, [1,2,3]); assert_eq!(state, BlockStateId(42)); assert_eq!(partial, 0.5);
@@ -36,7 +37,7 @@ impl Game {
 #[test]
 fn cancelled_default_and_missing_target() {
     for cancel in [false, true] {
-        let game = Game { world: World, cancel, calls: Cell::new(0) };
+        let game = Game { simulation: Simulation { world: World }, cancel, calls: Cell::new(0) };
         let hit = Hit { pos: [1,2,3] };
         assert_eq!(game.filter(Some(hit)), if cancel { None } else { Some(hit) });
         assert_eq!(game.filter(None), None);

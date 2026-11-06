@@ -525,7 +525,7 @@ pub(super) fn shelf_signal(
 impl Game<'_> {
     fn containers(&self) -> Containers<'_> {
         Containers {
-            world: &self.world,
+            world: &self.simulation.world,
             behaviours: self.res.behaviours(),
             items: self.items(),
             registry: self.pack.assets.registry,
@@ -542,7 +542,7 @@ impl Game<'_> {
     }
     fn slot_mut_at(&mut self, view: &View, slot: usize) -> Option<&mut Option<ItemStack>> {
         let (pos, i) = view.locate(slot)?;
-        let entity = self.world.block_entities.get_mut(&pos)?;
+        let entity = self.simulation.world.block_entities.get_mut(&pos)?;
         // A mod's slots grow to its container's count when first used.
         if let BlockEntity::Mod(m) = entity
             && m.items.len() <= i
@@ -568,7 +568,7 @@ impl Game<'_> {
         }
         self.chiseled_bookshelf_synced(pos);
         if matches!(
-            self.world.block_entities.get(&pos),
+            self.simulation.world.block_entities.get(&pos),
             Some(BlockEntity::Shelf(_))
         ) {
             self.mark_block_entity_updated(pos);
@@ -578,7 +578,10 @@ impl Game<'_> {
             .chain(self.chest_other_half(pos))
             .collect();
         for pos in halves {
-            self.world.modified.insert((pos.0 >> 4, pos.2 >> 4));
+            self.simulation
+                .world
+                .modified
+                .insert((pos.0 >> 4, pos.2 >> 4));
             self.with_level(|b, level, ticks| {
                 b.container_changed(level, ticks, BlockPos::new(pos.0, pos.1, pos.2))
             });
@@ -600,7 +603,7 @@ impl Game<'_> {
         let Some((pos, i)) = view.locate(slot) else {
             return false;
         };
-        let Some(BlockEntity::Mod(entity)) = self.world.block_entities.get(&pos) else {
+        let Some(BlockEntity::Mod(entity)) = self.simulation.world.block_entities.get(&pos) else {
             return false;
         };
         let mut cancel = false;
@@ -678,8 +681,9 @@ impl Game<'_> {
         }
         if success && was_empty && view.kind == Kind::Hopper {
             let dest = view.parts[0].0;
-            let from_ticked = from_hopper.and_then(|p| self.hoppers.get(&p).map(|h| h.ticked));
-            let state = self.hoppers.entry(dest).or_default();
+            let from_ticked =
+                from_hopper.and_then(|p| self.simulation.hoppers.get(&p).map(|h| h.ticked));
+            let state = self.simulation.hoppers.entry(dest).or_default();
             if state.cooldown <= 8 {
                 let skip = i32::from(from_ticked.is_some_and(|t| state.ticked >= t));
                 state.cooldown = 8 - skip;
@@ -732,9 +736,9 @@ impl Game<'_> {
     /// `HopperBlockEntity.pushItemsTick` of the hopper at `pos`, if its block
     /// is still a hopper (`BlockEntityType.isValid`).
     pub(super) fn tick_hopper(&mut self, pos: Pos) {
-        let time = self.world.game_time;
+        let time = self.simulation.world.game_time;
         let waiting = {
-            let state = self.hoppers.entry(pos).or_default();
+            let state = self.simulation.hoppers.entry(pos).or_default();
             state.cooldown -= 1;
             state.ticked = time;
             state.cooldown > 0
@@ -747,35 +751,41 @@ impl Game<'_> {
         let hopper = self
             .res
             .facts()
-            .get(self.world.block(pos.0, pos.1, pos.2))
+            .get(self.simulation.world.block(pos.0, pos.1, pos.2))
             .name
             .as_ref()
             == "minecraft:hopper";
         if !hopper {
-            self.hoppers.remove(&pos);
+            self.simulation.hoppers.remove(&pos);
             return;
         }
-        if let Some(state) = self.hoppers.get_mut(&pos) {
+        if let Some(state) = self.simulation.hoppers.get_mut(&pos) {
             state.cooldown = 0;
         }
         self.hopper_try_move_items(pos);
     }
     /// Drops the cooldowns of hoppers whose block entity is gone.
     pub(super) fn forget_gone_hoppers(&mut self) {
-        let entities = &self.world.block_entities;
-        self.hoppers.retain(|p, _| {
+        let entities = &self.simulation.world.block_entities;
+        self.simulation.hoppers.retain(|p, _| {
             matches!(entities.get(p), Some(BlockEntity::Chest(items)) if items.len() == HOPPER_SLOTS)
         });
     }
     /// `HopperBlockEntity.tryMoveItems` with `suckInItems`.
     pub(super) fn hopper_try_move_items(&mut self, pos: Pos) {
-        let state = self.world.block(pos.0, pos.1, pos.2);
+        let state = self.simulation.world.block(pos.0, pos.1, pos.2);
         let c = self.containers();
         let enabled = c.prop(state, "enabled") != Some("false");
         let Some(view) = c.view(pos, false) else {
             return;
         };
-        if self.hoppers.get(&pos).is_some_and(|h| h.cooldown > 0) || !enabled {
+        if self
+            .simulation
+            .hoppers
+            .get(&pos)
+            .is_some_and(|h| h.cooldown > 0)
+            || !enabled
+        {
             return;
         }
         self.native_prepare_hopper_transfer([pos.0, pos.1, pos.2]);
@@ -790,7 +800,7 @@ impl Game<'_> {
             changed |= self.hopper_suck(pos, &view);
         }
         if changed {
-            self.hoppers.entry(pos).or_default().cooldown = 8;
+            self.simulation.hoppers.entry(pos).or_default().cooldown = 8;
             self.container_changed(pos);
         }
     }
@@ -800,8 +810,8 @@ impl Game<'_> {
     /// entity phase, before the hopper's own tick counts its cooldown down.
     pub(super) fn hoppers_catch_items(&mut self) {
         let mut i = 0;
-        while i < self.dropped.len() {
-            let item = &self.dropped[i];
+        while i < self.simulation.dropped.len() {
+            let item = &self.simulation.dropped[i];
             // `ItemEntity.tick` moves 1 of 4 ticks while resting;
             // `checkInsideBlocks` only follows a move.
             let moved = item.position != item.previous
@@ -816,7 +826,7 @@ impl Game<'_> {
             'blocks: for x in lo.x.floor() as i32..=hi.x.floor() as i32 {
                 for y in lo.y.floor() as i32..=hi.y.floor() as i32 {
                     for z in lo.z.floor() as i32..=hi.z.floor() as i32 {
-                        let state = self.world.block(x, y, z);
+                        let state = self.simulation.world.block(x, y, z);
                         if self.res.facts().get(state).name.as_ref() != "minecraft:hopper" {
                             continue;
                         }
@@ -848,13 +858,17 @@ impl Game<'_> {
     /// `tryMoveItems(…, () -> addItem(hopper, itemEntity))`; true when the
     /// item entity was taken whole.
     fn hopper_take_item(&mut self, pos: Pos, i: usize) -> bool {
-        let state = self.world.block(pos.0, pos.1, pos.2);
+        let state = self.simulation.world.block(pos.0, pos.1, pos.2);
         let c = self.containers();
         let Some(view) = c.view(pos, false) else {
             return false;
         };
         if c.prop(state, "enabled") == Some("false")
-            || self.hoppers.get(&pos).is_some_and(|h| h.cooldown > 0)
+            || self
+                .simulation
+                .hoppers
+                .get(&pos)
+                .is_some_and(|h| h.cooldown > 0)
         {
             return false;
         }
@@ -867,7 +881,7 @@ impl Game<'_> {
             (0..view.len()).all(|n| c.get(&view, n).is_some_and(|s| s.count == c.max_stack(s)));
         let mut taken = false;
         if !full {
-            let stack = self.dropped[i].stack.clone();
+            let stack = self.simulation.dropped[i].stack.clone();
             let allowed = self.with_level(|_, level, _| {
                 level.allow_hopper_pickup_item(
                     BlockPos::new(pos.0, pos.1, pos.2),
@@ -885,11 +899,11 @@ impl Game<'_> {
                     taken = true;
                     changed = true;
                 }
-                Some(rest) => self.dropped[i].stack = rest,
+                Some(rest) => self.simulation.dropped[i].stack = rest,
             }
         }
         if changed {
-            self.hoppers.entry(pos).or_default().cooldown = 8;
+            self.simulation.hoppers.entry(pos).or_default().cooldown = 8;
             self.container_changed(pos);
         }
         taken
@@ -897,7 +911,7 @@ impl Game<'_> {
     /// `HopperBlockEntity.ejectItems`: into the block container in front, else
     /// a container entity there (`getContainerAt`).
     fn hopper_eject(&mut self, pos: Pos, hopper: &View) -> bool {
-        let state = self.world.block(pos.0, pos.1, pos.2);
+        let state = self.simulation.world.block(pos.0, pos.1, pos.2);
         let c = self.containers();
         let Some(facing) = c.prop(state, "facing").and_then(dir_from_name) else {
             return false;
@@ -930,11 +944,18 @@ impl Game<'_> {
         if x == i32::MAX - 15 && y == super::minecarts::CART_KEY_Y {
             let id = z as u32;
             let at = self
+                .simulation
                 .carts
                 .iter()
                 .find(|c| c.id == id)
                 .map(|c| c.position)
-                .or_else(|| self.boats.iter().find(|b| b.id == id).map(|b| b.position));
+                .or_else(|| {
+                    self.simulation
+                        .boats
+                        .iter()
+                        .find(|b| b.id == id)
+                        .map(|b| b.position)
+                });
             if let Some(p) = at {
                 return [p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32];
             }
@@ -999,7 +1020,7 @@ impl Game<'_> {
         if let Some(took) = self.suck_from_container(above, at, hopper) {
             return took;
         }
-        let above_state = self.world.block(above.0, above.1, above.2);
+        let above_state = self.simulation.world.block(above.0, above.1, above.2);
         let blocked = self.res.facts().get(above_state).full_collision
             && !self
                 .res
@@ -1023,7 +1044,7 @@ impl Game<'_> {
             ],
         );
         if let Some(columns) = self.item_columns.as_mut()
-            && !columns.may_reach(&self.dropped, pos.0, pos.2)
+            && !columns.may_reach(&self.simulation.dropped, pos.0, pos.2)
         {
             return false;
         }
@@ -1084,7 +1105,10 @@ impl Game<'_> {
             self.with_level(|b, level, ticks| b.composter_empty(level, ticks, at));
             let moved = self.add_item(None, hopper, bone_meal, None).is_none();
             self.with_level(|b, level, ticks| b.composter_empty(level, ticks, at));
-            self.world.modified.insert((above.0 >> 4, above.2 >> 4));
+            self.simulation
+                .world
+                .modified
+                .insert((above.0 >> 4, above.2 >> 4));
             return Some(moved);
         }
         let source_hopper = (source.kind == Kind::Hopper).then_some(above);
@@ -1142,6 +1166,7 @@ impl Game<'_> {
                 && hi.z > at[2] - 0.5
         };
         let mut found: Vec<u32> = self
+            .simulation
             .carts
             .iter()
             .filter(|c| {
@@ -1153,7 +1178,8 @@ impl Game<'_> {
             .map(|c| c.id)
             .collect();
         found.extend(
-            self.boats
+            self.simulation
+                .boats
                 .iter()
                 .filter(|b| b.chest && meets(b.bounds()))
                 .map(|b| b.id),
@@ -1162,6 +1188,7 @@ impl Game<'_> {
             return None;
         }
         let pick = self
+            .simulation
             .world
             .random
             .next_int_bound(found.len() as i32)
@@ -1176,18 +1203,18 @@ impl Game<'_> {
         id: u32,
         f: impl FnOnce(&mut Self, &View) -> R,
     ) -> Option<R> {
-        let mut items = if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
+        let mut items = if let Some(c) = self.simulation.carts.iter_mut().find(|c| c.id == id) {
             std::mem::take(&mut c.items)
         } else {
-            std::mem::take(&mut self.boats.iter_mut().find(|b| b.id == id)?.items)
+            std::mem::take(&mut self.simulation.boats.iter_mut().find(|b| b.id == id)?.items)
         };
         let key = (i32::MAX - 15, super::minecarts::CART_KEY_Y, id as i32);
         let (view, open) = self.lend_items(key, &mut items);
         let result = f(self, &view);
         self.reclaim_items(key, open, &mut items);
-        if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
+        if let Some(c) = self.simulation.carts.iter_mut().find(|c| c.id == id) {
             c.items = items;
-        } else if let Some(b) = self.boats.iter_mut().find(|b| b.id == id) {
+        } else if let Some(b) = self.simulation.boats.iter_mut().find(|b| b.id == id) {
             b.items = items;
         }
         Some(result)
@@ -1196,12 +1223,13 @@ impl Game<'_> {
     /// menu is open the placeholder is the live copy and stays as it is.
     /// Returns the view and whether the menu was open.
     fn lend_items(&mut self, key: Pos, items: &mut Vec<Option<ItemStack>>) -> (View, bool) {
-        let open = self.world.block_entities.contains_key(&key);
+        let open = self.simulation.world.block_entities.contains_key(&key);
         if !open {
             let slots = BlockEntity::Chest(std::mem::take(items));
-            self.world.block_entities.insert(key, slots);
+            self.simulation.world.block_entities.insert(key, slots);
         }
         let size = self
+            .simulation
             .world
             .block_entities
             .get(&key)
@@ -1218,9 +1246,9 @@ impl Game<'_> {
     /// left by a guest's close) gets the changed items copied to `items`.
     fn reclaim_items(&mut self, key: Pos, open: bool, items: &mut Vec<Option<ItemStack>>) {
         let slots = if open {
-            self.world.block_entities.get(&key).cloned()
+            self.simulation.world.block_entities.get(&key).cloned()
         } else {
-            self.world.block_entities.remove(&key)
+            self.simulation.world.block_entities.remove(&key)
         };
         if let Some(BlockEntity::Chest(slots)) = slots {
             *items = slots;
@@ -1236,8 +1264,8 @@ impl Game<'_> {
         max: [f64; 3],
     ) -> bool {
         let mut i = 0;
-        while i < self.dropped.len() {
-            let b = self.dropped[i].bounds();
+        while i < self.simulation.dropped.len() {
+            let b = self.simulation.dropped[i].bounds();
             let (lo, hi) = (b.min_position(), b.max_position());
             let inside = lo.x < max[0]
                 && hi.x > min[0]
@@ -1246,7 +1274,7 @@ impl Game<'_> {
                 && lo.z < max[2]
                 && hi.z > min[2];
             if inside {
-                let stack = self.dropped[i].stack.clone();
+                let stack = self.simulation.dropped[i].stack.clone();
                 let allowed = hopper_pos.is_none_or(|pos| {
                     self.with_level(|_, level, _| {
                         level.allow_hopper_pickup_item(
@@ -1265,7 +1293,7 @@ impl Game<'_> {
                         self.remove_dropped(i);
                         return true;
                     }
-                    Some(rest) => self.dropped[i].stack = rest,
+                    Some(rest) => self.simulation.dropped[i].stack = rest,
                 }
             }
             i += 1;
@@ -1336,7 +1364,14 @@ impl Game<'_> {
         let mut odds = 1;
         for i in 0..view.len() {
             if self.containers().get(&view, i).is_some() {
-                if self.world.random.next_int_bound(odds).unwrap_or(1) == 0 {
+                if self
+                    .simulation
+                    .world
+                    .random
+                    .next_int_bound(odds)
+                    .unwrap_or(1)
+                    == 0
+                {
                     slot = Some(i);
                 }
                 odds += 1;
@@ -1428,7 +1463,7 @@ impl Game<'_> {
             return (self.open_cart_kind() == Some(super::minecarts::CartKind::Hopper))
                 .then_some(Screen::Hopper);
         }
-        let state = self.world.block(key.0, key.1, key.2);
+        let state = self.simulation.world.block(key.0, key.1, key.2);
         match &*self.res.facts().get(state).name {
             "minecraft:hopper" => Some(Screen::Hopper),
             "minecraft:dispenser" => Some(Screen::Dispenser),
@@ -1739,23 +1774,24 @@ mod hopper_cart_transfer_tests {
             .unwrap();
         // A rail holds the cart still; the chest sits in the block the cart
         // pulls from (`getLevelY` is y + 0.5, so the block above is y + 1.5).
-        game.world.set(8, 64, 8, rail).unwrap();
-        game.world.set(8, 65, 8, chest).unwrap();
-        game.world.block_entities.insert(
+        game.simulation.world.set(8, 64, 8, rail).unwrap();
+        game.simulation.world.set(8, 65, 8, chest).unwrap();
+        game.simulation.world.block_entities.insert(
             (8, 65, 8),
             BlockEntity::Chest(vec![Some(ItemStack::new("minecraft:stone", 64)); 27]),
         );
-        game.next_entity += 1;
-        let id = game.next_entity;
+        game.simulation_server.next_entity += 1;
+        let id = game.simulation_server.next_entity;
         let mut cart = Minecart::new(id, CartKind::Hopper, Vec3::new(8.5, 64.0625, 8.5));
         cart.enabled = true;
-        game.carts.push(cart);
+        game.simulation.carts.push(cart);
         let count = |game: &Game<'_>| {
-            let in_chest: u32 = match game.world.block_entities.get(&(8, 65, 8)) {
+            let in_chest: u32 = match game.simulation.world.block_entities.get(&(8, 65, 8)) {
                 Some(BlockEntity::Chest(s)) => s.iter().flatten().map(|s| s.count).sum(),
                 _ => 0,
             };
             let in_cart: u32 = game
+                .simulation
                 .carts
                 .iter()
                 .find(|c| c.id == id)

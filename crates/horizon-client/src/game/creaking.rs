@@ -18,7 +18,7 @@ use horizon_core::{
     random::{LegacyRandom, RandomSource},
 };
 use horizon_world::registry::BlockStateId;
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 type Pos = (i32, i32, i32);
 
@@ -34,7 +34,7 @@ pub(super) fn heart_signal(world: &horizon_client::world::World, pos: BlockPos) 
 struct Host<'a> {
     mobs: &'a mut Vec<Mob>,
     added: Vec<Mob>,
-    uuids: &'a mut HashMap<u32, [i32; 4]>,
+    uuids: &'a mut horizon_client::fast_hash::FxHashMap<u32, [i32; 4]>,
     creaking: Option<Arc<MobType>>,
     next_entity: &'a mut u32,
     spawning: bool,
@@ -109,10 +109,10 @@ impl Game<'_> {
             &mut Vec<HeartEvent>,
         ),
     ) -> Result<()> {
-        let mut mobs = std::mem::take(&mut self.mobs);
-        let mut uuids = std::mem::take(&mut self.persist.uuids);
-        let mut next_entity = self.next_entity;
-        let mut random = self.world.random.clone();
+        let mut mobs = std::mem::take(&mut self.simulation.mobs);
+        let mut uuids = std::mem::take(&mut self.simulation.persist.uuids);
+        let mut next_entity = self.simulation_server.next_entity;
+        let mut random = self.simulation.world.random.clone();
         let spawning = self.spawning_monsters();
         let creaking = self.res.mob_types().get("minecraft:creaking").cloned();
         let player_uuid = self.level.player_uuid;
@@ -136,10 +136,10 @@ impl Game<'_> {
             host.added
         };
         mobs.extend(added);
-        self.mobs = mobs;
-        self.persist.uuids = uuids;
-        self.next_entity = next_entity;
-        self.world.random = random;
+        self.simulation.mobs = mobs;
+        self.simulation.persist.uuids = uuids;
+        self.simulation_server.next_entity = next_entity;
+        self.simulation.world.random = random;
         let mut mob_events = Vec::new();
         for e in events {
             match e {
@@ -172,14 +172,16 @@ impl Game<'_> {
             return;
         }
         let key = (home[0], home[1], home[2]);
-        let Some(BlockEntity::CreakingHeart(mut heart)) = self.world.block_entities.take(&key)
+        let Some(BlockEntity::CreakingHeart(mut heart)) =
+            self.simulation.world.block_entities.take(&key)
         else {
             return;
         };
         let _ = self.with_heart(key, &mut heart, true, |h, w, lr, host, out| {
             creaking_heart::creaking_hurt(h, home, w, lr, host, out);
         });
-        self.world
+        self.simulation
+            .world
             .block_entities
             .put(key, BlockEntity::CreakingHeart(heart));
     }
@@ -204,7 +206,7 @@ impl Game<'_> {
                 return;
             };
             for _ in 0..count {
-                let r = &mut this.world.random;
+                let r = &mut this.simulation.world.random;
                 let p = [
                     center[0] + r.next_gaussian() * spread[0],
                     center[1] + r.next_gaussian() * spread[1],
@@ -231,19 +233,20 @@ impl Game<'_> {
     pub(super) fn creaking_heart_broken(&mut self, pos: [i32; 3], by_player: bool) {
         let key = (pos[0], pos[1], pos[2]);
         if !matches!(
-            self.world.block_entities.get(&key),
+            self.simulation.world.block_entities.get(&key),
             Some(BlockEntity::CreakingHeart(_))
         ) {
             return;
         }
-        let Some(BlockEntity::CreakingHeart(mut heart)) = self.world.block_entities.take(&key)
+        let Some(BlockEntity::CreakingHeart(mut heart)) =
+            self.simulation.world.block_entities.take(&key)
         else {
             return;
         };
         let _ = self.with_heart(key, &mut heart, false, |h, _, _, host, out| {
             creaking_heart::remove_protector(h, host, true, out);
         });
-        let state = self.world.block(key.0, key.1, key.2);
+        let state = self.simulation.world.block(key.0, key.1, key.2);
         let natural = self
             .pack
             .assets
@@ -252,7 +255,7 @@ impl Game<'_> {
             .and_then(|s| s.properties.get("natural").cloned())
             .is_some_and(|v| v == "true");
         if by_player && natural && !self.creative && !self.spectator() {
-            let xp = 20 + self.world.random.next_int_bound(5).unwrap_or(0) as u32;
+            let xp = 20 + self.simulation.world.random.next_int_bound(5).unwrap_or(0) as u32;
             self.spawn_orbs(
                 [
                     f64::from(pos[0]) + 0.5,
@@ -262,7 +265,8 @@ impl Game<'_> {
                 xp,
             );
         }
-        self.world
+        self.simulation
+            .world
             .block_entities
             .put(key, BlockEntity::CreakingHeart(heart));
     }
@@ -270,14 +274,15 @@ impl Game<'_> {
     /// stays while uprooted, so that a heart whose block went away is still
     /// found here and lets go of its protector.
     pub(super) fn tick_creaking_heart(&mut self, key: Pos) -> Result<()> {
-        let Some(BlockEntity::CreakingHeart(mut heart)) = self.world.block_entities.take(&key)
+        let Some(BlockEntity::CreakingHeart(mut heart)) =
+            self.simulation.world.block_entities.take(&key)
         else {
             return Ok(());
         };
-        let state = self.world.block(key.0, key.1, key.2);
+        let state = self.simulation.world.block(key.0, key.1, key.2);
         if &*self.res.facts().get(state).name != "minecraft:creaking_heart" {
             // The block is gone: preRemoveSideEffects.
-            self.world.block_entities.forget(&key);
+            self.simulation.world.block_entities.forget(&key);
             self.with_heart(key, &mut heart, false, |h, _, _, host, out| {
                 creaking_heart::remove_protector(h, host, false, out);
             })?;
@@ -291,7 +296,8 @@ impl Game<'_> {
                 creaking_heart::server_tick(h, pos, w, lr, host, out);
             })?;
         }
-        self.world
+        self.simulation
+            .world
             .block_entities
             .put(key, BlockEntity::CreakingHeart(heart));
         Ok(())
@@ -316,19 +322,19 @@ impl Game<'_> {
         {
             return;
         }
-        self.creaking.follow_chunks(&self.world.chunks);
+        self.creaking.follow_chunks(&self.simulation.world.chunks);
         let mut keys: Vec<(i32, i32)> = self
             .creaking
             .unscanned
             .iter()
             .copied()
-            .filter(|k| self.world.chunks.get(k).is_some_and(|c| c.lit))
+            .filter(|k| self.simulation.world.chunks.get(k).is_some_and(|c| c.lit))
             .collect();
         keys.sort_unstable();
         for key in keys {
             self.creaking.unscanned.remove(&key);
             self.creaking.scanned.insert(key);
-            let Some(chunk) = self.world.chunks.get(&key).cloned() else {
+            let Some(chunk) = self.simulation.world.chunks.get(&key).cloned() else {
                 continue;
             };
             if self.creaking.hearts.is_empty() {
@@ -356,10 +362,11 @@ impl Game<'_> {
                     let (lx, lz, ly) = ((i & 15) as i32, ((i >> 4) & 15) as i32, (i >> 8) as i32);
                     let pos = (
                         key.0 * 16 + lx,
-                        self.world.bottom_y() + si as i32 * 16 + ly,
+                        self.simulation.world.bottom_y() + si as i32 * 16 + ly,
                         key.1 * 16 + lz,
                     );
-                    self.world
+                    self.simulation
+                        .world
                         .block_entities
                         .get_or_insert_with(pos, || BlockEntity::CreakingHeart(Box::default()));
                 }

@@ -287,7 +287,7 @@ impl Game<'_> {
         }
     }
     fn command_block(&self, pos: Pos) -> Option<&CommandBlock> {
-        match self.world.block_entities.get(&pos)? {
+        match self.simulation.world.block_entities.get(&pos)? {
             BlockEntity::CommandBlock(c) => Some(c),
             _ => None,
         }
@@ -296,13 +296,18 @@ impl Game<'_> {
     /// minecart's.
     fn edit_base(&self, s: &CommandBlockScreen) -> Option<&CommandBlock> {
         match s.cart {
-            Some(id) => self.carts.iter().find(|c| c.id == id).map(|c| &c.command),
+            Some(id) => self
+                .simulation
+                .carts
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| &c.command),
             None => self.command_block(s.pos),
         }
     }
     fn block_state_at(&self, pos: Pos) -> Option<&'static BlockState> {
         let registry = self.pack.assets.registry;
-        state_of(registry, self.world.block(pos.0, pos.1, pos.2))
+        state_of(registry, self.simulation.world.block(pos.0, pos.1, pos.2))
     }
     fn schedule_command_block(&mut self, pos: Pos) {
         let at = BlockPos::new(pos.0, pos.1, pos.2);
@@ -310,7 +315,7 @@ impl Game<'_> {
     }
     /// `CommandBlockEntity.scheduleTick`.
     fn schedule_command_block_tick(&mut self, pos: Pos) {
-        mark_condition_met(&mut self.world, self.pack.assets.registry, pos);
+        mark_condition_met(&mut self.simulation.world, self.pack.assets.registry, pos);
         self.schedule_command_block(pos);
     }
     fn update_output_signal(&mut self, pos: Pos) {
@@ -365,14 +370,14 @@ impl Game<'_> {
             return;
         };
         let auto = command_block::automatic_block(name);
-        if defaults && let Some(c) = command_block_mut(&mut self.world, pos) {
+        if defaults && let Some(c) = command_block_mut(&mut self.simulation.world, pos) {
             c.track_output = feedback;
             c.auto = auto;
         }
         let at = BlockPos::new(pos.0, pos.1, pos.2);
         let signal = self.with_level(|b, level, ticks| b.has_neighbor_signal(level, ticks, at));
         let registry = self.pack.assets.registry;
-        if let Some((was, auto)) = set_powered(&mut self.world, registry, pos, signal)
+        if let Some((was, auto)) = set_powered(&mut self.simulation.world, registry, pos, signal)
             && signal
             && !was
             && !auto
@@ -395,12 +400,12 @@ impl Game<'_> {
             return;
         };
         if mode == Mode::Auto {
-            mark_condition_met(&mut self.world, self.pack.assets.registry, key);
+            mark_condition_met(&mut self.simulation.world, self.pack.assets.registry, key);
         }
         match command_block::tick_action(mode, was_met, conditional(state)) {
             Some(true) => self.command_block_execute(key, state),
             Some(false) => {
-                if let Some(c) = command_block_mut(&mut self.world, key) {
+                if let Some(c) = command_block_mut(&mut self.simulation.world, key) {
                     c.success_count = 0;
                 }
             }
@@ -421,7 +426,7 @@ impl Game<'_> {
             .is_some_and(|c| !c.command.is_empty());
         if has_command {
             self.perform_command_block(pos);
-        } else if let Some(c) = command_block_mut(&mut self.world, pos) {
+        } else if let Some(c) = command_block_mut(&mut self.simulation.world, pos) {
             c.success_count = 0;
         }
         self.execute_chain(pos, facing_step(state));
@@ -446,13 +451,13 @@ impl Game<'_> {
                 break;
             };
             if c.powered || c.auto {
-                if mark_condition_met(&mut self.world, registry, pos) {
+                if mark_condition_met(&mut self.simulation.world, registry, pos) {
                     if !self.perform_command_block(pos) {
                         break;
                     }
                     self.update_output_signal(pos);
                 } else if conditional(state)
-                    && let Some(c) = command_block_mut(&mut self.world, pos)
+                    && let Some(c) = command_block_mut(&mut self.simulation.world, pos)
                 {
                     c.success_count = 0;
                 }
@@ -470,8 +475,8 @@ impl Game<'_> {
     /// game master level, counting the successful results. False when it
     /// already ran this game tick.
     fn perform_command_block(&mut self, pos: Pos) -> bool {
-        let game_time = self.world.game_time;
-        let Some(c) = command_block_mut(&mut self.world, pos) else {
+        let game_time = self.simulation.world.game_time;
+        let Some(c) = command_block_mut(&mut self.simulation.world, pos) else {
             return false;
         };
         if c.last_execution == game_time {
@@ -485,7 +490,7 @@ impl Game<'_> {
         c.success_count = 0;
         let command = c.command.clone();
         if self.ui.rules.bool("command_blocks_work") && !command.is_empty() {
-            if let Some(c) = command_block_mut(&mut self.world, pos) {
+            if let Some(c) = command_block_mut(&mut self.simulation.world, pos) {
                 c.last_output = None;
             }
             let Some(state) = self.block_state_at(pos) else {
@@ -508,11 +513,11 @@ impl Game<'_> {
                 cart: None,
             };
             let successes = self.run_as_game_master(&command, source);
-            if let Some(c) = command_block_mut(&mut self.world, pos) {
+            if let Some(c) = command_block_mut(&mut self.simulation.world, pos) {
                 c.success_count = successes;
             }
         }
-        if let Some(c) = command_block_mut(&mut self.world, pos) {
+        if let Some(c) = command_block_mut(&mut self.simulation.world, pos) {
             c.last_execution = if c.update_last_execution {
                 game_time
             } else {
@@ -538,7 +543,7 @@ impl Game<'_> {
     /// output, stamped with the time. Nothing when it doesn't track output
     /// (`CommandSource.NULL`).
     pub(super) fn command_block_output(&mut self, pos: Pos, message: Text) {
-        if let Some(c) = command_block_mut(&mut self.world, pos)
+        if let Some(c) = command_block_mut(&mut self.simulation.world, pos)
             && c.track_output
         {
             let time = chrono::Local::now().format("[%H:%M:%S] ").to_string();
@@ -951,7 +956,7 @@ impl Game<'_> {
             return;
         };
         let tag = Tag::compound(block.save());
-        let state = self.world.block(pos.0, pos.1, pos.2).0;
+        let state = self.simulation.world.block(pos.0, pos.1, pos.2).0;
         let Some(kind) = host.hub.encoder.entity_type(state) else {
             return;
         };
@@ -987,18 +992,18 @@ impl Game<'_> {
         if let Ok(id) = registry.resolve(&wanted)
             && wanted != *current
         {
-            let entity = self.world.block_entities.take(&pos);
+            let entity = self.simulation.world.block_entities.take(&pos);
             let at = BlockPos::new(pos.0, pos.1, pos.2);
             self.with_level(|b, level, ticks| {
                 b.set_block(level, ticks, at, id, flags::UPDATE_CLIENTS)
             });
             if let Some(entity) = entity {
-                self.world.block_entities.put(pos, entity);
+                self.simulation.world.block_entities.put(pos, entity);
             }
             let _ = self.process_level_events();
         }
         let command = s.command.clone();
-        let Some(c) = command_block_mut(&mut self.world, pos) else {
+        let Some(c) = command_block_mut(&mut self.simulation.world, pos) else {
             return;
         };
         c.set_command(&command);

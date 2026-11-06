@@ -447,9 +447,9 @@ impl Game<'_> {
         // where they ride it again (`Entity.teleportCrossDimension`). It
         // keeps its entity id, so the ride is never broken.
         let vehicle = g.vehicle.filter(|id| {
-            self.mobs.iter().any(|m| m.id == *id)
-                || self.boats.iter().any(|b| b.id == *id)
-                || self.carts.iter().any(|c| c.id == *id)
+            self.simulation.mobs.iter().any(|m| m.id == *id)
+                || self.simulation.boats.iter().any(|b| b.id == *id)
+                || self.simulation.carts.iter().any(|c| c.id == *id)
         });
         let source = self.dim;
         let end = plan.is_none();
@@ -537,7 +537,7 @@ impl Game<'_> {
     /// caller tells the player (`Hub::missing_respawn_block`).
     pub(super) fn resolve_server_respawn(&mut self, config: RespawnConfig) -> Option<(Vec3, f32)> {
         let [x, y, z] = config.pos;
-        let anchor = self.is_anchor(self.world.block(x, y, z));
+        let anchor = self.is_anchor(self.simulation.world.block(x, y, z));
         match self.find_respawn_and_use(config, true) {
             Ok(Some((at, yaw))) => {
                 if !config.forced && anchor {
@@ -670,7 +670,7 @@ impl Game<'_> {
                 || trip
                     .gateway
                     .and_then(GatewayJob::source_chunk)
-                    .is_some_and(|c| !self.world.chunks.contains_key(&c))
+                    .is_some_and(|c| !self.simulation.world.chunks.contains_key(&c))
             {
                 k += 1;
                 continue;
@@ -796,15 +796,15 @@ impl Game<'_> {
             .carried_motion
             .remove(&id)
             .unwrap_or(Vec3::ZERO);
-        let Some(parked) = self.levels.parked_mut(source) else {
+        let Some(parked) = self.simulation_server.levels.parked_mut(source) else {
             return;
         };
-        if let Some(b) = take_vehicle(&mut parked.boats, id, at, yaw, motion) {
-            self.boats.push(b);
-        } else if let Some(c) = take_vehicle(&mut parked.carts, id, at, yaw, motion) {
-            self.carts.push(c);
-        } else if let Some(m) = take_vehicle(&mut parked.mobs, id, at, yaw, motion) {
-            self.mobs.push(m);
+        if let Some(b) = take_vehicle(&mut parked.simulation.boats, id, at, yaw, motion) {
+            self.simulation.boats.push(b);
+        } else if let Some(c) = take_vehicle(&mut parked.simulation.carts, id, at, yaw, motion) {
+            self.simulation.carts.push(c);
+        } else if let Some(m) = take_vehicle(&mut parked.simulation.mobs, id, at, yaw, motion) {
+            self.simulation.mobs.push(m);
         } else {
             return;
         }
@@ -935,9 +935,9 @@ impl Game<'_> {
         let spawn = self.spawn.map_or([0.5, 80.0, 0.5], |s| [s.x, s.y, s.z]);
         let clock_rate = self.network_clock_rate();
         TickCtx {
-            world: &mut self.world,
+            world: &mut self.simulation.world,
             entities: &[],
-            next_entity: &mut self.next_entity,
+            next_entity: &mut self.simulation_server.next_entity,
             spawn,
             difficulty: i32::from(self.ui.difficulty),
             difficulty_locked: self.level.difficulty_locked,

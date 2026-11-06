@@ -36,7 +36,7 @@ impl Game<'_> {
     /// `Level.setBlock` of one boolean property of the block at `pos`.
     pub(crate) fn set_bool_prop(&mut self, pos: Pos, key: &str, value: bool, flags: i32) {
         let registry = self.pack.assets.registry;
-        let old = self.world.block(pos.0, pos.1, pos.2);
+        let old = self.simulation.world.block(pos.0, pos.1, pos.2);
         let Some(mut state) = registry.state(old).cloned() else {
             return;
         };
@@ -53,7 +53,7 @@ impl Game<'_> {
         let _ = self.process_level_events();
     }
     fn crafter_at(&self, pos: Pos) -> Option<&Crafter> {
-        match self.world.block_entities.get(&pos)? {
+        match self.simulation.world.block_entities.get(&pos)? {
             BlockEntity::Crafter(c) => Some(c),
             _ => None,
         }
@@ -61,10 +61,10 @@ impl Game<'_> {
     /// `CrafterBlockEntity.serverTick` of the crafter at `pos`, and the
     /// powered flag following the block state.
     pub(in crate::game) fn tick_crafter(&mut self, pos: Pos) {
-        let state = self.world.block(pos.0, pos.1, pos.2);
+        let state = self.simulation.world.block(pos.0, pos.1, pos.2);
         let triggered = self.containers().prop(state, "triggered") == Some("true");
         let mut finished = false;
-        if let Some(BlockEntity::Crafter(c)) = self.world.block_entities.get_mut(&pos) {
+        if let Some(BlockEntity::Crafter(c)) = self.simulation.world.block_entities.get_mut(&pos) {
             // CrafterBlock.neighborChanged sets the flag with the state; a
             // loaded crafter keeps its saved flag until then.
             if c.state_triggered.is_some_and(|t| t != triggered) {
@@ -112,7 +112,7 @@ impl Game<'_> {
         else {
             return Ok(());
         };
-        if let Some(BlockEntity::Crafter(c)) = self.world.block_entities.get_mut(&key) {
+        if let Some(BlockEntity::Crafter(c)) = self.simulation.world.block_entities.get_mut(&key) {
             c.crafting_ticks = CRAFTING_TICKS;
         }
         self.set_bool_prop(
@@ -131,7 +131,7 @@ impl Game<'_> {
         for rest in remainders.into_iter().flatten() {
             self.crafter_eject(key, facing, rest, &recipe);
         }
-        if let Some(BlockEntity::Crafter(c)) = self.world.block_entities.get_mut(&key) {
+        if let Some(BlockEntity::Crafter(c)) = self.simulation.world.block_entities.get_mut(&key) {
             for slot in c.items.iter_mut() {
                 if let Some(s) = slot {
                     s.count -= 1;
@@ -243,7 +243,7 @@ impl Game<'_> {
         };
         let powered = self
             .container
-            .map(|k| self.world.block(k.0, k.1, k.2))
+            .map(|k| self.simulation.world.block(k.0, k.1, k.2))
             .is_some_and(|state| self.containers().prop(state, "triggered") == Some("true"));
         let draws =
             horizon_client::screen_layout::crafter(&horizon_client::screen_layout::CrafterView {

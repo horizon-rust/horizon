@@ -99,6 +99,8 @@ jobs:
           PARITY_HOSTS: ''
           BASE_SHA: ${{ steps.merge.outputs.base }}
         run: python3 tools/parity.py frame_identity --timeout 2400
+      - name: The region simulation, each commit against a replay
+        run: bash tools/ci/region-verify.sh
       - name: Logs of the failed harnesses
         if: failure()
         uses: actions/upload-artifact@v7

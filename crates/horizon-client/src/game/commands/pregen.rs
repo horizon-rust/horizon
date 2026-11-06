@@ -185,7 +185,7 @@ impl Game<'_> {
         // A row is done once its chunks are lit and post-processed
         // (`postprocess_chunks`, on the tick), as vanilla's are by the time
         // they are FULL: then they may unload and be saved.
-        let (streaming, chunks) = (&mut self.streaming, &self.world.chunks);
+        let (streaming, chunks) = (&mut self.streaming, &self.simulation.world.chunks);
         if task.pregen.advance(|x, z| {
             streaming.is_lit(x, z)
                 && chunks
@@ -204,7 +204,8 @@ impl Game<'_> {
                 .iter()
                 .filter(|k| chunks.get(k).is_some_and(|c| !c.postprocess.is_empty()))
                 .count();
-            let [missing, lighting, unlit] = streaming.unstick_light(&mut self.world, &row);
+            let [missing, lighting, unlit] =
+                streaming.unstick_light(&mut self.simulation.world, &row);
             log::warn!(
                 "Horizon: pregeneration waits on row {:?}: {missing} not loaded, {lighting} being lit, \
                  {unlit} unlit with no light job (queued again), {waiting} not post-processed; {:?}",

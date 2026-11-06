@@ -25,7 +25,12 @@ impl Game<'_> {
     /// on a server for the one ticking now, which is out of the world (as
     /// for `native_with_mod_block_entity`). API @API:host_bridge@.
     pub(super) fn native_mod_block_entity(&self, pos: [i32; 3]) -> Option<ModBlockEntity> {
-        match self.world.block_entities.get(&(pos[0], pos[1], pos[2])) {
+        match self
+            .simulation
+            .world
+            .block_entities
+            .get(&(pos[0], pos[1], pos[2]))
+        {
             Some(BlockEntity::Mod(m)) if !m.id.is_empty() => Some(ModBlockEntity::clone(m)),
             _ => None,
         }

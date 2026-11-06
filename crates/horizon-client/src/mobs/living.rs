@@ -1481,7 +1481,7 @@ impl Mob {
         if self.horizontal_collision
             && w.no_collision(ahead)
             && !w.contains_any_liquid(ahead)
-            && !w.others_near(wide).any(|s| {
+            && !w.others_intersecting(wide).any(|s| {
                 s.id != self.id
                     && s.alive
                     && s.species == super::Species::Shulker
@@ -2013,12 +2013,11 @@ mod tests {
                 player: None,
                 controlling_player_movement: None,
                 nearest_player: None,
-                others: &[],
+                others: (&[]).into(),
                 dragon: None,
                 leash_boats: &[],
                 others_grid: None,
                 others_index: None,
-                others_villagers: None,
                 daylight: true,
                 monsters_burn: false,
                 game_time: 1000,
@@ -2130,12 +2129,11 @@ mod tests {
             player: None,
             controlling_player_movement: None,
             nearest_player: None,
-            others: &[],
+            others: (&[]).into(),
             dragon: None,
             leash_boats: &[],
             others_grid: None,
             others_index: None,
-            others_villagers: None,
             daylight: true,
             monsters_burn: false,
             game_time: 1000,

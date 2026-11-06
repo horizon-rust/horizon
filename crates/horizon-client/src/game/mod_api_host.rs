@@ -74,6 +74,7 @@ impl Game<'_> {
     /// nothing else of the entities' memory changes.
     pub(super) fn prune_entity_attachments(&mut self) {
         let gone: Vec<[i32; 4]> = self
+            .simulation
             .persist
             .uuids
             .iter()
@@ -100,7 +101,7 @@ impl Game<'_> {
     ) -> Result<&mut horizon_client::mod_api::Attachments, horizon_client::mod_api::AttachmentError>
     {
         if self.native_authoritative() {
-            self.world.attachment_syncs.insert(holder);
+            self.simulation.world.attachment_syncs.insert(holder);
             return self.attachment_map_quiet(holder);
         }
         match self.remote.as_mut() {
@@ -124,7 +125,8 @@ impl Game<'_> {
                 return Err(AttachmentError::MissingHolder);
             }
             attachment_compound(
-                self.persist
+                self.simulation
+                    .persist
                     .raw
                     .get(&id)
                     .and_then(|tag| tag.get(ATTACHMENTS_KEY)),
@@ -141,7 +143,7 @@ impl Game<'_> {
                 .get_mut(&uuid)
                 .ok_or(AttachmentError::MissingHolder);
         }
-        world_attachments(&mut self.world, holder)
+        world_attachments(&mut self.simulation.world, holder)
     }
 }
 

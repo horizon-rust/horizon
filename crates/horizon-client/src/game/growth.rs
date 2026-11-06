@@ -58,7 +58,7 @@ impl Game<'_> {
         if &*stack.item != "minecraft:shears" {
             return Ok(false);
         }
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         let b = self.res.behaviours();
         // A head grows and carries `AGE_25`; the plant's body below it does not.
         if !b.data(state).is(Class::GrowingPlantHead) {

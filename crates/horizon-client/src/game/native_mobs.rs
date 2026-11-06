@@ -32,7 +32,7 @@ impl Game<'_> {
         }
         let ticking = self.entity_ticking_area();
         let mut changes = Vec::new();
-        for m in self.mobs.iter_mut().filter(|m| !m.removed) {
+        for m in self.simulation.mobs.iter_mut().filter(|m| !m.removed) {
             if !ticking(m.position.x.floor() as i32, m.position.z.floor() as i32) {
                 continue;
             }
@@ -188,7 +188,7 @@ impl Game<'_> {
         }
         let id = self.spawn_mob(kind, pos, true)?;
         // A jockey's other mob comes after it: this one is found by its id.
-        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+        if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
             m.no_ai = options.no_ai;
             m.invisible = options.invisible;
             m.silent = options.silent;
@@ -207,7 +207,7 @@ impl Game<'_> {
     /// Whether the chunk holding `pos` is loaded in the level in place.
     fn native_chunk_loaded(&self, pos: [f64; 3]) -> bool {
         let (x, z) = (pos[0].floor() as i32, pos[2].floor() as i32);
-        self.world.chunks.contains_key(&(x >> 4, z >> 4))
+        self.simulation.world.chunks.contains_key(&(x >> 4, z >> 4))
     }
     /// The living mob `id` in the level in place, `dimension`; none on a
     /// client's copy. API 37.
@@ -215,7 +215,11 @@ impl Game<'_> {
         if !self.native_mob_level(dimension) {
             return None;
         }
-        let mob = self.mobs.iter().find(|m| m.id == id && !m.removed)?;
+        let mob = self
+            .simulation
+            .mobs
+            .iter()
+            .find(|m| m.id == id && !m.removed)?;
         mob.alive().then(|| self.native_mob_of(mob))
     }
     /// The living mobs in the level in place, `dimension`; none on a client's
@@ -224,7 +228,8 @@ impl Game<'_> {
         if !self.native_mob_level(dimension) {
             return Vec::new();
         }
-        self.mobs
+        self.simulation
+            .mobs
             .iter()
             .filter(|m| !m.removed && m.alive())
             .map(|m| self.native_mob_of(m))
@@ -237,7 +242,12 @@ impl Game<'_> {
         if !self.native_mob_level(dimension) || !spawnable(pos) {
             return false;
         }
-        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id && !m.removed) else {
+        let Some(m) = self
+            .simulation
+            .mobs
+            .iter_mut()
+            .find(|m| m.id == id && !m.removed)
+        else {
             return false;
         };
         let to = Vec3::new(pos[0], pos[1], pos[2]);
@@ -259,7 +269,12 @@ impl Game<'_> {
         if !self.native_mob_level(dimension) || !finite(velocity) {
             return false;
         }
-        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id && !m.removed) else {
+        let Some(m) = self
+            .simulation
+            .mobs
+            .iter_mut()
+            .find(|m| m.id == id && !m.removed)
+        else {
             return false;
         };
         m.velocity = Vec3::new(
@@ -278,6 +293,7 @@ impl Game<'_> {
             return false;
         }
         let Some(m) = self
+            .simulation
             .mobs
             .iter_mut()
             .find(|m| m.id == id && !m.removed && m.alive())
@@ -303,7 +319,12 @@ impl Game<'_> {
         if !self.native_mob_level(dimension) {
             return false;
         }
-        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id && !m.removed) else {
+        let Some(m) = self
+            .simulation
+            .mobs
+            .iter_mut()
+            .find(|m| m.id == id && !m.removed)
+        else {
             return false;
         };
         m.removed = true;

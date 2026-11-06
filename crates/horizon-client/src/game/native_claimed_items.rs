@@ -148,7 +148,9 @@ impl Game<'_> {
             Some(hit) => (
                 hit.pos,
                 hit.point,
-                self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]),
+                self.simulation
+                    .world
+                    .block(hit.pos[0], hit.pos[1], hit.pos[2]),
             ),
             None => self.lod_ray(eye, dir, reach)?,
         };
@@ -185,7 +187,7 @@ impl Game<'_> {
                 eye[2] + dir[2] * t,
             ];
             let (x, z) = (p[0].floor() as i32, p[2].floor() as i32);
-            if !self.world.loaded(x, z)
+            if !self.simulation.world.loaded(x, z)
                 && let Some((height, state)) = lod.ground(x, z)
                 && p[1] <= f64::from(height)
             {

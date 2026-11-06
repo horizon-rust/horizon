@@ -2229,7 +2229,7 @@ mod hurt_broadcast_tests {
             brute.ai.last_hurt_by_time = 5;
             let piglin = mob(2, Species::Piglin, Vec3::new(3.0, 64.0, 0.0));
             let others = [piglin.seen(None)];
-            w.others = &others;
+            w.others = (&others).into();
             let mut lr = LegacyRandom::new(1);
             before_goals(&mut brute, &w, &mut lr, &mut events);
         });

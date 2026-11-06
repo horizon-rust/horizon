@@ -282,7 +282,7 @@ fn hurt_touching_golems(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     let own = w.teams.of(Who::Mob(m.id));
     let pushable = m.pushable();
     let golems: Vec<u32> = w
-        .others_near(bounds)
+        .others_intersecting(bounds)
         .filter(|o| {
             let theirs = w.teams.of(Who::Mob(o.id));
             o.id != m.id

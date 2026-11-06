@@ -28,7 +28,7 @@ impl Game<'_> {
         let options = self.item_particle(stack);
         let mut spawned = Vec::new();
         particles::item_use_particles(
-            &mut self.world.random,
+            &mut self.simulation.world.random,
             self.pitch,
             self.yaw,
             [p.x, p.y, p.z],
@@ -63,7 +63,7 @@ impl Game<'_> {
             self.eat_particles(&stack, 5);
             return;
         }
-        let Some(m) = self.mobs.iter().find(|m| m.id == id as u32) else {
+        let Some(m) = self.simulation.mobs.iter().find(|m| m.id == id as u32) else {
             return;
         };
         let Some(stack) = m.item_by_slot(slot) else {
@@ -77,7 +77,7 @@ impl Game<'_> {
         let options = self.item_particle(&stack);
         let mut spawned = Vec::new();
         particles::item_use_particles(
-            &mut self.world.random,
+            &mut self.simulation.world.random,
             pitch,
             yaw,
             at,
@@ -106,7 +106,7 @@ impl Game<'_> {
             },
             _ => return,
         };
-        let pitch = 0.8 + self.world.random.next_float() * 0.4;
+        let pitch = 0.8 + self.simulation.world.random.next_float() * 0.4;
         self.audio.play_unshared(&sound, Some(at), 0.8, pitch);
     }
     /// The slime ball, snowball and cobweb models behind `item_slime`,

@@ -1473,7 +1473,7 @@ impl Game<'_> {
         c.partial += c.rate;
         let whole = c.partial.floor();
         c.partial -= whole;
-        self.world.day_time += whole as i64;
+        self.simulation.world.day_time += whole as i64;
     }
     /// `ServerClockInstance.packNetworkState`: the rate players' clients
     /// advance the overworld clock at, 0 while it is paused (`/time pause`)
@@ -1503,16 +1503,16 @@ impl Game<'_> {
     }
     /// Apply rules mirrored in other state (natural regeneration, difficulty).
     pub(super) fn sync_rules(&mut self) {
-        self.world.health_rules.natural_regeneration =
+        self.simulation.world.health_rules.natural_regeneration =
             self.ui.rules.bool("natural_health_regeneration");
         // Player.isInvulnerableTo: the damage-type rules.
-        self.world.health_rules.drowning_damage = self.ui.rules.bool("drowning_damage");
-        self.world.health_rules.fall_damage = self.ui.rules.bool("fall_damage");
-        self.world.health_rules.fire_damage = self.ui.rules.bool("fire_damage");
-        self.world.health_rules.freeze_damage = self.ui.rules.bool("freeze_damage");
+        self.simulation.world.health_rules.drowning_damage = self.ui.rules.bool("drowning_damage");
+        self.simulation.world.health_rules.fall_damage = self.ui.rules.bool("fall_damage");
+        self.simulation.world.health_rules.fire_damage = self.ui.rules.bool("fire_damage");
+        self.simulation.world.health_rules.freeze_damage = self.ui.rules.bool("freeze_damage");
         horizon_client::mobs::sulfur_cube::set_tnt_explodes(self.ui.rules.bool("tnt_explodes"));
         use horizon_world::food::Difficulty;
-        self.world.health_rules.difficulty = match self.ui.difficulty {
+        self.simulation.world.health_rules.difficulty = match self.ui.difficulty {
             0 => Difficulty::Peaceful,
             1 => Difficulty::Easy,
             3 => Difficulty::Hard,
@@ -1575,7 +1575,10 @@ impl Game<'_> {
             _ => Tag::Compound(Default::default()),
         };
         if let Tag::Compound(map) = &mut clock {
-            map.insert("total_ticks".into(), Tag::Long(self.world.day_time));
+            map.insert(
+                "total_ticks".into(),
+                Tag::Long(self.simulation.world.day_time),
+            );
             for (key, value, default) in [
                 (
                     "partial_tick",

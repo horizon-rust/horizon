@@ -614,7 +614,7 @@ impl Game<'_> {
                 .flat_map(|x| (0..diameter).map(move |z| (x, z)))
                 .map(|(x, z)| {
                     self.streaming.latest_status(
-                        &self.world,
+                        &self.simulation.world,
                         focus.0 + x - STATUS_RADIUS,
                         focus.1 + z - STATUS_RADIUS,
                     )
@@ -1182,7 +1182,7 @@ impl Game<'_> {
                 .map(|g| g.conn)
         {
             host.hub
-                .set_game_mode(conn, mode, &self.world, Some(self.collision));
+                .set_game_mode(conn, mode, &self.simulation.world, Some(self.collision));
         }
     }
     /// `IntegratedServer.setWorldAllowCommands`: the owner is an operator

@@ -124,7 +124,7 @@ impl Game<'_> {
         else {
             return false;
         };
-        let m = &mut self.mobs[index];
+        let m = &mut self.simulation.mobs[index];
         if !m.alive() {
             return false;
         }
@@ -163,10 +163,10 @@ impl Game<'_> {
     /// The other players' models and names: the players a server sends.
     fn other_players(&self) -> Vec<(&Mob, String)> {
         let mut out = Vec::new();
-        let indices = first_mob_indices(&self.mobs);
+        let indices = first_mob_indices(&self.simulation.mobs);
         for (id, name) in self.remote_player_names() {
             if let Some(&index) = indices.get(&id) {
-                out.push((&self.mobs[index], name));
+                out.push((&self.simulation.mobs[index], name));
             }
         }
         out
@@ -233,12 +233,12 @@ impl Game<'_> {
         hooks: bool,
         frustum: Option<&horizon_client::gfx::Frustum>,
     ) -> Vec<NameTag> {
-        let target = self.mob_hit().map(|(i, _, _)| self.mobs[i].id);
+        let target = self.mob_hit().map(|(i, _, _)| self.simulation.mobs[i].id);
         let viewer = self.player_team();
         let mut tags = Vec::new();
         let players = self.other_players();
         let player_ids = named_by_player_list(&players);
-        let named = self.mobs.iter().filter_map(|m| {
+        let named = self.simulation.mobs.iter().filter_map(|m| {
             // Already named by the player list: a second tag would sit on the
             // first (`named_by_player_list`).
             if player_ids.contains(&m.id) {
@@ -266,7 +266,7 @@ impl Game<'_> {
         // for each tag made this quadratic in the number of loaded entities.
         let local_entity_id = self.remote.as_ref().map(|r| r.entity_id as u32);
         let ridden = collect_vehicle_ids(
-            &self.mobs,
+            &self.simulation.mobs,
             self.remote_vehicle_ids(),
             self.riding,
             local_entity_id,
@@ -305,7 +305,11 @@ impl Game<'_> {
             let holder = if player {
                 Some(name.clone())
             } else {
-                self.persist.uuids.get(&m.id).map(|u| uuid_text(*u))
+                self.simulation
+                    .persist
+                    .uuids
+                    .get(&m.id)
+                    .map(|u| uuid_text(*u))
             };
             let team = if player {
                 self.score.board.players_team(&name)
@@ -361,7 +365,7 @@ impl Game<'_> {
             }
             if !visible {
                 if let Some(text) = description {
-                    let l = self.world.light(
+                    let l = self.simulation.world.light(
                         m.position.x.floor() as i32,
                         (m.position.y + f64::from(m.height())).floor() as i32,
                         m.position.z.floor() as i32,
@@ -410,7 +414,7 @@ impl Game<'_> {
                 lift = f64::from(9.0f32 * 1.15 * 0.025);
             }
             lines.push((shown, lift));
-            let l = self.world.light(
+            let l = self.simulation.world.light(
                 m.position.x.floor() as i32,
                 (m.position.y + f64::from(m.height())).floor() as i32,
                 m.position.z.floor() as i32,
@@ -426,7 +430,7 @@ impl Game<'_> {
         drop(player_ids);
         // Armor stands name themselves: an invisible one with a visible name
         // is a hologram (its model is skipped, its name tag is not).
-        for a in &self.armor_stands {
+        for a in &self.simulation.armor_stands {
             if !hooks {
                 let Some(_) = &a.custom_name else {
                     continue;
@@ -502,7 +506,12 @@ impl Game<'_> {
                 .unwrap_or(shown);
             let mut lines = Vec::new();
             let mut lift = 0.0;
-            let holder = self.persist.uuids.get(&a.id).map(|u| uuid_text(*u));
+            let holder = self
+                .simulation
+                .persist
+                .uuids
+                .get(&a.id)
+                .map(|u| uuid_text(*u));
             if distance_sqr < 10.0 * 10.0
                 && let Some(score) = holder.and_then(|h| self.below_name_text(&h))
             {
@@ -512,7 +521,7 @@ impl Game<'_> {
             lines.push((shown, lift));
             // The tag rides with the body, between last tick's position and this one's.
             let at = a.render_position(alpha);
-            let l = self.world.light(
+            let l = self.simulation.world.light(
                 at.x.floor() as i32,
                 (at.y + height).floor() as i32,
                 at.z.floor() as i32,
@@ -535,12 +544,12 @@ impl Game<'_> {
             })
             .map(|(index, _)| index);
         let frames = if hooks {
-            0..self.item_frames.len()
+            0..self.simulation.item_frames.len()
         } else {
             targeted_frame.map_or(0..0, |index| index..index + 1)
         };
         for index in frames {
-            let frame = &self.item_frames[index];
+            let frame = &self.simulation.item_frames[index];
             let name = frame.item.as_ref().and_then(|item| item.custom_name());
             if !hooks && name.is_none() {
                 continue;
@@ -579,7 +588,7 @@ impl Game<'_> {
                         Text::literal(text.or(name).unwrap_or_default()).resolve_legacy(),
                         0.0,
                     )],
-                    light: self.world.light(
+                    light: self.simulation.world.light(
                         center.x.floor() as i32,
                         center.y.floor() as i32,
                         center.z.floor() as i32,

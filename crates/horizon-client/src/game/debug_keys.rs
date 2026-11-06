@@ -805,7 +805,7 @@ impl Game<'_> {
             && let Some((index, _, _)) = self.mob_hit()
         {
             let (kind, position, id) = {
-                let m = &self.mobs[index];
+                let m = &self.simulation.mobs[index];
                 (m.kind.id.clone(), m.position, m.id)
             };
             if query {
@@ -840,7 +840,7 @@ impl Game<'_> {
             return;
         };
         let pos = hit.pos;
-        let state = self.state_string(self.world.block(pos[0], pos[1], pos[2]));
+        let state = self.state_string(self.simulation.world.block(pos[0], pos[1], pos[2]));
         if query {
             // DebugQueryHandler.queryBlockEntityTag: the answer copies it.
             let reply = QueryReply::Block { pos, state };
@@ -863,7 +863,11 @@ impl Game<'_> {
     /// `BlockEntity.saveWithoutMetadata` of the block entity at `pos`, if
     /// there is one: its data without the id or the position.
     pub(super) fn block_entity_tag(&self, pos: [i32; 3]) -> Option<Tag> {
-        let e = self.world.block_entities.get(&(pos[0], pos[1], pos[2]))?;
+        let e = self
+            .simulation
+            .world
+            .block_entities
+            .get(&(pos[0], pos[1], pos[2]))?;
         let name = self.data_block_name(pos);
         let mut tag = horizon_client::save::encode_block_entity((pos[0], pos[1], pos[2]), e, &name);
         if let Tag::Compound(c) = &mut tag {
@@ -898,6 +902,7 @@ impl Game<'_> {
                 // Entity.position() when the answer comes: where it is now,
                 // else where it was last.
                 let position = self
+                    .simulation
                     .mobs
                     .iter()
                     .find(|m| m.id == id)
@@ -952,15 +957,19 @@ impl Game<'_> {
                 p.position.y.floor() as i32,
                 p.position.z.floor() as i32,
             ];
-            let min_y = self.world.bottom_y();
-            g.chunk_borders(block, min_y, min_y + self.world.layout().height() - 1);
+            let min_y = self.simulation.world.bottom_y();
+            g.chunk_borders(
+                block,
+                min_y,
+                min_y + self.simulation.world.layout().height() - 1,
+            );
         }
         if !self.debug_entry("entity_hitboxes") {
             return g;
         }
         let lerp = |a: f64, b: f64| a + f64::from(alpha) * (b - a);
         let lerpf = |a: f32, b: f32| a + alpha * (b - a);
-        for m in self.mobs.iter() {
+        for m in self.simulation.mobs.iter() {
             if m.removed || m.invisible || m.has_effect("minecraft:invisibility") {
                 continue;
             }
@@ -981,7 +990,7 @@ impl Game<'_> {
                 view,
             );
         }
-        for item in &self.dropped {
+        for item in &self.simulation.dropped {
             let pos = [
                 lerp(item.previous.x, item.position.x),
                 lerp(item.previous.y, item.position.y),
@@ -999,17 +1008,17 @@ impl Game<'_> {
                 lerp(previous.z, now.z),
             ]
         };
-        for p in &self.paintings {
+        for p in &self.simulation.paintings {
             let (min, max) = p.bounds();
             let centre = std::array::from_fn(|i| (min[i] + max[i]) / 2.0);
             g.entity_box(min, max, centre, 0.425, false, step_view(p.step()));
         }
-        for f in self.item_frames.iter().filter(|f| !f.invisible) {
+        for f in self.simulation.item_frames.iter().filter(|f| !f.invisible) {
             let (min, max) = f.bounds();
             let centre = std::array::from_fn(|i| (min[i] + max[i]) / 2.0);
             g.entity_box(min, max, centre, 0.0, false, step_view(f.step()));
         }
-        for c in &self.cushions {
+        for c in &self.simulation.cushions {
             let (min, max) = c.bounds();
             let p = c.position;
             g.entity_box(min, max, [p.x, p.y, p.z], 0.2125, false, (0.0, c.yaw));
@@ -1028,7 +1037,7 @@ impl Game<'_> {
                 (0.0, 0.0),
             );
         }
-        for a in self.armor_stands.iter().filter(|a| !a.invisible) {
+        for a in self.simulation.armor_stands.iter().filter(|a| !a.invisible) {
             // ArmorStand.getDimensions: a marker has none, a small one is
             // half scale with its eyes at 0.9875.
             let (size, eye) = match (a.marker, a.small) {
@@ -1044,7 +1053,7 @@ impl Game<'_> {
                 (0.0, a.render_yaw(alpha)),
             );
         }
-        for b in &self.boats {
+        for b in &self.simulation.boats {
             let h = super::boats::HEIGHT as f32;
             g.hitbox(
                 at(b.previous, b.position),
@@ -1054,7 +1063,7 @@ impl Game<'_> {
                 (0.0, b.yaw),
             );
         }
-        for c in &self.carts {
+        for c in &self.simulation.carts {
             let (w, h) = (
                 super::minecarts::WIDTH as f32,
                 super::minecarts::HEIGHT as f32,
@@ -1067,7 +1076,7 @@ impl Game<'_> {
                 (0.0, c.yaw),
             );
         }
-        for o in &self.orbs {
+        for o in &self.simulation.orbs {
             g.hitbox(
                 at(o.previous, o.position),
                 (0.5, 0.5),
@@ -1076,7 +1085,7 @@ impl Game<'_> {
                 (0.0, 0.0),
             );
         }
-        for f in &self.falling {
+        for f in &self.simulation.falling {
             g.hitbox(
                 at(f.previous, f.position),
                 (0.98, 0.98),
@@ -1085,7 +1094,7 @@ impl Game<'_> {
                 (0.0, 0.0),
             );
         }
-        for t in &self.tnts {
+        for t in &self.simulation.tnts {
             g.hitbox(
                 at(t.previous, t.position),
                 (0.98, 0.98),
@@ -1094,11 +1103,11 @@ impl Game<'_> {
                 (0.0, 0.0),
             );
         }
-        for c in &self.crystals {
+        for c in &self.simulation.crystals {
             let p = c.position;
             g.hitbox([p.x, p.y, p.z], (2.0, 2.0), 1.7, false, (0.0, 0.0));
         }
-        for p in &self.creatures.projectiles {
+        for p in &self.simulation.projectiles {
             use horizon_client::projectiles::ProjectileKind as K;
             let (size, eye) = match p.kind {
                 K::Arrow { .. } | K::Trident => (0.5, 0.13),
@@ -1123,7 +1132,7 @@ impl Game<'_> {
                 (p.pitch, p.yaw),
             );
         }
-        for t in &self.tridents {
+        for t in &self.simulation.tridents {
             g.hitbox(
                 at(t.previous, t.position),
                 (0.5, 0.5),
@@ -1143,7 +1152,7 @@ impl Game<'_> {
                 (0.0, 0.0),
             );
         }
-        for r in &self.rockets {
+        for r in &self.simulation.rockets {
             // Projectile.updateRotation: the look follows the motion.
             let v = r.velocity;
             let yaw = v.x.atan2(v.z).to_degrees() as f32;
@@ -1164,7 +1173,7 @@ impl Game<'_> {
         {
             g.hitbox(at(h.0, h.1), (0.25, 0.25), 0.2125, false, (0.0, 0.0));
         }
-        for b in &self.bolts {
+        for b in &self.simulation.bolts {
             g.hitbox(b.at, (0.0, 0.0), 0.0, false, (0.0, 0.0));
         }
         // AreaEffectCloud.getDimensions: diameter follows synced radius,
@@ -1173,7 +1182,7 @@ impl Game<'_> {
             g.hitbox(c.at, (c.radius * 2.0, 0.5), 0.425, false, (0.0, 0.0));
         }
         // The dragon: 16 by 8, a living entity; its parts follow.
-        if let Some(d) = &self.dragon {
+        if let Some(d) = &self.simulation.dragon {
             g.hitbox(
                 at(d.previous, d.position),
                 (16.0, 8.0),

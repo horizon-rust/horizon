@@ -71,7 +71,7 @@ fn shared<'a>(
 
 impl Game<'_> {
     fn all_worlds(&self) -> impl Iterator<Item = &World> {
-        std::iter::once(&self.world).chain(self.levels.parked_worlds())
+        std::iter::once(&self.simulation.world).chain(self.simulation_server.levels.parked_worlds())
     }
     /// The census of this game's levels: the one in place and the parked ones.
     fn level_census(&self) -> ColumnCensus {

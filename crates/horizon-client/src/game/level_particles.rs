@@ -60,7 +60,7 @@ impl Game<'_> {
     /// nylium, netherrack, moss) or water, or inside a growing block.
     pub(super) fn growth_particles(&mut self, pos: BlockPos, count: i32) {
         let p = [pos.x, pos.y, pos.z];
-        let state = self.world.block(p[0], p[1], p[2]);
+        let state = self.simulation.world.block(p[0], p[1], p[2]);
         let facts = self.res.facts();
         // ParticleUtils.spawnParticles(level, pos, count, xzSpread, ySpread,
         // allowFloatingParticles, particle).
@@ -96,7 +96,7 @@ impl Game<'_> {
     /// `BlockState.getShape(..).max(Y)` of the block at `at`, 1.0 for air.
     fn block_shape_top(&self, at: [i32; 3]) -> f64 {
         let facts = self.res.facts();
-        let inside = self.world.block(at[0], at[1], at[2]);
+        let inside = self.simulation.world.block(at[0], at[1], at[2]);
         if facts.is_air(inside) {
             1.0
         } else {
@@ -133,7 +133,7 @@ impl Game<'_> {
                 || !self
                     .res
                     .facts()
-                    .is_air(self.world.block(below[0], below[1], below[2]))
+                    .is_air(self.simulation.world.block(below[0], below[1], below[2]))
             {
                 self.particles.add(&options, [x, y, z], v);
             }
@@ -223,7 +223,7 @@ impl Game<'_> {
         }
         if data == 1 {
             let at = [pos.x, pos.y, pos.z].map(|v| f64::from(v) + 0.5);
-            let pitch = self.world.random.next_float() * 0.1 + 0.9;
+            let pitch = self.simulation.world.random.next_float() * 0.1 + 0.9;
             self.audio.play(
                 "minecraft:entity.dragon_fireball.explode",
                 Some(at),
@@ -247,7 +247,7 @@ impl Game<'_> {
     /// the tip `pos`. The fluid above the stalactite's root picks the drip;
     /// with none, the dimension's default (lava in the Nether).
     pub(super) fn dripstone_drip_particle(&mut self, pos: BlockPos) {
-        let tip_state = self.world.block(pos.x, pos.y, pos.z);
+        let tip_state = self.simulation.world.block(pos.x, pos.y, pos.z);
         if !self.is_stalactite(tip_state) {
             return;
         }
@@ -256,10 +256,10 @@ impl Game<'_> {
         let mut root = None;
         for step in 1..11 {
             let y = pos.y + step;
-            if !(self.world.bottom_y()..self.world.top_y()).contains(&y) {
+            if !(self.simulation.world.bottom_y()..self.simulation.world.top_y()).contains(&y) {
                 break;
             }
-            let state = self.world.block(pos.x, y, pos.z);
+            let state = self.simulation.world.block(pos.x, y, pos.z);
             if self.res.facts().get(state).name != tip_name {
                 root = Some(y);
                 break;
@@ -271,7 +271,7 @@ impl Game<'_> {
         let Some(root_y) = root else {
             return;
         };
-        let above = self.world.block(pos.x, root_y + 1, pos.z);
+        let above = self.simulation.world.block(pos.x, root_y + 1, pos.z);
         let above_facts = self.res.facts().get(above);
         let nether = self.dim == super::Dim::Nether;
         let fluid = if &*above_facts.name == "minecraft:mud" && !nether {
@@ -349,7 +349,7 @@ impl Game<'_> {
         face: [i32; 3],
         play_sound: bool,
     ) {
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         if self.res.facts().is_air(state) {
             return;
         }
@@ -429,7 +429,7 @@ impl Game<'_> {
     }
     /// Queue and play level event `id` at `pos` (`Level.levelEvent`).
     pub(super) fn level_event_at(&mut self, id: i32, pos: [i32; 3], data: i32) {
-        self.level_events.push(LevelEvent::LevelEvent {
+        self.simulation.level_events.push(LevelEvent::LevelEvent {
             id,
             pos: BlockPos::new(pos[0], pos[1], pos[2]),
             data,

@@ -99,6 +99,59 @@ pub struct BodyFlags {
     pub glowing: bool,
 }
 
+/// `Hub::effect_meta`, for the workers that build entity states.
+pub fn effect_meta<'a>(
+    sync: &SyncData,
+    effects: impl IntoIterator<Item = (&'a str, bool)>,
+) -> Vec<(u8, i32, Value)> {
+    let mut particles = Vec::new();
+    let mut all_ambient = true;
+    for (effect, ambient) in effects {
+        let effect = effect.trim_start_matches("minecraft:");
+        // MobEffect.particleFactory: the omens have their own particles,
+        // the others an entity effect in their colour (faint if ambient).
+        let (name, data) = match effect {
+            "trial_omen" | "raid_omen" => (effect, None),
+            _ => {
+                let Some(def) = crate::brewing::effect(effect) else {
+                    continue;
+                };
+                let alpha = if ambient { 38 } else { 255 };
+                let argb = (alpha << 24) | def.color as i32;
+                ("entity_effect", Some(ParticleData::Color(argb)))
+            }
+        };
+        let Some(id) = sync.id("minecraft:particle_type", &format!("minecraft:{name}")) else {
+            continue;
+        };
+        particles.push(Particle { id, data });
+        all_ambient &= ambient;
+    }
+    if particles.is_empty() {
+        return Vec::new();
+    }
+    let mut meta = vec![(10, serializer::PARTICLES, Value::Particles(particles))];
+    if all_ambient {
+        meta.push((11, serializer::BOOLEAN, Value::Bool(true)));
+    }
+    meta
+}
+
+/// `Hub::stack`, for the workers that build entity states.
+pub fn network_stack(
+    sync: &SyncData,
+    s: &Option<ItemStack>,
+) -> Option<horizon_protocol::item::Stack> {
+    s.as_ref()?;
+    let item_id = |name: &str| {
+        sync.builtin
+            .get("minecraft:item")
+            .and_then(|i| i.id(name))
+            .unwrap_or(0)
+    };
+    stack_to_network(item_id, |registry, name| sync.id(registry, name), s)
+}
+
 /// Everything the hub needs from the game for one tick.
 pub struct TickCtx<'a> {
     pub world: &'a mut World,
@@ -346,6 +399,8 @@ pub struct Hub {
     pub ops: std::collections::HashMap<u128, u8>,
     /// `entity-broadcast-range-percentage` (dedicated servers).
     pub entity_range_percent: i32,
+    /// The server's workers, when this level has enough for them.
+    pub entity_pool: Option<std::sync::Arc<rayon::ThreadPool>>,
     /// `spawn-protection` (dedicated servers): the radius around the world
     /// spawn that only operators may change.
     pub spawn_protection: i32,
@@ -653,6 +708,7 @@ impl Hub {
             stepping: 0,
             ops: Default::default(),
             entity_range_percent: 100,
+            entity_pool: None,
             spawn_protection: 0,
             chat_spam_threshold: 0,
             command_spam_threshold: 0,
@@ -693,6 +749,11 @@ impl Hub {
     }
 
     /// The network id of a name in a built-in or synchronized registry.
+    /// The registries, for the workers that build entity states.
+    pub fn sync_data(&self) -> &SyncData {
+        &self.sync
+    }
+
     pub fn registry_id(&self, registry: &str, name: &str) -> Option<i32> {
         self.sync.id(registry, name)
     }
@@ -2509,10 +2570,13 @@ impl Hub {
                 (i, taken, far, bodies)
             })
             .collect();
+        let preparation = crate::spans::guard("chunk_output_prepare");
         self.encoder.warm(&columns.chunks);
         let mut encoded = self.encoder.bodies_with(&columns.chunks, world, &|x, z| {
             ctx.streaming.and_then(|s| s.proto_sections(x, z))
         });
+        drop(preparation);
+        let _queue = crate::spans::guard("chunk_output_queue");
         let uses = &mut columns.uses;
         let chunks = &columns.chunks;
         for (i, taken, far, batch) in batches {
@@ -2946,39 +3010,7 @@ impl Hub {
         &self,
         effects: impl IntoIterator<Item = (&'a str, bool)>,
     ) -> Vec<(u8, i32, Value)> {
-        let mut particles = Vec::new();
-        let mut all_ambient = true;
-        for (effect, ambient) in effects {
-            let effect = effect.trim_start_matches("minecraft:");
-            // MobEffect.particleFactory: the omens have their own particles,
-            // the others an entity effect in their colour (faint if ambient).
-            let (name, data) = match effect {
-                "trial_omen" | "raid_omen" => (effect, None),
-                _ => {
-                    let Some(def) = crate::brewing::effect(effect) else {
-                        continue;
-                    };
-                    let alpha = if ambient { 38 } else { 255 };
-                    let argb = (alpha << 24) | def.color as i32;
-                    ("entity_effect", Some(ParticleData::Color(argb)))
-                }
-            };
-            let Some(id) =
-                self.registry_id("minecraft:particle_type", &format!("minecraft:{name}"))
-            else {
-                continue;
-            };
-            particles.push(Particle { id, data });
-            all_ambient &= ambient;
-        }
-        if particles.is_empty() {
-            return Vec::new();
-        }
-        let mut meta = vec![(10, serializer::PARTICLES, Value::Particles(particles))];
-        if all_ambient {
-            meta.push((11, serializer::BOOLEAN, Value::Bool(true)));
-        }
-        meta
+        effect_meta(&self.sync, effects)
     }
 
     fn player_state(
@@ -3259,6 +3291,7 @@ impl Hub {
             })
             .collect();
         level.range_percent = Some(self.entity_range_percent);
+        level.pool.clone_from(&self.entity_pool);
         let (types, sync) = (&mut self.entity_types, &self.sync);
         level.tick(&entities, &self.riding, &mut viewers, |kind| {
             entity_type(types, sync, kind)

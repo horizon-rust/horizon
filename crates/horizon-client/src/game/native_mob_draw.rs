@@ -180,7 +180,7 @@ impl Game<'_> {
         let start = out.len();
         let mut draw = BlockEntityDraw::posed(
             partial,
-            self.world.game_time,
+            self.simulation.world.game_time,
             light,
             [feet.x, feet.y, feet.z].map(|c| c.floor() as i32),
             mob_pose(feet - camera, render.body_yaw),

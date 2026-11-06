@@ -67,7 +67,7 @@ impl Game<'_> {
             || dimension != self.dim.id()
             || self.pack.assets.registry.state(state).is_none()
             || self.res.facts().is_air(state)
-            || self.falling.len() >= NATIVE_FALLING_MAX
+            || self.simulation.falling.len() >= NATIVE_FALLING_MAX
             || !pos.iter().all(|v| v.is_finite() && v.abs() <= 30_000_000.0)
         {
             return false;
@@ -80,7 +80,12 @@ impl Game<'_> {
             pos[1].floor() as i32,
             pos[2].floor() as i32,
         );
-        if !self.world.chunks.contains_key(&(cell.x >> 4, cell.z >> 4)) {
+        if !self
+            .simulation
+            .world
+            .chunks
+            .contains_key(&(cell.x >> 4, cell.z >> 4))
+        {
             return false;
         }
         let mut damage =
@@ -91,11 +96,11 @@ impl Game<'_> {
             damage.max = 40;
         }
         let at = Vec3::new(pos[0], pos[1], pos[2]);
-        self.next_entity += 1;
-        self.falling.push(FallingBlock {
+        self.simulation_server.next_entity += 1;
+        self.simulation.falling.push(FallingBlock {
             rotation: [0.0, 0.0],
             join: Default::default(),
-            id: self.next_entity,
+            id: self.simulation_server.next_entity,
             state,
             start_pos: cell,
             position: at,

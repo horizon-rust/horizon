@@ -267,6 +267,7 @@ impl Game<'_> {
             if limit >= 1 {
                 let near = bounds.inflate(Vec3::new(2.0, 2.0, 2.0));
                 let nearby = self
+                    .simulation
                     .mobs
                     .iter()
                     .filter(|m| {
@@ -285,7 +286,7 @@ impl Game<'_> {
                     [feet.x, feet.y + 0.5, feet.z],
                     false,
                     true,
-                ) && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+                ) && let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id)
                 {
                     horizon_client::mobs::cube::set_size(m, 2);
                 }
@@ -304,7 +305,7 @@ impl Game<'_> {
         if effects.contains(&"wind_charged") {
             // A burst centred at half the height, radius 3 to 5.
             let center = [feet.x, feet.y + bounds.size().y / 2.0, feet.z];
-            let r = random.unwrap_or(&mut self.world.random);
+            let r = random.unwrap_or(&mut self.simulation.world.random);
             let radius = 3.0 + r.next_float() * 2.0;
             let _ = self.wind_burst(center, radius, 1.0, false, false);
         }
@@ -313,19 +314,23 @@ impl Game<'_> {
     /// free spaces with a solid floor, picked among 15 random blocks within one
     /// block of `pos`.
     fn spawn_cobwebs_around(&mut self, pos: [i32; 3], mut random: Option<&mut LegacyRandom>) {
-        let r = random.as_deref_mut().unwrap_or(&mut self.world.random);
+        let r = random
+            .as_deref_mut()
+            .unwrap_or(&mut self.simulation.world.random);
         let wanted = 2 + r.next_int_bound(2).unwrap_or(0) as usize;
         let mut chosen: Vec<[i32; 3]> = Vec::new();
         for _ in 0..15 {
-            let r = random.as_deref_mut().unwrap_or(&mut self.world.random);
+            let r = random
+                .as_deref_mut()
+                .unwrap_or(&mut self.simulation.world.random);
             let at = [
                 pos[0] - 1 + r.next_int_bound(3).unwrap_or(0),
                 pos[1] - 1 + r.next_int_bound(3).unwrap_or(0),
                 pos[2] - 1 + r.next_int_bound(3).unwrap_or(0),
             ];
             let facts = self.res.facts();
-            let here = facts.get(self.world.block(at[0], at[1], at[2]));
-            let below = facts.get(self.world.block(at[0], at[1] - 1, at[2]));
+            let here = facts.get(self.simulation.world.block(at[0], at[1], at[2]));
+            let below = facts.get(self.simulation.world.block(at[0], at[1] - 1, at[2]));
             if !chosen.contains(&at)
                 && here.replaceable
                 && below.sturdy_full & (1 << Direction::Up as u8) != 0
@@ -357,9 +362,9 @@ impl Game<'_> {
     }
     /// A living mob's own random (`Entity.random`), else the world's.
     fn bearer_random(&mut self, bearer: Option<u32>) -> &mut LegacyRandom {
-        match bearer.and_then(|id| self.mobs.iter().position(|m| m.id == id)) {
-            Some(i) => &mut self.mobs[i].random,
-            None => &mut self.world.random,
+        match bearer.and_then(|id| self.simulation.mobs.iter().position(|m| m.id == id)) {
+            Some(i) => &mut self.simulation.mobs[i].random,
+            None => &mut self.simulation.world.random,
         }
     }
     /// `InfestedMobEffect.onMobHurt`: a 10% chance of one or two silverfish at
@@ -384,7 +389,7 @@ impl Game<'_> {
                 f64::from(-x as f32 * sin + z as f32 * cos),
             );
             if let Some(id) = self.spawn_mob_for("minecraft:silverfish", at, false, true)
-                && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+                && let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id)
             {
                 m.velocity = velocity;
             }
@@ -579,7 +584,7 @@ impl Game<'_> {
                 let Some(eye) = self.eye_position() else {
                     return Ok(true);
                 };
-                let pitch = 0.4 / (self.world.random.next_float() * 0.4 + 0.8);
+                let pitch = 0.4 / (self.simulation.world.random.next_float() * 0.4 + 0.8);
                 let (sound, power) = match &*stack.item {
                     "minecraft:splash_potion" => ("minecraft:entity.splash_potion.throw", 0.5),
                     "minecraft:experience_bottle" => {
@@ -602,7 +607,7 @@ impl Game<'_> {
                     .sqrt()
                     .max(1e-9);
                 // getMovementToShoot: normalize, add triangle(0, 0.0172275 * uncertainty), scale.
-                let r = &mut self.world.random;
+                let r = &mut self.simulation.world.random;
                 let mut jitter = || r.triangle(0.0, 0.0172275);
                 let v = Vec3::new(
                     (f64::from(dir[0]) / l + jitter()) * power,
@@ -636,7 +641,7 @@ impl Game<'_> {
                 // plays item.bottle.fill_dragonbreath at the player, emits
                 // GameEvent.FLUID_PICKUP, and turns one bottle into dragon_breath.
                 if let Some(player) = self.player.as_ref()
-                    && collect_dragon_breath(player.bounds(), &mut self.breath_clouds)
+                    && collect_dragon_breath(player.bounds(), &mut self.simulation.breath_clouds)
                 {
                     let player_pos = [player.position.x, player.position.y, player.position.z];
                     self.audio.play(
@@ -652,7 +657,10 @@ impl Game<'_> {
                 let Some(hit) = self.pick_fluid() else {
                     return Ok(false);
                 };
-                let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
+                let state = self
+                    .simulation
+                    .world
+                    .block(hit.pos[0], hit.pos[1], hit.pos[2]);
                 if self.res.facts().get(state).fluid != horizon_client::blocks::Fluid::Water {
                     return Ok(false);
                 }
@@ -694,7 +702,7 @@ impl Game<'_> {
         // random places each one (count 1, no spread, speed 1). The packet is
         // what the window draws; a window that runs this itself still adds it.
         for _ in 0..5 {
-            let r = &mut self.world.random;
+            let r = &mut self.simulation.world.random;
             let at = [
                 f64::from(pos[0]) + r.next_double(),
                 f64::from(pos[1] + 1),
@@ -752,7 +760,7 @@ impl Game<'_> {
         let eye = self.eye_position().unwrap_or_default();
         // Consumable.emitParticlesAndSounds: the drink sound every 4 ticks near the end.
         if remaining <= 25 && remaining % 4 == 0 {
-            let pitch = self.world.random.next_float() * 0.1 + 0.9;
+            let pitch = self.simulation.world.random.next_float() * 0.1 + 0.9;
             self.audio
                 .play("minecraft:entity.generic.drink", Some(eye), 0.5, pitch);
         }
@@ -858,7 +866,12 @@ impl Game<'_> {
                 }
             }
             Who::Mob(id) => {
-                let Some(i) = self.mobs.iter().position(|m| m.id == id && m.alive()) else {
+                let Some(i) = self
+                    .simulation
+                    .mobs
+                    .iter()
+                    .position(|m| m.id == id && m.alive())
+                else {
                     return;
                 };
                 let inverted = self
@@ -867,11 +880,11 @@ impl Game<'_> {
                     .enchantments
                     .entity_tags
                     .get("minecraft:inverted_healing_and_harm")
-                    .is_some_and(|t| t.contains(&self.mobs[i].kind.id));
+                    .is_some_and(|t| t.contains(&self.simulation.mobs[i].kind.id));
                 for (effect, duration, amp) in effects {
                     let tags = &self.res.stations().enchantments.entity_tags;
                     // A mod's `onEffectAdded` may have changed the mobs.
-                    let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+                    let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) else {
                         return;
                     };
                     match effect {
@@ -917,7 +930,7 @@ impl Game<'_> {
             action => action,
         };
         let creative = self.creative;
-        let rules = self.world.health_rules;
+        let rules = self.simulation.world.health_rules;
         let Some(p) = self.player.as_mut() else {
             self.combat.forget_noted(false);
             return;
@@ -1226,10 +1239,10 @@ impl Game<'_> {
             }
         }
         if let Some(v) = vehicle {
-            if let Some(m) = self.mobs.iter().find(|m| m.id == v) {
+            if let Some(m) = self.simulation.mobs.iter().find(|m| m.id == v) {
                 boxes.push(m.bounds());
             }
-            if let Some(b) = self.boats.iter().find(|b| b.id == v) {
+            if let Some(b) = self.simulation.boats.iter().find(|b| b.id == v) {
                 boxes.push(b.bounds());
             }
         }
@@ -1278,10 +1291,12 @@ impl Game<'_> {
                     t.position.y + t.velocity.y * f,
                     t.position.z + t.velocity.z * f,
                 );
-                let state =
-                    self.world
-                        .block(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
-                let mob = self.mobs.iter().find(|m| {
+                let state = self.simulation.world.block(
+                    p.x.floor() as i32,
+                    p.y.floor() as i32,
+                    p.z.floor() as i32,
+                );
+                let mob = self.simulation.mobs.iter().find(|m| {
                     m.alive()
                         && (t.left_owner || Some(m.id) != vehicle)
                         && (m.position.x - p.x).abs() < m.kind.width / 2.0 + 0.125
@@ -1396,7 +1411,7 @@ impl Game<'_> {
                 |color| color as u32,
             );
         let id = self.take_entity_id();
-        self.breath_clouds.push(Breath {
+        self.simulation.breath_clouds.push(Breath {
             id,
             at: [at.x, at.y, at.z],
             radius: real("Radius", 3.0).clamp(0.0, 32.0),
@@ -1428,7 +1443,12 @@ impl Game<'_> {
     /// `AreaEffectCloud.tick` for the lingering potions' clouds: the client
     /// tick's particles, then the server tick.
     fn tick_potion_clouds(&mut self) {
-        if self.breath_clouds.iter().all(|c| c.potion.is_none()) {
+        if self
+            .simulation
+            .breath_clouds
+            .iter()
+            .all(|c| c.potion.is_none())
+        {
             return;
         }
         let players: Vec<FightPlayer> = self
@@ -1436,9 +1456,9 @@ impl Game<'_> {
             .into_iter()
             .filter(|p| p.alive)
             .collect();
-        let mut clouds = std::mem::take(&mut self.breath_clouds);
+        let mut clouds = std::mem::take(&mut self.simulation.breath_clouds);
         clouds.retain_mut(|c| c.potion.is_none() || self.tick_potion_cloud(c, &players));
-        self.breath_clouds.append(&mut clouds);
+        self.simulation.breath_clouds.append(&mut clouds);
     }
     /// `AreaEffectCloud.serverTick`: configured lifetime/radius changes and
     /// five-tick doses, with each victim's configured reapplication delay.
@@ -1491,7 +1511,7 @@ impl Game<'_> {
         // Only mobs that at least one of the cloud's effects can affect are
         // taken (`allEffects.stream().anyMatch(entity::canBeAffected)`), so
         // the others neither become victims nor use up its radius.
-        for m in self.mobs.iter().filter(|m| {
+        for m in self.simulation.mobs.iter().filter(|m| {
             m.alive()
                 && m.bounds().intersects(area)
                 && effects
@@ -1551,7 +1571,7 @@ impl Game<'_> {
         color: u32,
     ) {
         let id = self.take_entity_id();
-        self.breath_clouds.push(Breath {
+        self.simulation.breath_clouds.push(Breath {
             id,
             at,
             radius: 2.5,
@@ -1613,18 +1633,18 @@ impl Game<'_> {
                 }
             }),
             Victim::Mob(mob) => {
-                let Some(i) = self.mobs.iter().position(|m| m.id == mob) else {
+                let Some(i) = self.simulation.mobs.iter().position(|m| m.id == mob) else {
                     return;
                 };
                 // Undead invert healing and harming.
                 let tags = &world_stations!(self).enchantments.entity_tags;
                 let inverted = tags
                     .get("minecraft:inverted_healing_and_harm")
-                    .is_some_and(|t| t.contains(&self.mobs[i].kind.id));
+                    .is_some_and(|t| t.contains(&self.simulation.mobs[i].kind.id));
                 for (id, duration, amp) in effects {
                     let tags = &world_stations!(self).enchantments.entity_tags;
                     // A mod's `onEffectAdded` may have changed the mobs.
-                    let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob) else {
+                    let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == mob) else {
                         return;
                     };
                     match *id {
@@ -1680,7 +1700,7 @@ impl Game<'_> {
         let water = self
             .res
             .facts()
-            .get(self.world.block(
+            .get(self.simulation.world.block(
                 at.x.floor() as i32,
                 at.y.floor() as i32,
                 at.z.floor() as i32,
@@ -1708,7 +1728,7 @@ impl Game<'_> {
                 t.position.y + t.velocity.y,
                 t.position.z + t.velocity.z,
             );
-            let state = self.world.block(
+            let state = self.simulation.world.block(
                 next.x.floor() as i32,
                 next.y.floor() as i32,
                 next.z.floor() as i32,
@@ -1758,7 +1778,7 @@ impl Game<'_> {
                 continue;
             }
             let pose = glam::Mat4::from_translation((p - camera).as_vec3()) * orientation;
-            let light = self.world.light(
+            let light = self.simulation.world.light(
                 p.x.floor() as i32,
                 (p.y + 0.2125).floor() as i32,
                 p.z.floor() as i32,
@@ -1866,7 +1886,7 @@ impl Game<'_> {
             // event 2002, its sound 1053) and 3 to 11 experience.
             self.level_event_at(2002, block, 0xFF38_5DC6u32 as i32);
             self.level_event_at(1053, block, 0);
-            let r = &mut self.world.random;
+            let r = &mut self.simulation.world.random;
             let value = 3 + r.next_int_bound(5).unwrap_or(0) + r.next_int_bound(5).unwrap_or(0);
             self.spawn_orbs([at.x, at.y, at.z], value as u32);
             self.native_exp_bottle([at.x, at.y, at.z], value as u32);
@@ -1899,6 +1919,7 @@ impl Game<'_> {
                 [at.x + 0.125 + 4.0, at.y + 0.25 + 2.0, at.z + 0.125 + 4.0],
             );
             for m in self
+                .simulation
                 .mobs
                 .iter_mut()
                 .filter(|m| m.species() == horizon_client::mobs::Species::Axolotl && !m.removed)
@@ -1927,7 +1948,7 @@ impl Game<'_> {
             if !def.effects.is_empty() {
                 let at = mob.unwrap_or(at);
                 let id = self.take_entity_id();
-                self.breath_clouds.push(Breath {
+                self.simulation.breath_clouds.push(Breath {
                     id,
                     at: [at.x, at.y, at.z],
                     radius: 3.0,
@@ -1959,7 +1980,7 @@ impl Game<'_> {
         // Mobs take the instant effects (undead invert healing and harming).
         let undead = &self.stations().enchantments.entity_tags;
         let mut hits = Vec::new();
-        for (i, m) in self.mobs.iter().enumerate() {
+        for (i, m) in self.simulation.mobs.iter().enumerate() {
             if m.alive()
                 && let Some(d2) = splash_distance_sqr(at, age, m.bounds())
             {
@@ -1981,12 +2002,12 @@ impl Game<'_> {
                         if d > 20
                             && let Some(name) = mob_effect_id(id)
                         {
-                            self.mobs[i].add_effect(name, d, *amp);
+                            self.simulation.mobs[i].add_effect(name, d, *amp);
                         }
                         continue;
                     }
                 };
-                let m = &mut self.mobs[i];
+                let m = &mut self.simulation.mobs[i];
                 if harm && m.species() == horizon_client::mobs::Species::Enderman {
                     // `Enderman.hurtServer` for a thrown potion: only water hurts
                     // (`hurtWithCleanWater`), then `repeatedlyTryToTeleport`, which

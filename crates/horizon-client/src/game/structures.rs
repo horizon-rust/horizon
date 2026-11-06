@@ -16,7 +16,12 @@ impl Game<'_> {
         pos: [i32; 3],
         wanted: &dyn Fn(&str) -> bool,
     ) -> Vec<(String, bool)> {
-        let Some(chunk) = self.world.chunks.get(&(pos[0] >> 4, pos[2] >> 4)) else {
+        let Some(chunk) = self
+            .simulation
+            .world
+            .chunks
+            .get(&(pos[0] >> 4, pos[2] >> 4))
+        else {
             return Vec::new();
         };
         if chunk.structure_refs.is_empty() {

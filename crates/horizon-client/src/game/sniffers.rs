@@ -14,8 +14,8 @@ impl Game<'_> {
     pub(super) fn lay_sniffer_egg(&mut self, parent: &Mob) {
         let at = [parent.position.x, parent.position.y, parent.position.z];
         // new ItemEntity(level, x, y, z, stack): a little random push.
-        let vx = self.world.random.next_double() * 0.2 - 0.1;
-        let vz = self.world.random.next_double() * 0.2 - 0.1;
+        let vx = self.simulation.world.random.next_double() * 0.2 - 0.1;
+        let vz = self.simulation.world.random.next_double() * 0.2 - 0.1;
         self.spawn_item(
             ItemStack::new("minecraft:sniffer_egg", 1),
             at,
@@ -31,10 +31,10 @@ impl Game<'_> {
             f64::from(pos[2]) + 0.5,
         ];
         if let Some(id) = self.spawn_mob("minecraft:sniffer", at, true)
-            && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+            && let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id)
         {
             m.extra.age = sniffer::BABY_START_AGE;
-            let yaw = self.world.random.next_float() * 360.0 - 180.0;
+            let yaw = self.simulation.world.random.next_float() * 360.0 - 180.0;
             m.yaw = yaw;
             m.body_yaw = yaw;
             m.head_yaw = yaw;
@@ -51,8 +51,8 @@ impl Game<'_> {
         if players.is_empty() {
             return;
         }
-        for i in 0..self.mobs.len() {
-            let m = &self.mobs[i];
+        for i in 0..self.simulation.mobs.len() {
+            let m = &self.simulation.mobs[i];
             if m.species() != Species::Sniffer
                 || !m.alive()
                 || !players
@@ -81,8 +81,8 @@ impl Game<'_> {
             if ms <= 1700 || ms >= 6000 {
                 continue;
             }
-            let head = sniffer::head_block(&self.mobs[i]);
-            let below = self.world.block(head[0], head[1] - 1, head[2]);
+            let head = sniffer::head_block(&self.simulation.mobs[i]);
+            let below = self.simulation.world.block(head[0], head[1] - 1, head[2]);
             if self
                 .particle_sprite(below, [head[0], head[1] - 1, head[2]])
                 .is_none()
@@ -97,7 +97,7 @@ impl Game<'_> {
             // Drawn in this window when it has one, and sent to the players
             // within 32 blocks (the server thread's window is one of them).
             self.landing_dust(None, below, Vec3::new(dust[0], dust[1], dust[2]), 30, 0.0);
-            if !self.mobs[i].silent && self.mobs[i].age.is_multiple_of(10) {
+            if !self.simulation.mobs[i].silent && self.simulation.mobs[i].age.is_multiple_of(10) {
                 let hit = self.res.facts().get(below).sounds.hit.clone();
                 self.audio.play(&hit, Some(at), 0.5, 0.5);
             }

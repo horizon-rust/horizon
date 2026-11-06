@@ -22,7 +22,7 @@ impl Game<'_> {
                     horizon_client::mobs::DamageKind::FallingBlock
                 };
                 falling_block::hurt_mobs_with_kind(
-                    &mut self.mobs,
+                    &mut self.simulation.mobs,
                     block.position,
                     impact.amount,
                     mob_kind,
@@ -61,7 +61,7 @@ impl Game<'_> {
             }
             if anvil
                 && impact.wear_chance > 0.0
-                && self.world.random.next_float() < impact.wear_chance
+                && self.simulation.world.random.next_float() < impact.wear_chance
                 && let Some(mut state) = self.pack.assets.registry.state(block.state).cloned()
             {
                 if falling_block::wear_anvil(&mut state) {
@@ -93,7 +93,7 @@ impl Game<'_> {
         };
         if block.damage.cancel_drop {
             if let Some(id) = sound_event {
-                self.level_events.push(LevelEvent::LevelEvent {
+                self.simulation.level_events.push(LevelEvent::LevelEvent {
                     id,
                     pos: BlockPos::new(pos[0], pos[1], pos[2]),
                     data: 0,
@@ -107,12 +107,12 @@ impl Game<'_> {
             {
                 // BrushableBlock.onBrokenAfterFall.
                 let at = BlockPos::new(pos[0], pos[1], pos[2]);
-                self.level_events.push(LevelEvent::LevelEvent {
+                self.simulation.level_events.push(LevelEvent::LevelEvent {
                     id: 2001,
                     pos: at,
                     data: block.state.0 as i32,
                 });
-                self.level_events.push(LevelEvent::GameEvent {
+                self.simulation.level_events.push(LevelEvent::GameEvent {
                     pos: at,
                     event: "minecraft:block_destroy",
                     state: None,
@@ -136,7 +136,7 @@ impl Game<'_> {
             if let Some(entity) = self.new_block_entity(&name) {
                 let key = (pos[0], pos[1], pos[2]);
                 let mut tag = horizon_client::save::encode_block_entity(key, &entity, &name);
-                self.world.block_entities.insert(key, entity);
+                self.simulation.world.block_entities.insert(key, entity);
                 // FallingBlockEntity.tick copies each supplied field over the
                 // new block entity's saved defaults before loadWithComponents.
                 if let Some(horizon_world::nbt::Tag::Compound(carried)) = block
@@ -171,7 +171,7 @@ impl Game<'_> {
             && self.ui.rules.bool("entity_drops")
         {
             if let Some(id) = sound_event {
-                self.level_events.push(LevelEvent::LevelEvent {
+                self.simulation.level_events.push(LevelEvent::LevelEvent {
                     id,
                     pos: BlockPos::new(pos[0], pos[1], pos[2]),
                     data: 0,
@@ -199,7 +199,12 @@ impl Game<'_> {
         };
         let hurt = match (self.player.as_mut(), self.health_resources.damage.id(kind)) {
             (Some(p), Some(id)) => p
-                .hurt(&self.health_resources, self.world.health_rules, id, amount)
+                .hurt(
+                    &self.health_resources,
+                    self.simulation.world.health_rules,
+                    id,
+                    amount,
+                )
                 .unwrap_or(false),
             _ => false,
         };

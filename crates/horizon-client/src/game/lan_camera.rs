@@ -48,7 +48,7 @@ impl Game<'_> {
         }
         let t = self.level_entity(id)?;
         if let Target::Mob(m) = t
-            && !self.mobs.iter().any(|x| x.id == m && x.alive())
+            && !self.simulation.mobs.iter().any(|x| x.id == m && x.alive())
         {
             return None;
         }
@@ -62,14 +62,14 @@ impl Game<'_> {
     pub(super) fn camera_extra(&self, id: i32) -> Option<CameraExtra> {
         let id = u32::try_from(id).ok().filter(|&id| id != 0)?;
         let at = |v: Vec3| [v.x, v.y, v.z];
-        if let Some(t) = self.tnts.iter().find(|t| t.id == id) {
+        if let Some(t) = self.simulation.tnts.iter().find(|t| t.id == id) {
             return Some(CameraExtra {
                 position: at(t.position),
                 rotation: [0.0; 2],
                 bounds: t.bounds(),
             });
         }
-        if let Some(f) = self.falling.iter().find(|f| f.id == id) {
+        if let Some(f) = self.simulation.falling.iter().find(|f| f.id == id) {
             // EntityType.FALLING_BLOCK: 0.98 x 0.98.
             let h = 0.49;
             return Some(CameraExtra {
@@ -110,7 +110,11 @@ impl Game<'_> {
             ),
             // LivingEntity: not removed. ArmorStand: not a marker.
             Some(Target::Mob(_)) => self.camera_state(host, id).is_some(),
-            Some(Target::Stand(s)) => self.armor_stands.iter().any(|a| a.id == s && !a.marker),
+            Some(Target::Stand(s)) => self
+                .simulation
+                .armor_stands
+                .iter()
+                .any(|a| a.id == s && !a.marker),
             // BlockAttachedEntity, minecarts, boats, end crystals.
             Some(Target::Frame(_) | Target::Painting(_) | Target::Boat(_) | Target::Cart(_))
             | Some(Target::Crystal(_)) => true,

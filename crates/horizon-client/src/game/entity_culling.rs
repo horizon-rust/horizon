@@ -114,7 +114,7 @@ impl Game<'_> {
                         Some((false, _)) => false,
                         Some((true, Some(proof)))
                             if culler.proof_is_current(
-                                &self.world,
+                                &self.simulation.world,
                                 self.renderer.as_ref(),
                                 &self.streaming,
                                 &self.pending_uploads,
@@ -139,7 +139,7 @@ impl Game<'_> {
     fn entity_hidden_sync_camera_bounds(&self, lo: glam::Vec3, hi: glam::Vec3) -> bool {
         self.sync_occlusion_culler.as_ref().is_some_and(|culler| {
             let mut occluder = SyncOccluder::new(
-                &self.world,
+                &self.simulation.world,
                 self.res.facts(),
                 self.renderer.as_ref(),
                 &self.streaming,
@@ -215,7 +215,7 @@ impl Game<'_> {
                     Some((false, _)) => EntityCullDecision::CheckVertices,
                     Some((true, Some(proof)))
                         if culler.proof_is_current(
-                            &self.world,
+                            &self.simulation.world,
                             self.renderer.as_ref(),
                             &self.streaming,
                             &self.pending_uploads,
@@ -248,7 +248,7 @@ impl Game<'_> {
         let Some(camera_section) = self.entity_section_camera else {
             return false;
         };
-        let Some((min, max)) = entity_section_span(bounds, self.world.bottom_y()) else {
+        let Some((min, max)) = entity_section_span(bounds, self.simulation.world.bottom_y()) else {
             return false;
         };
 
@@ -307,7 +307,7 @@ impl Game<'_> {
                         Some((false, _)) => false,
                         Some((true, Some(proof)))
                             if culler.proof_is_current(
-                                &self.world,
+                                &self.simulation.world,
                                 self.renderer.as_ref(),
                                 &self.streaming,
                                 &self.pending_uploads,
@@ -336,7 +336,7 @@ impl Game<'_> {
     ) -> bool {
         self.sync_occlusion_culler.as_ref().is_some_and(|culler| {
             let mut occluder = SyncOccluder::new(
-                &self.world,
+                &self.simulation.world,
                 self.res.facts(),
                 self.renderer.as_ref(),
                 &self.streaming,

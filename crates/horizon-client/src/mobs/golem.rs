@@ -166,7 +166,7 @@ fn towards_villager_who_wants_golem(m: &mut Mob, cx: &mut Cx) -> Option<[f64; 3]
     let area = m.bounds().inflate(Vec3::new(32.0, 32.0, 32.0));
     let now = cx.w.game_time;
     let villagers: Vec<Vec3> =
-        cx.w.others_near(area)
+        cx.w.others_intersecting(area)
             .filter(|s| {
                 s.species == Species::Villager
                     && s.bounds.intersects(area)

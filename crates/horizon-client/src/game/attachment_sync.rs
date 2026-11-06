@@ -37,6 +37,7 @@ impl Game<'_> {
         let changes = match holder {
             // Read in place: a chunk lent to a mod is copied and saved.
             Holder::Chunk([x, z]) => self
+                .simulation
                 .world
                 .chunks
                 .get(&(x, z))
@@ -44,6 +45,7 @@ impl Game<'_> {
                 .map(|extras| extras.attachments.synced()),
             // Read in place: lending the map would give the entity one.
             Holder::Entity(id) => self
+                .simulation
                 .persist
                 .uuids
                 .get(&id)
@@ -58,7 +60,8 @@ impl Game<'_> {
         let mut holders = vec![(holder, changes)];
         if let Holder::Chunk([x, z]) = holder {
             holders.extend(
-                self.world
+                self.simulation
+                    .world
                     .block_entities
                     .chunk_attachments(x, z)
                     .into_iter()
@@ -107,7 +110,7 @@ impl Game<'_> {
                 guest.send_attachment_sync(&message);
             }
         }
-        for holder in std::mem::take(&mut self.world.attachment_syncs) {
+        for holder in std::mem::take(&mut self.simulation.world.attachment_syncs) {
             let Ok(map) = self.attachment_map_quiet(holder) else {
                 continue;
             };

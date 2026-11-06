@@ -104,10 +104,21 @@ pub trait RandomSource: Sized {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct LegacyRandom {
     state: u64,
     gaussian: Option<f64>,
+    /// Transaction bookkeeping only; never contributes to the random stream.
+    used: bool,
+}
+
+impl std::fmt::Debug for LegacyRandom {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LegacyRandom")
+            .field("state", &self.state)
+            .field("gaussian", &self.gaussian)
+            .finish()
+    }
 }
 
 impl LegacyRandom {
@@ -118,6 +129,7 @@ impl LegacyRandom {
         Self {
             state: (seed as u64 ^ Self::MULTIPLIER) & Self::MASK,
             gaussian: None,
+            used: false,
         }
     }
 
@@ -126,6 +138,7 @@ impl LegacyRandom {
         Self {
             state,
             gaussian: None,
+            used: false,
         }
     }
 
@@ -134,7 +147,27 @@ impl LegacyRandom {
         self.state
     }
 
+    /// Begin observing consumption by one simulation transaction. Seed and
+    /// Gaussian cache are unchanged; ordinary random draws need no observer.
+    pub fn clear_usage(&mut self) {
+        self.used = false;
+    }
+
+    /// Whether this transaction consumed or reseeded the stream, including a
+    /// cached Gaussian that does not advance the 48-bit generator state.
+    pub fn was_used(&self) -> bool {
+        self.used
+    }
+
+    /// Exact stream checkpoint equality, including the cached Gaussian. Usage
+    /// observation is deliberately excluded from the stream's identity.
+    pub fn same_stream(&self, other: &Self) -> bool {
+        self.state == other.state
+            && self.gaussian.map(f64::to_bits) == other.gaussian.map(f64::to_bits)
+    }
+
     fn bits(&mut self, count: u32) -> i32 {
+        self.used = true;
         self.state = self.state.wrapping_mul(Self::MULTIPLIER).wrapping_add(11) & Self::MASK;
         let value = (self.state >> (48 - count)) as i32;
         #[cfg(feature = "rng-trace")]
@@ -150,6 +183,7 @@ impl RandomSource for LegacyRandom {
     }
     fn set_seed(&mut self, seed: i64) {
         *self = Self::new(seed);
+        self.used = true;
     }
 
     fn next_int(&mut self) -> i32 {
@@ -190,6 +224,7 @@ impl RandomSource for LegacyRandom {
         value as f64 * (1.0 / 9_007_199_254_740_992.0)
     }
     fn next_gaussian(&mut self) -> f64 {
+        self.used = true;
         let mut cache = self.gaussian.take();
         let value = marsaglia_polar(&mut cache, || self.next_double());
         self.gaussian = cache;
@@ -364,5 +399,60 @@ mod tests {
         }
         a.set_seed(-1);
         assert_eq!(a.next_long(), XoroshiroRandom::new(-1).next_long());
+    }
+}
+
+#[cfg(test)]
+mod transaction_tests {
+    use super::{LegacyRandom, RandomSource};
+
+    #[test]
+    fn cached_gaussian_is_consumption_even_without_a_seed_advance() {
+        let mut random = LegacyRandom::new(42);
+        random.next_gaussian();
+        let checkpoint = random.clone();
+        let seed = random.state();
+        random.clear_usage();
+        assert!(!random.was_used());
+        random.next_gaussian();
+        assert!(random.was_used());
+        assert_eq!(random.state(), seed);
+        assert!(!random.same_stream(&checkpoint));
+    }
+
+    #[test]
+    fn reordered_shared_draws_fail_checkpoint_validation() {
+        let mut level = LegacyRandom::new(123);
+        let checkpoint = level.clone();
+        let mut predicted = checkpoint.clone();
+        predicted.clear_usage();
+        predicted.next_int_bound(17).unwrap();
+        assert!(predicted.was_used());
+        assert!(level.same_stream(&checkpoint));
+        level.next_long();
+        assert!(!level.same_stream(&checkpoint));
+        let mut replay = level.clone();
+        let expected = level.next_int_bound(17).unwrap();
+        assert_eq!(replay.next_int_bound(17).unwrap(), expected);
+        assert!(level.same_stream(&replay));
+    }
+
+    #[test]
+    fn observing_does_not_change_the_stream_and_reseeding_is_observed() {
+        let mut observed = LegacyRandom::new(91);
+        let mut serial = observed.clone();
+        for _ in 0..100 {
+            observed.clear_usage();
+            assert_eq!(
+                observed.next_gaussian().to_bits(),
+                serial.next_gaussian().to_bits()
+            );
+            assert!(observed.was_used());
+            assert!(observed.same_stream(&serial));
+        }
+        observed.clear_usage();
+        observed.set_seed(91);
+        assert!(observed.was_used());
+        assert!(observed.same_stream(&LegacyRandom::new(91)));
     }
 }

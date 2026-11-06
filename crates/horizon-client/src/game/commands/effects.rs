@@ -70,7 +70,7 @@ impl Game<'_> {
                     self.for_player(t, |g| g.add_player_effect(instance))
                         .unwrap_or(false)
                 }
-                Target::Mob(id) => match self.mobs.iter_mut().find(|m| m.id == id) {
+                Target::Mob(id) => match self.simulation.mobs.iter_mut().find(|m| m.id == id) {
                     Some(m) => {
                         let name = namespaced(effect.id);
                         let new = !m.has_effect(name);
@@ -134,23 +134,25 @@ impl Game<'_> {
                         g.potions.effects.list.len() != before
                     })
                     .unwrap_or(false),
-                (Target::Mob(id), e) => match self.mobs.iter_mut().find(|m| m.id == id) {
-                    Some(m) => {
-                        let before = m.extra.effects.len();
-                        m.extra
-                            .effects
-                            .retain(|x| e.is_some_and(|e| x.0 != namespaced(e.id)));
-                        let left = &m.extra.effects;
-                        m.extra
-                            .hidden_effects
-                            .retain(|h| left.iter().any(|x| x.0 == *h));
-                        m.extra
-                            .ambient_effects
-                            .retain(|h| left.iter().any(|x| x.0 == *h));
-                        m.extra.effects.len() != before
+                (Target::Mob(id), e) => {
+                    match self.simulation.mobs.iter_mut().find(|m| m.id == id) {
+                        Some(m) => {
+                            let before = m.extra.effects.len();
+                            m.extra
+                                .effects
+                                .retain(|x| e.is_some_and(|e| x.0 != namespaced(e.id)));
+                            let left = &m.extra.effects;
+                            m.extra
+                                .hidden_effects
+                                .retain(|h| left.iter().any(|x| x.0 == *h));
+                            m.extra
+                                .ambient_effects
+                                .retain(|h| left.iter().any(|x| x.0 == *h));
+                            m.extra.effects.len() != before
+                        }
+                        None => false,
                     }
-                    None => false,
-                },
+                }
                 _ => continue,
             };
             tracker.track(t, changed);
@@ -234,6 +236,7 @@ impl Game<'_> {
                 }
                 Target::Mob(mob) => {
                     let held = self
+                        .simulation
                         .mobs
                         .iter()
                         .find(|m| m.id == mob)

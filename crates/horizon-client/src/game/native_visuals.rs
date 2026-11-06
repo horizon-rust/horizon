@@ -90,12 +90,13 @@ impl Game<'_> {
         {
             return None;
         }
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         let loaded = self
+            .simulation
             .world
             .chunks
             .contains_key(&(pos[0].div_euclid(16), pos[2].div_euclid(16)));
-        if !rim_target_valid(loaded, state, self.world.air) {
+        if !rim_target_valid(loaded, state, self.simulation.world.air) {
             return None;
         }
         let facts = self.res.facts().get(state);
@@ -128,7 +129,7 @@ impl Game<'_> {
             && (0.25..=16.0).contains(&l.radius)
             && l.intensity.is_finite()
             && (0.0..=1.0).contains(&l.intensity)
-            && self.world.chunks.contains_key(&(
+            && self.simulation.world.chunks.contains_key(&(
                 (l.at[0].floor() as i32).div_euclid(16),
                 (l.at[2].floor() as i32).div_euclid(16),
             ))

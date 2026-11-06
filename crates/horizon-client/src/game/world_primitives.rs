@@ -49,7 +49,7 @@ impl Game<'_> {
         let white = horizon_client::gfx::lightning::white_uv(&atlas.font.white());
         let beam_sprite = atlas.sprites.get("entity/beacon/beacon_beam").copied();
         // BeaconRenderer's animation time: game time mod 40 plus the partial tick.
-        let time = self.world.game_time.rem_euclid(40) as f32 + alpha as f32;
+        let time = self.simulation.world.game_time.rem_euclid(40) as f32 + alpha as f32;
         let relative = |p: [f64; 3]| (glam::DVec3::from_array(p) - camera).as_vec3();
         let mut lines: [Vec<Line>; 2] = Default::default();
         let mut texts = Vec::new();

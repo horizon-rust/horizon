@@ -80,7 +80,7 @@ impl SpawnLevel for Columns<'_, '_> {
 impl Game<'_> {
     fn spawn_columns(&self) -> Columns<'_, '_> {
         Columns {
-            world: &self.world,
+            world: &self.simulation.world,
             properties: &self.pack.assets.properties,
             binding: self.collision,
             // The spawn searches are the overworld's (PlayerSpawnFinder); a
@@ -125,7 +125,7 @@ impl Game<'_> {
                 let (cx, cz) = (ox + dx, oz + dz);
                 if self.standalone_server() {
                     // getChunk(FULL) of the tested chunk alone: its 3x3 is decorated.
-                    if !self.world.chunks.contains_key(&(cx, cz)) {
+                    if !self.simulation.world.chunks.contains_key(&(cx, cz)) {
                         let area = [((cx, cz), -1)];
                         if self.streaming.extra != area {
                             self.streaming.extra = area.to_vec();
@@ -163,7 +163,7 @@ impl Game<'_> {
             return Ok(());
         }
         // `level.getRandom()`. Util.toShuffledList of the chunk's x and z.
-        let random = &mut self.world.random;
+        let random = &mut self.simulation.world.random;
         let mut shuffled = |min: i32| -> [i32; 16] {
             let mut values: [i32; 16] = std::array::from_fn(|i| min + i as i32);
             for end in (2..=16usize).rev() {
@@ -178,12 +178,15 @@ impl Game<'_> {
                 let y = self
                     .spawn_columns()
                     .height(HeightmapType::MotionBlockingNoLeaves, x, z);
-                if self.world.block(x, y, z) != self.world.air && !self.collision_empty([x, y, z]) {
+                if self.simulation.world.block(x, y, z) != self.simulation.world.air
+                    && !self.collision_empty([x, y, z])
+                {
                     continue;
                 }
                 self.set_block_clients([x, y, z], chest)?;
-                let seed = self.world.random.next_long();
-                self.world
+                let seed = self.simulation.world.random.next_long();
+                self.simulation
+                    .world
                     .block_entities
                     .insert((x, y, z), BlockEntity::Chest(Vec::new()));
                 self.load_block_entity_nbt(
@@ -222,14 +225,14 @@ impl Game<'_> {
     /// The block at `pos` has no collision shape.
     pub(super) fn collision_empty(&self, pos: [i32; 3]) -> bool {
         let mut scene = SceneCollisions {
-            world: &self.world,
+            world: &self.simulation.world,
             binding: self.collision,
             subject: None,
         };
         self.collision
             .collision_shape_with_context(
                 &mut scene,
-                self.world.block(pos[0], pos[1], pos[2]),
+                self.simulation.world.block(pos[0], pos[1], pos[2]),
                 BlockPos::new(pos[0], pos[1], pos[2]),
                 &CollisionContext::empty(false),
             )
@@ -349,7 +352,7 @@ impl Game<'_> {
             Vec3::new(feet.x + 0.3, feet.y + 1.8, feet.z + 0.3),
         );
         let mut scene = SceneCollisions {
-            world: &self.world,
+            world: &self.simulation.world,
             binding: self.collision,
             subject: None,
         };
@@ -359,11 +362,11 @@ impl Game<'_> {
     /// down onto the ground.
     fn fixup_spawn_height(&self, pos: [i32; 3]) -> Vec3 {
         let [x, mut y, z] = pos;
-        while !self.player_fits([x, y, z]) && y < self.world.top_y() - 1 {
+        while !self.player_fits([x, y, z]) && y < self.simulation.world.top_y() - 1 {
             y += 1;
         }
         y -= 1;
-        while self.player_fits([x, y, z]) && y > self.world.bottom_y() {
+        while self.player_fits([x, y, z]) && y > self.simulation.world.bottom_y() {
             y -= 1;
         }
         bottom_center([x, y + 1, z])

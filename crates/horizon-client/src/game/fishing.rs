@@ -240,7 +240,7 @@ fn rebound(velocity: Vec3, hit: Vec3, at: Vec3) -> Vec3 {
 impl Game<'_> {
     /// Run real `catchingFish` states for the vanilla differential harness.
     pub(super) fn fishing_tick_reference(&mut self) -> Vec<serde_json::Value> {
-        self.world.weather.raining = false;
+        self.simulation.world.weather.raining = false;
         let mut rows = Vec::new();
         for seed in [0_i64, 1, 42, 123456789, -1] {
             for phase in 0..5 {
@@ -279,24 +279,26 @@ impl Game<'_> {
             hook.nibble = 10;
             hook.random = LegacyRandom::new(seed);
             self.hook = Some(hook);
-            let item_start = self.dropped.len();
-            let orb_start = self.orbs.len();
-            self.world.random = LegacyRandom::new(seed);
+            let item_start = self.simulation.dropped.len();
+            let orb_start = self.simulation.orbs.len();
+            self.simulation.world.random = LegacyRandom::new(seed);
             self.use_fishing_rod(&rod);
             let items: Vec<_> = self
+                .simulation
                 .dropped
                 .iter()
                 .skip(item_start)
                 .map(|item| item.stack.item.to_string())
                 .collect();
             let xp: Vec<_> = self
+                .simulation
                 .orbs
                 .iter()
                 .skip(orb_start)
                 .map(|orb| orb.value)
                 .collect();
             rows.push(serde_json::json!({
-                "seed": seed, "level_next": self.world.random.next_long(), "items": items, "xp": xp,
+                "seed": seed, "level_next": self.simulation.world.random.next_long(), "items": items, "xp": xp,
             }));
         }
         rows
@@ -309,7 +311,7 @@ impl Game<'_> {
             300,
             old_position.z.floor() as i32,
         ];
-        let old_block = self.world.block(block[0], block[1], block[2]);
+        let old_block = self.simulation.world.block(block[0], block[1], block[2]);
         let water = self
             .pack
             .assets
@@ -318,7 +320,7 @@ impl Game<'_> {
             .unwrap();
         self.level_set(block, water).unwrap();
         assert_eq!(
-            self.world.block(block[0], block[1], block[2]),
+            self.simulation.world.block(block[0], block[1], block[2]),
             water,
             "bobbing fixture water not placed"
         );
@@ -332,7 +334,7 @@ impl Game<'_> {
             extra: None,
         });
         let old_hook = self.hook.take();
-        self.world.weather.raining = false;
+        self.simulation.world.weather.raining = false;
         let mut rows = Vec::new();
         for seed in [0_i64, 1, 42, 123456789, -1] {
             let mut hook = Hook::remote(1, Vec3::new(x, 300.5, z));
@@ -419,7 +421,7 @@ impl Game<'_> {
         if self.hook.is_some() {
             let damage = self.retrieve_hook(stack);
             self.damage_held(damage);
-            let pitch = 0.4 / (self.world.random.next_float() * 0.4 + 0.8);
+            let pitch = 0.4 / (self.simulation.world.random.next_float() * 0.4 + 0.8);
             self.audio.play(
                 "minecraft:entity.fishing_bobber.retrieve",
                 Some(at),
@@ -427,7 +429,7 @@ impl Game<'_> {
                 pitch,
             );
         } else {
-            let pitch = 0.4 / (self.world.random.next_float() * 0.4 + 0.8);
+            let pitch = 0.4 / (self.simulation.world.random.next_float() * 0.4 + 0.8);
             self.audio.play(
                 "minecraft:entity.fishing_bobber.throw",
                 Some(at),
@@ -448,9 +450,9 @@ impl Game<'_> {
             );
             let mut random = LegacyRandom::new(unique_seed());
             let v = cast_velocity(y_sin, y_cos, dir_y, &mut random);
-            self.next_entity += 1;
+            self.simulation_server.next_entity += 1;
             self.hook = Some(Hook {
-                id: self.next_entity,
+                id: self.simulation_server.next_entity,
                 position: start,
                 previous: start,
                 velocity: v,
@@ -509,18 +511,23 @@ impl Game<'_> {
             );
             let pulled = |v: Vec3| pull_hooked(v, hook.position, owner);
             let mut hooked_item = false;
-            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+            if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
                 m.velocity = pulled(m.velocity);
-            } else if let Some(item) = self.dropped.iter_mut().find(|i| i.id == id) {
+            } else if let Some(item) = self.simulation.dropped.iter_mut().find(|i| i.id == id) {
                 pull_item(item, Vec3::new(d.x * 0.1, d.y * 0.1, d.z * 0.1));
                 hooked_item = true;
-            } else if let Some(t) = self.tnts.iter_mut().find(|t| t.id != 0 && t.id == id) {
+            } else if let Some(t) = self
+                .simulation
+                .tnts
+                .iter_mut()
+                .find(|t| t.id != 0 && t.id == id)
+            {
                 t.velocity = pulled(t.velocity);
-            } else if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) {
+            } else if let Some(a) = self.simulation.armor_stands.iter_mut().find(|a| a.id == id) {
                 a.velocity = pulled(a.velocity);
-            } else if let Some(b) = self.boats.iter_mut().find(|b| b.id == id) {
+            } else if let Some(b) = self.simulation.boats.iter_mut().find(|b| b.id == id) {
                 b.velocity = pulled(b.velocity);
-            } else if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
+            } else if let Some(c) = self.simulation.carts.iter_mut().find(|c| c.id == id) {
                 // `AbstractMinecart` is pickable, so `pullEntity` moves it too.
                 c.velocity = pulled(c.velocity);
             } else if self.creatures.hook_targets.iter().any(|t| t.id == id) {
@@ -531,6 +538,7 @@ impl Game<'_> {
             }
             // CriteriaTriggers.FISHING_ROD_HOOKED with no items.
             let hooked = self
+                .simulation
                 .mobs
                 .iter()
                 .find(|m| m.id == id)
@@ -562,7 +570,7 @@ impl Game<'_> {
             let items = fishing_loot(
                 &loot,
                 &mut self.rand_sequences,
-                &mut self.world.random,
+                &mut self.simulation.world.random,
                 self.level.seed,
                 luck,
                 biome.as_deref(),
@@ -640,7 +648,7 @@ impl Game<'_> {
     }
     pub(super) fn biome_name_at(&self, p: Vec3) -> Option<String> {
         let (x, y, z) = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
-        let c = self.world.chunks.get(&(x >> 4, z >> 4))?;
+        let c = self.simulation.world.chunks.get(&(x >> 4, z >> 4))?;
         Some(
             world_biomes!(self).list[c.biome(x, y, z) as usize]
                 .name
@@ -648,11 +656,14 @@ impl Game<'_> {
         )
     }
     fn water_height(&self, x: i32, y: i32, z: i32) -> Option<(f32, bool)> {
-        let f = self.res.facts().get(self.world.block(x, y, z));
+        let f = self.res.facts().get(self.simulation.world.block(x, y, z));
         if f.fluid != Fluid::Water {
             return None;
         }
-        let above = self.res.facts().get(self.world.block(x, y + 1, z));
+        let above = self
+            .res
+            .facts()
+            .get(self.simulation.world.block(x, y + 1, z));
         let h = if above.fluid == Fluid::Water {
             1.0
         } else {
@@ -662,8 +673,13 @@ impl Game<'_> {
     }
     /// getOpenWaterTypeForBlock: 0 above water, 1 inside water, 2 invalid.
     fn open_water_type(&self, x: i32, y: i32, z: i32) -> u8 {
-        let f = self.res.facts().get(self.world.block(x, y, z));
-        if self.world.is_air(self.world.block(x, y, z)) || &*f.name == "minecraft:lily_pad" {
+        let f = self.res.facts().get(self.simulation.world.block(x, y, z));
+        if self
+            .simulation
+            .world
+            .is_air(self.simulation.world.block(x, y, z))
+            || &*f.name == "minecraft:lily_pad"
+        {
             return 0;
         }
         if f.fluid == Fluid::Water
@@ -707,7 +723,7 @@ impl Game<'_> {
     fn catching_fish(&mut self, h: &mut Hook, b: [i32; 3]) {
         let mut speed = 1;
         let above = [b[0], b[1] + 1, b[2]];
-        let sky = self.world.light(above[0], above[1], above[2]) >> 4 == 15;
+        let sky = self.simulation.world.light(above[0], above[1], above[2]) >> 4 == 15;
         // Level.isRainingAt: rain (not snow) reaches the position.
         if h.random.next_float() < 0.25
             && self.with_level(|b, level, _| {
@@ -780,7 +796,7 @@ impl Game<'_> {
                 for kind in [ParticleType::Bubble, ParticleType::Fishing] {
                     self.send_particles(kind, at, spread, f64::from(0.2f32), count);
                 }
-                h.trigger_bite(self.world.game_time);
+                h.trigger_bite(self.simulation.world.game_time);
             }
         } else if h.time_until_lured > 0 {
             h.time_until_lured -= speed;
@@ -817,7 +833,7 @@ impl Game<'_> {
     }
     /// `catchingFish`'s check below a fish: the block under it is water.
     fn water_block(&self, fish: [f64; 3]) -> bool {
-        let state = self.world.block(
+        let state = self.simulation.world.block(
             fish[0].floor() as i32,
             (fish[1] - 1.0).floor() as i32,
             fish[2].floor() as i32,
@@ -910,7 +926,8 @@ impl Game<'_> {
                     h.position,
                     entity_end,
                     entity_hit_margin(h.tick_count),
-                    self.mobs
+                    self.simulation
+                        .mobs
                         .iter()
                         .filter(|m| m.alive())
                         .map(|m| (m.id, m.bounds()))
@@ -922,21 +939,27 @@ impl Game<'_> {
                                 .map(|t| (t.id, t.bounds)),
                         )
                         .chain(
-                            self.armor_stands
+                            self.simulation
+                                .armor_stands
                                 .iter()
                                 .filter(|a| a.health > 0.0 && !a.marker)
                                 .map(|a| (a.id, a.bounds())),
                         )
                         .chain(
-                            self.boats
+                            self.simulation
+                                .boats
                                 .iter()
                                 .filter(|b| Some(b.id) != own_vehicle)
                                 .map(|b| (b.id, b.bounds())),
                         )
-                        .chain(minecart_hook_targets(self.carts.iter(), own_vehicle))
-                        .chain(self.dropped.iter().map(|i| (i.id, i.bounds())))
+                        .chain(minecart_hook_targets(
+                            self.simulation.carts.iter(),
+                            own_vehicle,
+                        ))
+                        .chain(self.simulation.dropped.iter().map(|i| (i.id, i.bounds())))
                         .chain(
-                            self.tnts
+                            self.simulation
+                                .tnts
                                 .iter()
                                 .filter(|t| t.id != 0)
                                 .map(|t| (t.id, t.bounds())),
@@ -944,6 +967,7 @@ impl Game<'_> {
                 );
                 if let Some(id) = hit {
                     let breeze = self
+                        .simulation
                         .mobs
                         .iter()
                         .find(|m| {
@@ -985,6 +1009,7 @@ impl Game<'_> {
             State::Hooked(id) => {
                 // updateHookedEntity: ride the hooked mob, player or item at 0.8 of its height.
                 let hooked = self
+                    .simulation
                     .mobs
                     .iter()
                     .find(|m| m.id == id && m.alive())
@@ -1003,31 +1028,39 @@ impl Game<'_> {
                             })
                     })
                     .or_else(|| {
-                        self.armor_stands.iter().find(|a| a.id == id).map(|a| {
-                            let b = a.bounds();
-                            (a.position, b.max_position().y - b.min_position().y)
-                        })
+                        self.simulation
+                            .armor_stands
+                            .iter()
+                            .find(|a| a.id == id)
+                            .map(|a| {
+                                let b = a.bounds();
+                                (a.position, b.max_position().y - b.min_position().y)
+                            })
                     })
                     .or_else(|| {
-                        self.boats
+                        self.simulation
+                            .boats
                             .iter()
                             .find(|b| b.id == id)
                             .map(|b| (b.position, super::boats::HEIGHT))
                     })
                     .or_else(|| {
-                        self.carts
+                        self.simulation
+                            .carts
                             .iter()
                             .find(|c| c.id == id)
                             .map(|c| (c.position, super::minecarts::HEIGHT))
                     })
                     .or_else(|| {
-                        self.dropped
+                        self.simulation
+                            .dropped
                             .iter()
                             .find(|i| i.id == id)
                             .map(|i| (i.position, horizon_client::entities::ItemEntity::WIDTH))
                     })
                     .or_else(|| {
-                        self.tnts
+                        self.simulation
+                            .tnts
                             .iter()
                             .find(|t| t.id != 0 && t.id == id)
                             .map(|t| (t.position, super::tnt::PrimedTnt::SIZE))
@@ -1056,7 +1089,8 @@ impl Game<'_> {
                 if in_water {
                     h.out_of_water = (h.out_of_water - 1).max(0);
                     if h.nibble > 0 {
-                        let mut sync_random = synchronized_random(h.id, self.world.game_time);
+                        let mut sync_random =
+                            synchronized_random(h.id, self.simulation.world.game_time);
                         let dip = -0.1
                             * f64::from(sync_random.next_float())
                             * f64::from(sync_random.next_float());
@@ -1072,7 +1106,7 @@ impl Game<'_> {
             h.velocity.y -= f64::from(0.03_f32);
         }
         let mut scene = SceneCollisions {
-            world: &self.world,
+            world: &self.simulation.world,
             binding: self.collision,
             subject: None,
         };
@@ -1187,9 +1221,11 @@ impl Game<'_> {
         let s = 0.25;
         let uv = [[r.u0, r.v1], [r.u1, r.v1], [r.u1, r.v0], [r.u0, r.v0]];
         for p in hooks {
-            let light =
-                self.world
-                    .light(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
+            let light = self.simulation.world.light(
+                p.x.floor() as i32,
+                p.y.floor() as i32,
+                p.z.floor() as i32,
+            );
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             let corners = [
                 p - right * s - up * s,
@@ -1507,7 +1543,7 @@ impl Game<'_> {
     pub(super) fn remote_hook_data(&mut self, id: u32, values: &[(u8, i32, Value)]) {
         // DATA_HOOKED_ENTITY (the hooked id plus one, 0 for none): a hook on a
         // client follows what it hooked (`FishingHook.onSyncedDataUpdated`).
-        let time = self.world.game_time;
+        let time = self.simulation.world.game_time;
         let hooked = |value: &Value| match value {
             Value::Int(v) if *v > 0 => State::Hooked(*v as u32 - 1),
             _ => State::Flying,
@@ -1596,12 +1632,12 @@ impl Game<'_> {
     /// `FishingHook.checkCollision` clips blocks on both sides of the connection.
     fn hook_block_hit(&self, from: Vec3, to: Vec3) -> Option<Vec3> {
         let mut scene = SceneCollisions {
-            world: &self.world,
+            world: &self.simulation.world,
             binding: self.collision,
             subject: None,
         };
         traverse_blocks(from, to, 1024, |p: BlockPos| {
-            let state = self.world.block(p.x, p.y, p.z);
+            let state = self.simulation.world.block(p.x, p.y, p.z);
             if self.res.facts().is_air(state) {
                 return None;
             }
@@ -1655,18 +1691,21 @@ impl Game<'_> {
                         .as_ref()
                         .map(|p| (p.position, f64::from(p.dimensions.height)))
                 } else {
-                    self.mobs
+                    self.simulation
+                        .mobs
                         .iter()
                         .find(|m| m.id == id && m.alive())
                         .map(|m| (m.position, f64::from(m.height())))
                         .or_else(|| {
-                            self.carts
+                            self.simulation
+                                .carts
                                 .iter()
                                 .find(|c| c.id == id)
                                 .map(|c| (c.position, super::minecarts::HEIGHT))
                         })
                         .or_else(|| {
-                            self.dropped
+                            self.simulation
+                                .dropped
                                 .iter()
                                 .find(|i| i.id == id)
                                 .map(|i| (i.position, horizon_client::entities::ItemEntity::WIDTH))
@@ -1699,7 +1738,7 @@ impl Game<'_> {
             velocity.y -= f64::from(0.03_f32);
         }
         let mut scene = SceneCollisions {
-            world: &self.world,
+            world: &self.simulation.world,
             binding: self.collision,
             subject: None,
         };
@@ -1748,7 +1787,7 @@ impl Game<'_> {
         self.remote_hooks
             .iter()
             .filter_map(|h| {
-                let owner = self.mobs.iter().find(|m| m.id == h.owner)?;
+                let owner = self.simulation.mobs.iter().find(|m| m.id == h.owner)?;
                 let feet = lerp(owner.previous, owner.position);
                 let body = horizon_client::camera::lerp(
                     alpha as f32,

@@ -104,6 +104,7 @@ impl Game<'_> {
             }
             if let Target::Stand(id) = t
                 && let Some(name) = self
+                    .simulation
                     .armor_stands
                     .iter()
                     .find(|a| a.id == id)

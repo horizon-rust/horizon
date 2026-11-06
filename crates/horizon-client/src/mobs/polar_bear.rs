@@ -62,7 +62,7 @@ pub fn register(m: &mut Mob) {
 /// (4 up and down).
 fn cub_nearby(m: &Mob, w: &MobWorld) -> bool {
     let area = m.bounds().inflate(Vec3::new(8.0, 4.0, 8.0));
-    w.others_near(area)
+    w.others_intersecting(area)
         .any(|s| s.species == Species::PolarBear && s.baby && s.bounds.intersects(area))
 }
 

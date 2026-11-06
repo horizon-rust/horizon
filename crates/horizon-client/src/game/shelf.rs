@@ -13,12 +13,15 @@ impl Game<'_> {
     pub(super) fn shelf_hit(&self, hit: &Hit) -> Option<(usize, Direction, bool)> {
         let p = hit.pos;
         if !matches!(
-            self.world.block_entities.get(&(p[0], p[1], p[2])),
+            self.simulation
+                .world
+                .block_entities
+                .get(&(p[0], p[1], p[2])),
             Some(BlockEntity::Shelf(_))
         ) {
             return None;
         }
-        let state = self.world.block(p[0], p[1], p[2]);
+        let state = self.simulation.world.block(p[0], p[1], p[2]);
         let data = self.pack.assets.registry.state(state)?;
         let facing = data
             .properties
@@ -51,7 +54,7 @@ impl Game<'_> {
             Direction::West => Direction::North,
             _ => return Vec::new(),
         };
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         let behaviours = self.res.behaviours();
         if !behaviours
             .tag("minecraft:wooden_shelves")
@@ -64,7 +67,7 @@ impl Game<'_> {
             let normal = dir.normal();
             for step in 1..3 {
                 let p = [pos[0] + normal[0] * step, pos[1], pos[2] + normal[2] * step];
-                let state = self.world.block(p[0], p[1], p[2]);
+                let state = self.simulation.world.block(p[0], p[1], p[2]);
                 let Some(info) = self.pack.assets.registry.state(state) else {
                     break;
                 };
@@ -105,14 +108,15 @@ impl Game<'_> {
         }
         let (slot, facing, powered) = self.shelf_hit(hit)?;
         let pos = hit.pos;
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         if powered {
             let chain = self.shelf_chain(pos, facing);
             let mut swapped = false;
             let count = chain.len();
             for (i, p) in chain.into_iter().enumerate() {
                 let key = (p[0], p[1], p[2]);
-                let Some(BlockEntity::Shelf(shelf)) = self.world.block_entities.get_mut(&key)
+                let Some(BlockEntity::Shelf(shelf)) =
+                    self.simulation.world.block_entities.get_mut(&key)
                 else {
                     continue;
                 };
@@ -126,7 +130,7 @@ impl Game<'_> {
                     std::mem::swap(&mut self.inventory[index], &mut shelf.items[n]);
                 }
                 self.container_changed(key);
-                let s = self.world.block(p[0], p[1], p[2]);
+                let s = self.simulation.world.block(p[0], p[1], p[2]);
                 self.post_block_game_event("minecraft:entity_interact", p, None, Some(s));
             }
             if !swapped {
@@ -142,7 +146,9 @@ impl Game<'_> {
         } else {
             let held = self.inventory[self.selected].clone();
             let key = (pos[0], pos[1], pos[2]);
-            let Some(BlockEntity::Shelf(shelf)) = self.world.block_entities.get_mut(&key) else {
+            let Some(BlockEntity::Shelf(shelf)) =
+                self.simulation.world.block_entities.get_mut(&key)
+            else {
                 return None;
             };
             let removed = std::mem::replace(&mut shelf.items[slot], held.clone());
@@ -198,7 +204,7 @@ impl Game<'_> {
 
     /// `ShelfRenderer`: three items face out, aligned to the bottom or centre.
     pub(super) fn shelf_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
-        for (key, entity) in &self.world.block_entities {
+        for (key, entity) in &self.simulation.world.block_entities {
             let BlockEntity::Shelf(shelf) = entity else {
                 continue;
             };
@@ -206,7 +212,7 @@ impl Game<'_> {
             if at.distance_squared(camera) >= 64.0 * 64.0 {
                 continue;
             }
-            let block = self.world.block(key.0, key.1, key.2);
+            let block = self.simulation.world.block(key.0, key.1, key.2);
             let facing = self
                 .pack
                 .assets
@@ -224,7 +230,7 @@ impl Game<'_> {
             };
             let packed = BlockPos::new(key.0, key.1, key.2).pack() as u64;
             let seed = (packed ^ (packed >> 32)) as i32;
-            let light = vertex_light(self.world.light(key.0, key.1, key.2));
+            let light = vertex_light(self.simulation.world.light(key.0, key.1, key.2));
             for (slot, stack) in shelf.items.iter().enumerate() {
                 let Some(stack) = stack else { continue };
                 let item = self.resolve_item(

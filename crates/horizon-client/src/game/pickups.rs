@@ -87,7 +87,7 @@ impl Game<'_> {
                 (p.position, f64::from(p.dimensions.eye_height))
             }
             Collector::Mob(id) => {
-                let m = self.mobs.iter().find(|m| m.id == id)?;
+                let m = self.simulation.mobs.iter().find(|m| m.id == id)?;
                 (m.position, m.eye_height())
             }
         };

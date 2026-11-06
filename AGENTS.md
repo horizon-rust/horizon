@@ -174,7 +174,9 @@ state stays separate from the library tests. This compiles gameplay twice for ex
 
 ## How `Game` is organised
 
-- `struct Game` (game.rs, ~290 fields) holds everything. Its methods are spread over ~180 files: game.rs keeps
+- `struct Game` (game.rs) coordinates gameplay, rendering and player state. `game/simulation.rs::LevelSimulation`
+  owns mutable level world/entity/tick state; `ServerCoordination` owns the level manager, global entity IDs and
+  persistent region pool. `Game` methods are spread over ~180 files: game.rs keeps
   the core (tick, render, input, inventory, world open/close) and each `game/<feature>.rs` adds an
   `impl Game<'_>` block for one feature, with its own state types. Fields stay private to the gameplay module and its descendants. Gameplay tests run in the gameplay library, separate from reusable-library tests.
 - Find a feature's code: `grep -rn "fn tick_<thing>\|fn <verb>_<thing>" crates/horizon-client/src/game*`;
@@ -185,10 +187,13 @@ state stays separate from the library tests. This compiles gameplay twice for ex
   `fn tick` returns `tick_remote()` when `remote` is set; a server ticks its levels (`fn tick_world`).
 - A server's players run through the shared gameplay code: `as_guest` swaps the guest's
   state (position, inventory, mode, mining, item use) into `Game` for one call (`game/lan_actions.rs`), and
-  `levels.rs` swaps whole dimensions in the same way. Changes reach clients through the block log, level
+  `levels.rs` swaps each dimension's `LevelSimulation` owner and its typed services. Changes reach clients through the block log, level
   events and the entity tracker (`lan/tracking.rs`, `game/lan_entities.rs`).
 - Shared read-only data: `Resources` (`res`: blocks, items, recipes, mob types, biomes) and `PackResources`
   (`pack`), both in game.rs.
+- Region topology and indexes live in `server_regions.rs`; worker transactions and ordered validation live in
+  `mobs/region_tick.rs`, with tracked observations in `mobs/snapshot.rs`. See [docs/server-regions.md](docs/server-regions.md)
+  for ownership, the dependency audit, serial fallbacks and benchmark controls.
 
 ## Single player runs on a server thread
 

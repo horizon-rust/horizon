@@ -339,7 +339,7 @@ impl Game<'_> {
         self.pack.assets.registry.resolve(&s).ok()
     }
     fn block_at(&self, p: Pos) -> BlockStateId {
-        self.world.block(p.0, p.1, p.2)
+        self.simulation.world.block(p.0, p.1, p.2)
     }
     fn dispenser_block_name(&self, p: Pos) -> std::sync::Arc<str> {
         self.res.facts().get(self.block_at(p)).name.clone()
@@ -480,7 +480,7 @@ impl Game<'_> {
         let p = Self::dispense_position(pos, facing, 0.7, [0.0; 3]);
         let mut at = [p.x, p.y, p.z];
         at[1] -= if s[1] != 0 { 0.125 } else { 0.156_25 };
-        let r = &mut self.world.random;
+        let r = &mut self.simulation.world.random;
         let pow = r.next_double() * 0.1 + 0.2;
         let spread = 0.017_227_5 * f64::from(accuracy);
         let v = [
@@ -519,7 +519,11 @@ impl Game<'_> {
     ) -> Option<ItemStack> {
         if !(self.serving.is_some() || self.options.dedicated.is_some())
             || dimension != self.dim.id()
-            || !self.world.chunks.contains_key(&(pos[0] >> 4, pos[2] >> 4))
+            || !self
+                .simulation
+                .world
+                .chunks
+                .contains_key(&(pos[0] >> 4, pos[2] >> 4))
         {
             return Some(stack);
         }
@@ -554,7 +558,7 @@ impl Game<'_> {
             return Some(remainder);
         }
         let mut rest = remainder;
-        if let Some(entity) = self.world.block_entities.get_mut(&pos) {
+        if let Some(entity) = self.simulation.world.block_entities.get_mut(&pos) {
             let max = self
                 .res
                 .items()
@@ -743,6 +747,7 @@ impl Game<'_> {
     fn targets_at(&self, p: Pos) -> Vec<Target> {
         let block = block_box(p);
         let mut found: Vec<(u32, Target)> = self
+            .simulation
             .mobs
             .iter()
             .enumerate()
@@ -750,7 +755,8 @@ impl Game<'_> {
             .map(|(i, m)| (m.id, Target::Mob(i)))
             .collect();
         found.extend(
-            self.armor_stands
+            self.simulation
+                .armor_stands
                 .iter()
                 .enumerate()
                 .filter(|(_, s)| overlaps(s.bounds(), block))
@@ -800,7 +806,7 @@ impl Game<'_> {
             ),
         );
         let mut scene = SceneCollisions {
-            world: &self.world,
+            world: &self.simulation.world,
             binding: self.collision,
             subject: None,
         };
@@ -899,10 +905,11 @@ impl Game<'_> {
                     }
             }
             Target::Stand(i) => slot.stand_index().is_some_and(|s| {
-                allows("minecraft:armor_stand") && self.armor_stands[i].equipment[s].is_none()
+                allows("minecraft:armor_stand")
+                    && self.simulation.armor_stands[i].equipment[s].is_none()
             }),
             Target::Mob(i) => {
-                let m = &self.mobs[i];
+                let m = &self.simulation.mobs[i];
                 m.alive()
                     && mob_can_use_slot(m, slot)
                     && allows(&m.kind.id)
@@ -939,14 +946,14 @@ impl Game<'_> {
                 return true;
             }
             Target::Stand(i) => {
-                let stand = &mut self.armor_stands[i];
+                let stand = &mut self.simulation.armor_stands[i];
                 if let Some(s) = slot.stand_index() {
                     stand.equipment[s] = Some(one);
                 }
                 (Some(stand.position), sound)
             }
             Target::Mob(i) => {
-                let m = &mut self.mobs[i];
+                let m = &mut self.simulation.mobs[i];
                 mob_set_slot(m, slot, one);
                 // setGuaranteedDrop / setPersistenceRequired.
                 m.persistent = true;
@@ -963,7 +970,7 @@ impl Game<'_> {
                 self.audio.play(&sound, Some([at.x, at.y, at.z]), 1.0, 1.0);
             }
             let who = match target {
-                Target::Mob(i) => Some(horizon_client::mobs::Who::Mob(self.mobs[i].id)),
+                Target::Mob(i) => Some(horizon_client::mobs::Who::Mob(self.simulation.mobs[i].id)),
                 Target::Player | Target::Stand(_) => None,
             };
             let ctx = self.who_context(who, None);
@@ -986,23 +993,23 @@ impl Game<'_> {
         if self.dragon_spawn_ambient(id) {
             return Ok(());
         }
-        let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
+        let Some(i) = self.simulation.mobs.iter().position(|m| m.id == id) else {
             return Ok(());
         };
-        let mut m = self.mobs.remove(i);
+        let mut m = self.simulation.mobs.remove(i);
         let mut events = Vec::new();
         {
             let w = self.mob_world_base(&[]);
             horizon_client::mobs::ai::ambient_sound(&mut m, &w, &mut events);
         }
-        self.mobs.insert(i, m);
+        self.simulation.mobs.insert(i, m);
         self.handle_mob_events(events)
     }
     /// A mob a bucket emptied: `setFromBucket` keeps it, then it calls out.
     /// Fish and axolotls carry the flag itself (saved as `FromBucket`, read by
     /// `requiresCustomPersistence`); the others stay persistent instead.
     pub(super) fn mob_placed(&mut self, id: u32) -> Result<()> {
-        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+        if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
             if matches!(
                 m.species(),
                 Species::Cod
@@ -1030,7 +1037,7 @@ impl Game<'_> {
             return Ok((Some(stack), CLICK));
         };
         // EntityType.create: `finalizeSpawn` first, the egg's components after.
-        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+        if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
             horizon_client::entity_nbt::apply_item_components(m, &stack);
         }
         // EntityType.updateCustomEntityTag: a configured egg
@@ -1138,7 +1145,7 @@ impl Game<'_> {
                     "minecraft:fire_charge" | "minecraft:wind_charge" => {
                         // asProjectile aims with the level's random first; the
                         // shot along the facing then replaces that motion.
-                        let r = &mut self.world.random;
+                        let r = &mut self.simulation.world.random;
                         let _ = (
                             r.triangle(dir[0], 0.114_85),
                             r.triangle(dir[1], 0.114_85),
@@ -1178,16 +1185,22 @@ impl Game<'_> {
             f64::from(front.2) + 0.5,
         );
         // EntityType.create rolls a yaw from the level random before the stack config turns it.
-        let _ = self.world.random.next_float();
-        self.next_entity += 1;
-        let mut stand =
-            horizon_client::entities::ArmorStand::new(self.next_entity, foot, y_rot(facing));
+        let _ = self.simulation.world.random.next_float();
+        self.simulation_server.next_entity += 1;
+        let mut stand = horizon_client::entities::ArmorStand::new(
+            self.simulation_server.next_entity,
+            foot,
+            y_rot(facing),
+        );
         // Entity.applyImplicitComponents: a name from an anvil names the stand.
         if let Some(name) = stack.custom_name() {
             stand.custom_name = Some(horizon_client::text::Text::literal(name));
         }
-        self.world.modified.insert((front.0 >> 4, front.2 >> 4));
-        self.armor_stands.push(stand);
+        self.simulation
+            .world
+            .modified
+            .insert((front.0 >> 4, front.2 >> 4));
+        self.simulation.armor_stands.push(stand);
         (shrink(stack), CLICK)
     }
     /// A tame donkey, mule or llama in front without a chest gets it.
@@ -1195,7 +1208,7 @@ impl Game<'_> {
         let front = offset(pos, facing);
         for target in self.targets_at(front) {
             let Target::Mob(i) = target else { continue };
-            let m = &mut self.mobs[i];
+            let m = &mut self.simulation.mobs[i];
             if matches!(
                 m.species(),
                 Species::Donkey | Species::Mule | Species::Llama | Species::TraderLlama
@@ -1241,9 +1254,9 @@ impl Game<'_> {
         if !self.boat_models.has(&wood, chest) {
             return (self.dispense_default(pos, facing, stack), CLICK);
         }
-        self.next_entity += 1;
+        self.simulation_server.next_entity += 1;
         let mut boat = super::boats::Boat::new(
-            self.next_entity,
+            self.simulation_server.next_entity,
             wood.as_str().into(),
             Vec3::new(x, y + y_offset, z),
             y_rot(facing),
@@ -1251,10 +1264,13 @@ impl Game<'_> {
         if chest {
             boat = boat.with_chest();
         }
-        self.world.modified.insert((front.0 >> 4, front.2 >> 4));
-        self.boats.push(boat);
+        self.simulation
+            .world
+            .modified
+            .insert((front.0 >> 4, front.2 >> 4));
+        self.simulation.boats.push(boat);
         if self.serving.is_some() || self.options.dedicated.is_some() {
-            let boat = self.boats.last().unwrap();
+            let boat = self.simulation.boats.last().unwrap();
             self.native_vehicle_create(
                 boat.entity_type().as_str(),
                 [boat.position.x, boat.position.y, boat.position.z],
@@ -1291,16 +1307,19 @@ impl Game<'_> {
                 -0.9
             }
         };
-        self.next_entity += 1;
+        self.simulation_server.next_entity += 1;
         let cart = super::minecarts::Minecart::new(
-            self.next_entity,
+            self.simulation_server.next_entity,
             kind,
             Vec3::new(x, base_y + y_offset, z),
         );
-        self.world.modified.insert((front.0 >> 4, front.2 >> 4));
-        self.carts.push(cart);
+        self.simulation
+            .world
+            .modified
+            .insert((front.0 >> 4, front.2 >> 4));
+        self.simulation.carts.push(cart);
         if self.serving.is_some() || self.options.dedicated.is_some() {
-            let cart = self.carts.last().unwrap();
+            let cart = self.simulation.carts.last().unwrap();
             self.native_vehicle_create(
                 cart.kind.id(),
                 [cart.position.x, cart.position.y, cart.position.z],
@@ -1342,7 +1361,7 @@ impl Game<'_> {
             // MobBucketItem.checkExtraContent: the mob (from the bucket, so
             // persistent) calls out, then ENTITY_PLACE.
             if let Some(id) = self.spawn_mob_at(kind, target, true) {
-                if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
                     horizon_client::entity_nbt::apply_item_components(m, &stack);
                 }
                 self.mob_placed(id)?;
@@ -1405,7 +1424,7 @@ impl Game<'_> {
         // tryIgniteExplosiveEntities: the first sulfur cube that can explode is primed.
         let cube = self.targets_at(target).into_iter().find_map(|t| match t {
             Target::Mob(i) => {
-                let m = &self.mobs[i];
+                let m = &self.simulation.mobs[i];
                 (m.species() == Species::SulfurCube
                     && m.alive()
                     && !sulfur_cube::primed(m)
@@ -1417,8 +1436,10 @@ impl Game<'_> {
         if let Some(i) = cube {
             // primeTime(false): the fuse is lit only while TNT explodes; the
             // ignition counts either way.
-            if self.ui.rules.bool("tnt_explodes") && sulfur_cube::prime(&mut self.mobs[i], false) {
-                let m = &mut self.mobs[i];
+            if self.ui.rules.bool("tnt_explodes")
+                && sulfur_cube::prime(&mut self.simulation.mobs[i], false)
+            {
+                let m = &mut self.simulation.mobs[i];
                 let (at, id) = (m.position, m.id);
                 let mut events = Vec::new();
                 m.voice("entity.tnt.primed", &mut events);
@@ -1492,7 +1513,8 @@ impl Game<'_> {
                 || b.grow_water_plant(level, ticks, target_pos, None)
         });
         if grown {
-            self.level_events
+            self.simulation
+                .level_events
                 .push(horizon_world::level::LevelEvent::LevelEvent {
                     id: 1505,
                     pos: target_pos,
@@ -1522,7 +1544,7 @@ impl Game<'_> {
         }
         set_success("tnt", true);
         // new PrimedTnt(level, x + 0.5, y, z + 0.5, null), its sound and ENTITY_PLACE.
-        let rot = self.world.random.next_double() * f64::from(std::f32::consts::TAU);
+        let rot = self.simulation.world.random.next_double() * f64::from(std::f32::consts::TAU);
         self.add_primed_tnt(target, rot, 80, None, None);
         self.audio.play(
             "minecraft:entity.tnt.primed",
@@ -1553,7 +1575,7 @@ impl Game<'_> {
     ) -> Result<Dispensed> {
         let target = offset(pos, facing);
         let free = self.res.facts().is_air(self.block_at(target))
-            && target.1 >= self.world.bottom_y() + 2
+            && target.1 >= self.simulation.world.bottom_y() + 2
             && self.ui.difficulty != 0
             && self.can_build_wither(target);
         if free {
@@ -1578,7 +1600,7 @@ impl Game<'_> {
             if let Some(skull) = skull {
                 self.level_set([target.0, target.1, target.2], skull)?;
                 if let Some(entity) = BlockEntity::for_block("minecraft:wither_skeleton_skull") {
-                    self.world.block_entities.insert(target, entity);
+                    self.simulation.world.block_entities.insert(target, entity);
                 }
                 self.post_block_game_event(
                     "minecraft:block_place",
@@ -1676,7 +1698,7 @@ impl Game<'_> {
         let state = self.apply_item_block_state([target.0, target.1, target.2], state, &stack)?;
         let name = self.res.facts().get(state).name.clone();
         if let Some(entity) = self.new_block_entity(&name) {
-            self.world.block_entities.insert(target, entity);
+            self.simulation.world.block_entities.insert(target, entity);
             self.apply_placed_item([target.0, target.1, target.2], &stack, false);
         }
         self.process_level_events()?;
@@ -1830,7 +1852,9 @@ impl Game<'_> {
                 let random = self.rand_sequences.get(&sequence, self.level.seed);
                 world_items!(self).loot_table_from(table, false, held, random)
             }
-            None => world_items!(self).loot_table(table, false, held, &mut self.world.random),
+            None => {
+                world_items!(self).loot_table(table, false, held, &mut self.simulation.world.random)
+            }
         }
     }
     /// `Entity.spawnAtLocation(level, stack, offset)`: an item at the entity's
@@ -1852,8 +1876,8 @@ impl Game<'_> {
     pub(super) fn convert_mob(&mut self, index: usize, kind: &str) -> Option<u32> {
         let t = self.res.mob_types().get(kind).cloned()?;
         let (old_id, old_kind) = (
-            self.mobs[index].id,
-            super::native_hooks::mob_kind(&self.mobs[index]),
+            self.simulation.mobs[index].id,
+            super::native_hooks::mob_kind(&self.simulation.mobs[index]),
         );
         // LivingConversionEvent.Pre: a canceled conversion leaves the mob.
         let mut cancel = false;
@@ -1861,9 +1885,9 @@ impl Game<'_> {
         if cancel {
             return None;
         }
-        let old = &self.mobs[index];
-        self.next_entity += 1;
-        let mut mob = Mob::new(self.next_entity, t, old.position, old.yaw);
+        let old = &self.simulation.mobs[index];
+        self.simulation_server.next_entity += 1;
+        let mut mob = Mob::new(self.simulation_server.next_entity, t, old.position, old.yaw);
         mob.previous = old.previous;
         mob.head_yaw = old.head_yaw;
         mob.body_yaw = old.body_yaw;
@@ -1890,9 +1914,9 @@ impl Game<'_> {
             *slot = None;
         }
         let id = mob.id;
-        self.mobs[index].removed = true;
-        self.mobs.push(mob);
-        self.native_mobs_joined(self.mobs.len() - 1, false);
+        self.simulation.mobs[index].removed = true;
+        self.simulation.mobs.push(mob);
+        self.native_mobs_joined(self.simulation.mobs.len() - 1, false);
         self.native_entity_transform(old_id, &old_kind, id, kind);
         self.native_living_conversion_post(old_id, &old_kind, id, kind);
         Some(id)
@@ -1907,7 +1931,7 @@ impl Game<'_> {
                 return Ok(true);
             }
             let Target::Mob(i) = t else { continue };
-            let m = &self.mobs[i];
+            let m = &self.simulation.mobs[i];
             if !m.alive() {
                 continue;
             }
@@ -1921,13 +1945,13 @@ impl Game<'_> {
                     // passenger attachment, and nothing is swallowed for 5 s.
                     let height = f64::from(m.height());
                     let id = m.id;
-                    if let Some(body) = self.mobs[i].extra.body.take() {
+                    if let Some(body) = self.simulation.mobs[i].extra.body.take() {
                         self.spawn_at_location(at, height, ItemStack::new(&body, 1));
                     }
                     // setItemSlot(BODY, EMPTY): an unequip.
                     let ctx = self.who_context(Some(horizon_client::mobs::Who::Mob(id)), None);
                     self.post_game_event("minecraft:unequip", [at.x, at.y, at.z], ctx);
-                    self.mobs[i].extra.ints[3] = sulfur_cube::PICKUP_TIMER;
+                    self.simulation.mobs[i].extra.ints[3] = sulfur_cube::PICKUP_TIMER;
                     self.audio
                         .play("minecraft:entity.sulfur_cube.eject", sound_at, 1.0, 1.0);
                 }
@@ -1949,7 +1973,7 @@ impl Game<'_> {
                             };
                             self.spawn_at_location(at, 1.0, one);
                             // Sheep.shear nudges each item with the sheep's own random.
-                            let r = &mut self.mobs[i].random;
+                            let r = &mut self.simulation.mobs[i].random;
                             let push = [
                                 f64::from((r.next_float() - r.next_float()) * 0.1),
                                 f64::from(r.next_float() * 0.05),
@@ -1964,7 +1988,7 @@ impl Game<'_> {
                             }
                         }
                     }
-                    self.mobs[i].extra.sheared = true;
+                    self.simulation.mobs[i].extra.sheared = true;
                 }
                 Species::Bogged if !m.extra.sheared => {
                     let height = f64::from(m.height());
@@ -1978,13 +2002,13 @@ impl Game<'_> {
                     for stack in drops {
                         self.spawn_at_location(at, height, stack);
                     }
-                    self.mobs[i].extra.sheared = true;
+                    self.simulation.mobs[i].extra.sheared = true;
                 }
                 Species::SnowGolem if !m.extra.sheared => {
                     let eye = m.eye_height();
                     self.audio
                         .play("minecraft:entity.snow_golem.shear", sound_at, 1.0, 1.0);
-                    self.mobs[i].extra.sheared = true;
+                    self.simulation.mobs[i].extra.sheared = true;
                     let drops = self.sequence_loot(
                         "minecraft:shearing/snow_golem",
                         "minecraft:shearing/snow_golem",
@@ -1998,10 +2022,10 @@ impl Game<'_> {
                 Species::CopperGolem if self.golem_shearable(i) => {
                     self.audio
                         .play("minecraft:entity.copper_golem.shear", sound_at, 1.0, 1.0);
-                    let antenna = self.mobs[i].saddle_item();
-                    let id = self.mobs[i].id;
+                    let antenna = self.simulation.mobs[i].saddle_item();
+                    let id = self.simulation.mobs[i].id;
                     // setItemSlot(EQUIPMENT_SLOT_ANTENNA, EMPTY): an unequip.
-                    self.mobs[i].set_saddle(None);
+                    self.simulation.mobs[i].set_saddle(None);
                     let ctx = self.who_context(Some(horizon_client::mobs::Who::Mob(id)), None);
                     self.post_game_event("minecraft:unequip", [at.x, at.y, at.z], ctx);
                     if let Some(antenna) = antenna {
@@ -2058,7 +2082,7 @@ impl Game<'_> {
         use horizon_client::mobs::{Who, leash::Holder};
         let (holder, centre, own) = match t {
             Target::Mob(i) => {
-                let m = &self.mobs[i];
+                let m = &self.simulation.mobs[i];
                 let b = m.bounds();
                 (Holder::Mob(m.id), b.center(), Some(i))
             }
@@ -2072,6 +2096,7 @@ impl Game<'_> {
         };
         let area = Aabb::new(centre, centre).inflate(Vec3::new(16.0, 16.0, 16.0));
         let mut leashed: Vec<(u32, usize)> = self
+            .simulation
             .mobs
             .iter()
             .enumerate()
@@ -2081,14 +2106,14 @@ impl Game<'_> {
             .map(|(j, m)| (m.id, j))
             .collect();
         leashed.sort_unstable();
-        let own_leashed = own.is_some_and(|i| self.mobs[i].extra.leash.is_some());
+        let own_leashed = own.is_some_and(|i| self.simulation.mobs[i].extra.leash.is_some());
         if leashed.is_empty() && !own_leashed {
             return false;
         }
         // Leashable.dropLeash: a lead item at the leashed entity's feet.
         let drop = |game: &mut Self, j: usize| {
-            if horizon_client::mobs::leash::remove(&mut game.mobs[j]).is_some() {
-                let at = game.mobs[j].position;
+            if horizon_client::mobs::leash::remove(&mut game.simulation.mobs[j]).is_some() {
+                let at = game.simulation.mobs[j].position;
                 game.spawn_at_location(at, 0.0, ItemStack::new("minecraft:lead", 1));
             }
         };
@@ -2100,7 +2125,7 @@ impl Game<'_> {
         }
         let (at, who) = match t {
             Target::Mob(i) => {
-                let m = &self.mobs[i];
+                let m = &self.simulation.mobs[i];
                 (m.position, Who::Mob(m.id))
             }
             _ => (
@@ -2122,15 +2147,17 @@ impl Game<'_> {
             .targets_at(target)
             .into_iter()
             .filter_map(|t| match t {
-                Target::Mob(i) if self.mobs[i].species() == Species::Armadillo => Some(i),
+                Target::Mob(i) if self.simulation.mobs[i].species() == Species::Armadillo => {
+                    Some(i)
+                }
                 _ => None,
             })
             .collect();
         for i in armadillos {
-            if self.mobs[i].is_baby() {
+            if self.simulation.mobs[i].is_baby() {
                 continue;
             }
-            let at = self.mobs[i].position;
+            let at = self.simulation.mobs[i].position;
             let drops = self.sequence_loot(
                 "minecraft:brush/armadillo",
                 "minecraft:brush/armadillo",
@@ -2145,7 +2172,7 @@ impl Game<'_> {
                 1.0,
                 1.0,
             );
-            let who = horizon_client::mobs::Who::Mob(self.mobs[i].id);
+            let who = horizon_client::mobs::Who::Mob(self.simulation.mobs[i].id);
             let ctx = self.who_context(Some(who), None);
             self.post_game_event("minecraft:entity_interact", [at.x, at.y, at.z], ctx);
             return (self.hurt_and_break(stack, 16), optional_event("brush"));
@@ -2160,21 +2187,23 @@ impl Game<'_> {
             .targets_at(target)
             .into_iter()
             .filter_map(|t| match t {
-                Target::Mob(i) if self.mobs[i].species() == Species::SulfurCube => Some(i),
+                Target::Mob(i) if self.simulation.mobs[i].species() == Species::SulfurCube => {
+                    Some(i)
+                }
                 _ => None,
             })
             .collect();
         for i in cubes {
-            let m = &self.mobs[i];
+            let m = &self.simulation.mobs[i];
             if m.is_baby() || m.extra.body.as_deref() == Some(&*stack.item) {
                 continue;
             }
             let (at, height) = (m.position, f64::from(m.height()));
             // The swallowed block comes out on top (the passenger attachment).
-            if let Some(old) = self.mobs[i].extra.body.take() {
+            if let Some(old) = self.simulation.mobs[i].extra.body.take() {
                 self.spawn_at_location(at, height, ItemStack::new(&old, 1));
             }
-            let m = &mut self.mobs[i];
+            let m = &mut self.simulation.mobs[i];
             m.extra.body = Some(stack.item.clone());
             m.persistent = true;
             let (at, id) = (m.position, m.id);
@@ -2221,7 +2250,8 @@ impl Game<'_> {
         };
         set_success("honeycomb", true);
         self.level_set([target.0, target.1, target.2], waxed)?;
-        self.level_events
+        self.simulation
+            .level_events
             .push(horizon_world::level::LevelEvent::LevelEvent {
                 id: 3003,
                 pos: Self::pos_of(target),
@@ -2252,7 +2282,7 @@ impl Game<'_> {
         }
         // The server picks the splash positions with the level random.
         for _ in 0..5 {
-            let r = &mut self.world.random;
+            let r = &mut self.simulation.world.random;
             let p = [
                 f64::from(pos.0) + r.next_double(),
                 f64::from(pos.1 + 1),

@@ -38,7 +38,7 @@ impl Game<'_> {
     /// meets `bounds` is removed without dying or dropping anything.
     pub(super) fn discard_entities_in(&mut self, bounds: Aabb) {
         let at = |v: horizon_core::geometry::Vec3| [v.x, v.y, v.z];
-        for m in &mut self.mobs {
+        for m in &mut self.simulation.mobs {
             if !m.removed
                 && intersects(
                     standing(at(m.position), f64::from(m.width()), f64::from(m.height())),
@@ -49,14 +49,16 @@ impl Game<'_> {
             }
         }
         // EntityType.ITEM and EXPERIENCE_ORB.
-        self.dropped
+        self.simulation
+            .dropped
             .retain(|i| !intersects(standing(at(i.position), 0.25, 0.25), bounds));
-        self.orbs
+        self.simulation
+            .orbs
             .retain(|o| !intersects(standing(at(o.position), 0.5, 0.5), bounds));
-        self.creatures
+        self.simulation
             .projectiles
             .retain(|p| !intersects(standing(at(p.position), 0.5, 0.5), bounds));
-        self.armor_stands.retain(|a| {
+        self.simulation.armor_stands.retain(|a| {
             // ArmorStand.getDimensions: a marker has none, a small one is
             // half scale.
             let (w, h) = match (a.marker, a.small) {
@@ -66,30 +68,37 @@ impl Game<'_> {
             };
             !intersects(standing(at(a.position), w, h), bounds)
         });
-        self.item_frames.retain(|f| !intersects(f.bounds(), bounds));
-        self.paintings.retain(|p| !intersects(p.bounds(), bounds));
+        self.simulation
+            .item_frames
+            .retain(|f| !intersects(f.bounds(), bounds));
+        self.simulation
+            .paintings
+            .retain(|p| !intersects(p.bounds(), bounds));
         let (boat_w, boat_h) = (super::boats::WIDTH, super::boats::HEIGHT);
         let gone: Vec<u32> = self
+            .simulation
             .boats
             .iter()
             .filter(|b| intersects(standing(at(b.position), boat_w, boat_h), bounds))
             .map(|b| b.id)
             .collect();
         for id in gone {
-            if let Some(i) = self.boats.iter().position(|b| b.id == id) {
-                let b = self.boats.remove(i);
+            if let Some(i) = self.simulation.boats.iter().position(|b| b.id == id) {
+                let b = self.simulation.boats.remove(i);
                 self.boat_removed(&b);
             }
         }
         let (cart_w, cart_h) = (super::minecarts::WIDTH, super::minecarts::HEIGHT);
-        self.carts
+        self.simulation
+            .carts
             .retain(|c| !intersects(standing(at(c.position), cart_w, cart_h), bounds));
         // EntityType.END_CRYSTAL is 2 by 2.
-        self.crystals
+        self.simulation
+            .crystals
             .retain(|c| !intersects(standing(at(c.position), 2.0, 2.0), bounds));
         // Entities Horizon does not simulate have no box of their own: the
         // position decides.
-        self.others.retain(|o| {
+        self.simulation.others.retain(|o| {
             let p = at(o.position);
             !(0..3).all(|i| p[i] >= bounds.0[i] && p[i] < bounds.1[i])
         });
@@ -112,7 +121,7 @@ impl Game<'_> {
     /// batch is done or a failure halts the run.
     pub(super) fn release_forced_chunks(&mut self) {
         self.streaming.forced.clear();
-        self.levels.release_parked_forced_chunks();
+        self.simulation_server.levels.release_parked_forced_chunks();
     }
 }
 

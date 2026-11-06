@@ -274,7 +274,11 @@ impl Game<'_> {
             p.position.y.floor() as i32,
             p.position.z.floor() as i32,
         );
-        let water = self.res.facts().get(self.world.block(x, y, z)).fluid
+        let water = self
+            .res
+            .facts()
+            .get(self.simulation.world.block(x, y, z))
+            .fluid
             == horizon_client::blocks::Fluid::Water;
         let (at, top) = (p.position, p.bounds().max_position().y);
         water || self.in_rain(at, top)
@@ -293,7 +297,7 @@ impl Game<'_> {
             at[1].floor() as i32,
             at[2].floor() as i32,
         );
-        if self.world.light(x, y, z) >> 4 != 15 {
+        if self.simulation.world.light(x, y, z) >> 4 != 15 {
             return;
         }
         if !self.lightning_strike_allowed(self.lan_acting_uuid, [x, y, z], "trident") {
@@ -301,7 +305,7 @@ impl Game<'_> {
         }
         self.spawn_bolt(at, false);
         // The summon effect's owner is the thrower: LightningBolt.setCause.
-        if let Some(bolt) = self.bolts.last_mut() {
+        if let Some(bolt) = self.simulation.bolts.last_mut() {
             bolt.cause = Some(guest);
         }
         self.audio
@@ -317,13 +321,13 @@ impl Game<'_> {
             from.z + velocity.z,
         );
         let mut scene = SceneCollisions {
-            world: &self.world,
+            world: &self.simulation.world,
             binding: self.collision,
             subject: None,
         };
         // ClipContext.Block.COLLIDER with Fluid.NONE.
         let hit = traverse_blocks(from, to, 1024, |p: BlockPos| {
-            let state = self.world.block(p.x, p.y, p.z);
+            let state = self.simulation.world.block(p.x, p.y, p.z);
             if self.res.facts().is_air(state) {
                 return None;
             }
@@ -336,7 +340,10 @@ impl Game<'_> {
         let Some(hit) = hit.ok().flatten() else {
             return;
         };
-        let state = self.world.block(hit.block.x, hit.block.y, hit.block.z);
+        let state = self
+            .simulation
+            .world
+            .block(hit.block.x, hit.block.y, hit.block.z);
         if !self.res.facts().get(state).name.ends_with("lightning_rod") {
             return;
         }
@@ -404,7 +411,7 @@ impl Game<'_> {
                 .map(|p| p.bounds());
             if let Some(bounds) = lift {
                 let mut scene = SceneCollisions {
-                    world: &self.world,
+                    world: &self.simulation.world,
                     binding: self.collision,
                     subject: None,
                 };
@@ -445,7 +452,7 @@ impl Game<'_> {
             (self.known_player_movement(), p.ground.on_ground)
         });
         projectile.shoot_from_rotation(
-            &mut self.world.random,
+            &mut self.simulation.world.random,
             self.pitch,
             self.yaw,
             0.0,
@@ -455,7 +462,7 @@ impl Game<'_> {
             on_ground,
         );
         let id = self.take_entity_id();
-        self.tridents.push(ThrownTrident {
+        self.simulation.tridents.push(ThrownTrident {
             join: Default::default(),
             id,
             loyalty: thrown.enchantment_level("minecraft:loyalty"),
@@ -574,7 +581,9 @@ impl Game<'_> {
             host.hub.take_item(t.id as i32, by.id, 1, at);
         }
         if by.guest.is_none() {
-            let pitch = ((self.world.random.next_float() - self.world.random.next_float()) * 0.7
+            let pitch = ((self.simulation.world.random.next_float()
+                - self.simulation.world.random.next_float())
+                * 0.7
                 + 1.0)
                 * 2.0;
             self.audio.play(
@@ -608,13 +617,13 @@ impl Game<'_> {
         }
     }
     pub(super) fn tick_tridents(&mut self) {
-        if self.tridents.is_empty() {
+        if self.simulation.tridents.is_empty() {
             return;
         }
         let catchers = self.trident_catchers();
         let mut i = 0;
-        while i < self.tridents.len() {
-            let mut t = self.tridents.remove(i);
+        while i < self.simulation.tridents.len() {
+            let mut t = self.simulation.tridents.remove(i);
             t.previous = t.position;
             t.age += 1;
             // AbstractArrow.tick: `if (shakeTime > 0) --shakeTime;`.
@@ -681,7 +690,7 @@ impl Game<'_> {
                 let margin = f64::from(((t.age as i32 - 2) as f32 / 20.0).clamp(0.0, 0.3));
                 let grow = Vec3::new(margin, margin, margin);
                 if !t.dealt_damage {
-                    for m in self.mobs.iter().filter(|m| m.alive()) {
+                    for m in self.simulation.mobs.iter().filter(|m| m.alive()) {
                         if let Some(d) =
                             segment_box(t.position, t.velocity, m.bounds().inflate(grow))
                             && hit_mob.is_none_or(|(_, best)| d < best)
@@ -728,6 +737,7 @@ impl Game<'_> {
                     // `PROJECTILE_DEFLECTION` turns it around. `onHit` does not
                     // run, so the breeze takes no damage and Channeling never fires.
                     let breeze = self
+                        .simulation
                         .mobs
                         .iter()
                         .find(|m| m.id == id && m.alive() && m.species() == Species::Breeze);
@@ -751,18 +761,21 @@ impl Game<'_> {
                         // ThrownTrident.getDamage: `EnchantmentHelper.modifyDamage` on 8
                         // (impaling hits `#sensitive_to_impaling`, the aquatic tag).
                         let victim = self
+                            .simulation
                             .mobs
                             .iter()
                             .find(|m| m.id == id)
                             .map(|m| m.kind.id.clone())
                             .or_else(|| {
-                                self.boats
+                                self.simulation
+                                    .boats
                                     .iter()
                                     .find(|b| b.id == id)
                                     .map(|b| b.entity_type())
                             })
                             .or_else(|| {
-                                self.carts
+                                self.simulation
+                                    .carts
                                     .iter()
                                     .find(|c| c.id == id)
                                     .map(|c| c.kind.id().to_owned())
@@ -780,13 +793,13 @@ impl Game<'_> {
                             Some(&t.stack),
                             "minecraft:damage",
                             &ctx,
-                            &mut self.world.random,
+                            &mut self.simulation.world.random,
                             8.0,
                         );
                         t.dealt_damage = true;
                         let mut hurt_at = None;
                         let aim = self.attacker_aim(Some(Who::Player));
-                        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                        if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
                             let from = Some([t.position.x, t.position.y, t.position.z]);
                             let hurt = m.damage_projectile(
                                 damage,
@@ -806,9 +819,11 @@ impl Game<'_> {
                         // ThrownTrident.onHitEntity on a boat or minecart:
                         // VehicleEntity.hurtServer takes the damage.
                         let creative = t.guest.is_none() && self.creative;
-                        if let Some(i) = self.boats.iter().position(|b| b.id == id) {
+                        if let Some(i) = self.simulation.boats.iter().position(|b| b.id == id) {
                             self.hurt_boat(i, damage, creative);
-                        } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
+                        } else if let Some(i) =
+                            self.simulation.carts.iter().position(|c| c.id == id)
+                        {
                             self.hurt_cart(i, damage, creative, false);
                         }
                         // `minecraft:post_attack` of Channeling, on the victim.
@@ -818,7 +833,7 @@ impl Game<'_> {
                             self.channel_lightning(at, t.guest);
                         }
                         if hurt_at.is_some()
-                            && let Some(m) = self.mobs.iter().find(|m| m.id == id)
+                            && let Some(m) = self.simulation.mobs.iter().find(|m| m.id == id)
                         {
                             // LivingEntity.hurtServer: PLAYER_HURT_ENTITY.
                             let victim = self.mob_entity(m);
@@ -855,8 +870,13 @@ impl Game<'_> {
                     // `AbstractArrow.onHitBlock` on a hit.
                     let from = t.position;
                     let flight = t.velocity;
-                    let clip =
-                        clip_block_hit(&self.world, self.res.facts(), self.collision, from, flight);
+                    let clip = clip_block_hit(
+                        &self.simulation.world,
+                        self.res.facts(),
+                        self.collision,
+                        from,
+                        flight,
+                    );
                     // Block effects reach the clip location before onHitBlock backs off.
                     let fire_to = clip.map_or(from.add_vector(flight), |(at, _, _)| at);
                     self.trident_block_effects(&mut t, from, fire_to);
@@ -962,7 +982,7 @@ impl Game<'_> {
                     continue;
                 }
             }
-            self.tridents.insert(i, t);
+            self.simulation.tridents.insert(i, t);
             i += 1;
         }
     }
@@ -997,6 +1017,7 @@ impl Game<'_> {
                 self.view_scale(),
             );
         let live = self
+            .simulation
             .tridents
             .iter()
             .filter(|t| {
@@ -1031,7 +1052,7 @@ impl Game<'_> {
             let base = glam::Mat4::from_translation(p.as_vec3())
                 * glam::Mat4::from_rotation_y((t.yaw - 90.0).to_radians())
                 * glam::Mat4::from_rotation_z((t.pitch + 90.0).to_radians());
-            let l = self.world.light(
+            let l = self.simulation.world.light(
                 t.position.x.floor() as i32,
                 t.position.y.floor() as i32,
                 t.position.z.floor() as i32,
@@ -1145,7 +1166,7 @@ mod tests {
         assert!(game.using.is_some());
         game.held_mut().as_mut().unwrap().damage = 9;
         game.release_trident(10);
-        assert!(game.tridents.is_empty());
+        assert!(game.simulation.tridents.is_empty());
         assert_eq!(game.held().unwrap().damage, 9);
         game.using = None;
 
@@ -1157,11 +1178,11 @@ mod tests {
         assert!(game.use_trident(&stack));
         assert!(game.using.is_some());
         game.release_trident(9);
-        assert!(game.tridents.is_empty());
+        assert!(game.simulation.tridents.is_empty());
         assert_eq!(game.held().unwrap().damage, 249);
         game.release_trident(10);
-        assert_eq!(game.tridents.len(), 1);
-        assert_eq!(game.tridents[0].stack.damage, 250);
+        assert_eq!(game.simulation.tridents.len(), 1);
+        assert_eq!(game.simulation.tridents[0].stack.damage, 250);
         assert!(game.held().is_none());
     }
 }

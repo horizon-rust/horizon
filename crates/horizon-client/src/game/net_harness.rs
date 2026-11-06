@@ -62,7 +62,7 @@ impl Game<'_> {
                 spawned_at.get_or_insert(now);
                 position.get_or_insert([p.position.x, p.position.y, p.position.z]);
             }
-            let count = self.world.chunks.len();
+            let count = self.simulation.world.chunks.len();
             if count != last_chunks {
                 last_chunks = count;
                 quiet_since = now;

@@ -132,7 +132,8 @@ impl Game<'_> {
         {
             return;
         }
-        let mut draw = NativeWorldDraw::new(camera.to_array(), partial, self.world.game_time);
+        let mut draw =
+            NativeWorldDraw::new(camera.to_array(), partial, self.simulation.world.game_time);
         // NONE keeps these quads out of shader-pack entity programs.
         self.mark_stage(out.len(), "NONE");
         self.native_world_submit(&mut draw);

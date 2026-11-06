@@ -157,7 +157,7 @@ impl Game<'_> {
                 let name = &*self.res.facts().get(block.state).name;
                 let mut draw = BlockEntityDraw::posed(
                     self.clock.fraction() as f32,
-                    self.world.game_time,
+                    self.simulation.world.game_time,
                     240 | 240 << 8,
                     block.pos,
                     Mat4::IDENTITY,
@@ -170,7 +170,7 @@ impl Game<'_> {
                 place_turning(
                     &drawn,
                     &spins,
-                    self.world.game_time,
+                    self.simulation.world.game_time,
                     self.clock.fraction() as f32,
                     at,
                     &mut placed,

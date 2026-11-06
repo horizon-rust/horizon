@@ -50,14 +50,14 @@ impl horizon_client::cushion::World for PlacementWorld<'_, '_> {
     fn collision_shapes(&self, bounds: Aabb) -> Vec<horizon_core::geometry::VoxelShape> {
         let binding = self.0.res.collision();
         let mut world = horizon_client::collisions::SceneCollisions {
-            world: &self.0.world,
+            world: &self.0.simulation.world,
             binding,
             subject: None,
         };
         // Include neighbour blocks whose collision shape can reach outside their cell.
         blocks_in(bounds.inflate(Vec3::new(1.0, 1.0, 1.0)))
             .filter_map(|p| {
-                let state = self.0.world.block(p[0], p[1], p[2]);
+                let state = self.0.simulation.world.block(p[0], p[1], p[2]);
                 binding
                     .collision_shape(&mut world, state, p)
                     .ok()
@@ -67,7 +67,7 @@ impl horizon_client::cushion::World for PlacementWorld<'_, '_> {
     }
     fn suffocating(&self, p: [i32; 3]) -> bool {
         self.0
-            .state_suffocating(self.0.world.block(p[0], p[1], p[2]))
+            .state_suffocating(self.0.simulation.world.block(p[0], p[1], p[2]))
     }
 }
 
@@ -148,7 +148,7 @@ impl Game<'_> {
         let (eye, dir) = self.aim()?;
         let reach: f64 = self.entity_reach;
         let mut best: Option<(usize, f64, [f64; 3])> = None;
-        for (i, c) in self.cushions.iter().enumerate() {
+        for (i, c) in self.simulation.cushions.iter().enumerate() {
             let Some(d) = ray_box(eye, dir, reach, aabb(c.bounds())) else {
                 continue;
             };
@@ -167,7 +167,10 @@ impl Game<'_> {
     fn cushion_in_fire(&self, c: &Cushion) -> bool {
         let bounds = aabb(c.bounds()).next_deflated();
         blocks_in(bounds).any(|p| {
-            let facts = self.res.facts().get(self.world.block(p[0], p[1], p[2]));
+            let facts = self
+                .res
+                .facts()
+                .get(self.simulation.world.block(p[0], p[1], p[2]));
             self.items().block_in_tag("minecraft:fire", &facts.name)
         })
     }
@@ -184,7 +187,10 @@ impl Game<'_> {
             face: hit.face,
             point: hit.point,
         };
-        let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
+        let state = self
+            .simulation
+            .world
+            .block(hit.pos[0], hit.pos[1], hit.pos[2]);
         if self.items().block_in_tag(
             "minecraft:cushion_uses_collision_shape",
             &self.res.facts().get(state).name,
@@ -195,7 +201,7 @@ impl Game<'_> {
             let end = point.add_vector(point.subtract(start).normalize().scale(0.001));
             let binding = self.res.collision();
             let mut world = horizon_client::collisions::SceneCollisions {
-                world: &self.world,
+                world: &self.simulation.world,
                 binding,
                 subject: None,
             };
@@ -215,10 +221,11 @@ impl Game<'_> {
             return None;
         }
         // BlockPlaceContext: a replaceable clicked block is replaced.
-        let clicked = self
-            .res
-            .facts()
-            .get(self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]));
+        let clicked = self.res.facts().get(
+            self.simulation
+                .world
+                .block(hit.pos[0], hit.pos[1], hit.pos[2]),
+        );
         let pos = if clicked.replaceable {
             hit.pos
         } else {
@@ -257,21 +264,22 @@ impl Game<'_> {
         };
         // `getEntitiesOfClass(Cushion.class, spawnAABB).isEmpty()`.
         if self
+            .simulation
             .cushions
             .iter()
             .any(|c| overlaps(aabb(c.bounds()), bounds))
         {
             return false;
         }
-        self.next_entity += 1;
-        let id = self.next_entity;
+        self.simulation_server.next_entity += 1;
+        let id = self.simulation_server.next_entity;
         // `BlockAttachedEntity.setPos`: `BlockPos.containing(position)`.
         let attached = [
             position.x.floor() as i32,
             position.y.floor() as i32,
             position.z.floor() as i32,
         ];
-        self.cushions.push(Cushion {
+        self.simulation.cushions.push(Cushion {
             id,
             position,
             pos: attached,
@@ -280,12 +288,13 @@ impl Game<'_> {
             check_interval: 0,
             custom_name: None,
         });
-        self.world
+        self.simulation
+            .world
             .modified
             .insert((attached[0] >> 4, attached[2] >> 4));
         // `destroyIfInFire`: placed into fire, it breaks at once.
-        let placed = self.cushions.len() - 1;
-        if self.cushion_in_fire(&self.cushions[placed]) {
+        let placed = self.simulation.cushions.len() - 1;
+        if self.cushion_in_fire(&self.simulation.cushions[placed]) {
             self.break_cushion(placed, false);
         }
         self.audio.play(
@@ -312,9 +321,8 @@ impl Game<'_> {
     /// cushion under the crosshair, or the one a guest's interact packet named.
     pub(super) fn interact_cushion(&mut self, target: Option<InteractTarget>) -> bool {
         let Some((i, d, _)) = (match target {
-            Some(t) => {
-                Self::named_entity(&self.cushions, t.id, |c| c.id).map(|i| (i, 0.0, [0.0; 3]))
-            }
+            Some(t) => Self::named_entity(&self.simulation.cushions, t.id, |c| c.id)
+                .map(|i| (i, 0.0, [0.0; 3])),
             None => self.cushion_hit(),
         }) else {
             return false;
@@ -327,7 +335,7 @@ impl Game<'_> {
         if self.keys.held(Action::Sneak) {
             return false;
         }
-        let id = self.cushions[i].id;
+        let id = self.simulation.cushions[i].id;
         let occupied = self.riding == Some(id)
             || self
                 .lan
@@ -349,7 +357,7 @@ impl Game<'_> {
             return true;
         }
         self.start_riding(id);
-        let p = self.cushions[i].position;
+        let p = self.simulation.cushions[i].position;
         self.audio.play(
             "minecraft:entity.cushion.sit",
             Some([p.x, p.y, p.z]),
@@ -381,9 +389,12 @@ impl Game<'_> {
     /// `Cushion.dropItem`: the break sound and particles, then the coloured
     /// item unless drops are off or the breaker has infinite materials.
     pub(super) fn break_cushion(&mut self, index: usize, by_player: bool) {
-        let c = self.cushions.remove(index);
+        let c = self.simulation.cushions.remove(index);
         let p = c.position;
-        self.world.modified.insert((c.pos[0] >> 4, c.pos[2] >> 4));
+        self.simulation
+            .world
+            .modified
+            .insert((c.pos[0] >> 4, c.pos[2] >> 4));
         if self.riding == Some(c.id) {
             self.dismount_removed_vehicle(p.y);
         }
@@ -432,20 +443,20 @@ impl Game<'_> {
     pub(super) fn tick_cushions(&mut self) {
         let ticking = self.entity_ticking_area();
         let mut i = 0;
-        while i < self.cushions.len() {
-            let p = self.cushions[i].position;
+        while i < self.simulation.cushions.len() {
+            let p = self.simulation.cushions[i].position;
             if !ticking(p.x.floor() as i32, p.z.floor() as i32) {
                 i += 1;
                 continue;
             }
-            let previous = self.cushions[i].check_interval;
-            self.cushions[i].check_interval += 1;
+            let previous = self.simulation.cushions[i].check_interval;
+            self.simulation.cushions[i].check_interval += 1;
             if previous < 100 {
                 i += 1;
                 continue;
             }
-            self.cushions[i].check_interval = 0;
-            let c = self.cushions[i].clone();
+            self.simulation.cushions[i].check_interval = 0;
+            let c = self.simulation.cushions[i].clone();
             if self.cushion_in_fire(&c) || !self.cushion_survives(&c) {
                 self.break_cushion(i, false);
                 continue;
@@ -504,7 +515,7 @@ impl Game<'_> {
                 size,
                 &border,
                 |q| {
-                    b.collision_shape(self.world.block(q.x, q.y, q.z))
+                    b.collision_shape(self.simulation.world.block(q.x, q.y, q.z))
                         .map(|s| s.moved(Vec3::new(f64::from(q.x), f64::from(q.y), f64::from(q.z))))
                 },
             );
@@ -523,6 +534,7 @@ impl Game<'_> {
     /// `Player.rideTick` on a cushion: hold the seat, and get up on sneak.
     pub(super) fn tick_cushion_riding(&mut self, keys: Keys) -> bool {
         let Some(c) = self
+            .simulation
             .cushions
             .iter()
             .find(|c| Some(c.id) == self.riding)
@@ -555,7 +567,7 @@ impl Game<'_> {
             return;
         };
         let sprites = &self.gui.atlas.sprites;
-        for c in &self.cushions {
+        for c in &self.simulation.cushions {
             let a = aabb(c.bounds());
             let (lo, hi) = (a.min_position(), a.max_position());
             let (lo, hi) = (
@@ -583,7 +595,7 @@ impl Game<'_> {
                 * glam::Mat4::from_rotation_x(std::f32::consts::PI)
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, -0.25, 0.0));
             // `EntityRenderer.getPackedLightCoords` probes at the eye height.
-            let l = self.world.light(
+            let l = self.simulation.world.light(
                 c.position.x.floor() as i32,
                 (c.position.y + 0.2125).floor() as i32,
                 c.position.z.floor() as i32,

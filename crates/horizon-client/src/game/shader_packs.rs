@@ -345,8 +345,9 @@ impl Game<'_> {
         }
         let lerp = |(old, new): (f32, f32)| old + (new - old) * partial;
         let at = camera.floor().as_ivec3();
-        let light = self.world.light(at.x, at.y, at.z);
+        let light = self.simulation.world.light(at.x, at.y, at.z);
         let biome = self
+            .simulation
             .world
             .chunks
             .get(&(at.x >> 4, at.z >> 4))
@@ -362,10 +363,10 @@ impl Game<'_> {
             day_time: if dimension.is_some_and(|d| d.default_clock.is_none()) {
                 0
             } else {
-                self.world.day_time
+                self.simulation.world.day_time
             },
-            rain: lerp(self.world.weather.rain_level),
-            thunder: lerp(self.world.weather.thunder_level),
+            rain: lerp(self.simulation.world.weather.rain_level),
+            thunder: lerp(self.simulation.world.weather.thunder_level),
             eye_in: match self.camera_fluid(camera.to_array()) {
                 CameraFluid::None => 0,
                 CameraFluid::Water => 1,
@@ -391,16 +392,16 @@ impl Game<'_> {
             held_light,
             right_handed: !self.settings.main_hand_left,
             on_ground: self.player.as_ref().is_some_and(|p| p.ground.on_ground),
-            min_y: self.world.shape.min_y,
-            height: self.world.shape.height,
-            logical_height: self.world.shape.logical_height,
-            has_skylight: self.world.shape.sky_light,
-            has_ceiling: self.world.shape.has_ceiling,
+            min_y: self.simulation.world.shape.min_y,
+            height: self.simulation.world.shape.height,
+            logical_height: self.simulation.world.shape.logical_height,
+            has_skylight: self.simulation.world.shape.sky_light,
+            has_ceiling: self.simulation.world.shape.has_ceiling,
             elytra_flying: self.player.as_ref().is_some_and(|p| p.fall_flying),
             cloud_height: horizon_client::gfx::pack_uniforms::cloud_height(sky),
             // Vanilla's drift in float, times its 0.030000001F blocks a tick.
             cloud_time: horizon_client::clouds::drift(
-                self.world.game_time,
+                self.simulation.world.game_time,
                 f64::from(partial),
                 self.pack.clouds.0,
             ) as f32

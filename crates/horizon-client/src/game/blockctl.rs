@@ -51,10 +51,14 @@ impl Game<'_> {
     }
     fn put_block(&mut self, pos: [i32; 3], state: BlockStateId) -> Result<()> {
         let name = self.res.facts().get(state).name.clone();
-        self.world.block_entities.remove(&(pos[0], pos[1], pos[2]));
+        self.simulation
+            .world
+            .block_entities
+            .remove(&(pos[0], pos[1], pos[2]));
         self.level_set(pos, state)?;
         if let Some(entity) = self.new_block_entity(&name) {
-            self.world
+            self.simulation
+                .world
                 .block_entities
                 .insert((pos[0], pos[1], pos[2]), entity);
         }
@@ -102,7 +106,7 @@ impl Game<'_> {
                     .resolve(&parse_state(words.get(4).ok_or("missing block")?)?)?;
                 self.put_block(pos, state)?;
                 Ok(Some(
-                    json!({ "ok": true, "block": self.state_text(self.world.block(pos[0], pos[1], pos[2])) }),
+                    json!({ "ok": true, "block": self.state_text(self.simulation.world.block(pos[0], pos[1], pos[2])) }),
                 ))
             }
             "fill" => {
@@ -126,7 +130,7 @@ impl Game<'_> {
             "getblock" => {
                 let pos = [int(1)?, int(2)?, int(3)?];
                 Ok(Some(
-                    json!({ "block": self.state_text(self.world.block(pos[0], pos[1], pos[2])) }),
+                    json!({ "block": self.state_text(self.simulation.world.block(pos[0], pos[1], pos[2])) }),
                 ))
             }
             "container" => {
@@ -139,6 +143,7 @@ impl Game<'_> {
                     };
                     let count: u32 = words.get(5).map_or(Ok(1), |c| c.parse())?;
                     let entity = self
+                        .simulation
                         .world
                         .block_entities
                         .get_mut(&key)
@@ -156,6 +161,7 @@ impl Game<'_> {
                     });
                 }
                 let entity = self
+                    .simulation
                     .world
                     .block_entities
                     .get(&key)

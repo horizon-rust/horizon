@@ -9,10 +9,14 @@
 //! A server keeps one level per dimension. Entity portal processes and
 //! cooldowns follow their level; shared `Arrival`s hold each traveller's
 //! saved compound until its destination chunks are loaded.
-use super::entity::{Entity as _, entity_lists_of, for_each_entity};
+use super::entity::{Entity as _, EntityLists, entity_lists_of, for_each_entity};
 use super::{Dim, Game, Screen};
+use horizon_client::chunk::Chunk;
 use horizon_client::fast_hash::FxHashMap;
+use horizon_client::mobs::Mob;
 use horizon_client::nether_portal::{ENTITY_DELAY, PortalState};
+use horizon_client::portal_sections::PortalSections;
+use horizon_client::section_mask::SectionMask;
 use horizon_core::{
     geometry::{Aabb, Axis, Vec3},
     position::BlockPos,
@@ -26,6 +30,7 @@ use horizon_world::{
     nbt::Tag,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// `Player.getDimensionChangingDelay`.
 pub(super) const PLAYER_DELAY: i32 = 10;
@@ -201,6 +206,124 @@ fn touches_end_portal(from: Vec3, to: Vec3, width: f32, height: f32, pos: BlockP
     );
     start.collided_along_vector(to.subtract(from), &[shape])
 }
+/// What a portal sweep reads: nothing of `Game` itself, so workers can share it.
+#[derive(Clone, Copy)]
+struct SweepView<'a> {
+    world: &'a horizon_client::world::World,
+    behaviours: &'a horizon_world::level::Behaviours,
+    facts: &'a horizon_client::blocks::BlockFacts,
+    /// Positions before this tick's moves, by entity id (`Portals::before`).
+    before: &'a FxHashMap<u32, Vec3>,
+}
+impl SweepView<'_> {
+    fn is_end_portal(&self, state: horizon_world::registry::BlockStateId) -> bool {
+        is_end_portal(self.facts, state)
+    }
+    /// Whether a palette entry is a nether or End portal state.
+    fn portal_state(&self, v: u32) -> bool {
+        let state = horizon_world::registry::BlockStateId(v);
+        self.behaviours.portal_axis(state).is_some() || self.is_end_portal(state)
+    }
+}
+fn is_end_portal(
+    facts: &horizon_client::blocks::BlockFacts,
+    state: horizon_world::registry::BlockStateId,
+) -> bool {
+    &*facts.get(state).name == "minecraft:end_portal"
+}
+/// The first nether or End portal block an entity box swept through
+/// (`Entity.checkInsideBlocks`, whose first portal sets the entry). `sections`
+/// answers for a chunk's palettes (`PortalSections`).
+fn swept_portal(
+    view: SweepView<'_>,
+    from: Vec3,
+    to: Vec3,
+    width: f32,
+    height: f32,
+    sections: &mut impl FnMut((i32, i32), &Arc<Chunk>) -> SectionMask,
+) -> Option<BlockPos> {
+    let half = f64::from(width) / 2.0;
+    let bounds = horizon_core::geometry::Aabb::new(
+        Vec3::new(to.x - half, to.y, to.z - half),
+        Vec3::new(to.x + half, to.y + f64::from(height), to.z + half),
+    )
+    .deflate(Vec3::new(
+        f64::from(1.0e-5_f32),
+        f64::from(1.0e-5_f32),
+        f64::from(1.0e-5_f32),
+    ));
+    // Every block the sweep visits lies in the box covering both ends.
+    let reach = bounds
+        .union_bounds(bounds.move_by(from.subtract(to)))
+        .inflate(Vec3::new(1.0, 1.0, 1.0));
+    if !may_hold_portal(view, reach, sections) {
+        return None;
+    }
+    let mut found = None;
+    let _ =
+        horizon_core::geometry::sweep_intersected_blocks(from, to, bounds, 1_000_000, |p, _| {
+            let state = view.world.block(p.x, p.y, p.z);
+            if view.behaviours.portal_axis(state).is_some()
+                || (view.is_end_portal(state) && touches_end_portal(from, to, width, height, p))
+            {
+                found = Some(p);
+                return false;
+            }
+            true
+        });
+    found
+}
+/// Whether a section `reach` touches has a nether or End portal state in
+/// its palette: without one, no block there is a portal. Palette answers are
+/// kept per chunk across ticks (`portal_sections`); a box over many
+/// sections is not checked.
+fn may_hold_portal(
+    view: SweepView<'_>,
+    reach: horizon_core::geometry::Aabb,
+    sections: &mut impl FnMut((i32, i32), &Arc<Chunk>) -> SectionMask,
+) -> bool {
+    let (min, max) = (reach.min_position(), reach.max_position());
+    if !min.is_finite() || !max.is_finite() {
+        return true;
+    }
+    let (min, max) = (BlockPos::containing(min), BlockPos::containing(max));
+    let top = view.world.layout().sections() as i32 - 1;
+    let (x0, x1) = (min.x >> 4, max.x >> 4);
+    let (z0, z1) = (min.z >> 4, max.z >> 4);
+    let (y0, y1) = (
+        ((min.y - view.world.bottom_y()) >> 4).clamp(0, top),
+        ((max.y - view.world.bottom_y()) >> 4).clamp(0, top),
+    );
+    let count = (i64::from(x1) - i64::from(x0) + 1)
+        * (i64::from(y1) - i64::from(y0) + 1)
+        * (i64::from(z1) - i64::from(z0) + 1);
+    if count > 64 {
+        return true;
+    }
+    let y_mask = SectionMask::below(y1 as usize + 1).from(y0 as usize);
+    let chunks = &view.world.chunks;
+    (x0..=x1).any(|cx| {
+        (z0..=z1).any(|cz| {
+            chunks
+                .get(&(cx, cz))
+                .is_some_and(|chunk| !(sections((cx, cz), chunk) & y_mask).is_empty())
+        })
+    })
+}
+/// `canUsePortal(false)` of a mob: what the mob itself decides
+/// (`mobs::mob_can_use_portal`), riding nothing, not asleep, and not carrying
+/// the players this side does.
+fn mob_may_use_portal(
+    m: &Mob,
+    riding: Option<u32>,
+    carries_riders: bool,
+    guest_rides: impl Fn(u32) -> bool,
+) -> bool {
+    horizon_client::mobs::mob_can_use_portal(m)
+        && m.extra.mount.is_none()
+        && riding != Some(m.id)
+        && (carries_riders || !guest_rides(m.id))
+}
 /// `PositionMoveRotation.calculateAbsolute` for an End portal's transition
 /// of an entity facing `[yaw, pitch]`: into the End it faces west and keeps
 /// its pitch (`Relative.X_ROT`); out of it both turn by the world spawn's
@@ -300,7 +423,7 @@ impl Game<'_> {
         } else {
             Dim::Nether
         };
-        let state = self.world.block(entry.x, entry.y, entry.z);
+        let state = self.simulation.world.block(entry.x, entry.y, entry.z);
         let b = self.res.behaviours();
         let (entry_x_axis, offset) = match b.portal_axis(state) {
             Some(x_axis) => {
@@ -310,7 +433,7 @@ impl Game<'_> {
                     21,
                     Axis::Y,
                     21,
-                    |p| self.world.block(p.x, p.y, p.z) == state,
+                    |p| self.simulation.world.block(p.x, p.y, p.z) == state,
                 );
                 let mut offset = relative_position(area, x_axis, at, width, height);
                 if reset_forward {
@@ -346,7 +469,7 @@ impl Game<'_> {
         height: f32,
         reset_forward: bool,
     ) -> Plan {
-        if !self.is_end_portal(self.world.block(entry.x, entry.y, entry.z)) {
+        if !self.is_end_portal(self.simulation.world.block(entry.x, entry.y, entry.z)) {
             return self.portal_plan(entry, at, width, height, reset_forward);
         }
         let spawn = self.level.world_spawn.unwrap_or_else(|| {
@@ -362,7 +485,15 @@ impl Game<'_> {
         )
     }
     fn is_end_portal(&self, state: horizon_world::registry::BlockStateId) -> bool {
-        &*self.res.facts().get(state).name == "minecraft:end_portal"
+        is_end_portal(self.res.facts(), state)
+    }
+    fn sweep_view(&self) -> SweepView<'_> {
+        SweepView {
+            world: &self.simulation.world,
+            behaviours: self.res.behaviours(),
+            facts: self.res.facts(),
+            before: &self.portals.before,
+        }
     }
     /// Where an item or mob through an End portal lands once `plan`'s level
     /// has loaded around it: the bottom centre of the End's spawn point,
@@ -393,7 +524,7 @@ impl Game<'_> {
         for z in cz - chunk_radius..=cz + chunk_radius {
             for x in cx - chunk_radius..=cx + chunk_radius {
                 let saved;
-                let chunk = match self.world.chunks.get(&(x, z)) {
+                let chunk = match self.simulation.world.chunks.get(&(x, z)) {
                     Some(c) => &**c,
                     None => {
                         match self
@@ -415,7 +546,7 @@ impl Game<'_> {
                     }) {
                         continue;
                     }
-                    let base = self.world.bottom_y() + 16 * s as i32;
+                    let base = self.simulation.world.bottom_y() + 16 * s as i32;
                     for y in base..base + 16 {
                         for lz in 0..16 {
                             for lx in 0..16 {
@@ -451,7 +582,7 @@ impl Game<'_> {
             // NetherPortalBlock.getExitPortal: the ticket goes on the chunk
             // of the portal found.
             self.place_portal_ticket((found.x >> 4, found.z >> 4));
-            let state = self.world.block(found.x, found.y, found.z);
+            let state = self.simulation.world.block(found.x, found.y, found.z);
             let x_axis = self.res.behaviours().portal_axis(state).unwrap_or(true);
             return Some(largest_rectangle_around(
                 found,
@@ -459,7 +590,7 @@ impl Game<'_> {
                 21,
                 Axis::Y,
                 21,
-                |p| self.world.block(p.x, p.y, p.z) == state,
+                |p| self.simulation.world.block(p.x, p.y, p.z) == state,
             ));
         }
         let logical = if to_nether { 128 } else { 384 };
@@ -494,7 +625,7 @@ impl Game<'_> {
     /// Only a server holds levels with tickets of their own.
     pub(super) fn place_portal_ticket(&mut self, chunk: (i32, i32)) {
         if !self.options.execution_role.is_client() {
-            self.tickets.add_portal(chunk);
+            self.simulation.tickets.add_portal(chunk);
         }
     }
     /// `NetherPortalBlock.createDimensionTransition`: the arrival position
@@ -503,7 +634,7 @@ impl Game<'_> {
         let b = self.res.behaviours();
         let corner = exit.min_corner;
         let exit_x_axis = b
-            .portal_axis(self.world.block(corner.x, corner.y, corner.z))
+            .portal_axis(self.simulation.world.block(corner.x, corner.y, corner.z))
             .unwrap_or(true);
         let (bottom, rotation) = exit_position(
             exit,
@@ -515,7 +646,7 @@ impl Game<'_> {
         );
         let border = self.border_bounds();
         let at = collision_free_position(bottom, plan.width, plan.height, &border, |p| {
-            b.collision_shape(self.world.block(p.x, p.y, p.z))
+            b.collision_shape(self.simulation.world.block(p.x, p.y, p.z))
                 .map(|s| s.moved(Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z))))
         });
         (at, rotation)
@@ -596,7 +727,7 @@ impl Game<'_> {
             }
         }
         if self.screen_fx.portal == 0.0 {
-            let pitch = self.world.random.next_float() * 0.4 + 0.8;
+            let pitch = self.simulation.world.random.next_float() * 0.4 + 0.8;
             self.audio
                 .play("minecraft:block.portal.trigger", None, 0.25, pitch);
         }
@@ -635,7 +766,7 @@ impl Game<'_> {
         let mut ids: Vec<(u32, bool)> = Vec::new();
         let tracked = &self.portals.entities;
         for_each_entity!(entity_lists_of!(self), entity => {
-            if entity.portal_size().is_some() && entity.is_vehicle() == vehicles {
+            if entity.is_vehicle() == vehicles && entity.portal_size().is_some() {
                 if entity.portal_from().is_none() {
                     before.insert(entity.id(), entity.position());
                 }
@@ -647,7 +778,7 @@ impl Game<'_> {
         self.portals.before = before;
         let present: std::collections::HashSet<u32> = ids.iter().map(|(id, _)| *id).collect();
         // Each pass keeps the other group's states.
-        let (boats, carts) = (&self.boats, &self.carts);
+        let (boats, carts) = (&self.simulation.boats, &self.simulation.carts);
         self.portals.entities.retain(|id, _| {
             let vehicle = boats.iter().any(|b| b.id == *id) || carts.iter().any(|c| c.id == *id);
             present.contains(id) || vehicle != vehicles
@@ -667,12 +798,12 @@ impl Game<'_> {
             // `Entity.teleportCrossDimension` carries the passengers: a
             // vehicle server players ride takes them along.
             if self.guest_rides(id) {
-                if let Some(c) = self.carts.iter().find(|c| c.id == id) {
+                if let Some(c) = self.simulation.carts.iter().find(|c| c.id == id) {
                     self.portals.carried_motion.insert(id, c.velocity);
                     self.portals.carried_at.insert(id, c.position);
-                } else if let Some(b) = self.boats.iter().find(|b| b.id == id) {
+                } else if let Some(b) = self.simulation.boats.iter().find(|b| b.id == id) {
                     self.portals.carried_at.insert(id, b.position);
-                } else if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
+                } else if let Some(m) = self.simulation.mobs.iter().find(|m| m.id == id) {
                     self.portals.carried_at.insert(id, m.position);
                 }
                 self.portals.carrying.push((self.dim, id, entry));
@@ -722,15 +853,19 @@ impl Game<'_> {
     /// (`mobs::mob_can_use_portal`), riding nothing, not asleep, and not
     /// carrying the players this side does.
     pub(super) fn mob_can_use_portal(&self, m: &horizon_client::mobs::Mob) -> bool {
-        horizon_client::mobs::mob_can_use_portal(m)
-            && m.extra.mount.is_none()
-            && self.riding != Some(m.id)
-            && (!self.guest_rides(m.id) || self.carries_riders())
+        mob_may_use_portal(m, self.riding, self.carries_riders(), |id| {
+            self.guest_rides(id)
+        })
     }
     /// `Entity.canUsePortal(false)` for a primed TNT: it carries no mob.
     pub(super) fn tnt_can_use_portal(&self, id: u32) -> bool {
         // Id 0: not tracked yet, nothing to key its portal state by.
-        id != 0 && !self.mobs.iter().any(|m| m.extra.mount == Some(id))
+        id != 0
+            && !self
+                .simulation
+                .mobs
+                .iter()
+                .any(|m| m.extra.mount == Some(id))
     }
     /// `canUsePortal(false)` of a boat or minecart: it is nobody's passenger;
     /// the mobs riding it, and on a server the players, cross with it.
@@ -763,14 +898,14 @@ impl Game<'_> {
     /// (`AbstractBoat` and `AbstractMinecart.getRelativePortalPosition`).
     pub(super) fn vehicle_plan(&self, id: u32, entry: BlockPos) -> Option<Plan> {
         let at = |own: Vec3| self.portals.carried_at.get(&id).copied().unwrap_or(own);
-        if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
+        if let Some(m) = self.simulation.mobs.iter().find(|m| m.id == id) {
             return Some(self.entity_plan(entry, at(m.position), m.width(), m.height(), true));
         }
-        if let Some(b) = self.boats.iter().find(|b| b.id == id) {
+        if let Some(b) = self.simulation.boats.iter().find(|b| b.id == id) {
             let (width, height) = (super::boats::WIDTH as f32, super::boats::HEIGHT as f32);
             return Some(self.entity_plan(entry, at(b.position), width, height, true));
         }
-        let c = self.carts.iter().find(|c| c.id == id)?;
+        let c = self.simulation.carts.iter().find(|c| c.id == id)?;
         let (width, height) = (
             super::minecarts::WIDTH as f32,
             super::minecarts::HEIGHT as f32,
@@ -797,6 +932,16 @@ impl Game<'_> {
         if self.remote.is_some() {
             return;
         }
+        for (id, pos) in self.portals_inside(only) {
+            self.portals
+                .entities
+                .entry(id)
+                .or_default()
+                .set_inside(pos, ENTITY_DELAY);
+        }
+    }
+    /// The entities that swept through a portal block, in walk order.
+    fn portals_inside(&mut self, only: Option<&[u32]>) -> Vec<(u32, BlockPos)> {
         let ridden = if only.is_none() {
             self.guest_vehicles()
         } else {
@@ -804,24 +949,45 @@ impl Game<'_> {
         };
         // A trident or rocket in flight gets its id here, before the walk.
         for t in self
+            .simulation
             .tridents
             .iter_mut()
             .filter(|t| only.is_none() && (!t.in_ground || t.previous != t.position))
         {
-            super::lan_entities::assign_entity_id(&mut self.next_entity, &mut t.id);
+            super::lan_entities::assign_entity_id(
+                &mut self.simulation_server.next_entity,
+                &mut t.id,
+            );
         }
         for r in self
+            .simulation
             .rockets
             .iter_mut()
             .filter(|r| only.is_none() && r.attached_to.is_none() && !r.attached)
         {
-            super::lan_entities::assign_entity_id(&mut self.next_entity, &mut r.id);
+            super::lan_entities::assign_entity_id(
+                &mut self.simulation_server.next_entity,
+                &mut r.id,
+            );
         }
-        let mut inside: Vec<(u32, BlockPos)> = Vec::new();
+        // The mob list comes first in `entity_lists!`, so the workers' results
+        // sit where the walk would have put them.
+        let swept_mobs = only.is_none().then(|| self.sweep_mobs(&ridden)).flatten();
+        let mobs_swept = swept_mobs.is_some();
+        let mut inside: Vec<(u32, BlockPos)> = swept_mobs.unwrap_or_default();
         let mut portal_sections = std::mem::take(&mut self.portals.sections);
+        let view = self.sweep_view();
+        let lists = EntityLists {
+            mobs: if mobs_swept {
+                &[]
+            } else {
+                &self.simulation.mobs[..]
+            },
+            ..entity_lists_of!(self)
+        };
         // The first portal block each entity's box swept through since the
         // start of its tick (a stuck arrow that did not move enters none).
-        for_each_entity!(entity_lists_of!(self), entity => {
+        for_each_entity!(lists, entity => {
             let Some((width, height)) = entity.portal_size() else {
                 continue;
             };
@@ -838,122 +1004,79 @@ impl Game<'_> {
             }
             let from = entity
                 .portal_from()
-                .unwrap_or_else(|| self.portals.before.get(&id).copied().unwrap_or(to));
-            if let Some(pos) = self.swept_portal(from, to, width, height, &mut portal_sections) {
+                .unwrap_or_else(|| view.before.get(&id).copied().unwrap_or(to));
+            let found = swept_portal(view, from, to, width, height, &mut |key, chunk| {
+                portal_sections.get(key, chunk, |v| view.portal_state(v))
+            });
+            if let Some(pos) = found {
                 inside.push((id, pos));
             }
         });
         self.portals.sections = portal_sections;
-        for (id, pos) in inside {
-            self.portals
-                .entities
-                .entry(id)
-                .or_default()
-                .set_inside(pos, ENTITY_DELAY);
-        }
+        inside
     }
-    /// The first nether or End portal block an entity box swept through
-    /// (`Entity.checkInsideBlocks`, whose first portal sets the entry).
-    fn swept_portal(
-        &self,
-        from: Vec3,
-        to: Vec3,
-        width: f32,
-        height: f32,
-        portal_sections: &mut horizon_client::portal_sections::PortalSections,
-    ) -> Option<BlockPos> {
-        let half = f64::from(width) / 2.0;
-        let bounds = horizon_core::geometry::Aabb::new(
-            Vec3::new(to.x - half, to.y, to.z - half),
-            Vec3::new(to.x + half, to.y + f64::from(height), to.z + half),
-        )
-        .deflate(Vec3::new(
-            f64::from(1.0e-5_f32),
-            f64::from(1.0e-5_f32),
-            f64::from(1.0e-5_f32),
-        ));
-        // Every block the sweep visits lies in the box covering both ends.
-        let reach = bounds
-            .union_bounds(bounds.move_by(from.subtract(to)))
-            .inflate(Vec3::new(1.0, 1.0, 1.0));
-        if !self.may_hold_portal(reach, portal_sections) {
-            return None;
-        }
-        let mut found = None;
-        let _ = horizon_core::geometry::sweep_intersected_blocks(
-            from,
-            to,
-            bounds,
-            1_000_000,
-            |p, _| {
-                let state = self.world.block(p.x, p.y, p.z);
-                if self.res.behaviours().portal_axis(state).is_some()
-                    || (self.is_end_portal(state) && touches_end_portal(from, to, width, height, p))
-                {
-                    found = Some(p);
-                    return false;
-                }
-                true
-            },
-        );
-        found
-    }
-    /// Whether a section `reach` touches has a nether or End portal state in
-    /// its palette: without one, no block there is a portal. Palette answers are
-    /// kept per chunk across ticks (`portal_sections`); a box over many
-    /// sections is not checked.
-    fn may_hold_portal(
-        &self,
-        reach: horizon_core::geometry::Aabb,
-        sections: &mut horizon_client::portal_sections::PortalSections,
-    ) -> bool {
-        use horizon_client::section_mask::SectionMask;
-        let (min, max) = (reach.min_position(), reach.max_position());
-        if !min.is_finite() || !max.is_finite() {
-            return true;
-        }
-        let (min, max) = (BlockPos::containing(min), BlockPos::containing(max));
-        let top = self.world.layout().sections() as i32 - 1;
-        let (x0, x1) = (min.x >> 4, max.x >> 4);
-        let (z0, z1) = (min.z >> 4, max.z >> 4);
-        let (y0, y1) = (
-            ((min.y - self.world.bottom_y()) >> 4).clamp(0, top),
-            ((max.y - self.world.bottom_y()) >> 4).clamp(0, top),
-        );
-        let count = (i64::from(x1) - i64::from(x0) + 1)
-            * (i64::from(y1) - i64::from(y0) + 1)
-            * (i64::from(z1) - i64::from(z0) + 1);
-        if count > 64 {
-            return true;
-        }
-        let y_mask = SectionMask::below(y1 as usize + 1).from(y0 as usize);
-        let behaviours = self.res.behaviours();
-        let chunks = &self.world.chunks;
-        (x0..=x1).any(|cx| {
-            (z0..=z1).any(|cz| {
-                chunks.get(&(cx, cz)).is_some_and(|chunk| {
-                    let portals = sections.get((cx, cz), chunk, |v| {
-                        let state = horizon_world::registry::BlockStateId(v);
-                        behaviours.portal_axis(state).is_some() || self.is_end_portal(state)
-                    });
-                    !(portals & y_mask).is_empty()
+    /// The mobs' part of the walk in `find_portals`, on the workers: the mobs
+    /// in list order that swept through a portal. None without workers. Each
+    /// reads the kept palette answers; a chunk with none is scanned where it is
+    /// needed and its answer stored here afterwards, as `PortalSections::get`
+    /// would have kept it.
+    fn sweep_mobs(&mut self, ridden: &[u32]) -> Option<Vec<(u32, BlockPos)>> {
+        let mobs = &self.simulation.mobs;
+        let executor = self
+            .simulation_server
+            .executor(self.simulation.regions.regions().len(), mobs.len())?;
+        let (riding, carries_riders) = (self.riding, self.carries_riders());
+        let view = self.sweep_view();
+        let sections = &self.portals.sections;
+        let results = executor.map(mobs, |_, m| {
+            let mut misses = Vec::new();
+            // A guest's vehicle is swept once `tick_guests` has moved it.
+            if !mob_may_use_portal(m, riding, carries_riders, |id| ridden.contains(&id))
+                || ridden.contains(&m.id)
+            {
+                return (None, misses);
+            }
+            let to = m.position;
+            let from = view.before.get(&m.id).copied().unwrap_or(to);
+            let found = swept_portal(view, from, to, m.width(), m.height(), &mut |key, chunk| {
+                sections.peek(key, chunk).unwrap_or_else(|| {
+                    misses.push(key);
+                    PortalSections::scan(chunk, |v| view.portal_state(v))
                 })
-            })
-        })
+            });
+            (found.map(|pos| (m.id, pos)), misses)
+        });
+        let mut inside = Vec::new();
+        let mut misses = Vec::new();
+        for (found, missed) in results {
+            inside.extend(found);
+            misses.extend(missed);
+        }
+        if !misses.is_empty() {
+            let mut portal_sections = std::mem::take(&mut self.portals.sections);
+            let view = self.sweep_view();
+            for key in misses {
+                if let Some(chunk) = view.world.chunks.get(&key) {
+                    portal_sections.get(key, chunk, |v| view.portal_state(v));
+                }
+            }
+            self.portals.sections = portal_sections;
+        }
+        Some(inside)
     }
     /// `Entity.teleportCrossDimension` away from the loaded dimension: the
     /// entity is saved and removed, and waits for its dimension to load.
     fn send_through_portal(&mut self, id: u32, entry: BlockPos) {
         let arrivals = self.portals.arrivals.len();
-        if let Some(i) = self.dropped.iter().position(|e| e.id == id) {
-            let e = &self.dropped[i];
+        if let Some(i) = self.simulation.dropped.iter().position(|e| e.id == id) {
+            let e = &self.simulation.dropped[i];
             let plan = self.entity_plan(entry, e.position, 0.25, 0.25, false);
             if !self.may_enter(plan.dim) {
                 return;
             }
             let uuid = self.uuid_for(id);
             let tag = horizon_client::entity_nbt::item_entity_to_nbt(
-                &self.dropped[i],
+                &self.simulation.dropped[i],
                 uuid,
                 self.persist_raw(id),
             );
@@ -961,52 +1084,63 @@ impl Game<'_> {
             self.detach_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
-        } else if let Some(i) = self.tnts.iter().position(|t| t.id == id) {
-            let t = &self.tnts[i];
+        } else if let Some(i) = self.simulation.tnts.iter().position(|t| t.id == id) {
+            let t = &self.simulation.tnts[i];
             let plan = self.entity_plan(entry, t.position, 0.98, 0.98, false);
             if !self.may_enter(plan.dim) {
                 return;
             }
             let tag = self.tnt_nbt(i);
-            self.tnts.remove(i);
+            self.simulation.tnts.remove(i);
             self.forget_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
-        } else if let Some(i) = self.tridents.iter().position(|t| t.id == id) {
-            let plan = self.entity_plan(entry, self.tridents[i].position, 0.5, 0.5, false);
+        } else if let Some(i) = self.simulation.tridents.iter().position(|t| t.id == id) {
+            let plan =
+                self.entity_plan(entry, self.simulation.tridents[i].position, 0.5, 0.5, false);
             if !self.may_enter(plan.dim) {
                 return;
             }
             let uuid = self.uuid_for(id);
-            let tag = self.tridents[i].to_nbt(uuid, self.persist_raw(id));
-            self.tridents.remove(i);
+            let tag = self.simulation.tridents[i].to_nbt(uuid, self.persist_raw(id));
+            self.simulation.tridents.remove(i);
             self.forget_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
-        } else if let Some(i) = self.rockets.iter().position(|r| r.id == id) {
-            let plan = self.entity_plan(entry, self.rockets[i].position, 0.25, 0.25, false);
+        } else if let Some(i) = self.simulation.rockets.iter().position(|r| r.id == id) {
+            let plan = self.entity_plan(
+                entry,
+                self.simulation.rockets[i].position,
+                0.25,
+                0.25,
+                false,
+            );
             if !self.may_enter(plan.dim) {
                 return;
             }
             let uuid = self.uuid_for(id);
-            let tag = self.rockets[i].to_nbt(uuid, self.level.player_uuid, self.persist_raw(id));
-            self.rockets.remove(i);
+            let tag = self.simulation.rockets[i].to_nbt(
+                uuid,
+                self.level.player_uuid,
+                self.persist_raw(id),
+            );
+            self.simulation.rockets.remove(i);
             self.forget_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
-        } else if let Some(i) = self.orbs.iter().position(|o| o.id == id) {
-            let plan = self.entity_plan(entry, self.orbs[i].position, 0.5, 0.5, false);
+        } else if let Some(i) = self.simulation.orbs.iter().position(|o| o.id == id) {
+            let plan = self.entity_plan(entry, self.simulation.orbs[i].position, 0.5, 0.5, false);
             if !self.may_enter(plan.dim) {
                 return;
             }
             let uuid = self.uuid_for(id);
-            let tag = horizon_client::entity_nbt::orb_to_nbt(&self.orbs[i], uuid);
-            self.orbs.remove(i);
+            let tag = horizon_client::entity_nbt::orb_to_nbt(&self.simulation.orbs[i], uuid);
+            self.simulation.orbs.remove(i);
             self.forget_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
-        } else if let Some(i) = self.mobs.iter().position(|m| m.id == id) {
-            let m = &self.mobs[i];
+        } else if let Some(i) = self.simulation.mobs.iter().position(|m| m.id == id) {
+            let m = &self.simulation.mobs[i];
             let plan = self.entity_plan(entry, m.position, m.width(), m.height(), true);
             if !self.may_enter(plan.dim) {
                 return;
@@ -1018,14 +1152,14 @@ impl Game<'_> {
             }
             let mut gone = vec![id];
             gone.extend(self.remove_mob_riders(id));
-            self.mobs.retain(|m| m.id != id);
+            self.simulation.mobs.retain(|m| m.id != id);
             for g in gone {
                 self.detach_entity(g);
             }
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
-        } else if let Some(i) = self.boats.iter().position(|b| b.id == id) {
-            let b = &self.boats[i];
+        } else if let Some(i) = self.simulation.boats.iter().position(|b| b.id == id) {
+            let b = &self.simulation.boats[i];
             let (width, height) = (super::boats::WIDTH as f32, super::boats::HEIGHT as f32);
             let plan = self.entity_plan(entry, b.position, width, height, true);
             if !self.may_enter(plan.dim) {
@@ -1033,7 +1167,7 @@ impl Game<'_> {
             }
             self.release_vehicle_container(id);
             let uuid = self.uuid_for(id);
-            let b = &self.boats[i];
+            let b = &self.simulation.boats[i];
             let mut tag = horizon_client::entity_nbt::boat_to_nbt(
                 &b.entity_type(),
                 b.position,
@@ -1048,12 +1182,12 @@ impl Game<'_> {
             for rider in self.remove_mob_riders(id) {
                 self.detach_entity(rider);
             }
-            self.boats.remove(i);
+            self.simulation.boats.remove(i);
             self.detach_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
-        } else if let Some(i) = self.carts.iter().position(|c| c.id == id) {
-            let c = &self.carts[i];
+        } else if let Some(i) = self.simulation.carts.iter().position(|c| c.id == id) {
+            let c = &self.simulation.carts[i];
             let (width, height) = (
                 super::minecarts::WIDTH as f32,
                 super::minecarts::HEIGHT as f32,
@@ -1064,7 +1198,7 @@ impl Game<'_> {
             }
             self.release_vehicle_container(id);
             let uuid = self.uuid_for(id);
-            let mut tag = self.carts[i].to_nbt(uuid, self.persist_raw(id));
+            let mut tag = self.simulation.carts[i].to_nbt(uuid, self.persist_raw(id));
             // `PositionMoveRotation.of(this)` takes the cart's `getKnownMovement`:
             // `OldMinecartBehavior` clamps it to 0.4 either way along x and z.
             let m = horizon_client::entity_nbt::motion(&tag);
@@ -1079,24 +1213,24 @@ impl Game<'_> {
             for rider in self.remove_mob_riders(id) {
                 self.detach_entity(rider);
             }
-            self.carts.remove(i);
+            self.simulation.carts.remove(i);
             self.detach_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
         } else if let Some(i) = self
-            .creatures
+            .simulation
             .projectiles
             .iter()
             .position(|p| p.id == id && (is_arrow(p) || is_portal_projectile(p)))
         {
-            let p = &self.creatures.projectiles[i];
+            let p = &self.simulation.projectiles[i];
             let (width, height) = projectile_box(p);
             let plan = self.entity_plan(entry, p.position, width, height, false);
             if !self.may_enter(plan.dim) {
                 return;
             }
             let uuid = self.uuid_for(id);
-            let p = &self.creatures.projectiles[i];
+            let p = &self.simulation.projectiles[i];
             let in_block = p
                 .arrow
                 .as_ref()
@@ -1114,7 +1248,7 @@ impl Game<'_> {
             else {
                 return;
             };
-            self.creatures.projectiles.remove(i);
+            self.simulation.projectiles.remove(i);
             self.forget_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
@@ -1132,7 +1266,8 @@ impl Game<'_> {
         while k < tree.len() {
             let v = tree[k];
             tree.extend(
-                self.mobs
+                self.simulation
+                    .mobs
                     .iter()
                     .filter(|m| m.extra.mount == Some(v))
                     .map(|m| m.id),
@@ -1140,7 +1275,7 @@ impl Game<'_> {
             k += 1;
         }
         tree.remove(0);
-        self.mobs.retain(|m| !tree.contains(&m.id));
+        self.simulation.mobs.retain(|m| !tree.contains(&m.id));
         tree
     }
     /// The chunks of the arrivals still waiting to land in `dim`, for the
@@ -1164,10 +1299,10 @@ impl Game<'_> {
         if self.remote.is_some() || self.portals.arrivals.is_empty() {
             return;
         }
-        let waiting = std::mem::take(&mut self.world.loaded_entities);
+        let waiting = std::mem::take(&mut self.simulation.world.loaded_entities);
         self.resolve_arrivals();
         self.spawn_loaded_entities();
-        self.world.loaded_entities.extend(waiting);
+        self.simulation.world.loaded_entities.extend(waiting);
     }
     /// Entities waiting for the loaded dimension whose exit area is loaded:
     /// their exit portal (found or built) or End destination, position,
@@ -1225,13 +1360,14 @@ impl Game<'_> {
             super::persist::mark_fresh(&mut tag);
             let key = ((at.x.floor() as i32) >> 4, (at.z.floor() as i32) >> 4);
             match self
+                .simulation
                 .world
                 .loaded_entities
                 .iter_mut()
                 .find(|(k, _)| *k == key)
             {
                 Some((_, tags)) => tags.push(tag),
-                None => self.world.loaded_entities.push((key, vec![tag])),
+                None => self.simulation.world.loaded_entities.push((key, vec![tag])),
             }
         }
     }
@@ -1243,7 +1379,15 @@ impl Game<'_> {
             return None;
         }
         let mut sections = std::mem::take(&mut self.portals.sections);
-        let entry = self.swept_portal(f.previous, f.position, 0.98, 0.98, &mut sections);
+        let view = self.sweep_view();
+        let entry = swept_portal(
+            view,
+            f.previous,
+            f.position,
+            0.98,
+            0.98,
+            &mut |key, chunk| sections.get(key, chunk, |v| view.portal_state(v)),
+        );
         self.portals.sections = sections;
         if let Some(entry) = entry {
             f.portal.set_inside(entry, ENTITY_DELAY);
@@ -1343,6 +1487,153 @@ impl Game<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The workers' mob sweep finds what the serial walk finds, in the same
+    /// place of the same list: the list stays the walk's, not the workers'.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn pool_and_serial_find_the_same_portals_in_the_same_order() {
+        use crate::game::tnt::PrimedTnt;
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        use horizon_client::world::World;
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let registry = game.pack.assets.registry;
+        let portal = registry.default_state("minecraft:nether_portal").unwrap();
+        let end = registry.default_state("minecraft:end_portal").unwrap();
+        let block = |x, z| BlockPos::new(x, 100, z);
+        let mob = |game: &Game<'_>, id, kind: &str, x, z| {
+            let kind = game.res.mob_types().get(kind).cloned().unwrap();
+            Mob::new(id, kind, Vec3::new(x, 100.0, z), 0.0)
+        };
+
+        for workers in [0, 1, 4] {
+            game.simulation_server.force_workers(workers);
+            let air = game.res.facts().air;
+            game.simulation.world = World::new(air, 0);
+            for key in [(0, 0), (3, 3)] {
+                let chunk = horizon_client::chunk::Chunk::empty(key.0, key.1);
+                game.simulation.world.chunks.insert(key, Arc::new(chunk));
+            }
+            game.simulation.world.set(2, 100, 2, portal).unwrap();
+            game.simulation.world.set(8, 100, 2, portal).unwrap();
+            game.simulation.world.set(2, 100, 8, end).unwrap();
+            let revision = game.simulation.world.chunks.membership_revision();
+            let keys: Vec<_> = game
+                .simulation
+                .world
+                .chunks
+                .iter()
+                .map(|(&k, _)| k)
+                .collect();
+            game.simulation.regions.rebuild(revision, keys.into_iter());
+            game.portals.sections = Default::default();
+            game.portals.before.clear();
+
+            let list = [
+                (1, "minecraft:zombie", 2.5, 2.5),     // stands in the portal
+                (2, "minecraft:zombie", 60.5, 60.5),   // no portal in its chunk
+                (3, "minecraft:zombie", 10.5, 2.5),    // swept through one
+                (4, "minecraft:zombie", 2.5, 2.5),     // rides: its vehicle carries it
+                (5, "minecraft:wither", 2.5, 2.5),     // a wither stays
+                (6, "minecraft:zombie", 2.5, 2.5),     // dead
+                (7, "minecraft:zombie", 2.5, 2.5),     // the player rides it
+                (8, "minecraft:zombie", 2.5, 8.5),     // in an End portal's shape
+                (9, "minecraft:zombie", 200.5, 200.5), // chunk not loaded
+            ];
+            game.simulation.mobs = Default::default();
+            for (id, kind, x, z) in list {
+                let mut m = mob(&game, id, kind, x, z);
+                match id {
+                    4 => m.extra.mount = Some(3),
+                    6 => m.health = 0.0,
+                    _ => {}
+                }
+                game.simulation.mobs.push(m);
+            }
+            game.riding = Some(7);
+            game.portals.before.insert(3, Vec3::new(6.5, 100.0, 2.5));
+            let at = Vec3::new(2.5, 100.0, 2.5);
+            game.simulation.tnts = Default::default();
+            game.simulation.tnts.push(PrimedTnt {
+                rotation: [0.0, 0.0],
+                id: 90,
+                position: at,
+                previous: at,
+                velocity: Vec3::ZERO,
+                fuse: 80,
+                on_ground: false,
+                owner: None,
+                guest: None,
+                no_gravity: false,
+                power: 4.0,
+                block_state: None,
+                join: Default::default(),
+            });
+
+            let regions = game.simulation.regions.regions().len();
+            let mobs = game.simulation.mobs.len();
+            let has_executor = game.simulation_server.executor(regions, mobs).is_some();
+            assert_eq!(has_executor, workers > 0, "{workers} workers");
+            let mut expected = vec![
+                (1, block(2, 2)),
+                (3, block(8, 2)),
+                (8, block(2, 8)),
+                (90, block(2, 2)),
+            ];
+            assert_eq!(game.portals_inside(None), expected, "{workers} workers");
+
+            // The workers read the cache and left their misses for this thread.
+            let stored = |game: &Game<'_>, key: (i32, i32)| {
+                let chunk = game.simulation.world.chunks.get(&key).unwrap();
+                game.portals.sections.peek(key, chunk).is_some()
+            };
+            assert!(stored(&game, (0, 0)), "{workers} workers");
+            assert_eq!(game.portals_inside(None), expected, "from the cache");
+
+            // A portal made since: the chunk's entry no longer answers.
+            game.simulation.world.set(60, 100, 60, portal).unwrap();
+            expected.insert(1, (2, block(60, 60)));
+            assert_eq!(game.portals_inside(None), expected, "{workers} workers");
+
+            // The ridden-vehicle pass walks only what it is given.
+            assert_eq!(
+                game.portals_inside(Some(&[3])),
+                [(3, block(8, 2))],
+                "{workers} workers"
+            );
+            // A guest's vehicle waits for that pass.
+            if workers > 0 {
+                let swept = game.sweep_mobs(&[1, 3]).unwrap();
+                assert_eq!(swept, [(2, block(60, 60)), (8, block(2, 8))]);
+            }
+        }
+    }
 
     #[test]
     fn end_portals_lead_to_the_end_spawn_and_back_to_the_world_spawn() {

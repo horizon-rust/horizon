@@ -21,7 +21,7 @@ impl Game<'_> {
             offer(hit.distance, id);
         }
         if let Some((i, d, _)) = self.mob_hit() {
-            offer(d, Some(self.mobs[i].id as i32));
+            offer(d, Some(self.simulation.mobs[i].id as i32));
         }
         if let Some((_, d)) = self.redirectable_hit() {
             offer(d, None);
@@ -44,15 +44,15 @@ impl Game<'_> {
                 best = Some((distance, uuid));
             }
         };
-        let uuid_of = |id: u32| self.persist.uuids.get(&id).copied();
+        let uuid_of = |id: u32| self.simulation.persist.uuids.get(&id).copied();
         if let Some(hit) = self.remote_object_hit(true) {
             offer(hit.distance, uuid_of(hit.id as u32));
         }
         if let Some((i, d, _)) = self.mob_hit() {
-            offer(d, uuid_of(self.mobs[i].id));
+            offer(d, uuid_of(self.simulation.mobs[i].id));
         }
         if let Some((i, d)) = self.redirectable_hit() {
-            offer(d, uuid_of(self.creatures.projectiles[i].id));
+            offer(d, uuid_of(self.simulation.projectiles[i].id));
         }
         if let Some((_, d)) = self.dragon_hit() {
             offer(d, None);
@@ -65,28 +65,28 @@ impl Game<'_> {
     /// framed item when it holds one) or end crystal.
     pub(super) fn entity_pick_result(&self, id: i32) -> Option<ItemStack> {
         let id = u32::try_from(id).ok()?;
-        let item = if let Some(m) = self.mobs.iter().find(|m| m.id == id) {
+        let item = if let Some(m) = self.simulation.mobs.iter().find(|m| m.id == id) {
             // Mob.getPickResult: SpawnEggItem.byId.
             let egg = format!("{}_spawn_egg", m.kind.id);
             return self.items().get(&egg).map(|_| ItemStack::new(&egg, 1));
-        } else if let Some(b) = self.boats.iter().find(|b| b.id == id) {
+        } else if let Some(b) = self.simulation.boats.iter().find(|b| b.id == id) {
             b.entity_type()
-        } else if let Some(c) = self.carts.iter().find(|c| c.id == id) {
+        } else if let Some(c) = self.simulation.carts.iter().find(|c| c.id == id) {
             c.kind.item().to_owned()
-        } else if self.armor_stands.iter().any(|a| a.id == id) {
+        } else if self.simulation.armor_stands.iter().any(|a| a.id == id) {
             "minecraft:armor_stand".to_owned()
-        } else if let Some(c) = self.cushions.iter().find(|c| c.id == id) {
+        } else if let Some(c) = self.simulation.cushions.iter().find(|c| c.id == id) {
             c.item()
-        } else if let Some(f) = self.item_frames.iter().find(|f| f.id == id) {
+        } else if let Some(f) = self.simulation.item_frames.iter().find(|f| f.id == id) {
             // ItemFrame.getPickResult: what it frames, else the frame itself.
             return Some(
                 f.item
                     .clone()
                     .unwrap_or_else(|| ItemStack::new(f.kind(), 1)),
             );
-        } else if self.paintings.iter().any(|p| p.id == id) {
+        } else if self.simulation.paintings.iter().any(|p| p.id == id) {
             "minecraft:painting".to_owned()
-        } else if self.crystals.iter().any(|c| c.id == id) {
+        } else if self.simulation.crystals.iter().any(|c| c.id == id) {
             "minecraft:end_crystal".to_owned()
         } else {
             return None;
@@ -102,7 +102,7 @@ impl Game<'_> {
         };
         let mob = u32::try_from(id)
             .ok()
-            .and_then(|id| self.mobs.iter().find(|m| m.id == id))
+            .and_then(|id| self.simulation.mobs.iter().find(|m| m.id == id))
             .map(|m| m.bounds());
         let Some(b) = self
             .object_target(id)

@@ -25,7 +25,7 @@ impl Game<'_> {
         held: Option<&ItemStack>,
     ) -> Option<bool> {
         let pos = hit.pos;
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         let info = self
             .pack
             .assets
@@ -111,6 +111,7 @@ impl Game<'_> {
     /// The bookshelf's six slots (made if the block has no block entity yet).
     fn bookshelf_items(&mut self, pos: [i32; 3]) -> Option<&mut [Option<ItemStack>; 6]> {
         let entity = self
+            .simulation
             .world
             .block_entities
             .get_or_insert_with((pos[0], pos[1], pos[2]), || {
@@ -127,7 +128,8 @@ impl Game<'_> {
     /// (`setBlockAndUpdate`) and `BLOCK_CHANGE` goes out.
     fn chiseled_bookshelf_update_state(&mut self, pos: [i32; 3], slot: usize) {
         let key = (pos[0], pos[1], pos[2]);
-        let Some(BlockEntity::ChiseledBookshelf(b)) = self.world.block_entities.get_mut(&key)
+        let Some(BlockEntity::ChiseledBookshelf(b)) =
+            self.simulation.world.block_entities.get_mut(&key)
         else {
             return;
         };
@@ -135,7 +137,7 @@ impl Game<'_> {
         let occupied: Vec<bool> = b.items.iter().map(Option::is_some).collect();
         let registry = self.pack.assets.registry;
         let Some(mut state) = registry
-            .state(self.world.block(pos[0], pos[1], pos[2]))
+            .state(self.simulation.world.block(pos[0], pos[1], pos[2]))
             .cloned()
         else {
             return;
@@ -150,7 +152,10 @@ impl Game<'_> {
         };
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         self.with_level(|b, level, ticks| b.set_block(level, ticks, at, new, flags::UPDATE_ALL));
-        self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+        self.simulation
+            .world
+            .modified
+            .insert((pos[0] >> 4, pos[2] >> 4));
         self.post_block_game_event("minecraft:block_change", pos, None, Some(new));
     }
 
@@ -158,14 +163,16 @@ impl Game<'_> {
     /// occupancy no longer matches the block state is the one `setItem` or
     /// `removeItem` updated.
     pub(super) fn chiseled_bookshelf_synced(&mut self, pos: (i32, i32, i32)) {
-        let Some(BlockEntity::ChiseledBookshelf(b)) = self.world.block_entities.get(&pos) else {
+        let Some(BlockEntity::ChiseledBookshelf(b)) =
+            self.simulation.world.block_entities.get(&pos)
+        else {
             return;
         };
         let Some(info) = self
             .pack
             .assets
             .registry
-            .state(self.world.block(pos.0, pos.1, pos.2))
+            .state(self.simulation.world.block(pos.0, pos.1, pos.2))
         else {
             return;
         };

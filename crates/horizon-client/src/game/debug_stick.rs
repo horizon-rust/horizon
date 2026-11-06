@@ -62,7 +62,7 @@ impl Game<'_> {
         if !self.can_use_game_master_blocks() {
             return Ok(false);
         }
-        let state_id = self.world.block(pos[0], pos[1], pos[2]);
+        let state_id = self.simulation.world.block(pos[0], pos[1], pos[2]);
         let Some(state) = self.pack.assets.registry.state(state_id).cloned() else {
             return Ok(false);
         };

@@ -10,7 +10,11 @@ use horizon_client::{
 impl Game<'_> {
     /// The pattern textures and tints of the banner at `pos`, bottom first.
     pub(super) fn banner_layers_at(&self, pos: [i32; 3]) -> Vec<(String, u32)> {
-        let Some(BlockEntity::Banner(b)) = self.world.block_entities.get(&(pos[0], pos[1], pos[2]))
+        let Some(BlockEntity::Banner(b)) = self
+            .simulation
+            .world
+            .block_entities
+            .get(&(pos[0], pos[1], pos[2]))
         else {
             return Vec::new();
         };
@@ -18,10 +22,13 @@ impl Game<'_> {
     }
     /// The banner at `pos` as a map marker source (`MapBanner.fromWorld`).
     pub(super) fn map_banner_at(&self, pos: [i32; 3]) -> Option<MapBanner> {
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         map_banner(
             pos,
-            self.world.block_entities.get(&(pos[0], pos[1], pos[2])),
+            self.simulation
+                .world
+                .block_entities
+                .get(&(pos[0], pos[1], pos[2])),
             &self.res.facts().get(state).name,
         )
     }

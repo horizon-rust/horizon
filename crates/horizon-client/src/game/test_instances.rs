@@ -193,14 +193,14 @@ impl Game<'_> {
     }
 
     pub(super) fn test_instance_at(&self, pos: Pos) -> Option<&TestInstanceBlock> {
-        match self.world.block_entities.get(&pos)? {
+        match self.simulation.world.block_entities.get(&pos)? {
             BlockEntity::TestInstanceBlock(b) => Some(b),
             _ => None,
         }
     }
 
     pub(super) fn test_instance_mut(&mut self, pos: Pos) -> Option<&mut TestInstanceBlock> {
-        match self.world.block_entities.get_mut(&pos)? {
+        match self.simulation.world.block_entities.get_mut(&pos)? {
             BlockEntity::TestInstanceBlock(b) => Some(b),
             _ => None,
         }
@@ -247,7 +247,7 @@ impl Game<'_> {
             .iter()
             .map(|(&pos, (text, _))| ([pos.0, pos.1, pos.2], text.clone(), HIGHLIGHT_FILL))
             .collect();
-        for (pos, entity) in &self.world.block_entities {
+        for (pos, entity) in &self.simulation.world.block_entities {
             let BlockEntity::TestInstanceBlock(b) = entity else {
                 continue;
             };
@@ -460,7 +460,7 @@ impl Game<'_> {
     pub(super) fn remove_test_barriers(&mut self, pos: Pos) {
         let barrier = self.pack.assets.registry.default_state("minecraft:barrier");
         for at in self.structure_boundary(pos) {
-            if Some(self.world.block(at.0, at.1, at.2)) == barrier {
+            if Some(self.simulation.world.block(at.0, at.1, at.2)) == barrier {
                 self.set_test_block_state(at, "minecraft:air", flags::UPDATE_ALL);
             }
         }
@@ -568,8 +568,8 @@ impl Game<'_> {
             BlockPos::new(bounds.min[0], bounds.min[1], bounds.min[2]),
             BlockPos::new(bounds.max[0], bounds.max[1], bounds.max[2]),
         );
-        self.block_ticks.blocks.clear_area(area);
-        self.block_ticks.block_events.retain(|e| {
+        self.simulation.block_ticks.blocks.clear_area(area);
+        self.simulation.block_ticks.block_events.retain(|e| {
             !(bounds.min[0]..=bounds.max[0]).contains(&e.pos.x)
                 || !(bounds.min[1]..=bounds.max[1]).contains(&e.pos.y)
                 || !(bounds.min[2]..=bounds.max[2]).contains(&e.pos.z)

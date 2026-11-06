@@ -551,12 +551,12 @@ impl Game<'_> {
                     server
                         .call(|g| {
                             g.in_owner_level(|g| {
-                                json!({ "game_time": g.world.game_time, "projectiles": g.projectiles_status() })
+                                json!({ "game_time": g.simulation.world.game_time, "projectiles": g.projectiles_status() })
                             })
                         })
                         .ok_or(super::integrated::NO_ANSWER)?
                 } else {
-                    json!({ "game_time": self.world.game_time, "projectiles": self.projectiles_status() })
+                    json!({ "game_time": self.simulation.world.game_time, "projectiles": self.projectiles_status() })
                 };
                 Ok(Some(value))
             }
@@ -907,11 +907,11 @@ impl Game<'_> {
             }
             "time" => {
                 let time: i64 = arg(1)?.parse()?;
-                self.world.day_time = time;
+                self.simulation.world.day_time = time;
                 // Single player's clock is its server thread's.
                 if let Some(server) = &self.integrated {
                     server
-                        .call(move |g| g.world.day_time = time)
+                        .call(move |g| g.simulation.world.day_time = time)
                         .ok_or(super::integrated::NO_ANSWER)?;
                 }
                 ok()
@@ -1235,8 +1235,8 @@ impl Game<'_> {
     /// `horizon-ctl save` and `save-all`.
     fn control_save(&mut self, all: bool) -> Result<()> {
         if all {
-            let keys: Vec<_> = self.world.chunks.keys().copied().collect();
-            self.world.modified.extend(keys);
+            let keys: Vec<_> = self.simulation.world.chunks.keys().copied().collect();
+            self.simulation.world.modified.extend(keys);
         }
         self.save_game()
     }
@@ -1381,7 +1381,10 @@ impl Game<'_> {
             })
         });
         let target = self.pick().map(|hit| {
-            let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
+            let state = self
+                .simulation
+                .world
+                .block(hit.pos[0], hit.pos[1], hit.pos[2]);
             json!({ "pos": hit.pos, "block": &*self.res.facts().get(state).name })
         });
         let renderer = self.renderer.as_ref().map(|r| {
@@ -1472,27 +1475,27 @@ impl Game<'_> {
             "fps": self.fps,
             "frames": self.frames,
             "ticks": self.ticks,
-            "day_time": self.world.day_time,
+            "day_time": self.simulation.world.day_time,
             "music": self.music.current(&self.audio.engine),
             "sounds": self.audio.census(),
             "fishing": self.hook_status(),
-            "tridents": self.tridents.len(),
-            "rockets": self.rockets.len(),
+            "tridents": self.simulation.tridents.len(),
+            "rockets": self.simulation.rockets.len(),
             "fight": self.dragon_status(),
             // A client of a server (single player's server thread) knows the
             // carts it was sent.
-            "carts": self.remote_carts().unwrap_or_else(|| self.carts.iter().map(|c| serde_json::json!({"kind": c.kind.id(), "position": [c.position.x, c.position.y, c.position.z], "velocity": [c.velocity.x, c.velocity.y, c.velocity.z]})).collect::<Vec<_>>()),
+            "carts": self.remote_carts().unwrap_or_else(|| self.simulation.carts.iter().map(|c| serde_json::json!({"kind": c.kind.id(), "position": [c.position.x, c.position.y, c.position.z], "velocity": [c.velocity.x, c.velocity.y, c.velocity.z]})).collect::<Vec<_>>()),
             "riding": self.riding,
             "using": self.using,
             "render_distance": self.streaming.radius,
-            "chunks": self.world.chunks.len(),
-            "mobs": self.mobs.len(),
-            "block_entities": self.world.block_entities.len(),
+            "chunks": self.simulation.world.chunks.len(),
+            "mobs": self.simulation.mobs.len(),
+            "block_entities": self.simulation.world.block_entities.len(),
             "pending_chunks": self.streaming.pending() + self.pending_uploads.len() + self.remote_backlog(),
             "generated_chunks": self.streaming.generated_total,
             "meshed_sections": self.streaming.meshed_total,
             "streaming": self.streaming.stages().into_iter().map(|(k, v)| (k.to_string(), v.into())).collect::<serde_json::Map<_, _>>(),
-            "dirty_light": self.world.dirty_light.len(),
+            "dirty_light": self.simulation.world.dirty_light.len(),
             "renderer": renderer,
             "display": self.window.as_deref().and_then(horizon_client::telemetry::monitor).map(|m| json!({
                 "width": m.size().width,
@@ -1524,7 +1527,7 @@ impl Game<'_> {
         status["stopped_sounds"] = json!(self.audio.stopped);
         // Boats, minecarts, armor stands, item frames and paintings.
         status["objects"] = json!(self.objects_status());
-        status["lightning"] = json!({"bolts": self.bolts.len(), "struck": self.lightning_seen[0],
+        status["lightning"] = json!({"bolts": self.simulation.bolts.len(), "struck": self.lightning_seen[0],
             "flashes": self.lightning_seen[1], "flash": self.flash});
         // Primed TNT, falling blocks, projectiles, tridents and end crystals.
         status["projectiles"] = json!(self.projectiles_status());

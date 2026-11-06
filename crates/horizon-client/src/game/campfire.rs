@@ -25,7 +25,7 @@ impl Game<'_> {
     /// to the server. Whether the food went in; None when this isn't a
     /// campfire use, so the item's own use runs.
     pub(super) fn use_on_campfire(&mut self, pos: [i32; 3]) -> Result<Option<bool>> {
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         if !is_campfire(&self.res.facts().get(state).name) {
             return Ok(None);
         }
@@ -40,7 +40,7 @@ impl Game<'_> {
             return Ok(Some(true));
         }
         let key = (pos[0], pos[1], pos[2]);
-        let placed = match self.world.block_entities.get_mut(&key) {
+        let placed = match self.simulation.world.block_entities.get_mut(&key) {
             Some(BlockEntity::Campfire(c)) => {
                 let mut one = held.clone();
                 c.place_food(&mut one, time)
@@ -69,7 +69,7 @@ impl Game<'_> {
     /// (`Containers.dropItemStack` at its integer position), then the clients
     /// see the slot empty and a `block_change` goes out.
     pub(super) fn tick_campfire(&mut self, pos: Pos) -> Result<()> {
-        let state = self.world.block(pos.0, pos.1, pos.2);
+        let state = self.simulation.world.block(pos.0, pos.1, pos.2);
         let lit = self
             .pack
             .assets
@@ -77,7 +77,8 @@ impl Game<'_> {
             .state(state)
             .and_then(|s| s.properties.get("lit"))
             .is_some_and(|v| v == "true");
-        let Some(BlockEntity::Campfire(c)) = self.world.block_entities.get_mut(&pos) else {
+        let Some(BlockEntity::Campfire(c)) = self.simulation.world.block_entities.get_mut(&pos)
+        else {
             return Ok(());
         };
         // BlockEntity.setChanged: a timer that moved is saved with the
@@ -88,13 +89,17 @@ impl Game<'_> {
             c.cooldown_tick()
         };
         if changed {
-            self.world.modified.insert((pos.0 >> 4, pos.2 >> 4));
+            self.simulation
+                .world
+                .modified
+                .insert((pos.0 >> 4, pos.2 >> 4));
         }
         if !lit {
             self.sleep_idle_campfire(pos, false);
             return Ok(());
         }
-        let Some(BlockEntity::Campfire(c)) = self.world.block_entities.get_mut(&pos) else {
+        let Some(BlockEntity::Campfire(c)) = self.simulation.world.block_entities.get_mut(&pos)
+        else {
             return Ok(());
         };
         let done = c.cook_tick();
@@ -118,9 +123,9 @@ impl Game<'_> {
     }
 
     fn sleep_idle_campfire(&mut self, pos: Pos, lit: bool) {
-        if matches!(self.world.block_entities.get(&pos), Some(BlockEntity::Campfire(c)) if c.idle(lit))
+        if matches!(self.simulation.world.block_entities.get(&pos), Some(BlockEntity::Campfire(c)) if c.idle(lit))
         {
-            self.world.block_entities.sleep(pos);
+            self.simulation.world.block_entities.sleep(pos);
         }
     }
 
@@ -129,7 +134,7 @@ impl Game<'_> {
     /// (90° about X), at a corner and three eighths of its size, drawn as a
     /// FIXED item seeded by the block's position plus the slot.
     pub(super) fn campfire_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
-        for (key, entity) in &self.world.block_entities {
+        for (key, entity) in &self.simulation.world.block_entities {
             let BlockEntity::Campfire(c) = entity else {
                 continue;
             };
@@ -141,7 +146,7 @@ impl Game<'_> {
                 continue;
             }
             // Direction.get2DDataValue: south 0, west 1, north 2, east 3.
-            let state = self.world.block(key.0, key.1, key.2);
+            let state = self.simulation.world.block(key.0, key.1, key.2);
             let facing = match self
                 .pack
                 .assets
@@ -155,7 +160,7 @@ impl Game<'_> {
                 Some("east") => 3,
                 _ => 0,
             };
-            let light = vertex_light(self.world.light(key.0, key.1, key.2));
+            let light = vertex_light(self.simulation.world.light(key.0, key.1, key.2));
             let packed = BlockPos::new(key.0, key.1, key.2).pack();
             for (i, stack) in c.items.iter().enumerate() {
                 let Some(stack) = stack else {
@@ -183,9 +188,11 @@ impl Game<'_> {
     /// integer position.
     pub(super) fn campfire_drop(&mut self, pos: Pos, stack: ItemStack) {
         let at = BlockPos::new(pos.0, pos.1, pos.2);
-        for piece in
-            horizon_world::level::removal::drop_item_stack(&mut self.world.random, at, stack.count)
-        {
+        for piece in horizon_world::level::removal::drop_item_stack(
+            &mut self.simulation.world.random,
+            at,
+            stack.count,
+        ) {
             self.spawn_item(
                 ItemStack {
                     count: piece.count,

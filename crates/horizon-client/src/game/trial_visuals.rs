@@ -85,7 +85,10 @@ impl Game<'_> {
             }
             3015 => {
                 if matches!(
-                    self.world.block_entities.get(&(pos[0], pos[1], pos[2])),
+                    self.simulation
+                        .world
+                        .block_entities
+                        .get(&(pos[0], pos[1], pos[2])),
                     Some(BlockEntity::Vault(_))
                 ) {
                     self.vault_activation_particles(pos, data != 0);
@@ -174,7 +177,7 @@ impl Game<'_> {
             return;
         };
         let pos = [key.0, key.1, key.2];
-        let time = self.world.game_time;
+        let time = self.simulation.world.game_time;
         let c = center(pos);
         let random = self.particles.level_random();
         // TrialSpawnerState.ParticleEmission.
@@ -211,7 +214,8 @@ impl Game<'_> {
         for (ty, at) in emitted {
             self.particle(ty, at, [0.0; 3]);
         }
-        if let Some(BlockEntity::TrialSpawner(s)) = self.world.block_entities.get_mut(&key)
+        if let Some(BlockEntity::TrialSpawner(s)) =
+            self.simulation.world.block_entities.get_mut(&key)
             && let Some(speed) = state.spinning_mob_speed()
         {
             let delay = (s.next_mob_spawns_at - time).max(0) as f64;
@@ -235,11 +239,12 @@ impl Game<'_> {
         };
         vault.update_display_item_spin();
         let shows = vault.display_item.is_some();
-        self.world
+        self.simulation
+            .world
             .block_entities
             .put(key, BlockEntity::Vault(vault));
         let pos = [key.0, key.1, key.2];
-        if self.world.game_time % 20 == 0 {
+        if self.simulation.world.game_time % 20 == 0 {
             self.vault_connection_particles(pos);
         }
         // emitIdleParticles.
@@ -274,7 +279,7 @@ impl Game<'_> {
     /// each connected player within the particles' range.
     fn vault_connection_particles(&mut self, pos: [i32; 3]) {
         let key = (pos[0], pos[1], pos[2]);
-        let Some(BlockEntity::Vault(vault)) = self.world.block_entities.get(&key) else {
+        let Some(BlockEntity::Vault(vault)) = self.simulation.world.block_entities.get(&key) else {
             return;
         };
         let me = self.level.player_uuid.unwrap_or_default();
@@ -299,7 +304,7 @@ impl Game<'_> {
             .pack
             .assets
             .registry
-            .state(self.world.block(pos[0], pos[1], pos[2]))
+            .state(self.simulation.world.block(pos[0], pos[1], pos[2]))
             .and_then(|b| b.properties.get("facing").cloned());
         let step = match facing.as_deref() {
             Some("south") => [0.0, 1.0],

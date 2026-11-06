@@ -10,7 +10,7 @@ use horizon_client::block_pattern::{
 
 impl Game<'_> {
     fn golem_block(&self, p: [i32; 3]) -> &str {
-        let state = self.world.block(p[0], p[1], p[2]);
+        let state = self.simulation.world.block(p[0], p[1], p[2]);
         &self.res.facts().get(state).name
     }
     fn is_golem_head(&self, p: [i32; 3]) -> bool {
@@ -31,7 +31,11 @@ impl Game<'_> {
         head: [i32; 3],
         base: bool,
     ) -> Option<(&'static str, Vec<[i32; 3]>, [i32; 3])> {
-        let air = |p: [i32; 3]| self.res.facts().is_air(self.world.block(p[0], p[1], p[2]));
+        let air = |p: [i32; 3]| {
+            self.res
+                .facts()
+                .is_air(self.simulation.world.block(p[0], p[1], p[2]))
+        };
         let snow = |c: char, p: [i32; 3]| match c {
             '^' => self.is_golem_head(p),
             _ => self.golem_block(p) == "minecraft:snow_block",
@@ -85,7 +89,7 @@ impl Game<'_> {
         let id = self.create_triggered(kind, at, 0.0);
         // CarvedPumpkinBlock.trySpawnGolem: setPlayerCreated(true) on the iron golem.
         if kind == "minecraft:iron_golem"
-            && let Some(m) = id.and_then(|id| self.mobs.iter_mut().find(|m| m.id == id))
+            && let Some(m) = id.and_then(|id| self.simulation.mobs.iter_mut().find(|m| m.id == id))
         {
             m.extra.player_created = true;
         }
@@ -98,7 +102,7 @@ impl Game<'_> {
     /// (`WitherSkullBlock.checkSpawn`).
     pub(super) fn trigger_summoned(&mut self, id: Option<u32>, reach: f64) {
         let Some(built) = id
-            .and_then(|id| self.mobs.iter().find(|m| m.id == id))
+            .and_then(|id| self.simulation.mobs.iter().find(|m| m.id == id))
             .cloned()
         else {
             return;
@@ -146,9 +150,9 @@ impl Game<'_> {
     /// wither has no spawn finalization and draws nothing from the level.
     pub(super) fn create_triggered(&mut self, kind: &str, at: [f64; 3], yaw: f32) -> Option<u32> {
         let t = self.res.mob_types().get(kind).cloned()?;
-        self.next_entity += 1;
+        self.simulation_server.next_entity += 1;
         let mut mob = horizon_client::mobs::Mob::new(
-            self.next_entity,
+            self.simulation_server.next_entity,
             t,
             horizon_core::geometry::Vec3::new(at[0], at[1], at[2]),
             yaw,
@@ -159,19 +163,20 @@ impl Game<'_> {
         mob.previous_body_yaw = yaw;
         mob.previous_head_yaw = yaw;
         let id = mob.id;
-        self.mobs.push(mob);
-        self.native_mobs_joined(self.mobs.len() - 1, false);
+        self.simulation.mobs.push(mob);
+        self.native_mobs_joined(self.simulation.mobs.len() - 1, false);
         Some(id)
     }
     /// `CarvedPumpkinBlock.clearPatternBlocks`: every cell of the match
     /// becomes air (flags 2) with its destroy event (2001).
     pub(super) fn clear_pattern_blocks(&mut self, cells: &[[i32; 3]]) -> Result<()> {
-        let air = self.world.air;
+        let air = self.simulation.world.air;
         for &p in cells {
-            let state = self.world.block(p[0], p[1], p[2]);
+            let state = self.simulation.world.block(p[0], p[1], p[2]);
             let pos = horizon_core::position::BlockPos::new(p[0], p[1], p[2]);
             self.with_level(|b, level, ticks| b.set_block(level, ticks, pos, air, 2));
-            self.level_events
+            self.simulation
+                .level_events
                 .push(horizon_world::level::LevelEvent::LevelEvent {
                     id: 2001,
                     pos,
@@ -183,7 +188,7 @@ impl Game<'_> {
     /// `CarvedPumpkinBlock.updatePatternBlocks`: neighbours of every cell
     /// hear that air arrived.
     pub(super) fn update_pattern_blocks(&mut self, cells: &[[i32; 3]]) -> Result<()> {
-        let air = self.world.air;
+        let air = self.simulation.world.air;
         for &p in cells {
             let pos = horizon_core::position::BlockPos::new(p[0], p[1], p[2]);
             self.with_level(|b, level, ticks| {
@@ -202,8 +207,8 @@ impl Game<'_> {
             return Ok(());
         }
         let below = [head[0], head[1] - 1, head[2]];
-        let copper = self.world.block(below[0], below[1], below[2]);
-        let pumpkin = self.world.block(head[0], head[1], head[2]);
+        let copper = self.simulation.world.block(below[0], below[1], below[2]);
+        let pumpkin = self.simulation.world.block(head[0], head[1], head[2]);
         let registry = self.pack.assets.registry;
         let facing = registry
             .state(pumpkin)
@@ -243,12 +248,13 @@ impl Game<'_> {
             if let Some(entity) = horizon_client::containers::BlockEntity::for_block(
                 &self.res.facts().get(chest).name,
             ) {
-                self.world
+                self.simulation
+                    .world
                     .block_entities
                     .insert((below[0], below[1], below[2]), entity);
             }
         }
-        if let Some(m) = id.and_then(|id| self.mobs.iter_mut().find(|m| m.id == id)) {
+        if let Some(m) = id.and_then(|id| self.simulation.mobs.iter_mut().find(|m| m.id == id)) {
             m.extra.variant = weather;
             let p = [m.position.x, m.position.y, m.position.z];
             self.audio

@@ -28,6 +28,26 @@ impl PortalSections {
     pub fn remove(&mut self, key: &(i32, i32)) {
         self.chunks.remove(key);
     }
+    /// What [`Self::get`] would answer without scanning, for readers sharing
+    /// the cache: None when `chunk` has no entry yet or has changed since.
+    pub fn peek(&self, key: (i32, i32), chunk: &Arc<Chunk>) -> Option<SectionMask> {
+        self.chunks
+            .get(&key)
+            .filter(|cached| cached.chunk.as_ptr() == Arc::as_ptr(chunk))
+            .map(|cached| cached.sections)
+    }
+    /// The sections of `chunk` whose palette may hold a portal, read from the
+    /// chunk itself. Preserves `maybe_has`, including unused entries and
+    /// global palettes.
+    pub fn scan(chunk: &Chunk, mut portal: impl FnMut(u32) -> bool) -> SectionMask {
+        chunk
+            .sections
+            .iter()
+            .enumerate()
+            .filter(|(_, section)| section.blocks.maybe_has(&mut portal))
+            .map(|(i, _)| i)
+            .collect()
+    }
     /// The sections of `chunk` whose palette may hold a portal, by index
     /// (`MIN_Y`'s section is 0). `portal` is only called while
     /// (re)building an entry, so an unchanged chunk scans its palette once.
@@ -35,21 +55,14 @@ impl PortalSections {
         &mut self,
         key: (i32, i32),
         chunk: &Arc<Chunk>,
-        mut portal: impl FnMut(u32) -> bool,
+        portal: impl FnMut(u32) -> bool,
     ) -> SectionMask {
         let cached = self.chunks.entry(key).or_insert_with(|| Cached {
             chunk: Weak::new(),
             sections: SectionMask::EMPTY,
         });
         if cached.chunk.as_ptr() != Arc::as_ptr(chunk) {
-            // Preserve maybe_has, including unused entries and global palettes.
-            cached.sections = chunk
-                .sections
-                .iter()
-                .enumerate()
-                .filter(|(_, section)| section.blocks.maybe_has(&mut portal))
-                .map(|(i, _)| i)
-                .collect();
+            cached.sections = Self::scan(chunk, portal);
             cached.chunk = Arc::downgrade(chunk);
         }
         cached.sections
@@ -112,6 +125,25 @@ mod tests {
             cache.get((-2, 3), &replacement, |id| id == 1),
             SectionMask::EMPTY
         );
+    }
+
+    #[test]
+    fn peek_answers_only_for_the_chunk_the_entry_was_built_from() {
+        let mut cache = PortalSections::default();
+        let mut chunk = Arc::new(Chunk::empty(0, 0));
+        assert_eq!(cache.peek((0, 0), &chunk), None, "never asked");
+        cache.get((0, 0), &chunk, |id| id == 7);
+        assert_eq!(cache.peek((0, 0), &chunk), Some(SectionMask::EMPTY));
+        Arc::make_mut(&mut chunk).set(0, MIN_Y, 0, 7);
+        assert_eq!(cache.peek((0, 0), &chunk), None, "edited since");
+        assert_eq!(
+            PortalSections::scan(&chunk, |id| id == 7),
+            SectionMask::single(0)
+        );
+        assert_eq!(cache.peek((0, 0), &chunk), None, "a scan stores nothing");
+        cache.get((0, 0), &chunk, |id| id == 7);
+        assert_eq!(cache.peek((0, 0), &chunk), Some(SectionMask::single(0)));
+        assert_eq!(cache.peek((1, 0), &chunk), None, "another key");
     }
 
     #[test]

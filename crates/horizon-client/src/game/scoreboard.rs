@@ -216,6 +216,7 @@ impl Game<'_> {
             | Target::Cloud(id) => Some(uuid_text(self.uuid_for(id))),
             // It keeps its UUID with itself.
             Target::Spawner(id) => self
+                .simulation
                 .ominous_spawners
                 .iter()
                 .find(|s| s.id == id)
@@ -260,16 +261,18 @@ impl Game<'_> {
             | Target::Trident(id)
             | Target::Other(id)
             | Target::Fangs(id)
-            | Target::Cloud(id) => self.persist.raw.get(&id),
+            | Target::Cloud(id) => self.simulation.persist.raw.get(&id),
             Target::Player => self.level.player_extra.as_ref(),
             // A server's player: the saved compound the guest's file is written from.
             Target::Guest(conn) => self.command_guest(conn).and_then(|g| g.saved.as_ref()),
             Target::Spawner(id) => self
+                .simulation
                 .ominous_spawners
                 .iter()
                 .find(|s| s.id == id)
                 .and_then(|s| s.raw.as_deref()),
             Target::Falling(id) => self
+                .simulation
                 .falling
                 .iter()
                 .find(|f| f.id == id)
@@ -527,7 +530,7 @@ impl Game<'_> {
     }
     /// `Scoreboard.entityRemoved`: a dead non-player entity leaves the board.
     pub(super) fn score_entity_removed(&mut self, id: u32) {
-        let Some(uuid) = self.persist.uuids.get(&id).copied() else {
+        let Some(uuid) = self.simulation.persist.uuids.get(&id).copied() else {
             return;
         };
         self.score.board.entity_removed(&uuid_text(uuid));
@@ -550,7 +553,11 @@ impl Game<'_> {
         // The mob is looked up only when its own name has no team: the
         // owner's team is the fallback.
         self.team_with_owner(id, || {
-            self.mobs.iter().find(|m| m.id == id).and_then(tame_owner)
+            self.simulation
+                .mobs
+                .iter()
+                .find(|m| m.id == id)
+                .and_then(tame_owner)
         })
     }
     /// [`mob_team`](Self::mob_team) of a mob at hand, without looking it up.
@@ -566,7 +573,7 @@ impl Game<'_> {
         id: u32,
         owner: impl FnOnce() -> Option<[i32; 4]>,
     ) -> Option<&sb::Team> {
-        let uuid = *self.persist.uuids.get(&id)?;
+        let uuid = *self.simulation.persist.uuids.get(&id)?;
         let own = self.scoreboard_name(id, uuid);
         if let Some(team) = self.score.board.players_team(&own) {
             return Some(team);
@@ -581,7 +588,8 @@ impl Game<'_> {
             let Target::Mob(pet) = self.target_by_uuid(ints_uuid(uuid))? else {
                 return None;
             };
-            self.mobs
+            self.simulation
+                .mobs
                 .iter()
                 .find(|m| m.id == pet && m.extra.tame)?
                 .extra
@@ -605,6 +613,7 @@ impl Game<'_> {
         }
         // One pass over the mobs, not one per mob.
         let tame_owners: HashMap<u32, [i32; 4]> = self
+            .simulation
             .mobs
             .iter()
             .filter_map(|m| Some((m.id, tame_owner(m)?)))
@@ -612,6 +621,7 @@ impl Game<'_> {
         horizon_client::mobs::Teams {
             player: self.player_team(),
             mobs: self
+                .simulation
                 .persist
                 .uuids
                 .keys()
@@ -627,7 +637,8 @@ impl Game<'_> {
         let Some(team) = self.player_team() else {
             return HashSet::new();
         };
-        self.persist
+        self.simulation
+            .persist
             .uuids
             .iter()
             .filter(|(id, uuid)| team.players.contains(&self.scoreboard_name(**id, **uuid)))

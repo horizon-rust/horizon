@@ -127,7 +127,7 @@ impl Game<'_> {
             return;
         };
         let [x, y, z] = hit.pos;
-        let state = self.world.block(x, y, z);
+        let state = self.simulation.world.block(x, y, z);
         let facts = self.res.facts().get(state);
         let offset = match facts.outline_offset {
             true => self.pack.context.tables.offset(state, x, z),
@@ -190,7 +190,10 @@ impl Game<'_> {
     /// else the world's. The world's own `day_time` and everything that plays by it stay.
     pub(super) fn view_day_time(&self) -> i64 {
         let fixed = self.settings.extras.pvp.tweaks.time;
-        horizon_client::pvp::view_day_time(self.world.day_time, fixed.filter(|_| self.own_view()))
+        horizon_client::pvp::view_day_time(
+            self.simulation.world.day_time,
+            fixed.filter(|_| self.own_view()),
+        )
     }
     /// The rain and thunder levels the frame draws (rain, the sky's colour and light, fog): PvP &
     /// HUD's weather, else the world's. Gameplay (riptide, mobs, crops) keeps the world's.

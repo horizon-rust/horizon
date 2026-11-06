@@ -20,7 +20,7 @@ impl Game<'_> {
         self.pack
             .assets
             .registry
-            .state(self.world.block(pos[0], pos[1], pos[2]))
+            .state(self.simulation.world.block(pos[0], pos[1], pos[2]))
             .filter(|s| matches!(&*s.name, "minecraft:campfire" | "minecraft:soul_campfire"))
             .filter(|s| s.properties.get("lit").map(String::as_str) == Some("true"))
             .cloned()

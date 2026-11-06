@@ -462,10 +462,16 @@ impl Game<'_> {
         // BlockPos.containing(getPosition)
         let p = self.resolve_coords(&c).map(|v| v.floor() as i32);
         let dimension = self.command_source.map_or(self.dim, |s| s.dimension);
-        if dimension != self.dim || !self.world.chunks.contains_key(&(p[0] >> 4, p[2] >> 4)) {
+        if dimension != self.dim
+            || !self
+                .simulation
+                .world
+                .chunks
+                .contains_key(&(p[0] >> 4, p[2] >> 4))
+        {
             return Err(err("argument.pos.unloaded", &[]));
         }
-        if p[1] < self.world.bottom_y() || p[1] >= self.world.top_y() {
+        if p[1] < self.simulation.world.bottom_y() || p[1] >= self.simulation.world.top_y() {
             return Err(err("argument.pos.outofworld", &[]));
         }
         Ok(p)
@@ -498,95 +504,131 @@ impl Game<'_> {
                 .map(|p| [p.position.x, p.position.y, p.position.z]),
             Target::Guest(conn) => self.command_guest(conn).map(|g| g.position),
             Target::Mob(id) => self
+                .simulation
                 .mobs
                 .iter()
                 .find(|m| m.id == id)
                 .map(|m| [m.position.x, m.position.y, m.position.z]),
             Target::Item(id) => self
+                .simulation
                 .dropped
                 .iter()
                 .find(|i| i.id == id)
                 .map(|i| [i.position.x, i.position.y, i.position.z]),
             Target::Orb(id) => self
+                .simulation
                 .orbs
                 .iter()
                 .find(|o| o.id == id)
                 .map(|o| [o.position.x, o.position.y, o.position.z]),
             Target::Projectile(id) => self
-                .creatures
+                .simulation
                 .projectiles
                 .iter()
                 .find(|a| a.id == id)
                 .map(|a| [a.position.x, a.position.y, a.position.z]),
             Target::Stand(id) => self
+                .simulation
                 .armor_stands
                 .iter()
                 .find(|a| a.id == id)
                 .map(|a| [a.position.x, a.position.y, a.position.z]),
-            Target::Frame(id) => self.item_frames.iter().find(|f| f.id == id).map(|f| {
-                let (lo, hi) = f.bounds();
-                [
-                    (lo[0] + hi[0]) / 2.0,
-                    (lo[1] + hi[1]) / 2.0,
-                    (lo[2] + hi[2]) / 2.0,
-                ]
-            }),
-            Target::Painting(id) => self.paintings.iter().find(|p| p.id == id).map(|p| {
-                let (lo, hi) = p.bounds();
-                [
-                    (lo[0] + hi[0]) / 2.0,
-                    (lo[1] + hi[1]) / 2.0,
-                    (lo[2] + hi[2]) / 2.0,
-                ]
-            }),
+            Target::Frame(id) => self
+                .simulation
+                .item_frames
+                .iter()
+                .find(|f| f.id == id)
+                .map(|f| {
+                    let (lo, hi) = f.bounds();
+                    [
+                        (lo[0] + hi[0]) / 2.0,
+                        (lo[1] + hi[1]) / 2.0,
+                        (lo[2] + hi[2]) / 2.0,
+                    ]
+                }),
+            Target::Painting(id) => {
+                self.simulation
+                    .paintings
+                    .iter()
+                    .find(|p| p.id == id)
+                    .map(|p| {
+                        let (lo, hi) = p.bounds();
+                        [
+                            (lo[0] + hi[0]) / 2.0,
+                            (lo[1] + hi[1]) / 2.0,
+                            (lo[2] + hi[2]) / 2.0,
+                        ]
+                    })
+            }
             Target::Boat(id) => self
+                .simulation
                 .boats
                 .iter()
                 .find(|b| b.id == id)
                 .map(|b| [b.position.x, b.position.y, b.position.z]),
             Target::Cart(id) => self
+                .simulation
                 .carts
                 .iter()
                 .find(|c| c.id == id)
                 .map(|c| [c.position.x, c.position.y, c.position.z]),
             Target::Other(id) => self
+                .simulation
                 .others
                 .iter()
                 .find(|o| o.id == id)
                 .map(|o| [o.position.x, o.position.y, o.position.z]),
             Target::Crystal(id) => self
+                .simulation
                 .crystals
                 .iter()
                 .find(|c| c.id == id)
                 .map(|c| [c.position.x, c.position.y, c.position.z]),
             Target::Dragon(id) => self
+                .simulation
                 .dragon
                 .as_ref()
                 .filter(|d| d.id == id)
                 .map(|d| [d.position.x, d.position.y, d.position.z]),
             Target::Tnt(id) => self
+                .simulation
                 .tnts
                 .iter()
                 .find(|t| t.id == id)
                 .map(|t| [t.position.x, t.position.y, t.position.z]),
             Target::Falling(id) => self
+                .simulation
                 .falling
                 .iter()
                 .find(|f| f.id == id)
                 .map(|f| [f.position.x, f.position.y, f.position.z]),
             Target::Rocket(id) => self
+                .simulation
                 .rockets
                 .iter()
                 .find(|r| r.id == id)
                 .map(|r| [r.position.x, r.position.y, r.position.z]),
-            Target::Cloud(id) => self.breath_clouds.iter().find(|c| c.id == id).map(|c| c.at),
+            Target::Cloud(id) => self
+                .simulation
+                .breath_clouds
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| c.at),
             Target::Trident(id) => self
+                .simulation
                 .tridents
                 .iter()
                 .find(|t| t.id == id)
                 .map(|t| [t.position.x, t.position.y, t.position.z]),
-            Target::Fangs(id) => self.fangs.list.iter().find(|f| f.id == id).map(|f| f.pos),
+            Target::Fangs(id) => self
+                .simulation
+                .fangs
+                .list
+                .iter()
+                .find(|f| f.id == id)
+                .map(|f| f.pos),
             Target::Spawner(id) => self
+                .simulation
                 .ominous_spawners
                 .iter()
                 .find(|s| s.id == id)
@@ -597,6 +639,7 @@ impl Game<'_> {
         match t {
             Target::Player | Target::Guest(_) => "minecraft:player".into(),
             Target::Mob(id) => self
+                .simulation
                 .mobs
                 .iter()
                 .find(|m| m.id == id)
@@ -606,14 +649,19 @@ impl Game<'_> {
             Target::Item(_) => "minecraft:item".into(),
             Target::Orb(_) => "minecraft:experience_orb".into(),
             Target::Projectile(id) => self
-                .creatures
+                .simulation
                 .projectiles
                 .iter()
                 .find(|p| p.id == id)
                 .map_or_else(String::new, |p| p.kind.id().into()),
             Target::Stand(_) => "minecraft:armor_stand".into(),
             Target::Frame(id) => {
-                if self.item_frames.iter().any(|f| f.id == id && f.glow) {
+                if self
+                    .simulation
+                    .item_frames
+                    .iter()
+                    .any(|f| f.id == id && f.glow)
+                {
                     "minecraft:glow_item_frame".into()
                 } else {
                     "minecraft:item_frame".into()
@@ -621,16 +669,19 @@ impl Game<'_> {
             }
             Target::Painting(_) => "minecraft:painting".into(),
             Target::Boat(id) => self
+                .simulation
                 .boats
                 .iter()
                 .find(|b| b.id == id)
                 .map_or_else(|| "minecraft:oak_boat".into(), |b| b.entity_type()),
             Target::Cart(id) => self
+                .simulation
                 .carts
                 .iter()
                 .find(|c| c.id == id)
                 .map_or_else(|| "minecraft:minecart".into(), |c| c.kind.id().into()),
             Target::Other(id) => self
+                .simulation
                 .others
                 .iter()
                 .find(|o| o.id == id)
@@ -677,7 +728,12 @@ impl Game<'_> {
                         &horizon_client::scoreboard::tag_to_json(c),
                     );
                 }
-                let stack = self.dropped.iter().find(|i| i.id == id).map(|i| &i.stack);
+                let stack = self
+                    .simulation
+                    .dropped
+                    .iter()
+                    .find(|i| i.id == id)
+                    .map(|i| &i.stack);
                 match stack.and_then(|s| s.item_name()) {
                     Some(name) => Text::literal(name),
                     None => {
@@ -690,6 +746,7 @@ impl Game<'_> {
             // with the block's name.
             Target::Falling(id) => {
                 let block = self
+                    .simulation
                     .falling
                     .iter()
                     .find(|f| f.id == id)
@@ -698,13 +755,18 @@ impl Game<'_> {
                 let block = Text::translate(&format!("block.{block}"), &[]);
                 Text::translate("entity.minecraft.falling_block_type", &[block])
             }
-            Target::Mob(id) => self.mobs.iter().find(|m| m.id == id).map_or_else(
-                || Text::translate("entity.", &[]),
-                |m| match self.mob_team_of(m) {
-                    Some(team) => team.formatted_name(m.command_name()),
-                    None => m.command_name(),
-                },
-            ),
+            Target::Mob(id) => self
+                .simulation
+                .mobs
+                .iter()
+                .find(|m| m.id == id)
+                .map_or_else(
+                    || Text::translate("entity.", &[]),
+                    |m| match self.mob_team_of(m) {
+                        Some(team) => team.formatted_name(m.command_name()),
+                        None => m.command_name(),
+                    },
+                ),
             other => {
                 // Entity.getDisplayName: the CustomName component, else the type.
                 let custom = match other {
@@ -787,7 +849,12 @@ impl Game<'_> {
             Sort::Furthest => out.sort_by(|a, b| b.1.total_cmp(&a.1)),
             Sort::Random => {
                 for i in (1..out.len()).rev() {
-                    let j = self.world.random.next_int_bound(i as i32 + 1).unwrap_or(0) as usize;
+                    let j = self
+                        .simulation
+                        .world
+                        .random
+                        .next_int_bound(i as i32 + 1)
+                        .unwrap_or(0) as usize;
                     out.swap(i, j);
                 }
             }
@@ -912,19 +979,46 @@ impl Game<'_> {
         for_each_entity!(entity_lists_of!(self), entity => {
             candidates.extend(entity.selector_target());
         });
-        candidates.extend(self.item_frames.iter().map(|f| Target::Frame(f.id)));
-        candidates.extend(self.paintings.iter().map(|p| Target::Painting(p.id)));
-        candidates.extend(self.others.iter().map(|o| Target::Other(o.id)));
-        candidates.extend(self.fangs.list.iter().map(|f| Target::Fangs(f.id)));
+        candidates.extend(
+            self.simulation
+                .item_frames
+                .iter()
+                .map(|f| Target::Frame(f.id)),
+        );
+        candidates.extend(
+            self.simulation
+                .paintings
+                .iter()
+                .map(|p| Target::Painting(p.id)),
+        );
+        candidates.extend(self.simulation.others.iter().map(|o| Target::Other(o.id)));
+        candidates.extend(
+            self.simulation
+                .fangs
+                .list
+                .iter()
+                .map(|f| Target::Fangs(f.id)),
+        );
         // The End crystals and the dragon (EndCrystal and EnderDragon
         // are entities of their own).
-        candidates.extend(self.crystals.iter().map(|c| Target::Crystal(c.id)));
-        if let Some(d) = &self.dragon {
+        candidates.extend(
+            self.simulation
+                .crystals
+                .iter()
+                .map(|c| Target::Crystal(c.id)),
+        );
+        if let Some(d) = &self.simulation.dragon {
             candidates.push(Target::Dragon(d.id));
         }
-        candidates.extend(self.ominous_spawners.iter().map(|s| Target::Spawner(s.id)));
         candidates.extend(
-            self.breath_clouds
+            self.simulation
+                .ominous_spawners
+                .iter()
+                .map(|s| Target::Spawner(s.id)),
+        );
+        candidates.extend(
+            self.simulation
+                .breath_clouds
                 .iter()
                 .filter(|c| c.id != 0)
                 .map(|c| Target::Cloud(c.id)),
@@ -935,7 +1029,7 @@ impl Game<'_> {
     /// overworld, the nether, the end (MinecraftServer.getAllLevels).
     fn loaded_dims(&self) -> Vec<Dim> {
         let mut dims = vec![self.dim];
-        dims.extend(self.levels.parked_dims());
+        dims.extend(self.simulation_server.levels.parked_dims());
         dims.sort_by_key(|d| match d {
             Dim::Overworld => 0,
             Dim::Nether => 1,
@@ -976,25 +1070,25 @@ impl Game<'_> {
         match t {
             // A player is in no level of its own.
             Target::Player | Target::Guest(_) => true,
-            Target::Mob(id) => self.mobs.iter().any(|m| m.id == id),
-            Target::Item(id) => self.dropped.iter().any(|i| i.id == id),
-            Target::Orb(id) => self.orbs.iter().any(|o| o.id == id),
-            Target::Projectile(id) => self.creatures.projectiles.iter().any(|p| p.id == id),
-            Target::Stand(id) => self.armor_stands.iter().any(|a| a.id == id),
-            Target::Frame(id) => self.item_frames.iter().any(|f| f.id == id),
-            Target::Painting(id) => self.paintings.iter().any(|p| p.id == id),
-            Target::Boat(id) => self.boats.iter().any(|b| b.id == id),
-            Target::Cart(id) => self.carts.iter().any(|c| c.id == id),
-            Target::Other(id) => self.others.iter().any(|o| o.id == id),
-            Target::Fangs(id) => self.fangs.list.iter().any(|f| f.id == id),
-            Target::Crystal(id) => self.crystals.iter().any(|c| c.id == id),
-            Target::Dragon(id) => self.dragon.as_ref().is_some_and(|d| d.id == id),
-            Target::Tnt(id) => self.tnts.iter().any(|t| t.id == id),
-            Target::Falling(id) => self.falling.iter().any(|f| f.id == id),
-            Target::Rocket(id) => self.rockets.iter().any(|r| r.id == id),
-            Target::Trident(id) => self.tridents.iter().any(|t| t.id == id),
-            Target::Spawner(id) => self.ominous_spawners.iter().any(|s| s.id == id),
-            Target::Cloud(id) => self.breath_clouds.iter().any(|c| c.id == id),
+            Target::Mob(id) => self.simulation.mobs.iter().any(|m| m.id == id),
+            Target::Item(id) => self.simulation.dropped.iter().any(|i| i.id == id),
+            Target::Orb(id) => self.simulation.orbs.iter().any(|o| o.id == id),
+            Target::Projectile(id) => self.simulation.projectiles.iter().any(|p| p.id == id),
+            Target::Stand(id) => self.simulation.armor_stands.iter().any(|a| a.id == id),
+            Target::Frame(id) => self.simulation.item_frames.iter().any(|f| f.id == id),
+            Target::Painting(id) => self.simulation.paintings.iter().any(|p| p.id == id),
+            Target::Boat(id) => self.simulation.boats.iter().any(|b| b.id == id),
+            Target::Cart(id) => self.simulation.carts.iter().any(|c| c.id == id),
+            Target::Other(id) => self.simulation.others.iter().any(|o| o.id == id),
+            Target::Fangs(id) => self.simulation.fangs.list.iter().any(|f| f.id == id),
+            Target::Crystal(id) => self.simulation.crystals.iter().any(|c| c.id == id),
+            Target::Dragon(id) => self.simulation.dragon.as_ref().is_some_and(|d| d.id == id),
+            Target::Tnt(id) => self.simulation.tnts.iter().any(|t| t.id == id),
+            Target::Falling(id) => self.simulation.falling.iter().any(|f| f.id == id),
+            Target::Rocket(id) => self.simulation.rockets.iter().any(|r| r.id == id),
+            Target::Trident(id) => self.simulation.tridents.iter().any(|t| t.id == id),
+            Target::Spawner(id) => self.simulation.ominous_spawners.iter().any(|s| s.id == id),
+            Target::Cloud(id) => self.simulation.breath_clouds.iter().any(|c| c.id == id),
         }
     }
     /// Run `f` with the level that holds the entity a target names in place
@@ -1009,7 +1103,7 @@ impl Game<'_> {
         if self.level_holds(t) {
             return Some(f(self));
         }
-        for dim in self.levels.parked_dims() {
+        for dim in self.simulation_server.levels.parked_dims() {
             let back = self.enter_command_level(dim);
             if self.level_holds(t) {
                 let r = f(self);
@@ -1474,7 +1568,7 @@ impl Game<'_> {
                             item.target = uuid;
                         }
                     } else {
-                        let r = &mut g.world.random;
+                        let r = &mut g.simulation.world.random;
                         let pitch = ((r.next_float() - r.next_float()) * 0.7 + 1.0) * 2.0;
                         g.audio
                             .play("minecraft:entity.item.pickup", Some(p), 0.2, pitch);
@@ -1604,7 +1698,7 @@ impl Game<'_> {
                 // transition is never asPassenger). A rider moved without this
                 // is seated again by the next sync, so nothing moves.
                 self.dismount_mob(id);
-                if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
                     m.position = v;
                     m.previous = v;
                     // Entity.teleportSetPosition: setYRot, setYHeadRot, setXRot
@@ -1624,7 +1718,7 @@ impl Game<'_> {
                 }
             }
             Target::Item(id) => {
-                if let Some(i) = self.dropped.iter_mut().find(|i| i.id == id) {
+                if let Some(i) = self.simulation.dropped.iter_mut().find(|i| i.id == id) {
                     i.position = v;
                     i.previous = v;
                     if let Some(r) = rotation {
@@ -1633,7 +1727,7 @@ impl Game<'_> {
                 }
             }
             Target::Orb(id) => {
-                if let Some(o) = self.orbs.iter_mut().find(|o| o.id == id) {
+                if let Some(o) = self.simulation.orbs.iter_mut().find(|o| o.id == id) {
                     o.position = v;
                     o.previous = v;
                     if let Some(r) = rotation {
@@ -1642,7 +1736,7 @@ impl Game<'_> {
                 }
             }
             Target::Projectile(id) => {
-                if let Some(a) = self.creatures.projectiles.iter_mut().find(|a| a.id == id) {
+                if let Some(a) = self.simulation.projectiles.iter_mut().find(|a| a.id == id) {
                     a.position = v;
                     a.previous = v;
                     if let Some(r) = rotation {
@@ -1651,7 +1745,7 @@ impl Game<'_> {
                 }
             }
             Target::Stand(id) => {
-                if let Some(a) = self.armor_stands.iter_mut().find(|a| a.id == id) {
+                if let Some(a) = self.simulation.armor_stands.iter_mut().find(|a| a.id == id) {
                     a.position = v;
                     a.previous = v;
                     // Entity.teleport's stopRiding(), as for a mob: a stand a
@@ -1663,7 +1757,7 @@ impl Game<'_> {
                 }
             }
             Target::Boat(id) => {
-                if let Some(b) = self.boats.iter_mut().find(|b| b.id == id) {
+                if let Some(b) = self.simulation.boats.iter_mut().find(|b| b.id == id) {
                     b.position = v;
                     b.previous = v;
                     if let Some(r) = rotation {
@@ -1672,7 +1766,7 @@ impl Game<'_> {
                 }
             }
             Target::Cart(id) => {
-                if let Some(c) = self.carts.iter_mut().find(|c| c.id == id) {
+                if let Some(c) = self.simulation.carts.iter_mut().find(|c| c.id == id) {
                     c.position = v;
                     c.previous = v;
                     if let Some(r) = rotation {
@@ -1681,7 +1775,7 @@ impl Game<'_> {
                 }
             }
             Target::Fangs(id) => {
-                if let Some(f) = self.fangs.list.iter_mut().find(|f| f.id == id) {
+                if let Some(f) = self.simulation.fangs.list.iter_mut().find(|f| f.id == id) {
                     f.pos = [v.x, v.y, v.z];
                     if let Some([yaw, _]) = rotation.filter(|r| r[0].is_finite()) {
                         f.yaw = yaw;
@@ -1689,7 +1783,7 @@ impl Game<'_> {
                 }
             }
             Target::Other(id) => {
-                if let Some(o) = self.others.iter_mut().find(|o| o.id == id) {
+                if let Some(o) = self.simulation.others.iter_mut().find(|o| o.id == id) {
                     o.position = v;
                     if let Some([yaw, pitch]) = rotation {
                         if yaw.is_finite() {
@@ -1702,18 +1796,18 @@ impl Game<'_> {
                 }
             }
             Target::Crystal(id) => {
-                if let Some(c) = self.crystals.iter_mut().find(|c| c.id == id) {
+                if let Some(c) = self.simulation.crystals.iter_mut().find(|c| c.id == id) {
                     c.position = v;
                 }
             }
             Target::Dragon(id) => {
-                if let Some(d) = self.dragon.as_mut().filter(|d| d.id == id) {
+                if let Some(d) = self.simulation.dragon.as_mut().filter(|d| d.id == id) {
                     d.position = v;
                     d.previous = v;
                 }
             }
             Target::Tnt(id) => {
-                if let Some(t) = self.tnts.iter_mut().find(|t| t.id == id) {
+                if let Some(t) = self.simulation.tnts.iter_mut().find(|t| t.id == id) {
                     t.position = v;
                     t.previous = v;
                     if let Some(r) = rotation {
@@ -1722,7 +1816,7 @@ impl Game<'_> {
                 }
             }
             Target::Falling(id) => {
-                if let Some(f) = self.falling.iter_mut().find(|f| f.id == id) {
+                if let Some(f) = self.simulation.falling.iter_mut().find(|f| f.id == id) {
                     f.position = v;
                     f.previous = v;
                     if let Some(r) = rotation {
@@ -1731,7 +1825,7 @@ impl Game<'_> {
                 }
             }
             Target::Rocket(id) => {
-                if let Some(r) = self.rockets.iter_mut().find(|r| r.id == id) {
+                if let Some(r) = self.simulation.rockets.iter_mut().find(|r| r.id == id) {
                     r.position = v;
                     r.previous = v;
                     if let Some(rot) = rotation {
@@ -1740,7 +1834,7 @@ impl Game<'_> {
                 }
             }
             Target::Trident(id) => {
-                if let Some(t) = self.tridents.iter_mut().find(|t| t.id == id) {
+                if let Some(t) = self.simulation.tridents.iter_mut().find(|t| t.id == id) {
                     t.position = v;
                     t.previous = v;
                     if let Some(r) = rotation {
@@ -1749,12 +1843,22 @@ impl Game<'_> {
                 }
             }
             Target::Spawner(id) => {
-                if let Some(s) = self.ominous_spawners.iter_mut().find(|s| s.id == id) {
+                if let Some(s) = self
+                    .simulation
+                    .ominous_spawners
+                    .iter_mut()
+                    .find(|s| s.id == id)
+                {
                     s.position = [v.x, v.y, v.z];
                 }
             }
             Target::Cloud(id) => {
-                if let Some(c) = self.breath_clouds.iter_mut().find(|c| c.id == id) {
+                if let Some(c) = self
+                    .simulation
+                    .breath_clouds
+                    .iter_mut()
+                    .find(|c| c.id == id)
+                {
                     c.at = pos;
                 }
             }
@@ -2018,14 +2122,14 @@ impl Game<'_> {
     /// Keep the existing Overworld clock tied to the world's canonical day time.
     fn command_clock_time(&self, clock: &str) -> i64 {
         if clock == "minecraft:overworld" {
-            self.world.day_time
+            self.simulation.world.day_time
         } else {
             self.ui.command_clocks.get(clock).map_or(0, |c| c.0)
         }
     }
     fn set_command_clock_time(&mut self, clock: &str, total: i64) {
         if clock == "minecraft:overworld" {
-            self.world.day_time = total;
+            self.simulation.world.day_time = total;
         } else {
             self.ui
                 .command_clocks
@@ -2050,7 +2154,7 @@ impl Game<'_> {
     /// separate; built-in timelines and markers belong only to Overworld.
     fn cmd_time(&mut self, id: &str, ctx: &Context) -> R<i32> {
         if id == "time.query.gametime" {
-            let t = self.world.game_time;
+            let t = self.simulation.world.game_time;
             self.feedback_unbroadcast(Text::tr("commands.time.query.gametime", &[&t]));
             return Ok((t % i64::from(i32::MAX)) as i32);
         }
@@ -2213,7 +2317,8 @@ impl Game<'_> {
         let (key, clear, time, raining, thundering) = if ctx.has("clear") {
             (
                 "commands.weather.set.clear",
-                duration.unwrap_or_else(|| sample(12_000, 180_000, &mut self.world.random)),
+                duration
+                    .unwrap_or_else(|| sample(12_000, 180_000, &mut self.simulation.world.random)),
                 0,
                 false,
                 false,
@@ -2222,7 +2327,8 @@ impl Game<'_> {
             (
                 "commands.weather.set.rain",
                 0,
-                duration.unwrap_or_else(|| sample(12_000, 24_000, &mut self.world.random)),
+                duration
+                    .unwrap_or_else(|| sample(12_000, 24_000, &mut self.simulation.world.random)),
                 true,
                 false,
             )
@@ -2230,26 +2336,27 @@ impl Game<'_> {
             (
                 "commands.weather.set.thunder",
                 0,
-                duration.unwrap_or_else(|| sample(3_600, 15_600, &mut self.world.random)),
+                duration
+                    .unwrap_or_else(|| sample(3_600, 15_600, &mut self.simulation.world.random)),
                 true,
                 true,
             )
         };
         let previous = (
-            self.world.weather.clear_time,
-            self.world.weather.rain_time,
-            self.world.weather.thunder_time,
-            self.world.weather.raining,
-            self.world.weather.thundering,
+            self.simulation.world.weather.clear_time,
+            self.simulation.world.weather.rain_time,
+            self.simulation.world.weather.thunder_time,
+            self.simulation.world.weather.raining,
+            self.simulation.world.weather.thundering,
         );
         let mut cancel = false;
         self.native_weather_change(self.dim.id(), raining, thundering, &mut cancel);
-        let old_thundering = self.world.weather.thundering;
-        let old_thunder_time = self.world.weather.thunder_time;
+        let old_thundering = self.simulation.world.weather.thundering;
+        let old_thunder_time = self.simulation.world.weather.thunder_time;
         let mut cancel_thunder = false;
         self.native_thunder_change(self.dim.id(), thundering, &mut cancel_thunder);
         if cancel {
-            let w = &mut self.world.weather;
+            let w = &mut self.simulation.world.weather;
             (
                 w.clear_time,
                 w.rain_time,
@@ -2259,7 +2366,7 @@ impl Game<'_> {
             ) = previous;
         } else {
             // ServerLevel.setWeatherParameters.
-            let w = &mut self.world.weather;
+            let w = &mut self.simulation.world.weather;
             w.clear_time = clear;
             w.rain_time = time;
             w.thunder_time = time;
@@ -2289,7 +2396,7 @@ impl Game<'_> {
                 self.ui.death_cause = Some("death.attack.genericKill".into());
             }
             Target::Mob(id) => {
-                if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
                     // LivingEntity.kill: a generic_kill hit of Float.MAX_VALUE,
                     // which its death message tells.
                     if m.alive() {
@@ -2307,52 +2414,58 @@ impl Game<'_> {
                 }
             }
             Target::Item(id) => {
-                if let Some(i) = self.dropped.iter().position(|i| i.id == id) {
+                if let Some(i) = self.simulation.dropped.iter().position(|i| i.id == id) {
                     self.remove_dropped(i);
                 }
             }
             Target::Orb(id) => {
-                if let Some(o) = self.orbs.iter_mut().find(|o| o.id == id) {
+                if let Some(o) = self.simulation.orbs.iter_mut().find(|o| o.id == id) {
                     o.age = u32::MAX / 2;
                 }
             }
             Target::Projectile(id) => {
-                self.creatures.projectiles.retain(|p| p.id != id);
+                self.simulation.projectiles.retain(|p| p.id != id);
             }
-            Target::Stand(id) => self.armor_stands.retain(|a| a.id != id),
+            Target::Stand(id) => self.simulation.armor_stands.retain(|a| a.id != id),
             Target::Frame(id) => {
                 // ItemFrame.onKilled.
-                if let Some(frame) = self.item_frames.iter().find(|f| f.id == id).cloned() {
+                if let Some(frame) = self
+                    .simulation
+                    .item_frames
+                    .iter()
+                    .find(|f| f.id == id)
+                    .cloned()
+                {
                     self.remove_framed_map(&frame);
                 }
-                self.item_frames.retain(|f| f.id != id);
+                self.simulation.item_frames.retain(|f| f.id != id);
             }
-            Target::Painting(id) => self.paintings.retain(|p| p.id != id),
+            Target::Painting(id) => self.simulation.paintings.retain(|p| p.id != id),
             Target::Boat(id) => {
                 // AbstractBoat.remove: a killed boat drops its lead.
-                if let Some(i) = self.boats.iter().position(|b| b.id == id) {
+                if let Some(i) = self.simulation.boats.iter().position(|b| b.id == id) {
                     self.release_vehicle_container(id);
-                    let b = self.boats.remove(i);
+                    let b = self.simulation.boats.remove(i);
                     self.boat_removed(&b);
                 }
             }
             Target::Cart(id) => {
                 self.release_vehicle_container(id);
-                self.carts.retain(|c| c.id != id);
+                self.simulation.carts.retain(|c| c.id != id);
             }
-            Target::Other(id) => self.others.retain(|o| o.id != id),
-            Target::Fangs(id) => self.fangs.list.retain(|f| f.id != id),
+            Target::Other(id) => self.simulation.others.retain(|o| o.id != id),
+            Target::Fangs(id) => self.simulation.fangs.list.retain(|f| f.id != id),
             Target::Crystal(id) => self.kill_crystal(id),
             Target::Dragon(id) => self.kill_dragon(id),
-            Target::Tnt(id) => self.tnts.retain(|t| t.id != id),
-            Target::Falling(id) => self.falling.retain(|f| f.id != id),
-            Target::Rocket(id) => self.rockets.retain(|r| r.id != id),
-            Target::Trident(id) => self.tridents.retain(|t| t.id != id),
-            Target::Spawner(id) => self.ominous_spawners.retain(|s| s.id != id),
-            Target::Cloud(id) => self.breath_clouds.retain(|c| c.id != id),
+            Target::Tnt(id) => self.simulation.tnts.retain(|t| t.id != id),
+            Target::Falling(id) => self.simulation.falling.retain(|f| f.id != id),
+            Target::Rocket(id) => self.simulation.rockets.retain(|r| r.id != id),
+            Target::Trident(id) => self.simulation.tridents.retain(|t| t.id != id),
+            Target::Spawner(id) => self.simulation.ominous_spawners.retain(|s| s.id != id),
+            Target::Cloud(id) => self.simulation.breath_clouds.retain(|c| c.id != id),
         }
         // The orbs marked for removal are gone (Entity.kill removes them).
-        self.orbs.retain(|o| o.age < u32::MAX / 2);
+        self.simulation.orbs.retain(|o| o.age < u32::MAX / 2);
         self.native_leaves_flush();
     }
     fn cmd_kill(&mut self, ctx: &Context) -> R<i32> {
@@ -2438,24 +2551,26 @@ impl Game<'_> {
                     // `new ExperienceOrb(level, pos, Vec3.ZERO, 0)`, unstuck
                     // like any other orb spawn.
                     let at = self.unstuck_orb(pos);
-                    self.next_entity += 1;
-                    self.orbs.push(horizon_client::entities::ExperienceOrb {
-                        rotation: [0.0, 0.0],
-                        join: Default::default(),
-                        no_gravity: false,
-                        id: self.next_entity,
-                        position: Vec3::new(at[0], at[1], at[2]),
-                        previous: Vec3::new(at[0], at[1], at[2]),
-                        velocity: Vec3::new(0.0, 0.0, 0.0),
-                        value: 0,
-                        age: 0,
-                        on_ground: false,
-                        count: 1,
-                        ticks: 0,
-                        health: 5,
-                    });
+                    self.simulation_server.next_entity += 1;
+                    self.simulation
+                        .orbs
+                        .push(horizon_client::entities::ExperienceOrb {
+                            rotation: [0.0, 0.0],
+                            join: Default::default(),
+                            no_gravity: false,
+                            id: self.simulation_server.next_entity,
+                            position: Vec3::new(at[0], at[1], at[2]),
+                            previous: Vec3::new(at[0], at[1], at[2]),
+                            velocity: Vec3::new(0.0, 0.0, 0.0),
+                            value: 0,
+                            age: 0,
+                            on_ground: false,
+                            count: 1,
+                            ticks: 0,
+                            health: 5,
+                        });
                     // tryAddFreshEntityWithPassengers refused: ERROR_DUPLICATE_UUID.
-                    if !self.native_joins_flush(false, self.next_entity) {
+                    if !self.native_joins_flush(false, self.simulation_server.next_entity) {
                         return Err(err("commands.summon.failed.uuid", &[]));
                     }
                     name = Text::translate("entity.minecraft.experience_orb", &[]);
@@ -2475,17 +2590,22 @@ impl Game<'_> {
                 "end_crystal" => {
                     // EndCrystal's constructor takes an id from the entity
                     // counter, and the crystal is shown with its base.
-                    self.next_entity += 1;
-                    self.crystals.push(super::dragon::Crystal {
-                        id: self.next_entity,
+                    self.simulation_server.next_entity += 1;
+                    self.simulation.crystals.push(super::dragon::Crystal {
+                        id: self.simulation_server.next_entity,
                         position: Vec3::new(pos[0], pos[1], pos[2]),
                         show_bottom: true,
-                        time: self.world.random.next_int_bound(100_000).unwrap_or(0),
+                        time: self
+                            .simulation
+                            .world
+                            .random
+                            .next_int_bound(100_000)
+                            .unwrap_or(0),
                         beam: None,
                         invulnerable: false,
                     });
                     // tryAddFreshEntityWithPassengers refused: ERROR_DUPLICATE_UUID.
-                    if !self.native_joins_flush(false, self.next_entity) {
+                    if !self.native_joins_flush(false, self.simulation_server.next_entity) {
                         return Err(err("commands.summon.failed.uuid", &[]));
                     }
                     name = Text::translate("entity.minecraft.end_crystal", &[]);
@@ -2493,9 +2613,9 @@ impl Game<'_> {
                 k if super::minecarts::CartKind::from_id(&kind).is_some() => {
                     let cart_kind = super::minecarts::CartKind::from_id(&kind)
                         .unwrap_or(super::minecarts::CartKind::Rideable);
-                    self.next_entity += 1;
+                    self.simulation_server.next_entity += 1;
                     let mut cart = super::minecarts::Minecart::new(
-                        self.next_entity,
+                        self.simulation_server.next_entity,
                         cart_kind,
                         Vec3::new(pos[0], pos[1], pos[2]),
                     );
@@ -2508,7 +2628,7 @@ impl Game<'_> {
                         cart.spawner = Some(Box::new(Spawner::load(&empty)));
                     }
                     let id = cart.id;
-                    self.carts.push(cart);
+                    self.simulation.carts.push(cart);
                     if !self.native_joins_flush(false, id) {
                         return Err(err("commands.summon.failed.uuid", &[]));
                     }
@@ -2537,12 +2657,12 @@ impl Game<'_> {
     /// included: a summon compares it before and after.
     fn spawned_mark(&self) -> (u32, usize) {
         (
-            self.next_entity,
-            self.tnts.len()
-                + self.falling.len()
-                + self.creatures.projectiles.len()
-                + self.rockets.len()
-                + self.tridents.len(),
+            self.simulation_server.next_entity,
+            self.simulation.tnts.len()
+                + self.simulation.falling.len()
+                + self.simulation.projectiles.len()
+                + self.simulation.rockets.len()
+                + self.simulation.tridents.len(),
         )
     }
     /// BlockStateArgument -> registry state.
@@ -2604,7 +2724,7 @@ impl Game<'_> {
         state: BlockStateId,
         strict: bool,
     ) -> R<bool> {
-        let previous = self.world.block(pos[0], pos[1], pos[2]);
+        let previous = self.simulation.world.block(pos[0], pos[1], pos[2]);
         if previous == state {
             return Ok(false);
         }
@@ -2618,7 +2738,7 @@ impl Game<'_> {
         let key = (pos[0], pos[1], pos[2]);
         if old != new {
             self.jukebox_removed(pos);
-            self.world.block_entities.remove(&key);
+            self.simulation.world.block_entities.remove(&key);
         }
         if strict {
             self.with_level(|b, level, ticks| {
@@ -2639,12 +2759,12 @@ impl Game<'_> {
         }
         // LevelChunk.setBlockState creates it when the block, not the state, is still
         // there after onPlace: a powered hopper turns itself `enabled=false`.
-        let landed = self.world.block(pos[0], pos[1], pos[2]);
+        let landed = self.simulation.world.block(pos[0], pos[1], pos[2]);
         if old != new
             && self.res.facts().get(landed).name == new
             && let Some(entity) = self.new_block_entity(&new)
         {
-            self.world.block_entities.insert(key, entity);
+            self.simulation.world.block_entities.insert(key, entity);
         }
         Ok(true)
     }
@@ -2658,15 +2778,15 @@ impl Game<'_> {
         if self.world_debug {
             return Err(err("commands.setblock.failed", &[]));
         }
-        let current = self.world.block(pos[0], pos[1], pos[2]);
-        if ctx.has("keep") && current != self.world.air {
+        let current = self.simulation.world.block(pos[0], pos[1], pos[2]);
+        if ctx.has("keep") && current != self.simulation.world.air {
             return Err(err("commands.setblock.failed", &[]));
         }
         // SetBlockCommand.setBlock skips placement when destruction already
         // leaves an air state and the requested state is also air.
         let place_needed = if ctx.has("destroy") {
             self.destroy_block_dropping(pos)?;
-            let remaining = self.world.block(pos[0], pos[1], pos[2]);
+            let remaining = self.simulation.world.block(pos[0], pos[1], pos[2]);
             !(self.res.facts().is_air(state) && self.res.facts().is_air(remaining))
         } else {
             true
@@ -2685,7 +2805,7 @@ impl Game<'_> {
             // ServerLevel.updateNeighboursOnBlockSet still runs when placing
             // air was unnecessary. The unchanged air has no analog output or
             // removal side effects, so only its neighbours need notification.
-            let remaining = self.world.block(pos[0], pos[1], pos[2]);
+            let remaining = self.simulation.world.block(pos[0], pos[1], pos[2]);
             self.with_level(|b, level, ticks| {
                 b.update_neighbors_at(
                     level,
@@ -2723,7 +2843,7 @@ impl Game<'_> {
             return self.set_pot_data(pos, &tag).unwrap_or(false);
         }
         let key = (pos[0], pos[1], pos[2]);
-        let Some(e) = self.world.block_entities.get(&key) else {
+        let Some(e) = self.simulation.world.block_entities.get(&key) else {
             return false;
         };
         let name = self.data_block_name(pos);
@@ -2745,16 +2865,19 @@ impl Game<'_> {
         let after = horizon_client::save::encode_block_entity(key, &new, &name);
         // The lock is outside the model: a tag that only changes it still
         // changes the block entity.
-        let lock_changed = self.world.block_lock(key) != tag.get("lock");
+        let lock_changed = self.simulation.world.block_lock(key) != tag.get("lock");
         // So is the custom name.
         let name_changed = self.load_block_name(key, &new, &tag);
         if after == before && !rolled && !lock_changed && !name_changed {
             return false;
         }
-        self.world.block_entities.insert(key, new);
-        self.world.set_block_lock(key, &tag);
+        self.simulation.world.block_entities.insert(key, new);
+        self.simulation.world.set_block_lock(key, &tag);
         self.update_spawner_display(key);
-        self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+        self.simulation
+            .world
+            .modified
+            .insert((pos[0] >> 4, pos[2] >> 4));
         true
     }
     /// `RandomizableContainer.unpackLootTable` for a player who opens a
@@ -2763,6 +2886,7 @@ impl Game<'_> {
     /// container saves its items, not the table.
     pub(super) fn unpack_opened_loot(&mut self, key: (i32, i32, i32), name: &str) {
         let Some(rolled) = self
+            .simulation
             .world
             .chunks
             .get(&(key.0 >> 4, key.2 >> 4))
@@ -2774,6 +2898,7 @@ impl Game<'_> {
         };
         // The roll is still there only while the container holds exactly its items.
         let still_rolled = self
+            .simulation
             .world
             .block_entities
             .get_mut(&key)
@@ -2787,7 +2912,12 @@ impl Game<'_> {
         if still_rolled {
             self.trigger_loot_table(&rolled.table);
         }
-        let Some(chunk) = self.world.chunks.get_mut(&(key.0 >> 4, key.2 >> 4)) else {
+        let Some(chunk) = self
+            .simulation
+            .world
+            .chunks
+            .get_mut(&(key.0 >> 4, key.2 >> 4))
+        else {
             return;
         };
         let chunk = std::sync::Arc::make_mut(chunk);
@@ -2798,7 +2928,10 @@ impl Game<'_> {
             .unwrap_or_default();
         horizon_client::save::consume_container_loot(&mut extras, key);
         chunk.saved = Some(std::sync::Arc::new(extras));
-        self.world.modified.insert((key.0 >> 4, key.2 >> 4));
+        self.simulation
+            .world
+            .modified
+            .insert((key.0 >> 4, key.2 >> 4));
         // `ChestBlock.getMenuProvider` unpacks both halves of a double chest:
         // the other half's table, if it still holds one, rolls too. The own roll
         // is consumed above, so the partner's call does not come back here.
@@ -2806,7 +2939,7 @@ impl Game<'_> {
             let other_name = self
                 .res
                 .facts()
-                .get(self.world.block(other.0, other.1, other.2))
+                .get(self.simulation.world.block(other.0, other.1, other.2))
                 .name
                 .to_string();
             self.unpack_opened_loot(other, &other_name);
@@ -2843,7 +2976,12 @@ impl Game<'_> {
             }
             _ => None,
         };
-        let Some(chunk) = self.world.chunks.get_mut(&(key.0 >> 4, key.2 >> 4)) else {
+        let Some(chunk) = self
+            .simulation
+            .world
+            .chunks
+            .get_mut(&(key.0 >> 4, key.2 >> 4))
+        else {
             return false;
         };
         let held = |c: &horizon_client::chunk::Chunk| {
@@ -2877,6 +3015,7 @@ impl Game<'_> {
             return;
         };
         let rolled = self
+            .simulation
             .world
             .chunks
             .get(&(key.0 >> 4, key.2 >> 4))
@@ -2910,7 +3049,7 @@ impl Game<'_> {
             return Err(err("commands.fill.failed", &[]));
         }
         let state = self.block_state(&block)?;
-        let air = self.world.air;
+        let air = self.simulation.world.air;
         let (hollow, outline, destroy, strict, keep) = (
             ctx.has("hollow"),
             ctx.has("outline"),
@@ -2927,7 +3066,7 @@ impl Game<'_> {
         for y in min[1]..=max[1] {
             for z in min[2]..=max[2] {
                 for x in min[0]..=max[0] {
-                    let current = self.world.block(x, y, z);
+                    let current = self.simulation.world.block(x, y, z);
                     if keep && current != air {
                         continue;
                     }
@@ -3002,7 +3141,12 @@ impl Game<'_> {
             return Err(err("commands.clone.toobig", &[&limit, &area]));
         }
         for p in [dest, dmax] {
-            if !self.world.chunks.contains_key(&(p[0] >> 4, p[2] >> 4)) {
+            if !self
+                .simulation
+                .world
+                .chunks
+                .contains_key(&(p[0] >> 4, p[2] >> 4))
+            {
                 return Err(err("argument.pos.unloaded", &[]));
             }
         }
@@ -3014,13 +3158,13 @@ impl Game<'_> {
             Some(Arg::Block(f)) => Some(f.clone()),
             _ => None,
         };
-        let air = self.world.air;
+        let air = self.simulation.world.air;
         let masked = ctx.has("masked");
         let mut copies = Vec::new();
         for y in min[1]..=max[1] {
             for z in min[2]..=max[2] {
                 for x in min[0]..=max[0] {
-                    let s = self.world.block(x, y, z);
+                    let s = self.simulation.world.block(x, y, z);
                     if masked && s == air {
                         continue;
                     }
@@ -3037,8 +3181,12 @@ impl Game<'_> {
                             dest[2] + z - min[2],
                         ],
                         s,
-                        self.world.block_entities.get(&(x, y, z)).cloned(),
-                        self.world.block_names.get(&(x, y, z)).cloned(),
+                        self.simulation
+                            .world
+                            .block_entities
+                            .get(&(x, y, z))
+                            .cloned(),
+                        self.simulation.world.block_names.get(&(x, y, z)).cloned(),
                     ));
                 }
             }
@@ -3060,11 +3208,11 @@ impl Game<'_> {
             }
             if let Some(e) = entity {
                 let key = (to[0], to[1], to[2]);
-                self.world.block_entities.insert(key, e);
+                self.simulation.world.block_entities.insert(key, e);
                 // The copied tag carries the custom name.
                 match name {
-                    Some(name) => self.world.block_names.insert(key, name),
-                    None => self.world.block_names.remove(&key),
+                    Some(name) => self.simulation.world.block_names.insert(key, name),
+                    None => self.simulation.world.block_names.remove(&key),
                 };
             }
         }
@@ -3762,7 +3910,7 @@ impl Game<'_> {
         let (cx1, cz1) = ((from[0] + RANGE) >> 4, (from[2] + RANGE) >> 4);
         for cx in cx0..=cx1 {
             for cz in cz0..=cz1 {
-                let Some(chunk) = self.world.chunks.get(&(cx, cz)) else {
+                let Some(chunk) = self.simulation.world.chunks.get(&(cx, cz)) else {
                     continue;
                 };
                 for (i, section) in chunk.sections.iter().enumerate() {
@@ -3778,7 +3926,7 @@ impl Game<'_> {
                     if !section.blocks.maybe_has(&mut wanted_state) {
                         continue;
                     }
-                    let base_y = self.world.bottom_y() + 16 * i as i32;
+                    let base_y = self.simulation.world.bottom_y() + 16 * i as i32;
                     for j in 0..4096 {
                         let state = section.get(j);
                         let Some(kind) = cache.get(&state).copied().flatten() else {
@@ -3840,8 +3988,8 @@ impl Game<'_> {
                 radius: 6400,
                 horizontal: 32,
                 vertical: 64,
-                min_y: self.world.bottom_y(),
-                max_y: self.world.top_y() - 1,
+                min_y: self.simulation.world.bottom_y(),
+                max_y: self.simulation.world.top_y() - 1,
             };
             let found = self
                 .end
@@ -4196,7 +4344,7 @@ mod teleport_pitch_tests {
             .get("minecraft:zombie")
             .unwrap()
             .clone();
-        game.mobs.push(horizon_client::mobs::Mob::new(
+        game.simulation.mobs.push(horizon_client::mobs::Mob::new(
             42,
             kind,
             horizon_core::geometry::Vec3::new(0.0, 0.0, 0.0),
@@ -4212,10 +4360,16 @@ mod teleport_pitch_tests {
             game.pitch = 20.0;
             game.teleport_to_in_level(Target::Player, [0.0; 3], Some(rotation), true);
             assert_eq!([game.yaw, game.pitch], expected);
-            game.mobs[0].yaw = 10.0;
-            game.mobs[0].head_pitch = 20.0;
+            game.simulation.mobs[0].yaw = 10.0;
+            game.simulation.mobs[0].head_pitch = 20.0;
             game.teleport_to_in_level(Target::Mob(42), [0.0; 3], Some(rotation), true);
-            assert_eq!([game.mobs[0].yaw, game.mobs[0].head_pitch], expected);
+            assert_eq!(
+                [
+                    game.simulation.mobs[0].yaw,
+                    game.simulation.mobs[0].head_pitch
+                ],
+                expected
+            );
         }
         game.build_registries();
         game.set_allow_commands(true);
@@ -4225,7 +4379,7 @@ mod teleport_pitch_tests {
             ("tp @e[type=minecraft:zombie,limit=1] 0 0 0 0 270", -90.0),
         ] {
             assert!(game.run_command(command), "{command}");
-            assert_eq!(game.mobs[0].head_pitch, expected, "{command}");
+            assert_eq!(game.simulation.mobs[0].head_pitch, expected, "{command}");
         }
         for (source, target, angle, expected) in [
             (90.0, 90.0, "~100", 90.0),
@@ -4234,25 +4388,28 @@ mod teleport_pitch_tests {
             (0.0, 90.0, "~-100", 90.0),
         ] {
             game.pitch = source;
-            game.mobs[0].head_pitch = target;
+            game.simulation.mobs[0].head_pitch = target;
             assert!(game.run_command(&format!(
                 "tp @e[type=minecraft:zombie,limit=1] 0 0 0 0 {angle}"
             )));
-            assert_eq!(game.mobs[0].head_pitch, expected);
+            assert_eq!(game.simulation.mobs[0].head_pitch, expected);
         }
         game.yaw = 190.0;
-        game.mobs[0].yaw = 170.0;
+        game.simulation.mobs[0].yaw = 170.0;
         assert!(game.run_command("tp @e[type=minecraft:zombie,limit=1] 0 0 0 ~ ~"));
-        assert_eq!(game.mobs[0].yaw, 190.0, "relative yaw wraps the delta");
+        assert_eq!(
+            game.simulation.mobs[0].yaw, 190.0,
+            "relative yaw wraps the delta"
+        );
 
-        game.mobs[0].head_pitch = 360.0;
+        game.simulation.mobs[0].head_pitch = 360.0;
         assert!(
             game.run_command(
                 "tp @e[type=minecraft:zombie,limit=1] @e[type=minecraft:zombie,limit=1]"
             )
         );
         assert_eq!(
-            game.mobs[0].head_pitch, 0.0,
+            game.simulation.mobs[0].head_pitch, 0.0,
             "destination rotation wraps too"
         );
 
@@ -4261,18 +4418,24 @@ mod teleport_pitch_tests {
             assert!(game.run_command(&format!(
                 "rotate @e[type=minecraft:zombie,limit=1] 0 {pitch}"
             )));
-            assert_eq!(game.mobs[0].head_pitch, expected);
+            assert_eq!(game.simulation.mobs[0].head_pitch, expected);
         }
         for (yaw, pitch, expected) in [
             ("40", overflow.as_str(), [40.0, 20.0]),
             (overflow.as_str(), "30", [10.0, 30.0]),
         ] {
-            game.mobs[0].yaw = 10.0;
-            game.mobs[0].head_pitch = 20.0;
+            game.simulation.mobs[0].yaw = 10.0;
+            game.simulation.mobs[0].head_pitch = 20.0;
             assert!(game.run_command(&format!(
                 "tp @e[type=minecraft:zombie,limit=1] 0 0 0 {yaw} {pitch}"
             )));
-            assert_eq!([game.mobs[0].yaw, game.mobs[0].head_pitch], expected);
+            assert_eq!(
+                [
+                    game.simulation.mobs[0].yaw,
+                    game.simulation.mobs[0].head_pitch
+                ],
+                expected
+            );
         }
     }
 
@@ -4411,7 +4574,7 @@ mod teleport_rider_tests {
             .unwrap()
             .clone();
         // A villager riding a horse, 30 degrees off it.
-        game.mobs.push(horizon_client::mobs::Mob::new(
+        game.simulation.mobs.push(horizon_client::mobs::Mob::new(
             42,
             horse,
             Vec3::new(3.0, 64.0, 5.0),
@@ -4420,13 +4583,13 @@ mod teleport_rider_tests {
         let mut rider =
             horizon_client::mobs::Mob::new(43, villager, Vec3::new(3.0, 64.5, 5.0), 30.0);
         rider.extra.mount = Some(42);
-        game.mobs.push(rider);
+        game.simulation.mobs.push(rider);
         // Entity.teleportPassengers: the rider keeps its offset from the
         // vehicle and turns by what the vehicle turned.
         game.teleport_to_in_level(Target::Mob(42), [10.0, 70.0, -4.0], Some([90.0, 0.0]), true);
-        let vehicle = game.mobs.iter().find(|m| m.id == 42).unwrap();
+        let vehicle = game.simulation.mobs.iter().find(|m| m.id == 42).unwrap();
         assert_eq!(vehicle.position, Vec3::new(10.0, 70.0, -4.0));
-        let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
+        let rider = game.simulation.mobs.iter().find(|m| m.id == 43).unwrap();
         assert_eq!(rider.position, Vec3::new(10.0, 70.5, -4.0));
         assert_eq!(rider.yaw, 120.0, "the rider keeps its angle to the vehicle");
         assert_eq!(
@@ -4442,11 +4605,11 @@ mod teleport_rider_tests {
             Some([180.0, 0.0]),
             true,
         );
-        let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
+        let rider = game.simulation.mobs.iter().find(|m| m.id == 43).unwrap();
         assert_eq!(rider.yaw, 210.0, "the rider turns by the vehicle's turn");
         // `facing` keeps the transition's rotation: the vehicle looks, the rider does not turn.
         game.teleport_to_in_level(Target::Mob(42), [10.0, 70.0, -4.0], Some([0.0, 0.0]), false);
-        let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
+        let rider = game.simulation.mobs.iter().find(|m| m.id == 43).unwrap();
         assert_eq!(
             rider.yaw, 210.0,
             "a vehicle turned by `facing` leaves its rider"
@@ -4454,7 +4617,7 @@ mod teleport_rider_tests {
         // Entity.teleport's stopRiding(): a target that is itself a passenger
         // leaves its vehicle, or the next sync seats it where it was.
         game.teleport_to_in_level(Target::Mob(43), [0.0, 64.0, 0.0], None, false);
-        let rider = game.mobs.iter().find(|m| m.id == 43).unwrap();
+        let rider = game.simulation.mobs.iter().find(|m| m.id == 43).unwrap();
         assert_eq!(rider.extra.mount, None, "the teleported rider dismounted");
         assert_eq!(rider.position, Vec3::new(0.0, 64.0, 0.0));
     }
@@ -4504,7 +4667,8 @@ mod selector_bounds_tests {
         .unwrap();
         game.build_registries();
         let kind = game.res.mob_types().get("minecraft:pig").unwrap().clone();
-        game.mobs
+        game.simulation
+            .mobs
             .push(Mob::new(30, kind, Vec3::new(10.5, 220.0, 10.5), 0.0));
         let target = Target::Mob(30);
         let mut selector = Selector {
@@ -4535,7 +4699,8 @@ mod selector_bounds_tests {
                 .len(),
             1
         );
-        game.armor_stands
+        game.simulation
+            .armor_stands
             .push(ArmorStand::new(31, Vec3::new(30.5, 220.0, 10.5), 0.0));
         selector.delta = [Some(0.0); 3];
         for (x, count) in [(29.5, 1), (29.25, 0), (30.75, 0), (29.250000000000004, 1)] {

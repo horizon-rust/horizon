@@ -170,7 +170,7 @@ impl Game<'_> {
     pub(super) fn stop_mining(&mut self) {
         if self.clicks.destroying.active {
             let pos = self.clicks.destroying.pos;
-            let state = self.world.block(pos[0], pos[1], pos[2]);
+            let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
             self.tutorial_destroy(state, -1.0);
         }
         let mut destroying = std::mem::take(&mut self.clicks.destroying);
@@ -271,7 +271,7 @@ impl Game<'_> {
         let look = v3(super::view_vector(self.yaw, self.pitch));
         let reach = attack_reach(range, self.creative);
         let camera = self.remote_camera_id();
-        let boxes: Vec<(usize, Aabb)> = (self.mobs.iter().enumerate())
+        let boxes: Vec<(usize, Aabb)> = (self.simulation.mobs.iter().enumerate())
             .filter(|(_, m)| !m.removed && Some(m.id) != self.riding && Some(m.id) != camera)
             .map(|(i, m)| (i, m.bounds()))
             .collect();
@@ -287,7 +287,7 @@ impl Game<'_> {
         let nearest = super::spear::hits_in_reach(&boxes, eye, look, movement, reach, clip)
             .into_iter()
             .map(|(i, at)| {
-                let feet = self.mobs[i].position;
+                let feet = self.simulation.mobs[i].position;
                 (
                     i,
                     eye.distance_squared(at).sqrt(),
@@ -349,7 +349,7 @@ impl Game<'_> {
             let d = &self.clicks.destroying;
             if d.active && d.ticks > ticks {
                 let (pos, first) = (d.pos, (d.ticks as u32 - 1).is_multiple_of(4));
-                let state = self.world.block(pos[0], pos[1], pos[2]);
+                let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
                 if first {
                     let sounds = self.res.facts().get(state).sounds.clone();
                     self.audio.play(
@@ -378,7 +378,7 @@ impl Game<'_> {
         if let Some(mining) = &self.mining {
             let pos = mining.pos;
             let progress = mining.progress;
-            let state = self.world.block(pos[0], pos[1], pos[2]);
+            let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
             self.tutorial_destroy(state, progress);
         }
         Ok(())
@@ -388,7 +388,7 @@ impl Game<'_> {
     /// here: single player's, a host's for each guest, a remote client's own.
     pub(super) fn destroy_progress(&mut self, pos: [i32; 3]) -> f32 {
         let block_break_speed = self.block_break_speed();
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         let facts = self.res.facts().get(state);
         if facts.hardness == -1.0 {
             return 0.0;
@@ -403,7 +403,7 @@ impl Game<'_> {
             && self
                 .res
                 .facts()
-                .get(self.world.block(
+                .get(self.simulation.world.block(
                     eye[0].floor() as i32,
                     eye[1].floor() as i32,
                     eye[2].floor() as i32,
@@ -442,16 +442,16 @@ impl Game<'_> {
     }
     /// `LocalPlayer.isHandsBusy`: paddling a boat.
     pub(super) fn hands_busy(&self) -> bool {
-        self.riding
-            .is_some_and(|id| self.controls_boat(id) && self.boats.iter().any(|b| b.id == id))
-            && [
-                winit::keyboard::KeyCode::KeyW,
-                winit::keyboard::KeyCode::KeyS,
-                winit::keyboard::KeyCode::KeyA,
-                winit::keyboard::KeyCode::KeyD,
-            ]
-            .iter()
-            .any(|k| self.movement_key_held(*k))
+        self.riding.is_some_and(|id| {
+            self.controls_boat(id) && self.simulation.boats.iter().any(|b| b.id == id)
+        }) && [
+            winit::keyboard::KeyCode::KeyW,
+            winit::keyboard::KeyCode::KeyS,
+            winit::keyboard::KeyCode::KeyA,
+            winit::keyboard::KeyCode::KeyD,
+        ]
+        .iter()
+        .any(|k| self.movement_key_held(*k))
     }
     /// `MultiPlayerGameMode.startUseItem`'s bookkeeping around the game's
     /// use: nothing starts while a block is being broken or the hands are
@@ -590,10 +590,12 @@ impl Game<'_> {
     /// boat), or a block whose `showAsInteractableInSpectatorMode` holds.
     pub(super) fn spectator_crosshair(&self) -> bool {
         let cart = self.cart_hit().map(|(i, d)| {
-            let kind = &self.carts[i].kind;
+            let kind = &self.simulation.carts[i].kind;
             (d, matches!(kind, CartKind::Chest | CartKind::Hopper))
         });
-        let boat = self.boat_hit().map(|(i, d)| (d, self.boats[i].chest));
+        let boat = self
+            .boat_hit()
+            .map(|(i, d)| (d, self.simulation.boats[i].chest));
         let others = [
             self.mob_hit().map(|h| h.1),
             self.armor_stand_hit().map(|h| h.1),
@@ -618,7 +620,11 @@ impl Game<'_> {
         let id = &*self
             .res
             .facts()
-            .get(self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]))
+            .get(
+                self.simulation
+                    .world
+                    .block(hit.pos[0], hit.pos[1], hit.pos[2]),
+            )
             .name;
         let name = id.trim_start_matches("minecraft:");
         match name {
@@ -634,7 +640,7 @@ impl Game<'_> {
             _ if horizon_client::containers::is_chest_block(id) => {
                 let key = (hit.pos[0], hit.pos[1], hit.pos[2]);
                 let blocked = |p: (i32, i32, i32)| {
-                    let above = self.world.block(p.0, p.1 + 1, p.2);
+                    let above = self.simulation.world.block(p.0, p.1 + 1, p.2);
                     self.res.behaviours().facts(above).flags
                         & horizon_world::level::data::state_flags::CONDUCTOR
                         != 0
@@ -754,7 +760,7 @@ impl HandWorld for GameHands<'_, '_> {
         }
     }
     fn is_air(&mut self, pos: [i32; 3]) -> bool {
-        let state = self.game.world.block(pos[0], pos[1], pos[2]);
+        let state = self.game.simulation.world.block(pos[0], pos[1], pos[2]);
         self.game.res.facts().get(state).name.ends_with("air")
     }
     fn creative(&self) -> bool {
@@ -845,7 +851,7 @@ impl HandWorld for GameHands<'_, '_> {
         {
             return false;
         }
-        let state = self.game.world.block(pos[0], pos[1], pos[2]);
+        let state = self.game.simulation.world.block(pos[0], pos[1], pos[2]);
         self.game.tutorial_destroy(state, 1.0);
         let r = self.game.break_block(pos);
         self.keep(r);

@@ -73,7 +73,7 @@ impl Game<'_> {
         let start = Vec3::new(pos.x, eye[1], pos.z);
         let mut proj = Projectile::new(ProjectileKind::WindCharge, start, Some(Who::Player));
         proj.shoot_from_rotation(
-            &mut self.world.random,
+            &mut self.simulation.world.random,
             self.pitch,
             self.yaw,
             0.0,
@@ -83,7 +83,7 @@ impl Game<'_> {
             on_ground,
         );
         self.add_projectile(proj);
-        let pitch = 0.4 / (self.world.random.next_float() * 0.4 + 0.8);
+        let pitch = 0.4 / (self.simulation.world.random.next_float() * 0.4 + 0.8);
         self.audio
             .play("minecraft:entity.wind_charge.throw", Some(eye), 0.5, pitch);
         self.award_stat("used", "minecraft:wind_charge", 1);
@@ -127,7 +127,7 @@ impl Game<'_> {
     /// `AbstractWindCharge.onHitEntity`: one point of damage.
     fn wind_charge_damage(&mut self, p: &Projectile, who: Who) {
         let owner_breeze = matches!(p.owner, Some(Who::Mob(id))
-            if self.mobs.iter().any(|m| m.id == id && m.species() == Species::Breeze));
+            if self.simulation.mobs.iter().any(|m| m.id == id && m.species() == Species::Breeze));
         match who {
             Who::Player => {
                 if !self.creative {
@@ -158,7 +158,7 @@ impl Game<'_> {
                     from: Some([p.previous.x, p.previous.y, p.previous.z]),
                     attacker_species: owner_breeze.then_some(Species::Breeze),
                 };
-                if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
                     // Breeze.isInvulnerableTo: its own kind's charges.
                     if owner_breeze && m.species() == Species::Breeze {
                         return;
@@ -186,7 +186,10 @@ impl Game<'_> {
             .get("minecraft:blocks_wind_charge_explosions")
             .cloned()
             .unwrap_or_default();
-        let (min_y, max_y) = (self.world.bottom_y(), self.world.top_y());
+        let (min_y, max_y) = (
+            self.simulation.world.bottom_y(),
+            self.simulation.world.top_y(),
+        );
         let mut set: BTreeSet<[i32; 3]> = BTreeSet::new();
         for xx in 0..16 {
             for yy in 0..16 {
@@ -203,7 +206,8 @@ impl Game<'_> {
                     for c in &mut d {
                         *c /= len;
                     }
-                    let mut power = radius * (0.7 + self.world.random.next_float() * 0.6);
+                    let mut power =
+                        radius * (0.7 + self.simulation.world.random.next_float() * 0.6);
                     let mut at = center;
                     while power > 0.0 {
                         let pos = [
@@ -217,7 +221,7 @@ impl Game<'_> {
                         let name = &self
                             .res
                             .facts()
-                            .get(self.world.block(pos[0], pos[1], pos[2]))
+                            .get(self.simulation.world.block(pos[0], pos[1], pos[2]))
                             .name;
                         if stops.contains(&**name) {
                             power -= (3_600_000.0_f32 + 0.3) * 0.3;
@@ -467,7 +471,12 @@ impl Game<'_> {
         if !breeze || self.ui.rules.bool("mob_griefing") {
             // Util.shuffle(list, level.random)
             for i in (2..=targets.len()).rev() {
-                let swap = self.world.random.next_int_bound(i as i32).unwrap_or(0) as usize;
+                let swap = self
+                    .simulation
+                    .world
+                    .random
+                    .next_int_bound(i as i32)
+                    .unwrap_or(0) as usize;
                 targets.swap(i - 1, swap);
             }
             for pos in targets {
@@ -505,7 +514,7 @@ impl Game<'_> {
     /// `BlockBehaviour.onExplosionHit` for `TRIGGER_BLOCK`: doors, gates,
     /// buttons, levers and bells react as if used; candles go out.
     fn wind_trigger_block(&mut self, pos: [i32; 3]) -> Result<()> {
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         let name = self.res.facts().get(state).name.clone();
         let prop = |game: &Self, key: &str| {
             game.pack

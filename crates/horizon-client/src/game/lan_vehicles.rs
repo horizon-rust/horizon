@@ -55,12 +55,14 @@ impl Game<'_> {
     /// Where the boat or minecart `id` of this level is.
     fn watched_vehicle_position(&self, id: u32) -> Option<[f64; 3]> {
         let at = |v: Vec3| [v.x, v.y, v.z];
-        self.boats
+        self.simulation
+            .boats
             .iter()
             .find(|b| b.id == id)
             .map(|b| at(b.position))
             .or_else(|| {
-                self.carts
+                self.simulation
+                    .carts
                     .iter()
                     .find(|c| c.id == id)
                     .map(|c| at(c.position))
@@ -159,30 +161,30 @@ impl Game<'_> {
             return Some((lo, hi, at(i.position)));
         }
         let id = u32::try_from(id).ok()?;
-        if let Some(b) = self.boats.iter().find(|b| b.id == id) {
+        if let Some(b) = self.simulation.boats.iter().find(|b| b.id == id) {
             let (lo, hi) = corners(b.bounds());
             return Some((lo, hi, at(b.position)));
         }
-        if let Some(c) = self.carts.iter().find(|c| c.id == id) {
+        if let Some(c) = self.simulation.carts.iter().find(|c| c.id == id) {
             let (lo, hi) = corners(c.bounds());
             return Some((lo, hi, at(c.position)));
         }
-        if let Some(a) = self.armor_stands.iter().find(|a| a.id == id) {
+        if let Some(a) = self.simulation.armor_stands.iter().find(|a| a.id == id) {
             let (lo, hi) = corners(a.bounds());
             return Some((lo, hi, at(a.position)));
         }
-        if let Some(c) = self.cushions.iter().find(|c| c.id == id) {
+        if let Some(c) = self.simulation.cushions.iter().find(|c| c.id == id) {
             let (lo, hi) = corners(Aabb::new(
                 Vec3::new(c.position.x - 0.5, c.position.y, c.position.z - 0.5),
                 Vec3::new(c.position.x + 0.5, c.position.y + 0.25, c.position.z + 0.5),
             ));
             return Some((lo, hi, at(c.position)));
         }
-        if let Some(f) = self.item_frames.iter().find(|f| f.id == id) {
+        if let Some(f) = self.simulation.item_frames.iter().find(|f| f.id == id) {
             let (lo, hi) = f.bounds();
             return Some((lo, hi, centre(f.pos)));
         }
-        let p = self.paintings.iter().find(|p| p.id == id)?;
+        let p = self.simulation.paintings.iter().find(|p| p.id == id)?;
         let (lo, hi) = p.bounds();
         Some((lo, hi, centre(p.pos)))
     }
@@ -225,10 +227,10 @@ impl Game<'_> {
             return;
         };
         let (keys, dead) = (input_keys(g.input), g.dead || g.health <= 0.0);
-        let boat = self.boats.iter().position(|b| b.id == vehicle);
-        let cart = self.carts.iter().any(|c| c.id == vehicle);
-        let mount = self.mobs.iter().any(|m| m.id == vehicle);
-        let cushion = self.cushions.iter().any(|c| c.id == vehicle);
+        let boat = self.simulation.boats.iter().position(|b| b.id == vehicle);
+        let cart = self.simulation.carts.iter().any(|c| c.id == vehicle);
+        let mount = self.simulation.mobs.iter().any(|m| m.id == vehicle);
+        let cushion = self.simulation.cushions.iter().any(|c| c.id == vehicle);
         // The vehicle is gone (broken, in another level) or the rider died:
         // its client drops it with the entity or the death screen.
         if dead || (boat.is_none() && !cart && !mount && !cushion) {
@@ -242,7 +244,7 @@ impl Game<'_> {
         if let Some(i) = boat {
             // AbstractBoat.tick on the server for a boat its rider drives:
             // only the hurt animation and the damage wear off here.
-            let b = &mut self.boats[i];
+            let b = &mut self.simulation.boats[i];
             b.hurt_time = (b.hurt_time - 1).max(0);
             b.damage = (b.damage - 1.0).max(0.0);
             // `Entity.ejectPassengers`: every player in the boat must see
@@ -253,8 +255,9 @@ impl Game<'_> {
         // is where it is now, so a move the server made (a piston, a push)
         // is not held against the rider's next move, which would fail, be
         // sent back, and fail again on every answer.
-        let at = boat.map(|i| self.boats[i].position).or_else(|| {
-            self.mobs
+        let at = boat.map(|i| self.simulation.boats[i].position).or_else(|| {
+            self.simulation
+                .mobs
                 .iter()
                 .find(|m| m.id == vehicle && equine::moved_by_client(m))
                 .map(|m| m.position)
@@ -267,16 +270,30 @@ impl Game<'_> {
         let seat = self.as_guest(host, conn, |game| {
             // A cushion does not move: the rider sits on it until it sneaks
             // (`Cushion.removePassenger` plays the get-up sound).
-            if game.cushions.iter().any(|c| Some(c.id) == game.riding) {
+            if game
+                .simulation
+                .cushions
+                .iter()
+                .any(|c| Some(c.id) == game.riding)
+            {
                 if keys.shift {
                     game.tick_cushion_riding(keys);
                     return None;
                 }
-                let c = game.cushions.iter().find(|c| Some(c.id) == game.riding)?;
+                let c = game
+                    .simulation
+                    .cushions
+                    .iter()
+                    .find(|c| Some(c.id) == game.riding)?;
                 let p = c.seat();
                 return Some([p.x, p.y, p.z]);
             }
-            if let Some(i) = game.boats.iter().position(|b| Some(b.id) == game.riding) {
+            if let Some(i) = game
+                .simulation
+                .boats
+                .iter()
+                .position(|b| Some(b.id) == game.riding)
+            {
                 if keys.shift || ejected {
                     game.dismount(i);
                     return None;
@@ -320,18 +337,21 @@ impl Game<'_> {
             return;
         }
         let at = self
+            .simulation
             .boats
             .iter()
             .position(|b| b.id == vehicle)
-            .map(|i| (self.boats[i].position, self.player_boat_seat(i)))
+            .map(|i| (self.simulation.boats[i].position, self.player_boat_seat(i)))
             .or_else(|| {
-                self.carts
+                self.simulation
+                    .carts
                     .iter()
                     .find(|c| c.id == vehicle)
                     .map(|c| (c.position, c.position.add_vector(Vec3::new(0.0, SEAT, 0.0))))
             })
             .or_else(|| {
-                self.cushions
+                self.simulation
+                    .cushions
                     .iter()
                     .find(|c| c.id == vehicle)
                     .map(|c| (c.position, c.seat()))
@@ -402,16 +422,17 @@ impl Game<'_> {
         // Only a boat, and a horse its rider's client moves, are driven by
         // their rider (getControllingPassenger); a minecart that is elsewhere
         // on the client is put back.
-        let boat = vehicle.and_then(|v| self.boats.iter().position(|b| b.id == v));
+        let boat = vehicle.and_then(|v| self.simulation.boats.iter().position(|b| b.id == v));
         let mount = vehicle.and_then(|v| {
-            self.mobs
+            self.simulation
+                .mobs
                 .iter()
                 .position(|m| m.id == v && equine::moved_by_client(m))
         });
         // The vehicle's id, position, rotation, motion, box, step height
         // and ground.
         let (id, old, yaw, velocity, bounds, step, on_ground) = if let Some(i) = boat {
-            let b = &self.boats[i];
+            let b = &self.simulation.boats[i];
             (
                 b.id,
                 b.position,
@@ -422,7 +443,7 @@ impl Game<'_> {
                 b.on_ground,
             )
         } else if let Some(i) = mount {
-            let m = &self.mobs[i];
+            let m = &self.simulation.mobs[i];
             let step = m.kind.step_height as f32;
             (
                 m.id,
@@ -434,7 +455,7 @@ impl Game<'_> {
                 m.on_ground,
             )
         } else {
-            if let Some(c) = vehicle.and_then(|v| self.carts.iter().find(|c| c.id == v))
+            if let Some(c) = vehicle.and_then(|v| self.simulation.carts.iter().find(|c| c.id == v))
                 && c.position.distance_squared(Vec3::new(x, y, z)) > 1.0
             {
                 back(host, c.position, c.yaw);
@@ -458,7 +479,7 @@ impl Game<'_> {
         // collisions: where it can't follow the client (a quarter block off,
         // the height aside), it moved wrongly.
         let mut scene = SceneCollisions {
-            world: &self.world,
+            world: &self.simulation.world,
             binding: self.collision,
             subject: None,
         };
@@ -484,7 +505,7 @@ impl Game<'_> {
         // around its box grown by 0.0625 and stretched 0.55 down (water holds a boat up). A flying or
         // no-gravity mount, and a server that allows flight, never float.
         let (gravity, no_gravity) = match mount {
-            Some(i) => (0.08, self.mobs[i].no_gravity),
+            Some(i) => (0.08, self.simulation.mobs[i].no_gravity),
             None => (0.04, false),
         };
         let around = moved_box
@@ -493,7 +514,7 @@ impl Game<'_> {
         let corner = |max: bool| {
             [Axis::X, Axis::Y, Axis::Z].map(|a| if max { around.max(a) } else { around.min(a) })
         };
-        let no_blocks = no_blocks_in(&self.world, corner(false), corner(true));
+        let no_blocks = no_blocks_in(&self.simulation.world, corner(false), corner(true));
         let allow_flight = host.hub.config.allow_flight;
         let g = &mut host.hub.guests[gi];
         g.vehicle_good = Some([target.x, target.y, target.z]);
@@ -507,7 +528,7 @@ impl Game<'_> {
         if let Some(i) = mount {
             // absSnapTo: where and how its rider's client turned it; the
             // rider sits on it from its own ride tick.
-            let m = &mut self.mobs[i];
+            let m = &mut self.simulation.mobs[i];
             m.position = target;
             m.yaw = p.yaw;
             m.head_pitch = p.pitch;
@@ -517,7 +538,7 @@ impl Game<'_> {
         let Some(i) = boat else {
             return;
         };
-        let b = &mut self.boats[i];
+        let b = &mut self.simulation.boats[i];
         b.previous = old;
         b.velocity = target.subtract(old);
         b.position = target;
@@ -559,7 +580,7 @@ impl Game<'_> {
         let Some(vehicle) = vehicle.filter(|&v| self.guest_controls_vehicle(host, conn, v)) else {
             return;
         };
-        if let Some(b) = self.boats.iter_mut().find(|b| b.id == vehicle) {
+        if let Some(b) = self.simulation.boats.iter_mut().find(|b| b.id == vehicle) {
             b.paddling = paddles;
             b.paddle_controller = true;
         }

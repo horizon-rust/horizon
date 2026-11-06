@@ -68,10 +68,10 @@ impl Game<'_> {
             return None;
         }
         let key = (pos[0], pos[1], pos[2]);
-        let state = self.world.block(pos[0], pos[1], pos[2]);
-        let buffer = self.world.block_entities.mod_energy(state.0)?;
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
+        let buffer = self.simulation.world.block_entities.mod_energy(state.0)?;
         // The block entity is out of the world while it ticks.
-        match self.world.block_entities.get(&key) {
+        match self.simulation.world.block_entities.get(&key) {
             Some(horizon_client::containers::BlockEntity::Mod(m)) if !m.id.is_empty() => {
                 Some((Arc::clone(buffer), read_energy(&m.nbt)))
             }
@@ -82,11 +82,14 @@ impl Game<'_> {
     fn native_energy_store(&mut self, pos: [i32; 3], energy: i32) {
         let key = (pos[0], pos[1], pos[2]);
         if let Some(horizon_client::containers::BlockEntity::Mod(m)) =
-            self.world.block_entities.get_mut(&key)
+            self.simulation.world.block_entities.get_mut(&key)
         {
             m.nbt
                 .insert(JavaString::from("energy"), Tag::Int(energy.max(0)));
-            self.world.modified.insert((key.0 >> 4, key.2 >> 4));
+            self.simulation
+                .world
+                .modified
+                .insert((key.0 >> 4, key.2 >> 4));
         }
     }
     /// What the buffer at `pos` takes (`insert`) or gives through `face` of

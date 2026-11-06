@@ -66,11 +66,13 @@ pub mod parrot;
 pub mod path;
 pub mod phantom;
 pub mod piglin;
+pub mod players;
 pub mod polar_bear;
 pub mod rabbit;
 pub mod raider;
 pub mod random_textures;
 pub mod ravager;
+pub mod region_tick;
 pub mod render;
 pub mod riders;
 pub mod seen_grid;
@@ -78,6 +80,7 @@ pub mod sheep_dye;
 pub mod shulker;
 pub mod skin;
 pub mod skin_layers;
+pub mod snapshot;
 pub mod sniffer;
 pub mod spawn_rules;
 pub mod spawn_selection;
@@ -1408,7 +1411,8 @@ pub struct Mob {
     pub invisible: bool,
     pub random: LegacyRandom,
     pub ai: Box<ai::Ai>,
-    pub extra: Extra,
+    /// Boxed: most of a mob's bytes, and rarely what a walk over the list reads.
+    pub extra: Box<Extra>,
     pub fluids: living::Fluids,
     /// Entity.wasEyeInWater: the eyes were in water before this tick's fluid
     /// update (`isUnderWater` reads it).
@@ -2662,6 +2666,21 @@ pub struct PendingPushes {
 }
 impl PendingPushes {
     const LIST_MAX: usize = 64;
+    /// What each mob has waiting, in push order, however it is held.
+    pub fn waiting(&self) -> std::collections::BTreeMap<u32, Vec<[u64; 3]>> {
+        let mut waiting: std::collections::BTreeMap<u32, Vec<[u64; 3]>> = Default::default();
+        let bits = |v: &Vec3| [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()];
+        for (id, pushes) in &self.by_mob {
+            waiting
+                .entry(*id)
+                .or_default()
+                .extend(pushes.iter().map(bits));
+        }
+        for (id, v) in &self.list {
+            waiting.entry(*id).or_default().push(bits(v));
+        }
+        waiting
+    }
     pub fn push(&mut self, id: u32, v: Vec3) {
         if self.by_mob.is_empty() && self.list.len() < Self::LIST_MAX {
             self.list.push((id, v));
@@ -2723,12 +2742,188 @@ pub fn apply_mob_pushes(m: &mut Mob, pending: &mut PendingPushes) {
         pushes.into_iter().for_each(add);
     }
 }
+/// What applying an event does at once to a mob other than its source.
+pub enum ImmediateWrite {
+    Nothing,
+    Target(u32),
+    /// Riding and schooling reach more mobs than the event names.
+    Everyone,
+}
+impl MobEvent {
+    /// The one list of what [`apply_brain_events`] writes: the region tick's
+    /// predictions and invalidations read it too, so they can't disagree with
+    /// it. No wildcard: a new event has to say. An event listed as `Nothing`
+    /// never reaches the application.
+    pub fn immediate_write(&self) -> ImmediateWrite {
+        match self {
+            MobEvent::BreedTarget { mob, .. }
+            | MobEvent::LockGaze { mob, .. }
+            | MobEvent::Retreat { mob, .. } => ImmediateWrite::Target(*mob),
+            MobEvent::SchoolSize { leader, .. } => ImmediateWrite::Target(*leader),
+            MobEvent::Breed { partner, .. } => ImmediateWrite::Target(*partner),
+            MobEvent::StartRiding { .. } | MobEvent::StartFollowing { .. } => {
+                ImmediateWrite::Everyone
+            }
+            MobEvent::SquidCycle { .. }
+            | MobEvent::EntitySound { .. }
+            | MobEvent::EndermanPlaceBlock { .. }
+            | MobEvent::LayEgg { .. }
+            | MobEvent::RabbitHop { .. }
+            | MobEvent::Drown { .. }
+            | MobEvent::PowderSnowParticle { .. }
+            | MobEvent::SunProtectionWear { .. }
+            | MobEvent::EntityEvent { .. }
+            | MobEvent::LevelParticles { .. }
+            | MobEvent::ItemParticles { .. }
+            | MobEvent::Sound(..)
+            | MobEvent::BubbleColumnParticles { .. }
+            | MobEvent::LandingDust { .. }
+            | MobEvent::Bonemeal { .. }
+            | MobEvent::RingBell { .. }
+            | MobEvent::ChestOpen { .. }
+            | MobEvent::EnterHive { .. }
+            | MobEvent::ParrotToShoulder { .. }
+            | MobEvent::BecomeStatue { .. }
+            | MobEvent::ChestSlot { .. }
+            | MobEvent::Infested { .. }
+            | MobEvent::ArmorHurt { .. }
+            | MobEvent::Gift { .. }
+            | MobEvent::SoundId(..)
+            | MobEvent::LocalSound(..)
+            | MobEvent::LevelEventSound { .. }
+            | MobEvent::GameEvent { .. }
+            | MobEvent::AttackPlayer(..)
+            | MobEvent::StingPlayer { .. }
+            | MobEvent::AttackPlayerWithEffect { .. }
+            | MobEvent::DamagePlayer { .. }
+            | MobEvent::ElderCurse { .. }
+            | MobEvent::SetVelocity { .. }
+            | MobEvent::RemoveKilled { .. }
+            | MobEvent::Push { .. }
+            | MobEvent::SonicBoom { .. }
+            | MobEvent::Shift { .. }
+            | MobEvent::Wololo { .. }
+            | MobEvent::Fangs { .. }
+            | MobEvent::Shoot(..)
+            | MobEvent::ExplosionSource { .. }
+            | MobEvent::Explode(..)
+            | MobEvent::LingeringCloud { .. }
+            | MobEvent::AttackMob { .. }
+            | MobEvent::AttackMobWithEffect { .. }
+            | MobEvent::CubeHurtPlayer { .. }
+            | MobEvent::CubeHurtMob { .. }
+            | MobEvent::PufferfishSting { .. }
+            | MobEvent::StabDismount { .. }
+            | MobEvent::Knockback { .. }
+            | MobEvent::SetTarget { .. }
+            | MobEvent::HuntHoglin { .. }
+            | MobEvent::Projectile(..)
+            | MobEvent::BowShot { .. }
+            | MobEvent::CrossbowLoad { .. }
+            | MobEvent::CrossbowShot { .. }
+            | MobEvent::Spawn(..)
+            | MobEvent::SpawnKind { .. }
+            | MobEvent::Convert { .. }
+            | MobEvent::DropItem { .. }
+            | MobEvent::ThrowItem { .. }
+            | MobEvent::DropGoatHorn { .. }
+            | MobEvent::DropGift { .. }
+            | MobEvent::SetBlock { .. }
+            | MobEvent::CrackTurtleEgg { .. }
+            | MobEvent::BedOccupied { .. }
+            | MobEvent::SetDoorOpen { .. }
+            | MobEvent::BreakDoor { .. }
+            | MobEvent::DestroyProgress { .. }
+            | MobEvent::CropRaided { .. }
+            | MobEvent::LevelEvent { .. }
+            | MobEvent::Infest { .. }
+            | MobEvent::BreakBlock { .. }
+            | MobEvent::Particles { .. }
+            | MobEvent::AroundSelf { .. }
+            | MobEvent::ParticleAt { .. }
+            | MobEvent::ParticleColored { .. }
+            | MobEvent::Experience { .. }
+            | MobEvent::AxolotlSupportPlayer { .. }
+            | MobEvent::DolphinTreasure { .. }
+            | MobEvent::EffectPlayer { .. }
+            | MobEvent::EffectMob { .. }
+            | MobEvent::Ignite { .. }
+            | MobEvent::SetBlockName { .. }
+            | MobEvent::Hiss { .. }
+            | MobEvent::Tamed { .. }
+            | MobEvent::Buck { .. }
+            | MobEvent::FinishAdmiring { .. }
+            | MobEvent::Launch { .. }
+            | MobEvent::HurtSelf { .. }
+            | MobEvent::VillagerMeet { .. }
+            | MobEvent::VillagerOffers { .. }
+            | MobEvent::VillagerBirth { .. }
+            | MobEvent::WorkAtComposter { .. }
+            | MobEvent::GolemCheck { .. }
+            | MobEvent::Firework { .. }
+            | MobEvent::ThrowGift { .. }
+            | MobEvent::PatrolTarget { .. }
+            | MobEvent::RaiderTarget { .. }
+            | MobEvent::GiftLoot { .. }
+            | MobEvent::ShedScute { .. }
+            | MobEvent::LeashBreak { .. }
+            | MobEvent::NotifyLeashHolder { .. }
+            | MobEvent::CureZombieVillager { .. }
+            | MobEvent::Vibration { .. }
+            | MobEvent::DigParticles { .. }
+            | MobEvent::Reinforcements { .. }
+            | MobEvent::BlockBreakEffect { .. }
+            | MobEvent::Darkness { .. }
+            | MobEvent::CreakingHurt { .. }
+            | MobEvent::CreakingTearDown { .. }
+            | MobEvent::PandaSneezed { .. }
+            | MobEvent::FallToPassengers { .. } => ImmediateWrite::Nothing,
+        }
+    }
+}
+
+/// Mutable inputs changed by immediate brain events. Complex passenger and
+/// schooling changes remain explicit global conflicts.
+#[derive(Default)]
+pub struct BrainWrites {
+    pub targets: Vec<u32>,
+    pub global: bool,
+}
+impl BrainWrites {
+    fn note(&mut self, write: &ImmediateWrite) {
+        match write {
+            ImmediateWrite::Nothing => {}
+            ImmediateWrite::Target(target) => self.targets.push(*target),
+            ImmediateWrite::Everyone => self.global = true,
+        }
+    }
+    /// What applying `events` would write, without applying them.
+    pub fn of(events: &[MobEvent]) -> Self {
+        let mut writes = Self::default();
+        for event in events {
+            writes.note(&event.immediate_write());
+        }
+        writes
+    }
+}
+
 /// Applies the brain memories a mob's tick set on other mobs (from event
 /// index `from` on), at once: vanilla sets them on the other entity during
 /// the tick, before the mobs after it tick.
-pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: usize) {
+pub fn apply_brain_events(
+    mobs: &mut [Mob],
+    events: &mut Vec<MobEvent>,
+    from: usize,
+) -> BrainWrites {
+    let mut writes = BrainWrites::default();
     let mut i = from;
     while i < events.len() {
+        let write = events[i].immediate_write();
+        if matches!(write, ImmediateWrite::Nothing) {
+            i += 1;
+            continue;
+        }
+        writes.note(&write);
         match events[i] {
             MobEvent::BreedTarget { mob, partner } => {
                 if let Some(m) = mobs.iter_mut().find(|m| m.id == mob) {
@@ -2826,6 +3021,7 @@ pub fn apply_brain_events(mobs: &mut [Mob], events: &mut Vec<MobEvent>, from: us
             _ => i += 1,
         }
     }
+    writes
 }
 /// The player as mobs see it.
 #[derive(Clone, Debug)]
@@ -2960,19 +3156,15 @@ pub struct MobWorld<'a> {
     /// `getNearestPlayer(mob, -1)`: where the nearest non-spectator of every
     /// player in the level stands, alive or not (the despawn distance).
     pub nearest_player: Option<Vec3>,
-    pub others: &'a [Seen],
+    pub others: snapshot::SeenView<'a>,
     /// The separately simulated dragon, visible to revenge and melee goals.
     pub dragon: Option<(u32, TargetInfo)>,
     /// The boats and rafts a lead can hang on (`Holder::Boat`): id and state.
     pub leash_boats: &'a [(u32, leash::HolderState)],
     /// `others` by position, when the caller keeps one (the mob ticks).
-    pub others_grid: Option<&'a seen_grid::SeenGrid>,
+    pub others_grid: Option<&'a dyn seen_grid::SnapshotGrid>,
     /// Where each id stands in `others`, when the caller keeps one.
     pub others_index: Option<&'a crate::fast_hash::FxHashMap<u32, u32>>,
-    /// The slots of `others` holding a villager, in order, when the caller
-    /// keeps them (the mob ticks: a slot keeps its mob, and its species, all
-    /// tick). Each zombie looking for a village read every slot.
-    pub others_villagers: Option<&'a [u32]>,
     pub daylight: bool,
     /// The `gameplay/monsters_burn` attribute: the overworld day timeline's
     /// step track, false in every other dimension.
@@ -3088,7 +3280,7 @@ impl Mob {
             persistent: false,
             random,
             ai: Box::default(),
-            extra: Extra::default(),
+            extra: Box::default(),
             fluids: living::Fluids::default(),
             was_eye_in_water: false,
             first_tick: true,
@@ -3765,14 +3957,34 @@ impl Mob {
         level_random: &mut LegacyRandom,
         events: &mut Vec<MobEvent>,
     ) -> bool {
-        self.track_section();
-        // LivingEntity.tick: CombatTracker.recheckStatus.
+        self.tick_ordered(w, level_random, events, None)
+    }
+    /// The same tick with a section-insertion number reserved by the level
+    /// coordinator in global entity order, independent of worker scheduling.
+    pub fn tick_with_order(
+        &mut self,
+        w: &MobWorld,
+        level_random: &mut LegacyRandom,
+        events: &mut Vec<MobEvent>,
+        section_order: u64,
+    ) -> bool {
+        self.tick_ordered(w, level_random, events, Some(section_order))
+    }
+    fn tick_ordered(
+        &mut self,
+        w: &MobWorld,
+        level_random: &mut LegacyRandom,
+        events: &mut Vec<MobEvent>,
+        section_order: Option<u64>,
+    ) -> bool {
+        self.track_section(section_order);
         let alive = self.alive();
         self.combat.recheck(alive, self.age);
         ai::tick(self, w, level_random, events)
     }
-    /// The section the mob is in, noted when it changes (`EntitySection` lists).
-    fn track_section(&mut self) {
+    fn track_section(&mut self, order: Option<u64>) {
+        // Standalone callers retain their original serial allocator. Server
+        // transactions always provide their level-owned reserved order.
         static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let section = [
             (self.position.x.floor() as i32) >> 4,
@@ -3781,7 +3993,8 @@ impl Mob {
         ];
         if self.extra.section_seq == 0 || section != self.extra.section {
             self.extra.section = section;
-            self.extra.section_seq = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.extra.section_seq = order
+                .unwrap_or_else(|| SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
         }
     }
     pub fn distance_to(&self, p: [f64; 3]) -> f64 {

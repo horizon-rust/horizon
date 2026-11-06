@@ -502,9 +502,13 @@ impl Game<'_> {
             (14, _, Value::OptPos(bed)) => Some(bed.map_or(0, |b| self.bed_facing(b))),
             _ => None,
         });
-        if let Some(m) = self.mob_index.get_mut(&mut self.mobs, id as u32) {
+        if let Some(m) = self
+            .simulation
+            .mob_index
+            .get_mut(&mut self.simulation.mobs, id as u32)
+        {
             apply(m, values, &r.builtin, r.entity_id);
-            apply_registry_data(m, values, &r.registries, self.world.game_time);
+            apply_registry_data(m, values, &r.registries, self.simulation.world.game_time);
             if let Some(code) = bed
                 && m.species() == Species::Villager
             {

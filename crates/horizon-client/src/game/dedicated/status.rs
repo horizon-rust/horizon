@@ -88,13 +88,13 @@ impl Game<'_> {
     fn status_levels(&self) -> Value {
         let mut levels = vec![json!({
             "dimension": self.dim.id(),
-            "chunks": self.world.chunks.len(),
+            "chunks": self.simulation.world.chunks.len(),
             "entities": self.entity_count(),
         })];
-        for dim in self.levels.parked_dims() {
+        for dim in self.simulation_server.levels.parked_dims() {
             if let (Some(world), Some(entities)) = (
-                self.levels.parked_world(dim),
-                self.levels.parked_entity_count(dim),
+                self.simulation_server.levels.parked_world(dim),
+                self.simulation_server.levels.parked_entity_count(dim),
             ) {
                 levels.push(json!({
                     "dimension": dim.id(),
@@ -109,20 +109,20 @@ impl Game<'_> {
     /// The entities of the level in place: mobs, items, orbs, projectiles, vehicles, falling blocks,
     /// hangings, armor stands, cushions, tridents, rockets and primed TNT.
     fn entity_count(&self) -> usize {
-        self.mobs.iter().filter(|m| !m.removed).count()
-            + self.dropped.len()
-            + self.orbs.len()
-            + self.creatures.projectiles.len()
-            + self.carts.len()
-            + self.boats.len()
-            + self.falling.len()
-            + self.paintings.len()
-            + self.item_frames.len()
-            + self.armor_stands.len()
-            + self.cushions.len()
-            + self.tridents.len()
-            + self.rockets.len()
-            + self.tnts.len()
+        self.simulation.mobs.iter().filter(|m| !m.removed).count()
+            + self.simulation.dropped.len()
+            + self.simulation.orbs.len()
+            + self.simulation.projectiles.len()
+            + self.simulation.carts.len()
+            + self.simulation.boats.len()
+            + self.simulation.falling.len()
+            + self.simulation.paintings.len()
+            + self.simulation.item_frames.len()
+            + self.simulation.armor_stands.len()
+            + self.simulation.cushions.len()
+            + self.simulation.tridents.len()
+            + self.simulation.rockets.len()
+            + self.simulation.tnts.len()
     }
 
     fn server_status(&self, state: &ServerState) -> Value {
@@ -162,7 +162,7 @@ impl Game<'_> {
             },
             "players": players,
             "max_players": max_players,
-            "chunks": self.world.chunks.len(),
+            "chunks": self.simulation.world.chunks.len(),
             "levels": self.status_levels(),
             "paused": state.paused,
         })

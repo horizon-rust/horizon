@@ -244,7 +244,8 @@ impl Game<'_> {
         }
         g.craft_result = menu.slot(0).cloned();
         host.play.entry(conn).or_default().crafting.inventory = Some(menu);
-        host.hub.inventory_clicked(conn, p, &self.world, &changed);
+        host.hub
+            .inventory_clicked(conn, p, &self.simulation.world, &changed);
         true
     }
 
@@ -273,7 +274,7 @@ impl Game<'_> {
         else {
             return false;
         };
-        let (kind, items) = match self.world.block_entities.get(&pos) {
+        let (kind, items) = match self.simulation.world.block_entities.get(&pos) {
             Some(BlockEntity::Furnace(f)) => {
                 let recipe = match f.kind.recipe_type() {
                     "minecraft:blasting" => "blasting",
@@ -297,14 +298,15 @@ impl Game<'_> {
         };
         let furnace = matches!(kind, Kind::Furnace(_));
         // CrafterBlockEntity.containerData: the disabled slots, then triggered.
-        let crafter_data = match self.world.block_entities.get(&pos) {
+        let crafter_data = match self.simulation.world.block_entities.get(&pos) {
             Some(BlockEntity::Crafter(c)) => Some((c.disabled, c.triggered)),
             _ => None,
         };
         if host.hub.guests[gi].spectator() {
             // handleContainerClick: nothing changes, and sendAllDataToRemote
             // takes back what the client predicted.
-            host.hub.resend_menu(conn, p.container, &self.world);
+            host.hub
+                .resend_menu(conn, p.container, &self.simulation.world);
             return true;
         }
         let mut menu = host
@@ -338,7 +340,7 @@ impl Game<'_> {
                 .filter(|&s| menu.slot(s) != before[s].as_ref())
                 .collect::<Vec<_>>()
         });
-        match self.world.block_entities.get_mut(&pos) {
+        match self.simulation.world.block_entities.get_mut(&pos) {
             Some(BlockEntity::Furnace(f)) => {
                 for k in 0..3 {
                     f.items[k] = menu.slot(k).cloned();
@@ -394,7 +396,8 @@ impl Game<'_> {
             self.container_changed(pos);
         }
         host.play.entry(conn).or_default().crafting.machine = Some((p.container, menu));
-        host.hub.inventory_clicked(conn, p, &self.world, &changed);
+        host.hub
+            .inventory_clicked(conn, p, &self.simulation.world, &changed);
         true
     }
 
@@ -423,11 +426,14 @@ impl Game<'_> {
             return;
         };
         if let (Some(BlockEntity::Crafter(c)), Ok(slot)) = (
-            self.world.block_entities.get_mut(&pos),
+            self.simulation.world.block_entities.get_mut(&pos),
             usize::try_from(slot),
         ) {
             c.set_slot_state(slot, enabled);
-            self.world.modified.insert((pos.0 >> 4, pos.2 >> 4));
+            self.simulation
+                .world
+                .modified
+                .insert((pos.0 >> 4, pos.2 >> 4));
         }
     }
 
@@ -602,7 +608,7 @@ impl Game<'_> {
         let name = &self
             .res
             .facts()
-            .get(self.world.block(pos[0], pos[1], pos[2]))
+            .get(self.simulation.world.block(pos[0], pos[1], pos[2]))
             .name;
         &**name == "minecraft:crafting_table" && g.within_block_range(pos, 4.0)
     }

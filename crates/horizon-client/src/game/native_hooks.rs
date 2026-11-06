@@ -2518,7 +2518,7 @@ impl Game<'_> {
     /// The authoritative server tick's phases: `ServerTickStart` before any
     /// level is ticked (NeoForge's `ServerTickEvent.Pre`), `ServerTickEnd`
     /// after the last (`.Post`). Read blocks with `native_server_block`, by
-    /// dimension: which level `self.world` holds here is not defined. A paused
+    /// dimension: which level `self.simulation.world` holds here is not defined. A paused
     /// pass fires nothing; a frozen world carries `world_running` false except
     /// during a requested step.
     pub(super) fn native_server_tick(
@@ -8291,7 +8291,12 @@ impl Game<'_> {
             .is_some_and(|p| p.entity_id == attacker)
         {
             [self.stack_in(self.selected).cloned(), self.offhand.clone()]
-        } else if let Some(mob) = self.mobs.iter().find(|m| m.id as i32 == attacker) {
+        } else if let Some(mob) = self
+            .simulation
+            .mobs
+            .iter()
+            .find(|m| m.id as i32 == attacker)
+        {
             [mob.extra.main_hand_stack().cloned(), None]
         } else {
             [None, None]
@@ -8760,13 +8765,14 @@ impl Game<'_> {
     }
     /// Read a loaded, light-emitting block. No implicit chunk loading.
     pub(super) fn native_lit_block_name(&self, pos: [i32; 3]) -> Option<&str> {
-        self.world
+        self.simulation
+            .world
             .chunks
             .contains_key(&(pos[0].div_euclid(16), pos[2].div_euclid(16)))
             .then(|| {
                 self.res
                     .facts()
-                    .get(self.world.block(pos[0], pos[1], pos[2]))
+                    .get(self.simulation.world.block(pos[0], pos[1], pos[2]))
             })
             .filter(|f| f.emission > 0)
             .map(|f| f.name.as_ref())
@@ -8824,17 +8830,18 @@ impl Game<'_> {
             return false;
         }
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
-        let previous = self.world.block(pos[0], pos[1], pos[2]);
+        let previous = self.simulation.world.block(pos[0], pos[1], pos[2]);
         let changed =
             self.with_level(|b, level, ticks| b.set_block(level, ticks, at, state, flags));
         let new = self.res.facts().get(state).name.clone();
-        let landed = self.world.block(pos[0], pos[1], pos[2]);
+        let landed = self.simulation.world.block(pos[0], pos[1], pos[2]);
         if changed
             && self.res.facts().get(previous).name != new
             && self.res.facts().get(landed).name == new
             && let Some(entity) = self.new_block_entity(&new)
         {
-            self.world
+            self.simulation
+                .world
                 .block_entities
                 .insert((pos[0], pos[1], pos[2]), entity);
         }
@@ -8863,10 +8870,10 @@ impl Game<'_> {
     /// reads here it reads the world this game holds: the level in place on
     /// a server, the server's copy on a client. API 97.
     pub(super) fn native_light(&self, pos: [i32; 3]) -> (u8, u8) {
-        if !self.world.loaded(pos[0], pos[2]) {
+        if !self.simulation.world.loaded(pos[0], pos[2]) {
             return (0, 0);
         }
-        let light = self.world.light(pos[0], pos[1], pos[2]);
+        let light = self.simulation.world.light(pos[0], pos[1], pos[2]);
         (light & 15, light >> 4)
     }
     /// The rain and thunder levels of the world in place, each 0.0 to 1.0
@@ -8880,13 +8887,16 @@ impl Game<'_> {
     /// same as `native_clock`'s `day_time`; it keeps counting past 24000, so
     /// take it modulo 24000 for the hour. API 97.
     pub(super) fn native_day_time(&self) -> i64 {
-        self.world.day_time
+        self.simulation.world.day_time
     }
     /// The lowest block y and the height of the world in place
     /// (`LevelHeightAccessor.getMinY` and `getHeight`): how deep a quarry or a
     /// miner may dig. API 97.
     pub(super) fn native_world_height(&self) -> (i32, i32) {
-        (self.world.shape.min_y, self.world.shape.height)
+        (
+            self.simulation.world.shape.min_y,
+            self.simulation.world.shape.height,
+        )
     }
     /// The most of the item `item` one slot holds (`Item.getDefaultMaxStackSize`),
     /// or `None` for an unknown item: for a mod's container that fills or
@@ -8912,9 +8922,10 @@ impl Game<'_> {
             _ => return None,
         };
         if dim == self.dim {
-            Some(&mut self.world.random)
+            Some(&mut self.simulation.world.random)
         } else {
-            self.levels
+            self.simulation_server
+                .levels
                 .parked_world_mut(dim)
                 .map(|world| &mut world.random)
         }
@@ -8936,7 +8947,8 @@ impl Game<'_> {
         {
             return Vec::new();
         }
-        self.dropped
+        self.simulation
+            .dropped
             .iter()
             .filter(|e| e.stack.count > 0 && box_meets(&e.bounds(), min, max))
             .map(|e| NativeItemEntity {
@@ -8964,13 +8976,13 @@ impl Game<'_> {
         {
             return false;
         }
-        let Some(i) = self.dropped.iter().position(|e| e.id == id) else {
+        let Some(i) = self.simulation.dropped.iter().position(|e| e.id == id) else {
             return false;
         };
         if stack.count == 0 {
             self.remove_dropped(i);
         } else {
-            self.dropped[i].stack = stack;
+            self.simulation.dropped[i].stack = stack;
         }
         true
     }
@@ -9004,7 +9016,7 @@ impl Game<'_> {
         if self.serving.is_none() && self.options.dedicated.is_none() {
             return false;
         }
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         let Some(id) = property_change(self.pack.assets.registry, state, key, value) else {
             return false;
         };
@@ -9048,7 +9060,7 @@ impl Game<'_> {
             return false;
         }
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         self.with_level(|b, level, ticks| {
             let block = b.block(state);
             b.update_neighbors_at(level, ticks, at, block);
@@ -9076,7 +9088,7 @@ impl Game<'_> {
         change: impl FnOnce(&mut ModBlockEntity) -> R,
     ) -> Option<R> {
         let key = (pos[0], pos[1], pos[2]);
-        let Some(BlockEntity::Mod(m)) = self.world.block_entities.get_mut(&key) else {
+        let Some(BlockEntity::Mod(m)) = self.simulation.world.block_entities.get_mut(&key) else {
             return None;
         };
         if m.id.is_empty() {
@@ -9085,7 +9097,10 @@ impl Game<'_> {
         let items = m.items.clone();
         let out = change(m);
         let moved = m.items != items;
-        self.world.modified.insert((key.0 >> 4, key.2 >> 4));
+        self.simulation
+            .world
+            .modified
+            .insert((key.0 >> 4, key.2 >> 4));
         if moved {
             self.container_changed(key);
         }
@@ -9101,10 +9116,10 @@ impl Game<'_> {
     /// not for every tick's progress: a menu's data slots carry that. Nothing
     /// happens for an unloaded block. API 52.
     pub(super) fn native_block_entity_sync(&mut self, pos: [i32; 3]) {
-        if !self.world.loaded(pos[0], pos[2]) {
+        if !self.simulation.world.loaded(pos[0], pos[2]) {
             return;
         }
-        if let Some(log) = self.world.block_log.as_mut() {
+        if let Some(log) = self.simulation.world.block_log.as_mut() {
             log.push((pos[0], pos[1], pos[2]));
         }
     }
@@ -9455,7 +9470,7 @@ impl Game<'_> {
     /// The block at `pos` (`mymod:cable`; air where nothing is loaded).
     /// API 20.
     pub(super) fn native_block(&self, pos: [i32; 3]) -> String {
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         self.res.facts().get(state).name.to_string()
     }
     /// The most recently extracted world frame's camera, if one exists.
@@ -9478,7 +9493,7 @@ impl Game<'_> {
     /// Property `key` of the block at `pos` (a machine's `facing`), if it
     /// has one. API 20.
     pub(super) fn native_block_property(&self, pos: [i32; 3], key: &str) -> Option<String> {
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         self.pack
             .assets
             .registry
@@ -9546,8 +9561,8 @@ impl Game<'_> {
     /// on the title screen. API 92.
     pub(super) fn native_clock(&self) -> Option<NativeClock> {
         self.player.is_some().then_some(NativeClock {
-            game_time: self.world.game_time,
-            day_time: self.world.day_time,
+            game_time: self.simulation.world.game_time,
+            day_time: self.simulation.world.day_time,
         })
     }
     /// The frame counter: frames in the last second, the slowest frame and
@@ -9847,7 +9862,7 @@ impl Game<'_> {
         &mut self,
         unloaded: &[std::sync::Arc<horizon_client::chunk::Chunk>],
     ) {
-        let loaded = std::mem::take(&mut self.world.loaded_chunks);
+        let loaded = std::mem::take(&mut self.simulation.world.loaded_chunks);
         if self.remote.is_some() {
             return;
         }
@@ -9888,21 +9903,24 @@ impl Game<'_> {
     pub(super) fn native_mobs_joined(&mut self, from: usize, natural: bool) {
         // A mod can keep a mob out; it is then taken out and not told of.
         self.native_joins_flush(false, 0);
-        for i in from..self.mobs.len() {
-            let m = &self.mobs[i];
+        for i in from..self.simulation.mobs.len() {
+            let m = &self.simulation.mobs[i];
             let (kind, pos) = (mob_kind(m), [m.position.x, m.position.y, m.position.z]);
             self.native_mob_spawned(self.dim.id(), &kind, pos, natural);
         }
     }
     /// The acting player's blow killed mob `index`.
     pub(super) fn native_kill_event(&mut self, index: usize) {
-        let (entity, kind) = (self.mobs[index].id, mob_kind(&self.mobs[index]));
+        let (entity, kind) = (
+            self.simulation.mobs[index].id,
+            mob_kind(&self.simulation.mobs[index]),
+        );
         let player = self.native_acting_id();
         self.native_mob_killed(player, entity, &kind);
     }
     /// The acting player's hit landed on mob `index`, holding `stack`.
     pub(super) fn native_hurt_enemy_event(&mut self, stack: &ItemStack, index: usize) {
-        let mob = &self.mobs[index];
+        let mob = &self.simulation.mobs[index];
         let kind = ["minecraft:", mob.kind.id.trim_start_matches("minecraft:")].concat();
         self.native_hurt_enemy(stack, mob.id, &kind);
     }
@@ -10077,15 +10095,15 @@ impl Game<'_> {
     /// A mod block's container at `key` opens its menu: its slots grown to
     /// the menu's. False for any other block.
     pub(super) fn open_mod_menu(&mut self, key: Pos) -> bool {
-        let state = self.world.block(key.0, key.1, key.2).0;
-        let Some(c) = self.world.block_entities.mod_container(state) else {
+        let state = self.simulation.world.block(key.0, key.1, key.2).0;
+        let Some(c) = self.simulation.world.block_entities.mod_container(state) else {
             return false;
         };
         let slots = c.slots;
         if c.menu.is_none() {
             return false;
         }
-        let Some(BlockEntity::Mod(m)) = self.world.block_entities.get_mut(&key) else {
+        let Some(BlockEntity::Mod(m)) = self.simulation.world.block_entities.get_mut(&key) else {
             return false;
         };
         if m.items.len() < slots {
@@ -10123,7 +10141,7 @@ impl Game<'_> {
         if let Some(pos) = self.container.filter(|_| !self.spectator()) {
             open(self, pos, 1);
         }
-        for (&pos, &(golems, _)) in &self.world.chest_openers {
+        for (&pos, &(golems, _)) in &self.simulation.world.chest_openers {
             open(self, pos, golems.max(0) as u32);
         }
         let dim = self.dim.id();
@@ -10133,8 +10151,8 @@ impl Game<'_> {
     }
     /// The menu type of the mod container at `key`, if it has one.
     pub(super) fn mod_menu_at(&self, key: Pos) -> Option<&'static str> {
-        let state = self.world.block(key.0, key.1, key.2).0;
-        let c = self.world.block_entities.mod_container(state)?;
+        let state = self.simulation.world.block(key.0, key.1, key.2).0;
+        let c = self.simulation.world.block_entities.mod_container(state)?;
         mod_menu(c.menu.as_deref()?).map(|(menu, _)| menu)
     }
     /// The container slots (of `size`) that the mod's screen for the block at
@@ -10147,7 +10165,7 @@ impl Game<'_> {
         let block = self
             .res
             .facts()
-            .get(self.world.block(pos.0, pos.1, pos.2))
+            .get(self.simulation.world.block(pos.0, pos.1, pos.2))
             .name
             .to_string();
         let mut screen = None;
@@ -10177,7 +10195,7 @@ impl Game<'_> {
         let block = self
             .res
             .facts()
-            .get(self.world.block(t.0, t.1, t.2))
+            .get(self.simulation.world.block(t.0, t.1, t.2))
             .name
             .to_string();
         if block.starts_with("minecraft:") {
@@ -10328,14 +10346,15 @@ impl Game<'_> {
     }
     /// The tick of the mod block entity at `pos`.
     pub(super) fn tick_mod_block_entity(&mut self, pos: Pos) {
-        let Some(BlockEntity::Mod(m)) = self.world.block_entities.get_mut(&pos) else {
+        let Some(BlockEntity::Mod(m)) = self.simulation.world.block_entities.get_mut(&pos) else {
             return;
         };
         // An empty id marks its place while the mod has it.
         let mut taken = std::mem::take(&mut **m);
         let items = taken.items.clone();
-        let state = self.world.block(pos.0, pos.1, pos.2).0;
+        let state = self.simulation.world.block(pos.0, pos.1, pos.2).0;
         let slots = self
+            .simulation
             .world
             .block_entities
             .mod_container(state)
@@ -10360,14 +10379,17 @@ impl Game<'_> {
         mut taken: ModBlockEntity,
         items: &[Option<ItemStack>],
     ) {
-        if let Some(BlockEntity::Mod(m)) = self.world.block_entities.get_mut(&pos)
+        if let Some(BlockEntity::Mod(m)) = self.simulation.world.block_entities.get_mut(&pos)
             && m.id.is_empty()
         {
             let moved = taken.items != items;
             **m = taken;
             // BlockEntity.setChanged: the next save writes its chunk, and
             // comparators read a container whose items changed.
-            self.world.modified.insert((pos.0 >> 4, pos.2 >> 4));
+            self.simulation
+                .world
+                .modified
+                .insert((pos.0 >> 4, pos.2 >> 4));
             if moved {
                 self.container_changed(pos);
             }
@@ -10381,7 +10403,10 @@ impl Game<'_> {
                 z: pos.2,
             };
             self.with_level(|_, level, _| level.drop_lost_contents(at, lost));
-            self.world.modified.insert((pos.0 >> 4, pos.2 >> 4));
+            self.simulation
+                .world
+                .modified
+                .insert((pos.0 >> 4, pos.2 >> 4));
         }
     }
     /// Menu button `id` on the mod container at `pos` (`clickMenuButton`),
@@ -10390,7 +10415,7 @@ impl Game<'_> {
         if self.mod_menu_at(pos).is_none() {
             return;
         }
-        let Some(BlockEntity::Mod(m)) = self.world.block_entities.get_mut(&pos) else {
+        let Some(BlockEntity::Mod(m)) = self.simulation.world.block_entities.get_mut(&pos) else {
             return;
         };
         if m.id.is_empty() {

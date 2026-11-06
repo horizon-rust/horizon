@@ -513,8 +513,11 @@ impl Game<'_> {
         camera: glam::DVec3,
     ) -> ParticleOcclusionContext<'_, '_> {
         let at = camera.to_array().map(|value| value.floor() as i32);
-        let camera_inside_opaque =
-            state_is_opaque(self.res.facts().get(self.world.block(at[0], at[1], at[2])));
+        let camera_inside_opaque = state_is_opaque(
+            self.res
+                .facts()
+                .get(self.simulation.world.block(at[0], at[1], at[2])),
+        );
         let mode =
             if self.model_packs_are_vanilla() && self.player.is_some() && !camera_inside_opaque {
                 self.settings.horizon.particle_culling
@@ -533,7 +536,7 @@ impl Game<'_> {
                 }
             }
             if let Some(culler) = &mut state.culler {
-                culler.begin_frame(camera, &self.world);
+                culler.begin_frame(camera, &self.simulation.world);
             }
         } else {
             let mut state = self.async_particle_culler.borrow_mut();
@@ -559,18 +562,18 @@ impl Game<'_> {
     }
 
     fn particle_occluder_ready(&self, pos: [i32; 3]) -> bool {
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         if !state_is_opaque(self.res.facts().get(state)) {
             return false;
         }
-        let Some(y) = pos[1].checked_sub(self.world.bottom_y()) else {
+        let Some(y) = pos[1].checked_sub(self.simulation.world.bottom_y()) else {
             return false;
         };
         let section = (pos[0] >> 4, y.div_euclid(16), pos[2] >> 4);
         self.renderer
             .as_ref()
             .is_some_and(|renderer| renderer.has_section(section))
-            && !self.world.dirty_sections.contains(&section)
+            && !self.simulation.world.dirty_sections.contains(&section)
             && !self.streaming.is_meshing(section)
             && !self.pending_uploads.iter().any(|(key, _)| *key == section)
     }
@@ -610,7 +613,8 @@ impl Game<'_> {
 
     fn particle_proof_is_current(&self, proof: &OcclusionProof) -> bool {
         proof.chunks.iter().all(|(key, expected)| {
-            self.world
+            self.simulation
+                .world
                 .chunks
                 .get(key)
                 .is_some_and(|current| std::ptr::eq(Arc::as_ptr(current), expected.as_ptr()))
@@ -618,7 +622,7 @@ impl Game<'_> {
             self.renderer
                 .as_ref()
                 .is_some_and(|renderer| renderer.has_section(section))
-                && !self.world.dirty_sections.contains(&section)
+                && !self.simulation.world.dirty_sections.contains(&section)
                 && !self.streaming.is_meshing(section)
                 && !self.pending_uploads.iter().any(|(key, _)| *key == section)
         })
@@ -626,7 +630,7 @@ impl Game<'_> {
 
     pub(super) fn finish_async_particle_culling(&self) {
         if let Some(culler) = &mut self.async_particle_culler.borrow_mut().culler {
-            culler.finish_frame(&self.world, self.res.facts());
+            culler.finish_frame(&self.simulation.world, self.res.facts());
         }
     }
 }

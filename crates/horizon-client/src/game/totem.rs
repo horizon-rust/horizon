@@ -99,11 +99,15 @@ impl Game<'_> {
                 height: f64::from(p.dimensions.height),
             })
         } else {
-            self.mobs.iter().find(|m| m.id == id as u32).map(|m| Body {
-                at: [m.position.x, m.position.y, m.position.z],
-                width: f64::from(m.width()),
-                height: f64::from(m.height()),
-            })
+            self.simulation
+                .mobs
+                .iter()
+                .find(|m| m.id == id as u32)
+                .map(|m| Body {
+                    at: [m.position.x, m.position.y, m.position.z],
+                    width: f64::from(m.width()),
+                    height: f64::from(m.height()),
+                })
         };
         if let Some(body) = body {
             self.totem_event(body, own);

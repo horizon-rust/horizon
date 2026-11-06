@@ -44,13 +44,13 @@ impl Game<'_> {
             spectator: g.spectator,
         });
         Players {
-            time: self.world.game_time,
+            time: self.simulation.world.game_time,
             players: host.into_iter().chain(guests).collect(),
         }
     }
     /// The vault at `key` with its block's state and ominous flag.
     pub(super) fn take_vault(&mut self, key: Pos) -> Option<(Box<Vault>, VaultState, bool)> {
-        let state = self.world.block(key.0, key.1, key.2);
+        let state = self.simulation.world.block(key.0, key.1, key.2);
         let block = self.pack.assets.registry.state(state)?;
         if block.name != "minecraft:vault" {
             return None;
@@ -61,7 +61,8 @@ impl Game<'_> {
             .and_then(|s| VaultState::from_name(s))
             .unwrap_or_default();
         let ominous = block.properties.get("ominous").is_some_and(|v| v == "true");
-        let Some(BlockEntity::Vault(vault)) = self.world.block_entities.take(&key) else {
+        let Some(BlockEntity::Vault(vault)) = self.simulation.world.block_entities.take(&key)
+        else {
             return None;
         };
         Some((vault, current, ominous))
@@ -83,7 +84,7 @@ impl Game<'_> {
     ) -> Option<Result<T>> {
         let (mut vault, current, ominous) = self.take_vault(key)?;
         let players = self.vault_players();
-        let mut random = std::mem::replace(&mut self.world.random, LegacyRandom::new(0));
+        let mut random = std::mem::replace(&mut self.simulation.world.random, LegacyRandom::new(0));
         let mut sequences = std::mem::take(&mut self.rand_sequences);
         let loot = horizon_client::structure_blocks::loot_data(
             &self.options.resources,
@@ -117,9 +118,10 @@ impl Game<'_> {
                 &mut events,
             )
         };
-        self.world.random = random;
+        self.simulation.world.random = random;
         self.rand_sequences = sequences;
-        self.world
+        self.simulation
+            .world
             .block_entities
             .put(key, BlockEntity::Vault(vault));
         Some(self.vault_events(key, events).map(|()| out))
@@ -199,7 +201,7 @@ impl Game<'_> {
     }
     /// `setBlockAndUpdate` with the new `vault_state`.
     fn set_vault_state(&mut self, key: Pos, state: VaultState) -> Result<()> {
-        let current = self.world.block(key.0, key.1, key.2);
+        let current = self.simulation.world.block(key.0, key.1, key.2);
         let Some(mut block) = self.pack.assets.registry.state(current).cloned() else {
             return Ok(());
         };
@@ -214,7 +216,7 @@ impl Game<'_> {
     /// `VaultRenderer`: the display item of every vault near the camera that
     /// shows one, turning above its floor.
     pub(super) fn vault_geometry(&self, camera: glam::DVec3, alpha: f64, out: &mut Vec<Vertex>) {
-        for (key, entity) in &self.world.block_entities {
+        for (key, entity) in &self.simulation.world.block_entities {
             let BlockEntity::Vault(vault) = entity else {
                 continue;
             };
@@ -233,7 +235,7 @@ impl Game<'_> {
                 glam::Mat4::from_translation(
                     (at - camera).as_vec3() + glam::Vec3::new(0.5, 0.4, 0.5),
                 ) * glam::Mat4::from_rotation_y(vault.display_spin(alpha as f32).to_radians());
-            let light = self.world.light(key.0, key.1, key.2);
+            let light = self.simulation.world.light(key.0, key.1, key.2);
             let seed =
                 i64::from(self.pack.item_renderer.item_id(&stack.item)) + i64::from(stack.damage);
             for copy in item_render::cluster_poses(

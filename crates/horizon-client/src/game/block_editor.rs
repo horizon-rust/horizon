@@ -177,6 +177,7 @@ impl Game<'_> {
     pub(super) fn open_block_editor(&mut self, pos: Pos, editor: Box<dyn Editor>) {
         let mut screen = BlockEditScreen::new(pos, editor);
         let opening = self
+            .simulation
             .world
             .block_entities
             .get(&pos)
@@ -203,7 +204,7 @@ impl Game<'_> {
         if !self.can_use_game_master_blocks() {
             return;
         }
-        match self.world.block_entities.get(&pos) {
+        match self.simulation.world.block_entities.get(&pos) {
             Some(BlockEntity::StructureBlock(_)) => self.open_structure_block(pos),
             Some(BlockEntity::JigsawBlock(_)) => self.open_jigsaw_block(pos),
             Some(BlockEntity::TestBlock(_)) => self.open_test_block(pos),
@@ -226,6 +227,7 @@ impl Game<'_> {
     ) -> Option<R> {
         let mut screen = self.block_editor.take()?;
         let result = self
+            .simulation
             .world
             .block_entities
             .get_mut(&screen.pos)
@@ -566,7 +568,7 @@ impl Game<'_> {
         let Some(mut screen) = self.block_editor.take() else {
             return;
         };
-        if let Some(entity) = self.world.block_entities.get(&screen.pos) {
+        if let Some(entity) = self.simulation.world.block_entities.get(&screen.pos) {
             screen.editor.status(entity, status, size);
         }
         screen.values = screen

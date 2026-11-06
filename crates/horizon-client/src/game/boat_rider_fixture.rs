@@ -28,7 +28,7 @@ impl Game<'_> {
 
         let mut output = Vec::new();
         for case in cases {
-            self.boats.clear();
+            self.simulation.boats.clear();
             let mut b = Boat::new(3, "oak".into(), Vec3::new(0.0, 100.0, 0.0), 0.0);
             let [x, y, z] = case.velocity;
             b.velocity = Vec3::new(x, y, z);
@@ -42,7 +42,7 @@ impl Game<'_> {
                     self.keys.press(key, Source::Agent);
                 }
             }
-            self.boats.push(b);
+            self.simulation.boats.push(b);
             let mut steps = Vec::new();
             for first in case.first {
                 self.remote_set_passengers(3, if first { &[1, 2] } else { &[2, 1] });
@@ -69,7 +69,7 @@ impl Game<'_> {
                 if case.event != 0 {
                     self.remote_boat_event(3, case.event);
                 }
-                let boat = &self.boats[0];
+                let boat = &self.simulation.boats[0];
                 steps.push(json!({
                     "controlled": self.remote.as_ref().unwrap().first_passenger,
                     "accepts_server_moves": accepts_server_moves,

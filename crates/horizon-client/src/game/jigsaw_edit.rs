@@ -255,7 +255,8 @@ impl Editor for JigsawEditor {
 impl Game<'_> {
     /// `LocalPlayer.openJigsawBlock`.
     pub(super) fn open_jigsaw_block(&mut self, pos: Pos) {
-        let Some(BlockEntity::JigsawBlock(b)) = self.world.block_entities.get(&pos) else {
+        let Some(BlockEntity::JigsawBlock(b)) = self.simulation.world.block_entities.get(&pos)
+        else {
             return;
         };
         let vertical = self

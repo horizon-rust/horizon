@@ -32,13 +32,13 @@ impl Game<'_> {
         }
     }
     fn nautilus_sound(&mut self, index: usize, sound: &str) {
-        let at = self.mobs[index].center();
+        let at = self.simulation.mobs[index].center();
         self.audio
             .play(&format!("minecraft:{sound}"), Some(at), 1.0, 1.0);
     }
     /// `AbstractNautilus.mobInteract`. Returns whether the click was used.
     pub(super) fn interact_nautilus(&mut self, index: usize, item: &str) -> bool {
-        let m = &self.mobs[index];
+        let m = &self.simulation.mobs[index];
         if !m.alive() || Some(m.id) == self.riding {
             return false;
         }
@@ -58,7 +58,7 @@ impl Game<'_> {
             if !food {
                 return false;
             }
-            let m = &mut self.mobs[index];
+            let m = &mut self.simulation.mobs[index];
             if !m.extra.age_locked {
                 let secs = ((-m.extra.age / 20) as f32 * 0.1) as i32;
                 horizon_client::mobs::ai::age_up(m, secs, true);
@@ -79,7 +79,7 @@ impl Game<'_> {
                 // tryToTame: one time in three.
                 self.use_nautilus_food(item);
                 let acting = self.acting_player_uuid();
-                let m = &mut self.mobs[index];
+                let m = &mut self.simulation.mobs[index];
                 let tamed = m.random.next_int_bound(3).unwrap_or(1) == 0;
                 if tamed {
                     m.extra.tame = true;
@@ -90,19 +90,19 @@ impl Game<'_> {
                 }
                 let sound = nautilus::eat_sound(m);
                 // TamableAnimal.spawnTamingParticles (entity event 7 or 6).
-                self.mob_event_particles(self.mobs[index].id, if tamed { 7 } else { 6 });
+                self.mob_event_particles(self.simulation.mobs[index].id, if tamed { 7 } else { 6 });
                 self.nautilus_sound(index, sound);
                 if tamed {
-                    let view = self.mob_entity(&self.mobs[index]);
+                    let view = self.mob_entity(&self.simulation.mobs[index]);
                     self.trigger_entity("minecraft:tame_animal", "entity", &view);
                 }
                 return true;
             }
-            let m = &self.mobs[index];
+            let m = &self.simulation.mobs[index];
             if food && m.health < m.attrs.max_health {
                 // feed(player, hand, stack, 2, 1).
                 let sound = nautilus::eat_sound(m);
-                let m = &mut self.mobs[index];
+                let m = &mut self.simulation.mobs[index];
                 m.heal(2.0);
                 self.use_nautilus_food(item);
                 self.nautilus_sound(index, sound);
@@ -110,7 +110,7 @@ impl Game<'_> {
             }
             // Equippable.equipOnInteract: a saddle or nautilus armour on a
             // tame adult.
-            let m = &mut self.mobs[index];
+            let m = &mut self.simulation.mobs[index];
             if item == "minecraft:saddle" && tame && !m.extra.saddled {
                 let held = self.inventory[self.selected].clone();
                 m.set_saddle(held);
@@ -128,30 +128,30 @@ impl Game<'_> {
         }
         if tame && !food {
             // doPlayerRide.
-            let id = self.mobs[index].id;
+            let id = self.simulation.mobs[index].id;
             if !self.may_board() || !self.native_may_board(id) {
                 return true;
             }
             self.break_leash(id, true, false);
-            self.yaw = self.mobs[index].yaw;
+            self.yaw = self.simulation.mobs[index].yaw;
             self.mount.reset_jump();
             self.start_riding(id);
             return true;
         }
         // Animal.mobInteract: a tame adult fed falls in love (not a zombie).
-        let m = &mut self.mobs[index];
+        let m = &mut self.simulation.mobs[index];
         if food && m.species() == Species::Nautilus && m.extra.age == 0 && m.extra.in_love <= 0 {
             m.extra.in_love = 600;
             m.extra.love_player = true;
             let sound = nautilus::eat_sound(m);
             let id = m.id;
             self.love_cause.insert(id, self.lan_acting);
-            let kind = self.mobs[index].kind.id.clone();
+            let kind = self.simulation.mobs[index].kind.id.clone();
             self.native_entity_enter_love_mode(id, &kind, self.lan_acting_uuid);
             self.use_nautilus_food(item);
             self.nautilus_sound(index, sound);
             // Animal.setInLove: entity event 18.
-            self.mob_event_particles(self.mobs[index].id, 18);
+            self.mob_event_particles(self.simulation.mobs[index].id, 18);
             return true;
         }
         false

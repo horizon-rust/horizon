@@ -13,16 +13,12 @@
 //! through a portal.
 
 use super::{
-    Dim, ExperienceOrb, FallingBlock, Game, ItemEntity, Mob, boats, commands,
-    creaking::CreakingState, dragon, fireworks, lan::LanHost, lightning, machines, minecarts,
-    ominous_item_spawner, persist, raids::Raiding, sculk::SculkState, tnt, trident,
+    Dim, Game, Mob, creaking::CreakingState, lan::LanHost, raids::Raiding, sculk::SculkState,
 };
 use horizon_client::{
-    Result, block_entity_anim::BlockEntityAnims, random_tick_sections::RandomTickSections,
-    save::SaveDir, streaming::Streaming, tick_chunk_membership::TickChunkMembership,
-    ticket_levels::ChunkTickets, vanillagen::VanillaTerrain, world::World,
+    Result, block_entity_anim::BlockEntityAnims, save::SaveDir, streaming::Streaming,
+    vanillagen::VanillaTerrain, world::World,
 };
-use horizon_world::level::{LevelEvent, Ticks};
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -36,60 +32,26 @@ const IDLE_TICKS: u32 = 300;
 
 /// A level that is not in place: every per-level field of `Game`.
 pub(super) struct Parked {
-    world: World,
     streaming: Streaming,
     locator: Option<Arc<VanillaTerrain>>,
     save: Arc<SaveDir>,
-    block_ticks: Ticks,
-    tick_chunks: TickChunkMembership,
-    tickets: ChunkTickets,
-    random_tick_sections: RandomTickSections,
-    level_events: Vec<LevelEvent>,
+
     /// Entity portal processes and cooldowns belong to this level's entities.
     portal_states: HashMap<u32, horizon_client::nether_portal::PortalState>,
-    falling: horizon_client::join_seq::JoinList<FallingBlock>,
-    paintings: Vec<horizon_client::entities::Painting>,
-    item_frames: Vec<horizon_client::entities::ItemFrame>,
-    armor_stands: horizon_client::join_seq::JoinList<horizon_client::entities::ArmorStand>,
-    cushions: Vec<horizon_client::entities::Cushion>,
-    others: Vec<commands::OtherEntity>,
-    fangs: super::fangs::FangState,
-    pub(super) boats: horizon_client::join_seq::JoinList<boats::Boat>,
-    pub(super) carts: horizon_client::join_seq::JoinList<minecarts::Minecart>,
+
     jukebox_sounds: HashMap<(i32, i32, i32), u64>,
-    bolts: Vec<lightning::Bolt>,
-    crystals: Vec<dragon::Crystal>,
-    dragon: Option<dragon::Dragon>,
-    dragon_fireballs: Vec<dragon::DragonFireball>,
-    breath_clouds: Vec<dragon::Breath>,
-    tridents: horizon_client::join_seq::JoinList<trident::ThrownTrident>,
-    rockets: horizon_client::join_seq::JoinList<fireworks::Rocket>,
-    ominous_spawners: Vec<ominous_item_spawner::OminousItemSpawner>,
-    tnts: horizon_client::join_seq::JoinList<tnt::PrimedTnt>,
-    hoppers: HashMap<(i32, i32, i32), machines::HopperState>,
-    pub(super) mobs: horizon_client::join_seq::JoinList<Mob>,
-    /// The entity ids of the level's fence knots (`knot_ids`).
-    knot_ids: HashMap<[i32; 3], u32>,
-    projectiles: horizon_client::join_seq::JoinList<horizon_client::projectiles::Projectile>,
-    dropped: horizon_client::join_seq::JoinList<ItemEntity>,
-    orbs: horizon_client::join_seq::JoinList<ExperienceOrb>,
-    persist: persist::EntityMemory,
-    lectern_pulses: Vec<((i32, i32, i32), i32)>,
-    lid_openers: HashMap<(i32, i32, i32), i32>,
-    lan_events: Vec<(i32, [i32; 3], i32, Option<u32>)>,
-    lan_block_events: Vec<([i32; 3], i32, i32, u32)>,
-    lan_entity_events: Vec<(i32, i8, [f64; 3])>,
-    lan_critical_hits: Vec<(Option<u32>, i32, bool)>,
+
+    pub(super) simulation: super::simulation::LevelSimulation,
+
     /// The hub's tracked entities of this level (`LanHost::states`), as its last tick described
     /// them: what its players' moves are checked against before this tick describes them again.
     lan_states: horizon_client::lan::entity::States,
     /// Only the per-level parts of these are used (`swap_level`).
     anims: BlockEntityAnims,
     raiding: Raiding,
+    random_tick_sections: horizon_client::random_tick_sections::RandomTickSections,
     sculk: SculkState,
     creaking: CreakingState,
-    /// Natural spawning's candidate cache: each level keeps its own players' squares.
-    spawn_scratch: super::natural_spawning::SpawnScratch,
     /// Server ticks since a player was last in the level.
     idle: u32,
 }
@@ -137,17 +99,19 @@ impl Levels {
 
     /// A parked level, without opening or loading it.
     pub(super) fn parked_world(&self, dim: Dim) -> Option<&World> {
-        self.parked.get(&dim).map(|level| &level.world)
+        self.parked.get(&dim).map(|level| &level.simulation.world)
     }
 
     /// The worlds of the levels not in place.
     pub(super) fn parked_worlds(&self) -> impl Iterator<Item = &World> {
-        self.parked.values().map(|level| &level.world)
+        self.parked.values().map(|level| &level.simulation.world)
     }
 
     /// The world of the level not in place, in `dim`, to change.
     pub(super) fn parked_world_mut(&mut self, dim: Dim) -> Option<&mut World> {
-        self.parked.get_mut(&dim).map(|level| &mut level.world)
+        self.parked
+            .get_mut(&dim)
+            .map(|level| &mut level.simulation.world)
     }
 
     /// The level not in place, in `dim`.
@@ -157,7 +121,7 @@ impl Levels {
 
     /// The entities of a parked level, counted as `Game::entity_count` counts the one in place.
     pub(super) fn parked_entity_count(&self, dim: Dim) -> Option<usize> {
-        let l = self.parked.get(&dim)?;
+        let l = &self.parked.get(&dim)?.simulation;
         Some(
             l.mobs.iter().filter(|m| !m.removed).count()
                 + l.dropped.len()
@@ -178,7 +142,9 @@ impl Levels {
 
     /// The mobs of a parked level.
     pub(super) fn parked_mobs(&self, dim: Dim) -> Option<&[Mob]> {
-        self.parked.get(&dim).map(|level| level.mobs.as_slice())
+        self.parked
+            .get(&dim)
+            .map(|level| level.simulation.mobs.as_slice())
     }
 
     /// A parked level's loose entities, for `horizon-report`: items, experience orbs,
@@ -186,11 +152,11 @@ impl Levels {
     pub(super) fn parked_entity_counts(&self, dim: Dim) -> Option<[usize; 5]> {
         self.parked.get(&dim).map(|l| {
             [
-                l.dropped.as_slice().len(),
-                l.orbs.as_slice().len(),
-                l.projectiles.as_slice().len(),
-                l.carts.as_slice().len(),
-                l.boats.as_slice().len(),
+                l.simulation.dropped.as_slice().len(),
+                l.simulation.orbs.as_slice().len(),
+                l.simulation.projectiles.as_slice().len(),
+                l.simulation.carts.as_slice().len(),
+                l.simulation.boats.as_slice().len(),
             ]
         })
     }
@@ -227,54 +193,22 @@ impl Game<'_> {
         world.shape = self.level_shapes.get(dim.id());
         world.fast_lava = dim == Dim::Nether;
         Ok(Parked {
-            world,
             streaming,
             locator,
             save,
-            block_ticks: Ticks::new(self.level.seed as i32),
-            tick_chunks: Default::default(),
-            tickets: Default::default(),
-            random_tick_sections: Default::default(),
-            level_events: Vec::new(),
+
             portal_states: HashMap::new(),
-            falling: Default::default(),
-            paintings: Vec::new(),
-            item_frames: Vec::new(),
-            armor_stands: Default::default(),
-            cushions: Vec::new(),
-            others: Vec::new(),
-            fangs: Default::default(),
-            boats: Default::default(),
-            carts: Default::default(),
+
             jukebox_sounds: HashMap::new(),
-            bolts: Vec::new(),
-            crystals: Vec::new(),
-            dragon: None,
-            dragon_fireballs: Vec::new(),
-            breath_clouds: Vec::new(),
-            tridents: Default::default(),
-            rockets: Default::default(),
-            ominous_spawners: Vec::new(),
-            tnts: Default::default(),
-            hoppers: HashMap::new(),
-            mobs: Default::default(),
-            knot_ids: HashMap::new(),
-            projectiles: Default::default(),
-            dropped: Default::default(),
-            orbs: Default::default(),
-            persist: Default::default(),
-            lectern_pulses: Vec::new(),
-            lid_openers: HashMap::new(),
-            lan_events: Vec::new(),
-            lan_block_events: Vec::new(),
-            lan_entity_events: Vec::new(),
-            lan_critical_hits: Vec::new(),
+
+            simulation: super::simulation::LevelSimulation::new(world, self.level.seed as i32),
+
             lan_states: Default::default(),
             anims: Default::default(),
             raiding: Default::default(),
+            random_tick_sections: Default::default(),
             sculk: Default::default(),
             creaking: Default::default(),
-            spawn_scratch: Default::default(),
             idle: 0,
         })
     }
@@ -282,51 +216,15 @@ impl Game<'_> {
     /// Exchange the level in place with `p`.
     fn swap_level(&mut self, p: &mut Parked) {
         use std::mem::swap;
-        swap(&mut self.world, &mut p.world);
+        swap(&mut self.simulation, &mut p.simulation);
         swap(&mut self.streaming, &mut p.streaming);
         let mut locator = self.end.locator();
         swap(&mut locator, &mut p.locator);
         self.end.set_locator(locator);
         self.share_spawn_conditions();
         swap(&mut self.save, &mut p.save);
-        swap(&mut self.block_ticks, &mut p.block_ticks);
-        swap(&mut self.tick_chunks, &mut p.tick_chunks);
-        swap(&mut self.tickets, &mut p.tickets);
-        swap(&mut self.random_tick_sections, &mut p.random_tick_sections);
-        swap(&mut self.level_events, &mut p.level_events);
         swap(&mut self.portals.entities, &mut p.portal_states);
-        swap(&mut self.falling, &mut p.falling);
-        swap(&mut self.paintings, &mut p.paintings);
-        swap(&mut self.item_frames, &mut p.item_frames);
-        swap(&mut self.armor_stands, &mut p.armor_stands);
-        swap(&mut self.cushions, &mut p.cushions);
-        swap(&mut self.others, &mut p.others);
-        swap(&mut self.fangs, &mut p.fangs);
-        swap(&mut self.boats, &mut p.boats);
-        swap(&mut self.carts, &mut p.carts);
         swap(&mut self.jukebox_sounds, &mut p.jukebox_sounds);
-        swap(&mut self.bolts, &mut p.bolts);
-        swap(&mut self.crystals, &mut p.crystals);
-        swap(&mut self.dragon, &mut p.dragon);
-        swap(&mut self.dragon_fireballs, &mut p.dragon_fireballs);
-        swap(&mut self.breath_clouds, &mut p.breath_clouds);
-        swap(&mut self.tridents, &mut p.tridents);
-        swap(&mut self.rockets, &mut p.rockets);
-        swap(&mut self.ominous_spawners, &mut p.ominous_spawners);
-        swap(&mut self.tnts, &mut p.tnts);
-        swap(&mut self.hoppers, &mut p.hoppers);
-        swap(&mut self.mobs, &mut p.mobs);
-        swap(&mut self.knot_ids, &mut p.knot_ids);
-        swap(&mut self.creatures.projectiles, &mut p.projectiles);
-        swap(&mut self.dropped, &mut p.dropped);
-        swap(&mut self.orbs, &mut p.orbs);
-        swap(&mut self.persist, &mut p.persist);
-        swap(&mut self.lectern_pulses, &mut p.lectern_pulses);
-        swap(&mut self.lid_openers, &mut p.lid_openers);
-        swap(&mut self.lan_events, &mut p.lan_events);
-        swap(&mut self.lan_block_events, &mut p.lan_block_events);
-        swap(&mut self.lan_entity_events, &mut p.lan_entity_events);
-        swap(&mut self.lan_critical_hits, &mut p.lan_critical_hits);
         let (a, b) = (&mut self.be_anims, &mut p.anims);
         swap(&mut a.chests, &mut b.chests);
         swap(&mut a.books, &mut b.books);
@@ -339,9 +237,9 @@ impl Game<'_> {
         swap(&mut a.gateway_servers, &mut b.gateway_servers);
         swap(&mut a.conduit_servers, &mut b.conduit_servers);
         self.raiding.swap_level(&mut p.raiding);
+        swap(&mut self.random_tick_sections, &mut p.random_tick_sections);
         self.sculk.swap_level(&mut p.sculk);
         self.creaking.swap_level(&mut p.creaking);
-        swap(&mut self.spawn_scratch, &mut p.spawn_scratch);
         // What only the client draws starts over.
         self.particles.clear();
         self.pickups.clear();
@@ -361,18 +259,18 @@ impl Game<'_> {
             return Ok(());
         }
         if target != self.dim {
-            let (mut p, opened) = match self.levels.parked.remove(&target) {
+            let (mut p, opened) = match self.simulation_server.levels.parked.remove(&target) {
                 Some(p) => (p, false),
                 None => (self.open_level(target)?, true),
             };
-            p.world.game_time = self.world.game_time;
-            p.world.day_time = self.world.day_time;
-            p.world.weather = self.world.weather;
+            p.simulation.world.game_time = self.simulation.world.game_time;
+            p.simulation.world.day_time = self.simulation.world.day_time;
+            p.simulation.world.weather = self.simulation.world.weather;
             // The game rules and the difficulty are the server's, not a
             // level's: natural regeneration holds in every dimension.
-            p.world.health_rules = self.world.health_rules;
+            p.simulation.world.health_rules = self.simulation.world.health_rules;
             // The sculk tables' watched blocks are built once per game.
-            p.world.watched = std::mem::take(&mut self.world.watched);
+            p.simulation.world.watched = std::mem::take(&mut self.simulation.world.watched);
             self.swap_level(&mut p);
             // The tracked entities go with their level: a level's moves, read before its tick
             // describes its entities again, would otherwise meet the last level's (the anticheat
@@ -386,7 +284,7 @@ impl Game<'_> {
             }
             p.idle = 0;
             let left = std::mem::replace(&mut self.dim, target);
-            self.levels.parked.insert(left, p);
+            self.simulation_server.levels.parked.insert(left, p);
             if opened {
                 // The new streaming's radius and meshing options.
                 self.apply_settings();
@@ -407,16 +305,21 @@ impl Game<'_> {
     /// moves with it from the level not in place to the level in place, so
     /// it is saved in the other level as it was.
     pub(super) fn move_entity_memory(&mut self, from: Dim, id: u32) {
-        let Some(p) = self.levels.parked.get_mut(&from) else {
+        let Some(p) = self.simulation_server.levels.parked.get_mut(&from) else {
             return;
         };
-        let uuid = p.persist.uuids.remove(&id);
-        let raw = p.persist.raw.remove(&id);
+        // Death bookkeeping follows the entity through a dimension transfer,
+        // so a corpse is not looted again in the destination level.
+        if p.simulation.died.remove(&id) {
+            self.simulation.died.insert(id);
+        }
+        let uuid = p.simulation.persist.uuids.remove(&id);
+        let raw = p.simulation.persist.raw.remove(&id);
         if let Some(u) = uuid {
-            self.persist.uuids.insert(id, u);
+            self.simulation.persist.uuids.insert(id, u);
         }
         if let Some(r) = raw {
-            self.persist.raw.insert(id, r);
+            self.simulation.persist.raw.insert(id, r);
         }
     }
 
@@ -429,7 +332,7 @@ impl Game<'_> {
         if dim == self.dim {
             return Some(self.streaming.lod_source());
         }
-        let parked = self.levels.parked.get(&dim)?;
+        let parked = self.simulation_server.levels.parked.get(&dim)?;
         Some(parked.streaming.lod_source())
     }
 
@@ -600,7 +503,7 @@ impl Game<'_> {
             let cpu = cpu.map_or_else(String::new, |c| format!(", cpu {c:.1} ms"));
             log::info!(
                 "Horizon: slow tick {wall:.1} ms{cpu} ({} mobs): {}{}",
-                self.mobs.len(),
+                self.simulation.mobs.len(),
                 horizon_client::spans::describe(&spans),
                 slowest_steps(&notes)
             );
@@ -669,7 +572,8 @@ impl Game<'_> {
                 let forced = if *d == self.dim {
                     held(&self.streaming)
                 } else {
-                    self.levels
+                    self.simulation_server
+                        .levels
                         .parked
                         .get(d)
                         .is_some_and(|p| held(&p.streaming))
@@ -699,12 +603,13 @@ impl Game<'_> {
     /// The chunks holding a portal ticket in `dim`'s level (`placePortalTicket`).
     pub(super) fn portal_ticket_chunks(&self, dim: Dim) -> Vec<(i32, i32)> {
         if dim == self.dim {
-            self.tickets.portal_chunks().collect()
+            self.simulation.tickets.portal_chunks().collect()
         } else {
-            self.levels
+            self.simulation_server
+                .levels
                 .parked
                 .get(&dim)
-                .map_or_else(Vec::new, |p| p.tickets.portal_chunks().collect())
+                .map_or_else(Vec::new, |p| p.simulation.tickets.portal_chunks().collect())
         }
     }
 
@@ -714,6 +619,7 @@ impl Game<'_> {
         let occupied = self.levels_to_tick();
         // A vehicle waiting there for its rider's arrival in another level.
         let waiting: Vec<Dim> = self
+            .simulation_server
             .levels
             .parked
             .keys()
@@ -721,7 +627,7 @@ impl Game<'_> {
             .filter(|d| self.vehicle_waits_in(*d))
             .collect();
         let mut closing = Vec::new();
-        for (dim, p) in &mut self.levels.parked {
+        for (dim, p) in &mut self.simulation_server.levels.parked {
             if occupied.contains(dim) || waiting.contains(dim) {
                 p.idle = 0;
                 continue;
@@ -738,15 +644,15 @@ impl Game<'_> {
         for dim in closing {
             self.enter_level(None, dim)?;
             // Its chunks leave with it: the mods hear before its last save.
-            let chunks: Vec<_> = self.world.chunks.values().cloned().collect();
+            let chunks: Vec<_> = self.simulation.world.chunks.values().cloned().collect();
             self.native_chunks_changed(&chunks);
             self.save_level(true)?;
             // Its entities' attachments are saved with them; they leave memory too.
-            for uuid in self.persist.uuids.values() {
+            for uuid in self.simulation.persist.uuids.values() {
                 self.entity_attachments.remove(uuid);
             }
             self.enter_level(None, back)?;
-            self.levels.parked.remove(&dim);
+            self.simulation_server.levels.parked.remove(&dim);
             self.native_level_closed(dim);
         }
         Ok(())
@@ -756,21 +662,27 @@ impl Game<'_> {
     pub(super) fn native_level_opened(&mut self, dim: Dim) {
         if self.remote.is_some()
             || self.options.execution_role.is_client()
-            || self.levels.heard_open.contains(&dim)
+            || self.simulation_server.levels.heard_open.contains(&dim)
         {
             return;
         }
-        self.levels.heard_open.push(dim);
+        self.simulation_server.levels.heard_open.push(dim);
         self.native_level_load(dim.id());
     }
 
     /// The mods hear `dim`'s level close (`LevelEvent.Unload`), once for
     /// each open they heard.
     fn native_level_closed(&mut self, dim: Dim) {
-        let Some(i) = self.levels.heard_open.iter().position(|d| *d == dim) else {
+        let Some(i) = self
+            .simulation_server
+            .levels
+            .heard_open
+            .iter()
+            .position(|d| *d == dim)
+        else {
             return;
         };
-        self.levels.heard_open.remove(i);
+        self.simulation_server.levels.heard_open.remove(i);
         self.native_level_unload(dim.id());
     }
 
@@ -786,11 +698,17 @@ impl Game<'_> {
     /// Save every parked level (`MinecraftServer.saveAllChunks`); the level
     /// in place is the caller's to save.
     pub(super) fn save_parked_levels(&mut self, wait: bool) -> Result<()> {
-        if self.levels.parked.is_empty() {
+        if self.simulation_server.levels.parked.is_empty() {
             return Ok(());
         }
         let back = self.dim;
-        let dims: Vec<Dim> = self.levels.parked.keys().copied().collect();
+        let dims: Vec<Dim> = self
+            .simulation_server
+            .levels
+            .parked
+            .keys()
+            .copied()
+            .collect();
         for dim in dims {
             self.enter_level(None, dim)?;
             self.save_level(wait)?;

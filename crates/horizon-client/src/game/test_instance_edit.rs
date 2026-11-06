@@ -342,7 +342,9 @@ impl Editor for TestInstanceEditor {
 impl Game<'_> {
     /// `LocalPlayer.openTestInstanceBlock`.
     pub(super) fn open_test_instance_block(&mut self, pos: Pos) {
-        let Some(BlockEntity::TestInstanceBlock(b)) = self.world.block_entities.get(&pos) else {
+        let Some(BlockEntity::TestInstanceBlock(b)) =
+            self.simulation.world.block_entities.get(&pos)
+        else {
             return;
         };
         let editor = TestInstanceEditor::new(b, self.test_rotation(pos));

@@ -19,6 +19,7 @@ impl Game<'_> {
     /// thrown from in front of it along `Entity.getLookAngle`.
     pub(super) fn fox_eat_particles(&mut self, id: u32) {
         let Some(m) = self
+            .simulation
             .mobs
             .iter_mut()
             .find(|m| m.id == id && m.species() == Species::Fox)
@@ -60,6 +61,7 @@ impl Game<'_> {
     /// the Java loop condition does.
     pub(super) fn witch_magic_particles(&mut self, id: u32) {
         let Some(m) = self
+            .simulation
             .mobs
             .iter_mut()
             .find(|m| m.id == id && m.species() == Species::Witch)
@@ -89,6 +91,7 @@ impl Game<'_> {
     /// within 4 blocks is thrown away from it.
     pub(super) fn remote_ravager_roar(&mut self, id: i32) {
         let Some(m) = self
+            .simulation
             .mobs
             .iter()
             .find(|m| m.id == id as u32 && m.species() == Species::Ravager)

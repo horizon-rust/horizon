@@ -374,7 +374,7 @@ impl Game<'_> {
                 self.run_function_by_id(&f, None, source);
             }
         }
-        let now = self.world.game_time;
+        let now = self.simulation.world.game_time;
         loop {
             let due = self
                 .fns
@@ -675,7 +675,7 @@ impl Game<'_> {
             return Err(err("commands.schedule.same_tick", &[]));
         }
         let replace = !ctx.has("append");
-        let tick_time = self.world.game_time + i64::from(time);
+        let tick_time = self.simulation.world.game_time + i64::from(time);
         let schedule_id = match name.strip_prefix('#') {
             // An unknown tag is empty, and scheduling it is allowed.
             Some(_) => name.clone(),

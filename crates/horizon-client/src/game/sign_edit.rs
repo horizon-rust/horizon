@@ -58,7 +58,7 @@ impl Game<'_> {
         let Some(player) = self.player.as_ref() else {
             return true;
         };
-        let id = self.world.block(pos.0, pos.1, pos.2);
+        let id = self.simulation.world.block(pos.0, pos.1, pos.2);
         let Some(state) = self.pack.assets.registry.state(id) else {
             return true;
         };
@@ -103,7 +103,7 @@ impl Game<'_> {
     /// player faces: a waxed sign with a `run_command` click event on it.
     pub(super) fn sign_can_execute_click_commands(&self, pos: (i32, i32, i32)) -> bool {
         // Only a waxed sign can; skip the facing maths for everything else.
-        let Some(BlockEntity::Sign(sign)) = self.world.block_entities.get(&pos) else {
+        let Some(BlockEntity::Sign(sign)) = self.simulation.world.block_entities.get(&pos) else {
             return false;
         };
         sign.waxed && sign.can_execute_click_commands(self.facing_sign_front(pos))
@@ -148,7 +148,7 @@ impl Game<'_> {
     /// line had one.
     fn execute_sign_click_commands(&mut self, pos: [i32; 3], front: bool) -> bool {
         let key = (pos[0], pos[1], pos[2]);
-        let Some(BlockEntity::Sign(sign)) = self.world.block_entities.get(&key) else {
+        let Some(BlockEntity::Sign(sign)) = self.simulation.world.block_entities.get(&key) else {
             return false;
         };
         let allow_op_features = sign.allow_op_features;
@@ -210,7 +210,7 @@ impl Game<'_> {
     pub(super) fn use_sign_empty_hand(&mut self, pos: [i32; 3]) {
         let key = (pos[0], pos[1], pos[2]);
         if !matches!(
-            self.world.block_entities.get(&key),
+            self.simulation.world.block_entities.get(&key),
             Some(BlockEntity::Sign(_))
         ) {
             return;
@@ -218,7 +218,7 @@ impl Game<'_> {
         let front = self.facing_sign_front(key);
         let executed = self.execute_sign_click_commands(pos, front);
         // The commands may have changed the sign, or removed it.
-        let Some(BlockEntity::Sign(sign)) = self.world.block_entities.get(&key) else {
+        let Some(BlockEntity::Sign(sign)) = self.simulation.world.block_entities.get(&key) else {
             return;
         };
         if sign.waxed {
@@ -242,7 +242,7 @@ impl Game<'_> {
             return false;
         };
         let key = (pos[0], pos[1], pos[2]);
-        let Some(BlockEntity::Sign(sign)) = self.world.block_entities.get(&key) else {
+        let Some(BlockEntity::Sign(sign)) = self.simulation.world.block_entities.get(&key) else {
             return false;
         };
         if sign.waxed || !self.may_build() {
@@ -266,7 +266,8 @@ impl Game<'_> {
             return false;
         }
         let front = self.facing_sign_front(key);
-        let Some(BlockEntity::Sign(sign)) = self.world.block_entities.get_mut(&key) else {
+        let Some(BlockEntity::Sign(sign)) = self.simulation.world.block_entities.get_mut(&key)
+        else {
             return false;
         };
         let centre = pos.map(|v| f64::from(v) + 0.5);
@@ -306,7 +307,7 @@ impl Game<'_> {
         self.audio.play(sound, Some(centre), 1.0, 1.0);
         self.mark_block_entity_updated(key);
         self.execute_sign_click_commands(pos, front);
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         self.post_block_game_event(
             "minecraft:block_change",
             pos,
@@ -322,7 +323,7 @@ impl Game<'_> {
     pub(super) fn open_sign_editor(&mut self, pos: (i32, i32, i32), front: bool) {
         // Minecraft.setScreen: the editor already open is removed first.
         self.close_sign_editor();
-        let lines = match self.world.block_entities.get(&pos) {
+        let lines = match self.simulation.world.block_entities.get(&pos) {
             Some(BlockEntity::Sign(sign)) if front => sign.front.lines.clone(),
             Some(BlockEntity::Sign(sign)) => sign.back.lines.clone(),
             _ => Default::default(),
@@ -355,7 +356,7 @@ impl Game<'_> {
             horizon_client::lan::guest::within_block_range(eye, self.reach() + 4.0, [x, y, z])
         });
         let sign = matches!(
-            self.world.block_entities.get(&edit.pos),
+            self.simulation.world.block_entities.get(&edit.pos),
             Some(BlockEntity::Sign(_))
         );
         if !sign || !near {
@@ -383,7 +384,7 @@ impl Game<'_> {
     /// the block, then the editor, on its client, and the guest may write on it.
     pub(super) fn lan_open_sign_editor(&mut self, host: &mut LanHost, conn: u32, edit: SignEditor) {
         let pos = [edit.pos.0, edit.pos.1, edit.pos.2];
-        let state = self.world.block(pos[0], pos[1], pos[2]).0 as i32;
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]).0 as i32;
         host.hub
             .send_to(conn, &C::BlockUpdate(play::BlockUpdate { pos, state }));
         host.hub.send_to(
@@ -436,7 +437,7 @@ impl Game<'_> {
             return;
         }
         if !matches!(
-            self.world.block_entities.get(&key),
+            self.simulation.world.block_entities.get(&key),
             Some(BlockEntity::Sign(sign)) if !sign.waxed
         ) {
             return;
@@ -480,7 +481,8 @@ impl Game<'_> {
             return;
         };
         // A hook may have broken the sign.
-        let Some(BlockEntity::Sign(sign)) = self.world.block_entities.get_mut(&key) else {
+        let Some(BlockEntity::Sign(sign)) = self.simulation.world.block_entities.get_mut(&key)
+        else {
             return;
         };
         if sign.waxed {
@@ -502,7 +504,7 @@ impl Game<'_> {
     pub(super) fn remote_open_sign_editor(&mut self, p: play::OpenSignEditor) {
         let key = (p.pos[0], p.pos[1], p.pos[2]);
         if matches!(
-            self.world.block_entities.get(&key),
+            self.simulation.world.block_entities.get(&key),
             Some(BlockEntity::Sign(_))
         ) {
             self.open_sign_editor(key, p.front);
@@ -571,7 +573,7 @@ impl Game<'_> {
     /// The edited line's text.
     fn sign_current(&self) -> Option<String> {
         let edit = self.sign_edit.as_ref()?;
-        let BlockEntity::Sign(sign) = self.world.block_entities.get(&edit.pos)? else {
+        let BlockEntity::Sign(sign) = self.simulation.world.block_entities.get(&edit.pos)? else {
             return None;
         };
         let side = if edit.front { &sign.front } else { &sign.back };
@@ -599,7 +601,8 @@ impl Game<'_> {
         if let Some(edit) = self.sign_edit.as_mut() {
             edit.lines[line].clone_from(&value);
         }
-        let Some(BlockEntity::Sign(sign)) = self.world.block_entities.get_mut(&pos) else {
+        let Some(BlockEntity::Sign(sign)) = self.simulation.world.block_entities.get_mut(&pos)
+        else {
             return;
         };
         let side = if front {
@@ -614,7 +617,8 @@ impl Game<'_> {
         let Some(edit) = self.sign_edit.as_ref() else {
             return false;
         };
-        let Some(BlockEntity::Sign(sign)) = self.world.block_entities.get(&edit.pos) else {
+        let Some(BlockEntity::Sign(sign)) = self.simulation.world.block_entities.get(&edit.pos)
+        else {
             return false;
         };
         HudBatch::text_width(&self.gui.atlas, value) <= sign.max_line_width()
@@ -725,7 +729,7 @@ impl Game<'_> {
     /// Centre x, the first line's y, the line height, the width limit and the four lines.
     fn sign_lines(&self, width: f32) -> Option<(f32, f32, f32, f32, Vec<String>)> {
         let edit = self.sign_edit.as_ref()?;
-        let BlockEntity::Sign(sign) = self.world.block_entities.get(&edit.pos)? else {
+        let BlockEntity::Sign(sign) = self.simulation.world.block_entities.get(&edit.pos)? else {
             return None;
         };
         let text = if edit.front { &sign.front } else { &sign.back };
@@ -742,7 +746,8 @@ impl Game<'_> {
     }
     pub(super) fn draw_sign_editor(&self, batch: &mut HudBatch) {
         let Some(edit) = &self.sign_edit else { return };
-        let Some(BlockEntity::Sign(sign)) = self.world.block_entities.get(&edit.pos) else {
+        let Some(BlockEntity::Sign(sign)) = self.simulation.world.block_entities.get(&edit.pos)
+        else {
             return;
         };
         self.render_transparent_background("sign_editor", batch);
@@ -761,7 +766,11 @@ impl Game<'_> {
         let tw = HudBatch::text_width(atlas, &title);
         batch.text(atlas, &title, (w - tw) / 2.0, 40.0, u32::MAX, true);
         let facts = self.res.facts();
-        let block = facts.get(self.world.block(edit.pos.0, edit.pos.1, edit.pos.2));
+        let block = facts.get(
+            self.simulation
+                .world
+                .block(edit.pos.0, edit.pos.1, edit.pos.2),
+        );
         let wood = facts.wood_type(&block.name).unwrap_or("oak");
         let cx = w / 2.0;
         let y = if sign.hanging {

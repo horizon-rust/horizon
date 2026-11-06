@@ -1067,7 +1067,10 @@ impl Game<'_> {
     /// The container changed under the book: comparators and saving.
     fn recipe_book_changed(&mut self) {
         if let Some(key) = self.container {
-            self.world.modified.insert((key.0 >> 4, key.2 >> 4));
+            self.simulation
+                .world
+                .modified
+                .insert((key.0 >> 4, key.2 >> 4));
             self.container_changed(key);
         }
     }

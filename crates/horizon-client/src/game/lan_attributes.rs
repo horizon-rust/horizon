@@ -81,6 +81,7 @@ impl Game<'_> {
     /// mobs that wear or hold something, since the mob does not know items.
     pub(super) fn refresh_gear_knockback_resistance(&mut self) {
         let values: Vec<Option<f64>> = self
+            .simulation
             .mobs
             .iter()
             .map(|m| {
@@ -98,15 +99,85 @@ impl Game<'_> {
                 .then(|| self.mob_knockback_resistance(m))
             })
             .collect();
-        for (m, value) in self.mobs.iter_mut().zip(values) {
+        for (m, value) in self.simulation.mobs.iter_mut().zip(values) {
             m.gear_knockback_resistance = value;
         }
     }
 
+    /// What building an entity's attribute state reads, for the workers.
+    pub(super) fn attribute_read(&self) -> AttributeRead<'_> {
+        AttributeRead {
+            catalog: &self.motion.attributes,
+            items: self.items(),
+            commanded: &self.cmds.attributes,
+        }
+    }
+
+    pub(super) fn stand_attributes(
+        &self,
+        id: u32,
+        equipment: &[Option<horizon_client::items::ItemStack>; 6],
+    ) -> Vec<AttributeSnapshot> {
+        self.attribute_read().stand_attributes(id, equipment)
+    }
+
+    /// The instances a server player's tick creates, and
+    /// `ServerPlayer.updatePlayerAttributes`: a creative player reaches 0.5
+    /// further to blocks and 2 to entities. Its client reads the reach from
+    /// these synced modifiers. (The crouching player's waypoint range is
+    /// server-side only: lan_waypoints.rs hides it.)
+    pub(super) fn update_player_attributes(&mut self) {
+        let creative = self.mode_id() == 1;
+        let Some(p) = self.player.as_mut() else {
+            return;
+        };
+        // LivingEntity.aiStep's removeFrost reads the movement speed instance
+        // every tick, which creates it (and its first sync).
+        if let Some(key) = p.attributes.key("minecraft:movement_speed") {
+            let _ = p.attributes.get_instance(Some(key));
+        }
+        for (attribute, id, amount) in [
+            (
+                "minecraft:block_interaction_range",
+                "minecraft:creative_mode_block_range",
+                0.5,
+            ),
+            (
+                "minecraft:entity_interaction_range",
+                "minecraft:creative_mode_entity_range",
+                2.0,
+            ),
+        ] {
+            let Some(key) = p.attributes.key(attribute) else {
+                continue;
+            };
+            // getAttribute creates the instance, a creative player's or not.
+            if !matches!(p.attributes.get_instance(Some(key.clone())), Ok(Some(_))) {
+                continue;
+            }
+            // addOrUpdateTransientModifier with the same modifier and
+            // removeModifier of a missing one leave the instance clean.
+            let has = p.attributes.has_modifier(Some(key), id).unwrap_or(false);
+            if has != creative {
+                let _ = p.set_modifier(attribute, id, amount, "add_value", creative);
+            }
+        }
+    }
+}
+
+/// What building a mob's or armor stand's attribute state reads of the game.
+pub(super) struct AttributeRead<'a> {
+    catalog: &'a horizon_world::attributes::entity::Catalog,
+    items: &'a horizon_client::items::Items,
+    commanded:
+        &'a std::collections::HashMap<Target, horizon_world::attributes::entity::EntityAttributes>,
+}
+
+impl AttributeRead<'_> {
     /// The registry id of a client-syncable attribute the entity type has
     /// (`AttributeMap.getInstance` is null for the others), by name.
     fn synced_attribute(&self, entity: &str, name: &str) -> Option<i32> {
-        let catalog = &self.motion.attributes;
+        let catalog = self.catalog;
         let id = catalog.id(name)?;
         (catalog.attribute(id).syncable && catalog.default_base(entity, id).is_some())
             .then(|| id.registry_id())
@@ -114,7 +185,7 @@ impl Game<'_> {
 
     /// The type's base value of an attribute, as the instance starts.
     fn attribute_default(&self, entity: &str, name: &str) -> f64 {
-        let catalog = &self.motion.attributes;
+        let catalog = self.catalog;
         catalog
             .id(name)
             .and_then(|id| catalog.default_base(entity, id))
@@ -132,7 +203,7 @@ impl Game<'_> {
         out: &mut Vec<AttributeSnapshot>,
     ) {
         for (slot, item) in slots {
-            let Some(info) = item.and_then(|i| self.items().get(i)) else {
+            let Some(info) = item.and_then(|i| self.items.get(i)) else {
                 continue;
             };
             for (attribute, id, amount, op, group) in &info.modifiers {
@@ -330,53 +401,10 @@ impl Game<'_> {
         out
     }
 
-    /// The instances a server player's tick creates, and
-    /// `ServerPlayer.updatePlayerAttributes`: a creative player reaches 0.5
-    /// further to blocks and 2 to entities. Its client reads the reach from
-    /// these synced modifiers. (The crouching player's waypoint range is
-    /// server-side only: lan_waypoints.rs hides it.)
-    pub(super) fn update_player_attributes(&mut self) {
-        let creative = self.mode_id() == 1;
-        let Some(p) = self.player.as_mut() else {
-            return;
-        };
-        // LivingEntity.aiStep's removeFrost reads the movement speed instance
-        // every tick, which creates it (and its first sync).
-        if let Some(key) = p.attributes.key("minecraft:movement_speed") {
-            let _ = p.attributes.get_instance(Some(key));
-        }
-        for (attribute, id, amount) in [
-            (
-                "minecraft:block_interaction_range",
-                "minecraft:creative_mode_block_range",
-                0.5,
-            ),
-            (
-                "minecraft:entity_interaction_range",
-                "minecraft:creative_mode_entity_range",
-                2.0,
-            ),
-        ] {
-            let Some(key) = p.attributes.key(attribute) else {
-                continue;
-            };
-            // getAttribute creates the instance, a creative player's or not.
-            if !matches!(p.attributes.get_instance(Some(key.clone())), Ok(Some(_))) {
-                continue;
-            }
-            // addOrUpdateTransientModifier with the same modifier and
-            // removeModifier of a missing one leave the instance clean.
-            let has = p.attributes.has_modifier(Some(key), id).unwrap_or(false);
-            if has != creative {
-                let _ = p.set_modifier(attribute, id, amount, "add_value", creative);
-            }
-        }
-    }
-
     /// The instances `/attribute` created in an entity's generic map
     /// replace the ones derived from its state.
     fn generic_attributes_of(&self, t: Target, out: &mut Vec<AttributeSnapshot>) {
-        if let Some(map) = self.cmds.attributes.get(&t) {
+        if let Some(map) = self.commanded.get(&t) {
             generic_attributes_into(map, out);
         }
     }

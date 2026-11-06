@@ -774,7 +774,7 @@ pub fn school_tick(m: &mut Mob, w: &MobWorld, level_random: &mut impl RandomSour
         let area = m.bounds().inflate(Vec3::new(8.0, 8.0, 8.0));
         let species = m.species();
         let others = w
-            .others_near(area)
+            .others_intersecting(area)
             .filter(|s| {
                 s.id != m.id && s.species == species && s.alive && s.bounds.intersects(area)
             })
@@ -861,7 +861,7 @@ impl Goal for FollowFlockLeader {
         let species = m.species();
         let area = m.bounds().inflate(Vec3::new(8.0, 8.0, 8.0));
         let mut near: Vec<&crate::mobs::Seen> =
-            cx.w.others_near(area)
+            cx.w.others_intersecting(area)
                 .filter(|s| s.species == species && s.alive && s.bounds.intersects(area))
                 .collect();
         // `getEntitiesOfClass`: the sections by x, z, y; in each, as they entered it.
@@ -948,7 +948,7 @@ impl Goal for PufferfishPuff {
                 .as_ref()
                 .is_some_and(|p| p.alive && !p.creative && area.intersects(p.bounds));
         // TARGETING_CONDITIONS: not #not_scary_for_pufferfish, and alive.
-        let mob = cx.w.others_near(area).any(|s| {
+        let mob = cx.w.others_intersecting(area).any(|s| {
             s.id != m.id
                 && s.alive
                 && !not_scary_for_pufferfish(s.species)
@@ -1248,7 +1248,7 @@ mod pufferfish_sting_tests {
             );
             let others = [target.seen(None)];
             let world = MobWorld {
-                others: &others,
+                others: (&others).into(),
                 ..w.clone()
             };
             for no_ai in [true, false] {
@@ -1379,7 +1379,7 @@ mod pufferfish_sting_tests {
                 let pig = make_mob(2, "minecraft:pig", Vec3::new(0.5, 64.0, 0.5));
                 let seen = [pig.seen(None)];
                 let world = MobWorld {
-                    others: &seen,
+                    others: (&seen).into(),
                     ..w.clone()
                 };
                 let mut events = Vec::new();
@@ -1406,7 +1406,7 @@ mod pufferfish_sting_tests {
                 let far_pig = make_mob(5, "minecraft:pig", Vec3::new(5.0, 64.0, 5.0));
                 let seen_far = [far_pig.seen(None)];
                 let world_far = MobWorld {
-                    others: &seen_far,
+                    others: (&seen_far).into(),
                     ..w.clone()
                 };
                 let mut events = Vec::new();
@@ -1428,7 +1428,7 @@ mod pufferfish_sting_tests {
                 invuln_pig.invulnerable_flag = true;
                 let seen = [invuln_pig.seen(None)];
                 let world = MobWorld {
-                    others: &seen,
+                    others: (&seen).into(),
                     ..w.clone()
                 };
                 let mut events = Vec::new();
@@ -1460,7 +1460,7 @@ mod pufferfish_sting_tests {
                 cooldown_pig.last_hurt = 3.0; // Pufferfish deals 1 + 2 = 3.0 <= 3.0
                 let seen = [cooldown_pig.seen(None)];
                 let world = MobWorld {
-                    others: &seen,
+                    others: (&seen).into(),
                     ..w.clone()
                 };
                 let mut events = Vec::new();
@@ -1493,7 +1493,7 @@ mod pufferfish_sting_tests {
                 let pig = make_mob(2, "minecraft:pig", Vec3::new(0.5, 64.0, 0.5));
                 let seen = [pig.seen(None)];
                 let world = MobWorld {
-                    others: &seen,
+                    others: (&seen).into(),
                     ..w.clone()
                 };
                 let mut events = Vec::new();
@@ -1530,7 +1530,7 @@ mod pufferfish_sting_tests {
                 // World Tick 1 continued: Pig ticks later in the same level tick
                 let fish_seen = [mobs[0].seen(None)];
                 let world_for_pig = MobWorld {
-                    others: &fish_seen,
+                    others: (&fish_seen).into(),
                     ..w.clone()
                 };
                 let mut pig_events = Vec::new();
@@ -1558,7 +1558,7 @@ mod pufferfish_sting_tests {
                 noai_pig.no_ai = true;
                 let seen = [noai_pig.seen(None)];
                 let world = MobWorld {
-                    others: &seen,
+                    others: (&seen).into(),
                     ..w.clone()
                 };
                 let mut events = Vec::new();
@@ -1569,7 +1569,7 @@ mod pufferfish_sting_tests {
                 assert_eq!(mobs[1].extra.effects[0].1, 120);
                 let fish_seen = [mobs[0].seen(None)];
                 let world_for_pig = MobWorld {
-                    others: &fish_seen,
+                    others: (&fish_seen).into(),
                     ..w.clone()
                 };
                 let mut pig_events = Vec::new();
@@ -1591,7 +1591,7 @@ mod pufferfish_sting_tests {
                 let pig_b = make_mob(3, "minecraft:pig", Vec3::new(0.4, 64.0, 0.5));
                 let seen = [pig_a.seen(None), pig_b.seen(None)];
                 let world = MobWorld {
-                    others: &seen,
+                    others: (&seen).into(),
                     ..w.clone()
                 };
                 let mut events = Vec::new();

@@ -176,9 +176,9 @@ impl Game<'_> {
             ),
             Environment::ClockTime { clock, time } => {
                 // Only the overworld clock runs in Horizon.
-                let previous = self.world.day_time;
+                let previous = self.simulation.world.day_time;
                 if clock == "minecraft:overworld" {
-                    self.world.day_time = *time;
+                    self.simulation.world.day_time = *time;
                     self.ui.clock.partial = 0.0;
                 }
                 Saved::Clock(previous)
@@ -210,7 +210,7 @@ impl Game<'_> {
             }
             Environment::Timelines => Saved::Unit,
             Environment::Weather(kind) => {
-                let w = &self.world.weather;
+                let w = &self.simulation.world.weather;
                 let previous = if w.thundering {
                     WeatherType::Thunder
                 } else if w.raining {
@@ -233,7 +233,7 @@ impl Game<'_> {
             }
             (Environment::ClockTime { clock, .. }, Saved::Clock(previous)) => {
                 if clock == "minecraft:overworld" {
-                    self.world.day_time = previous;
+                    self.simulation.world.day_time = previous;
                     self.ui.clock.partial = 0.0;
                 }
             }
@@ -247,7 +247,7 @@ impl Game<'_> {
             (_, Saved::GameRules(original)) => self.set_environment_rules(&original),
             (_, Saved::Weather(previous)) => {
                 // resetWeatherCycle, then the saved type.
-                let w = &mut self.world.weather;
+                let w = &mut self.simulation.world.weather;
                 w.rain_time = 0;
                 w.raining = false;
                 w.thunder_time = 0;
@@ -271,7 +271,7 @@ impl Game<'_> {
     /// `Weather.Type.apply`: `ServerLevel.setWeatherParameters`.
     fn set_weather_type(&mut self, kind: WeatherType) {
         let (clear, rain, raining, thundering) = kind.parameters();
-        let w = &mut self.world.weather;
+        let w = &mut self.simulation.world.weather;
         w.clear_time = clear;
         w.rain_time = rain;
         w.thunder_time = rain;

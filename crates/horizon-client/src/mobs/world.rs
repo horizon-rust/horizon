@@ -320,13 +320,31 @@ impl MobWorld<'_> {
     /// The other mobs whose boxes may meet `area` (callers test the boxes),
     /// in snapshot order: through the grid when there is one, else all.
     pub fn others_near(&self, area: Aabb) -> impl Iterator<Item = &Seen> {
+        self.others_query(area, false)
+    }
+    /// Exact box query. Unlike the legacy candidate-only API, callers cannot
+    /// accidentally observe entities outside the geometric dependency.
+    pub fn others_intersecting(&self, area: Aabb) -> impl Iterator<Item = &Seen> {
+        self.others_query(area, true)
+            .filter(move |seen| seen.bounds.intersects(area))
+    }
+    fn others_query(&self, area: Aabb, spatial: bool) -> impl Iterator<Item = &Seen> {
         let mut near = Vec::new();
-        let indexed = self
-            .others_grid
-            .is_some_and(|grid| grid.candidates(area, &mut near));
+        let indexed = self.others_grid.is_some_and(|grid| {
+            self.others.record_query(area, grid, spatial);
+            if spatial {
+                grid.spatial_candidates(area, &mut near)
+            } else {
+                grid.candidates(area, &mut near)
+            }
+        });
         let all = (!indexed).then(|| self.others.iter());
         near.into_iter()
-            .map(|i| &self.others[i as usize])
+            .map(|i| {
+                self.others
+                    .get_untracked(i as usize)
+                    .expect("snapshot grid slot")
+            })
             .chain(all.into_iter().flatten())
     }
     pub fn seen(&self, id: u32) -> Option<&Seen> {
@@ -353,7 +371,7 @@ impl MobWorld<'_> {
             Vec3::new(from.x + r, from.y + r, from.z + r),
         );
         let mut v: Vec<&Seen> = self
-            .others_near(area)
+            .others_query(area, true)
             .filter(|s| {
                 s.alive
                     && (s.position.x - from.x).abs() <= range
@@ -494,12 +512,11 @@ pub(crate) fn with_resource_test_world(
         player: None,
         controlling_player_movement: None,
         nearest_player: None,
-        others,
+        others: others.into(),
         dragon: None,
         leash_boats: &[],
         others_grid: None,
         others_index: None,
-        others_villagers: None,
         daylight: true,
         monsters_burn: false,
         game_time: 1000,

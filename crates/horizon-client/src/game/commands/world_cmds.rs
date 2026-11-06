@@ -229,7 +229,12 @@ impl Game<'_> {
                     _ => None,
                 });
                 let attacker_species = match attacker {
-                    Some(Who::Mob(i)) => self.mobs.iter().find(|m| m.id == i).map(|m| m.species()),
+                    Some(Who::Mob(i)) => self
+                        .simulation
+                        .mobs
+                        .iter()
+                        .find(|m| m.id == i)
+                        .map(|m| m.species()),
                     _ => None,
                 };
                 let damage = Damage {
@@ -302,7 +307,12 @@ impl Game<'_> {
         damage_type: &str,
         causing: Option<Target>,
     ) -> bool {
-        let Some(index) = self.dropped.iter().position(|item| item.id == id) else {
+        let Some(index) = self
+            .simulation
+            .dropped
+            .iter()
+            .position(|item| item.id == id)
+        else {
             return false;
         };
         let registry = &self.motion.health.damage;
@@ -315,6 +325,7 @@ impl Game<'_> {
             _ => false,
         };
         let invulnerable = self
+            .simulation
             .persist
             .raw
             .get(&id)
@@ -333,7 +344,7 @@ impl Game<'_> {
                 .item_renderer
                 .models
                 .components(&horizon_client::item_render::stack_view(
-                    &self.dropped[index].stack,
+                    &self.simulation.dropped[index].stack,
                 ));
         let resistant = |source: &str| {
             let matches = |value: &str| {
@@ -369,7 +380,7 @@ impl Game<'_> {
         {
             return false;
         }
-        let item = &mut self.dropped[index];
+        let item = &mut self.simulation.dropped[index];
         // Java subtracts in float before truncating to int, including fractions
         // and accepted zero-damage hits.
         item.health = (item.health as f32 - amount) as i32;
@@ -383,9 +394,9 @@ impl Game<'_> {
         };
         let context = self.who_context(who, None);
         self.post_game_event("minecraft:entity_damage", [at.x, at.y, at.z], context);
-        if self.dropped[index].health <= 0 {
-            let contents = self.dropped[index].hurt(0).unwrap_or_default();
-            self.dropped.remove(index);
+        if self.simulation.dropped[index].health <= 0 {
+            let contents = self.simulation.dropped[index].hurt(0).unwrap_or_default();
+            self.simulation.dropped.remove(index);
             self.spawn_destroyed_contents(contents.into_iter().map(|stack| (stack, at)).collect());
         }
         true
@@ -398,17 +409,22 @@ impl Game<'_> {
             .then(|| self.owner_damage_uuid())
             .flatten();
         let mut reinforcements = Vec::new();
-        let hurt = self.mobs.iter_mut().find(|m| m.id == id).is_some_and(|m| {
-            let queued = m.outbox.len();
-            let hurt = match player_uuid {
-                Some(uuid) => m.damage_with_player_uuid(amount, damage, uuid, None),
-                None => m.damage(amount, damage),
-            };
-            if hurt {
-                reinforcements = take_new_reinforcements(&mut m.outbox, queued);
-            }
-            hurt
-        });
+        let hurt = self
+            .simulation
+            .mobs
+            .iter_mut()
+            .find(|m| m.id == id)
+            .is_some_and(|m| {
+                let queued = m.outbox.len();
+                let hurt = match player_uuid {
+                    Some(uuid) => m.damage_with_player_uuid(amount, damage, uuid, None),
+                    None => m.damage(amount, damage),
+                };
+                if hurt {
+                    reinforcements = take_new_reinforcements(&mut m.outbox, queued);
+                }
+                hurt
+            });
         if hurt {
             self.resolve_player_responsible(id, damage);
             if damage.attacker == Some(Who::Player) {
@@ -502,7 +518,7 @@ impl Game<'_> {
             match t {
                 Target::Player => self.swing_arm(),
                 Target::Mob(id) => {
-                    if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                    if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
                         m.ai.swinging = true;
                         m.ai.swing_time = -1;
                     }
@@ -559,7 +575,7 @@ impl Game<'_> {
         );
         let range = if volume > 1.0 { 16.0 * volume } else { 16.0 };
         // PlaySoundCommand: one seed for every player.
-        let seed = self.world.random.next_long();
+        let seed = self.simulation.world.random.next_long();
         let here = self.dim.id();
         let mut tracker = Tracker::default();
         for t in targets {
@@ -1137,7 +1153,7 @@ impl Game<'_> {
                 )
             }
             Target::Mob(mob_id) => {
-                let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob_id) else {
+                let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == mob_id) else {
                     return Ok(0);
                 };
                 // The attributes the mob's gameplay reads live in `finalize`;
@@ -1265,7 +1281,7 @@ impl Game<'_> {
         if let Target::Mob(id) = t
             && matches!(attribute, "minecraft:armor" | "minecraft:armor_toughness")
         {
-            let mob = self.mobs.iter_mut().find(|m| m.id == id)?;
+            let mob = self.simulation.mobs.iter_mut().find(|m| m.id == id)?;
             if mob.extra.armor_attributes.is_none() {
                 mob.extra.armor_attributes =
                     self.motion.attributes.create(&mob.kind.id).map(Box::new);
@@ -1490,10 +1506,10 @@ impl Game<'_> {
         // carts have no mob passengers yet.
         match vehicle {
             Target::Boat(id) => {
-                let Some(i) = self.boats.iter().position(|b| b.id == id) else {
+                let Some(i) = self.simulation.boats.iter().position(|b| b.id == id) else {
                     return Err(generic());
                 };
-                if self.boat_passengers(id) >= self.boats[i].max_passengers() {
+                if self.boat_passengers(id) >= self.simulation.boats[i].max_passengers() {
                     return Err(generic());
                 }
                 if let Some(rider) = rider {
@@ -1504,7 +1520,7 @@ impl Game<'_> {
                     if !self.native_may_board(id) {
                         return Err(generic());
                     }
-                    self.yaw = self.boats[i].yaw;
+                    self.yaw = self.simulation.boats[i].yaw;
                     // ServerPlayer.startRiding seats the player immediately.
                     let at = self.player_boat_seat(i);
                     if let Some(player) = self.player.as_mut() {
@@ -1542,7 +1558,12 @@ impl Game<'_> {
         let Target::Mob(mob_id) = vehicle else {
             return Err(generic());
         };
-        if !self.mobs.iter().any(|m| m.id == mob_id && m.alive()) {
+        if !self
+            .simulation
+            .mobs
+            .iter()
+            .any(|m| m.id == mob_id && m.alive())
+        {
             return Err(generic());
         }
         if let Some(rider) = rider {
@@ -1559,7 +1580,7 @@ impl Game<'_> {
         if !self.native_may_board(mob_id) {
             return Err(generic());
         }
-        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob_id) {
+        if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == mob_id) {
             m.extra.flag = false;
             m.extra.counter = 0;
             self.yaw = m.yaw;
@@ -1578,12 +1599,19 @@ impl Game<'_> {
     pub(super) fn ride_vehicle(&self, t: Target) -> Option<Target> {
         let id = match t {
             Target::Player => self.riding?,
-            Target::Mob(id) => self.mobs.iter().find(|m| m.id == id)?.extra.mount?,
+            Target::Mob(id) => {
+                self.simulation
+                    .mobs
+                    .iter()
+                    .find(|m| m.id == id)?
+                    .extra
+                    .mount?
+            }
             _ => return None,
         };
-        Some(if self.boats.iter().any(|b| b.id == id) {
+        Some(if self.simulation.boats.iter().any(|b| b.id == id) {
             Target::Boat(id)
-        } else if self.carts.iter().any(|c| c.id == id) {
+        } else if self.simulation.carts.iter().any(|c| c.id == id) {
             Target::Cart(id)
         } else {
             Target::Mob(id)
@@ -1593,39 +1621,43 @@ impl Game<'_> {
     /// (Entity.removePassenger), then to where the vehicle lets it out
     /// (LivingEntity.dismountVehicle).
     pub(in crate::game) fn dismount_mob(&mut self, rider: u32) {
-        let Some(i) = self.mobs.iter().position(|m| m.id == rider) else {
+        let Some(i) = self.simulation.mobs.iter().position(|m| m.id == rider) else {
             return;
         };
-        let Some(v) = self.mobs[i].extra.mount else {
+        let Some(v) = self.simulation.mobs[i].extra.mount else {
             return;
         };
         if !self.native_mob_may_ride(rider, v, false) {
             return;
         }
-        self.mobs[i].extra.mount = None;
+        self.simulation.mobs[i].extra.mount = None;
         let remaining = self
+            .simulation
             .mobs
             .iter()
             .find(|m| m.extra.mount == Some(v))
             .map(|m| m.id);
-        if let Some(vehicle) = self.mobs.iter_mut().find(|m| m.id == v) {
+        if let Some(vehicle) = self.simulation.mobs.iter_mut().find(|m| m.id == v) {
             vehicle.extra.rider = remaining;
         }
-        let (width, yaw) = (f64::from(self.mobs[i].width()), self.mobs[i].yaw);
-        let at = if let Some(b) = self.boats.iter().position(|b| b.id == v) {
+        let (width, yaw) = (
+            f64::from(self.simulation.mobs[i].width()),
+            self.simulation.mobs[i].yaw,
+        );
+        let at = if let Some(b) = self.simulation.boats.iter().position(|b| b.id == v) {
             self.boat_dismount_target(b, width, yaw)
         } else if let Some(at) = self.horse_dismount_point(v, i) {
             at
         } else if let Some(at) = self.cart_dismount_point(v, i) {
             at
-        } else if let Some(m) = self.mobs.iter_mut().find(|m| m.id == v) {
+        } else if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == v) {
             // Entity.getDismountLocationForPassenger: on top of the vehicle.
             let p = m.position;
             horizon_core::geometry::Vec3::new(p.x, p.y + f64::from(m.height()), p.z)
         } else {
-            self.mobs[i].position
+            self.simulation.mobs[i].position
         };
-        let m = &mut self.mobs[i];
+        let m = &mut self.simulation.mobs[i];
         m.extra.passenger = false;
         m.extra.boarding_cooldown = super::super::boat_passengers::BOARDING_COOLDOWN;
         m.position = at;
@@ -1646,12 +1678,12 @@ impl Game<'_> {
         let respect = matches!(ctx.get("respectTeams"), Some(Arg::Bool(true)));
         let max_y = match ctx.get("maxHeight") {
             Some(Arg::Int(h)) => *h,
-            _ => self.world.top_y(),
+            _ => self.simulation.world.top_y(),
         };
-        if max_y < self.world.bottom_y() {
+        if max_y < self.simulation.world.bottom_y() {
             return Err(err(
                 "commands.spreadplayers.failed.invalid.height",
-                &[&max_y, &self.world.bottom_y()],
+                &[&max_y, &self.simulation.world.bottom_y()],
             ));
         }
         let targets = self.entities(ctx, "targets", false)?;
@@ -1688,7 +1720,7 @@ impl Game<'_> {
             if lo >= hi {
                 lo
             } else {
-                g.world.random.next_double() * (hi - lo) + lo
+                g.simulation.world.random.next_double() * (hi - lo) + lo
             }
         };
         let mut points: Vec<[f64; 2]> = Vec::with_capacity(count);
@@ -1843,7 +1875,11 @@ impl Game<'_> {
     fn spread_spawn_y(&self, p: [f64; 2], max_y: i32) -> i32 {
         let (x, z) = (p[0].floor() as i32, p[1].floor() as i32);
         let air = |y: i32| {
-            let name: &str = &self.res.facts().get(self.world.block(x, y, z)).name;
+            let name: &str = &self
+                .res
+                .facts()
+                .get(self.simulation.world.block(x, y, z))
+                .name;
             matches!(
                 name,
                 "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air"
@@ -1853,7 +1889,7 @@ impl Game<'_> {
         let mut air2 = air(y);
         y -= 1;
         let mut air1 = air(y);
-        while y > self.world.bottom_y() {
+        while y > self.simulation.world.bottom_y() {
             y -= 1;
             let current = air(y);
             if !current && air1 && air2 {
@@ -1868,7 +1904,12 @@ impl Game<'_> {
     fn spread_safe(&self, p: [f64; 2], max_y: i32) -> bool {
         let y = self.spread_spawn_y(p, max_y) - 1;
         let (x, z) = (p[0].floor() as i32, p[1].floor() as i32);
-        let name = self.res.facts().get(self.world.block(x, y, z)).name.clone();
+        let name = self
+            .res
+            .facts()
+            .get(self.simulation.world.block(x, y, z))
+            .name
+            .clone();
         let liquid = matches!(&*name, "minecraft:water" | "minecraft:lava");
         let teleportable = self
             .res
@@ -2002,16 +2043,16 @@ mod allay_owner_damage_tests {
         game.level.player_uuid = Some(actual);
         game.lan_acting_uuid = Some(horizon_client::lan::playerdata::ints_uuid(actual));
         let kind = game.res.mob_types().get("minecraft:allay").unwrap().clone();
-        let before = game.world.game_time;
+        let before = game.simulation.world.game_time;
         for melee in [true, false] {
             for liked in [Some(actual), None, Some(other)] {
-                game.mobs.clear();
+                game.simulation.mobs.clear();
                 let mut mob = Mob::new(1, kind.clone(), Vec3::new(22.5, 101.0, 22.5), 0.0);
                 mob.no_ai = true;
                 mob.extra.tame = liked.is_some();
                 mob.extra.owner = liked;
                 assert_eq!((mob.health, mob.hurt_time), (20.0, 0));
-                game.mobs.push(mob);
+                game.simulation.mobs.push(mob);
                 let source = Damage::player([20.5, 102.0, 20.5]);
                 let accepted = if melee {
                     game.hurt_by_player(0, 2.0, source)
@@ -2020,9 +2061,12 @@ mod allay_owner_damage_tests {
                 };
                 let expected = liked != Some(actual);
                 assert_eq!(accepted, expected, "melee={melee}, liked={liked:?}");
-                assert_eq!(game.mobs[0].health, if expected { 18.0 } else { 20.0 });
-                assert_eq!(game.mobs[0].extra.owner, liked);
-                assert_eq!(game.world.game_time, before);
+                assert_eq!(
+                    game.simulation.mobs[0].health,
+                    if expected { 18.0 } else { 20.0 }
+                );
+                assert_eq!(game.simulation.mobs[0].extra.owner, liked);
+                assert_eq!(game.simulation.world.game_time, before);
             }
         }
     }

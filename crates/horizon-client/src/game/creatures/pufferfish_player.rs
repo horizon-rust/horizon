@@ -16,6 +16,7 @@ impl Game<'_> {
             return;
         };
         let mut fish = self
+            .simulation
             .mobs
             .iter()
             .filter(|m| m.species() == Species::Pufferfish && m.alive() && m.extra.size > 0)

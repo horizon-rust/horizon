@@ -146,7 +146,7 @@ impl Game<'_> {
                 .as_ref()
                 .ok_or("command harness: portal without a player")?;
             let entry = horizon_core::position::BlockPos::containing(p.position);
-            let block = g.world.block(entry.x, entry.y, entry.z);
+            let block = g.simulation.world.block(entry.x, entry.y, entry.z);
             if &*g.res.facts().get(block).name != "minecraft:nether_portal" {
                 return Err("command harness: the player is not in a nether portal".into());
             }
@@ -216,7 +216,7 @@ impl Game<'_> {
                     "settle: player {:?} center {:?} chunks {} pending {}",
                     self.player.as_ref().map(|p| p.position),
                     self.streaming.center,
-                    self.world.chunks.len(),
+                    self.simulation.world.chunks.len(),
                     self.streaming.pending()
                 );
             }
@@ -325,7 +325,7 @@ impl Game<'_> {
                             return Err("anger state: UUID mismatch".into());
                         }
                         let m = g
-                            .mobs
+                            .simulation.mobs
                             .iter()
                             .find(|m| m.id == id && m.alive() && !m.removed)
                             .ok_or("anger state: missing live actor")?;
@@ -336,9 +336,9 @@ impl Game<'_> {
                         let (mut meta, mut defaults) = (Vec::new(), Vec::new());
                         super::lan::mob_meta(
                             m,
-                            hub,
+                            hub.sync_data(),
                             None,
-                            g.world.game_time,
+                            g.simulation.world.game_time,
                             &mut meta,
                             &mut defaults,
                         );
@@ -354,7 +354,7 @@ impl Game<'_> {
                             return Err("anger state: metadata value is not long".into());
                         };
                         Ok(json!({"uuid":actual,"kind":m.kind.id,"index":index,
-                            "serializer":entry.1,"value":value,"game_time":g.world.game_time}))
+                            "serializer":entry.1,"value":value,"game_time":g.simulation.world.game_time}))
                     })?;
                     out.push_str(
                         &json!({"cmd":format!("#mob_anger {}",op["label"].as_str().unwrap_or("")),
@@ -379,12 +379,13 @@ impl Game<'_> {
                     let [x, z] =
                         std::array::from_fn(|i| op["chunk"][i].as_i64().unwrap_or(0) as i32);
                     let state = self.harness_owner(|g| {
-                        let resident = g.world.chunks.contains_key(&(x, z));
+                        let resident = g.simulation.world.chunks.contains_key(&(x, z));
                         Ok([
                             resident,
                             g.streaming.is_lit(x, z),
                             resident
                                 && !g
+                                    .simulation
                                     .world
                                     .loaded_entities
                                     .iter()
@@ -415,9 +416,10 @@ impl Game<'_> {
                             g.update_world();
                             g.spawn_loaded_entities();
                             if targets.iter().all(|&(x, z)| {
-                                g.world.chunks.contains_key(&(x, z))
+                                g.simulation.world.chunks.contains_key(&(x, z))
                                     && g.streaming.is_lit(x, z)
                                     && !g
+                                        .simulation
                                         .world
                                         .loaded_entities
                                         .iter()
@@ -436,7 +438,7 @@ impl Game<'_> {
                 "weather_state" => {
                     // Saved state guards, separate from effective-weather predicates.
                     let state = self.harness_owner(|g| {
-                        let w = g.world.weather;
+                        let w = g.simulation.world.weather;
                         Ok([
                             i32::from(w.raining),
                             i32::from(w.thundering),
@@ -649,7 +651,7 @@ impl Game<'_> {
                             return Err("frame map: UUID is not a live frame".into());
                         };
                         let actual = *g.persist.uuids.get(&id).ok_or("frame map: no UUID")?;
-                        let frame = g.item_frames.iter().find(|f| f.id == id)
+                        let frame = g.simulation.item_frames.iter().find(|f| f.id == id)
                             .ok_or("frame map: missing frame")?.clone();
                         if horizon_client::lan::playerdata::ints_uuid(actual) != uuid {
                             return Err("frame map: UUID mismatch".into());
@@ -795,7 +797,7 @@ impl Game<'_> {
                     let [x, y, z] =
                         std::array::from_fn(|i| op["pos"][i].as_i64().unwrap_or(0) as i32);
                     self.harness_owner(|g| {
-                        let state = g.world.block(x, y, z);
+                        let state = g.simulation.world.block(x, y, z);
                         if &*g.res.facts().get(state).name != "minecraft:crafter" {
                             return Err("command harness: crafter tick without a crafter".into());
                         }
@@ -835,9 +837,14 @@ impl Game<'_> {
                     let matches = |f: &super::FallingBlock| {
                         &*facts.get(f.state).name == block && f.no_gravity == no_gravity
                     };
-                    let count = self.falling.iter().filter(|f| matches(f)).count();
+                    let count = self
+                        .simulation
+                        .falling
+                        .iter()
+                        .filter(|f| matches(f))
+                        .count();
                     if op["discard"].as_bool() == Some(true) {
-                        self.falling.retain(|f| !matches(f));
+                        self.simulation.falling.retain(|f| !matches(f));
                     }
                     self.enter_level(None, back)?;
                     let record = json!({

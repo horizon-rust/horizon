@@ -59,7 +59,10 @@ impl Game<'_> {
     /// sound, and the block entity's count. The brush wears when the block
     /// changed state.
     fn brush_stroke(&mut self, hit: &Hit, slot: usize) {
-        let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
+        let state = self
+            .simulation
+            .world
+            .block(hit.pos[0], hit.pos[1], hit.pos[2]);
         let name = self.res.facts().get(state).name.clone();
         let (sound, brushable) = match &*name {
             "minecraft:suspicious_sand" => ("minecraft:item.brush.brushing.sand", true),
@@ -78,7 +81,10 @@ impl Game<'_> {
 
     /// `BrushItem.spawnDustParticles`.
     pub(super) fn brush_dust(&mut self, hit: &Hit, off_hand: bool) {
-        let state = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
+        let state = self
+            .simulation
+            .world
+            .block(hit.pos[0], hit.pos[1], hit.pos[2]);
         let Some((sprite, tint)) = self.particle_sprite(state, hit.pos) else {
             return;
         };
@@ -114,7 +120,7 @@ impl Game<'_> {
 
     /// `BrushableBlockEntity.brush`: whether the block changed (the brush wears).
     fn brush_block(&mut self, pos: [i32; 3], face: [i32; 3], slot: usize) -> bool {
-        let time = self.world.game_time;
+        let time = self.simulation.world.game_time;
         let mut brush = self.brushing.remove(&pos).unwrap_or_default();
         brush.hit_face.get_or_insert(face);
         let direction = match brush.hit_face.unwrap() {
@@ -126,8 +132,11 @@ impl Game<'_> {
             [1, 0, 0] => 5,
             _ => return false,
         };
-        if let Some(BlockEntity::Brushable(b)) =
-            self.world.block_entities.get_mut(&(pos[0], pos[1], pos[2]))
+        if let Some(BlockEntity::Brushable(b)) = self
+            .simulation
+            .world
+            .block_entities
+            .get_mut(&(pos[0], pos[1], pos[2]))
         {
             b.hit_direction = Some(direction);
         }
@@ -157,7 +166,7 @@ impl Game<'_> {
     /// block entity's item.
     fn unpack_brush_loot(&mut self, pos: [i32; 3]) {
         let key = (pos[0], pos[1], pos[2]);
-        let Some(BlockEntity::Brushable(b)) = self.world.block_entities.get(&key) else {
+        let Some(BlockEntity::Brushable(b)) = self.simulation.world.block_entities.get(&key) else {
             return;
         };
         let Some(horizon_world::nbt::Tag::String(table)) = &b.loot_table else {
@@ -177,35 +186,44 @@ impl Game<'_> {
         decorated_pot::unpack_loot(
             &mut tag,
             loot.as_deref(),
-            &mut self.world.random,
+            &mut self.simulation.world.random,
             &mut self.rand_sequences,
             self.level.seed,
         );
-        if let Some(BlockEntity::Brushable(b)) = self.world.block_entities.get_mut(&key) {
+        if let Some(BlockEntity::Brushable(b)) = self.simulation.world.block_entities.get_mut(&key)
+        {
             b.loot_table = tag.get("LootTable").cloned();
             b.loot_seed = tag.get("LootTableSeed").cloned();
             b.item = tag.get("item").and_then(save::item_from_nbt);
         }
-        self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+        self.simulation
+            .world
+            .modified
+            .insert((pos[0] >> 4, pos[2] >> 4));
     }
 
     /// `BrushableBlockEntity.brushingCompleted`: the item drops out of the
     /// brushed face and the block turns into its sand or gravel.
     fn brushing_completed(&mut self, pos: [i32; 3], face: Option<[i32; 3]>, slot: usize) {
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         let turns_into = match &*self.res.facts().get(state).name {
             "minecraft:suspicious_sand" => "minecraft:sand",
             "minecraft:suspicious_gravel" => "minecraft:gravel",
             _ => "minecraft:air",
         };
         // dropContent: the item at the middle of the block beside that face.
-        let item = match self.world.block_entities.get(&(pos[0], pos[1], pos[2])) {
+        let item = match self
+            .simulation
+            .world
+            .block_entities
+            .get(&(pos[0], pos[1], pos[2]))
+        {
             Some(BlockEntity::Brushable(b)) => b.item.clone(),
             _ => None,
         };
         if let Some(mut item) = item {
             let face = face.unwrap_or([0, 1, 0]);
-            let take = 10 + self.world.random.next_int_bound(21).unwrap_or(0);
+            let take = 10 + self.simulation.world.random.next_int_bound(21).unwrap_or(0);
             item.count = item.count.min(take as u32);
             let at = [
                 f64::from(pos[0] + face[0]) + 0.5,
@@ -237,7 +255,7 @@ impl Game<'_> {
     fn set_dusted(&mut self, pos: [i32; 3], dusted: i32) {
         let registry = self.pack.assets.registry;
         let Some(mut state) = registry
-            .state(self.world.block(pos[0], pos[1], pos[2]))
+            .state(self.simulation.world.block(pos[0], pos[1], pos[2]))
             .cloned()
         else {
             return;
@@ -256,7 +274,7 @@ impl Game<'_> {
     /// `BrushableBlockEntity.checkReset`, from `BrushableBlock.tick`: a block
     /// left alone loses two counts, again every four ticks.
     pub(super) fn brushable_tick(&mut self, pos: [i32; 3]) {
-        let time = self.world.game_time;
+        let time = self.simulation.world.game_time;
         let Some(mut brush) = self.brushing.remove(&pos) else {
             return;
         };
@@ -269,8 +287,11 @@ impl Game<'_> {
         if brush.count != 0 {
             self.brushing.insert(pos, brush);
             self.schedule_brushable_tick(pos);
-        } else if let Some(BlockEntity::Brushable(b)) =
-            self.world.block_entities.get_mut(&(pos[0], pos[1], pos[2]))
+        } else if let Some(BlockEntity::Brushable(b)) = self
+            .simulation
+            .world
+            .block_entities
+            .get_mut(&(pos[0], pos[1], pos[2]))
         {
             b.hit_direction = None;
         }
@@ -282,7 +303,7 @@ impl Game<'_> {
     /// `BrushableBlockRenderer`: reveal the item from the first brushed face.
     pub(super) fn brushable_geometry(&self, camera: glam::DVec3, out: &mut Vec<Vertex>) {
         use horizon_assets::item_model::DisplayContext;
-        for (key, entity) in &self.world.block_entities {
+        for (key, entity) in &self.simulation.world.block_entities {
             let BlockEntity::Brushable(b) = entity else {
                 continue;
             };
@@ -293,7 +314,7 @@ impl Game<'_> {
             if at.distance_squared(camera) >= 64.0 * 64.0 {
                 continue;
             }
-            let state = self.world.block(key.0, key.1, key.2);
+            let state = self.simulation.world.block(key.0, key.1, key.2);
             let progress = self
                 .pack
                 .assets
@@ -324,7 +345,7 @@ impl Game<'_> {
             ) * glam::Mat4::from_rotation_y(
                 (86.0_f32 + if east_west { 90.0 } else { 0.0 }).to_radians(),
             ) * glam::Mat4::from_scale(glam::Vec3::splat(0.5));
-            let light = self.world.light(
+            let light = self.simulation.world.light(
                 key.0 + adjacent[0],
                 key.1 + adjacent[1],
                 key.2 + adjacent[2],

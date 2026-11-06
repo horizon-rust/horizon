@@ -33,7 +33,9 @@ impl Game<'_> {
         match words[0] {
             "setblock" => {
                 let state = self.parse_state(words.get(4).ok_or("missing state")?)?;
-                self.world.set(int(1)?, int(2)?, int(3)?, state)?;
+                self.simulation
+                    .world
+                    .set(int(1)?, int(2)?, int(3)?, state)?;
                 Ok(Some(json!({ "ok": true, "state": state.0 })))
             }
             "fill" => {
@@ -43,7 +45,7 @@ impl Game<'_> {
                 for x in a[0].min(b[0])..=a[0].max(b[0]) {
                     for y in a[1].min(b[1])..=a[1].max(b[1]) {
                         for z in a[2].min(b[2])..=a[2].max(b[2]) {
-                            self.world.set(x, y, z, state)?;
+                            self.simulation.world.set(x, y, z, state)?;
                             count += 1;
                         }
                     }
@@ -99,14 +101,17 @@ impl Game<'_> {
                 let name = self
                     .res
                     .facts()
-                    .get(self.world.block(key.0, key.1, key.2))
+                    .get(self.simulation.world.block(key.0, key.1, key.2))
                     .name
                     .clone();
                 let entity = self
                     .new_block_entity(&name)
                     .filter(|e| matches!(e, horizon_client::containers::BlockEntity::Sign(_)))
                     .ok_or("no sign there")?;
-                self.world.block_entities.get_or_insert_with(key, || entity);
+                self.simulation
+                    .world
+                    .block_entities
+                    .get_or_insert_with(key, || entity);
                 self.open_sign_editor(key, words.get(4) != Some(&"back"));
                 Ok(Some(json!({ "ok": true })))
             }

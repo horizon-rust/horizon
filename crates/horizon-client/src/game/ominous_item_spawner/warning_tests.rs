@@ -69,8 +69,8 @@ fn warning_dispatch_uses_neutral_at_tick_four() {
     game.audio.capture.as_mut().unwrap().clear();
     let (tag, _) = horizon_world::nbt::parse_snbt(r#"{id:"minecraft:ominous_item_spawner",UUID:[I;128,0,0,1],Pos:[6.25d,102.75d,4.875d],item:{id:"minecraft:diamond",count:1},spawn_item_after_ticks:40L}"#).unwrap();
     game.load_ominous_item_spawner(tag);
-    assert_eq!(game.ominous_spawners.len(), 1);
-    let s = &game.ominous_spawners[0];
+    assert_eq!(game.simulation.ominous_spawners.len(), 1);
+    let s = &game.simulation.ominous_spawners[0];
     assert_eq!(s.uuid, [128, 0, 0, 1]);
     assert_eq!(s.position, [6.25, 102.75, 4.875]);
     assert_eq!(&*s.item.item, "minecraft:diamond");
@@ -79,7 +79,7 @@ fn warning_dispatch_uses_neutral_at_tick_four() {
     assert_eq!(s.tick_count, 0);
     for tick in 1..=5 {
         game.tick_ominous_item_spawners();
-        assert_eq!(game.ominous_spawners[0].tick_count, tick);
+        assert_eq!(game.simulation.ominous_spawners[0].tick_count, tick);
         let warning: Vec<_> = game
             .audio
             .capture

@@ -37,6 +37,7 @@ impl Game<'_> {
         }
         let context = self.worker_context();
         self.clear_lod();
-        self.streaming.reload_resources(&mut self.world, context);
+        self.streaming
+            .reload_resources(&mut self.simulation.world, context);
     }
 }

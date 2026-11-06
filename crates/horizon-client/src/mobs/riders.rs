@@ -426,6 +426,35 @@ pub fn tick(
     random: &mut horizon_core::random::LegacyRandom,
     events: &mut Vec<super::MobEvent>,
 ) -> bool {
+    tick_ordered(mobs, index, w, random, events, None)
+}
+/// [`tick`] with the section-insertion number the level coordinator reserved
+/// for this mob (`Mob::tick_with_order`), independent of who runs it.
+pub fn tick_with_order(
+    mobs: &mut [Mob],
+    index: usize,
+    w: &MobWorld,
+    random: &mut horizon_core::random::LegacyRandom,
+    events: &mut Vec<super::MobEvent>,
+    section_order: u64,
+) -> bool {
+    tick_ordered(mobs, index, w, random, events, Some(section_order))
+}
+fn tick_ordered(
+    mobs: &mut [Mob],
+    index: usize,
+    w: &MobWorld,
+    random: &mut horizon_core::random::LegacyRandom,
+    events: &mut Vec<super::MobEvent>,
+    section_order: Option<u64>,
+) -> bool {
+    let run =
+        |m: &mut Mob, random: &mut horizon_core::random::LegacyRandom, events: &mut Vec<_>| {
+            match section_order {
+                Some(order) => m.tick_with_order(w, random, events, order),
+                None => m.tick(w, random, events),
+            }
+        };
     let mut owner = index;
     if !mobs[index].no_ai {
         for _ in 0..mobs.len() {
@@ -445,7 +474,7 @@ pub fn tick(
         }
     }
     if owner == index {
-        return mobs[index].tick(w, random, events);
+        return run(&mut mobs[index], random, events);
     }
     let (rider, vehicle) = if index < owner {
         let (left, right) = mobs.split_at_mut(owner);
@@ -463,7 +492,7 @@ pub fn tick(
         passenger: vehicle.extra.mount.is_some(),
         in_liquid: vehicle.is_in_liquid(),
     }));
-    let kept = rider.tick(w, random, events);
+    let kept = run(rider, random, events);
     let redirect = rider
         .ai
         .navigation_redirect

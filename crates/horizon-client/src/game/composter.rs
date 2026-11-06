@@ -13,7 +13,7 @@ use horizon_core::{position::BlockPos, random::RandomSource};
 impl Game<'_> {
     /// The composter's `level` at `pos`, None when it isn't a composter.
     pub(super) fn composter_level(&self, pos: [i32; 3]) -> Option<i32> {
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         let s = self.pack.assets.registry.state(state)?;
         if &*s.name != "minecraft:composter" {
             return None;
@@ -33,10 +33,13 @@ impl Game<'_> {
             target: None,
         };
         let layers = self.provider_int(layers, &context, 0).unwrap_or(0);
-        let before = self.world.block(pos[0], pos[1], pos[2]);
+        let before = self.simulation.world.block(pos[0], pos[1], pos[2]);
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         let after = self.with_level(|b, level, ticks| b.composter_insert(level, ticks, at, layers));
-        self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+        self.simulation
+            .world
+            .modified
+            .insert((pos[0] >> 4, pos[2] >> 4));
         // The game event and level event 1500 happen here, before the caller goes on.
         let _ = self.process_level_events();
         after != before
@@ -117,12 +120,12 @@ impl Game<'_> {
         }
         let mut remaining = 20;
         let mut amounts: Vec<(std::sync::Arc<str>, i32)> = Vec::new();
-        let slots = villager::ext(&self.mobs[mob]).map_or(0, |e| e.inventory.len());
+        let slots = villager::ext(&self.simulation.mobs[mob]).map_or(0, |e| e.inventory.len());
         'slots: for slot in (0..slots).rev() {
             if remaining <= 0 {
                 break;
             }
-            let stack = villager::ext_mut(&mut self.mobs[mob]).inventory[slot].clone();
+            let stack = villager::ext_mut(&mut self.simulation.mobs[mob]).inventory[slot].clone();
             if !matches!(
                 &*stack.item,
                 "minecraft:wheat_seeds" | "minecraft:beetroot_seeds"
@@ -169,9 +172,12 @@ impl Game<'_> {
         let layers = self.provider_int(&layers, &context, 0).unwrap_or(0);
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         self.with_level(|b, level, ticks| b.composter_layer(level, ticks, at, layers));
-        self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+        self.simulation
+            .world
+            .modified
+            .insert((pos[0] >> 4, pos[2] >> 4));
         let _ = self.process_level_events();
-        let inventory = &mut villager::ext_mut(&mut self.mobs[mob]).inventory;
+        let inventory = &mut villager::ext_mut(&mut self.simulation.mobs[mob]).inventory;
         inventory[slot].count -= 1;
         if inventory[slot].count == 0 {
             inventory.remove(slot);

@@ -312,7 +312,7 @@ impl Game<'_> {
         );
         let mut rays = VisualRays {
             scene: SceneCollisions {
-                world: &self.world,
+                world: &self.simulation.world,
                 binding: self.collision,
                 subject: None,
             },
@@ -359,7 +359,7 @@ impl Game<'_> {
         };
         let p = self.player.as_ref()?;
         let sleeping = self.sleeping.map(|head| {
-            let state = self.world.block(head[0], head[1], head[2]);
+            let state = self.simulation.world.block(head[0], head[1], head[2]);
             let props = self
                 .pack
                 .assets
@@ -379,7 +379,7 @@ impl Game<'_> {
         // attributes (the happy ghast's is 8, the default 4).
         let mount = self
             .riding
-            .and_then(|id| self.mobs.iter().find(|m| m.id == id))
+            .and_then(|id| self.simulation.mobs.iter().find(|m| m.id == id))
             .map(|m| {
                 let attribute = |name: &str, default: f64| {
                     m.kind.attributes.get(name).copied().unwrap_or(default)
@@ -395,11 +395,11 @@ impl Game<'_> {
         // frames of a tick.
         let ride_turn = self
             .riding
-            .and_then(|id| self.boats.iter().find(|b| b.id == id))
+            .and_then(|id| self.simulation.boats.iter().find(|b| b.id == id))
             .map_or_else(
                 || {
                     self.riding
-                        .and_then(|id| self.carts.iter().find(|c| c.id == id))
+                        .and_then(|id| self.simulation.carts.iter().find(|c| c.id == id))
                         .map_or(0.0, |c| c.passenger_yaw_delta)
                 },
                 |b| b.delta_rotation,
@@ -633,7 +633,7 @@ impl Game<'_> {
         // only at the tick, so it never swings past and back.
         if let Some(b) = self
             .riding
-            .and_then(|id| self.boats.iter().find(|b| b.id == id))
+            .and_then(|id| self.simulation.boats.iter().find(|b| b.id == id))
         {
             let delta = (self.yaw - b.yaw + 180.0).rem_euclid(360.0) - 180.0;
             self.yaw += delta.clamp(-105.0, 105.0) - delta;
@@ -644,10 +644,10 @@ impl Game<'_> {
     /// player's own turn.
     fn ridden_body(&self) -> Option<RiddenBody> {
         let id = self.riding?;
-        if let Some(b) = self.boats.iter().find(|b| b.id == id) {
+        if let Some(b) = self.simulation.boats.iter().find(|b| b.id == id) {
             return Some(RiddenBody::Boat(b.yaw));
         }
-        let m = self.mobs.iter().find(|m| m.id == id)?;
+        let m = self.simulation.mobs.iter().find(|m| m.id == id)?;
         Some(RiddenBody::Living(m.body_yaw))
     }
     /// `Entity.setOldRot` after a server sets the player's rotation
@@ -715,7 +715,7 @@ impl Game<'_> {
             .as_ref()
             .map_or_else(|| m.eye_height(), |p| f64::from(p.dimensions.eye_height));
         let probe = entity_light_block(m.position, m.extra.crouching, eye);
-        let light = self.world.light(probe[0], probe[1], probe[2]);
+        let light = self.simulation.world.light(probe[0], probe[1], probe[2]);
         let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);

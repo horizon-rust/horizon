@@ -122,18 +122,23 @@ impl Game<'_> {
     }
     /// `getHeight(WORLD_SURFACE)`: above the highest non-air block.
     pub(super) fn world_surface(&self, x: i32, z: i32) -> i32 {
-        self.world
+        self.simulation
+            .world
             .world_surface(x, z, |id| self.res.facts().is_air(id))
     }
     /// `BeaconBlockEntity.tick` of the beacon at `key`.
     pub(super) fn tick_beacon_at(&mut self, key: (i32, i32, i32)) {
-        let Some(BlockEntity::Beacon(mut b)) = self.world.block_entities.take(&key) else {
+        let Some(BlockEntity::Beacon(mut b)) = self.simulation.world.block_entities.take(&key)
+        else {
             return;
         };
         let previous = b.levels;
         self.tick_beacon(key, &mut b, false);
         let current = b.levels;
-        self.world.block_entities.put(key, BlockEntity::Beacon(b));
+        self.simulation
+            .world
+            .block_entities
+            .put(key, BlockEntity::Beacon(b));
         if (previous == 0) != (current == 0) {
             self.native_beacon_state_change(self.dim.id(), [key.0, key.1, key.2], current > 0);
         }
@@ -143,17 +148,22 @@ impl Game<'_> {
     /// sounds and the advancement stay with the server.
     pub(super) fn client_tick_beacons(&mut self) {
         let keys: Vec<_> = self
+            .simulation
             .world
             .block_entities
             .iter()
             .filter_map(|(k, e)| matches!(e, BlockEntity::Beacon(_)).then_some(*k))
             .collect();
         for key in keys {
-            let Some(BlockEntity::Beacon(mut b)) = self.world.block_entities.take(&key) else {
+            let Some(BlockEntity::Beacon(mut b)) = self.simulation.world.block_entities.take(&key)
+            else {
                 continue;
             };
             self.tick_beacon(key, &mut b, true);
-            self.world.block_entities.put(key, BlockEntity::Beacon(b));
+            self.simulation
+                .world
+                .block_entities
+                .put(key, BlockEntity::Beacon(b));
         }
     }
     fn tick_beacon(&mut self, (x, y, z): (i32, i32, i32), b: &mut Beacon, client: bool) {
@@ -167,7 +177,7 @@ impl Game<'_> {
         let surface = self.world_surface(x, z);
         let mut i = 0;
         while i < 10 && check <= surface {
-            let state = self.world.block(x, check, z);
+            let state = self.simulation.world.block(x, check, z);
             let f = self.res.facts().get(state);
             if let Some(color) = self.beam_color(&f.name) {
                 if b.checking.len() <= 1 {
@@ -197,7 +207,7 @@ impl Game<'_> {
             i += 1;
         }
         let previous = b.levels;
-        if self.world.game_time % 80 == 0 {
+        if self.simulation.world.game_time % 80 == 0 {
             if !b.sections.is_empty() {
                 b.levels = self.beacon_base(x, y, z);
             }
@@ -207,7 +217,7 @@ impl Game<'_> {
             }
         }
         if b.last_check_y >= surface {
-            b.last_check_y = self.world.bottom_y() - 1;
+            b.last_check_y = self.simulation.world.bottom_y() - 1;
             b.sections = std::mem::take(&mut b.checking);
             let (was, is) = (previous > 0, b.levels > 0);
             if !was && is {
@@ -261,12 +271,16 @@ impl Game<'_> {
         let mut levels = 0;
         for step in 1..=4 {
             let ly = y - step;
-            if ly < self.world.bottom_y() {
+            if ly < self.simulation.world.bottom_y() {
                 break;
             }
             let ok = (x - step..=x + step).all(|lx| {
                 (z - step..=z + step).all(|lz| {
-                    let name = &self.res.facts().get(self.world.block(lx, ly, lz)).name;
+                    let name = &self
+                        .res
+                        .facts()
+                        .get(self.simulation.world.block(lx, ly, lz))
+                        .name;
                     base.is_some_and(|t| t.contains(&**name))
                 })
             });
@@ -316,7 +330,12 @@ impl Game<'_> {
             return;
         };
         let pos = s.pos;
-        let (p, sec) = match self.world.block_entities.get(&(pos[0], pos[1], pos[2])) {
+        let (p, sec) = match self
+            .simulation
+            .world
+            .block_entities
+            .get(&(pos[0], pos[1], pos[2]))
+        {
             Some(BlockEntity::Beacon(b)) => (b.primary.clone(), b.secondary.clone()),
             _ => (None, None),
         };
@@ -334,7 +353,12 @@ impl Game<'_> {
             return levels;
         }
         let pos = s.pos;
-        match self.world.block_entities.get(&(pos[0], pos[1], pos[2])) {
+        match self
+            .simulation
+            .world
+            .block_entities
+            .get(&(pos[0], pos[1], pos[2]))
+        {
             Some(BlockEntity::Beacon(b)) => b.levels,
             _ => 0,
         }
@@ -439,8 +463,11 @@ impl Game<'_> {
         s.inputs[0] = None;
         let name = |e: Option<usize>| e.map(|e| format!("minecraft:{}", EFFECTS[e].0));
         let mut select_sound = false;
-        if let Some(BlockEntity::Beacon(b)) =
-            self.world.block_entities.get_mut(&(pos[0], pos[1], pos[2]))
+        if let Some(BlockEntity::Beacon(b)) = self
+            .simulation
+            .world
+            .block_entities
+            .get_mut(&(pos[0], pos[1], pos[2]))
         {
             b.primary = name(sel[0]);
             b.secondary = name(sel[1]);
@@ -449,7 +476,10 @@ impl Game<'_> {
         if select_sound {
             self.beacon_sound(pos, "minecraft:block.beacon.power_select");
         }
-        self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+        self.simulation
+            .world
+            .modified
+            .insert((pos[0] >> 4, pos[2] >> 4));
     }
     /// `BeaconScreen`: background, labels, payment icons, power buttons.
     pub(super) fn draw_beacon(&mut self, batch: &mut HudBatch) {
@@ -612,12 +642,12 @@ impl Game<'_> {
         else {
             return;
         };
-        let time = (self.world.game_time.rem_euclid(40)) as f32 + alpha as f32;
+        let time = (self.simulation.world.game_time.rem_euclid(40)) as f32 + alpha as f32;
         let scoping = self.scoping();
         // `BeaconRenderer.shouldRender` culls at the render distance; far
         // terrain extends that to its own distance.
         let view = f64::from(self.terrain_distance() * 16);
-        let world = &self.world;
+        let world = &self.simulation.world;
         if self.lod.is_some() {
             // The beam stays after its chunk unloads; once the chunk is back,
             // its block entity decides whether the beam is still there.

@@ -237,7 +237,7 @@ impl Game<'_> {
         // ClipContext(..., entity): the entity standing at the box's bottom.
         let mut rays = ColliderRays {
             scene: SceneCollisions {
-                world: &self.world,
+                world: &self.simulation.world,
                 binding: self.collision,
                 subject: None,
             },
@@ -320,7 +320,8 @@ impl Game<'_> {
                     xd /= d;
                     yd /= d;
                     zd /= d;
-                    let mut power = radius * (0.7 + self.world.random.next_float() * 0.6);
+                    let mut power =
+                        radius * (0.7 + self.simulation.world.random.next_float() * 0.6);
                     let (mut xp, mut yp, mut zp) = (center[0], center[1], center[2]);
                     while power > 0.0 {
                         let pos = [xp.floor() as i32, yp.floor() as i32, zp.floor() as i32];
@@ -331,7 +332,7 @@ impl Game<'_> {
                         {
                             break;
                         }
-                        let state = self.world.block(pos[0], pos[1], pos[2]);
+                        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
                         let f = self.res.facts().get(state);
                         let fluid = if f.fluid != Fluid::None {
                             100.0f32
@@ -462,7 +463,7 @@ impl Game<'_> {
                 && hurtable
                 && let Ok(o) = p.hurt_caused_by(
                     &self.health_resources,
-                    self.world.health_rules,
+                    self.simulation.world.health_rules,
                     id,
                     amount,
                     blocking,
@@ -614,7 +615,7 @@ impl Game<'_> {
             .combat
             .explosion_owner
             .or(exploding)
-            .and_then(|id| self.mobs.iter().find(|m| m.id == id))
+            .and_then(|id| self.simulation.mobs.iter().find(|m| m.id == id))
             .map(|m| m.species());
         // `ServerExplosion.hurtEntities`: every entity in reach, on the walk. Each
         // answers `ignoreExplosion` itself (`Entity::ignores_explosion`); the rest
@@ -630,7 +631,7 @@ impl Game<'_> {
             items_ignore: items_ignore_explosion(self.ui.rules.bool("mob_griefing"), interaction),
             spared: exploding.filter(|_| self.combat.explosion_source_named),
         };
-        let (items_len, orbs_len) = (self.dropped.len(), self.orbs.len());
+        let (items_len, orbs_len) = (self.simulation.dropped.len(), self.simulation.orbs.len());
         let (mut items_kept, mut orbs_kept) = (0, 0);
         let (mut boats_gone, mut carts_gone) = (0, 0);
         for handle in self.entity_handles() {
@@ -651,8 +652,8 @@ impl Game<'_> {
                 let entity = with_entity!(self, handle, e => e.id());
                 match handle {
                     EntityHandle::Mob(i) => {
-                        let hurtable = teams_allow(self, self.mob_team(self.mobs[i].id));
-                        let m = &mut self.mobs[i];
+                        let hurtable = teams_allow(self, self.mob_team(self.simulation.mobs[i].id));
+                        let m = &mut self.simulation.mobs[i];
                         // The exploding mob is the damage source's entity, so
                         // victims it kills drop its charged-creeper loot
                         // (`Creeper.killedEntity`).
@@ -675,25 +676,26 @@ impl Game<'_> {
                     }
                     // 5 health, destroyed by the explosion damage (nether stars resist).
                     EntityHandle::Item(i) => {
-                        destroyed = &*self.dropped[i].stack.item != "minecraft:nether_star"
+                        destroyed = &*self.simulation.dropped[i].stack.item
+                            != "minecraft:nether_star"
                             && amount >= 5.0;
                     }
                     // `ExperienceOrb.hurtServer` takes the damage off their 5 health.
                     EntityHandle::Orb(i) => {
-                        destroyed = self.orbs[i].hurt(amount);
+                        destroyed = self.simulation.orbs[i].hurt(amount);
                     }
                     // `VehicleEntity.hurtServer` (explosions ignite TNT carts);
                     // a destroyed one is gone before the push.
                     EntityHandle::Cart(i) => {
-                        let len = self.carts.len();
+                        let len = self.simulation.carts.len();
                         self.hurt_cart(i, amount, false, true);
-                        carts_gone += len - self.carts.len();
+                        carts_gone += len - self.simulation.carts.len();
                     }
                     // `VehicleEntity.hurtServer`: damage * 10, broken past 40.
                     EntityHandle::Boat(i) => {
-                        let len = self.boats.len();
+                        let len = self.simulation.boats.len();
                         self.hurt_boat(i, amount, false);
-                        boats_gone += len - self.boats.len();
+                        boats_gone += len - self.simulation.boats.len();
                     }
                     // `hurtServer` does nothing to the rest.
                     _ => {}
@@ -710,12 +712,12 @@ impl Game<'_> {
                 match handle {
                     EntityHandle::Item(_) | EntityHandle::Orb(_) if destroyed => {}
                     EntityHandle::Cart(_) => {
-                        if let Some(c) = self.carts.iter_mut().find(|c| c.id == entity) {
+                        if let Some(c) = self.simulation.carts.iter_mut().find(|c| c.id == entity) {
                             c.push_from_explosion(push);
                         }
                     }
                     EntityHandle::Boat(_) => {
-                        if let Some(b) = self.boats.iter_mut().find(|b| b.id == entity) {
+                        if let Some(b) = self.simulation.boats.iter_mut().find(|b| b.id == entity) {
                             b.push_from_explosion(push);
                         }
                     }
@@ -724,18 +726,18 @@ impl Game<'_> {
             }
             match handle {
                 EntityHandle::Item(i) if !destroyed => {
-                    self.dropped.swap(items_kept, i);
+                    self.simulation.dropped.swap(items_kept, i);
                     items_kept += 1;
                 }
                 EntityHandle::Orb(i) if !destroyed => {
-                    self.orbs.swap(orbs_kept, i);
+                    self.simulation.orbs.swap(orbs_kept, i);
                     orbs_kept += 1;
                 }
                 _ => {}
             }
         }
-        self.dropped.drain(items_kept..items_len);
-        self.orbs.drain(orbs_kept..orbs_len);
+        self.simulation.dropped.drain(items_kept..items_len);
+        self.simulation.orbs.drain(orbs_kept..orbs_len);
         self.native_leaves_flush();
         // Frames, paintings, cushions and armour stands last: vanilla lists
         // the entities in reach before hurting any, so the items they drop
@@ -789,8 +791,8 @@ impl Game<'_> {
             return;
         }
         let mut i = 0;
-        while i < self.armor_stands.len() {
-            let a = &self.armor_stands[i];
+        while i < self.simulation.armor_stands.len() {
+            let a = &self.simulation.armor_stands[i];
             let p = a.position;
             if !super::armor_stands::spared_by_blast(a)
                 && blast_reaches(center, diameter, [p.x, p.y, p.z])
@@ -804,10 +806,10 @@ impl Game<'_> {
     /// Paintings and cushions in reach (`BlockAttachedEntity.hurtServer`).
     fn explosion_breaks_hanging(&mut self, center: [f64; 3], diameter: f64) {
         let mut i = 0;
-        while i < self.paintings.len() {
+        while i < self.simulation.paintings.len() {
             // HangingEntity.recalculateBoundingBox: a painting stands at the
             // centre of its box.
-            let (lo, hi) = self.paintings[i].bounds();
+            let (lo, hi) = self.simulation.paintings[i].bounds();
             let at = [0, 1, 2].map(|k| (lo[k] + hi[k]) / 2.0);
             // A painting a mod keeps stays at `i`.
             if !(blast_reaches(center, diameter, at) && self.break_painting(i, false)) {
@@ -815,8 +817,8 @@ impl Game<'_> {
             }
         }
         let mut i = 0;
-        while i < self.cushions.len() {
-            let p = self.cushions[i].position;
+        while i < self.simulation.cushions.len() {
+            let p = self.simulation.cushions[i].position;
             if blast_reaches(center, diameter, [p.x, p.y, p.z]) {
                 self.break_cushion(i, false);
             } else {
@@ -891,7 +893,12 @@ impl Game<'_> {
         if interaction != BlockInteraction::Keep {
             // Util.shuffle(list, level.random)
             for i in (2..=targets.len()).rev() {
-                let swap = self.world.random.next_int_bound(i as i32).unwrap_or(0) as usize;
+                let swap = self
+                    .simulation
+                    .world
+                    .random
+                    .next_int_bound(i as i32)
+                    .unwrap_or(0) as usize;
                 targets.swap(i - 1, swap);
             }
             let mut stacks: Vec<([i32; 3], ItemStack)> = Vec::new();
@@ -904,15 +911,15 @@ impl Game<'_> {
         }
         if fire {
             for &pos in &targets {
-                if self.world.random.next_int_bound(3).unwrap_or(1) == 0
+                if self.simulation.world.random.next_int_bound(3).unwrap_or(1) == 0
                     && self
                         .res
                         .facts()
-                        .is_air(self.world.block(pos[0], pos[1], pos[2]))
+                        .is_air(self.simulation.world.block(pos[0], pos[1], pos[2]))
                     && self
                         .res
                         .facts()
-                        .get(self.world.block(pos[0], pos[1] - 1, pos[2]))
+                        .get(self.simulation.world.block(pos[0], pos[1] - 1, pos[2]))
                         .solid_render
                 {
                     // BaseFireBlock.getState: soul fire on its base blocks,
@@ -931,7 +938,7 @@ impl Game<'_> {
         // `ServerExplosion.isSmall` also covers an explosion that keeps blocks.
         let block_count = targets.len();
         let small = radius < 2.0 || interaction == BlockInteraction::Keep;
-        let (world, facts) = (&self.world, self.res.facts());
+        let (world, facts) = (&self.simulation.world, self.res.facts());
         self.particles
             .explosion(center, small, block_count, radius, &|b| {
                 facts.is_air(world.block(b[0], b[1], b[2]))
@@ -947,7 +954,7 @@ impl Game<'_> {
         interaction: BlockInteraction,
         stacks: &mut Vec<([i32; 3], ItemStack)>,
     ) -> Result<()> {
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         if self.res.facts().is_air(state) {
             return Ok(());
         }
@@ -977,10 +984,10 @@ impl Game<'_> {
                 horizon_client::beehive::Release::Emergency,
             );
         }
-        if let Some(entity) = self.world.block_entities.get(&key).cloned() {
-            let custom = self.world.block_names.get(&key).cloned();
+        if let Some(entity) = self.simulation.world.block_entities.get(&key).cloned() {
+            let custom = self.simulation.world.block_names.get(&key).cloned();
             self.pending.record(pos, &entity, &name, custom);
-        } else if let Some(tag) = super::spill::saved_entity(&self.world, pos) {
+        } else if let Some(tag) = super::spill::saved_entity(&self.simulation.world, pos) {
             self.pending.record_saved(pos, &tag);
         }
         if !is_tnt {
@@ -999,7 +1006,7 @@ impl Game<'_> {
                     state,
                     None,
                     &dynamic,
-                    &mut self.world.random,
+                    &mut self.simulation.world.random,
                     Some((&mut self.rand_sequences, self.level.seed)),
                     decay,
                     false,
@@ -1018,7 +1025,7 @@ impl Game<'_> {
             }
         }
         self.pending.clear(pos);
-        self.level_set(pos, self.world.air)?;
+        self.level_set(pos, self.simulation.world.air)?;
         // BeehiveBlock.onExplosionHit: the bees about turn on the player.
         if is_hive {
             self.anger_nearby_bees(pos);
@@ -1026,7 +1033,7 @@ impl Game<'_> {
         // TntBlock.wasExploded: new PrimedTnt (its push drawn first), then
         // getRandomShortFuse(80); no game event.
         if is_tnt && self.ui.rules.bool("tnt_explodes") {
-            let r = &mut self.world.random;
+            let r = &mut self.simulation.world.random;
             let rot = r.next_double() * f64::from(std::f32::consts::TAU);
             let fuse = r.next_int_bound(20).unwrap_or(0) + 10;
             // TntBlock.wasExploded hands the new TNT the blast's indirect

@@ -269,7 +269,7 @@ impl Game<'_> {
         let mut rocket = self.new_rocket(at, stack, false);
         rocket.owner = Some(Who::Player);
         rocket.guest = self.lan_acting;
-        self.rockets.push(rocket);
+        self.simulation.rockets.push(rocket);
         if !self.creative {
             self.consume_held();
         }
@@ -290,7 +290,7 @@ impl Game<'_> {
         rocket.angled = true;
         rocket.owner = owner;
         rocket.guest = self.lan_acting.filter(|_| owner == Some(Who::Player));
-        self.rockets.push(rocket);
+        self.simulation.rockets.push(rocket);
     }
     /// `Entity.getHandHoldingItemAngle(Items.FIREWORK_ROCKET)` for the local
     /// player: half a block out towards the hand holding the rocket while
@@ -337,9 +337,9 @@ impl Game<'_> {
     pub(super) fn rocket_spark(&mut self, r: &Rocket) {
         let g = |g: &mut horizon_core::random::LegacyRandom| g.next_gaussian() * 0.05;
         let v = [
-            g(&mut self.world.random),
+            g(&mut self.simulation.world.random),
             -r.velocity.y * 0.5,
-            g(&mut self.world.random),
+            g(&mut self.simulation.world.random),
         ];
         let at = [r.position.x, r.position.y, r.position.z];
         self.particles
@@ -364,7 +364,7 @@ impl Game<'_> {
         let mut rocket = self.new_rocket(at, stack, true);
         rocket.owner = Some(Who::Player);
         rocket.guest = self.lan_acting;
-        self.rockets.push(rocket);
+        self.simulation.rockets.push(rocket);
         if !self.creative {
             self.consume_held();
         }
@@ -376,14 +376,14 @@ impl Game<'_> {
         true
     }
     pub(super) fn tick_rockets(&mut self) {
-        let targets = if self.rockets.is_empty() {
+        let targets = if self.simulation.rockets.is_empty() {
             Vec::new()
         } else {
             self.rocket_targets()
         };
         let mut i = 0;
-        while i < self.rockets.len() {
-            let mut r = self.rockets.remove(i);
+        while i < self.simulation.rockets.len() {
+            let mut r = self.simulation.rockets.remove(i);
             r.previous = r.position;
             // Projectile.tick: whether it has left its owner, before it moves.
             let owner = self.rocket_owner(&r);
@@ -421,7 +421,7 @@ impl Game<'_> {
                 // getHitResultOnMoveVector before the move.
                 hit = self.rocket_struck(&targets, &r, r.next_motion(), skip);
                 let mut scene = SceneCollisions {
-                    world: &self.world,
+                    world: &self.simulation.world,
                     binding: self.collision,
                     subject: None,
                 };
@@ -441,6 +441,7 @@ impl Game<'_> {
             match hit {
                 Some(RocketHit::Entity(Who::Mob(id)))
                     if self
+                        .simulation
                         .mobs
                         .iter()
                         .any(|m| m.id == id && m.species() == Species::Breeze) =>
@@ -466,7 +467,7 @@ impl Game<'_> {
                 self.explode_rocket(&r);
                 continue;
             }
-            self.rockets.insert(i, r);
+            self.simulation.rockets.insert(i, r);
             i += 1;
         }
     }
@@ -503,7 +504,8 @@ impl Game<'_> {
             self.each_guest_hit_except(boosted, |g| g.rocket_blast_player(from, damage));
             let hits: Vec<(u32, f32)> = {
                 let world = self.mob_world_base(&[]);
-                self.mobs
+                self.simulation
+                    .mobs
                     .iter()
                     .filter(|m| m.alive())
                     .filter_map(|m| {
@@ -535,7 +537,7 @@ impl Game<'_> {
                     .is_some();
                 if ran {
                     for (id, _) in &hits {
-                        if self.mobs.iter().any(|m| m.id == *id) {
+                        if self.simulation.mobs.iter().any(|m| m.id == *id) {
                             host.mob_players.insert(*id, conn);
                         }
                     }
@@ -561,7 +563,7 @@ impl Game<'_> {
             0
         });
         for &(id, amount) in hits {
-            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+            if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
                 let hurt = m.damage(amount, Damage::fireworks(attacker, at));
                 // LivingEntity.hurtServer: a player's rocket makes them the
                 // last player to hurt it (`setLastHurtByPlayer`), so its death
@@ -591,6 +593,7 @@ impl Game<'_> {
     /// dragon's parts and crystals, the player and the guests.
     fn rocket_targets(&self) -> Vec<(Who, Aabb)> {
         let mut targets: Vec<(Who, Aabb)> = self
+            .simulation
             .mobs
             .iter()
             .filter(|m| m.alive())
@@ -650,7 +653,7 @@ impl Game<'_> {
     /// FireworkRocketEntity.handleEntityEvent: use the synchronized item data.
     pub(super) fn remote_firework_explosion(&mut self, id: i32) {
         let camera = self.eye_position();
-        if let Some(r) = self.rockets.iter().find(|r| r.id == id as u32) {
+        if let Some(r) = self.simulation.rockets.iter().find(|r| r.id == id as u32) {
             let at = [r.position.x, r.position.y, r.position.z];
             let v = [r.velocity.x, r.velocity.y, r.velocity.z];
             self.particles
@@ -709,6 +712,7 @@ impl Game<'_> {
         let orientation = glam::Mat4::from_quat(self.camera_orientation());
         // shouldRender: not while attached to an entity (`isAttachedToEntity`).
         for r in self
+            .simulation
             .rockets
             .iter()
             .filter(|r| !r.attached && r.attached_to.is_none())
@@ -745,7 +749,7 @@ impl Game<'_> {
                     * glam::Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2);
             }
             // getLightProbePosition: the eye, 0.85 of its 0.25 height.
-            let light = self.world.light(
+            let light = self.simulation.world.light(
                 p.x.floor() as i32,
                 (p.y + 0.2125).floor() as i32,
                 p.z.floor() as i32,
@@ -832,7 +836,7 @@ mod tests {
             let mut mob = Mob::new(id, kind.clone(), at, 0.0);
             mob.extra.leash = Some(Holder::Player);
             mob.extra.leash_player = Some(owner);
-            game.mobs.push(mob);
+            game.simulation.mobs.push(mob);
         };
         let here = Vec3::new(feet[0] + 1.0, feet[1], feet[2]);
         leashed(1, here, me);
@@ -843,19 +847,20 @@ mod tests {
         game.audio.capture = Some(Vec::new());
 
         assert!(!game.boost_firework(&stack));
-        assert_eq!(game.mobs[0].extra.leash, Some(Holder::Player));
-        assert!(game.dropped.is_empty());
+        assert_eq!(game.simulation.mobs[0].extra.leash, Some(Holder::Player));
+        assert!(game.simulation.dropped.is_empty());
         assert!(game.audio.capture.as_ref().unwrap().is_empty());
 
         game.player.as_mut().unwrap().fall_flying = true;
         assert!(game.boost_firework(&stack));
         assert!(
-            game.mobs[0].extra.leash.is_none(),
+            game.simulation.mobs[0].extra.leash.is_none(),
             "the mob on the lead comes free"
         );
-        assert_eq!(game.mobs[1].extra.leash, Some(Holder::Player));
-        assert_eq!(game.mobs[2].extra.leash, Some(Holder::Player));
+        assert_eq!(game.simulation.mobs[1].extra.leash, Some(Holder::Player));
+        assert_eq!(game.simulation.mobs[2].extra.leash, Some(Holder::Player));
         let leads: Vec<_> = game
+            .simulation
             .dropped
             .iter()
             .filter(|d| &*d.stack.item == "minecraft:lead")

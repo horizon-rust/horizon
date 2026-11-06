@@ -81,7 +81,7 @@ impl Game<'_> {
             Some(stack),
             "minecraft:item_damage",
             &ctx,
-            &mut self.world.random,
+            &mut self.simulation.world.random,
             amount as f32,
         )
         .max(0.0) as u32
@@ -128,7 +128,7 @@ impl Game<'_> {
             Some(&held),
             "minecraft:damage",
             &ctx,
-            &mut self.world.random,
+            &mut self.simulation.world.random,
             base,
         )
     }
@@ -151,7 +151,7 @@ impl Game<'_> {
                     Some(&held),
                     "minecraft:knockback",
                     &ctx,
-                    &mut self.world.random,
+                    &mut self.simulation.world.random,
                     0.0,
                 )
             }
@@ -183,7 +183,9 @@ impl Game<'_> {
         let Some(held) = self.held().cloned() else {
             return;
         };
-        let Some(m) = self.mobs.get(mob) else { return };
+        let Some(m) = self.simulation.mobs.get(mob) else {
+            return;
+        };
         let kind = m.kind.id.clone();
         let victim = m.id;
         let ctx = EffectContext {
@@ -222,14 +224,14 @@ impl Game<'_> {
                 if !own && !matches!(&*kind_of, "minecraft:ignite" | "minecraft:apply_mob_effect") {
                     continue;
                 }
-                let mut random = self.world.random.clone();
+                let mut random = self.simulation.world.random.clone();
                 let ok = effect.get("requirements").is_none_or(|r| {
                     self.res
                         .stations()
                         .enchantments
                         .condition(r, *level, &ctx, &mut random)
                 });
-                self.world.random = random;
+                self.simulation.world.random = random;
                 if !ok {
                     continue;
                 }
@@ -246,7 +248,7 @@ impl Game<'_> {
             }
         }
         if ignite > 0.0
-            && let Some(m) = self.mobs.get_mut(mob)
+            && let Some(m) = self.simulation.mobs.get_mut(mob)
             && !m.kind.flags.fire_immune
         {
             m.ignite_for_ticks((ignite * 20.0) as i32);
@@ -363,7 +365,7 @@ impl Game<'_> {
     /// random duration and amplifier between the level-based bounds.
     fn apply_mob_effect(&mut self, mob: usize, effect: &serde_json::Value, level: u32) {
         use horizon_client::enchant::level_value;
-        let Some(m) = self.mobs.get_mut(mob) else {
+        let Some(m) = self.simulation.mobs.get_mut(mob) else {
             return;
         };
         let ids: Vec<&str> = match &effect["to_apply"] {
@@ -433,7 +435,7 @@ impl Game<'_> {
                         r,
                         *level,
                         &ctx,
-                        &mut self.world.random,
+                        &mut self.simulation.world.random,
                     )
                 });
                 if !ok {
@@ -457,12 +459,17 @@ impl Game<'_> {
     /// `affected: attacker` effect of `Enchantment.doPostAttack` hurts the
     /// entity that caused the hit.
     pub(super) fn thorns(&mut self, attacker: u32) {
-        let Some(index) = self.mobs.iter().position(|m| m.id == attacker && m.alive()) else {
+        let Some(index) = self
+            .simulation
+            .mob_index
+            .find(&self.simulation.mobs, attacker)
+            .filter(|&i| self.simulation.mobs[i].alive())
+        else {
             return;
         };
         for damage in self.thorns_damage() {
-            let m = &mut self.mobs[index];
-            m.hurt(damage, None, &mut self.world.random);
+            let m = &mut self.simulation.mobs[index];
+            m.hurt(damage, None, &mut self.simulation.world.random);
             let center = [m.position.x, m.position.y, m.position.z];
             self.audio
                 .play("minecraft:enchant.thorns.hit", Some(center), 1.0, 1.0);
@@ -489,18 +496,18 @@ impl Game<'_> {
                 items: Some(world_items!(self)),
                 ..Default::default()
             };
-            let mut random = self.world.random.clone();
+            let mut random = self.simulation.world.random.clone();
             let ok = self.stations().enchantments.condition(
                 &effect["requirements"],
                 level,
                 &ctx,
                 &mut random,
             );
-            self.world.random = random;
+            self.simulation.world.random = random;
             if !ok {
                 continue;
             }
-            hits.push(1.0 + self.world.random.next_float() * 4.0);
+            hits.push(1.0 + self.simulation.world.random.next_float() * 4.0);
             // ChangeItemDamage -> ItemStack.hurtAndBreak: unbreaking applies.
             let loss = self.wear(&stack, 2);
             if let Some(s) = self.armor[slot].as_mut() {
@@ -539,6 +546,7 @@ impl Game<'_> {
                 return amount;
             }
             let slot = candidates[self
+                .simulation
                 .world
                 .random
                 .next_int_bound(candidates.len() as i32)
@@ -554,7 +562,7 @@ impl Game<'_> {
                 Some(&stack),
                 "minecraft:repair_with_xp",
                 &ctx,
-                &mut self.world.random,
+                &mut self.simulation.world.random,
                 amount as f32,
             ) as u32;
             let vanilla_repair = to_repair_xp;
@@ -637,7 +645,7 @@ impl Game<'_> {
             Some(&bow),
             "minecraft:damage",
             &ctx,
-            &mut self.world.random,
+            &mut self.simulation.world.random,
             0.0,
         );
         let ammo_ctx = EffectContext {
@@ -650,7 +658,7 @@ impl Game<'_> {
                 Some(&bow),
                 "minecraft:ammo_use",
                 &ammo_ctx,
-                &mut self.world.random,
+                &mut self.simulation.world.random,
                 1.0,
             ) == 0.0;
         (f64::from(power), infinity)
@@ -692,7 +700,7 @@ impl Game<'_> {
                         r,
                         *level,
                         &ctx,
-                        &mut self.world.random,
+                        &mut self.simulation.world.random,
                     )
                 });
                 if ok {
@@ -747,7 +755,7 @@ impl Game<'_> {
             active = wanted;
             // `random_chance` is the first term of the wear's `all_of`: it
             // draws from the level random before the block is looked at.
-            let roll = self.world.random.next_float() < 0.04;
+            let roll = self.simulation.world.random.next_float() < 0.04;
             wear = roll && on_ground && on_soul;
         }
         fx.applied_level = if active { level } else { 0 };
@@ -775,7 +783,7 @@ impl Game<'_> {
         if level == 0 {
             return None;
         }
-        let r = &mut self.world.random;
+        let r = &mut self.simulation.world.random;
         // `spawn_particles`: in the bounding box, 0.1 above the feet, thrown
         // back against the movement (-0.2) and up (0.1).
         let particle = tick_effects.then(|| {
@@ -858,7 +866,7 @@ impl Game<'_> {
     /// for an armor stand: run location effects before travel (including a
     /// piston push), on landing, and for newly equipped items.
     pub(super) fn armor_stand_location_effects(&mut self, index: usize, landed: bool) {
-        let stand = &mut self.armor_stands[index];
+        let stand = &mut self.simulation.armor_stands[index];
         let block = BlockPos::containing(stand.position);
         let moved = !landed && stand.enchantment_block.replace(block) != Some(block);
         let changed: [bool; 6] =
@@ -890,7 +898,7 @@ impl Game<'_> {
                 );
             }
         }
-        let stand = &self.armor_stands[index];
+        let stand = &self.simulation.armor_stands[index];
         let at = [stand.position.x, stand.position.y, stand.position.z];
         let who = Who::Mob(stand.id);
         let equipment = stand
@@ -987,7 +995,7 @@ impl Game<'_> {
         }
         let offset = cell_offset(p);
         let at = [0, 1, 2].map(|i| pos[i] + offset[i]);
-        let state = self.world.block(at[0], at[1], at[2]);
+        let state = self.simulation.world.block(at[0], at[1], at[2]);
         let b = self.res.behaviours();
         let names = |v: &Value| -> Vec<String> {
             match v {

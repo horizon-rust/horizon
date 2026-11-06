@@ -107,7 +107,7 @@ impl Game<'_> {
             Vec3::new(hi[0], hi[1], hi[2]),
         );
         let mut scene = horizon_client::collisions::SceneCollisions {
-            world: &self.world,
+            world: &self.simulation.world,
             binding: self.collision,
             subject: None,
         };
@@ -123,7 +123,7 @@ impl Game<'_> {
         for x in slo[0].floor() as i32..=shi[0].floor() as i32 {
             for y in slo[1].floor() as i32..=shi[1].floor() as i32 {
                 for z in slo[2].floor() as i32..=shi[2].floor() as i32 {
-                    let f = self.res.facts().get(self.world.block(x, y, z));
+                    let f = self.res.facts().get(self.simulation.world.block(x, y, z));
                     if !(f.legacy_solid || f.has_class("DiodeBlock")) {
                         return false;
                     }
@@ -131,6 +131,7 @@ impl Game<'_> {
             }
         }
         !self
+            .simulation
             .paintings
             .iter()
             .any(|o| o.id != p.id && overlaps(o.bounds(), (lo, hi)))
@@ -152,7 +153,7 @@ impl Game<'_> {
             hit.pos[2] + hit.face[2],
         ];
         let mut candidate = Painting {
-            id: self.next_entity.wrapping_add(1),
+            id: self.simulation_server.next_entity.wrapping_add(1),
             pos,
             facing,
             variant: Arc::from(""),
@@ -195,9 +196,9 @@ impl Game<'_> {
             hit.pos[1],
             hit.pos[2] + hit.face[2],
         ];
-        self.next_entity += 1;
+        self.simulation_server.next_entity += 1;
         let mut candidate = Painting {
-            id: self.next_entity,
+            id: self.simulation_server.next_entity,
             pos,
             facing,
             variant: Arc::from(""),
@@ -253,8 +254,11 @@ impl Game<'_> {
         // added; ItemStack.useOn then counts the use.
         let ctx = self.player_context(None);
         self.post_game_event("minecraft:entity_place", at, ctx);
-        self.paintings.push(candidate);
-        self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
+        self.simulation.paintings.push(candidate);
+        self.simulation
+            .world
+            .modified
+            .insert((pos[0] >> 4, pos[2] >> 4));
         if !self.creative {
             self.consume_held();
         }
@@ -268,7 +272,7 @@ impl Game<'_> {
         let (eye, dir) = self.aim()?;
         let reach: f64 = self.entity_reach;
         let mut best: Option<(usize, f64)> = None;
-        for (i, p) in self.paintings.iter().enumerate() {
+        for (i, p) in self.simulation.paintings.iter().enumerate() {
             let (lo, hi) = p.bounds();
             let (mut t0, mut t1) = (0.0f64, reach);
             let mut hit = true;
@@ -293,18 +297,21 @@ impl Game<'_> {
     /// `Painting.hurtServer` -> kill and `dropItem`. False when a mod kept it
     /// (`native_hanging_break`): it stays at `index`.
     pub(super) fn break_painting(&mut self, index: usize, by_player: bool) -> bool {
-        let pos = self.paintings[index].pos;
+        let pos = self.simulation.paintings[index].pos;
         if self.hanging_break_cancelled("minecraft:painting", pos, by_player) {
             return false;
         }
-        let p = self.paintings.remove(index);
+        let p = self.simulation.paintings.remove(index);
         let (lo, hi) = p.bounds();
         let at = [
             (lo[0] + hi[0]) / 2.0,
             (lo[1] + hi[1]) / 2.0,
             (lo[2] + hi[2]) / 2.0,
         ];
-        self.world.modified.insert((p.pos[0] >> 4, p.pos[2] >> 4));
+        self.simulation
+            .world
+            .modified
+            .insert((p.pos[0] >> 4, p.pos[2] >> 4));
         if !self.ui.rules.bool("entity_drops") {
             return true;
         }
@@ -334,17 +341,17 @@ impl Game<'_> {
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
         let mut i = 0;
-        while i < self.paintings.len() {
-            let (lo, hi) = self.paintings[i].bounds();
+        while i < self.simulation.paintings.len() {
+            let (lo, hi) = self.simulation.paintings[i].bounds();
             let centre = [0, 2].map(|k| ((lo[k] + hi[k]) / 2.0).floor() as i32);
             if !ticking(centre[0], centre[1]) {
                 i += 1;
                 continue;
             }
-            self.paintings[i].check_interval += 1;
-            if self.paintings[i].check_interval >= 100 {
-                self.paintings[i].check_interval = 0;
-                let p = self.paintings[i].clone();
+            self.simulation.paintings[i].check_interval += 1;
+            if self.simulation.paintings[i].check_interval >= 100 {
+                self.simulation.paintings[i].check_interval = 0;
+                let p = self.simulation.paintings[i].clone();
                 if !self.painting_survives(&p) && self.break_painting(i, false) {
                     continue;
                 }
@@ -359,7 +366,7 @@ impl Game<'_> {
         let Some(back) = sprites.get("painting/back").copied() else {
             return;
         };
-        for p in &self.paintings {
+        for p in &self.simulation.paintings {
             // EntityRenderer.shouldRender: the default range and its box,
             // measured from the box's centre (HangingEntity's position).
             let (lo, hi) = p.bounds();
@@ -396,7 +403,7 @@ impl Game<'_> {
                 1.0 / 32.0,
             );
             let entity_start = out.len();
-            let light = self.world.light(p.pos[0], p.pos[1], p.pos[2]);
+            let light = self.simulation.world.light(p.pos[0], p.pos[1], p.pos[2]);
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             let mut quad =
                 |corners: [glam::DVec3; 4], normal: glam::DVec3, uv: [[f32; 2]; 4], shade: f32| {

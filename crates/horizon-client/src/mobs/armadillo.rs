@@ -326,7 +326,7 @@ fn scared_by_someone(m: &Mob, w: &MobWorld) -> bool {
     {
         return true;
     }
-    w.others_near(area).any(|s| {
+    w.others_intersecting(area).any(|s| {
         s.id != m.id
             && s.alive
             && s.bounds.intersects(area)

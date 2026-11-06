@@ -14,7 +14,8 @@ use horizon_protocol::packets::play::{self, Serverbound as S};
 
 impl Game<'_> {
     fn command_cart_mut(&mut self, id: u32) -> Option<&mut Minecart> {
-        self.carts
+        self.simulation
+            .carts
             .iter_mut()
             .find(|c| c.id == id && c.kind == CartKind::CommandBlock)
     }
@@ -29,7 +30,7 @@ impl Game<'_> {
     /// `BaseCommandBlock.performCommand` for the cart: false when it already
     /// ran this game tick.
     pub(super) fn perform_cart_command(&mut self, id: u32) -> bool {
-        let game_time = self.world.game_time;
+        let game_time = self.simulation.world.game_time;
         let rules_work = self.ui.rules.bool("command_blocks_work");
         let Some(c) = self.command_cart_mut(id) else {
             return false;
@@ -111,6 +112,7 @@ impl Game<'_> {
     /// command (`MinecartCommandBlockEditScreen`).
     pub(super) fn open_cart_command_block(&mut self, id: u32) {
         let Some(block) = self
+            .simulation
             .carts
             .iter()
             .find(|c| c.id == id && c.kind == CartKind::CommandBlock)

@@ -107,6 +107,10 @@ pub(super) struct CombatTracker {
     /// The hit on the player now runs its post-attack effects (thorns) only
     /// if the player lives through it (`WitherSkull.onHitEntity`).
     pub(super) post_attack_if_alive: bool,
+    /// The mob whose swing is being applied, when the caller knows it. Without
+    /// it the attacker is the mob nearest to where the hit came from, which
+    /// walks every mob.
+    pub(super) melee_mob: Option<u32>,
     /// A firework rocket's burst is hurting the player now: the rocket is
     /// the direct entity (`rocket_hurt_player`).
     pub(super) rocket_hit: bool,
@@ -220,10 +224,14 @@ impl Game<'_> {
                 ([at.x, at.y, at.z], [v.x, v.y, v.z])
             })
         } else {
-            self.mobs.iter().find(|m| m.id == id as u32).map(|m| {
-                let (at, v) = (m.position, m.velocity);
-                ([at.x, at.y, at.z], [v.x, v.y, v.z])
-            })
+            self.simulation
+                .mobs
+                .iter()
+                .find(|m| m.id == id as u32)
+                .map(|m| {
+                    let (at, v) = (m.position, m.velocity);
+                    ([at.x, at.y, at.z], [v.x, v.y, v.z])
+                })
         };
         if let Some((at, v)) = body {
             self.drown_particles(at, v);
@@ -231,7 +239,7 @@ impl Game<'_> {
     }
     /// The display name of a mob: its custom name or its type's name.
     pub(super) fn mob_display_name(&self, id: u32) -> Option<Text> {
-        let m = self.mobs.iter().find(|m| m.id == id)?;
+        let m = self.simulation.mobs.iter().find(|m| m.id == id)?;
         Some(match &m.custom_name {
             Some(name) => Text::literal(name.clone()),
             None => Text::translate(&format!("entity.{}", m.kind.id.replace(':', ".")), &[]),
@@ -240,7 +248,8 @@ impl Game<'_> {
     /// `getLastHurtByMob`: the last mob to hurt the player, for 100 ticks.
     pub(super) fn player_hurt_by(&self) -> Option<(horizon_client::mobs::Who, i64)> {
         let ((id, _), at) = self.combat.last_hurt_by.as_ref()?;
-        (self.world.game_time - at <= 100).then_some((horizon_client::mobs::Who::Mob(*id), *at))
+        (self.simulation.world.game_time - at <= 100)
+            .then_some((horizon_client::mobs::Who::Mob(*id), *at))
     }
     /// Remember who deals the next `damage_type` damage to the player.
     pub(super) fn note_attacker(&mut self, damage_type: &str, mob: u32) {
@@ -248,7 +257,7 @@ impl Game<'_> {
             self.note_named_attacker(damage_type, mob, name);
         }
     }
-    /// `note_attacker` for an entity that is not one of `self.mobs` (the
+    /// `note_attacker` for an entity that is not one of `self.simulation.mobs` (the
     /// ender dragon).
     pub(super) fn note_named_attacker(&mut self, damage_type: &str, id: u32, name: Text) {
         self.note_player_attacker(damage_type, id, name, None);
@@ -322,7 +331,7 @@ impl Game<'_> {
                     .map(|i| self.combat.pending_direct.remove(i).1),
             };
             let (fall_location, fall_distance) = self.fall_location();
-            let now = self.world.game_time;
+            let now = self.simulation.world.game_time;
             if let Some(a) = &attacker {
                 self.combat.last_hurt_by = Some((a.clone(), now));
                 if !self.combat.in_combat {
@@ -363,7 +372,7 @@ impl Game<'_> {
             let name = self
                 .res
                 .facts()
-                .get(self.world.block(c.x, c.y, c.z))
+                .get(self.simulation.world.block(c.x, c.y, c.z))
                 .name
                 .clone();
             Some(match &*name {
@@ -375,7 +384,7 @@ impl Game<'_> {
                 _ => "other_climbable",
             })
         } else {
-            let f = self.res.facts().get(self.world.block(
+            let f = self.res.facts().get(self.simulation.world.block(
                 p.position.x.floor() as i32,
                 (p.position.y + 0.1).floor() as i32,
                 p.position.z.floor() as i32,
@@ -387,7 +396,8 @@ impl Game<'_> {
     /// `CombatTracker.recheckStatus`: forget old fights.
     fn recheck_combat(&mut self) {
         let reset = if self.combat.in_combat { 300 } else { 100 };
-        if !self.combat.entries.is_empty() && self.world.game_time - self.combat.last_damage > reset
+        if !self.combat.entries.is_empty()
+            && self.simulation.world.game_time - self.combat.last_damage > reset
         {
             self.combat.entries.clear();
             self.combat.in_combat = false;
@@ -428,7 +438,7 @@ impl Game<'_> {
     }
     /// The display component of a custom-named held stack.
     fn mob_main_hand_name(&self, id: u32) -> Option<Text> {
-        let m = self.mobs.iter().find(|m| m.id == id)?;
+        let m = self.simulation.mobs.iter().find(|m| m.id == id)?;
         let mut stack = m.extra.main_hand_stack()?.clone();
         if !has_custom_name(&stack) {
             return None;
@@ -539,7 +549,7 @@ impl Game<'_> {
         }
         // getKillCredit: the last mob that hurt the player in the past 100 ticks.
         if let Some(((_, name), at)) = &self.combat.last_hurt_by
-            && self.world.game_time - at <= 100
+            && self.simulation.world.game_time - at <= 100
         {
             return Text::translate(&format!("{key}.player"), &[me, name.clone()]);
         }
@@ -665,7 +675,7 @@ impl Game<'_> {
                 .filter(|_| m.age as i32 - m.ai.last_hurt_by_time <= 100)
                 .and_then(|w| name(self, w))
         };
-        let now = self.world.game_time;
+        let now = self.simulation.world.game_time;
         let mut tracker = CombatTracker {
             entries,
             last_damage: now,
@@ -794,5 +804,84 @@ mod stuck_tests {
         // Both timers run 580 ticks.
         assert!(s.tick());
         assert_eq!((s.arrows, s.stingers), (0, 0));
+    }
+}
+
+#[cfg(test)]
+mod guest_hit_tests {
+    use super::*;
+    use crate::game::{Audio, Options, PlayerMotion, Progress, Settings, load_resources};
+    use horizon_client::mobs::{Mob, MobEvent};
+    use horizon_core::geometry::Vec3;
+
+    /// A bystander stands exactly under the mob that bites, listed first: the
+    /// search by position ignores height and would have named the bystander.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn an_effect_hit_on_a_guest_credits_the_mob_that_swung() {
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.player = Some(PlayerMotion::new(game.motion, Vec3::new(0.5, 100.0, 0.5)).unwrap());
+        for (id, kind, y) in [
+            (4, "minecraft:zombie", 90.0),
+            (5, "minecraft:cave_spider", 100.0),
+        ] {
+            let kind = game.res.mob_types().get(kind).cloned().unwrap();
+            game.simulation
+                .mobs
+                .push(Mob::new(id, kind, Vec3::new(1.5, y, 0.5), 0.0));
+        }
+        let from = [1.5, 100.0, 0.5];
+        let hits = [
+            MobEvent::AttackPlayerWithEffect {
+                amount: 2.0,
+                from,
+                effect: "minecraft:poison",
+                ticks: 140,
+                amplifier: 0,
+            },
+            MobEvent::StingPlayer {
+                amount: 2.0,
+                from,
+                poison_ticks: 200,
+            },
+        ];
+        for hit in hits {
+            game.combat.pending.clear();
+            game.guest_mob_event(5, hit);
+            let noted: Vec<u32> = game
+                .combat
+                .pending
+                .iter()
+                .map(|(_, (id, _), _)| *id)
+                .collect();
+            assert_eq!(noted, [5]);
+            assert_eq!(game.combat.melee_mob, None, "the hit used it up");
+        }
     }
 }

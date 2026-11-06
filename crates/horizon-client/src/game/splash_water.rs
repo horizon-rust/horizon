@@ -83,7 +83,7 @@ impl Game<'_> {
     /// out after level event 1009 and its block-change game event.
     fn douse_fire(&mut self, pos: [i32; 3]) {
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
-        let state = self.world.block(pos[0], pos[1], pos[2]);
+        let state = self.simulation.world.block(pos[0], pos[1], pos[2]);
         let name = self.res.facts().get(state).name.clone();
         let fire = self.block_in_tag("minecraft:fire", &name);
         if fire {
@@ -146,7 +146,7 @@ impl Game<'_> {
         if hurts || extinguishes {
             let source =
                 Damage::indirect_magic(by_player.then_some(Who::Player), [at.x, at.y, at.z]);
-            for m in self.mobs.iter_mut().filter(|m| !m.removed) {
+            for m in self.simulation.mobs.iter_mut().filter(|m| !m.removed) {
                 // WATER_SENSITIVE_OR_ON_FIRE.
                 let sensitive = m.kind.flags.water_sensitive;
                 if !(sensitive || m.is_on_fire())
@@ -180,7 +180,7 @@ impl Game<'_> {
             self.for_each_player(|g| g.extinguish_player_in_splash(reach, at));
             // Armor stands are living entities too.
             let mut put_out = Vec::new();
-            for stand in self.armor_stands.iter_mut() {
+            for stand in self.simulation.armor_stands.iter_mut() {
                 if stand.fire_ticks > 0
                     && stand.health > 0.5
                     && reach.intersects(stand.bounds())
@@ -201,6 +201,7 @@ impl Game<'_> {
                 [at.x + 0.125 + 4.0, at.y + 0.25 + 2.0, at.z + 0.125 + 4.0],
             );
             for m in self
+                .simulation
                 .mobs
                 .iter_mut()
                 .filter(|m| m.species() == Species::Axolotl && !m.removed)

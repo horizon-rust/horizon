@@ -40,6 +40,7 @@ pub(super) struct Recording {
     /// Whether spans were on before (`HORIZON_SPIKES`): they stay on after.
     spans_were_on: bool,
     ticks: Vec<Tick>,
+    compression_start: (u64, u64),
     /// The ticks whose mobs were timed one by one ([`tick_profile::SAMPLE_EVERY`]).
     sampled_ticks: u64,
     /// The spans recorded, before they are summed by name: what timing them cost.
@@ -61,6 +62,7 @@ impl Recording {
             cpu_s: horizon_bench::cpu_seconds(std::process::id()),
             spans_were_on,
             ticks: Vec::with_capacity(seconds as usize * 20),
+            compression_start: horizon_client::lan::conn::compression_totals(),
             sampled_ticks: 0,
             spans_recorded: 0,
             wire_start: wire.into_iter().collect(),
@@ -313,20 +315,21 @@ impl Game<'_> {
                 "mobs_by_type": by_type.into_iter().map(|(k, v)| json!([k, v])).collect::<Vec<_>>(),
             })
         };
-        let mut current = here(self.dim, &self.world, &self.mobs);
-        current["item_entities"] = json!(self.dropped.len());
-        current["experience_orbs"] = json!(self.orbs.len());
-        current["projectiles"] = json!(self.creatures.projectiles.len());
-        current["minecarts"] = json!(self.carts.len());
-        current["boats"] = json!(self.boats.len());
+        let mut current = here(self.dim, &self.simulation.world, &self.simulation.mobs);
+        current["item_entities"] = json!(self.simulation.dropped.len());
+        current["experience_orbs"] = json!(self.simulation.orbs.len());
+        current["projectiles"] = json!(self.simulation.projectiles.len());
+        current["minecarts"] = json!(self.simulation.carts.len());
+        current["boats"] = json!(self.simulation.boats.len());
         levels.push(current);
-        for dim in self.levels.parked_dims() {
-            if let (Some(world), Some(mobs)) =
-                (self.levels.parked_world(dim), self.levels.parked_mobs(dim))
-            {
+        for dim in self.simulation_server.levels.parked_dims() {
+            if let (Some(world), Some(mobs)) = (
+                self.simulation_server.levels.parked_world(dim),
+                self.simulation_server.levels.parked_mobs(dim),
+            ) {
                 let mut level = here(dim, world, mobs);
                 if let Some([items, orbs, projectiles, carts, boats]) =
-                    self.levels.parked_entity_counts(dim)
+                    self.simulation_server.levels.parked_entity_counts(dim)
                 {
                     level["item_entities"] = json!(items);
                     level["experience_orbs"] = json!(orbs);
@@ -368,6 +371,20 @@ impl Game<'_> {
             .zip(r.cpu_s)
             .map(|(end, start)| round((end - start) / window_s.max(1e-9)));
         let players = self.lan.as_ref().map_or(0, |h| h.hub.guests.len());
+        // End-of-window samples, not peaks or counts of backpressure events.
+        let pending: Vec<usize> = self.lan.as_ref().map_or_else(Vec::new, |host| {
+            host.hub
+                .guests
+                .iter()
+                .map(|g| g.sender.pending.load(std::sync::atomic::Ordering::Relaxed))
+                .collect()
+        });
+        let compression = horizon_client::lan::conn::compression_totals();
+        let queues_at_end = json!({
+            "network_pending_bytes": pending.iter().sum::<usize>(),
+            "network_pending_bytes_largest_connection": pending.iter().max().copied().unwrap_or(0),
+            "active_level_streaming": self.streaming.stages().into_iter().collect::<BTreeMap<_, _>>(),
+        });
         let report = json!({
             "format": 2,
             "horizon": horizon_client::crash::version(),
@@ -376,6 +393,11 @@ impl Game<'_> {
             "ticks": ticks,
             "spans": spans,
             "worst_ticks": worst,
+            "queues_at_end": queues_at_end,
+            "network_compression": {
+                "calls": compression.0.saturating_sub(r.compression_start.0),
+                "worker_ms_sum": compression.1.saturating_sub(r.compression_start.1) as f64 / 1_000_000.0,
+            },
             "mob_costs": mob_costs(&costs, r.sampled_ticks),
             "mob_sampled_ticks": r.sampled_ticks,
             "chunk_workers": worker_jobs(&jobs, window_s),
@@ -604,6 +626,7 @@ mod tests {
             cpu_s: None,
             spans_were_on: true,
             ticks: Vec::new(),
+            compression_start: (0, 0),
             sampled_ticks: 0,
             spans_recorded: 0,
             wire_start: BTreeMap::new(),
@@ -735,6 +758,7 @@ mod tests {
             sampled_ticks: 0,
             spans_recorded: 0,
             wire_start: BTreeMap::new(),
+            compression_start: (0, 0),
         };
         for _ in 0..4 {
             r.add(50.0, None, Vec::new(), 100, false);

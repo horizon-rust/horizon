@@ -55,7 +55,7 @@ impl Game<'_> {
                 let kind = "minecraft:pillager";
                 match self.spawn_mob_for(kind, [player.x, player.y, player.z], true, true) {
                     Some(id) => {
-                        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+                        if let Some(m) = self.simulation.mobs.iter_mut().find(|m| m.id == id) {
                             raider::set_patrol_leader(m, true);
                             raider::finalize(m, raider::Reason::Other);
                         }

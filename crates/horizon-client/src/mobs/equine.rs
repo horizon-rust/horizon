@@ -834,7 +834,7 @@ pub fn follow_mommy(m: &mut Mob, w: &MobWorld) {
     // box is its own bounding box inflated by the same 16.
     let area = m.bounds().inflate(Vec3::new(16.0, 16.0, 16.0));
     let mommy = w
-        .others_near(area)
+        .others_intersecting(area)
         .filter(|o| {
             o.alive
                 && o.bred

@@ -779,13 +779,13 @@ impl Game<'_> {
     fn set_lectern_powered(&mut self, key: (i32, i32, i32), powered: bool) {
         self.set_lectern_property(key, "powered", powered);
         let p = BlockPos::new(key.0, key.1, key.2);
-        let state = self.world.block(key.0, key.1, key.2);
+        let state = self.simulation.world.block(key.0, key.1, key.2);
         self.with_level(|b, level, ticks| {
             b.lectern_update_below(level, ticks, p, state);
         });
     }
     fn set_lectern_property(&mut self, key: (i32, i32, i32), name: &str, value: bool) {
-        let state = self.world.block(key.0, key.1, key.2);
+        let state = self.simulation.world.block(key.0, key.1, key.2);
         let registry = self.pack.assets.registry;
         let Some(mut s) = registry.state(state).cloned() else {
             return;
@@ -805,13 +805,13 @@ impl Game<'_> {
     pub(super) fn tick_lecterns(&mut self) {
         self.follow_lectern();
         let mut done = Vec::new();
-        for (key, left) in &mut self.lectern_pulses {
+        for (key, left) in &mut self.simulation.lectern_pulses {
             *left -= 1;
             if *left <= 0 {
                 done.push(*key);
             }
         }
-        self.lectern_pulses.retain(|(_, left)| *left > 0);
+        self.simulation.lectern_pulses.retain(|(_, left)| *left > 0);
         for key in done {
             self.set_lectern_powered(key, false);
         }
@@ -822,13 +822,13 @@ impl Game<'_> {
         if &*self
             .res
             .facts()
-            .get(self.world.block(pos[0], pos[1], pos[2]))
+            .get(self.simulation.world.block(pos[0], pos[1], pos[2]))
             .name
             != "minecraft:lectern"
         {
             return false;
         }
-        let has_book = matches!(self.world.block_entities.get(&key), Some(BlockEntity::Lectern(l)) if l.book.is_some());
+        let has_book = matches!(self.simulation.world.block_entities.get(&key), Some(BlockEntity::Lectern(l)) if l.book.is_some());
         let Some(book) = held.filter(|h| {
             matches!(
                 &*h.item,
@@ -842,7 +842,7 @@ impl Game<'_> {
         }
         let mut one = book.clone();
         one.count = 1;
-        self.world.block_entities.insert(
+        self.simulation.world.block_entities.insert(
             key,
             BlockEntity::Lectern(Lectern {
                 book: Some(one),
@@ -869,7 +869,7 @@ impl Game<'_> {
     /// `LecternBlock.openScreen`: reading the lectern's book.
     pub(super) fn open_lectern(&mut self, pos: [i32; 3]) -> bool {
         let key = (pos[0], pos[1], pos[2]);
-        let Some(BlockEntity::Lectern(l)) = self.world.block_entities.get(&key) else {
+        let Some(BlockEntity::Lectern(l)) = self.simulation.world.block_entities.get(&key) else {
             return false;
         };
         let Some(book) = &l.book else { return false };
@@ -927,14 +927,14 @@ impl Game<'_> {
     /// lectern, so the screen closes (the server closes the menu once the
     /// book is gone; a server's client closes at once rather than wait).
     fn take_lectern_book(&mut self, key: (i32, i32, i32)) {
-        let before = match self.world.block_entities.get(&key) {
+        let before = match self.simulation.world.block_entities.get(&key) {
             Some(BlockEntity::Lectern(l)) => l.book.clone(),
             _ => None,
         };
         self.lectern_button(key, 3);
         if let (Some(book), Some(player), Some(name)) = (
             before.filter(|_| {
-                matches!(self.world.block_entities.get(&key),
+                matches!(self.simulation.world.block_entities.get(&key),
                 Some(BlockEntity::Lectern(l)) if l.book.is_none())
             }),
             self.lan_acting_uuid,
@@ -1063,7 +1063,7 @@ impl Game<'_> {
     /// `LecternMenu` over the lectern at `key` (the menu engine, for the
     /// local player and LAN guests alike): its book and page.
     pub(super) fn lectern_menu(&self, key: (i32, i32, i32)) -> Option<Menu> {
-        let Some(BlockEntity::Lectern(l)) = self.world.block_entities.get(&key) else {
+        let Some(BlockEntity::Lectern(l)) = self.simulation.world.block_entities.get(&key) else {
             return None;
         };
         let mut menu = Menu::new(Kind::Lectern);
@@ -1075,7 +1075,8 @@ impl Game<'_> {
     /// is `LecternBlock.signalPageChange` (the 2-tick pulse, level event
     /// 1043), a book gone `onBookItemRemove` (`resetBookState`).
     pub(super) fn lectern_menu_done(&mut self, key: (i32, i32, i32), menu: &Menu) {
-        let Some(BlockEntity::Lectern(l)) = self.world.block_entities.get_mut(&key) else {
+        let Some(BlockEntity::Lectern(l)) = self.simulation.world.block_entities.get_mut(&key)
+        else {
             return;
         };
         let (had, before) = (l.book.is_some(), l.page);
@@ -1087,7 +1088,7 @@ impl Game<'_> {
             self.container_changed(key);
         } else if menu.data[0] != before {
             self.set_lectern_powered(key, true);
-            self.lectern_pulses.push((key, 2));
+            self.simulation.lectern_pulses.push((key, 2));
             self.level_event_at(1043, [key.0, key.1, key.2], 0);
             self.container_changed(key);
             if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone())
@@ -1115,7 +1116,7 @@ impl Game<'_> {
         if self.remote.is_some() {
             return;
         }
-        match self.world.block_entities.get(key) {
+        match self.simulation.world.block_entities.get(key) {
             Some(BlockEntity::Lectern(l)) if l.book.is_some() => {
                 *page = (l.page.max(0) as usize).min(pages.len().saturating_sub(1));
             }

@@ -190,7 +190,7 @@ impl Game<'_> {
             items: Some(world_items!(self)),
             ..Default::default()
         };
-        let mut random = self.world.random.clone();
+        let mut random = self.simulation.world.random.clone();
         world_stations!(self)
             .enchantments
             .ignite_seconds(held.enchantments(), &ctx, &mut random)

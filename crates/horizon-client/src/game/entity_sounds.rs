@@ -19,7 +19,7 @@ impl Game<'_> {
         pitch: f32,
         except_actor: bool,
     ) {
-        let mob = &self.mobs[index];
+        let mob = &self.simulation.mobs[index];
         let entity = horizon_client::sound_engine::SoundEntity::new(
             mob.id,
             [mob.position.x, mob.position.y, mob.position.z],
@@ -87,14 +87,15 @@ impl Game<'_> {
                 removed: false,
             });
         }
-        if let Some(t) = self.tridents.iter().find(|t| t.id == id) {
+        if let Some(t) = self.simulation.tridents.iter().find(|t| t.id == id) {
             return Some(SoundEntityState {
                 position: [t.position.x, t.position.y, t.position.z],
                 silent: false,
                 removed: false,
             });
         }
-        self.mobs
+        self.simulation
+            .mobs
             .iter()
             .find(|m| m.id == id)
             .map(|m| SoundEntityState {

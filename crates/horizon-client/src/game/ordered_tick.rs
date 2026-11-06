@@ -74,14 +74,14 @@ impl Game<'_> {
     /// A level tick starts: what has joined so far ticks this tick.
     pub(super) fn begin_ordered_ticks(&mut self) {
         let firsts = [
-            first_join(&self.armor_stands),
-            first_join(&self.boats),
-            first_join(&self.carts),
-            first_join(&self.tridents),
-            first_join(&self.rockets),
-            first_join(&self.dropped),
-            first_join(&self.mobs),
-            first_join(&self.creatures.projectiles),
+            first_join(&self.simulation.armor_stands),
+            first_join(&self.simulation.boats),
+            first_join(&self.simulation.carts),
+            first_join(&self.simulation.tridents),
+            first_join(&self.simulation.rockets),
+            first_join(&self.simulation.dropped),
+            first_join(&self.simulation.mobs),
+            first_join(&self.simulation.projectiles),
         ];
         // A batch ticks whole, so an entity of the three kinds goes after the
         // last batch that holds anything that joined before it.
@@ -124,9 +124,16 @@ impl Game<'_> {
                 pending.push((j, kind));
             }
         };
-        self.orbs.iter().for_each(|e| offer(e.join, Pending::Orb));
-        self.tnts.iter().for_each(|e| offer(e.join, Pending::Tnt));
-        self.falling
+        self.simulation
+            .orbs
+            .iter()
+            .for_each(|e| offer(e.join, Pending::Orb));
+        self.simulation
+            .tnts
+            .iter()
+            .for_each(|e| offer(e.join, Pending::Tnt));
+        self.simulation
+            .falling
             .iter()
             .for_each(|e| offer(e.join, Pending::Falling));
         pending.sort_unstable_by_key(|&(j, _)| j);
@@ -135,10 +142,10 @@ impl Game<'_> {
             // ServerLevel.tick: only entities in entity-ticking chunks tick.
             match kind {
                 Pending::Tnt => {
-                    let Some(i) = find_join(&self.tnts, join) else {
+                    let Some(i) = find_join(&self.simulation.tnts, join) else {
                         continue;
                     };
-                    let at = self.tnts[i].position;
+                    let at = self.simulation.tnts[i].position;
                     if entity_ticking(at.x.floor() as i32, at.z.floor() as i32)
                         && let Err(e) = self.tick_one_tnt(i)
                     {
@@ -146,10 +153,10 @@ impl Game<'_> {
                     }
                 }
                 Pending::Falling => {
-                    let Some(i) = find_join(&self.falling, join) else {
+                    let Some(i) = find_join(&self.simulation.falling, join) else {
                         continue;
                     };
-                    let at = self.falling[i].position;
+                    let at = self.simulation.falling[i].position;
                     if entity_ticking(at.x.floor() as i32, at.z.floor() as i32) {
                         events = true;
                         if let Err(e) = self.tick_one_falling(i) {
@@ -158,11 +165,11 @@ impl Game<'_> {
                     }
                 }
                 Pending::Orb => {
-                    let Some(i) = find_join(&self.orbs, join) else {
+                    let Some(i) = find_join(&self.simulation.orbs, join) else {
                         continue;
                     };
                     let followed = followed.get_or_insert_with(|| self.orb_followed());
-                    let o = &mut self.orbs[i];
+                    let o = &mut self.simulation.orbs[i];
                     let distance = |feet: &[f64; 3]| -> f64 {
                         (feet[0] - o.position.x).powi(2)
                             + (feet[1] - o.position.y).powi(2)
@@ -187,7 +194,7 @@ impl Game<'_> {
                             audio.play("minecraft:entity.generic.burn", Some(pos), 0.4, pitch);
                         };
                         o.tick(
-                            &self.world,
+                            &self.simulation.world,
                             self.res.facts(),
                             self.collision,
                             target,
@@ -203,7 +210,7 @@ impl Game<'_> {
                     let snow = (o.previous, o.position, o.bounds(), o.velocity);
                     self.entity_powder_snow_particles(snow.0, snow.1, snow.2, snow.3, false);
                     if !stays {
-                        self.orbs.remove(i);
+                        self.simulation.orbs.remove(i);
                     }
                 }
             }

@@ -1000,7 +1000,7 @@ impl Game<'_> {
     /// (`RandomizableContainer.unpackLootTable` runs the function then).
     pub(super) fn resolve_container_maps(&mut self, key: (i32, i32, i32), origin: [f64; 3]) {
         use horizon_client::containers::BlockEntity;
-        let Some(BlockEntity::Chest(slots)) = self.world.block_entities.get(&key) else {
+        let Some(BlockEntity::Chest(slots)) = self.simulation.world.block_entities.get(&key) else {
             return;
         };
         let pending: Vec<usize> = slots
@@ -1013,14 +1013,18 @@ impl Game<'_> {
             .map(|(i, _)| i)
             .collect();
         for i in pending {
-            let Some(BlockEntity::Chest(slots)) = self.world.block_entities.get_mut(&key) else {
+            let Some(BlockEntity::Chest(slots)) =
+                self.simulation.world.block_entities.get_mut(&key)
+            else {
                 return;
             };
             let Some(mut item) = slots[i].take() else {
                 continue;
             };
             let keep = self.resolve_pending_map(&mut item, origin);
-            if let Some(BlockEntity::Chest(slots)) = self.world.block_entities.get_mut(&key) {
+            if let Some(BlockEntity::Chest(slots)) =
+                self.simulation.world.block_entities.get_mut(&key)
+            {
                 slots[i] = keep.then_some(item);
             }
         }
@@ -1175,12 +1179,17 @@ impl Game<'_> {
             return false;
         }
         let [x, y, z] = hit.pos;
-        let block = self.res.facts().get(self.world.block(x, y, z)).name.clone();
+        let block = self
+            .res
+            .facts()
+            .get(self.simulation.world.block(x, y, z))
+            .name
+            .clone();
         if !self.block_in_tag("minecraft:banners", &block) {
             return false;
         }
         let current = self.map_banner_at(hit.pos);
-        let game_time = self.world.game_time;
+        let game_time = self.simulation.world.game_time;
         let failed = self
             .map(id)
             .is_some_and(|m| !m.toggle_banner(hit.pos, current, game_time));
@@ -1202,7 +1211,7 @@ impl Game<'_> {
         if self
             .res
             .facts()
-            .get(self.world.block(x, y, z))
+            .get(self.simulation.world.block(x, y, z))
             .name
             .as_ref()
             != "minecraft:lodestone"
@@ -1260,11 +1269,11 @@ impl Game<'_> {
             };
             let [x, y, z] = [pos[0], pos[1], pos[2]];
             horizon_client::save::text(target.get("dimension")).as_deref() == Some(dim)
-                && game.world.chunks.contains_key(&(x >> 4, z >> 4))
+                && game.simulation.world.chunks.contains_key(&(x >> 4, z >> 4))
                 && game
                     .res
                     .facts()
-                    .get(game.world.block(x, y, z))
+                    .get(game.simulation.world.block(x, y, z))
                     .name
                     .as_ref()
                     != "minecraft:lodestone"
@@ -1330,7 +1339,10 @@ impl Game<'_> {
             .filter_map(|s| Some((map_id(s)?, static_decorations(s))))
             .collect();
         let (yaw, dim) = (self.yaw, self.dimension_id());
-        let (nether, game_time) = (self.dim == super::Dim::Nether, self.world.game_time);
+        let (nether, game_time) = (
+            self.dim == super::Dim::Nether,
+            self.simulation.world.game_time,
+        );
         let invisible = self.map_invisibility_worn(&self.armor);
         // The guest whose turn it is, else the host.
         let me = self.lan_acting.unwrap_or(HOST);
@@ -1426,9 +1438,10 @@ impl Game<'_> {
             .flatten()
             .filter_map(map_id)
             .collect();
-        let now = self.world.game_time;
+        let now = self.simulation.world.game_time;
         if now % 10 == 0 && host.hub.here(g) {
             let framed: Vec<(i32, std::sync::Arc<str>, Framed)> = self
+                .simulation
                 .item_frames
                 .iter()
                 // ServerEntity.sendChanges: only a framed MapItem (a filled
@@ -1485,7 +1498,7 @@ impl Game<'_> {
     /// `MapItemSavedData.checkBanners` on map `id` for the column `x`, `z`
     /// that `MapItem.update` is reading.
     fn check_banners(&mut self, id: i32, x: i32, z: i32) {
-        let (world, res) = (&self.world, &self.res);
+        let (world, res) = (&self.simulation.world, &self.res);
         let Some(m) = self.maps.data.get_mut(&id) else {
             return;
         };
@@ -1507,7 +1520,7 @@ impl Game<'_> {
         let Some(p) = self.player.as_ref().map(|p| p.position) else {
             return;
         };
-        let has_ceiling = self.world.shape.has_ceiling;
+        let has_ceiling = self.simulation.world.shape.has_ceiling;
         let Some(m) = self.maps.data.get_mut(&id) else {
             return;
         };
@@ -1541,7 +1554,12 @@ impl Game<'_> {
                 let dither_black = d2 > (radius - 2) * (radius - 2);
                 let min_x = (cx / scale + img_x - 64) * scale;
                 let min_z = (cz / scale + img_y - 64) * scale;
-                if !self.world.chunks.contains_key(&(min_x >> 4, min_z >> 4)) {
+                if !self
+                    .simulation
+                    .world
+                    .chunks
+                    .contains_key(&(min_x >> 4, min_z >> 4))
+                {
                     continue;
                 }
                 let mut counts: Vec<(u8, u32)> = Vec::new();
@@ -1569,25 +1587,30 @@ impl Game<'_> {
                         for dz in 0..scale {
                             let (x, z) = (min_x + dx, min_z + dz);
                             let mut y = self.world_surface(x, z);
-                            let min_y = self.world.bottom_y();
+                            let min_y = self.simulation.world.bottom_y();
                             let mut color;
                             if y <= min_y {
                                 color = 11;
                             } else {
                                 loop {
                                     y -= 1;
-                                    color =
-                                        self.res.facts().get(self.world.block(x, y, z)).map_color;
+                                    color = self
+                                        .res
+                                        .facts()
+                                        .get(self.simulation.world.block(x, y, z))
+                                        .map_color;
                                     if color != 0 || y <= min_y {
                                         break;
                                     }
                                 }
-                                let f = self.res.facts().get(self.world.block(x, y, z));
+                                let f = self.res.facts().get(self.simulation.world.block(x, y, z));
                                 if y > min_y && f.fluid != Fluid::None {
                                     let mut solid = y - 1;
                                     loop {
-                                        let below =
-                                            self.res.facts().get(self.world.block(x, solid, z));
+                                        let below = self
+                                            .res
+                                            .facts()
+                                            .get(self.simulation.world.block(x, solid, z));
                                         solid -= 1;
                                         water_depth += 1;
                                         if solid <= min_y || below.fluid == Fluid::None {
@@ -2052,7 +2075,8 @@ mod tests {
         .unwrap();
 
         let pos = [0, 64, 0];
-        game.world
+        game.simulation
+            .world
             .chunks
             .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
         let banner_state = game
@@ -2061,10 +2085,11 @@ mod tests {
             .registry
             .default_state("minecraft:red_banner")
             .unwrap();
-        game.world
+        game.simulation
+            .world
             .set(pos[0], pos[1], pos[2], banner_state)
             .unwrap();
-        game.world.block_entities.insert(
+        game.simulation.world.block_entities.insert(
             (pos[0], pos[1], pos[2]),
             horizon_client::containers::BlockEntity::Banner(horizon_client::containers::Banner {
                 layers: Vec::new(),

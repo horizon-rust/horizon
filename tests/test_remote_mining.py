@@ -68,9 +68,11 @@ mod play {
 }
 enum S { PlayerAction(play::PlayerAction) }
 fn face_direction(face: u8) -> u8 { face }
+#[derive(Default)]
+struct Simulation { world: World }
 struct Game {
     remote: Option<Remote>, mining: Option<Mining>, creative: bool,
-    world: World, res: Resources, player: Option<Player>, audio: Audio,
+    simulation: Simulation, res: Resources, player: Option<Player>, audio: Audio,
     hit: Hit, sequence: i32, packets: Vec<play::PlayerAction>, restricted: bool,
 }
 impl Game {
@@ -79,7 +81,7 @@ impl Game {
     fn new(hardness: f32, speed: f32, creative: bool) -> Self {
         Self {
             remote: Some(Remote::default()), mining: None, creative,
-            world: World::default(),
+            simulation: Simulation::default(),
             res: Resources { facts: Facts { hardness, name: "block".into(),
                 requires_tool: false, sounds: Sounds { hit: "hit".into(), volume: 1.0, pitch: 1.0 } }, speed, tool_allows_creative: true },
             player: Some(Player { ground: Ground { on_ground: true } }),
@@ -97,7 +99,7 @@ impl Game {
         self.res.speed / self.res.facts.hardness / 30.0
     }
     fn next_sequence(&mut self) -> i32 { self.sequence += 1; self.sequence }
-    fn predict_break(&mut self, pos: [i32; 3], _: u32, _: i32) { self.world.broken.push(pos); }
+    fn predict_break(&mut self, pos: [i32; 3], _: u32, _: i32) { self.simulation.world.broken.push(pos); }
     fn send(&mut self, S::PlayerAction(packet): S) { self.packets.push(packet); }
     fn crack_particle(&mut self, _: [i32; 3], _: u8, _: u32) {}
     // RedStoneOreBlock.attack's dust (sculk.rs): no particles in this fixture.
@@ -120,7 +122,7 @@ fn main() {
         for tick in 0..8 {
             game.hit.pos[0] = tick;
             game.remote_mining(tick == 0);
-            assert_eq!(game.world.broken.len(), tick as usize + 1,
+            assert_eq!(game.simulation.world.broken.len(), tick as usize + 1,
                 "instant break must happen every held tick");
             let remote = game.remote.as_ref().unwrap();
             assert_eq!(remote.destroy_delay, 0);
@@ -135,14 +137,14 @@ fn main() {
     // Gradual breaking still sends STOP and waits five continuation ticks.
     let mut game = Game::new(1.0, 15.0, false);
     game.remote_mining(true);
-    assert!(game.world.broken.is_empty());
+    assert!(game.simulation.world.broken.is_empty());
     // The dig plays the hit sound once, when it starts (#2277): the server's
     // destroy progress level events play it while the block is mined.
     assert_eq!(game.audio.played, ["hit"]);
     game.remote_mining(false);
-    assert!(game.world.broken.is_empty());
+    assert!(game.simulation.world.broken.is_empty());
     game.remote_mining(false);
-    assert_eq!(game.world.broken.len(), 1);
+    assert_eq!(game.simulation.world.broken.len(), 1);
     assert_eq!(game.audio.played, ["hit"], "the client must not play the mining sound in the loop");
     assert_eq!(game.packets.iter().map(|p| p.action).collect::<Vec<_>>(), [0, 3]);
     assert_eq!(game.remote.as_ref().unwrap().destroy_delay, 5);
@@ -161,17 +163,17 @@ fn main() {
     assert_eq!(game.remote.as_ref().unwrap().destroy_delay, 5);
     for _ in 0..5 {
         game.remote_mining(false);
-        assert_eq!(game.world.broken.len(), 1);
+        assert_eq!(game.simulation.world.broken.len(), 1);
     }
     game.remote_mining(false);
-    assert_eq!(game.world.broken.len(), 2);
+    assert_eq!(game.simulation.world.broken.len(), 2);
     assert_eq!(game.remote.as_ref().unwrap().destroy_delay, 5);
     // A restricted tool must neither predict a break nor send START in Creative.
     let mut game = Game::new(1.0, 1.0, true);
     game.res.tool_allows_creative = false;
     game.remote_mining(true);
     game.remote_mining(false);
-    assert!(game.world.broken.is_empty());
+    assert!(game.simulation.world.broken.is_empty());
     assert!(game.packets.is_empty());
     // Survival still mines with the same tool. Switching to Creative aborts the crack.
     game.creative = false;
@@ -189,7 +191,7 @@ fn main() {
     );
     assert!(!stopped.is_destroying);
     assert!(game.mining.is_none());
-    assert!(game.world.broken.is_empty());
+    assert!(game.simulation.world.broken.is_empty());
     // An adventure player without can_break (#3027): startDestroyBlock
     // refuses before predicting, so nothing breaks, cracks or is sent.
     for (hardness, speed) in [(0.0, 1.0), (1.0, 15.0)] {
@@ -199,7 +201,7 @@ fn main() {
         for _ in 0..40 {
             game.remote_mining(false);
         }
-        assert!(game.world.broken.is_empty());
+        assert!(game.simulation.world.broken.is_empty());
         assert!(game.packets.is_empty());
         assert!(game.audio.played.is_empty());
         assert!(game.mining.is_none());

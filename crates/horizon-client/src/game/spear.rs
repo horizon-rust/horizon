@@ -50,7 +50,7 @@ impl Game<'_> {
     pub(super) fn known_player_movement(&self) -> Vec3 {
         if let Some(i) = self
             .riding
-            .and_then(|v| self.mobs.iter().position(|m| m.id == v))
+            .and_then(|v| self.simulation.mobs.iter().position(|m| m.id == v))
         {
             return self.mob_speed(i).scale(1.0 / 20.0);
         }
@@ -65,11 +65,11 @@ impl Game<'_> {
     /// `Entity.getKnownSpeed` of the mob at `index`, per second: its root
     /// vehicle's (`KineticWeapon.getMotion`).
     fn mob_speed(&self, index: usize) -> Vec3 {
-        let mut mob = &self.mobs[index];
+        let mut mob = &self.simulation.mobs[index];
         while let Some(vehicle) = mob
             .extra
             .mount
-            .and_then(|v| self.mobs.iter().find(|m| m.id == v))
+            .and_then(|v| self.simulation.mobs.iter().find(|m| m.id == v))
         {
             mob = vehicle;
         }
@@ -80,12 +80,12 @@ impl Game<'_> {
     /// first meets a block, if it does (tall grass lets a stab through).
     fn clip_collider(&self, from: Vec3, to: Vec3) -> Option<Vec3> {
         let mut scene = SceneCollisions {
-            world: &self.world,
+            world: &self.simulation.world,
             binding: self.collision,
             subject: None,
         };
         traverse_blocks(from, to, 512, |p: BlockPos| {
-            let state = self.world.block(p.x, p.y, p.z);
+            let state = self.simulation.world.block(p.x, p.y, p.z);
             if self.res.facts().is_air(state) {
                 return None;
             }
@@ -102,7 +102,7 @@ impl Game<'_> {
     /// The boxes of the mobs a spear can hit: alive, and not the vehicle
     /// ridden (`PiercingWeapon.canHitEntity`), with their index.
     pub(super) fn hittable_mob_boxes(&self) -> Vec<(usize, Aabb)> {
-        (self.mobs.iter().enumerate())
+        (self.simulation.mobs.iter().enumerate())
             .filter(|(_, m)| m.alive() && !m.removed && self.riding != Some(m.id))
             .map(|(i, m)| (i, m.bounds()))
             .collect()
@@ -146,11 +146,11 @@ impl Game<'_> {
         let look = Vec3::new(look[0], look[1], look[2]);
         let movement = self.known_player_movement();
         let attacker_speed = look.dot(movement.scale(20.0));
-        let now = self.world.game_time;
+        let now = self.simulation.world.game_time;
         let actor = self.lan_acting;
         let mut affected = false;
         for i in self.stab_targets(eye, look, movement) {
-            let key = (actor, self.mobs[i].id);
+            let key = (actor, self.simulation.mobs[i].id);
             let recent = self
                 .stabbed
                 .get(&key)
@@ -195,9 +195,12 @@ impl Game<'_> {
     ) -> bool {
         let kind = format!(
             "minecraft:{}",
-            self.mobs[index].kind.id.trim_start_matches("minecraft:")
+            self.simulation.mobs[index]
+                .kind
+                .id
+                .trim_start_matches("minecraft:")
         );
-        let id = self.mobs[index].id;
+        let id = self.simulation.mobs[index].id;
         let Some(p) = self.player.as_ref() else {
             return false;
         };
@@ -220,29 +223,29 @@ impl Game<'_> {
         } else {
             0.0
         };
-        let old_health = self.mobs[index].health;
+        let old_health = self.simulation.mobs[index].health;
         let hurt = deals_damage && self.hurt_by_player(index, total, Damage::spear(from));
-        if hurt && old_health > 0.0 && !self.mobs[index].alive() {
+        if hurt && old_health > 0.0 && !self.simulation.mobs[index].alive() {
             self.native_kill_event(index);
         }
         // causeExtraKnockback: a push of 0.4, then the weapon's Knockback.
         if deals_knockback {
             let (xd, zd) = self.extra_knockback_direction();
             let source = Damage::spear(from);
-            self.mobs[index].knockback(0.4, xd, zd, &source);
+            self.simulation.mobs[index].knockback(0.4, xd, zd, &source);
             let (strength, _) = self.extra_knockback(&kind, 0.0);
-            self.mobs[index].knockback(f64::from(strength), xd, zd, &source);
+            self.simulation.mobs[index].knockback(f64::from(strength), xd, zd, &source);
             // ...and the attacker stops sprinting.
             self.stop_sprint_after_extra_knockback();
         }
-        let dismounted = dismounts && self.mobs[index].extra.mount.is_some();
+        let dismounted = dismounts && self.simulation.mobs[index].extra.mount.is_some();
         if dismounted {
             self.dismount_mob(id);
         }
         if !hurt && !deals_knockback && !dismounted {
             return false;
         }
-        let mob = &self.mobs[index];
+        let mob = &self.simulation.mobs[index];
         let (feet, width, height) = (
             [mob.position.x, mob.position.y, mob.position.z],
             mob.kind.width,
@@ -252,7 +255,7 @@ impl Game<'_> {
         if magic_boost > 0.0 {
             self.critical_hit(self.lan_acting, id as i32, feet, width, height, true);
         }
-        self.combat.last_hurt_mob = Some((id, self.world.game_time));
+        self.combat.last_hurt_mob = Some((id, self.simulation.world.game_time));
         // itemAttackInteraction: hurtEnemy (statistic, wear), and the
         // post-attack enchantments when the target was hurt.
         if let Some(stack) = self.held().cloned() {
@@ -263,7 +266,7 @@ impl Game<'_> {
             self.weapon_wear(&stack);
         }
         // damageStatsAndHearts.
-        let actual = old_health - self.mobs[index].health;
+        let actual = old_health - self.simulation.mobs[index].health;
         self.award_custom_stat("damage_dealt", (actual * 10.0).round() as i32);
         if actual > 2.0 {
             let indicator = horizon_client::particles::ParticleOptions::simple(
@@ -352,7 +355,7 @@ impl Game<'_> {
     /// moves back, `kinetic_hit_ticks`) and sounds, at most once every ten
     /// ticks.
     pub(super) fn kinetic_hit_feedback(&mut self, entity: i32, kinetic: &Kinetic, at: [f64; 3]) {
-        let now = self.world.game_time;
+        let now = self.simulation.world.game_time;
         if self
             .kinetic_feedback
             .get(&entity)
@@ -366,9 +369,9 @@ impl Game<'_> {
 
     /// `getTicksSinceLastKineticHitFeedback` of this window's player.
     pub(super) fn kinetic_hit_ticks(&self, partial: f32) -> f32 {
-        self.kinetic_feedback
-            .get(&OWN)
-            .map_or(0.0, |&t| (self.world.game_time - t) as f32 + partial)
+        self.kinetic_feedback.get(&OWN).map_or(0.0, |&t| {
+            (self.simulation.world.game_time - t) as f32 + partial
+        })
     }
 
     /// `LivingEntity.handleEntityEvent(2)` on a server's client: the
@@ -384,6 +387,7 @@ impl Game<'_> {
             (item, at)
         } else {
             let mob = self
+                .simulation
                 .mobs
                 .iter()
                 .find(|m| m.id == id as u32 && m.extra.using_item > 0);

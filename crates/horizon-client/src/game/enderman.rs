@@ -21,7 +21,7 @@ impl Game<'_> {
     ) -> Result<()> {
         // Runtime ids identify the actual mob in this level. An obsolete attempt
         // must not clear another mob's hand or a subsequently changed stack.
-        if !self.mobs.iter().any(|m| {
+        if !self.simulation.mobs.iter().any(|m| {
             m.id == mob
                 && m.alive()
                 && m.species() == Species::Enderman
@@ -59,7 +59,7 @@ impl Game<'_> {
             true
         });
         if placed
-            && let Some(m) = self.mobs.iter_mut().find(|m| {
+            && let Some(m) = self.simulation.mobs.iter_mut().find(|m| {
                 m.id == mob && m.species() == Species::Enderman && m.extra.carried == Some(carried)
             })
         {
