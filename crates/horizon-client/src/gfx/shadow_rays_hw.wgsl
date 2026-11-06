@@ -143,6 +143,12 @@ fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>, focus: bool) -> vec
     // reflected of it (Fresnel). A ray that grazes the surface or goes down gets no caustics.
     let layer = f32(arena_at(base, 4u) & 0x7fffu);
     if layer == rt.water.x || layer == rt.water.y {
+        // The top's backward face (mesher/fluid.rs, what shows the surface from under it) lies
+        // on the top itself: a ray up crosses both at the same distance, and the surface dims and
+        // focuses its light once, not twice (the caustics were squared, the depth's absorption
+        // doubled). Told by the distance alone: the quad's corners are not read again.
+        if abs(c.t - hw_water_t) < 1e-3 && (SKIP & 512u) == 0u { return vec3(1.0); }
+        hw_water_t = c.t;
         let w = arena_at(base, 5u);
         let tint = vec3(f32(w & 255u), f32((w >> 8u) & 255u), f32((w >> 16u) & 255u)) / 255.0;
         let absorption = WATER_ABSORPTION + WATER_PURE_ABSORPTION + WATER_TINT_ABSORPTION * (1.0 - pow(tint, vec3(2.2)));
@@ -152,7 +158,10 @@ fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>, focus: bool) -> vec
         let floor_at = pos + rt.camera.xyz + rt.fraction.xyz;
         let fresnel = 0.02 + 0.98 * pow(1.0 - l.y, 5.0);
         let dimmed = (1.0 - fresnel) * exp(-absorption * depth / max(-bent.y, 0.1));
-        if !focus { return dimmed; }
+        // The caustics are the sun's (or the moon's): its rays come parallel from infinity, as
+        // `water_caustics` takes them. A light source's ray (a torch, glowing lichen, a lamp in a
+        // flooded cave) takes their mean: it lit cave water with a sunlit, rainbow-fringed network.
+        if !focus || dot(l, rt.light.xyz) < 0.999 { return dimmed; }
         let footprint = length(pos) * 1.5 / rt.size.y;
         // How open the water lies, in its colour's alpha (mesher.rs `with_sea`).
         let sea = f32(w >> 28u) / 15.0;
@@ -227,6 +236,8 @@ fn hw_glass(c: RayIntersection, base: u32) -> vec4<f32> {
 // The caustics of the first water a shadow ray crosses (`hw_tint`), worked out once the ray is
 // known to reach the light: the floor point (x, z), the depth, the pixel's footprint; the sea.
 var<private> hw_caustic_on: bool;
+// The distance along the ray of the last water quad it crossed (`hw_tint`), -1 none yet.
+var<private> hw_water_t: f32 = -1.0;
 var<private> hw_caustic: vec4<f32>;
 var<private> hw_caustic_sea: f32;
 fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
@@ -235,6 +246,7 @@ fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     rayQueryInitialize(&q, terrain, RayDesc(0x0u, 0xffu, 0.0, reach, pos + rt.hw_offset.xyz, l));
     var through = vec3(1.0);
     hw_caustic_on = false;
+    hw_water_t = -1.0;
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);
         if c.geometry_index == instances[c.instance_custom_data].at.w {
@@ -434,6 +446,7 @@ const WATER_PURE_ABSORPTION: vec3<f32> = vec3(0.30, 0.045, 0.012);
 fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
     hw_level = vec3(0.0);
     var q: ray_query;
+    hw_water_t = -1.0;
     rayQueryInitialize(&q, terrain, RayDesc(0x0u, NO_CLOUDS, 0.0, reach, pos + rt.hw_offset.xyz, l));
     var through = vec3(1.0);
     while rayQueryProceed(&q) {
@@ -564,7 +577,8 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
             hit.t * 1.5 / rt.size.y / max(abs(n.y * ray.y), 0.03), f32(arena_at(base, 5u) >> 28u) / 15.0);
         // And the rain's ripples, as the water's shader has them (terrain.wgsl `rt_rain_ripples`).
         let r = hw_rain_ripples(world, hit.t);
-        n = normalize(vec3(-w.y - r.x, 1.0, -w.z - r.y));
+        let calm = shore_calm(world);
+        n = normalize(vec3(-w.y - r.x, 1.0, -w.z - r.y) * vec3(calm, 1.0, calm));
     }
     // Under the water, looking up at its top: the waves seen from below.
     if n.y < -0.5 && (layer == rt.water.x || layer == rt.water.y) {
@@ -572,7 +586,8 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
         // The pixel's footprint stretched by the slant (terrain.wgsl `water_footprint`).
         let w = water_waves(world.xz, rt.water.z,
             hit.t * 1.5 / rt.size.y / max(abs(n.y * ray.y), 0.03), f32(arena_at(base, 5u) >> 28u) / 15.0);
-        n = -normalize(vec3(-w.y, 1.0, -w.z));
+        let calm = shore_calm(world);
+        n = -normalize(vec3(-w.y * calm, 1.0, -w.z * calm));
     }
     // Its top (seen from above or below) refracts; its sides blend as before. Glass refracts on
     // every face (shadow_rays_psr.wgsl `hw_refract_glass`).
@@ -584,6 +599,23 @@ fn hw_reflect(p: vec2<i32>) -> vec4<f32> {
     var r = reflect(ray, n);
     if dot(r, n) < 0.0 { r = normalize(r - n * 2.0 * dot(r, n)); }
     return hw_mirror(at + n * 0.02, r);
+}
+// How far the waves' slopes stand at world `world` on the water's top: 1 in open water, down to 0
+// against a solid block beside it (the bank, a block's edge), over a third of a block. The
+// surface itself is flat (the waves are its normal only), so where a slope leaned at the bank the
+// refraction bent the ray away from the bank's foot and the reflection off it, and a gap of sky or
+// deep water showed between the water and the shore.
+fn shore_calm(world: vec3<f32>) -> f32 {
+    let c = vec3<i32>(floor(world - vec3(0.0, 0.05, 0.0)));
+    let f = world.xz - floor(world.xz);
+    var near = 1.0;
+    for (var dy = 0; dy <= 1; dy++) {
+        if solid_at(c + vec3(-1, dy, 0)) { near = min(near, f.x); }
+        if solid_at(c + vec3(1, dy, 0)) { near = min(near, 1.0 - f.x); }
+        if solid_at(c + vec3(0, dy, -1)) { near = min(near, f.y); }
+        if solid_at(c + vec3(0, dy, 1)) { near = min(near, 1.0 - f.y); }
+    }
+    return smoothstep(0.0, 0.35, near);
 }
 // What a mirror at camera-relative `start` reflects along `r`: the surface met, lit by the sun's
 // shadow ray and the radiance cache (or the last frame's screen) there; a 0 at the sky.

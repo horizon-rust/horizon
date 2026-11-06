@@ -3,8 +3,8 @@
 // `hw_opaque`, ported one for one), for the cutout quads and the entities; the quads whose sprite
 // has no transparent texel are in opaque geometries, whose hits the hardware confirms without
 // this shader (gfx/hw_rays.rs). The translucent geometry (stained glass, water, ice) lets the
-// light through untinted here: the kernel's tint (`hw_tint`, the water's caustics) is not in this
-// pass yet.
+// light through untinted here and marks the payload: the sun pass leaves such a ray to the kernel
+// (its `hw_tint`, the water's caustics), as the bounce pass does.
 #extension GL_EXT_ray_tracing : require
 #extension GL_EXT_samplerless_texture_functions : require
 

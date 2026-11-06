@@ -235,6 +235,7 @@ const HARDWARE: &str = concat!(
 );
 const NO_HARDWARE: &str = "
 const HW: bool = false;
+var<private> hw_caustic_on: bool = false;
 fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> { return vec3(-1.0); }
 fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
     return HwHit(-1.0, vec3(0.0), vec3(0.0), vec3(1.0));
