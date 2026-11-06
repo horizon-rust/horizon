@@ -14251,6 +14251,13 @@ fn build_renderer(
             .get("minecraft:block/glass_pane_top")
             .copied(),
     );
+    renderer.set_ice_layers(
+        assets.sprite_layers.get("minecraft:block/ice").copied(),
+        assets
+            .sprite_layers
+            .get("minecraft:block/packed_ice")
+            .copied(),
+    );
     renderer.hud.fire_animations = atlas
         .fire_animations
         .iter()

@@ -380,6 +380,8 @@ struct Info {
     leaves: bool,
     blocks_flow: bool,
     ice: bool,
+    /// RT lighting's ice (`rt_ice_kind`): 1 ice, 2 packed ice, 0 neither.
+    rt_ice: u8,
     sturdy: u8,
     /// Occlusion face per direction: 0 empty, 1 the full-block singleton, 2 partial.
     face: [u8; 6],
@@ -728,6 +730,7 @@ impl MeshTables {
                 leaves: s.has_class("LeavesBlock"),
                 blocks_flow: assets.blocks_fluid_flow.contains(&*s.name),
                 ice: s.has_class("IceBlock"),
+                rt_ice: rt_ice_kind(name),
                 sturdy: s.sturdy_full,
                 face,
                 cover,
@@ -1105,16 +1108,23 @@ impl Mesher<'_> {
                         let other = &info[neighbor as usize];
                         // LeavesBlock.skipRendering with opaque leaves.
                         let opaque_leaves = !self.cutout_leaves && state.leaves && other.leaves;
+                        // RT lighting's packed ice lets the eye in (`rt_ice_kind`): the faces it
+                        // hides of its other neighbours show through it, as an ice block's do.
+                        let through_ice = self.rt_lighting
+                            && other.rt_ice == 2
+                            && state.rt_ice != 2
+                            && rt_ice_on();
                         visible[d as usize] = !opaque_leaves
-                            && self
-                                .visibility
-                                .should_render_face(
-                                    BlockStateId(id),
-                                    BlockStateId(neighbor),
-                                    d,
-                                    true,
-                                )
-                                .unwrap_or(true);
+                            && (through_ice
+                                || self
+                                    .visibility
+                                    .should_render_face(
+                                        BlockStateId(id),
+                                        BlockStateId(neighbor),
+                                        d,
+                                        true,
+                                    )
+                                    .unwrap_or(true));
                     }
                     for model in &models {
                         for face in &model.faces {
@@ -1202,7 +1212,11 @@ impl Mesher<'_> {
             ([lighting::gray(directional); 4], [coords; 4])
         };
         let tint = Self::tint(state, q.tint_index, tints, pos);
-        let target = if face.translucent {
+        // RT lighting draws ice and packed ice as translucent ice (`rt_ice_kind`), whatever
+        // alpha the pack gives their textures.
+        let translucent =
+            face.translucent || (self.rt_lighting && state.rt_ice != 0 && rt_ice_on());
+        let target = if translucent {
             &mut out.translucent
         } else {
             &mut out.solid
@@ -1235,6 +1249,23 @@ impl Mesher<'_> {
             ));
         }
     }
+}
+/// RT lighting's ice (terrain.wgsl `rt_ice`): ice (1) and packed ice (2) are drawn translucent,
+/// clear ice with a little frost and packed ice frosted and milky, whatever alpha the resource
+/// pack gives their textures (packs made for RTX often ship them opaque, and vanilla's packed
+/// ice is). Packed ice stays a full block to light, collisions and the faces between two packed
+/// ice blocks, but no longer hides the faces of its other neighbours, which show through it.
+pub fn rt_ice_kind(name: &str) -> u8 {
+    match name {
+        "ice" => 1,
+        "packed_ice" => 2,
+        _ => 0,
+    }
+}
+/// Whether RT lighting draws its own ice (`rt_ice_kind`): `HORIZON_RT_ICE=0` keeps the pack's.
+pub fn rt_ice_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_ICE").map_or(true, |v| v != "0"))
 }
 /// Snapshot of the 3x3 chunk neighbourhood used by a worker job.
 pub type Region = [[Option<Arc<Chunk>>; 3]; 3];

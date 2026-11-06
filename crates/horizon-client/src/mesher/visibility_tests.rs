@@ -89,6 +89,7 @@ fn info(solid: bool) -> Info {
         leaves: false,
         blocks_flow: false,
         ice: false,
+        rt_ice: 0,
         sturdy: 0,
         face: [0; 6],
         cover: [0.0; 6],
