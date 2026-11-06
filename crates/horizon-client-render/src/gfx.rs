@@ -5674,8 +5674,11 @@ impl Renderer {
             None => (solid, solid_opaque, solid_cutout, solid_mirror),
         };
         // The solid quads in the compact layout, while no shader pack reads the arena
-        // (`follow_packed_layout`).
-        let packed_quads = flat.is_some() && !shader_pack && packed_wanted();
+        // and no hardware rays do (`follow_packed_layout`).
+        let packed_quads = flat.is_some()
+            && !shader_pack
+            && !hw_rays::HwRays::supported(&device)
+            && packed_wanted();
         packed::pack_quads(packed_quads);
         let visbuf = flat
             .as_ref()
@@ -7380,13 +7383,18 @@ impl Renderer {
             flat.set_translucent_page_vertices(arena.page_vertices());
         }
     }
-    /// Uploads solid quads in the compact layout (`packed_quads`) while no shader pack runs:
-    /// a pack's terrain and shadow programs, and Horizon's own packs' stages, read the
-    /// arena's vertices as `TerrainVertex`es. Leaving it drops every section and far tile
+    /// Uploads solid quads in the compact layout (`packed_quads`) while no shader pack runs
+    /// and RT lighting's hardware rays are off: a pack's terrain and shadow programs, Horizon's
+    /// own packs' stages, and the rays' structures and alpha test (`hw_rays`: four vertices a
+    /// quad) read the arena's vertices as `TerrainVertex`es. Leaving it drops every section and far tile
     /// for the game to mesh again, as `follow_translucent_layout` does.
     fn follow_packed_layout(&mut self) {
         let pack = self.pack_post.as_ref().and_then(|p| p.1.as_ref()).is_some();
-        let want = self.flat.is_some() && !pack && self.native.is_none() && packed_wanted();
+        let want = self.flat.is_some()
+            && !pack
+            && self.native.is_none()
+            && self.hw_rays.is_none()
+            && packed_wanted();
         if want == self.packed_quads {
             return;
         }
