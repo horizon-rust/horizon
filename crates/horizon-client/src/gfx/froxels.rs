@@ -39,6 +39,19 @@ use glam::{DVec3, Mat4, Vec3};
 
 /// Pixels a froxel spans on each side (Remix's `froxelGridResolutionScale` is 16).
 pub const TILE: u32 = 16;
+
+/// The pixels a froxel spans on each side: `TILE`, or `HORIZON_FROXEL_TILE` (8 to 64) to weigh
+/// the grid's cost against its detail. The inject, the blend and the integration go by the
+/// froxels, a VR eye's 3132x3016 pixels holding 1.9 times the 3440x1440 screen's.
+pub fn tile() -> u32 {
+    static TILE_SET: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *TILE_SET.get_or_init(|| {
+        std::env::var("HORIZON_FROXEL_TILE")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .map_or(TILE, |t| t.clamp(8, 64))
+    })
+}
 /// Slices along the rays.
 pub const SLICES: u32 = 96;
 /// Where the first slice ends and the last slice ends, in blocks (`froxelMaxDistanceMeters` 256).
@@ -755,8 +768,8 @@ impl Froxels {
     /// The view's froxels, made (and its history dropped) when its size changed.
     fn view_froxels(&mut self, device: &wgpu::Device, view: usize, size: [u32; 2]) -> usize {
         let dims = [
-            size[0].div_ceil(TILE).max(1),
-            size[1].div_ceil(TILE).max(1),
+            size[0].div_ceil(tile()).max(1),
+            size[1].div_ceil(tile()).max(1),
             SLICES,
         ];
         if let Some(i) = self.views.iter().position(|v| v.view == view) {
