@@ -66,7 +66,7 @@ Usage: horizon-server [--dir DIR] <command>
   players [--json]
               Who is online, the operators, the whitelist and the bans
   kick NAME [REASON], ban NAME [REASON], pardon NAME, ban-ip ADDRESS|NAME [REASON], pardon-ip ADDRESS
-              Moderate the running server (vanilla's commands, as from its console)
+              Moderate the running server, or edit ban files while it is stopped
 
   --dir DIR   The server folder (default: the current folder)
 
@@ -92,6 +92,7 @@ Horizon server settings (docs/server.md). The server writes them into server.pro
 | `simulation_distance` | `10` | `simulation-distance` | chunks around each player where mobs, crops and redstone tick |
 | `max_view_distance` | `0` | `horizon-max-view-distance` | past view_distance, saved chunks only, up to this (never generated; 0: off) |
 | `admin_feedback_to_ops` | `true` | `horizon-admin-feedback-to-ops` | operators see each other's commands ([name: ...], vanilla); false: only the log |
+| `accept_older_clients` | `false` | `horizon-accept-older-clients` | true: 26.2 clients join too, their packets translated (docs/hosting.md) |
 
 ### `[world]`
 
@@ -143,6 +144,19 @@ Any other server.properties key, spelled as vanilla spells it, for example: spaw
 | `bind` | `""` |  | the control API: "" a free port on 127.0.0.1; or a fixed one, like 127.0.0.1:8131 or a tailnet address |
 | `token` | `""` |  | its token (16 characters or more); "" a new random one at every start |
 | `allow_public` | `false` |  | true lets bind be any address; the token is then all that guards the server |
+
+### `[transfer]`
+
+A proxy handing players over between servers (docs/server.md). Not vanilla's accepts-transfers (the transfer packet).
+
+| Key | Default | In `server.properties` | What it does |
+| --- | --- | --- | --- |
+| `enabled` | `false` |  | true: take a proxy's player-* requests; needs Velocity forwarding (forwarding.secret) |
+| `expect_seconds` | `10` |  | how long a player the proxy announced is waited for, when it names no time |
+| `max_expect_seconds` | `60` |  | the longest the proxy may ask for |
+| `max_expected` | `64` |  | players waited for at once |
+| `max_freeze_seconds` | `30` |  | the longest a player stays frozen while it is handed over |
+| `max_hold_seconds` | `60` |  | the longest a player arriving from another server is held before it is dropped |
 
 ### `[discord]`
 

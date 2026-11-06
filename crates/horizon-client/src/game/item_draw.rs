@@ -15,6 +15,7 @@ use horizon_client::{
     items::ItemStack,
     mesher::Vertex,
 };
+use horizon_core::geometry::{Aabb, Vec3};
 use serde_json::Value;
 use std::{cell::RefCell, collections::HashMap};
 
@@ -78,6 +79,12 @@ impl ItemEnv for Env<'_, '_> {
         local_time(pattern)
     }
     fn random_float(&self) -> f32 {
+        if self.game.clock.still() {
+            // The same draw for a frame of the same world tick.
+            let mixed =
+                (self.game.visual_ticks() ^ 0x9e37_79b9).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            return (mixed >> 40) as f32 / (1u64 << 24) as f32;
+        }
         let nanos = self.game.started.elapsed().subsec_nanos();
         (nanos % 1_000_000) as f32 / 1_000_000.0
     }
@@ -395,7 +402,11 @@ impl Game<'_> {
     /// frame, not per item (`GameRenderer.extractOptions`).
     pub(super) fn capture_glint_frame(&self) -> item_render::GlintFrame {
         item_render::GlintFrame {
-            millis: self.started.elapsed().as_secs_f32() * 1000.0,
+            millis: if self.clock.still() {
+                self.visual_millis() as f32
+            } else {
+                self.started.elapsed().as_secs_f32() * 1000.0
+            },
             speed: self.settings.file.double("glintSpeed") as f32,
             alpha: self.settings.file.double("glintStrength") as f32,
             sprite: self
@@ -609,11 +620,24 @@ impl Game<'_> {
             let pose = glam::Mat4::from_translation(pos.as_vec3())
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, bob + min_offset_y, 0.0))
                 * glam::Mat4::from_rotation_y(spin);
-            let packed = self.simulation.world.light(
-                q.x.floor() as i32,
-                (q.y + 0.1).floor() as i32,
-                q.z.floor() as i32,
-            );
+            // `EntityRenderer.getPackedLightCoords`: an item entity is lit from
+            // the block its light probe (its eye, 0.2125 up) is in, at 15 block
+            // light while it burns. A pickup particle is not an entity and keeps
+            // the cell it is drawn in.
+            let packed = if entity {
+                let probe = item.light_probe(alpha);
+                item.render_light(self.simulation.world.light(
+                    probe[0].floor() as i32,
+                    probe[1].floor() as i32,
+                    probe[2].floor() as i32,
+                ))
+            } else {
+                vertex_light(self.simulation.world.light(
+                    q.x.floor() as i32,
+                    (q.y + 0.1).floor() as i32,
+                    q.z.floor() as i32,
+                ))
+            };
             let seed = i64::from(self.pack.item_renderer.item_id(&item.stack.item))
                 + i64::from(item.stack.damage);
             let copies = item_render::cluster_poses(
@@ -622,23 +646,52 @@ impl Game<'_> {
                 item_render::rendered_amount(item.stack.count),
                 seed,
             );
-            let glowing = self.entity_glowing(item.id);
+            // Use the same animated, spun, clustered transforms as the draw.
+            // ItemEntity's collision box is only 0.25 blocks and cannot prove
+            // that this larger rendered model stays behind an occluder.
+            let culling = entity.then(|| {
+                state
+                    .posed_bounds(&copies)
+                    .map(|(lo, hi)| {
+                        self.entity_cull_decision_in_bounds(
+                            item,
+                            Aabb::new(
+                                Vec3::new(
+                                    camera.x + f64::from(lo.x),
+                                    camera.y + f64::from(lo.y),
+                                    camera.z + f64::from(lo.z),
+                                ),
+                                Vec3::new(
+                                    camera.x + f64::from(hi.x),
+                                    camera.y + f64::from(hi.y),
+                                    camera.z + f64::from(hi.z),
+                                ),
+                            ),
+                        )
+                    })
+                    .unwrap_or_else(|| self.entity_cull_decision(item, f64::from(partial)))
+            });
+            if culling.is_some_and(|decision| decision.hides_entity()) {
+                continue;
+            }
+            let outline = self.thing_outline(item.id, "minecraft:item");
             // Posed on the GPU when every layer can be, its silhouette too when it glows.
             let skinned = skinning
-                .then(|| self.submit_item_skinned(&state, &copies, vertex_light(packed), lights))
+                .then(|| self.submit_item_skinned(&state, &copies, packed, lights))
                 .flatten();
             if skinned.is_none() {
                 for &copy in &copies {
-                    self.submit_item_world(&state, copy, vertex_light(packed), out);
+                    self.submit_item_world(&state, copy, packed, out);
                 }
             }
-            if glowing {
-                let rgb = super::glowing::team_color(self.mob_team(item.id));
+            if let Some(rgb) = outline {
                 self.mark_outline(&out[entity_start..], rgb);
                 if let Some(((first, _, _), _)) = skinned {
                     let color = horizon_client::mobs::render::abgr(rgb);
                     self.skin_frame.borrow_mut().outline_since(first, color);
                 }
+            } else if let Some(culling) = culling {
+                self.finish_entity_occlusion(culling, item, out, entity_start);
             } else {
                 self.cull_skinned(out, entity_start, skinned);
             }

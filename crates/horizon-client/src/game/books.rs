@@ -200,6 +200,8 @@ impl Game<'_> {
         } else if let Some(screen) = self.book_screen(stack) {
             self.open_book(screen);
         }
+        // WritableBookItem.use / WrittenBookItem.use count every open.
+        self.award_stat("used", &stack.item, 1);
         self.swing_arm();
         true
     }
@@ -1206,11 +1208,11 @@ impl Game<'_> {
     pub(super) fn draw_book(&self, batch: &mut HudBatch) {
         let Some(book) = &self.book else { return };
         let atlas = &self.gui.atlas;
-        let (w, h) = (batch.width, batch.height);
+        let w = batch.width;
         let (mx, my) = self.cursor;
         let hover =
             |x: f32, y: f32, bw: f32, bh: f32| mx >= x && my >= y && mx < x + bw && my < y + bh;
-        batch.fill(atlas, 0.0, 0.0, w, h, rgba(16, 16, 16, 160));
+        self.render_transparent_background("book", batch);
         let left = ((w - 192.0) / 2.0).floor();
         let top = 2.0;
         if let Some(mut r) = atlas.sprites.get("gui/book").copied() {
@@ -1276,6 +1278,20 @@ impl Game<'_> {
                 20.0,
                 &Text::literal(label),
                 active,
+                hover(x, 196.0, bw, 20.0),
+            );
+        };
+        let action_button = |batch: &mut HudBatch, action, x: f32, bw: f32, label: &str| {
+            ui::action_button(
+                batch,
+                atlas,
+                action,
+                x,
+                196.0,
+                bw,
+                20.0,
+                &Text::literal(label),
+                true,
                 hover(x, 196.0, bw, 20.0),
             );
         };
@@ -1382,12 +1398,12 @@ impl Game<'_> {
                     &tr("book.finalizeButton", "Sign and Close"),
                     !title.trim().is_empty(),
                 );
-                button(
+                action_button(
                     batch,
+                    widgets::Action::Cancel,
                     w / 2.0 + 2.0,
                     98.0,
                     &tr("gui.cancel", "Cancel"),
-                    true,
                 );
             }
             BookScreen::Edit {
@@ -1465,7 +1481,13 @@ impl Game<'_> {
                     &tr("book.signButton", "Sign"),
                     true,
                 );
-                button(batch, w / 2.0 + 2.0, 98.0, &tr("gui.done", "Done"), true);
+                action_button(
+                    batch,
+                    widgets::Action::Done,
+                    w / 2.0 + 2.0,
+                    98.0,
+                    &tr("gui.done", "Done"),
+                );
             }
             BookScreen::View {
                 pages,
@@ -1496,7 +1518,13 @@ impl Game<'_> {
                 // LecternScreen.createMenuControls: Done and Take Book only with
                 // build permission, else BookViewScreen's wide Done.
                 if lectern.is_some() && self.may_build() {
-                    button(batch, w / 2.0 - 100.0, 98.0, &tr("gui.done", "Done"), true);
+                    action_button(
+                        batch,
+                        widgets::Action::Done,
+                        w / 2.0 - 100.0,
+                        98.0,
+                        &tr("gui.done", "Done"),
+                    );
                     button(
                         batch,
                         w / 2.0 + 2.0,
@@ -1505,12 +1533,12 @@ impl Game<'_> {
                         true,
                     );
                 } else {
-                    button(
+                    action_button(
                         batch,
+                        widgets::Action::Done,
                         (w - 200.0) / 2.0,
                         200.0,
                         &tr("gui.done", "Done"),
-                        true,
                     );
                 }
                 // HoveredTextEffects.TOOLTIP_AND_CURSOR: the hovered words'

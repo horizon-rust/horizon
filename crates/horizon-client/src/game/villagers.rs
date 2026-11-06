@@ -248,7 +248,10 @@ impl Game<'_> {
     pub(super) fn villager_item_sense(&mut self) {
         if self.simulation.dropped.is_empty() {
             for m in &mut self.simulation.mobs {
-                if m.species() == Species::Villager && villager_brain::take_item_scan(m) {
+                if m.species() == Species::Villager
+                    && self.creatures.ticked.contains(&m.id)
+                    && villager_brain::take_item_scan(m)
+                {
                     villager_brain::set_wanted_item(m, None);
                 }
             }
@@ -262,7 +265,10 @@ impl Game<'_> {
             .cloned();
         let mut due = Vec::new();
         for (i, m) in self.simulation.mobs.iter_mut().enumerate() {
-            if m.species() == Species::Villager && villager_brain::take_item_scan(m) {
+            if m.species() == Species::Villager
+                && self.creatures.ticked.contains(&m.id)
+                && villager_brain::take_item_scan(m)
+            {
                 due.push(i);
             }
         }
@@ -315,26 +321,53 @@ impl Game<'_> {
             .item_tags
             .get("minecraft:villager_picks_up")
             .cloned();
+        // A villager with no item near skips its scan; one near an item scans
+        // the items of the cells it meets as before, testing the cheap reach
+        // first: a server's villagers and dropped items each run into the
+        // hundreds or thousands.
+        let mut near_items = super::item_areas::ItemAreas::default();
         for i in 0..self.simulation.mobs.len() {
             let m = &self.simulation.mobs[i];
-            if m.species() != Species::Villager || !m.alive() {
+            if m.species() != Species::Villager
+                || !m.alive()
+                || !self.creatures.ticked.contains(&m.id)
+            {
                 continue;
             }
             let (pos, half) = (m.position, f64::from(m.width()) / 2.0 + 1.0);
             let top = f64::from(m.height());
+            let reach = horizon_core::geometry::Aabb::new(
+                Vec3::new(pos.x - half, pos.y - 0.25, pos.z - half),
+                Vec3::new(pos.x + half, pos.y + top, pos.z + half),
+            );
+            let mut scan = near_items.scan(
+                &self.simulation.dropped,
+                self.simulation_server.next_entity,
+                reach,
+            );
+            if scan.is_empty() {
+                continue;
+            }
             let requested = villager::requested_items(m);
             let mut j = 0;
-            while j < self.simulation.dropped.len() {
-                let e = &self.simulation.dropped[j];
+            loop {
+                j = scan.next_from(j, self.simulation.dropped.len());
+                let Some(e) = self.simulation.dropped.get(j) else {
+                    break;
+                };
                 let near = (e.position.x - pos.x).abs() <= half
                     && (e.position.z - pos.z).abs() <= half
                     && e.position.y >= pos.y - 0.25
                     && e.position.y <= pos.y + top;
+                if !near || e.pickup_delay > 0 {
+                    j += 1;
+                    continue;
+                }
                 let item = e.stack.item.clone();
                 let wants = villager::food_points(&item) > 0
                     || picks_up.as_ref().is_some_and(|t| t.contains(&*item))
                     || requested.contains(&&*item);
-                if !near || e.pickup_delay > 0 || !wants {
+                if !wants {
                     j += 1;
                     continue;
                 }
@@ -356,6 +389,7 @@ impl Game<'_> {
                 match rest {
                     None => {
                         self.remove_dropped(j);
+                        scan.removed(j);
                     }
                     Some(rest) => {
                         self.simulation.dropped[j].stack.count = rest.count;
@@ -519,5 +553,20 @@ impl Game<'_> {
         if let Err(e) = self.handle_mob_events(events) {
             log::warn!("waking villager {id}: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod entity_event_particle_tests {
+    /// The raid sweat (42) and the dolphin's treasure hearts (38) are in the
+    /// table that now decides which entity events draw particles.
+    #[test]
+    fn the_table_draws_the_raid_sweat_and_the_dolphin_event() {
+        let kind = |entity, event| {
+            horizon_client::particles::entity_event_burst(entity, event).map(|(k, _)| k)
+        };
+        assert_eq!(kind("villager", 42), Some("splash"));
+        assert_eq!(kind("dolphin", 38), Some("happy_villager"));
+        assert_eq!(kind("villager", 2), None);
     }
 }

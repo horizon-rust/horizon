@@ -1123,14 +1123,16 @@ impl TickRound {
         random: &mut LegacyRandom,
         events: &mut Vec<MobEvent>,
     ) -> bool {
+        self.replay_with(slot, |order| {
+            mob.tick_with_order(world, random, events, order)
+        })
+    }
+    /// [`Self::replay`] for a tick the caller runs itself (a passenger lends
+    /// its vehicle's navigation), given the mob's section-insertion number.
+    pub fn replay_with(&mut self, slot: usize, tick: impl FnOnce(u64) -> bool) -> bool {
         self.failed[self.owners[slot]] = true;
         self.stats.replayed += 1;
-        mob.tick_with_order(
-            world,
-            random,
-            events,
-            self.section_base.wrapping_add(slot as u64),
-        )
+        tick(self.section_base.wrapping_add(slot as u64))
     }
     /// Each owner that predicted anything: its slot, what it predicted, and how
     /// much of that committed.

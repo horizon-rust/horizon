@@ -111,7 +111,7 @@ impl Game<'_> {
     pub(super) fn spectator_click_target(&self) -> Option<i32> {
         let mob = self
             .mob_hit()
-            .map(|(i, d)| (self.simulation.mobs[i].id as i32, d));
+            .map(|(i, d, _)| (self.simulation.mobs[i].id as i32, d));
         let object = self.remote_object_hit(false).map(|h| (h.id, h.distance));
         [mob, object]
             .into_iter()

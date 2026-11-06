@@ -68,6 +68,8 @@ enum Arriving {
     Saved(Tag),
     /// A thrown ender pearl (projectiles are not saved).
     Pearl(Box<Projectile>),
+    /// A vehicle remains in this level while its destination loads.
+    Vehicle(u32),
 }
 
 impl GatewayJob {
@@ -453,6 +455,7 @@ impl Game<'_> {
                 p.position.y = top;
             }
         }
+        self.award_stat("used", "minecraft:ender_eye", 1);
         self.consume_held();
         self.swing_arm();
         // EnderEyeItem.useOn emits this event for all nearby players.
@@ -460,13 +463,15 @@ impl Game<'_> {
         if let Some(c) = self.portal_ring_center(hit.pos) {
             for dz in -1..=1 {
                 for dx in -1..=1 {
-                    self.set_state_named(
-                        [c[0] + dx, c[1], c[2] + dz],
-                        "minecraft:end_portal",
-                        &[],
-                    )?;
+                    let p = [c[0] + dx, c[1], c[2] + dz];
+                    let at = BlockPos::new(p[0], p[1], p[2]);
+                    self.with_level(|b, level, ticks| {
+                        b.destroy_block(level, ticks, at, true);
+                    });
+                    self.set_state_named(p, "minecraft:end_portal", &[])?;
                 }
             }
+            self.process_level_events()?;
             // EnderEyeItem.useOn: global level event 1038 (END_PORTAL_SPAWN),
             // heard by every player (vanilla places it at the frame's corner
             // + (1, 0, 1); only its direction matters).
@@ -1233,6 +1238,7 @@ impl Game<'_> {
         self.audio
             .play("minecraft:entity.ender_eye.launch", Some(at), 1.0, pitch);
         self.consume_held();
+        self.award_stat("used", "minecraft:ender_eye", 1);
         self.swing_arm();
     }
 
@@ -1381,6 +1387,34 @@ impl Game<'_> {
             .iter()
             .filter(|m| self.mob_can_use_portal(m))
             .map(|m| (m.id, m.position, m.width(), m.height()))
+            .chain(
+                self.simulation
+                    .boats
+                    .iter()
+                    .filter(|b| self.vehicle_can_use_portal(b.id))
+                    .map(|b| {
+                        (
+                            b.id,
+                            b.position,
+                            super::boats::WIDTH as f32,
+                            super::boats::HEIGHT as f32,
+                        )
+                    }),
+            )
+            .chain(
+                self.simulation
+                    .carts
+                    .iter()
+                    .filter(|c| self.vehicle_can_use_portal(c.id))
+                    .map(|c| {
+                        (
+                            c.id,
+                            c.position,
+                            super::minecarts::WIDTH as f32,
+                            super::minecarts::HEIGHT as f32,
+                        )
+                    }),
+            )
             .collect();
         let mut inside: Vec<(u32, BlockPos)> = Vec::new();
         for (id, to, width, height) in items.into_iter().chain(mobs) {
@@ -1456,6 +1490,18 @@ impl Game<'_> {
             )
             .chain(
                 self.simulation
+                    .boats
+                    .iter()
+                    .map(|b| (b.id, self.vehicle_can_use_portal(b.id))),
+            )
+            .chain(
+                self.simulation
+                    .carts
+                    .iter()
+                    .map(|c| (c.id, self.vehicle_can_use_portal(c.id))),
+            )
+            .chain(
+                self.simulation
                     .projectiles
                     .iter()
                     .filter(|p| matches!(p.kind, ProjectileKind::EnderPearl))
@@ -1466,6 +1512,7 @@ impl Game<'_> {
         // A pearl waiting for its exit keeps its portal cooldown.
         present.extend(self.end.arrivals.iter().filter_map(|a| match &a.traveller {
             Arriving::Pearl(p) => Some(p.id),
+            Arriving::Vehicle(id) => Some(*id),
             Arriving::Saved(_) => None,
         }));
         self.end.gateways.retain(|id, _| present.contains(id));
@@ -1488,8 +1535,27 @@ impl Game<'_> {
     }
 
     /// `Entity.teleportToPortalDestination` for an entity that goes through an
-    /// End gateway: it is saved and waits for the exit's chunks.
+    /// End gateway: a same-level vehicle stays live while the exit loads.
     fn send_through_gateway(&mut self, id: u32, gateway: BlockPos) {
+        if matches!(
+            self.level_entity(id as i32),
+            Some(
+                super::commands::Target::Mob(_)
+                    | super::commands::Target::Boat(_)
+                    | super::commands::Target::Cart(_)
+            )
+        ) {
+            let (job, target) = self.gateway_job([gateway.x, gateway.y, gateway.z]);
+            let arrival = GatewayArrival {
+                traveller: Arriving::Vehicle(id),
+                job,
+                target,
+            };
+            if let Some(waiting) = self.arrive_through_gateway(arrival) {
+                self.end.arrivals.push(waiting);
+            }
+            return;
+        }
         let tag = if let Some(i) = self.simulation.dropped.iter().position(|e| e.id == id) {
             let uuid = self.uuid_for(id);
             let tag = horizon_client::entity_nbt::item_entity_to_nbt(
@@ -1502,32 +1568,6 @@ impl Game<'_> {
             self.simulation.dropped.remove(i);
             self.native_leave_skip(id);
             self.detach_entity(id);
-            tag
-        } else if let Some(i) = self.simulation.mobs.iter().position(|m| m.id == id) {
-            let mut tag = self.mob_tree_nbt(i);
-            // Entity.removeAfterChangingDimensions drops the leash.
-            if let Tag::Compound(c) = &mut tag {
-                c.remove(&"leash".into());
-            }
-            // The mobs riding it travel with it (their tags are in its compound).
-            let mut gone = vec![id];
-            let mut k = 0;
-            while k < gone.len() {
-                let v = gone[k];
-                gone.extend(
-                    self.simulation
-                        .mobs
-                        .iter()
-                        .filter(|m| m.extra.mount == Some(v))
-                        .map(|m| m.id),
-                );
-                k += 1;
-            }
-            self.simulation.mobs.retain(|m| !gone.contains(&m.id));
-            for g in gone {
-                self.native_leave_skip(g);
-                self.detach_entity(g);
-            }
             tag
         } else if let Some(i) = self.simulation.projectiles.iter().position(|p| p.id == id) {
             let pearl = Box::new(self.simulation.projectiles.remove(i));
@@ -1595,6 +1635,15 @@ impl Game<'_> {
         };
         let key = chunk(at);
         match arrival.traveller {
+            Arriving::Vehicle(id) => {
+                if let Some(target) = self.level_entity(id as i32) {
+                    // Entity.teleportSameDimension keeps the live entity and
+                    // its motion, and moves every passenger in the same operation.
+                    self.teleport_to_in_level(target, [at.x, at.y, at.z], None, false);
+                    self.set_portal_cooldown(id);
+                    self.place_portal_ticket(key);
+                }
+            }
             Arriving::Saved(mut tag) => {
                 if let Tag::Compound(c) = &mut tag {
                     c.insert("Pos".into(), doubles([at.x, at.y, at.z]));

@@ -19,17 +19,17 @@ use super::{
     biome_source::{BiomeSourceCatalog, ResolvedBiomeSource},
     biome_temperature::{BiomeTemperature, BiomeTemperatureSettings},
     carver::{CarverCatalog, WorldCarver, generate_carving_mask},
-    carving::{CarvingBlocks, apply_carving_mask},
+    carving::{CarvingBlocks, apply_carving_mask_shared},
     climate::{ClimateSampler, decode_parameter, quantize},
     decode_noise,
     density::DensityRegistry,
     generator_structures::Starts,
     material_condition::{
-        MaterialConditionRegistry, MaterialConditions, MaterialDensitySources, MaterialRule,
-        MaterialRuleError, MaterialRuleLibrary, MaterialSurfaceQueries,
+        CompiledSurfaceRule, MaterialConditionRegistry, MaterialConditions, MaterialDensitySources,
+        MaterialRule, MaterialRuleError, MaterialRuleLibrary, MaterialSurfaceQueries,
     },
     material_extensions::{ExtensionBlocks, ExtensionNoises, MaterialExtensions},
-    material_stage::{SurfaceInputs, TopMaterialInputs, build_surface},
+    material_stage::{SurfaceInputs, TopMaterialInputs, build_surface_shared},
     material_surface::{ClayBandBlocks, MaterialSurface},
     overrides::{self, WorldgenOverrides},
     router::{NoiseRouter, RouterField, RouterSamplers},
@@ -51,6 +51,7 @@ use horizon_core::{
 };
 use serde_json::Value;
 use std::{
+    any::Any,
     collections::{BTreeMap, BTreeSet, HashMap},
     fs, io,
     path::Path,
@@ -286,7 +287,7 @@ fn build_tags(
 }
 /// Convert a data-generator `biome_parameters` report into the quantized
 /// preset table format, using vanilla's float `quantizeCoord`.
-fn quantize_parameter_report(json: &str) -> Result<String, GeneratorError> {
+pub(crate) fn quantize_parameter_report(json: &str) -> Result<String, GeneratorError> {
     let report: Value = serde_json::from_str(json)?;
     let float = |v: &Value| -> Result<i64, GeneratorError> {
         let text = v.to_string();
@@ -404,13 +405,16 @@ impl GeneratorData {
                 let Ok(json) = fs::read_to_string(dir.join("blocks/structure-blocks.json")) else {
                     return Ok(None);
                 };
-                Ok(Some(Arc::new(super::structure::StructureResources::new(
-                    registry,
-                    super::structure::StateTransforms::from_json(&json, registry.len())?,
-                    &dir.join("structure"),
-                    read_optional_bundle(&dir, &ov, "processor_lists")?.unwrap_or_default(),
-                    &tags,
-                ))))
+                Ok(Some(Arc::new(
+                    super::structure::StructureResources::new(
+                        registry,
+                        super::structure::StateTransforms::from_json(&json, registry.len())?,
+                        &dir.join("structure"),
+                        read_optional_bundle(&dir, &ov, "processor_lists")?.unwrap_or_default(),
+                        &tags,
+                    )
+                    .with_pack_templates(ov.templates().clone()),
+                )))
             }
         })?;
         let behaviours = loading({
@@ -903,6 +907,11 @@ struct Settings {
     default_block: BlockStateId,
     default_fluid: BlockStateId,
     legacy: bool,
+    /// `NoiseGeneratorSettings.disableMobGeneration`: whether the generator
+    /// spawns the creature packs it would otherwise add to every chunk it
+    /// builds (`spawnOriginalMobs`). The End's preset is the only shipped one
+    /// that turns it on.
+    disable_mob_generation: bool,
 }
 
 /// The seed-bound pipeline for one random-source kind.
@@ -1009,33 +1018,18 @@ impl ChunkWork {
 
 type BiomeCache = Mutex<HashMap<(i32, i32), Arc<BiomeChunk<BiomeId>>>>;
 
-fn state(registry: &BlockRegistry, raw: &Value) -> Result<BlockStateId, GeneratorError> {
-    let name = raw
-        .get("Name")
-        .and_then(Value::as_str)
-        .or_else(|| raw.as_str())
-        .ok_or_else(|| resource("block state"))?;
-    let properties = raw.get("Properties").and_then(Value::as_object);
-    match properties {
-        Some(properties) if !properties.is_empty() => {
-            let descriptor = crate::chunk::BlockState {
-                name: super::tags::identifier(name)?,
-                properties: properties
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_owned()))
-                    .collect(),
-            };
-            registry
-                .resolve(&descriptor)
-                .map_err(|e| resource(format!("block state {name}: {e}")))
-        }
-        _ => registry
-            .default_state(&super::tags::identifier(name)?)
-            .ok_or_else(|| resource(format!("unknown block {name}"))),
-    }
+/// `NoiseGeneratorSettings`' `default_block` and `default_fluid`: a block state
+/// in 26.3's form, the id alone or `{"id", "properties"}`.
+fn state(
+    codec: &crate::registry::BlockStateJsonCodec<'_>,
+    raw: &Value,
+) -> Result<BlockStateId, GeneratorError> {
+    codec
+        .decode(&raw.to_string(), false)
+        .map_err(|e| resource(format!("block state {raw}: {e}")))
 }
 
-impl<R: RandomSource> Pipeline<R>
+impl<R: RandomSource + 'static> Pipeline<R>
 where
     R::Positional: Clone + Send + Sync,
 {
@@ -1060,6 +1054,8 @@ where
         if min_y < level_min_y || min_y + height > level_min_y + level_height {
             return Err(resource("noise range outside the dimension's build height"));
         }
+        let codec = crate::registry::BlockStateJsonCodec::new(registry, data.integers.clone())
+            .map_err(|e| resource(e.to_string()))?;
         let settings = Settings {
             noise_min_y: min_y,
             noise_height: height,
@@ -1068,15 +1064,16 @@ where
             sea_level: settings_json["sea_level"]
                 .as_i64()
                 .ok_or_else(|| resource("sea_level"))? as i32,
-            default_block: state(registry, &settings_json["default_block"])?,
-            default_fluid: state(registry, &settings_json["default_fluid"])?,
+            default_block: state(&codec, &settings_json["default_block"])?,
+            default_fluid: state(&codec, &settings_json["default_fluid"])?,
             legacy: settings_json["legacy_random_source"]
+                .as_bool()
+                .unwrap_or(false),
+            disable_mob_generation: settings_json["disable_mob_generation"]
                 .as_bool()
                 .unwrap_or(false),
         };
         let root = random.fork_positional();
-        let codec = crate::registry::BlockStateJsonCodec::new(registry, data.integers.clone())
-            .map_err(|e| resource(e.to_string()))?;
         let mut densities = DensityRegistry::from_json(&data.noises, &data.densities)?;
         let router =
             NoiseRouter::from_json(&settings_json["noise_router"].to_string(), &mut densities)?;
@@ -1707,10 +1704,17 @@ where
         .map_err(stage("noise"))?;
         let generation = self.generation();
         worker.timings.noise += lap(&mut clock);
+        // The surface rule, compiled by this worker's first chunk.
+        let mut shared = worker
+            .surface_rule
+            .take()
+            .and_then(|cache| cache.downcast::<CompiledSurfaceRule<R>>().ok())
+            .map(|cache| *cache);
         if !self.identity_end_surface(pos) {
-            build_surface(
+            build_surface_shared(
                 &mut chunk,
-                self.rule.clone(),
+                &self.rule,
+                &mut shared,
                 SurfaceInputs::<R, _> {
                     generation,
                     noise_volume: volume,
@@ -1749,10 +1753,11 @@ where
                 self.router.get(RouterField::Erosion).as_ref(),
             );
             let mut biome_context = SamplerContext::default();
-            apply_carving_mask(
+            apply_carving_mask_shared(
                 &mut chunk,
                 &mask,
-                self.rule.clone(),
+                &self.rule,
+                &mut shared,
                 TopMaterialInputs::<R, _> {
                     generation,
                     root: self.root.clone(),
@@ -1772,6 +1777,7 @@ where
             )
             .map_err(stage("carvers"))?;
         }
+        worker.surface_rule = shared.map(|rule| Box::new(rule) as Box<dyn Any + Send>);
         worker.timings.carvers += lap(&mut clock);
         chunk
             .prime_heightmaps(&[
@@ -2010,7 +2016,7 @@ where
         })
     }
 }
-impl<R: RandomSource> super::structure::start::StartContext for StructureQueries<'_, R>
+impl<R: RandomSource + 'static> super::structure::start::StartContext for StructureQueries<'_, R>
 where
     R::Positional: Clone + Send + Sync,
 {
@@ -2380,6 +2386,9 @@ pub(super) struct WorkerState {
     /// Decorate with structure pieces only (for structure parity checks).
     pub(super) structures_only: bool,
     pub(super) structure_mobs: Option<Arc<dyn StructureMobs>>,
+    /// The world's surface rule compiled once for this worker's chunks: a
+    /// `CompiledSurfaceRule` of the pipeline's random.
+    surface_rule: Option<Box<dyn Any + Send>>,
 }
 /// `Mob.finalizeSpawn(level, difficulty, STRUCTURE, null)` of the entities a
 /// structure places with finalizeEntities, run by the game, which owns mobs.
@@ -2418,6 +2427,9 @@ trait SeededPipeline: Send + Sync {
     /// The exact `end_island_decorated` origins in a chunk, without terrain.
     fn end_island_origins(&self, chunk: ChunkPos) -> Vec<[i32; 3]>;
     fn sea_level(&self) -> i32;
+    /// `NoiseGeneratorSettings.disableMobGeneration`, which
+    /// `NoiseBasedChunkGenerator.spawnOriginalMobs` reads.
+    fn disable_mob_generation(&self) -> bool;
     /// The level's build range (minimum Y, height).
     fn level(&self) -> (i32, i32);
     fn surface_sample(
@@ -2571,6 +2583,9 @@ where
     }
     fn sea_level(&self) -> i32 {
         self.settings.sea_level
+    }
+    fn disable_mob_generation(&self) -> bool {
+        self.settings.disable_mob_generation
     }
     fn level(&self) -> (i32, i32) {
         (self.settings.level_min_y, self.settings.level_height)
@@ -3584,6 +3599,11 @@ impl OverworldGenerator {
     pub fn sea_level(&self) -> i32 {
         self.pipeline.sea_level()
     }
+    /// `NoiseGeneratorSettings.disableMobGeneration`: the End's preset asks for
+    /// no creature packs at generation, every other shipped one does.
+    pub fn disable_mob_generation(&self) -> bool {
+        self.pipeline.disable_mob_generation()
+    }
     /// The dimension's build range (minimum Y, height): what its chunks span.
     pub fn level(&self) -> (i32, i32) {
         self.pipeline.level()
@@ -3637,6 +3657,7 @@ impl OverworldGenerator {
                 structures_only: false,
                 structure_mobs: None,
                 heights: HashMap::new(),
+                surface_rule: None,
             },
         }
     }
@@ -3823,6 +3844,29 @@ impl GeneratorWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn settings_default_states_read_the_26_3_block_state_form() {
+        let facts = br#"{"states": [
+            ["minecraft:stone", false, false, "x", "minecraft:stone"],
+            ["minecraft:jigsaw", false, false, "x", {"id": "minecraft:jigsaw", "properties": {"orientation": "north_up"}}],
+            ["minecraft:jigsaw", false, false, "x", {"id": "minecraft:jigsaw", "properties": {"orientation": "down_north"}}]
+        ], "defaults": {"minecraft:stone": 0, "minecraft:jigsaw": 1}}"#;
+        let (registry, _) = BlockRegistry::from_facts_json_bytes(facts).unwrap();
+        let codec =
+            crate::registry::BlockStateJsonCodec::new(&registry, Default::default()).unwrap();
+        let read = |raw: Value| state(&codec, &raw).map(|id| id.0);
+        assert_eq!(read(Value::from("minecraft:stone")).unwrap(), 0);
+        assert_eq!(
+            read(serde_json::json!({"id": "minecraft:jigsaw", "properties": {"orientation": "down_north"}}))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            read(serde_json::json!({"id": "minecraft:jigsaw"})).unwrap(),
+            1
+        );
+        assert!(read(serde_json::json!({"properties": {}})).is_err());
+    }
     #[test]
     fn pack_tags_join_the_prepared_ones_and_broken_ones_are_dropped() {
         let raw = Bundle::from([(

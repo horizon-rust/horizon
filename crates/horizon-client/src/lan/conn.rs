@@ -14,7 +14,7 @@ use super::{
 };
 use horizon_protocol::{
     PROTOCOL_VERSION,
-    connection::{ConnWriter, Connection},
+    connection::{ConnWriter, Connection, Counters},
     crypto::{offline_uuid, server_hash, uuid_string},
     packets::{
         Empty,
@@ -243,6 +243,9 @@ pub struct PlayerSender {
     pub pending: Arc<AtomicUsize>,
     held: Arc<Mutex<Vec<Vec<u8>>>>,
     to: To,
+    /// The connection's bytes on the wire (after compression and encryption), counted by its
+    /// network thread: `horizon-report`'s network use per player. None for a test's channel.
+    wire: Option<Arc<Counters>>,
 }
 #[derive(Clone)]
 enum To {
@@ -258,7 +261,18 @@ impl PlayerSender {
             pending,
             held: Arc::default(),
             to: To::Channel(tx),
+            wire: None,
         }
+    }
+    /// The bytes received from and sent to the client on the wire so far, where the
+    /// connection counts them.
+    pub fn wire_bytes(&self) -> Option<(u64, u64)> {
+        self.wire.as_ref().map(|c| {
+            (
+                c.bytes_in.load(Ordering::Relaxed).max(0) as u64,
+                c.bytes_out.load(Ordering::Relaxed).max(0) as u64,
+            )
+        })
     }
     /// Whether the client has answered no keep-alive for too long.
     pub fn timed_out(&self) -> bool {
@@ -476,7 +490,7 @@ fn serve_connection(
         // ServerHandshakePacketListenerImpl: a server that does not reply
         // to status requests closes the connection.
         handshake::STATUS if !shared.enable_status() => Ok(()),
-        handshake::STATUS => serve_status(&mut c, &shared),
+        handshake::STATUS => serve_status(&mut c, &shared, intention.protocol),
         handshake::TRANSFER if !shared.accepts_transfers() => {
             login_disconnect(
                 &mut c,
@@ -485,7 +499,9 @@ fn serve_connection(
             Ok(())
         }
         handshake::LOGIN | handshake::TRANSFER => {
-            if intention.protocol != PROTOCOL_VERSION {
+            if let Some(version) = older_client(&shared, intention.protocol) {
+                c.serve_older(version);
+            } else if intention.protocol != PROTOCOL_VERSION {
                 let key = if intention.protocol < 754 {
                     "multiplayer.disconnect.outdated_client"
                 } else {
@@ -507,7 +523,18 @@ fn serve_connection(
     }
 }
 
-fn serve_status(c: &mut Connection, shared: &Shared) -> Result<(), String> {
+/// The older release a client's handshake states, when this server lets it join
+/// (`horizon-accept-older-clients`): 26.2 only, for now.
+fn older_client(
+    shared: &Shared,
+    protocol: i32,
+) -> Option<horizon_protocol::adapter::ServerVersion> {
+    use horizon_protocol::adapter::ServerVersion;
+    let version = ServerVersion::from_protocol(protocol)?;
+    (shared.config.accept_older_clients && version == ServerVersion::V26_2).then_some(version)
+}
+
+fn serve_status(c: &mut Connection, shared: &Shared, protocol: i32) -> Result<(), String> {
     let e = |e: horizon_protocol::Error| e.to_string();
     let mut requested = false;
     loop {
@@ -517,7 +544,11 @@ fn serve_status(c: &mut Connection, shared: &Shared) -> Result<(), String> {
             status::Serverbound::StatusRequest(_) if requested => return Ok(()),
             status::Serverbound::StatusRequest(_) => {
                 requested = true;
-                let json = shared.status_json();
+                // A client this server lets join is told its own protocol, so its list shows it joinable.
+                let json = match older_client(shared, protocol) {
+                    Some(_) => shared.status_json_for(protocol),
+                    None => shared.status_json(),
+                };
                 c.send(
                     &status::Clientbound::StatusResponse(status::StatusResponse { json }).encode(),
                 )
@@ -772,17 +803,40 @@ fn serve_login(
         lost(shared, &user, &text);
         return Ok(());
     }
+    // A player a proxy said would arrive (`player-expect`) uses the expectation up
+    // here, as the login starts: one that ran out while the player was still in
+    // configuration (a resource pack prompt) would otherwise make it an ordinary
+    // login from this server's own file.
+    let expected = shared.config.arrivals.as_ref().and_then(|table| {
+        table
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take_until(uuid, std::time::Instant::now())
+    });
+    // A login that does not reach play (it failed in configuration) gives the
+    // expectation back, so the proxy's next attempt is still expected.
+    let put_back = || {
+        if let (Some(deadline), Some(table)) = (expected, shared.config.arrivals.as_ref()) {
+            table.lock().unwrap_or_else(|e| e.into_inner()).put_back(
+                uuid,
+                deadline,
+                std::time::Instant::now(),
+            );
+        }
+    };
     let result = login_and_configure(&mut c, shared, uuid, &name, properties);
     match result {
         Ok(Some(parts)) => {
-            play(c, shared, parts, address, counted);
+            play(c, shared, parts, address, counted, expected.is_some());
             Ok(())
         }
         Ok(None) => {
+            put_back();
             shared.release(uuid);
             Ok(())
         }
         Err(err) => {
+            put_back();
             shared.release(uuid);
             // ServerConfigurationPacketListenerImpl.onDisconnect.
             let profile = format!("{name} ({})", uuid_string(uuid));
@@ -926,6 +980,24 @@ fn login_and_configure(
             _ => {}
         }
     };
+    // An older client's packet ids are translated, not yet what is inside them (#10404): the registry data,
+    // tags and play packets would reach it in 26.3's ids and layouts, so it is turned away before them.
+    if let Some(version) = c.older_client()
+        && !shared.config.older_clients_play
+    {
+        let text = super::OLDER_CLIENTS_UNFINISHED;
+        let reason = horizon_world::nbt::Tag::String(horizon_world::nbt::JavaString::from(text));
+        let _ = send(c, cfg::Clientbound::Disconnect(cfg::Disconnect { reason }));
+        if let Some(log) = &shared.config.log {
+            let line = format!(
+                "Disconnecting {name}: its client is on protocol {} ({text})",
+                version.protocol()
+            );
+            (log.write)("Server thread", "INFO", &line);
+        }
+        lost(shared, &format!("{name} ({})", uuid_string(uuid)), text);
+        return Ok(None);
+    }
     // Custom component IDs need Horizon's registry check. The server may also
     // require Horizon clients even when it has no custom components.
     if brand != "horizon"
@@ -1228,6 +1300,7 @@ fn play(
     parts: Parts,
     address: std::net::SocketAddr,
     counted: Option<super::Counted>,
+    expected: bool,
 ) {
     shared.entered_play();
     let conn = shared.next_id();
@@ -1249,6 +1322,7 @@ fn play(
         pending,
         held: Arc::default(),
         to: To::Pool(outbox.clone(), watch.clone()),
+        wire: Some(c.reader.counters.clone()),
     };
     let required_pack = shared
         .config
@@ -1278,6 +1352,7 @@ fn play(
         sender,
         latency,
         address,
+        expected,
     };
     let mut session = Box::new(session);
     if shared
@@ -1585,6 +1660,11 @@ pub(super) fn frame_body(
     body: &[u8],
     out: &mut Vec<u8>,
 ) -> horizon_protocol::Result<()> {
+    // Renumbered first for a client of an older release; one with no such packet gets nothing.
+    let Some(body) = writer.for_client(body)? else {
+        return Ok(());
+    };
+    let body = &body[..];
     match writer.threshold {
         Some(t) if body.len() >= t.max(SHARED_FRAME_MIN) => {
             writer.frame_into(&SharedFrames::get().contents(body, t)?, out);
@@ -1687,7 +1767,7 @@ mod tests {
             announce: false,
             listen: false,
             accepts_transfers: false,
-            ..crate::lan::NetConfig::lan(0, "Transfers".into(), 8)
+            ..crate::lan::NetConfig::loopback(0, "Transfers".into(), 8)
         };
         let lan =
             crate::lan::Lan::start_with(Arc::new(crate::lan::data::SyncData::empty()), config)
@@ -1772,7 +1852,7 @@ mod tests {
                 let _ = never.recv();
                 Vec::new()
             }))),
-            ..crate::lan::NetConfig::lan(0, "Owner - World".into(), 8)
+            ..crate::lan::NetConfig::loopback(0, "Owner - World".into(), 8)
         };
         let lan =
             crate::lan::Lan::start_with(Arc::new(crate::lan::data::SyncData::empty()), config)

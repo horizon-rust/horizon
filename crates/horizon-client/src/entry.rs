@@ -15,6 +15,7 @@ pub fn main_with(mods: crate::mod_api::Mods) {
     horizon_threads::configure_allocator();
     horizon_client::telemetry::mark_start();
     horizon_client::spans::startup::init(std::time::Instant::now());
+    horizon_client::spans::trace::start_from_env();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let game_args = args.iter().take_while(|a| *a != "--dedicated");
     let help = game_args
@@ -154,6 +155,9 @@ pub fn main_with(mods: crate::mod_api::Mods) {
         },
         living_jump: |entity, kind| {
             crate::mod_api::dispatch_living_jump(crate::mod_api::mods(), entity, kind);
+        },
+        register_goals: |mob| {
+            crate::mod_api::dispatch_register_goals(crate::mod_api::mods(), mob);
         },
         ingredient: |kind, data, items| {
             crate::mod_api::dispatch_ingredient(crate::mod_api::mods(), kind, data, items);

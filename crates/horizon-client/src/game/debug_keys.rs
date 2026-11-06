@@ -67,9 +67,6 @@ impl Game<'_> {
     /// own handling. Returns true when it is used up (a debug combination,
     /// F3 itself, F3+Escape).
     pub(super) fn debug_key(&mut self, key: KeyCode, action: KeyAction) -> bool {
-        if self.title.is_some() {
-            return false;
-        }
         let Some(name) = keybinds::key_name(key) else {
             return false;
         };
@@ -82,6 +79,11 @@ impl Game<'_> {
                 }
             } else if key == KeyCode::Escape {
                 self.close_gamemode_switcher(false);
+            } else if name == self.settings.keys.get("key.debug.debugOptions") {
+                // The debug options screen interrupts the switcher too
+                // (`canInterruptScreen`): it closes, then F6 opens over the game.
+                self.close_gamemode_switcher(false);
+                self.toggle_debug_options();
             } else if matches!(key, KeyCode::F2 | KeyCode::F11) {
                 return false;
             }
@@ -708,6 +710,9 @@ impl Game<'_> {
                 self.debug_charts.toggle_lightmap(&mut self.debug);
                 true
             }
+            // The debug options screen is not wired over the title screen yet:
+            // leave F6 unhandled there rather than half-open it.
+            DebugAction::DebugOptions if self.title.is_some() => false,
             DebugAction::DebugOptions => {
                 self.toggle_debug_options();
                 true
@@ -797,7 +802,7 @@ impl Game<'_> {
             "client"
         };
         if self.entity_targeted()
-            && let Some((index, _)) = self.mob_hit()
+            && let Some((index, _, _)) = self.mob_hit()
         {
             let (kind, position, id) = {
                 let m = &self.simulation.mobs[index];

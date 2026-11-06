@@ -7,7 +7,8 @@ use horizon_client::{
     chunk::Chunk,
     entity_nbt,
     mobs::Who,
-    save::{ChunkExtras, random_uuid},
+    save::{ChunkExtras, random_uuid, text, uuid_from_text, uuid_text},
+    scoreboard::Scoreboard,
 };
 use horizon_core::{
     geometry::{Direction, Vec3},
@@ -50,6 +51,15 @@ pub struct EntityMemory {
     /// increasing order), type, and whether the last leave sweep saw it.
     /// Only filled while a mod is loaded.
     pub(super) live: Vec<(u32, String, bool)>,
+}
+impl EntityMemory {
+    /// The UUID entity `id` was loaded or saved with: what a save writes for a
+    /// field naming that entity (`entity_nbt::mob_to_nbt`'s `uuid_of`). `None`
+    /// for one that has none yet, so no reference is written rather than a
+    /// made-up UUID nothing would answer for.
+    pub(super) fn uuid_of(&self, id: u32) -> Option<[i32; 4]> {
+        self.uuids.get(&id).copied()
+    }
 }
 
 /// The key that marks a compound queued with the chunk loads as a fresh add
@@ -293,7 +303,7 @@ impl Game<'_> {
         }
     }
     /// `PistonMovingBlockEntity.saveAdditional`.
-    fn moving_piston_to_nbt(&self, pos: BlockPos, piston: &MovingPiston) -> Tag {
+    pub(super) fn moving_piston_to_nbt(&self, pos: BlockPos, piston: &MovingPiston) -> Tag {
         let flag = |b: bool| Tag::Byte(i8::from(b));
         Tag::compound([
             ("id", Tag::String("minecraft:piston".into())),
@@ -686,6 +696,7 @@ impl Game<'_> {
             let (wood, chest) = super::boats::any_boat_wood(k).unwrap_or(("oak", false));
             let mut b = super::boats::Boat::new(id, std::sync::Arc::from(wood), position, yaw);
             b.no_gravity = entity_nbt::flag(&tag, "NoGravity");
+            b.pitch = entity_nbt::rotation(&tag)[1];
             if chest {
                 b = b.with_chest();
                 b.items =
@@ -882,7 +893,7 @@ impl Game<'_> {
             if let Some(r) = self.load_mob(rider, Some(id))
                 && let Some(v) = self.simulation.mobs.iter_mut().find(|m| m.id == id)
             {
-                v.extra.rider = Some(r);
+                v.extra.rider.get_or_insert(r);
             }
         }
         Some(id)
@@ -913,11 +924,25 @@ impl Game<'_> {
     /// The mobs riding entity `id` under `tag`'s `Passengers`, after the
     /// passengers it kept from loading.
     pub(super) fn put_mob_passengers(&mut self, tag: &mut Tag, id: u32) {
-        let riders: Vec<usize> = (0..self.simulation.mobs.len())
+        let mut riders: Vec<usize> = (0..self.simulation.mobs.len())
             .filter(|&j| {
                 self.simulation.mobs[j].extra.mount == Some(id) && self.simulation.mobs[j].alive()
             })
             .collect();
+        if let Some(driver) = self
+            .simulation
+            .mobs
+            .iter()
+            .find(|m| m.id == id)
+            .and_then(|m| m.extra.rider)
+            && let Some(pos) = riders
+                .iter()
+                .position(|&j| self.simulation.mobs[j].id == driver)
+            && pos != 0
+        {
+            let d = riders.remove(pos);
+            riders.insert(0, d);
+        }
         let riders: Vec<Tag> = riders.into_iter().map(|j| self.mob_tree_nbt(j)).collect();
         add_passengers(tag, riders);
     }
@@ -1008,7 +1033,7 @@ impl Game<'_> {
         there.then_some(v)
     }
     /// The root vehicle `root` with its passengers (`Entity.save`).
-    fn vehicle_tree_nbt(&mut self, root: u32) -> Option<Tag> {
+    pub(super) fn vehicle_tree_nbt(&mut self, root: u32) -> Option<Tag> {
         if let Some(i) = self.simulation.mobs.iter().position(|m| m.id == root) {
             return Some(self.mob_tree_nbt(i));
         }
@@ -1181,6 +1206,7 @@ impl Game<'_> {
             uuid,
             self.simulation.persist.raw.get(&id),
             Some(self.pack.assets.registry),
+            |other| self.persist.uuid_of(other),
         );
         if horizon_client::mobs::camel::is_camel(self.simulation.mobs[i].species())
             && let Tag::Compound(c) = &mut tag
@@ -1223,7 +1249,7 @@ impl Game<'_> {
     /// A loaded chest minecart with a loot table and no items: the table
     /// rolled now, as generated containers are (Horizon does not unpack on
     /// first open), and kept to save it again while unchanged.
-    fn roll_cart_loot(&self, cart: &mut super::minecarts::Minecart, tag: &Tag) {
+    pub(in crate::game) fn roll_cart_loot(&self, cart: &mut super::minecarts::Minecart, tag: &Tag) {
         let Some(table) = horizon_client::save::text(tag.get("LootTable")) else {
             return;
         };
@@ -1282,9 +1308,13 @@ impl Game<'_> {
             self.remember_tags(id, tag);
         }
     }
-    fn remember(&mut self, id: u32, uuid: Option<[i32; 4]>, tag: Tag) {
+    fn remember(&mut self, id: u32, uuid: Option<[i32; 4]>, mut tag: Tag) {
         self.restore_portal_cooldown(id, &tag);
         self.remember_uuid(id, uuid, &tag);
+        // `Team` is read, never written: the team keeps its members itself.
+        if let Tag::Compound(c) = &mut tag {
+            c.remove(&"Team".into());
+        }
         self.simulation.persist.raw.insert(id, tag);
     }
     /// The UUID entity `id` was loaded with, and the attachments `tag` saved under it.
@@ -1293,15 +1323,32 @@ impl Game<'_> {
             self.simulation.persist.uuids.insert(id, u);
             read_attachments(tag, u, &mut self.entity_attachments);
         }
+        self.join_saved_team(id, tag);
+    }
+    fn join_saved_team(&mut self, id: u32, tag: &Tag) {
+        if tag.get("Team").is_some() {
+            let name = uuid_text(self.uuid_for(id));
+            join_saved_team(&mut self.score.board, &name, tag);
+        }
+    }
+    /// The entity a UUID read back from a save names, while it is in the level:
+    /// the player, or a mob loaded or saved with that UUID. `None` for nothing
+    /// loaded (an entity that is not here, or one `Who` cannot carry) - never
+    /// some other entity as a stand-in.
+    pub(super) fn who_by_uuid(&self, uuid: [i32; 4]) -> Option<Who> {
+        let player = if self.player.is_some() {
+            self.level.player_uuid
+        } else {
+            None
+        };
+        entity_nbt::who_by_uuid(&self.persist.uuids, &self.simulation.mobs, player, uuid)
     }
     /// The mob that was loaded or saved with a UUID.
     pub(super) fn mob_by_uuid(&self, uuid: [i32; 4]) -> Option<u32> {
-        self.simulation
-            .persist
-            .uuids
-            .iter()
-            .find(|(id, u)| **u == uuid && self.simulation.mobs.iter().any(|m| m.id == **id))
-            .map(|(id, _)| *id)
+        match self.who_by_uuid(uuid) {
+            Some(Who::Mob(id)) => Some(id),
+            _ => None,
+        }
     }
     /// A mob's UUID, made up for new ones.
     pub(super) fn mob_uuid(&mut self, id: u32) -> [i32; 4] {
@@ -1616,13 +1663,56 @@ impl Game<'_> {
             self.save.save_entities_later(chunks)
         }
     }
-    pub(super) fn prune_entity_memory(&mut self) {
+    /// The ids of every entity in the level now.
+    fn live_entity_ids(&self) -> HashSet<u32> {
         use super::entity::{Entity as _, entity_lists_of, for_each_entity};
-        // Forget entities that no longer exist.
         let mut alive: HashSet<u32> = self.entity_ids_off_walk().collect();
         for_each_entity!(entity_lists_of!(self), entity => {
             alive.insert(entity.id());
         });
+        alive
+    }
+    /// `ServerLevel.EntityCallbacks.onDestroyed` → `Scoreboard.entityRemoved`
+    /// for every kind of entity, not only the mobs `score_entity_removed`
+    /// covers as they die: an item picked up or killed, an expired cloud, a
+    /// discarded projectile leaves the board and its team. Unloaded and
+    /// travelling entities leave `persist.uuids` first (`forget_entity`,
+    /// `detach_entity`), so they keep their scores, as vanilla's do. Once a
+    /// tick, so a command in the same tick still sees them; nothing to do
+    /// while no entity holds a score or a team.
+    pub(super) fn score_destroyed_entities(&mut self) {
+        let board = &self.score.board;
+        let held: HashSet<[i32; 4]> = board
+            .scores
+            .keys()
+            .map(String::as_str)
+            .chain(board.team_members())
+            .filter(|holder| holder.len() == 36)
+            .filter_map(uuid_from_text)
+            .collect();
+        if held.is_empty() {
+            return;
+        }
+        let candidates: Vec<(u32, [i32; 4])> = self
+            .persist
+            .uuids
+            .iter()
+            .filter(|(_, uuid)| held.contains(*uuid))
+            .map(|(&id, &uuid)| (id, uuid))
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let alive = self.live_entity_ids();
+        for (id, uuid) in candidates {
+            if !alive.contains(&id) {
+                self.score.board.entity_removed(&uuid_text(uuid));
+            }
+        }
+    }
+    pub(super) fn prune_entity_memory(&mut self) {
+        // Forget entities that no longer exist.
+        let alive = self.live_entity_ids();
         for (id, uuid) in &self.simulation.persist.uuids {
             if !alive.contains(id) {
                 self.entity_attachments.remove(uuid);
@@ -1842,23 +1932,9 @@ impl Game<'_> {
         i: usize,
         keys: &HashSet<ChunkKey>,
     ) -> Option<(ChunkKey, Tag)> {
-        let (id, at) = (self.simulation.tnts[i].id, self.simulation.tnts[i].position);
-        keys.contains(&chunk_of(at)).then(|| {
-            let uuid = self.uuid_for(id);
-            let t = &self.simulation.tnts[i];
-            let tag = entity_nbt::tnt_to_nbt(
-                t.position,
-                t.velocity,
-                t.on_ground,
-                t.fuse,
-                t.power,
-                t.block_state_nbt(self.pack.assets.registry),
-                t.rotation,
-                uuid,
-                self.simulation.persist.raw.get(&id),
-            );
-            (chunk_of(at), tag)
-        })
+        let at = self.simulation.tnts[i].position;
+        keys.contains(&chunk_of(at))
+            .then(|| (chunk_of(at), self.tnt_nbt(i)))
     }
     pub(super) fn save_boat(
         &mut self,
@@ -1950,7 +2026,7 @@ fn strip_finalize(tag: &mut Tag) {
 }
 /// `riders` under `tag`'s `Passengers`, after the passengers it kept from
 /// loading (`Entity.saveWithoutId`).
-fn add_passengers(tag: &mut Tag, riders: Vec<Tag>) {
+pub(super) fn add_passengers(tag: &mut Tag, riders: Vec<Tag>) {
     if let Tag::Compound(c) = tag {
         let mut list = match c.get(&"Passengers".into()) {
             Some(Tag::List(l)) => l.clone(),
@@ -1996,7 +2072,7 @@ fn root_vehicle_tag(attach: [i32; 4], entity: Tag) -> Tag {
     ])
 }
 /// `Entity.getPassengersAndSelf` of `root`, from each rider's mount.
-fn vehicle_tree(root: u32, mounts: &[(u32, Option<u32>)]) -> Vec<u32> {
+pub(super) fn vehicle_tree(root: u32, mounts: &[(u32, Option<u32>)]) -> Vec<u32> {
     let mut tree = vec![root];
     let mut k = 0;
     while k < tree.len() {
@@ -2022,11 +2098,57 @@ fn drop_unleashable_leash(tag: &mut Tag, kind: &str, is_mob: bool) {
         c.remove(&"leash".into());
     }
 }
+/// `Entity.load`: a string `Team` adds the entity (`name`, its UUID) to that
+/// team when the scoreboard has it; else vanilla only logs a warning.
+fn join_saved_team(board: &mut Scoreboard, name: &str, tag: &Tag) -> bool {
+    let Some(team) = text(tag.get("Team")) else {
+        return false;
+    };
+    if board.team(&team).is_none() {
+        log::warn!("Unable to add mob to team \"{team}\" (that team probably doesn't exist)");
+        return false;
+    }
+    board.add_to_team(name, &team);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const MOUNT: [i32; 4] = [1, 2, 3, 4];
+
+    #[test]
+    fn a_saved_team_is_joined_only_when_the_scoreboard_has_it() {
+        let mut board = Scoreboard::default();
+        board.add_team("red");
+        let with_team = |team: &str| {
+            let mut t = entity("minecraft:zombie");
+            if let Tag::Compound(c) = &mut t {
+                c.insert("Team".into(), Tag::String(team.into()));
+            }
+            t
+        };
+        let name = "00000001-0002-0003-0004-000000000005";
+        assert!(join_saved_team(&mut board, name, &with_team("red")));
+        assert_eq!(
+            board.players_team(name).map(|t| t.name.as_str()),
+            Some("red")
+        );
+        // A team the scoreboard doesn't have is ignored, and the entity
+        // stays on its team.
+        assert!(!join_saved_team(&mut board, name, &with_team("blue")));
+        assert_eq!(
+            board.players_team(name).map(|t| t.name.as_str()),
+            Some("red")
+        );
+        assert!(!join_saved_team(
+            &mut board,
+            "other",
+            &entity("minecraft:zombie")
+        ));
+        assert!(board.players_team("other").is_none());
+    }
 
     #[test]
     fn only_mobs_and_boats_keep_a_leash_tag() {

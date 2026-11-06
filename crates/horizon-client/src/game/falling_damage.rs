@@ -197,10 +197,10 @@ impl Game<'_> {
         } else {
             amount
         };
-        let hurt = match (self.player.as_mut(), self.motion.health.damage.id(kind)) {
+        let hurt = match (self.player.as_mut(), self.health_resources.damage.id(kind)) {
             (Some(p), Some(id)) => p
                 .hurt(
-                    &self.motion.health,
+                    &self.health_resources,
                     self.simulation.world.health_rules,
                     id,
                     amount,
