@@ -169,7 +169,10 @@ impl World {
                     }
                     for dz in -1..=1 {
                         for dx in -1..=1 {
-                            self.dirty_sections.insert((key.0 + dx, sy, key.1 + dz));
+                            self.dirty_sections.insert_for(
+                                (key.0 + dx, sy, key.1 + dz),
+                                crate::world::Dirtied::Blocks,
+                            );
                         }
                     }
                 }

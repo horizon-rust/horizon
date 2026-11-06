@@ -1582,6 +1582,17 @@ impl Game<'_> {
                 .eye_position()
                 .map(|e| self.shown_name_tags(glam::DVec3::from_array(e))),
         });
+        // What makes the game mesh: sections meshed again, meshes made for nothing, and the sections
+        // marked to mesh by cause.
+        status["remeshed_sections"] = self.streaming.remeshed_total.into();
+        status["stale_meshes"] = self.streaming.stale_meshed_total.into();
+        status["dirtied_sections"] = self
+            .world
+            .dirty_sections
+            .counts()
+            .map(|(k, v)| (k.to_string(), v.into()))
+            .collect::<serde_json::Map<_, _>>()
+            .into();
         status["lod"] = lod;
         let (target, sampled) = self.lod.as_ref().map_or((0, 0), |lod| lod.progress());
         status["lod"]["target_tiles"] = target.into();

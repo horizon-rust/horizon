@@ -342,7 +342,10 @@ impl Game<'_> {
                         continue;
                     }
                     for sy in 0..self.world.layout().sections() as i32 {
-                        self.world.dirty_sections.insert((x + dx, sy, z + dz));
+                        self.world.dirty_sections.insert_for(
+                            (x + dx, sy, z + dz),
+                            horizon_client::world::Dirtied::Biomes,
+                        );
                     }
                 }
             }

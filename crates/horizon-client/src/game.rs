@@ -15132,10 +15132,17 @@ impl Game<'_> {
         }
     }
     /// `LevelExtractor.allChanged`: every loaded section is rebuilt.
+    #[track_caller]
     fn all_sections_changed(&mut self) {
+        log::info!(
+            "Horizon: every section meshes again ({})",
+            std::panic::Location::caller()
+        );
         for &(x, z) in self.world.chunks.keys() {
             for sy in 0..self.world.layout().height() / 16 {
-                self.world.dirty_sections.insert((x, sy, z));
+                self.world
+                    .dirty_sections
+                    .insert_for((x, sy, z), horizon_client::world::Dirtied::Everything);
             }
         }
     }

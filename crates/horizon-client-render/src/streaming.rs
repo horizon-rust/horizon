@@ -10,7 +10,7 @@ use crate::{
     graphics::LeafCullingMode,
     light::{LightChanges, LightTables, apply_lighting, apply_relighting, light_chunk},
     mesher::{MeshScratch, MeshTables, Mesher, Region, SectionMesh, borrow},
-    world::World,
+    world::{Dirtied, World},
 };
 use horizon_core::biome::BiomeZoom;
 use horizon_threads::jobs::{Class, PerWorker, Rank, Registration, Source};
@@ -555,6 +555,10 @@ pub struct Streaming {
     light_snapshots: FxHashMap<(i32, i32), u64>,
     pub generated_total: u64,
     pub meshed_total: u64,
+    /// Of `meshed_total`, the sections that had been meshed before (and kept since).
+    pub remeshed_total: u64,
+    /// Meshes made for nothing: asked for again (or their column unloaded) before they came back.
+    pub stale_meshed_total: u64,
     /// Chunks come from a server (`insert_remote`/`forget`): nothing is
     /// generated and columns are only unloaded when the server says so.
     pub remote: bool,
@@ -1134,6 +1138,8 @@ impl Streaming {
             light_snapshots: Default::default(),
             generated_total: 0,
             meshed_total: 0,
+            remeshed_total: 0,
+            stale_meshed_total: 0,
             remote: false,
             relight_resent: false,
             extra: Vec::new(),
@@ -1157,7 +1163,9 @@ impl Streaming {
         for &(x, z) in world.chunks.keys() {
             if self.lit.contains(&(x, z)) {
                 for sy in 0..world.layout().sections() as i32 {
-                    world.dirty_sections.insert((x, sy, z));
+                    world
+                        .dirty_sections
+                        .insert_for((x, sy, z), Dirtied::Everything);
                 }
             }
         }
@@ -1175,7 +1183,9 @@ impl Streaming {
         for dz in -1..=1 {
             for dx in -1..=1 {
                 for sy in 0..world.layout().sections() as i32 {
-                    world.dirty_sections.insert((key.0 + dx, sy, key.1 + dz));
+                    world
+                        .dirty_sections
+                        .insert_for((key.0 + dx, sy, key.1 + dz), Dirtied::Arrived);
                 }
             }
         }
@@ -1211,7 +1221,9 @@ impl Streaming {
                     for dx in -1..=1 {
                         let s = sy as i32 + dy;
                         if (0..world.layout().sections() as i32).contains(&s) {
-                            world.dirty_sections.insert((x + dx, s, z + dz));
+                            world
+                                .dirty_sections
+                                .insert_for((x + dx, s, z + dz), Dirtied::ServerLight);
                         }
                     }
                 }
@@ -1424,7 +1436,9 @@ impl Streaming {
         if loaded {
             self.lit.insert(key);
             for sy in 0..world.layout().sections() as i32 {
-                world.dirty_sections.insert((key.0, sy, key.1));
+                world
+                    .dirty_sections
+                    .insert_for((key.0, sy, key.1), Dirtied::Arrived);
             }
         }
         for dz in -1..=1 {
@@ -1695,7 +1709,9 @@ impl Streaming {
                             for dz in -1..=1 {
                                 for dx in -1..=1 {
                                     for sy in 0..world.layout().sections() as i32 {
-                                        world.dirty_sections.insert((x + dx, sy, z + dz));
+                                        world
+                                            .dirty_sections
+                                            .insert_for((x + dx, sy, z + dz), Dirtied::Arrived);
                                     }
                                 }
                             }
@@ -1707,18 +1723,22 @@ impl Streaming {
                 }
                 Done::Meshed(x, sy, z, mesh, seq) => {
                     if self.meshing.get(&(x, sy, z)) != Some(&seq) {
+                        self.stale_meshed_total += 1;
                         stale.push(((x, sy, z), mesh));
                         continue;
                     }
                     // Its column unloaded while it was meshed: nothing would
                     // ever remove the uploaded section.
                     if !world.chunks.contains_key(&(x, z)) {
+                        self.stale_meshed_total += 1;
                         self.meshing.remove(&(x, sy, z));
                         stale.push(((x, sy, z), mesh));
                         continue;
                     }
                     self.meshing.remove(&(x, sy, z));
-                    self.compile_started.insert((x, sy, z), seq);
+                    if self.compile_started.insert((x, sy, z), seq).is_some() {
+                        self.remeshed_total += 1;
+                    }
                     self.meshed_total += 1;
                     uploads.push(((x, sy, z), mesh));
                 }
@@ -2029,7 +2049,9 @@ impl Streaming {
             self.waiting.retain(|&(x, sy, z)| {
                 let back = ranges.in_view(x, z);
                 if back {
-                    world.dirty_sections.insert((x, sy, z));
+                    world
+                        .dirty_sections
+                        .insert_for((x, sy, z), Dirtied::BackInView);
                 }
                 !back
             });
@@ -2247,7 +2269,7 @@ impl Streaming {
             }
         }
         changed.dirty_sections(|section| {
-            world.dirty_sections.insert(section);
+            world.dirty_sections.insert_for(section, Dirtied::Relit);
         });
     }
     /// `ahead`, turned to the middle of its sector (`ahead_sector`), so priorities change
@@ -3141,7 +3163,7 @@ fn take_resent_column(
         }
     }
     cells.dirty_sections(|section| {
-        world.dirty_sections.insert(section);
+        world.dirty_sections.insert_for(section, Dirtied::Resent);
     });
 }
 
