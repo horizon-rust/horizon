@@ -24,7 +24,11 @@ use crate::chunk::MIN_Y;
 use crate::fast_hash::{FxHashMap, FxHashSet};
 use crate::lod::{Column, TileKey};
 use glam::DVec3;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// The least time between two reads of the far terrain's drawn tiles (`set_far_paced`).
+pub const FAR_PACE: Duration = Duration::from_millis(100);
 
 /// Texels a side of the finest level (a power of two).
 pub const SIZE: usize = 1024;
@@ -53,6 +57,10 @@ struct FarTile {
     stride: i32,
     cells: usize,
     heights: Vec<i16>,
+    /// The far terrain's columns the heights were read from, held: `Lod` changes a tile's
+    /// columns with `Arc::make_mut`, which copies them while this holds them, so the same
+    /// pointer is the same columns and `set_far` skips them without reading a cell.
+    source: Arc<Vec<Column>>,
 }
 impl FarTile {
     /// The chunk columns it covers, inclusive.
@@ -166,6 +174,8 @@ pub struct FarHeights {
     stale: FxHashSet<(i32, i32)>,
     far: FxHashMap<TileKey, FarTile>,
     far_revision: Option<u64>,
+    /// When `set_far_paced` last read the drawn tiles.
+    far_read_at: Option<Instant>,
     /// The window's chunk columns to write again, at the next pass.
     dirty: ChunkSet,
     /// Those the pass under way has still to write.
@@ -270,10 +280,30 @@ impl FarHeights {
         self.stale.clear();
         self.far.clear();
         self.far_revision = None;
+        self.far_read_at = None;
         self.dirty = ChunkSet::default();
         self.pass = ChunkSet::default();
         // Built again whole at the next pass, the far field off until then.
         self.origin = None;
+    }
+
+    /// `set_far` at most every `FAR_PACE`: the revision changes with each far tile meshed,
+    /// nearly every frame in flight, and the far field's shadows need not follow each one.
+    pub fn set_far_paced<'a>(
+        &mut self,
+        revision: u64,
+        tiles: impl Iterator<Item = (TileKey, &'a Arc<Vec<Column>>)>,
+        now: Instant,
+    ) {
+        if self.far_revision == Some(revision)
+            || self
+                .far_read_at
+                .is_some_and(|at| now.saturating_duration_since(at) < FAR_PACE)
+        {
+            return;
+        }
+        self.far_read_at = Some(now);
+        self.set_far(revision, tiles);
     }
 
     /// The distant terrain's drawn tiles, when they changed (`revision`, `Lod::revision`): the
@@ -281,7 +311,7 @@ impl FarHeights {
     pub fn set_far<'a>(
         &mut self,
         revision: u64,
-        tiles: impl Iterator<Item = (TileKey, &'a [Column])>,
+        tiles: impl Iterator<Item = (TileKey, &'a Arc<Vec<Column>>)>,
     ) {
         if self.far_revision == Some(revision) {
             return;
@@ -294,14 +324,18 @@ impl FarHeights {
                 continue;
             }
             let tile = match old.remove(&key) {
-                Some(tile)
+                // The columns it was read from: nothing to compare (a revision a mesh, nearly
+                // every frame in flight, with thousands of tiles drawn).
+                Some(tile) if Arc::ptr_eq(&tile.source, columns) => tile,
+                Some(mut tile)
                     if tile.heights.len() == columns.len()
                         && tile
                             .heights
                             .iter()
-                            .zip(columns)
+                            .zip(columns.iter())
                             .all(|(&h, c)| h == height(c)) =>
                 {
+                    tile.source = columns.clone();
                     tile
                 }
                 _ => {
@@ -311,6 +345,7 @@ impl FarHeights {
                         stride: key.size() / 16,
                         cells: 16,
                         heights: columns.iter().map(height).collect(),
+                        source: columns.clone(),
                     };
                     mark(&mut self.dirty, self.origin, tile.chunks());
                     tile
@@ -1020,7 +1055,7 @@ mod tests {
         columns[0] = column(100);
         columns[16] = column(80);
         columns[17] = column(90);
-        far.set_far(1, [(key, columns.as_slice())].into_iter());
+        far.set_far(1, [(key, &Arc::new(columns))].into_iter());
         let mut tops = [MIN_Y as i16; 256];
         tops[3 * 16 + 5] = 120;
         let world = [((0, 0), tops)].into_iter().collect();
@@ -1055,7 +1090,7 @@ mod tests {
         let mut far = FarHeights::default();
         let (mut gpu, mut now) = (Vec::new(), Instant::now());
         let mut world: FxHashMap<(i32, i32), [i16; 256]> = FxHashMap::default();
-        let mut tiles: FxHashMap<TileKey, Vec<Column>> = FxHashMap::default();
+        let mut tiles: FxHashMap<TileKey, Arc<Vec<Column>>> = FxHashMap::default();
         let new_tile = |rng: &mut Rng, _key: TileKey| -> Vec<Column> {
             let cells = 16usize;
             (0..cells * cells)
@@ -1078,7 +1113,7 @@ mod tests {
                     level,
                 };
                 let columns = new_tile(&mut rng, key);
-                tiles.insert(key, columns);
+                tiles.insert(key, Arc::new(columns));
             }
             let keys: Vec<TileKey> = tiles.keys().copied().collect();
             for key in keys {
@@ -1089,12 +1124,13 @@ mod tests {
                     1 => {
                         let cells = tiles[&key].len();
                         let i = rng.below(cells as i32) as usize;
-                        tiles.get_mut(&key).unwrap()[i] = column(rng.below(200) as i16);
+                        Arc::make_mut(tiles.get_mut(&key).unwrap())[i] =
+                            column(rng.below(200) as i16);
                     }
                     _ => {}
                 }
             }
-            far.set_far(step, tiles.iter().map(|(k, c)| (*k, c.as_slice())));
+            far.set_far(step, tiles.iter().map(|(k, c)| (*k, c)));
             // Chunk columns around the camera meshed, changed, gone.
             let (cx, cz) = ((camera.x as i32) >> 4, (camera.z as i32) >> 4);
             for _ in 0..40 {
@@ -1123,6 +1159,43 @@ mod tests {
         }
     }
 
+    /// Paced reads: a new revision within `FAR_PACE` of the last read waits for a later call;
+    /// a tile drawn from the same columns again marks nothing, and one changed by the far
+    /// terrain (`Arc::make_mut`, a copy while held here) marks its chunk columns.
+    #[test]
+    fn paced_reads_wait_and_unchanged_tiles_mark_nothing() {
+        let mut far = FarHeights::default();
+        let key = TileKey {
+            x: 3,
+            z: -2,
+            level: 2,
+        };
+        let (mut gpu, mut now) = (Vec::new(), Instant::now());
+        far.set_far(0, std::iter::empty());
+        settle(
+            &mut far,
+            &mut gpu,
+            DVec3::ZERO,
+            &mut now,
+            &FxHashMap::default(),
+        );
+        let mut columns = Arc::new((0..256).map(|i| column(i as i16)).collect::<Vec<_>>());
+        let start = now + FAR_PACE;
+        far.set_far_paced(1, [(key, &columns)].into_iter(), start);
+        assert_eq!(far.dirty.len(), 16);
+        far.dirty = ChunkSet::default();
+        // Too soon: not read, whatever changed.
+        far.set_far_paced(2, std::iter::empty(), start + FAR_PACE / 2);
+        assert_eq!(far.far.len(), 1);
+        // Later, the same columns: read, nothing marked.
+        far.set_far_paced(3, [(key, &columns)].into_iter(), start + FAR_PACE);
+        assert_eq!(far.dirty.len(), 0);
+        // Changed in place by the far terrain: marked.
+        Arc::make_mut(&mut columns)[0] = column(300);
+        far.set_far_paced(4, [(key, &columns)].into_iter(), start + FAR_PACE * 2);
+        assert_eq!(far.dirty.len(), 16);
+    }
+
     /// A tile's change writes the chunk columns under it alone, and a big change is spread over
     /// frames, `BUDGET` columns each.
     #[test]
@@ -1139,7 +1212,7 @@ mod tests {
             level: 2,
         };
         let columns: Vec<Column> = (0..256).map(|i| column(i as i16)).collect();
-        far.set_far(1, [(key, columns.as_slice())].into_iter());
+        far.set_far(1, [(key, &Arc::new(columns))].into_iter());
         assert_eq!(far.dirty.len(), 16);
         now += REBUILD_STEP;
         let writes = far.advance(DVec3::ZERO, now, |_, _| [MIN_Y as i16; 256]);
@@ -1148,7 +1221,8 @@ mod tests {
         // Four level 9 tiles, 8192 blocks each: the whole window, over 8 frames.
         let columns: Vec<Column> = (0..32 * 32).map(|_| column(70)).collect();
         let keys = [(-1, -1), (0, -1), (-1, 0), (0, 0)].map(|(x, z)| TileKey { x, z, level: 9 });
-        far.set_far(2, keys.iter().map(|&k| (k, columns.as_slice())));
+        let columns = Arc::new(columns);
+        far.set_far(2, keys.iter().map(|&k| (k, &columns)));
         let frames = settle(&mut far, &mut gpu, DVec3::ZERO, &mut now, &world);
         assert_eq!(frames, CHUNKS * CHUNKS / BUDGET);
         assert!(far.levels == rebuilt(&far, far.origin.unwrap()));

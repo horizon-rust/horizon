@@ -7793,8 +7793,11 @@ impl Renderer {
     /// The distant terrain's drawn tiles, for the rays' far field (`far_heights`): call after
     /// `Lod::update`; cheap unless they changed.
     pub fn set_far_terrain(&mut self, lod: &crate::lod::Lod) {
-        self.far_heights
-            .set_far(lod.revision(), lod.drawn_columns());
+        self.far_heights.set_far_paced(
+            lod.revision(),
+            lod.drawn_columns(),
+            std::time::Instant::now(),
+        );
     }
     /// Whether the entities cast ray-traced shadows: ray-traced shadows or RT lighting (both with
     /// Linear Light) on hardware rays, which trace the entities' quads (`hw_finish`); the voxel

@@ -1720,10 +1720,10 @@ impl Lod {
         self.revision
     }
     /// Each drawn tile and its cells' columns, for the rays' far field (gfx/far_heights.rs).
-    pub fn drawn_columns(&self) -> impl Iterator<Item = (TileKey, &[Column])> {
+    pub fn drawn_columns(&self) -> impl Iterator<Item = (TileKey, &Arc<Vec<Column>>)> {
         self.active.iter().filter_map(|&key| {
             let columns = self.ready.get(&key)?;
-            (columns.len() == CELLS * CELLS).then_some((key, columns.as_slice()))
+            (columns.len() == CELLS * CELLS).then_some((key, columns))
         })
     }
     pub fn stats(&self) -> (usize, usize) {
