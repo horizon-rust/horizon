@@ -371,6 +371,11 @@ pub struct Frame<'a> {
     pub sun_path_tilt: f32,
     /// First-person hand and held item, drawn after clearing depth.
     pub hand: &'a [Vertex],
+    /// The player's own body in first person (without what its hands hold: the view model is
+    /// in the rays already), relative to the camera: for the hardware rays only (`hw_rays`), so it
+    /// throws its shadow and shows in the mirrors. The camera never draws it. Empty without
+    /// them (`Renderer::hw_rays_on`) or in third person, where the entities hold the model.
+    pub rt_body: &'a [Vertex],
     /// `CameraRenderState.hudFov`: the hand's own field of view
     /// (`GameRenderer.render3dHud`).
     pub hand_fov_degrees: f32,
@@ -3882,6 +3887,11 @@ impl Renderer {
             .filter(|_| self.cull_on)
             .map(|c| c.hidden)
     }
+    /// Whether the hardware rays hold the moving geometry (`hw_rays`): then the player's body in
+    /// first person is worth building for them (`Frame::rt_body`).
+    pub fn hw_rays_on(&self) -> bool {
+        self.hw_rays.is_some()
+    }
     pub fn section_count(&self) -> usize {
         self.sections.len()
     }
@@ -4444,6 +4454,7 @@ impl Renderer {
             encoder,
             &hw_rays::Dynamic {
                 entities: &self.entity_batch.combined[..solid],
+                body: frame.rt_body,
                 hand,
                 hand_to_world,
                 clouds: tiles,
@@ -6567,6 +6578,8 @@ impl Renderer {
             );
         }
         let max_quads = (world_quads + additive_quads + hand_quads + see_through_quads)
+            // The rays build the entities' and the body's quads as one structure from index 0.
+            .max(world_quads + frame.rt_body.len() as u32 / 4)
             .max(cloud_quads)
             .max(if frame.lightning.bolts.is_empty() {
                 0
@@ -8568,9 +8581,13 @@ mod tests {
             &mut files,
         );
         assert!(files.len() >= 10, "{files:?}");
-        // The rays' pass is made of three files, with or without hardware rays (shadow_rays.rs).
+        // The rays' pass is made of four files, with or without hardware rays (shadow_rays.rs).
         let named = |p: &std::path::Path, name: &str| p.file_name().is_some_and(|f| f == name);
-        files.retain(|p| !named(p, "shadow_rays_hw.wgsl") && !named(p, "shadow_rays_psr.wgsl"));
+        files.retain(|p| {
+            !named(p, "shadow_rays_hw.wgsl")
+                && !named(p, "shadow_rays_psr.wgsl")
+                && !named(p, "shadow_rays_moving.wgsl")
+        });
         // The froxels' hardware section replaces a stub in froxels.wgsl (froxels.rs, hook 8; its
         // own test validates both variants).
         files.retain(|p| !named(p, "froxels_hw.wgsl"));

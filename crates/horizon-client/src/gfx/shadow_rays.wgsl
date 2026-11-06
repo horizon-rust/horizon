@@ -81,6 +81,8 @@ var<private> sun_from_pass: bool = false;
 // Whether this texel's sun ray crossed water on its way to the light (its caustics move with the
 // waves): `accumulate` keeps a short history of its sun there.
 var<private> sun_caustic: bool = false;
+// Whether this texel's ray toward the sun met a moving caster (`trace`, `hw_moving_shadow`).
+var<private> moving_shade: bool = false;
 @group(0) @binding(1) var depth: texture_depth_2d;
 // 512 bits an 8x8x8 brick in four texels along x, the solid blocks and the cutout ones; one texel
 // a brick (bit 0 any block, bit 1 cutout ones); one texel a 32x32x32 brick (1: any block).
@@ -620,16 +622,20 @@ fn sun_ray(pos: vec3<f32>) -> f32 {
 // (`random`): accumulated, the shadows' penumbra widens with the distance to what casts them, as
 // the real sun's does.
 fn sun_disc_ray(pos: vec3<f32>, random: vec2<f32>) -> vec3<f32> {
+    let d = sun_disc_dir(random);
+    // The hybrid's exact triangles where the GPU traces rays (shadow_rays_hw.wgsl).
+    if HW { return hw_light(pos, d, 4096.0); }
+    return vec3(ray(pos, d, i32(rt.grid.w), 1e30));
+}
+// The direction toward the point of the sun's disc `random` picks (`sun_disc_ray`).
+fn sun_disc_dir(random: vec2<f32>) -> vec3<f32> {
     let l = rt.light.xyz;
     let t = normalize(select(cross(l, vec3(0.0, 1.0, 0.0)), cross(l, vec3(1.0, 0.0, 0.0)),
         abs(l.y) > 0.9));
     let b = cross(l, t);
     let r = sqrt(random.x) * rt.sun_light.w;
     let a = 6.2831853 * random.y;
-    let d = normalize(l + (t * cos(a) + b * sin(a)) * r);
-    // The hybrid's exact triangles where the GPU traces rays (shadow_rays_hw.wgsl).
-    if HW { return hw_light(pos, d, 4096.0); }
-    return vec3(ray(pos, d, i32(rt.grid.w), 1e30));
+    return normalize(l + (t * cos(a) + b * sin(a)) * r);
 }
 // A pixel's and a frame's random numbers (PCG), 0..1.
 fn random2(texel: vec2<i32>, salt: u32) -> vec2<f32> {
@@ -1628,6 +1634,7 @@ fn surface_normal(p: vec2<i32>, pos: vec3<f32>) -> vec3<f32> {
     return select(n, -n, dot(n, pos) > 0.0);
 }
 fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
+    moving_shade = false;
     let lit_mode = rt.mode.x > 0.5;
     let none = Traced(select(vec4(1.0), vec4(1.0, 1.0, 1.0, -1.0), lit_mode), vec4(0.0, 0.0, 0.0, -1.0),
         vec4(0.0, 0.0, 0.0, -1.0), vec4(1.0), vec4(0u));
@@ -1713,6 +1720,13 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
                 sun_caustic = HW && hw_caustic_on && (SKIP & 512u) == 0u;
             }
             sun_through = mix(vec3(far_sun), disc * beyond, edge);
+            // Whether a moving caster (an entity, the player's body, the view model) stands
+            // between this surface and the point of the disc this frame's ray aimed at
+            // (shadow_rays_moving.wgsl): its shadow moves, `accumulate` keeps it sharp.
+            if HW && edge > 0.0 && (SKIP & 1024u) == 0u {
+                moving_shade = hw_moving_shadow(lifted, sun_disc_dir(random2(texel, 2u)),
+                    MOVING_REACH);
+            }
         }
         let v = max(sun_through.r, max(sun_through.g, sun_through.b));
         // The sky's and the light sources' light; it fades out toward the grid's edge into the
@@ -1764,6 +1778,9 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
         let moment = luminance(sky.rgb + direct.rgb) * luminance(sky.rgb + direct.rgb);
         // The sky seen: the traced rays', toward the far field's horizon across the band.
         let seen = select(sky.a, mix(far_seen, sky.a, edge), far_seen >= 0.0);
+        // A moving caster's shadow rides to `accumulate` (through `cs_sparse`'s blocks too) as a
+        // quarter past the face in the direct light's alpha; `accumulate` takes it off again.
+        if moving_shade { direct.a += MOVING_MARK; }
         return Traced(vec4(v, open, seen, length(pos)), blocks, direct, vec4(sun_through, moment),
             reservoir_out);
     }
@@ -1819,6 +1836,19 @@ const CAUSTIC_HISTORY: f32 = 3.0;
 // Below this many frames of history a surface the anti-lag cut traces its bounced light every
 // frame (`trace`'s turns).
 const RESTED_HISTORY: f32 = 8.0;
+// The frames the sun's history stays short where a moving caster's shadow is or just was, what
+// each frame's ray weighs then at least, and how far toward the sun the rays look for one
+// (shadow_rays_moving.wgsl). The frames left ride in the fast history's sun visibility, as twice
+// their count added to it (`fast_shade`); this frame's, from `trace`, as MOVING_MARK past the
+// face in the direct light's alpha.
+const MOVING_FRAMES: f32 = 3.0;
+const MOVING_SUN_WEIGHT: f32 = 0.5;
+const MOVING_REACH: f32 = 64.0;
+const MOVING_MARK: f32 = 0.25;
+// The frames a fast history's sun visibility (z) carries (`MOVING_FRAMES`), and the visibility.
+fn fast_shade(z: f32) -> f32 {
+    return floor(z / 2.0);
+}
 // The face (0..5) and the history length packed in the direct light's alpha (`face + 8 n`, exact in
 // a half float), for the denoiser and the reuse's checks.
 fn face_in(a: f32) -> f32 {
@@ -1851,10 +1881,15 @@ fn clamp_visibility(held: f32, mean: f32) -> f32 {
 // history's light, sun and sky seen are each clamped to it, so the metals (which show the sun's
 // highlight and the sky seen whole, with no diffuse light to hide them) don't trail a change of
 // light by 30 frames.
-fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
+fn accumulate(texel: vec2<i32>, traced: Traced) -> Traced {
+    // This frame's moving caster (`trace`), off the face again.
+    var v = traced;
+    let shade_now = v.direct.a - floor(v.direct.a) > 0.5 * MOVING_MARK;
+    v.direct.a = floor(v.direct.a);
     let now = v.blocks.rgb + v.direct.rgb;
     let lum_now = luminance(now);
-    fast_out = vec4(lum_now, lum_now * lum_now, v.rays.r, v.rays.b);
+    fast_out = vec4(lum_now, lum_now * lum_now,
+        v.rays.r + select(0.0, 2.0 * MOVING_FRAMES, shade_now), v.rays.b);
     if rt.motion.w < 0.5 || v.rays.a < 0.0 { return v; }
     // Past the grid's band (`block_mask`'s a below 0) no history is kept, and none ever grows:
     // its history is marked long, so its bounced light keeps resting in turns as it did (`trace`,
@@ -1875,6 +1910,7 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
     let f = at - floor(at);
     let d = length(q);
     let face = face_in(v.direct.a);
+    var last_shade = 0.0;
     var mask = vec3(0.0);
     var blocks = vec3(0.0);
     var direct = vec3(0.0);
@@ -1897,7 +1933,11 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
         blocks += b.rgb * w;
         direct += l.rgb * w;
         sun += textureLoad(last_sun, t, 0) * w;
-        quick += textureLoad(last_fast, t, 0) * w;
+        var last_quick = textureLoad(last_fast, t, 0);
+        let left = fast_shade(last_quick.z);
+        last_shade = max(last_shade, left);
+        last_quick.z -= 2.0 * left;
+        quick += last_quick * w;
         history += history_in(l.a) * w;
         cut += select(0.0, w, antilag_in(l.a));
         weight += w;
@@ -1905,7 +1945,9 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
     if weight < 1e-3 { return v; }
     var n = min(floor(history / weight + 0.5) + 1.0, MAX_HISTORY);
     let quick_mean = quick / weight;
-    fast_out = mix(quick_mean, fast_out, max(1.0 / (n + 1.0), 1.0 / FAST_HISTORY));
+    // (This frame's sun visibility without the frames `fast_out.z` carries for the early returns.)
+    fast_out = mix(quick_mean, vec4(fast_out.xy, v.rays.r, fast_out.w),
+        max(1.0 / (n + 1.0), 1.0 / FAST_HISTORY));
     // A light going out shows faster than one coming on (a lamp switched off, a torch put away):
     // when this frame is darker than the fast history, its light's mean and moment follow it over
     // DARKEN_HISTORY frames instead.
@@ -1966,9 +2008,15 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
     }
     let k = 1.0 / (n + 1.0);
     // Under water the sun's visibility and colour (the caustics) keep a few frames only.
-    let k_sun = select(k, max(k, 1.0 / (CAUSTIC_HISTORY + 1.0)), sun_caustic);
+    var k_sun = select(k, max(k, 1.0 / (CAUSTIC_HISTORY + 1.0)), sun_caustic);
+    // Where a moving caster's shadow is or was within MOVING_FRAMES frames, the sun's visibility
+    // keeps two frames' (the fast history follows it), so the shadow neither trails nor blurs.
+    let shade = select(max(last_shade - 1.0, 0.0), MOVING_FRAMES, shade_now);
+    if shade > 0.5 { k_sun = max(k_sun, MOVING_SUN_WEIGHT); }
     var rays = mix(slow_mask, v.rays.rgb, k);
     rays.r = mix(slow_mask.r, v.rays.r, k_sun);
+    if shade > 0.5 { fast_out.z = rays.r; }
+    fast_out.z += 2.0 * shade;
     let sun_now = mix(slow_sun, v.sun, k_sun);
     return Traced(vec4(rays, v.rays.a),
         vec4(mix(slow_blocks, v.blocks.rgb, k), v.blocks.a),
