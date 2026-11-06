@@ -40,6 +40,14 @@ const MAX_FRAMES: f32 = 16.0;
 // How far the neighbourhood's spread reaches (Salvi's gamma): 1 clips hardest, and the history
 // keeps less of what the 3x3 neighbourhood does not show; above it, ghosts last longer.
 const GAMMA: f32 = 1.25;
+// The clipping box's smallest half-size (in compressed YCoCg), so a flat neighbourhood doesn't clip
+// the history to its noise; darker than FLOOR / FLOOR_SHARE (a cave, a night), that share of the
+// neighbourhood's own light instead (`DARK_FLOOR` 1, gfx/taa.rs `dark_floor`). A fixed 0.004 there
+// was as much as the light itself: the history was never clipped, and everything that moved, or
+// that the camera's motion moved (a reflection, a lit patch), trailed for sixteen frames.
+const FLOOR: f32 = 0.004;
+const FLOOR_SHARE: f32 = 0.03;
+override DARK_FLOOR: u32 = 1u;
 // How far, relative, the depth under the history may be from where the pixel reprojects.
 const DEPTH_TOLERANCE: f32 = 0.04;
 // What the aux holds for the sky: its depth is the far plane's, which turning the camera moves.
@@ -201,8 +209,10 @@ fn fs_resolve(screen: Screen) -> Resolved {
     if seen {
         let mean = m1 / 9.0;
         let sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)));
-        // A floor keeps a flat neighbourhood from clipping the history to its noise.
-        let extent = max(sigma * GAMMA, vec3(0.004));
+        // A floor keeps a flat neighbourhood from clipping the history to its noise (`FLOOR`).
+        var least = FLOOR;
+        if DARK_FLOOR == 1u { least = min(FLOOR, FLOOR_SHARE * max(mean.x, 0.0) + 1e-6); }
+        let extent = max(sigma * GAMMA, vec3(least));
         let past = sample_history(prev_uv);
         let kept = decompress(from_ycocg(clip_box(mean, extent, to_ycocg(compress(past.rgb)))));
         let kept_alpha = clamp(past.a, alpha_low, alpha_high);

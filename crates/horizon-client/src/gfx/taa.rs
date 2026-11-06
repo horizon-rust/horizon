@@ -41,6 +41,14 @@ pub fn enabled() -> bool {
     *ON.get_or_init(|| !std::env::var("HORIZON_TAA").is_ok_and(|v| v == "0"))
 }
 
+/// Whether the clipping box's floor follows the neighbourhood's light where it is dark
+/// (taa.wgsl `DARK_FLOOR`): on unless `HORIZON_TAA_DARK_FLOOR=0`, which keeps the fixed floor that
+/// let a cave's history trail every motion.
+fn dark_floor() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_TAA_DARK_FLOOR").map_or(true, |v| v != "0"))
+}
+
 /// The `index`th number of the Halton sequence in `base`, in [0, 1).
 fn halton(mut index: u32, base: u32) -> f32 {
     let (mut result, mut fraction) = (0.0, 1.0);
@@ -201,7 +209,8 @@ impl Taa {
         let pipeline = |label,
                         layout: &wgpu::BindGroupLayout,
                         fragment,
-                        targets: &[Option<wgpu::ColorTargetState>]| {
+                        targets: &[Option<wgpu::ColorTargetState>],
+                        constants: &[(&str, f64)]| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(
@@ -223,7 +232,10 @@ impl Taa {
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some(fragment),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants,
+                        ..Default::default()
+                    },
                     targets,
                 }),
                 multiview_mask: None,
@@ -243,12 +255,14 @@ impl Taa {
                 &resolve_layout,
                 "fs_resolve",
                 &[target(super::tonemap::SCENE_FORMAT), target(AUX_FORMAT)],
+                &[("DARK_FLOOR", f64::from(u8::from(dark_floor())))],
             ),
             blit: pipeline(
                 "Horizon TAA blit",
                 &blit_layout,
                 "fs_blit",
                 &[target(super::tonemap::SCENE_FORMAT)],
+                &[],
             ),
             resolve_layout,
             blit_layout,
