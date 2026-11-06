@@ -7870,6 +7870,15 @@ impl Renderer {
                 None => {
                     let (sent, making) = std::sync::mpsc::channel();
                     let (device, queue) = (self.device.clone(), self.queue.clone());
+                    // `HORIZON_RT_SKIP` bit 524288: made on the frame, as before (to compare).
+                    let inline = std::env::var("HORIZON_RT_SKIP")
+                        .ok()
+                        .and_then(|v| v.parse::<u32>().ok())
+                        .is_some_and(|skip| skip & 524_288 != 0);
+                    if inline {
+                        self.rt_clouds = Some(rt_clouds::RtClouds::new(&self.device, &self.queue));
+                        return true;
+                    }
                     let spawned = std::thread::Builder::new()
                         .name("Horizon clouds".into())
                         .spawn(move || {

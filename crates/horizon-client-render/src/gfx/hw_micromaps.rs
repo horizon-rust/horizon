@@ -58,6 +58,43 @@ mod on {
     /// since is skipped, not worked out for nothing.
     type Latest = Arc<Mutex<HashMap<SectionKey, u64>>>;
 
+    /// `HORIZON_RT_SKIP` bit 262144: the micromaps worked out on the main thread as the section
+    /// is uploaded, as before the micromap threads (to compare).
+    fn inline() -> bool {
+        static INLINE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *INLINE.get_or_init(|| {
+            std::env::var("HORIZON_RT_SKIP")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .is_some_and(|skip| skip & 262_144 != 0)
+        })
+    }
+
+    /// A section's micromaps from its cutout `geometries` and its `quads`.
+    fn plan(
+        cache: &mut Cache,
+        sprites: &Sprites,
+        geometries: &[(u32, u32, u32)],
+        quads: &[(u16, [[u16; 2]; 4])],
+    ) -> Option<SectionMicromaps> {
+        let quad = |q: u32| {
+            let (layer, uv) = quads[q as usize];
+            (layer, uv.map(|c| c.map(|c| f32::from(c) / UV_STEPS)))
+        };
+        let layer = |l: u16| {
+            let index = u32::from(l & !OPAQUE_LAYER);
+            if l & OPAQUE_LAYER != 0 || index >= sprites.split {
+                return Layer::Opaque;
+            }
+            match sprites.layers.get(index as usize) {
+                Some(Alpha::Opaque) => Layer::Opaque,
+                Some(Alpha::Mask(mask)) => Layer::Mask(mask),
+                Some(Alpha::Changing) | None => Layer::Changing,
+            }
+        };
+        cache.section(geometries, quad, layer)
+    }
+
     /// A micromap thread: its cache and the sprites, off the main thread. A section in a
     /// forest took the frame up to 48 ms there when it was meshed.
     fn work(asks: Receiver<Ask>, done: Sender<Done>, latest: Latest) {
@@ -84,22 +121,7 @@ mod on {
                     if !current {
                         continue;
                     }
-                    let quad = |q: u32| {
-                        let (layer, uv) = quads[q as usize];
-                        (layer, uv.map(|c| c.map(|c| f32::from(c) / UV_STEPS)))
-                    };
-                    let layer = |l: u16| {
-                        let index = u32::from(l & !OPAQUE_LAYER);
-                        if l & OPAQUE_LAYER != 0 || index >= sprites.split {
-                            return Layer::Opaque;
-                        }
-                        match sprites.layers.get(index as usize) {
-                            Some(Alpha::Opaque) => Layer::Opaque,
-                            Some(Alpha::Mask(mask)) => Layer::Mask(mask),
-                            Some(Alpha::Changing) | None => Layer::Changing,
-                        }
-                    };
-                    let planned = cache.section(&geometries, quad, layer);
+                    let planned = plan(&mut cache, sprites, &geometries, &quads);
                     if done.send((key, job, planned)).is_err() {
                         return;
                     }
@@ -114,8 +136,10 @@ mod on {
         asks: Vec<Sender<Ask>>,
         latest: Latest,
         done: Receiver<Done>,
-        /// Whether sprites were given (no section is asked before).
-        sprites: bool,
+        /// The sprites given (no section is asked before), and the main thread's cache for
+        /// them (`inline`).
+        sprites: Option<Arc<Sprites>>,
+        cache: Cache,
         /// The sections asked of the thread and not back yet: their latest job's number and the
         /// frames since (past `MOST_FRAMES` the structure is built without them).
         waiting: HashMap<SectionKey, (u64, u32)>,
@@ -182,7 +206,8 @@ mod on {
                     asks,
                     latest,
                     done,
-                    sprites: false,
+                    sprites: None,
+                    cache: Cache::default(),
                     waiting: HashMap::new(),
                     next_job: 0,
                     meshed: HashMap::new(),
@@ -236,7 +261,7 @@ mod on {
                 layers.len(),
                 pixels.len()
             );
-            inner.sprites = !layers.is_empty();
+            let given = !layers.is_empty();
             // Results of the old sprites' jobs come back for no section waiting.
             inner.waiting.clear();
             inner.meshed.clear();
@@ -244,6 +269,8 @@ mod on {
                 latest.clear();
             }
             let sprites = Arc::new(Sprites { layers, split });
+            inner.cache.clear();
+            inner.sprites = given.then(|| sprites.clone());
             for asks in &inner.asks {
                 let _ = asks.send(Ask::Sprites(sprites.clone()));
             }
@@ -268,7 +295,7 @@ mod on {
             {
                 latest.remove(&key);
             }
-            if !inner.sprites || solid.len() < quads as usize * 4 {
+            if inner.sprites.is_none() || solid.len() < quads as usize * 4 {
                 return;
             }
             let geometries: Vec<_> = super::super::hw_rays::solid_geometries(quads, runs)
@@ -288,9 +315,18 @@ mod on {
                     copied[q as usize] = (v[0].layer, [0, 1, 2, 3].map(|i| v[i].uv));
                 }
             }
+            inner.seen[0] += 1;
+            if inline()
+                && let Some(sprites) = &inner.sprites
+            {
+                if let Some(m) = plan(&mut inner.cache, sprites, &geometries, &copied) {
+                    inner.seen[1] += 1;
+                    inner.meshed.insert(key, Arc::new(m));
+                }
+                return;
+            }
             let job = inner.next_job;
             inner.next_job += 1;
-            inner.seen[0] += 1;
             if let Ok(mut latest) = inner.latest.lock() {
                 latest.insert(key, job);
             }

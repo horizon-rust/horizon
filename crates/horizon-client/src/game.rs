@@ -491,6 +491,10 @@ use winit::{
     window::{CursorGrabMode, Window, WindowId},
 };
 
+/// A frame's finished meshes up to this many upload at once, unqueued (main's
+/// `AUTO_UPLOADS_AT_ONCE`).
+const UPLOADS_AT_ONCE: usize = 8;
+
 #[derive(Clone)]
 struct Options {
     resources: PathBuf,
@@ -17986,6 +17990,21 @@ impl Game<'_> {
             let pending = &mut self.pending_uploads;
             let chunks = &self.world.chunks;
             let mut spent = Vec::with_capacity(uploads.len());
+            // A frame's few meshes and nothing waiting (an edit, water or redstone changing, a
+            // standing player): uploaded at once, as main does, the queue left alone.
+            let budgeted = g.chunk_updates > 0 || g.upload_budget_kib > 0;
+            let at_once = !budgeted && pending.is_empty() && uploads.len() <= UPLOADS_AT_ONCE;
+            let queued = if at_once {
+                horizon_client::spans::time("upload", || {
+                    for (key, mesh) in &uploads {
+                        renderer.upload(*key, mesh);
+                    }
+                });
+                spent = uploads;
+                Vec::new()
+            } else {
+                uploads
+            };
             horizon_client::spans::time("uw_upload_queue", || {
                 // Columns leave by `unloaded` and by a server's forget packets
                 // (`Streaming::forget`): a lookup per waiting section.
@@ -18004,7 +18023,7 @@ impl Game<'_> {
                 };
                 horizon_client::spans::time("uw_queue_centre", || pending.set_centre(camera));
                 let _push = horizon_client::spans::guard("uw_queue_push");
-                for (key, mesh) in uploads {
+                for (key, mesh) in queued {
                     if chunks.contains_key(&(key.0, key.2)) {
                         if let Some(old) = pending.push(key, mesh) {
                             spent.push((key, old));
