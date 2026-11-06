@@ -124,9 +124,14 @@ fn hw_opaque(c: RayIntersection) -> bool {
     let base = hw_quad(c, false);
     if base == 0xffffffffu { return true; }
     if (arena_at(base, 4u) & 0x8000u) != 0u { return true; }
+    // The wind (gfx/wind.rs): the leaves and plants drawn sway, their structures don't; a cutout
+    // quad this near the ray's start is taken for the swaying surface's own copy.
+    if c.t < WIND_SELF_REACH && (SKIP & 4096u) == 0u { return false; }
     let texel = hw_texel(c, base);
     return texel.a < 0.0 || texel.a >= 0.5;
 }
+// gfx/wind.rs `SELF_REACH`.
+const WIND_SELF_REACH: f32 = 0.1;
 // What candidate hit `c` (a translucent quad: stained glass, water, ice) lets through: the light
 // filtered by its colour (its texel times its tint, in light), as much as it is opaque. Through
 // water the sun's shadow ray (`focus`) takes the waves' caustics too; the other rays (the bounces,
