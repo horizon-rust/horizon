@@ -365,13 +365,20 @@ fn kernel(
         .and_then(|v| v.parse::<u32>().ok())
         .filter(|v| *v >= 3)
         .map_or(0.0, f64::from);
+    let centre = f64::from(u8::from(
+        std::env::var("HORIZON_RT_SUN_CENTRE").is_ok_and(|v| v != "0"),
+    ));
     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("Ray-traced shadows"),
         layout: Some(layout),
         module: shader,
         entry_point: Some(entry),
         compilation_options: wgpu::PipelineCompilationOptions {
-            constants: &[("DEBUG", debug), ("SKIP", f64::from(skip))],
+            constants: &[
+                ("DEBUG", debug),
+                ("SKIP", f64::from(skip)),
+                ("SUN_CENTRE", centre),
+            ],
             ..Default::default()
         },
         cache: None,
