@@ -118,6 +118,9 @@ fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>) -> vec3<f32> {
         let sea = f32(w >> 28u) / 15.0;
         let fresnel = 0.02 + 0.98 * pow(1.0 - l.y, 5.0);
         let dimmed = (1.0 - fresnel) * exp(-absorption * depth / max(-bent.y, 0.1));
+        // The sun's caustics only (shadow_rays_hw.wgsl `hw_tint`): a light source's ray takes
+        // their mean.
+        if dot(l, fx.light.xyz) < 0.999 { return dimmed; }
         // The first water the ray crosses keeps its caustics for when the ray is known to reach
         // the light (`hw_light`), as shadow_rays_hw.wgsl does.
         if !hw_caustic_on {

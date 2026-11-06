@@ -158,7 +158,10 @@ fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>, focus: bool) -> vec
         let floor_at = pos + rt.camera.xyz + rt.fraction.xyz;
         let fresnel = 0.02 + 0.98 * pow(1.0 - l.y, 5.0);
         let dimmed = (1.0 - fresnel) * exp(-absorption * depth / max(-bent.y, 0.1));
-        if !focus { return dimmed; }
+        // The caustics are the sun's (or the moon's): its rays come parallel from infinity, as
+        // `water_caustics` takes them. A light source's ray (a torch, glowing lichen, a lamp in a
+        // flooded cave) takes their mean: it lit cave water with a sunlit, rainbow-fringed network.
+        if !focus || dot(l, rt.light.xyz) < 0.999 { return dimmed; }
         let footprint = length(pos) * 1.5 / rt.size.y;
         // How open the water lies, in its colour's alpha (mesher.rs `with_sea`).
         let sea = f32(w >> 28u) / 15.0;
