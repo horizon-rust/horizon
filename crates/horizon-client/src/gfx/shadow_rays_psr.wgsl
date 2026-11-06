@@ -33,7 +33,7 @@ fn hw_refract(p: vec2<i32>) -> vec4<f32> {
     let seen = start + bent * h.t;
     let light = sun_on(seen + h.normal * 0.02, h.normal) + hw_seen_light(seen, h.normal);
     // From above, the distance in the water; from below, the ray is already out of it.
-    return vec4(h.through * h.albedo * light, select(0.01, max(h.t, 0.01), inside));
+    return vec4(h.through * hw_surface(h, seen, light), select(0.01, max(h.t, 0.01), inside));
 }
 // The same through glass (shadow_rays_hw.wgsl `hw_glass`): where `hw_reflect` met it, its face
 // toward the camera (xyz) and distance (w, below 0 none), and its attenuation a block.
@@ -124,8 +124,10 @@ fn hw_refract_glass(ray: vec3<f32>) -> vec4<f32> {
         beam = luminance(hw_light(pos, l, 4096.0));
     }
     let h = hw_hit(pos, dir, 256.0);
-    if h.t < 0.0 { return vec4(sky_at(dir) * h.through * absorbed, 1.0 + beam); }
+    if h.t < 0.0 {
+        return vec4(absorbed * (sky_at(dir) * h.through + hw_water_glint(h, dir)), 1.0 + beam);
+    }
     let seen = pos + dir * h.t;
     let light = sun_on(seen + h.normal * 0.02, h.normal) + hw_seen_light(seen, h.normal);
-    return vec4(absorbed * h.through * h.albedo * light, 1.0 + beam);
+    return vec4(absorbed * (h.through * hw_surface(h, seen, light) + hw_water_glint(h, dir)), 1.0 + beam);
 }

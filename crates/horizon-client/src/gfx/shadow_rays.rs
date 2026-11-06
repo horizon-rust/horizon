@@ -238,11 +238,22 @@ const HW: bool = false;
 var<private> hw_caustic_on: bool = false;
 fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> { return vec3(-1.0); }
 fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
-    return HwHit(-1.0, vec3(0.0), vec3(0.0), vec3(1.0));
+    return HwHit(-1.0, vec3(0.0), vec3(0.0), vec3(1.0), false, -1.0);
 }
 fn hw_reflect(p: vec2<i32>) -> vec4<f32> { return vec4(0.0); }
 fn hw_refract(p: vec2<i32>) -> vec4<f32> { return vec4(0.0); }
 ";
+
+/// The lava's look (terrain.wgsl `lava_look`): the very text the terrain's shader draws lava with,
+/// so a ray that meets lava (through water or glass, in a mirror: shadow_rays_hw.wgsl
+/// `hw_surface`) sees it as drawn, not as the atlas's sprite.
+fn lava_look() -> &'static str {
+    super::wgsl_prefix::section(
+        super::wgsl_prefix::TERRAIN,
+        "fn lava_hash",
+        "// End of the lava's look.",
+    )
+}
 
 /// The pass's shader, with the hybrid's hardware rays or without (`ShadowRays::new`).
 pub fn source(hardware: bool, split: u32) -> String {
@@ -253,8 +264,9 @@ pub fn source(hardware: bool, split: u32) -> String {
             HARDWARE.to_string()
         };
         format!(
-            "enable wgpu_ray_query;\nconst SPRITE_SPLIT: u32 = {split}u;\n{}{hardware}",
-            include_str!("shadow_rays.wgsl")
+            "enable wgpu_ray_query;\nconst SPRITE_SPLIT: u32 = {split}u;\n{}{hardware}{}",
+            include_str!("shadow_rays.wgsl"),
+            lava_look()
         )
     } else {
         format!("{}{NO_HARDWARE}", include_str!("shadow_rays.wgsl"))
