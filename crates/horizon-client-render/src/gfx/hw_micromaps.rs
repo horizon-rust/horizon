@@ -17,11 +17,12 @@ mod on {
     use horizon_rtx::omm::{Geometry, Held, RawSections, Section};
     use std::collections::HashMap;
     use std::sync::Arc;
+    use std::sync::Mutex;
     use std::sync::mpsc::{Receiver, Sender, channel};
 
     /// The frames a section's structure waits for its micromaps at most: past them (the thread
     /// behind by that much, or gone) it is built without, its cutouts alpha-tested by the shader.
-    const MOST_FRAMES: u32 = 30;
+    const MOST_FRAMES: u32 = 90;
 
     /// What a sprite layer is to the alpha test.
     enum Alpha {
@@ -53,9 +54,13 @@ mod on {
     /// A section's micromaps worked out, or none (no triangle helps).
     type Done = (SectionKey, u64, Option<SectionMicromaps>);
 
-    /// The micromap thread: the cache and the sprites, off the main thread. A section in a
+    /// The latest job asked for each waiting section, shared with the threads: one remeshed
+    /// since is skipped, not worked out for nothing.
+    type Latest = Arc<Mutex<HashMap<SectionKey, u64>>>;
+
+    /// A micromap thread: its cache and the sprites, off the main thread. A section in a
     /// forest took the frame up to 48 ms there when it was meshed.
-    fn work(asks: Receiver<Ask>, done: Sender<Done>) {
+    fn work(asks: Receiver<Ask>, done: Sender<Done>, latest: Latest) {
         let mut cache = Cache::default();
         let mut sprites: Option<Arc<Sprites>> = None;
         while let Ok(ask) = asks.recv() {
@@ -73,6 +78,12 @@ mod on {
                     let Some(sprites) = &sprites else {
                         continue;
                     };
+                    let current = latest
+                        .lock()
+                        .is_ok_and(|latest| latest.get(&key) == Some(&job));
+                    if !current {
+                        continue;
+                    }
                     let quad = |q: u32| {
                         let (layer, uv) = quads[q as usize];
                         (layer, uv.map(|c| c.map(|c| f32::from(c) / UV_STEPS)))
@@ -99,8 +110,9 @@ mod on {
 
     struct Inner {
         raw: RawSections,
-        /// To the micromap thread (`work`), and back.
-        asks: Sender<Ask>,
+        /// To the micromap threads (`work`), and back.
+        asks: Vec<Sender<Ask>>,
+        latest: Latest,
         done: Receiver<Done>,
         /// Whether sprites were given (no section is asked before).
         sprites: bool,
@@ -122,6 +134,9 @@ mod on {
                     continue;
                 }
                 self.waiting.remove(&key);
+                if let Ok(mut latest) = self.latest.lock() {
+                    latest.remove(&key);
+                }
                 if let Some(m) = planned {
                     self.seen[1] += 1;
                     self.meshed.insert(key, Arc::new(m));
@@ -140,16 +155,32 @@ mod on {
     impl Micromaps {
         pub fn new(device: &wgpu::Device) -> Self {
             Self(RawSections::new(device).and_then(|raw| {
-                let (asks, asked) = channel();
                 let (finished, done) = channel();
-                std::thread::Builder::new()
-                    .name("Horizon micromaps".into())
-                    .spawn(move || work(asked, finished))
-                    .map_err(|e| log::warn!("Horizon RTX: no micromap thread: {e}"))
-                    .ok()?;
+                let latest = Latest::default();
+                // A quarter of the cores, 2 to 4 threads: one fell behind in fast flight, its
+                // sections built without micromaps after their wait.
+                let threads = std::thread::available_parallelism()
+                    .map_or(2, |n| n.get() / 4)
+                    .clamp(2, 4);
+                let asks: Vec<_> = (0..threads)
+                    .filter_map(|i| {
+                        let (asks, asked) = channel();
+                        let (finished, latest) = (finished.clone(), latest.clone());
+                        std::thread::Builder::new()
+                            .name(format!("Horizon micromaps {i}"))
+                            .spawn(move || work(asked, finished, latest))
+                            .map_err(|e| log::warn!("Horizon RTX: no micromap thread: {e}"))
+                            .ok()
+                            .map(|_| asks)
+                    })
+                    .collect();
+                if asks.is_empty() {
+                    return None;
+                }
                 Some(Inner {
                     raw,
                     asks,
+                    latest,
                     done,
                     sprites: false,
                     waiting: HashMap::new(),
@@ -209,9 +240,13 @@ mod on {
             // Results of the old sprites' jobs come back for no section waiting.
             inner.waiting.clear();
             inner.meshed.clear();
-            let _ = inner
-                .asks
-                .send(Ask::Sprites(Arc::new(Sprites { layers, split })));
+            if let Ok(mut latest) = inner.latest.lock() {
+                latest.clear();
+            }
+            let sprites = Arc::new(Sprites { layers, split });
+            for asks in &inner.asks {
+                let _ = asks.send(Ask::Sprites(sprites.clone()));
+            }
         }
 
         /// Section `key` meshed again: its `quads` solid quads `solid`, in `runs`
@@ -228,7 +263,11 @@ mod on {
                 return;
             };
             inner.meshed.remove(&key);
-            inner.waiting.remove(&key);
+            if inner.waiting.remove(&key).is_some()
+                && let Ok(mut latest) = inner.latest.lock()
+            {
+                latest.remove(&key);
+            }
             if !inner.sprites || solid.len() < quads as usize * 4 {
                 return;
             }
@@ -252,8 +291,11 @@ mod on {
             let job = inner.next_job;
             inner.next_job += 1;
             inner.seen[0] += 1;
-            if inner
-                .asks
+            if let Ok(mut latest) = inner.latest.lock() {
+                latest.insert(key, job);
+            }
+            let thread = (job % inner.asks.len() as u64) as usize;
+            if inner.asks[thread]
                 .send(Ask::Section {
                     key,
                     job,
@@ -292,7 +334,12 @@ mod on {
         pub fn retain(&mut self, keep: impl Fn(SectionKey) -> bool) {
             if let Some(inner) = &mut self.0 {
                 inner.meshed.retain(|k, _| keep(*k));
-                inner.waiting.retain(|k, _| keep(*k));
+                if inner.waiting.iter().any(|(k, _)| !keep(*k)) {
+                    inner.waiting.retain(|k, _| keep(*k));
+                    if let Ok(mut latest) = inner.latest.lock() {
+                        latest.retain(|k, _| keep(*k));
+                    }
+                }
             }
         }
 
