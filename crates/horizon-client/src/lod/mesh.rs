@@ -12,6 +12,11 @@ use std::collections::BTreeMap;
 
 #[cfg(test)]
 const CELLS: usize = 16;
+/// `HORIZON_LOD_WATER_UNDERSIDE=0`: distant water drawn from above only, as before.
+fn water_underside() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_LOD_WATER_UNDERSIDE").map_or(true, |v| v != "0"))
+}
 /// An occluder's cells on a side (`Mesher::occluders`): 4 or 16 occluders a tile, 64 to 512
 /// blocks wide past the nearest levels.
 const OCCLUDER_CELLS: usize = 16;
@@ -507,18 +512,31 @@ fn mesh_columns_with_edges(
                     let (x1, z1) = (x0 + step as f32, z0 + step as f32);
                     for segment in column {
                         if segment.top {
+                            let rect = Rect {
+                                u0: x0,
+                                v0: z0,
+                                u1: x1,
+                                v1: z1,
+                            };
                             add_face(
                                 &mut faces,
                                 Direction::Up,
                                 segment.max,
-                                Rect {
-                                    u0: x0,
-                                    v0: z0,
-                                    u1: x1,
-                                    v1: z1,
-                                },
+                                rect,
                                 segment.material,
                             );
+                            // The water's surface seen from under it, as the near sections draw
+                            // it: without it, from under the sea the surface ended where the
+                            // distant terrain began, and the sky showed past it.
+                            if segment.material.fluid == 1 && water_underside() {
+                                add_face(
+                                    &mut faces,
+                                    Direction::Down,
+                                    segment.max,
+                                    rect,
+                                    material(segment.span, Direction::Down),
+                                );
+                            }
                         }
                         if segment.bottom {
                             add_face(

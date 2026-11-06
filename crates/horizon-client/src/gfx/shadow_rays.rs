@@ -379,6 +379,7 @@ fn kernel(
                 ("DEBUG", debug),
                 ("SKIP", f64::from(skip)),
                 ("SUN_CENTRE", centre),
+                ("EDGE_BAND", edge_band()),
             ],
             ..Default::default()
         },
@@ -1290,6 +1291,17 @@ impl ShadowRays {
     }
 }
 
+/// `HORIZON_RT_EDGE_BAND`: the share of the voxel grid's reach (toward its edge) over which the
+/// traced rays fade into the far field and vanilla's light (shadow_rays.wgsl `EDGE_BAND`), 0.05
+/// to 0.9; 0.25 without it. A wider band softens where the near terrain's traced shadows and
+/// light give way to the distant terrain's.
+fn edge_band() -> f64 {
+    std::env::var("HORIZON_RT_EDGE_BAND")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| (0.05..=0.9).contains(v))
+        .unwrap_or(0.25)
+}
 #[cfg(test)]
 mod tests {
     #[test]

@@ -569,6 +569,9 @@ override SKIP: u32 = 0u;
 // `HORIZON_RT_SUN_CENTRE=1`: RT lighting traces the ray toward the sun's centre too, which it
 // never reads (`trace`), as before 8121f258f, to tell what leaving it out changed.
 override SUN_CENTRE: u32 = 0u;
+// The share of the grid's reach, toward its edge, over which the rays fade into the far field
+// (shadow_rays.rs `edge_band`, HORIZON_RT_EDGE_BAND).
+override EDGE_BAND: f32 = 0.25;
 
 // Ray-traced shadows (gfx/voxels.rs, docs/raytracing.md): whether world block `v` is in the grid.
 fn in_grid(v: vec3<i32>) -> bool {
@@ -1641,7 +1644,7 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
     // lights itself as vanilla does).
     let reach = 0.5 * rt.grid.z;
     let far = max(abs(pos.x), abs(pos.z));
-    let edge = 1.0 - smoothstep(0.75 * reach, reach, far);
+    let edge = 1.0 - smoothstep((1.0 - EDGE_BAND) * reach, reach, far);
     // Off the surface by more as the depth's precision falls with distance.
     let lifted = pos + n * (0.02 + 0.002 * length(pos));
     // The far field: past the grid the heights alone, from the surface (`far_sun`); within it,
