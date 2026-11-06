@@ -1586,6 +1586,8 @@ impl Game<'_> {
         // marked to mesh by cause.
         status["remeshed_sections"] = self.streaming.remeshed_total.into();
         status["stale_meshes"] = self.streaming.stale_meshed_total.into();
+        status["arrived_again_columns"] = self.streaming.arrived_again_total.into();
+        status["forgotten_columns"] = self.streaming.forgotten_total.into();
         status["dirtied_sections"] = self
             .world
             .dirty_sections

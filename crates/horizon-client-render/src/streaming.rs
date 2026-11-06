@@ -554,6 +554,12 @@ pub struct Streaming {
     /// Edit sequence at each in-flight light job's snapshot.
     light_snapshots: FxHashMap<(i32, i32), u64>,
     pub generated_total: u64,
+    /// Of the columns a server sent (`insert_remote`), those it had sent before in this
+    /// level (forgotten since), and the columns forgotten (`forget_columns`).
+    pub arrived_again_total: u64,
+    pub forgotten_total: u64,
+    /// Every column a server sent in this level, for `arrived_again_total`.
+    arrived_ever: FxHashSet<(i32, i32)>,
     pub meshed_total: u64,
     /// Of `meshed_total`, the sections that had been meshed before (and kept since).
     pub remeshed_total: u64,
@@ -1137,6 +1143,9 @@ impl Streaming {
             light_edit_sequence: 0,
             light_snapshots: Default::default(),
             generated_total: 0,
+            arrived_again_total: 0,
+            forgotten_total: 0,
+            arrived_ever: Default::default(),
             meshed_total: 0,
             remeshed_total: 0,
             stale_meshed_total: 0,
@@ -1180,6 +1189,9 @@ impl Streaming {
         world.chunks.insert(key, Arc::new(chunk));
         self.lit.insert(key);
         self.generated_total += 1;
+        if !self.arrived_ever.insert(key) {
+            self.arrived_again_total += 1;
+        }
         for dz in -1..=1 {
             for dx in -1..=1 {
                 for sy in 0..world.layout().sections() as i32 {
@@ -1274,6 +1286,10 @@ impl Streaming {
             release_columns(&mut queue, gone);
         }
         let mut chunks = Vec::with_capacity(gone.len());
+        self.forgotten_total += gone
+            .iter()
+            .filter(|column| world.chunks.contains_key(column))
+            .count() as u64;
         for &(x, z) in gone {
             self.lit.remove(&(x, z));
             self.meshed.remove(&(x, z));
