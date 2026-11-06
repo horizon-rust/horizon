@@ -7814,10 +7814,32 @@ impl Renderer {
             self.froxels.camera = saved;
             gpu_passes::stamp(&mut encoder, "froxels: apply");
         }
+        // The heat haze's flames in range (below), known before the resolve: it draws over it.
+        let haze_flames =
+            (rt.lighting && world_linear && self.world_format == tonemap::SCENE_FORMAT)
+                .then(|| self.voxels.flames(frame.camera, haze::RANGE));
         // Temporal anti-aliasing (taa.rs): the world and its media resolved against the history,
         // before the tone mapping's exposure and bloom read them (the hand and the HUD come after).
-        if taa_now {
-            self.taa.resolve(
+        // The resolved frame goes back over the scene only when something draws over it before the
+        // tone mapping (or the HDR output reads the scene itself): else the tone mapping reads it
+        // from the history (`resolved`).
+        let resolved = if taa_now {
+            let drawn_over = (rain_drops && !pack_draws_weather)
+                || haze_flames
+                    .as_ref()
+                    .is_some_and(|f| haze::enabled() && !f.is_empty())
+                || scaled.is_some()
+                || pack_out.is_some()
+                || (hand_quads > 0 && !pack_draws_hand && self.eye.is_none())
+                || self.entity_outline.draws()
+                || !frame.screen.is_empty()
+                || crosshair > 0
+                || (self.hdr.is_some()
+                    && self
+                        .tonemap
+                        .as_ref()
+                        .is_none_or(|t| t.graded(target_size).is_none()));
+            let resolved = self.taa.resolve(
                 &self.device,
                 &mut self.uploads,
                 &mut encoder,
@@ -7828,10 +7850,14 @@ impl Renderer {
                     size: world_size,
                     view_proj: clean_view_proj,
                     camera: frame.camera,
+                    copy_back: drawn_over,
                 },
             );
             gpu_passes::stamp(&mut encoder, "taa");
-        }
+            resolved
+        } else {
+            None
+        };
         // RT lighting's physical rain (`rain`): the drops over the resolved scene, depth tested
         // against the world's. Before the resolve the TAA's history (a sixteenth new a frame) would
         // wash out thin streaks that move every frame; they take the still matrix, as the rays do.
@@ -7881,8 +7907,7 @@ impl Renderer {
         }
         // Heat haze above the flames in view (haze.rs), on the resolved scene; nothing is recorded
         // with no flame in range.
-        if rt.lighting && world_linear && self.world_format == tonemap::SCENE_FORMAT {
-            let flames = self.voxels.flames(frame.camera, haze::RANGE);
+        if let Some(flames) = haze_flames {
             self.haze.run(
                 &self.device,
                 &mut self.uploads,
@@ -8126,6 +8151,7 @@ impl Renderer {
                 &view_target,
                 shadow_mask.as_ref(),
                 keep_graded,
+                resolved.as_ref(),
             );
             if let Some(hdr) = &self.hdr {
                 hdr.keep_world(&mut encoder);

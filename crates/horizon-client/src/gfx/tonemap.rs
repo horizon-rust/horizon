@@ -730,7 +730,10 @@ impl Tonemap {
     /// solid terrain scaled by the ray-traced shadows' `mask` when there is one. With `set_post`
     /// the scene is graded first (and the mask applied then), into the graded light's target when
     /// `keep_graded` (HDR output, a screenshot or a video reads it after: `graded`), else straight
-    /// onto `target` with the curve (ACES), one full-size pass and target less.
+    /// onto `target` with the curve (ACES), one full-size pass and target less. `source` is the
+    /// scene's light when another texture of its size and format holds it (the TAA's resolved
+    /// frame, nothing drawn over it after: taa.rs `Inputs::copy_back`).
+    #[allow(clippy::too_many_arguments)]
     pub fn run(
         &self,
         device: &wgpu::Device,
@@ -739,13 +742,18 @@ impl Tonemap {
         target: &wgpu::TextureView,
         mask: Option<&wgpu::TextureView>,
         keep_graded: bool,
+        source: Option<&wgpu::TextureView>,
     ) {
         let Some(t) = self.scenes.iter().find(|t| t.size == size) else {
             return;
         };
-        let scene = match mask {
-            Some(mask) => &self.group(device, &t.view, mask),
-            None => &t.group,
+        let scene = match (source, mask) {
+            (None, None) => &t.group,
+            (source, mask) => &self.group(
+                device,
+                source.unwrap_or(&t.view),
+                mask.unwrap_or(&self.no_mask),
+            ),
         };
         if let (true, Some(post), Some(grading)) = (self.post, &t.post, &self.grading) {
             // The parameters are copied in with the commands, not written ahead of them: in VR
