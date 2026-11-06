@@ -36,6 +36,8 @@ impl Game<'_> {
             self.world.chest_openers.remove(&key);
         }
         self.block_entity_event(chest, 1, count.max(0));
+        // The guests get the same `ClientboundBlockEventPacket` (the lid).
+        self.lan_block_event(chest, 1, count.max(0));
     }
     /// A copper golem took from or filled a chest slot.
     pub(super) fn golem_chest_slot(
@@ -100,6 +102,7 @@ impl Game<'_> {
                 o.0 = count;
             }
             self.block_entity_event(p, 1, count);
+            self.lan_block_event(p, 1, count);
         }
     }
     /// `ChestBlockEntity.playSound` for a chest the recheck closed.
@@ -204,6 +207,64 @@ impl Game<'_> {
         }
     }
     // ---- interactions -----------------------------------------------------
+    /// `WeatheringCopperGolemStatueBlock.useItemOn`: an axe on an unoxidized
+    /// statue turns it back into a golem (`CopperGolemStatueBlockEntity.removeStatue`),
+    /// wearing the axe. Weathered statues are scraped by the axe's own
+    /// transform instead.
+    pub(super) fn use_golem_statue(&mut self, pos: [i32; 3], held: Option<&ItemStack>) -> bool {
+        if !held.is_some_and(|s| s.item.ends_with("_axe")) {
+            return false;
+        }
+        let registry = self.pack.assets.registry;
+        let Some(state) = registry.state(self.world.block(pos[0], pos[1], pos[2])) else {
+            return false;
+        };
+        if state.name != "minecraft:copper_golem_statue" {
+            return false;
+        }
+        // `Direction.toYRot` of the statue's facing.
+        let yaw = match state.properties.get("facing").map(String::as_str) {
+            Some("west") => 90.0,
+            Some("north") => 180.0,
+            Some("east") => 270.0,
+            _ => 0.0,
+        };
+        let waterlogged = state
+            .properties
+            .get("waterlogged")
+            .is_some_and(|w| w == "true");
+        // initCopperGolem: at the block's feet, facing as the statue does.
+        let at = [
+            f64::from(pos[0]) + 0.5,
+            f64::from(pos[1]),
+            f64::from(pos[2]) + 0.5,
+        ];
+        let Some(id) = self.spawn_mob("minecraft:copper_golem", at, true) else {
+            return false;
+        };
+        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+            m.yaw = yaw;
+            m.previous_yaw = yaw;
+            m.body_yaw = yaw;
+            m.previous_body_yaw = yaw;
+            m.head_yaw = yaw;
+            m.previous_head_yaw = yaw;
+        }
+        self.damage_held(1);
+        self.audio
+            .play("minecraft:entity.copper_golem.spawn", Some(at), 1.0, 1.0);
+        // Level.removeBlock(pos, false): air, or the water the statue stood in.
+        let replacement = registry.default_state(if waterlogged {
+            "minecraft:water"
+        } else {
+            "minecraft:air"
+        });
+        if let Some(replacement) = replacement {
+            let _ = self.level_set(pos, replacement);
+        }
+        self.world.block_entities.remove(&(pos[0], pos[1], pos[2]));
+        true
+    }
     /// `CopperGolem.mobInteract`; true when handled.
     pub(super) fn interact_copper_golem(&mut self, index: usize, item: &str) -> bool {
         if self.mobs[index].species() != Species::CopperGolem || !self.mobs[index].alive() {
@@ -242,8 +303,14 @@ impl Game<'_> {
         if name == "minecraft:shears" && self.golem_shearable(index) {
             // CopperGolem.shear: the sound, the antenna slot emptied (an
             // unequip) and the flower dropped 1.5 up.
-            self.audio
-                .play("minecraft:entity.copper_golem.shear", Some(at), 1.0, 1.0);
+            self.play_mob_bound_sound(
+                index,
+                "minecraft:entity.copper_golem.shear",
+                7,
+                1.0,
+                1.0,
+                false,
+            );
             let antenna = self.mobs[index].saddle_item();
             self.mobs[index].set_saddle(None);
             let id = self.mobs[index].id;
@@ -270,8 +337,7 @@ impl Game<'_> {
         }
         if is_axe && waxed {
             self.mobs[index].extra.vector[0] = -1.0;
-            self.audio
-                .play("minecraft:item.axe.scrape", Some(at), 1.0, 1.0);
+            self.play_mob_bound_sound(index, "minecraft:item.axe.scrape", 6, 1.0, 1.0, false);
             self.level_event_at(3004, block, 0);
             self.damage_held_tool();
             return true;
@@ -280,8 +346,7 @@ impl Game<'_> {
             let m = &mut self.mobs[index];
             m.extra.vector[0] = -1.0;
             m.extra.variant = horizon_client::mobs::copper_golem::weather_previous(m.extra.variant);
-            self.audio
-                .play("minecraft:item.axe.scrape", Some(at), 1.0, 1.0);
+            self.play_mob_bound_sound(index, "minecraft:item.axe.scrape", 6, 1.0, 1.0, false);
             self.level_event_at(3005, block, 0);
             self.damage_held_tool();
             return true;

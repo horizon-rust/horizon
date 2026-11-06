@@ -23,8 +23,9 @@ pub struct Illusions {
     pub offsets: [[[f64; 3]; COPIES]; 2],
 }
 
-pub const MIRROR: u8 = 5;
-pub const BLINDNESS_SPELL: u8 = 4;
+// `IllagerSpell` ids: DISAPPEAR (the mirror spell) 4, BLINDNESS 5.
+pub const MIRROR: u8 = 4;
+pub const BLINDNESS_SPELL: u8 = 5;
 
 pub fn register(m: &mut Mob) {
     let g = &mut m.ai.goals;
@@ -62,7 +63,7 @@ pub fn register(m: &mut Mob) {
 
 /// `Illusioner.finalizeSpawn`: a bow in the main hand.
 pub fn finalize(m: &mut Mob) {
-    m.extra.main_hand = Some("minecraft:bow".into());
+    m.extra.set_main_hand(Some("minecraft:bow".into()));
 }
 
 /// `IllusionerMirrorSpellGoal` and `IllusionerBlindnessSpellGoal`.
@@ -130,12 +131,24 @@ impl Goal for Spell {
         }
         if self.spell == MIRROR {
             m.add_effect(INVISIBILITY, 1200, 0);
-        } else if m.ai.target == Some(Who::Player) {
-            cx.events.push(MobEvent::EffectPlayer {
-                effect: BLINDNESS,
-                ticks: 400,
-                amplifier: 0,
-            });
+        } else {
+            // `performSpellCasting` blinds the target whatever it is: a
+            // villager or an iron golem as well as the player.
+            match m.ai.target {
+                Some(Who::Player) => cx.events.push(MobEvent::EffectPlayer {
+                    effect: BLINDNESS,
+                    ticks: 400,
+                    amplifier: 0,
+                    ambient: false,
+                }),
+                Some(Who::Mob(target)) => cx.events.push(MobEvent::EffectMob {
+                    target,
+                    effect: BLINDNESS,
+                    ticks: 400,
+                    amplifier: 0,
+                }),
+                None => {}
+            }
         }
         cx.events.push(MobEvent::Sound(
             "entity.illusioner.cast_spell",
@@ -146,26 +159,22 @@ impl Goal for Spell {
     }
 }
 
+/// `Entity.isInvisible` of an illusioner on a client: the shared flag stands
+/// in for the effect the server holds, which draws the mirror images.
+pub fn set_invisible(m: &mut Mob, on: bool) {
+    m.extra.effects.retain(|e| e.0 != INVISIBILITY);
+    if on {
+        m.extra.effects.push((INVISIBILITY, i32::MAX, 0));
+    }
+}
+
 /// The client-side half of `Illusioner.aiStep`: new image offsets when
 /// hurt and once a minute, with a puff of cloud and a sound.
 pub fn tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
     if !m.has_effect(INVISIBILITY) {
         return;
     }
-    let hurt = m.hurt_time;
-    let age = m.age;
-    let mut il = m.extra.illusions.take().unwrap_or_default();
-    il.ticks = (il.ticks - 1).max(0);
-    if hurt == 1 || age.is_multiple_of(1200) {
-        il.ticks = 3;
-        for i in 0..COPIES {
-            il.offsets[0][i] = il.offsets[1][i];
-            let r = &mut m.random;
-            let x = (-6 + r.next_int_bound(13).unwrap_or(0)) as f64 * 0.5;
-            let y = (r.next_int_bound(6).unwrap_or(0) - 4).max(0) as f64;
-            let z = (-6 + r.next_int_bound(13).unwrap_or(0)) as f64 * 0.5;
-            il.offsets[1][i] = [x, y, z];
-        }
+    if step(m) {
         events.push(MobEvent::Particles {
             kind: "minecraft:cloud",
             at: [m.position.x, m.position.y + 0.9, m.position.z],
@@ -177,6 +186,47 @@ pub fn tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
             1.0,
             1.0,
         ));
+    }
+}
+
+/// `Illusioner.aiStep` on a client of a server: invisible is the synched
+/// shared flag. The puff is drawn here exactly (sixteen `addParticle`s); the
+/// sound comes from the server.
+pub fn client_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
+    if !m.invisible || !step(m) {
+        return;
+    }
+    let (w, h) = (f64::from(m.width()), f64::from(m.height()));
+    for _ in 0..16 {
+        // getRandomX(0.5), getRandomY() and getZ(0.5), which is not random.
+        let x = m.position.x + w * (2.0 * m.random.next_double() - 1.0) * 0.5;
+        let y = m.position.y + h * m.random.next_double();
+        events.push(MobEvent::ParticleAt {
+            kind: "cloud",
+            at: [x, y, m.position.z + w * 0.5],
+            velocity: [0.0; 3],
+        });
+    }
+}
+
+/// The image offsets' clock of an invisible illusioner. True when the images
+/// jumped to new offsets (hurt, or once a minute), which the puff goes with.
+fn step(m: &mut Mob) -> bool {
+    let hurt = m.hurt_time;
+    let age = m.age;
+    let mut il = m.extra.illusions.take().unwrap_or_default();
+    il.ticks = (il.ticks - 1).max(0);
+    let jumped = hurt == 1 || age.is_multiple_of(1200);
+    if jumped {
+        il.ticks = 3;
+        for i in 0..COPIES {
+            il.offsets[0][i] = il.offsets[1][i];
+            let r = &mut m.random;
+            let x = (-6 + r.next_int_bound(13).unwrap_or(0)) as f64 * 0.5;
+            let y = (r.next_int_bound(6).unwrap_or(0) - 4).max(0) as f64;
+            let z = (-6 + r.next_int_bound(13).unwrap_or(0)) as f64 * 0.5;
+            il.offsets[1][i] = [x, y, z];
+        }
     } else if hurt == 9 {
         il.ticks = 3;
         for i in 0..COPIES {
@@ -185,6 +235,7 @@ pub fn tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
         }
     }
     m.extra.illusions = Some(il);
+    jumped
 }
 
 /// `Illusioner.getIllusionOffsets`.
@@ -231,5 +282,92 @@ mod tests {
     #[test]
     fn wobble_is_small() {
         assert!(wobble(1, 10.0).iter().all(|c| c.abs() <= 0.025));
+    }
+
+    /// `SpellcasterIllager.customServerAiStep` counts a cast down once a
+    /// tick for the illusioner as for the evoker (`Illusioner` has no override).
+    /// Without it the count stayed at 20 after the first spell, so the
+    /// illusioner kept casting: no second spell and no bow.
+    #[test]
+    fn the_cast_counts_down() {
+        use crate::mobs::world::with_test_world;
+        use std::sync::Arc;
+        let mut left = None;
+        let ran = with_test_world(&[], |w, types| {
+            let mut m = Mob::new(
+                1,
+                Arc::new(types.types["minecraft:illusioner"].clone()),
+                horizon_core::geometry::Vec3::new(0.5, 64.0, 0.5),
+                0.0,
+            );
+            m.extra.counter = 20;
+            let (mut lr, mut events) = (horizon_core::random::LegacyRandom::new(0), Vec::new());
+            for _ in 0..5 {
+                crate::mobs::ai::tick(&mut m, w, &mut lr, &mut events);
+            }
+            left = Some(m.extra.counter);
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(left, Some(15));
+    }
+
+    /// `IllusionerBlindnessSpellGoal.performSpellCasting` adds Blindness for
+    /// 400 ticks to the `LivingEntity` the illusioner targets: a villager or
+    /// an iron golem (mob 2) gets it as the player does. Without the fix the
+    /// cast on a mob sent no effect at all.
+    #[test]
+    fn the_blindness_spell_reaches_a_targeted_mob() {
+        use crate::mobs::world::with_test_world;
+        use std::sync::Arc;
+        let mut cast = Vec::new();
+        let ran = with_test_world(&[], |w, types| {
+            for target in [Who::Mob(2), Who::Player] {
+                let mut m = Mob::new(
+                    1,
+                    Arc::new(types.types["minecraft:illusioner"].clone()),
+                    horizon_core::geometry::Vec3::new(0.5, 64.0, 0.5),
+                    0.0,
+                );
+                m.ai.target = Some(target);
+                let mut spell = Spell::new(BLINDNESS_SPELL);
+                spell.warmup = 1;
+                let (mut lr, mut events) = (horizon_core::random::LegacyRandom::new(0), Vec::new());
+                spell.tick(
+                    &mut m,
+                    &mut Cx {
+                        w,
+                        lr: &mut lr,
+                        events: &mut events,
+                    },
+                );
+                cast.push(events.into_iter().find_map(|e| match e {
+                    MobEvent::EffectMob {
+                        target,
+                        effect,
+                        ticks,
+                        amplifier,
+                    } => Some((Some(target), effect, ticks, amplifier)),
+                    MobEvent::EffectPlayer {
+                        effect,
+                        ticks,
+                        amplifier,
+                        ..
+                    } => Some((None, effect, ticks, amplifier)),
+                    _ => None,
+                }));
+            }
+        });
+        if !ran {
+            return;
+        }
+        assert_eq!(
+            cast,
+            [
+                Some((Some(2), BLINDNESS, 400, 0)),
+                Some((None, BLINDNESS, 400, 0)),
+            ]
+        );
     }
 }

@@ -7,6 +7,7 @@
 //!   stone room with a door, a sound behind a thick wall, a large cave), for ray counts and
 //!   bounces around the defaults;
 //! - the audio thread: the mixer with and without the filters and reverb buses.
+extern crate horizon_client_lib as horizon_client;
 use horizon_client::acoustics::{Acoustics, BlockState, RANGE, Sink, Snapshot, materials};
 use horizon_client::chunk::{MIN_Y, SECTIONS, Section, index};
 use horizon_client::fast_hash::FxHashMap;

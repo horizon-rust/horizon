@@ -8,7 +8,8 @@
 //! in order, and writes it with the current schema. Each fix finds its values
 //! with the schema just below its own key ([`schema`]). Every
 //! fix of the server data is ported ([`OLDEST_SUPPORTED`]). The fixes of client
-//! files (options, hotbars, debug profiles) are not ported either.
+//! files (options, debug profiles) are not ported either (creative toolbars in
+//! `hotbar.nbt` are ported via [`update_hotbar`]).
 mod block_state_data;
 mod chunk_flatten;
 mod chunk_leaves;
@@ -25,8 +26,10 @@ mod fixes_old;
 mod flat_tables;
 mod items;
 pub mod json;
+pub mod progress;
 pub mod schema;
 mod text;
+pub mod world_upgrader;
 
 use crate::nbt::Tag;
 use dynamic::{as_str, string};

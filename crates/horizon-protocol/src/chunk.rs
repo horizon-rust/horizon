@@ -2,7 +2,7 @@
 //! serialized LevelChunkSections with their PalettedContainers, block
 //! entities) and ClientboundLightUpdatePacketData (sky/block DataLayers).
 use crate::{
-    Result,
+    Error, Result,
     buf::{BitSet, Bytes, Codec, Longs, Reader, VarInt, Writer},
     packet,
 };
@@ -83,6 +83,11 @@ impl Paletted {
     pub fn read(r: &mut Reader, strategy: Strategy, global_bits: u8) -> Result<Self> {
         let wire = r.u8()?;
         let (has_palette, bits) = strategy.configuration(wire, global_bits);
+        // SimpleBitStorage holds 1 to 32 bits; wider wire values would
+        // divide by zero or overflow a shift.
+        if bits > 32 {
+            return Err(Error::new(format!("{bits} bits per entry, more than 32")));
+        }
         let palette = if !has_palette {
             Vec::new()
         } else if bits == 0 {
@@ -139,7 +144,7 @@ impl Paletted {
             return Self::from_values_slow(values, strategy, global_bits);
         }
         let mut palette: Vec<i32> = Vec::new();
-        let mut ids = Vec::with_capacity(values.len());
+        let mut ids: Vec<u32> = Vec::with_capacity(values.len());
         INDEX.with_borrow_mut(|index| {
             if index.len() <= max as usize {
                 index.resize(max as usize + 1, u32::MAX);
@@ -160,6 +165,17 @@ impl Paletted {
                 index[v as usize] = u32::MAX;
             }
         });
+        Self::from_palette(palette, &ids, strategy, global_bits)
+    }
+
+    /// `from_values` from what it finds first: the distinct values in
+    /// first-seen order, and each entry's index among them.
+    pub fn from_palette(
+        palette: Vec<i32>,
+        ids: &[u32],
+        strategy: Strategy,
+        global_bits: u8,
+    ) -> Self {
         let needed = if palette.len() <= 1 {
             0
         } else {
@@ -174,9 +190,9 @@ impl Paletted {
             };
         }
         let data = if has_palette {
-            pack(&ids, bits, |&id| u64::from(id))
+            pack(ids, bits, |&id| u64::from(id))
         } else {
-            pack(values, bits, |&v| v as u64)
+            pack(ids, bits, |&id| palette[id as usize] as u64)
         };
         Self {
             bits,
@@ -297,12 +313,25 @@ impl ChunkData {
         w.data
     }
 }
-/// ByteBufCodecs.byteArray(2048) per DataLayer.
+/// ByteBufCodecs.byteArray(2048) per DataLayer, whose constructor refuses
+/// any other length: the client indexes a layer's 2048 bytes directly.
 pub struct Layers;
 impl Codec<Vec<Vec<u8>>> for Layers {
     fn read(r: &mut Reader) -> Result<Vec<Vec<u8>>> {
         let n = r.count(r.remaining())?;
-        (0..n).map(|_| r.byte_array(2048)).collect()
+        (0..n)
+            .map(|_| {
+                let layer = r.byte_array(2048)?;
+                if layer.len() == 2048 {
+                    Ok(layer)
+                } else {
+                    Err(crate::Error::new(format!(
+                        "DataLayer should be 2048 bytes not: {}",
+                        layer.len()
+                    )))
+                }
+            })
+            .collect()
     }
     fn write(v: &Vec<Vec<u8>>, w: &mut Writer) {
         w.varint(v.len() as i32);
@@ -364,6 +393,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_light_layer_is_2048_bytes_or_refused() {
+        let layers = |len: usize| {
+            let mut w = Writer::new();
+            w.varint(1);
+            w.byte_array(&vec![0x11; len]);
+            Layers::read(&mut Reader::new(&w.data))
+        };
+        assert_eq!(layers(2048).unwrap(), [vec![0x11; 2048]]);
+        assert!(layers(0).is_err());
+        assert!(layers(2047).is_err());
+    }
+
+    #[test]
     fn from_values_matches_the_linear_search() {
         let mut seed = 12345u64;
         let mut next = |n: u64| {
@@ -423,6 +465,23 @@ mod tests {
         let g = Paletted::from_values(&wide, Strategy::Blocks, 16);
         assert!(g.palette.is_empty() && g.bits == 16);
         assert_eq!(g.get(4095), 4095 * 7);
+    }
+
+    #[test]
+    fn wire_bits_wider_than_storage_are_rejected() {
+        for wire in [33u8, 200] {
+            let data = [wire];
+            let mut r = Reader::new(&data);
+            assert!(Paletted::read(&mut r, Strategy::Blocks, 16).is_err());
+        }
+        // 15- and 16-bit global palettes still read (1024 longs of zeroes).
+        for (wire, global) in [(15u8, 15u8), (16, 16)] {
+            let mut data = vec![wire];
+            data.resize(1 + 1024 * 8, 0);
+            let mut r = Reader::new(&data);
+            let p = Paletted::read(&mut r, Strategy::Blocks, global).unwrap();
+            assert_eq!(p.bits, wire);
+        }
     }
 
     #[test]

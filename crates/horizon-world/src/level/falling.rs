@@ -12,7 +12,9 @@ pub enum Landing {
     /// solidified); discard the entity.
     Placed(BlockStateId),
     /// The block could not be placed: discard the entity and, if the entity
-    /// drops items, spawn the block's item (vanilla `spawnAtLocation`).
+    /// drops items, run `Fallable.onBrokenAfterFall` (the anvil's level event
+    /// 1029) and spawn the block's item from the entity's position (vanilla
+    /// `spawnAtLocation`).
     Broken,
     /// The landing position holds a moving piston: keep falling.
     Continue,
@@ -20,7 +22,12 @@ pub enum Landing {
 
 impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     /// `FallingBlockEntity.fall`.
-    pub(crate) fn falling_block_fall(&mut self, pos: BlockPos, state: BlockStateId) {
+    pub(crate) fn falling_block_fall(
+        &mut self,
+        pos: BlockPos,
+        state: BlockStateId,
+        hurt_per_distance: Option<f32>,
+    ) {
         let b = self.b;
         let carried = b
             .table
@@ -31,12 +38,13 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.emit(LevelEvent::FallingBlock {
             pos,
             state: carried,
+            hurt_per_distance,
         });
     }
     /// `FallingBlock.tick` (and `SpeleothemBlock`'s falling stalactites).
     pub(crate) fn falling_block_tick(&mut self, pos: BlockPos, state: BlockStateId) {
         if self.is_free(self.below_state(pos)) && pos.y >= self.level.min_y() {
-            self.falling_block_fall(pos, state);
+            self.falling_block_fall(pos, state, None);
         }
     }
     /// `SpeleothemBlock.spawnFallingStalactite`.
@@ -51,9 +59,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let mut fall_pos = pos;
         let mut fall_state = state;
         while is_stalactite(fall_state) {
-            self.falling_block_fall(fall_pos, fall_state);
             let thickness = b.table.text(fall_state, p.thickness);
-            if thickness == "tip" || thickness == "tip_merge" {
+            let tip = thickness == "tip" || thickness == "tip_merge";
+            let damage = tip.then_some((1 + pos.y - fall_pos.y).max(6) as f32);
+            self.falling_block_fall(fall_pos, fall_state, damage);
+            if tip {
                 break;
             }
             fall_pos = below(fall_pos);
@@ -81,7 +91,7 @@ impl Behaviours {
         }
         let concrete = self.instance_of(state, Class::ConcretePowder);
         // DirectionalPlaceContext(level, pos, DOWN, ItemStack.EMPTY, UP).
-        let ctx = super::place::Ctx {
+        let ctx = super::place::PlacementContext {
             pos,
             hit_pos: pos,
             face: Direction::Up,
@@ -101,9 +111,6 @@ impl Behaviours {
         let would_continue = sim.is_free(sim.below_state(pos)) && (!concrete || !stuck_in_water);
         let would_survive = sim.can_survive(state, pos) && !would_continue;
         if !(may_replace && would_survive) {
-            if self.instance_of(state, Class::Anvil) {
-                sim.level_event(1029, pos, 0);
-            }
             return Landing::Broken;
         }
         let mut placed = state;
@@ -113,9 +120,6 @@ impl Behaviours {
             placed = self.table.set_bool(placed, self.props.waterlogged, true);
         }
         if !sim.set_block_and_update(pos, placed) {
-            if self.instance_of(state, Class::Anvil) {
-                sim.level_event(1029, pos, 0);
-            }
             return Landing::Broken;
         }
         // Fallable.onLand

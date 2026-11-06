@@ -24,7 +24,9 @@ impl Launcher {
 
     pub(super) fn play_as(&mut self, who: Player) {
         let mut accounts = Accounts::load();
-        let done = accounts.play_as(who).and_then(|()| accounts.save());
+        let done = accounts
+            .play_as_with(account::store(), who, self.settings.dev_offline)
+            .and_then(|()| accounts.save());
         match done {
             Ok(()) => self.accounts = accounts,
             Err(e) => self.sign_in_state = Some(SignInState::Done(Err(e))),
@@ -33,7 +35,7 @@ impl Launcher {
     }
 
     /// Everyone the player can play as, with how each signs in.
-    fn players(&self) -> Vec<(Player, String, &'static str)> {
+    pub(super) fn players(&self) -> Vec<(Player, String, &'static str)> {
         let mut out: Vec<_> = self
             .accounts
             .accounts
@@ -79,7 +81,12 @@ impl Launcher {
             .bg(t.surface)
             .flex()
             .flex_col()
-            .occlude();
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                this.account_menu = false;
+                this.menu_closed_at = Some(event.position);
+                cx.notify();
+            }));
         for (i, (who, name, how)) in self.players().into_iter().enumerate() {
             let chosen = who == now;
             menu = menu.child(
@@ -94,10 +101,20 @@ impl Launcher {
                     .rounded(px(theme::RADIUS))
                     .cursor_pointer()
                     .hover(move |s| s.bg(t.plate_soft))
+                    .child(self.profile_heads.draw(
+                        match &who {
+                            Player::Microsoft(uuid) => Some(uuid),
+                            _ => None,
+                        },
+                        24.,
+                        self.scale,
+                        &t,
+                    ))
                     .child(
                         div()
                             .flex()
                             .flex_col()
+                            .flex_1()
                             .min_w_0()
                             .child(text(theme::LABEL).truncate().text_color(t.ink).child(name))
                             .child(text(theme::CAPTION).text_color(t.muted).child(how)),
@@ -140,7 +157,19 @@ impl Launcher {
         }
         self.play_as(Player::Offline(name));
         if !matches!(self.sign_in_state, Some(SignInState::Done(Err(_)))) {
-            self.servers.text(Field::OfflineName).clear();
+            self.servers.text(Field::OfflineName).set(String::new());
+        }
+    }
+
+    /// Forgets an offline name and its skin.
+    pub(super) fn forget_offline(&mut self, name: &str) {
+        let mut accounts = Accounts::load();
+        if accounts
+            .remove_offline(name, &horizon_launcher::skins::dir())
+            .is_ok()
+            && accounts.save().is_ok()
+        {
+            self.accounts = accounts;
         }
     }
 
@@ -182,10 +211,7 @@ impl Launcher {
             actions = actions.child(
                 button(format!("offline-forget-{i}"), "Forget", Kind::Ghost, &t).on_click(
                     cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        let mut accounts = Accounts::load();
-                        if accounts.remove_offline(&forget).is_ok() && accounts.save().is_ok() {
-                            this.accounts = accounts;
-                        }
+                        this.forget_offline(&forget);
                         cx.notify();
                     }),
                 ),
@@ -208,6 +234,37 @@ impl Launcher {
             ));
         }
         rows = rows.children(self.skin_panel(cx));
+        // The name the game made up can't be forgotten — it's what an offline player is —
+        // only rolled for a new one.
+        if let Some(made_up) = self.offline_name.clone() {
+            let plays = now == Player::GameName;
+            n += 1;
+            rows = rows.child(index_row(
+                n,
+                made_up,
+                Some(
+                    div()
+                        .child(tr(if plays {
+                            "Offline name · the game's own · plays"
+                        } else {
+                            "Offline name · the game's own"
+                        }))
+                        .into_any_element(),
+                ),
+                Some(
+                    button("game-name-new", "New name", Kind::Ghost, &t)
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            match instances::new_player_name() {
+                                Ok(name) => this.offline_name = Some(name),
+                                Err(e) => this.sign_in_state = Some(SignInState::Done(Err(e))),
+                            }
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                ),
+                &t,
+            ));
+        }
         n += 1;
         let add = div()
             .flex()

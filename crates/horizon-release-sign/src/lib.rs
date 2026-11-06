@@ -20,6 +20,11 @@ use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
 pub const SUMS: &str = "SHA256SUMS";
 /// Its signatures' asset name.
 pub const SIGNATURE: &str = "SHA256SUMS.sig";
+/// A Nightly's second signature file: the same checksum list signed for the Nightly's own version
+/// (`horizon release nightly-<date>-<commit>`) rather than for the channel, so an older Nightly can't
+/// be served as a newer one. Nightlies carry both while launchers that only read [`SIGNATURE`] are
+/// in use (docs/security.md, "Nightly signatures"); current launchers and servers require this one.
+pub const SIGNATURE_V2: &str = "SHA256SUMS.v2.sig";
 
 const KEYS: &str = include_str!("../release-keys.txt");
 const LEGACY: &str = include_str!("../legacy-releases.txt");
@@ -114,8 +119,60 @@ pub fn verify(
     parse_sums(text)
 }
 
+/// The channel nightly builds are signed for (nightly-build.yml): their message is
+/// `horizon release nightly`, which no release's tag is, so a nightly's signature never passes for a
+/// release's, nor a release's for a nightly's.
+pub const NIGHTLY: &str = "nightly";
+
+/// Whether `tag` is a nightly's: `nightly`, or a past one kept as `nightly-<date>`.
+pub fn is_nightly(tag: &str) -> bool {
+    tag == NIGHTLY || tag.starts_with("nightly-")
+}
+
+/// The version a nightly is listed as, from its release title ("Nightly 2026-10-28 · 0c02067"):
+/// `nightly-2026-10-28-0c02067`. `published` (GitHub's `published_at`) dates a title without one.
+/// For listing only: what installs is checked against [`nightly_title_version`], which has no
+/// fallback, since nothing signs `published`.
+pub fn nightly_version(title: &str, published: &str) -> String {
+    let mut words = title
+        .strip_prefix("Nightly ")
+        .unwrap_or_default()
+        .split(" · ");
+    let date = words
+        .next()
+        .filter(|d| is_date(d))
+        .unwrap_or_else(|| published.get(..10).unwrap_or(published));
+    let commit = words
+        .next()
+        .filter(|c| !c.is_empty() && c.chars().all(|c| c.is_ascii_hexdigit()));
+    match commit {
+        Some(commit) => format!("{NIGHTLY}-{date}-{commit}"),
+        None => format!("{NIGHTLY}-{date}"),
+    }
+}
+
+/// The date of a nightly's version or tag (`nightly-2026-10-28-0c02067`, `nightly-2026-10-28`):
+/// nightlies follow every release and each other by it.
+pub fn nightly_date(version: &str) -> Option<&str> {
+    let date = version.strip_prefix("nightly-")?.get(..10)?;
+    is_date(date).then_some(date)
+}
+
+fn is_date(text: &str) -> bool {
+    text.len() == 10
+        && text.chars().enumerate().all(|(i, c)| {
+            if i == 4 || i == 7 {
+                c == '-'
+            } else {
+                c.is_ascii_digit()
+            }
+        })
+}
+
 /// The signed SHA-256 of `asset` in release `tag`, or why the download must be refused.
 /// `sums` and `signature` are the release's SHA256SUMS and SHA256SUMS.sig, None when it has none.
+/// A nightly is never a release: its tags are refused here, whatever their signature
+/// ([`nightly_digest`] checks those).
 pub fn signed_digest(
     tag: &str,
     asset: &str,
@@ -123,17 +180,92 @@ pub fn signed_digest(
     signature: Option<&str>,
     keys: &[PublicKey],
 ) -> Result<String, String> {
-    let (Some(sums), Some(signature)) = (sums, signature) else {
+    if is_nightly(tag) {
         return Err(format!(
-            "{tag} is not signed, and Horizon installs only signed releases: pick a newer version."
+            "{tag} is a Nightly build: only a launcher with Nightly turned on installs it."
+        ));
+    }
+    digest_in(tag, tag, asset, sums, signature, keys)
+}
+
+/// The version a Nightly's GitHub title names, strictly: `Nightly 2026-10-28 · 0c02067` (as
+/// nightly-build.yml writes it) gives `nightly-2026-10-28-0c02067`. Anything else is None: a
+/// Nightly is verified against the version it installs as, so a title that doesn't name its date
+/// and commit is refused rather than dated by when GitHub says it was published.
+pub fn nightly_title_version(title: &str) -> Option<String> {
+    let (date, commit) = title.strip_prefix("Nightly ")?.split_once(" · ")?;
+    let commit_ok = (7..=40).contains(&commit.len())
+        && commit
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    (is_date(date) && commit_ok).then(|| format!("{NIGHTLY}-{date}-{commit}"))
+}
+
+/// Whether `version` is a Nightly build's full version, `nightly-<date>-<commit>`, the form its
+/// [`SIGNATURE_V2`] is signed for.
+pub fn is_nightly_build(version: &str) -> bool {
+    version
+        .strip_prefix("nightly-")
+        .and_then(|rest| rest.split_at_checked(10))
+        .is_some_and(|(date, commit)| {
+            is_date(date)
+                && commit.strip_prefix('-').is_some_and(|c| {
+                    (7..=40).contains(&c.len())
+                        && c.bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                })
+        })
+}
+
+/// The signed SHA-256 of `asset` in the Nightly that installs as `version`
+/// (`nightly-<date>-<commit>`, from [`nightly_title_version`]): `signature` is its
+/// [`SIGNATURE_V2`], which must sign `sums` for exactly that version. A release's list, the channel
+/// signature (`nightly`) and another Nightly's are all refused, so an older Nightly can't be passed off
+/// as tonight's.
+pub fn nightly_digest(
+    version: &str,
+    asset: &str,
+    sums: Option<&[u8]>,
+    signature: Option<&str>,
+    keys: &[PublicKey],
+) -> Result<String, String> {
+    if !is_nightly_build(version) {
+        return Err(format!(
+            "{version:?} doesn't name a Nightly's date and commit, so it can't be checked: not installed."
+        ));
+    }
+    let Some(signature) = signature else {
+        return Err(format!(
+            "{version} has no {SIGNATURE_V2} (its signature for this exact build): it was published \
+             before Nightlies were signed for their own version, so it can't be checked and was not \
+             installed. Pick a Nightly published since then; `horizon-server rollback` still goes back \
+             to a build a server already has."
         ));
     };
-    verify(tag, sums, signature, keys)?
+    digest_in(version, version, asset, sums, Some(signature), keys)
+}
+
+/// `asset`'s SHA-256 in `sums`, once one of `keys` is found to have signed them for `signed_for`;
+/// `name` says which build in messages.
+fn digest_in(
+    signed_for: &str,
+    name: &str,
+    asset: &str,
+    sums: Option<&[u8]>,
+    signature: Option<&str>,
+    keys: &[PublicKey],
+) -> Result<String, String> {
+    let (Some(sums), Some(signature)) = (sums, signature) else {
+        return Err(format!(
+            "{name} is not signed, and Horizon installs only signed releases: pick a newer version."
+        ));
+    };
+    verify(signed_for, sums, signature, keys)?
         .into_iter()
-        .find(|(name, _)| name == asset)
+        .find(|(n, _)| n == asset)
         .map(|(_, hex)| hex)
         .ok_or_else(|| {
-            format!("{asset} is not in {tag}'s signed checksums, so it was not installed.")
+            format!("{asset} is not in {name}'s signed checksums, so it was not installed.")
         })
 }
 
@@ -318,6 +450,131 @@ mod tests {
         assert_eq!(digest, Ok(sha256_hex(b"windows")));
         assert!(check("x", &sha256_hex(b"windows"), &sha256_hex(b"windows")).is_ok());
         assert!(check("x", &sha256_hex(b"windows"), &sha256_hex(b"linux")).is_err());
+    }
+
+    /// The release channel refuses everything signed for the nightly channel, and the other way
+    /// round: one key signs both, and only the message's channel keeps them apart.
+    #[test]
+    fn nightly_and_release_signatures_never_pass_for_each_other() {
+        const TONIGHT: &str = "nightly-2026-10-28-0c02067";
+        let (nightly, sums, signature) = signed(TONIGHT);
+        let keys = [nightly.public()];
+        let asset = "horizon-windows-x64.zip";
+        let digest = nightly_digest(
+            TONIGHT,
+            asset,
+            Some(sums.as_bytes()),
+            Some(&signature),
+            &keys,
+        );
+        assert_eq!(digest, Ok(sha256_hex(b"windows")));
+        // Served under a release's tag: the message names the Nightly, not v0.2.81.
+        for tag in ["v0.2.81", "v2026.10.28", "0.2.81"] {
+            let as_release =
+                signed_digest(tag, asset, Some(sums.as_bytes()), Some(&signature), &keys);
+            assert!(as_release.is_err(), "{tag} took a nightly's signature");
+        }
+        // Asked for by a nightly tag on the release channel: refused before any signature is read.
+        for tag in [NIGHTLY, "nightly-2026-10-27", TONIGHT] {
+            let err = signed_digest(tag, asset, Some(sums.as_bytes()), Some(&signature), &keys);
+            assert!(err.unwrap_err().contains("Nightly build"), "{tag}");
+        }
+        // A release's signed list replayed as tonight's nightly.
+        let (release, sums, signature) = signed("v0.2.81");
+        let keys = [release.public()];
+        assert!(
+            nightly_digest(
+                TONIGHT,
+                asset,
+                Some(sums.as_bytes()),
+                Some(&signature),
+                &keys
+            )
+            .is_err()
+        );
+        assert!(nightly_digest(TONIGHT, asset, Some(sums.as_bytes()), None, &keys).is_err());
+        assert!(is_nightly("nightly-2026-10-27") && !is_nightly("v0.2.81"));
+    }
+
+    #[test]
+    fn an_older_nightly_is_not_tonights() {
+        let asset = "horizon-windows-x64.zip";
+        // Last week's build, re-served under tonight's title: its v2 signature names last week.
+        let (key, sums, old) = signed("nightly-2026-10-21-aaaaaaa");
+        let keys = [key.public()];
+        let tonight = nightly_title_version("Nightly 2026-10-28 · 0c02067").unwrap();
+        let err = nightly_digest(&tonight, asset, Some(sums.as_bytes()), Some(&old), &keys);
+        assert!(err.is_err(), "an older Nightly passed as {tonight}");
+        // The channel signature (SHA256SUMS.sig, for launchers from before v2) is no v2 signature.
+        let (key, sums, channel) = signed(NIGHTLY);
+        let keys = [key.public()];
+        assert!(
+            nightly_digest(
+                &tonight,
+                asset,
+                Some(sums.as_bytes()),
+                Some(&channel),
+                &keys
+            )
+            .is_err()
+        );
+        // And a version that isn't a full Nightly build is refused whatever signs it.
+        for version in [NIGHTLY, "nightly-2026-10-28", "v0.2.81"] {
+            let (key, sums, signature) = signed(version);
+            let err = nightly_digest(
+                version,
+                asset,
+                Some(sums.as_bytes()),
+                Some(&signature),
+                &[key.public()],
+            );
+            assert!(err.unwrap_err().contains("doesn't name"), "{version}");
+        }
+    }
+
+    #[test]
+    fn a_nightlys_title_is_parsed_strictly() {
+        assert_eq!(
+            nightly_title_version("Nightly 2026-10-28 · 0c02067").as_deref(),
+            Some("nightly-2026-10-28-0c02067")
+        );
+        assert_eq!(
+            nightly_title_version(&format!("Nightly 2026-10-28 · {}", "a".repeat(40))),
+            Some(format!("nightly-2026-10-28-{}", "a".repeat(40)))
+        );
+        for title in [
+            "Something else",
+            "Nightly 2026-10-28",
+            "Nightly 2026-10-28 · ",
+            "Nightly 2026-10-28 · 0c020",     // too short
+            "Nightly 2026-10-28 · 0C02067",   // GitHub's short SHAs are lowercase
+            "Nightly 2026-10-28 · 0c02067 x", // trailing words
+            "Nightly 2026-1-28 · 0c02067",    // not a date
+            "nightly 2026-10-28 · 0c02067",
+            " Nightly 2026-10-28 · 0c02067",
+            "Nightly 2026-10-28 · 0c02067/../x",
+        ] {
+            assert_eq!(nightly_title_version(title), None, "{title:?}");
+        }
+        assert!(is_nightly_build("nightly-2026-10-28-0c02067"));
+        assert!(!is_nightly_build("nightly-2026-10-28"));
+        assert!(!is_nightly_build("nightly-2026-10-28-"));
+        assert!(!is_nightly_build("nightly-2026-10-28-0c02067-x"));
+    }
+
+    #[test]
+    fn a_nightly_is_named_by_its_date_and_commit() {
+        let v = nightly_version("Nightly 2026-10-28 · 0c02067", "2026-10-28T20:40:00Z");
+        assert_eq!(v, "nightly-2026-10-28-0c02067");
+        assert_eq!(
+            nightly_version("Something else", "2026-10-29T01:00:00Z"),
+            "nightly-2026-10-29"
+        );
+        assert_eq!(nightly_date(&v), Some("2026-10-28"));
+        assert_eq!(nightly_date("nightly-2026-10-27"), Some("2026-10-27"));
+        assert_eq!(nightly_date("nightly"), None);
+        assert_eq!(nightly_date("v0.2.95"), None);
+        assert!(is_nightly(&v));
     }
 
     #[test]

@@ -34,9 +34,10 @@ CYCLES = 3
 
 
 def game_env():
-    """macOS renders offscreen; Linux uses the virtual screen (as test_save_roundtrip_parity)."""
+    """macOS renders offscreen; Linux uses the virtual screen (as test_save_roundtrip_parity), or renders
+    offscreen too where there is no vscreen."""
     env = lab.game_env()
-    if sys.platform == 'darwin':
+    if sys.platform == 'darwin' or not shutil.which('vscreen'):
         return env, ['--offscreen']
     subprocess.run(['vscreen', 'up'], check=False, capture_output=True)
     text = subprocess.run(['vscreen', 'env'], capture_output=True, text=True, check=True).stdout
@@ -53,7 +54,7 @@ def main():
     args = parser.parse_args()
     bin_dir = Path(args.bin_dir).resolve() if args.bin_dir else None
     if bin_dir is None:
-        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-client', '--bins'], cwd=ROOT, check=True)
+        subprocess.run(['cargo', 'build', '--locked', '--profile', 'fast', '-p', 'horizon-client', '-p', 'horizon-client-lib', '--bins'], cwd=ROOT, check=True)
         bin_dir = ROOT / os.environ.get('CARGO_TARGET_DIR', 'target') / 'fast'
     shutil.rmtree(RUN, ignore_errors=True)
     RUN.mkdir(parents=True)

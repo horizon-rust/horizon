@@ -14,9 +14,26 @@ pub struct Jdk {
 
 const TIMEOUT: Duration = Duration::from_secs(3600);
 
-/// Exporters and JDK probes write to pipes or log files: on Windows they open no terminal.
+/// Options for every JVM preparing starts (the exporters, the data generator, javac with `-J`).
+/// They are short batch jobs that run side by side: the C2 compiler's background work costs
+/// more CPU than it wins back, and the serial collector keeps their heaps small. Measured on the
+/// pinned jars, a fresh preparation took 105 s with the defaults and 63-66 s with these, same
+/// output; the serial collector was as fast as the parallel one and its JVMs together took
+/// 1.25 GB instead of 2 GB.
+pub(crate) const BATCH_OPTIONS: [&str; 2] = ["-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC"];
+
+/// The variables a JVM reads extra options from. A collector chosen there, such as a player's
+/// global `-XX:+UseZGC`, stops a JVM started with [`BATCH_OPTIONS`]: "Multiple garbage collectors
+/// selected" (#10067).
+const JVM_OPTION_VARS: [&str; 3] = ["JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"];
+
+/// Exporters and JDK probes write to pipes or log files: on Windows they open no terminal. They
+/// run with [`BATCH_OPTIONS`] alone, whatever options the player's environment sets for Java.
 pub(crate) fn command(program: impl AsRef<OsStr>) -> Command {
-    let command = Command::new(program);
+    let mut command = Command::new(program);
+    for var in JVM_OPTION_VARS {
+        command.env_remove(var);
+    }
     #[cfg(windows)]
     let command = {
         use std::os::windows::process::CommandExt;
@@ -303,7 +320,14 @@ fn find_tools(major: i64, more: &[PathBuf], compiler: bool) -> Result<Jdk, Strin
                 }
             });
         match checked {
-            Ok(()) => return Ok(Jdk { javac, java }),
+            // Absolute: the exporters run in another working directory, where a relative
+            // `JAVA_HOME`, `--java-home` or `PATH` entry would name nothing.
+            Ok(()) => {
+                return Ok(Jdk {
+                    javac: std::path::absolute(&javac).unwrap_or(javac),
+                    java: std::path::absolute(&java).unwrap_or(java),
+                });
+            }
             Err(e) => problems.push(format!("{from}: {e}")),
         }
     }
@@ -339,6 +363,7 @@ impl Jdk {
     pub fn javac(&self, major: i64, args: &[String], log: &fs::File) -> Result<(), String> {
         let mut command = command(&self.javac);
         command
+            .args(BATCH_OPTIONS.map(|option| format!("-J{option}")))
             .args(["--release", &major.to_string(), "-proc:none"])
             .args(args);
         run(command, log)
@@ -346,7 +371,7 @@ impl Jdk {
 
     pub fn java(&self, args: &[String], cwd: Option<&Path>, log: &fs::File) -> Result<(), String> {
         let mut command = command(&self.java);
-        command.args(args);
+        command.args(BATCH_OPTIONS).args(args);
         if let Some(dir) = cwd {
             command.current_dir(dir);
         }
@@ -389,6 +414,19 @@ fn run(mut command: Command, log: &fs::File) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn jvms_ignore_the_players_global_options() {
+        let command = command("java");
+        for var in JVM_OPTION_VARS {
+            assert!(
+                command
+                    .get_envs()
+                    .any(|(name, value)| name == var && value.is_none()),
+                "{var} reaches the JVM"
+            );
+        }
+    }
 
     #[test]
     fn verbatim_drive_paths_lose_their_prefix() {

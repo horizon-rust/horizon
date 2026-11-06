@@ -5,9 +5,8 @@ use super::Game;
 use horizon_client::{
     items::ItemStack,
     mobs::{Mob, Species, sniffer},
-    particles::Particle,
 };
-use horizon_core::random::RandomSource;
+use horizon_core::{geometry::Vec3, random::RandomSource};
 
 impl Game<'_> {
     /// The egg item at the parent (`Sniffer.spawnChildFromBreeding`; the
@@ -46,20 +45,25 @@ impl Game<'_> {
     /// block's hit sound between the 1.7th and the 6th second of the
     /// digging animation) and `playSearchingSound`.
     pub(super) fn tick_sniffer_effects(&mut self) {
-        let Some(camera) = self.player.as_ref().map(|p| p.position) else {
+        // Vanilla runs these on each client: a sniffer within 32 blocks of
+        // any player in the level (the host and the guests) shows them.
+        let players = self.level_players();
+        if players.is_empty() {
             return;
-        };
+        }
         for i in 0..self.mobs.len() {
             let m = &self.mobs[i];
             if m.species() != Species::Sniffer
                 || !m.alive()
-                || m.silent
-                || m.position.distance_squared(camera) > 32.0 * 32.0
+                || !players
+                    .iter()
+                    .any(|p| m.position.distance_squared(p.position) <= 32.0 * 32.0)
             {
                 continue;
             }
+            let id = m.id;
             let at = [m.position.x, m.position.y, m.position.z];
-            if sniffer::state(m) == sniffer::SEARCHING && m.age.is_multiple_of(20) {
+            if !m.silent && sniffer::state(m) == sniffer::SEARCHING && m.age.is_multiple_of(20) {
                 self.audio
                     .play("minecraft:entity.sniffer.searching", Some(at), 1.0, 1.0);
                 continue;
@@ -71,29 +75,29 @@ impl Game<'_> {
                 continue;
             };
             if ms == 0 {
-                self.audio
-                    .play("minecraft:entity.sniffer.digging", Some(at), 1.0, 1.0);
+                // Sniffer.onDiggingStart: broadcast entity event 63.
+                self.lan_entity_event(id as i32, 63, at);
             }
             if ms <= 1700 || ms >= 6000 {
                 continue;
             }
-            let head = sniffer::head_block(m);
+            let head = sniffer::head_block(&self.mobs[i]);
             let below = self.world.block(head[0], head[1] - 1, head[2]);
-            let Some((sprite, tint)) = self.particle_sprite(below, [head[0], head[1] - 1, head[2]])
-            else {
+            if self
+                .particle_sprite(below, [head[0], head[1] - 1, head[2]])
+                .is_none()
+            {
                 continue;
-            };
+            }
             let dust = [
                 f64::from(head[0]) + 0.5,
                 f64::from(head[1]) + 0.5 - f64::from(0.65_f32),
                 f64::from(head[2]) + 0.5,
             ];
-            for _ in 0..30 {
-                let particle =
-                    Particle::terrain(&mut self.world.random, dust, [0.0; 3], sprite.clone(), tint);
-                self.particles.push(particle);
-            }
-            if self.mobs[i].age.is_multiple_of(10) {
+            // Drawn in this window when it has one, and sent to the players
+            // within 32 blocks (the server thread's window is one of them).
+            self.landing_dust(None, below, Vec3::new(dust[0], dust[1], dust[2]), 30, 0.0);
+            if !self.mobs[i].silent && self.mobs[i].age.is_multiple_of(10) {
                 let hit = self.res.facts().get(below).sounds.hit.clone();
                 self.audio.play(&hit, Some(at), 0.5, 0.5);
             }

@@ -10,6 +10,7 @@
 //! Times are this thread's CPU time in `Mesher::mesh` (best of `--rounds`);
 //! quads are those of the five fluid sprites. The vanilla checksum is the one
 //! `chunk_load_bench`-style A/B pairs compare.
+extern crate horizon_client_lib as horizon_client;
 use horizon_client::{
     assets::Assets,
     biome::Biomes,
@@ -65,7 +66,10 @@ fn main() -> Result<(), Error> {
         .map(|&l| l as u16)
         .collect();
 
-    let save = SaveDir::new(save::dimension_dir(&world, "minecraft:overworld"));
+    let save = SaveDir::new(
+        save::dimension_dir(&world, "minecraft:overworld"),
+        save::LevelShape::OVERWORLD,
+    );
     let mut loaded = std::collections::HashMap::new();
     for x in center.0 - radius..=center.0 + radius {
         for z in center.1 - radius..=center.1 + radius {
@@ -107,6 +111,11 @@ fn main() -> Result<(), Error> {
         cutout_leaves: true,
         smooth_fluids,
         rt_lighting: false,
+        shader_pack_lighting: false,
+        separate_ao: false,
+        shader_pack: false,
+        translucent_layers: &[],
+        leaf_culling: Default::default(),
         assets: &assets,
         render: &render,
         tables: &tables,

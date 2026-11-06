@@ -47,11 +47,14 @@ impl ProcessorData {
 
     pub fn read<R: Read + Seek>(zip: &mut zip::ZipArchive<R>) -> Self {
         let mut out = Self::default();
+        let mut budget = crate::entry::Budget::archive();
         for i in 0..zip.len() {
             let Ok(mut entry) = zip.by_index(i) else {
                 continue;
             };
-            let name = entry.name().to_owned();
+            let Ok(name) = entry.name().map(|n| n.into_owned()) else {
+                continue;
+            };
             let Some((ns, rest)) = name
                 .strip_prefix("data/")
                 .and_then(|r| r.strip_suffix(".json"))
@@ -64,11 +67,11 @@ impl ProcessorData {
             if spawners.is_none() && list.is_none() && rest != "moogs_structures/replace_vanilla" {
                 continue;
             }
-            let mut text = String::new();
-            let Ok(v) = entry
-                .read_to_string(&mut text)
+            let declared = entry.size();
+            let Ok(v) = budget
+                .read_text(&mut entry, declared, crate::entry::MAX_TEXT)
                 .map_err(|_| ())
-                .and_then(|_| serde_json::from_str::<Value>(&text).map_err(|_| ()))
+                .and_then(|text| serde_json::from_str::<Value>(&text).map_err(|_| ()))
             else {
                 continue;
             };

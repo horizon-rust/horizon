@@ -5,12 +5,18 @@
 //! request with the entry. Reviewers decide; merging publishes. Signed-in
 //! players also rate published projects (`ratings`, its only data: sessions
 //! are signed cookies, and GitHub holds everything else).
+mod archive;
 pub mod github;
+pub mod page;
 pub mod ratings;
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Multipart, Path as UrlPath, Query, State},
+    body::Body,
+    extract::{
+        DefaultBodyLimit, FromRequest, Multipart, Path as UrlPath, Query, Request, State,
+        multipart::MultipartError,
+    },
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -40,6 +46,8 @@ const PER_ACCOUNT: usize = 6;
 const PER_HOUR: usize = 60;
 /// The page's JSON.
 const MAX_FORM: usize = 64 << 10;
+/// A submission's whole body: the file, the page, its images and the form's framing.
+const MAX_BODY: usize = index::MAX_FILE as usize + page::MAX_IMAGES + MAX_FORM * 2;
 /// Ratings set per account per hour, and by everyone.
 const RATINGS_PER_ACCOUNT: usize = 30;
 const RATINGS_PER_HOUR: usize = 600;
@@ -54,6 +62,9 @@ pub struct Config {
     /// At least 32 bytes: signs sessions.
     pub session_key: Vec<u8>,
     pub github: GitHub,
+    /// `REGISTRY_UPDATE_KEY`: signs an owner update's trailer; None turns the
+    /// feature off (every update waits for a reviewer).
+    pub update_key: Option<Vec<u8>>,
     /// Where files wait during a submission.
     pub scratch: PathBuf,
     /// The ratings' SQLite file (a volume): `:memory:` keeps them in memory.
@@ -63,7 +74,8 @@ pub struct Config {
 impl Config {
     /// `REGISTRY_PUBLIC_URL`, `REGISTRY_SESSION_KEY`, `REGISTRY_REPO`,
     /// `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_BOT_TOKEN`,
-    /// `REGISTRY_DB` (default `/data/registry.sqlite3`).
+    /// `REGISTRY_UPDATE_KEY` (optional), `REGISTRY_DB` (default
+    /// `/data/registry.sqlite3`).
     pub fn from_env() -> Result<Config, String> {
         let var = |name: &str| std::env::var(name).map_err(|_| format!("{name} is not set"));
         let key = var("REGISTRY_SESSION_KEY")?;
@@ -71,15 +83,23 @@ impl Config {
             return Err("REGISTRY_SESSION_KEY needs at least 32 characters".into());
         }
         Ok(Config {
-            public_url: var("REGISTRY_PUBLIC_URL")?.trim_end_matches('/').to_owned(),
+            public_url: var("REGISTRY_PUBLIC_URL")?
+                .trim()
+                .trim_end_matches('/')
+                .to_owned(),
             session_key: key.into_bytes(),
             github: GitHub::new(
                 github::Endpoints::default(),
-                std::env::var("REGISTRY_REPO").unwrap_or_else(|_| "ludovic111/horizon-mods".into()),
+                std::env::var("REGISTRY_REPO")
+                    .unwrap_or_else(|_| "horizon-rust/horizon-mods".into()),
                 var("GITHUB_CLIENT_ID")?,
                 var("GITHUB_CLIENT_SECRET")?,
                 var("GITHUB_BOT_TOKEN")?,
             ),
+            update_key: std::env::var("REGISTRY_UPDATE_KEY")
+                .ok()
+                .filter(|k| !k.is_empty())
+                .map(String::into_bytes),
             scratch: std::env::temp_dir().join("horizon-mod-registry"),
             database: std::env::var_os("REGISTRY_DB")
                 .map_or_else(|| PathBuf::from("/data/registry.sqlite3"), PathBuf::from),
@@ -133,9 +153,7 @@ pub fn router(app: App) -> Router {
         .route("/api/mods/{id}/rating", get(my_rating).post(rate))
         .route(
             "/api/mods/submit",
-            post(submit).layer(DefaultBodyLimit::max(
-                index::MAX_FILE as usize + MAX_FORM * 2,
-            )),
+            post(submit).layer(DefaultBodyLimit::max(MAX_BODY)),
         )
         .with_state(app)
 }
@@ -162,6 +180,12 @@ fn bad(message: impl Into<String>) -> Refusal {
 
 fn github_down(e: github::Failure) -> Refusal {
     eprintln!("horizon-mod-registry: GitHub {}: {}", e.status, e.message);
+    if e.timed_out {
+        return Refusal::new(
+            StatusCode::GATEWAY_TIMEOUT,
+            "GitHub is slow right now: try again in a few minutes",
+        );
+    }
     Refusal::new(
         StatusCode::BAD_GATEWAY,
         "GitHub didn't answer as expected: try again in a minute",
@@ -442,7 +466,7 @@ async fn rate(
             format!("{id} isn't published in the registry"),
         ));
     };
-    if entry.owners.iter().any(|o| o.eq_ignore_ascii_case(&login)) {
+    if ownership(&entry, &login, account) != Ownership::None {
         return Err(Refusal::new(
             StatusCode::FORBIDDEN,
             "you publish this project: its players rate it",
@@ -475,17 +499,40 @@ pub struct Form {
     #[serde(default)]
     pub authors: Vec<String>,
     pub license: String,
+    /// The code's address.
+    #[serde(default)]
     pub source: String,
-    /// `https://` only; an icon in the repository is a pull request by hand.
+    /// Refused: the registry no longer follows repositories (every version is a submission).
+    /// Kept so an old form's listing gets a clear answer.
+    #[serde(default)]
+    pub repo: Option<String>,
+    /// Refused: icons are uploaded (the `icon` part) and kept in the registry.
     #[serde(default)]
     pub icon: Option<String>,
+    /// 1 to 3 of the kind's categories.
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// The project's screenshots to keep, in order (`screenshots/<id>/<name>` of its entry);
+    /// uploaded ones come after them. Absent: all of them.
+    #[serde(default)]
+    pub screenshots: Option<Vec<String>>,
+    /// A `shaderpack`'s submitter says they made it and its licence lets the registry hand it out.
+    #[serde(default)]
+    pub own_work: bool,
+    /// Changes the page only, with no file ("Edit project").
+    #[serde(default)]
+    pub edit: bool,
     /// A new project's minisign public key.
     #[serde(default)]
     pub key: Option<String>,
     /// The `.minisig` text.
     #[serde(default)]
     pub signature: Option<String>,
+    #[serde(default)]
     pub version: String,
+    #[serde(default)]
     pub game: String,
     #[serde(default)]
     pub changelog: String,
@@ -501,11 +548,29 @@ fn take(window: &mut VecDeque<Instant>, max: usize) -> bool {
     window.len() < max
 }
 
+/// The origin a URL names: `scheme://host[:port]`, without a path. An
+/// `Origin` is a page's origin and never carries a path, while
+/// `REGISTRY_PUBLIC_URL` may: the form's pages are below the site's root.
+fn url_origin(url: &str) -> &str {
+    let host = url.find("://").map_or(0, |scheme| scheme + 3);
+    url[host..]
+        .find('/')
+        .map_or(url, |path| &url[..host + path])
+}
+
+/// Whether a change comes from the site's own pages: its `Origin` is the
+/// origin of `REGISTRY_PUBLIC_URL`, which is what its pages are. A page on
+/// another site can't send its origin, so this is a whole origin's match,
+/// case folded the way a host name is.
+fn from_the_site(public_url: &str, origin: Option<&str>) -> bool {
+    origin.is_some_and(|origin| origin.eq_ignore_ascii_case(url_origin(public_url)))
+}
+
 /// A change sent by the site's own pages: from its origin, signed in, with
 /// the session's CSRF token. The account: (login, id).
 fn signed_in_here(app: &Inner, headers: &HeaderMap) -> Result<(String, u64), Refusal> {
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
-    if origin != Some(app.config.public_url.as_str()) {
+    if !from_the_site(&app.config.public_url, origin) {
         return Err(Refusal::new(
             StatusCode::FORBIDDEN,
             "send it from the registry's pages",
@@ -538,28 +603,89 @@ fn allow(windows: &Windows, login: &str, per_account: usize, per_hour: usize) ->
     ok
 }
 
+/// The answer to a file that is too big.
+fn too_big() -> Refusal {
+    Refusal::new(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        format!("the file is over {} MiB", index::MAX_FILE >> 20),
+    )
+}
+
+/// A form that broke off: over the body's limit, or not a form.
+fn torn(e: MultipartError) -> Refusal {
+    if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        too_big()
+    } else {
+        bad(e.body_text())
+    }
+}
+
+/// Reads and drops the rest of a refused submission, up to its limit. A
+/// browser still sending the file when the answer comes reports a network
+/// error instead of the answer, so the answer waits for the upload's end.
+async fn drain(body: Body) {
+    use http_body_util::BodyExt;
+    let mut body = http_body_util::Limited::new(body, MAX_BODY);
+    while let Some(Ok(_)) = body.frame().await {}
+}
+
+/// The rest of a form, past a part that was refused.
+async fn drain_form(multipart: &mut Multipart) {
+    while let Ok(Some(mut field)) = multipart.next_field().await {
+        while let Ok(Some(_)) = field.chunk().await {}
+    }
+}
+
 async fn submit(
     State(app): State<App>,
-    headers: HeaderMap,
-    mut multipart: Multipart,
+    request: Request,
 ) -> Result<Json<serde_json::Value>, Refusal> {
     let inner = app.0.clone();
-    let (login, user_id) = signed_in_here(&inner, &headers)?;
-    if !allow(&inner.recent, &login, PER_ACCOUNT, PER_HOUR) {
+    let (parts, body) = request.into_parts();
+    let checked = signed_in_here(&inner, &parts.headers).and_then(|account| {
+        let length = parts.headers.get(header::CONTENT_LENGTH);
+        if length.and_then(|l| l.to_str().ok()?.parse::<usize>().ok()) > Some(MAX_BODY) {
+            return Err(too_big());
+        }
+        if !allow(&inner.recent, &account.0, PER_ACCOUNT, PER_HOUR) {
+            return Err(Refusal::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many submissions this hour: try again later",
+            ));
+        }
+        Ok(account)
+    });
+    let (login, user_id) = match checked {
+        Ok(account) => account,
+        Err(refusal) => {
+            // Too big: what's past the limit would be cut anyway.
+            if refusal.0 != StatusCode::PAYLOAD_TOO_LARGE {
+                drain(body).await;
+            }
+            return Err(refusal);
+        }
+    };
+    let mut multipart = Multipart::from_request(Request::from_parts(parts, body), &())
+        .await
+        .map_err(|e| bad(e.body_text()))?;
+    let dir = inner.config.scratch.join(random_hex());
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        drain_form(&mut multipart).await;
         return Err(Refusal::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "too many submissions this hour: try again later",
+            StatusCode::INTERNAL_SERVER_ERROR,
+            e.to_string(),
         ));
     }
-    let dir = inner.config.scratch.join(random_hex());
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let result = receive(&mut multipart, &dir).await;
+    if result.is_err() {
+        drain_form(&mut multipart).await;
+    }
     let result = match result {
-        Ok((form, file)) => {
+        Ok((form, file, images)) => {
             let inner = inner.clone();
-            tokio::task::spawn_blocking(move || {
-                publish(&inner.config, &login, user_id, &form, &file)
+            tokio::task::spawn_blocking(move || match &file {
+                Some(file) => publish(&inner.config, &login, user_id, &form, file, &images),
+                None => page::edit(&inner.config, &login, user_id, &form, &images),
             })
             .await
             .unwrap_or_else(|_| {
@@ -575,18 +701,31 @@ async fn submit(
     result.map(|url| Json(json!({"pull_request": url})))
 }
 
-/// Reads the form's two parts: `entry` (JSON) and `file`, streamed to `dir`.
-async fn receive(multipart: &mut Multipart, dir: &Path) -> Result<(Form, PathBuf), Refusal> {
+/// Reads the form's parts: `entry` (JSON), `file`, streamed to `dir`, and the images, `icon`
+/// and up to 8 `screenshot`s.
+async fn receive(
+    multipart: &mut Multipart,
+    dir: &Path,
+) -> Result<(Form, Option<PathBuf>, page::Uploads), Refusal> {
     use tokio::io::AsyncWriteExt;
     let (mut form, mut file) = (None, None);
-    while let Some(mut field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| bad(e.body_text()))?
-    {
+    let mut images = page::Uploads::default();
+    while let Some(mut field) = multipart.next_field().await.map_err(torn)? {
         match field.name() {
+            Some(part @ ("icon" | "screenshot")) => {
+                let part = part.to_owned();
+                let name = field.file_name().unwrap_or("").to_owned();
+                let mut bytes = Vec::new();
+                while let Some(chunk) = field.chunk().await.map_err(torn)? {
+                    bytes.extend_from_slice(&chunk);
+                    if bytes.len() > page::MAX_IMAGE {
+                        return Err(bad(format!("{part} {name:?} is too big")));
+                    }
+                }
+                images.add(&part, &name, bytes).map_err(bad)?;
+            }
             Some("entry") => {
-                let text = field.text().await.map_err(|e| bad(e.body_text()))?;
+                let text = field.text().await.map_err(torn)?;
                 if text.len() > MAX_FORM {
                     return Err(bad("the page's text is too long"));
                 }
@@ -598,13 +737,10 @@ async fn receive(multipart: &mut Multipart, dir: &Path) -> Result<(Form, PathBuf
                     .await
                     .map_err(|e| Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
                 let mut size = 0u64;
-                while let Some(chunk) = field.chunk().await.map_err(|e| bad(e.body_text()))? {
+                while let Some(chunk) = field.chunk().await.map_err(torn)? {
                     size += chunk.len() as u64;
                     if size > index::MAX_FILE {
-                        return Err(bad(format!(
-                            "the file is over {} MiB",
-                            index::MAX_FILE >> 20
-                        )));
+                        return Err(too_big());
                     }
                     out.write_all(&chunk).await.map_err(|e| {
                         Refusal::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
@@ -617,7 +753,11 @@ async fn receive(multipart: &mut Multipart, dir: &Path) -> Result<(Form, PathBuf
         }
     }
     match (form, file) {
-        (Some(form), Some(file)) => Ok((form, file)),
+        (Some(form), _) if form.repo.is_some() => Err(bad(
+            "the registry doesn't follow repositories: submit each version's file here, so it is checked and reviewed",
+        )),
+        (Some(form), None) if form.edit => Ok((form, None, images)),
+        (Some(form), Some(file)) if !form.edit => Ok((form, Some(file), images)),
         _ => Err(bad("send the page and the file")),
     }
 }
@@ -637,6 +777,92 @@ fn date(secs: u64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// A key for submission tags, separate from the signed-cookie format. Keeping
+/// the domains distinct means a public tag can never be repackaged as a
+/// session cookie.
+fn submission_key(config: &Config) -> [u8; 32] {
+    let mut mac = Hmac::<Sha256>::new_from_slice(&config.session_key).expect("any key length");
+    mac.update(b"submission-tag-v1");
+    mac.finalize().into_bytes().into()
+}
+
+/// What a submission branch's commit carries to say the form wrote it for
+/// `login`: signed with the service's submission key, so a retry by the same
+/// account may start that branch again.
+fn submission_tag(config: &Config, branch: &str, login: &str) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(&submission_key(config)).expect("32 bytes");
+    mac.update(format!("submission\n{branch}\n{}", login.to_lowercase()).as_bytes());
+    URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+}
+
+fn submission_tag_valid(config: &Config, branch: &str, login: &str, tag: &str) -> bool {
+    let Ok(tag) = URL_SAFE_NO_PAD.decode(tag) else {
+        return false;
+    };
+    let mut mac = Hmac::<Sha256>::new_from_slice(&submission_key(config)).expect("32 bytes");
+    mac.update(format!("submission\n{branch}\n{}", login.to_lowercase()).as_bytes());
+    mac.verify_slice(&tag).is_ok()
+}
+
+/// How a signed-in account relates to a project's owners.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ownership {
+    /// Its numeric ID is one of `owner_ids`: the account that listed it (or was added), whatever
+    /// its login is now.
+    ById,
+    /// The entry records no IDs (from before they were recorded) and its login is listed: an owner
+    /// as far as anyone can tell, but its updates always wait for a reviewer.
+    ByLoginOnly,
+    None,
+}
+
+/// Who `login` (GitHub account `user_id`) is to `entry`. When the entry has IDs, only they count: a
+/// login listed in `owners` but held by another account is someone who claimed it after a rename.
+pub fn ownership(entry: &Entry, login: &str, user_id: u64) -> Ownership {
+    if !entry.owner_ids.is_empty() {
+        return if entry.owner_ids.contains(&user_id) {
+            Ownership::ById
+        } else {
+            Ownership::None
+        };
+    }
+    if entry.owners.iter().any(|o| o.eq_ignore_ascii_case(login)) {
+        Ownership::ByLoginOnly
+    } else {
+        Ownership::None
+    }
+}
+
+/// The trailer of an owner update's pull request: a comment holding what the
+/// update is and an HMAC-SHA256 (hex, with `key`) over it, which the registry
+/// repository's `owner-update` workflow verifies with the same secret
+/// (`scripts/owner_update.py` there builds the same message). v2 adds the
+/// submitter's numeric GitHub ID, which the workflow checks against the
+/// entry's `owner_ids` on main.
+pub fn update_trailer(
+    key: &[u8],
+    id: &str,
+    version: &str,
+    sha256: &str,
+    file: &str,
+    submitter: &str,
+    submitter_id: u64,
+) -> String {
+    let message =
+        format!("owner-update-v2\n{id}\n{version}\n{sha256}\n{file}\n{submitter}\n{submitter_id}");
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC takes any key length");
+    mac.update(message.as_bytes());
+    let hmac: String = mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!(
+        "<!-- owner-update\nformat: v2\nid: {id}\nversion: {version}\nsha256: {sha256}\nfile: {file}\nsubmitter: {submitter}\nsubmitter_id: {submitter_id}\nhmac: {hmac}\n-->"
+    )
+}
+
 /// The submission, past its checks: the entry written on a new branch and a
 /// pull request opened. Returns the pull request's address.
 pub fn publish(
@@ -645,6 +871,7 @@ pub fn publish(
     user_id: u64,
     form: &Form,
     file: &Path,
+    images: &page::Uploads,
 ) -> Result<String, Refusal> {
     let gh = &config.github;
     let kind = Kind::from(form.kind.clone());
@@ -652,13 +879,7 @@ pub fn publish(
     if !index::valid_id(&form.id) {
         return Err(bad("an id is 1 to 64 of a-z, 0-9 and _"));
     }
-    if form
-        .icon
-        .as_ref()
-        .is_some_and(|i| !i.starts_with("https://"))
-    {
-        return Err(bad("the icon must be an https:// address"));
-    }
+    page::check_form(form, &kind).map_err(bad)?;
     if !form.source.trim().starts_with("https://") {
         return Err(bad("the source must be an https:// address of the code"));
     }
@@ -666,6 +887,7 @@ pub fn publish(
         return Err(bad("a project needs a name and a licence"));
     }
     // The file's own checks first: a wrong file never reaches GitHub.
+    archive::check(file).map_err(bad)?;
     let facts = index::inspect(&kind, file).map_err(bad)?;
     if let Some(id) = facts.id.as_ref().filter(|id| **id != form.id) {
         return Err(bad(format!("the file's id is {id:?}, not {:?}", form.id)));
@@ -693,26 +915,41 @@ pub fn publish(
     };
     let existing = gh.entry(&form.id).map_err(github_down)?;
     let is_new = existing.is_none();
+    if is_new {
+        page::check_new(form, images).map_err(bad)?;
+    }
+    let turns_native =
+        kind == Kind::NativeMod && existing.as_ref().is_some_and(|(e, _)| e.kind == Kind::Mod);
+    // An owner update: an owner's new version and nothing else of the entry
+    // changes (key and owners included).
+    let mut owner_update = false;
+    let mut matched = Ownership::ById;
     let (entry, blob) = match existing {
         None => (
             Entry {
                 id: form.id.clone(),
+                repo: None,
                 kind: kind.clone(),
                 name: form.name.trim().to_owned(),
                 summary: form.summary.trim().to_owned(),
                 description: form.description.clone(),
                 authors: form.authors.clone(),
                 owners: vec![login.to_owned()],
+                owner_ids: vec![user_id],
                 license: form.license.trim().to_owned(),
                 source: form.source.trim().to_owned(),
-                icon: form.icon.clone(),
+                icon: None,
+                categories: form.categories.clone(),
+                tags: form.tags.clone(),
+                screenshots: Vec::new(),
                 key: form.key.clone().filter(|k| !k.trim().is_empty()),
                 versions: vec![version.clone()],
             },
             None,
         ),
         Some((mut entry, blob)) => {
-            if !entry.owners.iter().any(|o| o.eq_ignore_ascii_case(login)) {
+            matched = ownership(&entry, login, user_id);
+            if matched == Ownership::None {
                 return Err(Refusal::new(
                     StatusCode::FORBIDDEN,
                     format!(
@@ -722,8 +959,27 @@ pub fn publish(
                     ),
                 ));
             }
+            if let Some(repo) = &entry.repo {
+                return Err(Refusal::new(
+                    StatusCode::CONFLICT,
+                    format!(
+                        "{} is listed by its repository: publish a GitHub release in https://github.com/{repo} and it shows up within the hour",
+                        form.id
+                    ),
+                ));
+            }
+            // A mod may turn native once, never back (`registry::review`,
+            // docs/native-mods.md): its `.hmod` versions stay published.
             if entry.kind != kind {
-                return Err(bad(format!("{} is a {}", form.id, entry.kind.name())));
+                if (&entry.kind, &kind) != (&Kind::Mod, &Kind::NativeMod) {
+                    return Err(bad(format!(
+                        "{} is a {}, not a {}: a project's kind never changes (only a mod may turn native-mod, once)",
+                        form.id,
+                        entry.kind.name(),
+                        kind.name()
+                    )));
+                }
+                entry.kind = kind.clone();
             }
             if entry.versions.iter().any(|v| v.version == version.version) {
                 return Err(Refusal::new(
@@ -740,32 +996,45 @@ pub fn publish(
                     "changing a project's key is a pull request by hand, reviewed on its own",
                 ));
             }
+            let before = entry.clone();
             entry.name = form.name.trim().to_owned();
             entry.summary = form.summary.trim().to_owned();
             entry.description = form.description.clone();
             entry.authors = form.authors.clone();
             entry.license = form.license.trim().to_owned();
             entry.source = form.source.trim().to_owned();
-            if form.icon.is_some() {
-                entry.icon = form.icon.clone();
-            }
+            entry.categories = form.categories.clone();
+            entry.tags = form.tags.clone();
             entry.versions.insert(0, version.clone());
+            let (mut a, mut b) = (entry.clone(), before);
+            a.versions.clear();
+            b.versions.clear();
+            // A mod turning native is reviewed by hand, never an owner update.
+            // Only an owner known by ID publishes on their own: a login match alone
+            // could be someone who claimed the login after a rename.
+            owner_update = matched == Ownership::ById
+                && a == b
+                && images.is_empty()
+                && !turns_native
+                && (entry.key.is_none() || version.signature.is_some())
+                && version
+                    .version
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b".-+_".contains(&c));
             (entry, Some(blob))
         }
     };
+    let mut entry = entry;
+    let writes = page::place(&mut entry, form, images).map_err(bad)?;
     // Every check CI runs but the trial run: the file as its kind, its id and
     // version, its signature, the entry's fields. CI runs it all again.
     let files = file.parent().unwrap_or(Path::new("."));
     std::fs::copy(file, files.join(&sha256)).map_err(|e| bad(e.to_string()))?;
     let mut checked = entry.clone();
     checked.versions.truncate(1);
-    if checked
-        .icon
-        .as_ref()
-        .is_some_and(|i| !i.starts_with("https://"))
-    {
-        checked.icon = None;
-    }
+    // The images were checked by `page`; the registry's own files aren't in this scratch folder.
+    checked.icon = None;
+    checked.screenshots.clear();
     let project = registry::project(
         &checked,
         &Sources {
@@ -781,18 +1050,47 @@ pub fn publish(
     gh.stage(&format!("{sha256}.{extension}"), file)
         .map_err(github_down)?;
     let branch = format!("submit/{}-{}", form.id, version.version);
+    // Its commit's record of whose it is: only this service can write it,
+    // where a commit's text or author can be anyone's who writes to the repository.
+    let submission = submission_tag(config, &branch, login);
     if !gh.branch(&branch).map_err(github_down)? {
-        return Err(Refusal::new(
-            StatusCode::CONFLICT,
-            format!(
-                "{} {} was already submitted: its pull request is open",
-                form.id, version.version
-            ),
-        ));
+        // The branch is there: a pull request, someone else's submission, or
+        // this submitter's own that GitHub broke off (a timeout past the
+        // branch's creation). Only the last is taken up again, from main: the
+        // branch holds no commit yet, or only those this form wrote for them.
+        if let Some(url) = gh.open_pull(&branch).map_err(github_down)? {
+            return Err(Refusal::new(
+                StatusCode::CONFLICT,
+                format!(
+                    "{} {} was already submitted: its pull request is open ({url})",
+                    form.id, version.version
+                ),
+            ));
+        }
+        let commits = gh.commits(&branch).map_err(github_down)?;
+        // Every commit the form wrote (the entry, then its images) carries the tag; one without
+        // it is someone else's.
+        let theirs = commits.iter().all(|m| {
+            m.lines().any(|line| {
+                line.trim()
+                    .strip_prefix("Submission:")
+                    .is_some_and(|tag| submission_tag_valid(config, &branch, login, tag.trim()))
+            })
+        });
+        if !theirs {
+            return Err(Refusal::new(
+                StatusCode::CONFLICT,
+                format!(
+                    "{} {} was already submitted by someone else: give this file a new version",
+                    form.id, version.version
+                ),
+            ));
+        }
+        gh.reset(&branch).map_err(github_down)?;
     }
     let what = if is_new { "Add" } else { "Update" };
     let message = format!(
-        "{what} {} {}\n\nSubmitted by @{login} through the form.\n\nCo-authored-by: {login} <{user_id}+{login}@users.noreply.github.com>",
+        "{what} {} {}\n\nSubmitted by @{login} through the form.\n\nSubmission: {submission}\nCo-authored-by: {login} <{user_id}+{login}@users.noreply.github.com>",
         form.id, version.version
     );
     gh.put(
@@ -803,6 +1101,7 @@ pub fn publish(
         &message,
     )
     .map_err(github_down)?;
+    page::write(gh, &writes, &branch, &message)?;
     let v = &project.versions[0];
     let capabilities: Vec<String> = v
         .capabilities
@@ -827,7 +1126,13 @@ pub fn publish(
             .map_or(config.public_url.as_str(), |(_, host)| host),
         id = form.id,
         kind = kind.name(),
-        new = if is_new { "new" } else { "update" },
+        new = if is_new {
+            "new"
+        } else if turns_native {
+            "update: turns native, its `.hmod` versions stay published"
+        } else {
+            "update"
+        },
         version = v.version,
         game = v.game,
         file = v.file.name,
@@ -840,12 +1145,48 @@ pub fn publish(
         source = entry.source,
         lists = [capabilities, requires].concat().join("\n"),
     );
-    gh.pull(
-        &format!("{what} {} {}", form.id, version.version),
-        &branch,
-        &body,
-    )
-    .map_err(github_down)
+    let body = if matched == Ownership::ByLoginOnly {
+        format!(
+            "{body}\n\n⚠️ This entry records no owner IDs, so @{login} (GitHub ID {user_id}) was matched by login only. \
+             Check it is the same account that listed the project (a renamed owner's login can be claimed by anyone), \
+             then add `owner_ids = [{user_id}]` to the entry."
+        )
+    } else {
+        body
+    };
+    let trailer = config
+        .update_key
+        .as_deref()
+        .filter(|_| owner_update)
+        .map(|key| {
+            update_trailer(
+                key,
+                &form.id,
+                &version.version,
+                &sha256,
+                &v.file.name,
+                login,
+                user_id,
+            )
+        });
+    let body = match &trailer {
+        Some(t) => format!("{body}\n\n{t}"),
+        None => body,
+    };
+    let (url, number) = gh
+        .pull(
+            &format!("{what} {} {}", form.id, version.version),
+            &branch,
+            &body,
+        )
+        .map_err(github_down)?;
+    if trailer.is_some() {
+        // The pull request is open: a label that fails only leaves it to a reviewer.
+        if let Err(e) = gh.label(number, "owner-update") {
+            eprintln!("labelling {url}: {} {}", e.status, e.message);
+        }
+    }
+    Ok(url)
 }
 
 #[cfg(test)]
@@ -866,5 +1207,85 @@ mod tests {
             signed.split_once('.').unwrap().1
         );
         assert_eq!(unsign(key, &forged), None);
+    }
+
+    #[test]
+    fn submission_tags_are_not_session_cookies() {
+        let key = b"0123456789abcdef0123456789abcdef";
+        let config = Config {
+            public_url: "https://example.invalid".into(),
+            session_key: key.to_vec(),
+            github: GitHub::new(
+                github::Endpoints::default(),
+                "owner/repo".into(),
+                "client".into(),
+                "secret".into(),
+                "token".into(),
+            ),
+            update_key: None,
+            scratch: PathBuf::from("/tmp/horizon-mod-registry-test"),
+            database: PathBuf::from(":memory:"),
+        };
+        let branch = "submit/example-1.0.0";
+        let login = "12345678901";
+        let tag = submission_tag(&config, branch, login);
+        assert!(submission_tag_valid(&config, branch, login, &tag));
+
+        let payload = format!("submission\n{branch}\n{login}");
+        let cookie = format!("{}.{}", URL_SAFE_NO_PAD.encode(payload), tag);
+        assert_eq!(unsign(&config.session_key, &cookie), None);
+    }
+
+    #[test]
+    fn a_page_is_known_by_its_origin() {
+        // An `Origin` has no path, though REGISTRY_PUBLIC_URL may: the site's
+        // pages are below its root (#6159).
+        assert_eq!(
+            url_origin("https://playhorizon.dev/mods"),
+            "https://playhorizon.dev"
+        );
+        assert_eq!(
+            url_origin("https://playhorizon.dev/mods/submit/"),
+            "https://playhorizon.dev"
+        );
+        assert_eq!(
+            url_origin("https://playhorizon.dev"),
+            "https://playhorizon.dev"
+        );
+        assert_eq!(
+            url_origin("http://localhost:8080/mods"),
+            "http://localhost:8080"
+        );
+        // The configured site's origin, path or no path, and a host name's
+        // case folded as a browser folds it.
+        assert!(from_the_site(
+            "https://playhorizon.dev/mods",
+            Some("https://playhorizon.dev")
+        ));
+        assert!(from_the_site(
+            "https://playhorizon.dev/hub/",
+            Some("https://PlayHorizon.dev")
+        ));
+        // The scheme, the host and the port are all the origin's.
+        assert!(!from_the_site(
+            "https://playhorizon.dev",
+            Some("http://playhorizon.dev")
+        ));
+        assert!(!from_the_site(
+            "https://playhorizon.dev",
+            Some("https://playhorizon.dev:8443")
+        ));
+        // Another site's page, a page with no origin to give, and a name
+        // that only starts like the host.
+        assert!(!from_the_site(
+            "https://playhorizon.dev",
+            Some("https://evil.test")
+        ));
+        assert!(!from_the_site("https://playhorizon.dev", None));
+        assert!(!from_the_site(
+            "https://playhorizon.dev",
+            Some("https://playhorizon.dev.evil.test")
+        ));
+        assert!(!from_the_site("::", Some("null")));
     }
 }

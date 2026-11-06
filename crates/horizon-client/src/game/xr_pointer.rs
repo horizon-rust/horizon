@@ -4,9 +4,9 @@
 //! highlights, clicks, drags, sliders). The right stick scrolls and A clicks too, as for any
 //! controller in pointer mode (`pad_menu`); the left stick click puts the panel in front of
 //! the head again. The renderer finds the hit and draws the laser (`gfx/xr.rs`).
+use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
 use std::time::Instant;
-use winit::event_loop::ActiveEventLoop;
 
 /// Trigger travel that presses the pointer's button, and that releases it again.
 const PRESS: f32 = 0.6;
@@ -27,7 +27,7 @@ pub(super) struct XrMenu {
 
 impl Game<'_> {
     /// Once per poll, after the pad: the laser drives the pointer while a menu is open.
-    pub(super) fn xr_pointer_frame(&mut self, event_loop: &ActiveEventLoop) {
+    pub(super) fn xr_pointer_frame(&mut self, event_loop: &dyn EventLoopCtl) {
         let menu = self.pad_in_menu() && self.settings.controller.enabled;
         let Some(pointer) = self.renderer.as_mut().and_then(|r| r.xr_pointer(menu)) else {
             return;

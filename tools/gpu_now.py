@@ -3,7 +3,7 @@
 
   python3 tools/gpu_now.py --socket PATH [--seconds 3] [--keep] [--json] [--split] [--ctl horizon-ctl]
 
-Turns the game's stage timing on through its control socket (`horizon-ctl gpu-passes on`, the
+Turns the game's stage timing on through its control socket (`horizon-ctl gpu-stages on`, the
 same stages as HORIZON_GPU_PASSES=1), waits for a window of frames, reads each stage's median and
 95th percentile back and prints, per view (desktop, eye1, eye2...), the stages from the costliest
 down with their share of the frame, then the same summed by family (the name before the colon:
@@ -69,11 +69,11 @@ PARTS = [(1, "sun's ray (shadows)"), (2, "ReSTIR GI (sky, bounces)"), (4, "ReSTI
 
 def timed(a, skip: int) -> dict:
     """The views' times with `skip` left out of the kernel, over a fresh window."""
-    ctl(a.ctl, a.socket, "gpu-passes", "off")
+    ctl(a.ctl, a.socket, "gpu-stages", "off")
     ctl(a.ctl, a.socket, "rt-skip", str(skip))
-    ctl(a.ctl, a.socket, "gpu-passes", "on")
+    ctl(a.ctl, a.socket, "gpu-stages", "on")
     time.sleep(a.seconds)
-    return ctl(a.ctl, a.socket, "gpu-passes")["gpu"]
+    return ctl(a.ctl, a.socket, "gpu-stages")["gpu"]
 
 
 def trace_ms(gpu: dict, view: str) -> float:
@@ -92,7 +92,7 @@ def split(a) -> None:
     finally:
         ctl(a.ctl, a.socket, "rt-skip", "0")
         if not a.keep:
-            ctl(a.ctl, a.socket, "gpu-passes", "off")
+            ctl(a.ctl, a.socket, "gpu-stages", "off")
     print("\n\n".join(table(v) for v in full["views"]))
     for v in full["views"]:
         view = v["view"]
@@ -122,11 +122,11 @@ def main() -> None:
     if a.split:
         split(a)
         return
-    ctl(a.ctl, a.socket, "gpu-passes", "on")
+    ctl(a.ctl, a.socket, "gpu-stages", "on")
     time.sleep(a.seconds)
-    reply = ctl(a.ctl, a.socket, "gpu-passes")
+    reply = ctl(a.ctl, a.socket, "gpu-stages")
     if not a.keep:
-        ctl(a.ctl, a.socket, "gpu-passes", "off")
+        ctl(a.ctl, a.socket, "gpu-stages", "off")
     gpu = reply["gpu"]
     if a.json:
         print(json.dumps(gpu, indent=2))

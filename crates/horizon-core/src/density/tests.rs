@@ -959,3 +959,122 @@ fn binary_bulk_preserves_child_failure_order_and_output() {
         );
     }
 }
+/// A y-fixed slice's plane, kept by `SamplerContext::with_planes`, gives the
+/// values fresh sampling gives at other heights and vertical steps, and is
+/// sampled once for one x/z lattice.
+#[test]
+fn kept_planes_match_fresh_slices_across_vertical_lattices() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[derive(Debug)]
+    struct Counted(NoiseSampler, AtomicUsize);
+    impl DensitySampler for Counted {
+        fn sample_value(&self, c: &mut SamplerContext, p: [i32; 3]) -> Result<f32, SampleError> {
+            self.0.sample_value(c, p)
+        }
+        fn sample_volume(
+            &self,
+            c: &mut SamplerContext,
+            out: &mut [f32],
+            v: DensityVolume,
+        ) -> Result<(), SampleError> {
+            self.1.fetch_add(1, Ordering::Relaxed);
+            self.0.sample_volume(c, out, v)
+        }
+    }
+    let input = Arc::new(Counted(
+        NoiseSampler {
+            noise: Arc::new(PerlinNoise::new(&mut LegacyRandom::new(5))),
+            xz_scale: 0.3,
+            y_scale: 0.7,
+        },
+        AtomicUsize::new(0),
+    ));
+    let slice = slice::SliceSampler {
+        input: input.clone(),
+        axes: slice::SliceAxes::Y(0),
+    };
+    let lattices = [
+        DensityVolume::new([5, 9, 4], [-8, -64, 12], [4, 64, 4]).unwrap(),
+        DensityVolume::new([5, 17, 4], [-8, 0, 12], [4, 8, 4]).unwrap(),
+    ];
+    let mut kept = SamplerContext::sparse().with_planes();
+    for (i, volume) in lattices.into_iter().enumerate() {
+        let mut fresh = vec![0.0; volume.size()];
+        slice
+            .sample_volume(&mut SamplerContext::sparse(), &mut fresh, volume)
+            .unwrap();
+        let mut reused = vec![1.0; volume.size()];
+        slice.sample_volume(&mut kept, &mut reused, volume).unwrap();
+        assert_eq!(fresh, reused, "lattice {i}");
+    }
+    // Two fresh evaluations and one kept plane.
+    assert_eq!(input.1.load(Ordering::Relaxed), 3);
+}
+
+#[test]
+fn lerp_samples_its_branches_only_where_alpha_reads_them() {
+    // Hides `sample_needed`, so the branch is sampled everywhere.
+    #[derive(Debug)]
+    struct Everywhere(Arc<dyn DensitySampler>);
+    impl DensitySampler for Everywhere {
+        fn sample_value(&self, c: &mut SamplerContext, p: [i32; 3]) -> Result<f32, SampleError> {
+            self.0.sample_value(c, p)
+        }
+        fn sample_volume(
+            &self,
+            context: &mut SamplerContext,
+            buffer: &mut [f32],
+            volume: DensityVolume,
+        ) -> Result<(), SampleError> {
+            self.0.sample_volume(context, buffer, volume)
+        }
+    }
+    // The overworld's terrain noise: its alpha is often exactly 0 or 1.
+    let blended = BlendedNoise {
+        xz_scale: 0.25,
+        y_scale: 0.125,
+        xz_factor: 80.0,
+        y_factor: 160.0,
+        smear_scale_multiplier: 8.0,
+    };
+    let lerp = blended.compile(&mut LegacyRandom::new(12345)).unwrap();
+    let everywhere = |value: &DensityValue| match value {
+        DensityValue::Sampler(sampler) => {
+            DensityValue::Sampler(Arc::new(Everywhere(Arc::clone(sampler))))
+        }
+        DensityValue::Constant(value) => DensityValue::Constant(*value),
+    };
+    let reference = LerpSampler {
+        alpha: Arc::clone(&lerp.alpha),
+        first: everywhere(&lerp.first),
+        second: everywhere(&lerp.second),
+    };
+    let mut context = SamplerContext::default();
+    let (mut clamped, mut mixed) = (0, 0);
+    for (sizes, minimum, steps) in [
+        ([5, 49, 5], [0, -64, 0], [4, 8, 4]),
+        ([5, 49, 5], [-2000, -64, 3000], [4, 8, 4]),
+        ([3, 64, 2], [512, -64, -512], [4, 6, 4]),
+        ([2, 65, 2], [96, -64, 96], [4, 6, 4]),
+    ] {
+        let volume = DensityVolume::new(sizes, minimum, steps).unwrap();
+        let (mut actual, mut expected) = (vec![0.0; volume.size()], vec![0.0; volume.size()]);
+        lerp.sample_volume(&mut context, &mut actual, volume)
+            .unwrap();
+        reference
+            .sample_volume(&mut context, &mut expected, volume)
+            .unwrap();
+        assert_eq!(
+            actual.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+            "{sizes:?} {minimum:?}"
+        );
+        lerp.alpha
+            .sample_volume(&mut context, &mut actual, volume)
+            .unwrap();
+        clamped += actual.iter().filter(|&&a| a == 0.0 || a == 1.0).count();
+        mixed += actual.iter().filter(|&&a| a != 0.0 && a != 1.0).count();
+    }
+    // Both kinds of alpha occur, so both branches are skipped somewhere and read somewhere.
+    assert!(clamped > 0 && mixed > 0, "{clamped} {mixed}");
+}

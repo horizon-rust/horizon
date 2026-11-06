@@ -14,6 +14,7 @@ use horizon_core::{
     geometry::{Vec3, trig::Mth},
     random::{LegacyRandom, RandomSource},
 };
+use horizon_protocol::entity_data::PositionSource;
 use std::{collections::HashMap, f32::consts::PI};
 
 pub const EMERGE_DURATION: i64 = warden_brain::EMERGE_DURATION as i64;
@@ -395,7 +396,7 @@ pub fn anger_level(m: &Mob) -> AngerLevel {
 
 /// `Warden.isInvulnerableTo`: while digging or emerging.
 pub fn accepts_damage(m: &Mob, source: &Damage) -> bool {
-    !(digging_or_emerging(m) && source.kind != DamageKind::Generic)
+    !(digging_or_emerging(m) && !source.kind.bypasses_invulnerability())
 }
 /// `Warden.hurtServer`'s reaction, handled at the warden's next tick.
 pub fn hurt(m: &mut Mob, source: &Damage) {
@@ -404,7 +405,7 @@ pub fn hurt(m: &mut Mob, source: &Damage) {
     }
     let direct = !matches!(
         source.kind,
-        DamageKind::Arrow | DamageKind::Thrown | DamageKind::Fireball
+        DamageKind::Arrow | DamageKind::Thrown | DamageKind::Fireball | DamageKind::WitherSkull
     );
     if let Some(st) = m.extra.warden.as_mut() {
         st.hurt_by.push((source.attacker, direct));
@@ -454,7 +455,13 @@ pub fn do_push(m: &mut Mob, w: &MobWorld, who: Who, events: &mut Vec<MobEvent>) 
 }
 /// `Warden.doHurtTarget`: the attack keyframes (entity event 4), the impact
 /// sound, a sonic boom cooldown, then `Mob.doHurtTarget`.
-pub(super) fn do_hurt_target(m: &mut Mob, target: Who, w: &MobWorld, events: &mut Vec<MobEvent>) {
+pub(super) fn do_hurt_target(
+    m: &mut Mob,
+    target: Who,
+    w: &MobWorld,
+    lr: &mut LegacyRandom,
+    events: &mut Vec<MobEvent>,
+) {
     m.anim.states[ROAR].stop();
     m.anim.states[ATTACK].start(m.age as f32);
     events.push(MobEvent::EntityEvent {
@@ -465,7 +472,7 @@ pub(super) fn do_hurt_target(m: &mut Mob, target: Who, w: &MobWorld, events: &mu
     let pitch = voice_pitch(m);
     sound(m, "entity.warden.attack_impact", 10.0, pitch, events);
     warden_brain::mem(m).sonic_boom_cooldown.set_ttl((), 40);
-    let mut cx = warden_brain::cx(w, events);
+    let mut cx = warden_brain::cx(w, lr, events);
     super::ai::do_hurt_target(m, target, &mut cx);
 }
 
@@ -489,7 +496,8 @@ pub fn can_receive_vibration(m: &Mob, _now: i64, ctx: &Context) -> bool {
 }
 /// `VibrationSystem.Listener.handleGameEvent` for the warden: a free
 /// listener within 16 blocks of its eyes schedules what it can hear.
-/// `occluded` is `VibrationSystem.Listener.isOccluded`.
+/// `occluded` is `VibrationSystem.Listener.isOccluded`. Returns true when a
+/// sneaking player's step was avoided (AVOID_VIBRATION) instead.
 pub fn listen(
     m: &mut Mob,
     now: i64,
@@ -497,23 +505,35 @@ pub fn listen(
     pos: [f64; 3],
     ctx: &Context,
     occluded: impl Fn([f64; 3], [f64; 3]) -> bool,
-) {
+) -> bool {
     let eye = [m.position.x, m.position.y + m.kind.eye_height, m.position.z];
     let Some(st) = m.extra.warden.as_ref() else {
-        return;
+        return false;
     };
     if st.vibration.current.is_some() {
-        return;
+        return false;
     }
     let block = |p: [f64; 3]| p.map(|v| i64::from(v.floor() as i32));
     let (source, listener) = (block(pos), block(eye));
     let d = [0, 1, 2].map(|i| source[i] - listener[i]);
-    if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 256
-        || !sculk::valid_vibration(sculk::warden_can_listen(event), event, ctx)
+    if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 256 {
+        return false;
+    }
+    // isValidVibration: the warden can trigger avoid vibration.
+    let listens = sculk::warden_can_listen(event);
+    if listens
+        && ctx.source == Some(Who::Player)
+        && !ctx.spectator
+        && ctx.stepping_carefully
+        && sculk::ignored_when_sneaking(event)
+    {
+        return true;
+    }
+    if !sculk::valid_vibration(listens, event, ctx)
         || !can_receive_vibration(m, i64::from(m.age), ctx)
         || occluded(pos, eye)
     {
-        return;
+        return false;
     }
     let d = [pos[0] - eye[0], pos[1] - eye[1], pos[2] - eye[2]];
     let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() as f32;
@@ -529,6 +549,7 @@ pub fn listen(
             now,
         );
     }
+    false
 }
 /// `Level.gameEvent` for the mobs' own movement events from `from` on, as
 /// the mob AI probe has no sculk layer: every warden's listener hears them.
@@ -645,6 +666,12 @@ pub fn pre_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
             from: info.pos,
             to: eye,
             ticks: travel,
+            // `Warden.VibrationUser`: `new EntityPositionSource(warden,
+            // warden.getEyeHeight())`.
+            source: PositionSource::Entity {
+                id: m.id as i32,
+                y_offset: m.kind.eye_height as f32,
+            },
         });
     }
     if let Some(info) = tick.received {
@@ -730,34 +757,11 @@ pub(super) fn tick_sonic_boom(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEve
         });
     }
     sound(m, "entity.warden.sonic_boom", 3.0, 1.0, events);
-    let from = at(m);
-    // Players and the mobs hit here have no knockback resistance.
-    let resistance = 0.0;
-    match target {
-        Who::Player => events.push(MobEvent::DamagePlayer {
-            amount: 10.0,
-            from,
-            kind: "minecraft:sonic_boom",
-        }),
-        Who::Mob(id) => events.push(MobEvent::AttackMob {
-            target: id,
-            amount: 10.0,
-            source: Damage {
-                kind: DamageKind::SonicBoom,
-                attacker: Some(Who::Mob(m.id)),
-                from: Some(from),
-            },
-        }),
-    }
-    let horizontal = 2.5 * (1.0 - resistance);
-    let vertical = 0.5 * (1.0 - resistance);
-    events.push(MobEvent::Push {
+    events.push(MobEvent::SonicBoom {
         target,
-        velocity: [
-            normal[0] * horizontal,
-            normal[1] * vertical,
-            normal[2] * horizontal,
-        ],
+        attacker: m.id,
+        from: at(m),
+        direction: normal,
     });
 }
 /// `Warden.tick` on the client: the heartbeat (pitched by the client's copy
@@ -788,12 +792,13 @@ fn heartbeat(m: &mut Mob) -> bool {
     beat
 }
 /// `Warden.tick` on a client that is not the server: the heart and tendril
-/// animations and the keyframes that ended. Its sounds and particles come
-/// from the server.
-pub fn client_tick(m: &mut Mob) {
+/// animations and the keyframes that ended. Its sounds come from the server,
+/// but `Warden.clientDiggingParticles` is the client's own work, so the digging
+/// events are handed back to the caller.
+pub fn client_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
     m.anim.vo = m.anim.v;
     heartbeat(m);
-    animate(m, &mut Vec::new());
+    animate(m, events);
 }
 fn animate(m: &mut Mob, events: &mut Vec<MobEvent>) {
     // The animation values count down after the sync of the last tick.
@@ -1074,5 +1079,61 @@ mod tests {
         ] {
             assert_eq!(Pose::from_code(p.code()), p);
         }
+    }
+}
+
+#[cfg(test)]
+mod digging_tests {
+    use super::*;
+    use crate::mobs::MobTypes;
+    use std::sync::Arc;
+
+    fn mob(kind: &str) -> Option<Mob> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("entity-types.json").exists() {
+            return None;
+        }
+        let data = MobTypes::load(&root).ok()?;
+        let kind = Arc::new(data.types.get(kind)?.clone());
+        Some(Mob::new(
+            1,
+            kind,
+            horizon_core::geometry::Vec3::new(0.0, 4.0, 0.0),
+            0.0,
+        ))
+    }
+
+    /// `Warden.clientDiggingParticles` (#8614): while the emerging or digging
+    /// animation is under 4500 ms the client wants 30 block particles a tick,
+    /// so `client_tick` has to hand the event to the caller instead of
+    /// dropping it.
+    #[test]
+    fn an_emerging_warden_hands_its_digging_particles_back() {
+        let Some(mut m) = mob("minecraft:warden") else {
+            return;
+        };
+        let mut out = Vec::new();
+        client_tick(&mut m, &mut out);
+        assert!(out.is_empty(), "a standing warden digs nothing: {out:?}");
+
+        set_pose(&mut m, Pose::Emerging);
+        client_tick(&mut m, &mut out);
+        assert!(
+            out.iter()
+                .any(|e| matches!(e, MobEvent::DigParticles { .. })),
+            "an emerging warden digs: {out:?}"
+        );
+
+        // Past 4500 ms the animation has played out.
+        m.age += 20 * 5;
+        out.clear();
+        client_tick(&mut m, &mut out);
+        assert!(
+            !out.iter()
+                .any(|e| matches!(e, MobEvent::DigParticles { .. })),
+            "the animation is over: {out:?}"
+        );
     }
 }

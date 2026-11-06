@@ -609,7 +609,7 @@ impl B {
                     t.begin(cx.lr, cx.now);
                     // start
                     mem(m).path.set_opt(path.clone());
-                    m.nav_move_to_path(path.clone(), f64::from(*speed));
+                    m.nav_move_to_path(cx.w, path.clone(), f64::from(*speed));
                     if *slide {
                         // SlideToTargetSink.start
                         let at = m.center();
@@ -783,6 +783,7 @@ impl B {
                 m.swing();
                 let mut gcx = Cx {
                     w,
+                    lr: cx.lr,
                     events: cx.events,
                 };
                 super::ai::do_hurt_target(m, target, &mut gcx);
@@ -842,9 +843,13 @@ impl B {
                 }
                 super::breeze::set_pose(m, super::breeze::INHALING);
                 // level.playSound(null, breeze, BREEZE_CHARGE, HOSTILE, 1, 1)
-                let at = [m.position.x, m.position.y, m.position.z];
-                cx.events
-                    .push(MobEvent::Sound("entity.breeze.charge", at, 1.0, 1.0));
+                cx.events.push(MobEvent::entity_sound(
+                    m,
+                    "entity.breeze.charge",
+                    5,
+                    1.0,
+                    1.0,
+                ));
                 if let Some(p) = mem(m).breeze_jump_target.value() {
                     look_at_eyes(
                         m,
@@ -960,7 +965,7 @@ impl B {
                     if d > 4 && compute_path(m, cx.w, cx.now, &walk, path, speed, cant_reach) {
                         *last_target = Some(now_target);
                         mem(m).path.set_opt(path.clone());
-                        m.nav_move_to_path(path.clone(), f64::from(*speed));
+                        m.nav_move_to_path(cx.w, path.clone(), f64::from(*speed));
                     }
                 }
             }

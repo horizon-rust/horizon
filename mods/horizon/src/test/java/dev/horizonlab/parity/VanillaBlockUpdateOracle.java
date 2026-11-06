@@ -256,6 +256,12 @@ public final class VanillaBlockUpdateOracle {
                 }
             }
         }
+        /** Level.hasEntities (HangingEntity.canCoexist) over the level's entities. */
+        @Override public <T extends Entity> boolean hasEntities(net.minecraft.world.level.entity.EntityTypeTest<Entity, T> type, AABB box, java.util.function.Predicate<? super T> filter) {
+            List<T> out = new ArrayList<>();
+            getEntities(type, box, filter, out, 1);
+            return !out.isEmpty();
+        }
         /** ServerLevel.getEntity(id) over the level's entities. */
         @Override public Entity getEntity(int id) {
             if (entities == null) return null;
@@ -618,6 +624,11 @@ public final class VanillaBlockUpdateOracle {
         /** Leads send entity link packets; nobody is tracking. */
         @Override
         public void sendToTrackingPlayers(final net.minecraft.world.entity.Entity entity, final net.minecraft.network.protocol.Packet<? super net.minecraft.network.protocol.game.ClientGamePacketListener> packet) {
+        }
+
+        /** Entity events (an armor stand's wobble) go to the trackers and the entity itself; nobody is there. */
+        @Override
+        public void sendToTrackingPlayersAndSelf(final net.minecraft.world.entity.Entity entity, final net.minecraft.network.protocol.Packet<? super net.minecraft.network.protocol.game.ClientGamePacketListener> packet) {
         }
     }
 

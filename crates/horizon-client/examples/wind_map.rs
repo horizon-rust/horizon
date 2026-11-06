@@ -11,6 +11,7 @@
 //! `--synthetic` in place of `--world` draws a made-up terrain (hills, a valley, a pass, a sea).
 //! `--wind`: where the wind blows toward, in degrees from east (+x) toward south (+z), and its
 //! speed (default 30,3: a breeze toward the south-east).
+extern crate horizon_client_lib as horizon_client;
 use horizon_client::gfx::wind;
 use horizon_core::position::ChunkPos;
 use horizon_world::nbt::{Limits, Tag};

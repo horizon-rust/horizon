@@ -1,10 +1,10 @@
 //! Horizon's own registry (docs/api/mod-index.md): mods, modpacks and resource packs made for
-//! Horizon, reviewed as pull requests in ludovic111/horizon-mods. One file lists them all,
+//! Horizon, reviewed as pull requests in horizon-rust/horizon-mods. One file lists them all,
 //! `index.json`; every download is checked against it before it reaches the game folder
 //! (`horizon_mods::index::check_file`: size, SHA-256, the author's signature, the file's own
 //! manifest), and files the index says were taken down are refused and turned off.
 use super::{
-    details::{Details, Link},
+    details::{Details, GitHub, Link},
     download, installed, java, FileRef, Kind, Project, Query, Source, SourceId, Version, GAME,
 };
 use horizon_mods::index::{self, Index, Trust};
@@ -14,12 +14,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Where the registry publishes its index (GitHub Pages of ludovic111/horizon-mods).
-pub const INDEX_URL: &str = "https://ludovic111.github.io/horizon-mods/index.json";
+/// Where the registry publishes its index (GitHub Pages of horizon-rust/horizon-mods).
+pub const INDEX_URL: &str = "https://horizon-rust.github.io/horizon-mods/index.json";
 /// The registry's pages on the website, `<SITE>/<id>`.
 const SITE: &str = "https://playhorizon.dev/mods";
 /// The report form of a project.
-const REPORT: &str = "https://github.com/ludovic111/horizon-mods/issues/new?template=report.yml";
+const REPORT: &str = "https://github.com/horizon-rust/horizon-mods/issues/new?template=report.yml";
 /// The loader name the browser gives registry versions, so `support` and `pick` know them.
 pub const LOADER: &str = "horizon";
 /// How long a fetched index is used before it is fetched again.
@@ -58,6 +58,14 @@ pub fn known_index() -> Option<Arc<Index>> {
         .unwrap()
         .as_ref()
         .map(|(_, index)| index.clone())
+}
+
+/// Whether the registry's project `id` is a native mod, by the index already read (never the
+/// network); false when none was read.
+pub fn is_native_mod(id: &str) -> bool {
+    known_index()
+        .and_then(|index| Some(index.project(id)?.kind == index::Kind::NativeMod))
+        .unwrap_or(false)
 }
 
 /// The index: the one fetched in the last ten minutes, else fetched again (and kept in the game
@@ -209,24 +217,128 @@ fn kind_of(kind: &index::Kind) -> Option<Kind> {
         index::Kind::Mod => Some(Kind::Mod),
         index::Kind::ResourcePack => Some(Kind::ResourcePack),
         index::Kind::Modpack => Some(Kind::Modpack),
-        index::Kind::Shader => Some(Kind::Shader),
+        // Both go in shaderpacks/: the game reads `.hshader` packs and shaders/-folder zips.
+        index::Kind::Shader | index::Kind::ShaderPack => Some(Kind::Shader),
+        // Mixin mods: installed beside the others, compiled into the game by `native_mods`.
+        index::Kind::NativeMod => Some(Kind::Mod),
+        // Into a world the player picks ([`installed::install_datapack`]).
+        index::Kind::DataPack => Some(Kind::DataPack),
         index::Kind::Other(_) => None,
     }
 }
 
-/// What the player reads about a registry project before installing it: whether its files are
-/// signed, and for a mod what it may do, in the game's words (Options > Mods).
-pub fn trust_and_capabilities(id: &str) -> Vec<String> {
+/// The registry kind whose category list a browser kind filters by (`page::categories`): a
+/// native mod's list is a mod's, a shaders/-folder pack's a shader pack's.
+fn categories_of(kind: Kind) -> &'static [&'static str] {
+    index::page::categories(&match kind {
+        Kind::Mod => index::Kind::Mod,
+        Kind::ResourcePack => index::Kind::ResourcePack,
+        Kind::Modpack => index::Kind::Modpack,
+        Kind::Shader => index::Kind::Shader,
+        Kind::DataPack => index::Kind::DataPack,
+    })
+}
+
+/// The most tags the Filters panel offers for a kind.
+const MAX_TAGS_SHOWN: usize = 30;
+
+/// The tags the registry's projects of `kind` carry, plain ones only (as the site keeps them):
+/// the most used first, then by name.
+fn tags_of(index: &Index, kind: Kind) -> Vec<String> {
+    let plain = |t: &str| {
+        t.len() <= index::page::MAX_TAG
+            && t.bytes().next().is_some_and(|b| b != b'-')
+            && t.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    };
+    let mut uses: HashMap<&str, usize> = HashMap::new();
+    for p in index
+        .projects
+        .iter()
+        .filter(|p| kind_of(&p.kind) == Some(kind))
+    {
+        let mut own: Vec<&str> = p
+            .tags
+            .iter()
+            .map(String::as_str)
+            .filter(|t| plain(t))
+            .collect();
+        own.sort_unstable();
+        own.dedup();
+        for t in own {
+            *uses.entry(t).or_default() += 1;
+        }
+    }
+    let mut tags: Vec<(&str, usize)> = uses.into_iter().collect();
+    tags.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    tags.into_iter()
+        .take(MAX_TAGS_SHOWN)
+        .map(|(t, _)| t.to_owned())
+        .collect()
+}
+
+/// Where the registry's mod policy is: who owns and answers for a project, takedowns.
+pub const POLICY: &str = "https://playhorizon.dev/mods/policy";
+
+/// Whether the Horizon project made `p` (the mod policy's "Official": author Horizon, source in
+/// the horizon-rust organisation).
+pub fn official(p: &index::Project) -> bool {
+    p.authors == ["Horizon"] && p.source.starts_with("https://github.com/horizon-rust/")
+}
+
+/// Whether the registry's project `id` is Horizon's own ([`official`]), by the index already read
+/// (never the network); false when none was read.
+pub fn is_official(id: &str) -> bool {
+    official_in(known_index().as_deref(), id)
+}
+
+fn official_in(index: Option<&Index>, id: &str) -> bool {
+    index.and_then(|i| i.project(id)).is_some_and(official)
+}
+
+/// What the player reads about a registry project before installing it: who made it, whether its
+/// files are signed, and for a mod what it may do, in the game's words (Options > Mods). A native
+/// mod says it runs with the player's rights, and how it fits the Horizon `instance` plays.
+pub fn trust_and_capabilities(
+    id: &str,
+    instance: Option<&crate::instances::Instance>,
+) -> Vec<String> {
     let Ok(index) = index() else {
         return Vec::new();
     };
     let Some(p) = index.project(id) else {
         return Vec::new();
     };
-    let mut lines = vec![match &p.key {
+    let mut lines = vec![if official(p) {
+        "Made by Horizon".to_owned()
+    } else {
+        format!(
+            "Made by {}. Not made or endorsed by the Horizon project ({POLICY})",
+            p.authors.join(", ")
+        )
+    }];
+    lines.push(match &p.key {
         Some(_) => "Signed by its author: the launcher checks the signature".to_owned(),
         None => "Unsigned: the launcher checks its checksum only".to_owned(),
-    }];
+    });
+    if p.kind == index::Kind::NativeMod {
+        lines.push(
+            "Native code: it is compiled into the game and runs with full access to your computer. Its source was reviewed before it was listed".into(),
+        );
+        if let Some(v) = p.versions.iter().find(|v| v.game == GAME) {
+            let pin = v.api.split('/').nth(1).unwrap_or_default();
+            lines.push(
+                instance
+                    .and_then(|i| crate::native_fit::line(i, &p.id, v.hooks, pin, &v.broken_on))
+                    .unwrap_or_else(|| {
+                        format!(
+                            "Built by the launcher on Horizon {}",
+                            &pin[..pin.len().min(7)]
+                        )
+                    }),
+            );
+        }
+    }
     if let Some(v) = p.versions.first().filter(|_| p.kind == index::Kind::Mod) {
         lines.extend(
             v.capabilities
@@ -287,6 +399,7 @@ fn version_of(
         blocked: index
             .revoked(&p.id, &v.file.sha256)
             .map(|r| format!("taken down: {}", r.reason))
+            .or_else(|| needs_port(v).then(|| NEEDS_PORT.to_string()))
             .or_else(|| needs_newer(v, level).then(|| NEEDS_NEWER.to_string())),
     }
 }
@@ -303,28 +416,108 @@ fn github_login(login: &str) -> bool {
         && !login.contains("--")
 }
 
-/// The words of a query found in a project's id, name, summary or authors.
+/// The GitHub repository a project's `source` is in, `https://github.com/<owner>/<repo>`: a
+/// deeper path (a folder of a monorepo) or a trailing `.git` names the same repository. None
+/// when the source isn't on GitHub, or its owner or name isn't one GitHub allows.
+pub fn github_repo(source: &str) -> Option<String> {
+    let path = source.strip_prefix("https://github.com/")?;
+    let mut parts = path.split(['/', '?', '#']);
+    let owner = parts.next().filter(|o| github_login(o))?;
+    let repo = parts.next()?;
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+    let allowed = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.');
+    if repo.is_empty() || repo.len() > 100 || repo.starts_with('.') || !repo.bytes().all(allowed) {
+        return None;
+    }
+    Some(format!("https://github.com/{owner}/{repo}"))
+}
+
+/// The words of a query found in a project's id, name, summary, authors or tags.
 fn matches(p: &index::Project, text: &str) -> bool {
-    let hay = format!("{} {} {} {}", p.id, p.name, p.summary, p.authors.join(" ")).to_lowercase();
+    let hay = format!(
+        "{} {} {} {} {}",
+        p.id,
+        p.name,
+        p.summary,
+        p.authors.join(" "),
+        p.tags.join(" ")
+    )
+    .to_lowercase();
     text.split_whitespace()
         .all(|word| hay.contains(&word.to_lowercase()))
 }
 
-/// The projects of the query's kind whose words match, for this game unless `everything`: the
-/// most downloaded first.
+/// The sorts the registry can honor: it has downloads and each version's publish day, but no
+/// follows and no relevance score (its search is a word match).
+pub const SORTS: [super::details::Sort; 3] = [
+    super::details::Sort::Downloads,
+    super::details::Sort::Newest,
+    super::details::Sort::Updated,
+];
+
+/// The projects of the query's kind whose words match and that have every category and tag the
+/// filters ask for, for this game unless `everything`: the
+/// most downloaded first, or the newest (first published) or most recently updated (latest
+/// version) when the query asks, ties by downloads.
 fn search(index: &Index, query: &Query) -> Vec<Project> {
-    let mut found: Vec<Project> = index
+    use super::details::Sort;
+    let mut found: Vec<&index::Project> = index
         .projects
         .iter()
         .filter(|p| kind_of(&p.kind) == Some(query.kind) && matches(p, &query.text))
+        .filter(|p| {
+            query
+                .filters
+                .categories
+                .iter()
+                .all(|c| p.categories.contains(c))
+                && query.filters.tags.iter().all(|t| p.tags.contains(t))
+        })
         .filter(|p| query.everything || p.versions.iter().any(|v| v.game == GAME))
-        .filter_map(project_of)
+        // A WebAssembly mod stays in the index for the modpacks that need it, not in the browser.
+        .filter(|p| !p.versions.iter().filter(|v| v.game == GAME).all(needs_port))
         .collect();
-    found.sort_by_key(|p| std::cmp::Reverse(p.downloads));
+    let day = |p: &index::Project, newest: bool| {
+        let days = p.versions.iter().map(|v| v.published.as_str());
+        if newest { days.min() } else { days.max() }
+            .unwrap_or("")
+            .to_string()
+    };
+    match query.filters.sort {
+        Some(Sort::Newest) => found.sort_by_cached_key(|p| {
+            (
+                std::cmp::Reverse(day(p, true)),
+                std::cmp::Reverse(p.downloads),
+            )
+        }),
+        Some(Sort::Updated) => found.sort_by_cached_key(|p| {
+            (
+                std::cmp::Reverse(day(p, false)),
+                std::cmp::Reverse(p.downloads),
+            )
+        }),
+        _ => found.sort_by_key(|p| std::cmp::Reverse(p.downloads)),
+    }
     found
         .into_iter()
+        .filter_map(project_of)
         .skip(query.offset)
         .take(query.limit)
+        .collect()
+}
+
+/// A project's screenshots as its page's gallery, in the index's order: those the registry
+/// mirrored (`screenshots/<id>/`, served beside its icons), never another host's.
+fn gallery_of(p: &index::Project) -> Vec<super::details::Image> {
+    p.screenshots
+        .iter()
+        .filter(|url| super::images::refuse(url).is_none())
+        .map(|url| super::details::Image {
+            url: url.clone(),
+            title: String::new(),
+            description: String::new(),
+            featured: false,
+        })
         .collect()
 }
 
@@ -366,6 +559,22 @@ impl Source for Registry {
             .iter()
             .map(|v| version_of(&index, p, v, level))
             .collect())
+    }
+
+    /// Only categories and tags: every registry file is for Horizon on the version it plays. The
+    /// tags come from the index the search already read (never the network).
+    fn tags(&self, kind: Kind) -> Result<super::details::Tags, String> {
+        Ok(super::details::Tags {
+            tags: known_index().map(|i| tags_of(&i, kind)).unwrap_or_default(),
+            categories: categories_of(kind)
+                .iter()
+                .map(|name| super::details::Tag {
+                    name: (*name).to_owned(),
+                    header: "categories".into(),
+                })
+                .collect(),
+            ..Default::default()
+        })
     }
 
     fn details(&self, project: &Project) -> Result<Details, String> {
@@ -430,6 +639,12 @@ impl Source for Registry {
                 .map(|v| v.published.clone())
                 .unwrap_or_default(),
             updated: newest.map(|v| v.published.clone()).unwrap_or_default(),
+            categories: p.categories.clone(),
+            gallery: gallery_of(p),
+            github: github_repo(&p.source).map(|url| GitHub {
+                url,
+                stars: p.stars,
+            }),
             ..Details::default()
         })
     }
@@ -484,7 +699,7 @@ fn relative(kind: Kind, id: &str, file_name: &str) -> Result<String, String> {
         Kind::ResourcePack => Ok(format!("resourcepacks/{file_name}")),
         Kind::Shader => Ok(format!("shaderpacks/{file_name}")),
         Kind::Modpack => Err("A modpack installs as its own profile (pack::install).".into()),
-        Kind::DataPack => Err("Horizon's registry has no data packs.".into()),
+        Kind::DataPack => Err("A data pack goes into a world (fetch_datapack).".into()),
     }
 }
 
@@ -514,7 +729,41 @@ fn install_from(
         .project(&project.id)
         .ok_or_else(|| format!("{} isn't in Horizon's registry.", project.title))?;
     let v = newest(index, p, level)?;
+    if needs_port(v) {
+        return Err(format!("{} {NEEDS_PORT}.", p.name));
+    }
     install_version(index, local, p, v, home, progress).map(|e| vec![e])
+}
+
+/// Downloads the newest version of the registry's data pack `project` into `folder`, checked
+/// against the index as every registry file is (size, SHA-256, signature, `pack.mcmeta` and
+/// `data/`): the file and its version. [`installed::install_datapack`] puts it in a world.
+pub fn fetch_datapack(
+    project: &Project,
+    folder: &Path,
+    progress: &dyn Fn(f32),
+) -> Result<(PathBuf, String), String> {
+    fetch_datapack_from(&*index()?, local(), project, folder, progress)
+}
+
+fn fetch_datapack_from(
+    index: &Index,
+    local: bool,
+    project: &Project,
+    folder: &Path,
+    progress: &dyn Fn(f32),
+) -> Result<(PathBuf, String), String> {
+    let p = index
+        .project(&project.id)
+        .filter(|p| p.kind == index::Kind::DataPack)
+        .ok_or_else(|| format!("{} isn't a data pack in Horizon's registry.", project.title))?;
+    let v = newest(index, p, None)?;
+    let file = &version_of(index, p, v, None).files[0];
+    let path = fetch(file, folder, local, progress)?;
+    index::check_file(index, p, v, &path).inspect_err(|_| {
+        let _ = fs::remove_file(&path);
+    })?;
+    Ok((path, v.version.clone()))
 }
 
 /// A project's newest version for this game that wasn't taken down and that a game serving mod
@@ -542,6 +791,17 @@ fn newest<'a>(
 }
 
 const NEEDS_NEWER: &str = "needs a newer Horizon than the game you play";
+const NEEDS_PORT: &str = "needs a native port: Horizon doesn't run WebAssembly mods any more";
+
+/// Whether version `v` is a WebAssembly mod with code: a `.hmod` that may do more than add
+/// content. The registry keeps it for the modpacks that need it; a modpack installs it with its
+/// code left out (the game doesn't run it), and the browser neither lists nor installs it.
+pub fn needs_port(v: &index::Version) -> bool {
+    v.file.name.ends_with(".hmod")
+        && v.capabilities
+            .iter()
+            .any(|c| *c != horizon_mods::Capability::Registries)
+}
 
 /// Whether version `v` calls mod API functions a game serving `level` doesn't have.
 fn needs_newer(v: &index::Version, level: Option<u32>) -> bool {
@@ -558,11 +818,30 @@ fn install_version(
     home: &Path,
     progress: &dyn Fn(&str, f32),
 ) -> Result<installed::Entry, String> {
+    install_version_guarded(index, local, p, v, home, &|_| Ok(()), progress)
+}
+
+/// [`install_version`], with `guard` asked about the downloaded file once it passed the index's
+/// checks and before it replaces anything: its error leaves everything as it was.
+fn install_version_guarded(
+    index: &Index,
+    local: bool,
+    p: &index::Project,
+    v: &index::Version,
+    home: &Path,
+    guard: &dyn Fn(&Path) -> Result<(), String>,
+    progress: &dyn Fn(&str, f32),
+) -> Result<installed::Entry, String> {
+    let _lock = crate::browser::lock_home(home);
     let project = project_of(p).ok_or_else(|| format!("{} can't be installed here.", p.name))?;
     if let Some(r) = index.revoked(&p.id, &v.file.sha256) {
         return Err(format!("{} was taken down: {}", p.name, r.reason));
     }
-    let relative = relative(project.kind, &p.id, &v.file.name)?;
+    let native = p.kind == index::Kind::NativeMod;
+    let relative = match native {
+        true => format!("{}/{}.hnmod", crate::native_mods::INSTALLED, p.id),
+        false => relative(project.kind, &p.id, &v.file.name)?,
+    };
     let mut list = installed::Installed::load(home);
     let ours = |e: &installed::Entry| e.source == SourceId::Horizon && e.project == p.id;
     let old = list.entries.iter().find(|e| ours(e)).cloned();
@@ -579,7 +858,7 @@ fn install_version(
         ));
     }
     let clash = target.exists() && old.as_ref().is_none_or(|o| o.file != relative);
-    if project.kind == Kind::Mod && (clash || folder_mod.exists()) {
+    if project.kind == Kind::Mod && (clash || (!native && folder_mod.exists())) {
         return Err(format!(
             "A mod with the id {} is already in {}: move it away first.",
             p.id,
@@ -593,15 +872,31 @@ fn install_version(
     let file = &version_of(index, p, v, None).files[0];
     let staging = home.join("mod-browser/downloads");
     let path = fetch(file, &staging, local, &|f| progress(&line, f))?;
-    let trust = index::check_file(index, p, v, &path).inspect_err(|_| {
-        let _ = fs::remove_file(&path);
-    })?;
+    let checked = index::check_file(index, p, v, &path).and_then(|trust| {
+        // Only Rust and TOML sources, for the mod the index names: nothing in it runs here.
+        match native {
+            true => index::native::Bundle::read(&path).and_then(|b| match b.manifest.id == p.id {
+                true => Ok(trust),
+                false => Err(format!("it is {}, not {}", b.manifest.id, p.id)),
+            }),
+            false => Ok(trust),
+        }
+    });
+    let trust = checked
+        .and_then(|t| guard(&path).map(|()| t))
+        .inspect_err(|_| {
+            let _ = fs::remove_file(&path);
+        })?;
     if let Some(dir) = target.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     fs::rename(&path, &target).map_err(|e| format!("{}: {e}", target.display()))?;
-    if let Some(old) = old.as_ref().filter(|o| o.file != relative) {
-        let _ = fs::remove_file(home.join(&old.file));
+    if let Some(old) = old
+        .as_ref()
+        .filter(|o| o.file != relative && !stays(native, &o.file))
+        .and_then(|o| o.path(home))
+    {
+        let _ = fs::remove_file(old);
     }
     if project.kind == Kind::Mod {
         java::set_enabled(home, &p.id, true)?;
@@ -619,7 +914,10 @@ fn install_version(
         page: project.page.clone(),
         dependency: false,
         verdict: Some(trust_label(trust).into()),
-        skipped: Vec::new(),
+        skipped: match needs_port(v) {
+            true => vec![format!("its code ({NEEDS_PORT})")],
+            false => Vec::new(),
+        },
         namespaces: Vec::new(),
     };
     list.entries.retain(|e| !ours(e));
@@ -628,8 +926,19 @@ fn install_version(
     Ok(entry)
 }
 
-/// The mod id of an installed mod (`horizon-mods/<id>` or `horizon-mods/<id>.hmod`).
+/// Whether an update to a native version keeps the old file `old`: a mod that turned native
+/// keeps its `.hmod` until the player builds the game with the new version. The game runs it
+/// meanwhile and skips it once the native one is built in; removing the mod removes both.
+fn stays(native: bool, old: &str) -> bool {
+    native && old.ends_with(".hmod")
+}
+
+/// The mod id of an installed mod (`horizon-mods/<id>`, `horizon-mods/<id>.hmod` or
+/// `horizon-native-mods/<id>.hnmod`).
 pub fn mod_id(entry: &installed::Entry) -> Option<&str> {
+    if let Some(rest) = entry.file.strip_prefix(crate::native_mods::INSTALLED) {
+        return rest.strip_prefix('/')?.strip_suffix(".hnmod");
+    }
     let rest = entry.file.strip_prefix(java::MODS_DIR)?.strip_prefix('/')?;
     Some(rest.strip_suffix(".hmod").unwrap_or(rest))
 }
@@ -637,6 +946,7 @@ pub fn mod_id(entry: &installed::Entry) -> Option<&str> {
 /// Turns the registry's files that were taken down off in the game folder `home`, and says
 /// which. Their files stay, so the player sees them and can remove them.
 pub fn turn_off_revoked(index: &Index, home: &Path) -> Vec<String> {
+    let _lock = crate::browser::lock_home(home);
     let mut out = Vec::new();
     for e in installed::Installed::load(home).entries {
         let hash = e.checksum.strip_prefix("SHA-256:").unwrap_or_default();
@@ -692,6 +1002,7 @@ pub fn before_play(home: &Path) {
     });
 }
 
+pub mod auto;
 pub mod pack;
 #[cfg(test)]
 mod tests;

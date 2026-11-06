@@ -7,6 +7,11 @@ Until 0.2 the game was tagged by date (`v2026.10.19.15`) and the launcher counte
 From 0.2 both follow [semantic versioning](https://semver.org) and share one release line: **Horizon 0.2.x** is the
 game and the launcher of the 0.2 line.
 
+**Since 2026-10-28 the game ships only Nightlies** ([release-flow.md](release-flow.md#nightly-only)): no new `vX.Y.Z`
+game tag is made, and a game build is named `nightly-<date>-<commit>` (its release title, "Nightly <date> ·
+<commit>"), which launchers and servers rank after every `vX.Y.Z`. The launcher keeps its `launcher@X.Y.Z` tags on
+the release line. What follows describes the `vX.Y.Z` game tags as they were.
+
 ## Tags
 
 | | Game | Launcher |
@@ -44,7 +49,7 @@ A tag is a 0.2 tag when it is `v` or `launcher@` followed by exactly three numbe
 major below 1000; a date's first number is a year, so `v2026.10.21` never is. The rule is written once per
 language, with the same tests: `crates/horizon-server/src/update.rs` (`newer`), `launcher/src/backend.rs`
 (`release_order`), `tools/release_train.py` (`tag_key`) and
-the website's `src/versions.js` (ludovic111/horizon-site).
+the website's `src/versions.js` (horizon-rust/horizon-site).
 
 ## The workflows
 
@@ -70,6 +75,7 @@ Installs made before 0.2 run old code that compares tags number by number, so to
 | --- | --- | --- |
 | Launcher 0.16.0 and older, updating itself | Looks only at `launcher-v` tags and takes one above its own version. Never sees `launcher@`. | **The bridge**: one last `launcher-v0.17.0`, built with the new code. Old launchers take it as usual; it knows it is a `launcher-v` release and takes `launcher@0.2.0` next. Two updates, both by themselves. |
 | Launcher 0.16.0 and older, installing games | Sorts `v0.2.0` below every dated release and below the versions it has installed, so it never offers it. | Once the launcher has updated itself (above), it offers `v0.2.0` like any update. Until then a player can install `v0.2.0` by hand on the Versions page (it is listed last). |
+| Launcher that can't replace itself: opened from its disk image, a macOS app not moved out of Downloads (macOS runs it from a read-only copy), a `.zip` opened in Explorer without extracting it, a folder it can't write (#9287) | Finds every update and fails to put it in place at each check. Launchers released before #9287 say so only on Settings' Launcher line ("the update failed: …"), so the player sees nothing and stays on that version (launcher 0.2.0 seen on 2026-11-04 with 0.2.40 out). Newer ones say "A new version is available" with **Download again**. | Download the launcher again once from playhorizon.dev and put it where it can write: Applications on macOS, an extracted folder or `horizon-launcher-setup.exe` on Windows. It updates itself from then on. Nothing in a release can reach such a copy: it fails before it runs anything new. |
 | Launcher that never updates itself (`HORIZON_LAUNCHER_NO_SELF_UPDATE`, a package) | As above, without the bridge. | Update the package, or install `v0.2.0` by hand. |
 | `horizon-server` from before the bridge | Reads GitHub's *latest* release and installs it only if its tag compares higher: `v0.2.0` never does. `--version <tag>` skips the comparison. A server never updates itself: its supervisor only logs a notice every 6 hours, and the running process keeps its old code until the service restarts. | **The game bridge**: the last dated release, built with the new code, made stable (*latest*) before `v0.2.0` is published. `v0.2.0` then spends at least 6 hours as a beta, so *latest* stays the bridge for that long (the longer it stays a beta, the more servers are caught). An owner who runs `horizon-server update` in that time gets the bridge, and the command runs the new code at once, so the next `horizon-server update` takes `v0.2.0` once it is stable. The log notice only changes after the service restarts. An owner on old code after that time is told the server is up to date, and runs `horizon-server update --version v0.2.0` once. 0.2.0's notes say so. |
 | Servers the launcher hosts (Servers page) | Set up from the launcher's installed versions. | Follow the launcher. |
@@ -125,7 +131,7 @@ Run by the orchestrator, in this order. Until step 3, nothing is published.
 4. Let the game bridge become stable on its normal schedule: about 6 hours after it was published, the promote run
    makes it *latest*. Do not force it (`promote` with `force=true`): it carries about 43 player-facing pull requests
    from the freeze and needs its beta like any release. Check it is *latest*:
-   `gh api repos/ludovic111/horizon/releases/latest --jq .tag_name`.
+   `gh api repos/horizon-rust/horizon/releases/latest --jq .tag_name`.
 5. Only then merge the update channels pull request (the launcher's Stable and Alpha, the daily promotion), then
    mark the switch pull request (#1132) ready and merge it (`.github/release-line.txt` = `0.2`, and the
    docs that talk about 0.2). On the next run, about 10 minutes, the train publishes `v0.2.0` as a beta and

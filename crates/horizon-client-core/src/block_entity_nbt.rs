@@ -143,7 +143,9 @@ impl<'a> Fields<'a> {
     /// `RandomizableContainer.tryLoadLootTable` / `trySaveLootTable`; true when the
     /// block entity has a loot table (and so saves no items).
     fn loot_table(&mut self) -> bool {
-        let Some(table) = text(self.input.get("LootTable")) else {
+        let Some(table) =
+            text(self.input.get("LootTable")).and_then(|id| crate::identifier::normalize_id(&id))
+        else {
             return false;
         };
         self.put("LootTable", string(&table));
@@ -494,7 +496,11 @@ pub fn canonical(tag: &Tag) -> Option<Tag> {
                     _ => string("minecraft:air"),
                 },
             );
-            f.put("facing", Tag::Int(int(tag.get("facing")).unwrap_or(0)));
+            // Direction.LEGACY_ID_CODEC: the 3D data value as a byte.
+            f.put(
+                "facing",
+                Tag::Byte(int(tag.get("facing")).unwrap_or(0) as i8),
+            );
             f.float("progress", 0.0);
             f.flag("extending", false);
             f.flag("source", false);
@@ -873,6 +879,23 @@ mod tests {
         );
     }
 
+    /// `PistonMovingBlockEntity.saveAdditional`: `facing` through
+    /// `Direction.LEGACY_ID_CODEC` (a byte), `progress` a float.
+    #[test]
+    fn moving_piston_fields_match_vanilla() {
+        let out = canon(
+            "{id:\"minecraft:piston\",x:1,y:2,z:3,blockState:{Name:\"minecraft:stone\"},\
+             facing:5,progress:0.5f,extending:1b,source:0b}",
+        );
+        assert_eq!(out.get("facing"), Some(&Tag::Byte(5)));
+        assert_eq!(out.get("progress"), Some(&f32_tag(0.5)));
+        assert_eq!(out.get("extending"), Some(&Tag::Byte(1)));
+        assert_eq!(out.get("source"), Some(&Tag::Byte(0)));
+        let fresh = canon("{id:\"minecraft:piston\",x:1,y:2,z:3}");
+        assert_eq!(fresh.get("facing"), Some(&Tag::Byte(0)));
+        assert_eq!(fresh.get("blockState"), Some(&string("minecraft:air")));
+    }
+
     #[test]
     fn loot_table_replaces_items_and_zero_seed_is_omitted() {
         let out = canon(
@@ -882,6 +905,16 @@ mod tests {
         assert!(out.get("Items").is_none());
         assert!(out.get("LootTableSeed").is_none());
         assert_eq!(out.get("LootTable"), Some(&string("minecraft:chests/x")));
+    }
+
+    #[test]
+    fn invalid_loot_table_leaves_items_intact() {
+        let out = canon(
+            "{id:\"minecraft:barrel\",x:1,y:2,z:3,LootTable:\"INVALID TABLE\",\
+             Items:[{Slot:0b,id:\"minecraft:stone\",count:1}]}",
+        );
+        assert!(out.get("Items").is_some());
+        assert!(out.get("LootTable").is_none());
     }
 
     #[test]
