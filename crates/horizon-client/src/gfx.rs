@@ -3739,11 +3739,15 @@ impl Renderer {
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Depth32Float,
                 // Occlusion culling's in-shader test and ray-traced shadows read it; the rays'
-                // prepass's is copied into the world's (`HORIZON_WORLD_PREPASS`).
+                // prepass's is copied into the world's with `HORIZON_WORLD_PREPASS=1` alone, so
+                // that the copies' usages never touch how the driver lays the depth out else.
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                     | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_SRC
-                    | wgpu::TextureUsages::COPY_DST,
+                    | if world_prepass() == WorldPrepass::Rays {
+                        wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST
+                    } else {
+                        wgpu::TextureUsages::empty()
+                    },
                 view_formats: &[],
             })
             .create_view(&Default::default())
@@ -6995,6 +6999,7 @@ impl Renderer {
                     && plain
                     && clean_view_proj == view_proj
                     && d.texture().size() == world_depth.texture().size()
+                    && d.texture().usage().contains(wgpu::TextureUsages::COPY_SRC)
                     && world_depth
                         .texture()
                         .usage()
