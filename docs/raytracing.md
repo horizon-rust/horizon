@@ -653,6 +653,16 @@ wind):
 14. **Shadow rays end on their first hit** (`FIRST_HIT`, the ray flag `0x4`; `HORIZON_RT_FIRST_HIT=0` for the old): the
    sun's, the light sources', the froxels' and GI's visibility rays let the hardware commit the first opaque triangle
    they meet and stop, where it went on looking for a nearer one no shadow needs. What they return is the same.
+   Measured on dd9002142: about 0.05 ms on the froxels' inject and on the trace. Item 12 there: the TAA 0.38 to 0.25
+   ms an eye, but not while the vignette shows (it draws over the scene, item 15); item 13 within the noise, kept for
+   its triangles.
+15. **The vignette draws over the finished frame, in the tone mapping's pass** (tonemap.rs `Vignette`,
+   `HORIZON_VIGNETTE_CURVE=0` for the old): a full-size quad blended over the scene's light before the tone mapping,
+   0.087 ms an eye in VR, and the reason the TAA copied its frame back (item 12) wherever the vignette showed (at
+   night, underground). When the grading and the curve draw in one pass and the vignette is the last screen effect
+   (vanilla's other camera overlays draw after it), that pass multiplies its output by 1 - the sprite times its
+   colour: vanilla's own blend, over the frame as the screen shows it, where the quad darkened the light before the
+   curve.
 
 **Kept, though measured:** the second bounce on a radiance cache miss (3 ms of 12 in the RTX Demo's interior, which
 loses 1 % of its light without it) and the reuse's visibility ray (1.3 ms; without it a neighbour's sample leaks

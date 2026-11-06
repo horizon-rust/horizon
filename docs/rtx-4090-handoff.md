@@ -150,7 +150,13 @@ the first fake-runtime runs used 3132x3016). PR #2 (`claude/project-thread-tb0ay
   per-stage table is `pr2-item0-109a.txt` in the project files.
 - **The TAA's copy back only when something draws over the scene** (docs/raytracing.md item 12,
   `HORIZON_TAA_BLIT=1` for the old), **ReSTIR GI's visibility ray with hardware rays** (item 13,
-  `HORIZON_RT_GI_DDA=1`), **shadow rays ending on their first hit** (item 14, `HORIZON_RT_FIRST_HIT=0`). Not yet
+  `HORIZON_RT_GI_DDA=1`), **shadow rays ending on their first hit** (item 14, `HORIZON_RT_FIRST_HIT=0`). Measured on
+  dd9002142 (`pr2-dd90.txt`): 8.31 ms a frame (eye 1 5.38, eye 2 2.82); the TAA 0.38 to 0.25 ms an eye while no
+  vignette shows; the first hit about 0.05 ms; the visibility within the noise. Two runs of the defaults differ by
+  0.6 ms at one clock: the fake world's spawn moves from launch to launch, so captures at a fixed pose need a
+  teleport (`spreadplayers 0 0`).
+- **The vignette in the tone mapping's pass, over the finished frame as vanilla draws it** (item 15,
+  `HORIZON_VIGNETTE_CURVE=0` for the old): its quad was 0.087 ms an eye and kept the TAA's copy back. Not yet
   measured.
 - **Ideas weighed and left:** the second eye skipping the exposure meter (the grading's local tone mapping reads the
   meter's chain, level 2, so the eye needs its own); a conservative depth reuse across the TAA jitter (holes through

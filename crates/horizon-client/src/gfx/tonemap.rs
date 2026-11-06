@@ -165,6 +165,41 @@ struct Grading {
     /// `pipeline` and `aces` in one pass onto the screen's format, when nothing reads the graded
     /// light (`Tonemap::run`'s `keep_graded`).
     grade_aces: wgpu::RenderPipeline,
+    /// `grade_aces`'s vignette (`Vignette`): the atlas, its sampler and the sprite's uniform.
+    vignette_layout: wgpu::BindGroupLayout,
+    /// Bound without a vignette to draw (a 1x1 texture, the uniform's mode 0).
+    no_vignette: wgpu::BindGroup,
+}
+
+/// The vignette (`RenderPipelines.VIGNETTE`, screen_effects.rs `Blend::Vignette`), for the grading
+/// and the curve's one pass to draw over the finished frame as vanilla does, the frame times 1 - the
+/// sprite times its colour, rather than a quad blended over the scene's light before it (`run`'s
+/// `vignette`).
+pub struct Vignette<'a> {
+    /// The shared 2D atlas the sprite is in, and the sampler its sampling takes (nearest, or
+    /// linear for a blurred sprite).
+    pub atlas: &'a wgpu::TextureView,
+    pub sampler: &'a wgpu::Sampler,
+    /// The sprite's atlas rectangle (u0, v0, u1, v1).
+    pub rect: [f32; 4],
+    /// Its colour: how dark it makes the frame.
+    pub color: [f32; 4],
+    /// Clamp-to-edge addressing, else repeat (`TextureMetadataSection.clamp`).
+    pub clamp: bool,
+}
+
+/// Whether the vignette draws in the grading and the curve's pass, over the finished frame as
+/// vanilla draws it (`Vignette`): on unless `HORIZON_VIGNETTE_CURVE=0`, which blends its quad over
+/// the scene's light before the tone mapping, as before.
+pub fn vignette_in_curve() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_VIGNETTE_CURVE").map_or(true, |v| v != "0"))
+}
+
+/// `HORIZON_TONEMAP=shoulder`: the old curve with its shoulder in place of ACES.
+fn shoulder() -> bool {
+    static SHOULDER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SHOULDER.get_or_init(|| std::env::var("HORIZON_TONEMAP").as_deref() == Ok("shoulder"))
 }
 
 pub struct Tonemap {
@@ -369,9 +404,59 @@ impl Grading {
             multiview_mask: None,
             cache: None,
         });
+        let vignette_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Horizon vignette"),
+            entries: &[
+                entry(
+                    0,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(
+                    1,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                ),
+                entry(
+                    2,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
+            ],
+        });
+        let none = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("Horizon no vignette"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&Default::default());
+        let no_vignette = vignette_group(device, &vignette_layout, &none, &sampler, [0.0; 12]);
+        let fused_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Horizon grading and tone mapping"),
+            bind_group_layouts: &[Some(scene_layout), Some(&layout), Some(&vignette_layout)],
+            ..Default::default()
+        });
         let grade_aces = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("fs_grade_aces"),
-            layout: Some(&pipeline_layout),
+            layout: Some(&fused_layout),
             vertex: wgpu::VertexState {
                 module: shader,
                 entry_point: Some("vs_full"),
@@ -408,8 +493,46 @@ impl Grading {
             pipeline,
             aces,
             grade_aces,
+            vignette_layout,
+            no_vignette,
         }
     }
+}
+
+/// The vignette's group (tonemap.wgsl `VignetteParams`: the rectangle, the colour, the mode).
+fn vignette_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    atlas: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    words: [f32; 12],
+) -> wgpu::BindGroup {
+    use wgpu::util::DeviceExt;
+    // A buffer of its own each time: in VR an eye's frame can still be queued when the other's
+    // is encoded.
+    let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Horizon vignette"),
+        contents: bytemuck::cast_slice(&words),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Horizon vignette"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(atlas),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: params.as_entire_binding(),
+            },
+        ],
+    })
 }
 
 impl Tonemap {
@@ -732,7 +855,8 @@ impl Tonemap {
     /// `keep_graded` (HDR output, a screenshot or a video reads it after: `graded`), else straight
     /// onto `target` with the curve (ACES), one full-size pass and target less. `source` is the
     /// scene's light when another texture of its size and format holds it (the TAA's resolved
-    /// frame, nothing drawn over it after: taa.rs `Inputs::copy_back`).
+    /// frame, nothing drawn over it after: taa.rs `Inputs::copy_back`). `vignette` is drawn over
+    /// the finished frame when the grading and the curve draw in one pass (`fuses`).
     #[allow(clippy::too_many_arguments)]
     pub fn run(
         &self,
@@ -743,6 +867,7 @@ impl Tonemap {
         mask: Option<&wgpu::TextureView>,
         keep_graded: bool,
         source: Option<&wgpu::TextureView>,
+        vignette: Option<Vignette<'_>>,
     ) {
         let Some(t) = self.scenes.iter().find(|t| t.size == size) else {
             return;
@@ -792,15 +917,25 @@ impl Tonemap {
                 .down(encoder, &post.glow, scene, &grading.first, true);
             grading.bloom.up(encoder, &post.glow);
             super::gpu_passes::stamp(encoder, "bloom");
-            static SHOULDER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            let shoulder = *SHOULDER
-                .get_or_init(|| std::env::var("HORIZON_TONEMAP").as_deref() == Ok("shoulder"));
+            let shoulder = shoulder();
             if !keep_graded && !shoulder && fuse_grading() {
+                let drawn = vignette.map(|v| {
+                    let mode = [1.0, f32::from(u8::from(v.clamp)), 0.0, 0.0];
+                    let mut words = [0.0; 12];
+                    words[..4].copy_from_slice(&v.rect);
+                    words[4..8].copy_from_slice(&v.color);
+                    words[8..].copy_from_slice(&mode);
+                    vignette_group(device, &grading.vignette_layout, v.atlas, v.sampler, words)
+                });
                 Self::draw(
                     encoder,
                     "Grading and tone mapping",
                     &grading.grade_aces,
-                    &[scene, &post.group],
+                    &[
+                        scene,
+                        &post.group,
+                        drawn.as_ref().unwrap_or(&grading.no_vignette),
+                    ],
                     target,
                 );
                 super::gpu_passes::stamp(encoder, "grading and tone curve (ACES)");
@@ -829,6 +964,20 @@ impl Tonemap {
         } else {
             Self::draw(encoder, "Tone mapping", &self.tonemap, &[scene], target);
         }
+    }
+
+    /// Whether `run` grades the scene of `size` and draws the curve in the same pass, `keep_graded`
+    /// as `run` takes it: the pass that draws a `Vignette`.
+    pub fn fuses(&self, size: [u32; 2], keep_graded: bool) -> bool {
+        self.post
+            && self.grading.is_some()
+            && self
+                .scenes
+                .iter()
+                .any(|t| t.size == size && t.post.is_some())
+            && !keep_graded
+            && !shoulder()
+            && fuse_grading()
     }
 
     /// Decodes `scratch` (a pack's gamma-space output) into `scene`.

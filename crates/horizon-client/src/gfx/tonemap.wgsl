@@ -144,10 +144,38 @@ fn grade(p: vec2<f32>) -> vec3<f32> {
 @fragment fn fs_grade(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     return vec4(grade(p.xy), 1.0);
 }
+// The vignette over the finished frame (gfx/tonemap.rs `Vignette`), as vanilla draws it
+// (RenderPipelines.VIGNETTE blends ZERO, ONE_MINUS_SRC_COLOR over the frame): the sprite stretched
+// over the view, read with its own sampling (screen.wgsl `atlas_uv`).
+struct VignetteParams {
+    // The sprite's atlas rectangle (u0, v0, u1, v1).
+    rect: vec4<f32>,
+    // Its colour: how dark it makes the frame.
+    color: vec4<f32>,
+    // x: 1 to draw it; y: 1 for clamp-to-edge, else repeat.
+    mode: vec4<f32>,
+}
+@group(2) @binding(0) var vignette_atlas: texture_2d<f32>;
+@group(2) @binding(1) var vignette_sampler: sampler;
+@group(2) @binding(2) var<uniform> vignette: VignetteParams;
+// What the frame is multiplied by at `uv` (0..1 across the view, from its top left).
+fn vignette_at(uv: vec2<f32>) -> vec3<f32> {
+    if vignette.mode.x < 0.5 { return vec3(1.0); }
+    let rect = vignette.rect;
+    var at = rect.xy + fract(uv) * (rect.zw - rect.xy);
+    if vignette.mode.y > 0.5 {
+        let half = 0.5 / vec2<f32>(textureDimensions(vignette_atlas));
+        at = clamp(rect.xy + uv * (rect.zw - rect.xy), rect.xy + half, rect.zw - half);
+    }
+    let c = textureSampleLevel(vignette_atlas, vignette_sampler, at, 0.0) * vignette.color;
+    return vec3(1.0) - c.rgb;
+}
 // The grading and the curve in one pass, when nothing reads the graded light (gfx/tonemap.rs
-// `run`'s `keep_graded`): as `fs_grade` then `fs_tonemap_aces`, without the float target between.
+// `run`'s `keep_graded`): as `fs_grade` then `fs_tonemap_aces`, without the float target between;
+// the vignette over it.
 @fragment fn fs_grade_aces(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
-    return vec4(pow(aces(grade(p.xy)), vec3(1.0 / 2.2)), 1.0);
+    let uv = p.xy / vec2<f32>(textureDimensions(source));
+    return vec4(pow(aces(grade(p.xy)), vec3(1.0 / 2.2)) * vignette_at(uv), 1.0);
 }
 
 @fragment fn fs_decode(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {

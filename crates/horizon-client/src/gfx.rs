@@ -531,6 +531,10 @@ pub struct Renderer {
     /// Screen effects: alpha-blended, then vignette (`dst * (1 - src)`)
     /// pipelines, each for every sampling (index `blend * 4 + sampling`).
     screen_pipelines: [wgpu::RenderPipeline; 8],
+    /// The shared 2D atlas the screen effects read, and their samplers (nearest, linear), for the
+    /// vignette the tone mapping draws (tonemap.rs `Vignette`).
+    screen_atlas: wgpu::TextureView,
+    screen_samplers: [wgpu::Sampler; 2],
     screen_buffer: wgpu::Buffer,
     screen_capacity: u64,
     entity_group: wgpu::BindGroup,
@@ -3620,6 +3624,8 @@ impl Renderer {
             border_uniform,
             border_vertices,
             screen_pipelines,
+            screen_atlas: atlas_view.clone(),
+            screen_samplers: [atlas_sampler.clone(), lightmap_sampler.clone()],
             screen_buffer,
             screen_capacity,
             entity_group,
@@ -7814,6 +7820,27 @@ impl Renderer {
             self.froxels.camera = saved;
             gpu_passes::stamp(&mut encoder, "froxels: apply");
         }
+        // The graded light is read after when HDR output presents it, or a screenshot or a video
+        // frame keeps it (below): else the curve draws in the grading's pass.
+        let keep_graded = self.hdr.is_some()
+            || self.screenshot.is_some()
+            || self.recording.as_ref().is_some_and(|r| r.wants());
+        // The vignette, the last of the screen effects (vanilla's camera overlays draw after it),
+        // drawn by that pass over the finished frame, as vanilla draws it (tonemap.rs `Vignette`).
+        let folded_vignette = (tonemap::vignette_in_curve()
+            && self
+                .tonemap
+                .as_ref()
+                .is_some_and(|t| t.fuses(target_size, keep_graded))
+            && frame
+                .screen
+                .iter()
+                .filter(|q| q.blend == crate::screen_effects::Blend::Vignette)
+                .count()
+                == 1)
+            .then(|| frame.screen.len() - 1)
+            .filter(|&last| frame.screen[last].blend == crate::screen_effects::Blend::Vignette);
+        let screen_quads = frame.screen.len() - usize::from(folded_vignette.is_some());
         // The heat haze's flames in range (below), known before the resolve: it draws over it.
         let haze_flames =
             (rt.lighting && world_linear && self.world_format == tonemap::SCENE_FORMAT)
@@ -7832,7 +7859,7 @@ impl Renderer {
                 || pack_out.is_some()
                 || (hand_quads > 0 && !pack_draws_hand && self.eye.is_none())
                 || self.entity_outline.draws()
-                || !frame.screen.is_empty()
+                || screen_quads > 0
                 || crosshair > 0
                 || (self.hdr.is_some()
                     && self
@@ -8079,7 +8106,7 @@ impl Renderer {
         // GameRenderer.render: LevelRenderer.blitEntityOutline after the level and the hand.
         self.entity_outline
             .draw(&mut encoder, layer, &self.entity_group, &self.indices);
-        if !frame.screen.is_empty() {
+        if screen_quads > 0 {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: layer,
                 resolve_target: None,
@@ -8098,6 +8125,9 @@ impl Renderer {
             pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.set_vertex_buffer(0, self.screen_buffer.slice(..));
             for (i, quad) in frame.screen.iter().enumerate() {
+                if Some(i) == folded_vignette {
+                    continue;
+                }
                 let blend = match quad.blend {
                     crate::screen_effects::Blend::Alpha => 0,
                     crate::screen_effects::Blend::Vignette => 4,
@@ -8139,11 +8169,17 @@ impl Renderer {
         }
         gpu_passes::stamp(&mut encoder, "hand, outline, screen effects");
         if let Some(t) = &self.tonemap {
-            // The graded light is read after when HDR output presents it, or a screenshot or a
-            // video frame keeps it (below): else the curve draws in the grading's pass.
-            let keep_graded = self.hdr.is_some()
-                || self.screenshot.is_some()
-                || self.recording.as_ref().is_some_and(|r| r.wants());
+            let vignette = folded_vignette.map(|i| {
+                let quad = &frame.screen[i];
+                tonemap::Vignette {
+                    atlas: &self.screen_atlas,
+                    sampler: &self.screen_samplers
+                        [usize::from(quad.sampling & crate::screen_effects::SAMPLE_BLUR != 0)],
+                    rect: quad.vertices[0].rect,
+                    color: quad.vertices[0].color,
+                    clamp: quad.sampling & crate::screen_effects::SAMPLE_CLAMP != 0,
+                }
+            });
             t.run(
                 &self.device,
                 &mut encoder,
@@ -8152,6 +8188,7 @@ impl Renderer {
                 shadow_mask.as_ref(),
                 keep_graded,
                 resolved.as_ref(),
+                vignette,
             );
             if let Some(hdr) = &self.hdr {
                 hdr.keep_world(&mut encoder);
