@@ -638,7 +638,11 @@ wind):
    into: `HORIZON_RT_DEBUG=12` colours the second eye's light by what it took (taken from the first eye: green lit,
    cyan black though the accumulated light there isn't, blue both; its own: red lit, yellow black from the filter
    though its accumulated light isn't, magenta both), and `HORIZON_RT_SHARE_GUARD=1` is a trial that copies the
-   first eye's light only where it isn't under a quarter of the texel's accumulated light.
+   first eye's light only where it isn't under a quarter of the texel's accumulated light. On a60b1747f the zone is
+   red (the second eye's own light, lit at the last pass's input) and the guard changes nothing; but 12 writes its
+   colours into the light the next frame's bounces read. The kernel and the denoiser now keep their light from going below 0
+   (a light below 0 would blacken the terrain past its sun, as the zone is); `HORIZON_RT_DEBUG=8` shows the light
+   the terrain reads, untouched.
 11. **The mirrors and the refraction look for water or glass only where the raster finds some** (gfx.rs `draw_cover`,
    shadow_rays_hw.wgsl `psr_covered`, `HORIZON_RT_PSR_COVER=0` for the old): each texel of the sharp zone, and each 2x2
    quad of the periphery, traced a ray from the camera to its surface to find the water or glass before it, a primary

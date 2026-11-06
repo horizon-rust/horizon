@@ -2089,8 +2089,10 @@ var<workgroup> quad_refracted: array<vec4<f32>, 16>;
     if DEBUG == 3u { v.rays = vec4(textureLoad(depth, pixel_of(texel), 0) * 20.0 + 0.25); }
     if all(vec2<u32>(texel) < textureDimensions(mask)) {
         v.rays = finite4(v.rays);
-        v.blocks = finite4(v.blocks);
-        v.direct = finite4(v.direct);
+        // Light is never below 0: a negative bounce would come back through the last frame's light
+        // (`last_light`) and the history's clamp (`accumulate`) larger each frame.
+        v.blocks = finite4(vec4(max(v.blocks.rgb, vec3(0.0)), v.blocks.a));
+        v.direct = finite4(vec4(max(v.direct.rgb, vec3(0.0)), v.direct.a));
         v.sun = finite4(v.sun);
         fast_out = finite4(fast_out);
         textureStore(mask, texel, v.rays);
