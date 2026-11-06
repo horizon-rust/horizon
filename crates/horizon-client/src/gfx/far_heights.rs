@@ -204,6 +204,44 @@ struct Writes {
     whole: bool,
 }
 
+/// The relief a shadow is cast over, in blocks, for `still_lit`: a caster this much above the
+/// ground its shadow falls on.
+const CASTER: f32 = 128.0;
+/// How far, in blocks, the shadow of a `CASTER` may drift before the pass runs again: half a
+/// texel.
+const SHADOW_DRIFT: f32 = 1.0;
+
+/// Whether the far field the pass worked out for the light `lit` still serves the light
+/// `light` (both toward it, unit). The sun crosses the sky in ten minutes, so the light moves a
+/// little every frame (and between a VR frame's eyes), and the pass ran every frame for that:
+/// 0.2 ms on the RTX 4090, twice a VR frame. A caster `h` blocks high casts a shadow
+/// `h / tan(e)` long at the light's elevation `e`, which a turn of `d` radians moves by at most
+/// `h d / sin²(e)` (across, by `h d / tan(e)`, less): the pass waits until that is
+/// `SHADOW_DRIFT` for a `CASTER`: every frame within a few degrees of the horizon, every third
+/// of a second at 30 degrees, every second and a half overhead.
+/// Below the horizon the pass shades nothing either way. `HORIZON_RT_FAR_EVERY_FRAME=1` runs it
+/// for every change, as before.
+fn still_lit(lit: [f32; 3], light: [f32; 3]) -> bool {
+    static EVERY_FRAME: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if lit == light {
+        return true;
+    }
+    if *EVERY_FRAME
+        .get_or_init(|| std::env::var("HORIZON_RT_FAR_EVERY_FRAME").is_ok_and(|v| v != "0"))
+    {
+        return false;
+    }
+    if lit[1] <= 0.0 && light[1] <= 0.0 {
+        return true;
+    }
+    let rise = lit[1].min(light[1]).max(0.0);
+    let turn = (0..3)
+        .map(|i| (lit[i] - light[i]).powi(2))
+        .sum::<f32>()
+        .sqrt();
+    turn * CASTER <= SHADOW_DRIFT * rise * rise
+}
+
 /// Marks in `set` the chunk columns of `range` (inclusive, `FarTile::chunks`) in the window.
 fn mark(set: &mut ChunkSet, origin: Option<[i32; 2]>, range: [i32; 4]) {
     let Some(origin) = origin else {
@@ -472,8 +510,9 @@ impl FarHeights {
         Some([&field.views[0], &field.views[1], &field.views[2]])
     }
 
-    /// Runs the far field's pass into `encoder` where the heights or the light (toward it, unit)
-    /// changed since it last ran: once a frame at most, whatever the views.
+    /// Runs the far field's pass into `encoder` where the heights changed since it last ran, or
+    /// the light (toward it, unit) moved enough to move a shadow (`still_lit`): once a frame at
+    /// most, whatever the views.
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
@@ -488,7 +527,7 @@ impl FarHeights {
             .field
             .get_or_insert_with(|| Field::new(device, heights));
         let sky = std::mem::take(&mut self.uploaded);
-        if !sky && self.lit_for == Some(light) {
+        if !sky && self.lit_for.is_some_and(|lit| still_lit(lit, light)) {
             return;
         }
         let params: [f32; 8] = [
@@ -801,6 +840,41 @@ mod tests {
     use super::*;
     use crate::lod::Surface;
     use horizon_world::registry::BlockStateId;
+
+    /// The light at elevation `e` and azimuth `a` (radians), toward it.
+    fn toward(e: f32, a: f32) -> [f32; 3] {
+        [e.cos() * a.cos(), e.sin(), e.cos() * a.sin()]
+    }
+
+    /// The far field waits for the light to move a shadow: a frame's turn of the sun (2π over
+    /// 24000 ticks, at 90 frames a second) runs it near the horizon, not overhead, where a
+    /// second and a half's does; below the horizon it never runs again.
+    #[test]
+    fn far_field_waits_for_the_shadows_to_move() {
+        let frame = std::f32::consts::TAU / 1200.0 / 90.0;
+        let low = 3f32.to_radians();
+        assert!(!still_lit(toward(low, 0.3), toward(low + frame, 0.3)));
+        let high = 60f32.to_radians();
+        assert!(still_lit(toward(high, 0.3), toward(high + frame, 0.3)));
+        assert!(still_lit(toward(high, 0.3), toward(high, 0.3 + frame)));
+        assert!(!still_lit(
+            toward(high, 0.3),
+            toward(high + 135.0 * frame, 0.3)
+        ));
+        let mid = 30f32.to_radians();
+        assert!(still_lit(toward(mid, 0.3), toward(mid + 20.0 * frame, 0.3)));
+        assert!(!still_lit(
+            toward(mid, 0.3),
+            toward(mid + 40.0 * frame, 0.3)
+        ));
+        assert!(still_lit(toward(-0.2, 0.3), toward(-0.1, 0.3)));
+        assert!(!still_lit(toward(-0.01, 0.3), toward(0.01, 0.3)));
+        // The moon's light after the sun's.
+        assert!(!still_lit(
+            toward(0.05, 0.3),
+            toward(0.05, 0.3 + std::f32::consts::PI)
+        ));
+    }
 
     /// The full rebuild the incremental writes replaced, kept as their reference: every texel
     /// from the tiles, then the resident chunk columns over them, then the maxima.

@@ -464,6 +464,8 @@ pub struct Renderer {
     pub queue: wgpu::Queue,
     pub config: wgpu::SurfaceConfiguration,
     solid: wgpu::RenderPipeline,
+    /// The solid terrain over a depth prepass of it (`world_prepass`): tested, not written.
+    solid_on_depth: Option<wgpu::RenderPipeline>,
     translucent: wgpu::RenderPipeline,
     /// Flat section draws (`flat`), where multi-draw is emulated.
     flat: Option<flat::Flat>,
@@ -688,6 +690,17 @@ pub struct Renderer {
     rt_cloud_mesh: Option<rt_cloud_mesh::RtCloudMesh>,
     /// RT lighting's depth prepass: its pipeline and a depth per view size.
     solid_depth: wgpu::RenderPipeline,
+    /// The same without the alpha test, for the quads whose sprites have no transparent texel.
+    opaque_depth: wgpu::RenderPipeline,
+    /// The prepass's draws this frame (`split_prepass`): the solid draws' opaque runs, then
+    /// their cutout runs, with their pages and indirect arguments, and how many of each.
+    prepass_split: Vec<[u32; 5]>,
+    prepass_pages: Vec<(u32, Option<u32>)>,
+    prepass_indirect: wgpu::Buffer,
+    prepass_capacity: u64,
+    prepass_counts: Option<[u32; 2]>,
+    /// Whether the log said the world starts from the rays' prepass (`world_prepass`).
+    world_prepass_logged: bool,
     rt_depths: Vec<([u32; 2], wgpu::TextureView)>,
     /// VR's two eyes' prepass in one multiview pass, where the device has it.
     eye_depths: Option<EyeDepths>,
@@ -771,6 +784,32 @@ pub struct Renderer {
 /// `max_texture_array_layers` of the GPUs Horizon runs on. Mods add sprites
 /// past it into more arrays (terrain.wgsl's `sprite`).
 pub(crate) const SPRITE_SPLIT: u32 = 2048;
+/// Whether RT lighting's depth prepass draws its opaque quads without the alpha test
+/// (`Renderer::split_prepass`): on unless `HORIZON_RT_PREPASS_SPLIT=0`.
+fn prepass_split() -> bool {
+    static SPLIT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SPLIT.get_or_init(|| std::env::var("HORIZON_RT_PREPASS_SPLIT").map_or(true, |v| v != "0"))
+}
+/// How the world's solid terrain starts its depth (`Renderer::render`), to time what shading the
+/// hidden faces costs; off by default until measured. `HORIZON_WORLD_PREPASS=1`: from the rays'
+/// prepass (only with the TAA's jitter off); `2`: from a depth pass of its own before it, with the
+/// world's own (jittered) matrix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorldPrepass {
+    Off,
+    Rays,
+    Own,
+}
+fn world_prepass() -> WorldPrepass {
+    static MODE: std::sync::OnceLock<WorldPrepass> = std::sync::OnceLock::new();
+    *MODE.get_or_init(
+        || match std::env::var("HORIZON_WORLD_PREPASS").ok().as_deref() {
+            Some("1") => WorldPrepass::Rays,
+            Some("2") => WorldPrepass::Own,
+            _ => WorldPrepass::Off,
+        },
+    )
+}
 /// [`SPRITE_SPLIT`], or a smaller split from `HORIZON_SPRITE_SPLIT` (dev
 /// only: vanilla's sprites drawn from several arrays must look the same).
 fn sprite_split() -> u32 {
@@ -1199,6 +1238,8 @@ fn backends_name(backends: wgpu::Backends) -> &'static str {
 /// into a two-layer depth, each layer from its eye, and the second eye's rays take layer 1.
 struct EyeDepths {
     pipeline: wgpu::RenderPipeline,
+    /// The same without the alpha test, for the opaque quads (`prepass_split`).
+    opaque: wgpu::RenderPipeline,
     /// Both eyes' matrices (terrain_views.wgsl) and their group.
     matrices: wgpu::Buffer,
     group: wgpu::BindGroup,
@@ -1276,21 +1317,48 @@ fn surface_format(
 /// that no longer fit in video memory go to system memory. Shader packs' 16-bit normalized
 /// buffers (render targets with the adapter's own format features) and R11F_G11F_B10F: a
 /// float stand-in neither clamps nor drops NaN.
+/// terrain.wgsl, its clip position `@invariant` where the world tests against a depth prepass
+/// for equality (`world_prepass`) or `HORIZON_TERRAIN_INVARIANT=1` asks. b19c0339b made it
+/// invariant always, the only change to the terrain's shaders between b5b5252a7 and 482620a06,
+/// over which the RTX 4090's "world: phase 1" took 0.9 to 1.1 ms more and the rays' prepass 0.33
+/// (one session, the time of day fixed); the variable tells whether it was that.
+fn terrain_source() -> std::borrow::Cow<'static, str> {
+    static INVARIANT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let invariant = *INVARIANT.get_or_init(|| {
+        world_prepass() != WorldPrepass::Off
+            || std::env::var("HORIZON_TERRAIN_INVARIANT").is_ok_and(|v| v != "0")
+    });
+    let source = include_str!("terrain.wgsl");
+    if invariant {
+        invariant_terrain(source).into()
+    } else {
+        source.into()
+    }
+}
+/// `source` (terrain.wgsl) with `TerrainOut`'s clip position `@invariant`.
+fn invariant_terrain(source: &str) -> String {
+    let at = source
+        .find("struct TerrainOut {")
+        .expect("terrain.wgsl has TerrainOut");
+    let (head, tail) = source.split_at(at);
+    let field = "@builtin(position) clip: vec4<f32>,";
+    debug_assert!(tail.contains(field));
+    format!(
+        "{head}{}",
+        tail.replacen(field, "@builtin(position) @invariant clip: vec4<f32>,", 1)
+    )
+}
 /// terrain.wgsl with the translucent terrain's dual-source entry (`fs_translucent_dual`).
 fn dual_source_terrain() -> String {
     format!(
         "enable dual_source_blending;\n{}{}",
-        include_str!("terrain.wgsl"),
+        terrain_source(),
         include_str!("terrain_dual.wgsl")
     )
 }
 /// terrain.wgsl with VR's two-view depth prepass entry (`vs_terrain_views`, `EyeDepths`).
 fn terrain_views() -> String {
-    format!(
-        "{}{}",
-        include_str!("terrain.wgsl"),
-        include_str!("terrain_views.wgsl")
-    )
+    format!("{}{}", terrain_source(), include_str!("terrain_views.wgsl"))
 }
 fn device_features(adapter: &wgpu::Adapter) -> wgpu::Features {
     timing::GpuTimer::features(adapter)
@@ -1315,11 +1383,20 @@ fn hw_rt_features() -> wgpu::Features {
 /// EXPERIMENTAL VR: the device through the OpenXR runtime (`xr`), with a surface for the
 /// window on the same instance. `None` when the runtime, the headset or the surface is missing.
 fn open_xr_device(window: &Arc<Window>, offscreen: bool, layers: u32) -> Option<Opened> {
-    // RT lighting's hardware rays in the headset as on the screen, where the adapter has them.
+    // RT lighting's hardware rays in the headset as on the screen, where the adapter has them,
+    // with the RTX build's ray tracing pipelines (horizon-xr adds the build's extensions).
     let xr = xr::open(|adapter| {
+        let pipelines = if cfg!(feature = "rtx")
+            && !hw_rt_features().is_empty()
+            && adapter.features().contains(hw_rt_features())
+        {
+            wgpu::Features::EXPERIMENTAL_RAY_TRACING_PIPELINES
+        } else {
+            wgpu::Features::empty()
+        };
         (
             device_features(adapter)
-                | (adapter.features() & (hw_rt_features() | wgpu::Features::MULTIVIEW)),
+                | (adapter.features() & (hw_rt_features() | wgpu::Features::MULTIVIEW | pipelines)),
             adapter.limits(),
         )
     })?;
@@ -1673,7 +1750,7 @@ impl Renderer {
         let linear_constants = [("LINEAR", f64::from(u8::from(linear)))];
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Horizon terrain"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("terrain.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(terrain_source()),
         });
         let entry = |binding, visibility, ty| wgpu::BindGroupLayoutEntry {
             binding,
@@ -1926,48 +2003,74 @@ impl Renderer {
             true,
             None,
         );
-        // RT lighting's depth prepass: the solid terrain into a depth of its own, colour-less.
-        let depth_prepass =
-            |layout: &wgpu::PipelineLayout,
-             module: &wgpu::ShaderModule,
-             vertex: &str,
-             multiview_mask: Option<std::num::NonZeroU32>| {
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("Terrain depth for the rays"),
-                    layout: Some(layout),
-                    vertex: wgpu::VertexState {
-                        module,
-                        entry_point: Some(vertex),
-                        compilation_options: Default::default(),
-                        buffers: &terrain_buffers,
-                    },
-                    primitive: wgpu::PrimitiveState {
-                        topology: tri,
-                        cull_mode: Some(wgpu::Face::Back),
+        let solid_on_depth = (world_prepass() != WorldPrepass::Off).then(|| {
+            pipeline(
+                "Terrain solid over its depth prepass",
+                "vs_terrain",
+                "fs_solid",
+                &terrain_buffers,
+                tri,
+                Some(wgpu::Face::Back),
+                false,
+                true,
+                None,
+            )
+        });
+        // RT lighting's depth prepass: the solid terrain into a depth of its own, colour-less;
+        // with the alpha test (`fs_depth`), or for the quads whose sprites have no transparent
+        // texel without a fragment shader (`prepass_split`).
+        let depth_prepass = |layout: &wgpu::PipelineLayout,
+                             module: &wgpu::ShaderModule,
+                             vertex: &str,
+                             multiview_mask: Option<std::num::NonZeroU32>,
+                             alpha_test: bool| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(if alpha_test {
+                    "Terrain depth for the rays"
+                } else {
+                    "Opaque terrain depth for the rays"
+                }),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some(vertex),
+                    compilation_options: Default::default(),
+                    buffers: &terrain_buffers,
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: tri,
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: alpha_test.then(|| wgpu::FragmentState {
+                    module,
+                    entry_point: Some("fs_depth"),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &sprite_constants,
                         ..Default::default()
                     },
-                    depth_stencil: Some(wgpu::DepthStencilState {
-                        format: wgpu::TextureFormat::Depth32Float,
-                        depth_write_enabled: Some(true),
-                        depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                        stencil: Default::default(),
-                        bias: Default::default(),
-                    }),
-                    multisample: Default::default(),
-                    fragment: Some(wgpu::FragmentState {
-                        module,
-                        entry_point: Some("fs_depth"),
-                        compilation_options: wgpu::PipelineCompilationOptions {
-                            constants: &sprite_constants,
-                            ..Default::default()
-                        },
-                        targets: &[],
-                    }),
-                    multiview_mask,
-                    cache: None,
-                })
-            };
-        let solid_depth = depth_prepass(&layout, &shader, "vs_terrain", None);
+                    targets: &[],
+                }),
+                multiview_mask,
+                cache: None,
+            })
+        };
+        let prepass_indirect = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Prepass draws"),
+            size: 20,
+            usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let solid_depth = depth_prepass(&layout, &shader, "vs_terrain", None, true);
+        let opaque_depth = depth_prepass(&layout, &shader, "vs_terrain", None, false);
         // VR: both eyes' prepass in one multiview pass, where the device draws two views at once.
         let eye_depths = device
             .features()
@@ -2014,6 +2117,14 @@ impl Renderer {
                         &shader,
                         "vs_terrain_views",
                         std::num::NonZeroU32::new(0b11),
+                        true,
+                    ),
+                    opaque: depth_prepass(
+                        &layout,
+                        &shader,
+                        "vs_terrain_views",
+                        std::num::NonZeroU32::new(0b11),
+                        false,
                     ),
                     matrices,
                     group,
@@ -3363,6 +3474,7 @@ impl Renderer {
             queue,
             config,
             solid,
+            solid_on_depth,
             translucent,
             flat_on: flat.is_some(),
             cull_on: cull.is_some(),
@@ -3510,6 +3622,13 @@ impl Renderer {
             rt_clouds: None,
             rt_cloud_mesh: None,
             solid_depth,
+            opaque_depth,
+            prepass_split: Vec::new(),
+            prepass_pages: Vec::new(),
+            prepass_indirect,
+            prepass_capacity: 1,
+            prepass_counts: None,
+            world_prepass_logged: false,
             rt_depths: Vec::new(),
             eye_depths,
             voxels: voxels::Voxels::default(),
@@ -3650,9 +3769,16 @@ impl Renderer {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Depth32Float,
-                // Occlusion culling's in-shader test and ray-traced shadows read it.
+                // Occlusion culling's in-shader test and ray-traced shadows read it; the rays'
+                // prepass's is copied into the world's with `HORIZON_WORLD_PREPASS=1` alone, so
+                // that the copies' usages never touch how the driver lays the depth out else.
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | if world_prepass() == WorldPrepass::Rays {
+                        wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST
+                    } else {
+                        wgpu::TextureUsages::empty()
+                    },
                 view_formats: &[],
             })
             .create_view(&Default::default())
@@ -3927,7 +4053,22 @@ impl Renderer {
         count: u32,
         multi: bool,
     ) {
-        let (draws, pages) = (&self.draws[..], &self.draw_pages[..]);
+        let lists = (&self.draws[..], &self.draw_pages[..]);
+        self.draw_list(pass, lists, indirect, base, first, count, multi);
+    }
+    /// `draw_sections_with` over another list of draws and their pages, uploaded to `indirect`
+    /// from its entry `base`.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_list(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        (draws, pages): (&[[u32; 5]], &[(u32, Option<u32>)]),
+        indirect: &wgpu::Buffer,
+        base: u32,
+        first: u32,
+        count: u32,
+        multi: bool,
+    ) {
         let (mut i, end) = (first as usize, (first + count) as usize);
         // Back-to-front translucent draws often change one buffer of the two, not both.
         let mut bound = None;
@@ -4568,15 +4709,83 @@ impl Renderer {
                 multiview_mask: std::num::NonZeroU32::new(0b11),
                 ..Default::default()
             });
-            pass.set_pipeline(&depths.pipeline);
             pass.set_bind_group(0, &self.group, &[]);
             pass.set_bind_group(1, &depths.group, &[]);
-            self.prepass_draws(&mut pass, phase1, draws);
+            self.prepass_draws(&mut pass, &depths.opaque, &depths.pipeline, phase1, draws);
         }
         gpu_passes::stamp(encoder, "rays: depth prepass (both eyes)");
         depths.next = Some(second);
         self.eye_depths = Some(depths);
         Some((first, None))
+    }
+    /// The prepass's draws (`prepass_draws`) from the frame's solid draws: each section's runs
+    /// split into the quads whose sprites have no transparent texel, drawn first without a
+    /// fragment shader (the depth written at the rasterizer's rate, no texture read), and the
+    /// cutouts after them with the alpha test (`Sides::split`). Distant terrain tiles keep the
+    /// test: their quads are not sorted by kind, and a fading tile dithers in the shader. Each
+    /// list keeps the draws' order, front to back by band and page.
+    fn split_prepass(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        visible: &[resident::Visible],
+        solid_draws: u32,
+    ) {
+        let mut cutouts = std::mem::take(&mut self.prepass_split);
+        let mut cutout_pages = std::mem::take(&mut self.prepass_pages);
+        cutouts.clear();
+        cutout_pages.clear();
+        let mut opaque = Vec::with_capacity(solid_draws as usize);
+        let mut opaque_pages = Vec::with_capacity(solid_draws as usize);
+        for (d, &page) in self.draws[..solid_draws as usize]
+            .iter()
+            .zip(&self.draw_pages[..solid_draws as usize])
+        {
+            let instance = d[4];
+            let Some(section) = visible
+                .get(instance as usize)
+                .map(|v| self.sections.get(v.slot))
+            else {
+                cutouts.push([d[0], 1, d[2], d[3], instance]);
+                cutout_pages.push(page);
+                continue;
+            };
+            let start = section.start as u32;
+            let first = d[3].wrapping_sub(start) / 4;
+            section.sides.split(first, d[0] / 6, |first, quads, kind| {
+                let draw = [quads * 6, 1, 0, start + first * 4, instance];
+                if kind {
+                    opaque.push(draw);
+                    opaque_pages.push(page);
+                } else {
+                    cutouts.push(draw);
+                    cutout_pages.push(page);
+                }
+            });
+        }
+        let counts = [opaque.len() as u32, cutouts.len() as u32];
+        opaque.append(&mut cutouts);
+        opaque_pages.append(&mut cutout_pages);
+        self.prepass_split = opaque;
+        self.prepass_pages = opaque_pages;
+        if self.multi_draw && !self.prepass_split.is_empty() {
+            let len = self.prepass_split.len() as u64;
+            if len > self.prepass_capacity {
+                self.prepass_capacity = len.next_power_of_two();
+                self.prepass_indirect = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("Prepass draws"),
+                    size: self.prepass_capacity * 20,
+                    usage: wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            }
+            self.uploads.buffer(
+                encoder,
+                &self.prepass_indirect,
+                0,
+                bytemuck::cast_slice(&self.prepass_split),
+            );
+        }
+        self.prepass_counts = Some(counts);
     }
     /// One view's prepass into its size's depth.
     fn view_prepass(
@@ -4614,17 +4823,49 @@ impl Renderer {
                 }),
                 ..Default::default()
             });
-            pass.set_pipeline(&self.solid_depth);
             pass.set_bind_group(0, &self.group, &[]);
-            self.prepass_draws(&mut pass, phase1, draws);
+            self.prepass_draws(
+                &mut pass,
+                &self.opaque_depth,
+                &self.solid_depth,
+                phase1,
+                draws,
+            );
         }
         gpu_passes::stamp(encoder, "rays: depth prepass");
         depth
     }
-    /// The prepass's draws: every solid section, both phases of occlusion culling.
-    fn prepass_draws(&self, pass: &mut wgpu::RenderPass<'_>, phase1: u32, draws: u32) {
+    /// The prepass's draws: every solid section, both phases of occlusion culling; the opaque
+    /// runs with `opaque` (no fragment shader) where they were split from the cutouts
+    /// (`split_prepass`), the rest with `alpha_test`.
+    fn prepass_draws(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        opaque: &wgpu::RenderPipeline,
+        alpha_test: &wgpu::RenderPipeline,
+        phase1: u32,
+        draws: u32,
+    ) {
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
         pass.set_vertex_buffer(1, self.instances.slice(..));
+        if let Some([opaque_runs, cutout_runs]) = self.prepass_counts {
+            let lists = (&self.prepass_split[..], &self.prepass_pages[..]);
+            let indirect = &self.prepass_indirect;
+            pass.set_pipeline(opaque);
+            self.draw_list(pass, lists, indirect, 0, 0, opaque_runs, self.multi_draw);
+            pass.set_pipeline(alpha_test);
+            self.draw_list(
+                pass,
+                lists,
+                indirect,
+                0,
+                opaque_runs,
+                cutout_runs,
+                self.multi_draw,
+            );
+            return;
+        }
+        pass.set_pipeline(alpha_test);
         // The sections occlusion culling left to its second phase have no instance yet in the
         // indirect arguments (the GPU's test after the world's first phase gives them one):
         // the rays see them all, from the draws' own counts, or a section meshed again (no
@@ -5380,7 +5621,10 @@ impl Renderer {
         {
             rt.aldhani = [t, atmosphere::MOONLIGHT * atmosphere::PAPER_WHITE];
         }
-        if rt.any() {
+        // In VR the first eye alone updates the structures, as it alone submits their raw builds
+        // and builds the top level (below): the second eye's sections built raw with opacity
+        // micromaps were never submitted, the device lost once the top level took them.
+        if rt.any() && self.eye.is_none_or(|e| e.view_index <= 1) {
             crate::spans::time("rt_structures", || {
                 self.hw_update(&mut encoder, frame.camera)
             });
@@ -6462,6 +6706,21 @@ impl Renderer {
                 bytemuck::cast_slice(&self.draws),
             );
         }
+        // RT lighting's depth prepass draws its opaque quads without a fragment shader.
+        self.prepass_counts = None;
+        let prepass_drawn = rt.lighting
+            && world_linear
+            && !flat_frame
+            && solid_draws > 0
+            && !self.eye.is_some_and(|e| {
+                e.next_view_proj.is_none()
+                    && self.eye_depths.as_ref().is_some_and(|d| d.next.is_some())
+            });
+        if prepass_drawn && prepass_split() {
+            crate::spans::time("prepass_split", || {
+                self.split_prepass(&mut encoder, &visible, solid_draws)
+            });
+        }
         crate::spans::mark("prepare_rest", prepare_started);
         let passes_started = Instant::now();
         let view_target = target_texture.create_view(&wgpu::TextureViewDescriptor {
@@ -6591,6 +6850,8 @@ impl Renderer {
             }
             gpu_passes::stamp(&mut encoder, "structures (BLAS, TLAS)");
         }
+        // The rays' depth prepass, which the world may start from (`world_prepass`).
+        let mut prepass_depth: Option<wgpu::TextureView> = None;
         if rt_now {
             // The rays work on the still frame, not the TAA's jittered one: a thin contact shadow
             // then falls on the same mask texels every frame. Their depth prepass draws with the
@@ -6621,6 +6882,7 @@ impl Renderer {
                     bytemuck::cast_slice(&view_proj.to_cols_array()),
                 );
             }
+            prepass_depth = Some(depth.clone());
             let scene = self.taa.last_color(rt_view);
             self.terrain_groups_with(
                 Some(&mask),
@@ -6757,13 +7019,95 @@ impl Renderer {
                     store: wgpu::StoreOp::Store,
                 },
             })];
+            // `HORIZON_WORLD_PREPASS` (`world_prepass`): the world's solid terrain over a depth
+            // prepass of the same terrain (the same vertex shader, invariant, and alpha test,
+            // `fs_depth`), so each pixel's solid terrain is shaded once, the faces behind it
+            // rejected before their fragment shader. `1` takes the rays' prepass, only where
+            // both were drawn with one matrix (the TAA's jitter off, `HORIZON_TAA_JITTER=0`) at
+            // one size; `2` draws one of its own with the world's matrix. With Horizon's own
+            // terrain pipelines and section draws only.
+            let mode = world_prepass();
+            let plain = self.eye.is_none()
+                && material.is_none()
+                && !native_sky_pass
+                && !pack_draws_terrain
+                && !(flat_frame && self.flat.is_some())
+                && solid_draws > 0;
+            let rays_depth = prepass_depth.as_ref().filter(|d| {
+                mode == WorldPrepass::Rays
+                    && plain
+                    && clean_view_proj == view_proj
+                    && d.texture().size() == world_depth.texture().size()
+                    && d.texture().usage().contains(wgpu::TextureUsages::COPY_SRC)
+                    && world_depth
+                        .texture()
+                        .usage()
+                        .contains(wgpu::TextureUsages::COPY_DST)
+            });
+            if let Some(depth) = rays_depth {
+                encoder.copy_texture_to_texture(
+                    depth.texture().as_image_copy(),
+                    world_depth.texture().as_image_copy(),
+                    depth.texture().size(),
+                );
+            }
+            let own_depth = mode == WorldPrepass::Own && plain;
+            if own_depth {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Horizon world's depth prepass"),
+                    color_attachments: &[],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: world_depth,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    ..Default::default()
+                });
+                pass.set_pipeline(&self.solid_depth);
+                pass.set_bind_group(0, &self.group, &[]);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_vertex_buffer(1, self.instances.slice(..));
+                // What the world's first phase draws (all of it without occlusion culling).
+                let first = if cull.is_some() {
+                    phase1_draws
+                } else {
+                    solid_draws
+                };
+                self.draw_sections(&mut pass, &self.indirect, 0, 0, first);
+                drop(pass);
+                gpu_passes::stamp(&mut encoder, "world: depth prepass");
+            }
+            let reuse = rays_depth.is_some() || own_depth;
+            if reuse && !self.world_prepass_logged {
+                self.world_prepass_logged = true;
+                log::info!(
+                    "Horizon: the world drawn over {}",
+                    if own_depth {
+                        "a depth prepass of its own (HORIZON_WORLD_PREPASS=2)"
+                    } else {
+                        "the rays' depth prepass (HORIZON_WORLD_PREPASS=1)"
+                    }
+                );
+            }
+            // Its first phase over that depth, tested and not written again.
+            let phase1_pipeline = match &self.solid_on_depth {
+                Some(p) if reuse => p,
+                _ => solid_pipeline,
+            };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Horizon world"),
                 color_attachments: &attachments,
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: world_depth,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0.0),
+                        load: if reuse {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(0.0)
+                        },
                         // Phase 2 of occlusion culling draws over it; a shader pack, the ray-traced
                         // shadows and the TAA read it.
                         store: if cull.is_some()
@@ -6869,7 +7213,7 @@ impl Renderer {
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
                 None => {
-                    pass.set_pipeline(solid_pipeline);
+                    pass.set_pipeline(phase1_pipeline);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
                     match cull {
@@ -8243,6 +8587,23 @@ mod tests {
             .validate(&module)
             .unwrap_or_else(|e| panic!("dual-source froxels: {e:?}"));
         }
+        // The terrain with its clip position invariant (`terrain_source`, for the world's depth
+        // prepasses): the field is there to mark, once.
+        let plain = include_str!("terrain.wgsl");
+        let invariant = super::invariant_terrain(plain);
+        let out = &invariant[invariant.find("struct TerrainOut {").unwrap()..];
+        let out = &out[..out.find('}').unwrap()];
+        assert!(out.contains("@builtin(position) @invariant clip"));
+        assert_eq!(invariant.matches("@invariant").count(), 1);
+        assert!(!plain.contains("@invariant"));
+        let module = naga::front::wgsl::parse_str(&invariant)
+            .unwrap_or_else(|e| panic!("invariant terrain: {}", e.emit_to_string(&invariant)));
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("invariant terrain: {e:?}"));
         // The translucent terrain's dual-source entry and VR's two-view prepass come after
         // terrain.wgsl (gfx.rs).
         files.retain(|p| !named(p, "terrain_dual.wgsl") && !named(p, "terrain_views.wgsl"));

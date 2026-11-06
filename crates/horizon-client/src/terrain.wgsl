@@ -237,6 +237,9 @@ fn sprite_grad(uv: vec2<f32>, layer: u32, dx: vec2<f32>, dy: vec2<f32>) -> vec4<
 }
 
 struct TerrainOut {
+    // Made invariant where the world tests against a depth prepass for equality
+    // (`HORIZON_WORLD_PREPASS`, gfx.rs `terrain_source`), so that both give each fragment the same
+    // depth to the bit; not else, as it measured costly on the RTX 4090.
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) layer: u32,

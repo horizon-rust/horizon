@@ -106,6 +106,44 @@ impl Sides {
         out
     }
 
+    /// Splits the quads `first..first + count` (a run of `visible`'s) into
+    /// runs of one kind, in mesh order: `draw(first, count, opaque)`, as
+    /// `geometries` splits the whole mesh, neighbours of one kind merged.
+    /// A depth prepass draws the opaque runs without a fragment shader.
+    pub fn split(&self, first: u32, count: u32, mut draw: impl FnMut(u32, u32, bool)) {
+        let end = first + count;
+        let mut run: Option<(u32, u32, bool)> = None;
+        let mut start = 0;
+        for (&bucket_end, &opaque) in self.ends.iter().zip(&self.opaque) {
+            let parts = [
+                (start, start + opaque, true),
+                (start + opaque, bucket_end, false),
+            ];
+            for (a, b, kind) in parts {
+                let (a, b) = (a.max(first), b.min(end));
+                if a >= b {
+                    continue;
+                }
+                match &mut run {
+                    Some((s, n, k)) if *k == kind && *s + *n == a => *n += b - a,
+                    _ => {
+                        if let Some((s, n, k)) = run.take() {
+                            draw(s, n, k);
+                        }
+                        run = Some((a, b - a, kind));
+                    }
+                }
+            }
+            start = bucket_end;
+            if start >= end {
+                break;
+            }
+        }
+        if let Some((s, n, k)) = run {
+            draw(s, n, k);
+        }
+    }
+
     /// Calls `draw(first, count)` for each run of quads an eye at `eye`
     /// (relative to the mesh's origin) can see the front of, nearest the
     /// start first. Empty buckets do not break a run.
@@ -438,6 +476,32 @@ mod tests {
         }
         assert_eq!(next, sides.quads());
         assert!(runs.len() <= 14);
+        // Any run an eye draws splits into the same kinds, in order, covering it whole: the
+        // whole mesh as the geometries do.
+        let mut whole = Vec::new();
+        sides.split(0, sides.quads(), |f, n, k| whole.push((f, n, k)));
+        assert_eq!(whole, runs);
+        for eye in [[8.0, 9.0, -3.0], [-2.0, 0.5, 0.5], [1.0, -4.0, 9.0]] {
+            for (first, count) in self::runs(&sides, eye) {
+                let mut next = first;
+                let mut last: Option<bool> = None;
+                sides.split(first, count, |f, n, k| {
+                    assert_eq!(f, next);
+                    assert!(n > 0);
+                    assert_ne!(last, Some(k), "neighbours of one kind merge");
+                    for q in f..f + n {
+                        assert_eq!(is_opaque(&solid, q, &table), k);
+                    }
+                    next = f + n;
+                    last = Some(k);
+                });
+                assert_eq!(next, first + count);
+            }
+        }
+        // A mesh never sorted is one cutout run.
+        let mut all = Vec::new();
+        Sides::unsorted(9).split(2, 5, |f, n, k| all.push((f, n, k)));
+        assert_eq!(all, [(2, 5, false)]);
     }
 
     #[test]
