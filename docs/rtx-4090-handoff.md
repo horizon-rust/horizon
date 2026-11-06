@@ -114,10 +114,25 @@ the first fake-runtime runs used 3132x3016). PR #2 (`claude/project-thread-tb0ay
   `HORIZON_RT_PREPASS_SPLIT=0` (the rays' prepass drew every quad through the alpha test: now the opaque ones without a
   fragment shader), `HORIZON_FROXEL_TILE` (16 by default; the VR eye has 3.1 times the screen's froxels at 4400x3520),
   `HORIZON_WORLD_PREPASS=1|2` (the world over a depth prepass, off by default until measured).
+- **Measured at 4400x3520** (GPU a frame): 4956cf386 12.03 ms, the prepass split 11.85 (11.98 without), the far field
+  gate -0.5, froxels of 24 pixels 11.16 (now VR's default, e60ba36e5), 97ffe98c7 11.00. A later session read 12.58
+  for a build with no relevant change: its tables showed the hand drawn, `froxels: apply` doubled (fog) and the raster
+  up 0.5 an eye, another scene. Compare VR builds back to back, the time and the weather fixed
+  (`/time set 6000`, `doDaylightCycle false`, `/weather clear`, `doWeatherCycle false`).
+- **Then, not yet measured:** the denoiser filters VR's periphery by its 4x4 blocks sharing a ray, from the passes of 4
+  (2db53a830, `HORIZON_RT_DENOISE_FOVEA=0` for the old); VR's rays' prepass is drawn at the rays' resolution,
+  2200x1760 an eye, the rays over it with a scale of 1 (486eb379a, `HORIZON_RT_PREPASS_HALF=0` for the old).
+- **Desktop, open:** between b5b5252a7 and 482620a06 (one session, time fixed) the rays' prepass took 0.33 ms more,
+  `world: phase 1` 0.9 to 1.1, the forest's trace 0.65, the forest's frame unchanged. The terrain's `@invariant` and
+  the depth's copy usages (now only with `HORIZON_WORLD_PREPASS`, `HORIZON_TERRAIN_INVARIANT=1` to force it) were
+  measured not to be it, and the diff records nothing else new before phase 1 on the screen: next, an A-B-A run with
+  the GPU's clocks logged, then a bisect.
 - **Ideas weighed and left:** the second eye skipping the exposure meter (the grading's local tone mapping reads the
   meter's chain, level 2, so the eye needs its own); a conservative depth reuse across the TAA jitter (holes through
-  cutout gaps). **Still open:** the rays' prepass at the rays' resolution in VR (one ray for 2x2 pixels), VR's world
-  raster over the prepass (needs one matrix for both, the jitter), occlusion culling in the eyes.
+  cutout gaps); the TAA's blit folded into its resolve (the hand and the rain draw over the resolved scene, so the
+  history needs its own copy). **Still open:** VR's world raster over the prepass (needs one matrix for both, the
+  jitter), occlusion culling in the eyes (the eyes can't share a depth-based cull: it would test against both layers
+  of the multiview prepass).
 
 ## Open questions, with the way to answer them
 
