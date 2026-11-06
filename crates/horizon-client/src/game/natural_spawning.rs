@@ -1195,7 +1195,7 @@ mod tests {
         let ids: Vec<_> = finalizer.pending.iter().map(|m| m.id).collect();
         game.world.random = LegacyRandom::new(2468);
         let expected_level_draw = game.world.random.clone().next_long();
-        game.add_spawned(finalizer.pending, finalizer.rides);
+        insert_finalized(&mut game, finalizer.pending, finalizer.rides);
         assert_eq!(
             game.world.random.next_long(),
             expected_level_draw,
@@ -1220,6 +1220,10 @@ mod tests {
             })
             .collect();
         assert_eq!(inserted, finalized);
+    }
+
+    fn insert_finalized(game: &mut Game<'_>, pending: Vec<Mob>, rides: Vec<(u32, u32)>) {
+        game.add_spawned(pending, rides);
     }
 
     fn player(x: f64, y: f64, z: f64, spectator: bool) -> LevelPlayer {
