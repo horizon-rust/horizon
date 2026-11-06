@@ -127,8 +127,73 @@ fn hw_opaque(c: RayIntersection) -> bool {
     // The wind (gfx/wind.rs): the leaves and plants drawn sway, their structures don't; a cutout
     // quad this near the ray's start is taken for the swaying surface's own copy.
     if c.t < WIND_SELF_REACH && (SKIP & 4096u) == 0u { return false; }
-    let texel = hw_texel(c, base);
+    var texel = vec4(-1.0);
+    let kind = wind_class(arena_at(base, 4u) & 0x7fffu);
+    if kind != 0u && (SKIP & (4096u | 131072u)) == 0u {
+        texel = hw_swayed_texel(c, base, kind);
+    } else {
+        texel = hw_texel(c, base);
+    }
     return texel.a < 0.0 || texel.a >= 0.5;
+}
+// The wind (gfx/wind.rs): its buffer, the terrain's binding 25 here (the text between WIND-BEGIN
+// and WIND-END in terrain.wgsl is appended to this shader).
+@group(0) @binding(35) var<storage, read> wind_buf: array<u32>;
+// The texel candidate hit `c` meets on the swaying quad (wind class `kind`) from arena vertex
+// `base`, as drawn: the structure holds the quad unmoved, the screen shows it moved by the wind
+// (terrain.wgsl `wind_offset`, at its three corners and in between as the raster does); the ray
+// meets at the hit what the moved quad holds there, the texel the wind brought over it. The
+// offset across the quad is taken (along its normal, it would shift the shadow by its own
+// centimetres); leaves and vines repeat their sprite past an edge, a plant's sprite ends there.
+// So the shadows sway with the leaves and the grass (HORIZON_RT_SKIP 131072 keeps them still).
+fn hw_swayed_texel(c: RayIntersection, base: u32, kind: u32) -> vec4<f32> {
+    let layer = arena_at(base, 4u) & 0x7fffu;
+    if layer >= SPRITE_SPLIT { return vec4(-1.0); }
+    let second = (c.primitive_index & 1u) == 1u;
+    let b = c.barycentrics;
+    let v1 = base + select(1u, 2u, second);
+    let v2 = base + select(2u, 3u, second);
+    let p0 = hw_position(base);
+    let p1 = hw_position(v1);
+    let p2 = hw_position(v2);
+    let uv0 = hw_uv(base);
+    let uv1 = hw_uv(v1);
+    let uv2 = hw_uv(v2);
+    let w0 = 1.0 - b.x - b.y;
+    let local = p0 * w0 + p1 * b.x + p2 * b.y;
+    var uv = uv0 * w0 + uv1 * b.x + uv2 * b.y;
+    let pos = c.object_to_world * vec4(local, 1.0) - rt.hw_offset.xyz;
+    let sky = clamp(f32((arena_at(base, 4u) >> 16u) & 255u) / 240.0, 0.0, 1.0);
+    let open = wind_open(sky, length(pos));
+    if open > 0.0 {
+        let world = wind_world(pos);
+        let w = wind_at(pos, world);
+        let d = wind_shape(kind, world + p0 - local, w, uv0, wind_pinned(p0.y), open) * w0
+            + wind_shape(kind, world + p1 - local, w, uv1, wind_pinned(p1.y), open) * b.x
+            + wind_shape(kind, world + p2 - local, w, uv2, wind_pinned(p2.y), open) * b.y;
+        // The step across the triangle (in its barycentrics) that comes nearest -d.
+        let e1 = p1 - p0;
+        let e2 = p2 - p0;
+        let a11 = dot(e1, e1);
+        let a12 = dot(e1, e2);
+        let a22 = dot(e2, e2);
+        let det = a11 * a22 - a12 * a12;
+        if abs(det) > 1e-8 {
+            let r1 = -dot(e1, d);
+            let r2 = -dot(e2, d);
+            let s1 = (r1 * a22 - r2 * a12) / det;
+            let s2 = (a11 * r2 - a12 * r1) / det;
+            uv += s1 * (uv1 - uv0) + s2 * (uv2 - uv0);
+        }
+        if kind == 1u || kind == 5u {
+            uv = fract(uv);
+        } else if any(uv < vec2(0.0)) || any(uv > vec2(1.0)) {
+            return vec4(0.0);
+        }
+    }
+    let size = vec2<i32>(textureDimensions(sprites).xy);
+    let texel = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2(0), size - 1);
+    return textureLoad(sprites, texel, i32(layer), 0);
 }
 // gfx/wind.rs `SELF_REACH`.
 const WIND_SELF_REACH: f32 = 0.1;

@@ -4399,14 +4399,15 @@ impl Renderer {
             instances: hw.instances.clone(),
             dynamics: hw.dynamics.clone(),
             atlas,
+            wind: self.wind.buffer.clone(),
         })
     }
-    /// RT lighting's sun as `size` times its real size across, and the aerial perspective's air
-    /// as `aerial` times as dense as real air.
     /// The sprite layers' ways of swaying in the wind (`wind::wind_layers`).
     pub fn set_wind_layers(&self, classes: &[u8]) {
         self.wind.set_layers(&self.queue, classes);
     }
+    /// RT lighting's sun as `size` times its real size across, and the aerial perspective's air
+    /// as `aerial` times as dense as real air.
     /// The water's still and flowing sprite layers, for RT lighting to draw water its own way.
     pub fn set_water_layers(&mut self, still: Option<u32>, flow: Option<u32>) {
         self.water_layers = [still, flow].map(|l| l.map_or(-1.0, |l| l as f32));

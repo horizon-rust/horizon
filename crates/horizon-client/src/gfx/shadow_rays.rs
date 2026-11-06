@@ -224,6 +224,8 @@ pub struct Hardware<'a> {
     /// atlas their texels are in, for the alpha test and the hits' colour.
     pub dynamics: &'a wgpu::Buffer,
     pub atlas: &'a wgpu::TextureView,
+    /// The wind's buffer (`wind::Wind`), for the shadows of what sways.
+    pub wind: &'a wgpu::Buffer,
 }
 
 /// The hybrid's part of the shader (`hw_rays`): the sun's and the light sources' shadow rays
@@ -251,8 +253,14 @@ pub fn source(hardware: bool, split: u32) -> String {
         } else {
             HARDWARE.to_string()
         };
+        // The wind's functions, terrain.wgsl's (`hw_swayed_texel`).
+        let wind = super::wgsl_prefix::section(
+            super::wgsl_prefix::TERRAIN,
+            "// WIND-BEGIN",
+            "// WIND-END",
+        );
         format!(
-            "enable wgpu_ray_query;\nconst SPRITE_SPLIT: u32 = {split}u;\n{}{hardware}",
+            "enable wgpu_ray_query;\nconst SPRITE_SPLIT: u32 = {split}u;\n{}{hardware}{wind}",
             include_str!("shadow_rays.wgsl")
         )
     } else {
@@ -585,6 +593,8 @@ impl ShadowRays {
                             entry(16, storage),
                             entry(23, storage),
                             entry(36, storage),
+                            // The wind (`wind`): the shadows sway with the foliage.
+                            entry(35, storage),
                             entry(
                                 17,
                                 wgpu::BindingType::Texture {
@@ -1190,6 +1200,10 @@ impl ShadowRays {
                 wgpu::BindGroupEntry {
                     binding: 36,
                     resource: hw.dynamics.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 35,
+                    resource: hw.wind.as_entire_binding(),
                 },
                 view(37, hw.atlas),
             ]);

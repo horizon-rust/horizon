@@ -23,11 +23,14 @@
 //! the way `transmission::thin_layers` finds the thin ones.
 //!
 //! **With the rays**: the sections' structures stay as built (rebuilding every swaying section's
-//! every frame would cost far more than the effect), so the shadows the foliage casts stay put;
-//! the visible surfaces move, and a ray leaving one of them could meet its own unmoved copy a few
-//! centimetres away. The rays' alpha test (shadow_rays_hw.wgsl `hw_opaque`, horizon-rtx
-//! `sun.rahit`) ignores a cutout quad met within `SELF_REACH` of the ray's start while the wind
-//! is on. `HORIZON_RT_SKIP` bit 4096 turns all of it off (`horizon-ctl rt-skip` too).
+//! every frame would cost far more than the effect). The shadows sway all the same: the rays'
+//! alpha test on a swaying quad (shadow_rays_hw.wgsl `hw_swayed_texel`) evaluates the same wind
+//! at the hit (the shared text between `WIND-BEGIN` and `WIND-END` in terrain.wgsl) and reads the
+//! texel the moved quad holds there, so the leaves' holes and the blades of grass move in their
+//! shadows. A ray leaving a swaying surface could meet its own unmoved copy a few centimetres
+//! away: a cutout quad met within `SELF_REACH` of the ray's start is ignored (also horizon-rtx
+//! `sun.rahit`, whose pass keeps still shadows). `HORIZON_RT_SKIP` bit 4096 turns all of it off
+//! (`horizon-ctl rt-skip` too), bit 131072 only the shadows' swaying (`SHADOW_SKIP_BIT`).
 
 use crate::assets::RenderAssets;
 use crate::blocks::BlockFacts;
@@ -37,6 +40,8 @@ use std::time::{Duration, Instant};
 
 /// `HORIZON_RT_SKIP`'s bit for the wind.
 pub const SKIP_BIT: u32 = 4096;
+/// `HORIZON_RT_SKIP`'s bit for the shadows' swaying alone (shadow_rays_hw.wgsl).
+pub const SHADOW_SKIP_BIT: u32 = 131072;
 /// The kernel's and the any-hit's reach for a swaying quad's own copy (blocks): above the leaves'
 /// flutter, under the gap between two blocks' contact shadows.
 pub const SELF_REACH: f32 = 0.1;
@@ -47,15 +52,19 @@ pub const CELL: i32 = 8;
 /// The far field's level the map is made from.
 pub const LEVEL: usize = 2;
 /// Words of the header before the map (terrain.wgsl `WIND_MAP`).
-const HEADER: usize = 16;
+const HEADER: usize = 32;
 /// Words a texel (terrain.wgsl `wind_texel`).
 const TEXEL_WORDS: usize = 2;
-/// Where the layers' classes start (terrain.wgsl `WIND_LAYERS`), four a word.
-const LAYERS_AT: usize = HEADER + SIDE * SIDE * TEXEL_WORDS;
+/// Words of a map (terrain.wgsl `WIND_MAP_WORDS`).
+const MAP_WORDS: usize = SIDE * SIDE * TEXEL_WORDS;
+/// Where the layers' classes start (terrain.wgsl `WIND_LAYERS`), after the two maps, four a word.
+const LAYERS_AT: usize = HEADER + 2 * MAP_WORDS;
 /// Sprite layers the buffer holds (`mesher::OPAQUE_LAYER`).
 const MAX_LAYERS: usize = 1 << 15;
 /// The map is made again at most this often, when the heights changed.
 const REMAP: Duration = Duration::from_secs(2);
+/// A new map fades in over the last this long.
+const FADE: Duration = Duration::from_millis(1500);
 
 /// A sprite layer's way of moving (terrain.wgsl `wind_offset`).
 pub mod class {
@@ -245,6 +254,43 @@ pub fn terrain_map(heights: &[i16], side: usize, origin: [i32; 2]) -> Vec<u32> {
     out
 }
 
+/// A map texel's two words (`terrain_map`) read back: (exposure, slope x, slope z, confinement,
+/// axis x, axis z).
+pub fn unpack(words: [u32; 2]) -> [f32; 6] {
+    let w = |v: u32, k: u32| (f32::from((v >> (8 * k)) as u8 as i8) / 127.0).max(-1.0);
+    let [a, b] = words;
+    [w(a, 0), w(a, 1), w(a, 2), w(a, 3), w(b, 0), w(b, 1)]
+}
+
+/// The prevailing wind `wind` (m/s along x and z) bent by texel `t` (`unpack`) at height `y`,
+/// without the gusts: terrain.wgsl `wind_at`'s CPU copy (for `examples/wind_map.rs`).
+pub fn bend(t: [f32; 6], wind: [f32; 2], y: f32) -> [f32; 2] {
+    let calm = (wind[0] * wind[0] + wind[1] * wind[1]).sqrt();
+    let dir = if calm < 1e-3 {
+        [1.0, 0.0]
+    } else {
+        [wind[0] / calm, wind[1] / calm]
+    };
+    let [exposure, sx, sz, confined, ax, az] = t;
+    let confined = confined.clamp(0.0, 1.0);
+    let len = (ax * ax + az * az).sqrt().max(1e-3);
+    let axis = [ax / len, az / len];
+    let along = dir[0] * axis[0] + dir[1] * axis[1];
+    let sign = if along >= 0.0 { 1.0 } else { -1.0 };
+    let k = 0.75 * confined;
+    let m = [
+        dir[0] + (axis[0] * sign - dir[0]) * k + 1e-4,
+        dir[1] + (axis[1] * sign - dir[1]) * k + 1e-4,
+    ];
+    let ml = (m[0] * m[0] + m[1] * m[1]).sqrt();
+    let turned = [m[0] / ml, m[1] / ml];
+    let mut speed = calm * (1.0 + 0.6 * exposure).clamp(0.25, 1.8);
+    speed *= (1.0 + 1.5 * (dir[0] * sx + dir[1] * sz)).clamp(0.4, 1.6);
+    speed *= 1.0 + confined * (0.8 * along.abs() - 0.4 * (1.0 - along.abs()));
+    speed *= (1.0 + (y - 63.0) / 192.0).clamp(0.7, 1.8);
+    [turned[0] * speed, turned[1] * speed]
+}
+
 /// What the header tells the shader this frame (terrain.wgsl `wind_header`).
 pub struct Frame {
     /// The camera's place in the world.
@@ -257,15 +303,18 @@ pub struct Frame {
     pub on: bool,
 }
 
-/// The wind's buffer (terrain.wgsl group 0, binding 25): the header, the map, the layers'
-/// classes.
+/// The wind's buffer (terrain.wgsl group 0, binding 25; the rays' binding 35): the header, two
+/// maps (the newer fading in over the older for `FADE`, so the swaying never jumps where the far
+/// field's heights changed), the layers' classes.
 pub struct Wind {
     pub buffer: wgpu::Buffer,
-    /// The far field's heights' generation the map was made from.
+    /// The far field's heights' generation the newer map was made from.
     made_from: Option<u64>,
     made_at: Option<Instant>,
-    /// The map's first texel (world level-2 texels), once made.
-    origin: Option<[i32; 2]>,
+    /// Each map's first texel (world level-2 texels), once made.
+    origins: [Option<[i32; 2]>; 2],
+    /// The newer map.
+    newer: usize,
     /// `HORIZON_RT_SKIP` has bit 4096.
     pub skipped: bool,
 }
@@ -282,7 +331,8 @@ impl Wind {
             }),
             made_from: None,
             made_at: None,
-            origin: None,
+            origins: [None; 2],
+            newer: 1,
             skipped: skipped(),
         }
     }
@@ -307,42 +357,60 @@ impl Wind {
         }
     }
 
-    /// Makes the map again from the far field's heights when they changed, at most every
-    /// `REMAP`: `heights` its level-2 texels, their window's first texel and their generation.
+    /// Makes a map again from the far field's heights when they changed, at most every `REMAP`
+    /// (and once the last has faded in), into the older map's place: `heights` its level-2
+    /// texels, their window's first texel and their generation.
     pub fn update(&mut self, queue: &wgpu::Queue, heights: Option<([i32; 2], &[i16], u64)>) {
         let Some((origin, heights, generation)) = heights else {
             return;
         };
         let now = Instant::now();
         if self.made_from == Some(generation)
-            || self.made_at.is_some_and(|t| now.duration_since(t) < REMAP)
-                && self.origin == Some(origin)
+            || self
+                .made_at
+                .is_some_and(|t| now.duration_since(t) < REMAP.max(FADE))
         {
             return;
         }
         let map = crate::spans::time("wind_map", || terrain_map(heights, SIDE, origin));
+        let into = 1 - self.newer;
         queue.write_buffer(
             &self.buffer,
-            (HEADER * 4) as u64,
+            ((HEADER + into * MAP_WORDS) * 4) as u64,
             bytemuck::cast_slice(&map),
         );
         self.made_from = Some(generation);
         self.made_at = Some(now);
-        self.origin = Some(origin);
+        self.origins[into] = Some(origin);
+        self.newer = into;
     }
 
-    /// The header for `frame` (terrain.wgsl `wind_header`).
+    /// How much of map 1 the shader takes (the newer fading in over `FADE`).
+    fn fade(&self, now: Instant) -> f32 {
+        let ramp = match (self.made_at, self.origins[1 - self.newer]) {
+            (Some(t), Some(_)) => {
+                (now.duration_since(t).as_secs_f32() / FADE.as_secs_f32()).clamp(0.0, 1.0)
+            }
+            // The first map: no older one to fade from.
+            _ => 1.0,
+        };
+        if self.newer == 1 { ramp } else { 1.0 - ramp }
+    }
+
+    /// The header for `frame` (terrain.wgsl `wind_f`).
     pub fn header(&self, frame: &Frame) -> [u32; HEADER] {
         let f = f32::to_bits;
         let mut h = [0u32; HEADER];
         let c = frame.camera;
-        if let Some(o) = self.origin {
+        for (m, o) in self.origins.iter().enumerate() {
+            let Some(o) = o else { continue };
+            let at = 12 * m;
             let first = [o[0] * CELL, o[1] * CELL];
-            h[0] = f((f64::from(first[0]) - c.x) as f32);
-            h[1] = f((f64::from(first[1]) - c.z) as f32);
-            h[2] = o[0] as u32;
-            h[3] = o[1] as u32;
-            h[11] = 1;
+            h[at] = f((f64::from(first[0]) - c.x) as f32);
+            h[at + 1] = f((f64::from(first[1]) - c.z) as f32);
+            h[at + 2] = o[0] as u32;
+            h[at + 3] = o[1] as u32;
+            h[at + 11] = 1;
         }
         h[4] = f(c.x.rem_euclid(4096.0) as f32);
         h[5] = f(c.y as f32);
@@ -351,6 +419,7 @@ impl Wind {
         h[8] = f(frame.wind[0]);
         h[9] = f(frame.wind[1]);
         h[10] = f(if frame.on && !self.skipped { 1.0 } else { 0.0 });
+        h[28] = f(self.fade(Instant::now()));
         h
     }
 }
@@ -368,10 +437,7 @@ mod tests {
     use super::*;
 
     fn texel(map: &[u32], i: usize, j: usize) -> [f32; 6] {
-        let w = |v: u32, k: u32| f32::from((v >> (8 * k)) as u8 as i8) / 127.0;
-        let a = map[(j * SIDE + i) * 2];
-        let b = map[(j * SIDE + i) * 2 + 1];
-        [w(a, 0), w(a, 1), w(a, 2), w(a, 3), w(b, 0), w(b, 1)]
+        unpack([map[(j * SIDE + i) * 2], map[(j * SIDE + i) * 2 + 1]])
     }
 
     /// Heights by window texel, at window origin 0 (slots = window texels).
@@ -447,14 +513,27 @@ mod tests {
         let terrain = include_str!("../terrain.wgsl");
         assert!(terrain.contains(&format!("const WIND_LAYERS: u32 = {LAYERS_AT}u;")));
         assert!(terrain.contains(&format!("const WIND_MAP: u32 = {HEADER}u;")));
+        assert!(terrain.contains(&format!("const WIND_MAP_WORDS: u32 = {MAP_WORDS}u;")));
         assert!(terrain.contains(&format!("const WIND_SIDE: i32 = {SIDE};")));
         assert!(terrain.contains(&format!("const WIND_CELL: f32 = {CELL}.0;")));
         let rays = include_str!("shadow_rays_hw.wgsl");
+        assert!(rays.contains(&format!("(SKIP & ({SKIP_BIT}u | {SHADOW_SKIP_BIT}u))")));
         assert!(rays.contains(&format!("const WIND_SELF_REACH: f32 = {SELF_REACH};")));
         assert!(
             include_str!("../../../horizon-rtx/shaders/sun.rahit")
                 .contains(&format!("gl_HitTEXT < {SELF_REACH})"))
         );
+    }
+
+    #[test]
+    fn the_wind_turns_along_a_valley_and_speeds_up_on_a_ridge() {
+        // A valley along z, the wind from the west at 45 degrees off its axis.
+        let valley = [-0.5, 0.0, 0.0, 1.0, 0.0, 1.0];
+        let w = bend(valley, [3.0, 3.0], 70.0);
+        assert!(w[1] > 2.0 * w[0], "turned along z: {w:?}");
+        let ridge = bend([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], [3.0, 0.0], 70.0);
+        let flat = bend([0.0; 6], [3.0, 0.0], 70.0);
+        assert!(ridge[0] > 1.5 * flat[0], "{ridge:?} {flat:?}");
     }
 
     #[test]
