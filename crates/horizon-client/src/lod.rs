@@ -673,6 +673,28 @@ pub enum Covered {
 pub struct TileMesh {
     pub mesh: SectionMesh,
     pub bounds: Option<(glam::Vec3, glam::Vec3)>,
+    /// What of the tile hides what lies behind it (`horizon_culling`), empty without it.
+    pub occluders: Vec<Occluder>,
+}
+/// `HORIZON_LOD_HORIZON=1`: distant tiles hidden behind nearer distant terrain are left out of
+/// the draws (gfx/horizon.rs); each tile mesh comes with its occluders (`Occluder`).
+pub fn horizon_culling() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_LOD_HORIZON").is_ok_and(|v| v == "1"))
+}
+/// The height an occluder's opaque spans must reach down to (`mesh::Mesher::occluders`), so
+/// that a line of sight between two points above it, crossing the occluder under its top, meets
+/// it.
+pub const OCCLUDER_FLOOR: i16 = 48;
+/// A box of a distant tile drawn solid and opaque throughout: blocks `min` to `max` (exclusive)
+/// across, `lo` to `hi` high, at every column. A line of sight that crosses it between those
+/// heights meets drawn terrain (`mesh::occluders`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Occluder {
+    pub min: [i32; 2],
+    pub max: [i32; 2],
+    pub lo: i16,
+    pub hi: i16,
 }
 /// The box of a mesh's vertices, `None` for an empty mesh.
 pub fn mesh_bounds(mesh: &SectionMesh) -> Option<(glam::Vec3, glam::Vec3)> {
@@ -758,6 +780,7 @@ impl Selection {
             }
             let finer = finer.remove(&key).unwrap_or_default();
             let input = snapshot.mesh_input(key, finer);
+            let covered_area = bounds;
             let mut mesh = mesher.mesh(
                 input.key,
                 &input.columns(),
@@ -769,7 +792,25 @@ impl Selection {
             );
             mesh.sort_solid();
             let bounds = mesh_bounds(&mesh);
-            meshes.push((input.key, TileMesh { mesh, bounds }));
+            let occluders = if horizon_culling() {
+                mesher.occluders(
+                    input.key,
+                    &input.columns(),
+                    covered_area,
+                    context,
+                    &input.finer,
+                )
+            } else {
+                Vec::new()
+            };
+            meshes.push((
+                input.key,
+                TileMesh {
+                    mesh,
+                    bounds,
+                    occluders,
+                },
+            ));
         }
         Some(Done::Mesh {
             active: snapshot.active,

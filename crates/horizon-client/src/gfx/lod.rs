@@ -127,6 +127,8 @@ impl Pending {
 pub(super) struct Tile {
     pub mesh: SectionGpu,
     bounds: Bounds,
+    /// What of it hides what lies behind (`lod::TileMesh::occluders`, gfx/horizon.rs).
+    pub occluders: Vec<crate::lod::Occluder>,
     /// When it began to fade in: `None` while the job it came with uploads.
     shown: Option<Instant>,
     /// When it began to fade out, replaced.
@@ -134,6 +136,18 @@ pub(super) struct Tile {
 }
 
 impl Tile {
+    /// Whether it is drawn whole at `now` (not fading in or out), so its occluders count.
+    pub fn whole(&self, now: Instant) -> bool {
+        self.leaving.is_none() && self.shown.is_some_and(|since| now - since >= FADE)
+    }
+    /// Its box in the world, unsunk by the Earth's curvature.
+    pub fn world_box(&self, key: TileKey) -> (DVec3, DVec3) {
+        let origin = DVec3::from(key.origin().map(f64::from));
+        (
+            origin + self.bounds.min.as_dvec3(),
+            origin + self.bounds.max.as_dvec3(),
+        )
+    }
     /// Its instance's `w` (`instance`) at `now`; `None` hidden.
     fn fade(&self, now: Instant) -> Option<f32> {
         let progress = |since: Instant| (now - since).as_secs_f32() / FADE.as_secs_f32();
@@ -255,6 +269,7 @@ impl Renderer {
                 Tile {
                     mesh,
                     bounds,
+                    occluders: tile.occluders.clone(),
                     shown,
                     leaving: None,
                 },
@@ -389,6 +404,7 @@ mod tests {
         TileMesh {
             mesh: SectionMesh::default(),
             bounds: None,
+            occluders: Vec::new(),
         }
     }
 

@@ -1,5 +1,5 @@
 //! Exposed voxel-column faces, merged without changing their block-scale UVs.
-use super::{Column, Span, TileKey};
+use super::{Column, OCCLUDER_FLOOR, Span, TileKey};
 use crate::{
     fast_hash::{FxHashMap, FxHashSet},
     mesher::{OPAQUE_LAYER, SectionMesh, TerrainVertex},
@@ -12,6 +12,9 @@ use std::collections::BTreeMap;
 
 #[cfg(test)]
 const CELLS: usize = 16;
+/// An occluder's cells on a side (`Mesher::occluders`): 4 or 16 occluders a tile, 64 to 512
+/// blocks wide past the nearest levels.
+const OCCLUDER_CELLS: usize = 16;
 
 pub(super) struct EdgeColumn {
     pub start: i32,
@@ -56,6 +59,8 @@ struct Material {
 #[derive(Default)]
 pub(super) struct Mesher {
     styles: FxHashMap<(BlockStateId, u8), Styles>,
+    /// Per state, whether its cells are drawn opaque on every side (`occludes`).
+    occluding: FxHashMap<BlockStateId, bool>,
 }
 impl Mesher {
     pub(super) fn mesh(
@@ -77,6 +82,99 @@ impl Mesher {
             finer,
             |span, direction| self.material(span, direction, context),
         )
+    }
+    /// The tile's occluders (`super::Occluder`): its cells in blocks of `OCCLUDER_CELLS` on a
+    /// side, each the height every one of its columns is drawn solid and opaque over: from
+    /// `OCCLUDER_FLOOR` to the lowest top of the columns' topmost opaque spans reaching down to
+    /// the floor (a tree's leaves above the ground or the roof of a cave are not those spans). A
+    /// block counts only if every column has such a span and none of it is left to full-detail terrain
+    /// (`covered_area`, the covered columns' bounds) or to a finer tile: what is drawn there is
+    /// not these cells.
+    pub(super) fn occluders(
+        &mut self,
+        key: TileKey,
+        columns: &[Column],
+        covered_area: Option<[i32; 4]>,
+        context: &WorkerContext,
+        finer: &[TileKey],
+    ) -> Vec<super::Occluder> {
+        let cells = key.cells();
+        let block = OCCLUDER_CELLS.min(cells);
+        let stride = key.stride();
+        let [ox, _, oz] = key.origin();
+        let mut out = Vec::new();
+        for bz in (0..cells).step_by(block) {
+            for bx in (0..cells).step_by(block) {
+                let min = [ox + bx as i32 * stride, oz + bz as i32 * stride];
+                let max = [
+                    min[0] + block as i32 * stride,
+                    min[1] + block as i32 * stride,
+                ];
+                let overlaps = |[x0, z0, x1, z1]: [i32; 4]| {
+                    min[0] < x1 && x0 < max[0] && min[1] < z1 && z0 < max[1]
+                };
+                if covered_area.is_some_and(overlaps)
+                    || finer.iter().any(|f| {
+                        let [x, _, z] = f.origin();
+                        overlaps([x, z, x + f.size(), z + f.size()])
+                    })
+                {
+                    continue;
+                }
+                let mut hi = Some(i16::MAX);
+                'cells: for z in bz..bz + block {
+                    for x in bx..bx + block {
+                        let top = columns[z * cells + x]
+                            .spans
+                            .iter()
+                            .rev()
+                            .filter(|span| span.min <= OCCLUDER_FLOOR && span.min < span.max)
+                            .find(|span| self.occludes(span, context));
+                        match (top, &mut hi) {
+                            (Some(top), Some(hi)) => *hi = (*hi).min(top.max),
+                            _ => {
+                                hi = None;
+                                break 'cells;
+                            }
+                        }
+                    }
+                }
+                if let Some(hi) = hi
+                    && hi > OCCLUDER_FLOOR
+                {
+                    out.push(super::Occluder {
+                        min,
+                        max,
+                        lo: OCCLUDER_FLOOR,
+                        hi,
+                    });
+                }
+            }
+        }
+        out
+    }
+    /// Whether a span's cells are drawn opaque from every side: no fluid, and on each side a
+    /// face whose sprite has no transparent texel (or opaque leaves).
+    fn occludes(&mut self, span: &Span, context: &WorkerContext) -> bool {
+        if let Some(&occludes) = self.occluding.get(&span.state) {
+            return occludes;
+        }
+        let occludes = Direction::ALL.into_iter().all(|direction| {
+            let material = self.material(span, direction, context);
+            material.fluid == 0
+                && material.faces[0].is_some_and(|face| {
+                    !face.translucent
+                        && (face.layer & OPAQUE_LAYER != 0
+                            || context
+                                .render
+                                .opaque_layers
+                                .get(usize::from(face.layer))
+                                .copied()
+                                .unwrap_or(false))
+                })
+        });
+        self.occluding.insert(span.state, occludes);
+        occludes
     }
     fn material(&mut self, span: &Span, direction: Direction, context: &WorkerContext) -> Material {
         let styles = *self

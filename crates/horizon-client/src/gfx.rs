@@ -80,6 +80,7 @@ mod flat;
 mod hdr;
 // Heat haze above the flames, for RT lighting (gfx/haze.rs).
 mod haze;
+mod horizon;
 mod hw_micromaps;
 mod hw_rays;
 pub mod lightning;
@@ -617,6 +618,10 @@ pub struct Renderer {
     /// Per-frame scratch, kept to avoid allocating every frame.
     visible: Vec<resident::Visible>,
     visible_lods: Vec<lod::Visible>,
+    /// `HORIZON_LOD_HORIZON=1`: distant tiles under nearer terrain's skyline left out
+    /// (`horizon`), while the eye is open to the sky (`set_horizon_open`).
+    horizon: horizon::Horizon,
+    horizon_open: bool,
     /// The sections a shader pack's shadow camera sees (`pack_post::ShadowView`).
     shadow_visible: Vec<resident::Visible>,
     translucent_draws: Vec<(u64, usize, [u32; 5], (u32, Option<u32>))>,
@@ -3670,6 +3675,8 @@ impl Renderer {
             multi_draw,
             visible: Vec::new(),
             visible_lods: Vec::new(),
+            horizon: horizon::Horizon::default(),
+            horizon_open: false,
             shadow_visible: Vec::new(),
             translucent_draws: Vec::new(),
             origins: Vec::new(),
@@ -4404,6 +4411,12 @@ impl Renderer {
     /// `Streaming::rt_lighting`).
     /// The distant terrain's drawn tiles, for the rays' far field (`far_heights`): call after
     /// `Lod::update`; cheap unless they changed.
+    /// Whether the eye is open to the sky (not in a cave, under a roof or leaves), so that
+    /// horizon culling (`HORIZON_LOD_HORIZON=1`, gfx/horizon.rs) may leave tiles out: from under
+    /// cover, a cave mouth or a window looks out under the skyline.
+    pub fn set_horizon_open(&mut self, open: bool) {
+        self.horizon_open = open;
+    }
     pub fn set_far_terrain(&mut self, lod: &crate::lod::Lod) {
         self.far_heights
             .set_far(lod.revision(), lod.drawn_columns());
@@ -6087,6 +6100,24 @@ impl Renderer {
                 visible_lods.extend(self.lods.iter().filter_map(|(&key, tile)| {
                     tile.visible(key, camera, frame.distance, &view, curved, now)
                 }));
+            }
+            if crate::lod::horizon_culling() && self.horizon_open && !visible_lods.is_empty() {
+                crate::spans::time("lod_horizon", || {
+                    let lods = &self.lods;
+                    let hidden = self.horizon.cull(
+                        camera,
+                        curved,
+                        lods.values()
+                            .filter(|t| t.whole(now))
+                            .flat_map(|t| &t.occluders),
+                        visible_lods.iter().map(|v| lods[&v.key].world_box(v.key)),
+                    );
+                    let mut i = 0;
+                    visible_lods.retain(|_| {
+                        i += 1;
+                        !hidden[i - 1]
+                    });
+                });
             }
             visible_lods.sort_unstable_by_key(|v| (v.distance, v.key));
         }
