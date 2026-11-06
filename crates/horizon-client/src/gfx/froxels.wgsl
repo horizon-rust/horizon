@@ -834,6 +834,17 @@ fn pixel_dither(pixel: vec2<f32>) -> f32 {
     let q = pixel + 5.588238 * (fx.dims.w % 64.0);
     return fract(52.9829189 * fract(dot(q, vec2(0.06711056, 0.00583715)))) - 0.5;
 }
+// The integrated grid's slice holding distance `r`: its index (the froxels' slices, then the far
+// ones past `depth.y`) and its two ends' distances.
+fn grid_slice(r: f32) -> vec3<f32> {
+    let n = fx.dims.z;
+    if r <= fx.depth.y {
+        let k = min(floor(slice_t(r) * n), n - 1.0);
+        return vec3(k, select(slice_r(k / n), 0.0, k < 0.5), slice_r((k + 1.0) / n));
+    }
+    let z = min(floor(far_t(r) * fx.far.z), fx.far.z - 1.0);
+    return vec3(n + z, far_r(z / fx.far.z), far_r((z + 1.0) / fx.far.z));
+}
 // The integrated froxels at screen `uv` and distance `r`: the in-scatter and the luminance of the
 // transmittance (slice `z` holds the value at its far end: coordinate `(z + 0.5) / n`, the near
 // end of the first slice being nothing and clear).
@@ -845,23 +856,11 @@ fn pixel_dither(pixel: vec2<f32>) -> f32 {
 // clear and one late too foggy (counting the fog behind it), a sawtooth of the slices' period
 // that showed as rings around the eye.
 fn froxel_at(uv: vec2<f32>, r: f32, dither: f32) -> vec4<f32> {
-    let n = fx.dims.z;
-    // The integrated grid holds the froxels' slices, then the far ones past `depth.y`.
-    let total = n + fx.far.z;
-    // The slice holding `r` (its index in the grid) and its ends' distances.
-    var k: f32;
-    var r0: f32;
-    var r1: f32;
-    if r <= fx.depth.y {
-        k = min(floor(slice_t(r) * n), n - 1.0);
-        r0 = select(slice_r(k / n), 0.0, k < 0.5);
-        r1 = slice_r((k + 1.0) / n);
-    } else {
-        let z = min(floor(far_t(r) * fx.far.z), fx.far.z - 1.0);
-        k = n + z;
-        r0 = far_r(z / fx.far.z);
-        r1 = far_r((z + 1.0) / fx.far.z);
-    }
+    let total = fx.dims.z + fx.far.z;
+    let slice = grid_slice(r);
+    let k = slice.x;
+    let r0 = slice.y;
+    let r1 = slice.z;
     var a = vec4(0.0, 0.0, 0.0, 1.0);
     if k > 0.5 { a = integrated_cubic(uv, (k - 0.5) / total); }
     let b = integrated_cubic(uv, (k + 0.5) / total);
@@ -895,13 +894,19 @@ fn froxel_at(uv: vec2<f32>, r: f32, dither: f32) -> vec4<f32> {
 // The integrated froxels for this view's screen `uv` at distance `r`: its own, or another view's
 // (the second VR eye reads the first's) where that view sees the same point.
 fn view_froxel_at(uv: vec2<f32>, r: f32, dither: f32) -> vec4<f32> {
-    if fx.other_eye.w < 0.5 { return froxel_at(uv, r, dither); }
+    let v = froxel_view(uv, r);
+    return froxel_at(v.xy, v.z, dither);
+}
+// This view's screen `uv` at distance `r` in the froxels it reads (`view_froxel_at`): the same, or
+// where the first VR eye sees that point (screen position, distance).
+fn froxel_view(uv: vec2<f32>, r: f32) -> vec3<f32> {
+    if fx.other_eye.w < 0.5 { return vec3(uv, r); }
     let p = fx.eye.xyz + ray_dir(uv) * r;
     let c = fx.other_view_proj * vec4(p, 1.0);
     let ndc = c.xy / max(c.w, 1e-6);
     let end = select(fx.depth.y, fx.far.x, fog_on());
     let other = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
-    return froxel_at(other, min(length(p - fx.other_eye.xyz), end), dither);
+    return vec3(other, min(length(p - fx.other_eye.xyz), end));
 }
 // The froxels' injected light for this view's screen `uv` at distance `r`: its own, or the view's
 // whose froxels it reads (`view_froxel_at`), where that view sees the same point.
@@ -966,10 +971,39 @@ fn fog_march(uv: vec2<f32>, r: f32, dither: f32, light: bool) -> vec4<f32> {
     }
     return vec4(scattered, fog_through);
 }
+// What the fogs let through, as the grid's columns around the pixel see them, for the ray to `r`
+// to be marched as clear air: their transmittance out to the end of the slice holding it.
+const CLEAR_THROUGH: f32 = 0.9999;
+// The medium in front of the pixel out to `r` where the grid sees no fog on its way (the
+// transmittance at least `CLEAR_THROUGH`): the air alone, which the grid holds as the march would
+// add it up (`light`), and past the froxels the march's air out to its range, lit by their last
+// slice. Where the grid sees fog, its transmittance alone, below `CLEAR_THROUGH`: the pixel marches
+// its own fog then. Most pixels see no fog: two reads of the grid in place of the march's 32 steps,
+// each reading the fog map.
+fn clear_view(uv: vec2<f32>, r: f32, light: bool) -> vec4<f32> {
+    let v = froxel_view(uv, r);
+    let slice = grid_slice(v.z);
+    let total = fx.dims.z + fx.far.z;
+    let b = integrated_cubic(v.xy, (slice.x + 0.5) / total);
+    if b.a < CLEAR_THROUGH || !light { return vec4(0.0, 0.0, 0.0, b.a); }
+    var a = vec4(0.0, 0.0, 0.0, 1.0);
+    if slice.x > 0.5 { a = integrated_cubic(v.xy, (slice.x - 0.5) / total); }
+    var air = mix(a.rgb, b.rgb, clamp((v.z - slice.y) / max(slice.z - slice.y, 1e-4), 0.0, 1.0));
+    let past = min(r, MARCH_RANGE) - fx.depth.y;
+    if past > 0.0 {
+        let st = max(fx.sigma_t.rgb, vec3(1e-6));
+        let j = view_source_at(uv, MARCH_RANGE);
+        air += exp(-st * fx.depth.y) * j * fx.albedo.rgb * (1.0 - exp(-st * past));
+    }
+    return vec4(air, b.a);
+}
 // The medium in front of the pixel out to `r`: marched by the pixel within `MARCH_RANGE`, the
 // froxels' integral past it (its share past the range, through the pixel's own fog to there).
+// Where the grid sees no fog on the way, the grid's air (`clear_view`).
 fn fog_view(uv: vec2<f32>, r: f32, dither: f32, light: bool) -> vec4<f32> {
     if !fog_on() { return view_froxel_at(uv, r, dither); }
+    let clear = clear_view(uv, r, light);
+    if clear.a >= CLEAR_THROUGH { return clear; }
     if r <= MARCH_RANGE { return fog_march(uv, r, dither, light); }
     let m = fog_march(uv, MARCH_RANGE, dither, light);
     let a = view_froxel_at(uv, MARCH_RANGE, dither);
@@ -993,12 +1027,12 @@ fn medium(in: Screen) -> Medium {
     // The steam fog's reflection in the water under it: the mirrored ray crosses the same thin
     // layer again, so the water reflects (Fresnel's share) the light the layer scattered along the
     // view's last stretch through it.
-    if fog_on() && fx.fog.y > 0.0 && r < fx.depth.y {
-        let dir = ray_dir(in.uv);
+    let dir = ray_dir(in.uv);
+    if fog_on() && fx.fog.y > 0.0 && r < fx.depth.y && dir.y < -0.01 {
         let pos = fx.eye.xyz + dir * r;
         let m = fog_map_at(pos.xz);
         let y = fx.camera.y + fx.fraction.y + pos.y;
-        if dir.y < -0.01 && m.climate.y > 0.5 && abs(y - m.shape.y) < 0.4 {
+        if m.climate.y > 0.5 && abs(y - m.shape.y) < 0.4 {
             let before = fog_view(in.uv, max(r - STEAM_TOP / -dir.y, 0.0), dither, true);
             let layer = max(here.rgb - before.rgb, vec3(0.0)) / max(before.a, 0.05);
             let fresnel = 0.02 + 0.98 * pow(1.0 + dir.y, 5.0);

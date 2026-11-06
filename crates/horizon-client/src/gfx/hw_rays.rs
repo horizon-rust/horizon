@@ -193,8 +193,11 @@ pub struct HwRays {
     /// This frame's raw top-level build (`RawTlas::build`), for the renderer to submit between
     /// the commands before it and after (`take_raw_build`).
     raw_build: Option<wgpu::CommandBuffer>,
-    /// This frame's raw builds of sections with opacity micromaps, submitted before it.
-    raw_sections: Option<wgpu::CommandBuffer>,
+    /// The raw builds of sections with opacity micromaps not yet submitted, submitted before
+    /// the next top-level build (`take_raw_build`). Their structures are already marked built,
+    /// so none may be dropped unsubmitted: a structure in the top level never built is garbage
+    /// to the GPU (the device lost).
+    raw_sections: Vec<wgpu::CommandBuffer>,
     /// The cutout sections' opacity micromaps (the `rtx` feature, `HORIZON_RT_OMM=0` turns them off).
     pub micromaps: super::hw_micromaps::Micromaps,
     /// Where each instance's quads are, by its custom data (shadow_rays_hw.wgsl `instances`,
@@ -393,14 +396,11 @@ impl HwRays {
     /// top-level one): submit them after the encoder `update` and `finish` recorded into and
     /// before the commands that read the structure.
     pub fn take_raw_build(&mut self) -> Vec<wgpu::CommandBuffer> {
-        let top = self.raw_build.take();
-        let sections = self.raw_sections.take();
-        match top {
-            Some(top) => sections.into_iter().chain([top]).collect(),
-            // No top-level build this frame: the sections' still go (none were built raw then,
-            // `update` builds them raw only with the raw top-level build).
-            None => sections.into_iter().collect(),
-        }
+        // The sections' first, then the top level's (without a top-level build this frame, the
+        // sections' still go).
+        let mut builds = std::mem::take(&mut self.raw_sections);
+        builds.extend(self.raw_build.take());
+        builds
     }
 
     /// Whether `device` traces hardware rays (and `HORIZON_HW_RT` isn't 0).
@@ -424,7 +424,7 @@ impl HwRays {
             tlas,
             raw,
             raw_build: None,
-            raw_sections: None,
+            raw_sections: Vec::new(),
             micromaps: super::hw_micromaps::Micromaps::new(device),
             instances: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("RT lighting's terrain instances"),
@@ -645,7 +645,7 @@ impl HwRays {
             for (i, hold) in which.into_iter().zip(built) {
                 holds[i] = hold;
             }
-            self.raw_sections = commands;
+            self.raw_sections.extend(commands);
             for (i, ((blas, address), size)) in made.iter_mut().zip(&sizes).enumerate() {
                 if plans[i].is_some() && holds[i].is_none() {
                     *blas = section_blas(device, size.clone());

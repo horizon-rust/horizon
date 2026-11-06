@@ -987,6 +987,57 @@ fn srgb_twin(format: wgpu::TextureFormat) -> Result<(vk::Format, wgpu::TextureFo
     }
 }
 
+/// The RTX build's device extensions the GPU offers and the features ask for: shader execution
+/// reordering for ray tracing pipelines, and opacity micromaps (with what they build on) for
+/// traced rays unless `HORIZON_RT_OMM=0`.
+struct RtxExtensions {
+    reorder: bool,
+    micromaps: bool,
+    synchronization2: bool,
+}
+
+impl RtxExtensions {
+    fn extensions(&self) -> Vec<&'static std::ffi::CStr> {
+        let mut names = Vec::new();
+        if self.reorder {
+            names.push(ash::nv::ray_tracing_invocation_reorder::NAME);
+        }
+        if self.micromaps {
+            names.push(ash::ext::opacity_micromap::NAME);
+            if self.synchronization2 {
+                names.push(ash::khr::synchronization2::NAME);
+            }
+        }
+        names
+    }
+}
+
+/// # Safety
+/// `physical` is a physical device of `instance`.
+unsafe fn rtx_extensions(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    features: wgpu::Features,
+) -> RtxExtensions {
+    let offered =
+        unsafe { instance.enumerate_device_extension_properties(physical) }.unwrap_or_default();
+    let offers = |name: &std::ffi::CStr| {
+        offered
+            .iter()
+            .any(|e| e.extension_name_as_c_str() == Ok(name))
+    };
+    let reorder = offers(ash::nv::ray_tracing_invocation_reorder::NAME)
+        && features.contains(wgpu::Features::EXPERIMENTAL_RAY_TRACING_PIPELINES);
+    let micromaps = !std::env::var("HORIZON_RT_OMM").is_ok_and(|v| v == "0")
+        && offers(ash::ext::opacity_micromap::NAME)
+        && features.contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY);
+    RtxExtensions {
+        reorder,
+        micromaps,
+        synchronization2: micromaps && offers(ash::khr::synchronization2::NAME),
+    }
+}
+
 type Opened = (
     wgpu::Instance,
     wgpu::Adapter,
@@ -1094,6 +1145,21 @@ unsafe fn open_vulkan(
         if shading_rate.is_some() {
             device_extensions.push(ash::khr::fragment_shading_rate::NAME);
         }
+        // The RTX build's extensions, as the screen's device gets them (horizon-hdr
+        // `open_vulkan_device`): without them the headset's rays had no opacity micromaps, no
+        // reordering and no ray tracing pipeline passes (horizon-rtx `omm`, `sun`).
+        // SAFETY: the physical device is the instance's own.
+        let rtx = unsafe { rtx_extensions(&ash_instance, physical, features) };
+        for name in rtx.extensions() {
+            if !device_extensions.contains(&name) {
+                device_extensions.push(name);
+            }
+        }
+        let mut reorder_features =
+            vk::PhysicalDeviceRayTracingInvocationReorderFeaturesNV::default()
+                .ray_tracing_invocation_reorder(true);
+        let mut micromap_features =
+            vk::PhysicalDeviceOpacityMicromapFeaturesEXT::default().micromap(true);
         let device_names: Vec<*const std::ffi::c_char> =
             device_extensions.iter().map(|e| e.as_ptr()).collect();
         let mut phd_features = hal_adapter.physical_device_features(&device_extensions, features);
@@ -1111,6 +1177,12 @@ unsafe fn open_vulkan(
         );
         if shading_rate.is_some() {
             device_create = device_create.push_next(&mut rate_features);
+        }
+        if rtx.reorder {
+            device_create = device_create.push_next(&mut reorder_features);
+        }
+        if rtx.micromaps {
+            device_create = device_create.push_next(&mut micromap_features);
         }
         let raw_device = unsafe {
             xr.create_vulkan_device(

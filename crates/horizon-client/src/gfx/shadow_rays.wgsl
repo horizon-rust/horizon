@@ -566,6 +566,9 @@ override DEBUG: u32 = 0u;
 // `accumulate`), to compare with before. (32, VR's second eye's own
 // light, never reaches the kernel: shadow_rays.rs `set_skip`.)
 override SKIP: u32 = 0u;
+// `HORIZON_RT_SUN_CENTRE=1`: RT lighting traces the ray toward the sun's centre too, which it
+// never reads (`trace`), as before 8121f258f, to tell what leaving it out changed.
+override SUN_CENTRE: u32 = 0u;
 
 // Ray-traced shadows (gfx/voxels.rs, docs/raytracing.md): whether world block `v` is in the grid.
 fn in_grid(v: vec3<i32>) -> bool {
@@ -1671,7 +1674,10 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
             none.blocks, none.direct, none.sun, none.reservoir);
     }
     var sun = 1.0;
-    if shadows {
+    // The sun's shadows alone (without RT lighting, or their debug view). RT lighting's sun is
+    // `sun_through` below, a ray toward a point of the disc: this ray toward its centre went
+    // unused there, traced for nothing unless the compiler dropped it (a ray query's loop).
+    if shadows && (!lit_mode || DEBUG == 5u || SUN_CENTRE == 1u) {
         let v = sun_visibility(lifted, n);
         if DEBUG == 5u { return Traced(vec4(v), none.blocks, none.direct, none.sun, none.reservoir); }
         sun = mix(1.0, mix(far_facing, v * beyond, edge), rt.light.w);
