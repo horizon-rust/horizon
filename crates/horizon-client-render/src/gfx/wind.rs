@@ -303,7 +303,7 @@ pub struct Frame {
     pub on: bool,
 }
 
-/// The wind's buffer (terrain.wgsl group 0, binding 25; the rays' binding 35): the header, two
+/// The wind's buffer (terrain.wgsl group 0, binding 25; the rays' binding 65): the header, two
 /// maps (the newer fading in over the older for `FADE`, so the swaying never jumps where the far
 /// field's heights changed), the layers' classes.
 pub struct Wind {

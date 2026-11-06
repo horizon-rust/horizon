@@ -11,10 +11,12 @@
 //! auto-exposure (`exposure`) scales its light to the eye's adaptation and the bloom (`bloom`)
 //! lets the brightest of it glow. Both are measured on a chain of halved copies of the scene,
 //! and the grading pass writes the result into a float target of its own (`Post`), which the
-//! curve reads and HDR output reads in place of the scene (`graded`). Env switches, for A/B:
-//! `HORIZON_POST=0` (no grading), `HORIZON_EXPOSURE=0` (the exposure stays 1; a number is
-//! a fixed value in stops), `HORIZON_BLOOM=0` (a number is the bloom's burn intensity) and
-//! `HORIZON_TONEMAP=shoulder` (today's curve in place of ACES).
+//! curve reads and HDR output reads in place of the scene (`graded`); when nothing reads it after
+//! (no HDR output, screenshot or video), the grading pass applies the curve itself, onto the
+//! screen's target. Env switches, for A/B: `HORIZON_POST=0` (no grading), `HORIZON_EXPOSURE=0`
+//! (the exposure stays 1; a number is a fixed value in stops), `HORIZON_BLOOM=0` (a number is the
+//! bloom's burn intensity), `HORIZON_TONEMAP=shoulder` (today's curve in place of ACES) and
+//! `HORIZON_GRADE_FUSED=0` (the graded light's target and the curve's own pass every frame).
 //!
 //! The grading follows RTX Remix's post-processing and its rtx.conf values (`PostParams`): the
 //! auto-exposure of `exposure`, a threshold bloom that is added to the scene (burn intensity),
@@ -160,6 +162,9 @@ struct Grading {
     pipeline: wgpu::RenderPipeline,
     /// The curve of the graded light: ACES.
     aces: wgpu::RenderPipeline,
+    /// `pipeline` and `aces` in one pass onto the screen's format, when nothing reads the graded
+    /// light (`Tonemap::run`'s `keep_graded`).
+    grade_aces: wgpu::RenderPipeline,
 }
 
 pub struct Tonemap {
@@ -194,6 +199,14 @@ fn debug_constant() -> (&'static str, f64) {
                 f64::from(if (3..=5).contains(&v) || v == 7 { 1 } else { v })
             }),
     )
+}
+
+/// Whether the grading and the curve draw in one pass when nothing reads the graded light
+/// (`Tonemap::run`): on unless `HORIZON_GRADE_FUSED=0`, which draws the graded light first, then
+/// the curve, as always.
+fn fuse_grading() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_GRADE_FUSED").map_or(true, |v| v != "0"))
 }
 
 /// The bloom's burn intensity when `HORIZON_BLOOM` sets it (0 for none).
@@ -356,6 +369,34 @@ impl Grading {
             multiview_mask: None,
             cache: None,
         });
+        let grade_aces = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("fs_grade_aces"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_full"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_grade_aces"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[debug_constant()],
+                    ..Default::default()
+                },
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: screen,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         Self {
             bloom,
             meter,
@@ -366,6 +407,7 @@ impl Grading {
             sampler,
             pipeline,
             aces,
+            grade_aces,
         }
     }
 }
@@ -686,7 +728,9 @@ impl Tonemap {
 
     /// Tone maps the scene of `size` onto `target` (the screen's format, the same size), its
     /// solid terrain scaled by the ray-traced shadows' `mask` when there is one. With `set_post`
-    /// the scene is graded first (and the mask applied then).
+    /// the scene is graded first (and the mask applied then), into the graded light's target when
+    /// `keep_graded` (HDR output, a screenshot or a video reads it after: `graded`), else straight
+    /// onto `target` with the curve (ACES), one full-size pass and target less.
     pub fn run(
         &self,
         device: &wgpu::Device,
@@ -694,6 +738,7 @@ impl Tonemap {
         size: [u32; 2],
         target: &wgpu::TextureView,
         mask: Option<&wgpu::TextureView>,
+        keep_graded: bool,
     ) {
         let Some(t) = self.scenes.iter().find(|t| t.size == size) else {
             return;
@@ -739,6 +784,20 @@ impl Tonemap {
                 .down(encoder, &post.glow, scene, &grading.first, true);
             grading.bloom.up(encoder, &post.glow);
             super::gpu_passes::stamp(encoder, "bloom");
+            static SHOULDER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            let shoulder = *SHOULDER
+                .get_or_init(|| std::env::var("HORIZON_TONEMAP").as_deref() == Ok("shoulder"));
+            if !keep_graded && !shoulder && fuse_grading() {
+                Self::draw(
+                    encoder,
+                    "Grading and tone mapping",
+                    &grading.grade_aces,
+                    &[scene, &post.group],
+                    target,
+                );
+                super::gpu_passes::stamp(encoder, "grading and tone curve (ACES)");
+                return;
+            }
             Self::draw(
                 encoder,
                 "Grading",
@@ -747,9 +806,6 @@ impl Tonemap {
                 &post.graded,
             );
             super::gpu_passes::stamp(encoder, "grading (local tone mapping)");
-            static SHOULDER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            let shoulder = *SHOULDER
-                .get_or_init(|| std::env::var("HORIZON_TONEMAP").as_deref() == Ok("shoulder"));
             Self::draw(
                 encoder,
                 "Tone mapping",

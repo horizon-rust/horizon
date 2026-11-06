@@ -459,7 +459,10 @@ RTX 4090, with the copy of NVIDIA's RTX Demo world (the player at its spawn), NV
 **How it was timed.** `HORIZON_GPU_PASSES=1` (`gfx/gpu_passes.rs`) writes a GPU timestamp between the frame's
 stages and logs each stage's median every 60 frames, per view (`desktop`, `eye1`, `eye2`); `tools/gpu_passes_report.py
 game.log` sums the reports (`--by-look` one a head pose, `--best 0.25` the shortest-framed ones, for a run that
-shares the GPU). `HORIZON_RT_SKIP` (a mask: 1 the sun's ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR, 64 the far field; 2048, read at start, the mesh clouds instead of the dome's) leaves parts of the
+shares the GPU). The medians take only frames whose head pose stayed put, and each stage only the frames it ran in,
+so their sum need not be the GPU time the VR line logs every 300 frames: beside that line, `Horizon VR: GPU means`
+gives each view's stages' means over the same frames (a stage that did not run counts 0), and the time between the
+views of a frame (other submissions' work, or the GPU idle). `HORIZON_RT_SKIP` (a mask: 1 the sun's ray, 2 ReSTIR GI, 4 ReSTIR DI, 8 the PSR, 64 the far field; 2048, read at start, the mesh clouds instead of the dome's) leaves parts of the
 trace kernel out to time each alone, `HORIZON_RT_SHARP` (degrees) moves the foveation's sharp zone (0: sparse all over,
 180: sharp all over). `HORIZON_RT_FORCE_OPAQUE=1` traces every hardware ray (the trace kernel's and the froxels') with
 the force-opaque ray flag, so no candidate hit comes back to the shader for its alpha test (cutouts shadow as squares,
@@ -618,6 +621,21 @@ wind):
    frustum) and, for each eye, the mirrors and the refraction. Both eyes' grain is then the same. The second eye's
    trace 4.9 to 2.7 ms (3.3 to 1.2 without the mirrors), its frame 9.45 to 7.35; no light bleeds at the near
    edges in the captures. It needs 8's multiview.
+10. **The second eye takes the first eye's denoised light too** (shadow_rays.wgsl `taken_out`, denoise.wgsl `taken`,
+   `HORIZON_RT_SHARE_DENOISED=0` for the old): where 9 took a texel's light, the kernel writes the first eye's texel
+   there (in the periphery the block's centre's, each texel shifted as the centre is), and the second eye's denoiser
+   copies the first eye's light as its five passes left it on the first pass, into the other texture they write on
+   the second, and leaves those texels be on the three after. Only what the second eye traced itself is filtered,
+   the copied light among its taps. A surface's diffuse light being the same from either eye, both eyes then show the
+   same denoised light; before, the second eye filtered the taken light again (0.53 to 0.63 ms of its 3.2 to 3.7 at
+   4400x3520 on the RTX 4090).
+11. **The mirrors and the refraction look for water or glass only where the raster finds some** (gfx.rs `draw_cover`,
+   shadow_rays_hw.wgsl `psr_covered`, `HORIZON_RT_PSR_COVER=0` for the old): each texel of the sharp zone, and each 2x2
+   quad of the periphery, traced a ray from the camera to its surface to find the water or glass before it, a primary
+   ray over the whole structure, though most of a view has none. After the rays' prepass the translucent terrain's
+   draws (every quad whole, back faces culled as the world draws them) are drawn into a cover of the prepass's size
+   (one pass for both eyes in VR), tested against its depth; where the cover and its neighbours on the quad's side are
+   empty, the kernel skips that ray (a puddle still reflects). The GPU stage `rays: translucent cover` times it.
 
 **Kept, though measured:** the second bounce on a radiance cache miss (3 ms of 12 in the RTX Demo's interior, which
 loses 1 % of its light without it) and the reuse's visibility ray (1.3 ms; without it a neighbour's sample leaks

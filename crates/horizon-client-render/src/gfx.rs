@@ -1544,6 +1544,10 @@ pub struct Renderer {
     /// Whether the log said the world starts from the rays' prepass (`world_prepass`).
     world_prepass_logged: bool,
     rt_depths: Vec<([u32; 2], wgpu::TextureView)>,
+    /// The translucent terrain's cover over the prepass (`draw_cover`): its pipeline and a target
+    /// per view size.
+    rt_cover: wgpu::RenderPipeline,
+    rt_covers: Vec<([u32; 2], wgpu::TextureView)>,
     /// VR's two eyes' prepass in one multiview pass, where the device has it.
     eye_depths: Option<EyeDepths>,
     voxels: voxels::Voxels,
@@ -2366,6 +2370,33 @@ fn backends_name(backends: wgpu::Backends) -> &'static str {
         _ => "graphics",
     }
 }
+/// The translucent terrain's cover over the rays' prepass (`Renderer::draw_cover`): 1 where water
+/// or glass lies in front of the solid terrain.
+const COVER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+/// Whether the rays look for water or glass in front of a texel only where the translucent
+/// terrain's cover says some lies (shadow_rays_hw.wgsl `hw_reflect`): on unless
+/// `HORIZON_RT_PSR_COVER=0`, which traces that ray from every texel as before.
+fn psr_cover() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_PSR_COVER").map_or(true, |v| v != "0"))
+}
+/// A target for the translucent terrain's cover of `size`, with `layers` layers.
+fn cover_texture(device: &wgpu::Device, size: [u32; 2], layers: u32) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Translucent terrain's cover for the rays"),
+        size: wgpu::Extent3d {
+            width: size[0].max(1),
+            height: size[1].max(1),
+            depth_or_array_layers: layers,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: COVER_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    })
+}
 /// The first eye's draw lists, for the second (`Renderer::draw_frame`): phase 1's end, the
 /// solid draws' end, the translucent draws, whether occlusion culling tested them, and the
 /// opaque and cutout split with GPU culling's solid sections (`opaque_end`, `cutout_start`,
@@ -2384,6 +2415,11 @@ struct EyeDepths {
     layers: Option<([u32; 2], wgpu::TextureView, [wgpu::TextureView; 2])>,
     /// The second eye's layer, drawn by the first eye this frame.
     next: Option<wgpu::TextureView>,
+    /// The translucent terrain's cover over both layers (`Renderer::draw_cover`): its pipeline,
+    /// its two-layer target as `layers`, and the second eye's layer this frame.
+    cover: wgpu::RenderPipeline,
+    covers: Option<([u32; 2], wgpu::TextureView, [wgpu::TextureView; 2])>,
+    next_cover: Option<wgpu::TextureView>,
 }
 /// Whether an adapter renders on the CPU (WARP, llvmpipe).
 fn is_software(kind: wgpu::DeviceType) -> bool {
@@ -3583,6 +3619,50 @@ impl Renderer {
         });
         let solid_depth = depth_prepass(&layout, &shader, "vs_terrain", None, true);
         let opaque_depth = depth_prepass(&layout, &shader, "vs_terrain", None, false);
+        // The translucent terrain's cover over the prepass's depth (`draw_cover`): its quads as the
+        // world draws them (back faces culled), tested against the depth without writing it.
+        let cover_prepass =
+            |layout: &wgpu::PipelineLayout,
+             module: &wgpu::ShaderModule,
+             vertex: &str,
+             multiview_mask: Option<std::num::NonZeroU32>| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("Translucent terrain's cover for the rays"),
+                    layout: Some(layout),
+                    vertex: wgpu::VertexState {
+                        module,
+                        entry_point: Some(vertex),
+                        compilation_options: Default::default(),
+                        buffers: &terrain_buffers,
+                    },
+                    primitive: wgpu::PrimitiveState {
+                        topology: tri,
+                        cull_mode: Some(wgpu::Face::Back),
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: wgpu::TextureFormat::Depth32Float,
+                        depth_write_enabled: Some(false),
+                        depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module,
+                        entry_point: Some("fs_cover"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format: COVER_FORMAT,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                    }),
+                    multiview_mask,
+                    cache: None,
+                })
+            };
+        let rt_cover = cover_prepass(&layout, &shader, "vs_terrain", None);
         // VR: both eyes' prepass in one multiview pass, where the device draws two views at once.
         let eye_depths = device
             .features()
@@ -3642,6 +3722,14 @@ impl Renderer {
                     group,
                     layers: None,
                     next: None,
+                    cover: cover_prepass(
+                        &layout,
+                        &shader,
+                        "vs_terrain_views",
+                        std::num::NonZeroU32::new(0b11),
+                    ),
+                    covers: None,
+                    next_cover: None,
                 }
             });
         // `solid` in two passes (terrain.wgsl's `opaque_quad`, `mesher::Part`), for the
@@ -5945,6 +6033,8 @@ impl Renderer {
             prepass_counts: None,
             world_prepass_logged: false,
             rt_depths: Vec::new(),
+            rt_cover,
+            rt_covers: Vec::new(),
             eye_depths,
             voxels: voxels::Voxels::default(),
             far_heights: far_heights::FarHeights::default(),
@@ -7899,6 +7989,7 @@ impl Renderer {
         rt: &shadow_rays::Rays,
         phase1: u32,
         draws: u32,
+        translucent: [u32; 2],
     ) -> [wgpu::TextureView; 6] {
         let foveation = match &self.eye {
             Some(eye) => eye.foveation,
@@ -7915,10 +8006,15 @@ impl Renderer {
             ),
             _ => (size, foveation),
         };
-        let (depth, first_depth) = match self.eye_prepass(encoder, size, view_proj, phase1, draws) {
-            Some(d) => d,
-            None => (self.view_prepass(encoder, size, phase1, draws), None),
-        };
+        let (depth, first_depth, cover) =
+            match self.eye_prepass(encoder, size, view_proj, phase1, draws, translucent) {
+                Some(d) => d,
+                None => {
+                    let (depth, cover) =
+                        self.view_prepass(encoder, size, phase1, draws, translucent);
+                    (depth, None, cover)
+                }
+            };
         let view = self.eye.map_or(0, |e| e.view_index);
         let grid = self.voxels.views().expect("the grid runs");
         let lights = self.voxels.light_buffers().expect("the grid runs");
@@ -8003,6 +8099,7 @@ impl Renderer {
             self.far_heights.views(),
             hw.as_ref().map(hw_rays::Bindings::hardware),
             first_depth.as_ref(),
+            cover.as_ref(),
             sun_pass,
         );
         [mask, blocks, sun, reflection, refraction, depth]
@@ -8017,17 +8114,23 @@ impl Renderer {
         view_proj: Mat4,
         phase1: u32,
         draws: u32,
-    ) -> Option<(wgpu::TextureView, Option<wgpu::TextureView>)> {
+        translucent: [u32; 2],
+    ) -> Option<(
+        wgpu::TextureView,
+        Option<wgpu::TextureView>,
+        Option<wgpu::TextureView>,
+    )> {
         let eye = self.eye?;
         let mut depths = self.eye_depths.take()?;
         let Some(next) = eye.next_view_proj else {
             let layer = depths.next.take();
+            let cover = depths.next_cover.take();
             let first = depths
                 .layers
                 .as_ref()
                 .map(|(_, _, [first, _])| first.clone());
             self.eye_depths = Some(depths);
-            return layer.map(|layer| (layer, first));
+            return layer.map(|layer| (layer, first, cover));
         };
         if depths.layers.as_ref().is_none_or(|(s, _, _)| *s != size) {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -8087,8 +8190,89 @@ impl Renderer {
         }
         gpu_passes::stamp(encoder, "rays: depth prepass (both eyes)");
         depths.next = Some(second);
+        let cover = psr_cover().then(|| {
+            if depths.covers.as_ref().is_none_or(|(s, _, _)| *s != size) {
+                let texture = cover_texture(&self.device, size, 2);
+                let layer = |i| {
+                    texture.create_view(&wgpu::TextureViewDescriptor {
+                        dimension: Some(wgpu::TextureViewDimension::D2),
+                        base_array_layer: i,
+                        array_layer_count: Some(1),
+                        ..Default::default()
+                    })
+                };
+                let all = texture.create_view(&wgpu::TextureViewDescriptor {
+                    dimension: Some(wgpu::TextureViewDimension::D2Array),
+                    ..Default::default()
+                });
+                depths.covers = Some((size, all, [layer(0), layer(1)]));
+            }
+            let (_, all, [this_eye, next_eye]) = depths.covers.clone().expect("made above");
+            self.draw_cover(
+                encoder,
+                &all,
+                &both,
+                &depths.cover,
+                Some(&depths.group),
+                std::num::NonZeroU32::new(0b11),
+                translucent,
+            );
+            gpu_passes::stamp(encoder, "rays: translucent cover (both eyes)");
+            depths.next_cover = Some(next_eye);
+            this_eye
+        });
         self.eye_depths = Some(depths);
-        Some((first, None))
+        Some((first, None, cover))
+    }
+    /// The translucent terrain's cover over the rays' prepass: the `translucent` draws (the
+    /// frame's first and count) into `cover` (cleared), tested against `depth` without writing
+    /// it, 1 where water or glass lies in front of the solid terrain, so the rays' mirrors and
+    /// refraction look for them only there (shadow_rays_hw.wgsl `hw_reflect`). `views` is the
+    /// eyes' matrices' group with `multiview`.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_cover(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        cover: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        pipeline: &wgpu::RenderPipeline,
+        views: Option<&wgpu::BindGroup>,
+        multiview: Option<std::num::NonZeroU32>,
+        [first, count]: [u32; 2],
+    ) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Translucent terrain's cover for the rays"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: cover,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            multiview_mask: multiview,
+            ..Default::default()
+        });
+        if count == 0 {
+            return;
+        }
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &self.group, &[]);
+        if let Some(views) = views {
+            pass.set_bind_group(1, views, &[]);
+        }
+        pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+        pass.set_vertex_buffer(1, self.instances.slice(..));
+        self.draw_sections(&mut pass, &self.indirect, 0, first, count);
     }
     /// The prepass's draws (`prepass_draws`) from the frame's solid draws: each section's runs
     /// split into the quads whose sprites have no transparent texel, drawn first without a
@@ -8166,7 +8350,8 @@ impl Renderer {
         size: [u32; 2],
         phase1: u32,
         draws: u32,
-    ) -> wgpu::TextureView {
+        translucent: [u32; 2],
+    ) -> (wgpu::TextureView, Option<wgpu::TextureView>) {
         let depth = match self.rt_depths.iter().find(|(s, _)| *s == size) {
             Some((_, d)) => d.clone(),
             None => {
@@ -8205,7 +8390,31 @@ impl Renderer {
             );
         }
         gpu_passes::stamp(encoder, "rays: depth prepass");
-        depth
+        let cover = psr_cover().then(|| {
+            let cover = match self.rt_covers.iter().find(|(s, _)| *s == size) {
+                Some((_, c)) => c.clone(),
+                None => {
+                    if self.rt_covers.len() >= 5 {
+                        self.rt_covers.remove(0);
+                    }
+                    let c = cover_texture(&self.device, size, 1).create_view(&Default::default());
+                    self.rt_covers.push((size, c.clone()));
+                    c
+                }
+            };
+            self.draw_cover(
+                encoder,
+                &cover,
+                &depth,
+                &self.rt_cover,
+                None,
+                None,
+                translucent,
+            );
+            gpu_passes::stamp(encoder, "rays: translucent cover");
+            cover
+        });
+        (depth, cover)
     }
     /// The prepass's draws: every solid section, both phases of occlusion culling; the opaque
     /// runs with `opaque` (no fragment shader) where they were split from the cutouts
@@ -9117,6 +9326,7 @@ impl Renderer {
             let result = self.write_capture(&request, frame);
             self.capture_result = Some(result.map_err(|e| e.to_string()));
         }
+        gpu_passes::next_frame();
         let xr_frame = match self
             .xr
             .is_some()
@@ -11631,6 +11841,7 @@ impl Renderer {
                 &rt,
                 phase1_draws,
                 solid_draws,
+                [solid_draws, translucent_draws],
             );
             if taa_now {
                 self.uploads.buffer(
@@ -13234,6 +13445,7 @@ impl Renderer {
                     hw.as_ref().map(hw_rays::Bindings::hardware),
                     None,
                     None,
+                    None,
                 )[0]
                 .clone()
             });
@@ -14259,10 +14471,16 @@ impl Renderer {
             let first = overlay.first_crosshair;
             pass.draw(0..4, first..first + overlay.crosshair);
         }
+        gpu_passes::stamp(encoder, "hand, outline, screen effects");
         if let Some((_, size, mask)) = scene
             && let Some(t) = &self.tonemap
         {
-            t.run(&self.device, encoder, size, view_target, mask);
+            // The graded light is read after when HDR output presents it, or a screenshot or a
+            // video frame keeps it: else the curve draws in the grading's pass.
+            let keep_graded = self.hdr.is_some()
+                || self.screenshot.is_some()
+                || self.recording.as_ref().is_some_and(|r| r.wants());
+            t.run(&self.device, encoder, size, view_target, mask, keep_graded);
             if let Some(hdr) = &self.hdr {
                 hdr.keep_world(encoder, timing.as_mut());
             }
@@ -14275,7 +14493,6 @@ impl Renderer {
                 &mut timing,
             );
         }
-        gpu_passes::stamp(encoder, "hand, outline, screen effects");
         // In VR the HUD goes onto its own panel (`xr::finish_eyes`), not over each eye.
         let hud_here = self.eye.is_none();
         let menu_blur = frame

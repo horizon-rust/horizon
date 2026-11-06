@@ -131,15 +131,23 @@ fn night_vision(c: vec3<f32>) -> vec3<f32> {
     let grey = tint * (rods / dot(tint, vec3(0.2126, 0.7152, 0.0722)));
     return mix(grey, c, cones);
 }
-@fragment fn fs_grade(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
-    let c = textureLoad(source, vec2<i32>(p.xy), 0);
-    let uv = p.xy / vec2<f32>(textureDimensions(source));
+fn grade(p: vec2<f32>) -> vec3<f32> {
+    let c = textureLoad(source, vec2<i32>(p), 0);
+    let uv = p / vec2<f32>(textureDimensions(source));
     let bloom = textureSampleLevel(glow, glow_sampler, uv, 0.0).rgb;
-    let lit = night_vision(max(shadowed(c, p.xy), vec3(0.0)));
+    let lit = night_vision(max(shadowed(c, p), vec3(0.0)));
     var light = (lit + bloom * params.bloom.x) * exposure.x;
     let near = textureSampleLevel(local_light, glow_sampler, uv, 0.0).rgb * exposure.x;
     light = local_tone(light, dot(near, vec3(0.2126, 0.7152, 0.0722)));
-    return vec4(light * params.local.x, 1.0);
+    return light * params.local.x;
+}
+@fragment fn fs_grade(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    return vec4(grade(p.xy), 1.0);
+}
+// The grading and the curve in one pass, when nothing reads the graded light (gfx/tonemap.rs
+// `run`'s `keep_graded`): as `fs_grade` then `fs_tonemap_aces`, without the float target between.
+@fragment fn fs_grade_aces(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+    return vec4(pow(aces(grade(p.xy)), vec3(1.0 / 2.2)), 1.0);
 }
 
 @fragment fn fs_decode(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {

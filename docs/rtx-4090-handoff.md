@@ -119,14 +119,27 @@ the first fake-runtime runs used 3132x3016). PR #2 (`claude/project-thread-tb0ay
   for a build with no relevant change: its tables showed the hand drawn, `froxels: apply` doubled (fog) and the raster
   up 0.5 an eye, another scene. Compare VR builds back to back, the time and the weather fixed
   (`/time set 6000`, `doDaylightCycle false`, `/weather clear`, `doWeatherCycle false`).
-- **Then, not yet measured:** the denoiser filters VR's periphery by its 4x4 blocks sharing a ray, from the passes of 4
-  (2db53a830, `HORIZON_RT_DENOISE_FOVEA=0` for the old); VR's rays' prepass is drawn at the rays' resolution,
-  2200x1760 an eye, the rays over it with a scale of 1 (486eb379a, `HORIZON_RT_PREPASS_HALF=0` for the old).
-- **Desktop, open:** between b5b5252a7 and 482620a06 (one session, time fixed) the rays' prepass took 0.33 ms more,
-  `world: phase 1` 0.9 to 1.1, the forest's trace 0.65, the forest's frame unchanged. The terrain's `@invariant` and
-  the depth's copy usages (now only with `HORIZON_WORLD_PREPASS`, `HORIZON_TERRAIN_INVARIANT=1` to force it) were
-  measured not to be it, and the diff records nothing else new before phase 1 on the screen: next, an A-B-A run with
-  the GPU's clocks logged, then a bisect.
+- **Measured on integ-final** (PRs #2 to #12 merged, 4400x3520): 11.14 ms a frame. The denoiser filtering VR's
+  periphery by its 4x4 blocks (2db53a830, `HORIZON_RT_DENOISE_FOVEA=0` for the old) gives 0.11 ms; VR's rays' prepass
+  at the rays' resolution, 2200x1760 an eye (486eb379a, `HORIZON_RT_PREPASS_HALF=0` for the old), gives 0.76 ms.
+- **VR stalls, closed:** the fake runtime froze a frame about 2.5 s every 180 frames, writing its captures inside
+  `xrEndFrame`; it writes them on a thread of its own now. KRVR's own log shows no such waits. Without them, integ-final
+  is at 10.10 ms a frame (eye 1 6.37, eye 2 3.67), the means of `Horizon VR: GPU means` over the same frames.
+- **Desktop, closed:** between b5b5252a7 and 482620a06 the rays' prepass read 0.33 ms more, `world: phase 1` 0.9 to
+  1.1, the forest's trace 0.65. An A-B-A run with the clocks logged found the game capped at 30 fps, the GPU down to
+  1635 MHz for f05270165 against 2200 to 2300 for b5b5252a7: at the same clock the prepass is 0.06 ms more.
+  integ-final's trace read 0.9 ms more at 1905 MHz, not yet compared at one clock. Compare uncapped, or with the
+  clocks locked and logged.
+- **The second eye's denoiser** (0.53 to 0.63 ms) filters only what that eye traced itself: where it took the first
+  eye's light, it copies the first eye's denoised light (`HORIZON_RT_SHARE_DENOISED=0` for the old, docs/raytracing.md
+  item 10). Not yet measured.
+- **The grading and the ACES curve in one pass** when nothing reads the graded light after (no HDR output,
+  screenshot or video): one full-size float target written and read less an eye; the stages `grading` and
+  `tone curve` become `grading and tone curve (ACES)` (`HORIZON_GRADE_FUSED=0` for the old). Not yet measured.
+- **The mirrors' search ray only where water or glass lies in front** (docs/raytracing.md item 11): a cover of the
+  translucent terrain over the rays' prepass, and the kernel skips the camera ray that looked for water or glass
+  elsewhere (`HORIZON_RT_PSR_COVER=0` for the old; `HORIZON_RT_SKIP=8` drops the mirrors whole, the upper bound).
+  Not yet measured.
 - **Ideas weighed and left:** the second eye skipping the exposure meter (the grading's local tone mapping reads the
   meter's chain, level 2, so the eye needs its own); a conservative depth reuse across the TAA jitter (holes through
   cutout gaps); the TAA's blit folded into its resolve (the hand and the rain draw over the resolved scene, so the

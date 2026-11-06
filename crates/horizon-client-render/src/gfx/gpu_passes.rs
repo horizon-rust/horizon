@@ -15,15 +15,22 @@
 //! The control socket turns it on and off in a running game and reads the medians back
 //! (`horizon-ctl gpu-stages`, game/control.rs): the profiler is made at start either way, off
 //! unless the variable is set, so finding where a player's frame goes needs no relaunch.
+//!
+//! The medians only take frames whose note (the head's pose) stayed the same, and a stage's only
+//! the frames it ran in. Beside them every frame read back adds to a tally that `take_means` turns
+//! into each stage's mean over a frame, by view, with the GPU's time between two views of one
+//! frame (another submission's work, or none): the VR log's line every 300 frames (gfx/xr.rs
+//! `xr_frame_times`) reports what its GPU time is made of, over the same frames.
 
 use std::collections::VecDeque;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU8, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 
-/// Frames in flight at once (a VR frame is a submission per eye, so two eyes a frame).
-const SLOTS: usize = 12;
+/// Frames in flight at once (a VR frame is a submission per eye, the window's and the panel's:
+/// four a frame).
+const SLOTS: usize = 24;
 /// Stamps a frame takes at most.
 const CAPACITY: u32 = 96;
 /// Timed frames each stage's median is taken over, and the number between two reports.
@@ -35,6 +42,8 @@ const MAPPED: u8 = 2;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<Option<Profiler>> = Mutex::new(None);
+/// The frame the views begun now belong to (`next_frame`).
+static FRAME: AtomicU64 = AtomicU64::new(0);
 
 struct Slot {
     queries: wgpu::QuerySet,
@@ -44,6 +53,9 @@ struct Slot {
     /// The view this frame drew, and each stamp's stage after the first (the start).
     label: String,
     names: Vec<&'static str>,
+    /// The frame (`next_frame`) and the view's place among the views begun in it.
+    frame: u64,
+    order: u8,
 }
 
 /// One view's last frames: each stage's times in milliseconds, in the order they first ran.
@@ -52,6 +64,16 @@ struct History {
     stages: Vec<(&'static str, VecDeque<f32>)>,
     totals: VecDeque<f32>,
     since_report: usize,
+}
+
+/// One view's tally since the last `take_means`: the times it was begun (timed or not) and read
+/// back, the sum of its frames' times, and of each stage's, in milliseconds.
+#[derive(Default)]
+struct Tally {
+    begun: u32,
+    timed: u32,
+    total: f64,
+    stages: Vec<(&'static str, f64)>,
 }
 
 struct Profiler {
@@ -67,6 +89,16 @@ struct Profiler {
     begun: u32,
     read: u32,
     dropped: u32,
+    /// Since the last `take_means`, whatever the note: each view's tally, and the GPU's time
+    /// between two views read back of one frame (the next one's start less this one's end).
+    tallies: Vec<(String, Tally)>,
+    between: f64,
+    /// The views read back last: frame, place in it, first and last stamp (ticks).
+    recent: VecDeque<(u64, u8, u64, u64)>,
+    /// The frame being begun, and the place its next view takes; the frame at the last
+    /// `take_means`.
+    frame: (u64, u8),
+    taken_at: u64,
 }
 
 /// Whether the stage times are taken (`HORIZON_GPU_PASSES`, or `set_enabled`).
@@ -109,6 +141,8 @@ pub fn init(device: &wgpu::Device, queue: &wgpu::Queue) {
             state: Arc::new(AtomicU8::new(FREE)),
             label: String::new(),
             names: Vec::new(),
+            frame: 0,
+            order: 0,
         })
         .collect();
     if let Ok(mut state) = STATE.lock() {
@@ -122,6 +156,11 @@ pub fn init(device: &wgpu::Device, queue: &wgpu::Queue) {
             begun: 0,
             read: 0,
             dropped: 0,
+            tallies: Vec::new(),
+            between: 0.0,
+            recent: VecDeque::new(),
+            frame: (0, 0),
+            taken_at: FRAME.load(Ordering::Relaxed),
         });
         if asked {
             ENABLED.store(true, Ordering::Relaxed);
@@ -142,6 +181,10 @@ pub fn set_enabled(on: bool) -> bool {
     if on && !enabled() {
         p.views.clear();
         p.current = None;
+        p.tallies.clear();
+        p.between = 0.0;
+        p.recent.clear();
+        p.taken_at = FRAME.load(Ordering::Relaxed);
     }
     ENABLED.store(on, Ordering::Relaxed);
     true
@@ -199,6 +242,65 @@ pub fn note(text: impl FnOnce() -> String) {
     }
 }
 
+/// Starts a frame of views (a VR frame's eyes, window and panel): the GPU's time between two of
+/// them counts as the frame's (`take_means`).
+pub fn next_frame() {
+    FRAME.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Each view's stages' means over the frames begun since the last call (`next_frame`), as log
+/// lines, the tallies begun afresh: a stage's mean counts the frames it did not run in as 0, so
+/// that a view's stages add up to its frame, and the views' to what the GPU spent on them, in
+/// their submissions' order. The last line adds the time between views (empty while not timing).
+pub fn take_means() -> Vec<String> {
+    if !enabled() {
+        return Vec::new();
+    }
+    let Ok(mut state) = STATE.lock() else {
+        return Vec::new();
+    };
+    let Some(p) = state.as_mut() else {
+        return Vec::new();
+    };
+    p.collect();
+    let now = FRAME.load(Ordering::Relaxed);
+    let frames = now.saturating_sub(p.taken_at).max(1);
+    p.taken_at = now;
+    let frames_f = frames as f64;
+    let mut lines = Vec::new();
+    let mut views = Vec::new();
+    let mut sum = 0.0;
+    for (view, t) in p.tallies.drain(..) {
+        if t.timed == 0 {
+            continue;
+        }
+        // Each timed frame stands for the view's untimed ones too.
+        let per = f64::from(t.begun.max(t.timed)) / f64::from(t.timed) / frames_f;
+        let parts: Vec<String> = t
+            .stages
+            .iter()
+            .map(|(name, ms)| format!("{name} {:.3}", ms * per))
+            .collect();
+        lines.push(format!(
+            "GPU means [{view}] ({} of {} timed), ms a frame: {:.3} = {}",
+            t.timed,
+            t.begun,
+            t.total * per,
+            parts.join("; ")
+        ));
+        sum += t.total * per;
+        views.push(format!("{view} {:.3}", t.total * per));
+    }
+    let between = p.between / frames_f;
+    lines.push(format!(
+        "GPU means over {frames} frames: the views {sum:.3} ms a frame ({}), between them {between:.3} (other submissions' work, or the GPU idle), in all {:.3}",
+        views.join(", "),
+        sum + between,
+    ));
+    p.between = 0.0;
+    lines
+}
+
 /// Starts timing the frame `encoder` records, for the view `label`, when a slot is free.
 pub fn begin(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, label: &str) {
     if !enabled() {
@@ -218,6 +320,13 @@ pub fn begin(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, label: &
             p.dropped
         );
     }
+    let frame = FRAME.load(Ordering::Relaxed);
+    if p.frame.0 != frame {
+        p.frame = (frame, 0);
+    }
+    let order = p.frame.1;
+    p.frame.1 = p.frame.1.saturating_add(1);
+    p.tally(label).begun += 1;
     let slot = p.next;
     p.current = (p.slots[slot].state.load(Ordering::Acquire) == FREE).then_some(slot);
     let Some(slot) = p.current else { return };
@@ -225,6 +334,8 @@ pub fn begin(device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, label: &
     s.label.clear();
     s.label.push_str(label);
     s.names.clear();
+    s.frame = frame;
+    s.order = order;
     encoder.write_timestamp(&s.queries, 0);
 }
 
@@ -279,7 +390,23 @@ pub fn submitted() {
     p.next = (slot + 1) % SLOTS;
 }
 
+/// `label`'s tally in `tallies`, made the first time.
+fn tally<'a>(tallies: &'a mut Vec<(String, Tally)>, label: &str) -> &'a mut Tally {
+    let i = match tallies.iter().position(|t| t.0 == label) {
+        Some(i) => i,
+        None => {
+            tallies.push((label.to_owned(), Tally::default()));
+            tallies.len() - 1
+        }
+    };
+    &mut tallies[i].1
+}
+
 impl Profiler {
+    fn tally(&mut self, label: &str) -> &mut Tally {
+        tally(&mut self.tallies, label)
+    }
+
     fn collect(&mut self) {
         for slot in 0..SLOTS {
             if self.slots[slot].state.load(Ordering::Acquire) != MAPPED {
@@ -322,6 +449,30 @@ impl Profiler {
                     None => frame.push((name, t)),
                 }
             }
+            let (first, last) = (stamps[0], stamps[stamps.len() - 1]);
+            let t = tally(&mut self.tallies, &s.label);
+            t.timed += 1;
+            t.total += f64::from(ms(last - first));
+            for &(name, ms) in &frame {
+                match t.stages.iter_mut().find(|f| f.0 == name) {
+                    Some(f) => f.1 += f64::from(ms),
+                    None => t.stages.push((name, f64::from(ms))),
+                }
+            }
+            // The gap to the view before it in its frame, and from the one after, when read back.
+            let at = (s.frame, u16::from(s.order));
+            for &(f, order, start, end) in &self.recent {
+                let order = u16::from(order);
+                if f == at.0 && order + 1 == at.1 && first >= end {
+                    self.between += f64::from(ms(first - end));
+                } else if f == at.0 && at.1 + 1 == order && start >= last {
+                    self.between += f64::from(ms(start - last));
+                }
+            }
+            if self.recent.len() == 32 {
+                self.recent.pop_front();
+            }
+            self.recent.push_back((s.frame, s.order, first, last));
             for (name, t) in frame {
                 let i = match history.stages.iter().position(|h| h.0 == name) {
                     Some(i) => i,

@@ -40,8 +40,19 @@ struct Rt {
     // xyz: where the eyes look, w: the cosine of the sharp zone's half angle (below -1: no
     // foveation).
     fovea: vec4<f32>,
+    // z: 2 for VR's second eye taking the first eye's denoised light (`taken`).
+    mode: vec4<f32>,
 }
 @group(0) @binding(7) var<uniform> rt: Rt;
+// VR's second eye (`rt.mode.z` 2): where the rays took the first eye's light (shadow_rays.wgsl
+// `taken_out`), the first eye's texel (x + 1 in the low 16 bits, y in the high ones), 0 where this
+// eye traced its own; and the first eye's light as its denoiser left it this frame. A surface's
+// diffuse light is the same from either eye: the first pass copies the first eye's there, the
+// second into the other texture the passes write, and neither is filtered again (the passes after
+// leave it be in both), while the texels this eye traced itself filter as before, the copied light
+// around them among their taps.
+@group(0) @binding(8) var taken: texture_2d<u32>;
+@group(0) @binding(9) var first_light: texture_2d<f32>;
 // How many standard deviations of the pixel's noise a neighbour's light may differ by.
 const LIGHT_SIGMA: f32 = 6.0;
 fn luminance(c: vec3<f32>) -> f32 {
@@ -81,6 +92,18 @@ fn sharp_block(p: vec2<i32>) -> bool {
     let size = vec2<i32>(textureDimensions(input));
     let p = vec2<i32>(id.xy);
     if any(p >= size) { return; }
+    if rt.mode.z > 1.5 {
+        let taken_at = textureLoad(taken, p, 0).r;
+        if taken_at != 0u {
+            if params.step.x == 1 {
+                let t = vec2<i32>(i32(taken_at & 0xffffu) - 1, i32(taken_at >> 16u));
+                textureStore(output, p, textureLoad(first_light, t, 0));
+            } else if params.step.x == 2 {
+                textureStore(output, p, textureLoad(input, p, 0));
+            }
+            return;
+        }
+    }
     let centre = textureLoad(input, p, 0);
     let first = params.step.x == 1;
     // Away from VR's sharp zone a 4x4 block of texels shares one ray (shadow_rays.wgsl

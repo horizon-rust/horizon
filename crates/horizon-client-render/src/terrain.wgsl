@@ -2559,6 +2559,12 @@ fn rt_dither(pixel: vec2<f32>) -> f32 {
     let color = sprite(in.uv, in.layer & 0x7fffu) * in.color;
     if (color.a < 0.5 && (in.layer & 0x8000u) == 0u) || faded(in.fade, in.local, dpdx(in.local), dpdy(in.local)) { discard; }
 }
+// RT lighting's cover of the translucent terrain (gfx.rs `draw_cover`): where water or glass lies
+// in front of the prepass's depth, every quad of it whole (no alpha test, no fade), for the rays'
+// mirrors and refraction to look for it only there (shadow_rays_hw.wgsl `hw_reflect`).
+@fragment fn fs_cover() -> @location(0) vec4<f32> {
+    return vec4(1.0);
+}
 // RT lighting's glass (shadow_rays_hw.wgsl `hw_glass`: Remix's translucent material as RTX Remix
 // for Minecraft gives the block atlas): stained glass, panes, plain glass and every translucent
 // block but water. A dielectric of index 1.52, its normal the pack's map (or, without one, drawn
