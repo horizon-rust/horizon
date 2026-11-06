@@ -1263,19 +1263,6 @@ fn lava_fbm(p: vec3<f32>) -> f32 {
     }
     return sum;
 }
-// RT lighting's edge of the world, Remix's distance fade (its `viewDistance` mode 3, function 1,
-// noise scale 20, from 87.5 % of the distance to all of it): past the start the surface gives way
-// to the horizon pixel by pixel, where a world-space noise (20 blocks across) is below how far it
-// is into the fade, instead of vanilla's linear fog; the environment's fog (water, lava,
-// blindness) stays vanilla's.
-fn rt_fade(spherical: f32, cylindrical: f32, pos: vec3<f32>) -> f32 {
-    let end = globals.fog.w;
-    let into = linear_fog(cylindrical, end * 0.875, end);
-    let world = pos + globals.rt_camera.xyz;
-    let noise = lava_noise(vec3(world.x, world.y, world.z) / 20.0);
-    let faded = select(0.0, 1.0, into > 0.0 && noise < into);
-    return max(linear_fog(spherical, globals.fog.x, globals.fog.y), faded);
-}
 // The black body's colour from cooler (0) to hotter (1), linear.
 fn lava_blackbody(x: f32) -> vec3<f32> {
     let deep = vec3(0.45, 0.015, 0.0);
@@ -1293,13 +1280,15 @@ fn lava_heat(p: vec3<f32>) -> f32 {
     let crack = 1.0 - abs(lava_fbm(q * 2.1 + vec3(3.1, 7.7, 0.0)) * 2.0 - 1.0);
     return clamp(0.95 * body + 0.7 * pow(crack, 7.0) - 0.15, 0.0, 1.0);
 }
-fn rt_lava(pos: vec3<f32>, n: vec3<f32>, pixel: vec2<f32>, light: vec2<f32>, spherical: f32,
-    cylindrical: f32) -> vec3<f32> {
-    let world = pos + globals.rt_camera.xyz;
-    let t = globals.rt_water.z;
-    // Triplanar: on the top it drifts on the world's plane, on a side (or a fall) it runs down,
-    // stretched as falling lava streams; a slope blends them by its normal, so no face sees the
-    // top's pattern smeared along it.
+// The lava's look at world `world` on a face of normal `n` (any sign), `t` seconds into the
+// water's clock: rgb the light its hot rock gives off (paper whites), w how much of it is cooled
+// crust (dark basalt, `LAVA_ROCK`, lit as the terrain is). Triplanar: on the top it drifts on the
+// world's plane, on a side (or a fall) it runs down, stretched as falling lava streams; a slope
+// blends them by its normal, so no face sees the top's pattern smeared along it.
+// The one source of the lava's look: the terrain's shader draws it (`rt_lava`), and the rays
+// that meet lava (seen through water or glass, in a mirror: shadow_rays_hw.wgsl `hw_surface`)
+// take this same text (gfx/shadow_rays.rs `LAVA_LOOK`), not the atlas's old sprite.
+fn lava_look(world: vec3<f32>, n: vec3<f32>, t: f32) -> vec4<f32> {
     var w = pow(abs(n), vec3(4.0));
     w /= max(w.x + w.y + w.z, 1e-4);
     var heat = 0.0;
@@ -1315,9 +1304,29 @@ fn rt_lava(pos: vec3<f32>, n: vec3<f32>, pixel: vec2<f32>, light: vec2<f32>, sph
     }
     let crust = 1.0 - smoothstep(0.28, 0.46, heat);
     let glow = lava_blackbody(heat) * (0.15 + LAVA_GLOW * heat * heat * heat) * (1.0 - 0.9 * crust);
-    let rock = rt_material_lit(rt_plain(vec3(0.07, 0.06, 0.055), n), n, pos, pixel, light,
-        spherical, cylindrical);
-    return glow + rock * crust;
+    return vec4(glow, crust);
+}
+// The cooled crust's colour (gamma).
+const LAVA_ROCK: vec3<f32> = vec3(0.07, 0.06, 0.055);
+// End of the lava's look.
+// RT lighting's edge of the world, Remix's distance fade (its `viewDistance` mode 3, function 1,
+// noise scale 20, from 87.5 % of the distance to all of it): past the start the surface gives way
+// to the horizon pixel by pixel, where a world-space noise (20 blocks across) is below how far it
+// is into the fade, instead of vanilla's linear fog; the environment's fog (water, lava,
+// blindness) stays vanilla's.
+fn rt_fade(spherical: f32, cylindrical: f32, pos: vec3<f32>) -> f32 {
+    let end = globals.fog.w;
+    let into = linear_fog(cylindrical, end * 0.875, end);
+    let world = pos + globals.rt_camera.xyz;
+    let noise = lava_noise(vec3(world.x, world.y, world.z) / 20.0);
+    let faded = select(0.0, 1.0, into > 0.0 && noise < into);
+    return max(linear_fog(spherical, globals.fog.x, globals.fog.y), faded);
+}
+fn rt_lava(pos: vec3<f32>, n: vec3<f32>, pixel: vec2<f32>, light: vec2<f32>, spherical: f32,
+    cylindrical: f32) -> vec3<f32> {
+    let look = lava_look(pos + globals.rt_camera.xyz, n, globals.rt_water.z);
+    let rock = rt_material_lit(rt_plain(LAVA_ROCK, n), n, pos, pixel, light, spherical, cylindrical);
+    return look.rgb + rock * look.w;
 }
 fn rt_lava_on(layer: u32) -> bool {
     return globals.rt_mode.x > 0.5 && linear_on() && rt_is_lava(layer);

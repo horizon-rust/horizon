@@ -149,6 +149,13 @@ fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>, focus: bool) -> vec
         // doubled). Told by the distance alone: the quad's corners are not read again.
         if abs(c.t - hw_water_t) < 1e-3 && (SKIP & 512u) == 0u { return vec3(1.0); }
         hw_water_t = c.t;
+        // A ray going down into it from above (a mirror's or a window's, to a pond): the air it
+        // crossed to reach the surface is not water. The surface lets through what Fresnel does
+        // not reflect; `hw_hit` takes the absorption over the length run under it, and what the
+        // eye sees adds what the surface reflects (`hw_water_glint`), as the water's own shader.
+        if !focus && l.y < -0.02 && (SKIP & 8192u) == 0u {
+            return vec3(1.0 - water_fresnel(-l.y));
+        }
         let w = arena_at(base, 5u);
         let tint = vec3(f32(w & 255u), f32((w >> 8u) & 255u), f32((w >> 16u) & 255u)) / 255.0;
         let absorption = WATER_ABSORPTION + WATER_PURE_ABSORPTION + WATER_TINT_ABSORPTION * (1.0 - pow(tint, vec3(2.2)));
@@ -156,7 +163,7 @@ fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>, focus: bool) -> vec
         let depth = c.t * l.y;
         let bent = refract(-l, vec3(0.0, 1.0, 0.0), 1.0 / WATER_INDEX);
         let floor_at = pos + rt.camera.xyz + rt.fraction.xyz;
-        let fresnel = 0.02 + 0.98 * pow(1.0 - l.y, 5.0);
+        let fresnel = water_fresnel(l.y);
         let dimmed = (1.0 - fresnel) * exp(-absorption * depth / max(-bent.y, 0.1));
         // The caustics are the sun's (or the moon's): its rays come parallel from infinity, as
         // `water_caustics` takes them. A light source's ray (a torch, glowing lichen, a lamp in a
@@ -458,11 +465,19 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
         }
     }
     let hit = rayQueryGetCommittedIntersection(&q);
+    // Gone down into water (`hw_tint`): its medium over the length run under the surface.
+    var water = -1.0;
+    if hw_water_t >= 0.0 && l.y < -0.02 && (SKIP & 8192u) == 0u {
+        water = hw_water_t;
+        let end = select(reach, hit.t, hit.kind != RAY_QUERY_INTERSECTION_NONE);
+        through *= exp(-(WATER_ABSORPTION + WATER_PURE_ABSORPTION) * max(end - water, 0.0));
+    }
     if hit.kind == RAY_QUERY_INTERSECTION_NONE {
-        return HwHit(-1.0, vec3(0.0), vec3(0.0), through);
+        return HwHit(-1.0, vec3(0.0), vec3(0.0), through, false, water);
     }
     let at = pos + l * hit.t;
     let base = hw_quad(hit, false);
+    var lava = false;
     // The triangle's face from the quad's corners (the instances are only moved, not turned).
     var n = -l;
     var albedo = vec3(-1.0);
@@ -483,6 +498,7 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
         let block = f32((arena_at(base, 4u) >> 24u) & 255u) / 16.0;
         let steps = max(15.0 - block, 0.0);
         hw_level = select(vec3(0.0), HW_BLOCK_LIGHT / ((1.0 + steps) * (1.0 + steps)), block > 0.0);
+        lava = hw_is_lava(arena_at(base, 4u) & 0x7fffu);
         if texel.a >= 0.0 {
             let w = arena_at(base, 5u);
             let tint = vec3(f32(w & 255u), f32((w >> 8u) & 255u), f32((w >> 16u) & 255u)) / 255.0;
@@ -494,7 +510,36 @@ fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
         let cell = vec3<i32>(floor(at - n * 0.01 + rt.camera.xyz + rt.fraction.xyz));
         albedo = max(map_albedo(cell), vec3(0.0));
     }
-    return HwHit(hit.t, n, albedo, through);
+    return HwHit(hit.t, n, albedo, through, lava, water);
+}
+// Whether sprite layer `layer` is the lava's, still or flowing (`rt.water.w`, packed as
+// terrain.wgsl `rt_is_lava` reads it).
+fn hw_is_lava(layer: u32) -> bool {
+    let packed = rt.water.w;
+    if packed < 0.0 || (SKIP & 8192u) != 0u { return false; }
+    let l = f32(layer);
+    let flow = floor(packed / 4096.0);
+    return l == packed - flow * 4096.0 || l == flow;
+}
+// What the eye sees of the surface hit `h` (`hw_hit`) at camera-relative `seen` under `light`:
+// its colour in that light, or where it is lava, the lava's own look (terrain.wgsl `lava_look`,
+// the text the terrain draws it with): its hot rock's glow and its crust lit. Every ray whose hit
+// the eye sees (a mirror's, the refraction through water and glass) takes it from here, so lava
+// is the same seen directly, through water or glass, or reflected.
+fn hw_surface(h: HwHit, seen: vec3<f32>, light: vec3<f32>) -> vec3<f32> {
+    if !h.lava { return h.albedo * light; }
+    let look = lava_look(seen + rt.camera.xyz + rt.fraction.xyz, h.normal, rt.water.z);
+    return look.rgb + pow(LAVA_ROCK, vec3(2.2)) * light * look.w;
+}
+// What the water's top a ray `l` went down through (`hw_hit`'s `water`) reflects toward it: the
+// sky, by Fresnel's share, as the water's shader shows it.
+fn hw_water_glint(h: HwHit, l: vec3<f32>) -> vec3<f32> {
+    if h.water < 0.0 { return vec3(0.0); }
+    return water_fresnel(-l.y) * sky_at(reflect(l, vec3(0.0, 1.0, 0.0)));
+}
+// Water's reflectance (Schlick's, F0 0.02) at `cosine` to its normal.
+fn water_fresnel(cosine: f32) -> f32 {
+    return 0.02 + 0.98 * pow(1.0 - clamp(cosine, 0.0, 1.0), 5.0);
 }
 // The light sources' light on the surface `hw_hit` last met by its block light level (terrain.wgsl
 // `BLOCK_LIGHT` over the square of the steps from the light), which what the primary surface
@@ -624,7 +669,7 @@ fn hw_mirror(start: vec3<f32>, r: vec3<f32>) -> vec4<f32> {
     if h.t < 0.0 { return vec4(0.0); }
     let seen = start + r * h.t;
     let light = sun_on(seen + h.normal * 0.02, h.normal) + hw_seen_light(seen, h.normal);
-    return vec4(h.through * h.albedo * light, 1.0);
+    return vec4(h.through * hw_surface(h, seen, light) + hw_water_glint(h, r), 1.0);
 }
 // The rain's ripples (slopes) on the water's top at world `world`, `t` blocks from the camera,
 // where the rain falls on it (terrain.wgsl `rt_rain_ripples`).

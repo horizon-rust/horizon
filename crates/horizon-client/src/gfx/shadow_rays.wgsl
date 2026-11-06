@@ -560,11 +560,13 @@ override DEBUG: u32 = 0u;
 // instead of in turns (`trace`), to measure what the turns save and what they change; 64 the far
 // field (`far_light`, `far_sky`); 128 the translucent candidates' tint (glass, water, ice pass the
 // light untinted: what their shading costs against the force-opaque floor); 256 leaves the
-// denoiser's anti-lag out (`accumulate`), to see what it changes; 32768 leaves a dark
-// history to climb by itself when the light comes on (`accumulate`), as it did before; 512 the
-// water's fixes of the camera under it (the sun pass's rays through water and glass traced again
-// here with their tint and caustics, the surface's backward face tinting a second time, the
-// caustics' short history in `accumulate`), to compare with before. (32, VR's second eye's own
+// denoiser's anti-lag out (`accumulate`), to see what it changes; 32768 leaves a dark history to
+// climb by itself when the light comes on (`accumulate`), as it did before; 512 the water's fixes
+// of the camera under it (the sun pass's rays through water and glass traced again here with their
+// tint and caustics, the surface's backward face tinting a second time, the caustics' short history
+// in `accumulate`), to compare with before; 8192 the rays' hits as before the one look (lava met by
+// a mirror or seen through water or glass in its atlas sprite, a ray down into water absorbed over
+// the air before it: shadow_rays_hw.wgsl `hw_surface`). (32, VR's second eye's own
 // light, never reaches the kernel: shadow_rays.rs `set_skip`.)
 override SKIP: u32 = 0u;
 // `HORIZON_RT_SUN_CENTRE=1`: RT lighting traces the ray toward the sun's centre too, which it
@@ -821,13 +823,17 @@ const SKY_RAYS: i32 = 2;
 // brightest light source. Remix path traces up to 4 bounces and ends the paths in its caches.
 const BOUNCE_BUDGET: i32 = 24;
 // A ray's hit: where (its parameter, below 0 none), the face's normal, the surface's colour in
-// light, and what the translucent surfaces on the way let through (the hardware rays'
-// `hw_hit`; the voxel grid's `cast_ray` gives its block instead).
+// light, what the translucent surfaces on the way let through (the hardware rays'
+// `hw_hit`; the voxel grid's `cast_ray` gives its block instead), whether the surface is lava
+// (what the eye sees of it is its own look, not its colour: shadow_rays_hw.wgsl `hw_surface`),
+// and where the ray went down into water (its parameter, below 0 not).
 struct HwHit {
     t: f32,
     normal: vec3<f32>,
     albedo: vec3<f32>,
     through: vec3<f32>,
+    lava: bool,
+    water: f32,
 }
 // The map colour of world block `cell`, in light: the voxel grid's colour of a surface (none: -1).
 fn map_albedo(cell: vec3<i32>) -> vec3<f32> {
