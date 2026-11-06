@@ -1660,7 +1660,10 @@ fn trace(p: vec2<i32>, texel: vec2<i32>) -> Traced {
             none.blocks, none.direct, none.sun, none.reservoir);
     }
     var sun = 1.0;
-    if shadows {
+    // The sun's shadows alone (without RT lighting, or their debug view). RT lighting's sun is
+    // `sun_through` below, a ray toward a point of the disc: this ray toward its centre went
+    // unused there, traced for nothing unless the compiler dropped it (a ray query's loop).
+    if shadows && (!lit_mode || DEBUG == 5u) {
         let v = sun_visibility(lifted, n);
         if DEBUG == 5u { return Traced(vec4(v), none.blocks, none.direct, none.sun, none.reservoir); }
         sun = mix(1.0, mix(far_facing, v * beyond, edge), rt.light.w);
