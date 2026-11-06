@@ -144,13 +144,11 @@ fn hw_tint(c: RayIntersection, pos: vec3<f32>, l: vec3<f32>, focus: bool) -> vec
     let layer = f32(arena_at(base, 4u) & 0x7fffu);
     if layer == rt.water.x || layer == rt.water.y {
         // The top's backward face (mesher/fluid.rs, what shows the surface from under it) lies
-        // on the top itself: a ray up crosses both, and the surface dims and focuses its light
-        // once, not twice (the caustics were squared, the depth's absorption doubled).
-        let q0 = hw_position(base);
-        let up = cross(hw_position(base + 1u) - q0, hw_position(base + 2u) - q0);
-        if up.y < 0.0 && up.y * up.y > 0.25 * dot(up, up) && (SKIP & 512u) == 0u {
-            return vec3(1.0);
-        }
+        // on the top itself: a ray up crosses both at the same distance, and the surface dims and
+        // focuses its light once, not twice (the caustics were squared, the depth's absorption
+        // doubled). Told by the distance alone: the quad's corners are not read again.
+        if abs(c.t - hw_water_t) < 1e-3 && (SKIP & 512u) == 0u { return vec3(1.0); }
+        hw_water_t = c.t;
         let w = arena_at(base, 5u);
         let tint = vec3(f32(w & 255u), f32((w >> 8u) & 255u), f32((w >> 16u) & 255u)) / 255.0;
         let absorption = WATER_ABSORPTION + WATER_PURE_ABSORPTION + WATER_TINT_ABSORPTION * (1.0 - pow(tint, vec3(2.2)));
@@ -235,6 +233,8 @@ fn hw_glass(c: RayIntersection, base: u32) -> vec4<f32> {
 // The caustics of the first water a shadow ray crosses (`hw_tint`), worked out once the ray is
 // known to reach the light: the floor point (x, z), the depth, the pixel's footprint; the sea.
 var<private> hw_caustic_on: bool;
+// The distance along the ray of the last water quad it crossed (`hw_tint`), -1 none yet.
+var<private> hw_water_t: f32 = -1.0;
 var<private> hw_caustic: vec4<f32>;
 var<private> hw_caustic_sea: f32;
 fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
@@ -243,6 +243,7 @@ fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> {
     rayQueryInitialize(&q, terrain, RayDesc(0x0u, 0xffu, 0.0, reach, pos + rt.hw_offset.xyz, l));
     var through = vec3(1.0);
     hw_caustic_on = false;
+    hw_water_t = -1.0;
     while rayQueryProceed(&q) {
         let c = rayQueryGetCandidateIntersection(&q);
         if c.geometry_index == instances[c.instance_custom_data].at.w {
@@ -442,6 +443,7 @@ const WATER_PURE_ABSORPTION: vec3<f32> = vec3(0.30, 0.045, 0.012);
 fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
     hw_level = vec3(0.0);
     var q: ray_query;
+    hw_water_t = -1.0;
     rayQueryInitialize(&q, terrain, RayDesc(0x0u, NO_CLOUDS, 0.0, reach, pos + rt.hw_offset.xyz, l));
     var through = vec3(1.0);
     while rayQueryProceed(&q) {
