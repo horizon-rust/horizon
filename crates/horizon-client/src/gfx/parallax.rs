@@ -44,11 +44,38 @@ const TERRAIN_TEXTURES: u32 = 20;
 
 const PREFIX: &str = "horizon_terrain_";
 
+/// Where the relief's own shadow fades out by default, in blocks (the march's is 24).
+pub const SHADOW_DISTANCE: f64 = 36.0;
+/// `HORIZON_RT_SKIP`'s bit for the shadow's old distance, the march's own.
+const SKIP_SHADOW_DISTANCE: u32 = 65536;
+
+/// The shadow's distance: `HORIZON_POM_SHADOW_DISTANCE` when set, the march's 24 under
+/// `HORIZON_RT_SKIP` bit 65536, [`SHADOW_DISTANCE`] otherwise.
+fn shadow_distance(distance: Option<&str>, skip: Option<&str>) -> f64 {
+    if let Some(d) = distance.and_then(|v| v.trim().parse::<f64>().ok())
+        && d.is_finite()
+        && d >= 0.0
+    {
+        return d;
+    }
+    let skip = skip.and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(0);
+    if skip & SKIP_SHADOW_DISTANCE != 0 {
+        24.0
+    } else {
+        SHADOW_DISTANCE
+    }
+}
+
 /// The entries, after the prefixed terrain and the normal map declarations.
 const ENTRIES: &str = r"
 // How deep the relief goes (1: LabPBR's quarter block) and where it fades out, in blocks.
 override PARALLAX_DEPTH: f32 = 1.0;
 override PARALLAX_DISTANCE: f32 = 24.0;
+// Where the relief's own shadow (`parallax_self_shadow`) fades out, in blocks: past the march's
+// distance it is cast on the flat face from the height map alone, a few texture reads where the
+// march costs up to 48. [`SHADOW_DISTANCE`] by default, `HORIZON_POM_SHADOW_DISTANCE` (or the
+// march's 24 with `HORIZON_RT_SKIP` bit 65536) to compare.
+override PARALLAX_SHADOW_DISTANCE: f32 = 36.0;
 // How much darker the bottom of the relief is (0 leaves occlusion to the map and the light).
 override PARALLAX_CAVITY: f32 = 0.25;
 // At most this many texels crossed per fragment.
@@ -321,7 +348,12 @@ fn parallax_surface(in: ParallaxOut, march: bool) -> ParallaxSurface {
     let lod = log2(max(max(length(dx), length(dy)) * slot.size, 1e-6));
     let distance = length(in.position);
     let near = 1.0 - smoothstep(PARALLAX_DISTANCE * 0.75, PARALLAX_DISTANCE, distance);
-    let strength = select(0.0, near * (1.0 - smoothstep(-0.5, 0.5, lod)), march);
+    let fine = 1.0 - smoothstep(-0.5, 0.5, lod);
+    let strength = select(0.0, near * fine, march);
+    // The shadow reaches further than the march, never less far.
+    let shadow_distance = max(PARALLAX_SHADOW_DISTANCE, PARALLAX_DISTANCE);
+    let shadow_near = 1.0 - smoothstep(shadow_distance * 0.75, shadow_distance, distance);
+    let shadow_strength = select(0.0, shadow_near * fine, march);
     let view = in.position / max(distance, 1e-6);
     var hit: ParallaxHit;
     var relief: f32;
@@ -344,11 +376,19 @@ fn parallax_surface(in: ParallaxOut, march: bool) -> ParallaxSurface {
     }
     let world = normalize(hit.normal.x * tu + hit.normal.y * tv + hit.normal.z * n);
     let ao = hit.ao * (1.0 - PARALLAX_CAVITY * hit.depth);
-    if strength > 0.001 {
+    // Only the rays' sun (terrain.wgsl `rt_shade`) takes the shadow.
+    if shadow_strength > 0.001 && horizon_terrain_globals.rt_mode.x > 0.5 {
+        // From where the view landed, at its share of the relief's depth (the texel's own depth
+        // where the march did not run), over the map at the shadow's strength: inside the
+        // march's distance the same relief the view sees, past it the map on the flat face.
+        var landed_depth = hit.depth;
+        if strength <= 0.001 {
+            landed_depth = 1.0 - parallax_texel(slot, floor(in.uv * slot.size), 0).a;
+        }
         let l = horizon_terrain_globals.rt_light.xyz;
-        let deepest = 0.25 * PARALLAX_DEPTH * strength;
-        horizon_terrain_rt_relief_sun = parallax_self_shadow(slot, hit.uv, hit.depth * deepest,
-            vec3(dot(l, tu), dot(l, tv), dot(l, n)), strength);
+        let deepest = 0.25 * PARALLAX_DEPTH * shadow_strength;
+        horizon_terrain_rt_relief_sun = parallax_self_shadow(slot, hit.uv,
+            landed_depth * deepest, vec3(dot(l, tu), dot(l, tv), dot(l, n)), shadow_strength);
     }
     // The sprite where the ray landed, when it moved.
     var landed = texel;
@@ -705,7 +745,13 @@ impl Parallax {
             shape,
             "Parallax terrain",
             module,
-            Vec::new(),
+            vec![(
+                "PARALLAX_SHADOW_DISTANCE",
+                shadow_distance(
+                    std::env::var("HORIZON_POM_SHADOW_DISTANCE").ok().as_deref(),
+                    std::env::var("HORIZON_RT_SKIP").ok().as_deref(),
+                ),
+            )],
             (GROUP, &layout),
             ["parallax_vs", "parallax_vs_flat"],
             ["parallax_fs_solid", "parallax_fs_translucent"],
@@ -760,6 +806,15 @@ mod tests {
 
     /// Each map kind's index and arrays and the thin layers take consecutive bindings of the
     /// group, as `Parallax::new` lays them out.
+    #[test]
+    fn the_shadow_distance_takes_the_variable_then_the_skip_bit() {
+        assert_eq!(shadow_distance(None, None), SHADOW_DISTANCE);
+        assert_eq!(shadow_distance(Some("48"), Some("65536")), 48.0);
+        assert_eq!(shadow_distance(Some("x"), Some("65536")), 24.0);
+        assert_eq!(shadow_distance(None, Some("1024")), SHADOW_DISTANCE);
+        assert_eq!(shadow_distance(Some("-1"), None), SHADOW_DISTANCE);
+    }
+
     #[test]
     fn the_maps_and_the_thin_layers_take_consecutive_bindings() {
         for arrays in [[0, 0, 0], [2, 0, 1], [3, 2, 5]] {
