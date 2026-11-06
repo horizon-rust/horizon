@@ -238,7 +238,9 @@ const HARDWARE: &str = concat!(
 );
 const NO_HARDWARE: &str = "
 const HW: bool = false;
+const GI_HW_VISIBILITY: bool = false;
 fn hw_light(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> vec3<f32> { return vec3(-1.0); }
+fn hw_visible(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> bool { return true; }
 fn hw_hit(pos: vec3<f32>, l: vec3<f32>, reach: f32) -> HwHit {
     return HwHit(-1.0, vec3(0.0), vec3(0.0), vec3(1.0));
 }
@@ -255,7 +257,10 @@ pub fn source(hardware: bool, split: u32) -> String {
             HARDWARE.to_string()
         };
         format!(
-            "enable wgpu_ray_query;\nconst SPRITE_SPLIT: u32 = {split}u;\n{}{hardware}",
+            "enable wgpu_ray_query;\nconst SPRITE_SPLIT: u32 = {split}u;\n\
+             const FIRST_HIT: u32 = {}u;\nconst GI_HW_VISIBILITY: bool = {};\n{}{hardware}",
+            first_hit_flag(),
+            !gi_dda(),
             include_str!("shadow_rays.wgsl")
         )
     } else {
@@ -274,7 +279,30 @@ pub fn force_opaque() -> bool {
 
 /// `text`'s ray queries with the force-opaque ray flag (`0x1`) in place of none (`0x0`).
 pub fn with_forced_opaque(text: &str) -> String {
-    text.replace("RayDesc(0x0u,", "RayDesc(0x1u,")
+    text.replace("RayDesc(0x0u", "RayDesc(0x1u")
+}
+
+/// The ray flag the hardware shadow rays take (`FIRST_HIT` in shadow_rays_hw.wgsl and
+/// froxels_hw.wgsl): terminate on the first hit (`0x4`), so the first opaque triangle a shadow ray
+/// meets ends its search rather than the nearest one being looked for. `HORIZON_RT_FIRST_HIT=0`
+/// traces them as before (`0x0`).
+pub fn first_hit_flag() -> u32 {
+    static FLAG: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| {
+        if std::env::var("HORIZON_RT_FIRST_HIT").is_ok_and(|v| v == "0") {
+            0
+        } else {
+            4
+        }
+    })
+}
+
+/// `HORIZON_RT_GI_DDA=1`: ReSTIR GI's visibility ray toward a reused sample goes through the voxel
+/// grid, as before, rather than against the hardware's triangles (shadow_rays_hw.wgsl
+/// `hw_visible`) that the sample was found on.
+fn gi_dda() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("HORIZON_RT_GI_DDA").is_ok_and(|v| v == "1"))
 }
 
 /// RT lighting's radiance cache's cells (a power of two).
@@ -1434,15 +1462,20 @@ mod tests {
 
     #[test]
     fn the_forced_opaque_flag_reaches_every_hardware_ray() {
-        // Every ray query of the hybrid and of the froxels spells its flags `RayDesc(0x0u,`, so
-        // that `HORIZON_RT_FORCE_OPAQUE` turns them all.
+        // Every ray query of the hybrid and of the froxels spells its flags from `RayDesc(0x0u`
+        // (a shadow ray's `| FIRST_HIT` after it), so that `HORIZON_RT_FORCE_OPAQUE` turns them all.
         for text in [super::HARDWARE, include_str!("froxels_hw.wgsl")] {
             let rays = text.matches("RayDesc(").count();
             assert!(rays > 0);
-            assert_eq!(text.matches("RayDesc(0x0u,").count(), rays);
+            assert_eq!(text.matches("RayDesc(0x0u").count(), rays);
             let forced = super::with_forced_opaque(text);
-            assert_eq!(forced.matches("RayDesc(0x1u,").count(), rays);
-            assert!(!forced.contains("RayDesc(0x0u,"));
+            assert_eq!(forced.matches("RayDesc(0x1u").count(), rays);
+            assert!(!forced.contains("RayDesc(0x0u"));
+        }
+        // The shadow rays (the sun's, the light sources', the froxels', GI's visibility) end on
+        // their first hit; the rays that look for what they meet don't.
+        for text in [super::HARDWARE, include_str!("froxels_hw.wgsl")] {
+            assert!(text.contains("RayDesc(0x0u | FIRST_HIT"));
         }
     }
 

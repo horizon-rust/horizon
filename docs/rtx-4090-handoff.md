@@ -132,14 +132,26 @@ the first fake-runtime runs used 3132x3016). PR #2 (`claude/project-thread-tb0ay
   clocks locked and logged.
 - **The second eye's denoiser** (0.53 to 0.63 ms) filters only what that eye traced itself: where it took the first
   eye's light, it copies the first eye's denoised light (`HORIZON_RT_SHARE_DENOISED=0` for the old, docs/raytracing.md
-  item 10). Not yet measured.
+  item 10). Measured on 109a15996: that denoiser 0.59 to 0.25 ms.
 - **The grading and the ACES curve in one pass** when nothing reads the graded light after (no HDR output,
   screenshot or video): one full-size float target written and read less an eye; the stages `grading` and
-  `tone curve` become `grading and tone curve (ACES)` (`HORIZON_GRADE_FUSED=0` for the old). Not yet measured.
+  `tone curve` become `grading and tone curve (ACES)` (`HORIZON_GRADE_FUSED=0` for the old). Measured on 109a15996:
+  0.168 to 0.062 ms an eye in VR.
 - **The mirrors' search ray only where water or glass lies in front** (docs/raytracing.md item 11): a cover of the
   translucent terrain over the rays' prepass, and the kernel skips the camera ray that looked for water or glass
   elsewhere (`HORIZON_RT_PSR_COVER=0` for the old; `HORIZON_RT_SKIP=8` drops the mirrors whole, the upper bound).
-  Not yet measured.
+  Measured on 109a15996, a view without water: the first eye's trace 0.09 ms less, the second's 0.05, the cover
+  0.05 ms (for both eyes).
+- **Measured on 109a15996** (VR 4400x3520, fake runtime without captures, 6000, clear, GPU unlocked at 2880 MHz, ten
+  runs back to back): **8.96 ms a frame** (eye 1 5.88, eye 2 2.98), under the 11.1 of 90 Hz. Without VRS 11.36. The
+  first eye's largest stages: the world's raster 1.17, both eyes' rays' prepass 1.02, the trace 0.76 (ReSTIR GI 0.27
+  of it, `HORIZON_RT_SKIP=2`; the sun, the light sources, the mirrors and the far field in the noise), the denoiser
+  0.6, structures 0.58, TAA 0.32. Run to run noise about 0.3 ms; the first run of a series is the slowest. The
+  per-stage table is `pr2-item0-109a.txt` in the project files.
+- **The TAA's copy back only when something draws over the scene** (docs/raytracing.md item 12,
+  `HORIZON_TAA_BLIT=1` for the old), **ReSTIR GI's visibility ray with hardware rays** (item 13,
+  `HORIZON_RT_GI_DDA=1`), **shadow rays ending on their first hit** (item 14, `HORIZON_RT_FIRST_HIT=0`). Not yet
+  measured.
 - **Ideas weighed and left:** the second eye skipping the exposure meter (the grading's local tone mapping reads the
   meter's chain, level 2, so the eye needs its own); a conservative depth reuse across the TAA jitter (holes through
   cutout gaps); the TAA's blit folded into its resolve (the hand and the rain draw over the resolved scene, so the

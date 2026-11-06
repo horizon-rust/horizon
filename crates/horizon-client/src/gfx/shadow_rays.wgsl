@@ -1073,7 +1073,16 @@ fn restir_gi(pos: vec3<f32>, n: vec3<f32>, texel: vec2<i32>, last_at: vec2<i32>,
         let to = chosen.at - pos;
         let d = length(to);
         let reach = select(d - 0.05, 1e30, d > 4000.0);
-        if ray(pos, to / d, SKY_BUDGET, reach) < 0.5 {
+        // With hardware rays against the triangles the sample was found on (`hw_visible`), else
+        // (and with `HORIZON_RT_GI_DDA=1`) through the voxel grid, a long cave's ray taken as
+        // stopped once its budget is spent.
+        var visible = true;
+        if HW && GI_HW_VISIBILITY {
+            visible = hw_visible(pos, to / d, min(reach, 4096.0));
+        } else {
+            visible = ray(pos, to / d, SKY_BUDGET, reach) >= 0.5;
+        }
+        if !visible {
             chosen = own;
             aim = gi_target(own, pos, n);
             weight = select(0.0, 3.14159265 * luminance(own.light) / aim, aim > 0.0);

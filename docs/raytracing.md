@@ -626,15 +626,33 @@ wind):
    copies the first eye's light as its five passes left it on the first pass, into the other texture they write on
    the second, and leaves those texels be on the three after. Only what the second eye traced itself is filtered,
    the copied light among its taps. A surface's diffuse light being the same from either eye, both eyes then show the
-   same denoised light; before, the second eye filtered the taken light again (0.53 to 0.63 ms of its 3.2 to 3.7 at
-   4400x3520 on the RTX 4090).
+   same denoised light; before, the second eye filtered the taken light again. Its denoiser 0.59 to 0.25 ms at
+   4400x3520 on the RTX 4090 (109a15996).
 11. **The mirrors and the refraction look for water or glass only where the raster finds some** (gfx.rs `draw_cover`,
    shadow_rays_hw.wgsl `psr_covered`, `HORIZON_RT_PSR_COVER=0` for the old): each texel of the sharp zone, and each 2x2
    quad of the periphery, traced a ray from the camera to its surface to find the water or glass before it, a primary
    ray over the whole structure, though most of a view has none. After the rays' prepass the translucent terrain's
    draws (every quad whole, back faces culled as the world draws them) are drawn into a cover of the prepass's size
    (one pass for both eyes in VR), tested against its depth; where the cover and its neighbours on the quad's side are
-   empty, the kernel skips that ray (a puddle still reflects). The GPU stage `rays: translucent cover` times it.
+   empty, the kernel skips that ray (a puddle still reflects). The GPU stage `rays: translucent cover` times it:
+   0.05 ms for both eyes, against 0.09 ms of the first eye's trace and 0.05 of the second's in a view without water
+   (109a15996).
+12. **The TAA's resolved frame goes back over the scene only when something draws over it** (taa.rs
+   `Inputs::copy_back`, `HORIZON_TAA_BLIT=1` for the old): the resolve writes the next history, which a blit copied
+   back over the scene for what reads it after. Before the tone mapping only the rain, the heat haze, a pack, the
+   hand, the glowing outline, the screen effects and the debug crosshair draw over it, and HDR output without the
+   grading reads it: with none of them the tone mapping reads the history itself (tonemap.rs `run`'s `source`), one
+   full-size write of half floats an eye less (VR's eyes being 15 million pixels each, that write is the blit's cost
+   whatever the shading rate).
+13. **ReSTIR GI's visibility ray with hardware rays** (shadow_rays_hw.wgsl `hw_visible`, `HORIZON_RT_GI_DDA=1` for
+   the old): a sample reused from the last frame or a neighbour is kept only if the pixel sees it, a ray that went
+   through the voxel grid (24 bricks of budget, a long cave's taken as stopped) though the sample was found on the
+   hardware's triangles. It goes against those now, translucent surfaces letting it through, cutouts alpha-tested,
+   ended by the first opaque hit. ReSTIR GI was 0.27 ms of the first eye's 0.76 ms trace at 4400x3520
+   (`HORIZON_RT_SKIP=2`, 109a15996).
+14. **Shadow rays end on their first hit** (`FIRST_HIT`, the ray flag `0x4`; `HORIZON_RT_FIRST_HIT=0` for the old): the
+   sun's, the light sources', the froxels' and GI's visibility rays let the hardware commit the first opaque triangle
+   they meet and stop, where it went on looking for a nearer one no shadow needs. What they return is the same.
 
 **Kept, though measured:** the second bounce on a radiance cache miss (3 ms of 12 in the RTX Demo's interior, which
 loses 1 % of its light without it) and the reuse's visibility ray (1.3 ms; without it a neighbour's sample leaks
