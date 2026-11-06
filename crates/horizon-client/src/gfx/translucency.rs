@@ -49,14 +49,20 @@ impl SortState {
 
     /// Large tiles cannot use the section viewpoint shortcut: the camera may
     /// cross a quad's plane while remaining on the same side of the first 16³.
+    /// They sort again once the camera's block has moved `step` blocks or more on
+    /// some axis since the last sort (1: at every block crossed).
     pub fn update_lod<'a>(
         &mut self,
         camera: [f64; 3],
         origin: [i32; 3],
+        step: i32,
         sorter: &'a mut Sorter,
     ) -> Option<&'a [u32]> {
         let block = camera.map(|v| v.floor() as i32);
-        if self.last.is_some_and(|(last, _)| last == block) {
+        if self
+            .last
+            .is_some_and(|(last, _)| (0..3).all(|i| (block[i] - last[i]).abs() < step))
+        {
             return None;
         }
         self.last = Some((block, [0; 3]));
@@ -136,25 +142,49 @@ mod tests {
         );
     }
     #[test]
+    fn a_far_tile_sorts_again_only_after_its_step() {
+        let mut state = SortState::new(vec![[32.0, 0.0, 0.0], [96.0, 0.0, 0.0]]);
+        let mut sorter = Sorter::default();
+        assert!(state.update_lod([0.5; 3], [0; 3], 8, &mut sorter).is_some());
+        // Seven blocks on each axis: not yet; eight on one: again, counted from there.
+        assert!(state.update_lod([7.5; 3], [0; 3], 8, &mut sorter).is_none());
+        assert!(
+            state
+                .update_lod([8.5, 0.5, 0.5], [0; 3], 8, &mut sorter)
+                .is_some()
+        );
+        assert!(
+            state
+                .update_lod([1.5, 0.5, 0.5], [0; 3], 8, &mut sorter)
+                .is_none()
+        );
+        assert!(
+            state
+                .update_lod([0.5, 0.5, 0.5], [0; 3], 8, &mut sorter)
+                .is_some()
+        );
+    }
+
+    #[test]
     fn large_tiles_resort_inside_the_same_section_viewpoint() {
         let mut state = SortState::new(vec![[32.0, 0.0, 0.0], [96.0, 0.0, 0.0]]);
         let mut sorter = Sorter::default();
         assert_eq!(
             state
-                .update_lod([48.0, 20.0, 20.0], [0; 3], &mut sorter)
+                .update_lod([48.0, 20.0, 20.0], [0; 3], 1, &mut sorter)
                 .unwrap()[0],
             4
         );
         assert!(
             state
-                .update_lod([48.5, 20.0, 20.0], [0; 3], &mut sorter)
+                .update_lod([48.5, 20.0, 20.0], [0; 3], 1, &mut sorter)
                 .is_none()
         );
         // Both views have positive x/y/z signs relative to the first section,
         // so the section-sized shortcut would incorrectly keep the old order.
         assert_eq!(
             state
-                .update_lod([80.0, 20.0, 20.0], [0; 3], &mut sorter)
+                .update_lod([80.0, 20.0, 20.0], [0; 3], 1, &mut sorter)
                 .unwrap()[0],
             0
         );

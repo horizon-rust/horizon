@@ -8,6 +8,40 @@ use crate::{
 use glam::{DVec3, Vec3};
 use std::time::{Duration, Instant};
 
+/// An environment switch read once: `on` unless `name` is set to `0` (or, for `off` defaults,
+/// on only when it is `1`).
+fn env_switch(name: &str, default: bool) -> bool {
+    match std::env::var(name).as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => default,
+    }
+}
+
+/// `HORIZON_LOD_DRAW=0`: the distant tiles left out of every draw (still meshed and uploaded),
+/// to measure what they cost the frame, GPU and CPU, against the same flight with them.
+pub(super) fn draw_tiles() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| env_switch("HORIZON_LOD_DRAW", true))
+}
+
+/// `HORIZON_LOD_RESORT=1`: a distant tile's water sorted again only once the camera has moved a
+/// share of its distance to the tile (`resort_step`), not at each block crossed.
+pub(super) fn resort_by_distance() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| env_switch("HORIZON_LOD_RESORT", false))
+}
+
+/// How far (in blocks, on any axis) the camera moves before a tile `distance` blocks away
+/// (`Bounds::visible`'s nearest point) sorts its water again under `HORIZON_LOD_RESORT=1`: a
+/// 64th of the distance, at least a block. Two quad centres' order seen from the camera turns
+/// only where it crosses the plane halfway between them; from 64 times their spread away, a
+/// step of a 64th turns the line of sight by under a degree, and most of a far tile's water lies
+/// in one plane, where no order shows at all.
+pub(super) fn resort_step(distance: f64) -> i32 {
+    ((distance / 64.0) as i32).max(1)
+}
+
 /// How long a tile takes to fade in, and the tiles it replaces to fade out: the two draw
 /// opposite pixels of a dither pattern (`terrain.wgsl`'s `faded_out`), so detail changing
 /// with distance blends instead of popping, and each pixel still shows one opaque surface
