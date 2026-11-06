@@ -10,6 +10,7 @@ use horizon_client::{
     mobs::{
         Mob, MobWorld, Species,
         data::{self, MobData},
+        finalize::{self, Ctx, FinalizeLevel, Group, Reason, SpawnData},
         seen_grid::SeenGrid,
         spawn_rules::{Dimension, SpawnLevel},
         spawn_selection::{
@@ -620,6 +621,155 @@ impl horizon_client::mobs::spawner::SpawnerLevel for GameLevel<'_, '_> {
         mobs + pending
     }
 }
+/// The live level view used by the shared vanilla finalizer. Entity ids are
+/// allocated before finalization: school leaders and jockey links keep them.
+struct FinalizeRuntime<'s, 'g, 'a> {
+    level: &'s GameLevel<'g, 'a>,
+    pending: &'s [Mob],
+    rides: &'s mut Vec<(u32, u32)>,
+    next_id: &'s mut u32,
+}
+impl FinalizeLevel for FinalizeRuntime<'_, '_, '_> {
+    fn biome(&self, p: [i32; 3]) -> String {
+        self.level
+            .zoomed_biome(p[0], p[1], p[2])
+            .map_or_else(String::new, |b| b.name.clone())
+    }
+    fn biome_tag(&self, tag: &str, p: [i32; 3]) -> bool {
+        SpawnLevel::biome_tag(self.level, tag, p[0], p[1], p[2])
+    }
+    fn structures_with_piece_at(&self, p: [i32; 3]) -> Vec<String> {
+        self.level
+            .game
+            .structures_reaching_where(p, &|_| true)
+            .into_iter()
+            .filter_map(|(id, in_piece)| in_piece.then_some(id))
+            .collect()
+    }
+    fn moon_phase(&self, _: [i32; 3]) -> usize {
+        self.level
+            .game
+            .world
+            .day_time
+            .div_euclid(24000)
+            .rem_euclid(8) as usize
+    }
+    fn spawning_monsters(&self) -> bool {
+        !self.level.peaceful() && self.level.game.ui.rules.bool("spawn_monsters")
+    }
+    fn no_collision(&self, bounds: Aabb) -> bool {
+        NaturalLevel::no_collision(self.level, bounds)
+    }
+    fn free_chicken(&self, bounds: Aabb) -> Option<u32> {
+        self.level
+            .game
+            .mobs
+            .iter()
+            .chain(self.pending)
+            .find(|m| {
+                m.species() == Species::Chicken
+                    && m.alive()
+                    && !m.removed
+                    && m.extra.rider.is_none()
+                    && m.bounds().intersects(bounds)
+                    && !self.rides.iter().any(|&(chicken, _)| chicken == m.id)
+            })
+            .map(|m| m.id)
+    }
+    fn ride_chicken(&mut self, chicken: u32, rider: u32) {
+        self.rides.push((chicken, rider));
+    }
+    fn game_time(&self) -> i64 {
+        self.level.game.world.game_time
+    }
+    fn halloween(&self) -> bool {
+        finalize::is_halloween()
+    }
+    fn create(&mut self, kind: &str, _: Reason) -> Option<Mob> {
+        if self.level.peaceful() && !finalize::allowed_in_peaceful(kind) {
+            return None;
+        }
+        let kind = self.level.game.res.mob_types().get(kind)?.clone();
+        *self.next_id += 1;
+        Some(Mob::new(*self.next_id, kind, Vec3::ZERO, 0.0))
+    }
+}
+
+struct NaturalFinalizer {
+    group: Option<Group>,
+    pending: Vec<Mob>,
+    rides: Vec<(u32, u32)>,
+    next_id: u32,
+}
+impl NaturalFinalizer {
+    fn new(next_id: u32) -> Self {
+        Self {
+            group: None,
+            pending: Vec::new(),
+            rides: Vec::new(),
+            next_id,
+        }
+    }
+    fn spawn<R: RandomSource>(
+        &mut self,
+        level: &GameLevel<'_, '_>,
+        r: &SpawnRequest,
+        random: &mut R,
+    ) -> Option<Spawned> {
+        if r.group_index == 0 {
+            self.group = None;
+        }
+        let game = level.game;
+        let kind = game.res.mob_types().get(r.entity)?.clone();
+        self.next_id += 1;
+        let [x, y, z] = r.position;
+        let mut mob = Mob::new(self.next_id, kind, Vec3::new(x, y, z), r.yaw);
+        let camel = game.res.mob_types().get("minecraft:camel_husk");
+        let data = SpawnData {
+            registries: &game.res.rest().spawn_registries,
+            enchantments: &game.stations().enchantments,
+            items: game.items(),
+            camel_husk_size: camel.map_or((0.0, 0.0), |m| (m.width as f32, m.height as f32)),
+        };
+        let mut runtime = FinalizeRuntime {
+            level,
+            pending: &self.pending,
+            rides: &mut self.rides,
+            next_id: &mut self.next_id,
+        };
+        let mut cx = Ctx {
+            level: &mut runtime,
+            random,
+            difficulty: game.local_difficulty(r.position),
+            data: &data,
+            created: Vec::new(),
+            jockey_rider: None,
+        };
+        self.group = cx.finalize(&mut mob, Reason::Natural, self.group.take());
+        let result = Spawned {
+            bounds: mob.bounds(),
+            school: !mob.extra.lone,
+        };
+        let added_at = self.pending.len();
+        self.pending.extend(cx.created);
+        self.pending.push(mob);
+        // Vanilla adds the accepted mob with its passengers before another
+        // attempt. Jockeys can extend outside the parent's obstruction box.
+        level
+            .pending
+            .borrow_mut()
+            .extend(self.pending[added_at..].iter().map(Mob::bounds));
+        // Chickens created earlier in this pass are not in Game::mobs yet.
+        for &(chicken, rider) in &self.rides {
+            if let Some(m) = self.pending.iter_mut().find(|m| m.id == chicken) {
+                m.extra.rider = Some(rider);
+                m.extra.jockey = true;
+            }
+        }
+        Some(result)
+    }
+}
+
 /// Every entity type with a spawn cost in some biome, each once.
 fn spawn_cost_types(biomes: &horizon_client::biome::Biomes) -> Vec<&str> {
     let mut types: Vec<&str> = Vec::new();
@@ -650,40 +800,24 @@ impl<'a> Game<'a> {
             costed: spawn_cost_types(world_biomes!(self)),
         }
     }
-    /// Creates a mob the spawner accepted, finalized the game's way; the
-    /// caller adds it with [`Game::add_spawned`].
-    fn finalize_spawned(&self, r: &SpawnRequest, pending: &mut Vec<Mob>) -> Option<Spawned> {
-        let kind = self.res.mob_types().get(r.entity)?.clone();
-        let [x, y, z] = r.position;
-        let mut mob = Mob::new(0, kind, Vec3::new(x, y, z), r.yaw);
-        let facts = self.biome_facts(x.floor() as i32, y.floor() as i32, z.floor() as i32);
-        let difficulty = self.local_difficulty(r.position);
-        horizon_client::mobs::spawning::finalize(&mut mob, &facts, &difficulty);
-        horizon_client::mobs::raider::finalize(
-            &mut mob,
-            horizon_client::mobs::raider::Reason::Natural,
-        );
-        let bounds = mob.bounds();
-        pending.push(mob);
-        Some(Spawned {
-            bounds,
-            school: true,
-        })
-    }
-    /// Adds the mobs a spawn pass created: ids, enchanted gear and jockeys.
-    fn add_spawned(&mut self, pending: Vec<Mob>, persistent: bool) {
-        for mut mob in pending {
-            self.next_entity += 1;
-            mob.id = self.next_entity;
-            mob.persistent = persistent;
-            let id = mob.id;
+    /// Adds already finalized mobs, retaining the ids their pack and riding links use.
+    fn add_spawned(&mut self, pending: Vec<Mob>, rides: Vec<(u32, u32)>) {
+        // Join hooks may create entities too; reserve every finalized id first.
+        self.next_entity = pending
+            .iter()
+            .map(|m| m.id)
+            .max()
+            .unwrap_or(self.next_entity)
+            .max(self.next_entity);
+        for (chicken, rider) in rides {
+            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == chicken) {
+                m.extra.rider = Some(rider);
+                m.extra.jockey = true;
+            }
+        }
+        for mob in pending {
             self.mobs.push(mob);
             self.native_mobs_joined(self.mobs.len() - 1, true);
-            self.enchant_spawn_equipment(id);
-            self.halloween_spawn_head(id);
-            if !persistent {
-                self.spawn_jockeys(id, true);
-            }
         }
     }
     /// Every player in the level in place: the local player, and the LAN
@@ -764,7 +898,7 @@ impl<'a> Game<'a> {
         let spawn_mobs = self.ui.rules.bool("spawn_mobs");
         let spawn_enemies = self.ui.rules.bool("spawn_monsters");
         let mut random = std::mem::replace(&mut self.world.random, LegacyRandom::new(0));
-        let mut pending = Vec::new();
+        let mut finalizer = NaturalFinalizer::new(self.next_entity);
         let last_state;
         {
             let level = self.natural_level();
@@ -813,14 +947,10 @@ impl<'a> Game<'a> {
             spawn_selection::attempt_counters(false);
             if !categories.is_empty() {
                 for chunk in scratch.candidates.drain(..) {
-                    let mut spawn = |l: &GameLevel, r: &SpawnRequest| {
-                        let spawned = l.game.finalize_spawned(r, &mut pending);
-                        if let Some(s) = &spawned {
-                            l.pending.borrow_mut().push(s.bounds);
-                        }
-                        spawned
+                    let mut spawn = |l: &GameLevel, r: &SpawnRequest, random: &mut LegacyRandom| {
+                        finalizer.spawn(l, r, random)
                     };
-                    spawn_selection::spawn_for_chunk(
+                    spawn_selection::spawn_for_chunk_with_random(
                         &level,
                         &mut random,
                         &mut state,
@@ -837,7 +967,7 @@ impl<'a> Game<'a> {
         self.world.random = random;
         // ServerChunkCache.lastSpawnState, for the debug overlay.
         self.spawn_counts.insert(self.dim, last_state);
-        self.add_spawned(pending, false);
+        self.add_spawned(finalizer.pending, finalizer.rides);
         self.spawn_scratch = scratch;
         laps.lap("sn_finalize");
     }
@@ -923,6 +1053,174 @@ impl<'a> Game<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// These age and level-RNG results come from VanillaFinalizeSpawnOracle:
+    /// cow seed=0 pack=4 and tropical_fish seed=5 pack=1, NATURAL, plains.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn runtime_natural_finalizer_preserves_pack_data_and_level_random() {
+        use crate::game::{Audio, Options, Progress, Settings, load_resources};
+        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = super::super::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        let plains = game
+            .res
+            .biomes()
+            .list
+            .iter()
+            .position(|b| b.name == "minecraft:plains")
+            .unwrap() as u16;
+        for cx in -1..=0 {
+            for cz in -1..=0 {
+                let mut chunk = horizon_client::chunk::Chunk::empty(cx, cz);
+                for qx in 0..4 {
+                    for qz in 0..4 {
+                        for qy in -16..80 {
+                            chunk.set_biome_cell(qx, qy, qz, plains);
+                        }
+                    }
+                }
+                game.world
+                    .chunks
+                    .insert((cx, cz), std::sync::Arc::new(chunk));
+            }
+        }
+        let mut finalizer = NaturalFinalizer::new(game.next_entity);
+        let mut random = LegacyRandom::new(0);
+        {
+            let level = game.natural_level();
+            let mut request = SpawnRequest {
+                entity: "minecraft:cow",
+                species: Species::Cow,
+                position: [0.5, 64.0, 0.5],
+                yaw: 0.0,
+                group_index: 0,
+                reason: Reason::Natural,
+            };
+            for i in 0..4 {
+                request.group_index = i;
+                finalizer.spawn(&level, &request, &mut random).unwrap();
+            }
+            assert_eq!(
+                finalizer
+                    .pending
+                    .iter()
+                    .map(|m| m.extra.age)
+                    .collect::<Vec<_>>(),
+                vec![0, 0, -24000, 0]
+            );
+            assert_eq!(random.next_long(), -8062155292093192501);
+            // The first member of another pack cannot inherit the old size.
+            request.group_index = 0;
+            finalizer.spawn(&level, &request, &mut random).unwrap();
+            assert_eq!(finalizer.pending.last().unwrap().extra.age, 0);
+            assert!(matches!(&finalizer.group, Some(Group::Ageable(a)) if a.size == 1));
+            request.entity = "minecraft:tropical_fish";
+            request.species = Species::TropicalFish;
+            random = LegacyRandom::new(5);
+            let result = finalizer.spawn(&level, &request, &mut random).unwrap();
+            assert!(!result.school, "a loner ends the tropical-fish pack");
+            assert_eq!(random.next_long(), 7887083129949472399);
+            // This seed creates a skeleton rider in the existing Java oracle
+            // corpus (case/15613). Spider and skeleton draws are the same for
+            // its TRIAL_SPAWNER reason and this NATURAL reason, on normal.
+            request.entity = "minecraft:spider";
+            request.species = Species::Spider;
+            request.position = [8.5, 64.0, 8.5];
+            random = LegacyRandom::new(4122790947106936923);
+            let parent = finalizer.spawn(&level, &request, &mut random).unwrap();
+            let spider = finalizer.pending.last().unwrap();
+            let skeleton = finalizer
+                .pending
+                .iter()
+                .find(|m| m.extra.mount == Some(spider.id))
+                .unwrap();
+            assert_eq!(skeleton.species(), Species::Skeleton);
+            assert_eq!(spider.extra.rider, Some(skeleton.id));
+            assert_eq!(skeleton.extra.main_hand.as_deref(), Some("minecraft:bow"));
+            let rider_only = Aabb::new(Vec3::new(8.45, 65.1, 8.45), Vec3::new(8.55, 65.2, 8.55));
+            assert!(!parent.bounds.intersects(rider_only));
+            assert!(skeleton.bounds().intersects(rider_only));
+            assert!(
+                !level.unobstructed(rider_only),
+                "the rider obstructs the next attempt"
+            );
+            assert_eq!(
+                level.pending.borrow().len(),
+                finalizer.pending.len(),
+                "register each accepted entity once"
+            );
+        }
+        // Insertion must preserve finalized equipment, randoms and riding links.
+        let finalized: Vec<_> = finalizer
+            .pending
+            .iter()
+            .map(|m| {
+                (
+                    m.id,
+                    (0..6)
+                        .map(|slot| finalize::item(m, slot))
+                        .collect::<Vec<_>>(),
+                    m.extra.gear.clone(),
+                    m.random.clone().next_long(),
+                    m.extra.mount,
+                    m.extra.rider,
+                )
+            })
+            .collect();
+        let ids: Vec<_> = finalizer.pending.iter().map(|m| m.id).collect();
+        game.world.random = LegacyRandom::new(2468);
+        let expected_level_draw = game.world.random.clone().next_long();
+        game.add_spawned(finalizer.pending, finalizer.rides);
+        assert_eq!(
+            game.world.random.next_long(),
+            expected_level_draw,
+            "insertion must not repeat spawn draws"
+        );
+        assert_eq!(game.mobs.iter().map(|m| m.id).collect::<Vec<_>>(), ids);
+        assert_eq!(game.next_entity, *ids.iter().max().unwrap());
+        let inserted: Vec<_> = game
+            .mobs
+            .iter()
+            .map(|m| {
+                (
+                    m.id,
+                    (0..6)
+                        .map(|slot| finalize::item(m, slot))
+                        .collect::<Vec<_>>(),
+                    m.extra.gear.clone(),
+                    m.random.clone().next_long(),
+                    m.extra.mount,
+                    m.extra.rider,
+                )
+            })
+            .collect();
+        assert_eq!(inserted, finalized);
+    }
 
     fn player(x: f64, y: f64, z: f64, spectator: bool) -> LevelPlayer {
         LevelPlayer {

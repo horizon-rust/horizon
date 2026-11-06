@@ -1061,8 +1061,8 @@ pub struct Spawned {
     pub school: bool,
 }
 
-/// `NaturalSpawner.spawnForChunk` for the categories already filtered.
 #[allow(clippy::too_many_arguments)]
+/// Spawns filtered categories with a callback that does not consume the level RNG.
 pub fn spawn_for_chunk<L: NaturalLevel, R: RandomSource>(
     l: &L,
     random: &mut R,
@@ -1072,16 +1072,19 @@ pub fn spawn_for_chunk<L: NaturalLevel, R: RandomSource>(
     spawn: &mut dyn FnMut(&L, &SpawnRequest) -> Option<Spawned>,
     trace: &mut dyn FnMut(Event),
 ) {
-    for &category in categories {
-        let local = state.can_spawn_local(category, chunk.0, chunk.1);
-        trace(Event::Local(category, local));
-        if local {
-            spawn_category_for_chunk(l, random, state, category, chunk, spawn, trace);
-        }
-    }
+    spawn_for_chunk_with_random(
+        l,
+        random,
+        state,
+        categories,
+        chunk,
+        &mut |l, r, _| spawn(l, r),
+        trace,
+    );
 }
-/// `NaturalSpawner.spawnCategoryForChunk`: `getRandomPosWithin` (a column of
-/// the chunk, a height up to one above the world surface).
+
+#[allow(clippy::too_many_arguments)]
+/// Spawns one category with a callback that does not consume the level RNG.
 pub fn spawn_category_for_chunk<L: NaturalLevel, R: RandomSource>(
     l: &L,
     random: &mut R,
@@ -1091,19 +1094,19 @@ pub fn spawn_category_for_chunk<L: NaturalLevel, R: RandomSource>(
     spawn: &mut dyn FnMut(&L, &SpawnRequest) -> Option<Spawned>,
     trace: &mut dyn FnMut(Event),
 ) {
-    let x = chunk.0 * 16 + random.next_int_bound(16).unwrap_or(0);
-    let z = chunk.1 * 16 + random.next_int_bound(16).unwrap_or(0);
-    let top = l.heightmap(Heightmap::WorldSurface, x, z) + 1;
-    let min = l.min_y();
-    let y = min + random.next_int_bound(top - min + 1).unwrap_or(0);
-    trace(Event::Start(category, [x, y, z]));
-    if y > min {
-        spawn_category_for_position(l, random, state, category, chunk, [x, y, z], spawn, trace);
-    }
+    spawn_category_for_chunk_with_random(
+        l,
+        random,
+        state,
+        category,
+        chunk,
+        &mut |l, r, _| spawn(l, r),
+        trace,
+    );
 }
-/// `NaturalSpawner.spawnCategoryForPosition` with the spawn state's
-/// `canSpawn` and `afterSpawn`.
+
 #[allow(clippy::too_many_arguments)]
+/// Spawns at a position with a callback that does not consume the level RNG.
 pub fn spawn_category_for_position<L: NaturalLevel, R: RandomSource>(
     l: &L,
     random: &mut R,
@@ -1112,6 +1115,81 @@ pub fn spawn_category_for_position<L: NaturalLevel, R: RandomSource>(
     chunk: (i32, i32),
     start: [i32; 3],
     spawn: &mut dyn FnMut(&L, &SpawnRequest) -> Option<Spawned>,
+    trace: &mut dyn FnMut(Event),
+) {
+    spawn_category_for_position_with_random(
+        l,
+        random,
+        state,
+        category,
+        chunk,
+        start,
+        &mut |l, r, _| spawn(l, r),
+        trace,
+    );
+}
+
+/// `NaturalSpawner.spawnForChunk` for the categories already filtered.
+/// The finalizer receives the same level RNG, before the next spawn attempt.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_for_chunk_with_random<L: NaturalLevel, R: RandomSource>(
+    l: &L,
+    random: &mut R,
+    state: &mut SpawnState,
+    categories: &[Category],
+    chunk: (i32, i32),
+    spawn: &mut dyn FnMut(&L, &SpawnRequest, &mut R) -> Option<Spawned>,
+    trace: &mut dyn FnMut(Event),
+) {
+    for &category in categories {
+        let local = state.can_spawn_local(category, chunk.0, chunk.1);
+        trace(Event::Local(category, local));
+        if local {
+            spawn_category_for_chunk_with_random(l, random, state, category, chunk, spawn, trace);
+        }
+    }
+}
+/// `NaturalSpawner.spawnCategoryForChunk`: `getRandomPosWithin` (a column of
+/// the chunk, a height up to one above the world surface).
+pub fn spawn_category_for_chunk_with_random<L: NaturalLevel, R: RandomSource>(
+    l: &L,
+    random: &mut R,
+    state: &mut SpawnState,
+    category: Category,
+    chunk: (i32, i32),
+    spawn: &mut dyn FnMut(&L, &SpawnRequest, &mut R) -> Option<Spawned>,
+    trace: &mut dyn FnMut(Event),
+) {
+    let x = chunk.0 * 16 + random.next_int_bound(16).unwrap_or(0);
+    let z = chunk.1 * 16 + random.next_int_bound(16).unwrap_or(0);
+    let top = l.heightmap(Heightmap::WorldSurface, x, z) + 1;
+    let min = l.min_y();
+    let y = min + random.next_int_bound(top - min + 1).unwrap_or(0);
+    trace(Event::Start(category, [x, y, z]));
+    if y > min {
+        spawn_category_for_position_with_random(
+            l,
+            random,
+            state,
+            category,
+            chunk,
+            [x, y, z],
+            spawn,
+            trace,
+        );
+    }
+}
+/// `NaturalSpawner.spawnCategoryForPosition` with the spawn state's
+/// `canSpawn` and `afterSpawn`.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_category_for_position_with_random<L: NaturalLevel, R: RandomSource>(
+    l: &L,
+    random: &mut R,
+    state: &mut SpawnState,
+    category: Category,
+    chunk: (i32, i32),
+    start: [i32; 3],
+    spawn: &mut dyn FnMut(&L, &SpawnRequest, &mut R) -> Option<Spawned>,
     trace: &mut dyn FnMut(Event),
 ) {
     let [x0, y, z0] = start;
@@ -1198,7 +1276,7 @@ pub fn spawn_category_for_position<L: NaturalLevel, R: RandomSource>(
                 group_index,
                 reason: Reason::Natural,
             };
-            let Some(result) = spawn(l, &request) else {
+            let Some(result) = spawn(l, &request, random) else {
                 continue;
             };
             attempt_count(1);

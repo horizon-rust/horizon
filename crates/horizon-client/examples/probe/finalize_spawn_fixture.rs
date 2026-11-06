@@ -209,6 +209,7 @@ fn variant(m: &Mob, regs: &SpawnRegistries, v: &mut Vec<String>) {
                 | (u32::from(m.extra.variant2) & 0xFF) << 16
                 | (u32::from(m.extra.variant3) & 0xFF) << 24;
             v.push((packed as i32).to_string());
+            v.push(format!("school={}", !m.extra.lone));
         }
         S::Salmon => v.push(SALMON[m.extra.variant as usize % 3].into()),
         S::Panda => v.push(format!(
