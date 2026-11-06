@@ -7642,11 +7642,14 @@ impl Game<'_> {
         self.name_tag_geometry(camera, alpha, &mut out, &mut see_through);
         self.text_display_geometry(camera, alpha, &mut out, &mut see_through);
         self.see_through_vertices = see_through;
-        // Entity shadows (EntityRenderer.extractShadow).
+        // Entity shadows (EntityRenderer.extractShadow). Not when the rays trace the entities:
+        // they already shade the ground under each one, and the round blob would darken it twice.
         self.mark_translucent_entity(out.len(), "minecraft:entity_shadow");
-        let shadow_sprite = self
-            .settings
-            .entity_shadows
+        let rt_shadows = self
+            .renderer
+            .as_ref()
+            .is_some_and(|r| r.rt_entity_shadows());
+        let shadow_sprite = (self.settings.entity_shadows && !rt_shadows)
             .then(|| self.gui.atlas.sprites.get("misc/shadow").copied())
             .flatten();
         if let Some(sprite) = shadow_sprite {
