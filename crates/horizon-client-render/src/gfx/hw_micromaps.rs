@@ -17,6 +17,11 @@ mod on {
     use horizon_rtx::omm::{Geometry, Held, RawSections, Section};
     use std::collections::HashMap;
     use std::sync::Arc;
+    use std::sync::mpsc::{Receiver, Sender, channel};
+
+    /// The frames a section's structure waits for its micromaps at most: past them (the thread
+    /// behind by that much, or gone) it is built without, its cutouts alpha-tested by the shader.
+    const MOST_FRAMES: u32 = 30;
 
     /// What a sprite layer is to the alpha test.
     enum Alpha {
@@ -25,15 +30,104 @@ mod on {
         Mask(AlphaMask),
     }
 
-    struct Inner {
-        raw: RawSections,
-        cache: Cache,
+    /// The sprite layers as the alpha test sees them, and the first taken as opaque.
+    struct Sprites {
         layers: Vec<Alpha>,
         split: u32,
+    }
+
+    /// What the micromap thread is asked.
+    enum Ask {
+        /// New sprites: the cache starts again.
+        Sprites(Arc<Sprites>),
+        /// A section's alpha-tested geometries `(geometry, first quad, quads)` and every solid
+        /// quad's sprite layer and texture coordinates (`UV_STEPS` units), under job number `job`.
+        Section {
+            key: SectionKey,
+            job: u64,
+            geometries: Vec<(u32, u32, u32)>,
+            quads: Vec<(u16, [[u16; 2]; 4])>,
+        },
+    }
+
+    /// A section's micromaps worked out, or none (no triangle helps).
+    type Done = (SectionKey, u64, Option<SectionMicromaps>);
+
+    /// The micromap thread: the cache and the sprites, off the main thread. A section in a
+    /// forest took the frame up to 48 ms there when it was meshed.
+    fn work(asks: Receiver<Ask>, done: Sender<Done>) {
+        let mut cache = Cache::default();
+        let mut sprites: Option<Arc<Sprites>> = None;
+        while let Ok(ask) = asks.recv() {
+            match ask {
+                Ask::Sprites(new) => {
+                    cache.clear();
+                    sprites = Some(new);
+                }
+                Ask::Section {
+                    key,
+                    job,
+                    geometries,
+                    quads,
+                } => {
+                    let Some(sprites) = &sprites else {
+                        continue;
+                    };
+                    let quad = |q: u32| {
+                        let (layer, uv) = quads[q as usize];
+                        (layer, uv.map(|c| c.map(|c| f32::from(c) / UV_STEPS)))
+                    };
+                    let layer = |l: u16| {
+                        let index = u32::from(l & !OPAQUE_LAYER);
+                        if l & OPAQUE_LAYER != 0 || index >= sprites.split {
+                            return Layer::Opaque;
+                        }
+                        match sprites.layers.get(index as usize) {
+                            Some(Alpha::Opaque) => Layer::Opaque,
+                            Some(Alpha::Mask(mask)) => Layer::Mask(mask),
+                            Some(Alpha::Changing) | None => Layer::Changing,
+                        }
+                    };
+                    let planned = cache.section(&geometries, quad, layer);
+                    if done.send((key, job, planned)).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    struct Inner {
+        raw: RawSections,
+        /// To the micromap thread (`work`), and back.
+        asks: Sender<Ask>,
+        done: Receiver<Done>,
+        /// Whether sprites were given (no section is asked before).
+        sprites: bool,
+        /// The sections asked of the thread and not back yet: their latest job's number and the
+        /// frames since (past `MOST_FRAMES` the structure is built without them).
+        waiting: HashMap<SectionKey, (u64, u32)>,
+        next_job: u64,
         /// The sections meshed since their structure was built, and their micromaps.
         meshed: HashMap<SectionKey, Arc<SectionMicromaps>>,
         /// Sections with alpha-tested geometries meshed, and those given micromaps (for the log).
         seen: [u64; 2],
+    }
+
+    impl Inner {
+        /// What the thread finished: kept for the latest job of each section only.
+        fn collect(&mut self) {
+            while let Ok((key, job, planned)) = self.done.try_recv() {
+                if self.waiting.get(&key).map(|w| w.0) != Some(job) {
+                    continue;
+                }
+                self.waiting.remove(&key);
+                if let Some(m) = planned {
+                    self.seen[1] += 1;
+                    self.meshed.insert(key, Arc::new(m));
+                }
+            }
+        }
     }
 
     pub struct Micromaps(Option<Inner>);
@@ -45,13 +139,24 @@ mod on {
 
     impl Micromaps {
         pub fn new(device: &wgpu::Device) -> Self {
-            Self(RawSections::new(device).map(|raw| Inner {
-                raw,
-                cache: Cache::default(),
-                layers: Vec::new(),
-                split: 0,
-                meshed: HashMap::new(),
-                seen: [0; 2],
+            Self(RawSections::new(device).and_then(|raw| {
+                let (asks, asked) = channel();
+                let (finished, done) = channel();
+                std::thread::Builder::new()
+                    .name("Horizon micromaps".into())
+                    .spawn(move || work(asked, finished))
+                    .map_err(|e| log::warn!("Horizon RTX: no micromap thread: {e}"))
+                    .ok()?;
+                Some(Inner {
+                    raw,
+                    asks,
+                    done,
+                    sprites: false,
+                    waiting: HashMap::new(),
+                    next_job: 0,
+                    meshed: HashMap::new(),
+                    seen: [0; 2],
+                })
             }))
         }
 
@@ -71,7 +176,7 @@ mod on {
             };
             let texels = (size * size) as usize;
             let animated: std::collections::HashSet<u32> = animated.collect();
-            inner.layers = (0..layers)
+            let layers: Vec<Alpha> = (0..layers)
                 .map(|l| {
                     let Some(rgba) =
                         pixels.get(l as usize * texels * 4..(l as usize + 1) * texels * 4)
@@ -87,27 +192,31 @@ mod on {
                     }
                 })
                 .collect();
-            let masks = inner
-                .layers
+            let masks = layers
                 .iter()
                 .filter(|l| matches!(l, Alpha::Mask(_)))
                 .count();
-            let changing = inner
-                .layers
+            let changing = layers
                 .iter()
                 .filter(|l| matches!(l, Alpha::Changing))
                 .count();
             log::info!(
-                "Horizon RTX: micromaps from {layers} sprite layers ({size}x{size}, {} bytes of pixels): {masks} cutouts, {changing} animated or missing, the rest opaque",
+                "Horizon RTX: micromaps from {} sprite layers ({size}x{size}, {} bytes of pixels): {masks} cutouts, {changing} animated or missing, the rest opaque",
+                layers.len(),
                 pixels.len()
             );
-            inner.split = split;
-            inner.cache.clear();
+            inner.sprites = !layers.is_empty();
+            // Results of the old sprites' jobs come back for no section waiting.
+            inner.waiting.clear();
             inner.meshed.clear();
+            let _ = inner
+                .asks
+                .send(Ask::Sprites(Arc::new(Sprites { layers, split })));
         }
 
         /// Section `key` meshed again: its `quads` solid quads `solid`, in `runs`
-        /// (`mesher::Sides::geometries`).
+        /// (`mesher::Sides::geometries`). Its micromaps are worked out on the micromap thread;
+        /// the section waits for them (`waiting`) before its structure is built.
         pub fn meshed(
             &mut self,
             key: SectionKey,
@@ -119,45 +228,41 @@ mod on {
                 return;
             };
             inner.meshed.remove(&key);
-            if inner.layers.is_empty() {
+            inner.waiting.remove(&key);
+            if !inner.sprites || solid.len() < quads as usize * 4 {
                 return;
             }
-            let alpha_tested: Vec<_> = super::super::hw_rays::solid_geometries(quads, runs)
+            let geometries: Vec<_> = super::super::hw_rays::solid_geometries(quads, runs)
                 .iter()
                 .enumerate()
                 .filter(|(_, g)| !g.2)
                 .map(|(i, &(first, count, _))| (i as u32, first, count))
                 .collect();
-            if alpha_tested.is_empty() {
+            if geometries.is_empty() {
                 return;
             }
-            let (layers, split) = (&inner.layers, inner.split);
-            let quad = |q: u32| {
-                let v = &solid[q as usize * 4..q as usize * 4 + 4];
-                (
-                    v[0].layer,
-                    [0, 1, 2, 3].map(|i| v[i].uv.map(|c| f32::from(c) / UV_STEPS)),
-                )
-            };
-            let layer = |l: u16| {
-                let index = u32::from(l & !OPAQUE_LAYER);
-                if l & OPAQUE_LAYER != 0 || index >= split {
-                    return Layer::Opaque;
+            // Only the quads the cutout geometries hold are read; the others stay zero.
+            let mut copied = vec![(0u16, [[0u16; 2]; 4]); quads as usize];
+            for &(_, first, count) in &geometries {
+                for q in first..first + count {
+                    let v = &solid[q as usize * 4..q as usize * 4 + 4];
+                    copied[q as usize] = (v[0].layer, [0, 1, 2, 3].map(|i| v[i].uv));
                 }
-                match layers.get(index as usize) {
-                    Some(Alpha::Opaque) => Layer::Opaque,
-                    Some(Alpha::Mask(mask)) => Layer::Mask(mask),
-                    Some(Alpha::Changing) | None => Layer::Changing,
-                }
-            };
-            if solid.len() < quads as usize * 4 {
-                return;
             }
-            let planned = inner.cache.section(&alpha_tested, quad, layer);
+            let job = inner.next_job;
+            inner.next_job += 1;
             inner.seen[0] += 1;
-            if let Some(m) = planned {
-                inner.seen[1] += 1;
-                inner.meshed.insert(key, Arc::new(m));
+            if inner
+                .asks
+                .send(Ask::Section {
+                    key,
+                    job,
+                    geometries,
+                    quads: copied,
+                })
+                .is_ok()
+            {
+                inner.waiting.insert(key, (job, 0));
             }
             if inner.seen[0] % 500 == 1 {
                 log::info!(
@@ -168,21 +273,43 @@ mod on {
             }
         }
 
+        /// Whether section `key`'s micromaps are still being worked out: its structure waits.
+        pub fn waiting(&mut self, key: SectionKey) -> bool {
+            let Some(inner) = &mut self.0 else {
+                return false;
+            };
+            if inner.waiting.is_empty() {
+                return false;
+            }
+            inner.collect();
+            inner
+                .waiting
+                .get(&key)
+                .is_some_and(|&(_, frames)| frames < MOST_FRAMES)
+        }
+
         /// Forget the sections `keep` turns down (out of the rays' range).
         pub fn retain(&mut self, keep: impl Fn(SectionKey) -> bool) {
             if let Some(inner) = &mut self.0 {
                 inner.meshed.retain(|k, _| keep(*k));
+                inner.waiting.retain(|k, _| keep(*k));
             }
         }
 
         /// Section `key`'s micromaps, once.
         pub fn take(&mut self, key: SectionKey) -> Option<Planned> {
-            self.0.as_mut()?.meshed.remove(&key)
+            let inner = self.0.as_mut()?;
+            inner.collect();
+            inner.meshed.remove(&key)
         }
 
-        /// The next frame (frees what the GPU is done with).
+        /// The next frame (frees what the GPU is done with, keeps what the thread finished).
         pub fn frame(&mut self) {
             if let Some(inner) = &mut self.0 {
+                inner.collect();
+                for (_, frames) in inner.waiting.values_mut() {
+                    *frames += 1;
+                }
                 inner.raw.frame();
             }
         }
@@ -267,6 +394,9 @@ mod off {
             _: &[(u32, u32, bool)],
         ) {
             let _ = (OPAQUE_LAYER, UV_STEPS);
+        }
+        pub fn waiting(&mut self, _: SectionKey) -> bool {
+            false
         }
         pub fn retain(&mut self, _: impl Fn(SectionKey) -> bool) {}
         pub fn take(&mut self, _: SectionKey) -> Option<Planned> {

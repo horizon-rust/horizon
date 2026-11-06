@@ -1530,6 +1530,9 @@ pub struct Renderer {
     atmosphere: atmosphere::Atmosphere,
     /// RT lighting's volumetric clouds (`rt_clouds`), made when first drawn.
     rt_clouds: Option<rt_clouds::RtClouds>,
+    /// The volumetric clouds being made on a thread of their own (their noise and pipelines took
+    /// the first frame that drew them about 170 ms): taken by the first frame after.
+    rt_clouds_making: Option<std::sync::mpsc::Receiver<rt_clouds::RtClouds>>,
     /// RT lighting's cloud mesh (`rt_cloud_mesh`), made when first drawn.
     rt_cloud_mesh: Option<rt_cloud_mesh::RtCloudMesh>,
     /// RT lighting's depth prepass: its pipeline and a depth per view size.
@@ -6070,6 +6073,7 @@ impl Renderer {
             rt_depth_unused,
             atmosphere,
             rt_clouds: None,
+            rt_clouds_making: None,
             rt_cloud_mesh: None,
             solid_depth,
             opaque_depth,
@@ -7858,6 +7862,44 @@ impl Renderer {
     pub fn clear_fog_map(&mut self) {
         self.froxels.clear_fog_map();
     }
+    /// Whether the volumetric clouds are made: the first call starts making them on a thread of
+    /// their own, and the frames until they are drawn without them.
+    fn rt_clouds_ready(&mut self) -> bool {
+        if self.rt_clouds.is_none() {
+            match &self.rt_clouds_making {
+                None => {
+                    let (sent, making) = std::sync::mpsc::channel();
+                    let (device, queue) = (self.device.clone(), self.queue.clone());
+                    let spawned = std::thread::Builder::new()
+                        .name("Horizon clouds".into())
+                        .spawn(move || {
+                            let _ = sent.send(rt_clouds::RtClouds::new(&device, &queue));
+                        });
+                    match spawned {
+                        Ok(_) => self.rt_clouds_making = Some(making),
+                        // No thread: made here, as before.
+                        Err(_) => {
+                            self.rt_clouds =
+                                Some(rt_clouds::RtClouds::new(&self.device, &self.queue))
+                        }
+                    }
+                }
+                Some(making) => match making.try_recv() {
+                    Ok(clouds) => {
+                        self.rt_clouds = Some(clouds);
+                        self.rt_clouds_making = None;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    // The thread died: made here.
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        self.rt_clouds_making = None;
+                        self.rt_clouds = Some(rt_clouds::RtClouds::new(&self.device, &self.queue));
+                    }
+                },
+            }
+        }
+        self.rt_clouds.is_some()
+    }
     /// RT lighting's hybrid: structures for the sections near `camera` that lack one (a frame's
     /// budget of them), and the frame's top-level structure.
     fn hw_update(&mut self, encoder: &mut wgpu::CommandEncoder, camera: DVec3) {
@@ -7872,7 +7914,13 @@ impl Renderer {
         // them (arriving in a new place, the far ring waits a few frames, not the ground underfoot).
         let mut candidates = Vec::new();
         for (key, s, _) in self.sections.iter() {
-            if s.solid + s.translucent > 0 && hw_rays::HwRays::near(center, key) && !hw.has(key) {
+            // A section whose micromaps the micromap thread still works on waits a frame or two
+            // (its stale structure, if any, standing in).
+            if s.solid + s.translucent > 0
+                && hw_rays::HwRays::near(center, key)
+                && !hw.has(key)
+                && !hw.micromaps.waiting(key)
+            {
                 let (dx, dz) = (key.0 - center.0, key.2 - center.1);
                 candidates.push((
                     dx * dx + dz * dz,
@@ -13557,10 +13605,9 @@ impl Renderer {
                 rt_clouds::Mode::March | rt_clouds::Mode::Dome
             )
             && let Some(input) = &frame.clouds
+            && self.rt_clouds_ready()
+            && let Some(clouds) = self.rt_clouds.as_mut()
         {
-            let clouds = self
-                .rt_clouds
-                .get_or_insert_with(|| rt_clouds::RtClouds::new(&self.device, &self.queue));
             let to_light = if rt_sun.y > 0.0 { rt_sun } else { -rt_sun };
             let light = rt_sun_light;
             let params = rt_clouds::Params {
