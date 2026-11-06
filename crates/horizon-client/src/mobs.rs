@@ -2760,6 +2760,7 @@ impl MobEvent {
             | MobEvent::LockGaze { mob, .. }
             | MobEvent::Retreat { mob, .. } => ImmediateWrite::Target(*mob),
             MobEvent::SchoolSize { leader, .. } => ImmediateWrite::Target(*leader),
+            MobEvent::PufferfishSting { target, .. } => ImmediateWrite::Target(*target),
             MobEvent::Breed { partner, .. } => ImmediateWrite::Target(*partner),
             MobEvent::StartRiding { .. } | MobEvent::StartFollowing { .. } => {
                 ImmediateWrite::Everyone
@@ -2812,7 +2813,6 @@ impl MobEvent {
             | MobEvent::AttackMobWithEffect { .. }
             | MobEvent::CubeHurtPlayer { .. }
             | MobEvent::CubeHurtMob { .. }
-            | MobEvent::PufferfishSting { .. }
             | MobEvent::StabDismount { .. }
             | MobEvent::Knockback { .. }
             | MobEvent::SetTarget { .. }
@@ -3018,7 +3018,11 @@ pub fn apply_brain_events(
                     i += 1;
                 }
             }
-            _ => i += 1,
+            // `immediate_write` said this event writes, so it needs an arm.
+            _ => {
+                debug_assert!(false, "no arm applies {:?}", events[i]);
+                i += 1;
+            }
         }
     }
     writes
