@@ -1945,7 +1945,10 @@ fn accumulate(texel: vec2<i32>, v: Traced) -> Traced {
     if sun_bound != sun_held {
         slow_mask.r = sun_bound;
         slow_sun = vec4(slow_sun.rgb * (sun_bound / max(sun_held, 1e-4)), slow_sun.a);
-        lag = lag || abs(sun_bound - sun_held) > ANTILAG_VISIBILITY;
+        // Not where the sun's ray crossed water: its caustics move with the waves every frame, a
+        // change of light the anti-lag would see on every frame (and trace the bounced light
+        // every frame for, `trace`'s turns); their own short history follows them.
+        lag = lag || (abs(sun_bound - sun_held) > ANTILAG_VISIBILITY && !sun_caustic);
     }
     let seen_held = slow_mask.b;
     let seen_bound = clamp_visibility(seen_held, fast_out.w);
