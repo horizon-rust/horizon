@@ -266,6 +266,7 @@ impl Game<'_> {
                         id,
                         kind: "minecraft:area_effect_cloud".into(),
                         item_transformation: None,
+                        knot_check: None,
                         position: horizon_core::geometry::Vec3::new(x, y, z),
                         yaw: 0.0,
                         pitch: 0.0,
