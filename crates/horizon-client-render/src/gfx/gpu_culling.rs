@@ -279,6 +279,11 @@ struct Params {
     occl: [u32; 4],
     /// The world pass's view projection, which the test draws its boxes with.
     view_proj: [[f32; 4]; 4],
+    /// The Hi-Z pyramid (`hiz.rs`): the width and height of the depth it was
+    /// seeded from, then its levels, then nothing -- level 0 is half the
+    /// depth, so the shader works out every level's size. Zero levels means no
+    /// pyramid yet, and `cull` makes no Hi-Z test.
+    hiz: [u32; 4],
 }
 
 /// Counts before the pages' (the shader's `STATS`): the sections `cull` kept,
@@ -286,7 +291,14 @@ struct Params {
 /// quads of the sections with runs and of the tested boxes not seen (the
 /// gate's share), the box draw (its instances: the boxes tested), and the
 /// boxes not seen.
-const STATS: u64 = 12;
+const STATS: u64 = 17;
+/// Report-only Hi-Z: the sections `cull` tested against the pyramid and those
+/// it would hide (the shader's `HIZ_TESTED` and `HIZ_HIDDEN`).
+const HIZ_TESTED: usize = 12;
+const HIZ_HIDDEN: usize = 13;
+const HIZ_OCCLUDER: usize = 14;
+const HIZ_MAX_W: usize = 15;
+const HIZ_MAX_NEAR: usize = 16;
 const QUADS: usize = 2;
 const HIDDEN_QUADS: usize = 3;
 const BOX: u64 = 4;
@@ -358,6 +370,12 @@ pub(super) struct FrameInputs<'a> {
     /// do, by its gate (`GpuCulling::occluding`).
     pub view_proj: Mat4,
     pub occlude: bool,
+    /// The Hi-Z pyramid the last frame left (`hiz.rs`), every level, and its
+    /// shape (`HiZ::shape_for_shader`). Zero levels means no pyramid yet and
+    /// no Hi-Z test; the view is then a placeholder, which the bind group
+    /// still needs whatever the state.
+    pub hiz: Option<&'a wgpu::TextureView>,
+    pub hiz_shape: [u32; 4],
 }
 
 /// What `GpuCulling::prepare` made of a frame.
@@ -984,6 +1002,15 @@ pub(super) struct GpuCulling {
     reach_generation: Option<u64>,
     /// Dropped as soon as one of its buffers is made anew.
     group: Option<wgpu::BindGroup>,
+    /// The Hi-Z view `group` was made with: a pyramid built anew (a resize)
+    /// makes the group again, as a new buffer does.
+    hiz_bound: Option<wgpu::TextureView>,
+    /// Bound where no pyramid exists yet: the bind group needs a view whatever
+    /// the state, and zero levels tell the shader not to test.
+    hiz_placeholder: wgpu::TextureView,
+    /// Report-only Hi-Z, from the newest readback: the frame it came from, and
+    /// the sections `cull` tested against the pyramid and would have hidden.
+    hiz_report: (u64, [usize; 5]),
     /// What `sections` holds once `prepare` writes it; a field of its own, so
     /// that the arena's compaction moves records while it borrows the
     /// renderer's other fields.
@@ -1050,6 +1077,16 @@ impl GpuCulling {
                 storage(6, false),
                 storage(7, false),
                 storage(8, true),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1155,6 +1192,24 @@ impl GpuCulling {
                 U::STORAGE | U::COPY_DST,
             )?,
             reach_generation: None,
+            hiz_bound: None,
+            hiz_placeholder: device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("GPU culling Hi-Z placeholder"),
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::R32Float,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default()),
+            hiz_report: (0, [0; 5]),
             group: None,
             records: Records::default(),
             fades: Fades::default(),
@@ -1347,13 +1402,16 @@ impl GpuCulling {
             (params.reach_height, params.reach_sections) = (r.height, r.sections);
             params.flags |= REACH | if r.sky_reached { SKY } else { 0 };
         }
+        params.hiz = input.hiz_shape;
         uploads.buffer(encoder, &self.params, 0, bytemuck::bytes_of(&params));
         // A frame that occludes reads phase 2's blocks too; the boxes to test
         // are written before they are read.
         let cleared = if self.occluding { tests_at } else { phase1_end };
         encoder.clear_buffer(&self.counts.buffer, 0, Some(cleared * 4));
-        if self.group.is_none() {
-            self.group = Some(self.bind(device));
+        let hiz = input.hiz.unwrap_or(&self.hiz_placeholder);
+        if self.group.is_none() || self.hiz_bound.as_ref() != Some(hiz) {
+            self.hiz_bound = Some(hiz.clone());
+            self.group = Some(self.bind(device, hiz));
             if let Some(test) = &mut self.test {
                 test.group = Some(test.bind(
                     device,
@@ -1373,7 +1431,8 @@ impl GpuCulling {
         Some(Prepared::Gpu)
     }
 
-    fn bind(&self, device: &wgpu::Device) -> wgpu::BindGroup {
+    fn bind(&self, device: &wgpu::Device, hiz: &wgpu::TextureView) -> wgpu::BindGroup {
+        // `hiz` is the pyramid, or `hiz_placeholder` where there is none.
         fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
             wgpu::BindGroupEntry {
                 binding,
@@ -1393,6 +1452,10 @@ impl GpuCulling {
                 entry(6, &self.origins.buffer),
                 entry(7, &self.runs.buffer),
                 entry(8, &self.reach.buffer),
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: wgpu::BindingResource::TextureView(hiz),
+                },
             ],
         })
     }
@@ -1549,6 +1612,13 @@ impl GpuCulling {
     /// frame's, as (frame, [sections drawn, section draws, draw calls]), the
     /// pass's counts added to the CPU's part. Called as a frame starts, so a
     /// copy no submission took (a frame that failed on the way) is dropped.
+    /// Report-only Hi-Z: of the sections `cull` kept, how many it tested
+    /// against the pyramid and how many it would have hidden. Both zero while
+    /// no pyramid has been built.
+    pub fn hiz_report(&self) -> [usize; 5] {
+        self.hiz_report.1
+    }
+
     pub fn collect(&mut self, device: &wgpu::Device) -> Option<(u64, [usize; 3])> {
         self.current = None;
         if device.poll(wgpu::PollType::Poll).is_err() {
@@ -1571,6 +1641,20 @@ impl GpuCulling {
                     bytemuck::pod_read_unaligned(&data[..STATS as usize * 4]);
                 let [kept, draws] = [words[0], words[1]];
                 // The newest test's share, for the gate (`prepare`).
+                // Report-only Hi-Z: what the pyramid tested and would hide,
+                // from the newest readback, whether or not the frame occluded.
+                if r.frame >= self.hiz_report.0 {
+                    self.hiz_report = (
+                        r.frame,
+                        [
+                            words[HIZ_TESTED] as usize,
+                            words[HIZ_HIDDEN] as usize,
+                            words[HIZ_OCCLUDER] as usize,
+                            words[HIZ_MAX_W] as usize,
+                            words[HIZ_MAX_NEAR] as usize,
+                        ],
+                    );
+                }
                 if r.occluded && r.frame > self.share.0 {
                     let quads = words[QUADS].max(1);
                     self.share = (r.frame, words[HIDDEN_QUADS] as f32 / quads as f32);
@@ -1691,6 +1775,8 @@ mod tests {
             eye: None,
             view_proj: Mat4::IDENTITY,
             occlude: false,
+            hiz: None,
+            hiz_shape: [0; 4],
         }
     }
 
@@ -2128,7 +2214,8 @@ mod tests {
         ];
         assert_eq!(layout("Update"), (size_of::<Update>(), named(&id)));
         assert_eq!((size_of::<Record>(), size_of::<Update>()), (80, 96));
-        assert_eq!(size_of::<Params>(), 208);
+        // 224 since the Hi-Z pyramid added a vec4<u32> (`hiz`).
+        assert_eq!(size_of::<Params>(), 224);
         let constant = |name: &str| {
             let (_, c) = module
                 .constants
@@ -2991,6 +3078,8 @@ mod tests {
                 eye,
                 view_proj: Mat4::IDENTITY,
                 occlude: false,
+                hiz: None,
+                hiz_shape: [0; 4],
             };
             if case == 7 {
                 // Planes past the integers: the CPU draws that frame, nothing is
@@ -3375,6 +3464,8 @@ struct Quad {
                 eye,
                 view_proj: Mat4::IDENTITY,
                 occlude: false,
+                hiz: None,
+                hiz_shape: [0; 4],
             };
             let prepared = gpu.prepare(device, queue, &mut uploads, &mut encoder, &input);
             assert_eq!(prepared, Prepared::Gpu, "frame {frame}");

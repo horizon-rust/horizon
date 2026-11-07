@@ -168,6 +168,7 @@ mod gpu_culling;
 mod hdr;
 mod hdr_icc;
 mod hdr_stats;
+mod hiz;
 pub use hdr::Calibration as HdrCalibration;
 pub mod block_light;
 mod displace;
@@ -1107,6 +1108,9 @@ pub struct Renderer {
     /// for the settings in `graphics::gpu_culling_offer`), and whether the last frame drew
     /// them so (`gpu_frame`).
     gpu_culling: Option<gpu_culling::GpuCulling>,
+    /// The Hi-Z depth pyramid (`hiz.rs`), built after each world pass and read
+    /// by the next frame's `cull` pass.
+    hiz: hiz::HiZ,
     gpu_culling_offer: crate::graphics::GpuCullingOffer,
     gpu_frame: bool,
     /// GPU frames since GPU culling was switched on: the first and every 64th after it
@@ -4502,6 +4506,7 @@ impl Renderer {
             ));
         }
         let world_primitives = world_primitives::WorldPrimitives::new(&device, frame_format);
+        let hiz = hiz::HiZ::new(&device);
         Ok(Self {
             display: DisplayWatch::default(),
             display_fresh: false,
@@ -4539,6 +4544,7 @@ impl Renderer {
             cull_on: cull.is_some(),
             sides_on: true,
             gpu_culling: None,
+            hiz,
             gpu_culling_offer,
             gpu_frame: false,
             #[cfg(debug_assertions)]
@@ -5049,6 +5055,14 @@ impl Renderer {
     /// Whether the last frame GPU culling drew ran its occlusion test.
     pub fn gpu_occluding(&self) -> bool {
         self.gpu_frame && self.gpu_culling.as_ref().is_some_and(|g| g.occluding())
+    }
+    /// Report-only Hi-Z (`hiz.rs`): of the sections GPU culling kept, how many
+    /// it tested against the depth pyramid and how many it would have hidden.
+    /// Nothing is hidden yet; this measures what hiding them would be worth.
+    pub fn hiz_report(&self) -> [usize; 5] {
+        self.gpu_culling
+            .as_ref()
+            .map_or([0; 5], gpu_culling::GpuCulling::hiz_report)
     }
     /// Whether the last frame drew them so.
     pub fn gpu_frame(&self) -> bool {
@@ -7582,6 +7596,8 @@ impl Renderer {
                 eye,
                 view_proj: jittered,
                 occlude: self.cull_on,
+                hiz: self.hiz.view(),
+                hiz_shape: self.hiz.shape_for_shader(),
             };
             let prepared = crate::spans::time("gpu culling", || {
                 gpu.prepare(
@@ -8871,11 +8887,19 @@ impl Renderer {
         let pack_reads_world = pack_post || native_post;
         laps.lap("r_uploads");
         // Phase 2 of occlusion culling draws over the depth, and a shader pack or TAA reads it.
+        // A frame that builds a Hi-Z pyramid keeps its depth to the end.
+        let hiz_frame = self.gpu_culling.is_some() && hiz::enabled();
         let keep_depth = pack_reads_world
             || (taa && self.world_post.taa)
             || oit_on
             || native_render::render_needs().world_depth
-            || fg;
+            || fg
+            // Every world pass after culling stores its depth where this is
+            // set, so the pyramid built at the end of the frame reads the
+            // depth the frame drew. Discarded instead, the depth read back as
+            // its clear value on every texel -- 0.0, the far plane -- and the
+            // pyramid said nothing was in front of anything.
+            || hiz_frame;
         // The pack's program reads the vertices this frame's draws bind.
         let pack_draws_terrain = pack_terrain && flat_frame == self.pack_terrain_flat;
         // The shadow camera's lists, drawn by the pack's shadow programs.
@@ -8934,11 +8958,18 @@ impl Renderer {
         if culling && let Some(cull) = &mut self.cull {
             cull.bind_depth(&self.device, world_depth);
         }
+        // The Hi-Z pyramid is built at the end of the frame (`first_frame`
+        // below), once the world pass has drawn this frame's depth.
         // The hand draws at the end of the world pass, after a depth reset, when nothing runs
         // between them (a scaled world's post pass, HDR's world copy, a native mod's
         // `native_world_drawn`): one render pass fewer, ~10 µs of wgpu's encoding a frame.
+        // `hiz_frame`: the hand's depth reset (`depth_reset` below) pushes the
+        // whole depth to the far plane, which a Hi-Z pyramid built after the
+        // pass would read as nothing in front of anything. One render pass
+        // more (~10 us) buys a depth the pyramid can use.
         let hand_in_world = (frame.hand.len() / 4) > 0
             && !pack_draws_hand
+            && !hiz_frame
             && scaled.is_none()
             && self.hdr.is_none()
             // Frame generation draws the hand over the real and the made frame after the world.
@@ -9148,7 +9179,12 @@ impl Renderer {
                     view: world_depth,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0.0),
-                        store: wgpu::StoreOp::Discard,
+                        // Kept where a Hi-Z pyramid reads it after the frame.
+                        store: if hiz_frame {
+                            wgpu::StoreOp::Store
+                        } else {
+                            wgpu::StoreOp::Discard
+                        },
                     }),
                     stencil_ops: None,
                 }),
@@ -9373,8 +9409,16 @@ impl Renderer {
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(0.0),
                         // The visibility buffer's passes, and those after an occlusion test,
-                        // draw on after it.
-                        store: if cull.is_some() || gpu_occluding || keep_depth || vis_frame {
+                        // draw on after it. The Hi-Z pyramid (`hiz.rs`) reads it
+                        // once the frame is drawn, so a frame that builds one
+                        // keeps it: discarded, it read back as zeros and the
+                        // pyramid hid nothing.
+                        store: if cull.is_some()
+                            || gpu_occluding
+                            || keep_depth
+                            || vis_frame
+                            || hiz_frame
+                        {
                             wgpu::StoreOp::Store
                         } else {
                             wgpu::StoreOp::Discard
@@ -10301,6 +10345,20 @@ impl Renderer {
                 pass.draw(0..3, 0..1);
                 self.draw_hand(&mut pass, hand_quads, world_quads + additive_quads);
             }
+        }
+        // The Hi-Z pyramid of the depth the world pass just drew, for the next
+        // frame's `cull` to test against (`hiz.rs`). Here and not at the end of
+        // the frame: the post chain and the hand's reset write the depth after
+        // this, and a pyramid seeded from it then held nothing but zeros.
+        if hiz_frame {
+            let [w, h] = self
+                .world_post
+                .size()
+                .unwrap_or([self.config.width, self.config.height]);
+            crate::spans::time("hi-z", || {
+                self.hiz
+                    .build(&self.device, &self.queue, &mut encoder, world_depth, w, h);
+            });
         }
         if let Some((color, depth)) = &scaled
             && pack_post
