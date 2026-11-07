@@ -54,6 +54,9 @@ struct Params {
     // The world pass's view projection, TAA's jitter included (gfx.rs
     // `globals.view_proj`).
     view_proj: mat4x4<f32>,
+    // The Hi-Z pyramid (hiz.rs): the depth it was seeded from, its levels and
+    // its level-0 side. Zero levels: no pyramid yet, and no test.
+    hiz: vec4<u32>,
 }
 
 // gpu_culling.rs `Record`.
@@ -104,6 +107,9 @@ struct Update {
 // occlusion.rs `Reach::bits`: whether the search reached each cell of its box,
 // a bit each (32 a word, lowest first).
 @group(0) @binding(8) var<storage, read> reached_cells: array<u32>;
+// The Hi-Z pyramid, every level (hiz.wgsl). A 1x1 placeholder until a frame
+// has built one, which `params.hiz.z` reports as zero levels.
+@group(0) @binding(9) var hiz: texture_2d<f32>;
 
 // gfx.rs `section_instance`'s w for a whole section: 1 / mesher::UV_STEPS.
 const STEP_BITS: u32 = 0x38000000u;
@@ -114,13 +120,21 @@ const BLOCK: u32 = 64u;
 // Counts before the pages': sections kept and draws, then occlusion's: the
 // quads of the sections with runs and those of the tested boxes not seen, the
 // box draw (four words and a spare), those boxes, phase 2's draws, a spare.
-const STATS: u32 = 12u;
+const STATS: u32 = 17u;
 const DRAWS: u32 = 1u;
 const QUADS: u32 = 2u;
 const HIDDEN_QUADS: u32 = 3u;
 const BOX: u32 = 4u;
 const HIDDEN: u32 = 9u;
 const DRAWN2: u32 = 10u;
+// Report-only Hi-Z (hiz.rs): the sections it tested and those it would hide.
+const HIZ_TESTED: u32 = 12u;
+const HIZ_HIDDEN: u32 = 13u;
+// Diagnostic: tests whose footprint found any occluder at all.
+const HIZ_OCCLUDER: u32 = 14u;
+// Diagnostic: the largest pyramid and box depths seen, scaled by 1e9.
+const HIZ_MAX_W: u32 = 15u;
+const HIZ_MAX_NEAR: u32 = 16u;
 // gpu_culling.rs `rounded_box` for a box past what its codes hold: no plane
 // rejects it.
 const UNBOUNDED: u32 = 0x80000000u;
@@ -315,6 +329,71 @@ fn near_or_big(o: vec3<f32>, b: u32) -> bool {
     return size.x * size.y > BIG * 4.0;
 }
 
+// Whether the Hi-Z pyramid says this box is hidden (hiz.rs).
+//
+// A box is hidden only where even the weakest occluder over its screen
+// footprint is nearer than the box's own nearest corner. Reversed depth, so
+// the pyramid holds the farthest (smallest) depth of each region and the box's
+// nearest corner is its largest: hidden when that largest is still smaller
+// than the region's smallest.
+//
+// Every doubt answers "not hidden": a box that reaches the near half of the
+// view (as `near_or_big`, whose guard this repeats), one with no pyramid, and
+// one whose footprint falls outside the view.
+fn hiz_hidden(o: vec3<f32>, b: u32) -> bool {
+    if params.hiz.z == 0u {
+        return false;
+    }
+    var lo = vec2(1e30);
+    var hi = vec2(-1e30);
+    var nearest = -1e30;
+    for (var c = 0u; c < 8u; c++) {
+        let p = params.view_proj * vec4(box_corner(o, b, c), 1.0);
+        if !(p.z < NEAR_DEPTH * p.w) {
+            return false;
+        }
+        let q = p.xy / p.w;
+        lo = min(lo, q);
+        hi = max(hi, q);
+        nearest = max(nearest, p.z / p.w);
+    }
+    // Clipped to the view, then to the depth the pyramid was seeded from: its
+    // level 0 holds that depth in its corner, so a pixel maps straight to a
+    // texel, and a level-n texel is the pixel's coordinates shifted down.
+    let a = clamp(lo, vec2(-1.0), vec2(1.0));
+    let z = clamp(hi, vec2(-1.0), vec2(1.0));
+    if any(z <= a) {
+        return false;
+    }
+    let have = vec2<f32>(params.hiz.xy);
+    let uv_lo = vec2(a.x * 0.5 + 0.5, 0.5 - z.y * 0.5) * have;
+    let uv_hi = vec2(z.x * 0.5 + 0.5, 0.5 - a.y * 0.5) * have;
+    let span = max(uv_hi.x - uv_lo.x, uv_hi.y - uv_lo.y);
+    // Level 0 is HALF the depth (hiz.wgsl), so its texel is two pixels and a
+    // level-n texel is 2^(n+1) of them. Pick the level whose texels are wide
+    // enough that the footprint covers two at most, so the four loads below
+    // see all of it: ceil(log2(span)) - 1, floored at level 0.
+    let wide = u32(max(ceil(log2(max(span, 1.0))) - 1.0, 0.0));
+    let level = min(wide, params.hiz.z - 1u);
+    // The level's size, halving from level 0's as hiz.rs built it.
+    let size = max((params.hiz.xy + 1u) / 2u >> vec2(level), vec2(1u));
+    let last = vec2<i32>(size - 1u);
+    let shift = vec2<u32>(level + 1u);
+    let p0 = clamp(vec2<i32>(uv_lo) >> shift, vec2(0), last);
+    let p1 = clamp(vec2<i32>(uv_hi) >> shift, p0, last);
+    let l = i32(level);
+    let w = min(
+        min(textureLoad(hiz, p0, l).x, textureLoad(hiz, vec2(p1.x, p0.y), l).x),
+        min(textureLoad(hiz, vec2(p0.x, p1.y), l).x, textureLoad(hiz, p1, l).x),
+    );
+    if w > 0.0 {
+        atomicAdd(&counts[HIZ_OCCLUDER], 1u);
+    }
+    atomicMax(&counts[HIZ_MAX_W], u32(clamp(w, 0.0, 4.0) * 1e9));
+    atomicMax(&counts[HIZ_MAX_NEAR], u32(clamp(nearest, 0.0, 4.0) * 1e9));
+    return nearest < w;
+}
+
 // In frames that occlude, a kept section with runs: its flags (0: phase 1,
 // untested), its box listed when it is tested. Its last test saw it: phase 1,
 // retested every RETEST frames (every frame with PROBE). A box that counts as
@@ -415,6 +494,14 @@ fn cull(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     if n == 0u {
         return;
+    }
+    // Report only, for now: what a Hi-Z test would hide, counted without
+    // hiding it, so the gain can be measured before a frame draws less.
+    if params.hiz.z != 0u {
+        atomicAdd(&counts[HIZ_TESTED], 1u);
+        if hiz_hidden(bitcast<vec3<f32>>(origin.xyz), s.a.z) {
+            atomicAdd(&counts[HIZ_HIDDEN], 1u);
+        }
     }
     var flags = 0u;
     if (params.flags & OCCLUDE) != 0u {
