@@ -1298,23 +1298,24 @@ impl Game<'_> {
     /// Runs `push_from_cart` for the cart being ticked (`c` is a copy of the
     /// stored one): the stored cart is replaced by `c` for the push and `c`
     /// takes back what the push changed.
-    fn push_from_ticked_cart(&mut self, c: &mut Minecart) {
-        let Some(i) = self.simulation.carts.iter().position(|x| x.id == c.id) else {
+    fn push_from_ticked_cart(&mut self, c: &mut Minecart, slot: usize) {
+        let Some(i) = cart_at(&self.simulation.carts, c.id, slot) else {
             return;
         };
         // The loot roll stays with the ticked copy, as in `tick_carts_now`: a
         // push never reads it, and a mineshaft's chest cart carries its whole
-        // roll as NBT, copied twice a tick per cart otherwise.
+        // roll as NBT. The stored cart becomes the ticked one, and the copy
+        // it replaces is what the pushed cart is copied back over.
         let loot = c.loot.take();
-        self.simulation.carts[i] = c.clone();
+        std::mem::swap(&mut self.simulation.carts[i], c);
+        // Pushing and boarding change velocities and riders, never the list.
         self.push_from_cart(i);
-        if let Some(i) = self.simulation.carts.iter().position(|x| x.id == c.id) {
-            *c = self.simulation.carts[i].clone();
-        }
+        c.clone_from(&self.simulation.carts[i]);
         c.loot = loot;
     }
     /// `AbstractMinecart.tick` for one cart; returns false once it is gone.
-    fn tick_cart(&mut self, c: &mut Minecart, intent: [f64; 2]) -> bool {
+    /// `slot` is where the cart is stored (where to look first).
+    fn tick_cart(&mut self, c: &mut Minecart, intent: [f64; 2], slot: usize) -> bool {
         c.tick_count += 1;
         c.previous = c.position;
         c.previous_yaw = c.yaw;
@@ -1368,7 +1369,7 @@ impl Game<'_> {
         // OldMinecartBehavior.tick ends with pushAndPickupEntities, before
         // AbstractMinecart.tick's updateFluidInteraction. The experiment still
         // uses this fallback until its per-move pickup/push retry is ported.
-        self.push_from_ticked_cart(c);
+        self.push_from_ticked_cart(c, slot);
         // AbstractMinecart.tick: updateFluidInteraction, a stream pushes the cart.
         c.in_water = c
             .push_by_fluid(&self.simulation.world, &self.res.motion().fluids)
@@ -1877,7 +1878,7 @@ impl Game<'_> {
             let loot = self.simulation.carts[i].loot.take();
             let mut c = self.simulation.carts[i].clone();
             c.loot = loot;
-            let alive = self.tick_cart(&mut c, [0.0; 2]);
+            let alive = self.tick_cart(&mut c, [0.0; 2], i);
             if c.kind == CartKind::Hopper && c.enabled {
                 self.hopper_cart_suck(&mut c);
             }
@@ -1909,7 +1910,7 @@ impl Game<'_> {
                 hint = i + 1;
                 let p = self.simulation.carts[i].position;
                 if ticking(p.x.floor() as i32, p.z.floor() as i32) {
-                    self.cart_lava_tick(id);
+                    self.cart_lava_tick(id, i);
                 }
             }
         }
@@ -1919,9 +1920,9 @@ impl Game<'_> {
     /// own `isInLava`. The second breaks the cart, or primes a TNT minecart
     /// (`MinecartTNT.destroy` for a fire source). A cart has no `baseTick`,
     /// so the fire `lavaIgnite` lights never burns it.
-    fn cart_lava_tick(&mut self, id: u32) {
+    fn cart_lava_tick(&mut self, id: u32, slot: usize) {
         for _ in 0..2 {
-            let Some(i) = self.simulation.carts.iter().position(|c| c.id == id) else {
+            let Some(i) = cart_at(&self.simulation.carts, id, slot) else {
                 return;
             };
             if !self.in_lava(self.simulation.carts[i].bounds()) {
@@ -2007,7 +2008,7 @@ impl Game<'_> {
         let (s, co) = (f64::from(r.sin()), f64::from(r.cos()));
         let intent = [left * co - forward * s, forward * co + left * s];
         let mut c = self.simulation.carts[i].clone();
-        let alive = self.tick_cart(&mut c, intent);
+        let alive = self.tick_cart(&mut c, intent, i);
         if let Some(p) = self.player.as_mut() {
             self.previous_position = p.position;
             p.position = Vec3::new(c.position.x, c.position.y + SEAT, c.position.z);
