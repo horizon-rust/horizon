@@ -680,6 +680,8 @@ pub struct Renderer {
     rain: rain::Rain,
     /// Bound in place of RT lighting's sun through tinting glass while there is none: all of it.
     rt_sun_unused: wgpu::TextureView,
+    /// RT lighting's clouds' shadows, which the terrain reads (`rt_clouds::Shadows`).
+    cloud_shadows: rt_clouds::Shadows,
     /// Bound in place of RT lighting's depth prepass while there is none.
     rt_depth_unused: wgpu::TextureView,
     /// RT lighting's sun and sky.
@@ -889,6 +891,7 @@ fn terrain_group(
     aldhani: &aldhani::Aldhani,
     rain: &wgpu::Buffer,
     scene: &wgpu::TextureView,
+    cloud_shadows: &rt_clouds::Shadows,
 ) -> wgpu::BindGroup {
     let view = |binding, view| wgpu::BindGroupEntry {
         binding,
@@ -941,6 +944,11 @@ fn terrain_group(
                 resource: rain.as_entire_binding(),
             },
             view(24, scene),
+            view(25, &cloud_shadows.view),
+            wgpu::BindGroupEntry {
+                binding: 26,
+                resource: wgpu::BindingResource::Sampler(&cloud_shadows.sampler),
+            },
         ],
     })
 }
@@ -1925,6 +1933,21 @@ impl Renderer {
                         multisampled: false,
                     },
                 ),
+                // RT lighting's clouds' shadows (`rt_clouds::Shadows`), filtered, wrapping.
+                entry(
+                    25,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                entry(
+                    26,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                ),
                 // The sky table: the stars read it where they are (vs_rt_star).
                 entry(
                     14,
@@ -2612,6 +2635,7 @@ impl Renderer {
                 view_formats: &[],
             })
             .create_view(&Default::default());
+        let cloud_shadows = rt_clouds::Shadows::new(&device, &queue);
         let group = terrain_group(
             &device,
             "Horizon terrain resources",
@@ -2633,6 +2657,7 @@ impl Renderer {
             &aldhani,
             rain.map(),
             &rt_history_unused,
+            &cloud_shadows,
         );
         let crosshair_group = terrain_group(
             &device,
@@ -2655,6 +2680,7 @@ impl Renderer {
             &aldhani,
             rain.map(),
             &rt_history_unused,
+            &cloud_shadows,
         );
         let index_quads = 1 << 16;
         let indices = Self::quad_indices(&device, index_quads);
@@ -3718,6 +3744,7 @@ impl Renderer {
             aldhani,
             rain,
             rt_sun_unused,
+            cloud_shadows,
             rt_depth_unused,
             atmosphere,
             rt_clouds: None,
@@ -5152,6 +5179,7 @@ impl Renderer {
             &self.aldhani,
             self.rain.map(),
             scene,
+            &self.cloud_shadows,
         );
         self.crosshair_group = terrain_group(
             &self.device,
@@ -5174,6 +5202,7 @@ impl Renderer {
             &self.aldhani,
             self.rain.map(),
             scene,
+            &self.cloud_shadows,
         );
     }
     /// This frame's ray-traced shadows: the grid written up to date, the light's direction (the
@@ -7784,6 +7813,19 @@ impl Renderer {
                 thick: rain_level.clamp(0.0, 1.0),
                 curvature: earth_bend,
             };
+            // Their shadows, for the terrain the next frame (and the other eyes this one).
+            if self.eye.is_none_or(|e| e.view_index <= 1) {
+                clouds.update_shadows(
+                    &self.device,
+                    &mut self.uploads,
+                    &mut encoder,
+                    world_depth,
+                    frame.camera,
+                    &params,
+                    &self.atmosphere.view,
+                    &mut self.cloud_shadows,
+                );
+            }
             if rt_clouds::mode() == rt_clouds::Mode::Dome && rt_clouds::dome_sees(frame.camera) {
                 // One march a frame for every view (both eyes see clouds alike): the first view
                 // updates the dome, each view looks it up.

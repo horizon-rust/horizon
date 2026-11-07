@@ -39,8 +39,8 @@ use super::wgsl_prefix::{TERRAIN, prefixed, section};
 pub const GROUP: u32 = 2;
 /// Block sampled textures terrain.wgsl's group 0 binds (8 sprite arrays, the lightmap, RT
 /// lighting's two masks, its sky, its sun's tint, its depth, its reflection and refraction, the
-/// moon's and the Milky Way's maps, the view's last frame).
-const TERRAIN_TEXTURES: u32 = 20;
+/// moon's and the Milky Way's maps, the view's last frame, the clouds' shadows).
+const TERRAIN_TEXTURES: u32 = 21;
 
 const PREFIX: &str = "horizon_terrain_";
 
