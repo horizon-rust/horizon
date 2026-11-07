@@ -14497,6 +14497,8 @@ impl Game<'_> {
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                         horizon_client::entity_nbt::apply_item_components(m, stack);
                     }
+                    // MobBucketItem.spawn: EntityType.createDefaultStackConfig.
+                    self.apply_spawn_egg_entity_data(id, stack, true);
                     self.mob_placed(id)?;
                 }
                 self.post_block_game_event(

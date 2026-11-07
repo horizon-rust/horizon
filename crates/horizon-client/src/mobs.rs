@@ -2533,8 +2533,12 @@ impl Seen {
     }
 }
 impl Mob {
-    /// The name used by command replies: CustomName takes precedence over the type.
+    /// The name used by command replies: CustomName (its whole text, style
+    /// included) takes precedence over the type.
     pub fn command_name(&self) -> crate::text::Text {
+        if let Some(text) = &self.custom_name_text {
+            return text.clone();
+        }
         if let Some(name) = &self.custom_name {
             return crate::text::Text::literal(name);
         }
