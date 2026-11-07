@@ -118,6 +118,13 @@ impl Game<'_> {
         {
             return Ok(());
         }
+        // While its delay counts down, `serverTick` only takes one off it: no
+        // level, random or event (a server with hundreds of dungeons near its
+        // players built the level for every one of them, every tick).
+        if spawner.spawn_delay > 0 {
+            spawner.spawn_delay -= 1;
+            return Ok(());
+        }
         let pos = [key.0, key.1, key.2];
         let mut random = std::mem::replace(
             &mut self.simulation.world.random,
