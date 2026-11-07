@@ -53,8 +53,8 @@ pub fn thrown_types() -> &'static [ThrownType] {
 }
 /// the lib's tests' one mod type, `ruby:bolt` thrown from `ruby:gem`: the
 /// registry is set once per process, so every test registers the same.
-#[cfg(test)]
-pub(crate) fn register_test_types() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn register_test_types() {
     let _ = register_thrown_types([("ruby:bolt".into(), "ruby:gem".into(), 2.0)]);
 }
 /// the mod type with entity type `id`; out of line, as vanilla's never are.
@@ -1903,10 +1903,6 @@ mod tests {
         assert!(
             thrown_type("ruby:late").is_none() && thrown_by_item("minecraft:snowball").is_none()
         );
-        // its template's tracking settings, not the builder defaults.
-        let settings = crate::lan::tracking::settings;
-        assert_eq!(settings("ruby:bolt"), settings("minecraft:snowball"));
-        assert_eq!(settings("ruby:late"), (5, 3, true));
     }
 
     /// `ShulkerBullet.tick` with no target: `applyGravity` (0.04, none under

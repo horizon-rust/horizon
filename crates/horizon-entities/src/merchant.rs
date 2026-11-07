@@ -917,7 +917,7 @@ impl Trades {
                 // DyedItemColor.applyDyes: one item, the colours mixed in.
                 let current = stack.data().and_then(|d| d.dyed_color);
                 let mut out = ItemStack { count: 1, ..stack };
-                out.data_mut().dyed_color = Some(crate::crafting::apply_dyes(current, &dyes));
+                out.data_mut().dyed_color = Some(apply_dyes(current, &dyes));
                 Some((out, 0))
             }
             "minecraft:set_random_potion" => {
@@ -968,6 +968,33 @@ impl Trades {
     }
 }
 
+/// `DyedItemColor.applyDyes` over dye indexes.
+pub fn apply_dyes(current: Option<i32>, dyes: &[usize]) -> i32 {
+    let (mut r, mut g, mut b, mut intensity, mut n) = (0i32, 0i32, 0i32, 0i32, 0i32);
+    let mut add = |rgb: u32| {
+        let (red, green, blue) = (
+            (rgb >> 16 & 255) as i32,
+            (rgb >> 8 & 255) as i32,
+            (rgb & 255) as i32,
+        );
+        intensity += red.max(green.max(blue));
+        r += red;
+        g += green;
+        b += blue;
+        n += 1;
+    };
+    if let Some(c) = current {
+        add(c as u32);
+    }
+    for d in dyes {
+        add(crate::block_entity_render::DYES[*d].1);
+    }
+    let (red, green, blue) = (r / n, g / n, b / n);
+    let average = intensity as f32 / n as f32;
+    let result = red.max(green.max(blue)) as f32;
+    let scale = |c: i32| (c as f32 * average / result) as i32;
+    scale(red) << 16 | scale(green) << 8 | scale(blue)
+}
 #[cfg(test)]
 mod tests {
     use super::*;

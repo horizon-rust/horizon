@@ -9,7 +9,7 @@ StringRepresentable	skip:java		codec and name-lookup builders; Horizon matches e
 StringRepresentable.EnumCodec	skip:java		codec byName lookup
 StringUtil.truncateStringIfNecessary	port	crates/horizon-client-render/src/screen_draw.rs::TextField::set_value	gap: minor: no '...' suffix variant (only the brain-dump debug text uses it); cuts by characters
 StringUtil.lineCount	skip:other		no caller in 26.3 (dead helper)
-StringUtil.isBlank	port	crates/horizon-client/src/title.rs::Title::buttons	Save of the rename screen is active only for a non-blank name; trim() uses Unicode whitespace, a tiny difference from Java's isWhitespace
+StringUtil.isBlank	port	crates/horizon-client-lib/src/title.rs::Title::buttons	Save of the rename screen is active only for a non-blank name; trim() uses Unicode whitespace, a tiny difference from Java's isWhitespace
 ThreadingDetector	skip:debug		debug check that two threads enter the same structure; Rust's ownership rules rule it out
 TickThrottler.isUnderThreshold	port	crates/horizon-client/src/game/lan_chat.rs::detect_rate_spam	a chat message or command adds 20 to the guest's counter, and a guest over the threshold who is not an operator is kicked with disconnect.spam; a threshold of 0 or less never kicks
 Util.makeDescriptionId	inline	crates/horizon-client/src/game/commands.rs::Game::stack_display_name	gap: minor: each caller builds its own item, block or entity key (creative.rs, brewing.rs, stats_screen.rs, combat.rs); no shared key builder
@@ -40,7 +40,7 @@ Util.describeError	skip:debug		error text for game test reports and FreeType err
 Util.executeInSequence	missing		minor: the steps of a file move are not retried as a unit; a failed move is reported once
 Util.runWithRetries	missing		minor: no retry loop (10 attempts) around file moves for Windows file locks; Horizon's save and datafix moves do not retry
 Util.safeMoveFile	port	crates/horizon-world/src/datafix/files.rs::move_file	gap: minor: one attempt, no 10-try retry; still refuses to overwrite an existing target
-Util.safeReplaceOrMoveFile	port	crates/horizon-client/src/save.rs::write_dat	gap: minor: no retries and no rollback to the backup when the new file cannot be renamed in; the old file is moved to a *_old name
+Util.safeReplaceOrMoveFile	port	crates/horizon-client-lib/src/save.rs::write_dat	gap: minor: no retries and no rollback to the backup when the new file cannot be renamed in; the old file is moved to a *_old name
 Util.offsetByCodepoints	inline	crates/horizon-client-render/src/screen_draw.rs::TextField::key	gap: minor: arrow keys move one character only (no count argument, no surrogate pairs); ctrl-arrows use ui word_position
 Util.startTimerHackThread	skip:other		JVM Windows timer-resolution thread; Rust timers do not need it
 Util.copyBetweenDirs	inline	crates/horizon-client-render/src/datapack.rs::install	Create World's picks are copied into <world>/datapacks one by one, each pack's folder or zip (datapack.rs::copy)
@@ -74,8 +74,8 @@ TrackingDebugSynchronizer.PoiSynchronizer	skip:debug		F3 POI debug renderer data
 TrackingDebugSynchronizer.SourceSynchronizer	skip:debug		F3 debug value sync; Horizon has none
 TrackingDebugSynchronizer.ValueSource	skip:debug		F3 debug value polling; Horizon has none
 TrackingDebugSynchronizer.VillageSectionSynchronizer	skip:debug		F3 village section debug renderer data; Horizon has none
-AbstractSampleLogger.logFullSample	port	crates/horizon-client/src/debug_chart.rs::SampleLogger::log_full	keeps the last 240 samples, oldest dropped
-AbstractSampleLogger.logPartialSample	inline	crates/horizon-client/src/debug_chart.rs::log_tick	one tick sample's four slots are filled at once and pushed by log_full: full tick, tick method, scheduled tasks, idle
+AbstractSampleLogger.logFullSample	port	crates/horizon-client-lib/src/debug_chart.rs::SampleLogger::log_full	keeps the last 240 samples, oldest dropped
+AbstractSampleLogger.logPartialSample	inline	crates/horizon-client-lib/src/debug_chart.rs::log_tick	one tick sample's four slots are filled at once and pushed by log_full: full tick, tick method, scheduled tasks, idle
 AbstractSampleLogger.resetSample	skip:other		resets the working sample buffer; Horizon passes each full sample, nothing to reset
-LocalSampleLogger.useSample	port	crates/horizon-client/src/debug_chart.rs::SampleLogger::log_full	copies the working sample into the 240-entry ring
+LocalSampleLogger.useSample	port	crates/horizon-client-lib/src/debug_chart.rs::SampleLogger::log_full	copies the working sample into the 240-entry ring
 RemoteSampleLogger.useSample	skip:debug		sends chart samples to debug subscribers; Horizon has no debug subscriptions

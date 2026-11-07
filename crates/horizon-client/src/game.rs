@@ -7985,7 +7985,10 @@ impl Game<'_> {
         let mut player = PlayerMotion::new(self.motion, feet)?;
         player.yaw = self.yaw;
         let entering = self.restore_player_state;
-        player.load_saved_state_once(&mut self.restore_player_state, &self.level)?;
+        player.load_saved_state_once(
+            &mut self.restore_player_state,
+            &self.level.saved_player_state(),
+        )?;
         let spectator = self.mode == horizon_client::command::args::GameMode::Spectator;
         player.may_fly = self.creative || spectator;
         player.invulnerable = self.creative || spectator;

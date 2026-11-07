@@ -1,8 +1,8 @@
-PlayerList.updateEntireScoreboard	port	crates/horizon-client/src/lan/scoreboard.rs::View::changes	the join is View::changes against the guest's empty view, sent from game/scoreboard.rs lan_sync_scoreboard
-PlayerList.loadPlayerData	port	crates/horizon-client/src/lan/playerdata.rs::load_owner	gap: minor: the owner gets the file level.dat names as Level::read_root read it, anyone else playerdata.rs::load; the files are datafixed when the world is upgraded (datafix/files.rs), not on load
+PlayerList.updateEntireScoreboard	port	crates/horizon-client-lib/src/lan/scoreboard.rs::View::changes	the join is View::changes against the guest's empty view, sent from game/scoreboard.rs lan_sync_scoreboard
+PlayerList.loadPlayerData	port	crates/horizon-client-lib/src/lan/playerdata.rs::load_owner	gap: minor: the owner gets the file level.dat names as Level::read_root read it, anyone else playerdata.rs::load; the files are datafixed when the world is upgraded (datafix/files.rs), not on load
 PlayerList.save	port	crates/horizon-client/src/game/lan.rs::Game::save_guest	player file, advancements and statistics of a guest
-PlayerList.disconnectAllPlayersWithProfile	port	crates/horizon-client/src/lan/hub.rs::Hub::poll	kicks every connection of the uuid on NetEvent::Duplicate; the refusal of a second login is Shared::try_admit (lan/mod.rs)
-PlayerList.broadcastSystemToTeam	port	crates/horizon-client/src/lan/hub.rs::Hub::system_message_to	
+PlayerList.disconnectAllPlayersWithProfile	port	crates/horizon-client-lib/src/lan/hub.rs::Hub::poll	kicks every connection of the uuid on NetEvent::Duplicate; the refusal of a second login is Shared::try_admit (lan/mod.rs)
+PlayerList.broadcastSystemToTeam	port	crates/horizon-client-lib/src/lan/hub.rs::Hub::system_message_to	
 PlayerList.broadcastSystemToAllExceptTeam	port	crates/horizon-client-core/src/scoreboard.rs::death_message_reaches	HideForOwnTeam sends the death message to everyone outside the dying player's team, checked before the LAN hub broadcasts it and before the local chat line
 PlayerList.getPlayerNamesArray	skip:server		the GS4 query reply's player list; RCON and query server code; Horizon has no RCON or GS4 query port
 PlayerList.op	inline	crates/horizon-client/src/game/dedicated.rs::Game::console_command	the op arm: list add, reply, and sync_ops (permission level push to the hub)
@@ -62,17 +62,17 @@ RconThread.run	port	crates/horizon-server/src/rcon.rs::serve	accept a connection
 RconThread.create	port	crates/horizon-server/src/rcon.rs::start	server-ip (0.0.0.0 when empty), rcon.port 1 to 65535 and a password, with vanilla's three warnings
 RconThread.stop	skip:server		the listener runs as long as the supervisor does, through game restarts
 RconThread.closeSocket	skip:server		the listener runs as long as the supervisor does
-ServerWaypointManager.trackWaypoint	port	crates/horizon-client/src/lan/waypoints.rs::Waypoints::track	
-ServerWaypointManager.updateWaypoint	port	crates/horizon-client/src/lan/waypoints.rs::Waypoints::update_waypoint	
-ServerWaypointManager.untrackWaypoint	port	crates/horizon-client/src/lan/waypoints.rs::Waypoints::untrack	
-ServerWaypointManager.addPlayer	port	crates/horizon-client/src/lan/waypoints.rs::Waypoints::add_player	
-ServerWaypointManager.updatePlayer	port	crates/horizon-client/src/lan/waypoints.rs::Waypoints::update_player	
-ServerWaypointManager.removePlayer	port	crates/horizon-client/src/lan/waypoints.rs::Waypoints::remove_player	
-ServerWaypointManager.remakeConnections	inline	crates/horizon-client/src/lan/waypoints.rs::Waypoints::tick_level	called on scoreboard team changes; the per-tick update re-checks every connection instead
-ServerWaypointManager.createConnection	port	crates/horizon-client/src/lan/waypoints.rs::Waypoints::create_connection	
-ServerWaypointManager.updateConnection	port	crates/horizon-client/src/lan/waypoints.rs::Waypoints::update_or_create	
+ServerWaypointManager.trackWaypoint	port	crates/horizon-client-lib/src/lan/waypoints.rs::Waypoints::track	
+ServerWaypointManager.updateWaypoint	port	crates/horizon-client-lib/src/lan/waypoints.rs::Waypoints::update_waypoint	
+ServerWaypointManager.untrackWaypoint	port	crates/horizon-client-lib/src/lan/waypoints.rs::Waypoints::untrack	
+ServerWaypointManager.addPlayer	port	crates/horizon-client-lib/src/lan/waypoints.rs::Waypoints::add_player	
+ServerWaypointManager.updatePlayer	port	crates/horizon-client-lib/src/lan/waypoints.rs::Waypoints::update_player	
+ServerWaypointManager.removePlayer	port	crates/horizon-client-lib/src/lan/waypoints.rs::Waypoints::remove_player	
+ServerWaypointManager.remakeConnections	inline	crates/horizon-client-lib/src/lan/waypoints.rs::Waypoints::tick_level	called on scoreboard team changes; the per-tick update re-checks every connection instead
+ServerWaypointManager.createConnection	port	crates/horizon-client-lib/src/lan/waypoints.rs::Waypoints::create_connection	
+ServerWaypointManager.updateConnection	port	crates/horizon-client-lib/src/lan/waypoints.rs::Waypoints::update_or_create	
 SoundEvent.create	skip:data		registry object construction; Horizon's sound_events.rs models sounds.json entries, not SoundEvent objects
-SoundEvent.getRange	inline	crates/horizon-client/src/lan/containers.rs::Hub::broadcast_near	16*max(volume,1) is the whole formula: no 26.3 event sets a fixed range (SoundEvents never calls createFixedRangeEvent), and a player exactly on it is left out
+SoundEvent.getRange	inline	crates/horizon-client-lib/src/lan/containers.rs::Hub::broadcast_near	16*max(volume,1) is the whole formula: no 26.3 event sets a fixed range (SoundEvents never calls createFixedRangeEvent), and a player exactly on it is left out
 SoundEvents.register	skip:data		registry bootstrap of sound events and variant sets; Horizon has no registry layer
 SoundEvents.registerForHolder	skip:data		registry bootstrap of sound events and variant sets; Horizon has no registry layer
 SoundEvents.registerGoatHornSoundVariants	skip:data		registry bootstrap of sound events and variant sets; Horizon has no registry layer
@@ -81,15 +81,15 @@ SoundEvents.registerChickenSoundVariants	skip:data		registry bootstrap of sound 
 SoundEvents.registerCowSoundVariants	skip:data		registry bootstrap of sound events and variant sets; Horizon has no registry layer
 SoundEvents.registerPigSoundVariants	skip:data		registry bootstrap of sound events and variant sets; Horizon has no registry layer
 SoundEvents.registerCatSoundVariants	skip:data		registry bootstrap of sound events and variant sets; Horizon has no registry layer
-RecipeBook.setBookSetting	port	crates/horizon-client/src/lan/hub.rs::Hub::process_inbox	the RecipeBookChangeSettings arm sets open and filtering for the book
+RecipeBook.setBookSetting	port	crates/horizon-client-lib/src/lan/hub.rs::Hub::process_inbox	the RecipeBookChangeSettings arm sets open and filtering for the book
 RecipeBookSettings.getSettings	skip:java		accessor: the four books are arrays indexed by BookType::index in recipe_book.rs
-RecipeBookSettings.updateSettings	inline	crates/horizon-client/src/lan/hub.rs::Hub::process_inbox	the open and filtering writes of the change-settings arm
+RecipeBookSettings.updateSettings	inline	crates/horizon-client-lib/src/lan/hub.rs::Hub::process_inbox	the open and filtering writes of the change-settings arm
 RecipeBookSettings.copy	skip:java		value copy of a plain struct; no separate copy step
-RecipeBookSettings.replaceFrom	inline	crates/horizon-client/src/recipe_book.rs::Settings::read_valid	the flags and recipe sets of a loaded book
+RecipeBookSettings.replaceFrom	inline	crates/horizon-client-lib/src/recipe_book.rs::Settings::read_valid	the flags and recipe sets of a loaded book
 RecipeBookSettings.TypeSettings.codec	skip:java		NBT codec builder; Settings::read_valid and Settings::write use the same keys
-ServerRecipeBook.loadRecipes	port	crates/horizon-client/src/recipe_book.rs::Settings::read_valid	gap: minor: recipes that fail the validator are dropped without vanilla's error log
-ServerRecipeBook.pack	port	crates/horizon-client/src/recipe_book.rs::Settings::write	the saved compound of the book
-ServerRecipeBook.apply	inline	crates/horizon-client/src/recipe_book.rs::Settings::read_valid	replaces the book's known and highlighted recipes on load
+ServerRecipeBook.loadRecipes	port	crates/horizon-client-lib/src/recipe_book.rs::Settings::read_valid	gap: minor: recipes that fail the validator are dropped without vanilla's error log
+ServerRecipeBook.pack	port	crates/horizon-client-lib/src/recipe_book.rs::Settings::write	the saved compound of the book
+ServerRecipeBook.apply	inline	crates/horizon-client-lib/src/recipe_book.rs::Settings::read_valid	replaces the book's known and highlighted recipes on load
 ServerStatsCounter.createTypedStatsCodec	skip:java		codec builder for the stats map
 ServerStatsCounter.parse	port	crates/horizon-client/src/game/stats.rs::Stats::read	gap: minor: no data fixer runs on old stats files
 Stat.equals	skip:java		Horizon keys stats by name strings; there are no Stat objects to compare
@@ -114,7 +114,7 @@ TagLoader.findTagsForRegistry	skip:data		lookup helper of the reload layer; Hori
 TagLoader.ElementLookup.fromGetters	skip:java		lookup adapter over the registry getters
 TagLoader.SortingEntry.visitRequiredDependencies	inline	crates/horizon-world/src/worldgen/tags.rs::TagDefinitions::build	the edges of the sort in TagDefinitions::build
 TagLoader.SortingEntry.visitOptionalDependencies	inline	crates/horizon-world/src/worldgen/tags.rs::TagDefinitions::build	the edges of the sort in TagDefinitions::build
-TagNetworkSerialization.serializeToNetwork	port	crates/horizon-client/src/lan/data.rs::SyncData::load_tags	tag ids per registry, with # references expanded
+TagNetworkSerialization.serializeToNetwork	port	crates/horizon-client-lib/src/lan/data.rs::SyncData::load_tags	tag ids per registry, with # references expanded
 TagNetworkSerialization.deserializeTagsFromNetwork	missing		minor: the client never reads UpdateTags (only lan/conn.rs sends it), so tags from a server are not applied; Horizon loads its own tag files (items.rs load_tag_lists)
 ARGB.linearChannelMean	port	crates/horizon-client-render/src/mipmap.rs::mean_linear	the linear-light mean of four samples for one channel
 ARGB.addRgb	skip:other		int overload has no caller in 26.3; ColorModifier uses the Vector3fc and Vector4fc overloads

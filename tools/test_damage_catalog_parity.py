@@ -74,9 +74,9 @@ def main():
                lab.ROOT / "crates/horizon-world/examples/damage_catalog_probe.rs",
                lab.ROOT / "crates/horizon-world/src/damage_source.rs",
                lab.ROOT / "crates/horizon-world/src/damage_source/resources.rs",
-               lab.ROOT / "crates/horizon-client/src/health/datapack_tests.rs",
-               lab.ROOT / "crates/horizon-client/src/landing.rs",
-               lab.ROOT / "crates/horizon-client/src/lan/data.rs",
+               lab.ROOT / "crates/horizon-entities/src/health/datapack_tests.rs",
+               lab.ROOT / "crates/horizon-entities/src/landing.rs",
+               lab.ROOT / "crates/horizon-client-lib/src/lan/data.rs",
                lab.ROOT / "crates/horizon-client/src/game/lan.rs"]
     hashes = {str(p.relative_to(lab.ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}
     libraries = sorted((args.game_dir / "libraries/server").rglob("*.jar"))

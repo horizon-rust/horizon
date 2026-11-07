@@ -30,3 +30,26 @@ pub fn float(tag: Option<&Tag>) -> Option<f64> {
         other => number(Some(other))? as f64,
     })
 }
+pub fn doubles(values: &[f64]) -> Tag {
+    Tag::List(values.iter().map(|v| Tag::Double(v.to_bits())).collect())
+}
+pub fn floats(values: &[f32]) -> Tag {
+    Tag::List(values.iter().map(|v| Tag::Float(v.to_bits())).collect())
+}
+pub fn read_doubles<const N: usize>(tag: Option<&Tag>) -> Option<[f64; N]> {
+    match tag? {
+        Tag::List(l) if l.len() == N => {
+            let mut out = [0.0; N];
+            for (o, v) in out.iter_mut().zip(l) {
+                *o = float(Some(v))?;
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+pub fn put(tag: &mut Tag, key: &str, value: Tag) {
+    if let Tag::Compound(map) = tag {
+        map.insert(key.into(), value);
+    }
+}

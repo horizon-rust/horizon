@@ -40,9 +40,9 @@ to players. Players still prepare their own copy from their official launcher (`
   | --- | --- | --- |
   | `crates/horizon-core/src/version.rs` | `gen_version_consts.py` | the client jar's `version.json` |
   | `crates/horizon-protocol/src/ids.rs` | `generate_packet_ids.py` | `packets.json` report |
-  | `crates/horizon-client/src/lan/tracking.rs` | `generate_entity_tracking.py` | decompiled `EntityTypes` |
-  | `crates/horizon-client/src/lan/command_suggestions.rs` | `generate_command_suggestions.py` | `VanillaCommandSuggestionsExporter` |
-  | `crates/horizon-client/src/lan/command_order.rs` | `generate_lan_command_order.py` | vanilla's command tree |
+  | `crates/horizon-client-lib/src/lan/tracking.rs` | `generate_entity_tracking.py` | decompiled `EntityTypes` |
+  | `crates/horizon-client-lib/src/lan/command_suggestions.rs` | `generate_command_suggestions.py` | `VanillaCommandSuggestionsExporter` |
+  | `crates/horizon-client-lib/src/lan/command_order.rs` | `generate_lan_command_order.py` | vanilla's command tree |
   | `crates/horizon-command/src/vanilla_order.rs` | `generate_command_order.py` | command-parse harness export |
   | `crates/horizon-world/src/datafix/block_state_data.txt` | `gen_block_state_data.py` | decompiled `BlockStateData` |
   | `crates/horizon-world/src/datafix/flat_tables.rs` | `gen_flat_tables.py` | 1.13 flattening fixers (never change) |

@@ -33,7 +33,7 @@ already written there ("Type is not saved"). Then drill in:
 ```sh
 python3 tools/port_ledger.py where MushroomCow.readAdditionalSaveData   # ports, callers, callees, gaps
 python3 tools/port_ledger.py class MushroomCow                          # every method: where, or missing
-python3 tools/port_ledger.py what crates/horizon-client/src/mobs/farm.rs:120   # which vanilla method a fn ports
+python3 tools/port_ledger.py what crates/horizon-entities/src/mobs/farm.rs:120   # which vanilla method a fn ports
 ```
 
 A ledger answer is a lead, not a verdict: about 1 in 12 map rows is wrong. Read the vanilla method (path and

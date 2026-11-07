@@ -625,7 +625,10 @@ pub fn to_nbt(m: &Mob, map: &mut horizon_world::nbt::Compound) {
     };
     match m.saddle_item() {
         Some(saddle) => {
-            equipment.insert("saddle".into(), crate::save::item_to_nbt(&saddle));
+            equipment.insert(
+                "saddle".into(),
+                horizon_items::item_nbt::item_to_nbt(&saddle),
+            );
         }
         None => {
             equipment.remove(&"saddle".into());
@@ -646,7 +649,7 @@ pub fn to_nbt(m: &Mob, map: &mut horizon_world::nbt::Compound) {
 /// `TamableAnimal.readAdditionalSaveData`: Sitting is independent of Owner.
 pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     use horizon_world::nbt::Tag;
-    m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
+    m.extra.owner = horizon_client_core::uuid::uuid_from_tag(tag.get("Owner"));
     m.extra.tame = m.extra.owner.is_some();
     m.extra.sitting = crate::entity_nbt::flag(tag, "Sitting");
     if let Some(Tag::String(v)) = tag.get("variant") {
@@ -656,7 +659,7 @@ pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     let saddle = tag
         .get("equipment")
         .and_then(|e| e.get("saddle"))
-        .and_then(crate::save::item_from_nbt);
+        .and_then(horizon_items::item_nbt::item_from_nbt);
     m.set_saddle(saddle);
     if let Some(Tag::Int(v)) = tag
         .get("Brain")

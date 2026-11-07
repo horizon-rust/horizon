@@ -310,7 +310,7 @@ world's name or a server's address. Horizon Settings has the switch
 (**Discord Rich Presence**, on by default; `discordPresence` in
 `horizon-extras.txt`), and `HORIZON_NO_DISCORD=1` turns it off for one run.
 
-`crates/horizon-client/src/discord_presence.rs` speaks Discord's local IPC
+`crates/horizon-client-lib/src/discord_presence.rs` speaks Discord's local IPC
 itself (the `discord-ipc-N` socket or named pipe, no SDK) from a thread of its
 own: the frame only hands it a status when it changes. It retries every 15 s
 while Discord isn't running and stays within Discord's 5 updates per 20 s.

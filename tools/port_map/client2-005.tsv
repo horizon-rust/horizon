@@ -19,41 +19,41 @@ RenderType.calculateHasBlending	skip:other		blend flag from the pipeline colour 
 RenderType.prepare	inline	crates/horizon-client-render/src/gfx.rs::Renderer::draw_frame	gap: minor: texture and overlay/lightmap binding folded into the frame passes
 RenderType.writeDynamicTransforms	inline	crates/horizon-client-render/src/gfx.rs::Renderer::draw_frame	gap: minor: no per-render-type layering offset found (only perspective layering scale)
 RenderTypes.createMovingBlockSetup	inline	crates/horizon-client/src/game/moving_pistons.rs::Game::moving_piston_geometry	block atlas and lightmap for moving blocks; gap: minor: crumbling and outline flags not checked here
-RenderTypes.breezeWind	inline	crates/horizon-client/src/mobs/render.rs::layers	the breeze's wind layer scrolls by 0.02 of the texture a tick (scroll_offset, scroll_u)
-BannerSpecialRenderer.submit	port	crates/horizon-client/src/item_render/special.rs::submit	Banner arm: flag, base and up to 16 pattern layers
-BannerSpecialRenderer.Unbaked.bake	inline	crates/horizon-client/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
-BellSpecialRenderer.submit	port	crates/horizon-client/src/item_render/special.rs::submit	Bell arm
-BellSpecialRenderer.getExtents	port	crates/horizon-client/src/item_render/special.rs::extents	Bell arm
-BellSpecialRenderer.Unbaked.bake	inline	crates/horizon-client/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
-BookSpecialRenderer.submit	port	crates/horizon-client/src/item_render/special.rs::submit	Book arm with book_pose
-BookSpecialRenderer.getExtents	port	crates/horizon-client/src/item_render/special.rs::extents	Book arm with book_pose
-BookSpecialRenderer.Unbaked.bake	inline	crates/horizon-client/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
-ChestSpecialRenderer.createDefaultTextures	inline	crates/horizon-client/src/item_render/special.rs::submit	default chest texture ids come from mapped("chest", ...) in the Chest arm
-ChestSpecialRenderer.submit	port	crates/horizon-client/src/item_render/special.rs::submit	Chest arm with chest_pose
-ChestSpecialRenderer.getExtents	port	crates/horizon-client/src/item_render/special.rs::extents	Chest arm with chest_pose
-ChestSpecialRenderer.Unbaked.bake	inline	crates/horizon-client/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
-ConduitSpecialRenderer.submit	port	crates/horizon-client/src/item_render/special.rs::submit	Conduit arm
-CopperGolemStatueSpecialRenderer.submit	port	crates/horizon-client/src/item_render/special.rs::submit	CopperGolemStatue arm
-CopperGolemStatueSpecialRenderer.getExtents	port	crates/horizon-client/src/item_render/special.rs::extents	CopperGolemStatue arm
-CopperGolemStatueSpecialRenderer.Unbaked.bake	inline	crates/horizon-client/src/item_render/special.rs::load_parts	COPPER_GOLEM_LAYERS are baked once
-CopperGolemStatueSpecialRenderer.Unbaked.getModel	port	crates/horizon-client/src/item_render/special.rs::statue_layer	pose to model layer
-DecoratedPotSpecialRenderer.submit	port	crates/horizon-client/src/item_render/special.rs::submit	DecoratedPot arm
+RenderTypes.breezeWind	inline	crates/horizon-entities/src/mobs/render.rs::layers	the breeze's wind layer scrolls by 0.02 of the texture a tick (scroll_offset, scroll_u)
+BannerSpecialRenderer.submit	port	crates/horizon-client-lib/src/item_render/special.rs::submit	Banner arm: flag, base and up to 16 pattern layers
+BannerSpecialRenderer.Unbaked.bake	inline	crates/horizon-client-lib/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
+BellSpecialRenderer.submit	port	crates/horizon-client-lib/src/item_render/special.rs::submit	Bell arm
+BellSpecialRenderer.getExtents	port	crates/horizon-client-lib/src/item_render/special.rs::extents	Bell arm
+BellSpecialRenderer.Unbaked.bake	inline	crates/horizon-client-lib/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
+BookSpecialRenderer.submit	port	crates/horizon-client-lib/src/item_render/special.rs::submit	Book arm with book_pose
+BookSpecialRenderer.getExtents	port	crates/horizon-client-lib/src/item_render/special.rs::extents	Book arm with book_pose
+BookSpecialRenderer.Unbaked.bake	inline	crates/horizon-client-lib/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
+ChestSpecialRenderer.createDefaultTextures	inline	crates/horizon-client-lib/src/item_render/special.rs::submit	default chest texture ids come from mapped("chest", ...) in the Chest arm
+ChestSpecialRenderer.submit	port	crates/horizon-client-lib/src/item_render/special.rs::submit	Chest arm with chest_pose
+ChestSpecialRenderer.getExtents	port	crates/horizon-client-lib/src/item_render/special.rs::extents	Chest arm with chest_pose
+ChestSpecialRenderer.Unbaked.bake	inline	crates/horizon-client-lib/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
+ConduitSpecialRenderer.submit	port	crates/horizon-client-lib/src/item_render/special.rs::submit	Conduit arm
+CopperGolemStatueSpecialRenderer.submit	port	crates/horizon-client-lib/src/item_render/special.rs::submit	CopperGolemStatue arm
+CopperGolemStatueSpecialRenderer.getExtents	port	crates/horizon-client-lib/src/item_render/special.rs::extents	CopperGolemStatue arm
+CopperGolemStatueSpecialRenderer.Unbaked.bake	inline	crates/horizon-client-lib/src/item_render/special.rs::load_parts	COPPER_GOLEM_LAYERS are baked once
+CopperGolemStatueSpecialRenderer.Unbaked.getModel	port	crates/horizon-client-lib/src/item_render/special.rs::statue_layer	pose to model layer
+DecoratedPotSpecialRenderer.submit	port	crates/horizon-client-lib/src/item_render/special.rs::submit	DecoratedPot arm
 EndCubeSpecialRenderer.Unbaked.bake	missing		minor: no bundled item uses the end cube model (special.rs notes it), so no end portal or gateway effect in hand
-PlayerHeadSpecialRenderer.submit	port	crates/horizon-client/src/item_render/special.rs::submit	PlayerHead arm
-PlayerHeadSpecialRenderer.getExtents	port	crates/horizon-client/src/item_render/special.rs::extents	PlayerHead arm
+PlayerHeadSpecialRenderer.submit	port	crates/horizon-client-lib/src/item_render/special.rs::submit	PlayerHead arm
+PlayerHeadSpecialRenderer.getExtents	port	crates/horizon-client-lib/src/item_render/special.rs::extents	PlayerHead arm
 PlayerHeadSpecialRenderer.extractArgument	port	crates/horizon-client-render/src/skins.rs::head_skin	profile to skin lookup
-PlayerHeadSpecialRenderer.Unbaked.bake	inline	crates/horizon-client/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
-ShieldSpecialRenderer.getExtents	port	crates/horizon-client/src/item_render/special.rs::extents	Shield arm
-ShieldSpecialRenderer.Unbaked.bake	inline	crates/horizon-client/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
-ShulkerBoxSpecialRenderer.submit	port	crates/horizon-client/src/item_render/special.rs::submit	ShulkerBox arm with shulker_pose
-ShulkerBoxSpecialRenderer.Unbaked.bake	inline	crates/horizon-client/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
-SkullSpecialRenderer.submit	port	crates/horizon-client/src/item_render/special.rs::submit	Head arm with skull_pose and skull_texture
-SkullSpecialRenderer.getExtents	port	crates/horizon-client/src/item_render/special.rs::extents	Head arm with skull_pose
-SkullSpecialRenderer.Unbaked.bake	inline	crates/horizon-client/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
+PlayerHeadSpecialRenderer.Unbaked.bake	inline	crates/horizon-client-lib/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
+ShieldSpecialRenderer.getExtents	port	crates/horizon-client-lib/src/item_render/special.rs::extents	Shield arm
+ShieldSpecialRenderer.Unbaked.bake	inline	crates/horizon-client-lib/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
+ShulkerBoxSpecialRenderer.submit	port	crates/horizon-client-lib/src/item_render/special.rs::submit	ShulkerBox arm with shulker_pose
+ShulkerBoxSpecialRenderer.Unbaked.bake	inline	crates/horizon-client-lib/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
+SkullSpecialRenderer.submit	port	crates/horizon-client-lib/src/item_render/special.rs::submit	Head arm with skull_pose and skull_texture
+SkullSpecialRenderer.getExtents	port	crates/horizon-client-lib/src/item_render/special.rs::extents	Head arm with skull_pose
+SkullSpecialRenderer.Unbaked.bake	inline	crates/horizon-client-lib/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
 SpecialModelRenderers.bootstrap	skip:data		registers special model kinds; Horizon matches SpecialKind in item_model.rs
-TridentSpecialRenderer.submit	port	crates/horizon-client/src/item_render/special.rs::submit	Trident arm; has_foil gives the standard foil
-TridentSpecialRenderer.getExtents	port	crates/horizon-client/src/item_render/special.rs::extents	Trident arm
-TridentSpecialRenderer.Unbaked.bake	inline	crates/horizon-client/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
+TridentSpecialRenderer.submit	port	crates/horizon-client-lib/src/item_render/special.rs::submit	Trident arm; has_foil gives the standard foil
+TridentSpecialRenderer.getExtents	port	crates/horizon-client-lib/src/item_render/special.rs::extents	Trident arm
+TridentSpecialRenderer.Unbaked.bake	inline	crates/horizon-client-lib/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
 BlitRenderState.buildVertices	skip:ui		GUI draw-queue geometry; Horizon draws its own HUD
 BlitRenderState.getBounds	skip:ui		GUI draw-queue geometry; Horizon draws its own HUD
 ColoredRectangleRenderState.buildVertices	skip:ui		GUI draw-queue geometry; Horizon draws its own HUD
@@ -134,12 +134,12 @@ SpriteLoader.stitch	port	crates/horizon-client-render/src/sprites.rs::sprite_mip
 SpriteLoader.runSpriteSuppliers	skip:java		parallel sprite loading
 SpriteLoader.loadAndStitch	inline	crates/horizon-client-render/src/sprites.rs::Sprites::insert	gap: minor: sprites are read on first use, not as one batch
 SpriteLoader.getStitchedSprites	skip:other		maps sprites to atlas rectangles; Horizon uses array layers
-Stitcher.registerSprite	inline	crates/horizon-client/src/item_render/glint_atlas.rs::stitch	mip-zero GUI item-atlas holders include filtering padding; GPU textures remain arrays
-Stitcher.stitch	port	crates/horizon-client/src/item_render/glint_atlas.rs::stitch	logical vanilla items-atlas rectangles for GUI glint; other atlases remain arrays
-Stitcher.gatherSprites	inline	crates/horizon-client/src/item_render/glint_atlas.rs::Region::gather	GUI glint atlas rectangles, including padding
+Stitcher.registerSprite	inline	crates/horizon-client-lib/src/item_render/glint_atlas.rs::stitch	mip-zero GUI item-atlas holders include filtering padding; GPU textures remain arrays
+Stitcher.stitch	port	crates/horizon-client-lib/src/item_render/glint_atlas.rs::stitch	logical vanilla items-atlas rectangles for GUI glint; other atlases remain arrays
+Stitcher.gatherSprites	inline	crates/horizon-client-lib/src/item_render/glint_atlas.rs::Region::gather	GUI glint atlas rectangles, including padding
 Stitcher.smallestFittingMinTexel	skip:other		atlas rectangle packing; Horizon uses one texture-array layer per sprite
-Stitcher.addToStorage	inline	crates/horizon-client/src/item_render/glint_atlas.rs::stitch	first fitting region, then expansion for the GUI glint atlas
-Stitcher.expand	inline	crates/horizon-client/src/item_render/glint_atlas.rs::stitch	power-of-two GUI item-atlas expansion
-Stitcher.Region.add	port	crates/horizon-client/src/item_render/glint_atlas.rs::Region::add	first-fit region splitting, no rotation
-Stitcher.Region.walk	inline	crates/horizon-client/src/item_render/glint_atlas.rs::Region::gather	gathers GUI glint atlas rectangles
+Stitcher.addToStorage	inline	crates/horizon-client-lib/src/item_render/glint_atlas.rs::stitch	first fitting region, then expansion for the GUI glint atlas
+Stitcher.expand	inline	crates/horizon-client-lib/src/item_render/glint_atlas.rs::stitch	power-of-two GUI item-atlas expansion
+Stitcher.Region.add	port	crates/horizon-client-lib/src/item_render/glint_atlas.rs::Region::add	first-fit region splitting, no rotation
+Stitcher.Region.walk	inline	crates/horizon-client-lib/src/item_render/glint_atlas.rs::Region::gather	gathers GUI glint atlas rectangles
 Stitcher.Region.toString	skip:debug		

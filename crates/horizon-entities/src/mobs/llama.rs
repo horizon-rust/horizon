@@ -262,7 +262,7 @@ pub fn to_nbt(m: &Mob, map: &mut horizon_world::nbt::Compound) {
     }
 }
 pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
-    use crate::save::number;
+    use horizon_client_core::nbt_value::number;
     m.extra.variant = number(tag.get("Variant")).unwrap_or(0).clamp(0, 3) as u8;
     m.extra.variant2 = number(tag.get("Strength")).unwrap_or(1).clamp(1, 5) as u8;
     m.extra.variant3 = i32::from(m.extra.variant3).min(MAX_TEMPER) as u8;

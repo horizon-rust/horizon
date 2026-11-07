@@ -173,7 +173,7 @@ def main():
     lock, jars, libraries = base.verify_artifacts()
     resources = lab.LOCAL / 'horizon-client/26.3'
     oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaNaturalSpawnOracle.java'
-    sources = [oracle, Path(__file__), lab.ROOT / 'crates/horizon-client/examples/probe/natural_spawn_fixture.rs',
+    sources = [oracle, Path(__file__), lab.ROOT / 'crates/horizon-client-lib/examples/probe/natural_spawn_fixture.rs',
                lab.ROOT / 'crates/horizon-client-render/src/vault.rs',
                lab.ROOT / 'crates/horizon-client-render/src/chunk/block_entity.rs',
                lab.ROOT / 'crates/horizon-client-core/src/identifier.rs',

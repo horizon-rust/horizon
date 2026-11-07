@@ -56,7 +56,7 @@ bytecode, binary hashes, manifests and rejected attempts are retained locally in
 
 ## Resource-free regression
 
-`cargo test -p horizon-client-lib --lib spell_ticks_nbt_tests` exercises the real
+`cargo test -p horizon-entities --lib spell_ticks_nbt_tests` exercises the real
 Mob NBT decode/save functions with fresh modeled mobs, absent/positive/zero/negative
 inputs, no raw output source, mutated counters, stale raw counters and an unrelated
 raw field. The same tests fail on unchanged production because the writer omits

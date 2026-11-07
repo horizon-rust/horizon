@@ -35,9 +35,9 @@ diff --git a/tools/lan_e2e.py b/tools/lan_e2e.py
 @@ -5 +5 @@ def check_chest(args):
 -    x
 +    y
-diff --git a/crates/horizon-client/examples/probe/mob_ai_probe.rs b/crates/horizon-client/examples/probe/mob_ai_probe.rs
---- a/crates/horizon-client/examples/probe/mob_ai_probe.rs
-+++ b/crates/horizon-client/examples/probe/mob_ai_probe.rs
+diff --git a/crates/horizon-client-lib/examples/probe/mob_ai_probe.rs b/crates/horizon-client-lib/examples/probe/mob_ai_probe.rs
+--- a/crates/horizon-client-lib/examples/probe/mob_ai_probe.rs
++++ b/crates/horizon-client-lib/examples/probe/mob_ai_probe.rs
 @@ -214,0 +215,2 @@ fn goal_name(m: &Mob, name: &str) -> String {
 +        "a" => 1,
 +        "b" => 2,

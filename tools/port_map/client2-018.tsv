@@ -1,11 +1,11 @@
 GhostSlots.extractTooltip	port	crates/horizon-client/src/game/recipe_book.rs::Game::ghost_stack	the stack a ghost slot is showing, cycling like the ghost's own draw, becomes that slot's tooltip: draw_slot_tooltip asks ghost_stack first, so a ghost's tooltip wins over the slot's own
-GhostSlots.GhostSlot.getItem	port	crates/horizon-client/src/recipe_book_screen.rs::ghost	the stack cycles with index % items; empty ghost slots are dropped in Book::ghost
+GhostSlots.GhostSlot.getItem	port	crates/horizon-client-lib/src/recipe_book_screen.rs::ghost	the stack cycles with index % items; empty ghost slots are dropped in Book::ghost
 OverlayRecipeComponent.mouseClicked	port	crates/horizon-client/src/game/recipe_book.rs::Game::recipe_book_click	left click places the overlay's recipe; right click and outside clicks close the overlay
-OverlayRecipeComponent.OverlayCraftingRecipeButton.calculateIngredientsPositions	port	crates/horizon-client/src/recipe_book_screen.rs::overlay_cells	shaped recipes use the 3x3 grid cells, shapeless ones i % 3 and i / 3; empty ingredients are dropped
-OverlayRecipeComponent.OverlayCraftingRecipeButton.getSprite	port	crates/horizon-client/src/recipe_book_screen.rs::overlay	crafting_overlay sprite by craftable and hover
-OverlayRecipeComponent.OverlayRecipeButton.createGridPos	port	crates/horizon-client/src/recipe_book_screen.rs::overlay	cell at 3 + 7x, 3 + 7y inside the 24 px button
-OverlayRecipeComponent.OverlayRecipeButton.extractWidgetRenderState	port	crates/horizon-client/src/recipe_book_screen.rs::overlay	cells drawn as items at 0.375 scale, each cycling its stacks by index
-OverlayRecipeComponent.OverlaySmeltingRecipeButton.getSprite	port	crates/horizon-client/src/recipe_book_screen.rs::overlay	furnace_overlay sprites by craftable and hover
+OverlayRecipeComponent.OverlayCraftingRecipeButton.calculateIngredientsPositions	port	crates/horizon-client-lib/src/recipe_book_screen.rs::overlay_cells	shaped recipes use the 3x3 grid cells, shapeless ones i % 3 and i / 3; empty ingredients are dropped
+OverlayRecipeComponent.OverlayCraftingRecipeButton.getSprite	port	crates/horizon-client-lib/src/recipe_book_screen.rs::overlay	crafting_overlay sprite by craftable and hover
+OverlayRecipeComponent.OverlayRecipeButton.createGridPos	port	crates/horizon-client-lib/src/recipe_book_screen.rs::overlay	cell at 3 + 7x, 3 + 7y inside the 24 px button
+OverlayRecipeComponent.OverlayRecipeButton.extractWidgetRenderState	port	crates/horizon-client-lib/src/recipe_book_screen.rs::overlay	cells drawn as items at 0.375 scale, each cycling its stacks by index
+OverlayRecipeComponent.OverlaySmeltingRecipeButton.getSprite	port	crates/horizon-client-lib/src/recipe_book_screen.rs::overlay	furnace_overlay sprites by craftable and hover
 RecipeBookComponent.init	inline	crates/horizon-client/src/game/recipe_book.rs::Game::ensure_book	the book and search box are built on first use; the open flag is Game::book_open and the views come from refresh_book_view
 RecipeBookComponent.initVisuals	inline	crates/horizon-client/src/game/recipe_book.rs::Game::refresh_book_view	tabs, buttons and page are rebuilt when inventory, grid, filter, tab, search text or known recipes change; the search box is drawn by screen::draw
 RecipeBookComponent.setVisible	port	crates/horizon-client/src/game/recipe_book.rs::Game::recipe_book_click	the book button flips the open flag and sends the settings; closing clears the overlay; gap: minor: a server settings packet sets the flag without clearing the overlay or page
@@ -31,17 +31,17 @@ RecipeBookComponent.updateNarration	skip:other		screen-reader narration; Horizon
 RecipeBookPage.init	inline	crates/horizon-client/src/game/recipe_book.rs::Game::button_pos	button places (5 per row, 25 px apart) are computed here; arrow places are fixed in recipe_book_click and screen::draw
 RecipeBookPage.updateCollections	inline	crates/horizon-client/src/game/recipe_book.rs::Game::refresh_book_view	page count is div_ceil(20) of the buttons; the page is reset to 0 when it is past the end
 RecipeBookPage.updateButtonsForPage	port	crates/horizon-client/src/game/recipe_book.rs::Game::draw_book_panel	the page's buttons are skip(page * 20).take(20)
-RecipeBookPage.updateArrowButtons	port	crates/horizon-client/src/recipe_book_screen.rs::draw	arrows show when there is more than one page and the page is not the first or the last
+RecipeBookPage.updateArrowButtons	port	crates/horizon-client-lib/src/recipe_book_screen.rs::draw	arrows show when there is more than one page and the page is not the first or the last
 RecipeBookPage.mouseClicked	port	crates/horizon-client/src/game/recipe_book.rs::Game::recipe_book_click	page arrows; right click opens the overlay when the button has more than one recipe; left click places
-RecipeBookTabButton.extractContents	port	crates/horizon-client/src/recipe_book_screen.rs::draw	tab sprite, the 2 px shift when selected, and the squeeze pose
-RecipeBookTabButton.extractIcon	port	crates/horizon-client/src/recipe_book_screen.rs::draw	one or two fake item icons at offsets 9, or 3 and 14, shifted 2 px when selected
+RecipeBookTabButton.extractContents	port	crates/horizon-client-lib/src/recipe_book_screen.rs::draw	tab sprite, the 2 px shift when selected, and the squeeze pose
+RecipeBookTabButton.extractIcon	port	crates/horizon-client-lib/src/recipe_book_screen.rs::draw	one or two fake item icons at offsets 9, or 3 and 14, shifted 2 px when selected
 RecipeBookTabButton.updateVisibility	port	crates/horizon-client/src/game/recipe_book.rs::Game::build_view	a tab is shown when a collection of its category has a selected recipe
-RecipeButton.extractWidgetRenderState	port	crates/horizon-client/src/recipe_book_screen.rs::draw	sprite by craftable and by several recipes, squeeze pose, same-result item under the fake item
+RecipeButton.extractWidgetRenderState	port	crates/horizon-client-lib/src/recipe_book_screen.rs::draw	sprite by craftable and by several recipes, squeeze pose, same-result item under the fake item
 RecipeButton.getCurrentRecipe	port	crates/horizon-client/src/game/recipe_book.rs::Game::recipe_book_click	the entry at swap_index % entries
 RecipeButton.getTooltipText	port	crates/horizon-client/src/game/recipe_book.rs::Game::paint_book	ItemTooltip: the stack's tooltip, then Right Click for More when there are several recipes
 RecipeButton.updateWidgetNarration	skip:other		screen-reader narration; Horizon has no narration output
 RecipeButton.isValidClickButton	port	crates/horizon-client/src/game/recipe_book.rs::Game::recipe_book_click	left and right clicks only; a middle click does nothing here
-RecipeButton.ResolvedEntry.selectItem	port	crates/horizon-client/src/recipe_book_screen.rs::display_stack	the stack at offset % count; display_stack first picks the recipe from index % count
+RecipeButton.ResolvedEntry.selectItem	port	crates/horizon-client-lib/src/recipe_book_screen.rs::display_stack	the stack at offset % count; display_stack first picks the recipe from index % count
 RecipeCollection.selectRecipes	inline	crates/horizon-client/src/game/recipe_book.rs::Game::build_view	selected when the recipe fits the crafting grid; craftable from Book::can_craft against the stock
 RecipeCollection.getSelectedRecipes	inline	crates/horizon-client/src/game/recipe_book.rs::Game::build_view	entries kept per view: selected ones, and only craftable ones when filtering
 AbstractReportScreen	skip:service		chat and skin abuse reporting screens; Horizon has no reporting

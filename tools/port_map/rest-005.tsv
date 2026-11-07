@@ -10,35 +10,35 @@ QuickPlay.getLatestSingleplayerWorld	missing		minor: a quick play with no world 
 QuickPlay.joinMultiplayerWorld	port	crates/horizon-client/src/game.rs::Options::read	gap: minor: the server is not added to the server list
 QuickPlay.joinRealmsWorld	skip:service		Realms
 QuickPlayLog.log	skip:other		writes the launcher's quick play session file; Horizon keeps none
-FullTextSearchTree.searchIdentifier	port	crates/horizon-client/src/recipe_book.rs::Book::collection_matches	recipe-book namespace:path search; the creative search is Creative::search_results
-IdSearchTree.search	port	crates/horizon-client/src/creative.rs::Creative::search_results	# tag branch; plain text goes to the name search
-IdSearchTree.searchIdentifier	port	crates/horizon-client/src/creative.rs::Creative::search_results	#namespace:path tag search
-IdentifierSearchTree.create	inline	crates/horizon-client/src/creative.rs::Creative::from_legacy	builds the search index with the item list
-IntersectionIterator.computeNext	inline	crates/horizon-client/src/creative.rs::Creative::search_results	namespace and path matches intersected by filter
-MergingUniqueIterator.computeNext	inline	crates/horizon-client/src/creative.rs::Creative::search_results	one match per item, found by any/filter
-SearchTree.plainText	inline	crates/horizon-client/src/creative.rs::Creative::search_results	name search over tooltip lines
+FullTextSearchTree.searchIdentifier	port	crates/horizon-client-lib/src/recipe_book.rs::Book::collection_matches	recipe-book namespace:path search; the creative search is Creative::search_results
+IdSearchTree.search	port	crates/horizon-client-lib/src/creative.rs::Creative::search_results	# tag branch; plain text goes to the name search
+IdSearchTree.searchIdentifier	port	crates/horizon-client-lib/src/creative.rs::Creative::search_results	#namespace:path tag search
+IdentifierSearchTree.create	inline	crates/horizon-client-lib/src/creative.rs::Creative::from_legacy	builds the search index with the item list
+IntersectionIterator.computeNext	inline	crates/horizon-client-lib/src/creative.rs::Creative::search_results	namespace and path matches intersected by filter
+MergingUniqueIterator.computeNext	inline	crates/horizon-client-lib/src/creative.rs::Creative::search_results	one match per item, found by any/filter
+SearchTree.plainText	inline	crates/horizon-client-lib/src/creative.rs::Creative::search_results	name search over tooltip lines
 SuffixArray.add	skip:java		suffix array index build; Horizon scans the item list
 SuffixArray.generate	skip:java		suffix array construction; Horizon scans the item list
 SuffixArray.print	skip:debug		suffix array debug dump
 SuffixArray.getString	skip:debug		suffix array debug text
 SuffixArray.compare	skip:java		binary-search helper of the suffix array
-SuffixArray.search	port	crates/horizon-client/src/creative.rs::Creative::search_results	substring match by linear scan, same matches in tab order
-IntegratedPlayerList.canPlayerLogin	inline	crates/horizon-client/src/lan/mod.rs::Shared::try_admit	gap: minor: no owner-name check; duplicate logins are matched by uuid
+SuffixArray.search	port	crates/horizon-client-lib/src/creative.rs::Creative::search_results	substring match by linear scan, same matches in tab order
+IntegratedPlayerList.canPlayerLogin	inline	crates/horizon-client-lib/src/lan/mod.rs::Shared::try_admit	gap: minor: no owner-name check; duplicate logins are matched by uuid
 IntegratedServer.processPacketsAndTick	skip:debug		gizmo collector for debug draws
 IntegratedServer.fillServerSystemReport	skip:debug		system report for crash reports
 IntegratedServer.getPersonalGameMode	port	crates/horizon-client/src/game/integrated.rs::Game::server_options	owner's game mode, read from the guest record
 IntegratedServer.updateGameModeBasedOnPermission	inline	crates/horizon-client/src/game/lan.rs::Game::lan_guest_joined	gap: player: a guest already in the world keeps their mode when force-gamemode or the default mode changes; only a join applies it
-IntegratedServer.updatePermissions	port	crates/horizon-client/src/lan/hub.rs::Hub::resend_commands	permission level and commands sent to every guest
+IntegratedServer.updatePermissions	port	crates/horizon-client-lib/src/lan/hub.rs::Hub::resend_commands	permission level and commands sent to every guest
 IntegratedServer.setDefaultGameType	port	crates/horizon-client/src/game/lan.rs::Game::set_default_game_mode	
-IntegratedServer.isSingleplayerOwner	port	crates/horizon-client/src/lan/hub.rs::Hub::player_info	the owner is kept by uuid on the hub, and player_info marks the guest it names
+IntegratedServer.isSingleplayerOwner	port	crates/horizon-client-lib/src/lan/hub.rs::Hub::player_info	the owner is kept by uuid on the hub, and player_info marks the guest it names
 IntegratedServer.getScaledTrackingDistance	inline	crates/horizon-client/src/game/lan.rs::Game::tick_lan	the Entity Distance option becomes the hub's entity range percent for an integrated or LAN host
 IntegratedServer.getForcedGameType	inline	crates/horizon-client/src/game/lan.rs::Game::lan_guest_joined	forced mode is sent when a guest joins
 IntegratedServer.selectLevelLoadFocusPos	missing		unsure: no load focus at the owner's saved position found in game/integrated.rs open_integrated
-IntegratedServer.reportChunkLoadFailure	port	crates/horizon-client/src/chunk_io.rs::load_failed	a failed load sets low_disk_space, which is warnOnLowDiskSpace plus reportChunkLoadFailure
-IntegratedServer.reportChunkSaveFailure	port	crates/horizon-client/src/chunk_io.rs::Pending::save_failed	the same low_disk_space flag is raised by the save side
-LanServerDetection.LanServerDetector.run	port	crates/horizon-client/src/lan/discovery.rs::listen	receive loop for LAN announcements
+IntegratedServer.reportChunkLoadFailure	port	crates/horizon-client-lib/src/chunk_io.rs::load_failed	a failed load sets low_disk_space, which is warnOnLowDiskSpace plus reportChunkLoadFailure
+IntegratedServer.reportChunkSaveFailure	port	crates/horizon-client-lib/src/chunk_io.rs::Pending::save_failed	the same low_disk_space flag is raised by the save side
+LanServerDetection.LanServerDetector.run	port	crates/horizon-client-lib/src/lan/discovery.rs::listen	receive loop for LAN announcements
 LanServerDetection.LanServerList.takeDirtyServers	skip:java		dirty flag; Scanner::games returns a copy on each call
-LanServerPinger.run	port	crates/horizon-client/src/lan/discovery.rs::Pinger::start	announce loop on a thread until dropped
+LanServerPinger.run	port	crates/horizon-client-lib/src/lan/discovery.rs::Pinger::start	announce loop on a thread until dropped
 ChannelAccess.createHandle	port	crates/horizon-client-render/src/audio.rs::MixerBackend::create	gap: minor: the streaming flag is ignored
 ChannelAccess.executeOnChannels	skip:other		sound executor thread; the mixer is shared under a lock
 ChannelAccess.ChannelHandle.execute	port	crates/horizon-client-render/src/audio.rs::MixerBackend::with	runs the action on the channel when it exists
@@ -57,8 +57,8 @@ JOrbisAudioStream.copyAnyChannels	inline	crates/horizon-client-render/src/audio.
 JOrbisAudioStream.copyMono	inline	crates/horizon-client-render/src/audio.rs::decode	Ogg reading folded into decode
 JOrbisAudioStream.copyStereo	inline	crates/horizon-client-render/src/audio.rs::decode	Ogg reading folded into decode
 LoopingAudioStream.read	port	crates/horizon-client-render/src/audio.rs::attach	gap: minor: the looping flag is set on the channel; the buffer loops, no stream is reopened
-MusicManager.canReplace	inline	crates/horizon-client/src/music.rs::MusicManager::tick	replace only when the new track differs from the playing one
-MusicManager.getCurrentMusicTranslationKey	port	crates/horizon-client/src/music.rs::MusicManager::current	gap: minor: returns the sound id; the short translation key is not built
+MusicManager.canReplace	inline	crates/horizon-client-lib/src/music.rs::MusicManager::tick	replace only when the new track differs from the playing one
+MusicManager.getCurrentMusicTranslationKey	port	crates/horizon-client-lib/src/music.rs::MusicManager::current	gap: minor: returns the sound id; the short translation key is not built
 SoundBufferLibrary.getCompleteBuffer	port	crates/horizon-client-render/src/audio.rs::decode	cached in SoundCache
 SoundBufferLibrary.getStream	inline	crates/horizon-client-render/src/audio.rs::decode	gap: minor: the whole file is decoded; no stream
 SoundBufferLibrary.clear	inline	crates/horizon-client-render/src/audio.rs::Audio::reload	the cache is emptied on reload
@@ -101,8 +101,8 @@ Tutorial.tick	port	crates/horizon-client/src/game/tutorial.rs::Game::tick_tutori
 Tutorial.setStep	port	crates/horizon-client/src/game/tutorial.rs::Tutorial::set_step	the step with a fresh state; Game::persist_tutorial_step writes it to options.txt
 Tutorial.isSurvival	inline	crates/horizon-client/src/game/tutorial.rs::Game::tick_tutorial	the game mode is read there and passed to Tutorial::tick, which stops the step outside survival
 TutorialSteps.getByName	port	crates/horizon-client-render/src/options_file.rs::OptionsFile::try_apply	tutorialStep name read from options
-ClientWaypointManager.updateWaypoint	port	crates/horizon-client/src/locator_bar.rs::ClientWaypoints::apply	updates a tracked waypoint by id
-ClientWaypointManager.forEachWaypoint	port	crates/horizon-client/src/locator_bar.rs::ClientWaypoints::draw	drawn farthest first
+ClientWaypointManager.updateWaypoint	port	crates/horizon-client-lib/src/locator_bar.rs::ClientWaypoints::apply	updates a tracked waypoint by id
+ClientWaypointManager.forEachWaypoint	port	crates/horizon-client-lib/src/locator_bar.rs::ClientWaypoints::draw	drawn farthest first
 ArgumentVisitor.visitArguments	port	crates/horizon-client/src/game/lan_chat.rs::Game::signable_arguments	collects the message arguments of a command
 ArgumentVisitor.visitNodeArguments	inline	crates/horizon-client/src/game/lan_chat.rs::Game::signable_arguments	per-node walk folded into the collector
 CacheableFunction.get	skip:java		caches the resolved function; no behaviour of its own
@@ -118,7 +118,7 @@ CommandSourceStack.withAnchor	inline	crates/horizon-client/src/game/commands/exe
 CommandSourceStack.withSigningContext	skip:service		chat message signing
 CommandSourceStack.getPlayer	port	crates/horizon-client/src/game/commands/players.rs::Game::source_entity	the source entity; callers check for a player
 CommandSourceStack.shouldFilterMessageTo	skip:service		chat text filtering
-CommandSourceStack.sendChatMessage	port	crates/horizon-client/src/lan/hub.rs::Hub::chat	gap: minor: console and command block sources are not sent here
+CommandSourceStack.sendChatMessage	port	crates/horizon-client-lib/src/lan/hub.rs::Hub::chat	gap: minor: console and command block sources are not sent here
 CommandSourceStack.suggestRegistryElements	port	crates/horizon-command/src/args.rs::suggest_resources	registry tags and elements
 CommandSourceStack.getLookup	skip:data		registry lookup; registries come from tables
 Commands.<init>	port	crates/horizon-command/src/vanilla.rs::build	registers the command tree
@@ -139,7 +139,7 @@ DimensionArgument.getDimension	inline	crates/horizon-client/src/game/commands/ex
 EntityAnchorArgument.parse	port	crates/horizon-command/src/args.rs::ArgType::parse	eyes or feet
 EntityArgument.parse	port	crates/horizon-command/src/args.rs::ArgType::parse	the selector is read by selector.rs::parse
 EntityArgument.listSuggestions	port	crates/horizon-command/src/selector.rs::suggest	selector and player name suggestions
-EntityArgument.Info.serializeToNetwork	port	crates/horizon-client/src/lan/commands.rs::properties	entity flags: single and players only
+EntityArgument.Info.serializeToNetwork	port	crates/horizon-client-lib/src/lan/commands.rs::properties	entity flags: single and players only
 EntityArgument.Info.deserializeFromNetwork	port	crates/horizon-command/src/network.rs::argument_type	entity flags of a received command tree
 EntityArgument.Info.serializeToJson	skip:data		JSON of the argument template; Horizon reads tree data from files
 GameModeArgument.parse	port	crates/horizon-command/src/args.rs::ArgType::parse	game mode name

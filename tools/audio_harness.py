@@ -47,7 +47,7 @@ def run_harness(name, oracle, example, inputs_text, extra_sources=(), java_args=
     report = build / 'report.json'
     report.unlink(missing_ok=True)
     oracle_path = lab.ROOT / f'mods/horizon/src/test/java/dev/horizonlab/parity/{oracle}.java'
-    example_path = lab.ROOT / f'crates/horizon-client/examples/probe/{example}.rs'
+    example_path = lab.ROOT / f'crates/horizon-client-lib/examples/probe/{example}.rs'
     sources = [*COMMON_SOURCES, oracle_path, example_path, *[Path(s) for s in extra_sources]]
     tested = base.source_hashes(sources)
     inputs = build / 'inputs.txt'

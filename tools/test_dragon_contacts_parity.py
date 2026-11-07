@@ -60,7 +60,7 @@ def main():
         run(['java', '-Xmx2G', '-cp', str(classes) + os.pathsep + cp,
              'dev.horizonlab.parity.VanillaCommandExecOracle',
              Path(scratch) / 'universe', script, expected_path, '1'], 'java', env=env)
-    run(['cargo', 'test', '--locked', '-p', 'horizon-client-lib', '--lib',
+    run(['cargo', 'test', '--locked', '-p', 'horizon-entities', '--lib',
          'mobs::dragon_contacts::', '--', '--include-ignored'], 'rust',
         env=dict(os.environ, HORIZON_DRAGON_CONTACT_OUTPUT=str(actual_path)))
     expected = json.loads(expected_path.read_text())

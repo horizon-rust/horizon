@@ -24,20 +24,20 @@ TagCommand.getTags	inline	crates/horizon-client/src/game/commands/data.rs::Game:
 TagCommand.addTag	port	crates/horizon-client/src/game/commands/data.rs::Game::cmd_tag	tag.add arm
 TagCommand.removeTag	port	crates/horizon-client/src/game/commands/data.rs::Game::cmd_tag	tag.remove arm
 TagCommand.listTags	port	crates/horizon-client/src/game/commands/data.rs::Game::cmd_tag	default arm: list
-TeamCommand.leaveTeam	port	crates/horizon-client/src/scoreboard_cmd.rs::team	team.leave arm
-TeamCommand.joinTeam	port	crates/horizon-client/src/scoreboard_cmd.rs::team	team.join arm
-TeamCommand.setNameTagVisibility	port	crates/horizon-client/src/scoreboard_cmd.rs::team_modify	team.modify arm
-TeamCommand.setDeathMessageVisibility	port	crates/horizon-client/src/scoreboard_cmd.rs::team_modify	team.modify arm
-TeamCommand.setCollision	port	crates/horizon-client/src/scoreboard_cmd.rs::team_modify	team.modify arm
-TeamCommand.setFriendlySight	port	crates/horizon-client/src/scoreboard_cmd.rs::team_modify	team.modify arm
-TeamCommand.setFriendlyFire	port	crates/horizon-client/src/scoreboard_cmd.rs::team_modify	team.modify arm
-TeamCommand.setDisplayName	port	crates/horizon-client/src/scoreboard_cmd.rs::team_modify	team.modify arm
-TeamCommand.setColor	port	crates/horizon-client/src/scoreboard_cmd.rs::team_modify	team.modify arm
-TeamCommand.clearColor	port	crates/horizon-client/src/scoreboard_cmd.rs::team_modify	team.modify arm
-TeamCommand.setPrefix	port	crates/horizon-client/src/scoreboard_cmd.rs::team_modify	team.modify arm
-TeamCommand.setSuffix	port	crates/horizon-client/src/scoreboard_cmd.rs::team_modify	team.modify arm
-TeamCommand.emptyTeam	port	crates/horizon-client/src/scoreboard_cmd.rs::team	team.empty arm
-TeamCommand.deleteTeam	port	crates/horizon-client/src/scoreboard_cmd.rs::team	team.remove arm
+TeamCommand.leaveTeam	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::team	team.leave arm
+TeamCommand.joinTeam	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::team	team.join arm
+TeamCommand.setNameTagVisibility	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::team_modify	team.modify arm
+TeamCommand.setDeathMessageVisibility	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::team_modify	team.modify arm
+TeamCommand.setCollision	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::team_modify	team.modify arm
+TeamCommand.setFriendlySight	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::team_modify	team.modify arm
+TeamCommand.setFriendlyFire	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::team_modify	team.modify arm
+TeamCommand.setDisplayName	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::team_modify	team.modify arm
+TeamCommand.setColor	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::team_modify	team.modify arm
+TeamCommand.clearColor	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::team_modify	team.modify arm
+TeamCommand.setPrefix	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::team_modify	team.modify arm
+TeamCommand.setSuffix	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::team_modify	team.modify arm
+TeamCommand.emptyTeam	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::team	team.empty arm
+TeamCommand.deleteTeam	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::team	team.remove arm
 TeamMsgCommand.sendMessage	port	crates/horizon-client/src/game/commands/misc.rs::Game::cmd_teammsg	gap: minor: only the local player can receive; no per-receiver chat filtering
 TeleportCommand.register	port	crates/horizon-command/src/vanilla.rs::registered	teleport and tp nodes
 TeleportCommand.teleportToPos	port	crates/horizon-client/src/game/commands.rs::Game::cmd_teleport	location arm
@@ -64,10 +64,10 @@ TitleCommand.setTimes	port	crates/horizon-client/src/game/commands/text_commands
 TransferCommand.register	port	crates/horizon-client/src/game/commands.rs::Game::execute_command	the node (the literal, the permission level, the `hostname` and optional `port` arguments, the `players` selector) comes from the data generator's commands.json through lan/commands.rs, which lists `transfer` as dedicated-only; this branch is its execute
 TransferCommand.transfer	port	crates/horizon-client/src/game/commands/profiles.rs::Game::cmd_transfer	each target's `lan/hub.rs::Hub::transfer` sends the Transfer packet with the host and port; the reply is one name or a count, both with the host and port
 TriggerCommand.suggestObjectives	port	crates/horizon-command/src/lib.rs::Suggests::suggest	Suggests::Triggers arm
-TriggerCommand.addValue	port	crates/horizon-client/src/scoreboard_cmd.rs::trigger	trigger.add arm
-TriggerCommand.setValue	port	crates/horizon-client/src/scoreboard_cmd.rs::trigger	trigger.set arm
-TriggerCommand.simpleTrigger	port	crates/horizon-client/src/scoreboard_cmd.rs::trigger	trigger arm without a sub-command
-TriggerCommand.getScore	inline	crates/horizon-client/src/scoreboard_cmd.rs::trigger	primed check and lock
+TriggerCommand.addValue	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::trigger	trigger.add arm
+TriggerCommand.setValue	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::trigger	trigger.set arm
+TriggerCommand.simpleTrigger	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::trigger	trigger arm without a sub-command
+TriggerCommand.getScore	inline	crates/horizon-client-lib/src/scoreboard_cmd.rs::trigger	primed check and lock
 VersionCommand.register	port	crates/horizon-command/src/vanilla.rs::registered	version node
 WardenSpawnTrackerCommand.setWarningLevel	port	crates/horizon-client/src/game/sculk.rs::Game::cmd_warden_spawn_tracker	set arm
 WardenSpawnTrackerCommand.resetTracker	port	crates/horizon-client/src/game/sculk.rs::Game::cmd_warden_spawn_tracker	clear arm
@@ -94,12 +94,12 @@ BlockDataAccessor.setData	port	crates/horizon-client/src/game/commands/data.rs::
 BlockDataAccessor.getModifiedSuccess	port	crates/horizon-client/src/game/commands/data.rs::Game::modified_text	block message
 BlockDataAccessor.getPrintSuccess	port	crates/horizon-client/src/game/commands/data.rs::Game::query_text	block query message
 DataCommands.stringifyTagList	inline	crates/horizon-client/src/game/commands/data.rs::Game::cmd_data_modify	string branch of modify
-DataCommands.validatedSubstring	port	crates/horizon-client/src/data_cmd.rs::substring	
+DataCommands.validatedSubstring	port	crates/horizon-entities/src/data_cmd.rs::substring	
 DataCommands.resolveSourcePath	inline	crates/horizon-client/src/game/commands/data.rs::Game::cmd_data_modify	sourcePath resolution
 DataCommands.manipulateData	port	crates/horizon-client/src/game/commands/data.rs::Game::cmd_data_modify	modify arm
 DataCommands.removeData	port	crates/horizon-client/src/game/commands/data.rs::Game::cmd_data_in	data.remove arm
-DataCommands.getData	port	crates/horizon-client/src/data_cmd.rs::get_value	count of list, compound, string or numeric
-DataCommands.getNumeric	port	crates/horizon-client/src/data_cmd.rs::scaled_value	floor of numeric times scale
+DataCommands.getData	port	crates/horizon-entities/src/data_cmd.rs::get_value	count of list, compound, string or numeric
+DataCommands.getNumeric	port	crates/horizon-entities/src/data_cmd.rs::scaled_value	floor of numeric times scale
 DataCommands.mergeData	port	crates/horizon-client/src/game/commands/data.rs::Game::cmd_data_in	data.merge arm
 net/minecraft/server/commands/data/EntityDataAccessor#setData	port	crates/horizon-client/src/game/commands/data.rs::Game::apply_entity_nbt	refuses players
 net/minecraft/server/commands/data/EntityDataAccessor#getModifiedSuccess	port	crates/horizon-client/src/game/commands/data.rs::Game::modified_text	entity message

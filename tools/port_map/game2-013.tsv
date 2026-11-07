@@ -6,7 +6,7 @@ CopperBulbBlock.onPlace	inline	crates/horizon-world/src/level/hooks.rs::Sim::on_
 CopperBulbBlock.neighborChanged	inline	crates/horizon-world/src/level/hooks.rs::Sim::neighbor_changed	arm calls copper_bulb_check (checkAndFlip) on neighbour change
 CopperBulbBlock.createBlockStateDefinition	skip:data		lit and powered properties come from the block state tables
 CopperBulbBlock.getAnalogOutputSignal	port	crates/horizon-world/src/level/redstone.rs::Sim::analog_output	CopperBulb arm: 15 when lit, else 0
-CopperChestBlock.getHingeSound	inline	crates/horizon-client/src/mobs/transport_items.rs::open_or_close	weathered, oxidized and plain open and close sound ids are chosen inside open_or_close
+CopperChestBlock.getHingeSound	inline	crates/horizon-entities/src/mobs/transport_items.rs::open_or_close	weathered, oxidized and plain open and close sound ids are chosen inside open_or_close
 CopperGolemStatueBlock.createBlockStateDefinition	skip:data		facing, pose and waterlogged properties come from the block state tables
 CopperGolemStatueBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.rs::Sim::placement_class	facing opposite the player and waterlogged when the spot is water
 CopperGolemStatueBlock.rotate	skip:data		rotation results come from the exported BlockState rotate table (worldgen/structure.rs)
@@ -23,15 +23,15 @@ CrafterBlock.mirror	skip:data		mirror results come from the exported BlockState 
 CrafterBlock.createBlockStateDefinition	skip:data		orientation, triggered and crafting properties come from the block state tables
 CraftingTableBlock.useWithoutItem	port	crates/horizon-world/src/level/interact.rs::Sim::use_without_item	CraftingTable arm opens the menu; the interact_with_crafting_table stat is awarded in Game::open_station
 CreakingHeartBlock.getTicker	port	crates/horizon-world/src/level/creaking.rs::Sim::heart_tick	scheduled heart tick; the uprooted check is done inside heart_update_state
-CreakingHeartBlock.animateTick	port	crates/horizon-client/src/animate_tick.rs::step	ticked in #3516; `CreakingHeartBlock.animateTick` is cited at crates/horizon-client/src/animate_tick.rs:104
+CreakingHeartBlock.animateTick	port	crates/horizon-client-lib/src/animate_tick.rs::step	ticked in #3516; `CreakingHeartBlock.animateTick` is cited at crates/horizon-client-lib/src/animate_tick.rs:104
 CreakingHeartBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	CreakingHeart arm schedules the 1-tick heart update then the default shape
-CreakingHeartBlock.isSurroundedByLogs	port	crates/horizon-client/src/mobs/creaking_heart.rs::has_required_logs	the six sides must be pale oak logs; a heart without them spawns no creaking
+CreakingHeartBlock.isSurroundedByLogs	port	crates/horizon-entities/src/mobs/creaking_heart.rs::has_required_logs	the six sides must be pale oak logs; a heart without them spawns no creaking
 CreakingHeartBlock.createBlockStateDefinition	skip:data		axis, creaking_heart_state and natural properties come from the block state tables
 CreakingHeartBlock.tryAwardExperience	inline	crates/horizon-client/src/game/creaking.rs::Game::creaking_heart_broken	natural heart drops 20-24 xp orbs when broken by a player outside creative and spectator
-CreakingHeartBlock.getAnalogOutputSignal	port	crates/horizon-client/src/mobs/creaking_heart.rs::output_signal	gap: minor: distance-based signal, no explicit uprooted check; a heart with no creaking or protector gives 0
+CreakingHeartBlock.getAnalogOutputSignal	port	crates/horizon-entities/src/mobs/creaking_heart.rs::output_signal	gap: minor: distance-based signal, no explicit uprooted check; a heart with no creaking or protector gives 0
 CropBlock.growCrops	inline	crates/horizon-world/src/level/bonemeal.rs::Sim::perform_bonemeal	crop arm adds the bonemeal age increase capped at max age and sets the state
 CropBlock.canSurvive	port	crates/horizon-world/src/level/survive.rs::Sim::can_survive_class	Crop arm: raw light of at least 8 and the supports_crops ground check
-CropBlock.entityInside	port	crates/horizon-client/src/mobs/ravager.rs::ai_step	ticked in #3516; `CropBlock.entityInside` is cited at crates/horizon-client/src/mobs/ravager.rs:134 (in a comment, so `where` names the enclosing fn)
+CropBlock.entityInside	port	crates/horizon-entities/src/mobs/ravager.rs::ai_step	ticked in #3516; `CropBlock.entityInside` is cited at crates/horizon-entities/src/mobs/ravager.rs:134 (in a comment, so `where` names the enclosing fn)
 DaylightDetectorBlock.useWithoutItem	port	crates/horizon-world/src/level/interact.rs::Sim::use_without_item	DaylightDetector arm checks mayBuild, cycles inverted, sends block change and updates the signal
 DaylightDetectorBlock.getTicker	port	crates/horizon-world/src/level/mod.rs::Behaviours::tick_daylight_detector	gap: minor: every 20 game ticks; only the Nether is skipped here, the End has no sky light but is not excluded
 DaylightDetectorBlock.createBlockStateDefinition	skip:data		power and inverted properties come from the block state tables

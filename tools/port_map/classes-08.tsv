@@ -18,35 +18,35 @@ MapBanner.fromWorld	port	crates/horizon-client/src/game/banners.rs::Game::map_ba
 MapBanner.getDecoration	port	crates/horizon-client/src/game/maps.rs::MapBanner::sprite	ticked in #3517; `MapBanner.getDecoration` is cited at crates/horizon-client/src/game/maps.rs:50
 MapBanner.getId	inline	crates/horizon-client/src/game/maps.rs::toggle_banner	a banner marker is filed under Key::Banner(pos): the id as an enum key, so the map keeps one marker per banner
 MapDecorationTypes	skip:data		registry of map decoration types; maps.rs keeps its own DECORATION_TYPES table
-MapId.addToTooltip	port	crates/horizon-client/src/item_tooltip.rs::PlayerHeadName::map_id_lines	ticked in #3517; `MapId.addToTooltip` is cited at crates/horizon-client/src/item_tooltip.rs:412
+MapId.addToTooltip	port	crates/horizon-client-lib/src/item_tooltip.rs::PlayerHeadName::map_id_lines	ticked in #3517; `MapId.addToTooltip` is cited at crates/horizon-client-lib/src/item_tooltip.rs:412
 MapIndex.getNextMapId	port	crates/horizon-client/src/game/maps.rs::Game::next_map_id	
 DerivedLevelData	skip:debug		crash report category
 LevelData	skip:debug		crash report category
-LevelStorageSource.createAccess	port	crates/horizon-client/src/save.rs::SessionLock::acquire	gap: minor: takes the folder's session lock; there is no separate access object
+LevelStorageSource.createAccess	port	crates/horizon-client-lib/src/save.rs::SessionLock::acquire	gap: minor: takes the folder's session lock; there is no separate access object
 LevelStorageSource.createDefault	skip:java		factory for the source with its symlink validator
-LevelStorageSource.findLevelCandidates	inline	crates/horizon-client/src/title.rs::list_worlds	folders with a readable level.dat
-LevelStorageSource.getFileModificationTime	inline	crates/horizon-client/src/title.rs::list_worlds	level.dat mtime, used when LastPlayed is absent
-LevelStorageSource.getLevelDataAndDimensions	port	crates/horizon-client/src/save.rs::Level::read	gap: minor: reads level.dat; dimension and world-gen registry setup happen elsewhere
-LevelStorageSource.isNewLevelIdAcceptable	port	crates/horizon-client/src/title.rs::Title::target_folder	gap: minor: sanitises the name and picks a free folder instead of rejecting it
-LevelStorageSource.levelExists	inline	crates/horizon-client/src/title.rs::Title::target_folder	folder-exists check
-LevelStorageSource.loadLevelSummaries	port	crates/horizon-client/src/title.rs::list_worlds	
-LevelStorageSource.makeLevelSummary	inline	crates/horizon-client/src/title.rs::list_worlds	per-folder name, version, mode and last played
-LevelStorageSource.parseFeatureFlagsFromSummary	port	crates/horizon-client/src/save.rs::Level::read_summary	the summary read goes through read_root, which parses WorldDataConfiguration's enabled_features; gap: minor: the world list still shows no experimental marker for them
+LevelStorageSource.findLevelCandidates	inline	crates/horizon-client-lib/src/title.rs::list_worlds	folders with a readable level.dat
+LevelStorageSource.getFileModificationTime	inline	crates/horizon-client-lib/src/title.rs::list_worlds	level.dat mtime, used when LastPlayed is absent
+LevelStorageSource.getLevelDataAndDimensions	port	crates/horizon-client-lib/src/save.rs::Level::read	gap: minor: reads level.dat; dimension and world-gen registry setup happen elsewhere
+LevelStorageSource.isNewLevelIdAcceptable	port	crates/horizon-client-lib/src/title.rs::Title::target_folder	gap: minor: sanitises the name and picks a free folder instead of rejecting it
+LevelStorageSource.levelExists	inline	crates/horizon-client-lib/src/title.rs::Title::target_folder	folder-exists check
+LevelStorageSource.loadLevelSummaries	port	crates/horizon-client-lib/src/title.rs::list_worlds	
+LevelStorageSource.makeLevelSummary	inline	crates/horizon-client-lib/src/title.rs::list_worlds	per-folder name, version, mode and last played
+LevelStorageSource.parseFeatureFlagsFromSummary	port	crates/horizon-client-lib/src/save.rs::Level::read_summary	the summary read goes through read_root, which parses WorldDataConfiguration's enabled_features; gap: minor: the world list still shows no experimental marker for them
 LevelStorageSource.parseValidator	skip:other		symlink allow-list (allowed_symlinks.txt); Horizon does not read that file
-LevelStorageSource.readDataConfig	port	crates/horizon-client/src/save.rs::Level::read	DataPacks and enabled_features are read with the level (data_packs, enabled_features), and datapack::enabled_ids layers the world's own packs over the bundle with them
-LevelSummary.backupStatus	inline	crates/horizon-client/src/title.rs::should_backup	FILE_FIXING_REQUIRED when the world needs its files fixed or comes from a newer version; UPGRADE_TO_SNAPSHOT never applies to a stable build
-LevelSummary.compareTo	inline	crates/horizon-client/src/title.rs::list_worlds	newest first by last played
-LevelSummary.createInfo	port	crates/horizon-client/src/title.rs::world_info	locked, incompatible and corrupt rows in red, else the mode (hardcore in red), the commands marker and the version, italic or red when a backup is due
-LevelSummary.getLevelName	inline	crates/horizon-client/src/title.rs::list_worlds	WorldEntry.name
-LevelSummary.getWorldVersionName	inline	crates/horizon-client/src/title.rs::list_worlds	WorldEntry.version from Version.Name
-LevelSummary.isDisabled	port	crates/horizon-client/src/title.rs::disabled	locked, or saved by another series; primaryActionActive (can_play) and canEdit build on it
-LevelVersion.parse	inline	crates/horizon-client/src/title.rs::list_worlds	reads Version.Name only
-PrimaryLevelData.createTag	port	crates/horizon-client/src/save.rs::Level::write	
-PrimaryLevelData.setModdedInfo	inline	crates/horizon-client/src/save.rs::Level::write	gap: minor: writes WasModded 0 and the brand list; there is no modded save state
-PrimaryLevelData.stringCollectionToTag	inline	crates/horizon-client/src/save.rs::Level::write	ServerBrands and DataPacks lists
-PrimaryLevelData.writeLastPlayed	inline	crates/horizon-client/src/save.rs::Level::write	LastPlayed
-PrimaryLevelData.writeVersionHistory	inline	crates/horizon-client/src/save.rs::Level::write	version_history
-PrimaryLevelData.writeVersionTag	inline	crates/horizon-client/src/save.rs::Level::write	Version compound
+LevelStorageSource.readDataConfig	port	crates/horizon-client-lib/src/save.rs::Level::read	DataPacks and enabled_features are read with the level (data_packs, enabled_features), and datapack::enabled_ids layers the world's own packs over the bundle with them
+LevelSummary.backupStatus	inline	crates/horizon-client-lib/src/title.rs::should_backup	FILE_FIXING_REQUIRED when the world needs its files fixed or comes from a newer version; UPGRADE_TO_SNAPSHOT never applies to a stable build
+LevelSummary.compareTo	inline	crates/horizon-client-lib/src/title.rs::list_worlds	newest first by last played
+LevelSummary.createInfo	port	crates/horizon-client-lib/src/title.rs::world_info	locked, incompatible and corrupt rows in red, else the mode (hardcore in red), the commands marker and the version, italic or red when a backup is due
+LevelSummary.getLevelName	inline	crates/horizon-client-lib/src/title.rs::list_worlds	WorldEntry.name
+LevelSummary.getWorldVersionName	inline	crates/horizon-client-lib/src/title.rs::list_worlds	WorldEntry.version from Version.Name
+LevelSummary.isDisabled	port	crates/horizon-client-lib/src/title.rs::disabled	locked, or saved by another series; primaryActionActive (can_play) and canEdit build on it
+LevelVersion.parse	inline	crates/horizon-client-lib/src/title.rs::list_worlds	reads Version.Name only
+PrimaryLevelData.createTag	port	crates/horizon-client-lib/src/save.rs::Level::write	
+PrimaryLevelData.setModdedInfo	inline	crates/horizon-client-lib/src/save.rs::Level::write	gap: minor: writes WasModded 0 and the brand list; there is no modded save state
+PrimaryLevelData.stringCollectionToTag	inline	crates/horizon-client-lib/src/save.rs::Level::write	ServerBrands and DataPacks lists
+PrimaryLevelData.writeLastPlayed	inline	crates/horizon-client-lib/src/save.rs::Level::write	LastPlayed
+PrimaryLevelData.writeVersionHistory	inline	crates/horizon-client-lib/src/save.rs::Level::write	version_history
+PrimaryLevelData.writeVersionTag	inline	crates/horizon-client-lib/src/save.rs::Level::write	Version compound
 ServerLevelData	skip:debug		crash report category
 TagValueInput	skip:java		NBT read helpers; Horizon reads Tag values directly
 TagValueInput.CompoundListWrapper	skip:java		NBT list wrapper; Horizon reads Tag values directly
@@ -149,6 +149,6 @@ SetLoreFunction.updateLore	inline	crates/horizon-client/src/game/commands/items.
 SetLoreFunction.getReferencedContextParams	skip:data		validation of referenced context params
 SetLoreFunction.Builder	skip:java		builder
 SetOminousBottleAmplifierFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	set_ominous_bottle_amplifier arm
-SetRandomDyesFunction.run	port	crates/horizon-client/src/merchant.rs::Trades::apply_modifier	set_random_dyes arm
-SetRandomPotionFunction.run	port	crates/horizon-client/src/merchant.rs::Trades::apply_modifier	set_random_potion arm
+SetRandomDyesFunction.run	port	crates/horizon-entities/src/merchant.rs::Trades::apply_modifier	set_random_dyes arm
+SetRandomPotionFunction.run	port	crates/horizon-entities/src/merchant.rs::Trades::apply_modifier	set_random_potion arm
 SetStewEffectFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	set_stew_effect arm

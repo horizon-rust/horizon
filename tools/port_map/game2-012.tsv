@@ -32,7 +32,7 @@ Block.fallOn	port	crates/horizon-world/src/block_landing.rs::BlockLandingRegistr
 Block.getShapeForEachState	skip:java		Shape lookup cache over the state table; Horizon precomputes shapes per state.
 Block.tryDropExperience	inline	crates/horizon-client/src/game.rs::Game::break_block_as_player	Sampled block XP and pop folded into the break path; silk touch zeroes it as in vanilla (hard-coded check).
 Block.ShapePairKey.equals	skip:java		Hash key for the shape cache.
-Blocks.ocelotOrParrot	port	crates/horizon-client/src/mobs/spawn_rules.rs::is_valid_spawn	Leaves spawn rule for ocelots and parrots (VALID_SPAWN_LEAVES).
+Blocks.ocelotOrParrot	port	crates/horizon-entities/src/mobs/spawn_rules.rs::is_valid_spawn	Leaves spawn rule for ocelots and parrots (VALID_SPAWN_LEAVES).
 Blocks.logProperties	skip:data		Block.Properties builder; the values come from extracted block data.
 Blocks.netherStemProperties	skip:data		Block.Properties builder; the values come from extracted block data.
 Blocks.leavesProperties	skip:data		Block.Properties builder; the values come from extracted block data.
@@ -44,7 +44,7 @@ Blocks.registerStair	skip:data		Registry bootstrap; Horizon reads block definiti
 Blocks.registerSlab	skip:data		Registry bootstrap; Horizon reads block definitions from extracted data.
 Blocks.register	skip:data		Registry bootstrap; Horizon reads block definitions from extracted data.
 BrushableBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	Class::Brushable arm schedules the 2-tick update.
-BubbleColumnBlock.animateTick	port	crates/horizon-client/src/animate_tick.rs::block_animate_tick	Bubble and current particles plus whirlpool and upwards ambient sounds.
+BubbleColumnBlock.animateTick	port	crates/horizon-client-lib/src/animate_tick.rs::block_animate_tick	Bubble and current particles plus whirlpool and upwards ambient sounds.
 BubbleColumnBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	Class::BubbleColumn arm schedules the water tick and the 5-tick recheck.
 BubbleColumnBlock.pickupBlock	port	crates/horizon-world/src/level/fluids.rs::Sim::pickup_block	ticked in #3516; `BubbleColumnBlock.pickupBlock` is cited at crates/horizon-world/src/level/fluids.rs:318 (in a comment, so `where` names the enclosing fn)
 ButtonBlock.makeShapes	skip:data		Shape precomputed from the extracted block shapes (level/data.rs).
@@ -58,11 +58,11 @@ ButtonBlock.createBlockStateDefinition	skip:data		Block state properties come fr
 CactusBlock.randomTick	port	crates/horizon-world/src/level/tick.rs::Sim::cactus_random_tick	Growth, cactus flower chance and reset at age 15.
 CactusBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	Class::Cactus arm schedules a 1-tick survival check.
 CactusBlock.canSurvive	port	crates/horizon-world/src/level/survive.rs::Sim::can_survive_class	Solid or lava side neighbours block it; needs cactus or support tag below and no liquid above.
-CampfireBlock.entityInside	port	crates/horizon-client/src/motion.rs::MotionWorld::check_inside_blocks	Lit campfire hurts living entities through environment_hurt.
+CampfireBlock.entityInside	port	crates/horizon-entities/src/motion.rs::MotionWorld::check_inside_blocks	Lit campfire hurts living entities through environment_hurt.
 CampfireBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.rs::Sim::placement_class	Waterlogged, lit, signal fire from hay below, facing from the player.
 CampfireBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	Waterlogged tick and signal fire from the block below.
 CampfireBlock.placeLiquid	port	crates/horizon-world/src/level/fluids.rs::Sim::place_liquid	Water puts it out with the extinguish sound and sets waterlogged.
-CampfireBlock.onProjectileHit	port	crates/horizon-client/src/arrows.rs::Ticker::block_reaction	a burning arrow lights an unlit, dry campfire
+CampfireBlock.onProjectileHit	port	crates/horizon-entities/src/arrows.rs::Ticker::block_reaction	a burning arrow lights an unlit, dry campfire
 CampfireBlock.getFluidState	port	crates/horizon-world/src/level/mod.rs::Behaviours::fluid	Waterlogged fluid is read from per-state facts.
 CampfireBlock.rotate	skip:data		Rotation is a precomputed table from extracted data.
 CampfireBlock.createBlockStateDefinition	skip:data		Block state properties come from extracted data.

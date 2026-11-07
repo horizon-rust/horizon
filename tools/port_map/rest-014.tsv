@@ -1,31 +1,31 @@
-ServerScoreboard.onScoreChanged	port	crates/horizon-client/src/lan/scoreboard.rs::View::changes	score packet for tracked objectives, sent as the diff
-ServerScoreboard.onPlayerRemoved	port	crates/horizon-client/src/lan/scoreboard.rs::View::changes	reset-all becomes one ResetScore per tracked objective; same client result
-ServerScoreboard.onPlayerScoreRemoved	port	crates/horizon-client/src/lan/scoreboard.rs::View::changes	ResetScore for one tracked objective
-ServerScoreboard.addPlayerToTeam	port	crates/horizon-client/src/lan/scoreboard.rs::View::changes	team method 3 (join) for the new member
-ServerScoreboard.removePlayerFromTeam	port	crates/horizon-client/src/lan/scoreboard.rs::View::changes	team method 4 (leave)
-ServerScoreboard.onObjectiveChanged	port	crates/horizon-client/src/lan/scoreboard.rs::View::changes	objective method 2 when its display changes
-ServerScoreboard.onObjectiveRemoved	port	crates/horizon-client/src/lan/scoreboard.rs::View::changes	objective method 1 when it leaves every display slot
-ServerScoreboard.onTeamAdded	port	crates/horizon-client/src/lan/scoreboard.rs::View::changes	team method 0 (create) to everyone
-ServerScoreboard.onTeamChanged	port	crates/horizon-client/src/lan/scoreboard.rs::View::changes	team method 2 (update parameters); waypoints in Waypoints::tick_level
-ServerScoreboard.onTeamRemoved	port	crates/horizon-client/src/lan/scoreboard.rs::View::changes	team method 1 (remove)
+ServerScoreboard.onScoreChanged	port	crates/horizon-client-lib/src/lan/scoreboard.rs::View::changes	score packet for tracked objectives, sent as the diff
+ServerScoreboard.onPlayerRemoved	port	crates/horizon-client-lib/src/lan/scoreboard.rs::View::changes	reset-all becomes one ResetScore per tracked objective; same client result
+ServerScoreboard.onPlayerScoreRemoved	port	crates/horizon-client-lib/src/lan/scoreboard.rs::View::changes	ResetScore for one tracked objective
+ServerScoreboard.addPlayerToTeam	port	crates/horizon-client-lib/src/lan/scoreboard.rs::View::changes	team method 3 (join) for the new member
+ServerScoreboard.removePlayerFromTeam	port	crates/horizon-client-lib/src/lan/scoreboard.rs::View::changes	team method 4 (leave)
+ServerScoreboard.onObjectiveChanged	port	crates/horizon-client-lib/src/lan/scoreboard.rs::View::changes	objective method 2 when its display changes
+ServerScoreboard.onObjectiveRemoved	port	crates/horizon-client-lib/src/lan/scoreboard.rs::View::changes	objective method 1 when it leaves every display slot
+ServerScoreboard.onTeamAdded	port	crates/horizon-client-lib/src/lan/scoreboard.rs::View::changes	team method 0 (create) to everyone
+ServerScoreboard.onTeamChanged	port	crates/horizon-client-lib/src/lan/scoreboard.rs::View::changes	team method 2 (update parameters); waypoints in Waypoints::tick_level
+ServerScoreboard.onTeamRemoved	port	crates/horizon-client-lib/src/lan/scoreboard.rs::View::changes	team method 1 (remove)
 ServerScoreboard.storeToSaveDataIfDirty	port	crates/horizon-client/src/game/scoreboard.rs::Game::save_scoreboard	gap: minor: saves the board on every save, no dirty flag; same file
-ServerScoreboard.getStartTrackingPackets	inline	crates/horizon-client/src/lan/scoreboard.rs::View::changes	objective, display slot and score packets come from the diff
-ServerScoreboard.startTrackingObjective	inline	crates/horizon-client/src/lan/scoreboard.rs::View::changes	no per-objective call; a newly displayed objective appears in the next diff
-ServerScoreboard.getStopTrackingPackets	inline	crates/horizon-client/src/lan/scoreboard.rs::View::changes	objective method 1 and display resets come from the diff
-ServerScoreboard.stopTrackingObjective	inline	crates/horizon-client/src/lan/scoreboard.rs::View::changes	objective removed from the next diff
-ServerScoreboard.getObjectiveDisplaySlotCount	inline	crates/horizon-client/src/lan/scoreboard.rs::View::of	tracked set = objectives in any display slot
-ServerScoreboard.updatePlayerWaypoint	port	crates/horizon-client/src/lan/waypoints.rs::Waypoints::tick_level	team change remakes the player's waypoint connections, found by the per-tick diff
-ServerScoreboard.updateTeamWaypoints	port	crates/horizon-client/src/lan/waypoints.rs::Waypoints::tick_level	every player on a changed team, via the per-tick diff
+ServerScoreboard.getStartTrackingPackets	inline	crates/horizon-client-lib/src/lan/scoreboard.rs::View::changes	objective, display slot and score packets come from the diff
+ServerScoreboard.startTrackingObjective	inline	crates/horizon-client-lib/src/lan/scoreboard.rs::View::changes	no per-objective call; a newly displayed objective appears in the next diff
+ServerScoreboard.getStopTrackingPackets	inline	crates/horizon-client-lib/src/lan/scoreboard.rs::View::changes	objective method 1 and display resets come from the diff
+ServerScoreboard.stopTrackingObjective	inline	crates/horizon-client-lib/src/lan/scoreboard.rs::View::changes	objective removed from the next diff
+ServerScoreboard.getObjectiveDisplaySlotCount	inline	crates/horizon-client-lib/src/lan/scoreboard.rs::View::of	tracked set = objectives in any display slot
+ServerScoreboard.updatePlayerWaypoint	port	crates/horizon-client-lib/src/lan/waypoints.rs::Waypoints::tick_level	team change remakes the player's waypoint connections, found by the per-tick diff
+ServerScoreboard.updateTeamWaypoints	port	crates/horizon-client-lib/src/lan/waypoints.rs::Waypoints::tick_level	every player on a changed team, via the per-tick diff
 ServerScoreboard.load	port	crates/horizon-client-core/src/scoreboard.rs::Scoreboard::unpack	the saved data's Objectives, Scores, DisplaySlots and Teams read back
 ServerScoreboard.store	port	crates/horizon-client-core/src/scoreboard.rs::Scoreboard::pack	ScoreboardSaveData.Packed's fields, those equal to their codec default left out
-ServerTickRateManager.updateJoiningPlayer	port	crates/horizon-client/src/lan/hub.rs::Hub::send_level_info	sends ticking state and step to the joining guest
-ServerTickRateManager.updateStepTicks	inline	crates/horizon-client/src/lan/hub.rs::Hub::sync_ticking	a step's revision change broadcasts TickingStep, and the same fn sends the ticking state when the rate or the freeze changed
+ServerTickRateManager.updateJoiningPlayer	port	crates/horizon-client-lib/src/lan/hub.rs::Hub::send_level_info	sends ticking state and step to the joining guest
+ServerTickRateManager.updateStepTicks	inline	crates/horizon-client-lib/src/lan/hub.rs::Hub::sync_ticking	a step's revision change broadcasts TickingStep, and the same fn sends the ticking state when the rate or the freeze changed
 SuppressedExceptionCollector.addEntry	skip:server		feeds the system report's suppressed-exception section; no player-facing behaviour
 SuppressedExceptionCollector.dump	skip:server		system report section only
 WorldLoader.PackConfig.createResourceManager	port	crates/horizon-client/src/game/functions.rs::Game::reload_datapacks	discovers packs and rebuilds the data store; no resource manager object
-AdvancementVisibilityEvaluator.evaluateVisibility	port	crates/horizon-client/src/advancements.rs::Tree::visible	done, ancestors and near unhidden advancements in one walk
-AdvancementVisibilityEvaluator.evaluateVisibilityRule	inline	crates/horizon-client/src/advancements.rs::Tree::visible	rule match inside the walk
-AdvancementVisibilityEvaluator.evaluateVisiblityForUnfinishedNode	inline	crates/horizon-client/src/advancements.rs::Tree::visible	two-level check on the top three rules, in the walk
+AdvancementVisibilityEvaluator.evaluateVisibility	port	crates/horizon-client-lib/src/advancements.rs::Tree::visible	done, ancestors and near unhidden advancements in one walk
+AdvancementVisibilityEvaluator.evaluateVisibilityRule	inline	crates/horizon-client-lib/src/advancements.rs::Tree::visible	rule match inside the walk
+AdvancementVisibilityEvaluator.evaluateVisiblityForUnfinishedNode	inline	crates/horizon-client-lib/src/advancements.rs::Tree::visible	two-level check on the top three rules, in the walk
 CustomBossEvent.addPlayer	port	crates/horizon-client/src/game/bossbars.rs::Game::bossbar_set	players arm stores the UUID set; viewer packets from publish_boss_bars
 CustomBossEvent.removePlayer	port	crates/horizon-client/src/game/bossbars.rs::Game::bossbar_set	players arm replaces the set without the removed UUID
 CustomBossEvent.removeAllPlayers	inline	crates/horizon-client/src/game/bossbars.rs::Game::bossbar_command	bossbar remove drops the bar for every viewer on the next publish; no separate clear

@@ -105,13 +105,6 @@ def touched_crates(paths, packages):
         if path.startswith(MOD_API_INPUTS):
             crates.update({"horizon-client", "horizon-client-render", "horizon-mod-api-gen"})
             continue
-        if "horizon-client-lib" in packages and path.startswith("crates/horizon-client/"):
-            relative = path.removeprefix("crates/horizon-client/")
-            gameplay = relative in {"Cargo.toml", "build.rs", "windows-segment-heap.manifest",
-                                    "src/lib.rs", "src/main.rs", "src/entry.rs", "src/game.rs", "tests/launch_api.rs"} \
-                or relative.startswith("src/game/")
-            crates.add("horizon-client" if gameplay else "horizon-client-lib")
-            continue
         owners = [name for name, directory in packages.items() if path.startswith(directory.rstrip("/") + "/")]
         if owners:
             crates.add(max(owners, key=lambda name: len(packages[name])))
@@ -341,7 +334,7 @@ def mod_features(crates):
 
 # What horizon-client's full content-root tests load (mod_content_tests.rs). They take minutes on prepared data, so
 # they are #[ignore]d and run here only when one of these changes.
-CONTENT_ROOT = ("crates/horizon-client/src/mod_content", "crates/horizon-client-render/src/assets.rs", "crates/horizon-items/",
+CONTENT_ROOT = ("crates/horizon-client-lib/src/mod_content", "crates/horizon-client-render/src/assets.rs", "crates/horizon-items/",
                 "crates/horizon-mods/", "crates/horizon-assets/")
 CONTENT_ROOT_TESTS = "cargo test --locked -p horizon-client-lib --lib mod_content::tests:: -- --ignored"
 

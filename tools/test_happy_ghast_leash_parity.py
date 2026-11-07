@@ -33,7 +33,7 @@ def main():
         raise SystemExit("vanilla fixture must cover 36 leash cases and seven snapped leads")
     env["HORIZON_HAPPY_GHAST_LEASH_REFERENCE"] = str(reference)
     env["HORIZON_TEST_RESOURCES"] = os.environ.get("HORIZON_TEST_RESOURCES", str(lab.RESOURCES))
-    subprocess.run(["cargo", "test", "-p", "horizon-client-lib", "--lib",
+    subprocess.run(["cargo", "test", "-p", "horizon-entities", "--lib",
                     "mobs::leash::tests::happy_ghast_leash_dispatch_matches_vanilla",
                     "--", "--exact", "--ignored"], cwd=lab.ROOT, env=env, check=True)
     print("Happy Ghast leash: 36 adult/baby/cow dispatch, threshold and force cases match vanilla")

@@ -11,6 +11,15 @@ pub fn uuid_text(u: [i32; 4]) -> String {
         &hex[20..32]
     )
 }
+/// A UUID as NBT holds it: vanilla's int array, or the text form of older saves.
+pub fn uuid_from_tag(tag: Option<&horizon_world::nbt::Tag>) -> Option<[i32; 4]> {
+    use horizon_world::nbt::Tag;
+    match tag? {
+        Tag::IntArray(v) if v.len() == 4 => Some([v[0], v[1], v[2], v[3]]),
+        Tag::String(s) => uuid_from_text(&s.to_string_lossy()),
+        _ => None,
+    }
+}
 pub fn uuid_from_text(s: &str) -> Option<[i32; 4]> {
     let mut hex = [0u8; 32];
     let mut len = 0;

@@ -194,7 +194,7 @@ def main():
     oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaServerFilesOracle.java'
     sources = [Path(__file__).resolve(), oracle, lab.ROOT / 'tools/oracle_harness.py', lab.ROOT / 'tools/lab.py',
                lab.ROOT / 'tools/test_rust_parity.py', lab.ROOT / 'Cargo.lock',
-               lab.ROOT / 'crates/horizon-client/examples/probe/server_files_probe.rs',
+               lab.ROOT / 'crates/horizon-client-lib/examples/probe/server_files_probe.rs',
                *sorted((lab.ROOT / 'crates/horizon-client/src/server').glob('*.rs'))]
     tested = base.source_hashes(sources)
     cases, count = make_cases(build)

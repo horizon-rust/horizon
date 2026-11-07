@@ -80,9 +80,9 @@ ItemTransforms.Deserializer.deserialize	port	crates/horizon-assets/src/model.rs:
 ItemTransforms.Deserializer.getTransform	port	crates/horizon-assets/src/item_bake.rs::BakedItemModel::transform	transform for one display context
 BakedQuad.position	skip:java		record accessor; ModelQuad.positions field
 BakedQuad.packedUV	skip:java		record accessor; ModelQuad.uv field
-BakedQuad.MaterialInfo.of	port	crates/horizon-client/src/item_render.rs::FileSprites::translucent	gap: minor: picks solid or translucent only; no per-material render type or glint sheet
+BakedQuad.MaterialInfo.of	port	crates/horizon-client-lib/src/item_render.rs::FileSprites::translucent	gap: minor: picks solid or translucent only; no per-material render type or glint sheet
 BakedQuad.MaterialInfo.flags	skip:java		translucent and animated bit flags used to skip work; Horizon ticks animated textures by its setting
-ItemQuads.split	port	crates/horizon-client/src/item_render.rs::submit_quads	quads with translucent sprites go to the translucent pass
+ItemQuads.split	port	crates/horizon-client-lib/src/item_render.rs::submit_quads	quads with translucent sprites go to the translucent pass
 QuadCollection.computeMaterialFlags	skip:java		flag bits of the quad list; see BakedQuad.MaterialInfo.flags
 QuadCollection.getQuads	port	crates/horizon-client-render/src/mesher.rs::Mesher::mesh	quads filtered by cull direction
 QuadCollection.materialFlags	skip:java		cached flag bits
@@ -123,19 +123,19 @@ PalettedTextureManager.Slot.getU	skip:java		UV accessor of a dynamic atlas slot;
 PalettedTextureManager.Slot.getV	skip:java		UV accessor of a dynamic atlas slot; Horizon uses sprite rects
 DownloadedPackSource.configureSource	inline	crates/horizon-client/src/game/server_packs.rs::Game::start_pack_reload	pack list staged for the reload; empty when none
 DownloadedPackSource.loadRequestedPacks	port	crates/horizon-client-render/src/packs.rs::server_pack	server/{id}/{file} with resourcePack.server.name; the pack screen lists active ones via Game::pack_infos
-DownloadedPackSource.onRecovery	port	crates/horizon-client/src/server_packs.rs::ServerPacks::reloaded	reloads the packs that were active after a failure
-DownloadedPackSource.onRecoveryFailure	port	crates/horizon-client/src/server_packs.rs::ServerPacks::reloaded	second failure leaves the server's packs inactive
+DownloadedPackSource.onRecovery	port	crates/horizon-client-lib/src/server_packs.rs::ServerPacks::reloaded	reloads the packs that were active after a failure
+DownloadedPackSource.onRecoveryFailure	port	crates/horizon-client-lib/src/server_packs.rs::ServerPacks::reloaded	second failure leaves the server's packs inactive
 DownloadedPackSource.waitForPackFeedback	skip:java		future over the feedback callback; replies go through ServerPacks::take_replies
-ServerPackManager.markExistingPacksAsRemoved	inline	crates/horizon-client/src/server_packs.rs::ServerPacks::push	packs with the same id are removed as ServerReplaced
-ServerPackManager.pushPack	port	crates/horizon-client/src/server_packs.rs::ServerPacks::push	declined prompt answers DECLINED
-ServerPackManager.pushLocalPack	port	crates/horizon-client/src/server_packs.rs::ServerPacks::push_local	the world's `resourcepacks/resources.zip` is pushed as a pack already on disk (`Download::Done`, no url or sha1); a declined prompt reports DECLINED
-ServerPackManager.pushNewPack	inline	crates/horizon-client/src/server_packs.rs::ServerPacks::push	adds the pack and accepts it when allowed
-ServerPackManager.findPackInfo	inline	crates/horizon-client/src/server_packs.rs::ServerPacks::pop	finds the live pack with the id
-ServerPackManager.popPack	port	crates/horizon-client/src/server_packs.rs::ServerPacks::pop	marks the pack ServerRemoved
-ServerPackManager.allowServerPacks	port	crates/horizon-client/src/server_packs.rs::ServerPacks::allow	prompt allowed; accepts the waiting packs
-ServerPackManager.rejectServerPacks	port	crates/horizon-client/src/server_packs.rs::ServerPacks::reject	prompt declined; removes the unaccepted packs
-ServerPackManager.cleanupRemovedPacks	inline	crates/horizon-client/src/server_packs.rs::ServerPacks::tick	forgets removed packs and reports why
-ServerPackManager.updateDownloads	port	crates/horizon-client/src/server_packs.rs::ServerPacks::tick	gap: minor: returns the download requests; the download itself starts in game/server_packs.rs::Game::start_pack_downloads
+ServerPackManager.markExistingPacksAsRemoved	inline	crates/horizon-client-lib/src/server_packs.rs::ServerPacks::push	packs with the same id are removed as ServerReplaced
+ServerPackManager.pushPack	port	crates/horizon-client-lib/src/server_packs.rs::ServerPacks::push	declined prompt answers DECLINED
+ServerPackManager.pushLocalPack	port	crates/horizon-client-lib/src/server_packs.rs::ServerPacks::push_local	the world's `resourcepacks/resources.zip` is pushed as a pack already on disk (`Download::Done`, no url or sha1); a declined prompt reports DECLINED
+ServerPackManager.pushNewPack	inline	crates/horizon-client-lib/src/server_packs.rs::ServerPacks::push	adds the pack and accepts it when allowed
+ServerPackManager.findPackInfo	inline	crates/horizon-client-lib/src/server_packs.rs::ServerPacks::pop	finds the live pack with the id
+ServerPackManager.popPack	port	crates/horizon-client-lib/src/server_packs.rs::ServerPacks::pop	marks the pack ServerRemoved
+ServerPackManager.allowServerPacks	port	crates/horizon-client-lib/src/server_packs.rs::ServerPacks::allow	prompt allowed; accepts the waiting packs
+ServerPackManager.rejectServerPacks	port	crates/horizon-client-lib/src/server_packs.rs::ServerPacks::reject	prompt declined; removes the unaccepted packs
+ServerPackManager.cleanupRemovedPacks	inline	crates/horizon-client-lib/src/server_packs.rs::ServerPacks::tick	forgets removed packs and reports why
+ServerPackManager.updateDownloads	port	crates/horizon-client-lib/src/server_packs.rs::ServerPacks::tick	gap: minor: returns the download requests; the download itself starts in game/server_packs.rs::Game::start_pack_downloads
 AbstractSoundInstance.getOrResolve	port	crates/horizon-client-render/src/sound_engine.rs::SoundEngine::resolve	event lookup, then a random sound from it
 BeeSoundInstance.tick	port	crates/horizon-client-render/src/sound_engine.rs::SoundInstance::tick	Ticking::Bee follows the bee; pitch and volume from speed
 DirectionalSoundInstance.setPosition	port	crates/horizon-client/src/game/end.rs::Game::tick_end	gap: minor: the end flash plays without a position, so the 10-block offset toward the view is not kept

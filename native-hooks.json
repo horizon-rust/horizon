@@ -2410,7 +2410,7 @@
     {
       "name": "living_breathe",
       "version": 1,
-      "target": "horizon_client_lib::breathing::native_living_breathe",
+      "target": "horizon_entities::breathing::native_living_breathe",
       "neoforge": "LivingBreatheEvent",
       "side": "server",
       "cancellable": false,
@@ -4663,7 +4663,7 @@
     {
       "name": "living_drown",
       "version": 1,
-      "target": "horizon_client_lib::breathing::native_living_drown",
+      "target": "horizon_entities::breathing::native_living_drown",
       "neoforge": "LivingDrownEvent",
       "side": "server",
       "mod_api": {
@@ -4674,7 +4674,7 @@
     {
       "name": "living_fall",
       "version": 1,
-      "target": "horizon_client_lib::landing::native_living_fall",
+      "target": "horizon_entities::landing::native_living_fall",
       "neoforge": "LivingFallEvent",
       "side": "both",
       "mod_api": {
@@ -4685,7 +4685,7 @@
     {
       "name": "living_heal",
       "version": 1,
-      "target": "horizon_client_lib::hunger::native_living_heal",
+      "target": "horizon_entities::hunger::native_living_heal",
       "neoforge": "LivingHealEvent",
       "side": "both",
       "mod_api": {
@@ -4696,7 +4696,7 @@
     {
       "name": "living_jump",
       "version": 1,
-      "target": "horizon_client_lib::motion::native_living_jump",
+      "target": "horizon_entities::motion::native_living_jump",
       "neoforge": "LivingEvent.LivingJumpEvent",
       "side": "both",
       "mod_api": {

@@ -257,15 +257,15 @@ GENERATORS = [
      lambda root, version, store, build: [python(), "tools/gen_version_consts.py"]),
     ("packet_ids", ["crates/horizon-protocol/src/ids.rs"],
      lambda root, version, store, build: [python(), "tools/generate_packet_ids.py"]),
-    ("entity_tracking", ["crates/horizon-client/src/lan/tracking.rs"],
+    ("entity_tracking", ["crates/horizon-client-lib/src/lan/tracking.rs"],
      lambda root, version, store, build: [python(), "tools/generate_entity_tracking.py", "--sources",
                                           store / "sources" / "client"]),
     ("block_state_data", ["crates/horizon-world/src/datafix/block_state_data.txt"],
      lambda root, version, store, build: [python(), "tools/gen_block_state_data.py",
                                           store / "sources/server" / f"{SOURCES[1][1]}.java"]),
-    ("lan_command_order", ["crates/horizon-client/src/lan/command_order.rs"],
+    ("lan_command_order", ["crates/horizon-client-lib/src/lan/command_order.rs"],
      lambda root, version, store, build: [python(), "tools/generate_lan_command_order.py"]),
-    ("command_suggestions", ["crates/horizon-client/src/lan/command_suggestions.rs"], gen_suggestions),
+    ("command_suggestions", ["crates/horizon-client-lib/src/lan/command_suggestions.rs"], gen_suggestions),
     ("vanilla_command_order", ["crates/horizon-command/src/vanilla_order.rs"], gen_vanilla_order),
 ]
 

@@ -1,0 +1,43 @@
+[package]
+name = "horizon-entities"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version = "1.90"
+description = "Mobs, other entities and their movement, below the client library"
+
+[dependencies]
+horizon-assets = { path = "../horizon-assets" }
+horizon-client-core = { path = "../horizon-client-core" }
+horizon-client-input = { path = "../horizon-client-input" }
+horizon-client-render = { path = "../horizon-client-render" }
+horizon-command = { path = "../horizon-command" }
+# Emotes pose the player model (`Mob::emote`, `mobs::anim::setup`).
+horizon-cosmetics = { path = "../horizon-cosmetics" }
+horizon-items = { path = "../horizon-items" }
+horizon-core = { path = "../horizon-core" }
+horizon-optifine = { path = "../horizon-optifine" }
+horizon-world = { path = "../horizon-world" }
+horizon-protocol = { path = "../horizon-protocol" }
+horizon-server-files = { path = "../horizon-server-files" }
+bytemuck = { version = "1.24", features = ["derive"] }
+glam = "0.30"
+serde_json = { version = "1.0.151", features = ["raw_value"] }
+log = "0.4"
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
+
+[features]
+# Helpers for the library's own tests: the mob type fixture and registered test types.
+test-support = []
+# Records the call sites of mob random draws (`mob_ai_probe` traces).
+rng-trace = ["horizon-core/rng-trace"]
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# The farming tests build a content mod with `mod_content::build`.
+horizon-client-lib = { path = "../horizon-client-lib", default-features = false }
+horizon-mods = { path = "../horizon-mods", default-features = false, features = ["index"] }
+horizon-client-render = { path = "../horizon-client-render", features = ["test-support"] }
+horizon-items = { path = "../horizon-items", features = ["test-support"] }

@@ -1082,7 +1082,7 @@ impl Special {
                 }
                 let current = target_stack.data().and_then(|d| d.dyed_color);
                 let mut out = result.over(target_stack, 0);
-                out.data_mut().dyed_color = Some(apply_dyes(current, &dyes));
+                out.data_mut().dyed_color = Some(crate::merchant::apply_dyes(current, &dyes));
                 out
             }
             Self::Imbue { result, .. } => {
@@ -1254,33 +1254,6 @@ impl Special {
         // ItemStackTemplate.validate: oversized stacks become empty.
         (made.count > 0 && made.count <= ctx.max_stack(&made.item)).then_some(made)
     }
-}
-/// `DyedItemColor.applyDyes` over dye indexes.
-pub(crate) fn apply_dyes(current: Option<i32>, dyes: &[usize]) -> i32 {
-    let (mut r, mut g, mut b, mut intensity, mut n) = (0i32, 0i32, 0i32, 0i32, 0i32);
-    let mut add = |rgb: u32| {
-        let (red, green, blue) = (
-            (rgb >> 16 & 255) as i32,
-            (rgb >> 8 & 255) as i32,
-            (rgb & 255) as i32,
-        );
-        intensity += red.max(green.max(blue));
-        r += red;
-        g += green;
-        b += blue;
-        n += 1;
-    };
-    if let Some(c) = current {
-        add(c as u32);
-    }
-    for d in dyes {
-        add(crate::block_entity_render::DYES[*d].1);
-    }
-    let (red, green, blue) = (r / n, g / n, b / n);
-    let average = intensity as f32 / n as f32;
-    let result = red.max(green.max(blue)) as f32;
-    let scale = |c: i32| (c as f32 * average / result) as i32;
-    scale(red) << 16 | scale(green) << 8 | scale(blue)
 }
 #[derive(Clone, Debug)]
 pub struct Cooking {
@@ -2678,6 +2651,6 @@ mod tests {
     #[test]
     fn dyes_blend_like_dyed_item_color() {
         // One red dye on an undyed item gives the dye's own colour.
-        assert_eq!(apply_dyes(None, &[14]), 0xB02E26);
+        assert_eq!(crate::merchant::apply_dyes(None, &[14]), 0xB02E26);
     }
 }

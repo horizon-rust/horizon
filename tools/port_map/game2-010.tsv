@@ -29,7 +29,7 @@ EnchantmentHelper.updateEnchantments	port	crates/horizon-items/src/item_data.rs:
 EnchantmentHelper.processAmmoUse	port	crates/horizon-client/src/game/enchant_effects.rs::Game::bow_enchantments	Infinity as a flag; the ammo count change is decided by the caller
 EnchantmentHelper.processBlockExperience	inline	crates/horizon-client/src/game.rs::Game::break_block_as_player	Silk Touch zeroes the XP at the call site; spawners keep it
 EnchantmentHelper.processMobExperience	skip:other		no enchantment in the data uses mob_experience, so the amount never changes
-EnchantmentHelper.createBook	inline	crates/horizon-client/src/creative.rs::from_json	the search tab comes from creative-inventory.json, whose export carries the 171 enchanted book stacks (vanilla CreativeModeTabs generates them)
+EnchantmentHelper.createBook	inline	crates/horizon-client-lib/src/creative.rs::from_json	the search tab comes from creative-inventory.json, whose export carries the 171 enchanted book stacks (vanilla CreativeModeTabs generates them)
 EnchantmentHelper.runIterationOnItem	port	crates/horizon-items/src/item_data.rs::ItemStack::enchantments	the (enchantment, level) iteration; callers loop over it
 EnchantmentHelper.runIterationOnEquipment	inline	crates/horizon-client/src/game/enchant_effects.rs::Game::apply_enchantment_attributes	gap: minor: worn armor only; hand slots are not read
 EnchantmentHelper.isImmuneToDamage	port	crates/horizon-client/src/game/enchant_effects.rs::Game::wears_burn_from_stepping_immunity	gap: minor: worn armor only; no requirements or damage source check
@@ -62,7 +62,7 @@ Equippable.equipOnTarget	port	crates/horizon-client/src/game/ghasts.rs::Game::in
 Equippable.canBeEquippedBy	port	crates/horizon-client/src/game/mount_menu.rs::shows_saddle	gap: minor: the saddle slot's entity check only; the armour swap has no entity test
 Equippable.Builder	skip:data		datagen builder for equippable data
 ItemCost.withComponents	skip:data		datagen helper; no runtime caller in 26.3
-ItemCost.test	port	crates/horizon-client/src/merchant.rs::ItemCost::test	item match, then the stack data when the cost has data
+ItemCost.test	port	crates/horizon-entities/src/merchant.rs::ItemCost::test	item match, then the stack data when the cost has data
 MerchantOffer.<init>	skip:java		constructor; Horizon builds the offer in merchant.rs
 MerchantOffer.writeToStream	skip:java		wire encoding (stream codec)
 MerchantOffer.createFromStream	skip:java		wire decoding (stream codec)
@@ -72,10 +72,10 @@ VillagerTrade.Builder	skip:data		datagen builder for trade data
 BaseCommandBlock.createSource	inline	crates/horizon-client/src/game/command_blocks.rs::Game::command_block_success	the track_output gate that decides whether the source exists
 BaseCommandBlock.CloseableCommandBlockSource.acceptsSuccess	port	crates/horizon-client/src/game/command_blocks.rs::Game::command_block_success	track_output and send_command_feedback; a removed block gets no output
 BaseCommandBlock.CloseableCommandBlockSource.shouldInformAdmins	port	crates/horizon-client/src/game/command_blocks.rs::Game::command_block_success	command_block_output rule, with feedback on
-BaseSpawner.setEntityData	port	crates/horizon-client/src/mobs/spawner.rs::Spawner::set_entity_id	
+BaseSpawner.setEntityData	port	crates/horizon-entities/src/mobs/spawner.rs::Spawner::set_entity_id	
 BaseSpawner.getOrCreateDisplayEntity	port	crates/horizon-client/src/game/spawner.rs::Game::update_spawner_display	display mob made per spawner from its next spawn data
-BaseSpawner.onEventTriggered	port	crates/horizon-client/src/mobs/spawner.rs::Spawner::client_event	block event 1 resets the client's delay
-BaseSpawner.getOrCreateNextSpawnData	port	crates/horizon-client/src/mobs/spawner.rs::Spawner::next_or_create	next spawn data picked once and kept
+BaseSpawner.onEventTriggered	port	crates/horizon-entities/src/mobs/spawner.rs::Spawner::client_event	block event 1 resets the client's delay
+BaseSpawner.getOrCreateNextSpawnData	port	crates/horizon-entities/src/mobs/spawner.rs::Spawner::next_or_create	next spawn data picked once and kept
 Level.isInWorldBounds	port	crates/horizon-world/src/level/update.rs::Sim::is_in_valid_bounds	height and horizontal range
 Level.isInValidBounds	port	crates/horizon-world/src/level/update.rs::Sim::is_in_valid_bounds	chunk-level bounds folded into the same range
 Level.isInWorldBoundsHorizontal	inline	crates/horizon-world/src/level/update.rs::Sim::is_in_valid_bounds	the -30000000..30000000 test
@@ -89,7 +89,7 @@ Level.addBlockEntityTicker	port	crates/horizon-client/src/game.rs::GameLevel::lo
 Level.guardEntityTick	skip:debug		crash-report wrapper around an entity tick
 Level.getBlockEntity	skip:other		bare block_entities map lookup at each caller; no port of its own
 Level.setBlockEntity	port	crates/horizon-client/src/game.rs::GameLevel::load_block_entity	
-Level.loadedAndEntityCanStandOnFace	inline	crates/horizon-client/src/mobs/shulker.rs::can_stay_at	the supporting block's face toward the shell is tested for sturdiness (`BlockState.entityCanStandOnFace`) before the opened shell's box; the chunk is loaded by construction where the sim asks
+Level.loadedAndEntityCanStandOnFace	inline	crates/horizon-entities/src/mobs/shulker.rs::can_stay_at	the supporting block's face toward the shell is tested for sturdiness (`BlockState.entityCanStandOnFace`) before the opened shell's box; the chunk is loaded by construction where the sim asks
 Level.getWorldBorderAdjustedRespawnData	missing		unsure: respawn clamp to the world border not found
 Level.hasEntities	missing		unsure: no entity-in-box test found for this use
 Level.getClockTimeTicks	port	crates/horizon-client/src/game.rs::GameLevel::day_time	day time; no separate clock time
@@ -111,14 +111,14 @@ ChunkPos.getRegionX	port	crates/horizon-core/src/position.rs::ChunkPos::region
 ChunkPos.getRegionZ	port	crates/horizon-core/src/position.rs::ChunkPos::region	
 ChunkPos.getBlockAt	skip:other		no caller in 26.3 code
 ChunkPos.contains	port	crates/horizon-core/src/position.rs::BlockPos::chunk	a block is in a chunk when its chunk() is that chunk
-ChunkPos.getChessboardDistance	inline	crates/horizon-client/src/ticket_levels.rs::compute	Chebyshev distance folded into the ticket level loop
-ChunkPos.distanceSquared	inline	crates/horizon-client/src/lan/hub.rs::requeue_ring	the pending chunk queue is sorted by the squared chunk distance, the only use vanilla makes of it (PlayerChunkSender.collectChunksToSend)
+ChunkPos.getChessboardDistance	inline	crates/horizon-client-lib/src/ticket_levels.rs::compute	Chebyshev distance folded into the ticket level loop
+ChunkPos.distanceSquared	inline	crates/horizon-client-lib/src/lan/hub.rs::requeue_ring	the pending chunk queue is sorted by the squared chunk distance, the only use vanilla makes of it (PlayerChunkSender.collectChunksToSend)
 CollisionGetter.isUnobstructed	port	crates/horizon-client/src/game.rs::GameLevel::is_unobstructed	the state-based overload
 CollisionGetter.noBorderCollision	port	crates/horizon-client-render/src/collisions.rs::EntityCollisions::movement_border	border shape when inside close to the border
 CollisionGetter.getPreMoveCollisions	inline	crates/horizon-client-render/src/collisions.rs::SceneCollisions::resolve_with_context	gap: minor: entity and block shapes are not returned as a list; the resolver takes them together
 CollisionGetter.getBlockAndLiquidCollisions	port	crates/horizon-client-render/src/collisions.rs::no_collision_or_liquid	gap: minor: a yes or no test, not the shape list
 CollisionGetter.getBlockCollisionsFromContext	port	crates/horizon-client-render/src/collisions.rs::SceneCollisions::collision_block	gap: minor: per-block shape; the box walk is not here
-CollisionGetter.clipIncludingBorder	port	crates/horizon-client/src/projectiles.rs::clip_including_border	a ray that starts inside the world border and ends outside it stops on the border at WorldBorder.clampVec3ToBound of that point, facing the nearest direction of travel; the projectile clip in creatures.rs calls it around its block clip
+CollisionGetter.clipIncludingBorder	port	crates/horizon-entities/src/projectiles.rs::clip_including_border	a ray that starts inside the world border and ends outside it stops on the border at WorldBorder.clampVec3ToBound of that point, facing the nearest direction of travel; the projectile clip in creatures.rs calls it around its block clip
 CollisionGetter.collidesWithSuffocatingBlock	port	crates/horizon-client-render/src/collisions.rs::SceneCollisions::is_suffocating	
 EntityGetter.getEntitiesOfClass	skip:other		class filter repeated at each caller over the entity lists; no shared lookup
 EntityGetter.getPlayerByUUID	skip:other		uuid find repeated at each caller (e.g. allays.rs)
@@ -132,9 +132,9 @@ LevelReader.getBlockStatesIfLoaded	port	crates/horizon-client-render/src/world.r
 LevelReader.getNoiseBiome	skip:other		no caller in 26.3 code
 LevelReader.getHeightmapPos	port	crates/horizon-client-render/src/world.rs::World::world_surface	gap: minor: the height only; the BlockPos is built by the caller
 LevelReader.getChunk	missing		unsure: same as Level.getChunk
-LevelReader.findBlocksInBoxByManhattanDistance	inline	crates/horizon-client/src/mobs/bee.rs::manhattan_box	the box in vanilla's order (`BlockPos.withinBoxByManhattanDistance`); the first-match search over it is inlined at each caller, e.g. Pollinate::find_flower for findNearbyFlower
+LevelReader.findBlocksInBoxByManhattanDistance	inline	crates/horizon-entities/src/mobs/bee.rs::manhattan_box	the box in vanilla's order (`BlockPos.withinBoxByManhattanDistance`); the first-match search over it is inlined at each caller, e.g. Pollinate::find_flower for findNearbyFlower
 LevelWriter.destroyBlock	port	crates/horizon-world/src/level/update.rs::Sim::destroy_block	
-LocalMobCapCalculator.getPlayersNear	port	crates/horizon-client/src/mobs/spawn_selection.rs::SpawnState::players_near	
-LocalMobCapCalculator.addMob	port	crates/horizon-client/src/mobs/spawn_selection.rs::SpawnState::add_local	
-LocalMobCapCalculator.MobCounts.add	port	crates/horizon-client/src/mobs/spawn_selection.rs::SpawnState::add_local	per-player count
-LocalMobCapCalculator.MobCounts.canSpawn	port	crates/horizon-client/src/mobs/spawn_selection.rs::SpawnState::can_spawn_local	
+LocalMobCapCalculator.getPlayersNear	port	crates/horizon-entities/src/mobs/spawn_selection.rs::SpawnState::players_near	
+LocalMobCapCalculator.addMob	port	crates/horizon-entities/src/mobs/spawn_selection.rs::SpawnState::add_local	
+LocalMobCapCalculator.MobCounts.add	port	crates/horizon-entities/src/mobs/spawn_selection.rs::SpawnState::add_local	per-player count
+LocalMobCapCalculator.MobCounts.canSpawn	port	crates/horizon-entities/src/mobs/spawn_selection.rs::SpawnState::can_spawn_local	

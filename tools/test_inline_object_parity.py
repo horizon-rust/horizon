@@ -35,7 +35,7 @@ def main():
     sources = [lab.ROOT / path for path in (
         'tools/test_inline_object_parity.py',
         'crates/horizon-client-render/src/hud.rs',
-        'crates/horizon-client/examples/probe/inline_object_fixture.rs',
+        'crates/horizon-client-lib/examples/probe/inline_object_fixture.rs',
         'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaInlineObjectOracle.java')]
     tested = base.source_hashes(sources)
     inputs, count = make_input(build)

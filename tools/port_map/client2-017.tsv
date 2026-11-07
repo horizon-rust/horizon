@@ -17,35 +17,35 @@ TooltipRenderUtil.extractTooltipBackground	port	crates/horizon-client-render/src
 TooltipRenderUtil.getBackgroundSprite	inline	crates/horizon-client-render/src/ui.rs::tooltip	gap: minor: only the default style; no tooltip_style component
 TooltipRenderUtil.getFrameSprite	inline	crates/horizon-client-render/src/ui.rs::tooltip	gap: minor: only the default style; no tooltip_style component
 CodeOfConductScreen	home	crates/horizon-client/src/game/code_of_conduct.rs	the text in a scroll area with the not-again box, Acknowledge and Disconnect (Prompt::layout, Game::draw_code_of_conduct, Game::answer_code_of_conduct); the accepted hash is kept on the server list entry
-JoinMultiplayerScreen.init	port	crates/horizon-client/src/multiplayer.rs::Screen::buttons	footer buttons and their enabling; server load and LAN scan start are in Screen::list
+JoinMultiplayerScreen.init	port	crates/horizon-client-lib/src/multiplayer.rs::Screen::buttons	footer buttons and their enabling; server load and LAN scan start are in Screen::list
 JoinMultiplayerScreen.repositionElements	skip:ui		layout only: the list area is computed from the window size each frame (list_area)
-JoinMultiplayerScreen.tick	inline	crates/horizon-client/src/multiplayer.rs::Screen::draw	LAN games are read each frame (lan.games()); server pings run on their own threads
-JoinMultiplayerScreen.removed	port	crates/horizon-client/src/lan/discovery.rs::ScanInner::drop	dropping the list screen drops its scanner, and the drop stops the LAN scan
-JoinMultiplayerScreen.deleteCallback	port	crates/horizon-client/src/multiplayer.rs::Screen::click	delete answer (ids 58, 59) removes the server, clears the selection and saves
-JoinMultiplayerScreen.editServerCallback	port	crates/horizon-client/src/multiplayer.rs::Screen::click	edit save (id 50); the list reloads and re-pings after it
-JoinMultiplayerScreen.addServerCallback	port	crates/horizon-client/src/multiplayer.rs::Screen::click	gap: minor: no hidden-server unhide (ServerList.unhide); add save (id 50, no index)
-JoinMultiplayerScreen.directJoinCallback	port	crates/horizon-client/src/multiplayer.rs::Screen::click	gap: minor: a new address is not saved to the list first, as vanilla does; direct join (id 52) connects
-JoinMultiplayerScreen.keyPressed	port	crates/horizon-client/src/title.rs::Title::refresh_servers	F5 refreshes the server list, wired in game/startup_menu.rs
-JoinMultiplayerScreen.join	port	crates/horizon-client/src/multiplayer.rs::Screen::click	returns Outcome::Connect for the selected server, LAN game or friend invite
-JoinMultiplayerScreen.onSelectedChange	port	crates/horizon-client/src/multiplayer.rs::Screen::buttons	Join enabled with a selection; Edit and Delete only for a saved server
+JoinMultiplayerScreen.tick	inline	crates/horizon-client-lib/src/multiplayer.rs::Screen::draw	LAN games are read each frame (lan.games()); server pings run on their own threads
+JoinMultiplayerScreen.removed	port	crates/horizon-client-lib/src/lan/discovery.rs::ScanInner::drop	dropping the list screen drops its scanner, and the drop stops the LAN scan
+JoinMultiplayerScreen.deleteCallback	port	crates/horizon-client-lib/src/multiplayer.rs::Screen::click	delete answer (ids 58, 59) removes the server, clears the selection and saves
+JoinMultiplayerScreen.editServerCallback	port	crates/horizon-client-lib/src/multiplayer.rs::Screen::click	edit save (id 50); the list reloads and re-pings after it
+JoinMultiplayerScreen.addServerCallback	port	crates/horizon-client-lib/src/multiplayer.rs::Screen::click	gap: minor: no hidden-server unhide (ServerList.unhide); add save (id 50, no index)
+JoinMultiplayerScreen.directJoinCallback	port	crates/horizon-client-lib/src/multiplayer.rs::Screen::click	gap: minor: a new address is not saved to the list first, as vanilla does; direct join (id 52) connects
+JoinMultiplayerScreen.keyPressed	port	crates/horizon-client-lib/src/title.rs::Title::refresh_servers	F5 refreshes the server list, wired in game/startup_menu.rs
+JoinMultiplayerScreen.join	port	crates/horizon-client-lib/src/multiplayer.rs::Screen::click	returns Outcome::Connect for the selected server, LAN game or friend invite
+JoinMultiplayerScreen.onSelectedChange	port	crates/horizon-client-lib/src/multiplayer.rs::Screen::buttons	Join enabled with a selection; Edit and Delete only for a saved server
 RestrictionsScreen.createPermissionStatus	port	crates/horizon-client/src/game/lan_screen.rs::Restrictions::new	allowed or denied line per permission, green or red
 RestrictionsScreen.repositionElements	skip:ui		layout only: Restrictions::new sizes the scroll area from the window
-SafetyScreen.addFooterButtons	port	crates/horizon-client/src/title.rs::Title::buttons	Proceed and Back, 150 wide, under the warning's box; the page and its checkbox are Title::draw_with_items and Title::click_action (Mode::MultiplayerWarning)
+SafetyScreen.addFooterButtons	port	crates/horizon-client-lib/src/title.rs::Title::buttons	Proceed and Back, 150 wide, under the warning's box; the page and its checkbox are Title::draw_with_items and Title::click_action (Mode::MultiplayerWarning)
 ServerReconfigScreen	home	crates/horizon-client/src/game/remote.rs	the reconfiguring title over Disconnect, which wakes after 600 ticks and leaves the server (Game::reconfigure_layout, Game::draw_reconfiguring, Game::connect_screen_click)
-ServerSelectionList.refreshEntries	port	crates/horizon-client/src/multiplayer.rs::rows	saved servers, LAN header and LAN games as one row list; selection is kept by index
-ServerSelectionList.updateOnlineServers	inline	crates/horizon-client/src/multiplayer.rs::rows	no separate list to refresh; rows are rebuilt from the saved servers
-ServerSelectionList.updateNetworkServers	inline	crates/horizon-client/src/multiplayer.rs::rows	LAN games are read each frame in rows; one found since the last call narrates multiplayer.lan.server_found with its getServerNarration (Screen::lan_found_narrations)
-ServerSelectionList.LANHeader.extractContent	port	crates/horizon-client/src/multiplayer.rs::Screen::draw	scanning label and loading dots drawn in the list
-ServerSelectionList.NetworkServerEntry.extractContent	port	crates/horizon-client/src/multiplayer.rs::Screen::draw	gap: minor: the address is always shown, Hide Server Address (hideServerAddress) is not read; LAN World title, MOTD and address
-ServerSelectionList.NetworkServerEntry.keyPressed	port	crates/horizon-client/src/multiplayer.rs::Screen::confirm	Enter joins the selected LAN game: the index past the saved servers picks it out of the scanner and connects to its address
-ServerSelectionList.NetworkServerEntry.join	port	crates/horizon-client/src/multiplayer.rs::Screen::click	LAN game joined by a click on its row (Row::Lan) or a second click on the selected row
+ServerSelectionList.refreshEntries	port	crates/horizon-client-lib/src/multiplayer.rs::rows	saved servers, LAN header and LAN games as one row list; selection is kept by index
+ServerSelectionList.updateOnlineServers	inline	crates/horizon-client-lib/src/multiplayer.rs::rows	no separate list to refresh; rows are rebuilt from the saved servers
+ServerSelectionList.updateNetworkServers	inline	crates/horizon-client-lib/src/multiplayer.rs::rows	LAN games are read each frame in rows; one found since the last call narrates multiplayer.lan.server_found with its getServerNarration (Screen::lan_found_narrations)
+ServerSelectionList.LANHeader.extractContent	port	crates/horizon-client-lib/src/multiplayer.rs::Screen::draw	scanning label and loading dots drawn in the list
+ServerSelectionList.NetworkServerEntry.extractContent	port	crates/horizon-client-lib/src/multiplayer.rs::Screen::draw	gap: minor: the address is always shown, Hide Server Address (hideServerAddress) is not read; LAN World title, MOTD and address
+ServerSelectionList.NetworkServerEntry.keyPressed	port	crates/horizon-client-lib/src/multiplayer.rs::Screen::confirm	Enter joins the selected LAN game: the index past the saved servers picks it out of the scanner and connects to its address
+ServerSelectionList.NetworkServerEntry.join	port	crates/horizon-client-lib/src/multiplayer.rs::Screen::click	LAN game joined by a click on its row (Row::Lan) or a second click on the selected row
 ServerSelectionList.NetworkServerEntry.matches	skip:java		selection is kept by index, so no entry identity match is needed
-ServerSelectionList.OnlineServerEntry.extractContent	port	crates/horizon-client/src/multiplayer.rs::Screen::draw	player: name, MOTD, ping bars, player count, hover join and move sprites; a server on another protocol shows its version in red in place of the player count and the count carries the playerList tooltip
-ServerSelectionList.OnlineServerEntry.refreshStatus	port	crates/horizon-client/src/multiplayer.rs::ping_tooltip	ping tooltip: ms, no connection or pinging; the player count's playerList tooltip is player_list_tooltip; the bar choice is in Screen::draw
-ServerSelectionList.OnlineServerEntry.extractIcon	port	crates/horizon-client/src/multiplayer.rs::draw_server_icon	server icon at 32x32
-ServerSelectionList.OnlineServerEntry.keyPressed	port	crates/horizon-client/src/multiplayer.rs::Screen::confirm	Enter joins the selected server as a click on it does; Shift+Up/Down swaps it with its neighbour and saves the list in Screen::arrow
-ServerSelectionList.OnlineServerEntry.swap	port	crates/horizon-client/src/multiplayer.rs::Screen::click	icon arrow click swaps the server up or down and saves
-ServerSelectionList.OnlineServerEntry.getNarration	port	crates/horizon-client/src/multiplayer.rs::Screen::server_narration	the entry's name then its status, joined for the screen narrator
+ServerSelectionList.OnlineServerEntry.extractContent	port	crates/horizon-client-lib/src/multiplayer.rs::Screen::draw	player: name, MOTD, ping bars, player count, hover join and move sprites; a server on another protocol shows its version in red in place of the player count and the count carries the playerList tooltip
+ServerSelectionList.OnlineServerEntry.refreshStatus	port	crates/horizon-client-lib/src/multiplayer.rs::ping_tooltip	ping tooltip: ms, no connection or pinging; the player count's playerList tooltip is player_list_tooltip; the bar choice is in Screen::draw
+ServerSelectionList.OnlineServerEntry.extractIcon	port	crates/horizon-client-lib/src/multiplayer.rs::draw_server_icon	server icon at 32x32
+ServerSelectionList.OnlineServerEntry.keyPressed	port	crates/horizon-client-lib/src/multiplayer.rs::Screen::confirm	Enter joins the selected server as a click on it does; Shift+Up/Down swaps it with its neighbour and saves the list in Screen::arrow
+ServerSelectionList.OnlineServerEntry.swap	port	crates/horizon-client-lib/src/multiplayer.rs::Screen::click	icon arrow click swaps the server up or down and saves
+ServerSelectionList.OnlineServerEntry.getNarration	port	crates/horizon-client-lib/src/multiplayer.rs::Screen::server_narration	the entry's name then its status, joined for the screen narrator
 ServerSelectionList.OnlineServerEntry.matches	skip:java		selection is kept by index, so no entry identity match is needed
 WarningScreen	home	crates/horizon-client/src/game/code_of_conduct.rs	title, the text box with 12 px around it, the checkbox, then the footer 8 px apart (Prompt::layout); title.rs warning_top is the same column for the safety warning
 AccessibilityOptionsScreen.options	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::list_rows	ACCESSIBILITY_OPTIONS list, same options in the same order
@@ -57,8 +57,8 @@ ChatOptionsScreen.options	port	crates/horizon-client-render/src/options_ui.rs::O
 FontOptionsScreen.options	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::list_rows	Force Unicode Font and Japanese glyph variants
 InWorldGameRulesScreen.initContent	port	crates/horizon-client/src/game/lan_screen.rs::Game::world_options_click	GameRules button: a remote world sends REQUEST_GAMERULE_VALUES (action 2); a local world builds RulesScreen from its rules
 InWorldGameRulesScreen.onDone	port	crates/horizon-client/src/game/lan_screen.rs::Game::close_game_rules	Done sends only the changed rules, and only with permission 2 on a remote world
-InWorldGameRulesScreen.collectChangedGameRule	port	crates/horizon-client/src/game_rules_screen.rs::RulesScreen::changes	rules whose value differs from the initial one
-InWorldGameRulesScreen.hasGameRuleChanged	inline	crates/horizon-client/src/game_rules_screen.rs::RulesScreen::changes	comparison against the initial value
+InWorldGameRulesScreen.collectChangedGameRule	port	crates/horizon-client-lib/src/game_rules_screen.rs::RulesScreen::changes	rules whose value differs from the initial one
+InWorldGameRulesScreen.hasGameRuleChanged	inline	crates/horizon-client-lib/src/game_rules_screen.rs::RulesScreen::changes	comparison against the initial value
 InWorldGameRulesScreen.onGameRuleValuesUpdated	port	crates/horizon-client/src/game/lan_screen.rs::Game::remote_world_options_rules	server values for the rules view (GameRuleValues)
 InWorldGameRulesScreen.initializeGameRuleValue	inline	crates/horizon-client/src/game/lan_screen.rs::Game::remote_world_options_rules	each server value parsed into the rules
 InWorldGameRulesScreen.onGamemasterPermissionChanged	port	crates/horizon-client/src/game/lan_screen.rs::Game::remote_world_options_permission	gap: minor: closes the rules only for a remote world; vanilla closes on any lost permission
@@ -122,8 +122,8 @@ PackSelectionScreen.updateFilteredEntries	port	crates/horizon-client-render/src/
 PackSelectionScreen.repositionElements	port	crates/horizon-client-render/src/pack_screen.rs::PackScreen::reposition	search box and both list boxes
 PackSelectionScreen.tick	port	crates/horizon-client-render/src/options_ui.rs::OptionsUi::watch_data_packs	once a second the data pack folder is listed again when its stamp changes
 PackSelectionScreen.reload	port	crates/horizon-client-render/src/pack_screen.rs::PackScreen::populate	gap: minor: rebuilds both lists; no rescan here (see findNewPacks)
-PackSelectionScreen.copyPacks	port	crates/horizon-client/src/title.rs::Title::drop_file	gap: minor: a dropped pack is copied into the Create New World data pack folder only (datapack::copy_pack); the resource pack screen takes no drops
-PackSelectionScreen.onFilesDrop	port	crates/horizon-client/src/title.rs::Title::drop_file	a zip or pack folder dropped on the create world screen is copied into its pack folder (datapack.rs::copy_pack); the standalone pack screen takes no drops
+PackSelectionScreen.copyPacks	port	crates/horizon-client-lib/src/title.rs::Title::drop_file	gap: minor: a dropped pack is copied into the Create New World data pack folder only (datapack::copy_pack); the resource pack screen takes no drops
+PackSelectionScreen.onFilesDrop	port	crates/horizon-client-lib/src/title.rs::Title::drop_file	a zip or pack folder dropped on the create world screen is copied into its pack folder (datapack.rs::copy_pack); the standalone pack screen takes no drops
 PackSelectionScreen.getPackIcon	port	crates/horizon-client-render/src/pack_screen.rs::load_icon	icons decoded once into PackInfo.icon, then bound as textures (icon_texture)
 PackSelectionScreen.Watcher	port	crates/horizon-client-render/src/datapack.rs::folder_stamp	polling instead of a WatchService: the folder is stamped once a second (`OptionsUi::watch_data_packs`) and a changed stamp re-lists the packs
 TransferableSelectionList.keyPressed	missing		minor: no keyboard entry navigation: keys reach only the search box (type_text, shortcut, erase), not a selected pack
@@ -135,5 +135,5 @@ TransferableSelectionList.PackEntry.keyboardSelection	missing		minor: no keyboar
 TransferableSelectionList.PackEntry.handlePackSelection	port	crates/horizon-client-render/src/pack_screen.rs::PackScreen::entry_click	gap: minor: keyboard path missing (keyboardSelection); icon click selects; an incompatible pack opens the confirmation (open_confirm) first
 TransferableSelectionList.PackEntry.shouldTakeFocusAfterInteraction	skip:ui		focus after a click matters only for keyboard entry navigation, which Horizon does not have
 CraftingRecipeBookComponent.isCraftingSlot	missing		minor: unsure: no crafting-slot check found in the recipe book code
-CraftingRecipeBookComponent.fillGhostRecipe	port	crates/horizon-client/src/recipe_book.rs::Book::ghost	crafting branch: shaped recipes placed by place_cells, shapeless in order; result set first
-FurnaceRecipeBookComponent.fillGhostRecipe	port	crates/horizon-client/src/recipe_book.rs::Book::ghost	furnace branch: ingredient, and the fuel only when the fuel slot is empty (fuel_empty)
+CraftingRecipeBookComponent.fillGhostRecipe	port	crates/horizon-client-lib/src/recipe_book.rs::Book::ghost	crafting branch: shaped recipes placed by place_cells, shapeless in order; result set first
+FurnaceRecipeBookComponent.fillGhostRecipe	port	crates/horizon-client-lib/src/recipe_book.rs::Book::ghost	furnace branch: ingredient, and the fuel only when the fuel slot is empty (fuel_empty)

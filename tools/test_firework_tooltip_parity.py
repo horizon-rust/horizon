@@ -68,6 +68,6 @@ if __name__ == '__main__':
         'Firework rocket and star tooltip lines: flight duration, explosions (counted runs), colours, fade, trail, '
         'twinkle, defaults and tooltip_display',
         sources=[lab.ROOT / 'crates/horizon-items/src/enchant.rs',
-                 lab.ROOT / 'crates/horizon-client/src/item_tooltip.rs', lab.ROOT / 'crates/horizon-items/src/item_data.rs',
+                 lab.ROOT / 'crates/horizon-client-lib/src/item_tooltip.rs', lab.ROOT / 'crates/horizon-items/src/item_data.rs',
                  lab.ROOT / 'crates/horizon-client-render/src/particles.rs'],
         expected_lines=COUNT)

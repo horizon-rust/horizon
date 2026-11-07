@@ -30,7 +30,7 @@ def main():
     classes.mkdir(exist_ok=True)
     source = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaTextDisplayOracle.java'
     sources = [Path(__file__).resolve(), source,
-        lab.ROOT / 'crates/horizon-client/src/text_display.rs',
+        lab.ROOT / 'crates/horizon-client-lib/src/text_display.rs',
         lab.ROOT / 'crates/horizon-protocol/src/entity_data.rs', lab.ROOT / 'Cargo.lock']
     tested = base.source_hashes(sources)
     cp = os.pathsep.join(map(str, [jars['server'], *libraries]))

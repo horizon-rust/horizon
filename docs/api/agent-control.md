@@ -28,7 +28,7 @@ serves the same commands as MCP tools. The launcher's MCP server offers them too
 ## Reference
 
 [horizon-ctl-commands.md](../horizon-ctl-commands.md), generated from the command table in
-`crates/horizon-client/src/bin/horizon-ctl/commands.rs`: every command, its MCP tool and its arguments.
+`crates/horizon-client-lib/src/bin/horizon-ctl/commands.rs`: every command, its MCP tool and its arguments.
 
 ## Examples
 

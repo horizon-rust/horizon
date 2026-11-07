@@ -52,7 +52,7 @@ Replay (resource tests need isolated fresh homes/cwd as in AGENTS.md):
 ```sh
 python3 tools/test_glow_squid_noai_parity.py --binary /path/to/game --work-dir .local/h176/replay
 python3 tools/test_glow_squid_noai_parity.py --full-diagnostic --binary /path/to/game --work-dir .local/h176/full-replay
-cargo test -p horizon-client-lib --lib mob_tick_keeps_glow_squid_countdowns_with_no_ai -- --ignored --nocapture
+cargo test -p horizon-entities --lib mob_tick_keeps_glow_squid_countdowns_with_no_ai -- --ignored --nocapture
 ```
 
 Raw commands/JSON/bodies/styles, full expected/actual reports, Java logs, bytecode,

@@ -1,9 +1,9 @@
 RegionFileVersion.configure	port	crates/horizon-world/src/compression.rs::Compression::configure	read from server.properties by the dedicated server (game/dedicated.rs), every chunk region written with it (save.rs compress_records); an unknown name is logged and the default kept
 RegionFileVersion.register	skip:data		static version table; Horizon's codecs are the Compression enum (compression.rs)
 RegionFileVersion.wrap	port	crates/horizon-world/src/compression.rs::Compression::encode	whole-buffer codec; output side (input side is Compression::decode)
-RegionStorageInfo.withTypeSuffix	port	crates/horizon-client/src/save.rs::Folder::name	folder name per region kind; only the fixed region, entities and poi folders exist, none is suffixed
+RegionStorageInfo.withTypeSuffix	port	crates/horizon-client-lib/src/save.rs::Folder::name	folder name per region kind; only the fixed region, entities and poi folders exist, none is suffixed
 EntityLookup.add	skip:java		index insert; Horizon keeps entities in per-kind Vecs (game.rs) and a uuid map (game/persist.rs)
-EntityLookup.getEntities	port	crates/horizon-client/src/mobs/seen_grid.rs::SeenGrid::candidates	gap: minor: returns mob candidates only (only mobs are indexed); callers test the boxes exactly
+EntityLookup.getEntities	port	crates/horizon-entities/src/mobs/seen_grid.rs::SeenGrid::candidates	gap: minor: returns mob candidates only (only mobs are indexed); callers test the boxes exactly
 EntityLookup.getEntity	skip:java		lookup by id or uuid over Horizon's per-kind lists and the uuid map
 EntityLookup.remove	skip:java		index removal; Horizon removes the entity from its per-kind list
 EntitySection	skip:java		section container; Horizon has no section index, only the mob grid (mobs/seen_grid.rs)
@@ -14,14 +14,14 @@ PersistentEntitySectionManager.addEntity	skip:java		section and visibility bookk
 PersistentEntitySectionManager.addEntityUuid	skip:java		uuid set kept in persist.uuids (game/persist.rs)
 PersistentEntitySectionManager.addLegacyChunkEntities	port	crates/horizon-client/src/game/persist.rs::Game::spawn_loaded_entities	saved chunk entity tags are spawned here once the chunk's entities arrive
 PersistentEntitySectionManager.addWorldGenChunkEntities	port	crates/horizon-client/src/game/persist.rs::Game::spawn_loaded_entities	worldgen entities arrive as saved tags and are spawned the same way
-PersistentEntitySectionManager.canPositionTick	port	crates/horizon-client/src/ticket_levels.rs::Levels::entity_ticking_at	a position ticks entities when its chunk is entity ticking
+PersistentEntitySectionManager.canPositionTick	port	crates/horizon-client-lib/src/ticket_levels.rs::Levels::entity_ticking_at	a position ticks entities when its chunk is entity ticking
 PersistentEntitySectionManager.dumpSections	skip:debug		section dump for debugging
 PersistentEntitySectionManager.ensureChunkQueuedForLoad	skip:other		async load queue; Horizon's streaming hands the saved entity tags over with the chunk
 PersistentEntitySectionManager.gatherStats	skip:debug		statistics string
 PersistentEntitySectionManager.getAllChunksToSave	inline	crates/horizon-client/src/game/persist.rs::Game::save_entities	the resident chunk keys that save_entities writes
 PersistentEntitySectionManager.processChunkUnload	port	crates/horizon-client/src/game/persist.rs::Game::unload_entities	saves and removes the entities of an unloaded chunk
 PersistentEntitySectionManager.processUnloads	inline	crates/horizon-client/src/game/persist.rs::Game::unload_entities	the batch of unloaded chunks handed over by the tick
-PersistentEntitySectionManager.requestChunkLoad	port	crates/horizon-client/src/save.rs::SaveDir::load_entities	reads the saved entity record of the chunk; the chunk load itself is streaming
+PersistentEntitySectionManager.requestChunkLoad	port	crates/horizon-client-lib/src/save.rs::SaveDir::load_entities	reads the saved entity record of the chunk; the chunk load itself is streaming
 PersistentEntitySectionManager.saveAll	port	crates/horizon-client/src/game/persist.rs::Game::save_entities	the waiting form (quit path) writes every resident chunk and flushes
 PersistentEntitySectionManager.storeChunkSections	port	crates/horizon-client/src/game/persist.rs::Game::entity_chunks	the saved entity tags of a chunk; with remove the entities leave the world
 PersistentEntitySectionManager.updateChunkStatus	skip:other		visibility per chunk status; Horizon derives entity ticking from ticket levels (ticket_levels.rs) instead of storing it
@@ -34,7 +34,7 @@ DynamicGameEventListener.ifChunkExists	port	crates/horizon-client/src/game/sculk
 DynamicGameEventListener.move	skip:other		listeners are fixed block positions in Horizon; sculk blocks do not move
 DynamicGameEventListener.remove	port	crates/horizon-client/src/game/sculk.rs::Game::sculk_sync_index	drops the listener's index entry when its block is gone
 EntityPositionSource.getId	skip:java		accessor; Horizon's listeners hold the source as a Who (sculk.rs Info)
-EntityPositionSource.getPosition	port	crates/horizon-client/src/mobs/warden.rs::listen	gap: minor: covers the warden's eye-height listener only; no other position source is used
+EntityPositionSource.getPosition	port	crates/horizon-entities/src/mobs/warden.rs::listen	gap: minor: covers the warden's eye-height listener only; no other position source is used
 EntityPositionSource.getUuid	skip:java		accessor; Horizon holds the source as a Who
 EntityPositionSource.resolveEntity	skip:other		the source is a Who held by the listener, so there is no entity lookup to port
 EuclideanGameEventListenerRegistry.getPostableListenerPosition	inline	crates/horizon-client/src/game/sculk.rs::Game::post_game_event	the in-range distance test that picks the listeners
