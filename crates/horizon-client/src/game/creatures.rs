@@ -2565,6 +2565,13 @@ impl Game<'_> {
                     });
                     self.combat.explosion_source = source_mob;
                     self.combat.explosion_source_named = noted;
+                    let portal_proof = species == Species::SulfurCube
+                        && source_mob.is_some_and(|id| {
+                            self.portals
+                                .entities
+                                .get(&id)
+                                .is_some_and(|p| p.cooldown > 0)
+                        });
                     self.combat.explosion_cause = match species {
                         Species::Creeper => Some("minecraft:creeper"),
                         Species::Wither => Some("minecraft:wither"),
@@ -2583,7 +2590,12 @@ impl Game<'_> {
                         Species::Creeper | Species::Wither => {
                             self.with_hive_emptying_blast(|g| g.explode(at, radius))
                         }
-                        Species::SulfurCube => self.explode_sulfur_cube(at, radius),
+                        Species::SulfurCube => self.explode_sulfur_cube(
+                            at,
+                            radius,
+                            super::explosion::ExplosionSource::default()
+                                .with_portal_proof(portal_proof),
+                        ),
                         _ => self.explode(at, radius),
                     };
                     self.combat.explosion_source = None;

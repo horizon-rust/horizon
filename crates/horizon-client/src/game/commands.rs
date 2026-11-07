@@ -1717,6 +1717,8 @@ impl Game<'_> {
             }
             Target::Tnt(id) => {
                 if let Some(t) = self.tnts.iter_mut().find(|t| t.id == id) {
+                    // `PrimedTnt.teleport` includes same-level command teleports.
+                    t.used_portal = true;
                     t.position = v;
                     t.previous = v;
                     if let Some(r) = rotation {
