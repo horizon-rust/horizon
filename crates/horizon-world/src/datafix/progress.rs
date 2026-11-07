@@ -46,7 +46,7 @@ impl UpgradeType {
         match self {
             Self::Files => "files",
             Self::LegacyStructures => "legacy_structures",
-            Self::Regions => "regions",
+            Self::Regions => "region",
         }
     }
     /// The key of `label()`: `upgradeWorld.progress.type.` + the serialized name.
@@ -276,7 +276,7 @@ mod tests {
         assert_eq!(p.total_file_fix_stats().progress(), 1.0);
         assert_eq!(
             p.upgrade_type().unwrap().label_key(),
-            "upgradeWorld.progress.type.regions"
+            "upgradeWorld.progress.type.region"
         );
     }
 }
