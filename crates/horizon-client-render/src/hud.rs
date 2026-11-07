@@ -1333,6 +1333,44 @@ impl HudAtlas {
             }
         }
         if full {
+            // Official Recipes artwork from Just Enough Items, under MIT.
+            for (name, png) in [
+                (
+                    "recipe_options_tab_v2",
+                    include_bytes!("jei_recipes/recipe_options_tab_v2.png").as_slice(),
+                ),
+                (
+                    "button_highlight_v2",
+                    include_bytes!("jei_recipes/button_highlight_v2.png").as_slice(),
+                ),
+                (
+                    "button_enabled_v2",
+                    include_bytes!("jei_recipes/button_enabled_v2.png").as_slice(),
+                ),
+                (
+                    "icons/bookmarks_first",
+                    include_bytes!("jei_recipes/icons/bookmarks_first.png").as_slice(),
+                ),
+                (
+                    "icons/craftable_first",
+                    include_bytes!("jei_recipes/icons/craftable_first.png").as_slice(),
+                ),
+                (
+                    "button_pressed_highlight_v2",
+                    include_bytes!("jei_recipes/button_pressed_highlight_v2.png").as_slice(),
+                ),
+                (
+                    "button_pressed_v2",
+                    include_bytes!("jei_recipes/button_pressed_v2.png").as_slice(),
+                ),
+                (
+                    "icons/recipe_bookmark",
+                    include_bytes!("jei_recipes/icons/recipe_bookmark.png").as_slice(),
+                ),
+            ] {
+                let (width, height, rgba) = decode_bytes(png)?;
+                images.push((format!("horizon/jei/{name}"), width, height, rgba));
+            }
             Self::slots(&mut images, crate::trims::slot_size(root), mod_image);
             // MissingTextureAtlasSprite.generateMissingImage: 16x16, magenta
             // and black quarters.

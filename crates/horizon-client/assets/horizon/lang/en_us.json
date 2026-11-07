@@ -892,5 +892,12 @@
   "Editing: %s": "Editing: %s",
   "Press the button for this. %s cancels.": "Press the button for this. %s cancels.",
   "This button also does: %s": "This button also does: %s",
-  "horizon.pad.notice.connected.press": "Press to use it"
+  "horizon.pad.notice.connected.press": "Press to use it",
+  "horizon.recipes.bookmark.remove": "Remove recipe bookmark",
+  "horizon.recipes.bookmark.add": "Bookmark recipe",
+  "horizon.recipes.sort.bookmarks": "Bookmarked recipes first",
+  "horizon.recipes.sort.craftable": "Craftable recipes first",
+  "horizon.recipes.bookmarks.previous": "Previous bookmarks page",
+  "horizon.recipes.bookmarks.next": "Next bookmarks page",
+  "horizon.recipes.bookmark.open": "Open bookmarked recipe: {item}"
 }

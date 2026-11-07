@@ -38,6 +38,7 @@ pub(super) struct RecipePage {
     pub(super) tabs: Vec<BrowserStack>,
     pub(super) tab: u32,
     pub(super) recipes: Vec<BrowserRecipe>,
+    pub(super) bookmark_ids: Vec<String>,
 }
 impl RecipePage {
     /// `native_panel_recipes`' page, cut as `set-recipes` cuts one; none
@@ -68,6 +69,7 @@ impl RecipePage {
             tabs: tabs.into_iter().take(TABS).collect(),
             tab,
             recipes,
+            bookmark_ids: Vec::new(),
         })
     }
 }
@@ -91,6 +93,7 @@ pub(super) struct Pages {
     tabs: Vec<(BrowserStack, Option<ItemStack>)>,
     tab: usize,
     recipes: Vec<Shown>,
+    bookmark_ids: Vec<String>,
     page: usize,
     since: Instant,
 }
@@ -133,6 +136,7 @@ impl Pages {
                 .collect(),
             tab,
             recipes,
+            bookmark_ids: shown.bookmark_ids.clone(),
             page: kept.as_ref().map_or(0, |o| o.page),
             since: kept.map_or_else(Instant::now, |o| o.since),
         }
@@ -212,15 +216,30 @@ fn recipes_top(pages: &Pages, layout: &Layout) -> f32 {
         .map_or(layout.grid.1 + TITLE, |&(_, y)| y + TAB + 3.0)
 }
 
+fn recipe_skin(
+    batch: &mut HudBatch,
+    atlas: &horizon_client::hud::HudAtlas,
+    sprite: &str,
+    rect: [f32; 4],
+) {
+    let [x, y, w, h] = rect;
+    horizon_client::ui::nine_slice(batch, atlas, sprite, x, y, w, h, u32::MAX);
+}
+
+fn recipe_sort_buttons(layout: &Layout) -> [[f32; 4]; 2] {
+    let [x, y, _, height] = layout.area;
+    [0.0, 16.0].map(|offset| [x - 16.0, y + height - 35.0 + offset, 16.0, 16.0])
+}
+
 impl Game<'_> {
     /// The first recipe of each page, filling the panel from the tabs to
     /// the search box.
-    fn recipe_pages(pages: &Pages, layout: &Layout) -> Vec<usize> {
+    fn recipe_pages(pages: &Pages, layout: &Layout, order: &[usize]) -> Vec<usize> {
         let room = layout.search[1] - 4.0 - recipes_top(pages, layout);
         let mut starts = vec![0];
         let mut used = 0.0;
-        for (i, r) in pages.recipes.iter().enumerate() {
-            let h = r.height(layout.width());
+        for (i, &recipe) in order.iter().enumerate() {
+            let h = pages.recipes[recipe].height(layout.width());
             if used > 0.0 && used + h > room {
                 starts.push(i);
                 used = 0.0;
@@ -229,19 +248,70 @@ impl Game<'_> {
         }
         starts
     }
+    /// Sort positions, keeping the mod's original indices for transfer and bookmarks.
+    fn recipe_order(&self, pages: &Pages) -> Vec<usize> {
+        use horizon_client::menu::place::Stacked;
+        let mut order: Vec<_> = (0..pages.recipes.len()).collect();
+        if pages.bookmark_ids.len() != pages.recipes.len() || order.len() < 2 {
+            return order;
+        }
+        let [bookmarks_off, craftable_off] = self.panel.recipe_sort_disabled;
+        if bookmarks_off && craftable_off {
+            return order;
+        }
+        let stacked = (!craftable_off
+            && pages
+                .recipes
+                .iter()
+                .any(|r| r.action == Some(true) && self.mod_recipe_screen()))
+        .then(|| {
+            let mut stacked = Stacked::default();
+            for stack in self
+                .inventory
+                .iter()
+                .take(36)
+                .chain(&self.craft_grid)
+                .flatten()
+            {
+                if let Some(item) = self.items().get(&stack.item) {
+                    stacked.account_simple(stack, item.max_stack);
+                }
+            }
+            stacked
+        });
+        order.sort_by_cached_key(|&i| {
+            let id = &pages.bookmark_ids[i];
+            let marked = !bookmarks_off && self.recipe_is_bookmarked(id);
+            let craftable = stacked.as_ref().is_some_and(|stacked| {
+                let recipe = &pages.recipes[i];
+                recipe.action == Some(true)
+                    && self.mod_recipe_screen()
+                    && self.recipes().placement(id).is_some_and(|placement| {
+                        !placement.impossible()
+                            && stacked.can_craft(&placement.ingredients.iter().collect::<Vec<_>>())
+                    })
+            });
+            (!marked, !craftable)
+        });
+        order
+    }
+
     /// The recipes on the open page, each with its corner.
     fn recipes_shown(&self, layout: &Layout) -> Vec<(usize, (f32, f32))> {
         let Some(pages) = &self.panel.recipes else {
             return Vec::new();
         };
-        let starts = Self::recipe_pages(pages, layout);
+        let order = self.recipe_order(pages);
+        let starts = Self::recipe_pages(pages, layout, &order);
         let page = pages.page.min(starts.len() - 1);
         let end = starts.get(page + 1).copied().unwrap_or(pages.recipes.len());
         let mut y = recipes_top(pages, layout);
-        (starts[page]..end)
-            .map(|i| {
+        order[starts[page]..end]
+            .iter()
+            .map(|&i| {
+                let recipe = &pages.recipes[i];
                 let at = (layout.grid.0, y);
-                y += pages.recipes[i].height(layout.width());
+                y += recipe.height(layout.width());
                 (i, at)
             })
             .collect()
@@ -293,13 +363,90 @@ impl Game<'_> {
             })
     }
 
+    fn recipe_bookmark_button(&self, layout: &Layout, recipe: &Shown, x: f32, y: f32) -> [f32; 4] {
+        let (_, _, (ax, ay)) = recipe.places(layout.width());
+        let dy = if recipe.action.is_some() {
+            if ay >= 13.0 { ay - 13.0 } else { ay + 12.0 }
+        } else {
+            ay
+        };
+        [x + ax, y + dy, 13.0, 13.0]
+    }
+
+    fn draw_recipe_bookmark_button(&self, batch: &mut HudBatch, rect: [f32; 4], pinned: bool) {
+        let [x, y, w, h] = rect;
+        let atlas = &self.gui.atlas;
+        if pinned {
+            let skin = if inside(self.cursor, rect) {
+                "horizon/jei/button_pressed_highlight_v2"
+            } else {
+                "horizon/jei/button_pressed_v2"
+            };
+            recipe_skin(batch, atlas, skin, rect);
+        } else {
+            recipe_skin(batch, atlas, "gui/sprites/widget/button", rect);
+        }
+        batch.sprite(atlas, "horizon/jei/icons/recipe_bookmark", x + 3.0, y + 3.0);
+        if pinned {
+            batch.fill(atlas, x, y, w, h, rgba(0, 255, 0, 17));
+        }
+        let label = if pinned {
+            self.translate("horizon.recipes.bookmark.remove", "Remove recipe bookmark")
+        } else {
+            self.translate("horizon.recipes.bookmark.add", "Bookmark recipe")
+        };
+        horizon_client::widgets::record(&label, rect, true);
+    }
+
+    fn draw_recipe_sort_controls(&self, batch: &mut HudBatch, layout: &Layout) {
+        let [x, y, _, h] = layout.area;
+        let atlas = &self.gui.atlas;
+        recipe_skin(
+            batch,
+            atlas,
+            "horizon/jei/recipe_options_tab_v2",
+            [x - 22.0, y + h - 41.0, 28.0, 44.0],
+        );
+        let labels = [
+            ("horizon.recipes.sort.bookmarks", "Bookmarked recipes first"),
+            ("horizon.recipes.sort.craftable", "Craftable recipes first"),
+        ];
+        for (i, rect) in recipe_sort_buttons(layout).into_iter().enumerate() {
+            let [x, y, _, _] = rect;
+            let active = !self.panel.recipe_sort_disabled[i];
+            let hovered = inside(self.cursor, rect);
+            let sprite = match (active, hovered) {
+                (true, true) => "horizon/jei/button_pressed_highlight_v2",
+                (true, false) => "horizon/jei/button_pressed_v2",
+                (false, true) => "horizon/jei/button_highlight_v2",
+                (false, false) => "horizon/jei/button_enabled_v2",
+            };
+            recipe_skin(batch, atlas, sprite, rect);
+            let icon = if i == 0 {
+                "horizon/jei/icons/bookmarks_first"
+            } else {
+                "horizon/jei/icons/craftable_first"
+            };
+            batch.sprite(atlas, icon, x + 1.0, y + 1.0);
+            let (key, fallback) = labels[i];
+            let label = self.translate(key, fallback);
+            let state = if active {
+                self.translate("options.on", "ON")
+            } else {
+                self.translate("options.off", "OFF")
+            };
+            horizon_client::widgets::record(&format!("{label}: {state}"), rect, true);
+        }
+    }
+
     /// Draws the title row, the page's recipes and the page arrows.
     pub(super) fn draw_browser_recipes(&mut self, batch: &mut HudBatch, layout: &Layout) {
         let Some(pages) = &self.panel.recipes else {
             return;
         };
         let cursor = self.cursor;
-        let starts = Self::recipe_pages(pages, layout);
+        let order = self.recipe_order(pages);
+        let starts = Self::recipe_pages(pages, layout, &order);
         let page = pages.page.min(starts.len() - 1);
         let (title, pages_n) = (pages.title.clone(), starts.len());
         let (back, label) = self.back_button(layout);
@@ -341,6 +488,14 @@ impl Game<'_> {
             true,
         );
         self.draw_recipe_tabs(batch, layout);
+        if self
+            .panel
+            .recipes
+            .as_ref()
+            .is_some_and(|p| !p.bookmark_ids.is_empty())
+        {
+            self.draw_recipe_sort_controls(batch, layout);
+        }
         if pages_n > 1 {
             let labels = [
                 self.translate("gui.recipebook.previous_page", "Previous Page"),
@@ -401,6 +556,16 @@ impl Game<'_> {
                 x + arrow.0,
                 y + arrow.1,
             );
+            if let Some(id) = self
+                .panel
+                .recipes
+                .as_ref()
+                .and_then(|p| p.bookmark_ids.get(i))
+                .filter(|id| !id.is_empty())
+            {
+                let rect = self.recipe_bookmark_button(layout, r, x, y);
+                self.draw_recipe_bookmark_button(batch, rect, self.recipe_is_bookmarked(id));
+            }
             if let Some(enabled) = button {
                 let rect = [x + action.0, y + action.1, 12.0, 12.0];
                 let sprite = match (enabled, inside(cursor, rect)) {
@@ -509,8 +674,23 @@ impl Game<'_> {
             return false;
         };
         let cursor = self.cursor;
-        let starts = Self::recipe_pages(pages, layout);
+        let order = self.recipe_order(pages);
+        let starts = Self::recipe_pages(pages, layout, &order);
         let page = pages.page.min(starts.len() - 1);
+        if !pages.bookmark_ids.is_empty()
+            && !right
+            && let Some(index) = recipe_sort_buttons(layout)
+                .into_iter()
+                .position(|rect| inside(cursor, rect))
+        {
+            self.panel.recipe_sort_disabled[index] = !self.panel.recipe_sort_disabled[index];
+            if let Some(pages) = self.panel.recipes.as_mut() {
+                pages.page = 0;
+            }
+            self.audio
+                .play("minecraft:ui.button.click", None, 0.25, 1.0);
+            return true;
+        }
         let [back_arrow, forward] = layout.arrows();
         let turn = if page > 0 && inside(cursor, [back_arrow.0, back_arrow.1, 12.0, 17.0]) {
             Some(page - 1)
@@ -525,7 +705,7 @@ impl Game<'_> {
             }
             self.audio
                 .play("minecraft:ui.button.click", None, 0.25, 1.0);
-            self.panel_event(owner, BrowserEvent::Page(starts[to] as u32));
+            self.panel_event(owner, BrowserEvent::Page(order[starts[to]] as u32));
             return true;
         }
         if let Some((tab, _, _)) = self.recipe_tab_hovered(layout) {
@@ -549,6 +729,20 @@ impl Game<'_> {
             };
             self.panel_event(owner, event);
             return true;
+        }
+        if !right {
+            let bookmark = self
+                .recipes_shown(layout)
+                .into_iter()
+                .find_map(|(i, (x, y))| {
+                    let id = pages.bookmark_ids.get(i).filter(|id| !id.is_empty())?;
+                    let rect = self.recipe_bookmark_button(layout, &pages.recipes[i], x, y);
+                    inside(cursor, rect).then(|| id.clone())
+                });
+            if let Some(id) = bookmark {
+                self.toggle_recipe_bookmark(id);
+                return true;
+            }
         }
         let action = self.recipes_shown(layout).into_iter().find(|&(i, (x, y))| {
             let r = &pages.recipes[i];

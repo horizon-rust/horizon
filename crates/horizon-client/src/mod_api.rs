@@ -456,6 +456,8 @@ pub enum NativePanelEvent {
     Back,
     /// The player picked the tab at this index.
     Tab(u32),
+    /// Open a saved Recipes view by its stable recipe identifier.
+    OpenRecipeBookmark(String),
 }
 
 /// The zoom a native mod asks for (`native_zoom`): the factor (1 is none), eased through the

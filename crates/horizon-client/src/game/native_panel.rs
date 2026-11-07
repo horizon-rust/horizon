@@ -69,9 +69,35 @@ pub(super) struct Panel {
     searching: bool,
     /// The recipes shown instead of the items.
     pub(super) recipes: Option<super::native_panel_recipes::Pages>,
+    bookmarks: Option<RecipeBookmarks>,
+    pub(super) recipe_sort_disabled: [bool; 2],
+}
+
+const MAX_BOOKMARKS: usize = 256;
+
+#[derive(Default)]
+struct RecipeBookmarks {
+    ids: Vec<String>,
+    entries: Vec<RecipeBookmark>,
+    page: usize,
+}
+
+struct RecipeBookmark {
+    id: String,
+    result: ItemStack,
+    station: ItemStack,
+}
+
+fn recipe_bookmarks_path() -> Result<std::path::PathBuf, String> {
+    Ok(Game::native_config_dir()?.join("recipes-bookmarks.json"))
 }
 
 impl Panel {
+    pub(super) fn is_official_recipes(&self) -> bool {
+        self.of
+            .as_ref()
+            .is_some_and(|(owner, _)| owner.native_id() == "recipes")
+    }
     /// What the panel shows: a native mod's, one `on`.
     pub(super) fn shown(&self, on: impl Fn(&str) -> bool) -> Option<&Shown> {
         self.native.as_ref().filter(|s| on(s.owner.native_id()))
@@ -181,6 +207,7 @@ impl Game<'_> {
             return None;
         };
         let of = (shown.owner.clone(), shown.version);
+        let load_bookmarks = of.0.native_id() == "recipes" && !self.panel.is_official_recipes();
         if self.panel.of.as_ref() != Some(&of) {
             let items = world_items!(self);
             let stacks = shown
@@ -197,8 +224,243 @@ impl Game<'_> {
                 .map(|shown| super::native_panel_recipes::Pages::new(items, shown, old));
             self.panel.of = Some(of.clone());
         }
+        if load_bookmarks {
+            let marks = self.panel.bookmarks.get_or_insert_with(|| RecipeBookmarks {
+                ids: recipe_bookmarks_path()
+                    .ok()
+                    .and_then(|path| std::fs::read(path).ok())
+                    .and_then(|bytes| serde_json::from_slice::<Vec<String>>(&bytes).ok())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .take(MAX_BOOKMARKS)
+                    .collect(),
+                ..RecipeBookmarks::default()
+            });
+            let ids = marks.ids.clone();
+            self.refresh_recipe_bookmarks(ids);
+        }
         Some(of.0)
     }
+    fn refresh_recipe_bookmarks(&mut self, ids: Vec<String>) {
+        let mut entries = Vec::new();
+        if let Some(tables) = self.native_recipes() {
+            let items = world_items!(self);
+            for id in &ids {
+                let Some(recipe) = tables.recipes.iter().find(|r| r.id == *id) else {
+                    continue;
+                };
+                let Some(result) = recipe.results.first() else {
+                    continue;
+                };
+                let Some(item) = tables.items.get(result.item as usize) else {
+                    continue;
+                };
+                if let Some(stack) = browser_stack(
+                    items,
+                    &BrowserStack {
+                        item: item.id.to_string(),
+                        count: result.count,
+                        components: result.components.clone(),
+                    },
+                ) {
+                    use super::native_hooks::NativeRecipeKind::*;
+                    let station = match recipe.kind {
+                        CraftingShaped | CraftingShapeless => "minecraft:crafting_table",
+                        Smelting => "minecraft:furnace",
+                        Blasting => "minecraft:blast_furnace",
+                        Smoking => "minecraft:smoker",
+                        Campfire => "minecraft:campfire",
+                        Stonecutting => "minecraft:stonecutter",
+                        Smithing => "minecraft:smithing_table",
+                        Brewing => "minecraft:brewing_stand",
+                    };
+                    entries.push(RecipeBookmark {
+                        id: id.clone(),
+                        result: stack,
+                        station: ItemStack::new(station, 1),
+                    });
+                }
+            }
+        }
+        let marks = self
+            .panel
+            .bookmarks
+            .get_or_insert_with(RecipeBookmarks::default);
+        marks.ids = ids;
+        marks.entries = entries;
+    }
+
+    pub(super) fn recipe_is_bookmarked(&self, id: &str) -> bool {
+        self.panel
+            .bookmarks
+            .as_ref()
+            .is_some_and(|marks| marks.ids.iter().any(|saved| saved == id))
+    }
+
+    pub(super) fn toggle_recipe_bookmark(&mut self, id: String) {
+        let Some(marks) = &self.panel.bookmarks else {
+            return;
+        };
+        let mut ids = marks.ids.clone();
+        if let Some(index) = ids.iter().position(|saved| *saved == id) {
+            ids.remove(index);
+        } else if ids.len() < MAX_BOOKMARKS {
+            ids.push(id);
+        } else {
+            return;
+        }
+        let saved = (|| -> Result<(), String> {
+            let path = recipe_bookmarks_path()?;
+            let staged = path.with_extension(format!("{}.tmp", std::process::id()));
+            let data = serde_json::to_vec(&ids).map_err(|error| error.to_string())?;
+            std::fs::write(&staged, data).map_err(|error| error.to_string())?;
+            std::fs::rename(&staged, path).map_err(|error| error.to_string())
+        })();
+        if let Err(error) = saved {
+            log::warn!("Recipes: saving bookmarks: {error}");
+            return;
+        }
+        self.refresh_recipe_bookmarks(ids);
+    }
+
+    fn bookmarks_layout(&self, batch: &HudBatch) -> Option<Layout> {
+        if !self.panel.is_official_recipes() || self.panel.bookmarks.as_ref()?.entries.is_empty() {
+            return None;
+        }
+        let edge = self.container_image(batch).left as f32;
+        let x = 6.0;
+        let top = 28.0;
+        let columns = ((edge - x - 4.0) / SLOT).floor().clamp(0.0, 9.0) as usize;
+        let rows = ((batch.height - top - 25.0) / SLOT).floor().max(0.0) as usize;
+        (columns > 0 && rows > 0).then_some(Layout {
+            area: [
+                x,
+                6.0,
+                columns as f32 * SLOT,
+                top + rows as f32 * SLOT - 6.0,
+            ],
+            grid: (x, top),
+            columns,
+            rows,
+            arrows_y: 6.0,
+            search: [0.0; 4],
+        })
+    }
+
+    fn draw_recipe_bookmarks(&self, batch: &mut HudBatch, layout: &Layout) -> Option<ItemStack> {
+        let marks = self.panel.bookmarks.as_ref()?;
+        let capacity = layout.per_page();
+        let pages = marks.entries.len().div_ceil(capacity);
+        let page = marks.page.min(pages - 1);
+        let atlas = &self.gui.atlas;
+        batch.fill(
+            atlas,
+            layout.area[0],
+            6.0,
+            layout.width(),
+            20.0,
+            rgba(0, 0, 0, 48),
+        );
+        self.draw_bookmark_arrows(
+            batch,
+            layout.arrows().map(|(x, y)| [x, y, 12.0, 17.0]),
+            &[
+                self.translate(
+                    "horizon.recipes.bookmarks.previous",
+                    "Previous bookmarks page",
+                ),
+                self.translate("horizon.recipes.bookmarks.next", "Next bookmarks page"),
+            ],
+            [page > 0, page + 1 < pages],
+        );
+        let label = format!("{}/{}", page + 1, pages);
+        let x = layout.area[0] + (layout.width() - HudBatch::text_width(atlas, &label)) / 2.0;
+        batch.text(atlas, &label, x, 10.0, u32::MAX, true);
+        let mut hovered = None;
+        for (index, entry) in marks
+            .entries
+            .iter()
+            .skip(page * capacity)
+            .take(capacity)
+            .enumerate()
+        {
+            let (x, y) = layout.slot(index);
+            let rect = [x, y, SLOT, SLOT];
+            let stack = &entry.result;
+            self.draw_item(batch, stack, x + 1.0, y + 1.0);
+            let start = batch.vertices.len();
+            let (badge_x, badge_y) = (x + 10.0, y + 10.0);
+            self.draw_item_model(batch, &entry.station, badge_x, badge_y);
+            for vertex in &mut batch.vertices[start..] {
+                vertex.pos[0] = badge_x + (vertex.pos[0] - badge_x) * 0.5;
+                vertex.pos[1] = badge_y + (vertex.pos[1] - badge_y) * 0.5;
+            }
+            if inside(self.cursor, rect) {
+                batch.fill(atlas, x, y, SLOT, SLOT, rgba(255, 255, 255, 65));
+                hovered = Some(stack.clone());
+            }
+            let name = self.pack.names.display_item(&stack.item);
+            let label = self
+                .translate(
+                    "horizon.recipes.bookmark.open",
+                    "Open bookmarked recipe: {item}",
+                )
+                .replace("{item}", &name);
+            horizon_client::widgets::record(&label, rect, true);
+        }
+        hovered
+    }
+
+    fn recipe_bookmark_press(&mut self, layout: &Layout, owner: &Owner, right: bool) -> bool {
+        let Some(marks) = &mut self.panel.bookmarks else {
+            return false;
+        };
+        let capacity = layout.per_page();
+        let pages = marks.entries.len().div_ceil(capacity);
+        let page = marks.page.min(pages - 1);
+        let [back, forward] = layout.arrows().map(|(x, y)| [x, y, 12.0, 17.0]);
+        if !right && page > 0 && inside(self.cursor, back) {
+            marks.page = page - 1;
+        } else if !right && page + 1 < pages && inside(self.cursor, forward) {
+            marks.page = page + 1;
+        } else if !right {
+            let first = page * capacity;
+            for (index, entry) in marks.entries[first..].iter().take(capacity).enumerate() {
+                let (x, y) = layout.slot(index);
+                if inside(self.cursor, [x, y, SLOT, SLOT]) {
+                    let event = BrowserEvent::OpenRecipeBookmark(entry.id.clone());
+                    self.panel_event(owner, event);
+                    return true;
+                }
+            }
+        }
+        inside(self.cursor, layout.area)
+    }
+
+    fn draw_bookmark_arrows(
+        &self,
+        batch: &mut HudBatch,
+        rects: [[f32; 4]; 2],
+        labels: &[String; 2],
+        enabled: [bool; 2],
+    ) {
+        for (([x, y, w, h], (name, label)), enabled) in rects
+            .into_iter()
+            .zip(["page_backward", "page_forward"].into_iter().zip(labels))
+            .zip(enabled)
+        {
+            if enabled {
+                batch.sprite(
+                    &self.gui.atlas,
+                    &format!("gui/sprites/recipe_book/{name}"),
+                    x,
+                    y,
+                );
+                horizon_client::widgets::record(label, [x, y, w, h], true);
+            }
+        }
+    }
+
     /// What the panel shows now.
     fn panel_shown(&self) -> Option<&Shown> {
         let disabled = &self.settings.mods.disabled;
@@ -365,8 +627,13 @@ impl Game<'_> {
         let mut search = search.clone();
         search.draw(batch, &self.gui.atlas, None);
         self.panel.search = Some(search);
+        let bookmark = self
+            .bookmarks_layout(batch)
+            .and_then(|layout| self.draw_recipe_bookmarks(batch, &layout));
         if self.carried.is_some() {
             self.draw_carried(batch);
+        } else if let Some(stack) = bookmark {
+            self.draw_stack_tooltip(batch, &stack, cursor.0, cursor.1);
         } else if let Some(stack) = self.browser_pointed_stack(&layout) {
             self.draw_stack_tooltip(batch, &stack.1, cursor.0, cursor.1);
         } else {
@@ -387,6 +654,11 @@ impl Game<'_> {
         let Some(layout) = self.browser_layout(&batch) else {
             return false;
         };
+        if let Some(bookmarks) = self.bookmarks_layout(&batch)
+            && self.recipe_bookmark_press(&bookmarks, &owner, right)
+        {
+            return true;
+        }
         let cursor = self.cursor;
         let shift = self.has_shift_down();
         let atlas = &self.gui.atlas;
