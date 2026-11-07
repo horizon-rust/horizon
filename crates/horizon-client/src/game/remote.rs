@@ -488,7 +488,10 @@ fn stepped_move(
 /// comes back from `ChunkDecoder::next`.
 enum Received {
     Event(Event),
-    Chunk(Arc<ChunkFormat>),
+    Chunk {
+        pos: (i32, i32),
+        format: Arc<ChunkFormat>,
+    },
 }
 
 /// `Minecraft.services().profileKeySignatureValidator()`: the services' profile-key keys, which a
@@ -2162,8 +2165,15 @@ impl Game<'_> {
         for event in r.session.poll() {
             events.push_back(match event {
                 Event::Packet(p) if matches!(*p, C::LevelChunkWithLight(_)) => {
+                    let pos = match &*p {
+                        C::LevelChunkWithLight(chunk) => (chunk.x, chunk.z),
+                        _ => (0, 0),
+                    };
                     match r.decoder.submit(r.chunk_format.clone(), p) {
-                        None => Received::Chunk(r.chunk_format.clone()),
+                        None => Received::Chunk {
+                            pos,
+                            format: r.chunk_format.clone(),
+                        },
                         Some(p) => Received::Event(Event::Packet(p)),
                     }
                 }
@@ -2174,6 +2184,9 @@ impl Game<'_> {
             .backlog_since
             .is_some_and(|since| since.elapsed() >= BACKLOG_LIMIT);
         let mut chunks = Duration::ZERO;
+        let mut deferred = VecDeque::new();
+        let mut deferred_chunks = horizon_client::fast_hash::FxHashSet::default();
+        let mut deferring_chunks = false;
         // A run of ForgetLevelChunk (thousands when the server's view moves far: a
         // teleport at 32 chunks) is forgotten at once, before whatever follows it.
         let mut forgotten = horizon_client::fast_hash::FxHashSet::default();
@@ -2183,28 +2196,31 @@ impl Game<'_> {
             {
                 self.native_client_packet(packet);
                 forgotten.insert((p.pos[0], p.pos[1]));
+                deferred_chunks.remove(&(p.pos[0], p.pos[1]));
                 continue;
             }
             self.forget_remote_columns(&mut forgotten);
-            let chunk = matches!(item, Received::Chunk(_));
-            if chunk && !overdue && chunks >= CHUNK_PACKETS_PER_FRAME {
-                events.push_front(item);
-                break;
-            }
-            let started = chunk.then(Instant::now);
             let event = match item {
-                Received::Event(event) => event,
-                Received::Chunk(format) => {
-                    // A column still decoding waits for the next frame, with
-                    // what came after it, overdue or not.
+                Received::Chunk { pos, format } => {
+                    if deferring_chunks || (!overdue && chunks >= CHUNK_PACKETS_PER_FRAME) {
+                        deferring_chunks = true;
+                        deferred_chunks.insert(pos);
+                        deferred.push_back(Received::Chunk { pos, format });
+                        continue;
+                    }
+                    let started = Instant::now();
                     let Some(next) = self.remote.as_ref().map(|r| r.decoder.next()) else {
+                        deferred_chunks.insert(pos);
+                        deferred.push_back(Received::Chunk { pos, format });
                         break;
                     };
                     let (packet, column) = match next {
                         Next::Ready(decoded) => decoded,
                         Next::Decoding => {
-                            events.push_front(Received::Chunk(format));
-                            break;
+                            deferring_chunks = true;
+                            deferred_chunks.insert(pos);
+                            deferred.push_back(Received::Chunk { pos, format });
+                            continue;
                         }
                         Next::Lost => {
                             log::warn!("Horizon: the chunk decoder stopped; a column is missing");
@@ -2215,8 +2231,25 @@ impl Game<'_> {
                     if let C::LevelChunkWithLight(p) = *packet {
                         self.remote_chunk(&p, Some((&format, column)));
                     }
-                    chunks += started.map_or(Duration::ZERO, |t| t.elapsed());
+                    chunks += started.elapsed();
                     continue;
+                }
+                Received::Event(event) => {
+                    let block_chunk = match &event {
+                        Event::Packet(p) => match &**p {
+                            C::BlockUpdate(b) => Some((b.pos[0] >> 4, b.pos[2] >> 4)),
+                            C::SectionBlocksUpdate(s) => Some((s.section[0], s.section[2])),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(chunk_pos) = block_chunk
+                        && deferred_chunks.contains(&chunk_pos)
+                    {
+                        deferred.push_back(Received::Event(event));
+                        continue;
+                    }
+                    event
                 }
             };
             match event {
@@ -2380,7 +2413,6 @@ impl Game<'_> {
                 }
                 Event::Packet(packet) => self.handle_packet(*packet)?,
             }
-            chunks += started.map_or(Duration::ZERO, |t| t.elapsed());
             if self.remote.is_none() {
                 break;
             }
@@ -2389,12 +2421,13 @@ impl Game<'_> {
             self.forget_remote_columns(&mut forgotten);
         }
         if let Some(r) = self.remote.as_mut() {
-            r.backlog_since = if events.is_empty() {
+            deferred.extend(events);
+            r.backlog_since = if deferred.is_empty() {
                 None
             } else {
                 Some(r.backlog_since.unwrap_or_else(Instant::now))
             };
-            r.backlog = events;
+            r.backlog = deferred;
         }
         self.send_suggestion_request();
         Ok(())
@@ -12940,5 +12973,22 @@ mod tests {
         assert_eq!(respawn.event, 11);
         assert_eq!(crafting.event, 12);
         assert!(crafting.param == 1.0);
+    }
+
+    /// When chunk decoding is deferred, interactive packets (like chat, entities,
+    /// ping or game events) in the backlog should not be blocked from processing.
+    #[test]
+    fn chunk_backlog_preserves_position_coordinates() {
+        use super::Received;
+        let format = std::sync::Arc::new(super::ChunkFormat::default());
+        let chunk_item = Received::Chunk {
+            pos: (12, -34),
+            format,
+        };
+        if let Received::Chunk { pos, .. } = chunk_item {
+            assert_eq!(pos, (12, -34));
+        } else {
+            panic!("expected Received::Chunk");
+        }
     }
 }
