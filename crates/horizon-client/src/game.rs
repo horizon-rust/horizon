@@ -375,6 +375,7 @@ mod sniffers;
 mod social;
 mod spawner;
 mod spear;
+mod special_attack_fixture;
 mod spectator;
 mod spill;
 mod splash_water;
@@ -12552,8 +12553,20 @@ impl Game<'_> {
         target_kind: &str,
         living: bool,
     ) -> (f32, f32, bool, bool) {
+        self.melee_damage_with_admission(target_kind, living).0
+    }
+    /// Player.attack admits its hurt/tail before the item's damage bonus. Keep
+    /// that predicate with the one damage evaluation, including its RNG draws.
+    pub(super) fn melee_damage_with_admission(
+        &mut self,
+        target_kind: &str,
+        living: bool,
+    ) -> ((f32, f32, bool, bool), bool) {
         if self.legacy_rules() {
-            return self.legacy_melee_damage(target_kind, living);
+            let hit = self.legacy_melee_damage(target_kind, living);
+            // The legacy rules use their resulting damage, including the
+            // intentionally retained modern mace bonus.
+            return (hit, hit.0 > 0.0);
         }
         let hand_damage = self.attack_damage();
         // Riptide's spin replaces the attack damage attribute.
@@ -12580,7 +12593,7 @@ impl Game<'_> {
         }
         // Enchantment damage (sharpness, smite, bane) scaled by the attack strength.
         amount += enchant_bonus * scale;
-        (amount, scale, crit, enchant_bonus * scale > 0.0)
+        ((amount, scale, crit, enchant_bonus * scale > 0.0), damaging)
     }
     /// `Player.getAttackStrengthScale(0.5)`.
     fn attack_strength_scale(&self) -> f32 {
@@ -12664,6 +12677,24 @@ impl Game<'_> {
     /// box `area`. Before the hit resets the charge (`Player.onAttack`).
     pub(super) fn vehicle_attack_sounds(&mut self, area: Aabb, magic: Option<i32>) {
         self.attack_effects(area, None, false, mace::Spared::Nothing, magic);
+    }
+    /// Player.attack's cost after an accepted special-entity hurt. Hanging
+    /// decorations consume their hit in skipAttackInteraction, before this tail.
+    pub(super) fn special_attack_exhaustion(&mut self) {
+        if let Some(player) = self.player.as_mut() {
+            player.cause_food_exhaustion(0.1);
+        }
+    }
+    /// The attacker's side of Player.causeExtraKnockback, including when the
+    /// accepted target was removed by its hurt implementation.
+    pub(super) fn special_attack_slowdown(&mut self, knockback: f32) {
+        if knockback > 0.0 {
+            if let Some(player) = self.player.as_mut() {
+                player.velocity.x *= horizon_client::attack_strength::ATTACKER_SLOWDOWN;
+                player.velocity.z *= horizon_client::attack_strength::ATTACKER_SLOWDOWN;
+            }
+            self.stop_sprint_after_extra_knockback();
+        }
     }
     /// `Player.attack` after a target that is not a mob took the hit:
     /// the sprint knockback sound, a living target's critical hit (`living`:

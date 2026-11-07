@@ -2302,9 +2302,14 @@ impl Game<'_> {
         let area = self.carts[i].bounds();
         // Player.attack's full damage against the cart's entity type.
         let id = self.carts[i].id as i32;
-        let (damage, _, _, magic) = self.melee_damage(self.carts[i].kind.id(), false);
-        self.hurt_cart(i, damage, self.creative, burning);
-        self.vehicle_attack_sounds(area, magic.then_some(id));
+        let kind = self.carts[i].kind.id();
+        let (damage, scale, _, magic) = self.melee_damage(kind, false);
+        if self.hurt_cart_result(i, damage, self.creative, burning) && damage > 0.0 {
+            self.vehicle_attack_sounds(area, magic.then_some(id));
+            let (knockback, _) = self.extra_knockback(kind, scale);
+            self.special_attack_slowdown(knockback);
+            self.special_attack_exhaustion();
+        }
         // Player.onAttack: the hit starts the attack strength again.
         self.attack_ticks = 0;
         self.swing_arm();
