@@ -165,6 +165,15 @@ zombie,cow,villager` runs one.
   to serial execution.
 - `HORIZON_REGION_METRICS=1`: region, predicted, committed and replayed counts,
   and whether the round was clean or fell back, with the reason.
+- `HORIZON_REGION_SPAWNING=0`: natural spawning stays one serial pass. Otherwise,
+  when the executor runs regions in parallel (not in `verify`, and without
+  native spawn hooks), the spawn chunks are grouped by region; each group draws
+  a seed from the level random in region order and spawns on a worker with its
+  own `LegacyRandom` and its own copy of the spawn state, and the mobs join in
+  region order. **This is not vanilla's random order**: vanilla shuffles every
+  spawn chunk and draws from the level random for each in turn. Each region's
+  local mob caps still hold, but two regions near one player both read the
+  counts from the start of the pass.
 
 What a prediction replaces is guarded in debug builds too: `TickRound::commit`
 panics when the walk wrote to the mob since its prediction was made. Every event
