@@ -428,6 +428,31 @@ pub fn is_farmer(m: &Mob) -> bool {
 /// `SimpleContainer(8)`: stacks the villager carries.
 const INVENTORY_SLOTS: usize = 8;
 
+/// `SimpleContainer.addItem`: merge into stacks, then free slots; the
+/// part that did not fit is returned.
+pub fn add_to_container(
+    inventory: &mut Vec<ItemStack>,
+    mut stack: ItemStack,
+    max_stack: u32,
+) -> Option<ItemStack> {
+    for s in inventory.iter_mut() {
+        if stack.count > 0 && s.same_item_same_components(&stack) && s.count < max_stack {
+            let n = (max_stack - s.count).min(stack.count);
+            s.count += n;
+            stack.count -= n;
+        }
+    }
+    while stack.count > 0 && inventory.len() < INVENTORY_SLOTS {
+        let n = stack.count.min(max_stack);
+        inventory.push(ItemStack {
+            count: n,
+            ..stack.clone()
+        });
+        stack.count -= n;
+    }
+    (stack.count > 0).then_some(stack)
+}
+
 impl Ext {
     /// `countFoodPointsInInventory`.
     pub fn food_in_inventory(&self) -> i32 {
@@ -477,23 +502,8 @@ impl Ext {
     }
     /// `SimpleContainer.addItem`: merge into stacks, then free slots; the
     /// part that did not fit is returned.
-    pub fn add_item(&mut self, mut stack: ItemStack, max_stack: u32) -> Option<ItemStack> {
-        for s in &mut self.inventory {
-            if stack.count > 0 && s.same_item_same_components(&stack) && s.count < max_stack {
-                let n = (max_stack - s.count).min(stack.count);
-                s.count += n;
-                stack.count -= n;
-            }
-        }
-        while stack.count > 0 && self.inventory.len() < INVENTORY_SLOTS {
-            let n = stack.count.min(max_stack);
-            self.inventory.push(ItemStack {
-                count: n,
-                ..stack.clone()
-            });
-            stack.count -= n;
-        }
-        (stack.count > 0).then_some(stack)
+    pub fn add_item(&mut self, stack: ItemStack, max_stack: u32) -> Option<ItemStack> {
+        add_to_container(&mut self.inventory, stack, max_stack)
     }
     /// `SimpleContainer.removeItemType`: take up to `count` of the item from
     /// the first stacks that hold it.
@@ -967,6 +977,7 @@ pub fn read_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
         &mut saved.last_woken,
         |v| int(Some(v)),
     );
+    let kind = m.kind.clone();
     let e = ext_mut(m);
     e.food_level = int(tag.get("FoodLevel")).unwrap_or(0) as i32;
     e.gossips = tag
@@ -985,11 +996,11 @@ pub fn read_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     };
     let asleep = e.sleeping_pos.is_some();
     if let Some(Tag::List(items)) = tag.get("Inventory") {
-        e.inventory = items
-            .iter()
-            .filter_map(crate::save::item_from_nbt)
-            .take(INVENTORY_SLOTS)
-            .collect();
+        e.inventory.clear();
+        for stack in items.iter().filter_map(crate::save::item_from_nbt) {
+            let max = kind.inventory_stack_limit(&stack);
+            add_to_container(&mut e.inventory, stack, max);
+        }
     }
     if asleep {
         m.extra.ints[1] = bed_facing_code(None);
@@ -1406,5 +1417,93 @@ mod tests {
         assert_eq!(food_points("minecraft:bread"), 4);
         assert_eq!(food_points("minecraft:beetroot"), 1);
         assert_eq!(food_points("minecraft:apple"), 0);
+    }
+
+    #[test]
+    fn villager_inventory_nbt_load_merges_same_item_stacks_and_drops_overflow() {
+        let item_stack = |id: &str, count: i32, custom: Option<i32>| -> horizon_world::nbt::Tag {
+            use horizon_world::nbt::Tag;
+            let mut fields = vec![("id", Tag::String(id.into())), ("count", Tag::Int(count))];
+            if let Some(c) = custom {
+                fields.push((
+                    "components",
+                    Tag::compound([(
+                        "minecraft:custom_data",
+                        Tag::compound([("audit", Tag::Int(c))]),
+                    )]),
+                ));
+            }
+            Tag::compound(fields)
+        };
+
+        // 1. Same item with room to merge -> merged into fewer stacks
+        let mut m = villager();
+        let tag = horizon_world::nbt::Tag::compound([(
+            "Inventory",
+            horizon_world::nbt::Tag::List(vec![
+                item_stack("minecraft:stone", 2, None),
+                item_stack("minecraft:stone", 3, None),
+            ]),
+        )]);
+        read_nbt(&mut m, &tag);
+        let inv = &ext_mut(&mut m).inventory;
+        assert_eq!(inv.len(), 1);
+        assert_eq!(inv[0].item.as_ref(), "minecraft:stone");
+        assert_eq!(inv[0].count, 5);
+
+        // [stone 40, dirt 1, stone 40] -> [stone 64, dirt 1, stone 16]
+        let mut m = villager();
+        let tag = horizon_world::nbt::Tag::compound([(
+            "Inventory",
+            horizon_world::nbt::Tag::List(vec![
+                item_stack("minecraft:stone", 40, None),
+                item_stack("minecraft:dirt", 1, None),
+                item_stack("minecraft:stone", 40, None),
+            ]),
+        )]);
+        read_nbt(&mut m, &tag);
+        let inv = &ext_mut(&mut m).inventory;
+        assert_eq!(inv.len(), 3);
+        assert_eq!(
+            (inv[0].item.as_ref(), inv[0].count),
+            ("minecraft:stone", 64)
+        );
+        assert_eq!((inv[1].item.as_ref(), inv[1].count), ("minecraft:dirt", 1));
+        assert_eq!(
+            (inv[2].item.as_ref(), inv[2].count),
+            ("minecraft:stone", 16)
+        );
+
+        // 2. Differing components stay separate, same components merge
+        let mut m = villager();
+        let tag = horizon_world::nbt::Tag::compound([(
+            "Inventory",
+            horizon_world::nbt::Tag::List(vec![
+                item_stack("minecraft:stone", 10, Some(1)),
+                item_stack("minecraft:stone", 10, Some(1)),
+                item_stack("minecraft:stone", 10, Some(2)),
+            ]),
+        )]);
+        read_nbt(&mut m, &tag);
+        let inv = &ext_mut(&mut m).inventory;
+        assert_eq!(inv.len(), 2);
+        assert_eq!(inv[0].count, 20);
+        assert_eq!(inv[1].count, 10);
+
+        // 3. Overflow beyond 8 slots is dropped
+        let mut m = villager();
+        let mut nine_items = Vec::new();
+        for i in 0..9 {
+            nine_items.push(item_stack(&format!("minecraft:item_{i}"), 1, None));
+        }
+        let tag = horizon_world::nbt::Tag::compound([(
+            "Inventory",
+            horizon_world::nbt::Tag::List(nine_items),
+        )]);
+        read_nbt(&mut m, &tag);
+        let inv = &ext_mut(&mut m).inventory;
+        assert_eq!(inv.len(), 8);
+        assert_eq!(inv[0].item.as_ref(), "minecraft:item_0");
+        assert_eq!(inv[7].item.as_ref(), "minecraft:item_7");
     }
 }

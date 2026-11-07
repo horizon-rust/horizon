@@ -73,7 +73,7 @@ SimpleContainer.toString	skip:debug
 SimpleContainer.moveItemToEmptySlots	inline	crates/horizon-world/src/simple_container.rs::SimpleContainer::add	second pass of addItem; the villager's Ext::add_item does the same
 SimpleContainer.moveItemToOccupiedSlotsWithSameType	inline	crates/horizon-world/src/simple_container.rs::SimpleContainer::add	first pass of addItem
 SimpleContainer.moveItemsBetweenStacks	inline	crates/horizon-world/src/simple_container.rs::SimpleContainer::add	the grow and shrink with the per-stack limit
-SimpleContainer.fromItemList	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	villager and piglin Inventory read; the piglin list is cut to 8 instead of re-added
+SimpleContainer.fromItemList	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	villager and piglin Inventory read via add_to_container
 SimpleContainer.storeAsItemList	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	villager and piglin Inventory written
 Stopwatches.unpack	port	crates/horizon-client/src/stopwatches.rs::Stopwatches::load	
 Stopwatches.pack	port	crates/horizon-client/src/stopwatches.rs::Stopwatches::save	

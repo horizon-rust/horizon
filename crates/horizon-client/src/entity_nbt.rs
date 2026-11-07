@@ -1973,11 +1973,11 @@ pub fn mob_from_nbt(
             && let Some(Tag::List(items)) = tag.get("Inventory")
         {
             // InventoryCarrier.readInventoryFromTag (eight slots).
-            m.extra.inventory = items
-                .iter()
-                .filter_map(crate::save::item_from_nbt)
-                .take(8)
-                .collect();
+            m.extra.inventory.clear();
+            for stack in items.iter().filter_map(crate::save::item_from_nbt) {
+                let max = m.kind.inventory_stack_limit(&stack);
+                crate::mobs::villager::add_to_container(&mut m.extra.inventory, stack, max);
+            }
         }
     }
     if matches!(
@@ -9166,5 +9166,114 @@ mod carrier_inventory_tests {
                 .get("Inventory")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn piglin_inventory_nbt_load_merges_same_item_stacks_and_drops_overflow() {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        Arc::make_mut(&mut kind).id = "minecraft:piglin".into();
+        Arc::make_mut(&mut kind).species = Species::Piglin;
+        let types = HashMap::from([("minecraft:piglin".to_string(), kind)]);
+
+        let item_stack = |id: &str, count: i32, custom: Option<i32>| -> Tag {
+            let mut fields = vec![("id", string(id)), ("count", Tag::Int(count))];
+            if let Some(c) = custom {
+                fields.push((
+                    "components",
+                    Tag::compound([(
+                        "minecraft:custom_data",
+                        Tag::compound([("audit", Tag::Int(c))]),
+                    )]),
+                ));
+            }
+            Tag::compound(fields)
+        };
+
+        // 1. Same item with room to merge -> merged into fewer stacks
+        let raw = Tag::compound([
+            ("id", string("minecraft:piglin")),
+            ("Pos", doubles(&[1.5, 200.0, 4.5])),
+            (
+                "Inventory",
+                Tag::List(vec![
+                    item_stack("minecraft:stone", 2, None),
+                    item_stack("minecraft:stone", 3, None),
+                ]),
+            ),
+        ]);
+        let mob = mob_from_nbt(&raw, &types, 1, None).unwrap();
+        assert_eq!(mob.extra.inventory.len(), 1);
+        assert_eq!(mob.extra.inventory[0].item.as_ref(), "minecraft:stone");
+        assert_eq!(mob.extra.inventory[0].count, 5);
+
+        // [stone 40, dirt 1, stone 40] -> [stone 64, dirt 1, stone 16]
+        let raw = Tag::compound([
+            ("id", string("minecraft:piglin")),
+            ("Pos", doubles(&[1.5, 200.0, 4.5])),
+            (
+                "Inventory",
+                Tag::List(vec![
+                    item_stack("minecraft:stone", 40, None),
+                    item_stack("minecraft:dirt", 1, None),
+                    item_stack("minecraft:stone", 40, None),
+                ]),
+            ),
+        ]);
+        let mob = mob_from_nbt(&raw, &types, 2, None).unwrap();
+        assert_eq!(mob.extra.inventory.len(), 3);
+        assert_eq!(
+            (
+                mob.extra.inventory[0].item.as_ref(),
+                mob.extra.inventory[0].count
+            ),
+            ("minecraft:stone", 64)
+        );
+        assert_eq!(
+            (
+                mob.extra.inventory[1].item.as_ref(),
+                mob.extra.inventory[1].count
+            ),
+            ("minecraft:dirt", 1)
+        );
+        assert_eq!(
+            (
+                mob.extra.inventory[2].item.as_ref(),
+                mob.extra.inventory[2].count
+            ),
+            ("minecraft:stone", 16)
+        );
+
+        // 2. Same item with same components merges; differing components stay separate
+        let raw = Tag::compound([
+            ("id", string("minecraft:piglin")),
+            ("Pos", doubles(&[1.5, 200.0, 4.5])),
+            (
+                "Inventory",
+                Tag::List(vec![
+                    item_stack("minecraft:stone", 10, Some(1)),
+                    item_stack("minecraft:stone", 10, Some(1)),
+                    item_stack("minecraft:stone", 10, Some(2)),
+                ]),
+            ),
+        ]);
+        let mob = mob_from_nbt(&raw, &types, 3, None).unwrap();
+        assert_eq!(mob.extra.inventory.len(), 2);
+        assert_eq!(mob.extra.inventory[0].count, 20);
+        assert_eq!(mob.extra.inventory[1].count, 10);
+
+        // 3. Overflow beyond 8 slots is dropped
+        let mut nine_items = Vec::new();
+        for i in 0..9 {
+            nine_items.push(item_stack(&format!("minecraft:item_{i}"), 1, None));
+        }
+        let raw = Tag::compound([
+            ("id", string("minecraft:piglin")),
+            ("Pos", doubles(&[1.5, 200.0, 4.5])),
+            ("Inventory", Tag::List(nine_items)),
+        ]);
+        let mob = mob_from_nbt(&raw, &types, 4, None).unwrap();
+        assert_eq!(mob.extra.inventory.len(), 8);
+        assert_eq!(mob.extra.inventory[0].item.as_ref(), "minecraft:item_0");
+        assert_eq!(mob.extra.inventory[7].item.as_ref(), "minecraft:item_7");
     }
 }
