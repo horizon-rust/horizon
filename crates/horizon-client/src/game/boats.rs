@@ -992,22 +992,25 @@ impl Game<'_> {
     /// `AbstractBoat.onAboveBubbleColumn`: whether the splash comes up, one
     /// time in a hundred for a boat that is not under water.
     pub(super) fn boat_splash_roll(&mut self, i: usize) -> bool {
-        !self.boats[i].under_water() && self.world.random.next_int_bound(100).unwrap_or(1) == 0
+        let mut random = crate::mobs::entity_random(self.boats[i].id, self.boats[i].position);
+        !self.boats[i].under_water() && random.next_int_bound(100).unwrap_or(1) == 0
     }
     /// `AbstractBoat.onAboveBubbleColumn`: the client's half after the roll,
     /// the splash sound and particle at the boat.
     pub(super) fn boat_bubble_splash(&mut self, i: usize) {
+        let mut random = crate::mobs::entity_random(self.boats[i].id, self.boats[i].position);
+        let _ = random.next_int_bound(100);
         use horizon_client::particles::{ParticleOptions, ParticleType};
         let p = self.boats[i].position;
-        let pitch = 0.8 + 0.4 * self.world.random.next_float();
+        let pitch = 0.8 + 0.4 * random.next_float();
         self.audio.play(
             "minecraft:entity.generic.splash",
             Some([p.x, p.y, p.z]),
             1.0,
             pitch,
         );
-        let x = p.x + f64::from(self.world.random.next_float());
-        let z = p.z + f64::from(self.world.random.next_float());
+        let x = p.x + f64::from(random.next_float());
+        let z = p.z + f64::from(random.next_float());
         self.particles.add(
             &ParticleOptions::simple(ParticleType::Splash),
             [x, p.y + 0.7, z],

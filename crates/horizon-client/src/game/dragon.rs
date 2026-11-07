@@ -1274,7 +1274,11 @@ impl Game<'_> {
             {
                 continue;
             }
-            let drawn = self.world.random.next_int_bound(100_000).unwrap_or(0);
+            // EndCrystal's constructor: `this.random.nextInt(100000)`, the
+            // crystal's own random (an unseeded factory stream), not the level's.
+            let drawn = super::dispenser::entity_random()
+                .next_int_bound(100_000)
+                .unwrap_or(0);
             let time = Crystal::start_time(at, drawn, self.clock.still());
             // EndCrystal's constructor takes an id from the entity counter.
             self.next_entity += 1;

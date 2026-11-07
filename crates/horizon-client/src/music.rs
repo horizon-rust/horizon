@@ -5,7 +5,7 @@
 use crate::options_ui::{MusicGroup, MusicTrack};
 use crate::sound_engine::{InstanceId, MUSIC, PlayResult, SoundEngine, SoundInstance, Sounds};
 use crate::sound_events::{Sentinel, SoundRegistry};
-use horizon_core::random::{LegacyRandom, RandomSource};
+use horizon_core::random::{LegacyRandom, RandomSource, seed_for};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -452,7 +452,7 @@ pub struct MusicManager {
 impl Default for MusicManager {
     fn default() -> Self {
         // RandomSource.create(): seeded from the clock, not the world.
-        Self::new(crate::sound_engine::unique_seed())
+        Self::new(seed_for("music"))
     }
 }
 impl MusicManager {

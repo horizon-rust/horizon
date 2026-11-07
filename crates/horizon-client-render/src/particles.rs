@@ -15,7 +15,7 @@ use crate::{
 use glam::{DVec3, Quat, Vec3 as FVec3};
 use horizon_core::{
     geometry::{Aabb, Axis, Vec3, trig},
-    random::{LegacyRandom, RandomSource},
+    random::{LegacyRandom, RandomSource, unique_seed},
 };
 use horizon_protocol::entity_data::PositionSource;
 use horizon_world::block_collision::BlockCollisionRegistry;
@@ -1437,11 +1437,12 @@ fn below_half_pixel(radius: f64, distance_squared: f64, pixel_focal_length: f32)
 }
 
 /// `ClientExplosionTracker.ExplosionInfo`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct TrackedExplosion {
     center: [f64; 3],
     radius: f32,
     block_count: usize,
+    rng: LegacyRandom,
 }
 impl ParticleEngine {
     pub fn new(root: &Path, atlas: &HashMap<String, Rect>, translucent: &HashSet<String>) -> Self {
@@ -1816,6 +1817,7 @@ impl ParticleEngine {
                 center,
                 radius,
                 block_count,
+                rng: LegacyRandom::new(unique_seed()),
             });
         }
     }
@@ -3745,7 +3747,7 @@ impl ParticleEngine {
         if self.tracked_explosions.is_empty() {
             return;
         }
-        let explosions = std::mem::take(&mut self.tracked_explosions);
+        let mut explosions = std::mem::take(&mut self.tracked_explosions);
         if self.particle_level != 0 {
             return;
         }
@@ -3754,41 +3756,47 @@ impl ParticleEngine {
             return;
         }
         let total_particles = total_blocks.min(512);
+        // Isolate explosion debris from unrelated particle effects: each
+        // explosion carries its own unseeded stream, allocated when it was
+        // tracked, and the weighted pick uses a per-tick stream.
+        let mut picker = LegacyRandom::new(unique_seed());
         for _ in 0..total_particles {
             // `WeightedRandom.getRandomItem` draws its `nextInt(totalWeight)`
             // even when one explosion is tracked.
-            let mut pick = self.random.next_int_bound(total_blocks as i32).unwrap_or(0) as usize;
-            let mut explosion = &explosions[0];
-            for exp in &explosions {
+            let mut pick = picker.next_int_bound(total_blocks as i32).unwrap_or(0) as usize;
+            let mut explosion_idx = 0usize;
+            for (i, exp) in explosions.iter().enumerate() {
                 if pick < exp.block_count {
-                    explosion = exp;
+                    explosion_idx = i;
                     break;
                 }
                 pick -= exp.block_count;
             }
-            let r = &mut self.random;
+            let explosion = &mut explosions[explosion_idx];
+            let r = &mut explosion.rng;
             let d = Vec3::new(
                 f64::from(r.next_float() * 2.0 - 1.0),
                 f64::from(r.next_float() * 2.0 - 1.0),
                 f64::from(r.next_float() * 2.0 - 1.0),
             )
             .normalize();
-            let distance = r.next_float().cbrt() * explosion.radius;
+            let radius = explosion.radius;
+            let center = explosion.center;
+            let distance = r.next_float().cbrt() * radius;
             let local = [
                 d.x * f64::from(distance),
                 d.y * f64::from(distance),
                 d.z * f64::from(distance),
             ];
             let at = [
-                explosion.center[0] + local[0],
-                explosion.center[1] + local[1],
-                explosion.center[2] + local[2],
+                center[0] + local[0],
+                center[1] + local[1],
+                center[2] + local[2],
             ];
             if !is_air(ParticleLevel::block_at(at)) {
                 continue;
             }
-            let speed =
-                0.5 / (distance / explosion.radius + 0.1) * r.next_float() * r.next_float() + 0.3;
+            let speed = 0.5 / (distance / radius + 0.1) * r.next_float() * r.next_float() + 0.3;
             // Level.DEFAULT_EXPLOSION_BLOCK_PARTICLES: poof (scaling 0.5) or smoke, equally weighted.
             let (ty, scaling) = if r.next_int_bound(2).unwrap_or(0) == 0 {
                 (ParticleType::Poof, 0.5)
@@ -3796,9 +3804,9 @@ impl ParticleEngine {
                 (ParticleType::Smoke, 1.0)
             };
             let p = [
-                explosion.center[0] + local[0] * scaling,
-                explosion.center[1] + local[1] * scaling,
-                explosion.center[2] + local[2] * scaling,
+                center[0] + local[0] * scaling,
+                center[1] + local[1] * scaling,
+                center[2] + local[2] * scaling,
             ];
             self.add(
                 &ParticleOptions::simple(ty),

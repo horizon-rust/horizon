@@ -1,7 +1,9 @@
 //! Vanilla's two seeded random streams. No platform/default Rust RNG is used.
+mod determinism;
 mod hash;
 mod positional;
 mod worldgen;
+pub use determinism::{master_seed, pinned_seed, seed_for, unique_seed};
 pub use hash::{seed_from_hash, seed_from_hash_utf16};
 pub use positional::{
     LegacyPositionalRandom, PositionalRandom, XoroshiroPositionalRandom, java_string_hash,

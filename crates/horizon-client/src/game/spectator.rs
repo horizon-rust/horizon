@@ -49,10 +49,15 @@ impl Game<'_> {
                     return None;
                 }
                 // A random member's face is the team's icon.
-                let pick = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.subsec_nanos() as usize)
-                    % members.len();
+                let pick = horizon_core::random::pinned_seed("spectator_team_icon").map_or_else(
+                    || {
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.subsec_nanos() as usize)
+                            % members.len()
+                    },
+                    |seed| (seed as u64 as usize) % members.len(),
+                );
                 Some(Team {
                     name: comp_text(&team.display_name),
                     color: team.color.as_deref().and_then(team_color_rgb),

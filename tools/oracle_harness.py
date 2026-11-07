@@ -55,8 +55,12 @@ def compare(client_out, rust_out, expected_lines):
     return matched
 
 
-def differential(name, oracle, probe, make_input, scope, sources=(), expected_lines=None):
-    """Compile the oracle and probe, run both on one input and require identical output."""
+def differential(name, oracle, probe, make_input, scope, sources=(), expected_lines=None,
+                 jvm=(), rust_env=None):
+    """Compile the oracle and probe, run both on one input and require identical output.
+
+    `jvm` adds JVM options (a determinism agent, for example); `rust_env` merges into the probe's
+    environment (a fixed RNG seed)."""
     import platform
     lock, jars, libraries = base.verify_artifacts()
     libraries = baking.client_libraries()
@@ -74,8 +78,9 @@ def differential(name, oracle, probe, make_input, scope, sources=(), expected_li
     input_hash = lab.digest(input_path, 'sha256') if input_path.is_file() else None
     classes, dependencies, _ = compile_oracle(build, oracle, jars, libraries, lock['minecraft']['java_major'])
     command = build_probe(build, probe)
-    run_logged([*command, input_path, build / 'rust.txt'], build, 'rust')
-    java_run(build, classes, dependencies, oracle, [input_path, build / 'client.txt'], 'client')
+    rust_call = {'env': {**os.environ, **rust_env}} if rust_env is not None else {}
+    run_logged([*command, input_path, build / 'rust.txt'], build, 'rust', **rust_call)
+    java_run(build, classes, dependencies, oracle, [input_path, build / 'client.txt'], 'client', jvm=jvm)
     try:
         matched = base.compare(build / 'client.txt', build / 'rust.txt')
     except AssertionError as error:

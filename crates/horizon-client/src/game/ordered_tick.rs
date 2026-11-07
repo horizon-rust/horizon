@@ -27,8 +27,6 @@ pub(super) struct OrderedTicks {
     /// For each batch of another kind, in tick order (see [`Batch`]): the
     /// lowest join number among it and every batch after it.
     suffix_min: [JoinSeq; Batch::COUNT],
-    /// The orbs' lava random, made on first use.
-    lava_random: Option<horizon_core::random::LegacyRandom>,
 }
 
 /// The batches of the other kinds, in the order they tick.
@@ -97,7 +95,6 @@ impl Game<'_> {
             born: JoinSeq::upcoming(),
             done: None,
             suffix_min,
-            lava_random: None,
         };
     }
 
@@ -213,14 +210,10 @@ impl Game<'_> {
                         .filter(|(feet, _)| distance(feet) < 64.0)
                         .min_by(|a, b| distance(&a.0).total_cmp(&distance(&b.0)))
                         .map(|(_, target)| *target);
-                    // An orb has no random of its own here: lava draws from one
-                    // made on first use, apart from the level stream.
-                    let random = &mut self.ordered.lava_random;
-                    let mut next_float = || {
-                        random
-                            .get_or_insert_with(super::dispenser::entity_random)
-                            .next_float()
-                    };
+                    // Per-orb stream: each orb carries its own random, seeded by
+                    // its id and position, like item and arrow entities.
+                    let mut orb_random = crate::mobs::entity_random(o.id, o.position);
+                    let mut next_float = || orb_random.next_float();
                     let stays = {
                         let audio = &mut self.audio;
                         let mut on_sound = |pos: [f64; 3], pitch: f32| {

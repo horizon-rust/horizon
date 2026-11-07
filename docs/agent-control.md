@@ -369,7 +369,9 @@ A recording is one folder, a bundle is that folder plus the logs in one zip:
 `HORIZON_STILL=1` (a dev switch, off by default) makes a frozen scene draw the same frame in every
 run, pixel for pixel, on the same build, GPU and driver: a change's before and after are then
 compared by a pixel diff, not by eye, where two runs otherwise differ by a shade or two over much
-of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)).
+of the frame ([#8750](https://github.com/horizon-rust/horizon/issues/8750)). It also pins
+unseeded randomness to seed 0; `HORIZON_RNG_SEED=<n>` picks another seed for repeatable
+Horizon runs ([repeatable random numbers](rng-determinism.md)).
 
 - The world starts frozen (`/tick freeze`) before its first tick, on the server and the client:
   how many ticks run while the world loads differs between runs, and the torch flicker and the

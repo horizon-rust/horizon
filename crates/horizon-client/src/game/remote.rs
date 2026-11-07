@@ -7425,12 +7425,6 @@ impl Game<'_> {
         // updates; the server removes it on pickup.
         let (world, facts, collision) = (&self.world, self.res.facts(), self.collision);
         let border = Some(self.border.geometry());
-        let mut lava_random = None;
-        let mut next_float = || {
-            lava_random
-                .get_or_insert_with(super::dispenser::entity_random)
-                .next_float()
-        };
         if running {
             self.orbs.retain_mut(|o| {
                 let distance = |feet: &[f64; 3]| -> f64 {
@@ -7458,6 +7452,8 @@ impl Game<'_> {
                     l.steps -= 1;
                 }
                 let before = o.position;
+                let mut orb_random = horizon_client::mobs::entity_random(o.id as u32, o.position);
+                let mut next_float = || orb_random.next_float();
                 let kept = o.tick(
                     world,
                     facts,

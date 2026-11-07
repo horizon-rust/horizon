@@ -1100,9 +1100,11 @@ impl Game<'_> {
         let modifier = self.item_modifier_arg(ctx, "modifier")?;
         let source = self.command_source.unwrap_or_else(|| self.player_source());
         let view = source.entity.map(|t| self.entity_view_asked(t, &modifier));
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos() as i64);
+        let seed = horizon_core::random::pinned_seed("command_item_modify").unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos() as i64)
+        });
         let mut rng = horizon_core::random::LegacyRandom::new(seed);
         let mut tracker = Tracker::default();
         let mut selected = 0;

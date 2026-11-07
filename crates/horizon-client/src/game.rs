@@ -4274,8 +4274,16 @@ impl Game<'_> {
             return;
         };
         let boxes = self.particle_shape(pos, state);
+        // Named stream, derived from the tick and position so repeated cracks
+        // stay varied while remaining deterministic under HORIZON_RNG_SEED.
         // Keep client effects separate from the authoritative world RNG.
-        let r = self.particles.random();
+        let key = format!(
+            "block_breaking_particle:{}:{}:{}:{}:{}:{}:{}",
+            self.world.game_time, pos[0], pos[1], pos[2], face[0], face[1], face[2]
+        );
+        let mut named =
+            horizon_core::random::pinned_seed(&key).map(horizon_core::random::LegacyRandom::new);
+        let r = named.as_mut().unwrap_or_else(|| self.particles.random());
         let Some(p) = horizon_client::particles::breaking_position(r, pos, face, &boxes) else {
             return;
         };
@@ -4344,8 +4352,11 @@ impl Game<'_> {
         let count = stack.count as i32;
         self.next_entity += 1;
         let p = Vec3::new(position[0], position[1], position[2]);
-        // ItemEntity.bobOffs comes from the entity's own random, not the level's.
-        let bob = self.particles.random().next_float() * std::f32::consts::PI * 2.0;
+        // ItemEntity.bobOffs comes from the entity's own random, not the level's
+        // nor the shared particle-engine random.
+        let bob = crate::mobs::entity_random(self.next_entity, p).next_float()
+            * std::f32::consts::PI
+            * 2.0;
         self.dropped.push(ItemEntity {
             rotation: [0.0, 0.0],
             join: Default::default(),
@@ -5864,7 +5875,7 @@ impl Game<'_> {
                             1045 | 1046 | 1047 | 1052 => {
                                 self.particles.level_random().next_float() * 0.1 + 0.9
                             }
-                            1029 | 1030 | 1042 | 1043 | 1044 | 1053 | 1054 => {
+                            1029 | 1030 | 1031 | 1042 | 1043 | 1044 | 1053 | 1054 => {
                                 self.world.random.next_float() * 0.1 + 0.9
                             }
                             1026 | 1027 => {
@@ -14219,9 +14230,10 @@ impl Game<'_> {
             roughly.map(|v| v / len)
         };
         let at = self.unstuck_orb([0, 1, 2].map(|a| at[a] + unit[a] * 0.25));
-        let mut r = dispenser::entity_random();
-        let _yaw = r.next_float();
         let p = Vec3::new(at[0], at[1], at[2]);
+        self.next_entity += 1;
+        let mut r = crate::mobs::entity_random(self.next_entity, p);
+        let _yaw = r.next_float();
         let mut velocity = Vec3::new(
             (r.next_double() * 0.2 - 0.1) * 2.0,
             r.next_double() * 0.2 * 2.0,
@@ -14231,7 +14243,6 @@ impl Game<'_> {
         if len_sqr > 0.0 && dot < 0.0 {
             velocity = Vec3::new(-velocity.x, -velocity.y, -velocity.z);
         }
-        self.next_entity += 1;
         self.orbs.push(ExperienceOrb {
             rotation: [0.0, 0.0],
             join: Default::default(),

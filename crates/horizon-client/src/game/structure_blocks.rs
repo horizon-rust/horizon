@@ -677,12 +677,15 @@ pub(super) fn load_settings(
     }
 }
 
-/// `StructureBlockEntity.createRandom`'s seed: 0 is the clock.
+/// `StructureBlockEntity.createRandom`'s seed: 0 is the clock, or the named
+/// stream under `HORIZON_RNG_SEED`/`HORIZON_STILL`.
 pub(super) fn create_seed(seed: i64) -> i64 {
     if seed == 0 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(1, |d| d.as_millis() as i64)
+        horizon_core::random::pinned_seed("structure_block").unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(1, |d| d.as_millis() as i64)
+        })
     } else {
         seed
     }

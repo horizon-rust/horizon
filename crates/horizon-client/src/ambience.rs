@@ -4,7 +4,7 @@
 //! and `LocalPlayer.updateIsUnderwater` (enter/exit sounds and the
 //! `UnderLiquidAmbientSoundInstance` loop), played through the sound engine.
 use crate::sound_engine::{AMBIENT, InstanceId, PLAYERS, SoundEngine, SoundInstance, Sounds};
-use horizon_core::random::{LegacyRandom, RandomSource};
+use horizon_core::random::{LegacyRandom, RandomSource, seed_for};
 use serde_json::Value;
 use std::{collections::HashMap, path::Path};
 
@@ -160,7 +160,7 @@ pub struct Ambience {
 }
 impl Default for Ambience {
     fn default() -> Self {
-        Self::new(crate::sound_engine::unique_seed())
+        Self::new(seed_for("ambience"))
     }
 }
 impl Ambience {

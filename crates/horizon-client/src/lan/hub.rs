@@ -20,7 +20,7 @@ use crate::{
 };
 use horizon_core::{
     geometry::{Aabb, ShapeOp, Vec3, VoxelShape},
-    random::LegacyRandom,
+    random::{LegacyRandom, seed_for},
 };
 use horizon_protocol::ids::play::clientbound as ids;
 use horizon_protocol::{
@@ -694,7 +694,7 @@ impl Hub {
             sync,
             ticks: 0,
             seat_order: 0,
-            sound_seeds: Mutex::new(LegacyRandom::new(crate::sound_engine::unique_seed())),
+            sound_seeds: Mutex::new(LegacyRandom::new(seed_for("lan_sound_seeds"))),
             sound_order: Mutex::default(),
             immediate_respawn: false,
             reduced_debug_info: false,

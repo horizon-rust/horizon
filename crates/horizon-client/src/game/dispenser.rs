@@ -138,23 +138,7 @@ enum Target {
 /// (`RandomSupport.generateUniqueSeed`). Draws of an entity's own random never
 /// touch the level's stream.
 pub(super) fn entity_random() -> LegacyRandom {
-    use std::sync::atomic::{AtomicI64, Ordering};
-    static UNIQUIFIER: AtomicI64 = AtomicI64::new(8_682_522_807_148_012);
-    const STEP: i64 = 1_181_783_497_276_652_981;
-    // seedUniquifier.updateAndGet(s -> s * STEP)
-    let mut current = UNIQUIFIER.load(Ordering::Relaxed);
-    let seed = loop {
-        let next = current.wrapping_mul(STEP);
-        match UNIQUIFIER.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed)
-        {
-            Ok(_) => break next,
-            Err(actual) => current = actual,
-        }
-    };
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as i64);
-    LegacyRandom::new(seed ^ nanos)
+    LegacyRandom::new(horizon_core::random::unique_seed())
 }
 /// `new ItemEntity(level, x, y, z, stack)`'s motion, from the item's own random.
 pub(super) fn new_item_motion() -> [f64; 3] {

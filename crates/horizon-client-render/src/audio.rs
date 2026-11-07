@@ -13,7 +13,7 @@ use crate::sound_engine::{
 use crate::sound_events::{Sound, SoundRegistry};
 #[cfg(feature = "audio")]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use horizon_core::random::{LegacyRandom, RandomSource};
+use horizon_core::random::{LegacyRandom, RandomSource, seed_for};
 use std::{
     collections::HashMap,
     fs,
@@ -1071,7 +1071,7 @@ impl Audio {
             listener: [0.0; 3],
             listener_yaw: 0.0,
             master: 1.0,
-            random: LegacyRandom::new(crate::sound_engine::unique_seed()),
+            random: LegacyRandom::new(seed_for("audio_source")),
             source_override: None,
             capture: None,
             heard: Default::default(),
@@ -1232,7 +1232,7 @@ impl Audio {
             listener: [0.0; 3],
             listener_yaw: 0.0,
             master: self.master,
-            random: LegacyRandom::new(crate::sound_engine::unique_seed()),
+            random: LegacyRandom::new(seed_for("audio_stream")),
             source_override: None,
             capture: None,
             heard: Default::default(),

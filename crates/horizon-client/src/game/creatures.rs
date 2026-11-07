@@ -2171,6 +2171,11 @@ impl Game<'_> {
             a.spawn_pos = Some(p.position);
             a.spawn_velocity = Some(p.velocity);
             a.spawn_rot = Some((p.pitch, p.yaw));
+            // Entity.random: per-entity stream, seeded by the id we just
+            // assigned (unique), like thrown tridents/potions and saved
+            // projectiles. Seeding by spawn position collides for shots from
+            // the same spot.
+            a.random = horizon_core::random::LegacyRandom::new(i64::from(p.id));
         }
         self.creatures.projectiles.push(p);
         self.native_projectile_launch(player, &name, id, kind);
@@ -5830,9 +5835,15 @@ impl Game<'_> {
     pub(super) fn item_burst(&mut self, at: [f64; 3], item: &str) {
         let options = self.item_particle(&horizon_client::items::ItemStack::new(item, 1));
         let egg = item == "minecraft:egg";
+        let key = format!(
+            "item_burst:{}:{}:{}:{}",
+            self.world.game_time, at[0], at[1], at[2]
+        );
+        let mut named =
+            horizon_core::random::pinned_seed(&key).map(horizon_core::random::LegacyRandom::new);
         for _ in 0..8 {
             let v = if egg {
-                let r = self.particles.random();
+                let r = named.as_mut().unwrap_or_else(|| self.particles.random());
                 [
                     (f64::from(r.next_float()) - 0.5) * 0.08,
                     (f64::from(r.next_float()) - 0.5) * 0.08,

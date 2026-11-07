@@ -760,10 +760,15 @@ impl Title {
         let splashes =
             std::fs::read_to_string(resources.join("assets/minecraft/texts/splashes.txt"))
                 .unwrap_or_default();
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_nanos() as usize;
+        let seed = horizon_core::random::pinned_seed("title_splash").map_or_else(
+            || {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .subsec_nanos() as u64
+            },
+            |seed| seed as u64,
+        );
         let splash_you = rolls_user_splash(
             &splashes,
             (seed as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((seed as u64) >> 7),
@@ -800,7 +805,7 @@ impl Title {
             connect_request: None,
             toast: None,
             icons: RefCell::new(std::collections::HashMap::new()),
-            splash: choose_splash(&splashes, seed, (today.month(), today.day())),
+            splash: choose_splash(&splashes, seed as usize, (today.month(), today.day())),
             splash_you,
             recent: std::cell::RefCell::new(None),
             rules: RefCell::new(None),

@@ -12,12 +12,11 @@ use horizon_client::{
     mesher::Vertex,
     particles::{ParticleOptions, ParticleType},
     pose::Pose,
-    sound_engine::unique_seed,
 };
 use horizon_core::{
     geometry::{Aabb, Vec3, traverse_blocks, trig},
     position::BlockPos,
-    random::{LegacyRandom, RandomSource},
+    random::{LegacyRandom, RandomSource, unique_seed},
 };
 use horizon_protocol::entity_data::{Value, serializer};
 use std::{collections::HashMap, sync::Arc};
