@@ -805,6 +805,16 @@ enum Cmd {
             requires = "folder"
         )]
         server_output: Option<PathBuf>,
+        /// Prebuilt mode, for the registry's CI (#11859): build every .hnmod file in FOLDER as a
+        /// player's launcher would, and write the program, its native-mods.json and request.txt
+        /// into this new folder instead of installing it. The base needs no prepared game files
+        #[arg(
+            long = "prebuilt-out",
+            value_name = "DIR",
+            conflicts_with_all = ["instance", "server_output", "update"],
+            requires = "folder"
+        )]
+        prebuilt_out: Option<PathBuf>,
         /// The instance whose installed native mods to build, and which then plays the build
         /// (default: the selected one)
         #[arg(long)]
@@ -1314,6 +1324,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
         Cmd::NativeBuild {
             folder,
             server_output,
+            prebuilt_out,
             instance,
             version,
             update,
@@ -1334,6 +1345,30 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
                 let secs = started.elapsed().as_secs();
                 eprintln!("[{:>2}:{:02}] {}", secs / 60, secs % 60, step.label())
             };
+            if let Some(out) = prebuilt_out {
+                // For the registry's CI: no instance, no install, no launcher config.
+                let folder = folder.unwrap();
+                let base = match &version {
+                    Some(v) => backend::resolve_version(Some(v))?,
+                    None => native_mods::base_for(None, &backend::installed(), false)
+                        .ok_or_else(backend::no_version_installed)?,
+                };
+                let made = horizon_launcher::native_prebuilt::export(
+                    &base, &folder, &out, profile, steps,
+                )?;
+                let left: Vec<&str> = made.left_out.iter().map(|l| l.id.as_str()).collect();
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "key": made.request.key(),
+                        "target": made.request.target,
+                        "base": made.request.base,
+                        "version": made.version,
+                        "left_out": left,
+                    })
+                );
+                return Ok(());
+            }
             if let Some(output) = server_output {
                 // Export mode: a standalone server engine in `output`. No instance is read
                 // or changed, and no launcher config is written; `folder` is required (clap).
@@ -3968,6 +4003,45 @@ mod tests {
             parse(&["--instance", "A"]).unwrap().command,
             Some(Cmd::NativeBuild { instance: Some(i), server_output: None, .. }) if i == "A"
         ));
+    }
+
+    #[test]
+    fn prebuilt_mode_needs_mods_and_builds_for_no_instance() {
+        let parse = |args: &[&str]| {
+            Cli::try_parse_from(
+                [
+                    &["horizon-launcher", "native-build", "--trust-native-code"],
+                    args,
+                ]
+                .concat(),
+            )
+        };
+        match parse(&["hnmods", "--prebuilt-out", "out", "--version", "nightly"])
+            .unwrap()
+            .command
+        {
+            Some(Cmd::NativeBuild {
+                folder,
+                prebuilt_out,
+                version,
+                ..
+            }) => {
+                assert_eq!(folder.as_deref(), Some(Path::new("hnmods")));
+                assert_eq!(prebuilt_out.as_deref(), Some(Path::new("out")));
+                assert_eq!(version.as_deref(), Some("nightly"));
+            }
+            _ => panic!("expected native-build"),
+        }
+        // The CI names its mods; an instance's, a server engine or a move to another Horizon
+        // are a player's builds.
+        assert!(parse(&["--prebuilt-out", "out"]).is_err());
+        for other in [
+            &["--instance", "A"][..],
+            &["--server-output", "engine"],
+            &["--update"],
+        ] {
+            assert!(parse(&[&["hnmods", "--prebuilt-out", "out"][..], other].concat()).is_err());
+        }
     }
 
     #[test]

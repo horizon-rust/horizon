@@ -1922,6 +1922,18 @@ whole file, **Open full log** opens it outside the launcher, **Show in folder** 
 refresh, not a live stream: a running build's later output appears only on the next refresh. Nothing is
 uploaded; the log stays on the player's computer.
 
+## Prebuilt builds (in progress)
+
+Most players can't wait 30 to 60 minutes for a first build, so the registry builds sets of its native mods itself
+and signs them (#11859). The launcher's own pipeline makes them in CI:
+`horizon-launcher native-build --prebuilt-out DIR --version <Nightly> --profile release --trust-native-code FOLDER`
+builds every `.hnmod` in FOLDER as a player's launcher would (the same pins, hook points and left-out mods), on the
+Nightly's source, without the player's game files. It writes the program, its `native-mods.json` and `request.txt`
+into DIR instead of installing anything. `request.txt` names the build: the target, the Nightly's commit and each
+mod's id, version and file SHA-256 (`horizon_release_sign::native_build::Request`), the text whose SHA-256 the
+launcher computes to look the build up. A set with a post-build step is never exported, because that step runs on
+the player's own game files. Downloading and checking the signed builds in the launcher comes next.
+
 ## Rebuilds stay on the instance's Horizon
 
 A build starts from the version the instance plays (`native_mods::base_for`). When that is a native build, the

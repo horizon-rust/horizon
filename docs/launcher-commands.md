@@ -111,6 +111,7 @@ Native mods (docs/native-mods.md): compile mixin bundles on the Horizon revision
 
 - `FOLDER`: A mod folder (horizon-mixin.toml, or an unpacked .hnmod), or a folder of them (default: the native mods installed and turned on in the instance)
 - `--server-output`: Export mode: build a standalone dedicated-server engine into this folder instead of an instance's build. Needs a mod FOLDER; no instance is read or changed, and no launcher config is written
+- `--prebuilt-out`: Prebuilt mode, for the registry's CI (#11859): build every .hnmod file in FOLDER as a player's launcher would, and write the program, its native-mods.json and request.txt into this new folder instead of installing it. The base needs no prepared game files
 - `--instance`: The instance whose installed native mods to build, and which then plays the build (default: the selected one)
 - `--update`: Move to the newest installed release or Nightly instead of the Horizon the instance plays (a full rebuild)
 - `--trust-native-code`: You read the mods' source and trust it with full access to this computer

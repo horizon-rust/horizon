@@ -198,6 +198,17 @@ fn platform_for_game(base: &str) -> Result<BuildPlatform, String> {
     windows_build_platform(machine, host.target)
 }
 
+/// The Rust target a build on installed version `base` compiles for: a prebuilt build's
+/// (`native_prebuilt`) is named by it.
+pub(crate) fn build_target(base: &str) -> Result<&'static str, String> {
+    match platform_for_game(base)?.target {
+        Some(target) => Ok(target),
+        None => rust_toolchain::host()
+            .map(|h| h.target)
+            .ok_or_else(|| architecture_mismatch(std::env::consts::ARCH, "a supported computer")),
+    }
+}
+
 fn windows_build_platform(machine: u16, host_target: &str) -> Result<BuildPlatform, String> {
     let target = rust_toolchain::windows_target_for_machine(machine).ok_or_else(|| {
         architecture_mismatch(&format!("PE machine 0x{machine:04x}"), "x64 or ARM64")
@@ -627,12 +638,7 @@ pub fn installed_mods(home: &Path) -> Result<PathBuf, String> {
         if !crate::browser::java::is_enabled(home, &bundle.manifest.id) {
             continue;
         }
-        let dir = out.join(&bundle.manifest.id);
-        for (name, bytes) in &bundle.files {
-            let to = dir.join(name);
-            fs::create_dir_all(to.parent().unwrap_or(&dir)).map_err(|e| e.to_string())?;
-            fs::write(&to, bytes).map_err(|e| format!("{}: {e}", to.display()))?;
-        }
+        unpack(&bundle, &out)?;
         count += 1;
     }
     if count == 0 {
@@ -642,6 +648,20 @@ pub fn installed_mods(home: &Path) -> Result<PathBuf, String> {
         ));
     }
     Ok(out)
+}
+
+/// Writes a checked `.hnmod`'s files into `out/<id>/`, as a build reads an installed mod.
+pub(crate) fn unpack(
+    bundle: &horizon_mods::index::native::Bundle,
+    out: &Path,
+) -> Result<(), String> {
+    let dir = out.join(&bundle.manifest.id);
+    for (name, bytes) in &bundle.files {
+        let to = dir.join(name);
+        fs::create_dir_all(to.parent().unwrap_or(&dir)).map_err(|e| e.to_string())?;
+        fs::write(&to, bytes).map_err(|e| format!("{}: {e}", to.display()))?;
+    }
+    Ok(())
 }
 
 /// A mixin bundle: a folder with a `horizon-mixin.toml`, and the revisions it pins.
@@ -1132,6 +1152,11 @@ fn ask_github(repo: &str, revision: &str) -> Result<String, String> {
 /// How [`build`] starts its error when mods pin other Horizon revisions than the one it would
 /// use and the player hasn't agreed to try (`anyway`); the rest lists them.
 pub const MISMATCH: &str = "Made for other Horizon versions: ";
+
+/// Why a set with a post-build step is never exported as a prebuilt build: the step runs in the
+/// installed version, on the player's own game files (`native_prebuilt`, #11859).
+pub const PREBUILT_POST_BUILD: &str =
+    "A mod of this set has a post-build step, which runs on the player's own game files: it is built on the player's computer, never prebuilt.";
 
 /// Each pinned mod whose Horizon revision isn't `revision`, as `id → pin`, and the build's.
 fn mismatch(mods: &[Bundle], revision: &str) -> Option<String> {
@@ -2219,9 +2244,14 @@ fn pipeline(
     progress: &impl Fn(Step),
     skip: &[LeftOut],
     isolate: bool,
+    export: Option<&Path>,
 ) -> Result<Built, Failed> {
     let started = std::time::Instant::now();
-    backend::need_prepared(base)?;
+    // An export (`native_prebuilt::export`, the registry's CI) never plays: it needs only the
+    // version's program, never the player's prepared game files.
+    if export.is_none() {
+        backend::need_prepared(base)?;
+    }
     let platform = platform_for_game(base)?;
     fs::create_dir_all(root()).map_err(|e| e.to_string())?;
     // The mods are copied first: the build and its key use the copy, whatever happens to the
@@ -2375,7 +2405,7 @@ fn pipeline(
             .map(|m| Ok((m.id.clone(), mod_hash(m)?)))
             .collect::<Result<_, String>>()?,
     };
-    let exists = target.directory(&version).join(".installed").is_file();
+    let exists = export.is_none() && target.directory(&version).join(".installed").is_file();
     let plan = classify(
         exists,
         last_record(target, profile, platform.cache_key()).as_ref(),
@@ -2465,6 +2495,11 @@ fn pipeline(
         let stage = stage_dir(&real)?;
         sync(&fresh, &stage)?;
         let _ = fs::remove_dir_all(&fresh);
+        // A post-build step runs in the installed version, on the player's game files: a build
+        // with one is only ever made on that computer.
+        if export.is_some() && !crates::post_builds(&stage)?.is_empty() {
+            return Err(PREBUILT_POST_BUILD.to_string().into());
+        }
         if crates::any(&stage) || has_api {
             progress(Step::Crates);
             lock_crates(&rust, &source, &stage, &mods)?;
@@ -2588,14 +2623,21 @@ fn pipeline(
             })).collect::<Vec<_>>(),
             "left_out": left_out.iter().map(LeftOut::to_json).collect::<Vec<_>>(),
         });
-        install(base, &version, target, &binary, &about, |dir| {
-            for (step, program) in &post {
-                progress(Step::PostBuild(step.mod_id.clone()));
-                let cmd = crates::post_build(program, step, dir, &real.join("cache"), &stage)?;
-                run(cmd, &format!("{}'s post-build step", step.mod_id), |_| {})?;
+        match export {
+            Some(out) => {
+                copy_out(&binary, &out.join(target.binary()))?;
+                fs::write(out.join("native-mods.json"), about.to_string())
+                    .map_err(|e| e.to_string())?;
             }
-            Ok(())
-        })?;
+            None => install(base, &version, target, &binary, &about, |dir| {
+                for (step, program) in &post {
+                    progress(Step::PostBuild(step.mod_id.clone()));
+                    let cmd = crates::post_build(program, step, dir, &real.join("cache"), &stage)?;
+                    run(cmd, &format!("{}'s post-build step", step.mod_id), |_| {})?;
+                }
+                Ok(())
+            })?,
+        }
         let _ = fs::remove_dir_all(real.join("programs"));
     } else {
         // Used again: it counts as the newest of the builds kept (`prune`).
@@ -2694,6 +2736,7 @@ pub fn build(
                     &progress,
                     skip,
                     true,
+                    None,
                 )
             },
             &progress,
@@ -2710,6 +2753,40 @@ pub fn build(
             });
         }
         Ok(built.version)
+    })
+}
+
+/// Builds the bundles in `folder` as a player's launcher builds them on installed version
+/// `base` (left-out mods included), and writes the program and its `native-mods.json` into `out`
+/// instead of installing it: a prebuilt build for the registry's CI (`native_prebuilt::export`).
+/// Nothing is installed, no instance is changed, and `base` needs no prepared game files.
+/// Returns the version a player's build of the same set would install, and the mods left out.
+pub(crate) fn build_prebuilt(
+    base: &str,
+    folder: &Path,
+    out: &Path,
+    profile: Profile,
+    progress: impl Fn(Step),
+) -> Result<(String, Vec<LeftOut>), String> {
+    logged(|| {
+        let built = isolated(
+            |skip| {
+                pipeline(
+                    base,
+                    folder,
+                    false,
+                    false,
+                    profile,
+                    Target::Client,
+                    &progress,
+                    skip,
+                    true,
+                    Some(out),
+                )
+            },
+            &progress,
+        )?;
+        Ok((built.version, built.left_out))
     })
 }
 
@@ -2768,6 +2845,7 @@ pub fn build_server(
             &progress,
             &[],
             false,
+            None,
         )
         .map_err(String::from)?;
         export(&Target::Server.directory(&built.version), &output)?;
