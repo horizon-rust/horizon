@@ -14,21 +14,21 @@ AbstractLayout.setX	skip:ui		moves a layout's children with it; Horizon computes
 AbstractLayout.setY	skip:ui		moves a layout's children with it; Horizon computes positions each frame (dialog_screen.rs Layout::new)
 AbstractLayout.AbstractChildWrapper.getHeight	skip:ui		padded child height, layout bookkeeping only
 AbstractLayout.AbstractChildWrapper.getWidth	skip:ui		padded child width, layout bookkeeping only
-AbstractLayout.AbstractChildWrapper.setX	inline	crates/horizon-client/src/dialog_screen.rs::Layout::new	gap: minor: only centred alignment (0.5) is modelled; xAlignment and per-child padding are not
-AbstractLayout.AbstractChildWrapper.setY	inline	crates/horizon-client/src/dialog_screen.rs::Layout::new	gap: minor: only centred alignment (0.5) is modelled; yAlignment and per-child padding are not
+AbstractLayout.AbstractChildWrapper.setX	inline	crates/horizon-client-lib/src/dialog_screen.rs::Layout::new	gap: minor: only centred alignment (0.5) is modelled; xAlignment and per-child padding are not
+AbstractLayout.AbstractChildWrapper.setY	inline	crates/horizon-client-lib/src/dialog_screen.rs::Layout::new	gap: minor: only centred alignment (0.5) is modelled; yAlignment and per-child padding are not
 EqualSpacingLayout	skip:ui		equal-gap layout; its only user is WorldOptionsScreen, placing its buttons; layout only, no behaviour
 EqualSpacingLayout.Orientation	skip:ui		horizontal or vertical helpers of EqualSpacingLayout; layout only
-FrameLayout.arrangeElements	inline	crates/horizon-client/src/dialog_screen.rs::Layout::new	gap: minor: frame centring is done for the header title and the footer buttons only; no general minimum size
+FrameLayout.arrangeElements	inline	crates/horizon-client-lib/src/dialog_screen.rs::Layout::new	gap: minor: frame centring is done for the header title and the footer buttons only; no general minimum size
 FrameLayout.addChild	skip:ui		adds a child to the frame's list; no behaviour of its own
 FrameLayout.visitChildren	skip:ui		visits children for layout; no behaviour of its own
-FrameLayout.centerInRectangle	port	crates/horizon-client/src/dialog_screen.rs::centre	gap: minor: one axis at a time through centre; the 2D call is not a separate fn
-FrameLayout.alignInRectangle	inline	crates/horizon-client/src/dialog_screen.rs::Layout::new	gap: minor: only the centre alignment (0.5); PauseScreen's 0.25 vertical alignment is not modelled
-GridLayout.arrangeElements	port	crates/horizon-client/src/dialog_screen.rs::columns	gap: minor: only the dialog button grids (2 px apart, 22 px rows); general row and column spans and spacing are not modelled
+FrameLayout.centerInRectangle	port	crates/horizon-client-lib/src/dialog_screen.rs::centre	gap: minor: one axis at a time through centre; the 2D call is not a separate fn
+FrameLayout.alignInRectangle	inline	crates/horizon-client-lib/src/dialog_screen.rs::Layout::new	gap: minor: only the centre alignment (0.5); PauseScreen's 0.25 vertical alignment is not modelled
+GridLayout.arrangeElements	port	crates/horizon-client-lib/src/dialog_screen.rs::columns	gap: minor: only the dialog button grids (2 px apart, 22 px rows); general row and column spans and spacing are not modelled
 GridLayout.addChild	skip:ui		adds a cell to the grid's list; no behaviour of its own
 GridLayout.visitChildren	skip:ui		visits children for layout; no behaviour of its own
-GridLayout.RowHelper.addChild	inline	crates/horizon-client/src/dialog_screen.rs::columns	gap: minor: rows fill left to right and a full row is cut from the list by columns(); a row that does not fit moves down, as RowHelper does
+GridLayout.RowHelper.addChild	inline	crates/horizon-client-lib/src/dialog_screen.rs::columns	gap: minor: rows fill left to right and a full row is cut from the list by columns(); a row that does not fit moves down, as RowHelper does
 HeaderAndFooterLayout.visitChildren	skip:ui		visits children for layout; no behaviour of its own
-HeaderAndFooterLayout.arrangeElements	port	crates/horizon-client/src/dialog_screen.rs::Layout::new	header 33 high, body at header + 30 clamped above the footer, footer at the bottom; server_links.rs list_top and lan_screen.rs WorldOptions::top do the same for their screens
+HeaderAndFooterLayout.arrangeElements	port	crates/horizon-client-lib/src/dialog_screen.rs::Layout::new	header 33 high, body at header + 30 clamped above the footer, footer at the bottom; server_links.rs list_top and lan_screen.rs WorldOptions::top do the same for their screens
 HeaderAndFooterLayout.addToHeader	skip:ui		adds to the header frame; no behaviour of its own
 HeaderAndFooterLayout.addToFooter	skip:ui		adds to the footer frame; no behaviour of its own
 HeaderAndFooterLayout.addToContents	skip:ui		adds to the contents frame; no behaviour of its own
@@ -63,8 +63,8 @@ ScreenRectangle.transformMaxBounds	skip:other		bounds of a rotated rectangle und
 DynamicAtlasAllocator	skip:other		slot allocator for the GUI item atlas; Horizon has no item atlas and draws items into the HUD batch (item_render/gui.rs)
 GuiItemAtlas.computeTextureSizeFor	skip:other		atlas texture sizing; Horizon has no item atlas
 GuiItemAtlas.tryPrepareFor	skip:other		atlas space check; Horizon has no item atlas
-GuiItemAtlas.getOrUpdate	inline	crates/horizon-client/src/item_render/gui.rs::draw	gap: minor: vanilla draws each item once into an atlas slot and blits it; Horizon re-submits the item and caches its vertices by position (gui_drawn, DrawnKey)
-GuiItemAtlas.drawToSlot	port	crates/horizon-client/src/item_render/gui.rs::draw_now	the item is clipped to its 16x16 slot unless oversized
+GuiItemAtlas.getOrUpdate	inline	crates/horizon-client-lib/src/item_render/gui.rs::draw	gap: minor: vanilla draws each item once into an atlas slot and blits it; Horizon re-submits the item and caches its vertices by position (gui_drawn, DrawnKey)
+GuiItemAtlas.drawToSlot	port	crates/horizon-client-lib/src/item_render/gui.rs::draw_now	the item is clipped to its 16x16 slot unless oversized
 GuiItemAtlas.close	skip:other		GPU texture release; Horizon has no item atlas
 GuiRenderer.render	inline	crates/horizon-client-render/src/screen_draw.rs::paint	gap: minor: paint has no panorama, blur or GPU upload pass; the frame is one ordered list of draws
 GuiRenderer.clearUnusedOversizedItemRenderers	skip:other		GPU renderer cache cleanup; Horizon's gui_drawn cache is bounded (DRAWN_LIMIT)
@@ -73,10 +73,10 @@ GuiRenderer.addElementsToMeshes	skip:other		vertex batching by pipeline and scis
 GuiRenderer.executeDrawRange	port	crates/horizon-client-render/src/hud.rs::HudRenderer::draw_range	draws a range of the batch with its blend, depth and scissor state
 GuiRenderer.addElementToMesh	skip:other		vertex batching by pipeline and scissor; HudBatch appends quads in order
 GuiRenderer.prepareText	inline	crates/horizon-client-render/src/screen_draw.rs::paint	text is drawn at its own pose through Draw::Text (batch.text_styled)
-GuiRenderer.prepareItemElements	port	crates/horizon-client/src/item_render/gui.rs::draw	gap: minor: oversized items are drawn unclipped into the HUD batch, not into a picture-in-picture texture
+GuiRenderer.prepareItemElements	port	crates/horizon-client-lib/src/item_render/gui.rs::draw	gap: minor: oversized items are drawn unclipped into the HUD batch, not into a picture-in-picture texture
 GuiRenderer.preparePictureInPicture	skip:other		Horizon calls each picture drawer directly (game/perspective.rs draw_player_preview, item_render/gui.rs draw_banner_result); no pool dispatch
 GuiRenderer.preparePictureInPictureState	skip:other		picture-in-picture pool dispatch; Horizon calls each drawer directly
-GuiRenderer.submitBlitFromItemAtlas	inline	crates/horizon-client/src/item_render/gui.rs::draw	the atlas slot blit is the item drawn at its GUI position
+GuiRenderer.submitBlitFromItemAtlas	inline	crates/horizon-client-lib/src/item_render/gui.rs::draw	the atlas slot blit is the item drawn at its GUI position
 GuiRenderer.prepareItemAtlas	skip:other		item atlas creation and resize; Horizon has no item atlas
 GuiRenderer.getGuiScaleInvalidatingItemAtlasIfChanged	skip:other		item atlas invalidation on GUI scale change; Horizon has no item atlas
 GuiRenderer.executeDraw	port	crates/horizon-client-render/src/hud.rs::HudRenderer::draw_range	one pipeline, vertex buffer, scissor and index range draw
@@ -89,19 +89,19 @@ GuiBookModelRenderer.renderToTexture	skip:other		no GUI caller in the 26.3 sourc
 GuiEntityRenderer.renderToTexture	port	crates/horizon-client/src/game/perspective.rs::Game::draw_player_preview	gap: player: the smithing-table armor stand preview (SmithingScreen) is not drawn; only the player model
 GuiProfilerChartRenderer.renderToTexture	skip:debug		the profiler pie chart (F3 profiler screen)
 GuiSkinRenderer.renderToTexture	missing		player: Options > Skin Customisation has no rotating player model; options_ui.rs lists that entry without a page
-OversizedItemRenderer.renderToTexture	port	crates/horizon-client/src/item_render/gui.rs::draw	gap: minor: oversized items are drawn unclipped into the HUD batch, not via a picture-in-picture texture
+OversizedItemRenderer.renderToTexture	port	crates/horizon-client-lib/src/item_render/gui.rs::draw	gap: minor: oversized items are drawn unclipped into the HUD batch, not via a picture-in-picture texture
 OversizedItemRenderer.textureIsReadyToBlit	skip:other		cache check for the picture-in-picture texture; Horizon redraws from the item model
 PictureInPictureRenderer.blitTexture	skip:other		picture-in-picture texture blit; Horizon draws each preview into the batch directly (draw_player_preview, draw_banner_result)
 PictureInPictureRenderer.prepareTexturesAndProjection	skip:other		GPU texture allocation for a picture-in-picture
 PictureInPictureRenderer.close	skip:other		GPU texture release
-AccessibilityOnboardingScreen.init	port	crates/horizon-client/src/title/onboarding.rs::Title::onboarding_buttons	gap: minor: the Narrator button is drawn disabled and labelled Narrator: Not Available where vanilla builds it from Options.narrator's own button and enables it while the narrator can speak, so the narrator cannot be turned on here; handleInitialNarrationDelay's accessibility.onboarding.screen.narrator line is not said
+AccessibilityOnboardingScreen.init	port	crates/horizon-client-lib/src/title/onboarding.rs::Title::onboarding_buttons	gap: minor: the Narrator button is drawn disabled and labelled Narrator: Not Available where vanilla builds it from Options.narrator's own button and enables it while the narrator can speak, so the narrator cannot be turned on here; handleInitialNarrationDelay's accessibility.onboarding.screen.narrator line is not said
 AccessibilityOnboardingScreen.setInitialFocus	missing		minor: the onboarding screen itself is ported (title/onboarding.rs); the focus starting on the Narrator button is not
-AccessibilityOnboardingScreen.closeAndSetScreen	port	crates/horizon-client/src/title.rs::Title::click_action	
-AccessibilityOnboardingScreen.extractRenderState	port	crates/horizon-client/src/title/onboarding.rs::Title::draw_onboarding	
+AccessibilityOnboardingScreen.closeAndSetScreen	port	crates/horizon-client-lib/src/title.rs::Title::click_action	
+AccessibilityOnboardingScreen.extractRenderState	port	crates/horizon-client-lib/src/title/onboarding.rs::Title::draw_onboarding	
 AccessibilityOnboardingScreen.handleInitialNarrationDelay	skip:other		screen-reader narration; Horizon has no narration output
-AlertScreen	home	crates/horizon-client/src/title.rs	Alert::Incompatible and Alert::Recreate are the two alerts (title at 70, text at 90): their OK and Cancel buttons in Title::buttons, their drawing in Title::draw_with_items, their narration in Title::narration
-BackupConfirmScreen	home	crates/horizon-client/src/title.rs	the backup question before opening a world whose file fixes are due, and Edit World's Optimize World with the Erase Cached Data box; drawn in Title::draw_with_items, Escape runs its cancel in Title::escape
-BanNoticeScreens	home	crates/horizon-client-render/src/ban_notice.rs,crates/horizon-client/src/title.rs	the multiplayer, name and skin bans queued as Notice, each with its title, message (reason, status, duration) and help link; Title::next_ban_notice opens them as ConfirmLinkScreen, Title::click_action handles Open in Browser and Copy
+AlertScreen	home	crates/horizon-client-lib/src/title.rs	Alert::Incompatible and Alert::Recreate are the two alerts (title at 70, text at 90): their OK and Cancel buttons in Title::buttons, their drawing in Title::draw_with_items, their narration in Title::narration
+BackupConfirmScreen	home	crates/horizon-client-lib/src/title.rs	the backup question before opening a world whose file fixes are due, and Edit World's Optimize World with the Erase Cached Data box; drawn in Title::draw_with_items, Escape runs its cancel in Title::escape
+BanNoticeScreens	home	crates/horizon-client-render/src/ban_notice.rs,crates/horizon-client-lib/src/title.rs	the multiplayer, name and skin bans queued as Notice, each with its title, message (reason, status, duration) and help link; Title::next_ban_notice opens them as ConfirmLinkScreen, Title::click_action handles Open in Browser and Copy
 ChatScreen.removed	port	crates/horizon-client/src/game/chat.rs::Game::keep_chat_draft	the text left in the box becomes the draft unless shouldDiscardDraft; blank text discards it, and a draft still shown unchanged stays as it is
 ChatScreen.shouldDiscardDraft	port	crates/horizon-client/src/game/chat.rs::should_discard_draft	kept on interruption, and on Escape only with Save Chat Drafts; sent text discards it
 ChatScreen.insertText	port	crates/horizon-client-render/src/chat.rs::ChatScreen::type_text	insert at the cursor; replace=true (setValue) is ChatScreen::suggest_command in Horizon

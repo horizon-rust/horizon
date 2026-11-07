@@ -26,7 +26,7 @@ Transformation.compose	port	crates/horizon-assets/src/bake/transform.rs::Affine:
 Transformation.inverse	port	crates/horizon-assets/src/bake/transform.rs::Affine::inverse	gap: minor: no null result for a non-finite inverse
 Transformation.ensureDecomposed	skip:other		SVD split of a matrix-built transform; Horizon never needs it (text displays store decomposed parts)
 Transformation.equals	skip:java		value equality of a Java wrapper
-Transformation.slerp	port	crates/horizon-client/src/text_display.rs::TextDisplayData::blend	gap: player: only text displays ease their transform; item and block displays have no renderer here, so their transform changes snap
+Transformation.slerp	port	crates/horizon-client-lib/src/text_display.rs::TextDisplayData::blend	gap: player: only text displays ease their transform; item and block displays have no renderer here, so their transform changes snap
 CharPredicate.and	skip:java		Java functional combinator
 CharPredicate.or	skip:java		Java functional combinator
 ChatFormatting.getByCode	inline	crates/horizon-client-core/src/text.rs::Text::legacy	colour codes come from COLORS, format codes from the k-o and r arms, both in the legacy parser
@@ -89,65 +89,65 @@ Advancement.Builder.requirements	skip:data		datagen builder; Horizon reads advan
 AdvancementHolder.equals	skip:java		Java equality by id
 AdvancementNode.getRoot	skip:other		no upward root walk: Horizon walks down from each root (Tree::visible, Tree::layout, advancements_screen tabs)
 AdvancementNode.equals	skip:java		Java equality by holder
-AdvancementProgress.hasProgress	inline	crates/horizon-client/src/advancements.rs::Progress::to_json	the save keeps only advancements with a criterion obtained (empty entries are skipped)
-AdvancementProgress.grantProgress	port	crates/horizon-client/src/advancements.rs::Progress::grant	records the criterion date; false when already obtained
-AdvancementProgress.revokeProgress	port	crates/horizon-client/src/advancements.rs::Progress::revoke	removes the criterion; false when not obtained
-AdvancementProgress.isCriterionDone	port	crates/horizon-client/src/advancements.rs::Progress::has	criterion obtained
+AdvancementProgress.hasProgress	inline	crates/horizon-client-lib/src/advancements.rs::Progress::to_json	the save keeps only advancements with a criterion obtained (empty entries are skipped)
+AdvancementProgress.grantProgress	port	crates/horizon-client-lib/src/advancements.rs::Progress::grant	records the criterion date; false when already obtained
+AdvancementProgress.revokeProgress	port	crates/horizon-client-lib/src/advancements.rs::Progress::revoke	removes the criterion; false when not obtained
+AdvancementProgress.isCriterionDone	port	crates/horizon-client-lib/src/advancements.rs::Progress::has	criterion obtained
 AdvancementProgress.getPercent	port	crates/horizon-client/src/game/advancements_screen.rs::Game::adv_draw_hover	obtained over total requirement groups, drives the progress bar and icon frame
 AdvancementProgress.getProgressText	port	crates/horizon-client/src/game/advancements_screen.rs::Game::adv_draw_hover	advancements.progress text, only when there are more than one group
 AdvancementProgress.getRemainingCriteria	missing		minor: /advancement test is not implemented; cmd_advancement only grants and revokes
 AdvancementProgress.getCompletedCriteria	missing		minor: /advancement test is not implemented; cmd_advancement only grants and revokes
 AdvancementProgress.getFirstProgressDate	skip:java		used only by compareTo, which has no caller
 AdvancementProgress.compareTo	skip:java		Comparable with no vanilla caller
-AdvancementRequirements.test	port	crates/horizon-client/src/advancements.rs::Progress::done	every requirement group has a criterion obtained
-AdvancementRequirements.count	port	crates/horizon-client/src/advancements.rs::Progress::counts	groups with a criterion obtained
-AdvancementRequirements.anyMatch	inline	crates/horizon-client/src/advancements.rs::Progress::done	the any() over one group
+AdvancementRequirements.test	port	crates/horizon-client-lib/src/advancements.rs::Progress::done	every requirement group has a criterion obtained
+AdvancementRequirements.count	port	crates/horizon-client-lib/src/advancements.rs::Progress::counts	groups with a criterion obtained
+AdvancementRequirements.anyMatch	inline	crates/horizon-client-lib/src/advancements.rs::Progress::done	the any() over one group
 AdvancementRequirements.validate	missing		minor: shipped advancement requirements are already valid
 AdvancementRequirements.names	skip:java		builds a name set to pre-create progress entries; Horizon creates them on grant
 AdvancementRewards.grant	port	crates/horizon-client/src/game/advancements.rs::Game::award	function reward wired through run_advancement_reward_function; existing XP/recipe/loot paths retained, loot-context gap H292 remains
 AdvancementRewards.Builder.build	skip:data		datagen builder; rewards come from advancement JSON
 AdvancementTree.remove	inline	crates/horizon-client/src/game/advancements.rs::Game::remote_advancements	gap: minor: removes the ids the server lists; children are not walked here
-AdvancementTree.tryInsert	inline	crates/horizon-client/src/advancements.rs::Tree::children	the pass that inserts an advancement once its parent is in
-AdvancementTree.get	port	crates/horizon-client/src/advancements.rs::Tree::get	lookup by id
+AdvancementTree.tryInsert	inline	crates/horizon-client-lib/src/advancements.rs::Tree::children	the pass that inserts an advancement once its parent is in
+AdvancementTree.get	port	crates/horizon-client-lib/src/advancements.rs::Tree::get	lookup by id
 AdvancementType.createAnnouncement	inline	crates/horizon-client/src/game/advancements.rs::Game::award	the chat line is built in award from the frame's key
-DisplayInfo.serializeToNetwork	port	crates/horizon-client/src/lan/advancements.rs::ServerAdvancements::write_advancement	writes title, description, icon, frame, flags and background
+DisplayInfo.serializeToNetwork	port	crates/horizon-client-lib/src/lan/advancements.rs::ServerAdvancements::write_advancement	writes title, description, icon, frame, flags and background
 DisplayInfo.fromNetwork	port	crates/horizon-protocol/src/packets/play.rs::UpdateAdvancements::read	reads the display and its flags
-TreeNodePosition.addChild	port	crates/horizon-client/src/advancements.rs::Layout::add_child	adds visible children in order
-TreeNodePosition.firstWalk	port	crates/horizon-client/src/advancements.rs::Layout::first_walk	first pass of the tree layout
-TreeNodePosition.secondWalk	port	crates/horizon-client/src/advancements.rs::Layout::second_walk	second pass: absolute positions and minimum
-TreeNodePosition.thirdWalk	port	crates/horizon-client/src/advancements.rs::Layout::third_walk	third pass: shift to non-negative
-TreeNodePosition.executeShifts	port	crates/horizon-client/src/advancements.rs::Layout::execute_shifts	shifts of the children
-TreeNodePosition.previousOrThread	port	crates/horizon-client/src/advancements.rs::Layout::previous_or_thread	previous node or thread
-TreeNodePosition.nextOrThread	port	crates/horizon-client/src/advancements.rs::Layout::next_or_thread	next node or thread
-TreeNodePosition.apportion	port	crates/horizon-client/src/advancements.rs::Layout::apportion	subtree separation
-TreeNodePosition.moveSubtree	port	crates/horizon-client/src/advancements.rs::Layout::move_subtree	moves a subtree right
-TreeNodePosition.getAncestor	port	crates/horizon-client/src/advancements.rs::Layout::ancestor_of	ancestor among the siblings
-TreeNodePosition.finalizePosition	inline	crates/horizon-client/src/advancements.rs::Tree::layout	positions are copied out in layout's final loop
-TreeNodePosition.run	port	crates/horizon-client/src/advancements.rs::Tree::layout	the whole layout for one root
-net/minecraft/advancements/predicates/BlockPredicate#matches	port	crates/horizon-client/src/advancements.rs::block	gap: minor: block-entity nbt and components are not checked; no vanilla advancement uses them
+TreeNodePosition.addChild	port	crates/horizon-client-lib/src/advancements.rs::Layout::add_child	adds visible children in order
+TreeNodePosition.firstWalk	port	crates/horizon-client-lib/src/advancements.rs::Layout::first_walk	first pass of the tree layout
+TreeNodePosition.secondWalk	port	crates/horizon-client-lib/src/advancements.rs::Layout::second_walk	second pass: absolute positions and minimum
+TreeNodePosition.thirdWalk	port	crates/horizon-client-lib/src/advancements.rs::Layout::third_walk	third pass: shift to non-negative
+TreeNodePosition.executeShifts	port	crates/horizon-client-lib/src/advancements.rs::Layout::execute_shifts	shifts of the children
+TreeNodePosition.previousOrThread	port	crates/horizon-client-lib/src/advancements.rs::Layout::previous_or_thread	previous node or thread
+TreeNodePosition.nextOrThread	port	crates/horizon-client-lib/src/advancements.rs::Layout::next_or_thread	next node or thread
+TreeNodePosition.apportion	port	crates/horizon-client-lib/src/advancements.rs::Layout::apportion	subtree separation
+TreeNodePosition.moveSubtree	port	crates/horizon-client-lib/src/advancements.rs::Layout::move_subtree	moves a subtree right
+TreeNodePosition.getAncestor	port	crates/horizon-client-lib/src/advancements.rs::Layout::ancestor_of	ancestor among the siblings
+TreeNodePosition.finalizePosition	inline	crates/horizon-client-lib/src/advancements.rs::Tree::layout	positions are copied out in layout's final loop
+TreeNodePosition.run	port	crates/horizon-client-lib/src/advancements.rs::Tree::layout	the whole layout for one root
+net/minecraft/advancements/predicates/BlockPredicate#matches	port	crates/horizon-client-lib/src/advancements.rs::block	gap: minor: block-entity nbt and components are not checked; no vanilla advancement uses them
 net/minecraft/advancements/predicates/BlockPredicate#willMatchBlockEntity	missing		minor: block-entity nbt and components predicates are not read; no vanilla advancement uses them
-net/minecraft/advancements/predicates/BlockPredicate#matchesState	inline	crates/horizon-client/src/advancements.rs::block	block id and state properties
+net/minecraft/advancements/predicates/BlockPredicate#matchesState	inline	crates/horizon-client-lib/src/advancements.rs::block	block id and state properties
 net/minecraft/advancements/predicates/BlockPredicate#matchesBlockEntity	missing		minor: block-entity nbt and components are not read; no vanilla advancement uses them
 net/minecraft/advancements/predicates/BlockPredicate#matchesBlockEntityData	missing		minor: block-entity nbt is not read; no vanilla advancement uses it
 net/minecraft/advancements/predicates/BlockPredicate#matchesComponents	missing		minor: block-entity components are not read; no vanilla advancement uses them
 BlockPredicate.Builder.of	skip:data		datagen builder
 BlockPredicate.Builder.build	skip:data		datagen builder
 CollectionContentsPredicate.of	skip:java		factory that picks a Zero, Single or Multiple strategy; Horizon checks the JSON in potions()
-CollectionContentsPredicate.Multiple.test	port	crates/horizon-client/src/advancements.rs::potions	contains: each listed predicate matched by an effect
+CollectionContentsPredicate.Multiple.test	port	crates/horizon-client-lib/src/advancements.rs::potions	contains: each listed predicate matched by an effect
 CollectionCountsPredicate.of	skip:java		factory that picks a strategy class
 CollectionCountsPredicate.Entry.codec	skip:data		codec
-CollectionCountsPredicate.Multiple.test	port	crates/horizon-client/src/advancements.rs::potions	count entries: each count bound checked against the effects
+CollectionCountsPredicate.Multiple.test	port	crates/horizon-client-lib/src/advancements.rs::potions	count entries: each count bound checked against the effects
 CollectionPredicate.codec	skip:data		codec
-CollectionPredicate.test	port	crates/horizon-client/src/advancements.rs::potions	gap: minor: only the potion effect list is checked; item container and bundle contents are not
-net/minecraft/advancements/predicates/DamagePredicate#matches	port	crates/horizon-client/src/advancements.rs::damage	dealt and taken bounds, source entity, blocked and type
+CollectionPredicate.test	port	crates/horizon-client-lib/src/advancements.rs::potions	gap: minor: only the potion effect list is checked; item container and bundle contents are not
+net/minecraft/advancements/predicates/DamagePredicate#matches	port	crates/horizon-client-lib/src/advancements.rs::damage	dealt and taken bounds, source entity, blocked and type
 DamagePredicate.Builder.type	skip:data		datagen builder
 DamagePredicate.Builder.build	skip:data		datagen builder
-DamageSourcePredicate.matches	port	crates/horizon-client/src/advancements.rs::damage	the type part: damage type tags, direct and source entity, is_direct
-DataComponentMatchers.test	port	crates/horizon-client/src/advancements.rs::components	gap: minor: exact component matches only; partial predicates are not read
-DataComponentMatchers.isEmpty	inline	crates/horizon-client/src/advancements.rs::components	an empty expectation passes every component check
+DamageSourcePredicate.matches	port	crates/horizon-client-lib/src/advancements.rs::damage	the type part: damage type tags, direct and source entity, is_direct
+DataComponentMatchers.test	port	crates/horizon-client-lib/src/advancements.rs::components	gap: minor: exact component matches only; partial predicates are not read
+DataComponentMatchers.isEmpty	inline	crates/horizon-client-lib/src/advancements.rs::components	an empty expectation passes every component check
 DataComponentMatchers.Builder.any	skip:data		datagen builder
-EnchantmentPredicate.containedIn	port	crates/horizon-client/src/advancements.rs::item	the enchantments list and level bounds of the item predicate
-EnchantmentPredicate.matchesEnchantment	inline	crates/horizon-client/src/advancements.rs::item	one enchantment and its level
-FluidPredicate.matches	port	crates/horizon-client/src/advancements.rs::location	gap: minor: the fluid id and tags only; fluid state properties are not checked; no vanilla advancement uses fluid
+EnchantmentPredicate.containedIn	port	crates/horizon-client-lib/src/advancements.rs::item	the enchantments list and level bounds of the item predicate
+EnchantmentPredicate.matchesEnchantment	inline	crates/horizon-client-lib/src/advancements.rs::item	one enchantment and its level
+FluidPredicate.matches	port	crates/horizon-client-lib/src/advancements.rs::location	gap: minor: the fluid id and tags only; fluid state properties are not checked; no vanilla advancement uses fluid
 FluidPredicate.Builder.of	skip:data		datagen builder
 FoodPredicate.matches	missing		minor: no food level or saturation condition; no vanilla advancement uses one

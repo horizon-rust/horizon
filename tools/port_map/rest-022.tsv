@@ -55,15 +55,15 @@ HashOps.mergeToList	skip:java		DynamicOps merge into a hashed list; Horizon buil
 HashOps.mergeToMap	skip:java		DynamicOps merge into a hashed map; Horizon builds no hashed data incrementally
 HashOps.ListHashBuilder.build	skip:java		DynamicOps builder for hashed lists; not needed without component hashing
 HashOps.MapHashBuilder.build	skip:java		DynamicOps builder for hashed maps; not needed without component hashing
-HttpUtil.updateModificationTime	port	crates/horizon-client/src/server_packs/download.rs::touch	
-HttpUtil.hashFile	port	crates/horizon-client/src/server_packs/download.rs::sha1_of	
-HttpUtil.checkExistingFile	port	crates/horizon-client/src/server_packs/download.rs::matches	
-HttpUtil.downloadAndHash	port	crates/horizon-client/src/server_packs/download.rs::download_file	
-HttpUtil.isPortAvailable	port	crates/horizon-client/src/lan/mod.rs::Lan::bind	gap: minor: returns the bind error, not a bool; no 0..65535 range check
-InclusiveRange.codec	port	crates/horizon-client/src/mobs/spawner.rs::light_limit	gap: minor: only 0..15 light limits in integer, two-element or min/max form; no generic range codec
-InclusiveRange.create	inline	crates/horizon-client/src/mobs/spawner.rs::light_limit	the min <= max check
+HttpUtil.updateModificationTime	port	crates/horizon-client-lib/src/server_packs/download.rs::touch	
+HttpUtil.hashFile	port	crates/horizon-client-lib/src/server_packs/download.rs::sha1_of	
+HttpUtil.checkExistingFile	port	crates/horizon-client-lib/src/server_packs/download.rs::matches	
+HttpUtil.downloadAndHash	port	crates/horizon-client-lib/src/server_packs/download.rs::download_file	
+HttpUtil.isPortAvailable	port	crates/horizon-client-lib/src/lan/mod.rs::Lan::bind	gap: minor: returns the bind error, not a bool; no 0..65535 range check
+InclusiveRange.codec	port	crates/horizon-client-lib/src/mobs/spawner.rs::light_limit	gap: minor: only 0..15 light limits in integer, two-element or min/max form; no generic range codec
+InclusiveRange.create	inline	crates/horizon-client-lib/src/mobs/spawner.rs::light_limit	the min <= max check
 InclusiveRange.map	skip:java		Java generic element mapper; Horizon ranges are concrete integers
-InclusiveRange.isValueInRange	inline	crates/horizon-client/src/mobs/spawner.rs::SpawnData::valid_position	the light test is written inline
+InclusiveRange.isValueInRange	inline	crates/horizon-client-lib/src/mobs/spawner.rs::SpawnData::valid_position	the light test is written inline
 InclusiveRange.contains	missing		minor: no subrange check; Horizon reads only single light ranges (spawner.rs light_limit)
 Interval.sub	port	crates/horizon-core/src/density/interval.rs::Interval::subtract_range	
 Interval.mul	port	crates/horizon-core/src/density/interval.rs::Interval::multiply_range	
@@ -77,16 +77,16 @@ Interval.lerpFiniteBounds	port	crates/horizon-core/src/density/interval.rs::Inte
 Interval.lerpInfiniteBounds	inline	crates/horizon-core/src/density/interval.rs::Interval::lerp_values	the infinite-bound branch is folded into lerp_values
 Interval.equals	port	crates/horizon-core/src/density/interval.rs::Interval::eq	gap: minor: two NaI intervals compare equal here; vanilla compares NaN bounds, so they differ unless same object
 Interval.toString	skip:debug		debug text of a range; Horizon has no Display for Interval
-net/minecraft/util/Keyframe#codec	port	crates/horizon-client/src/patrol.rs::GameplayAttributes::load	gap: minor: only boolean keyframe values are read
-KeyframeTrack.mapCodec	port	crates/horizon-client/src/patrol.rs::GameplayAttributes::load	gap: minor: the ease field is not read; boolean tracks are never eased
+net/minecraft/util/Keyframe#codec	port	crates/horizon-client-lib/src/patrol.rs::GameplayAttributes::load	gap: minor: only boolean keyframe values are read
+KeyframeTrack.mapCodec	port	crates/horizon-client-lib/src/patrol.rs::GameplayAttributes::load	gap: minor: the ease field is not read; boolean tracks are never eased
 KeyframeTrack.validateKeyframes	missing		minor: no check that keyframes are ordered or that more than two share a tick; load only skips an empty track
 KeyframeTrack.validatePeriod	missing		minor: no check that keyframe ticks lie in 0..period on load
 KeyframeTrack.Builder.addKeyframe	skip:java		builder; Horizon builds keyframe lists from JSON
 KeyframeTrack.Builder.build	skip:java		builder; Horizon builds keyframe lists from JSON
-KeyframeTrackSampler.bakeSegments	inline	crates/horizon-client/src/patrol.rs::BoolTrack::sample	gap: minor: no periodic wrap segment; with a period and a first keyframe after tick 0, ticks before it read keyframes[0] instead of the last keyframe
-KeyframeTrackSampler.addSegmentsFromKeyframes	inline	crates/horizon-client/src/patrol.rs::BoolTrack::sample	segments are not built; sample reads the keyframes directly
-KeyframeTrackSampler.getSegmentAt	inline	crates/horizon-client/src/patrol.rs::BoolTrack::sample	the keyframe lookup is a scan in sample
-KeyframeTrackSampler.loopTicks	inline	crates/horizon-client/src/patrol.rs::BoolTrack::sample	the period wrap (rem_euclid) inside sample
+KeyframeTrackSampler.bakeSegments	inline	crates/horizon-client-lib/src/patrol.rs::BoolTrack::sample	gap: minor: no periodic wrap segment; with a period and a first keyframe after tick 0, ticks before it read keyframes[0] instead of the last keyframe
+KeyframeTrackSampler.addSegmentsFromKeyframes	inline	crates/horizon-client-lib/src/patrol.rs::BoolTrack::sample	segments are not built; sample reads the keyframes directly
+KeyframeTrackSampler.getSegmentAt	inline	crates/horizon-client-lib/src/patrol.rs::BoolTrack::sample	the keyframe lookup is a scan in sample
+KeyframeTrackSampler.loopTicks	inline	crates/horizon-client-lib/src/patrol.rs::BoolTrack::sample	the period wrap (rem_euclid) inside sample
 LightCoordsUtil.addSmoothBlockEmission	port	crates/horizon-client-render/src/particles.rs::Particle::light_coords	the age-emission arms add the emitted block light capped at 240
 LinearCongruentialGenerator.next	inline	crates/horizon-core/src/biome.rs::BiomeZoom::quart_at_block	the g closure is the LCG step; the coordinate is added separately
 MemoryReserve.release	skip:other		frees a JVM heap reserve for OutOfMemoryError; Horizon is native code
@@ -101,8 +101,8 @@ Mth.rayIntersectsAABB	skip:other		minor: no caller in 26.3 (dead helper)
 Mth.fastInvCubeRoot	skip:other		minor: no caller in 26.3 (dead helper)
 Mth.murmurHash3Mixer	skip:java		JVM identity-hash bucketing in CrudeIncrementalIntIdentityHashBiMap; Horizon has no identity-hash maps
 Mth.sign	skip:java		pure math helper; sign is written inline at each use
-Mth.clampedMap	inline	crates/horizon-client/src/title/onboarding.rs::Onboarding::widget_alpha	the inverse lerp clamped to 0..1 then lerped to the new range, folded into the caller
-Mth.map	inline	crates/horizon-client/src/mobs/sulfur_cube.rs::vertical_hit_angle_power_transfer	(value - from) / (to - from) scaled into the new range, inlined at the call site
+Mth.clampedMap	inline	crates/horizon-client-lib/src/title/onboarding.rs::Onboarding::widget_alpha	the inverse lerp clamped to 0..1 then lerped to the new range, folded into the caller
+Mth.map	inline	crates/horizon-client-lib/src/mobs/sulfur_cube.rs::vertical_hit_angle_power_transfer	(value - from) / (to - from) scaled into the new range, inlined at the call site
 Mth.wobble	skip:other		minor: no caller in 26.3 (dead helper)
 Mth.lengthSquared	skip:java		2-D squared length; Rust arithmetic at each use
 NativeModuleLister.listModules	skip:other		Windows module list for crash reports; Horizon has no such report
@@ -115,7 +115,7 @@ NativeModuleLister.addCrashSection	skip:other		Windows module list for crash rep
 NativeModuleLister.NativeModuleInfo.toString	skip:other		Windows module list for crash reports; Horizon has no such report
 ParticleUtils.spawnParticlesOnBlockFace	inline	crates/horizon-client-render/src/particles.rs::on_block_faces_between	the per-face count and emission fold into the six-face loop
 ParticleUtils.getRandomSpeedRanges	inline	crates/horizon-client-render/src/particles.rs::on_block_faces_between	the speed draw is written inline in the loop
-ParticleUtils.spawnParticleBelow	inline	crates/horizon-client/src/animate_tick.rs::block_animate_tick	the leaves drip and falling-dust arms place a particle at y - 0.05 with zero velocity
+ParticleUtils.spawnParticleBelow	inline	crates/horizon-client-lib/src/animate_tick.rs::block_animate_tick	the leaves drip and falling-dust arms place a particle at y - 0.05 with zero velocity
 PlaceholderLookupProvider.hasRegisteredPlaceholders	skip:data		datagen placeholder lookup for data-driven registries
 PlaceholderLookupProvider.UniversalLookup.get	skip:data		datagen placeholder lookup for data-driven registries
 PlaceholderLookupProvider.UniversalLookup.getOrCreate	skip:data		datagen placeholder lookup for data-driven registries

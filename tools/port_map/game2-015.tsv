@@ -8,12 +8,12 @@ PointedDripstoneBlock.canGrow	inline	crates/horizon-world/src/level/speleothem.r
 PointedDripstoneBlock.getDripParticle	port	crates/horizon-client/src/game/level_particles.rs::Game::dripstone_drip_particle	
 PotentSulfurBlock.isSourceIfFluid	inline	crates/horizon-world/src/level/shapes.rs::Sim::potent_sulfur_state	source_if_fluid check inside the state rule
 PotentSulfurBlock.onPlace	port	crates/horizon-world/src/level/shapes.rs::Sim::potent_sulfur_on_place	ticked in #3516; `PotentSulfurBlock.onPlace` is cited at crates/horizon-world/src/level/shapes.rs:878
-PotentSulfurBlock.spawnBubbleParticlesAt	inline	crates/horizon-client/src/animate_tick.rs::block_animate_tick	two sulfur bubbles in the potent sulfur arm; add_visible is the always-visible add
+PotentSulfurBlock.spawnBubbleParticlesAt	inline	crates/horizon-client-lib/src/animate_tick.rs::block_animate_tick	two sulfur bubbles in the potent sulfur arm; add_visible is the always-visible add
 PotentSulfurBlock.triggerEvent	port	crates/horizon-world/src/level/pistons.rs::Sim::trigger_event	the potent sulfur arm answers handled, and the caller hands the block entity the eruption's game time, which the plume timing reads (the geyser itself erupts in game/potent_sulfur.rs)
 PotentSulfurBlock.getTicker	port	crates/horizon-client/src/game/potent_sulfur.rs::Game::tick_potent_sulfur	ticked in #3516; `PotentSulfurBlock.getTicker` is cited at crates/horizon-client/src/game/potent_sulfur.rs:133
 PowderSnowBlock.skipRendering	port	crates/horizon-world/src/block_render.rs::FaceVisibility::skips	same_block skip kind from the block data
 PowderSnowBlock.fallOn	port	crates/horizon-world/src/block_landing.rs::BlockLandingRegistry::fall_on	powder snow landing sound from 4 blocks, small or big by 7
-PowderSnowBlock.getEntityInsideCollisionShape	inline	crates/horizon-client/src/motion.rs::MotionWorld::check_inside_blocks	gap: minor: each powder snow cell is swept as a full box; vanilla uses the entity-context shape, which for falling entities over 2.5 blocks is a 0.9 tall box
+PowderSnowBlock.getEntityInsideCollisionShape	inline	crates/horizon-client-lib/src/motion.rs::MotionWorld::check_inside_blocks	gap: minor: each powder snow cell is swept as a full box; vanilla uses the entity-context shape, which for falling entities over 2.5 blocks is a 0.9 tall box
 RailBlock.updateState	port	crates/horizon-world/src/level/rails.rs::Sim::rail_update_state	
 RailBlock.rotate	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::rotate	rail shape rotation from the generated state table, as PoweredRailBlock.rotate
 RailBlock.mirror	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::mirror	rail shape mirror from the generated state table, as PoweredRailBlock.rotate
@@ -52,14 +52,14 @@ RedstoneWireBlock.neighborChanged	port	crates/horizon-world/src/level/hooks.rs::
 RedstoneWireBlock.getDirectSignal	port	crates/horizon-world/src/level/redstone.rs::Sim::state_direct_signal	zero while the wire signal is off
 RedstoneWireBlock.getSignal	port	crates/horizon-world/src/level/redstone.rs::Sim::wire_signal	
 RedstoneWireBlock.shouldConnectTo	port	crates/horizon-world/src/level/redstone.rs::Sim::should_wire_connect_to	
-RedstoneWireBlock.spawnParticlesAlongLine	inline	crates/horizon-client/src/animate_tick.rs::block_animate_tick	the dust line closure in the redstone wire arm
-RedstoneWireBlock.animateTick	port	crates/horizon-client/src/animate_tick.rs::block_animate_tick	redstone wire arm: dust per connected side by power colour
+RedstoneWireBlock.spawnParticlesAlongLine	inline	crates/horizon-client-lib/src/animate_tick.rs::block_animate_tick	the dust line closure in the redstone wire arm
+RedstoneWireBlock.animateTick	port	crates/horizon-client-lib/src/animate_tick.rs::block_animate_tick	redstone wire arm: dust per connected side by power colour
 RedstoneWireBlock.rotate	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::rotate	rotation from the generated state table, as PoweredRailBlock.rotate
 RedstoneWireBlock.mirror	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::mirror	mirror from the generated state table
 RedstoneWireBlock.createBlockStateDefinition	skip:data		block state definition is data (blocks table in horizon-items)
 RedstoneWireBlock.updatesOnShapeChange	port	crates/horizon-world/src/level/interact.rs::Sim::wire_use	the cross or dot toggle on right-click calls the shape-change update
 RespawnAnchorBlock.canBeCharged	inline	crates/horizon-client/src/game/respawn_anchor.rs::Game::use_respawn_anchor	the charge below four check before a glowstone charge
-RespawnAnchorBlock.animateTick	port	crates/horizon-client/src/animate_tick.rs::block_animate_tick	
+RespawnAnchorBlock.animateTick	port	crates/horizon-client-lib/src/animate_tick.rs::block_animate_tick	
 RespawnAnchorBlock.getScaledChargeLevel	inline	crates/horizon-world/src/level/redstone.rs::Sim::analog_output	the charges over four times 15 comparator value
 SaplingBlock.isValidBonemealTarget	port	crates/horizon-world/src/level/bonemeal.rs::Sim::bonemeal_valid	sapling arm: tree can grow and the minimum height fits
 SaplingBlock.isBonemealSuccess	port	crates/horizon-world/src/level/bonemeal.rs::Sim::bonemeal_success	

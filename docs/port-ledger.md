@@ -108,7 +108,7 @@ file per batch, tab-separated:
 ```
 Class.method	verdict	where	note
 XoroshiroRandomSource.nextInt	port	crates/horizon-core/src/random.rs::XoroshiroRandom::next_int_bound	bounded form
-ArmadilloAi.initIdleActivity	inline	crates/horizon-client/src/mobs/armadillo.rs::register	gap: no AnimalMakeLove, so armadillos never breed
+ArmadilloAi.initIdleActivity	inline	crates/horizon-client-lib/src/mobs/armadillo.rs::register	gap: no AnimalMakeLove, so armadillos never breed
 MushroomCow.addAdditionalSaveData	missing		Type is not saved: a mooshroom turned brown by lightning loads red
 NoiseRouterData	skip:data		a class row covers the class's methods without a row of their own
 ```

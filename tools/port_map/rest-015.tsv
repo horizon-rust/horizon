@@ -61,7 +61,7 @@ LootCommand.drop	inline	crates/horizon-client/src/game/commands/terrain_cmds.rs:
 LootContextSources.ContextDecorator.createParams	port	crates/horizon-client/src/game/commands/compute.rs::Game::compute_context	gap: minor: keeps only the block and entity picks; no origin or this-entity loot params
 LootContextSources.ContextDecorator.createContext	inline	crates/horizon-client/src/game/commands/compute.rs::Game::compute_context	gap: minor: no LootContext is built
 MsgCommand.register	port	crates/horizon-command/src/vanilla.rs::registered	msg literal with tell and w aliases
-MsgCommand.sendMessage	port	crates/horizon-client/src/lan/hub/chat.rs::Hub::whisper	the outgoing line for the sender and the incoming one for each target
+MsgCommand.sendMessage	port	crates/horizon-client-lib/src/lan/hub/chat.rs::Hub::whisper	the outgoing line for the sender and the incoming one for each target
 OpCommand.register	inline	crates/horizon-client/src/game/commands.rs::Game::execute_command	"op" reaches the op arm of cmd_profiles on a dedicated server: the entry joins the op list, the lists are synced and commands.op.success is said
 OpCommand.opPlayers	port	crates/horizon-server/src/lists.rs::run	gap: minor: CLI op only (ops.json); no in-game /op
 PardonCommand.register	inline	crates/horizon-client/src/game/commands.rs::Game::execute_command	"pardon" reaches the pardon arm of cmd_profiles on a dedicated server
@@ -117,24 +117,24 @@ SayCommand.register	port	crates/horizon-command/src/vanilla.rs::registered	say l
 ScheduleCommand.remove	port	crates/horizon-client/src/game/functions.rs::Game::cmd_schedule	schedule.clear branch: removes by id, failure when none
 ScoreboardCommand.createRenderTypeModify	port	crates/horizon-command/src/tree_scoreboard.rs::scoreboard	rendertype literal per render type
 ScoreboardCommand.suggestTriggers	port	crates/horizon-command/src/lib.rs::Suggests::suggest	lists trigger objectives that are unlocked for the targets
-ScoreboardCommand.getScore	port	crates/horizon-client/src/scoreboard_cmd.rs::players	players get branch
-ScoreboardCommand.performOperation	port	crates/horizon-client/src/scoreboard_cmd.rs::players	players operation branch applying apply_operation per target and source
-ScoreboardCommand.enableTrigger	port	crates/horizon-client/src/scoreboard_cmd.rs::players	players enable branch
-ScoreboardCommand.resetScores	port	crates/horizon-client/src/scoreboard_cmd.rs::players	players reset without objective
-ScoreboardCommand.resetScore	port	crates/horizon-client/src/scoreboard_cmd.rs::players	players reset with objective
-ScoreboardCommand.setScore	port	crates/horizon-client/src/scoreboard_cmd.rs::players	players set branch
-ScoreboardCommand.setScoreDisplay	port	crates/horizon-client/src/scoreboard_cmd.rs::players	players display name branch
-ScoreboardCommand.setScoreNumberFormat	port	crates/horizon-client/src/scoreboard_cmd.rs::players	players display numberformat branch
-ScoreboardCommand.addScore	port	crates/horizon-client/src/scoreboard_cmd.rs::players	players add branch
-ScoreboardCommand.removeScore	port	crates/horizon-client/src/scoreboard_cmd.rs::players	players remove branch
-ScoreboardCommand.clearDisplaySlot	port	crates/horizon-client/src/scoreboard_cmd.rs::scoreboard	objectives setdisplay branch without objective
-ScoreboardCommand.setDisplaySlot	port	crates/horizon-client/src/scoreboard_cmd.rs::scoreboard	objectives setdisplay branch with objective
-ScoreboardCommand.setDisplayName	port	crates/horizon-client/src/scoreboard_cmd.rs::scoreboard	objectives modify displayname branch
-ScoreboardCommand.setDisplayAutoUpdate	port	crates/horizon-client/src/scoreboard_cmd.rs::scoreboard	objectives modify displayautoupdate branch
-ScoreboardCommand.setObjectiveFormat	port	crates/horizon-client/src/scoreboard_cmd.rs::scoreboard	objectives modify numberformat branch
-ScoreboardCommand.setRenderType	port	crates/horizon-client/src/scoreboard_cmd.rs::scoreboard	objectives modify rendertype branch
-ScoreboardCommand.removeObjective	port	crates/horizon-client/src/scoreboard_cmd.rs::scoreboard	objectives remove branch
-ScoreboardCommand.addObjective	port	crates/horizon-client/src/scoreboard_cmd.rs::scoreboard	objectives add branch
+ScoreboardCommand.getScore	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::players	players get branch
+ScoreboardCommand.performOperation	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::players	players operation branch applying apply_operation per target and source
+ScoreboardCommand.enableTrigger	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::players	players enable branch
+ScoreboardCommand.resetScores	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::players	players reset without objective
+ScoreboardCommand.resetScore	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::players	players reset with objective
+ScoreboardCommand.setScore	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::players	players set branch
+ScoreboardCommand.setScoreDisplay	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::players	players display name branch
+ScoreboardCommand.setScoreNumberFormat	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::players	players display numberformat branch
+ScoreboardCommand.addScore	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::players	players add branch
+ScoreboardCommand.removeScore	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::players	players remove branch
+ScoreboardCommand.clearDisplaySlot	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::scoreboard	objectives setdisplay branch without objective
+ScoreboardCommand.setDisplaySlot	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::scoreboard	objectives setdisplay branch with objective
+ScoreboardCommand.setDisplayName	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::scoreboard	objectives modify displayname branch
+ScoreboardCommand.setDisplayAutoUpdate	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::scoreboard	objectives modify displayautoupdate branch
+ScoreboardCommand.setObjectiveFormat	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::scoreboard	objectives modify numberformat branch
+ScoreboardCommand.setRenderType	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::scoreboard	objectives modify rendertype branch
+ScoreboardCommand.removeObjective	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::scoreboard	objectives remove branch
+ScoreboardCommand.addObjective	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::scoreboard	objectives add branch
 SeedCommand.register	port	crates/horizon-command/src/vanilla.rs::registered	seed literal; the seed text is the seed arm of execute_command
 ServerPackCommand.register	missing		minor: no /serverpack literal
 ServerPackCommand.sendToAllConnections	missing		minor: no pack packets are sent to connected clients by any command

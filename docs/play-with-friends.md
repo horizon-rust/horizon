@@ -6,7 +6,7 @@ Connection takes a full code too; or on the launcher's Play page) and join.
 There is no Horizon server in the middle and no account: the code itself says where the host is and
 holds the key that encrypts the game between them.
 
-It is built on Open to LAN: the integrated server (`crates/horizon-client/src/lan`) listens on a local
+It is built on Open to LAN: the integrated server (`crates/horizon-client-lib/src/lan`) listens on a local
 TCP port and speaks the vanilla protocol. Play with friends puts an encrypted tunnel in front of that
 port. Neither the integrated server nor the guest's client changes: the tunnel carries exactly the
 bytes vanilla's protocol would send, between a loopback port on each side.

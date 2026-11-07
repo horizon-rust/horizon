@@ -1,7 +1,7 @@
 MessageArgument.getMessage	port	crates/horizon-client/src/game/commands.rs::Game::expand_selectors	gap: minor: plain text only, no chat signing
 MessageArgument.resolveChatMessage	port	crates/horizon-client/src/game/commands.rs::Game::cmd_say	gap: minor: no chat signing or decorator; the text filter is chat_filter_command
 MessageArgument.resolveSignedMessage	missing		minor: no signed chat (signature, ChatDecorator); /say sends plain text, its arguments filtered by chat_filter_command
-MessageArgument.resolveDisguisedMessage	inline	crates/horizon-client/src/lan/hub.rs::Hub::say	the /say of a source with no player: a disguised chat of type say_command named after the source
+MessageArgument.resolveDisguisedMessage	inline	crates/horizon-client-lib/src/lan/hub.rs::Hub::say	the /say of a source with no player: a disguised chat of type say_command named after the source
 MessageArgument.filterPlainText	port	crates/horizon-client/src/game/chat_filter.rs::Game::chat_filter_command	the message arguments of a guest's command (/say, /me, /msg, /teammsg) through the server's text filter
 MessageArgument.Message.toComponent	port	crates/horizon-client/src/game/commands.rs::Game::expand_selectors	@-selector expansion into names
 NbtPathArgument.readUnquotedName	port	crates/horizon-client-core/src/nbt_path.rs::parse_node	unquoted node name read in the bare-name arm of parse_node
@@ -23,13 +23,13 @@ NbtPathArgument.NbtPath.apply	inline	crates/horizon-client-core/src/nbt_path.rs:
 NbtPathArgument.NbtPath.isTooDeep	port	crates/horizon-client-core/src/nbt_path.rs::too_deep	
 NbtPathArgument.Node.getOrCreate	inline	crates/horizon-client-core/src/nbt_path.rs::NbtPath::descend	walk that creates missing tags node by node
 NbtPathArgument.Node.collect	inline	crates/horizon-client-core/src/nbt_path.rs::NbtPath::read_steps	per-node collection loop of the read walk
-ObjectiveArgument.getObjective	port	crates/horizon-client/src/scoreboard_cmd.rs::objective_name	
-ObjectiveArgument.getWritableObjective	port	crates/horizon-client/src/scoreboard_cmd.rs::writable_objective	
+ObjectiveArgument.getObjective	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::objective_name	
+ObjectiveArgument.getWritableObjective	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::writable_objective	
 ObjectiveArgument.listSuggestions	port	crates/horizon-command/src/args.rs::ArgType::suggest	ArgType::Objective arm
 ObjectiveCriteriaArgument.listSuggestions	port	crates/horizon-command/src/args.rs::ArgType::suggest	ArgType::Criteria arm: custom, team kill and stat criteria
-OperationArgument.getOperation	port	crates/horizon-client/src/scoreboard_cmd.rs::players	gap: minor: the operation string is read inside players, no separate accessor
+OperationArgument.getOperation	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::players	gap: minor: the operation string is read inside players, no separate accessor
 OperationArgument.listSuggestions	port	crates/horizon-command/src/args.rs::ArgType::suggest	ArgType::Operation arm (OPERATIONS)
-OperationArgument.getSimpleOperation	port	crates/horizon-client/src/scoreboard_cmd.rs::apply_operation	floor division and positive modulo as in Mth
+OperationArgument.getSimpleOperation	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::apply_operation	floor division and positive modulo as in Mth
 ParticleArgument.readParticleType	port	crates/horizon-command/src/args.rs::ArgType::parse	ArgType::Particle arm: id, registry check, options
 ParticleArgument.listSuggestions	port	crates/horizon-command/src/args.rs::ArgType::suggest	ArgType::Particle arm
 ResourceArgument.getResource	port	crates/horizon-command/src/args.rs::ArgType::parse	ArgType::Resource arm checks the registry
@@ -45,16 +45,16 @@ ResourceOrTagArgument.TagResult.cast	skip:java		generic unchecked cast; the regi
 ResourceOrTagKeyArgument.getResourceOrTagKey	port	crates/horizon-command/src/args.rs::ArgType::parse	ArgType::ResOrTagKey arm (key only)
 ResourceSelectorArgument.readPattern	port	crates/horizon-command/src/args.rs::ArgType::parse	ArgType::ResourceSelector arm reads the pattern
 ResourceSelectorArgument.isAllowedPatternCharacter	inline	crates/horizon-command/src/args.rs::ArgType::parse	the id-char or * or ? test in the ResourceSelector arm
-ScoreHolderArgument.getNamesWithDefaultWildcard	port	crates/horizon-client/src/scoreboard_cmd.rs::holders	default_wildcard true
-ScoreHolderArgument.Info.serializeToNetwork	port	crates/horizon-client/src/lan/commands.rs::properties	score_holder flag written as u8
+ScoreHolderArgument.getNamesWithDefaultWildcard	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::holders	default_wildcard true
+ScoreHolderArgument.Info.serializeToNetwork	port	crates/horizon-client-lib/src/lan/commands.rs::properties	score_holder flag written as u8
 ScoreHolderArgument.Info.deserializeFromNetwork	port	crates/horizon-command/src/network.rs::argument_type	score_holder multiple flag read from the packet
-ScoreHolderArgument.SelectorResult.getNames	port	crates/horizon-client/src/scoreboard_cmd.rs::resolve_holders	selector holders; empty is an error
+ScoreHolderArgument.SelectorResult.getNames	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::resolve_holders	selector holders; empty is an error
 SlotSourceArgument.listSuggestions	port	crates/horizon-command/src/args.rs::ArgType::suggest	ArgType::SlotSource arm
 StringRepresentableArgument.listSuggestions	port	crates/horizon-command/src/args.rs::ArgType::suggest	ArgType::Enum and StrEnum arms
 StringRepresentableArgument.getExamples	skip:other		Brigadier examples API; no player-visible output in vanilla play
 SwingAnimationArgument.parse	port	crates/horizon-command/src/args.rs::ArgType::parse	StrEnum arm with argument.swing_animation.invalid
 SwingAnimationArgument.listSuggestions	port	crates/horizon-command/src/args.rs::ArgType::suggest	StrEnum arm
-TeamArgument.getTeam	port	crates/horizon-client/src/scoreboard_cmd.rs::team_name	
+TeamArgument.getTeam	port	crates/horizon-client-lib/src/scoreboard_cmd.rs::team_name	
 TeamArgument.listSuggestions	port	crates/horizon-command/src/args.rs::ArgType::suggest	ArgType::Team arm
 TimeArgument.time	skip:java		builder: Horizon names ArgType::Time in the command tree
 TimeArgument.listSuggestions	port	crates/horizon-command/src/args.rs::ArgType::suggest	ArgType::Time arm

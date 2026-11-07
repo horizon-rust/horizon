@@ -64,13 +64,13 @@ class AreaTests(unittest.TestCase):
         cases = {
             "launcher/src/main.rs": "launcher",
             "crates/horizon-world/src/worldgen/structure/mod.rs": "worldgen",
-            "crates/horizon-client/src/mobs/ai.rs": "mobs",
+            "crates/horizon-client-lib/src/mobs/ai.rs": "mobs",
             "crates/horizon-client/src/game/wither.rs": "mobs",
             "crates/horizon-client-render/src/gfx/cull.rs": "rendering",
             "crates/horizon-client-render/src/terrain.wgsl": "rendering",
             "crates/horizon-client/src/game/dedicated/status.rs": "server",
             "crates/horizon-server-files/src/lib.rs": "server",
-            "crates/horizon-client/src/lan/hub.rs": "multiplayer",
+            "crates/horizon-client-lib/src/lan/hub.rs": "multiplayer",
             "crates/horizon-client/src/game/remote_vehicles.rs": "multiplayer",
             "crates/horizon-protocol/src/packets/play.rs": "multiplayer",
             "crates/horizon-mods/src/lib.rs": "mods",
@@ -81,7 +81,7 @@ class AreaTests(unittest.TestCase):
             "crates/horizon-client-render/src/sound_engine.rs": "audio",
             "crates/horizon-client-render/src/streaming.rs": "chunks",
             "crates/horizon-world/src/level/redstone.rs": "blocks",
-            "crates/horizon-client/src/title/worlds.rs": "ui",
+            "crates/horizon-client-lib/src/title/worlds.rs": "ui",
             "crates/horizon-client-render/src/options_ui.rs": "ui",
             "docs/api/shaders.md": "website",
             "roadmap/roadmap.toml": "website",
@@ -96,7 +96,7 @@ class AreaTests(unittest.TestCase):
             self.assertIsNone(pl.area_of(path), path)
 
     def test_biggest_three_with_a_tenth_each(self):
-        files = [("launcher/src/a.rs", 50), ("crates/horizon-client/src/mobs/a.rs", 30),
+        files = [("launcher/src/a.rs", 50), ("crates/horizon-client-lib/src/mobs/a.rs", 30),
                  ("crates/horizon-command/src/a.rs", 10), ("crates/horizon-client-render/src/audio.rs", 9),
                  ("tools/x.py", 1)]
         self.assertEqual(pl.areas(files), ["launcher", "mobs", "commands"])

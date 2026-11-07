@@ -1,8 +1,8 @@
-HoneyBlock.doesEntityDoHoneyBlockSlideEffects	inline	crates/horizon-client/src/motion.rs::MotionWorld::honey_block_inside	gap: minor: only the player slides here; boats, minecarts, TNT and mobs get no slide sound or event
+HoneyBlock.doesEntityDoHoneyBlockSlideEffects	inline	crates/horizon-client-lib/src/motion.rs::MotionWorld::honey_block_inside	gap: minor: only the player slides here; boats, minecarts, TNT and mobs get no slide sound or event
 HoneyBlock.fallOn	port	crates/horizon-world/src/block_landing.rs::BlockLandingRegistry::fall_on	honey rule: slide sound, entity event 54, fall damage 0.2, fall sound
-HoneyBlock.isSlidingDown	inline	crates/horizon-client/src/entities.rs::ArmorStand::apply_honey_slide	stand side-slide after travel; player motion, mob ai and ItemEntity retain their separate existing honey paths
+HoneyBlock.isSlidingDown	inline	crates/horizon-client-lib/src/entities.rs::ArmorStand::apply_honey_slide	stand side-slide after travel; player motion, mob ai and ItemEntity retain their separate existing honey paths
 HoneyBlock.maybeDoSlideAchievement	port	crates/horizon-client/src/game/advancements.rs::Game::trigger_honey_slide	gap: minor: the every-20-ticks check sits in the caller, Game::tick
-HoneyBlock.doSlideMovement	inline	crates/horizon-client/src/motion.rs::MotionWorld::honey_block_inside	velocity damping and fall distance reset
+HoneyBlock.doSlideMovement	inline	crates/horizon-client-lib/src/motion.rs::MotionWorld::honey_block_inside	velocity damping and fall distance reset
 HoneyBlock.showParticles	port	crates/horizon-client/src/game.rs::Game::honey_slide_particles	five honey block particles at the entity
 IceBlock.randomTick	port	crates/horizon-world/src/level/tick.rs::Sim::random_tick_block	melts through Sim::ice_melt when block light is above 11 minus dampening
 InfestedBlock.spawnInfestation	inline	crates/horizon-client/src/game.rs::Game::break_block_as_player	silverfish at the broken block's bottom centre when blocks drop and there is no silk touch; poof via mob_poof
@@ -21,7 +21,7 @@ JukeboxBlock.useWithoutItem	port	crates/horizon-client/src/game/jukebox.rs::Game
 JukeboxBlock.ownSignal	port	crates/horizon-client/src/game/jukebox.rs::jukebox_signals	15 while a song plays
 JukeboxBlock.getAnalogOutputSignal	port	crates/horizon-client/src/game/jukebox.rs::jukebox_signals	comparator output of the song
 JukeboxBlock.getTicker	port	crates/horizon-client/src/game/jukebox.rs::Game::tick_jukebox	ticks only while a song plays
-LayeredCauldronBlock.isFull	inline	crates/horizon-client/src/cauldron.rs::interact	the level 3 test that gates bucket filling
+LayeredCauldronBlock.isFull	inline	crates/horizon-client-lib/src/cauldron.rs::interact	the level 3 test that gates bucket filling
 LayeredCauldronBlock.canReceiveStalactiteDrip	port	crates/horizon-world/src/level/speleothem.rs::Sim::cauldron_can_receive	the water cauldron is the rain type here
 LayeredCauldronBlock.handlePrecipitation	port	crates/horizon-world/src/level/tick.rs::Sim::precipitation_tick	rain or snow chance, cycles the level below 3
 LayeredCauldronBlock.receiveStalactiteDrip	port	crates/horizon-world/src/level/speleothem.rs::Sim::cauldron_tick	adds one level below full with level event 1047
@@ -120,7 +120,7 @@ NetherPortalBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim
 NetherPortalBlock.getPortalTransitionTime	port	crates/horizon-client/src/game/server_travel.rs::Game::handle_server_portal	creative and default delay game rules by invulnerability; the delay counter is in the same fn
 NetherPortalBlock.getExitPortal	port	crates/horizon-client/src/game/nether_portal.rs::Game::nether_exit_portal	gap: minor: the Nether exit only; the End variant is Game::end_portal_exit
 NetherPortalBlock.getDimensionTransitionFromExit	port	crates/horizon-client/src/game/nether_portal.rs::Game::portal_plan	
-NetherPortalBlock.animateTick	port	crates/horizon-client/src/animate_tick.rs::block_animate_tick	portal ambient sound and particles
+NetherPortalBlock.animateTick	port	crates/horizon-client-lib/src/animate_tick.rs::block_animate_tick	portal ambient sound and particles
 NetherPortalBlock.rotate	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::rotate	axis swap through the rotate table
 NoteBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	instrument follows the block below
 NoteBlock.neighborChanged	port	crates/horizon-world/src/level/redstone.rs::Sim::note_neighbor_changed	
@@ -135,7 +135,7 @@ PitcherCropBlock.getCollisionShape	skip:data	-	collision shape per state comes f
 PitcherCropBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	
 PitcherCropBlock.canSurvive	port	crates/horizon-world/src/level/survive.rs::Sim::can_survive_class	
 PitcherCropBlock.createBlockStateDefinition	skip:data	-	state properties come from the data tables
-PitcherCropBlock.entityInside	port	crates/horizon-client/src/mobs/ravager.rs::ai_step	ticked in #3516; `PitcherCropBlock.entityInside` is cited at crates/horizon-client/src/mobs/ravager.rs:136 (in a comment, so `where` names the enclosing fn)
+PitcherCropBlock.entityInside	port	crates/horizon-client-lib/src/mobs/ravager.rs::ai_step	ticked in #3516; `PitcherCropBlock.entityInside` is cited at crates/horizon-client-lib/src/mobs/ravager.rs:136 (in a comment, so `where` names the enclosing fn)
 PitcherCropBlock.isRandomlyTicking	inline	crates/horizon-world/src/level/tick.rs::Sim::random_tick_block	the lower half and not max age test gates the pitcher arm
 PitcherCropBlock.canGrowInto	port	crates/horizon-world/src/level/bonemeal.rs::Sim::pitcher_can_grow	
 PitcherCropBlock.isLower	inline	crates/horizon-world/src/level/survive.rs::Sim::can_survive_class	lower-half test used by the survival check

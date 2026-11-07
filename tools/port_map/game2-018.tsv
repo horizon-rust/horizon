@@ -1,10 +1,10 @@
-SkullBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	skull arm writes profile, note_block_sound and custom_name
-SkullBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_block_entity	skull arm reads the same three keys
-SkullBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	profile, note sound and custom name from the item components are applied to the saved tag
-SkullBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	per-part component read; the skull's three parts come from the parts table
-SkullBlockEntity.removeComponentsFromTag	inline	crates/horizon-client/src/block_entity_item.rs::pick	the three keys are removed from the saved NBT inside pick's part loop
-SpawnerBlockEntity.triggerEvent	port	crates/horizon-client/src/mobs/spawner.rs::Spawner::client_event	event 1 resets the client spawn delay to the minimum; other events return false
-SpawnerBlockEntity.setEntityData	port	crates/horizon-client/src/mobs/spawner.rs::Spawner::set_entity_data	use_spawn_egg_on_spawner passes the egg's entity data, which is merged into the spawner's next data; the BlockUpdated event sets it changed
+SkullBlockEntity.saveAdditional	port	crates/horizon-client-lib/src/save.rs::encode_block_entity	skull arm writes profile, note_block_sound and custom_name
+SkullBlockEntity.loadAdditional	port	crates/horizon-client-lib/src/save.rs::decode_block_entity	skull arm reads the same three keys
+SkullBlockEntity.applyImplicitComponents	port	crates/horizon-client-lib/src/block_entity_item.rs::place	profile, note sound and custom name from the item components are applied to the saved tag
+SkullBlockEntity.collectImplicitComponents	port	crates/horizon-client-lib/src/block_entity_item.rs::collect	per-part component read; the skull's three parts come from the parts table
+SkullBlockEntity.removeComponentsFromTag	inline	crates/horizon-client-lib/src/block_entity_item.rs::pick	the three keys are removed from the saved NBT inside pick's part loop
+SpawnerBlockEntity.triggerEvent	port	crates/horizon-client-lib/src/mobs/spawner.rs::Spawner::client_event	event 1 resets the client spawn delay to the minimum; other events return false
+SpawnerBlockEntity.setEntityData	port	crates/horizon-client-lib/src/mobs/spawner.rs::Spawner::set_entity_data	use_spawn_egg_on_spawner passes the egg's entity data, which is merged into the spawner's next data; the BlockUpdated event sets it changed
 StructureBlockEntity.updateBlockState	port	crates/horizon-client/src/game/structure_blocks.rs::Game::set_structure_mode	the mode is written to the block's mode property too
 StructureBlockEntity.usedBy	port	crates/horizon-client/src/game/block_editor.rs::Game::open_block_editor_if_editable	a game master's right click opens the structure block screen
 StructureBlockEntity.setStructureName	port	crates/horizon-client-render/src/structure_block.rs::StructureBlock::set_structure_name	the SET_STRUCTURE_BLOCK packet's name reaches the entity
@@ -38,27 +38,27 @@ TrialSpawnerBlockEntity.setEntityData	inline	crates/horizon-client/src/game/spaw
 TrialSpawnerBlockEntity.getState	port	crates/horizon-client/src/game/trial_spawner.rs::Game::trial_spawner_block	reads the state and ominous properties of the block
 TrialSpawnerBlockEntity.setState	port	crates/horizon-client/src/game/trial_spawner.rs::Game::set_trial_spawner_state	writes the state property and the ominous flag together
 TrialSpawnerBlockEntity.markUpdated	port	crates/horizon-client/src/game/trial_spawner.rs::Game::mark_block_entity_updated	
-TrialSpawner.removeOminous	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::tick_and_get_next	the cooldown branch clears the ominous flag and emits OminousSet(false); the block write goes through set_trial_spawner_state
-TrialSpawner.shouldMobBeUntracked	port	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::server_tick	gap: minor: drops mobs that are gone or beyond 47 blocks; no separate alive or dimension check
+TrialSpawner.removeOminous	inline	crates/horizon-client-lib/src/mobs/trial_spawner.rs::TrialSpawner::tick_and_get_next	the cooldown branch clears the ominous flag and emits OminousSet(false); the block write goes through set_trial_spawner_state
+TrialSpawner.shouldMobBeUntracked	port	crates/horizon-client-lib/src/mobs/trial_spawner.rs::TrialSpawner::server_tick	gap: minor: drops mobs that are gone or beyond 47 blocks; no separate alive or dimension check
 TrialSpawner.addBecomeOminousParticles	inline	crates/horizon-client/src/game/trial_visuals.rs::Game::trial_level_event	the 3020 arm draws the 20 trial omen and soul fire flame particles
-TrialSpawner.overrideEntityToSpawn	port	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawnerExt::override_entity	a spawn egg on a trial spawner rewrites its spawn potentials and returns it to INACTIVE
-TrialSpawner.FullConfig.overrideEntity	port	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawnerExt::override_entity	both configs' spawn potentials are rewritten
-TrialSpawner.FullConfig.overrideEntityData	port	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::override_entity_data	the egg's entity data rewrites both configs' spawn potentials
-TrialSpawnerState.calculatePositionToSpawnSpawner	port	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::item_spawner_position	
-TrialSpawnerState.calculatePositionAbove	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::item_spawner_position	the clip two to five blocks above the chosen entity and the drop point under it
-TrialSpawnerState.selectEntityToSpawnItemAbove	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::item_spawner_position	picks a mob or a player at random, as vanilla does
+TrialSpawner.overrideEntityToSpawn	port	crates/horizon-client-lib/src/mobs/trial_spawner.rs::TrialSpawnerExt::override_entity	a spawn egg on a trial spawner rewrites its spawn potentials and returns it to INACTIVE
+TrialSpawner.FullConfig.overrideEntity	port	crates/horizon-client-lib/src/mobs/trial_spawner.rs::TrialSpawnerExt::override_entity	both configs' spawn potentials are rewritten
+TrialSpawner.FullConfig.overrideEntityData	port	crates/horizon-client-lib/src/mobs/trial_spawner.rs::TrialSpawner::override_entity_data	the egg's entity data rewrites both configs' spawn potentials
+TrialSpawnerState.calculatePositionToSpawnSpawner	port	crates/horizon-client-lib/src/mobs/trial_spawner.rs::TrialSpawner::item_spawner_position	
+TrialSpawnerState.calculatePositionAbove	inline	crates/horizon-client-lib/src/mobs/trial_spawner.rs::TrialSpawner::item_spawner_position	the clip two to five blocks above the chosen entity and the drop point under it
+TrialSpawnerState.selectEntityToSpawnItemAbove	inline	crates/horizon-client-lib/src/mobs/trial_spawner.rs::TrialSpawner::item_spawner_position	picks a mob or a player at random, as vanilla does
 TrialSpawnerState.ParticleEmission.addParticle	inline	crates/horizon-client/src/game/trial_visuals.rs::Game::client_tick_trial_spawner	each state's particle is emitted by this fn; the Game::particle helper sends it
 TrialSpawnerStateData.pack	skip:java		immutable snapshot copy of the data for save and sync; no behaviour of its own
-TrialSpawnerStateData.isReadyToSpawnNextMob	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::tick_and_get_next	the Active spawn branch checks the spawn time and the simultaneous-mob target
-TrialSpawnerStateData.countAdditionalPlayers	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::tick_and_get_next	additional players are detected players minus one, floored at zero
-TrialSpawnerStateData.findPlayerWithOminousEffect	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::try_detect_players	Trial Omen wins, else the last Bad Omen player; folded into the detect step
-TrialSpawnerStateData.resetAfterBecomingOminous	port	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::apply_ominous	gap: minor: mobs are discarded without Mob.dropPreservedEquipment
+TrialSpawnerStateData.isReadyToSpawnNextMob	inline	crates/horizon-client-lib/src/mobs/trial_spawner.rs::TrialSpawner::tick_and_get_next	the Active spawn branch checks the spawn time and the simultaneous-mob target
+TrialSpawnerStateData.countAdditionalPlayers	inline	crates/horizon-client-lib/src/mobs/trial_spawner.rs::TrialSpawner::tick_and_get_next	additional players are detected players minus one, floored at zero
+TrialSpawnerStateData.findPlayerWithOminousEffect	inline	crates/horizon-client-lib/src/mobs/trial_spawner.rs::TrialSpawner::try_detect_players	Trial Omen wins, else the last Bad Omen player; folded into the detect step
+TrialSpawnerStateData.resetAfterBecomingOminous	port	crates/horizon-client-lib/src/mobs/trial_spawner.rs::TrialSpawner::apply_ominous	gap: minor: mobs are discarded without Mob.dropPreservedEquipment
 TrialSpawnerStateData.transformBadOmenIntoTrialOmen	port	crates/horizon-client/src/game/trial_spawner.rs::Game::bad_omen_to_trial_omen	Bad Omen level plus one becomes Trial Omen for 18000 ticks per level
-TrialSpawnerStateData.isReadyToOpenShutter	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::tick_and_get_next	WaitingForRewardEjection opens the shutter after the delay and plays its sound
-TrialSpawnerStateData.isReadyToEjectItems	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::tick_and_get_next	EjectingReward ejects on the ejection interval
+TrialSpawnerStateData.isReadyToOpenShutter	inline	crates/horizon-client-lib/src/mobs/trial_spawner.rs::TrialSpawner::tick_and_get_next	WaitingForRewardEjection opens the shutter after the delay and plays its sound
+TrialSpawnerStateData.isReadyToEjectItems	inline	crates/horizon-client-lib/src/mobs/trial_spawner.rs::TrialSpawner::tick_and_get_next	EjectingReward ejects on the ejection interval
 TrialSpawnerStateData.getOrCreateDisplayEntity	port	crates/horizon-client/src/game/spawner.rs::Game::update_spawner_display	the shown mob is made again when its type changes; a trial spawner shows one only with a spinning mob
-TrialSpawnerStateData.getDispensingItems	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::spawn_ominous_item_spawner	rolls the loot once and keeps a non-empty roll
-TrialSpawnerStateData.lowResolutionPosition	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::spawn_ominous_item_spawner	the 30 by 20 by 30 cell of the position plus the level seed
+TrialSpawnerStateData.getDispensingItems	inline	crates/horizon-client-lib/src/mobs/trial_spawner.rs::TrialSpawner::spawn_ominous_item_spawner	rolls the loot once and keeps a non-empty roll
+TrialSpawnerStateData.lowResolutionPosition	inline	crates/horizon-client-lib/src/mobs/trial_spawner.rs::TrialSpawner::spawn_ominous_item_spawner	the 30 by 20 by 30 cell of the position plus the level seed
 VaultBlockEntity.saveAdditional	port	crates/horizon-client-render/src/vault.rs::Vault::save	writes config, shared data and server data
 VaultBlockEntity.loadAdditional	port	crates/horizon-client-render/src/vault.rs::Vault::load	reads server data, config and shared data back
 VaultBlockEntity.getServerData	skip:other		accessor that is null on the client; Horizon keeps one Vault struct holding both halves, so there is no server object to return
@@ -122,8 +122,8 @@ PistonMovingBlockEntity.saveAdditional	port	crates/horizon-client/src/game/persi
 PistonMovingBlockEntity.setLevel	skip:data		on load an unknown moved block becomes air; Horizon resolves moved states from the block registry
 PistonStructureResolver.isSticky	port	crates/horizon-world/src/level/pistons.rs::Sim::is_sticky_piston	
 PistonStructureResolver.canStickToEachOther	port	crates/horizon-world/src/level/pistons.rs::Sim::can_stick	
-AmbientDesertBlockSoundsPlayer.columnContainsTriggeringBlock	inline	crates/horizon-client/src/animate_tick.rs::sand_sound_nearby	the column check runs for each of the four sides at eight blocks out
-AmbientLeavesBlockSoundPlayer.of	inline	crates/horizon-client/src/animate_tick.rs::leaves_ambient_sound	the 1 in 300 chance, the poplar log count and the three leaf count are in leaves_ambient_sound
+AmbientDesertBlockSoundsPlayer.columnContainsTriggeringBlock	inline	crates/horizon-client-lib/src/animate_tick.rs::sand_sound_nearby	the column check runs for each of the four sides at eight blocks out
+AmbientLeavesBlockSoundPlayer.of	inline	crates/horizon-client-lib/src/animate_tick.rs::leaves_ambient_sound	the 1 in 300 chance, the poplar log count and the three leaf count are in leaves_ambient_sound
 BlockBehaviour.isPathfindable	port	crates/horizon-client/src/game/natural_spawning.rs::GameLevel::pathfindable_land	gap: minor: only the LAND type; WATER is read as a fluid state in dolphin.rs and AIR is not used
 BlockBehaviour.showAsInteractableInSpectatorMode	port	crates/horizon-client/src/game/hand.rs::Game::spectator_crosshair	the block branch lists the menu blocks and portals; a chest with a redstone block on top is not interactable
 BlockBehaviour.canBeReplaced	port	crates/horizon-world/src/level/place.rs::Sim::can_be_replaced	default case: replaceable, and not the same item as the one in hand

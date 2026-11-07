@@ -34,10 +34,10 @@ Gizmos.rect	inline	crates/horizon-client/src/game/debug_renderers.rs::Game::soli
 Gizmos.billboardTextOverBlock	inline	crates/horizon-client/src/game/debug_renderers.rs::Game::debug_renderer_geometry	the frame's texts: centred billboard text above a block in its own colour, sized by gizmos.rs::billboard_text_unit (block and sky light, water amounts)
 Gizmos.billboardTextOverMob	missing		minor: debug text above a mob (debug renderers only); gizmos.rs has no billboard text
 Gizmos.TemporaryCollection.close	skip:other		restores vanilla's thread-local gizmo collector; Horizon has no collector stack
-LineGizmo.emit	port	crates/horizon-client/src/gizmos.rs::Gizmos::line	gap: minor: no alpha multiplier, so debug lines do not fade
+LineGizmo.emit	port	crates/horizon-client-lib/src/gizmos.rs::Gizmos::line	gap: minor: no alpha multiplier, so debug lines do not fade
 PointGizmo.emit	missing		minor: debug point gizmo (F3 debug renderers only); gizmos.rs has no point primitive
 RectGizmo.fromCuboidFace	inline	crates/horizon-client/src/game/debug_renderers.rs::Game::solid_face_shapes	the four corners of one cuboid face, in gizmos.rs::cuboid_fill_quads' order (+X, -X, -Z, +Z, +Y, -Y), for the sturdy sides
-RectGizmo.emit	inline	crates/horizon-client/src/gizmos.rs::cuboid_fill_quads	the filled quad of a rect gizmo: cuboid_fill_quads' six faces, filled with a plain colour in debug_renderer_geometry
+RectGizmo.emit	inline	crates/horizon-client-lib/src/gizmos.rs::cuboid_fill_quads	the filled quad of a rect gizmo: cuboid_fill_quads' six faces, filled with a plain colour in debug_renderer_geometry
 SimpleGizmoCollector.add	skip:other		adds to vanilla's per-frame gizmo collector; Horizon has no collector object, gizmos.rs::Gizmos holds the lines
 SimpleGizmoCollector.drainGizmos	skip:other		per-frame hand-off and expiry of vanilla's collector; Horizon's debug gizmos have no expiry
 SimpleGizmoCollector.GizmoInstance.persistForMillis	missing		minor: debug gizmos that stay on screen for a set time (F3 debug renderers only); gizmos.rs has no expiry

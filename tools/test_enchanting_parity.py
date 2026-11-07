@@ -56,8 +56,9 @@ def main():
     items = sorted((k, v.get('minecraft:max_damage', 0)) for k, v in catalog.items()
                    if 'minecraft:enchantable' in v)
     oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaEnchantingOracle.java'
-    sources = [oracle, Path(__file__), lab.ROOT / 'crates/horizon-client/examples/probe/enchanting_fixture.rs',
+    sources = [oracle, Path(__file__), lab.ROOT / 'crates/horizon-client-lib/examples/probe/enchanting_fixture.rs',
                *sorted((lab.ROOT / 'crates/horizon-client/src').glob('*.rs')),
+               *sorted((lab.ROOT / 'crates/horizon-client-lib/src').glob('*.rs')),
                *sorted((lab.ROOT / 'crates/horizon-client-render/src').glob('*.rs'))]
     tested = base.source_hashes(sources)
     inputs = build / 'inputs.txt'

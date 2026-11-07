@@ -375,7 +375,8 @@ mod tests {
             error:
                 "panicked at src/save.rs:10:5:\nno level.dat in /Users/ana/horizon/saves/Ana's Base"
                     .into(),
-            stack: "horizon_client::save::load (crates/horizon-client/src/save.rs:10:5)\n".into(),
+            stack: "horizon_client::save::load (crates/horizon-client-lib/src/save.rs:10:5)\n"
+                .into(),
             thread: "Render thread".into(),
             side: "client",
             details: vec![

@@ -5,8 +5,8 @@ ServerPlayerGameMode.incrementDestroyProgress	inline	crates/horizon-client/src/g
 ServerPlayerGameMode.debugLogging	skip:debug		DEBUG_BLOCK_BREAK logging
 ServerPlayerGameMode.abortDestroyBlock	inline	crates/horizon-client/src/game/lan_actions.rs::Game::lan_guest_packet	the abort action clears the guest's crack for everyone; no separate check of a mismatched destroy position
 ServerPlayerGameMode.destroyAndAck	missing		minor: guest_destroy ignores whether the break succeeded, so a refused break never sends the block back to the guest
-SimulationChunkTracker.getLevel	port	crates/horizon-client/src/ticket_levels.rs::Map::get	simulation level per chunk, 33 where no ticket reaches
-SimulationChunkTracker.setLevel	inline	crates/horizon-client/src/ticket_levels.rs::compute	the whole level map is rebuilt from player and forced tickets instead of updated per node
+SimulationChunkTracker.getLevel	port	crates/horizon-client-lib/src/ticket_levels.rs::Map::get	simulation level per chunk, 33 where no ticket reaches
+SimulationChunkTracker.setLevel	inline	crates/horizon-client-lib/src/ticket_levels.rs::compute	the whole level map is rebuilt from player and forced tickets instead of updated per node
 ThreadedLevelLightEngine.checkBlock	inline	crates/horizon-client-render/src/light.rs::relight	a block change relights resident chunks directly, no queued PRE_UPDATE task
 ThreadedLevelLightEngine.updateChunkStatus	skip:other		Horizon lights a chunk in one flood fill and keeps no per-section light state to reset
 ThreadedLevelLightEngine.updateSectionStatus	skip:other		no per-section empty flags: light_chunk reads the sections directly
@@ -42,23 +42,23 @@ CompoundContainer.getItem	port	crates/horizon-client/src/game/machines.rs::Conta
 CompoundContainer.removeItem	inline	crates/horizon-client/src/game/machines.rs::Game::slot_mut_at	View::locate picks the half, the caller splits the stack
 CompoundContainer.removeItemNoUpdate	inline	crates/horizon-client/src/game/machines.rs::Game::slot_mut_at	View::locate picks the half, the caller takes the slot
 CompoundContainer.setItem	inline	crates/horizon-client/src/game/machines.rs::Game::slot_mut_at	View::locate picks the half
-CompoundContainer.stillValid	port	crates/horizon-client/src/lan/menu.rs::Slots::still_valid	both halves must still be there and in reach
+CompoundContainer.stillValid	port	crates/horizon-client-lib/src/lan/menu.rs::Slots::still_valid	both halves must still be there and in reach
 CompoundContainer.canPlaceItem	port	crates/horizon-client/src/game/machines.rs::Containers::can_place	
-Container.countItem	port	crates/horizon-client/src/mobs/villager.rs::Ext::count_item	villager inventory only, the one caller that needs it
-Container.hasAnyOf	inline	crates/horizon-client/src/mobs/villager.rs::Ext::take_half_stack	TradeWithVillager's hasAnyOf gate: no wanted item in the inventory, nothing is thrown
-Container.hasAnyMatching	inline	crates/horizon-client/src/mobs/villager_brain.rs::harvest_tick	Villager.hasFarmSeeds gate: a farmer sows only when a plantable seed is in the inventory; the hopper checks of chiseled bookshelf and jukebox canTakeItem are not ported as such
+Container.countItem	port	crates/horizon-client-lib/src/mobs/villager.rs::Ext::count_item	villager inventory only, the one caller that needs it
+Container.hasAnyOf	inline	crates/horizon-client-lib/src/mobs/villager.rs::Ext::take_half_stack	TradeWithVillager's hasAnyOf gate: no wanted item in the inventory, nothing is thrown
+Container.hasAnyMatching	inline	crates/horizon-client-lib/src/mobs/villager_brain.rs::harvest_tick	Villager.hasFarmSeeds gate: a farmer sows only when a plantable seed is in the inventory; the hopper checks of chiseled bookshelf and jukebox canTakeItem are not ported as such
 Container.getSlot	port	crates/horizon-client/src/game/commands/items.rs::Game::slot_get	/item and execute if items read a container slot by number
 Container.ContainerIterator.next	skip:java		iterator over slots
 ContainerHelper.removeItem	skip:java		NonNullList helper: split a stack in a slot Vec; block entities take from their own slot vector
 ContainerHelper.takeItem	skip:java		NonNullList helper: Option::take on the slot
 ContainerHelper.clearOrCountMatchingItems	port	crates/horizon-client/src/game/commands.rs::Game::clear_matching	/clear over main, armor, offhand, crafting grid and carried stack, count only when max is 0
 DifficultyInstance.isHard	skip:other		no vanilla caller (isHarderThan is what Illusioner uses)
-DifficultyInstance.getSpecialMultiplier	port	crates/horizon-client/src/mobs/spawning.rs::LocalDifficulty::special	
-DifficultyInstance.calculateDifficulty	port	crates/horizon-client/src/mobs/spawning.rs::LocalDifficulty::new	
-InteractionHand.asArm	inline	crates/horizon-client/src/mobs/ai.rs::Mob::swing_hand	off_hand != main arm left; the player's first person hand does the same in game.rs hand_geometry
+DifficultyInstance.getSpecialMultiplier	port	crates/horizon-client-lib/src/mobs/spawning.rs::LocalDifficulty::special	
+DifficultyInstance.calculateDifficulty	port	crates/horizon-client-lib/src/mobs/spawning.rs::LocalDifficulty::new	
+InteractionHand.asArm	inline	crates/horizon-client-lib/src/mobs/ai.rs::Mob::swing_hand	off_hand != main arm left; the player's first person hand does the same in game.rs hand_geometry
 InteractionResult.Success.heldItemTransformedTo	skip:java		result builder; Horizon replaces the held item in place where the item is used
 ItemStackWithSlot.isValidInContainer	port	crates/horizon-client-core/src/block_entity_nbt.rs::items	slots outside 0..size are dropped when items load
-LockCode.canUnlock	port	crates/horizon-client/src/advancements.rs::can_unlock	checked when a container opens (game/advancements.rs container_locked_for from lan_actions.rs): a spectator opens any container, otherwise the main hand must match the lock predicate
+LockCode.canUnlock	port	crates/horizon-client-lib/src/advancements.rs::can_unlock	checked when a container opens (game/advancements.rs container_locked_for from lan_actions.rs): a spectator opens any container, otherwise the main hand must match the lock predicate
 RandomSequences.createSequence	port	crates/horizon-items/src/random_sequences.rs::create	
 RandomSequences.DirtyMarkingRandomSource.nextInt	skip:java		marks the saved data dirty on each draw; Horizon saves every sequence
 RandomSequences.DirtyMarkingRandomSource.equals	skip:java		wrapper equality
@@ -73,14 +73,14 @@ SimpleContainer.toString	skip:debug
 SimpleContainer.moveItemToEmptySlots	inline	crates/horizon-world/src/simple_container.rs::SimpleContainer::add	second pass of addItem; the villager's Ext::add_item does the same
 SimpleContainer.moveItemToOccupiedSlotsWithSameType	inline	crates/horizon-world/src/simple_container.rs::SimpleContainer::add	first pass of addItem
 SimpleContainer.moveItemsBetweenStacks	inline	crates/horizon-world/src/simple_container.rs::SimpleContainer::add	the grow and shrink with the per-stack limit
-SimpleContainer.fromItemList	inline	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	villager and piglin Inventory read; the piglin list is cut to 8 instead of re-added
-SimpleContainer.storeAsItemList	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	villager and piglin Inventory written
-Stopwatches.unpack	port	crates/horizon-client/src/stopwatches.rs::Stopwatches::load	
-Stopwatches.pack	port	crates/horizon-client/src/stopwatches.rs::Stopwatches::save	
-Stopwatches.add	port	crates/horizon-client/src/stopwatches.rs::Stopwatches::create	
-Stopwatches.update	port	crates/horizon-client/src/stopwatches.rs::Stopwatches::restart	only the restart update that /stopwatch uses
-Stopwatches.remove	port	crates/horizon-client/src/stopwatches.rs::Stopwatches::remove	
-Stopwatches.isDirty	inline	crates/horizon-client/src/stopwatches.rs::Stopwatches::save	save skips the write when not dirty and empty
+SimpleContainer.fromItemList	inline	crates/horizon-client-lib/src/entity_nbt.rs::mob_from_nbt	villager and piglin Inventory read; the piglin list is cut to 8 instead of re-added
+SimpleContainer.storeAsItemList	inline	crates/horizon-client-lib/src/entity_nbt.rs::mob_to_nbt	villager and piglin Inventory written
+Stopwatches.unpack	port	crates/horizon-client-lib/src/stopwatches.rs::Stopwatches::load	
+Stopwatches.pack	port	crates/horizon-client-lib/src/stopwatches.rs::Stopwatches::save	
+Stopwatches.add	port	crates/horizon-client-lib/src/stopwatches.rs::Stopwatches::create	
+Stopwatches.update	port	crates/horizon-client-lib/src/stopwatches.rs::Stopwatches::restart	only the restart update that /stopwatch uses
+Stopwatches.remove	port	crates/horizon-client-lib/src/stopwatches.rs::Stopwatches::remove	
+Stopwatches.isDirty	inline	crates/horizon-client-lib/src/stopwatches.rs::Stopwatches::save	save skips the write when not dirty and empty
 AttributeType.ofInterpolated	skip:data		attribute type definitions and codecs
 AttributeType.ofNotInterpolated	skip:data		attribute type definitions and codecs
 AttributeType.createModifierCodec	skip:data		attribute type definitions and codecs
@@ -121,9 +121,9 @@ EnvironmentAttributeSystem.ValueSampler.computeValueNotPositional	inline	crates/
 EnvironmentAttributes.register	skip:data		attribute registry
 WeatherAttributes.addBuiltinLayers	port	crates/horizon-client-render/src/environment.rs::apply_weather	rain and thunder layers over sky, fog, cloud, sky light, stars and sunrise; bees staying in the hive is bees_stay_in_hive in bee.rs
 WeatherAttributes.addLayer	port	crates/horizon-client-render/src/environment.rs::apply_weather	rain level minus thunder level, then thunder level, each lerped over the value
-BooleanModifier.apply	port	crates/horizon-client/src/patrol.rs::BoolTrack::apply	and, or, xor, nand, nor, xnor over the timeline track value
+BooleanModifier.apply	port	crates/horizon-client-lib/src/patrol.rs::BoolTrack::apply	and, or, xor, nand, nor, xnor over the timeline track value
 ColorModifier.BlendToGray.lerp	skip:other		only lerps blend_to_gray arguments between keyframes; no timeline uses that modifier
-ListModifier.Append.apply	inline	crates/horizon-client/src/animate_tick.rs::AnimateTables::load	a biome's ambient_particles list is its argument over an empty dimension list
+ListModifier.Append.apply	inline	crates/horizon-client-lib/src/animate_tick.rs::AnimateTables::load	a biome's ambient_particles list is its argument over an empty dimension list
 MobSpawnSettingsModifier.Overlay.apply	inline	crates/horizon-client-render/src/biome.rs::Biomes::load	no dimension sets natural_mob_spawns, so the overlay over the empty default is the biome's own spawns
 ClockTimeMarker.getRepetitionCount	skip:other		no vanilla caller
 ClockTimeMarker.resolveTimeToMoveTo	port	crates/horizon-client/src/game/chat.rs::TimeMarker::resolve	

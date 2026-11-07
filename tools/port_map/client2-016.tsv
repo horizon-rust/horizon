@@ -17,7 +17,7 @@ EffectsInInventory.getEffectName	inline	crates/horizon-client-render/src/invento
 EnchantmentNames.getRandomName	inline	crates/horizon-client/src/game/stations.rs::Game::draw_station	galactic word names from the enchant seed (WORDS), drawn in the enchanting option slots
 EnchantmentScreen.init	skip:ui		creates the book model for drawing only; the book itself is not drawn (see extractBook)
 EnchantmentScreen.containerTick	port	crates/horizon-client/src/game/locator_bar.rs::Game::track_experience_display	gap: player: keeps the experience bar up while the table is open; the book tick (tickBook) is not run
-EnchantmentScreen.extractBook	port	crates/horizon-client/src/item_render/gui.rs::draw_enchanting_book	the open book over the table, drawn from the book's own open amount and flip
+EnchantmentScreen.extractBook	port	crates/horizon-client-lib/src/item_render/gui.rs::draw_enchanting_book	the open book over the table, drawn from the book's own open amount and flip
 EnchantmentScreen.tickBook	port	crates/horizon-client/src/game/stations.rs::Game::tick_enchanting_book	the book opens for an offer and turns when the item or the offers change
 GrindstoneScreen.extractBackground	inline	crates/horizon-client/src/game/stations.rs::Game::draw_station	grindstone texture and the error sprite when an input is set and there is no result
 HangingSignEditScreen.extractSignBackground	port	crates/horizon-client/src/game/sign_edit.rs::Game::draw_sign_editor	hanging sign board at 4.5x scale
@@ -75,5 +75,5 @@ StructureBlockEditScreen	home	crates/horizon-client/src/game/block_editor.rs
 TestBlockEditScreen	home	crates/horizon-client/src/game/block_editor.rs	
 TestInstanceBlockEditScreen	home	crates/horizon-client/src/game/block_editor.rs	
 BelowOrAboveWidgetTooltipPositioner.positionTooltip	port	crates/horizon-client-render/src/ui.rs::menu_tooltip_position	the tooltip under the widget, over it when it does not fit, with vanilla's margins and overlaps
-ClientActivePlayersTooltip.getWidth	port	crates/horizon-client/src/multiplayer.rs::player_list	the sample's names are the tooltip's lines; its width comes from them (the status tooltip's own sizing)
-ClientActivePlayersTooltip.extractImage	inline	crates/horizon-client/src/multiplayer.rs::player_list	the sample names, styled by their § codes, become the tooltip's text lines, then and_more for the players the sample leaves out; gap: player: no player face is drawn beside each name (vanilla draws a 10x10 face per entry through PlayerFaceExtractor), so the tooltip is text only
+ClientActivePlayersTooltip.getWidth	port	crates/horizon-client-lib/src/multiplayer.rs::player_list	the sample's names are the tooltip's lines; its width comes from them (the status tooltip's own sizing)
+ClientActivePlayersTooltip.extractImage	inline	crates/horizon-client-lib/src/multiplayer.rs::player_list	the sample names, styled by their § codes, become the tooltip's text lines, then and_more for the players the sample leaves out; gap: player: no player face is drawn beside each name (vanilla draws a 10x10 face per entry through PlayerFaceExtractor), so the tooltip is text only

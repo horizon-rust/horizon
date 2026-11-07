@@ -22,7 +22,7 @@ The dedicated server is the game itself, run headless:
   vanilla's `Properties.store`), and refuses to start until `eula.txt` says `eula=true`. It then loads the
   operator, whitelist and ban lists in vanilla's order and format, and opens `<universe>/<level-name>` with
   the same `Game` as single player, minus the local player.
-- **Network.** Players join through the play-state hub that Open to LAN uses (`crates/horizon-client/src/lan`).
+- **Network.** Players join through the play-state hub that Open to LAN uses (`crates/horizon-client-lib/src/lan`).
   Status ping, legacy ping, compression, login gate (bans, whitelist, IP bans), operator permission levels,
   the player limit with `bypassesPlayerLimit`, MOTD and `server-icon.png` all follow `server.properties`.
 - **Main loop.** It ticks at 20 TPS on one thread, with chunk generation and lighting on the worker pool.

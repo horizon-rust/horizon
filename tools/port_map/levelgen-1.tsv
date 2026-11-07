@@ -15,9 +15,9 @@ Column.create	inline	crates/horizon-world/src/worldgen/dripstone.rs::Speleothem:
 Column.scan	port	crates/horizon-world/src/worldgen/dripstone.rs::Speleothem::scan	
 Column.scanDirection	inline	crates/horizon-world/src/worldgen/dripstone.rs::Speleothem::scan	the up and down walks are one closure
 Column.Ray.toString	skip:debug		debug text
-DebugLevelSource	home	crates/horizon-client/src/debugworld.rs	the minecraft:debug preset: one of every block state in a square grid at HEIGHT 70 over a barrier floor at BARRIER_HEIGHT 60 (DebugTerrain; `state_for` is getBlockStateFor, `grid` GRID_WIDTH and GRID_HEIGHT)
-FlatLevelSource.createState	port	crates/horizon-client/src/flatgen.rs::FlatTerrain::structure_settings	the layers, the fixed biome and structure_overrides as a FlatSettings; VanillaTerrain::for_flat runs those sets on the flat ground, strongholds searched with seed 0, and none when structure_overrides is empty
-FlatLevelSource.buildTerrain	port	crates/horizon-client/src/flatgen.rs::FlatTerrain::proto	stacks the layers from the minimum Y
+DebugLevelSource	home	crates/horizon-client-lib/src/debugworld.rs	the minecraft:debug preset: one of every block state in a square grid at HEIGHT 70 over a barrier floor at BARRIER_HEIGHT 60 (DebugTerrain; `state_for` is getBlockStateFor, `grid` GRID_WIDTH and GRID_HEIGHT)
+FlatLevelSource.createState	port	crates/horizon-client-lib/src/flatgen.rs::FlatTerrain::structure_settings	the layers, the fixed biome and structure_overrides as a FlatSettings; VanillaTerrain::for_flat runs those sets on the flat ground, strongholds searched with seed 0, and none when structure_overrides is empty
+FlatLevelSource.buildTerrain	port	crates/horizon-client-lib/src/flatgen.rs::FlatTerrain::proto	stacks the layers from the minimum Y
 FlatLevelSource.getBaseHeight	port	crates/horizon-world/src/worldgen/generator.rs::Pipeline::noise_column	the flat arm answers the heightmap query from the layers, top down; a null layer is air and never stops it, and the level minimum is the answer when no layer is opaque
 FlatLevelSource.getBaseColumn	port	crates/horizon-world/src/worldgen/generator.rs::Pipeline::noise_column	the flat arm reads the layers as a column, a null layer as air; `Pipeline::base_column` and `noise_blocks` are the two faces of it
 LegacyRandomSource.setSeed	port	crates/horizon-core/src/random.rs::LegacyRandom::set_seed	also drops the cached gaussian
@@ -61,20 +61,20 @@ VerticalAnchor.merge	skip:java		codec glue; VerticalAnchor::from_json decodes
 VerticalAnchor.split	skip:java		codec glue
 VerticalAnchor.BelowTop.resolveY	port	crates/horizon-world/src/worldgen/anchor.rs::VerticalAnchor::resolve	BelowTop arm
 WorldDimensions.keysInOrder	skip:other		orders the dimension registry; Horizon has the preset's fixed overworld, nether and end
-WorldDimensions.replaceOverworldGenerator	inline	crates/horizon-client/src/save.rs::write_world_gen_settings_with	a flat generator replaces the overworld when world_gen_settings is written
-WorldDimensions.withOverworld	inline	crates/horizon-client/src/save.rs::write_world_gen_settings_with	same as replaceOverworldGenerator
-WorldDimensions.overworld	inline	crates/horizon-client/src/flatgen.rs::FlatTerrain::from_settings	reads the overworld generator from world_gen_settings; a normal one is OverworldGenerator::for_world
-WorldDimensions.specialWorldProperty	inline	crates/horizon-client/src/save.rs::WorldGen::read	the preset from the overworld generator: Flat for minecraft:flat, Debug for minecraft:debug, else Normal
+WorldDimensions.replaceOverworldGenerator	inline	crates/horizon-client-lib/src/save.rs::write_world_gen_settings_with	a flat generator replaces the overworld when world_gen_settings is written
+WorldDimensions.withOverworld	inline	crates/horizon-client-lib/src/save.rs::write_world_gen_settings_with	same as replaceOverworldGenerator
+WorldDimensions.overworld	inline	crates/horizon-client-lib/src/flatgen.rs::FlatTerrain::from_settings	reads the overworld generator from world_gen_settings; a normal one is OverworldGenerator::for_world
+WorldDimensions.specialWorldProperty	inline	crates/horizon-client-lib/src/save.rs::WorldGen::read	the preset from the overworld generator: Flat for minecraft:flat, Debug for minecraft:debug, else Normal
 WorldDimensions.isVanillaLike	skip:other		stability only picks the experimental-settings warning; Horizon's preset dimensions are stable
 WorldDimensions.isStableOverworld	skip:other		same as isVanillaLike
 WorldDimensions.isStableNether	skip:other		same as isVanillaLike
 WorldDimensions.isStableEnd	skip:other		same as isVanillaLike
 WorldDimensions.bake	skip:other		builds the dimension registry; Horizon has the preset's fixed dimensions
-WorldGenSettings.of	inline	crates/horizon-client/src/save.rs::write_world_gen_settings_with	seed, options and dimensions written together
+WorldGenSettings.of	inline	crates/horizon-client-lib/src/save.rs::write_world_gen_settings_with	seed, options and dimensions written together
 WorldGenSettings.hashCode	skip:java		
 WorldGenerationContext.of	port	crates/horizon-world/src/worldgen/anchor.rs::WorldGenerationContext::with_generator	the plain-level branch is WorldGenerationContext::new
-WorldOptions.withBonusChest	inline	crates/horizon-client/src/title/create_world.rs::WorldOptions::world_gen	never in Hardcore
-WorldOptions.withStructures	inline	crates/horizon-client/src/title/create_world.rs::WorldOptions::world_gen	
+WorldOptions.withBonusChest	inline	crates/horizon-client-lib/src/title/create_world.rs::WorldOptions::world_gen	never in Hardcore
+WorldOptions.withStructures	inline	crates/horizon-client-lib/src/title/create_world.rs::WorldOptions::world_gen	
 WorldOptions.withSeed	inline	crates/horizon-client/src/game/world_loading.rs::WorldRequest::prepare	parse_seed in title.rs reads the text; a random seed fills an empty one here
 Xoroshiro128PlusPlus.nextLong	port	crates/horizon-core/src/random.rs::XoroshiroRandom::next_long	
 XoroshiroRandomSource.setSeed	port	crates/horizon-core/src/random.rs::XoroshiroRandom::set_seed	

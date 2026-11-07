@@ -92,9 +92,9 @@ class PortReportTests(unittest.TestCase):
         regen = {"new": "26.3", "candidate": "/ports/26.3", "commit": "0123456789abcdef", "generators": {
             "packet_ids": {"status": "regenerated", "outputs": ["crates/horizon-protocol/src/ids.rs"],
                            "stat": {"crates/horizon-protocol/src/ids.rs": [142, 134]}},
-            "entity_tracking": {"status": "unchanged", "outputs": ["crates/horizon-client/src/lan/tracking.rs"],
+            "entity_tracking": {"status": "unchanged", "outputs": ["crates/horizon-client-lib/src/lan/tracking.rs"],
                                 "stat": {}},
-            "lan_command_order": {"status": "failed", "outputs": ["crates/horizon-client/src/lan/command_order.rs"],
+            "lan_command_order": {"status": "failed", "outputs": ["crates/horizon-client-lib/src/lan/command_order.rs"],
                                   "error": "javac exited 1",
                                   "compile_errors": ["ParityData.java:45: cannot find symbol: variable WORLD"]}}}
         built = self.build(regen=regen)
@@ -119,7 +119,7 @@ class PortReportTests(unittest.TestCase):
         self.assertEqual(kinds, sorted(kinds, key=lambda k: k[0]))
         regenerated = {i["files"][0] for i in built["items"] if i["kind"] == "regenerate"}
         self.assertEqual(regenerated, {"crates/horizon-core/src/version.rs", "crates/horizon-protocol/src/ids.rs",
-                                       "crates/horizon-client/src/lan/tracking.rs"})
+                                       "crates/horizon-client-lib/src/lan/tracking.rs"})
 
     def test_save_format_lists_new_schemas_and_fixes(self):
         save = next(i for i in self.build()["items"] if i["kind"] == "save-format")

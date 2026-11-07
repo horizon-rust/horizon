@@ -41,7 +41,7 @@ A reference page is written by code from the source it describes, and a test fai
 | Page | Generated from | Update it with |
 | --- | --- | --- |
 | [server-reference.md](server-reference.md) | `horizon-server`'s help, `config::TEMPLATE`, `api::ROUTES` | `HORIZON_WRITE_DOCS=1 cargo test -p horizon-server reference` |
-| [horizon-ctl-commands.md](../horizon-ctl-commands.md) | the command table in `crates/horizon-client/src/bin/horizon-ctl/commands.rs` | `horizon-ctl help --markdown > docs/horizon-ctl-commands.md` |
+| [horizon-ctl-commands.md](../horizon-ctl-commands.md) | the command table in `crates/horizon-client-lib/src/bin/horizon-ctl/commands.rs` | `horizon-ctl help --markdown > docs/horizon-ctl-commands.md` |
 | [launcher-commands.md](../launcher-commands.md) | `launcher/src/cli.rs` | `HORIZON_WRITE_DOCS=1 cargo test --manifest-path launcher/Cargo.toml the_launcher_reference` |
 | [launch-reference.md](launch-reference.md) | `crates/horizon-client/src/game/launch_api.rs` | `HORIZON_WRITE_DOCS=1 cargo test -p horizon-client --lib launch_api` |
 

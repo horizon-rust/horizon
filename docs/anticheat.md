@@ -91,7 +91,7 @@ ones in this version.
 ## Writing a check
 
 - The rules are in `crates/horizon-anticheat` (no game state: unit-test them there); the hub runs them
-  where it handles the packet (`crates/horizon-client/src/lan/`) and calls `Hub::flag`, which carries out
+  where it handles the packet (`crates/horizon-client-lib/src/lan/`) and calls `Hub::flag`, which carries out
   setback, alert and kick (`lan/anticheat.rs`).
 - A check is one entry in the `checks!` table of `horizon-anticheat/src/lib.rs`: its name in
   `server.toml`, its default thresholds and its own settings.

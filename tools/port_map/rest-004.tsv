@@ -14,7 +14,7 @@ Options.setGraphicsPresetToCustom	inline	crates/horizon-client-render/src/option
 Options.processOptions	inline	crates/horizon-client-render/src/options_file.rs::OptionsFile::parse	gap: minor: the save direction is OptionsFile::serialize
 Options.dataFix	port	crates/horizon-client-render/src/options_fixes.rs::update	
 Options.getFullscreenVideoModeString	inline	crates/horizon-client-input/src/window.rs::VideoMode::write	options.txt keeps fullscreenResolution as `VideoMode::write`'s mode JSON, not as a separate 'WxH@Hz' string; `Settings.video_mode_index` reads it back to place the Video screen's mode slider
-Options.buildPlayerInformation	port	crates/horizon-client/src/net.rs::run	gap: player: only view distance and chat visibility are sent; language, skin parts, main hand, particles and text filtering stay at defaults
+Options.buildPlayerInformation	port	crates/horizon-client-lib/src/net.rs::run	gap: player: only view distance and chat visibility are sent; language, skin parts, main hand, particles and text filtering stay at defaults
 Options.setModelPart	port	crates/horizon-client-render/src/options_file.rs::OptionsFile::model_customisation	the seven modelPart_* options are read back and sent as the PlayerModelPart set
 Options.loadSelectedResourcePacks	port	crates/horizon-client-render/src/packs.rs::enabled	gap: minor: dropped packs are not written back to resourcePacks
 Options.readListOfStrings	port	crates/horizon-client-render/src/options_file.rs::read_list	
@@ -61,12 +61,12 @@ StringSplitter.LineBreakFinder.accept	port	crates/horizon-client-render/src/font
 StringSplitter.LineComponent.visit	skip:java		visitor plumbing over FormattedText
 StringSplitter.WidthLimitedCharSink.accept	port	crates/horizon-client-render/src/screen_draw.rs::Measure::head	
 AnimationDefinition.Builder.addAnimation	skip:java		builder for code-made animations; Horizon parses animation JSON
-KeyframeAnimation.bake	inline	crates/horizon-client/src/mobs/keyframes.rs::Animation::apply	gap: minor: bones are looked up per frame; no check that a bone exists
-KeyframeAnimation.getElapsedSeconds	inline	crates/horizon-client/src/mobs/keyframes.rs::Animation::apply	seconds modulo the length when looping
-KeyframeAnimations.degreeVec	inline	crates/horizon-client/src/mobs/keyframes.rs::Animation::apply	the vanilla animation definitions call degreeVec when they build their keyframes, so the pre/post targets the exporter writes and Horizon parses are already radians; apply adds them straight into the pose
-KeyframeAnimations.scaleVec	inline	crates/horizon-client/src/mobs/keyframes.rs::Animation::apply	the definitions call scaleVec first, so a keyframe scale arrives with 1 already subtracted and adds onto the part's scale, as ModelPart.offsetScale does
-ColorLerper.getLerpedColor	port	crates/horizon-client/src/mobs/render.rs::jeb_wool_rgb	a sheep whose custom name is exactly jeb_ cycles through the dye colours by age, as MobRenderer.checkMagicName does
-ColorLerper.getModifiedColor	inline	crates/horizon-client/src/mobs/render.rs::jeb_wool_rgb	the same table walk, inlined for the jeb_ name
+KeyframeAnimation.bake	inline	crates/horizon-client-lib/src/mobs/keyframes.rs::Animation::apply	gap: minor: bones are looked up per frame; no check that a bone exists
+KeyframeAnimation.getElapsedSeconds	inline	crates/horizon-client-lib/src/mobs/keyframes.rs::Animation::apply	seconds modulo the length when looping
+KeyframeAnimations.degreeVec	inline	crates/horizon-client-lib/src/mobs/keyframes.rs::Animation::apply	the vanilla animation definitions call degreeVec when they build their keyframes, so the pre/post targets the exporter writes and Horizon parses are already radians; apply adds them straight into the pose
+KeyframeAnimations.scaleVec	inline	crates/horizon-client-lib/src/mobs/keyframes.rs::Animation::apply	the definitions call scaleVec first, so a keyframe scale arrives with 1 already subtracted and adds onto the part's scale, as ModelPart.offsetScale does
+ColorLerper.getLerpedColor	port	crates/horizon-client-lib/src/mobs/render.rs::jeb_wool_rgb	a sheep whose custom name is exactly jeb_ cycles through the dye colours by age, as MobRenderer.checkMagicName does
+ColorLerper.getModifiedColor	inline	crates/horizon-client-lib/src/mobs/render.rs::jeb_wool_rgb	the same table walk, inlined for the jeb_ name
 BlockColors.getTintSource	port	crates/horizon-client-render/src/mesher.rs::Mesher::tint	
 BlockColors.register	skip:data		tint sources come from block data in Horizon
 BlockColors.getColoringProperties	skip:other		only ModelGroupCollector uses it to group block states; Horizon bakes each state
@@ -102,24 +102,24 @@ net/minecraft/client/main/Main#hasValidUuid	skip:other		the --uuid argument is w
 net/minecraft/client/main/Main#isUuidValid	skip:other		the check behind hasValidUuid, which no --uuid argument reaches
 AbstractClientPlayer.getPlayerInfo	inline	crates/horizon-client/src/game/remote.rs::Game::remote_pushes	the entity id -> uuid -> tab entry lookups stand in for the PlayerInfo; the name, team and game mode are read from that entry
 AbstractClientPlayer.getSkin	port	crates/horizon-client/src/game/remote.rs::Game::update_remote_skins	the downloaded skin and slim flag, else DefaultPlayerSkin by uuid, as PlayerInfo.getSkin
-AbstractClientPlayer.getParrotVariantOnShoulder	port	crates/horizon-client/src/mobs/render.rs::shoulder_parrot	the shoulder slot's stored variant picks the parrot texture and model in the layer
-ClientInput.makeJump	inline	crates/horizon-client/src/motion.rs::MotionWorld::controlled_simulation_tick	gap: minor: carries the auto-jump flag; no separate jump input
+AbstractClientPlayer.getParrotVariantOnShoulder	port	crates/horizon-client-lib/src/mobs/render.rs::shoulder_parrot	the shoulder slot's stored variant picks the parrot texture and model in the layer
+ClientInput.makeJump	inline	crates/horizon-client-lib/src/motion.rs::MotionWorld::controlled_simulation_tick	gap: minor: carries the auto-jump flag; no separate jump input
 FirstPersonHandsAndItems.extractRenderState	inline	crates/horizon-client/src/game/hand.rs::Game::visible_hand_items	gap: minor: bob, swing and map state are read elsewhere; no render-state struct
 FirstPersonHandsAndItems.shouldInstantlyReplaceVisibleItem	port	crates/horizon-client/src/game/hand.rs::shows_held_stack	the same stack object, or an equal one, which plays no swap animation; the slot a replaced hand changed is the exception
 FirstPersonHandsAndItems.extractMapRenderState	inline	crates/horizon-client/src/game/maps.rs::Game::held_map	the MAP_ID component picks the map data drawn in the hand, its decorations included, and decides the checkerboard background
-FirstPersonHandsAndItems.isChargedCrossbow	inline	crates/horizon-client/src/first_person.rs::hands_to_render	
-ItemActivation.tick	port	crates/horizon-client/src/item_activation.rs::ItemActivation::tick	the count down to 0, where the item goes; game.rs::tick_item_activation runs it
-ItemActivation.activate	port	crates/horizon-client/src/item_activation.rs::ItemActivation::activate	a copy of the stack, the 40 ticks and two offsets in [-1, 1); game/totem.rs sets it from findTotem
+FirstPersonHandsAndItems.isChargedCrossbow	inline	crates/horizon-client-lib/src/first_person.rs::hands_to_render	
+ItemActivation.tick	port	crates/horizon-client-lib/src/item_activation.rs::ItemActivation::tick	the count down to 0, where the item goes; game.rs::tick_item_activation runs it
+ItemActivation.activate	port	crates/horizon-client-lib/src/item_activation.rs::ItemActivation::activate	a copy of the stack, the 40 ticks and two offsets in [-1, 1); game/totem.rs sets it from findTotem
 KeyboardInput.calculateImpulse	inline	crates/horizon-client-input/src/input.rs::keyboard_direction	
-LocalPlayer.<init>	inline	crates/horizon-client/src/ambience.rs::Ambience::new	gap: minor: the three ambient handlers are the Ambience loops; no connection set-up
+LocalPlayer.<init>	inline	crates/horizon-client-lib/src/ambience.rs::Ambience::new	gap: minor: the three ambient handlers are the Ambience loops; no connection set-up
 LocalPlayer.sendChanges	port	crates/horizon-client/src/game/remote.rs::Game::remote_send_state	
-LocalPlayer.getCurrentMood	inline	crates/horizon-client/src/ambience.rs::Ambience::tick_biome	gap: minor: moodiness is built here; no getter is exposed
+LocalPlayer.getCurrentMood	inline	crates/horizon-client-lib/src/ambience.rs::Ambience::tick_biome	gap: minor: moodiness is built here; no getter is exposed
 LocalPlayer.sendIsSprintingIfNeeded	inline	crates/horizon-client/src/game/remote.rs::Game::remote_send_state	sprint start and stop commands
 LocalPlayer.closeContainer	port	crates/horizon-client/src/game/remote.rs::Game::remote_close_container	
-LocalPlayer.isSuppressingSlidingDownLadder	port	crates/horizon-client/src/motion.rs::MotionWorld::suppressing_ladder_slide	gap: minor: sneak only; vanilla also requires not flying
+LocalPlayer.isSuppressingSlidingDownLadder	port	crates/horizon-client-lib/src/motion.rs::MotionWorld::suppressing_ladder_slide	gap: minor: sneak only; vanilla also requires not flying
 LocalPlayer.canSpawnSprintParticle	port	crates/horizon-client/src/game/client_ambient.rs::Game::sprint_dust	gap: minor: the test there is Entity.canSpawnSprintParticle's (sprinting, not spectator, not crouching, alive, out of water and lava) without the !abilities.flying LocalPlayer adds
 LocalPlayer.sendRidingJump	port	crates/horizon-client/src/game/remote_vehicles.rs::riding_jump	START_RIDING_JUMP carrying the jump scale
-LocalPlayer.removeRecipeHighlight	port	crates/horizon-client/src/recipe_book.rs::Settings::remove_highlight	gap: minor: the seen-recipe packet is not sent, so the server keeps the highlight
+LocalPlayer.removeRecipeHighlight	port	crates/horizon-client-lib/src/recipe_book.rs::Settings::remove_highlight	gap: minor: the seen-recipe packet is not sent, so the server keeps the highlight
 LocalPlayer.moveTowardsClosestSpace	port	crates/horizon-client/src/game.rs::Game::closest_space_nudge	the four body corners, 0.1 towards the nearest free side on its axis, a later corner overwriting an earlier one
 LocalPlayer.suffocatesAt	inline	crates/horizon-client/src/game.rs::closest_space_nudge	the suffocates_at closure tests a full collision cube that is also a full render cube, over the body's Y span
 LocalPlayer.setExperienceDisplayStartTickToTickCount	inline	crates/horizon-client/src/game/locator_bar.rs::Game::track_experience_display	
@@ -132,14 +132,14 @@ LocalPlayer.openTextEdit	port	crates/horizon-client/src/game/sign_edit.rs::Game:
 LocalPlayer.modifyInputSpeedForSquareMovement	port	crates/horizon-client-input/src/input.rs::square_movement	
 LocalPlayer.distanceToUnitSquare	inline	crates/horizon-client-input/src/input.rs::square_movement	
 LocalPlayer.resetPos	inline	crates/horizon-client/src/game/screens.rs::Game::respawn_player	gap: minor: no free-height search, pose, rotation or velocity reset
-LocalPlayer.shouldStopRunSprinting	port	crates/horizon-client/src/sprint.rs::Conditions::should_stop	gap: player: minor_horizontal_collision is always false, so wall slides stop the sprint
-LocalPlayer.shouldStopSwimSprinting	port	crates/horizon-client/src/sprint.rs::Conditions::should_stop	
+LocalPlayer.shouldStopRunSprinting	port	crates/horizon-client-lib/src/sprint.rs::Conditions::should_stop	gap: player: minor_horizontal_collision is always false, so wall slides stop the sprint
+LocalPlayer.shouldStopSwimSprinting	port	crates/horizon-client-lib/src/sprint.rs::Conditions::should_stop	
 LocalPlayer.tickDeath	missing		minor: unsure: the dead local player is not removed after 20 ticks; the death screen flow covers it
 LocalPlayer.rideTick	port	crates/horizon-client/src/game/remote_vehicles.rs::Game::remote_ride	the keys are latched into the boat's input and the seat follows its turn
-LocalPlayer.isHorizontalCollisionMinor	port	crates/horizon-client/src/motion.rs::EntityMoveWorld::minor_horizontal_collision	the sprint keeps when a move hits a wall at under 8 degrees
-LocalPlayer.isMoving	inline	crates/horizon-client/src/auto_jump.rs::can_auto_jump	
-LocalPlayer.isSprintingPossible	port	crates/horizon-client/src/sprint.rs::Conditions::possible	
-LocalPlayer.canStartSprinting	port	crates/horizon-client/src/sprint.rs::Conditions::can_start	gap: player: slow_item is never set, so eating does not block starting a sprint
+LocalPlayer.isHorizontalCollisionMinor	port	crates/horizon-client-lib/src/motion.rs::EntityMoveWorld::minor_horizontal_collision	the sprint keeps when a move hits a wall at under 8 degrees
+LocalPlayer.isMoving	inline	crates/horizon-client-lib/src/auto_jump.rs::can_auto_jump	
+LocalPlayer.isSprintingPossible	port	crates/horizon-client-lib/src/sprint.rs::Conditions::possible	
+LocalPlayer.canStartSprinting	port	crates/horizon-client-lib/src/sprint.rs::Conditions::can_start	gap: player: slow_item is never set, so eating does not block starting a sprint
 LocalPlayer.onGameModeChanged	missing		minor: switching to spectator keeps vertical momentum
 LocalPlayer.getRopeHoldPosition	port	crates/horizon-client/src/game/leads.rs::Game::player_rope_hold	the first-person rope point from the look angles and the main arm
 LocalPlayer.raycastHitResult	port	crates/horizon-client/src/game/hand.rs::GameHands::hit	gap: minor: block fallback is Game::pick; no separate item attack-range pass

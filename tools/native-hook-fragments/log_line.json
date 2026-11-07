@@ -12,6 +12,6 @@
   "rust_summary": "each message written to the log, on the log's writer thread (`native_log_line`).",
   "doc_summary": "each message written to `logs/latest.log`, on the log's writer thread: `native_log_line(level, thread, message, line)`. Bundles need \"hooks\": @API:log_line@.",
   "comments": [
-    "crates/horizon-client/src/native_client_hooks.rs"
+    "crates/horizon-client-lib/src/native_client_hooks.rs"
   ]
 }

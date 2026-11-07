@@ -11,7 +11,7 @@ EventLogDirectory.FileList.compressAll	skip:service		telemetry log directory (Te
 EventLogDirectory.RawFile.openChannel	skip:service		telemetry log directory (TelemetryLogManager); not gameplay
 EventLogDirectory.RawFile.openReader	skip:service		telemetry log directory (TelemetryLogManager); not gameplay
 EventLogDirectory.RawFile.compress	skip:service		telemetry log directory (TelemetryLogManager); not gameplay
-JsonEventLog.open	port	crates/horizon-client/src/server_packs/download.rs::append_log	gap: minor: log.json is opened per entry, not once per queue
+JsonEventLog.open	port	crates/horizon-client-lib/src/server_packs/download.rs::append_log	gap: minor: log.json is opened per entry, not once per queue
 JsonEventLog.openReader	skip:other		no vanilla caller; nothing reads download log.json back
 JsonEventLogReader.create	skip:other		reader used only by JsonEventLog.openReader, which has no callers
 MinecraftServerStatistics.registerJmxMonitoring	skip:server		JMX MBean registration
@@ -62,7 +62,7 @@ UnquotedStringParseRule.parse	port	crates/horizon-command/src/snbt.rs::grammar	c
 net/minecraft/util/random/Weighted#codec	skip:java		codec; WeightedList::decode_inner reads data and weight per entry
 WeightedList.map	port	crates/horizon-assets/src/blockstate/choice.rs::Choice::map	keeps weights and maps values; used for variant model lists
 WeightedList.entryToNonEmptyListCodec	port	crates/horizon-world/src/worldgen/weighted.rs::WeightedList::build	rejects a list whose total weight is zero
-WeightedList.contains	inline	crates/horizon-client/src/mobs/spawn_selection.rs::valid_position_for_type	a group's entry must still be in the mobs list at a new position: the list is looked up there and scanned for the same spawner (canSpawnMobAt)
+WeightedList.contains	inline	crates/horizon-client-lib/src/mobs/spawn_selection.rs::valid_position_for_type	a group's entry must still be in the mobs list at a new position: the list is looked up there and scanned for the same spawner (canSpawnMobAt)
 WeightedList.equals	skip:java		equality of a Java collection
 WeightedList.hashCode	skip:java		hash of a Java collection
 WeightedList.Builder.add	skip:java		builder; WeightedList::new takes (value, weight) pairs
@@ -137,8 +137,8 @@ WorldUpgrader.verifyChunkPosAndEraseCache	port	crates/horizon-world/src/datafix/
 WorldUpgrader.verifyChunkPos	port	crates/horizon-world/src/datafix/world_upgrader.rs::verify_chunk_pos	warns when the stored xPos/zPos differ from the chunk's own position and reports no change
 WorldUpgrader.work	port	crates/horizon-world/src/datafix/files.rs::upgrade_world	gap: minor: no Optimize World pass and no progress; upgrade_world runs the file fixes then the data upgrade
 WorldUpgrader.upgradeLevels	inline	crates/horizon-world/src/datafix/files.rs::upgrade_world	per-dimension loop folded into upgrade_world
-LongJumpUtil.isClearTransition	port	crates/horizon-client/src/mobs/breeze.rs::clear_transition	boxed steps of nine tenths the smaller side from one point to the next must all be clear, for the breeze's long jump
-Cushion.isAnchorBuried	inline	crates/horizon-client/src/cushion.rs::can_place	the resting-slab test; can_place returns false when the slab is covered
+LongJumpUtil.isClearTransition	port	crates/horizon-client-lib/src/mobs/breeze.rs::clear_transition	boxed steps of nine tenths the smaller side from one point to the next must all be clear, for the breeze's long jump
+Cushion.isAnchorBuried	inline	crates/horizon-client-lib/src/cushion.rs::can_place	the resting-slab test; can_place returns false when the slab is covered
 FishingHook.calculateOpenWater	port	crates/horizon-client/src/game/fishing.rs::Game::calculate_open_water	
 AbstractContainerMenu.getRedstoneSignalFromBlockEntity	port	crates/horizon-client/src/game/machines.rs::container_signal	block entity containers for the comparator; 0 when there is none
 CreativeModeTabs.validate	skip:data		bootstrap check of creative tab positions
@@ -147,4 +147,4 @@ LevelAccessor.neighborShapeChanged	port	crates/horizon-world/src/level/update.rs
 LevelHeightAccessor.isInsideBuildHeight	port	crates/horizon-world/src/level/query.rs::Sim::is_inside_build_height	takes the y; the BlockPos overload is the caller's pos.y
 Block.shouldRenderFace	port	crates/horizon-world/src/block_render.rs::FaceVisibility::should_render_face	gap: minor: uses precomputed face flags and the cutout flag, not vanilla's EmptyBlockGetter path
 MultifaceBlock.availableFaces	port	crates/horizon-world/src/level/sculk.rs::Sim::available_faces	
-BeehiveBlockEntity.tickOccupants	port	crates/horizon-client/src/beehive.rs::Beehive::server_tick	ticks each bee and releases the finished ones in order
+BeehiveBlockEntity.tickOccupants	port	crates/horizon-client-lib/src/beehive.rs::Beehive::server_tick	ticks each bee and releases the finished ones in order

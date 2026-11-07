@@ -11,7 +11,7 @@ Identifier.withPath	port	crates/horizon-world/src/identifier.rs::Identifier::fro
 Identifier.equals	skip:java		derived PartialEq on namespace and path
 Identifier.compareTo	port	crates/horizon-world/src/identifier.rs::Identifier::cmp	path first, then namespace
 Identifier.resolveAgainst	missing		vanilla resolves namespace/path under a root and throws when the joined path normalises outside it; the resource and pack readers join the two onto their folder with no such check
-Identifier.toLanguageKey	inline	crates/horizon-client/src/title/buffet.rs::display_name	spelled out behind a 'biome.' prefix there (toLanguageKey("biome")); the namespace and path are joined by hand, and '/' is turned into '.' as well
+Identifier.toLanguageKey	inline	crates/horizon-client-lib/src/title/buffet.rs::display_name	spelled out behind a 'biome.' prefix there (toLanguageKey("biome")); the namespace and path are joined by hand, and '/' is turned into '.' as well
 Identifier.toShortLanguageKey	skip:other		string helper; translation keys are built where a Text is made
 Identifier.toShortString	skip:other		string helper; the minecraft: prefix is stripped at each display site
 Identifier.readGreedy	port	crates/horizon-command/src/args.rs::read_identifier	reads id characters while they are allowed
@@ -44,7 +44,7 @@ RegistryOps.HolderLookupAdapter.lookup	skip:data		registry lookup adapter for da
 RegistryOps.HolderLookupAdapter.equals	skip:data		registry lookup adapter for data decoding
 ResourceKey.create	skip:java		interned key; Horizon uses plain identifiers
 ResourceKey.dependent	skip:data		derived registry key; the ids come from Horizon's tables
-ResourceManagerRegistryLoadTask.load	inline	crates/horizon-client/src/lan/data.rs::file_order	the registry's files are read from the prepared folder (walk) with a world's pack files over them (pack_entries), registered in the file order listMatchingResources keys them by (file_order); the element codec read is a serde_json parse
+ResourceManagerRegistryLoadTask.load	inline	crates/horizon-client-lib/src/lan/data.rs::file_order	the registry's files are read from the prepared folder (walk) with a world's pack files over them (pack_entries), registered in the file order listMatchingResources keys them by (file_order); the element codec read is a serde_json parse
 Bootstrap.bootStrap	skip:data		startup bootstrap of the registries and data
 Bootstrap.checkTranslations	skip:debug		IDE-only translation check
 Bootstrap.checkGameruleTranslations	skip:debug		IDE-only game rule translation check
@@ -80,13 +80,13 @@ MinecraftServer.autoSave	inline	crates/horizon-client/src/game.rs::Game::tick	ga
 MinecraftServer.logTickMethodTime	skip:server		tick timing log for the profiler
 MinecraftServer.computeNextAutosaveInterval	port	crates/horizon-client/src/game.rs::Game::next_autosave_interval	Math.max(100, (int)(rate * 300.0F)) ticks counted down a tick at a time, at the tick rate or the measured rate while /tick sprint runs; twenty a second is still the six thousand a world autosaved on
 MinecraftServer.onTickRateChanged	port	crates/horizon-client/src/game.rs::Game::on_tick_rate_changed	/tick rate recomputes the wait and shortens the one already running when the new rate asks for less
-MinecraftServer.buildPlayerStatus	port	crates/horizon-client/src/lan/mod.rs::Shared::status_json	up to 12 sampled player names in the status JSON
+MinecraftServer.buildPlayerStatus	port	crates/horizon-client-lib/src/lan/mod.rs::Shared::status_json	up to 12 sampled player names in the status JSON
 MinecraftServer.updateEffectiveRespawnData	inline	crates/horizon-client/src/game/initial_spawn.rs::Game::spawn_finder	gap: minor: no cached respawn data; the radius is clamped to the border when the spawn is found
-MinecraftServer.forceGameTimeSynchronization	port	crates/horizon-client/src/lan/hub.rs::Hub::sync_world	game time sent to guests with SetTime
+MinecraftServer.forceGameTimeSynchronization	port	crates/horizon-client-lib/src/lan/hub.rs::Hub::sync_world	game time sent to guests with SetTime
 MinecraftServer.fillSystemReport	skip:debug		system report for crash and debug output
 MinecraftServer.setDifficulty	port	crates/horizon-client/src/game/commands.rs::Game::cmd_difficulty	gap: player: LAN guests are not sent ChangeDifficulty when /difficulty changes; they get it on join, respawn or dimension change
 MinecraftServer.updateMobSpawningFlags	inline	crates/horizon-client/src/game/natural_spawning.rs::Game::spawn_natural	rules are read at each spawn; no cached spawn flag
-MinecraftServer.sendDifficultyUpdate	inline	crates/horizon-client/src/lan/hub.rs::Hub::place_new_player	gap: player: sent when a guest joins, respawns or changes dimension; see setDifficulty
+MinecraftServer.sendDifficultyUpdate	inline	crates/horizon-client-lib/src/lan/hub.rs::Hub::place_new_player	gap: player: sent when a guest joins, respawns or changes dimension; see setDifficulty
 MinecraftServer.enforceGameTypeForPlayers	inline	crates/horizon-client/src/game/lan.rs::enforce_guest_game_mode	applies the default mode to online players when force game mode is enabled
 MinecraftServer.executeIfPossible	skip:java		rejects tasks during shutdown
 MinecraftServer.reloadResources	port	crates/horizon-client/src/game/functions.rs::Game::cmd_reload	gap: minor: data packs only, via reload_datapacks
@@ -99,7 +99,7 @@ MinecraftServer.setRespawnData	port	crates/horizon-client/src/game/commands.rs::
 MinecraftServer.getCommandStorage	skip:java		getter for the command storage
 MinecraftServer.getStopwatches	skip:java		getter for the stopwatches
 MinecraftServer.setWeatherParameters	port	crates/horizon-client/src/game/commands.rs::Game::cmd_weather	sets the weather timers and state
-MinecraftServer.getAverageTickTimeNanos	port	crates/horizon-client/src/clock.rs::FixedStep::average_nanos	average of the recent tick times
+MinecraftServer.getAverageTickTimeNanos	port	crates/horizon-client-lib/src/clock.rs::FixedStep::average_nanos	average of the recent tick times
 MinecraftServer.saveDebugReport	skip:debug		debug report output
 MinecraftServer.dumpMiscStats	skip:debug		debug report output
 MinecraftServer.dumpGameRules	skip:debug		debug report output
@@ -113,19 +113,19 @@ MinecraftServer.stopTimeProfiler	skip:debug		debug profiler stop
 MinecraftServer.setAutoSave	port	crates/horizon-client/src/game/dedicated.rs::set_auto_save	changes the shared server-level save flag; the tick skips periodic saves while it is disabled
 MinecraftServer.isAutoSave	port	crates/horizon-client/src/game/dedicated.rs::auto_save	reads the shared server-level save flag
 MinecraftServer.storeChunkIoError	skip:debug		writes a chunk IO crash report
-MinecraftServer.reportChunkLoadFailure	port	crates/horizon-client/src/chunk_io.rs::report_load_failure	logs, warns on low disk space and records the failed chunk for the toast; gap: no suppressed-exception store and no debug crash report
-MinecraftServer.reportChunkSaveFailure	port	crates/horizon-client/src/chunk_io.rs::report_save_failure	logs, warns on low disk space and records the failed chunk; gap: no suppressed-exception store and no debug crash report
-PlayerAdvancements.reload	port	crates/horizon-client/src/lan/advancements.rs::ServerAdvancements::reload	on /reload every guest loaded so far has its visible set cleared and its progress re-read against the new tree, then the tick advancements are granted and the reward recipes added; gap: the host's own progress is not reloaded
+MinecraftServer.reportChunkLoadFailure	port	crates/horizon-client-lib/src/chunk_io.rs::report_load_failure	logs, warns on low disk space and records the failed chunk for the toast; gap: no suppressed-exception store and no debug crash report
+MinecraftServer.reportChunkSaveFailure	port	crates/horizon-client-lib/src/chunk_io.rs::report_save_failure	logs, warns on low disk space and records the failed chunk; gap: no suppressed-exception store and no debug crash report
+PlayerAdvancements.reload	port	crates/horizon-client-lib/src/lan/advancements.rs::ServerAdvancements::reload	on /reload every guest loaded so far has its visible set cleared and its progress re-read against the new tree, then the tick advancements are granted and the reward recipes added; gap: the host's own progress is not reloaded
 PlayerAdvancements.registerListeners	skip:other		no per-criterion listener map; trigger() tests every criterion when an event fires
 PlayerAdvancements.checkForAutomaticTriggers	missing		minor: criteria-less advancements from data packs are not granted when a player loads
 PlayerAdvancements.asData	inline	crates/horizon-client/src/game/advancements.rs::Game::save_advancements	writes the progress that has any progress
 PlayerAdvancements.revoke	port	crates/horizon-client/src/game/advancements.rs::Game::revoke_advancement	revokes one criterion or all of them
-PlayerAdvancements.markForVisibilityUpdate	inline	crates/horizon-client/src/lan/advancements.rs::ServerAdvancements::update	visibility is recomputed for the whole tree on each update
+PlayerAdvancements.markForVisibilityUpdate	inline	crates/horizon-client-lib/src/lan/advancements.rs::ServerAdvancements::update	visibility is recomputed for the whole tree on each update
 PlayerAdvancements.unregisterListeners	skip:other		no per-criterion listener map; trigger() tests every criterion when an event fires
-PlayerAdvancements.setSelectedTab	port	crates/horizon-client/src/lan/hub.rs::Hub::process_inbox	the SeenAdvancements arm: a root with a display is kept as Guest::selected_tab, anything else clears it, and the tab is sent back when it changed; ServerAdvancements::selectable decides
+PlayerAdvancements.setSelectedTab	port	crates/horizon-client-lib/src/lan/hub.rs::Hub::process_inbox	the SeenAdvancements arm: a root with a display is kept as Guest::selected_tab, anything else clears it, and the tab is sent back when it changed; ServerAdvancements::selectable decides
 PlayerAdvancements.getOrStartProgress	skip:java		map get-or-create
 PlayerAdvancements.startProgress	skip:java		initialises progress for an advancement
-PlayerAdvancements.updateTreeVisibility	port	crates/horizon-client/src/advancements.rs::Tree::visible	gap: minor: returns the visible flags; the added and removed lists are built in lan/advancements.rs
+PlayerAdvancements.updateTreeVisibility	port	crates/horizon-client-lib/src/advancements.rs::Tree::visible	gap: minor: returns the visible flags; the added and removed lists are built in lan/advancements.rs
 PlayerAdvancements.removeListener	skip:other		no per-criterion listener map; trigger() tests every criterion when an event fires
 PlayerAdvancements.Data.forEach	skip:java		sorted iteration over loaded progress; no game behaviour of its own
 RegistryLayer.createRegistryAccess	skip:data		registry layers; Horizon's registries come from its tables

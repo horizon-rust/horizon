@@ -6,13 +6,13 @@ organised and how to build and test are in [AGENTS.md](../AGENTS.md).
 
 Gameplay lives in the `horizon-client` library; `main.rs` is a thin executable calling
 `entry::main`. The reusable modules, control tool and probes belong to `horizon-client-lib`,
-whose library root is `crates/horizon-client/src/client_lib.rs`. Source paths stay in place.
+in `crates/horizon-client-lib/`.
 The gameplay library re-exports the reusable API, keeping existing mod targets unchanged.
 Gameplay tests run in its library test target, separately from the reusable library's tests.
 There is no copy of gameplay in the executable's test target. Tools and probes depend only
 on the reusable library, so gameplay edits do not invalidate their builds.
 
-Paths: `L/` = `crates/horizon-client/src/`, `G/` = `crates/horizon-client/src/game/`, `W/` =
+Paths: `L/` = `crates/horizon-client-lib/src/`, `G/` = `crates/horizon-client/src/game/`, `W/` =
 `crates/horizon-world/src/`, `K/` = `crates/horizon-client-core/src/`, `C/` = `crates/horizon-command/src/`,
 `I/` = `crates/horizon-items/src/`, `R/` = `crates/horizon-client-render/src/`, `N/` = `crates/horizon-client-input/src/`.
 Checks: a bare name is a harness (`python3 tools/parity.py <name>`, script `tools/test_<name>_parity.py`);

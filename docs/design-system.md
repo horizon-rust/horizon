@@ -6,7 +6,7 @@ and the HUD are not part of it: they are vanilla's, because parity is the point 
 Horizon's own settings are pages built from vanilla's widgets, the way mods add theirs.
 
 The tokens live in one place, `crates/horizon-theme`. The launcher (`launcher/src/theme.rs`)
-and the game (`crates/horizon-client/src/ui_theme.rs`) read them as Rust constants, and the
+and the game (`crates/horizon-client-lib/src/ui_theme.rs`) read them as Rust constants, and the
 website reads them as CSS custom properties generated from the same crate
 (`cargo run -p xtask -- tokens` writes `crates/horizon-theme/tokens.css`, which the website's build
 reads from main; a test fails when the file is out of date). Change a value in the crate and all three follow.
