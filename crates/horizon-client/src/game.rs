@@ -15514,8 +15514,16 @@ impl Game<'_> {
                         || (m.extra.anger > 0 && m.ai.target.is_some()))
                     && m.alive()
                     && m.bounds().intersects(horizon_core::geometry::Aabb::new(
-                        Vec3::new(f64::from(head[0]) + 0.5 - 8.0, f64::from(head[1]) - 5.0, f64::from(head[2]) + 0.5 - 8.0),
-                        Vec3::new(f64::from(head[0]) + 0.5 + 8.0, f64::from(head[1]) + 5.0, f64::from(head[2]) + 0.5 + 8.0),
+                        Vec3::new(
+                            f64::from(head[0]) + 0.5 - 8.0,
+                            f64::from(head[1]) - 5.0,
+                            f64::from(head[2]) + 0.5 - 8.0,
+                        ),
+                        Vec3::new(
+                            f64::from(head[0]) + 0.5 + 8.0,
+                            f64::from(head[1]) + 5.0,
+                            f64::from(head[2]) + 0.5 + 8.0,
+                        ),
                     ))
             })
         {
@@ -15600,7 +15608,14 @@ impl Game<'_> {
         }
         self.occupy_bed(head);
         let straw = &*self.res.facts().get(state).name == "minecraft:straw_bed";
-        self.award_custom_stat(if straw { "sleep_in_straw_bed" } else { "sleep_in_bed" }, 1);
+        self.award_custom_stat(
+            if straw {
+                "sleep_in_straw_bed"
+            } else {
+                "sleep_in_bed"
+            },
+            1,
+        );
         if self.bed_sets_spawn(state) {
             self.trigger_player("minecraft:slept_in_bed");
         }

@@ -66,6 +66,8 @@ impl PlayerMotion {
         }
         Ok(())
     }
+    /// `ServerPlayer.doTick`: tick FoodData after movement; starvation's
+    /// `LivingEntity.hurtServer` also synchronizes the sleeping pose.
     pub fn food_tick(&mut self, resources: &HealthResources, rules: HealthRules) -> Result<()> {
         if self.client_side {
             return Ok(());

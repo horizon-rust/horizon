@@ -3988,6 +3988,8 @@ impl Game<'_> {
         }
         self.give_player_effect("minecraft:wither", 40, 0);
     }
+    /// `LivingEntity.hurtServer` for type-only damage to the acting player:
+    /// propagate stopSleeping even when the hurt cooldown rejects the hit.
     pub(super) fn hurt_player_by(&mut self, damage_type: &str, amount: f32) {
         let mut canceled = false;
         let mut stopped_sleeping = false;

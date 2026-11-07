@@ -555,6 +555,9 @@ public final class VanillaDispenserOracle {
         List<String> stats;
         String using;
         boolean sleepProbe, stopAfterSleepTick, stopAfterWake;
+        @Override public void sendSystemMessage(net.minecraft.network.chat.Component message, boolean overlay) {
+            sendSystemMessage(message);
+        }
         static final class SleepBoundary extends RuntimeException { }
         @Override protected boolean updateIsUnderwater() {
             if (stopAfterSleepTick) throw new SleepBoundary();
@@ -695,11 +698,13 @@ public final class VanillaDispenserOracle {
             // The real sleep methods need the entity storage normally installed
             // by its constructor. No sleep method is replaced by this fixture.
             player.sleepProbe = true;
+            VanillaBlockUpdateOracle.set(Entity.class, player, "level", w);
             defineData(player);
+            player.setId(w.getNextEntityId());
             player.setHealth(20.0F);
             var dimensions = EntityTypes.PLAYER.getDimensions();
             VanillaBlockUpdateOracle.set(Entity.class, player, "dimensions", dimensions);
-            VanillaBlockUpdateOracle.set(Entity.class, player, "chunkPosition", new net.minecraft.world.level.ChunkPos(BlockPos.containing(at)));
+            VanillaBlockUpdateOracle.set(Entity.class, player, "chunkPosition", net.minecraft.world.level.ChunkPos.containing(BlockPos.containing(at)));
             VanillaBlockUpdateOracle.set(Entity.class, player, "levelCallback", net.minecraft.world.level.entity.EntityInLevelCallback.NULL);
             VanillaBlockUpdateOracle.set(Entity.class, player, "passengers", com.google.common.collect.ImmutableList.of());
             VanillaBlockUpdateOracle.set(Entity.class, player, "deltaMovement", net.minecraft.world.phys.Vec3.ZERO);

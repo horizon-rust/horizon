@@ -528,11 +528,15 @@ impl Game<'_> {
             self.sleeping = None;
             self.sleep_timer = 0;
             self.player_beds.clear();
+            self.message = None;
             self.world.day_time = op["day_time"].as_i64().unwrap_or(18000);
-            self.ui.rules.set("players_sleeping_percentage", RuleValue::Int(101));
+            self.ui
+                .rules
+                .set("players_sleeping_percentage", RuleValue::Int(101));
         }
         let sleep_stats = ["sleep_in_bed", "sleep_in_straw_bed"];
-        let sleep_before = sleep_stats.map(|name| self.stats.get("custom", &format!("minecraft:{name}")));
+        let sleep_before =
+            sleep_stats.map(|name| self.stats.get("custom", &format!("minecraft:{name}")));
         let stack = parse_stack(op["item"].as_str().unwrap_or("-"))?;
         self.mode = if op["creative"].as_bool().unwrap_or(false) {
             GameMode::Creative
@@ -606,6 +610,21 @@ impl Game<'_> {
         self.process_level_events()?;
         let mut out = Vec::new();
         if sleep_probe {
+            // Bed refusals/night-skip notices use the overlay, separate from
+            // chat_capture. Translate only the observed text back to its key.
+            if let Some((message, _)) = self.message.take() {
+                let keys = [
+                    "block.minecraft.bed.too_far_away",
+                    "block.minecraft.bed.obstructed",
+                    "block.minecraft.bed.not_safe",
+                    "block.minecraft.bed.no_sleep",
+                    "sleep.not_possible",
+                ];
+                let key = keys
+                    .into_iter()
+                    .find(|key| self.translate(key, key) == message);
+                out.push(format!("msg {}", key.unwrap_or(&message)));
+            }
             out.push(format!("sleep admitted {}", self.sleeping.is_some()));
             for (name, before) in sleep_stats.iter().zip(sleep_before) {
                 let value = self.stats.get("custom", &format!("minecraft:{name}")) - before;

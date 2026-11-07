@@ -1137,14 +1137,19 @@ mod tests {
     #[test]
     #[ignore = "requires explicit HORIZON_TEST_RESOURCES; run the focused prepared-data check"]
     fn eligible_damage_wakes_even_when_the_cooldown_rejects_the_hit() {
-        let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES")
-            .expect("set HORIZON_TEST_RESOURCES to the prepared vanilla resources"));
-        assert!(root.join("movement-properties.nbt").exists(), "prepared resources missing");
+        let root = std::path::PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES")
+                .expect("set HORIZON_TEST_RESOURCES to the prepared vanilla resources"),
+        );
+        assert!(
+            root.join("movement-properties.nbt").exists(),
+            "prepared resources missing"
+        );
         let assets = crate::assets::Assets::load(&root).unwrap();
         let resources = crate::motion::MotionResources::load(&root, &assets).unwrap();
-        let mut player = crate::motion::PlayerMotion::new(
-            &resources, horizon_core::geometry::Vec3::ZERO,
-        ).unwrap();
+        let mut player =
+            crate::motion::PlayerMotion::new(&resources, horizon_core::geometry::Vec3::ZERO)
+                .unwrap();
         let health = &resources.health;
         let id = health.damage.id("minecraft:mob_attack").unwrap();
         let rules = super::HealthRules::default();
