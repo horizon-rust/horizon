@@ -565,7 +565,7 @@ public final class VanillaCommandExecOracle {
                     messages.add(spans(chatType.decorate(message.content())));
                 }
             };
-            if(Boolean.getBoolean("horizon.merchantCraftedFixture")) this.tickRateManager().setFrozen(true);
+            if(Boolean.getBoolean("horizon.merchantFixture") || Boolean.getBoolean("horizon.merchantCraftedFixture")) this.tickRateManager().setFrozen(true);
             Connection connection = new Connection(PacketFlow.SERVERBOUND);
             EmbeddedChannel channel = Boolean.getBoolean("horizon.merchantCraftedFixture") ? new EmbeddedChannel(
                 new io.netty.channel.ChannelInitializer<io.netty.channel.Channel>() {
@@ -575,13 +575,19 @@ public final class VanillaCommandExecOracle {
                     }
                 }) : new EmbeddedChannel(connection);
             JsonObject login = new JsonObject();
-            if (Boolean.getBoolean("horizon.loadedFixture")) {
+            java.util.Map<Integer, JsonArray> sentMerchantOffers = new java.util.HashMap<>();
+            if (Boolean.getBoolean("horizon.loadedFixture") || Boolean.getBoolean("horizon.merchantCraftedFixture")) {
                 channel.pipeline().addLast(new io.netty.channel.ChannelOutboundHandlerAdapter() {
                     @Override public void write(io.netty.channel.ChannelHandlerContext context, Object message,
                             io.netty.channel.ChannelPromise promise) throws Exception {
                         if (message instanceof net.minecraft.network.protocol.game.ClientboundLoginPacket packet) {
                             login.addProperty("view_distance", packet.chunkRadius());
                             login.addProperty("simulation_distance", packet.simulationDistance());
+                        }
+                        if (message instanceof net.minecraft.network.protocol.game.ClientboundMerchantOffersPacket packet) {
+                            JsonArray offers = new JsonArray();
+                            for (var offer : packet.getOffers()) offers.add(merchantOffer(offer));
+                            sentMerchantOffers.put(packet.getContainerId(), offers);
                         }
                         super.write(context, message, promise);
                     }
@@ -1003,6 +1009,7 @@ public final class VanillaCommandExecOracle {
                         out.append(gson.toJson(record)).append('\n');
                     }
                     case "close_menu" -> player.closeContainer();
+                    case "merchant_save" -> saveEverything(true, true, true);
                     case "merchant_saved_stats" -> {
                         player.getStats().save();
                         String raw;
@@ -1061,9 +1068,10 @@ public final class VanillaCommandExecOracle {
                         uuid=new JsonArray();for(int n:net.minecraft.core.UUIDUtil.uuidToIntArray(player.getUUID()))uuid.add(n);state.add("player",uuid);
                         JsonArray slots=new JsonArray();for(int n=0;n<3;n++)slots.add(merchantStack(menu.getSlot(n).getItem()));state.add("slots",slots);
                         state.add("carried",merchantStack(menu.getCarried()));state.addProperty("xp",menu.getTraderXp());
+                        state.add("sent_offers",sentMerchantOffers.get(menu.containerId));
                         JsonArray offers=new JsonArray();for(var offer:menu.getOffers()) {
                             JsonObject o=new JsonObject();o.addProperty("uses",offer.getUses());o.addProperty("special",offer.getSpecialPriceDiff());
-                            o.addProperty("cost",offer.getCostA().getCount());offers.add(o);
+                            o.addProperty("demand",offer.getDemand());o.addProperty("cost",offer.getCostA().getCount());offers.add(o);
                         }state.add("offers",offers);
                         JsonObject record=new JsonObject();record.addProperty("cmd","#merchant_state "+op.get("label").getAsString());
                         record.add("messages",new JsonArray());record.add("results",new JsonArray());record.add("state",state);
@@ -1156,6 +1164,15 @@ public final class VanillaCommandExecOracle {
                 }
             }
             Files.writeString(output, out.toString(), StandardCharsets.UTF_8);
+        }
+
+        static JsonObject merchantOffer(net.minecraft.world.item.trading.MerchantOffer offer) {
+            JsonObject value = new JsonObject();
+            value.addProperty("uses", offer.getUses());
+            value.addProperty("special", offer.getSpecialPriceDiff());
+            value.addProperty("demand", offer.getDemand());
+            value.addProperty("cost", offer.getCostA().getCount());
+            return value;
         }
 
         static net.minecraft.world.entity.npc.villager.Villager merchantOwner(net.minecraft.world.inventory.MerchantMenu menu) {

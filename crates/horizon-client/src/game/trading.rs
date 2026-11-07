@@ -126,6 +126,35 @@ impl merchant::MapMaker for GameMaps<'_> {
 }
 
 impl Game<'_> {
+    /// `Villager.updateSpecialPrices` for the current local trading player.
+    /// Reputation events refresh only their source player; restocks use `None`.
+    pub(super) fn merchant_refresh_local(&mut self, id: u32, source_uuid: Option<[i32; 4]>) {
+        let trading = self
+            .station
+            .as_ref()
+            .and_then(|s| s.merchant.as_ref())
+            .is_some_and(|m| m.mob == Some(id));
+        if !trading {
+            return;
+        }
+        let Some(trader_uuid) = self.player_uuid_of(self.lan_acting) else {
+            return;
+        };
+        if source_uuid.is_some_and(|source| source != trader_uuid) {
+            return;
+        }
+        let reputation = self.villager_reputation_of(id, trader_uuid);
+        let hero = self.hero_amplifier();
+        self.menu_session(|menu, env, _| {
+            if let Some(session) = menu.merchant.as_mut() {
+                session.reputation = reputation;
+                session.hero = hero;
+                session.update_special_prices();
+            }
+            menu.merchant_update(env);
+            Some(true)
+        });
+    }
     pub(super) fn random_sequences_path(&self) -> std::path::PathBuf {
         self.world_root.join("data/minecraft/random_sequences.dat")
     }
@@ -300,6 +329,11 @@ impl Game<'_> {
         }
         // startTrading: updateSpecialPrices, then the screen opens.
         session.update_special_prices();
+        // The mob owns the live offers even while a menu is open.
+        {
+            let trade = self.mobs[index].extra.trade.get_or_insert_default();
+            trade.offers = session.offers.clone();
+        }
         // setTradingPlayer: a wandering trader stands still while trading, a
         // villager's brain follows and looks at the player
         // (LookAndFollowTradingPlayerSink).
@@ -314,9 +348,19 @@ impl Game<'_> {
         });
         Ok(true)
     }
-    /// `Villager.setTradingPlayer(null)`: the session goes back to the mob
-    /// (special prices stay as they were), the borrowed sequences to the world.
+    /// `Villager.updateSpecialPrices` after restock: the live offers, result
+    /// slot and offer packet all change before the trading player's next click.
+    pub(super) fn merchant_restocked(&mut self, id: u32) {
+        self.merchant_refresh_local(id, None);
+        if let Some(mut host) = self.lan.take() {
+            self.lan_merchant_refresh(&mut host, id, None);
+            self.lan = Some(host);
+        }
+    }
+    /// `Villager.setTradingPlayer(null)`: retain the current special prices;
+    /// the next opening recalculates them. Return borrowed sequences to the world.
     pub(super) fn merchant_closed(&mut self, state: &mut MerchantState) {
+        self.merchant_sync_in(&mut state.session, state.mob);
         let session = &mut state.session;
         for (id, r) in std::mem::take(&mut session.sequences) {
             self.rand_sequences.give_back(id, r);
@@ -397,6 +441,10 @@ impl Game<'_> {
             session.random = m.random.clone();
             session.ambient_sound_time = m.ambient_timer;
             session.origin = [m.position.x, m.position.y, m.position.z];
+            if let Some(trade) = m.extra.trade.as_deref() {
+                session.offers = trade.offers.clone();
+                session.xp = trade.xp;
+            }
         }
     }
     /// After a menu click: the session back to the station, its random to
@@ -472,6 +520,13 @@ impl Game<'_> {
                     self.audio.play(sound, Some(origin), 1.0, 1.0);
                 }
             }
+        }
+        // Offer hooks above may edit the live session. Publish that final state
+        // so the next click, AI restock and save all see the same offers.
+        if let Some(m) = mob.and_then(|id| self.mobs.iter_mut().find(|m| m.id == id)) {
+            let trade = m.extra.trade.get_or_insert_default();
+            trade.offers = session.offers.clone();
+            trade.xp = session.xp;
         }
         (session, traded)
     }

@@ -3304,6 +3304,7 @@ impl Game<'_> {
                         self.ensure_offers(i);
                     }
                 }
+                MobEvent::VillagerRestocked { mob } => self.merchant_restocked(mob),
                 MobEvent::VillagerBirth {
                     parent,
                     partner,
