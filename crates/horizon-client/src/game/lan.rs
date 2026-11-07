@@ -2368,6 +2368,7 @@ impl Game<'_> {
         let events = {
             let clock_rate = self.network_clock_rate();
             let mut ctx = TickCtx {
+                sea_level: self.end.locator().map_or(63, |terrain| terrain.sea_level()),
                 world: &mut self.world,
                 entities: entities.as_slice(),
                 next_entity: &mut self.next_entity,
@@ -2699,6 +2700,7 @@ impl Game<'_> {
             let events = {
                 let clock_rate = self.network_clock_rate();
                 let mut ctx = TickCtx {
+                    sea_level: self.end.locator().map_or(63, |terrain| terrain.sea_level()),
                     world: &mut self.world,
                     entities,
                     next_entity: &mut self.next_entity,
@@ -2946,6 +2948,7 @@ impl Game<'_> {
         };
         let clock_rate = self.network_clock_rate();
         let mut ctx = TickCtx {
+            sea_level: self.end.locator().map_or(63, |terrain| terrain.sea_level()),
             world: &mut self.world,
             entities,
             next_entity: &mut self.next_entity,

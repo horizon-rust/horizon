@@ -977,6 +977,7 @@ mod hub_tests {
         let border = crate::worldborder::WorldBorder::default();
         let mut next = 100;
         let mut ctx = TickCtx {
+            sea_level: 63,
             world: &mut world,
             entities: &[],
             next_entity: &mut next,
@@ -1000,6 +1001,7 @@ mod hub_tests {
         next: &'a mut u32,
     ) -> TickCtx<'a> {
         TickCtx {
+            sea_level: 63,
             world,
             entities: &[],
             next_entity: next,

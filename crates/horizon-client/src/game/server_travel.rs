@@ -1060,6 +1060,7 @@ impl Game<'_> {
         let spawn = self.spawn.map_or([0.5, 80.0, 0.5], |s| [s.x, s.y, s.z]);
         let clock_rate = self.network_clock_rate();
         TickCtx {
+            sea_level: self.end.locator().map_or(63, |terrain| terrain.sea_level()),
             world: &mut self.world,
             entities: &[],
             next_entity: &mut self.next_entity,
