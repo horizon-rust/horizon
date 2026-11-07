@@ -283,6 +283,9 @@ impl<'a> PlayerDirectory<'a> {
             .get(&conn)
             .map(|&index| &self.guests[index].1)
     }
+    pub fn guest_count(&self) -> usize {
+        self.guests.len()
+    }
     /// Where a guest stands in the list this directory was built from.
     pub fn guest_slot(&self, conn: u32) -> Option<usize> {
         self.connections.get(&conn).copied()

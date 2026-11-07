@@ -5893,7 +5893,18 @@ mod effect_refusal_tests {
         assert_eq!(aquatic::dark_ticks(&struck), 100);
     }
 }
-crate::impl_joined!(Mob);
+impl crate::join_seq::Joined for Mob {
+    fn join_seq(&self) -> crate::join_seq::JoinSeq {
+        self.join
+    }
+    fn set_join_seq(&mut self, seq: crate::join_seq::JoinSeq) {
+        self.join = seq;
+    }
+    /// What [`region_tick::SectionOrder`] has to reserve above.
+    fn high_water(&self) -> u64 {
+        self.extra.section_seq
+    }
+}
 
 #[cfg(test)]
 mod named_damage_tests {

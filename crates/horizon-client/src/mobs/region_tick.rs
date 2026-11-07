@@ -238,6 +238,7 @@ impl RegionTick<'_> {
             .collect();
         let mut pending_brains: crate::fast_hash::FxHashMap<u32, Vec<MobEvent>> =
             Default::default();
+        let mut views = LentViews::new(self.players, self.resources.player.as_ref());
         for (slot, original) in input.mobs {
             // Active raiders' hurt ordering still uses a global sequence. No
             // speculative execution may consume it, including rejected work.
@@ -267,12 +268,8 @@ impl RegionTick<'_> {
                 let conn = self
                     .players
                     .player_for(input.owner, &mob, context.bound_player);
-                let player = conn
-                    .and_then(|conn| self.players.guest(conn))
-                    .or(self.resources.player.as_ref())
-                    .cloned();
                 let mut world = self.resources.view(
-                    player,
+                    views.lend(conn),
                     snapshot::SeenView::observed(self.snapshot, &overlay, &reads)
                         .with_species(self.species),
                     &grid,
@@ -283,6 +280,7 @@ impl RegionTick<'_> {
                 world.difficulty = context.difficulty;
                 let kept =
                     mob.tick_with_order(&world, &mut random, &mut events, context.section_order);
+                views.give_back(conn, world.player);
                 (kept, conn)
             };
             let tick_nanos = timed.map(|start| start.elapsed().as_nanos() as u64);
@@ -349,6 +347,47 @@ impl RegionTick<'_> {
     }
 }
 
+/// The player views one region's job lends its mobs, as the walk lends its own:
+/// a tick only reads its view (`&MobWorld`), so a job copies each player it sees
+/// once, not once per mob.
+struct LentViews<'a> {
+    directory: &'a players::PlayerDirectory<'a>,
+    host_source: Option<&'a PlayerView>,
+    host: Option<PlayerView>,
+    guests: Vec<Option<PlayerView>>,
+}
+impl<'a> LentViews<'a> {
+    fn new(directory: &'a players::PlayerDirectory<'a>, host: Option<&'a PlayerView>) -> Self {
+        let mut guests = Vec::new();
+        guests.resize_with(directory.guest_count(), || None);
+        Self {
+            directory,
+            host_source: host,
+            host: None,
+            guests,
+        }
+    }
+    /// Where the view of this connection waits. One the directory doesn't know
+    /// sees the host.
+    fn held(&mut self, conn: Option<u32>) -> &mut Option<PlayerView> {
+        match conn.and_then(|conn| self.directory.guest_slot(conn)) {
+            Some(slot) => &mut self.guests[slot],
+            None => &mut self.host,
+        }
+    }
+    /// The view a mob bound to `conn` sees, until [`Self::give_back`].
+    fn lend(&mut self, conn: Option<u32>) -> Option<PlayerView> {
+        self.held(conn).take().or_else(|| {
+            conn.and_then(|conn| self.directory.guest(conn))
+                .or(self.host_source)
+                .cloned()
+        })
+    }
+    fn give_back(&mut self, conn: Option<u32>, view: Option<PlayerView>) {
+        *self.held(conn) = view;
+    }
+}
+
 /// One persistent bounded pool per server, shared by all of its levels. The
 /// install call lends immutable tick data safely; it joins all region jobs
 /// before returning predictions or propagating a worker panic.
@@ -400,6 +439,21 @@ impl RegionExecutor {
                     .collect()
             }),
             None => items.iter().enumerate().map(each).collect(),
+        }
+    }
+    /// `out` becomes `f` of every item, in order, on the workers, in its own
+    /// allocation when that fits.
+    pub fn map_into<T: Sync, R: Send>(
+        &self,
+        items: &[T],
+        out: &mut Vec<R>,
+        f: impl Fn(&T) -> R + Send + Sync,
+    ) {
+        use rayon::prelude::*;
+        out.clear();
+        match &self.pool {
+            Some(pool) => pool.install(|| out.par_extend(items.par_iter().with_min_len(64).map(f))),
+            None => out.extend(items.iter().map(f)),
         }
     }
     /// `f` of every region's list on the workers, one task for each: unlike
@@ -1474,6 +1528,11 @@ pub fn verify_commit(
 /// Per-level EntitySection insertion order. Reserving a slot for every entity
 /// keeps relative order correct even if an earlier immediate interaction makes
 /// a later mob change sections. Unused reservations are harmless gaps.
+///
+/// Only the numbers' order means anything. Every number this level hands out is
+/// below `next`, so a higher one can only arrive with a mob: one from another
+/// level, or with a number from the standalone allocator. Those join through
+/// the list, which remembers the highest, so a tick need not scan its mobs.
 pub struct SectionOrder {
     next: u64,
 }
@@ -1483,14 +1542,13 @@ impl Default for SectionOrder {
     }
 }
 impl SectionOrder {
-    pub fn reserve(&mut self, mobs: &[Mob]) -> u64 {
-        let after_existing = mobs
-            .iter()
-            .map(|mob| mob.extra.section_seq)
-            .max()
-            .unwrap_or(0)
-            .wrapping_add(1);
+    pub fn reserve(&mut self, mobs: &mut crate::join_seq::JoinList<Mob>) -> u64 {
+        let after_existing = mobs.take_high_water().wrapping_add(1);
         let start = self.next.max(after_existing);
+        debug_assert!(
+            mobs.iter().all(|mob| mob.extra.section_seq < start),
+            "a mob's section number got into the list without joining it"
+        );
         self.next = start.wrapping_add(mobs.len() as u64);
         start
     }
@@ -1506,6 +1564,13 @@ mod tests {
         assert_eq!(executor.slots(&items, |n| n % 7 == 0), sevens);
         let doubled: Vec<u32> = (0..1000).map(|n| n * 2).collect();
         assert_eq!(executor.map(&items, |slot, n| slot as u32 + n), doubled);
+        for executor in [executor, RegionExecutor::new(1).unwrap()] {
+            let mut out = vec![7; 1200];
+            let buffer = out.as_ptr();
+            executor.map_into(&items, &mut out, |n| n * 2);
+            assert_eq!(out, doubled, "what it held before is gone");
+            assert_eq!(out.as_ptr(), buffer, "the allocation it had fits");
+        }
     }
 
     #[test]
@@ -1581,7 +1646,7 @@ mod tests {
             .wrapping_add(1);
         let mut snapshot: Vec<_> = mobs.iter().map(|mob| mob.seen(None)).collect();
         let mut grid = seen_grid::SeenGrid::new(snapshot.iter().map(|seen| seen.bounds));
-        let species_index = snapshot::SpeciesIndex::new(&snapshot);
+        let species_index = snapshot::SpeciesIndex::default();
         let index: FxHashMap<_, _> = mobs
             .iter()
             .enumerate()
@@ -2207,6 +2272,96 @@ mod tests {
             test.round.outcomes().collect::<Vec<_>>(),
             [(0, 2, 2), (1, 1, 1)]
         );
+    }
+
+    #[test]
+    fn a_lent_view_is_the_one_each_mob_saw_and_a_job_copies_it_once() {
+        let at = |x| Vec3::new(x, 64.0, 0.0);
+        let (host, one, two) = (
+            world::test_player(at(1.0)),
+            world::test_player(at(2.0)),
+            world::test_player(at(3.0)),
+        );
+        let guests = vec![(10, one), (20, two)];
+        let directory = players::PlayerDirectory::new(Some(&host), &guests);
+        let mut views = LentViews::new(&directory, Some(&host));
+        // Interleaved as a region's mobs are; a connection nobody has sees the host.
+        for (conn, x) in [
+            (None, 1.0),
+            (Some(10), 2.0),
+            (Some(20), 3.0),
+            (Some(10), 2.0),
+            (None, 1.0),
+            (Some(99), 1.0),
+            (Some(20), 3.0),
+        ] {
+            let view = views.lend(conn);
+            assert_eq!(view.as_ref().map(|v| v.position), Some(at(x)), "{conn:?}");
+            views.give_back(conn, view);
+        }
+        for original in [&host, &guests[0].1, &guests[1].1] {
+            assert_eq!(Arc::strong_count(&original.allies), 2, "one copy per job");
+        }
+        drop(views);
+
+        let directory = players::PlayerDirectory::new(None, &guests);
+        let mut views = LentViews::new(&directory, None);
+        assert!(views.lend(None).is_none(), "no host, no guest: nobody");
+        assert_eq!(views.lend(Some(20)).unwrap().position, at(3.0));
+    }
+
+    #[test]
+    fn section_numbers_stay_above_everything_a_level_has_seen() {
+        let joining = |id, section_seq| {
+            let mut mob = test_mob(id);
+            mob.extra.section_seq = section_seq;
+            mob
+        };
+        let mut order = SectionOrder::default();
+        let mut mobs = crate::join_seq::JoinList::default();
+        mobs.push(joining(1, 0));
+        mobs.push(joining(2, 0));
+        assert_eq!(order.reserve(&mut mobs), 1, "the first numbers");
+        assert_eq!(order.reserve(&mut mobs), 3, "ranges never overlap");
+
+        // A number below `next` changes nothing, however it got here.
+        mobs.push(joining(3, 2));
+        assert_eq!(order.reserve(&mut mobs), 5);
+
+        // A mob from a level further along: this level's numbers go above it.
+        mobs.push(joining(4, 100));
+        assert_eq!(order.reserve(&mut mobs), 101);
+        assert_eq!(order.reserve(&mut mobs), 105, "only once");
+
+        let arrivals: [fn(&mut crate::join_seq::JoinList<Mob>, Mob); 4] = [
+            |mobs, mob| mobs.insert(0, mob),
+            |mobs, mob| mobs.extend([mob]),
+            // The tick's list goes back behind what spawned while it was out.
+            |mobs, mob| {
+                let mut spawned = crate::join_seq::JoinList::default();
+                spawned.push(mob);
+                spawned.append(mobs);
+                *mobs = std::mem::take(&mut spawned);
+            },
+            // Taken out for a while and put back.
+            |mobs, mob| {
+                let mut held = std::mem::take(mobs);
+                held.push(mob);
+                *mobs = held;
+            },
+        ];
+        for arrive in arrivals {
+            let mut order = SectionOrder::default();
+            let mut mobs = crate::join_seq::JoinList::default();
+            arrive(&mut mobs, joining(5, 500));
+            assert_eq!(order.reserve(&mut mobs), 501);
+        }
+
+        // One that leaves before the next tick still leaves the numbers rising.
+        mobs.push(joining(6, 900));
+        mobs.retain(|mob| mob.id != 6);
+        let start = order.reserve(&mut mobs);
+        assert!(start >= 109, "{start}");
     }
 
     #[test]

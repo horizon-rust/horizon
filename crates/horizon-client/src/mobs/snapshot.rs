@@ -7,7 +7,7 @@ use super::{
 };
 use crate::fast_hash::{FxHashMap, FxHashSet};
 use horizon_core::geometry::Aabb;
-use std::{cell::RefCell, ops::Index};
+use std::{cell::RefCell, ops::Index, sync::OnceLock};
 
 #[derive(Default, Debug, Clone)]
 pub struct ReadSet {
@@ -232,18 +232,26 @@ impl SnapshotChanges {
     }
 }
 
-/// Ordered membership built once from the tick's snapshot. It lends only
-/// slot indexes; changed same-region membership is supplied by the overlay.
+/// Ordered membership of the tick's snapshot, built the first time a mob asks:
+/// most ticks nobody does. A mob's species doesn't change, so its slot's doesn't
+/// during the tick either, and how far the walk has got doesn't show in the
+/// result. It lends only slot indexes; changed same-region membership is
+/// supplied by the overlay.
+#[derive(Default)]
 pub struct SpeciesIndex {
-    slots: FxHashMap<Species, Vec<usize>>,
+    slots: OnceLock<FxHashMap<Species, Vec<usize>>>,
 }
 impl SpeciesIndex {
-    pub fn new(snapshot: &[Seen]) -> Self {
-        let mut slots: FxHashMap<Species, Vec<usize>> = Default::default();
-        for (slot, seen) in snapshot.iter().enumerate() {
-            slots.entry(seen.species).or_default().push(slot);
-        }
-        Self { slots }
+    /// The slots of a species, ascending.
+    fn of(&self, snapshot: &[Seen], species: Species) -> &[usize] {
+        let slots = self.slots.get_or_init(|| {
+            let mut slots: FxHashMap<Species, Vec<usize>> = Default::default();
+            for (slot, seen) in snapshot.iter().enumerate() {
+                slots.entry(seen.species).or_default().push(slot);
+            }
+            slots
+        });
+        slots.get(&species).map_or(&[], Vec::as_slice)
     }
 }
 
@@ -291,25 +299,38 @@ impl<'a> SeenView<'a> {
         if let Some(reads) = self.reads {
             reads.borrow_mut().species.insert(species);
         }
-        let mut slots = match self.species {
-            Some(index) => index.slots.get(&species).cloned().unwrap_or_default(),
-            None => self
-                .base
-                .iter()
-                .enumerate()
-                .filter(|(_, seen)| seen.species == species)
-                .map(|(slot, _)| slot)
-                .collect(),
+        // Both ascending; at most one of them holds anything. A slot that left
+        // the species is filtered out below, so only one that entered it makes
+        // a list of its own.
+        let (mut shared, mut owned): (&'a [usize], Vec<usize>) = match self.species {
+            Some(index) => (index.of(self.base, species), Vec::new()),
+            None => (
+                &[],
+                self.base
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, seen)| seen.species == species)
+                    .map(|(slot, _)| slot)
+                    .collect(),
+            ),
         };
         if let Some(overlay) = self.overlay {
-            for (&slot, seen) in &overlay.entries {
-                if seen.species == species && self.base[slot].species != species {
-                    slots.push(slot);
-                }
+            let mut entered = overlay
+                .entries
+                .iter()
+                .filter(|(slot, seen)| {
+                    seen.species == species && self.base[**slot].species != species
+                })
+                .map(|(&slot, _)| slot)
+                .peekable();
+            if entered.peek().is_some() {
+                owned.extend_from_slice(shared);
+                shared = &[];
+                owned.extend(entered);
+                owned.sort_unstable();
             }
         }
-        slots.sort_unstable();
-        slots.into_iter().filter_map(move |slot| {
+        shared.iter().copied().chain(owned).filter_map(move |slot| {
             self.get_untracked(slot)
                 .filter(|seen| seen.species == species)
         })
@@ -490,7 +511,7 @@ mod tests {
             .map(|id| Mob::new(id, kind(), horizon_core::geometry::Vec3::ZERO, 0.0).seen(None))
             .collect();
         base[1].species = Species::Villager;
-        let index = SpeciesIndex::new(&base);
+        let index = SpeciesIndex::default();
         let mut overlay = SnapshotOverlay::default();
         let mut entered = base[0].clone();
         entered.species = Species::Villager;
@@ -513,6 +534,52 @@ mod tests {
         assert_eq!(ids(&overlay), [1, 3]);
         assert!(!reads.borrow().all);
         assert!(reads.borrow().species.contains(&Species::Villager));
+    }
+
+    #[test]
+    fn species_lists_keep_slot_order_on_every_view() {
+        use super::super::{Mob, sensor_scan_tests::kind};
+        let mut base: Vec<_> = (1..=5)
+            .map(|id| Mob::new(id, kind(), horizon_core::geometry::Vec3::ZERO, 0.0).seen(None))
+            .collect();
+        for slot in [1, 2, 4] {
+            base[slot].species = Species::Villager;
+        }
+        let ids = |view: SeenView<'_>| {
+            view.of_species(Species::Villager)
+                .map(|seen| seen.id)
+                .collect::<Vec<_>>()
+        };
+        let index = SpeciesIndex::default();
+        let walk = SeenView::from(&base).with_species(&index);
+        assert_eq!(ids(walk), [2, 3, 5]);
+        assert_eq!(ids(SeenView::from(&base)), [2, 3, 5], "without an index");
+
+        // As the walk replaces entries: the live one answers, in the same place.
+        let mut live = base.clone();
+        live[2].alive = false;
+        let view = SeenView::from(&live).with_species(&index);
+        let dead: Vec<_> = view
+            .of_species(Species::Villager)
+            .map(|seen| (seen.id, seen.alive))
+            .collect();
+        assert_eq!(dead, [(2, true), (3, false), (5, true)]);
+
+        // An index first asked once the walk is under way gives the same list.
+        let late = SpeciesIndex::default();
+        assert_eq!(ids(SeenView::from(&live).with_species(&late)), [2, 3, 5]);
+
+        // Someone leaving is no reason to copy, and comes out all the same.
+        let reads = RefCell::new(ReadSet::default());
+        let mut overlay = SnapshotOverlay::default();
+        let observed = |overlay: &SnapshotOverlay| {
+            ids(SeenView::observed(&base, overlay, &reads).with_species(&index))
+        };
+        assert_eq!(observed(&overlay), [2, 3, 5]);
+        let mut left = base[2].clone();
+        left.species = Species::Cow;
+        overlay.update(2, left);
+        assert_eq!(observed(&overlay), [2, 5]);
     }
 
     #[test]

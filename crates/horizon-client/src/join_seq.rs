@@ -47,6 +47,11 @@ impl JoinSeq {
 pub trait Joined {
     fn join_seq(&self) -> JoinSeq;
     fn set_join_seq(&mut self, seq: JoinSeq);
+    /// A number its list remembers the highest of, whatever then happens to this
+    /// entity ([`JoinList::take_high_water`]).
+    fn high_water(&self) -> u64 {
+        0
+    }
 }
 
 /// Implements [`Joined`] for a struct with a `join: JoinSeq` field.
@@ -93,6 +98,7 @@ impl ListStamp {
 pub struct JoinList<T> {
     list: Vec<T>,
     stamp: ListStamp,
+    high_water: u64,
 }
 
 impl<T> Default for JoinList<T> {
@@ -104,7 +110,10 @@ impl<T> Default for JoinList<T> {
 impl<T: Clone> Clone for JoinList<T> {
     /// A list of its own from here on: the two change apart.
     fn clone(&self) -> Self {
-        Self::from(self.list.clone())
+        Self {
+            high_water: self.high_water,
+            ..Self::from(self.list.clone())
+        }
     }
 }
 
@@ -116,6 +125,7 @@ impl<T> From<Vec<T>> for JoinList<T> {
         Self {
             list,
             stamp: ListStamp::new(),
+            high_water: 0,
         }
     }
 }
@@ -147,18 +157,29 @@ impl<T> JoinList<T> {
 }
 
 impl<T: Joined> JoinList<T> {
-    fn number(entity: &mut T) {
+    fn admit(&mut self, entity: &mut T) {
         if !entity.join_seq().is_joined() {
             entity.set_join_seq(JoinSeq::next());
         }
+        self.high_water = self.high_water.max(entity.high_water());
     }
     pub fn push(&mut self, mut entity: T) {
-        Self::number(&mut entity);
+        self.admit(&mut entity);
         self.deref_mut().push(entity);
     }
     pub fn insert(&mut self, index: usize, mut entity: T) {
-        Self::number(&mut entity);
+        self.admit(&mut entity);
         self.deref_mut().insert(index, entity);
+    }
+    /// Moves all of `other` to the end of this list.
+    pub fn append(&mut self, other: &mut Self) {
+        self.high_water = self.high_water.max(std::mem::take(&mut other.high_water));
+        self.deref_mut().append(other.deref_mut());
+    }
+    /// The highest [`Joined::high_water`] of what joined since the last call.
+    /// Entities that have left since still count, which only ever raises it.
+    pub fn take_high_water(&mut self) -> u64 {
+        std::mem::take(&mut self.high_water)
     }
     pub fn extend(&mut self, entities: impl IntoIterator<Item = T>) {
         for entity in entities {

@@ -104,7 +104,7 @@ pub(super) struct Creatures {
     pub lan_explosions: Vec<([f64; 3], bool, f32, usize, Vec<(u32, [f64; 3])>)>,
     /// Ticks left of the elder guardian's apparition (MobAppearanceParticle).
     pub elder_apparition: i32,
-    /// The serial snapshot's buffer between ticks, empty: ~400 bytes a mob, so
+    /// The snapshot's buffer between ticks, empty: ~400 bytes a mob, so
     /// thousands of mobs would allocate and free megabytes every tick.
     seen_buf: Vec<Seen>,
     /// The mobs whose own tick ran in the last `tick_creature_entities`:
@@ -1063,18 +1063,17 @@ impl Game<'_> {
         } else {
             Vec::new()
         };
-        let mut snapshot: Vec<Seen> = match self
+        let mut snapshot = std::mem::take(&mut self.creatures.seen_buf);
+        match self
             .simulation_server
             .executor(self.simulation.regions.regions().len(), mob_count)
         {
-            Some(executor) => executor.map(&self.simulation.mobs, |_, m| seen(m, uuid)),
-            None => {
-                let mut snapshot = std::mem::take(&mut self.creatures.seen_buf);
-                snapshot.extend(self.simulation.mobs.iter().map(|m| seen(m, uuid)));
-                snapshot
+            Some(executor) => {
+                executor.map_into(&self.simulation.mobs, &mut snapshot, |m| seen(m, uuid));
             }
-        };
-        let species_index = horizon_client::mobs::snapshot::SpeciesIndex::new(&snapshot);
+            None => snapshot.extend(self.simulation.mobs.iter().map(|m| seen(m, uuid))),
+        }
+        let species_index = horizon_client::mobs::snapshot::SpeciesIndex::default();
         laps.lap("mob_snapshot");
         let mut events = Vec::new();
         // A panic from here on leaves them to the crash save.
@@ -1294,16 +1293,9 @@ impl Game<'_> {
                         executor, plan, mobs, &snapshot, &grid, &scratch, &context, died, &bindings,
                     ));
                 } else {
-                    // Every mob a clean round ticks was due: loaded, in range, not canceled.
-                    ticked.extend(
-                        mobs.iter()
-                            .filter(|m| {
-                                let (x, z) =
-                                    (m.position.x.floor() as i32, m.position.z.floor() as i32);
-                                base.world.loaded(x, z) && ticking(x, z) && !round.canceled(m.id)
-                            })
-                            .map(|m| m.id),
-                    );
+                    // A clean round predicted every mob, and only one that was
+                    // due gets a prediction: loaded, in range, not canceled.
+                    ticked.extend(mobs.iter().map(|m| m.id));
                     transaction.commit_clean(
                         executor,
                         plan,
@@ -1635,9 +1627,10 @@ impl Game<'_> {
             #[cfg(test)]
             if self.simulation_server.walk_log.is_some() {
                 let walk_log = format!(
-                    "mobs {:?}\nsnapshot {snapshot:?}\ngrid {grid:?}\nrandom {scratch:?}\nstats {:?}\nkeep {keep:?}\nevents {events:?}\nguest_events {guest_events:?}\ndead {dead:?}\ncorpses {corpses:?}\ngone {gone:?}\npushes {:?}\nbindings {:?}",
+                    "mobs {:?}\nsnapshot {snapshot:?}\ngrid {grid:?}\nrandom {scratch:?}\nstats {:?}\nticked {:?}\nkeep {keep:?}\nevents {events:?}\nguest_events {guest_events:?}\ndead {dead:?}\ncorpses {corpses:?}\ngone {gone:?}\npushes {:?}\nbindings {:?}",
                     **mobs,
                     region_round.as_ref().map(|round| round.stats.outcome()),
+                    ticked.iter().collect::<std::collections::BTreeSet<_>>(),
                     pushes.waiting(),
                     bindings
                         .iter()
