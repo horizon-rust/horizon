@@ -11,7 +11,7 @@ use horizon_client::{
         Mob, MobWorld, Species,
         data::{self, MobData},
         seen_grid::SeenGrid,
-        spawn_rules::{Dimension, SpawnLevel},
+        spawn_rules::SpawnLevel,
         spawn_selection::{
             self, Category, Counted, Heightmap, NaturalLevel, SpawnCost, SpawnPlayer, SpawnRequest,
             SpawnState, Spawned, StructureAt, StructureSpawns,
@@ -23,6 +23,7 @@ use horizon_core::{
     random::{LegacyRandom, RandomSource, WorldgenRandom, XoroshiroRandom},
 };
 use horizon_world::{
+    dimension_type::DimensionFacts,
     nbt::{Compound, Tag},
     registry::BlockStateId,
 };
@@ -430,8 +431,8 @@ impl SpawnLevel for GameLevel<'_, '_> {
     fn peaceful(&self) -> bool {
         self.w.peaceful()
     }
-    fn dimension(&self) -> Dimension {
-        self.w.dimension()
+    fn dimension_type(&self) -> &DimensionFacts {
+        self.game.dimension_type()
     }
     fn surface_slime_chance(&self, x: i32, y: i32, z: i32) -> f32 {
         self.w.surface_slime_chance(x, y, z)
@@ -470,11 +471,7 @@ impl NaturalLevel for GameLevel<'_, '_> {
         self.w.world.top_y() - 1
     }
     fn ambient_light(&self) -> f32 {
-        match self.game.dim {
-            Dim::Nether => 0.1,
-            Dim::End => 0.25,
-            _ => 0.0,
-        }
+        self.game.dimension_type().ambient_light
     }
     fn has_ceiling(&self) -> bool {
         self.w.world.shape.has_ceiling
