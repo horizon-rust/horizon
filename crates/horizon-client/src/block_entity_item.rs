@@ -129,6 +129,35 @@ pub fn stack_configured_entity(stack: &crate::items::ItemStack, kind: &str, own:
     }
 }
 
+/// `EntityType.createDefaultStackConfig` for a vehicle an item places or a
+/// dispenser drops (`MinecartItem`, `BoatItem` and their dispense behaviours):
+/// `applyComponentsFromItemStack` stores the item's `minecraft:custom_data` as
+/// the vehicle's `data` and its `minecraft:custom_name` as `CustomName`, then
+/// `updateCustomEntityTag` merges the item's `minecraft:entity_data` over the
+/// vehicle's saved tag `own` when it names `kind`. `op` is whether the one who
+/// placed it is an op (`onlyOpCanSetNbt` types take data from ops only; a
+/// dispenser has no player, so it passes `false`).
+pub fn stack_configured_vehicle(
+    stack: &crate::items::ItemStack,
+    kind: &str,
+    own: &Tag,
+    op: bool,
+) -> Tag {
+    let mut tag = own.clone();
+    if let (Tag::Compound(map), Some(data)) = (&mut tag, stack.data()) {
+        if let Some(custom) = data.other("minecraft:custom_data") {
+            map.insert("data".into(), custom.clone());
+        }
+        if let Some(name) = &data.custom_name {
+            map.insert("CustomName".into(), name.clone());
+        }
+    }
+    match spawn_egg_entity_data(stack, kind, op) {
+        Some(data) => crate::data_cmd::merged(&tag, data),
+        None => tag,
+    }
+}
+
 /// `Spawner.getSpawnEntityDisplayName` (`SpawnData.entity.id` of the item's
 /// data, which `ItemStack.addDetailsToTooltip` reads for spawners and trial
 /// spawners alike): the entity type a spawner item spawns.
@@ -638,6 +667,61 @@ mod tests {
         let tag = stack_configured_entity(&stack, "minecraft:item_frame", &own);
         assert_eq!(tag.get("ShowArms"), Some(&Tag::Byte(0)));
         assert!(tag.get("data").is_some());
+    }
+
+    #[test]
+    fn a_placed_vehicle_takes_the_items_name_data_and_matching_entity_data() {
+        let item = |id: &str, components: &str| {
+            let components = snbt(components);
+            let (damage, extra) = crate::item_data::decode_components(Some(&components));
+            crate::items::ItemStack {
+                damage,
+                extra,
+                ..crate::items::ItemStack::new(id, 1)
+            }
+        };
+        let own = snbt("{id:\"minecraft:tnt_minecart\",fuse:-1}");
+        let stack = item(
+            "minecraft:tnt_minecart",
+            "{\"minecraft:custom_name\":\"Rail Rider\",\"minecraft:custom_data\":{k:1b},\
+             \"minecraft:entity_data\":{id:\"minecraft:tnt_minecart\",fuse:80}}",
+        );
+        // The name and custom data are stored, the matching entity data merges.
+        let tag = stack_configured_vehicle(&stack, "minecraft:tnt_minecart", &own, false);
+        assert_eq!(tag.get("fuse"), Some(&Tag::Int(80)));
+        assert_eq!(
+            tag.get("CustomName"),
+            Some(&Tag::String("Rail Rider".into()))
+        );
+        assert_eq!(
+            tag.get("data").and_then(|d| d.get("k")),
+            Some(&Tag::Byte(1))
+        );
+        // Entity data naming another type is not loaded; the name still is.
+        let tag = stack_configured_vehicle(&stack, "minecraft:chest_minecart", &own, false);
+        assert_eq!(tag.get("fuse"), Some(&Tag::Int(-1)));
+        assert!(tag.get("CustomName").is_some());
+        // An op-only type takes entity data from an op, never from a dispenser.
+        let command = item(
+            "minecraft:command_block_minecart",
+            "{\"minecraft:entity_data\":{id:\"minecraft:command_block_minecart\",Command:\"say hi\"}}",
+        );
+        let own = snbt("{id:\"minecraft:command_block_minecart\",Command:\"\"}");
+        let kind = "minecraft:command_block_minecart";
+        assert_eq!(
+            stack_configured_vehicle(&command, kind, &own, true).get("Command"),
+            Some(&Tag::String("say hi".into()))
+        );
+        assert_eq!(
+            stack_configured_vehicle(&command, kind, &own, false).get("Command"),
+            Some(&Tag::String("".into()))
+        );
+        // A plain item changes nothing.
+        let plain = item("minecraft:tnt_minecart", "{}");
+        assert_eq!(
+            stack_configured_vehicle(&plain, "minecraft:tnt_minecart", &own, true),
+            own
+        );
     }
 
     #[test]

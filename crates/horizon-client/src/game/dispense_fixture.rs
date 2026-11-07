@@ -1296,7 +1296,21 @@ impl Game<'_> {
         for b in &self.boats {
             let kind = b.entity_type();
             let (p, v) = (b.position, b.velocity);
-            out.push(line(&kind, [p.x, p.y, p.z], [v.x, v.y, v.z], ""));
+            let saved = horizon_client::entity_nbt::boat_to_nbt(
+                &kind,
+                p,
+                v,
+                [b.yaw, b.pitch],
+                [0; 4],
+                self.persist.raw.get(&b.id),
+                b.chest.then_some(&b.items[..]),
+            );
+            out.push(line(
+                &kind,
+                [p.x, p.y, p.z],
+                [v.x, v.y, v.z],
+                &vehicle_extras(&saved, None),
+            ));
         }
         // A merged orb prints once per count, as the oracle does: whether orbs
         // merge depends on entity ids, which differ from vanilla's.
@@ -1313,7 +1327,13 @@ impl Game<'_> {
         }
         for c in &self.carts {
             let (p, v) = (c.position, c.velocity);
-            out.push(line(c.kind.id(), [p.x, p.y, p.z], [v.x, v.y, v.z], ""));
+            let saved = c.to_nbt([0; 4], self.persist.raw.get(&c.id));
+            out.push(line(
+                c.kind.id(),
+                [p.x, p.y, p.z],
+                [v.x, v.y, v.z],
+                &vehicle_extras(&saved, Some(c.kind)),
+            ));
         }
         for c in &self.crystals {
             let p = c.position;
@@ -1334,4 +1354,34 @@ impl Game<'_> {
             out.push(line(kind, centre(f.bounds()), [0.0; 3], ""));
         }
     }
+}
+
+/// What the oracle prints after a dispensed vehicle's motion: its custom name
+/// (plain text), a TNT cart's fuse and a command cart's command, all read from
+/// the entity's saved form.
+fn vehicle_extras(
+    saved: &horizon_world::nbt::Tag,
+    cart: Option<super::minecarts::CartKind>,
+) -> String {
+    use horizon_world::nbt::Tag;
+    let mut parts = Vec::new();
+    if let Some(Tag::String(name)) = saved.get("CustomName") {
+        parts.push(format!("name={}", name.to_string_lossy()));
+    }
+    match cart {
+        Some(super::minecarts::CartKind::Tnt) => {
+            if let Some(Tag::Int(fuse)) = saved.get("fuse") {
+                parts.push(format!("cart_fuse={fuse}"));
+            }
+        }
+        Some(super::minecarts::CartKind::CommandBlock) => {
+            let command = match saved.get("Command") {
+                Some(Tag::String(command)) => command.to_string_lossy(),
+                _ => String::new(),
+            };
+            parts.push(format!("cmd={command}"));
+        }
+        _ => {}
+    }
+    parts.join(" ")
 }

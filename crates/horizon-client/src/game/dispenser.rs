@@ -1250,6 +1250,8 @@ impl Game<'_> {
         if chest {
             boat = boat.with_chest();
         }
+        // `BoatDispenseItemBehavior`: `createDefaultStackConfig` with no player.
+        self.configure_boat_from_stack(&boat, &stack, false);
         self.world.modified.insert((front.0 >> 4, front.2 >> 4));
         self.boats.push(boat);
         if self.serving.is_some() || self.options.dedicated.is_some() {
@@ -1291,11 +1293,13 @@ impl Game<'_> {
             }
         };
         self.next_entity += 1;
-        let cart = super::minecarts::Minecart::new(
+        let mut cart = super::minecarts::Minecart::new(
             self.next_entity,
             kind,
             Vec3::new(x, base_y + y_offset, z),
         );
+        // `MinecartDispenseItemBehavior`: `createDefaultStackConfig` with no player.
+        self.configure_cart_from_stack(&mut cart, &stack, false);
         self.world.modified.insert((front.0 >> 4, front.2 >> 4));
         self.carts.push(cart);
         if self.serving.is_some() || self.options.dedicated.is_some() {

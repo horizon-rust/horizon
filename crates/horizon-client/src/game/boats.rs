@@ -1245,12 +1245,43 @@ impl Game<'_> {
             Vec3::new(b.position.x, top, b.position.z)
         }
     }
+    /// `EntityType.createDefaultStackConfig` on a boat an item placed or a
+    /// dispenser dropped: the item's `custom_name` and `custom_data`, then its
+    /// `entity_data` merged over the boat's saved tag. The boat's own fields
+    /// stay as placed; the merged tag is kept as its saved extras.
+    pub(super) fn configure_boat_from_stack(&mut self, boat: &Boat, stack: &ItemStack, op: bool) {
+        let own = horizon_client::entity_nbt::boat_to_nbt(
+            &boat.entity_type(),
+            boat.position,
+            boat.velocity,
+            [boat.yaw, boat.pitch],
+            [0; 4],
+            None,
+            boat.chest.then_some(&boat.items[..]),
+        );
+        let mut raw = horizon_client::block_entity_item::stack_configured_vehicle(
+            stack,
+            boat.entity_type().as_str(),
+            &own,
+            op,
+        );
+        if raw == own {
+            return;
+        }
+        if let horizon_world::nbt::Tag::Compound(map) = &mut raw {
+            map.remove(&"UUID".into());
+        }
+        self.persist.raw.insert(boat.id, raw);
+    }
     /// `BoatItem.use`: aim at a block or the water surface.
     pub(super) fn place_boat(&mut self, stack: &ItemStack) -> bool {
         let Some(boat) = self.boat_to_place(stack) else {
             return false;
         };
         self.next_entity += 1;
+        // `BoatItem.use`: `createDefaultStackConfig` with the placing player.
+        let op = self.acting_player_is_op();
+        self.configure_boat_from_stack(&boat, stack, op);
         let key = (
             boat.position.x.floor() as i32 >> 4,
             boat.position.z.floor() as i32 >> 4,
