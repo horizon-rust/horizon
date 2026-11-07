@@ -892,5 +892,14 @@
   "Editing: %s": "Editing: %s",
   "Press the button for this. %s cancels.": "Press the button for this. %s cancels.",
   "This button also does: %s": "This button also does: %s",
-  "horizon.pad.notice.connected.press": "Press to use it"
+  "horizon.pad.notice.connected.press": "Press to use it",
+  "horizon.recipes.previous_category": "Previous Category",
+  "horizon.recipes.next_category": "Next Category",
+  "horizon.recipes.category.smelting": "Smelting",
+  "horizon.recipes.category.smoking": "Smoking",
+  "horizon.recipes.category.blasting": "Blasting",
+  "horizon.recipes.category.campfire": "Campfire Cooking",
+  "horizon.recipes.category.stonecutting": "Stonecutting",
+  "horizon.recipes.category.smithing": "Smithing",
+  "horizon.recipes.category.brewing": "Brewing"
 }
