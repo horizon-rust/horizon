@@ -1201,6 +1201,7 @@ impl Items {
             killed_by_player: false,
             explosion_radius: None,
             this_entity: false,
+            target: None,
             keep_empty,
         };
         ctx.evaluate(table, random)
@@ -1379,6 +1380,7 @@ impl Items {
                 killed_by_player: false,
                 explosion_radius,
                 this_entity: breaker,
+                target: None,
                 keep_empty,
             };
             return ctx.evaluate(table, random);
@@ -1391,6 +1393,7 @@ impl Items {
             killed_by_player: false,
             explosion_radius,
             this_entity: breaker,
+            target: None,
             keep_empty,
         };
         ctx.evaluate(table, random)
@@ -1427,6 +1430,7 @@ impl Items {
             killed_by_player,
             explosion_radius: None,
             this_entity: false,
+            target: None,
             keep_empty,
         };
         // LootTable.getRandomItemsRaw visits the table itself first.
@@ -1465,6 +1469,7 @@ impl Items {
             killed_by_player: false,
             explosion_radius: None,
             this_entity: false,
+            target: None,
             keep_empty: false,
         };
         match table.get("random_sequence").and_then(Value::as_str) {
@@ -1492,6 +1497,7 @@ impl Items {
             killed_by_player,
             explosion_radius: None,
             this_entity: false,
+            target: None,
             keep_empty: false,
         };
         ctx.evaluate(table, random)
@@ -1503,7 +1509,7 @@ impl Items {
         held: Option<&ItemStack>,
         random: &mut R,
     ) -> Vec<ItemStack> {
-        self.entity_drops_for_command(entity, killed_by_player, held, random, false)
+        self.entity_drops_context(entity, killed_by_player, held, None, random, false)
     }
     /// `LootCommand.dropKillLoot`: output-list adapter; replacement keeps emitted empties.
     pub fn entity_drops_for_command<R: RandomSource>(
@@ -1511,6 +1517,38 @@ impl Items {
         entity: &str,
         killed_by_player: bool,
         held: Option<&ItemStack>,
+        random: &mut R,
+        keep_empty: bool,
+    ) -> Vec<ItemStack> {
+        self.entity_drops_context(entity, killed_by_player, held, None, random, keep_empty)
+    }
+    /// `LootCommand.dropKillLoot`: bind actual target predicates without changing the evaluator.
+    #[allow(clippy::too_many_arguments)]
+    pub fn entity_drops_with_target<R: RandomSource>(
+        &self,
+        entity: &str,
+        killed_by_player: bool,
+        held: Option<&ItemStack>,
+        target: &horizon_world::loot::LootEntity,
+        matcher: &dyn Fn(&Value, &horizon_world::loot::LootEntity) -> bool,
+        random: &mut R,
+        keep_empty: bool,
+    ) -> Vec<ItemStack> {
+        self.entity_drops_context(
+            entity,
+            killed_by_player,
+            held,
+            Some((target, matcher)),
+            random,
+            keep_empty,
+        )
+    }
+    fn entity_drops_context<R: RandomSource>(
+        &self,
+        entity: &str,
+        killed_by_player: bool,
+        held: Option<&ItemStack>,
+        target: Option<EntityTarget<'_>>,
         random: &mut R,
         keep_empty: bool,
     ) -> Vec<ItemStack> {
@@ -1527,6 +1565,7 @@ impl Items {
             killed_by_player,
             explosion_radius: None,
             this_entity: false,
+            target,
             keep_empty,
         };
         ctx.evaluate(table, random)
@@ -1563,6 +1602,10 @@ impl LootContext<'_> {
         out
     }
 }
+type EntityTarget<'a> = (
+    &'a horizon_world::loot::LootEntity,
+    &'a dyn Fn(&Value, &horizon_world::loot::LootEntity) -> bool,
+);
 struct LootContext<'a> {
     items: &'a Items,
     block: &'a str,
@@ -1573,6 +1616,8 @@ struct LootContext<'a> {
     explosion_radius: Option<f32>,
     /// `LootContextParams.THIS_ENTITY` is set (a player broke the block).
     this_entity: bool,
+    /// Actual command target, used only by `entity_properties` for `this`.
+    target: Option<EntityTarget<'a>>,
     /// Command replacement consumes the emitted list positions, including empty stacks.
     keep_empty: bool,
 }
@@ -1764,6 +1809,12 @@ impl LootContext<'_> {
                     c["unenchanted_chance"].as_f64().unwrap_or(0.0) as f32
                 };
                 random.next_float() < chance
+            }
+            "minecraft:entity_properties"
+                if c["entity"].as_str() == Some("this") && self.target.is_some() =>
+            {
+                let (target, matcher) = self.target.unwrap();
+                matcher(&c["predicate"], target)
             }
             // `this` with no checks (snow, chorus flower) holds when an entity
             // broke the block (LootItemEntityPropertyCondition needs the entity).
@@ -2890,6 +2941,95 @@ mod tests {
         );
     }
 
+    #[test]
+    fn entity_target_context_leaves_unaffected_rolls_and_rng_continuation_unchanged() {
+        let mut items = Items::for_tests(HashMap::new());
+        items.loot = Arc::new([("minecraft:entities/test".into(), json!({"pools":[{
+            "rolls":{"type":"minecraft:uniform","min":1,"max":3},
+            "condition":{"type":"minecraft:all_of","terms":[
+                {"type":"minecraft:killed_by_player"},
+                {"type":"minecraft:match_tool","predicate":{"items":"minecraft:stick"}}]},
+            "entries":[{"type":"minecraft:item","name":"minecraft:diamond","weight":1},
+                       {"type":"minecraft:item","name":"minecraft:iron_ingot","weight":3}],
+            "modifier":[{"type":"minecraft:set_count","count":{"type":"minecraft:uniform","min":1,"max":4}}]
+        }]}))].into_iter().collect());
+        let target = horizon_world::loot::LootEntity::new("minecraft:sheep");
+        let held = ItemStack::new("minecraft:stick", 1);
+        let unused = |_: &Value, _: &horizon_world::loot::LootEntity| -> bool {
+            panic!("no entity predicate on this unaffected path")
+        };
+        for seed in [0, 1, 99, i64::MAX] {
+            for by_player in [false, true] {
+                let mut old = LegacyRandom::new(seed);
+                let mut bound = old.clone();
+                let expected =
+                    items.entity_drops("minecraft:test", by_player, Some(&held), &mut old);
+                let actual = items.entity_drops_with_target(
+                    "minecraft:test",
+                    by_player,
+                    Some(&held),
+                    &target,
+                    &unused,
+                    &mut bound,
+                    false,
+                );
+                assert_eq!(actual, expected);
+                assert_eq!(bound.next_long(), old.next_long());
+                assert_eq!(bound.next_int_bound(137), old.next_int_bound(137));
+            }
+        }
+    }
+
+    #[test]
+    fn entity_target_context_reuses_the_loaded_matcher_only_for_this() {
+        use horizon_world::loot::{LootData, LootEntity};
+        let root = std::env::temp_dir().join(format!("h036-items-matcher-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("data/minecraft/loot_table")).unwrap();
+        std::fs::write(root.join("items.json"), "{}").unwrap();
+        let data = LootData::load(&root, &PackOverlay::NONE).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        let matcher = |p: &Value, e: &LootEntity| data.entity_matches(p, Some(e));
+        let mut items = Items::for_tests(HashMap::new());
+        for who in ["this", "attacker"] {
+            items.loot = Arc::new(
+                [(
+                    "minecraft:entities/sheep".into(),
+                    json!({"pools":[{"rolls":1,"entries":[{
+                        "type":"minecraft:item","name":"minecraft:white_wool",
+                        "condition":{"type":"minecraft:entity_properties","entity":who,"predicate":{
+                            "minecraft:components":{"minecraft:sheep/color":"white"},
+                            "minecraft:type_specific/sheep":{"sheared":false}}}
+                    }]}]}),
+                )]
+                .into_iter()
+                .collect(),
+            );
+            for (color, sheared) in [("white", false), ("white", true), ("red", false)] {
+                let mut target = LootEntity::new("minecraft:sheep");
+                target.sheep = Some((color.into(), sheared));
+                let mut random = LegacyRandom::new(36);
+                let actual = items.entity_drops_with_target(
+                    "minecraft:sheep",
+                    true,
+                    None,
+                    &target,
+                    &matcher,
+                    &mut random,
+                    false,
+                );
+                assert_eq!(
+                    !actual.is_empty(),
+                    who == "this" && color == "white" && !sheared
+                );
+                assert!(
+                    items
+                        .entity_drops("minecraft:sheep", true, None, &mut LegacyRandom::new(36))
+                        .is_empty()
+                );
+            }
+        }
+    }
+
     fn ctx<'a>(
         items: &'a Items,
         held: Option<&'a ItemStack>,
@@ -2904,6 +3044,7 @@ mod tests {
             killed_by_player: block.is_empty(),
             explosion_radius: None,
             this_entity: false,
+            target: None,
             keep_empty: false,
         }
     }
