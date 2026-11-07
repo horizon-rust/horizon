@@ -469,62 +469,96 @@ python3 tools/bench_region_ticks.py --bin target/fast --before-bin <main>/target
   --behaviour stand --players 100
 ```
 
-### Measurements (2026-11-07)
+### Measurements (2026-11-07, second run)
 
-Before is main at the merge base `5a83184c7e`; after is this branch's code at
-`32ec9e94cc` with `HORIZON_SIMULATION_MODE=parallel` and eight workers. Both
+Before is main at the merge base `5a83184c7e`; after is this branch at
+`a1cf6491dd` with `HORIZON_SIMULATION_MODE=parallel` and eight workers. Both
 use the `fast` profile and Rust 1.99.0 on a Ryzen 5 5600X (6 cores, 12
 threads), with the bots on the same machine. Each case ran once per binary,
-main first, on a desktop shared with other idle sessions (load averages 0.6 to
-3.8 at the start of each run). The full results are in
-[`performance/server-regions.json`](performance/server-regions.json).
+main first, on a desktop that was also running a Horizon game: load averages
+were 1.2 to 6.8 at the start of each run, recorded per run in
+[`performance/server-regions.json`](performance/server-regions.json). The
+branch uses three to four cores where main uses one, so it loses more to the
+other load. An earlier run of the same sweeps on `32ec9e94cc`, on a quieter
+desktop (load 0.6 to 3.8), measured within 3% of these at view distance 16 with
+separate regions, the single region about 33% slower than main (here 26% to
+47%), and both engines 13% to 34% faster at view distance 2 (here at load 3.0
+to 6.8).
 
 **View distance 16, simulation distance 10, 640 blocks apart, 180 s to load.**
-Every run kept all its players and mobs, finished loading before measuring,
-and committed every prediction, with no replay and no fallback round.
+Every run kept all its players and mobs and committed every prediction, with
+no replay and no fallback round.
 
 | Players | Main avg/p50/p95/p99 ms | Branch avg/p50/p95/p99 ms | Avg change | TPS | Mob median ms | CPU % | Mean RSS MiB | Regions |
 | --- | --- | --- | ---: | --- | --- | --- | --- | ---: |
-| 50 standing | 43.52/42.96/46.89/51.46 | 28.73/28.26/31.12/37.45 | −34.0% | 20.00 → 20.02 | 25.5 → 11.7 | 104 → 272 | 771 → 832 | 50 |
-| 100 standing | 100.42/99.22/108.85/116.92 | 66.76/65.53/74.93/85.22 | −33.5% | 9.95 → 14.96 | 54.5 → 25.2 | 104 → 346 | 1,273 → 1,363 | 100 |
-| 200 standing | 237.16/232.74/266.08/280.49 | 146.44/142.93/174.40/183.33 | −38.3% | 4.21 → 6.82 | 121.2 → 52.1 | 109 → 331 | 2,263 → 2,402 | 200 |
-| 100 walking | 121.72/119.02/137.01/149.27 | 158.12/153.58/183.51/191.18 | **+29.9%** | 8.21 → 6.32 | 68.0 → 102.6 | 119 → 153 | 1,378 → 1,490 | 3.3 |
+| 50 standing | 45.91/45.33/50.33/56.75 | 29.51/28.98/32.04/39.67 | −35.7% | 20.00 → 20.02 | 26.2 → 12.7 | 109 → 281 | 767 → 837 | 50 |
+| 100 standing | 105.54/104.13/115.68/131.08 | 68.42/67.49/73.98/90.35 | −35.2% | 9.47 → 14.60 | 56.0 → 27.0 | 104 → 345 | 1,252 → 1,360 | 100 |
+| 200 standing | 255.78/251.74/287.25/300.66 | 142.78/140.92/153.37/189.83 | −44.2% | 3.91 → 7.00 | 128.7 → 54.1 | 104 → 340 | 2,249 → 2,403 | 200 |
+| 100 walking | 124.10/122.34/140.41/159.04 | 163.26/160.03/186.98/195.54 | **+31.6%** | 8.05 → 6.12 | 70.0 → 109.5 | 119 → 153 | 1,392 → 1,498 | 3.1 |
 
 The walkers move up to 48 blocks (three chunks) from their spot, which closes
 the three-chunk gap between their loaded squares, so the 100 players formed
-3.3 regions on average. Nearly all the mobs then belong to one region, which one
+3.1 regions on average. Nearly all the mobs then belong to one region, which one
 worker ticks in order, and the transaction's prediction and commit cost comes
 on top. The branch is slower than main there.
 
 **The same at 576 blocks: one connected region.** 576 blocks is 36 chunks, one
 less than a loaded square, so neighbouring squares touch and every player's
-mobs belong to one region.
+mobs belong to one region. Every run committed every prediction.
 
-| Players | Main avg ms | Branch avg ms | Change | TPS | Regions |
-| --- | ---: | ---: | ---: | --- | ---: |
-| 50 standing | 44.11 | 58.86 | **+33.4%** | 20.00 → 16.97 | 1 |
-| 100 standing | 94.58 | 126.58 | **+33.8%** | 10.56 → 7.89 | 1 |
-| 100 walking | 114.40 | 151.21 | **+32.2%** | 8.74 → 6.61 | 1 |
+| Players | Main avg/p50/p95/p99 ms | Branch avg/p50/p95/p99 ms | Avg change | TPS | Mob median ms | CPU % | Regions |
+| --- | --- | --- | ---: | --- | --- | --- | ---: |
+| 50 standing | 43.53/42.88/46.94/52.32 | 64.06/63.67/68.91/72.71 | **+47.2%** | 19.99 → 15.59 | 26.2 → 47.3 | 104 → 143 | 1 |
+| 100 standing | 100.28/99.33/113.40/124.42 | 131.76/131.20/138.05/151.10 | **+31.4%** | 9.96 → 7.58 | 56.6 → 97.0 | 104 → 143 | 1 |
+| 200 standing | 222.71/218.26/252.10/263.30 | 279.63/278.57/294.74/325.97 | **+25.6%** | 4.49 → 3.57 | 122.5 → 203.6 | 109 → 143 | 1 |
+| 100 walking | 128.21/126.78/151.45/175.07 | 167.51/165.65/182.13/201.87 | **+30.7%** | 7.79 → 5.97 | 73.5 → 117.2 | 114 → 143 | 1 |
 
-The 200-player run of that sweep (211.41 → 124.26 ms, 200 regions) is left
-out: its 60 s settle was too short, chunks were still generating at the end, and
-its squares had not grown into each other yet.
+The 50-player case ran twice: its first branch run started at load 6.1 and
+averaged 74.53 ms (+71%); the table has the second, at load 1.2.
 
 **View distance 2, simulation distance 2, 512 blocks apart**, the workload of
 earlier versions of this page. Every run kept all its players and mobs.
 
-| Players | Main avg/p50/p95/p99 ms | Branch avg/p50/p95/p99 ms | Avg change | TPS | CPU % | Mean RSS MiB | Regions |
-| --- | --- | --- | ---: | --- | --- | --- | ---: |
-| 50 standing | 35.09/34.88/36.84/38.76 | 20.89/20.69/22.62/23.62 | −40.5% | 20.01 → 20.02 | 139 → 326 | 367 → 435 | 50 |
-| 100 standing | 79.29/78.90/83.28/85.71 | 46.58/46.34/49.15/50.99 | −41.3% | 12.60 → 20.00 | 104 → 425 | 491 → 576 | 100 |
-| 200 standing | 181.02/180.36/190.05/193.54 | 96.11/95.89/100.97/102.40 | −46.9% | 5.52 → 10.40 | 109 → 440 | 711 → 868 | 200 |
-| 100 walking | 93.18/93.39/100.15/102.37 | 55.09/53.33/59.62/130.93 | −40.9% | 10.72 → 18.13 | 114 → 371 | 534 → 624 | 98.5 |
+| Players | Main avg/p50/p95/p99 ms | Branch avg/p50/p95/p99 ms | Avg change | TPS | Mob median ms | CPU % | Mean RSS MiB | Regions |
+| --- | --- | --- | ---: | --- | --- | --- | --- | ---: |
+| 50 standing | 39.66/39.23/42.71/45.20 | 27.90/27.55/31.27/33.45 | −29.7% | 20.00 → 20.02 | 27.9 → 15.7 | 123 → 360 | 367 → 427 | 50 |
+| 100 standing | 94.96/94.70/101.36/106.16 | 59.15/58.94/63.41/67.93 | −37.7% | 10.52 → 16.88 | 63.8 → 32.2 | 104 → 428 | 488 → 560 | 100 |
+| 200 standing | 217.50/217.00/236.95/269.58 | 123.18/122.23/132.16/146.54 | −43.4% | 4.59 → 8.11 | 146.3 → 66.9 | 104 → 433 | 719 → 864 | 200 |
+| 100 walking | 118.10/117.96/131.88/146.73 | 67.08/66.79/72.99/85.84 | −43.2% | 8.46 → 14.89 | 78.3 → 32.6 | 109 → 369 | 550 → 618 | 96.7 |
 
 The standing runs committed every prediction in clean rounds. In the walking
-run every round (366 of 366) fell back as `Unpredicted`: at simulation distance
-2 the walkers leave some of their mobs outside the entity-ticking area, which
-predicted 6,414 of the 7,000 mobs a tick on average. The walk still saved 41%
-on average, but its p99 rose to 130.93 ms and the slowest tick took 145.86 ms.
+run every round (305 of 305) fell back as `Unpredicted`: at simulation distance
+2 the walkers leave some of their mobs outside the entity-ticking area. The
+walk still saved 43% on average, and its p99 stayed below main's.
+
+**A spread server with real worldgen** (`tools/server_bench.py --servers
+horizon --behaviour mixed --bots 200 --spread 100000 --join-every 0.5 --warmup
+240 --seconds 120 --explore-speed 10`, view and simulation distance 10, seed
+12345, the default automatic mode). Bots walk, explore and idle far apart, so
+the server generates terrain, spawns and ticks a mixed population, block
+entities and minecarts. One run each, main first (load 6.4 and 4.8 at the
+start); every bot joined in both.
+
+| | Main | Branch |
+| --- | ---: | ---: |
+| Tick avg / p50 / p95 / p99 ms | 276.34 / 271.60 / 324.22 / 365.05 | 209.50 / 207.16 / 241.90 / 292.86 |
+| TPS | 3.62 | 4.77 |
+| CPU % / mean RSS MiB | 297 / 5,172 | 394 / 5,754 |
+| Chunks sent per second | 41.05 | 66.78 |
+| Loaded chunks / mobs / block entities / minecarts | 31,505 / 3,878 / 10,560 / 525 | 38,979 / 4,925 / 12,591 / 673 |
+| Natural spawning ms | 65.66 | 17.36 |
+| Mob tick ms | 97.78 | 45.23 |
+| Streaming ms | 62.14 | 41.66 |
+| Block ticks ms (random ticks) | 42.12 (22.92) | 49.81 (25.82) |
+| Block entities ms | 21.91 | 21.43 |
+| Minecarts ms | 17.37 | 11.03 |
+| LAN (players, tracking) ms | 21.37 | 19.52 |
+
+The branch ticked 24% faster while it held 24% more chunks and 27% more mobs
+and sent chunks 63% faster. Its spawning runs each region on a worker
+([controls](#execution-controls)); minecarts cost 16 µs each against main's
+33 µs. Block ticks and block entities grow with the loaded world and cost about
+the same per chunk on both.
 
 ## Failures and limits
 
@@ -539,18 +573,19 @@ Harnesses that fail on this branch and on main at `5a83184c7e` alike:
 Limits of this change and of these measurements:
 
 - **Few large regions are slower than main.** With one region the branch is
-  about 33% slower in forced parallel mode, and walking players at view
-  distance 16 merged into 3.3 regions and were 30% slower. Automatic mode keeps
+  26% to 47% slower in forced parallel mode, and walking players at view
+  distance 16 merged into 3.1 regions and were 32% slower. Automatic mode keeps
   the serial path for a single region, but uses region transactions from two
   regions and 128 mobs, so the walking case's cost would reach a default server.
-  Automatic mode was not benchmarked.
+  Automatic mode ran only in the spread benchmark.
 - Every case ran once per binary, main always first, on a shared desktop with
   the bots on the same CPU. Run-to-run variation was not measured.
 - The workload is the best case for regions: invulnerable zombies, no level RNG
   users, villagers, breeding, raiders or native mods. No mixed population ran.
-- The branch uses 2.5 to 4 times the CPU and 60 to 160 MiB more memory.
-- At 200 players neither engine holds 20 TPS (view distance 16: 4.21 → 6.82;
-  view distance 2: 5.52 → 10.40).
+- The branch uses 2.6 to 4.2 times the CPU (1.3 times with one region) and 55
+  to 160 MiB more memory.
+- At 200 players neither engine holds 20 TPS (view distance 16: 3.91 → 7.00;
+  view distance 2: 4.59 → 8.11).
 - The full harness sweep did not finish (see Validation), the port-ledger check
   and the live LAN checks were not rerun on this head, and the earlier report of
   `lan_e2e`'s damage check (999.04 health against vanilla's 996.0, also on the
