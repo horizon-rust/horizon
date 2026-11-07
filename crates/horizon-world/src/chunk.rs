@@ -1013,7 +1013,7 @@ mod tests {
                 Tag::compound([("id", Tag::String(format!("minecraft:b{i}").as_str().into()))])
             })
             .collect();
-        let defaults: std::collections::BTreeMap<_, _> = (0..states)
+        let defaults: Compound = (0..states)
             .map(|i| {
                 (
                     JavaString::from(format!("minecraft:b{i}").as_str()),

@@ -80,10 +80,8 @@ fn rejects_foreign_incomplete_and_malformed_definitions() {
     let Tag::Compound(blocks) = bad.get_mut("blocks").unwrap() else {
         unreachable!()
     };
-    blocks.insert(
-        "minecraft:unknown".into(),
-        blocks.values().next().unwrap().clone(),
-    );
+    let known = blocks.values().next().unwrap().clone();
+    blocks.insert("minecraft:unknown".into(), known);
     assert!(MovementProperties::from_nbt(&bad, &registry).is_err());
 }
 #[test]

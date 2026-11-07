@@ -188,6 +188,38 @@ impl<K: JavaKey, V> JavaHashMap<K, V> {
     pub fn get(&self, key: &K) -> Option<&V> {
         self.find(key).map(|i| &self.node(i).value)
     }
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        match self.find(key) {
+            Some(i) => Some(&mut self.node_mut(i).value),
+            None => None,
+        }
+    }
+    /// Every live entry once, in storage order: a walk that edits values in
+    /// place does not depend on the traversal order `entries` gives.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&K, &mut V)> + '_ {
+        self.nodes
+            .iter_mut()
+            .filter_map(|node| node.as_mut().map(|node| (&node.key, &mut node.value)))
+    }
+    /// See [`iter_mut`](Self::iter_mut).
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut V> + '_ {
+        self.iter_mut().map(|(_, value)| value)
+    }
+    /// Keep only the entries `keep` accepts.
+    pub fn retain(&mut self, mut keep: impl FnMut(&K, &mut V) -> bool)
+    where
+        K: Clone,
+    {
+        let mut drop = Vec::new();
+        for (key, value) in self.iter_mut() {
+            if !keep(key, value) {
+                drop.push(key.clone());
+            }
+        }
+        for key in drop {
+            self.remove(&key);
+        }
+    }
     pub fn entries(&self) -> impl Iterator<Item = (&K, &V)> {
         self.table
             .iter()

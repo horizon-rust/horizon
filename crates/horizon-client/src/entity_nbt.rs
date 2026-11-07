@@ -3852,7 +3852,7 @@ mod tnt_power_tests {
     #[test]
     fn explosion_power_is_read_clamped_and_defaulted() {
         let with = |power: Option<f32>| {
-            let mut map = std::collections::BTreeMap::new();
+            let mut map = Compound::new();
             if let Some(p) = power {
                 map.insert("explosion_power".into(), Tag::Float(p.to_bits()));
             }

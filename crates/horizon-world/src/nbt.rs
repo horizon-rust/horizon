@@ -1,5 +1,10 @@
 //! Java Edition NBT with lossless UTF-16 strings and 26.3 mixed-list wrappers.
-use std::collections::BTreeMap;
+use crate::java_hash_map::{JavaHashMap, JavaKey};
+use std::{
+    cmp::Ordering,
+    fmt,
+    hash::{Hash, Hasher},
+};
 
 /// Java strings can contain unpaired surrogates, which Rust UTF-8 strings cannot.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -32,7 +37,197 @@ impl JavaString {
     }
 }
 
-pub type Compound = BTreeMap<JavaString, Tag>;
+impl JavaKey for JavaString {
+    /// Java `String.hashCode` over the UTF-16 code units.
+    fn java_hash(&self) -> i32 {
+        self.0
+            .iter()
+            .fold(0i32, |h, &c| h.wrapping_mul(31).wrapping_add(i32::from(c)))
+    }
+    /// `String` is `Comparable`, so tree bins order it with `compareTo`.
+    fn comparable_compare(&self, other: &Self) -> Option<Ordering> {
+        Some(self.0.cmp(&other.0))
+    }
+    fn tie_break(&self, other: &Self) -> Ordering {
+        match self.0.cmp(&other.0) {
+            Ordering::Equal => Ordering::Less,
+            order => order,
+        }
+    }
+}
+
+/// A Java `CompoundTag`, i.e. a `HashMap<String, Tag>`. Iteration, and so the
+/// order the keys serialise in, is `HashMap` bucket order rather than sorted:
+/// vanilla's own bytes for two keys often have the later one first.
+#[derive(Default)]
+/// The map is boxed so `Tag` stays small: NBT nests a thousand deep and every
+/// recursive read, write and drop frame holds one.
+pub struct Compound(Box<JavaHashMap<JavaString, Tag>>);
+impl Compound {
+    pub fn new() -> Self {
+        Self(Box::default())
+    }
+    pub fn get(&self, key: &JavaString) -> Option<&Tag> {
+        self.0.get(key)
+    }
+    pub fn get_mut(&mut self, key: &JavaString) -> Option<&mut Tag> {
+        self.0.get_mut(key)
+    }
+    pub fn contains_key(&self, key: &JavaString) -> bool {
+        self.0.get(key).is_some()
+    }
+    /// Java `Map.put`: a present key keeps its place and gets the new value.
+    pub fn insert(&mut self, key: JavaString, value: Tag) -> Option<Tag> {
+        self.0.put(key, value)
+    }
+    pub fn remove(&mut self, key: &JavaString) -> Option<Tag> {
+        self.0.remove(key)
+    }
+    pub fn iter(&self) -> impl Iterator<Item = (&JavaString, &Tag)> {
+        self.0.entries()
+    }
+    pub fn keys(&self) -> impl Iterator<Item = &JavaString> {
+        self.0.entries().map(|(key, _)| key)
+    }
+    pub fn values(&self) -> impl Iterator<Item = &Tag> {
+        self.0.entries().map(|(_, value)| value)
+    }
+    /// Every entry once, for an in-place walk. The order is the map's storage
+    /// order, not the `HashMap` order [`iter`](Self::iter) serialises in; a walk
+    /// that writes the entries out must use `iter`.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&JavaString, &mut Tag)> {
+        self.0.iter_mut()
+    }
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Tag> {
+        self.0.values_mut()
+    }
+    /// Java `Map.computeIfAbsent`'s shape, as `HashMap::entry`.
+    pub fn entry(&mut self, key: JavaString) -> Entry<'_> {
+        if self.0.get(&key).is_some() {
+            Entry::Occupied(self.0.get_mut(&key).expect("just checked"))
+        } else {
+            Entry::Vacant { key, map: self }
+        }
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn clear(&mut self) {
+        self.0.clear()
+    }
+    pub fn retain(&mut self, keep: impl FnMut(&JavaString, &mut Tag) -> bool) {
+        self.0.retain(keep)
+    }
+}
+impl Clone for Compound {
+    /// `CompoundTag.copy`: a fresh map at the default capacity, filled in the
+    /// source's traversal order. Copying the table would instead pick the
+    /// smallest capacity that holds the entries, and a later `put` would then
+    /// land in a different bucket order than vanilla's copy gets.
+    fn clone(&self) -> Self {
+        let mut map = Self::new();
+        for (key, value) in self.iter() {
+            map.insert(key.clone(), value.clone());
+        }
+        map
+    }
+}
+impl fmt::Debug for Compound {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_map().entries(self.iter()).finish()
+    }
+}
+impl PartialEq for Compound {
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len()
+            && self
+                .iter()
+                .all(|(key, value)| other.get(key) == Some(value))
+    }
+}
+impl Eq for Compound {}
+impl Hash for Compound {
+    /// Independent of the bucket order the map happens to iterate in.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write_usize(self.len());
+        let mut entries = 0u64;
+        for (key, value) in self.iter() {
+            let mut entry = std::collections::hash_map::DefaultHasher::new();
+            key.hash(&mut entry);
+            value.hash(&mut entry);
+            entries ^= entry.finish();
+        }
+        state.write_u64(entries);
+    }
+}
+pub enum Entry<'a> {
+    Occupied(&'a mut Tag),
+    Vacant {
+        key: JavaString,
+        map: &'a mut Compound,
+    },
+}
+impl<'a> Entry<'a> {
+    pub fn or_insert(self, default: Tag) -> &'a mut Tag {
+        self.or_insert_with(|| default)
+    }
+    pub fn or_insert_with(self, default: impl FnOnce() -> Tag) -> &'a mut Tag {
+        match self {
+            Self::Occupied(value) => value,
+            Self::Vacant { key, map } => {
+                map.insert(key.clone(), default());
+                map.get_mut(&key).expect("just inserted")
+            }
+        }
+    }
+}
+impl std::ops::Index<&JavaString> for Compound {
+    type Output = Tag;
+    fn index(&self, key: &JavaString) -> &Tag {
+        self.get(key).expect("no entry found for key")
+    }
+}
+impl<const N: usize> From<[(JavaString, Tag); N]> for Compound {
+    fn from(entries: [(JavaString, Tag); N]) -> Self {
+        entries.into_iter().collect()
+    }
+}
+impl FromIterator<(JavaString, Tag)> for Compound {
+    fn from_iter<T: IntoIterator<Item = (JavaString, Tag)>>(iter: T) -> Self {
+        let mut map = Self::new();
+        for (key, value) in iter {
+            map.insert(key, value);
+        }
+        map
+    }
+}
+impl Extend<(JavaString, Tag)> for Compound {
+    fn extend<T: IntoIterator<Item = (JavaString, Tag)>>(&mut self, iter: T) {
+        for (key, value) in iter {
+            self.insert(key, value);
+        }
+    }
+}
+impl<'a> IntoIterator for &'a Compound {
+    type Item = (&'a JavaString, &'a Tag);
+    type IntoIter = Box<dyn Iterator<Item = (&'a JavaString, &'a Tag)> + 'a>;
+    fn into_iter(self) -> Self::IntoIter {
+        Box::new(self.iter())
+    }
+}
+impl IntoIterator for Compound {
+    type Item = (JavaString, Tag);
+    type IntoIter = std::vec::IntoIter<(JavaString, Tag)>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+}
 
 /// Float and double variants hold their IEEE bit patterns. Java's disk output
 /// canonicalizes NaNs (`DataOutputStream.writeFloat`); its network output
@@ -1190,6 +1385,73 @@ mod tests {
         );
         assert!(
             write_network(&Tag::String(JavaString(vec![0; 32768])), Limits::default()).is_err()
+        );
+    }
+    fn written_keys(tag: &Tag) -> Vec<String> {
+        let root = NamedTag {
+            name: JavaString::default(),
+            tag: tag.clone(),
+        };
+        let bytes = write_named(&root, Limits::default()).unwrap();
+        let mut at = 3; // the compound's header byte and its empty name
+        let mut keys = Vec::new();
+        loop {
+            let id = bytes[at];
+            at += 1;
+            if id == 0 {
+                return keys;
+            }
+            let len = usize::from(u16::from_be_bytes([bytes[at], bytes[at + 1]]));
+            at += 2;
+            keys.push(String::from_utf8(bytes[at..at + len].to_vec()).unwrap());
+            at += len;
+            at += match id {
+                1 => 1, // Byte
+                3 => 4, // Int
+                other => panic!("unexpected tag id {other}"),
+            };
+        }
+    }
+
+    /// `CompoundTag` is a `HashMap`, so its keys serialise in bucket order, not
+    /// the order they were put in. Both lists are `java.util.HashMap`'s own
+    /// iteration order for those keys (JDK 25 `HashMap.keySet()`).
+    #[test]
+    fn a_compound_serialises_in_java_hash_map_order() {
+        let two = Tag::compound([("Z", Tag::Byte(1)), ("a", Tag::Byte(2))]);
+        assert_eq!(
+            write_named(
+                &NamedTag {
+                    name: JavaString::default(),
+                    tag: two
+                },
+                Limits::default()
+            )
+            .unwrap(),
+            [0x0a, 0, 0, 1, 0, 1, b'a', 2, 1, 0, 1, b'Z', 1, 0]
+        );
+        let keys = [
+            "Z", "a", "Name", "id", "x", "y", "z", "Pos", "Rotation", "Motion", "OnGround",
+            "Health", "Air", "Fire",
+        ];
+        let tag = Tag::compound(
+            keys.into_iter()
+                .enumerate()
+                .map(|(i, key)| (key, Tag::Int(i as i32))),
+        );
+        assert_eq!(
+            written_keys(&tag),
+            [
+                "a", "Motion", "Health", "OnGround", "Air", "Rotation", "Name", "Pos", "Fire", "x",
+                "y", "Z", "z", "id"
+            ]
+        );
+        // The text is not: `StringTagVisitor.visitCompound` sorts the entries it
+        // copies out of the map, so SNBT keeps the key order this test's binary
+        // form just lost.
+        assert_eq!(
+            crate::snbt_text::to_snbt(&tag),
+            "{Air:12,Fire:13,Health:11,Motion:9,Name:2,OnGround:10,Pos:7,Rotation:8,Z:0,a:1,id:3,x:4,y:5,z:6}"
         );
     }
     #[test]
