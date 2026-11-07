@@ -139,6 +139,7 @@ fn host_a_guest(game: &mut Game<'_>, at: [f64; 3]) {
             latency: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(0)),
             address: "127.0.0.1:25565".parse().unwrap(),
             expected: false,
+            configured: Default::default(),
         },
         900,
         at,

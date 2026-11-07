@@ -107,6 +107,9 @@ pub(super) struct Creatures {
     /// The snapshot's buffer between ticks, empty: ~400 bytes a mob, so
     /// thousands of mobs would allocate and free megabytes every tick.
     seen_buf: Vec<Seen>,
+    /// The targets the mobs had before their ticks, kept between ticks
+    /// (empty) as `seen_buf` is: `native_living_change_target` hears a change.
+    target_buf: Vec<Option<Who>>,
     /// The mobs whose own tick ran in the last `tick_creature_entities`:
     /// `ServerLevel.tick` ticks only the entities in entity-ticking range, so
     /// what the passes after the loop do for a mob's `aiStep`, goals or brain
@@ -305,6 +308,53 @@ fn flame_geometry(
 }
 pub(super) fn seen(m: &Mob, player: Option<[i32; 4]>) -> Seen {
     m.seen(player)
+}
+/// A mob's target as `native_living_change_target` names it: a player's UUID
+/// or a mob's id, both None for no target; None for one it cannot name.
+/// `Who::Player` is the guest the mob sees (`seen`, a connection) or, with
+/// none, the host's own player (`host`); a guest's entity (`guest_ids`, by
+/// connection) is that guest.
+fn target_named(
+    target: Option<Who>,
+    seen: Option<u32>,
+    guests: &super::lan_mobs::GuestViews,
+    guest_ids: &[(u32, u32)],
+    host: Option<&PlayerView>,
+) -> Option<(Option<u128>, Option<u32>)> {
+    let uuid = |v: &PlayerView| horizon_client::lan::playerdata::ints_uuid(v.uuid);
+    let guest = |conn: u32| guests.iter().find(|g| g.0 == conn).map(|g| uuid(&g.1));
+    match target {
+        None => Some((None, None)),
+        Some(Who::Player) => {
+            let player = match seen {
+                Some(conn) => guest(conn),
+                None => host.map(uuid),
+            };
+            Some((Some(player?), None))
+        }
+        Some(Who::Mob(id)) => match guest_ids.iter().find(|g| g.1 == id) {
+            Some(&(conn, _)) => Some((Some(guest(conn)?), None)),
+            None => Some((None, Some(id))),
+        },
+    }
+}
+/// Whether `e`, from a mob's tick, is a hit it deals `target`: a melee hit
+/// (with its effect), a sting, a sonic boom.
+fn hits_target(e: &MobEvent, want: Who) -> bool {
+    match (e, want) {
+        (
+            MobEvent::AttackPlayer(..)
+            | MobEvent::AttackPlayerWithEffect { .. }
+            | MobEvent::StingPlayer { .. },
+            Who::Player,
+        ) => true,
+        (
+            MobEvent::AttackMob { target, .. } | MobEvent::AttackMobWithEffect { target, .. },
+            Who::Mob(id),
+        ) => *target == id,
+        (MobEvent::SonicBoom { target, .. }, _) => *target == want,
+        _ => false,
+    }
 }
 /// Whether a mob a packet named may take the click: `mob_hit` skips a mob in
 /// its death animation, the one the player rides (it shares the player's root
@@ -1099,6 +1149,14 @@ impl Game<'_> {
         let mobs = &mut taken.mobs;
         let died = &mut taken.died;
         let section_base = self.simulation.section_order.reserve(mobs);
+        // Each mob's target as the mods last heard it, by its place in `mobs`
+        // (`native_living_change_target`). Loaded mods keep the round off the workers,
+        // so the walk hears every change; with none, nobody is listening.
+        let mut targets = std::mem::take(&mut self.creatures.target_buf);
+        targets.clear();
+        if !horizon_client::mod_api::mods().is_empty() {
+            targets.extend(mobs.iter().map(|m| m.ai.target));
+        }
         let mut dead = Vec::new();
         let mut corpses = Vec::new();
         let mut ticked = std::mem::take(&mut self.creatures.ticked);
@@ -1561,6 +1619,46 @@ impl Game<'_> {
                 if let Some(transaction) = region_round.as_mut() {
                     transaction.events(i, &events[from..], &index);
                 }
+                // Its tick changed its target: the mods may keep the one it had
+                // (`native_living_change_target`), and then what the tick did to
+                // the new one is not dealt.
+                if let Some(&before) = targets.get(i)
+                    && m.ai.target != before
+                {
+                    let named = target_named(
+                        m.ai.target,
+                        seen_guest,
+                        &guests,
+                        &guest_ids,
+                        base.player.as_ref(),
+                    );
+                    if let Some((player, mob)) = named {
+                        let kind = super::native_hooks::mob_kind(m);
+                        let mut cancel = false;
+                        Self::native_living_change_target(
+                            level_id,
+                            m.id,
+                            &kind,
+                            player,
+                            mob,
+                            &mut cancel,
+                        );
+                        if cancel {
+                            if let Some(new) = m.ai.target {
+                                let mut k = from;
+                                while k < events.len() {
+                                    if hits_target(&events[k], new) {
+                                        events.remove(k);
+                                    } else {
+                                        k += 1;
+                                    }
+                                }
+                            }
+                            m.ai.target = before;
+                        }
+                    }
+                    targets[i] = m.ai.target;
+                }
                 // A killed mob's body is removed: its effects that act on
                 // death run (`LivingEntity.remove` with KILLED).
                 if !kept && !m.alive() && !m.removed && !m.extra.effects.is_empty() {
@@ -1616,6 +1714,43 @@ impl Game<'_> {
                 let immediate = horizon_client::mobs::apply_brain_events(mobs, &mut events, from);
                 if let Some(transaction) = region_round.as_mut() {
                     transaction.immediate_brain_write(i, &immediate, &index);
+                }
+            }
+            // Targets changed after the mob's own tick (another mob's alert):
+            // heard now, and a cancel puts the old one back before its next tick.
+            for (i, m) in mobs.iter_mut().enumerate() {
+                let Some(&before) = targets.get(i) else {
+                    break;
+                };
+                if m.ai.target == before {
+                    continue;
+                }
+                let seen_guest = if guests.is_empty() {
+                    None
+                } else {
+                    bindings.get(&m.id).copied()
+                };
+                let named = target_named(
+                    m.ai.target,
+                    seen_guest,
+                    &guests,
+                    &guest_ids,
+                    base.player.as_ref(),
+                );
+                if let Some((player, mob)) = named {
+                    let kind = super::native_hooks::mob_kind(m);
+                    let mut cancel = false;
+                    Self::native_living_change_target(
+                        level_id,
+                        m.id,
+                        &kind,
+                        player,
+                        mob,
+                        &mut cancel,
+                    );
+                    if cancel {
+                        m.ai.target = before;
+                    }
                 }
             }
             if let Some(transaction) = region_round.as_mut() {
@@ -1705,6 +1840,8 @@ impl Game<'_> {
         self.creatures.ticked = ticked;
         snapshot.clear();
         self.creatures.seen_buf = snapshot;
+        targets.clear();
+        self.creatures.target_buf = targets;
         self.native_tick_post_batch(round);
         // ... and entity event 60 goes out as it is: the poof.
         // 🤖 Agent: the split follows the poof, as `LivingEntity.tickDeath`
