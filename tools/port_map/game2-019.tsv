@@ -8,7 +8,7 @@ SideChainPart.whenDisconnectedFromTheRight	port	crates/horizon-world/src/level/s
 SideChainPart.whenDisconnectedFromTheLeft	port	crates/horizon-world/src/level/shelf.rs::Part::disconnected_from_the_left	same table
 BlockScanUtils.sectionBasedScan	inline	crates/horizon-world/src/level/timeline.rs::box_scan_order	gap: minor: only the visiting order; no section skip, no abort, no virtual AIR outside the world bounds
 BlockScanUtils.findBlocksInSection	inline	crates/horizon-client-render/src/light.rs::light_chunk	gap: minor: section loop only for light emitters; no generic predicate and consumer
-BlockScanUtils.findBlocksWithCache	inline	crates/horizon-client-lib/src/mobs/world.rs::MobWorld::nearest_block	gap: minor: first match in Manhattan box order, used by mob goals; explicit position lists are not generalised
+BlockScanUtils.findBlocksWithCache	inline	crates/horizon-entities/src/mobs/world.rs::MobWorld::nearest_block	gap: minor: first match in Manhattan box order, used by mob goals; explicit position lists are not generalised
 WorldBorder.getDistanceToBorder	port	crates/horizon-core/src/geometry/border.rs::BorderGeometry::distance_to_border	-
 WorldBorder.lerpSizeBetween	port	crates/horizon-client-render/src/worldborder.rs::WorldBorder::lerp_between	-
 WorldBorder.setSafeZone	port	crates/horizon-client/src/game/commands/terrain_cmds.rs::Game::cmd_worldborder	plain field write in the /worldborder damage buffer arm; no listener notification

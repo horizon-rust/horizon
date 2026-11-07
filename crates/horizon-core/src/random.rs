@@ -38,7 +38,8 @@ pub mod trace {
             match raw.strip_prefix("at ") {
                 Some(at)
                     if (at.contains("horizon-client/src/")
-                        || at.contains("horizon-client-lib/src/"))
+                        || at.contains("horizon-client-lib/src/")
+                        || at.contains("horizon-entities/src/"))
                         && n < 7 =>
                 {
                     let file = at.rsplit('/').next().unwrap_or(at);

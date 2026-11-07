@@ -17,8 +17,8 @@ ItemFeatureRenderer.getLayerColorSafe	port	crates/horizon-client-lib/src/item_re
 LeashFeatureRenderer.buildGroup	port	crates/horizon-client/src/game/leads.rs::Game::leash_geometry	loop over leash submits
 LeashFeatureRenderer.prepare	port	crates/horizon-client/src/game/leads.rs::Game::leash_geometry	gap: player: rope never sags when slack (vanilla droops the rope); no slack state in the leash render
 LeashFeatureRenderer.addVertexPair	inline	crates/horizon-client/src/game/leads.rs::Game::leash_geometry	vertex pair with block and sky light lerp folded into leash_geometry
-ModelFeatureRenderer.buildGroup	port	crates/horizon-client-lib/src/mobs.rs::render_model	loop over model submits
-ModelFeatureRenderer.prepareModel	port	crates/horizon-client-lib/src/mobs.rs::render_model	gap: minor: setupAnim is done by the mob code, and the sheeted decal and uv wrap are not checked
+ModelFeatureRenderer.buildGroup	port	crates/horizon-entities/src/mobs.rs::render_model	loop over model submits
+ModelFeatureRenderer.prepareModel	port	crates/horizon-entities/src/mobs.rs::render_model	gap: minor: setupAnim is done by the mob code, and the sheeted decal and uv wrap are not checked
 MovingBlockFeatureRenderer.buildGroup	port	crates/horizon-client/src/game/moving_pistons.rs::Game::moving_piston_geometry	moving piston block and base geometry
 MovingBlockFeatureRenderer.putBakedQuad	port	crates/horizon-client/src/game/moving_pistons.rs::Game::moving_block_vertices	quad placed at the moving offset
 QuadParticleFeatureRenderer	skip:other		GPU batching and draw plumbing of particle quads; Horizon's particle pass lives in particles.rs and gfx/pack_entities.rs

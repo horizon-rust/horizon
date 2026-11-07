@@ -42,7 +42,9 @@ pub enum Pending {
 pub fn pending_from_nbt(tag: Option<&Tag>) -> Option<Pending> {
     match tag? {
         Tag::IntArray(p) if p.len() == 3 => Some(Pending::Knot([p[0], p[1], p[2]])),
-        t @ Tag::Compound(_) => crate::save::uuid_from_tag(t.get("UUID")).map(Pending::Uuid),
+        t @ Tag::Compound(_) => {
+            horizon_client_core::uuid::uuid_from_tag(t.get("UUID")).map(Pending::Uuid)
+        }
         _ => None,
     }
 }

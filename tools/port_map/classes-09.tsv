@@ -129,7 +129,7 @@ Vec2.dot	skip:other		2D vector maths; Horizon has no Vec2 type and keeps 2D math
 Vec2.length	skip:other		2D vector maths; Horizon has no Vec2 type and keeps 2D maths in its callers
 Vec2.lengthSquared	skip:other		2D vector maths; Horizon has no Vec2 type and keeps 2D maths in its callers
 Vec2.normalized	skip:other		2D vector maths; Horizon has no Vec2 type and keeps 2D maths in its callers
-Vec2.rotate	port	crates/horizon-client-lib/src/mobs/sulfur_cube.rs::rotate	x cos - y sin, x sin + y cos in floats, for the sulfur cube's 2D maths; the other Vec2 rows stay arithmetic in their callers
+Vec2.rotate	port	crates/horizon-entities/src/mobs/sulfur_cube.rs::rotate	x cos - y sin, x sin + y cos in floats, for the sulfur cube's 2D maths; the other Vec2 rows stay arithmetic in their callers
 Vec2.scale	skip:other		2D vector maths; Horizon has no Vec2 type and keeps 2D maths in its callers
 Vec2.equals	skip:java		Object equality; Rust derives it
 Vec2.hashCode	skip:java		Object hashing; Rust derives it

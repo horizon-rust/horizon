@@ -1509,6 +1509,7 @@ dependencies = [
  "horizon-core",
  "horizon-cosmetics",
  "horizon-dualsense",
+ "horizon-entities",
  "horizon-friends",
  "horizon-hdr",
  "horizon-items",
@@ -1636,6 +1637,31 @@ dependencies = [
  "cpal",
  "hidapi",
  "log",
+]
+
+[[package]]
+name = "horizon-entities"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "chrono",
+ "glam",
+ "horizon-assets",
+ "horizon-client-core",
+ "horizon-client-input",
+ "horizon-client-lib",
+ "horizon-client-render",
+ "horizon-command",
+ "horizon-core",
+ "horizon-cosmetics",
+ "horizon-items",
+ "horizon-mods",
+ "horizon-optifine",
+ "horizon-protocol",
+ "horizon-server-files",
+ "horizon-world",
+ "log",
+ "serde_json",
 ]
 
 [[package]]

@@ -96,7 +96,7 @@ SkullBlockRenderer.submitSkull	port	crates/horizon-client-render/src/block_entit
 SkullBlockRenderer.resolveSkullRenderType	inline	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	player head skin via scene.skull, otherwise the type's texture
 SkullBlockRenderer.createWallTransformation	inline	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	wall skull offset and turn in the skull branch
 SkullBlockRenderer.createGroundTransformation	inline	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	ground skull turn by segment in the skull branch
-SpawnerRenderer.extractRenderState	port	crates/horizon-client-lib/src/mobs/spawner.rs::display_pose	spin and scale of the display mob
+SpawnerRenderer.extractRenderState	port	crates/horizon-entities/src/mobs/spawner.rs::display_pose	spin and scale of the display mob
 SpawnerRenderer.submit	port	crates/horizon-client/src/game/spawner.rs::Game::spawner_geometry	display mob at the spawner's centre with spin, tilt and scale
 StandingSignRenderer.extractRenderState	inline	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	gap: minor: the text filtering option is not read
 StandingSignRenderer.createTransformations	inline	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	front and back text transforms per attachment
@@ -107,7 +107,7 @@ TestInstanceRenderer.shouldRenderOffScreen	missing		minor: culling policy of a r
 TestInstanceRenderer.shouldRender	missing		minor: culling policy of a renderer Horizon lacks
 TheEndGatewayRenderer.submit	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	beam and visible cube faces in the end gateway branch
 TheEndPortalRenderer.submit	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::render_one	portal slab in the end portal branch
-TrialSpawnerRenderer.extractRenderState	port	crates/horizon-client-lib/src/mobs/spawner.rs::display_pose	same spin and scale rule as spawners
+TrialSpawnerRenderer.extractRenderState	port	crates/horizon-entities/src/mobs/spawner.rs::display_pose	same spin and scale rule as spawners
 TrialSpawnerRenderer.submit	port	crates/horizon-client/src/game/spawner.rs::Game::spawner_geometry	trial spawner display mob drawn in the same pass
 VaultRenderer.extractRenderState	inline	crates/horizon-client/src/game/vault.rs::Game::vault_geometry	display item and spin read there
 VaultRenderer.submit	port	crates/horizon-client/src/game/vault.rs::Game::vault_geometry	item cluster at the vault centre with spin

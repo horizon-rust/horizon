@@ -19,7 +19,7 @@ def main():
     build.mkdir(parents=True, exist_ok=True)
     report = build / 'report.json'
     report.unlink(missing_ok=True)
-    paths = ['crates/horizon-client-lib/src/entity_nbt.rs',
+    paths = ['crates/horizon-entities/src/entity_nbt.rs',
              'crates/horizon-client/src/game/creatures.rs',
              'crates/horizon-client-lib/examples/probe/conversion_tags_fixture.rs',
              'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaConversionTagsOracle.java',

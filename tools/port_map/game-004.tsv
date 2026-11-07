@@ -1,4 +1,4 @@
-DamageSources.source	port	crates/horizon-client-lib/src/mobs.rs::Damage::of	a damage source is a DamageKind plus attacker and origin; type ids are resolved in creatures.rs::damage_type
+DamageSources.source	port	crates/horizon-entities/src/mobs.rs::Damage::of	a damage source is a DamageKind plus attacker and origin; type ids are resolved in creatures.rs::damage_type
 DamageSources.fireball	inline	crates/horizon-client/src/game/creatures.rs::damage_type	gap: minor: always minecraft:fireball; an owner-less fireball is not the unattributed_fireball type (death message and loot condition only)
 DamageSources.explosion	inline	crates/horizon-client/src/game/creatures.rs::damage_type	gap: minor: player_explosion only when the attacker is the player; vanilla uses it whenever a causing entity exists (a creeper too), so that death message differs
 FallLocation.blockToFallLocation	port	crates/horizon-client/src/game/combat.rs::Game::fall_location	gap: minor: trapdoors are not mapped to the ladder location, they count as other_climbable
@@ -28,7 +28,7 @@ MobEffectInstance.BlendState.getFactor	port	crates/horizon-client/src/game/fov.r
 MobEffectInstance.Details.create	skip:java		record constructor for the codec
 MobEffectUtil.hasDigSpeed	inline	crates/horizon-client-render/src/effects.rs::PlayerEffects::mining_speed_factor	haste or conduit power, also read for the arm swing duration in first_person.rs
 MobEffectUtil.hasWaterBreathing	inline	crates/horizon-client-render/src/effects.rs::PlayerEffects::status	water_breathing flag is water breathing or conduit power; breath of the nautilus is its own flag read with it
-MobEffectUtil.shouldEffectsRefillAirsupply	inline	crates/horizon-client-lib/src/motion/environment.rs::MotionWorld::tick_environment_damage	air refills unless only breath of the nautilus is active
+MobEffectUtil.shouldEffectsRefillAirsupply	inline	crates/horizon-entities/src/motion/environment.rs::MotionWorld::tick_environment_damage	air refills unless only breath of the nautilus is active
 OozingMobEffect.onMobRemoved	inline	crates/horizon-client/src/game/potions.rs::Game::effects_on_death	oozing branch: two slimes, fewer when slimes within 2 blocks fill max_entity_cramming
 OozingMobEffect.spawnSlimeOffspring	inline	crates/horizon-client/src/game/potions.rs::Game::effects_on_death	size 2 slime half a block up
 PoisonMobEffect.applyEffectTick	port	crates/horizon-client-render/src/effects.rs::periodic	one magic damage while above 1 health; mobs in mobs/ai.rs::tick_effects
@@ -43,9 +43,9 @@ AbstractInterpolationHandler.adjustInterpolationTargetFromDeltas	skip:other		sam
 AbstractInterpolationHandler.setLastPositionAndRotation	skip:other		only feeds the delta adjustments above; Horizon's own last is the start of the step
 AgeableMob.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	the baby flag (baby_index) and AGE_LOCKED after it; a kind outside baby_index (sulfur cube, nautilus, happy ghast) sends neither
 AgeableMob.getAge	inline	crates/horizon-client/src/game/remote_mob_data.rs::apply	m.extra.age on the host; a remote client only learns baby or not (-1 or 0)
-AgeableMob.addAdditionalSaveData	port	crates/horizon-client-lib/src/entity_nbt.rs::mob_to_nbt	modeled Age, ForcedAge and AgeLocked for baby-capable creatures; zombie nautiluses omit ignored raw age keys
-AgeableMob.readAdditionalSaveData	port	crates/horizon-client-lib/src/entity_nbt.rs::mob_from_nbt	Age/ForcedAge through NumericTag.intValue; AgeLocked unchanged
-AnimationState.getTimeInMillis	port	crates/horizon-client-lib/src/mobs/keyframes.rs::AnimationState::millis	
+AgeableMob.addAdditionalSaveData	port	crates/horizon-entities/src/entity_nbt.rs::mob_to_nbt	modeled Age, ForcedAge and AgeLocked for baby-capable creatures; zombie nautiluses omit ignored raw age keys
+AgeableMob.readAdditionalSaveData	port	crates/horizon-entities/src/entity_nbt.rs::mob_from_nbt	Age/ForcedAge through NumericTag.intValue; AgeLocked unchanged
+AnimationState.getTimeInMillis	port	crates/horizon-entities/src/mobs/keyframes.rs::AnimationState::millis	
 AreaEffectCloud.defineSynchedData	port	crates/horizon-client/src/game/lan_entities.rs::Game::lan_projectile_states	radius, waiting and particle for dragon breath and lingering clouds; read back in remote_projectiles.rs::remote_projectile_data
 AreaEffectCloud.setRadius	inline	crates/horizon-client/src/game/potions.rs::Game::tick_potion_cloud	loaded radius and nonzero per-tick/per-use changes clamp to 0..32
 AreaEffectCloud.refreshDimensions	inline	crates/horizon-client/src/game/potions.rs::Game::tick_potion_cloud	the affected box is rebuilt from the radius every check
@@ -56,15 +56,15 @@ AreaEffectCloud.applyImplicitComponents	inline	crates/horizon-client/src/game/po
 AreaEffectCloud.applyImplicitComponent	inline	crates/horizon-client/src/game/potions.rs::Game::splash	same: potion contents only
 Avatar.defineSynchedData	port	crates/horizon-client-lib/src/lan/hub.rs::Hub::player_state	gap: minor: skin parts (entry 16) are sent, the main hand entry is not
 Avatar.isModelPartShown	port	crates/horizon-client/src/game/remote.rs::Game::update_remote_skins	the Skin Customization cape option reaches the drawn player
-Bucketable.loadDefaultDataFromBucketTag	port	crates/horizon-client-lib/src/entity_nbt.rs::apply_item_components	NoAI, Silent, NoGravity, Glowing, Invulnerable, PersistenceRequired and Health, read from the bucket's entity data
+Bucketable.loadDefaultDataFromBucketTag	port	crates/horizon-entities/src/entity_nbt.rs::apply_item_components	NoAI, Silent, NoGravity, Glowing, Invulnerable, PersistenceRequired and Health, read from the bucket's entity data
 ContainerUser.getLivingEntity	skip:java		interface cast; every container user here is the player
-ConversionTracker.addAdditionalSaveData	inline	crates/horizon-client-lib/src/entity_nbt.rs::mob_to_nbt	Zombie-derived InWaterTime saves -1 unless cached eyes are in water; gap: supplied NBT can still shadow live counter progress
-ConversionTracker.readAdditionalSaveData	port	crates/horizon-client-lib/src/entity_nbt.rs::mob_from_nbt	the affliction time (0 when absent) and a conversion started from the saved time, for drowned, stray, husk and zombie-villager mobs
-ConversionTracker.doConversion	inline	crates/horizon-client-lib/src/mobs/undead.rs::custom_server_ai_step	gap: player: zombie to drowned, husk to zombie and skeleton to stray (and piglin to zombified piglin, hoglin to zoglin) spawn a fresh mob through SpawnKind, so the old one's armor, held items, name tag and effects are lost
+ConversionTracker.addAdditionalSaveData	inline	crates/horizon-entities/src/entity_nbt.rs::mob_to_nbt	Zombie-derived InWaterTime saves -1 unless cached eyes are in water; gap: supplied NBT can still shadow live counter progress
+ConversionTracker.readAdditionalSaveData	port	crates/horizon-entities/src/entity_nbt.rs::mob_from_nbt	the affliction time (0 when absent) and a conversion started from the saved time, for drowned, stray, husk and zombie-villager mobs
+ConversionTracker.doConversion	inline	crates/horizon-entities/src/mobs/undead.rs::custom_server_ai_step	gap: player: zombie to drowned, husk to zombie and skeleton to stray (and piglin to zombified piglin, hoglin to zoglin) spawn a fresh mob through SpawnKind, so the old one's armor, held items, name tag and effects are lost
 ConversionType.convertCommon	port	crates/horizon-client/src/game/zombie_villagers.rs::carry_over	gap: player: only villager and zombie villager conversions use it (dispenser.rs::Game::convert_mob copies the flags for shearing); drowned, stray, zombified piglin, zoglin, frog and witch conversions go through SpawnKind and carry only baby, yaw and persistence, so name tag, armor, held items and effects are lost; absorption and tags are never copied
 ConversionType.copyComponent	inline	crates/horizon-client/src/game/zombie_villagers.rs::carry_over	gap: minor: the custom name is kept by carry_over and convert_mob, custom data is not
-Crackiness.byFraction	port	crates/horizon-client-lib/src/mobs/golem.rs::crackiness	iron golem thresholds 0.75, 0.5, 0.25; wolf armor 0.95, 0.69, 0.32 are in mobs/render.rs::layers and mobs.rs::Mob::hurt_wolf_armor
-Crackiness.byDamage	inline	crates/horizon-client-lib/src/mobs/render.rs::layers	wolf armor: durability left over max picks the crack texture; a golem uses its health instead
+Crackiness.byFraction	port	crates/horizon-entities/src/mobs/golem.rs::crackiness	iron golem thresholds 0.75, 0.5, 0.25; wolf armor 0.95, 0.69, 0.32 are in mobs/render.rs::layers and mobs.rs::Mob::hurt_wolf_armor
+Crackiness.byDamage	inline	crates/horizon-entities/src/mobs/render.rs::layers	wolf armor: durability left over max picks the crack texture; a golem uses its health instead
 Display.onSyncedDataUpdated	port	crates/horizon-client/src/game/text_displays.rs::RemoteTextDisplay::metadata	gap: minor: text displays a remote server sends only; start delay, duration and render state flags are tracked
 Display.createTransformation	port	crates/horizon-client-lib/src/text_display.rs::TextDisplayData::matrix	translation, left rotation, scale, right rotation plus the billboard turn
 Display.tick	port	crates/horizon-client/src/game/text_displays.rs::RemoteTextDisplay::tick	start tick, interpolation duration and render state refresh; text displays only
@@ -94,7 +94,7 @@ Display.TextDisplay.createFreshTextRenderState	inline	crates/horizon-client/src/
 Display.TextDisplay.createInterpolatedTextRenderState	port	crates/horizon-client-lib/src/text_display.rs::TextDisplayData::blend	opacity and the four background channels interpolate linearly
 Display.TextDisplay.cacheDisplay	inline	crates/horizon-client/src/game/text_displays.rs::Game::text_display_geometry	the split lines and widths are cached in RemoteTextDisplay::lines until the render state changes
 Display.TransformationInterpolator.get	port	crates/horizon-client-lib/src/text_display.rs::TextDisplayData::blend	translation and scale lerp, both rotations slerp
-DropChances.filterDefaultValues	port	crates/horizon-client-lib/src/entity_nbt.rs::mob_to_nbt	only the chances that are not the default 0.085 are written; an all-default set is dropped from the tage and reload
-DropChances.toEnumMap	port	crates/horizon-client-lib/src/entity_nbt.rs::mob_from_nbt	the saved drop_chances compound read back by slot name, missing slots keeping the default
-DropChances.withEquipmentChance	port	crates/horizon-client-lib/src/mobs/finalize.rs::set_drop_chance	stored per slot in extra.drop_chances
-ElytraAnimationState.tick	port	crates/horizon-client-lib/src/mobs.rs::ElytraAnimation::tick	
+DropChances.filterDefaultValues	port	crates/horizon-entities/src/entity_nbt.rs::mob_to_nbt	only the chances that are not the default 0.085 are written; an all-default set is dropped from the tage and reload
+DropChances.toEnumMap	port	crates/horizon-entities/src/entity_nbt.rs::mob_from_nbt	the saved drop_chances compound read back by slot name, missing slots keeping the default
+DropChances.withEquipmentChance	port	crates/horizon-entities/src/mobs/finalize.rs::set_drop_chance	stored per slot in extra.drop_chances
+ElytraAnimationState.tick	port	crates/horizon-entities/src/mobs.rs::ElytraAnimation::tick	

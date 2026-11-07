@@ -10,7 +10,7 @@ FlowingFluid.BlockStatePairKey.equals	skip:java	-	cache key record equality
 FlowingFluid.BlockStatePairKey.hashCode	skip:java	-	cache key record hash
 FlowingFluid.SpreadContext.getBlockState	port	crates/horizon-world/src/level/fluids.rs::Sim::context_state	-
 FlowingFluid.SpreadContext.isHole	port	crates/horizon-world/src/level/fluids.rs::Sim::context_is_hole	-
-Fluid.getAABB	inline	crates/horizon-client-lib/src/arrows.rs::Ticker::collided_with_fluid	the fluid box (block to block plus height) is built inside collided_with_fluid for the sweep test
+Fluid.getAABB	inline	crates/horizon-entities/src/arrows.rs::Ticker::collided_with_fluid	the fluid box (block to block plus height) is built inside collided_with_fluid for the sweep test
 FluidState.isSourceOfType	port	crates/horizon-world/src/level/fluids.rs::Sim::is_source_of	family comparison instead of owner identity; same result for source states
 LavaFluid.hasFlammableNeighbours	inline	crates/horizon-world/src/level/fluids.rs::Sim::lava_random_tick	the six-neighbour check is folded into the random tick; uses the plain IGNITED_BY_LAVA flag, no face argument
 LavaFluid.isFlammable	port	crates/horizon-world/src/level/fluids.rs::Sim::lava_flammable	deprecated no-face overload; same build-height and chunk check and flag
@@ -24,32 +24,32 @@ WaterFluid.Flowing.createFluidStateDefinition	skip:data	-	state property list, r
 MapColor.calculateARGBColor	port	crates/horizon-client/src/game/maps.rs::packed_rgba	packed id with brightness in, ARGB out; id 0 is transparent as in vanilla NONE
 MapColor.getPackedId	inline	crates/horizon-client/src/game/maps.rs::Game::render_biome_preview	the packed id (color << 2 | brightness) is built where map pixels are written (maps.rs:682 and in update_map)
 AmphibiousNodeEvaluator.done	skip:other	-	vanilla sets the mob malus for WATER, WALKABLE and WATER_BORDER in prepare and restores it here; Horizon never writes the mob malus, Finder::malus applies the amphibious values per search
-AmphibiousNodeEvaluator.isVerticalNeighborValid	inline	crates/horizon-client-lib/src/mobs/path.rs::Finder::walk_neighbors	the amphibious up and down neighbours need a valid node that is WATER; folded into the amphibious branch
+AmphibiousNodeEvaluator.isVerticalNeighborValid	inline	crates/horizon-entities/src/mobs/path.rs::Finder::walk_neighbors	the amphibious up and down neighbours need a valid node that is WATER; folded into the amphibious branch
 BinaryHeap.remove	skip:other	-	no vanilla caller: the search only uses insert, pop and changeCost, Horizon has heap_insert, heap_pop and change_cost
-FlyNodeEvaluator.getNeighbors	port	crates/horizon-client-lib/src/mobs/path.rs::Finder::fly_neighbors	fly neighbours
-FlyNodeEvaluator.hasMalus	inline	crates/horizon-client-lib/src/mobs/path.rs::Finder::fly_neighbors	the cost_malus >= 0 test is a closure inside fly_neighbors
-FlyNodeEvaluator.getCachedPathType	port	crates/horizon-client-lib/src/mobs/path.rs::Finder::fly_path_type	-
-FlyNodeEvaluator.iteratePathfindingStartNodeCandidatePositions	inline	crates/horizon-client-lib/src/mobs/path.rs::Finder::start	gap: minor: flying start candidates are the four corners only; the small-mob branch (ten random positions in the inflated box) is not ported
+FlyNodeEvaluator.getNeighbors	port	crates/horizon-entities/src/mobs/path.rs::Finder::fly_neighbors	fly neighbours
+FlyNodeEvaluator.hasMalus	inline	crates/horizon-entities/src/mobs/path.rs::Finder::fly_neighbors	the cost_malus >= 0 test is a closure inside fly_neighbors
+FlyNodeEvaluator.getCachedPathType	port	crates/horizon-entities/src/mobs/path.rs::Finder::fly_path_type	-
+FlyNodeEvaluator.iteratePathfindingStartNodeCandidatePositions	inline	crates/horizon-entities/src/mobs/path.rs::Finder::start	gap: minor: flying start candidates are the four corners only; the small-mob branch (ten random positions in the inflated box) is not ported
 pathfinder/Node.createDebugStreamCodec	skip:debug	-	stream codec for the debug path overlay
-pathfinder/Node.cloneAndMove	inline	crates/horizon-client-lib/src/mobs/path.rs::Path::raise_cauldron_nodes	the copy-and-move is written in place: PathNode is Copy, so the cauldron trim writes the raised y
+pathfinder/Node.cloneAndMove	inline	crates/horizon-entities/src/mobs/path.rs::Path::raise_cauldron_nodes	the copy-and-move is written in place: PathNode is Copy, so the cauldron trim writes the raised y
 pathfinder/Node.createHash	skip:java	-	Java map key; Horizon indexes nodes inside Finder
-pathfinder/Node.distanceTo	port	crates/horizon-client-lib/src/mobs/path.rs::Node::distance	both overloads: node to node and node to block position
+pathfinder/Node.distanceTo	port	crates/horizon-entities/src/mobs/path.rs::Node::distance	both overloads: node to node and node to block position
 pathfinder/Node.distanceToXZ	missing	-	minor: only the Warden path finder uses horizontal distance as its cost; Horizon costs use 3D distance everywhere (Finder::find)
 pathfinder/Node.distanceToSqr	skip:other	-	no vanilla caller in pathfinding or navigation; Horizon has no squared node distance
-pathfinder/Node.distanceManhattan	port	crates/horizon-client-lib/src/mobs/path.rs::Node::manhattan	-
+pathfinder/Node.distanceManhattan	port	crates/horizon-entities/src/mobs/path.rs::Node::manhattan	-
 pathfinder/Node.asVec3	skip:debug	-	only the pathfinding debug renderer calls it
-pathfinder/Node.equals	port	crates/horizon-client-lib/src/mobs/path.rs::Path::same_as	compares the node lists; Horizon nodes are PathNode values that also compare kind, vanilla compares position only
-Path.getEndNode	port	crates/horizon-client-lib/src/mobs/path.rs::Path::end	-
-Path.truncateNodes	port	crates/horizon-client-lib/src/mobs/nav.rs::trim_path	GroundPathNavigation.trimPath with avoidSun: the path stops before the first node the sky sees
-Path.getPreviousNode	inline	crates/horizon-client-lib/src/mobs/villager_brain.rs::B::try_start	path.nodes[path.next - 1] is read directly for the door check (InteractWithDoor)
+pathfinder/Node.equals	port	crates/horizon-entities/src/mobs/path.rs::Path::same_as	compares the node lists; Horizon nodes are PathNode values that also compare kind, vanilla compares position only
+Path.getEndNode	port	crates/horizon-entities/src/mobs/path.rs::Path::end	-
+Path.truncateNodes	port	crates/horizon-entities/src/mobs/nav.rs::trim_path	GroundPathNavigation.trimPath with avoidSun: the path stops before the first node the sky sees
+Path.getPreviousNode	inline	crates/horizon-entities/src/mobs/villager_brain.rs::B::try_start	path.nodes[path.next - 1] is read directly for the door check (InteractWithDoor)
 Path.equals	skip:java	-	Java equals; Path derives PartialEq and navigation compares paths with same_as
 Path.copy	skip:java	-	Path derives Clone
-PathFinder.reconstructPath	inline	crates/horizon-client-lib/src/mobs/path.rs::Finder::find	the came_from walk is the build closure inside find
-Target.updateBest	port	crates/horizon-client-lib/src/mobs/path.rs::Finder::best_h	keeps the best heuristic per target
-WalkNodeEvaluator.done	inline	crates/horizon-client-lib/src/mobs/sniffer.rs::ai_step	gap: minor: the per-search caches need no clearing (Horizon caches live in one search); the Sniffer water malus is set from the wet state each tick, while vanilla also sets it to -1 right after each search in onPathfindingDone
-WalkNodeEvaluator.doesBlockHavePartialCollision	port	crates/horizon-client-lib/src/mobs/path.rs::Finder::partial_collision	-
-WalkNodeEvaluator.getCachedPathType	port	crates/horizon-client-lib/src/mobs/path.rs::Finder::path_type	-
-WalkNodeEvaluator.getPathTypeWithinMobBB	port	crates/horizon-client-lib/src/mobs/path.rs::Finder::within_bb	-
+PathFinder.reconstructPath	inline	crates/horizon-entities/src/mobs/path.rs::Finder::find	the came_from walk is the build closure inside find
+Target.updateBest	port	crates/horizon-entities/src/mobs/path.rs::Finder::best_h	keeps the best heuristic per target
+WalkNodeEvaluator.done	inline	crates/horizon-entities/src/mobs/sniffer.rs::ai_step	gap: minor: the per-search caches need no clearing (Horizon caches live in one search); the Sniffer water malus is set from the wet state each tick, while vanilla also sets it to -1 right after each search in onPathfindingDone
+WalkNodeEvaluator.doesBlockHavePartialCollision	port	crates/horizon-entities/src/mobs/path.rs::Finder::partial_collision	-
+WalkNodeEvaluator.getCachedPathType	port	crates/horizon-entities/src/mobs/path.rs::Finder::path_type	-
+WalkNodeEvaluator.getPathTypeWithinMobBB	port	crates/horizon-entities/src/mobs/path.rs::Finder::within_bb	-
 MapItemSavedData.type	skip:data	-	saved-data type and codec; Horizon saves map files in save_maps
 MapItemSavedData.<init>	port	crates/horizon-client/src/game/maps.rs::MapData::fresh	gap: minor: sets the grid cell, scale and dimension; locked and the tracking flags are set by the caller or the NBT load
 MapItemSavedData.createForClient	port	crates/horizon-client/src/game/maps.rs::Game::remote_map_item_data	the client map is created from the packet (fresh map, locked flag from the packet)

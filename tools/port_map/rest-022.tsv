@@ -60,10 +60,10 @@ HttpUtil.hashFile	port	crates/horizon-client-lib/src/server_packs/download.rs::s
 HttpUtil.checkExistingFile	port	crates/horizon-client-lib/src/server_packs/download.rs::matches	
 HttpUtil.downloadAndHash	port	crates/horizon-client-lib/src/server_packs/download.rs::download_file	
 HttpUtil.isPortAvailable	port	crates/horizon-client-lib/src/lan/mod.rs::Lan::bind	gap: minor: returns the bind error, not a bool; no 0..65535 range check
-InclusiveRange.codec	port	crates/horizon-client-lib/src/mobs/spawner.rs::light_limit	gap: minor: only 0..15 light limits in integer, two-element or min/max form; no generic range codec
-InclusiveRange.create	inline	crates/horizon-client-lib/src/mobs/spawner.rs::light_limit	the min <= max check
+InclusiveRange.codec	port	crates/horizon-entities/src/mobs/spawner.rs::light_limit	gap: minor: only 0..15 light limits in integer, two-element or min/max form; no generic range codec
+InclusiveRange.create	inline	crates/horizon-entities/src/mobs/spawner.rs::light_limit	the min <= max check
 InclusiveRange.map	skip:java		Java generic element mapper; Horizon ranges are concrete integers
-InclusiveRange.isValueInRange	inline	crates/horizon-client-lib/src/mobs/spawner.rs::SpawnData::valid_position	the light test is written inline
+InclusiveRange.isValueInRange	inline	crates/horizon-entities/src/mobs/spawner.rs::SpawnData::valid_position	the light test is written inline
 InclusiveRange.contains	missing		minor: no subrange check; Horizon reads only single light ranges (spawner.rs light_limit)
 Interval.sub	port	crates/horizon-core/src/density/interval.rs::Interval::subtract_range	
 Interval.mul	port	crates/horizon-core/src/density/interval.rs::Interval::multiply_range	
@@ -102,7 +102,7 @@ Mth.fastInvCubeRoot	skip:other		minor: no caller in 26.3 (dead helper)
 Mth.murmurHash3Mixer	skip:java		JVM identity-hash bucketing in CrudeIncrementalIntIdentityHashBiMap; Horizon has no identity-hash maps
 Mth.sign	skip:java		pure math helper; sign is written inline at each use
 Mth.clampedMap	inline	crates/horizon-client-lib/src/title/onboarding.rs::Onboarding::widget_alpha	the inverse lerp clamped to 0..1 then lerped to the new range, folded into the caller
-Mth.map	inline	crates/horizon-client-lib/src/mobs/sulfur_cube.rs::vertical_hit_angle_power_transfer	(value - from) / (to - from) scaled into the new range, inlined at the call site
+Mth.map	inline	crates/horizon-entities/src/mobs/sulfur_cube.rs::vertical_hit_angle_power_transfer	(value - from) / (to - from) scaled into the new range, inlined at the call site
 Mth.wobble	skip:other		minor: no caller in 26.3 (dead helper)
 Mth.lengthSquared	skip:java		2-D squared length; Rust arithmetic at each use
 NativeModuleLister.listModules	skip:other		Windows module list for crash reports; Horizon has no such report

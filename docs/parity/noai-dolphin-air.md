@@ -57,7 +57,7 @@ or game resource is committed. Unknown phase times stay null.
 
 ## Actual full-Mob tick regression
 
-`cargo test -p horizon-client-lib --lib dolphin_noai_air_tests` uses the existing
+`cargo test -p horizon-entities --lib dolphin_noai_air_tests` uses the existing
 prepared-resource world factory with actual water or air and calls the real full
 `mobs::ai::tick`. It checks both media, loaded 4800/100, actual tick age, eye-water
 state, unchanged Health and NoAI, plus the normal water countdown. Before the fix,

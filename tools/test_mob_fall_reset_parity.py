@@ -36,10 +36,10 @@ def main():
     sources = [Path(__file__), oracle, lab.ROOT / 'tools/lab.py',
                lab.ROOT / 'tools/oracle_harness.py', lab.ROOT / 'tools/test_rust_parity.py',
                lab.ROOT / 'tools/integration_env.py', lab.ROOT / 'Cargo.toml', lab.ROOT / 'Cargo.lock',
-               lab.ROOT / 'crates/horizon-client-lib/src/mobs.rs',
-               lab.ROOT / 'crates/horizon-client-lib/src/mobs/ai.rs',
-               lab.ROOT / 'crates/horizon-client-lib/src/mobs/living.rs',
-               lab.ROOT / 'crates/horizon-client-lib/src/mobs/world.rs',
+               lab.ROOT / 'crates/horizon-entities/src/mobs.rs',
+               lab.ROOT / 'crates/horizon-entities/src/mobs/ai.rs',
+               lab.ROOT / 'crates/horizon-entities/src/mobs/living.rs',
+               lab.ROOT / 'crates/horizon-entities/src/mobs/world.rs',
                java_root / 'dev/horizonlab/parity/ParityData.java',
                java_root / 'dev/horizonlab/parity/VanillaBlockUpdateOracle.java']
     hashes = base.source_hashes(sources)
@@ -59,7 +59,7 @@ def main():
                    HORIZON_MOB_FALL_RESET_OUTPUT=str(build / 'rust.txt'))
         env.setdefault('CARGO_BUILD_JOBS', '1')
         env.setdefault('RUST_TEST_THREADS', '2')
-        harness.run_logged(['cargo', 'test', '--locked', '-p', 'horizon-client-lib', '--lib',
+        harness.run_logged(['cargo', 'test', '--locked', '-p', 'horizon-entities', '--lib',
                             'mobs::ai::flight_effect_fall_tests::flight_effects_reset_accumulated_fall_distance_even_without_ai',
                             '--', '--exact', '--ignored'], build, 'rust', env=env)
     matched = harness.compare(build / 'server.txt', build / 'rust.txt', 18)

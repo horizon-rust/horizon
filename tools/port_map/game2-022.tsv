@@ -130,7 +130,7 @@ LevelLightEngine.getLayerListener	skip:other		listener API; relight returns the 
 LevelLightEngine.getDebugData	skip:debug		
 LevelLightEngine.getDebugSectionType	skip:debug		
 LevelLightEngine.retainData	skip:other		no retained light data for unloaded chunks
-LevelLightEngine.getRawBrightness	port	crates/horizon-client-lib/src/mobs/spawn_rules.rs::raw_brightness	
+LevelLightEngine.getRawBrightness	port	crates/horizon-entities/src/mobs/spawn_rules.rs::raw_brightness	
 LevelLightEngine.lightOnInColumn	skip:other		no per-column light readiness flag; chunks are lit whole
 LightEngine.hasDifferentLightProperties	port	crates/horizon-client-render/src/light.rs::LightTables::differs	
 LightEngine.getState	port	crates/horizon-client-render/src/light.rs::Region::state	

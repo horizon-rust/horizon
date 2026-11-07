@@ -12801,7 +12801,7 @@ mod tests {
     #[test]
     fn native_breathing_stays_hookable() {
         let source =
-            include_str!("../../../horizon-client-lib/src/breathing.rs").replace("\r\n", "\n");
+            include_str!("../../../horizon-entities/src/breathing.rs").replace("\r\n", "\n");
         let hook = source.find("pub fn native_living_breathe(").unwrap();
         // From its doc comment's first line, so an attribute above it counts.
         let start = source[..hook].find("/// An entity's breathing").unwrap();
@@ -12959,13 +12959,13 @@ mod tests {
         // The menu engine's (`horizon_client::menu`).
         let menu_hooks = free_hooks(include_str!("../../../horizon-client-lib/src/menu.rs"));
         // The air supply's (`horizon_client::breathing`).
-        let breath_hooks = free_hooks(include_str!("../../../horizon-client-lib/src/breathing.rs"));
+        let breath_hooks = free_hooks(include_str!("../../../horizon-entities/src/breathing.rs"));
         // The crafting loaders' (`horizon_client_lib::crafting`).
         let crafting_hooks =
             free_hooks(include_str!("../../../horizon-client-lib/src/crafting.rs"));
-        let hunger_hooks = free_hooks(include_str!("../../../horizon-client-lib/src/hunger.rs"));
-        let landing_hooks = free_hooks(include_str!("../../../horizon-client-lib/src/landing.rs"));
-        let motion_hooks = free_hooks(include_str!("../../../horizon-client-lib/src/motion.rs"));
+        let hunger_hooks = free_hooks(include_str!("../../../horizon-entities/src/hunger.rs"));
+        let landing_hooks = free_hooks(include_str!("../../../horizon-entities/src/landing.rs"));
+        let motion_hooks = free_hooks(include_str!("../../../horizon-entities/src/motion.rs"));
         let sound_hooks = free_hooks(include_str!(
             "../../../horizon-client-lib/src/sound_playback.rs"
         ));
@@ -12973,13 +12973,13 @@ mod tests {
         let chat_hooks = free_hooks(include_str!(
             "../../../horizon-client-lib/src/lan/hub/chat.rs"
         ));
-        // The mob AI's (`horizon_client_lib::mobs::ai`).
-        let mob_hooks = free_hooks(include_str!("../../../horizon-client-lib/src/mobs/ai.rs"));
+        // The mob AI's (`horizon_entities::mobs::ai`).
+        let mob_hooks = free_hooks(include_str!("../../../horizon-entities/src/mobs/ai.rs"));
         // The connections' (`horizon_client_lib::lan::conn`).
         let conn_hooks = free_hooks(include_str!("../../../horizon-client-lib/src/lan/conn.rs"));
-        // The log writer's (`horizon_client_lib::native_client_hooks`).
+        // The log writer's (`horizon_entities::native_client_hooks`).
         let client_hooks = free_hooks(include_str!(
-            "../../../horizon-client-lib/src/native_client_hooks.rs"
+            "../../../horizon-entities/src/native_client_hooks.rs"
         ));
         let declared: BTreeSet<_> = section
             .lines()
@@ -13029,11 +13029,11 @@ mod tests {
                 // split): horizon-mixins resolves the crate by its package.
                 format!("horizon_client_lib::crafting::native_{name}")
             } else if hunger_hooks.contains(name) {
-                format!("horizon_client_lib::hunger::native_{name}")
+                format!("horizon_entities::hunger::native_{name}")
             } else if landing_hooks.contains(name) {
-                format!("horizon_client_lib::landing::native_{name}")
+                format!("horizon_entities::landing::native_{name}")
             } else if motion_hooks.contains(name) {
-                format!("horizon_client_lib::motion::native_{name}")
+                format!("horizon_entities::motion::native_{name}")
             } else if sound_hooks.contains(name) {
                 format!("horizon_client_lib::sound_playback::native_{name}")
             } else if chat_hooks.contains(name) {
@@ -13044,13 +13044,13 @@ mod tests {
                 format!("horizon_client_lib::menu::native_{name}")
             } else if breath_hooks.contains(name) {
                 // breathing.rs compiles into horizon-client-lib too.
-                format!("horizon_client_lib::breathing::native_{name}")
+                format!("horizon_entities::breathing::native_{name}")
             } else if mob_hooks.contains(name) {
-                format!("horizon_client_lib::mobs::ai::native_{name}")
+                format!("horizon_entities::mobs::ai::native_{name}")
             } else if conn_hooks.contains(name) {
                 format!("horizon_client_lib::lan::conn::native_{name}")
             } else if client_hooks.contains(name) {
-                format!("horizon_client_lib::native_client_hooks::native_{name}")
+                format!("horizon_entities::native_client_hooks::native_{name}")
             } else if level_hooks.contains(name) {
                 format!("horizon_client::game::native_hooks::GameLevel<'_>::native_{name}")
             } else {
@@ -13067,6 +13067,7 @@ mod tests {
         // crate must be a module of that crate's lib root.
         let client_root = include_str!("../lib.rs");
         let lib_root = include_str!("../../../horizon-client-lib/src/lib.rs");
+        let entities_root = include_str!("../../../horizon-entities/src/lib.rs");
         for hook in &hooks {
             let target = hook["target"].as_str().unwrap();
             let (root, crate_name, rest) =
@@ -13074,6 +13075,8 @@ mod tests {
                     (client_root, "horizon_client", rest)
                 } else if let Some(rest) = target.strip_prefix("horizon_client_lib::") {
                     (lib_root, "horizon_client_lib", rest)
+                } else if let Some(rest) = target.strip_prefix("horizon_entities::") {
+                    (entities_root, "horizon_entities", rest)
                 } else {
                     // The other crates (render, world) are their own packages,
                     // never split.

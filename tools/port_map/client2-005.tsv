@@ -19,7 +19,7 @@ RenderType.calculateHasBlending	skip:other		blend flag from the pipeline colour 
 RenderType.prepare	inline	crates/horizon-client-render/src/gfx.rs::Renderer::draw_frame	gap: minor: texture and overlay/lightmap binding folded into the frame passes
 RenderType.writeDynamicTransforms	inline	crates/horizon-client-render/src/gfx.rs::Renderer::draw_frame	gap: minor: no per-render-type layering offset found (only perspective layering scale)
 RenderTypes.createMovingBlockSetup	inline	crates/horizon-client/src/game/moving_pistons.rs::Game::moving_piston_geometry	block atlas and lightmap for moving blocks; gap: minor: crumbling and outline flags not checked here
-RenderTypes.breezeWind	inline	crates/horizon-client-lib/src/mobs/render.rs::layers	the breeze's wind layer scrolls by 0.02 of the texture a tick (scroll_offset, scroll_u)
+RenderTypes.breezeWind	inline	crates/horizon-entities/src/mobs/render.rs::layers	the breeze's wind layer scrolls by 0.02 of the texture a tick (scroll_offset, scroll_u)
 BannerSpecialRenderer.submit	port	crates/horizon-client-lib/src/item_render/special.rs::submit	Banner arm: flag, base and up to 16 pattern layers
 BannerSpecialRenderer.Unbaked.bake	inline	crates/horizon-client-lib/src/item_render/special.rs::load_parts	models are baked once from entity-models.json
 BellSpecialRenderer.submit	port	crates/horizon-client-lib/src/item_render/special.rs::submit	Bell arm

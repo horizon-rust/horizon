@@ -1,6 +1,6 @@
-BinaryAnimator.tick	port	crates/horizon-client-lib/src/mobs/axolotl.rs::Animation::tick	one axolotl Animation holds the four animators; old/value pair and the clamp to 10 as vanilla
-BinaryAnimator.getFactor	port	crates/horizon-client-lib/src/mobs/axolotl.rs::Animation::factor	lerp of old and value over 10, then the IN_OUT_SINE curve as vanilla
-BlockUtil.packDifferenceInPositionInternal	port	crates/horizon-client-lib/src/mobs/shulker.rs::pack_diff	gap: minor: radius fixed at 8 on each axis; the dragon egg packs (16, 8, 16) inline in crates/horizon-world/src/level/interact.rs::Sim::dragon_egg_teleport
+BinaryAnimator.tick	port	crates/horizon-entities/src/mobs/axolotl.rs::Animation::tick	one axolotl Animation holds the four animators; old/value pair and the clamp to 10 as vanilla
+BinaryAnimator.getFactor	port	crates/horizon-entities/src/mobs/axolotl.rs::Animation::factor	lerp of old and value over 10, then the IN_OUT_SINE curve as vanilla
+BlockUtil.packDifferenceInPositionInternal	port	crates/horizon-entities/src/mobs/shulker.rs::pack_diff	gap: minor: radius fixed at 8 on each axis; the dragon egg packs (16, 8, 16) inline in crates/horizon-world/src/level/interact.rs::Sim::dragon_egg_teleport
 BlockUtil.checkDifferenceInBounds	skip:other		range guard inside packDifferenceInPosition; radii of 8 and 16 cannot exceed 127
 ByIdMap.createMap	skip:java		id-to-value lookup table; Horizon enums match their own ids
 ByIdMap.sparse	skip:java		id-to-value lookup table; Horizon enums match their own ids

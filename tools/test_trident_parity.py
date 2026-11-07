@@ -108,7 +108,7 @@ def main():
                ROOT / 'Cargo.toml', ROOT / 'Cargo.lock',
                ROOT / 'crates/horizon-client-lib/examples/probe/trident_probe.rs',
                ROOT / 'crates/horizon-client-lib/examples/probe/main.rs',
-               ROOT / 'crates/horizon-client-lib/src/arrows.rs',
+               ROOT / 'crates/horizon-entities/src/arrows.rs',
                ROOT / 'crates/horizon-client/src/game/trident.rs']
     tested = base.source_hashes(sources)
     cases = fixtures()

@@ -245,7 +245,7 @@ LeafLitterBlock.createBlockStateDefinition	skip:data		block state definition is 
 LeafLitterBlock.rotate	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::rotate	
 LilyPadBlock.entityInside	port	crates/horizon-client/src/game.rs::GameLevel::boat_trigger_boxes	ticked in #3516; `LilyPadBlock.entityInside` is cited at crates/horizon-client/src/game.rs:878
 LilyPadBlock.mayPlaceOn	port	crates/horizon-world/src/level/survive.rs::Sim::may_place_on	
-MagmaBlock.stepOn	port	crates/horizon-client-lib/src/mobs/ai.rs::effects_from_blocks	a mob on the ground on magma takes the hot-floor point; the player's is in motion.rs
+MagmaBlock.stepOn	port	crates/horizon-entities/src/mobs/ai.rs::effects_from_blocks	a mob on the ground on magma takes the hot-floor point; the player's is in motion.rs
 MangrovePropaguleBlock.canSurvive	port	crates/horizon-world/src/level/survive.rs::Sim::can_survive_class	
 MangrovePropaguleBlock.createBlockStateDefinition	skip:data		block state definition is data (blocks table in horizon-items)
 MangrovePropaguleBlock.createNewHangingPropagule	inline	crates/horizon-world/src/level/bonemeal.rs::Sim::perform_bonemeal	hanging state set when a propagule grows down

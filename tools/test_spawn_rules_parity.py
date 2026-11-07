@@ -139,7 +139,7 @@ def main():
     types = sorted(t for t, v in entity_types.items() if 'attributes' in v and t.split(':')[1] not in SKIPPED)
     oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaSpawnRulesOracle.java'
     sources = [oracle, Path(__file__), lab.ROOT / 'crates/horizon-client-lib/examples/probe/spawn_rules_fixture.rs',
-               lab.ROOT / 'crates/horizon-client-lib/src/mobs/spawn_rules.rs']
+               lab.ROOT / 'crates/horizon-entities/src/mobs/spawn_rules.rs']
     tested = base.source_hashes(sources)
     inputs = build / 'inputs.txt'
     cases = corpus(types)

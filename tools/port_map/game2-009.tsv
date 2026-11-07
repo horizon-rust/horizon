@@ -59,17 +59,17 @@ DyedItemColor.getOrDefault	port	crates/horizon-assets/src/item_model.rs::Resolve
 FireworkExplosion.getColorName	port	crates/horizon-client-lib/src/item_tooltip.rs::firework_lines	dye name from the firework colour; unknown colours read as custom colour
 FireworkExplosion.withFadeColors	port	crates/horizon-client-lib/src/crafting.rs::Special::assemble	sets the fade colours of the star-fade recipe result
 ItemContainerContents.fromSlots	port	crates/horizon-items/src/item_data.rs::decode_components	reads the container slot list from its NBT; only non-empty slots are kept as pairs
-ItemContainerContents.fromItems	port	crates/horizon-client-lib/src/block_entity_item.rs::collect	writes the non-empty slots of the container into the item's components
+ItemContainerContents.fromItems	port	crates/horizon-entities/src/block_entity_item.rs::collect	writes the non-empty slots of the container into the item's components
 ItemContainerContents.findLastNonEmptySlot	skip:java		trims trailing empty slots; Horizon keeps only the non-empty slot pairs
 ItemContainerContents.asSlots	port	crates/horizon-items/src/item_data.rs::components_tag	writes the non-empty slots as minecraft:container entries
-ItemContainerContents.createStackFromSlot	port	crates/horizon-client-lib/src/block_entity_item.rs::place	reads a slot's stack into the placed container
-ItemContainerContents.copyInto	port	crates/horizon-client-lib/src/block_entity_item.rs::place	copies the container items into the placed block entity
+ItemContainerContents.createStackFromSlot	port	crates/horizon-entities/src/block_entity_item.rs::place	reads a slot's stack into the placed container
+ItemContainerContents.copyInto	port	crates/horizon-entities/src/block_entity_item.rs::place	copies the container items into the placed block entity
 ItemContainerContents.itemCopies	skip:other		no callers in the vanilla source
 ItemContainerContents.asMutable	skip:other		no callers in the vanilla source
 ItemContainerContents.equals	skip:java		value equality; Horizon compares the item data directly
 KineticWeapon.makeLocalHitSound	port	crates/horizon-client/src/game/spear.rs::Game::kinetic_hit_feedback	the local hit sound, at most once per ten ticks per entity
-KineticWeapon.computeDamageUseDuration	port	crates/horizon-client-lib/src/spear.rs::Kinetic::damage_use_duration	the delay plus the damage window's duration, which `SpearUseGoal` and `SpearAttack` read as the spear's use duration
-KineticWeapon.Condition.test	port	crates/horizon-client-lib/src/spear.rs::Condition::test	tick, attacker speed and relative speed against the scaled minimums
+KineticWeapon.computeDamageUseDuration	port	crates/horizon-entities/src/spear.rs::Kinetic::damage_use_duration	the delay plus the damage window's duration, which `SpearUseGoal` and `SpearAttack` read as the spear's use duration
+KineticWeapon.Condition.test	port	crates/horizon-entities/src/spear.rs::Condition::test	tick, attacker speed and relative speed against the scaled minimums
 PiercingWeapon.makeHitSound	port	crates/horizon-client/src/game/spear.rs::Game::jab	gap: minor: the hit sound plays at this player's feet only; vanilla plays it for everyone nearby
 ResolvableProfile.createUnresolved	port	crates/horizon-client-render/src/skins.rs::parse_profile	keeps a name or id as the unresolved key, resolved later
 ResolvableProfile.createPartialProfile	port	crates/horizon-client-render/src/skins.rs::parse_profile	id, else the name's offline UUID, else nil

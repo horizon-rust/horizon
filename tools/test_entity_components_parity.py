@@ -60,7 +60,7 @@ def main():
     harness.differential(
         'rust-entity-components-parity', 'VanillaEntityComponentsOracle', 'entity_components_probe', make_cases, scope,
         sources=[lab.ROOT / 'crates/horizon-client-lib/src/advancements.rs',
-                 lab.ROOT / 'crates/horizon-client-lib/src/mobs/finalize.rs'])
+                 lab.ROOT / 'crates/horizon-entities/src/mobs/finalize.rs'])
 
 
 if __name__ == '__main__':

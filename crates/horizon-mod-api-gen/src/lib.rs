@@ -576,15 +576,21 @@ fn free_function_source(target: &str) -> Option<(&'static str, String)> {
         ("horizon_world::", "horizon-world"),
         ("horizon_client_render::", "horizon-client-render"),
         ("horizon_client_lib::", "horizon-client-lib"),
+        ("horizon_entities::", "horizon-entities"),
     ];
     prefixes
         .into_iter()
         .find_map(|(prefix, krate)| target.strip_prefix(prefix).map(|p| (krate, p.to_owned())))
         .or_else(|| {
-            ["menu", "breathing"].into_iter().find_map(|module| {
+            [
+                ("menu", "horizon-client-lib"),
+                ("breathing", "horizon-entities"),
+            ]
+            .into_iter()
+            .find_map(|(module, krate)| {
                 target
                     .strip_prefix(&format!("horizon_client::{module}::"))
-                    .map(|p| ("horizon-client-lib", format!("{module}::{p}")))
+                    .map(|p| (krate, format!("{module}::{p}")))
             })
         })
 }

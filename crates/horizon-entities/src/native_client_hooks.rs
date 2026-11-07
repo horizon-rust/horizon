@@ -40,7 +40,7 @@ pub fn install(hooks: NativeClientHooks) -> Result<(), NativeClientHooks> {
     HOOKS.set(hooks)
 }
 
-pub(crate) fn menu_slot_rules(
+pub fn menu_slot_rules(
     menu: &str,
     slot: usize,
     stack: &ItemStack,
@@ -52,7 +52,7 @@ pub(crate) fn menu_slot_rules(
     }
 }
 
-pub(crate) fn player_chat(
+pub fn player_chat(
     player: u128,
     name: &str,
     message: &str,
@@ -126,7 +126,7 @@ pub(crate) fn register_goals(mob: &mut crate::mobs::Mob) {
     }
 }
 
-pub(crate) fn player_pre_login(
+pub fn player_pre_login(
     player: u128,
     name: &str,
     address: std::net::SocketAddr,
@@ -137,7 +137,7 @@ pub(crate) fn player_pre_login(
     }
 }
 
-pub(crate) fn player_profile(
+pub fn player_profile(
     player: u128,
     name: &str,
     properties: &mut Vec<horizon_protocol::packets::login::Property>,
@@ -147,13 +147,13 @@ pub(crate) fn player_profile(
     }
 }
 
-pub(crate) fn ingredient(kind: &str, data: &Map<String, Value>, items: &mut Vec<String>) {
+pub fn ingredient(kind: &str, data: &Map<String, Value>, items: &mut Vec<String>) {
     if let Some(hooks) = HOOKS.get() {
         (hooks.ingredient)(kind, data, items);
     }
 }
 
-pub(crate) fn ingredient_test(
+pub fn ingredient_test(
     kind: &str,
     data: &Map<String, Value>,
     stack: &ItemStack,
@@ -184,7 +184,7 @@ pub(crate) fn log_line(level: &str, thread: &str, message: &str, line: &str) {
     }
 }
 
-pub(crate) fn handshake(
+pub fn handshake(
     address: std::net::SocketAddr,
     host: &mut String,
     intent: i32,
@@ -196,7 +196,7 @@ pub(crate) fn handshake(
     }
 }
 
-pub(crate) fn sound_play(
+pub fn sound_play(
     sound: &crate::sound_engine::SoundPlayback<'_>,
     volume: &mut f32,
     pitch: &mut f32,

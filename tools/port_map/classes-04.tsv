@@ -162,9 +162,9 @@ PotentSulfurBlockEntity.loadAdditional	port	crates/horizon-client-lib/src/save.r
 PotentSulfurBlockEntity.setLevel	inline	crates/horizon-client/src/game/potent_sulfur.rs::client_tick_potent_sulfur	the eruption tick is set to the level's game time while it is still -1, as setLevel does when the entity learns its level
 PotentSulfurBlockEntity.spawnGeyserParticle	port	crates/horizon-client/src/game/potent_sulfur.rs::Game::spawn_geyser_particle	ticked in #3516; `PotentSulfurBlockEntity.spawnGeyserParticle` is cited at crates/horizon-client/src/game/potent_sulfur.rs:380
 PotentSulfurBlockEntity.spawnNoxiousGasCloudParticle	port	crates/horizon-client/src/game/potent_sulfur.rs::Game::spawn_noxious_gas_cloud_particle	ticked in #3516; `PotentSulfurBlockEntity.spawnNoxiousGasCloudParticle` is cited at crates/horizon-client/src/game/potent_sulfur.rs:395
-RandomizableContainerBlockEntity.applyImplicitComponents	port	crates/horizon-client-lib/src/block_entity_item.rs::place	the item's minecraft:container_loot hands the block its LootTable and LootTableSeed
+RandomizableContainerBlockEntity.applyImplicitComponents	port	crates/horizon-entities/src/block_entity_item.rs::place	the item's minecraft:container_loot hands the block its LootTable and LootTableSeed
 RandomizableContainerBlockEntity.canOpen	inline	crates/horizon-client/src/game/advancements.rs::Game::container_locked_for	the negative of it: a spectator opens any container, and otherwise the lock decides (LockCode.canUnlock)
-RandomizableContainerBlockEntity.collectImplicitComponents	port	crates/horizon-client-lib/src/block_entity_item.rs::collect	the block's LootTable and LootTableSeed leave on the item as minecraft:container_loot
+RandomizableContainerBlockEntity.collectImplicitComponents	port	crates/horizon-entities/src/block_entity_item.rs::collect	the block's LootTable and LootTableSeed leave on the item as minecraft:container_loot
 RandomizableContainerBlockEntity.createMenu	port	crates/horizon-client/src/game.rs::Game::open_menu	gap: minor: the spectator and loot-table checks are not ported here
 SculkSensorBlockEntity.loadAdditional	port	crates/horizon-client-render/src/sculk.rs::SculkEntity::load	
 SculkSensorBlockEntity.saveAdditional	port	crates/horizon-client-render/src/sculk.rs::SculkEntity::to_nbt	
@@ -172,8 +172,8 @@ SculkSensorBlockEntity.VibrationUser.canReceiveVibration	port	crates/horizon-cli
 SculkSensorBlockEntity.VibrationUser.onReceiveVibration	port	crates/horizon-client-render/src/sculk.rs::Data::schedule	
 TestBlockEntity	skip:debug		game-test tooling: reset, trigger and logging belong to the test runner, which Horizon does not have; its NBT is kept
 TestInstanceBlockEntity	skip:debug		game-test tooling: export and chunk forcing belong to the test runner, which Horizon does not have
-TrialSpawnerConfig.calculateTargetSimultaneousMobs	port	crates/horizon-client-lib/src/mobs/trial_spawner.rs::TrialConfig::target_simultaneous_mobs	
-TrialSpawnerConfig.calculateTargetTotalMobs	port	crates/horizon-client-lib/src/mobs/trial_spawner.rs::TrialConfig::target_total_mobs	
+TrialSpawnerConfig.calculateTargetSimultaneousMobs	port	crates/horizon-entities/src/mobs/trial_spawner.rs::TrialConfig::target_simultaneous_mobs	
+TrialSpawnerConfig.calculateTargetTotalMobs	port	crates/horizon-entities/src/mobs/trial_spawner.rs::TrialConfig::target_total_mobs	
 TrialSpawnerConfig.withSpawning	skip:java		builder-style setter on the config record
 TrialSpawnerConfig.Builder	skip:java		builder for the trial config
 TrialSpawnerConfigs	skip:data		registry bootstrap and equipment spawn data

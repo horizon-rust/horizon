@@ -149,6 +149,6 @@ SetLoreFunction.updateLore	inline	crates/horizon-client/src/game/commands/items.
 SetLoreFunction.getReferencedContextParams	skip:data		validation of referenced context params
 SetLoreFunction.Builder	skip:java		builder
 SetOminousBottleAmplifierFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	set_ominous_bottle_amplifier arm
-SetRandomDyesFunction.run	port	crates/horizon-client-lib/src/merchant.rs::Trades::apply_modifier	set_random_dyes arm
-SetRandomPotionFunction.run	port	crates/horizon-client-lib/src/merchant.rs::Trades::apply_modifier	set_random_potion arm
+SetRandomDyesFunction.run	port	crates/horizon-entities/src/merchant.rs::Trades::apply_modifier	set_random_dyes arm
+SetRandomPotionFunction.run	port	crates/horizon-entities/src/merchant.rs::Trades::apply_modifier	set_random_potion arm
 SetStewEffectFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	set_stew_effect arm

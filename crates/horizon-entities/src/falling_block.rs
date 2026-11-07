@@ -1,10 +1,8 @@
 //! FallingBlockEntity's impact damage, anvil wear, saved impact settings and
 //! the blocks it moves through (cobwebs, bubble columns).
+use crate::mobs::{Damage as MobDamage, DamageKind, Mob};
 use crate::motion::BubbleColumn;
-use crate::{
-    mobs::{Damage as MobDamage, DamageKind, Mob},
-    save::{float, number, put},
-};
+use horizon_client_core::nbt_value::{float, number, put};
 use horizon_core::{
     geometry::{Aabb, Axis, Direction, Vec3, sweep_intersected_blocks},
     position::BlockPos,

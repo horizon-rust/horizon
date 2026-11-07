@@ -36,7 +36,7 @@ def main():
                lab.ROOT / 'tools/oracle_harness.py', lab.ROOT / 'tools/test_rust_parity.py',
                lab.ROOT / 'Cargo.toml', lab.ROOT / 'Cargo.lock',
                lab.ROOT / 'crates/horizon-client-lib/Cargo.toml',
-               lab.ROOT / 'crates/horizon-client-lib/src/mobs/zombie_villager.rs']
+               lab.ROOT / 'crates/horizon-entities/src/mobs/zombie_villager.rs']
     tested = base.source_hashes(sources)
     rng = random.Random(0x43555245)
     seeds = [0, 1, -1, 42, -(2**63), 2**63 - 1] + [rng.randrange(-2**63, 2**63) for _ in range(128)]

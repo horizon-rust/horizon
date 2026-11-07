@@ -2543,7 +2543,7 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   included. Set `cancel` and it does not run. Push to `replies` to answer: each line is logged as the console's
   feedback is, so it also reaches the RCON client or the `horizon-server` caller. There is no player (the console is
   level 4). An audit log's `ServerCommandEvent`/`RemoteServerCommandEvent`. Bundles need `"hooks": @API:console_line@`.
-- **`native_log_line(level, thread, message, line)`** (`horizon_client_lib::native_client_hooks`): a message was
+- **`native_log_line(level, thread, message, line)`** (`horizon_entities::native_client_hooks`): a message was
   written to `logs/latest.log`, so a console bridge needs no tailing of the file. `level` is `INFO`, `WARN` or `ERROR`,
   `thread` the thread the line names, `message` the text and `line` what the file got (`[HH:mm:ss] [thread/LEVEL]:
   message`). It runs on the log's own writer thread after the file is written, never on the server or render thread,
@@ -3580,7 +3580,7 @@ place; `native_server_tick` does not define one, so name the dimension and expec
 
 ### Mob goals
 
-**`horizon_client_lib::mobs::ai::native_register_goals(mob)`** (vanilla's `Mob.registerGoals`; a trait mod's
+**`horizon_entities::mobs::ai::native_register_goals(mob)`** (vanilla's `Mob.registerGoals`; a trait mod's
 `Hooks::register_goals(event)`, with `event.mob`) is asked for every new mob, after its species added its goals and before its
 saved data is read. `mob.ai.goals` is vanilla's `goalSelector`, `mob.ai.targets` its `targetSelector`. A mod's living type
 ([mods.md](mods.md)) comes with its template's goals, a zombie's attacks, strolls and targets: clear them to replace them, as a

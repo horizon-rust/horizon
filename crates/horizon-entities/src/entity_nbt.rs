@@ -10,12 +10,11 @@ use crate::{
     mobs::{Mob, MobType, Who},
     nbt_path::int_value,
     projectiles::{Projectile, ProjectileKind},
-    save::{
-        doubles, float, floats, item_from_nbt, item_to_nbt, number, put, read_doubles, text,
-        uuid_from_tag,
-    },
 };
+use horizon_client_core::nbt_value::{doubles, float, floats, number, put, read_doubles, text};
+use horizon_client_core::uuid::uuid_from_tag;
 use horizon_core::geometry::Vec3;
+use horizon_items::item_nbt::{item_from_nbt, item_to_nbt};
 use horizon_world::{
     chunk::BlockState,
     nbt::{Compound, Tag},
@@ -664,7 +663,7 @@ pub fn mob_to_nbt(
                 m.extra
                     .inventory
                     .iter()
-                    .map(crate::save::item_to_nbt)
+                    .map(horizon_items::item_nbt::item_to_nbt)
                     .collect(),
             ),
         );
@@ -824,7 +823,7 @@ pub fn mob_to_nbt(
                         m.extra
                             .inventory
                             .iter()
-                            .map(crate::save::item_to_nbt)
+                            .map(horizon_items::item_nbt::item_to_nbt)
                             .collect(),
                     ),
                 );
@@ -859,13 +858,16 @@ pub fn mob_to_nbt(
                 map.insert("ChestedHorse".into(), Tag::Byte(i8::from(m.extra.chested)));
             }
             if m.extra.chested && !m.extra.items.is_empty() {
-                map.insert("Items".into(), crate::save::encode_items(&m.extra.items));
+                map.insert(
+                    "Items".into(),
+                    horizon_items::item_nbt::encode_items(&m.extra.items),
+                );
             } else {
                 map.remove(&"Items".into());
             }
             let mut equipment = Vec::new();
             if let Some(saddle) = m.saddle_item() {
-                equipment.push(("saddle", crate::save::item_to_nbt(&saddle)));
+                equipment.push(("saddle", horizon_items::item_nbt::item_to_nbt(&saddle)));
             }
             if let Some(armor) = &m.extra.body {
                 equipment.push((
@@ -924,7 +926,10 @@ pub fn mob_to_nbt(
                 _ => Compound::new(),
             };
             if let Some(saddle) = m.saddle_item() {
-                equipment.insert("saddle".into(), crate::save::item_to_nbt(&saddle));
+                equipment.insert(
+                    "saddle".into(),
+                    horizon_items::item_nbt::item_to_nbt(&saddle),
+                );
             } else {
                 equipment.remove(&"saddle".into());
             }
@@ -1088,7 +1093,7 @@ pub fn mob_to_nbt(
             if let Some(saddle) = m.saddle_item() {
                 map.insert(
                     "equipment".into(),
-                    Tag::compound([("saddle", crate::save::item_to_nbt(&saddle))]),
+                    Tag::compound([("saddle", horizon_items::item_nbt::item_to_nbt(&saddle))]),
                 );
             } else {
                 map.remove(&"equipment".into());
@@ -1352,7 +1357,7 @@ pub fn mob_to_nbt(
                     stack.data_mut().enchantments = g.slots[index].clone();
                     stack.data_mut().trim = g.trims[index].clone();
                 }
-                equipment.insert(slot.into(), crate::save::item_to_nbt(&stack));
+                equipment.insert(slot.into(), horizon_items::item_nbt::item_to_nbt(&stack));
                 continue;
             }
             // A worn piece or held item that kept its damage, name or
@@ -1371,7 +1376,7 @@ pub fn mob_to_nbt(
                     ][index],
                 )
             {
-                equipment.insert(slot.into(), crate::save::item_to_nbt(&stack));
+                equipment.insert(slot.into(), horizon_items::item_nbt::item_to_nbt(&stack));
                 continue;
             }
             // Enchanted or trimmed gear is saved with its components.
@@ -1381,7 +1386,7 @@ pub fn mob_to_nbt(
                 let mut stack = crate::items::ItemStack::new(id, 1);
                 stack.data_mut().enchantments = g.slots[index].clone();
                 stack.data_mut().trim = g.trims[index].clone();
-                equipment.insert(slot.into(), crate::save::item_to_nbt(&stack));
+                equipment.insert(slot.into(), horizon_items::item_nbt::item_to_nbt(&stack));
                 continue;
             }
             match item {
@@ -1403,7 +1408,9 @@ pub fn mob_to_nbt(
                         if !has_patterns {
                             equipment.insert(
                                 slot.into(),
-                                crate::save::item_to_nbt(&crate::mobs::raider::ominous_banner()),
+                                horizon_items::item_nbt::item_to_nbt(
+                                    &crate::mobs::raider::ominous_banner(),
+                                ),
                             );
                         }
                     } else if !keep {
@@ -1424,7 +1431,10 @@ pub fn mob_to_nbt(
         // LivingEntity saves the actual saddle equipment even on a mob whose
         // Survival interaction does not offer saddling (for example a husk).
         if let Some(saddle) = m.saddle_item() {
-            equipment.insert("saddle".into(), crate::save::item_to_nbt(&saddle));
+            equipment.insert(
+                "saddle".into(),
+                horizon_items::item_nbt::item_to_nbt(&saddle),
+            );
         }
         // A happy ghast wears its harness in the body slot (and a nautilus
         // its armour, a sulfur cube its swallowed block, a wolf its armor,
@@ -1437,7 +1447,7 @@ pub fn mob_to_nbt(
                 stack.damage = m.extra.body_damage.max(0) as u32;
                 stack.extra = m.extra.body_extra.clone();
             }
-            equipment.insert("body".into(), crate::save::item_to_nbt(&stack));
+            equipment.insert("body".into(), horizon_items::item_nbt::item_to_nbt(&stack));
         }
         // Vanilla saves `equipment` only when something is equipped.
         if equipment.is_empty() {
@@ -1546,7 +1556,7 @@ fn custom_name(tag: &Tag) -> Option<String> {
 }
 pub use horizon_client_core::component::name_text;
 /// Mob.finalizeSpawn's follow range bonus in the saved attributes.
-pub(crate) fn spawn_bonus(tag: &Tag) -> Option<f64> {
+pub fn spawn_bonus(tag: &Tag) -> Option<f64> {
     let Some(Tag::List(attrs)) = tag.get("attributes") else {
         return None;
     };
@@ -1715,8 +1725,10 @@ pub fn mob_from_nbt(
     m.hurt_time = number(tag.get("HurtTime")).unwrap_or(0) as i32;
     // What it holds (equipment.mainhand / offhand), when saved.
     if let Some(eq) = tag.get("equipment") {
-        m.extra
-            .set_main_hand_stack(eq.get("mainhand").and_then(crate::save::item_from_nbt));
+        m.extra.set_main_hand_stack(
+            eq.get("mainhand")
+                .and_then(horizon_items::item_nbt::item_from_nbt),
+        );
         m.extra.off_hand = eq
             .get("offhand")
             .and_then(|i| text(i.get("id")))
@@ -1735,7 +1747,7 @@ pub fn mob_from_nbt(
         }
         // Their enchantments and trims.
         for (index, key) in crate::mobs::gear::KEYS.iter().enumerate() {
-            if let Some(stack) = eq.get(key).and_then(crate::save::item_from_nbt) {
+            if let Some(stack) = eq.get(key).and_then(horizon_items::item_nbt::item_from_nbt) {
                 crate::mobs::gear::set(&mut m, index, stack.enchantments().to_vec());
                 let trim = stack.data().and_then(|d| d.trim.clone());
                 crate::mobs::gear::set_trim(&mut m, index, trim);
@@ -1815,7 +1827,7 @@ pub fn mob_from_nbt(
     if is_animal(&m.kind.id) {
         m.extra.in_love = tag.get("InLove").and_then(int_value).unwrap_or(0);
         // Animal.readAdditionalSaveData: the player who fed it into love.
-        m.extra.love_cause = crate::save::uuid_from_tag(tag.get("LoveCause"));
+        m.extra.love_cause = horizon_client_core::uuid::uuid_from_tag(tag.get("LoveCause"));
     }
     m.name_visible = flag(tag, "CustomNameVisible");
     m.no_ai = flag(tag, "NoAI");
@@ -1871,7 +1883,7 @@ pub fn mob_from_nbt(
     {
         m.extra.inventory = items
             .iter()
-            .filter_map(crate::save::item_from_nbt)
+            .filter_map(horizon_items::item_nbt::item_from_nbt)
             .take(carrier_slots)
             .collect();
     }
@@ -1892,7 +1904,7 @@ pub fn mob_from_nbt(
             // InventoryCarrier.readInventoryFromTag (eight slots).
             m.extra.inventory = items
                 .iter()
-                .filter_map(crate::save::item_from_nbt)
+                .filter_map(horizon_items::item_nbt::item_from_nbt)
                 .take(8)
                 .collect();
         }
@@ -1904,7 +1916,7 @@ pub fn mob_from_nbt(
         let saddle = tag
             .get("equipment")
             .and_then(|e| e.get("saddle"))
-            .and_then(crate::save::item_from_nbt);
+            .and_then(horizon_items::item_nbt::item_from_nbt);
         if saddle.is_some() || flag(tag, "Saddle") {
             m.set_saddle(Some(saddle.unwrap_or_else(|| {
                 crate::items::ItemStack::new("minecraft:saddle", 1)
@@ -1915,7 +1927,7 @@ pub fn mob_from_nbt(
         m.extra.tame = flag(tag, "Tame");
         m.extra.variant3 = number(tag.get("Temper")).unwrap_or(0).clamp(0, 100) as u8;
         m.extra.bred = flag(tag, "Bred");
-        m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
+        m.extra.owner = horizon_client_core::uuid::uuid_from_tag(tag.get("Owner"));
         let v = number(tag.get("Variant")).unwrap_or(0) as i32;
         m.extra.variant = (v & 0xFF).clamp(0, 6) as u8;
         m.extra.variant2 = ((v >> 8) & 0xFF).clamp(0, 4) as u8;
@@ -1924,12 +1936,12 @@ pub fn mob_from_nbt(
         }
         m.extra.chested = flag(tag, "ChestedHorse");
         if m.extra.chested {
-            m.extra.items = crate::save::decode_items(tag.get("Items"), 15);
+            m.extra.items = horizon_items::item_nbt::decode_items(tag.get("Items"), 15);
         }
         let eq = tag.get("equipment");
         m.set_saddle(
             eq.and_then(|e| e.get("saddle"))
-                .and_then(crate::save::item_from_nbt),
+                .and_then(horizon_items::item_nbt::item_from_nbt),
         );
         m.extra.body = eq
             .and_then(|e| e.get("body"))
@@ -1977,7 +1989,7 @@ pub fn mob_from_nbt(
             if let Some(Tag::List(trusted)) = tag.get("Trusted") {
                 for uuid in trusted
                     .iter()
-                    .filter_map(|t| crate::save::uuid_from_tag(Some(t)))
+                    .filter_map(|t| horizon_client_core::uuid::uuid_from_tag(Some(t)))
                 {
                     crate::mobs::fox::add_trusted_entity(&mut m, uuid);
                 }
@@ -2032,7 +2044,7 @@ pub fn mob_from_nbt(
         m.extra.trusting = flag(tag, "Trusting");
     }
     if m.species() == crate::mobs::Species::Cat {
-        m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
+        m.extra.owner = horizon_client_core::uuid::uuid_from_tag(tag.get("Owner"));
         m.extra.tame = m.extra.owner.is_some();
         m.extra.sitting = flag(tag, "Sitting");
         m.extra.color =
@@ -2044,13 +2056,13 @@ pub fn mob_from_nbt(
         m.extra.variant2 = gene("HiddenGene");
     }
     if m.species() == crate::mobs::Species::Parrot {
-        m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
+        m.extra.owner = horizon_client_core::uuid::uuid_from_tag(tag.get("Owner"));
         m.extra.tame = m.extra.owner.is_some();
         m.extra.sitting = flag(tag, "Sitting");
     }
     if m.species() == crate::mobs::Species::Wolf {
         let health = m.health;
-        m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
+        m.extra.owner = horizon_client_core::uuid::uuid_from_tag(tag.get("Owner"));
         let tame = m.extra.owner.is_some();
         crate::mobs::tame::set_tame(&mut m, tame);
         m.health = health;
@@ -2058,7 +2070,7 @@ pub fn mob_from_nbt(
         let armor = tag
             .get("equipment")
             .and_then(|e| e.get("body"))
-            .and_then(crate::save::item_from_nbt);
+            .and_then(horizon_items::item_nbt::item_from_nbt);
         m.extra.body_damage = armor.as_ref().map_or(0, |s| s.damage as i32);
         m.extra.body_extra = armor.and_then(|s| s.extra);
         m.extra.color =
@@ -2111,7 +2123,7 @@ pub fn mob_from_nbt(
         m.extra.tame = liked.is_some();
         m.extra.owner = liked
             .and_then(|l| l.get("value"))
-            .and_then(|v| crate::save::uuid_from_tag(Some(v)));
+            .and_then(|v| horizon_client_core::uuid::uuid_from_tag(Some(v)));
         let memory = |key: &str| {
             tag.get("Brain")
                 .and_then(|b| b.get("memories"))
@@ -3311,7 +3323,7 @@ pub fn cushion_from_nbt(tag: &Tag, id: u32) -> Option<Cushion> {
     let yaw = match tag.get("Rotation") {
         Some(Tag::List(l)) => l
             .first()
-            .and_then(|v| crate::save::float(Some(v)))
+            .and_then(|v| horizon_client_core::nbt_value::float(Some(v)))
             .unwrap_or(0.0) as f32,
         _ => 0.0,
     };
@@ -3584,7 +3596,7 @@ pub fn boat_to_nbt(
     }
     .tag(raw);
     if let (Some(items), Tag::Compound(map)) = (items, &mut tag) {
-        map.insert("Items".into(), crate::save::encode_items(items));
+        map.insert("Items".into(), horizon_items::item_nbt::encode_items(items));
     }
     tag
 }
@@ -7361,7 +7373,7 @@ mod neutral_anger_tests {
         assert_eq!(back.extra.angry_at, Some(crate::mobs::Who::Mob(0)));
         let again = mob_to_nbt(&back, [1, 2, 3, 6], Some(&raw), None, |_| None);
         assert_eq!(
-            crate::save::uuid_from_tag(again.get("angry_at")),
+            horizon_client_core::uuid::uuid_from_tag(again.get("angry_at")),
             Some([9, 8, 7, 6])
         );
         // Once the anger is over (`stopBeingAngry`), the loaded target goes.
@@ -8304,7 +8316,7 @@ mod carrier_inventory_tests {
         let mut pig = Mob::new(2, kind, Vec3::ZERO, 0.0);
         pig.extra
             .inventory
-            .push(crate::save::item_from_nbt(&stack).unwrap());
+            .push(horizon_items::item_nbt::item_from_nbt(&stack).unwrap());
         assert!(
             mob_to_nbt(&pig, [137, 0, 0, 2], None, None, |_| None)
                 .get("Inventory")

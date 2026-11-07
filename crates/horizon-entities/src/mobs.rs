@@ -446,7 +446,7 @@ impl MobType {
 }
 /// Each type's default attribute values, parsed exactly (serde_json's
 /// default float parsing can miss the nearest double by one ulp).
-pub(crate) fn exact_attributes(bytes: &[u8]) -> HashMap<String, HashMap<String, f64>> {
+pub fn exact_attributes(bytes: &[u8]) -> HashMap<String, HashMap<String, f64>> {
     use serde_json::value::RawValue;
     type Raw = HashMap<String, Box<RawValue>>;
     let Ok(types) = serde_json::from_slice::<Raw>(bytes) else {
@@ -4705,8 +4705,8 @@ mod spear_knockback_tests {
 #[cfg(test)]
 mod teams_tests {
     use super::*;
-    use crate::save::uuid_text;
     use crate::scoreboard::{Scoreboard, Team};
+    use horizon_client_core::uuid::uuid_text;
 
     /// A board where every other mob is on the player's team, as with a
     /// datapack that colours its mobs' names.
@@ -4777,13 +4777,13 @@ mod teams_tests {
         }
     }
 }
-#[cfg(test)]
-pub(crate) mod sensor_scan_tests {
+#[cfg(any(test, feature = "test-support"))]
+pub mod sensor_scan_tests {
     use super::*;
     use horizon_core::geometry::Vec3;
     use serde_json::json;
 
-    pub(crate) fn kind() -> Arc<MobType> {
+    pub fn kind() -> Arc<MobType> {
         Arc::new(MobType {
             id: "minecraft:cow".into(),
             species: Species::Cow,
@@ -4832,7 +4832,7 @@ pub(crate) mod sensor_scan_tests {
     }
     /// `n` mobs in pens of 20 spread over a square of `side` blocks, as on a
     /// server's farms; their snapshot and its grid.
-    fn herd(n: u32, side: f64) -> (Vec<Seen>, seen_grid::SeenGrid) {
+    pub fn herd(n: u32, side: f64) -> (Vec<Seen>, seen_grid::SeenGrid) {
         let kind = kind();
         let mut seed = 0x9e37_79b9_7f4a_7c15u64;
         let mut next = |range: f64| {
@@ -4853,13 +4853,13 @@ pub(crate) mod sensor_scan_tests {
         (seen, grid)
     }
     /// `NearestLivingEntitySensor` over every mob, as the brains ran it.
-    fn scan(seen: &[Seen], me: &Seen, area: Aabb) -> Vec<u32> {
+    pub fn scan(seen: &[Seen], me: &Seen, area: Aabb) -> Vec<u32> {
         seen.iter()
             .filter(|o| o.id != me.id && o.alive && o.bounds.intersects(area))
             .map(|o| o.id)
             .collect()
     }
-    fn indexed(seen: &[Seen], grid: &seen_grid::SeenGrid, me: &Seen, area: Aabb) -> Vec<u32> {
+    pub fn indexed(seen: &[Seen], grid: &seen_grid::SeenGrid, me: &Seen, area: Aabb) -> Vec<u32> {
         let mut near = Vec::new();
         assert!(grid.candidates(area, &mut near));
         near.iter()

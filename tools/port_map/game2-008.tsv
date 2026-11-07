@@ -34,9 +34,9 @@ StonecutterMenu.canTakeItemForPickAll	port	crates/horizon-client-lib/src/menu.rs
 StonecutterMenu.quickMoveStack	inline	crates/horizon-client-lib/src/menu.rs::Menu::quick_move	the Kind::Stonecutter arm
 StonecutterMenu.removed	port	crates/horizon-client/src/game/stations.rs::Game::close_station	input stacks are given back when the station closes; the result is derived and not kept
 ArrowItem.asProjectile	port	crates/horizon-client/src/game/dispenser.rs::Game::shoot_projectile_item	dispensed arrows are built in the arrow arm of the item shot
-BlockItem.updateBlockEntityComponents	port	crates/horizon-client-lib/src/block_entity_item.rs::place	the placed block entity takes the item's components
+BlockItem.updateBlockEntityComponents	port	crates/horizon-entities/src/block_entity_item.rs::place	the placed block entity takes the item's components
 BlockItem.canPlace	port	crates/horizon-world/src/level/place.rs::Sim::place	the placement checks, including the survive check, run in Sim::place
-BlockItem.onDestroyed	port	crates/horizon-client-lib/src/entities.rs::ItemEntity::hurt	the damage that empties an item's health makes the stack's `container` contents item entities where it lay (`item_data::destroyed_container`)
+BlockItem.onDestroyed	port	crates/horizon-entities/src/entities.rs::ItemEntity::hurt	the damage that empties an item's health makes the stack's `container` contents item entities where it lay (`item_data::destroyed_container`)
 BoatItem.getBoat	port	crates/horizon-client/src/game/boats.rs::Game::place_boat	boat placed at the hit point with the item's stack config
 BucketItem.playEmptySound	port	crates/horizon-world/src/level/buckets.rs::Sim::empty_sound	
 BundleItem.getWeightSafe	port	crates/horizon-items/src/bundle.rs::Contents::weight_fraction	float fraction; vanilla compares an exact Fraction
@@ -44,7 +44,7 @@ BundleItem.getBarWidth	port	crates/horizon-items/src/bundle.rs::Contents::bar
 BundleItem.getBarColor	port	crates/horizon-items/src/bundle.rs::Contents::bar	
 BundleItem.removeOneItemFromBundle	port	crates/horizon-items/src/bundle.rs::Contents::remove_one	
 BundleItem.getTooltipImage	port	crates/horizon-client-lib/src/item_tooltip.rs::bundle_tooltip	the contents grid, hidden when `minecraft:tooltip_display` hides `minecraft:bundle_contents` (or the whole tooltip); the geometry is `bundle.rs::tooltip_layout`
-BundleItem.onDestroyed	port	crates/horizon-client-lib/src/entities.rs::ItemEntity::hurt	the damage that empties an item's health makes the bundle's contents item entities where it lay (`bundle::destroyed`)
+BundleItem.onDestroyed	port	crates/horizon-entities/src/entities.rs::ItemEntity::hurt	the damage that empties an item's health makes the bundle's contents item entities where it lay (`bundle::destroyed`)
 BundleItem.playRemoveOneSound	port	crates/horizon-client/src/game.rs::Game::drop_bundle_content	the menu queues the same sound in menu/bundle.rs
 BundleItem.playInsertSound	port	crates/horizon-client-lib/src/menu/bundle.rs::Menu::carried_bundle_click	queues the insert or insert-fail sound
 BundleItem.playDropContentsSound	port	crates/horizon-client/src/game.rs::Game::drop_bundle_content	
@@ -52,7 +52,7 @@ CompassItem.isFoil	port	crates/horizon-assets/src/item_model.rs::Resolve::has_fo
 CrossbowItem.tryLoadProjectiles	port	crates/horizon-client/src/game/crossbow.rs::Game::tick_crossbow	the drawn ammo is stored on the crossbow once charged
 CrossbowItem.shootProjectile	port	crates/horizon-client/src/game/crossbow.rs::Game::shoot_crossbow	
 CrossbowItem.getProjectileShotVector	inline	crates/horizon-client/src/game/crossbow.rs::Game::shoot_crossbow	the multishot spread is rotated inline from the view and up vectors
-CrossbowItem.createProjectile	port	crates/horizon-client-lib/src/arrows.rs::Ticker::hit_sound	a crossbow arrow hits with item.crossbow.hit (the arrow keeps fired_from_weapon, set in shoot_crossbow)
+CrossbowItem.createProjectile	port	crates/horizon-entities/src/arrows.rs::Ticker::hit_sound	a crossbow arrow hits with item.crossbow.hit (the arrow keeps fired_from_weapon, set in shoot_crossbow)
 CrossbowItem.getShotPitch	inline	crates/horizon-client/src/game/crossbow.rs::Game::shoot_crossbow	the shot pitch per index is inline
 CrossbowItem.getRandomShotPitch	inline	crates/horizon-client/src/game/crossbow.rs::Game::shoot_crossbow	the random pitch formula is inline
 CrossbowItem.getPowerForTime	inline	crates/horizon-client/src/game/crossbow.rs::Game::tick_crossbow	the charge fraction capped at one is the tick check against the charge time

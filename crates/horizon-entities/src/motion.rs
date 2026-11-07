@@ -452,6 +452,17 @@ pub struct PlayerMotion {
 fn attribute_error(error: impl std::fmt::Debug) -> io::Error {
     io::Error::other(format!("movement attribute: {error:?}"))
 }
+/// What `PlayerMotion::load_saved_state_once` restores from a save's player.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SavedPlayerState<'a> {
+    pub player_extra: Option<&'a horizon_world::nbt::Tag>,
+    pub fall_distance: f64,
+    pub health: f32,
+    pub absorption: f32,
+    pub food: i32,
+    pub saturation: f32,
+    pub flying: bool,
+}
 impl PlayerMotion {
     /// `ServerGamePacketListenerImpl.handleMovePlayer`: the movement the client
     /// sent is the server copy's own delta movement. A glide's wall hit reads it
@@ -478,15 +489,15 @@ impl PlayerMotion {
     pub fn load_saved_state_once(
         &mut self,
         pending: &mut bool,
-        level: &crate::save::Level,
+        level: &SavedPlayerState<'_>,
     ) -> Result<()> {
         if std::mem::take(pending) {
-            let extra = level.player_extra.as_ref();
+            let extra = level.player_extra;
             self.fire_ticks = extra
-                .and_then(|t| crate::save::number(t.get("Fire")))
+                .and_then(|t| horizon_client_core::nbt_value::number(t.get("Fire")))
                 .unwrap_or(-20) as i32;
             self.air = extra
-                .and_then(|t| crate::save::number(t.get("Air")))
+                .and_then(|t| horizon_client_core::nbt_value::number(t.get("Air")))
                 .unwrap_or(300) as i32;
             self.fall_distance = level.fall_distance;
             // LivingEntity.readAdditionalSaveData applies the saved attributes
@@ -3277,67 +3288,6 @@ mod tests {
     }
 
     #[test]
-    fn attribute_bases_survive_a_save_and_reload() {
-        // #4425: LivingEntity.addAdditionalSaveData writes AttributeMap.pack
-        // and readAdditionalSaveData applies it (before the health).
-        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../.local/horizon-client")
-                    .join(horizon_core::VANILLA_VERSION)
-            });
-        if !root.join("movement-properties.nbt").exists() {
-            eprintln!("skipped attribute save: prepared resources unavailable");
-            return;
-        }
-        let assets = Assets::load(&root).unwrap();
-        let resources = MotionResources::load(&root, &assets).unwrap();
-        let mut p = PlayerMotion::new(&resources, Vec3::ZERO).unwrap();
-        let set_base = |p: &mut PlayerMotion, name: &str, v: f64| {
-            let key = p.attributes.key(name).unwrap();
-            let h = p.attributes.get_instance(Some(key)).unwrap().unwrap();
-            p.attributes
-                .edit(&h, |a, o| a.set_base_value(v, o))
-                .unwrap();
-        };
-        set_base(&mut p, "minecraft:scale", 2.0);
-        set_base(&mut p, "minecraft:max_health", 30.0);
-        let key = p.attributes.key("minecraft:max_health").unwrap();
-        let h = p.attributes.get_instance(Some(key)).unwrap().unwrap();
-        let bonus = Modifier::new("test:bonus", 0.5, Operation::AddMultipliedBase).unwrap();
-        p.attributes
-            .edit(&h, |a, o| a.add_permanent(bonus, o))
-            .unwrap();
-        let mut level = crate::save::Level {
-            health: 40.0,
-            food: 20,
-            saturation: 5.0,
-            player_extra: Some(horizon_world::nbt::Tag::compound([(
-                "attributes",
-                p.saved_attributes(),
-            )])),
-            ..Default::default()
-        };
-        // Through the player compound as the file holds it.
-        let tag = level.player_tag();
-        level = crate::save::Level::default();
-        level.read_player(&tag);
-        level.player_extra = Some(tag);
-        let mut back = PlayerMotion::new(&resources, Vec3::ZERO).unwrap();
-        let mut pending = true;
-        back.load_saved_state_once(&mut pending, &level).unwrap();
-        let base = |p: &mut PlayerMotion, name: &str| {
-            let key = p.attributes.key(name).unwrap();
-            p.attributes.value(Some(key), ValueKind::Base).unwrap()
-        };
-        assert_eq!(base(&mut back, "minecraft:scale"), 2.0);
-        assert_eq!(base(&mut back, "minecraft:max_health"), 30.0);
-        assert_eq!(back.attribute("minecraft:max_health").unwrap(), 45.0);
-        assert_eq!(back.health.health(), 40.0);
-    }
-
-    #[test]
     #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
     fn auto_jump_detects_collidable_entities() {
         let root = std::path::PathBuf::from(
@@ -5371,11 +5321,11 @@ mod tests {
             ("Fire", horizon_world::nbt::Tag::Short(160)),
             ("Air", horizon_world::nbt::Tag::Short(8)),
         ]);
-        let mut level = crate::save::Level {
+        let mut level = SavedPlayerState {
             health: 13.0,
             food: 11,
             saturation: 2.25,
-            player_extra: Some(extra),
+            player_extra: Some(&extra),
             flying: true,
             ..Default::default()
         };

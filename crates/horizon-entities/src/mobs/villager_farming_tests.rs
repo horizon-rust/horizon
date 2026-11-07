@@ -1,5 +1,6 @@
 use super::*;
-use crate::{items::ItemStack, mod_content::ContentMod};
+use crate::items::ItemStack;
+use horizon_client_lib::mod_content::ContentMod;
 use std::{
     path::PathBuf,
     sync::{Arc, OnceLock},
@@ -41,7 +42,7 @@ fn resources() -> &'static std::path::Path {
         let package = horizon_mods::Package::read(&dir).unwrap();
         let content = horizon_mods::Content::read(&dir, &package.manifest).unwrap();
         let out = scratch.join("resources");
-        crate::mod_content::build(&base, &[ContentMod { id: "fieldtest".into(), content }], &out)
+        horizon_client_lib::mod_content::build(&base, &[ContentMod { id: "fieldtest".into(), content }], &out)
             .unwrap();
         out
     })
@@ -54,7 +55,7 @@ fn farmer(types: &super::super::MobTypes) -> Mob {
         Vec3::new(0.5, 1.0, 0.5),
         0.0,
     );
-    super::super::villager::set_profession(&mut m, 5);
+    crate::mobs::villager::set_profession(&mut m, 5);
     m
 }
 
@@ -85,7 +86,7 @@ fn put(
 #[test]
 #[ignore = "full content root: tools/test_villager_farming_parity.py runs it"]
 fn mod_farmland_is_a_secondary_site_and_farming_target() {
-    assert!(super::super::world::with_resource_test_world(
+    assert!(crate::mobs::world::with_resource_test_world(
         resources(),
         &[],
         true,
@@ -123,7 +124,7 @@ fn mod_farmland_is_a_secondary_site_and_farming_target() {
 #[test]
 #[ignore = "full content root: tools/test_villager_farming_parity.py runs it"]
 fn mod_crops_are_harvested_only_at_their_vanilla_templates_max_age() {
-    assert!(super::super::world::with_resource_test_world(
+    assert!(crate::mobs::world::with_resource_test_world(
         resources(),
         &[],
         true,
@@ -185,7 +186,7 @@ fn mod_crops_are_harvested_only_at_their_vanilla_templates_max_age() {
 #[test]
 #[ignore = "full content root: tools/test_villager_farming_parity.py runs it"]
 fn farming_uses_the_first_tagged_block_item_and_consumes_one_seed() {
-    assert!(super::super::world::with_resource_test_world(
+    assert!(crate::mobs::world::with_resource_test_world(
         resources(),
         &[],
         true,
@@ -197,7 +198,7 @@ fn farming_uses_the_first_tagged_block_item_and_consumes_one_seed() {
         },
         |w, types| {
             let mut m = farmer(types);
-            let inventory = &mut super::super::villager::ext_mut(&mut m).inventory;
+            let inventory = &mut crate::mobs::villager::ext_mut(&mut m).inventory;
             *inventory = vec![
                 ItemStack::new("minecraft:wheat_seeds", 2),
                 ItemStack::new("minecraft:stick", 2),
@@ -228,7 +229,7 @@ fn farming_uses_the_first_tagged_block_item_and_consumes_one_seed() {
                 _ => None,
             });
             assert_eq!(planted, Some("fieldtest:roots"));
-            let inventory = &super::super::villager::ext(&m).unwrap().inventory;
+            let inventory = &crate::mobs::villager::ext(&m).unwrap().inventory;
             assert_eq!(
                 inventory
                     .iter()
@@ -260,7 +261,7 @@ fn farming_uses_the_first_tagged_block_item_and_consumes_one_seed() {
                 |e| matches!(e, MobEvent::SetBlock { pos: [1, 1, 0], state } if *state == expected)
             ));
             assert_eq!(
-                super::super::villager::ext(&m)
+                crate::mobs::villager::ext(&m)
                     .unwrap()
                     .inventory
                     .last()
@@ -295,7 +296,7 @@ fn vanilla_farming_classification_matches_the_oracle() {
         })
         .collect();
     assert!(!rows.is_empty());
-    assert!(super::super::world::with_built_test_world(
+    assert!(crate::mobs::world::with_built_test_world(
         &[],
         |world, _| {
             for (x, (state, _)) in rows.iter().enumerate() {
@@ -312,8 +313,8 @@ fn vanilla_farming_classification_matches_the_oracle() {
                 let p = [x as i32, 0, 0];
                 assert_eq!(
                     vec![
-                        super::super::villager::crop(w, p),
-                        super::super::villager::ripe_crop(w, p),
+                        crate::mobs::villager::crop(w, p),
+                        crate::mobs::villager::ripe_crop(w, p),
                         farmland_valid(w, [p[0], 1, 0])
                     ],
                     *expected,

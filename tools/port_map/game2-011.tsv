@@ -1,15 +1,15 @@
-NaturalSpawner.getFilteredSpawningCategories	port	crates/horizon-client-lib/src/mobs/spawn_selection.rs::SpawnState::filtered_categories	categories in spawn order, filtered by enemies, persistent and the global cap
-NaturalSpawner.isRightDistanceToPlayerAndSpawnPoint	port	crates/horizon-client-lib/src/mobs/spawn_selection.rs::right_distance	24 block player distance, respawn point distance and chunk checks
-NaturalSpawner.getMobForSpawn	inline	crates/horizon-client-lib/src/mobs/spawn_selection.rs::spawn_category_for_position	gap: minor: no warning log when a type cannot be created; the type is skipped there
-NaturalSpawner.isValidPositionForMob	inline	crates/horizon-client-lib/src/mobs/spawn_selection.rs::spawn_category_for_position	the far-away removal check; gap: minor: NeoForge spawn position event hook is not modelled
-NaturalSpawner.getRandomSpawnMobAt	inline	crates/horizon-client-lib/src/mobs/spawn_selection.rs::spawn_category_for_position	the water ambient reduce roll, then the weighted pick from mobs_at
-NaturalSpawner.isInNetherFortressBounds	inline	crates/horizon-client-lib/src/mobs/spawn_selection.rs::mobs_at	the monster fortress check on nether bricks comes first in mobs_at
-NaturalSpawner.getRandomPosWithin	port	crates/horizon-client-lib/src/mobs/spawn_selection.rs::spawn_category_for_chunk	random column in the chunk, height up to one above the world surface
-NaturalSpawner.SpawnState.canSpawnForCategoryGlobal	port	crates/horizon-client-lib/src/mobs/spawn_selection.rs::SpawnState::can_spawn_global	per chunk cap from the spawnable chunk count
-NaturalSpawner.SpawnState.canSpawnForCategoryLocal	port	crates/horizon-client-lib/src/mobs/spawn_selection.rs::SpawnState::can_spawn_local	local cap per player near the chunk; the debug flag is not kept
+NaturalSpawner.getFilteredSpawningCategories	port	crates/horizon-entities/src/mobs/spawn_selection.rs::SpawnState::filtered_categories	categories in spawn order, filtered by enemies, persistent and the global cap
+NaturalSpawner.isRightDistanceToPlayerAndSpawnPoint	port	crates/horizon-entities/src/mobs/spawn_selection.rs::right_distance	24 block player distance, respawn point distance and chunk checks
+NaturalSpawner.getMobForSpawn	inline	crates/horizon-entities/src/mobs/spawn_selection.rs::spawn_category_for_position	gap: minor: no warning log when a type cannot be created; the type is skipped there
+NaturalSpawner.isValidPositionForMob	inline	crates/horizon-entities/src/mobs/spawn_selection.rs::spawn_category_for_position	the far-away removal check; gap: minor: NeoForge spawn position event hook is not modelled
+NaturalSpawner.getRandomSpawnMobAt	inline	crates/horizon-entities/src/mobs/spawn_selection.rs::spawn_category_for_position	the water ambient reduce roll, then the weighted pick from mobs_at
+NaturalSpawner.isInNetherFortressBounds	inline	crates/horizon-entities/src/mobs/spawn_selection.rs::mobs_at	the monster fortress check on nether bricks comes first in mobs_at
+NaturalSpawner.getRandomPosWithin	port	crates/horizon-entities/src/mobs/spawn_selection.rs::spawn_category_for_chunk	random column in the chunk, height up to one above the world surface
+NaturalSpawner.SpawnState.canSpawnForCategoryGlobal	port	crates/horizon-entities/src/mobs/spawn_selection.rs::SpawnState::can_spawn_global	per chunk cap from the spawnable chunk count
+NaturalSpawner.SpawnState.canSpawnForCategoryLocal	port	crates/horizon-entities/src/mobs/spawn_selection.rs::SpawnState::can_spawn_local	local cap per player near the chunk; the debug flag is not kept
 NoiseColumn.getBlock	port	crates/horizon-world/src/worldgen/structure/start.rs::NoiseColumn::get	air outside the column height
 NoiseColumn.setBlock	skip:other		no callers in vanilla; Horizon builds the column once and never writes it
-PotentialCalculator.PointCharge.getPotentialChange	inline	crates/horizon-client-lib/src/mobs/spawn_selection.rs::SpawnState::energy_change	one charge's term charge over distance, infinity at zero distance, summed in energy_change
+PotentialCalculator.PointCharge.getPotentialChange	inline	crates/horizon-entities/src/mobs/spawn_selection.rs::SpawnState::energy_change	one charge's term charge over distance, infinity at zero distance, summed in energy_change
 ServerExplosion.interactWithBlocks	inline	crates/horizon-client/src/game/explosion.rs::Game::server_explode_as	shuffles the targets, runs each block's explosion hit, then pops the merged drops
 ServerExplosion.createFire	inline	crates/horizon-client/src/game/explosion.rs::Game::server_explode_as	one in three chance on air above a solid block, with the block's fire state
 ServerExplosion.canTriggerBlocks	inline	crates/horizon-client/src/game/wind.rs::Game::wind_burst	breeze charges need mob griefing before the trigger pass; the trigger-only check is implicit because only wind bursts reach it
@@ -83,9 +83,9 @@ AbstractBedBlock.setPlacedBy	port	crates/horizon-world/src/level/place.rs::Sim::
 AbstractBedBlock.getSeed	skip:other		model seed of a random block variant; beds have one model, nothing reads it
 AbstractBedBlock.bedSurroundStandUpOffsets	inline	crates/horizon-client/src/game/respawn_anchor.rs::Game::bed_stand_up	the ten cells around the bed, built inside bed_stand_up
 AbstractBedBlock.bedAboveStandUpOffsets	inline	crates/horizon-client/src/game/respawn_anchor.rs::Game::bed_stand_up	the two cells on the bed, built inside bed_stand_up
-AbstractCandleBlock.onProjectileHit	port	crates/horizon-client-lib/src/arrows.rs::Ticker::block_reaction	a fire arrow lights an unlit, dry candle or candle cake
+AbstractCandleBlock.onProjectileHit	port	crates/horizon-entities/src/arrows.rs::Ticker::block_reaction	a fire arrow lights an unlit, dry candle or candle cake
 AbstractCandleBlock.extinguish	inline	crates/horizon-world/src/level/fluids.rs::Sim::place_liquid	gap: minor: water flow turns a lit candle off with its sound; the smoke particles and game event are not here (the candle cake click is CandleCakeBlock's)
-AbstractCandleBlock.setLit	inline	crates/horizon-client-lib/src/arrows.rs::Ticker::block_reaction	the lit=true write for a fire arrow; the lit=false write is in place_liquid
+AbstractCandleBlock.setLit	inline	crates/horizon-entities/src/arrows.rs::Ticker::block_reaction	the lit=true write for a fire arrow; the lit=false write is in place_liquid
 AbstractCandleBlock.onExplosionHit	port	crates/horizon-client/src/game/wind.rs::Game::wind_trigger_block	a wind burst puts out a lit candle; only trigger blasts do this, as in vanilla
 AbstractCauldronBlock.useItemOn	port	crates/horizon-client/src/game.rs::Game::use_on_cauldron	held item interaction with a cauldron
 AbstractSkullBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.rs::Sim::placement_class	powered from the neighbour signal at placement

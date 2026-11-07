@@ -13,7 +13,7 @@ PotentSulfurBlock.triggerEvent	port	crates/horizon-world/src/level/pistons.rs::S
 PotentSulfurBlock.getTicker	port	crates/horizon-client/src/game/potent_sulfur.rs::Game::tick_potent_sulfur	ticked in #3516; `PotentSulfurBlock.getTicker` is cited at crates/horizon-client/src/game/potent_sulfur.rs:133
 PowderSnowBlock.skipRendering	port	crates/horizon-world/src/block_render.rs::FaceVisibility::skips	same_block skip kind from the block data
 PowderSnowBlock.fallOn	port	crates/horizon-world/src/block_landing.rs::BlockLandingRegistry::fall_on	powder snow landing sound from 4 blocks, small or big by 7
-PowderSnowBlock.getEntityInsideCollisionShape	inline	crates/horizon-client-lib/src/motion.rs::MotionWorld::check_inside_blocks	gap: minor: each powder snow cell is swept as a full box; vanilla uses the entity-context shape, which for falling entities over 2.5 blocks is a 0.9 tall box
+PowderSnowBlock.getEntityInsideCollisionShape	inline	crates/horizon-entities/src/motion.rs::MotionWorld::check_inside_blocks	gap: minor: each powder snow cell is swept as a full box; vanilla uses the entity-context shape, which for falling entities over 2.5 blocks is a 0.9 tall box
 RailBlock.updateState	port	crates/horizon-world/src/level/rails.rs::Sim::rail_update_state	
 RailBlock.rotate	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::rotate	rail shape rotation from the generated state table, as PoweredRailBlock.rotate
 RailBlock.mirror	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::mirror	rail shape mirror from the generated state table, as PoweredRailBlock.rotate

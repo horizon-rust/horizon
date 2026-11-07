@@ -11,6 +11,7 @@ description = "Reusable client systems, control tool and parity probes"
 
 [dependencies]
 horizon-assets = { path = "../horizon-assets" }
+horizon-entities = { path = "../horizon-entities", default-features = false }
 horizon-client-core = { path = "../horizon-client-core" }
 horizon-client-input = { path = "../horizon-client-input" }
 horizon-client-render = { path = "../horizon-client-render" }
@@ -116,7 +117,7 @@ audio = ["horizon-client-render/audio"]
 # Controllers: gilrs, and the DualSense's own output. Without it only `horizon-ctl pad`'s virtual pad.
 controllers = ["dep:gilrs", "dep:horizon-dualsense", "horizon-client-input/controllers"]
 # Records the call sites of mob random draws (`mob_ai_probe` traces).
-rng-trace = ["horizon-core/rng-trace"]
+rng-trace = ["horizon-core/rng-trace", "horizon-entities/rng-trace"]
 # Compatibility with earlier experiment commands: main already uses mimalloc.
 windows-mimalloc = []
 # Opt-in Windows heap experiment; see docs/windows-allocators.md.
@@ -126,6 +127,7 @@ windows-segment-heap = []
 workspace = true
 
 [dev-dependencies]
+horizon-entities = { path = "../horizon-entities", default-features = false, features = ["test-support"] }
 horizon-client-render = { path = "../horizon-client-render", features = ["test-support"] }
 horizon-items = { path = "../horizon-items", features = ["test-support"] }
 # Every WGSL shader translated as wgpu's DirectX 12 backend does (gfx.rs tests).

@@ -137,7 +137,7 @@ fn parse_cure(tag: &Tag) -> Option<Cure> {
     };
     (time != -1).then(|| Cure {
         time,
-        starter: crate::save::uuid_from_tag(tag.get("ConversionPlayer")),
+        starter: horizon_client_core::uuid::uuid_from_tag(tag.get("ConversionPlayer")),
     })
 }
 /// The saved fields: the cure and the gossip.

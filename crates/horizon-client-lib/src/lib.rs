@@ -2,12 +2,17 @@
 //! bindings between the validated simulation pieces and the game loop.
 #![forbid(unsafe_code)]
 extern crate self as horizon_client;
+#[cfg(test)]
+mod entity_cross_tests;
+pub use horizon_entities::{
+    arrows, attribute_updates, auto_jump, beehive, block_contact, block_entity_item, breathing,
+    data_cmd, entities, entity_nbt, entity_rules, falling_block, first_person, gossip, health,
+    hunger, impl_joined, join_seq, landing, merchant, mobs, motion, native_client_hooks, pose,
+    powder_snow, projectiles, spear, sprint, stand_up,
+};
 pub mod advancements;
 pub mod ambience;
 pub mod animate_tick;
-pub mod arrows;
-pub mod block_contact;
-pub mod powder_snow;
 pub use horizon_client_render::{
     assets, atlas_sources, audio, auth, ban_notice, bidi, biome, block_edit, block_entities,
     block_entity_anim, block_entity_render, block_sprites, block_states, bluemap, bluemap_detect,
@@ -26,16 +31,11 @@ pub use horizon_client_render::{
     testgen, title_edition, trims, ui, vault, weather, widgets, world, worldborder, zip,
 };
 pub mod attack_strength;
-pub mod attribute_updates;
-pub mod auto_jump;
 pub mod banner;
-pub mod beehive;
 pub mod benchmark;
-pub mod block_entity_item;
 pub mod block_pattern;
 pub mod block_transform;
 pub mod boss_overlay;
-pub mod breathing;
 pub mod cauldron;
 pub mod chunk_io;
 pub mod clock;
@@ -47,7 +47,6 @@ pub mod control;
 pub mod crafting;
 pub mod creative;
 pub mod cushion;
-pub mod data_cmd;
 pub mod debug_chart;
 pub mod debug_entries;
 pub mod debug_keys;
@@ -58,44 +57,30 @@ pub mod dialog_screen;
 pub mod discord_presence;
 pub mod end_crystal;
 pub mod end_gateway;
-pub mod entities;
-pub mod entity_nbt;
-pub mod entity_rules;
 pub mod extras_hud;
-pub mod falling_block;
 pub mod fire_render;
-pub mod first_person;
 pub mod flatgen;
 pub mod friends_screen;
 pub mod furnace;
 pub mod game_mode_switcher;
 pub mod game_rules_screen;
 pub mod gizmos;
-pub mod gossip;
-pub mod health;
 pub mod heartbeat;
 pub mod hotbar;
-pub mod hunger;
 pub mod inv_sort;
 pub mod item_activation;
 pub mod item_render;
 pub mod item_sync;
 pub mod item_tooltip;
-pub mod join_seq;
 pub mod lan;
-pub mod landing;
 pub mod legacy_combat;
 pub mod locator_bar;
 pub mod lod_net;
 pub mod menu;
-pub mod merchant;
-pub mod mobs;
 pub mod mod_content;
 pub mod mod_registry;
-pub mod motion;
 pub mod multiplayer;
 pub mod music;
-pub mod native_client_hooks;
 pub mod native_data;
 pub mod net;
 pub mod nether_portal;
@@ -108,9 +93,7 @@ pub mod perf_overlay;
 pub mod pick_item;
 pub mod player_sync;
 pub mod portal_sections;
-pub mod pose;
 pub mod pregen;
-pub mod projectiles;
 pub mod raid;
 pub mod random_tick_sections;
 pub mod realms;
@@ -127,10 +110,7 @@ pub use horizon_server_files as server;
 pub mod controller_notice;
 pub mod server_packs;
 pub mod shadows;
-pub mod spear;
 pub mod spectator_menu;
-pub mod sprint;
-pub mod stand_up;
 pub mod stations;
 pub mod stopwatches;
 pub mod structure_blocks;

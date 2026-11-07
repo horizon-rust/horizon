@@ -132,7 +132,7 @@ def main():
     types = sorted('minecraft:' + p.stem for p in tables.glob('*.json') if p.stem not in SKIPPED)
     oracle = lab.ROOT / 'mods/horizon/src/test/java/dev/horizonlab/parity/VanillaEntityDeathLootOracle.java'
     sources = [oracle, Path(__file__), lab.ROOT / 'crates/horizon-client-lib/examples/probe/entity_death_loot_fixture.rs',
-               lab.ROOT / 'crates/horizon-client-lib/src/mobs/drops.rs', lab.ROOT / 'crates/horizon-client-lib/src/mobs/enderman.rs',
+               lab.ROOT / 'crates/horizon-entities/src/mobs/drops.rs', lab.ROOT / 'crates/horizon-entities/src/mobs/enderman.rs',
                lab.ROOT / 'crates/horizon-world/src/loot.rs']
     tested = base.source_hashes(sources)
     inputs = build / 'inputs.txt'

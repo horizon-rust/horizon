@@ -114,11 +114,6 @@ pub fn chunks_with_block_entities<'a, N: std::hash::BuildHasher>(
 use horizon_client_core::nbt_value::string;
 pub use horizon_client_core::nbt_value::{float, number, text};
 /// Insert or replace a key of a compound tag.
-pub(crate) fn put(tag: &mut Tag, key: &str, value: Tag) {
-    if let Tag::Compound(map) = tag {
-        map.insert(key.into(), value);
-    }
-}
 fn compound_or_empty(tag: Option<Tag>) -> Tag {
     match tag {
         Some(t @ Tag::Compound(_)) => t,
@@ -3279,31 +3274,8 @@ pub fn random_uuid() -> [i32; 4] {
 pub(crate) fn uuid_tag(u: [i32; 4]) -> Tag {
     Tag::IntArray(u.to_vec())
 }
-pub(crate) fn uuid_from_tag(tag: Option<&Tag>) -> Option<[i32; 4]> {
-    match tag? {
-        Tag::IntArray(v) if v.len() == 4 => Some([v[0], v[1], v[2], v[3]]),
-        Tag::String(s) => uuid_from_text(&s.to_string_lossy()),
-        _ => None,
-    }
-}
-pub(crate) fn doubles(values: &[f64]) -> Tag {
-    Tag::List(values.iter().map(|v| Tag::Double(v.to_bits())).collect())
-}
-pub(crate) fn floats(values: &[f32]) -> Tag {
-    Tag::List(values.iter().map(|v| Tag::Float(v.to_bits())).collect())
-}
-pub(crate) fn read_doubles<const N: usize>(tag: Option<&Tag>) -> Option<[f64; N]> {
-    match tag? {
-        Tag::List(l) if l.len() == N => {
-            let mut out = [0.0; N];
-            for (o, v) in out.iter_mut().zip(l) {
-                *o = float(Some(v))?;
-            }
-            Some(out)
-        }
-        _ => None,
-    }
-}
+pub use horizon_client_core::nbt_value::{doubles, floats, put, read_doubles};
+pub use horizon_client_core::uuid::uuid_from_tag;
 
 /// Default game rules of a new 26.3 world (`data/minecraft/game_rules.dat`).
 const GAME_RULES: [(&str, i32); 58] = [
@@ -3770,6 +3742,18 @@ pub struct Level {
     pub singleplayer_file: bool,
 }
 impl Level {
+    /// The player's saved state, for `PlayerMotion::load_saved_state_once`.
+    pub fn saved_player_state(&self) -> crate::motion::SavedPlayerState<'_> {
+        crate::motion::SavedPlayerState {
+            player_extra: self.player_extra.as_ref(),
+            fall_distance: self.fall_distance,
+            health: self.health,
+            absorption: self.absorption,
+            food: self.food,
+            saturation: self.saturation,
+            flying: self.flying,
+        }
+    }
     /// `PrimaryLevelData.setDifficulty`: the level data holds the world's
     /// difficulty, so the game and the file follow each other and a world
     /// that was set to hard is hard when it is opened again.

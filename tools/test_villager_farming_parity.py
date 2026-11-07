@@ -22,7 +22,7 @@ def main():
     oracle_harness.java_run(build, classes, dependencies, "VanillaVillagerFarmingOracle", [expected], "vanilla")
     env = dict(lab.game_env(), HORIZON_FARMING_ORACLE=str(expected))
     oracle_harness.run_logged([
-        "cargo", "test", "--locked", "-p", "horizon-client-lib", "--lib",
+        "cargo", "test", "--locked", "-p", "horizon-entities", "--lib",
         "mobs::villager_brain::farming_tests", "--", "--include-ignored", "--nocapture",
     ], build, "rust", env=env)
     print(f"{len(expected.read_text().splitlines())} vanilla block states match; content-mod farming regressions pass")

@@ -835,7 +835,12 @@ pub fn write_nbt(m: &Mob, map: &mut horizon_world::nbt::Compound) {
     map.insert("LastGossipDecay".into(), Tag::Long(e.last_gossip_decay));
     map.insert(
         "Inventory".into(),
-        Tag::List(e.inventory.iter().map(crate::save::item_to_nbt).collect()),
+        Tag::List(
+            e.inventory
+                .iter()
+                .map(horizon_items::item_nbt::item_to_nbt)
+                .collect(),
+        ),
     );
 }
 /// The memories of `Brain.memories` the villager keeps besides positions.
@@ -987,7 +992,7 @@ pub fn read_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     if let Some(Tag::List(items)) = tag.get("Inventory") {
         e.inventory = items
             .iter()
-            .filter_map(crate::save::item_from_nbt)
+            .filter_map(horizon_items::item_nbt::item_from_nbt)
             .take(INVENTORY_SLOTS)
             .collect();
     }

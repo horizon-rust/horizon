@@ -163,20 +163,20 @@ SkyLightEngine.setLightEnabled	skip:other		light is computed when a chunk loads 
 SkyLightSectionStorage	skip:other		sky data layer bookkeeping per section; Horizon keeps light in chunk sections
 SkyLightSectionStorage.SkyDataLayerStorageMap	skip:java		copy of sky data layers; collection plumbing
 SpatialLongSet.InternalMap	skip:java		hash set internals for section positions
-NodeEvaluator.getNode	port	crates/horizon-client-lib/src/mobs/path.rs::Finder::node	
-NodeEvaluator.getPathType	port	crates/horizon-client-lib/src/mobs/path.rs::Finder::path_type	
-NodeEvaluator.getTargetNodeAt	port	crates/horizon-client-lib/src/mobs/path.rs::Finder::node	target lookup is the same arena lookup
-NodeEvaluator.prepare	port	crates/horizon-client-lib/src/mobs/path.rs::Finder::new	per-query state
-PathTypeCache.compute	port	crates/horizon-client-lib/src/mobs/path.rs::Finder::compute_path_type	
-PathTypeCache.get	port	crates/horizon-client-lib/src/mobs/path.rs::Finder::cached	
-PathTypeCache.getOrCompute	port	crates/horizon-client-lib/src/mobs/path.rs::Finder::cached	
+NodeEvaluator.getNode	port	crates/horizon-entities/src/mobs/path.rs::Finder::node	
+NodeEvaluator.getPathType	port	crates/horizon-entities/src/mobs/path.rs::Finder::path_type	
+NodeEvaluator.getTargetNodeAt	port	crates/horizon-entities/src/mobs/path.rs::Finder::node	target lookup is the same arena lookup
+NodeEvaluator.prepare	port	crates/horizon-entities/src/mobs/path.rs::Finder::new	per-query state
+PathTypeCache.compute	port	crates/horizon-entities/src/mobs/path.rs::Finder::compute_path_type	
+PathTypeCache.get	port	crates/horizon-entities/src/mobs/path.rs::Finder::cached	
+PathTypeCache.getOrCompute	port	crates/horizon-entities/src/mobs/path.rs::Finder::cached	
 PathTypeCache.invalidate	skip:java		the cache lives for one query, so nothing is invalidated
-SwimNodeEvaluator.findAcceptedNode	port	crates/horizon-client-lib/src/mobs/path.rs::Finder::swim_accepted	
-SwimNodeEvaluator.getCachedBlockType	port	crates/horizon-client-lib/src/mobs/path.rs::Finder::cached	
-SwimNodeEvaluator.getNeighbors	port	crates/horizon-client-lib/src/mobs/path.rs::Finder::swim_neighbors	
-SwimNodeEvaluator.getPathTypeOfMob	port	crates/horizon-client-lib/src/mobs/path.rs::Finder::path_type_of_mob	
-SwimNodeEvaluator.getStart	port	crates/horizon-client-lib/src/mobs/path.rs::Finder::start	Swim arm
-SwimNodeEvaluator.hasMalus	inline	crates/horizon-client-lib/src/mobs/path.rs::Finder::swim_neighbors	diagonal check on both sides
+SwimNodeEvaluator.findAcceptedNode	port	crates/horizon-entities/src/mobs/path.rs::Finder::swim_accepted	
+SwimNodeEvaluator.getCachedBlockType	port	crates/horizon-entities/src/mobs/path.rs::Finder::cached	
+SwimNodeEvaluator.getNeighbors	port	crates/horizon-entities/src/mobs/path.rs::Finder::swim_neighbors	
+SwimNodeEvaluator.getPathTypeOfMob	port	crates/horizon-entities/src/mobs/path.rs::Finder::path_type_of_mob	
+SwimNodeEvaluator.getStart	port	crates/horizon-entities/src/mobs/path.rs::Finder::start	Swim arm
+SwimNodeEvaluator.hasMalus	inline	crates/horizon-entities/src/mobs/path.rs::Finder::swim_neighbors	diagonal check on both sides
 CollectingNeighborUpdater.addAndRun	port	crates/horizon-world/src/level/update.rs::Sim::add_and_run	
 CollectingNeighborUpdater.neighborChanged	port	crates/horizon-world/src/level/update.rs::Sim::neighbor_changed_at	Simple update
 CollectingNeighborUpdater.runUpdates	port	crates/horizon-world/src/level/update.rs::Sim::run_updates	

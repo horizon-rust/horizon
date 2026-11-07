@@ -126,7 +126,7 @@ def main():
                parity / (oracle + '.java'), parity / 'VanillaSceneCollisionOracle.java',
                parity / 'VanillaRegistryCollisionScanOracle.java', lab.ROOT / 'Cargo.lock',
                lab.ROOT / 'crates/horizon-client-lib/examples/probe/auto_jump_probe.rs',
-               lab.ROOT / 'crates/horizon-client-lib/src/auto_jump.rs', lab.ROOT / 'crates/horizon-client-lib/src/motion.rs']
+               lab.ROOT / 'crates/horizon-entities/src/auto_jump.rs', lab.ROOT / 'crates/horizon-entities/src/motion.rs']
     tested = base.source_hashes(sources)
     fixtures = list(cases(random.Random(0x4155544f)))
     inputs = build / 'cases.jsonl'

@@ -94,12 +94,12 @@ BlockDataAccessor.setData	port	crates/horizon-client/src/game/commands/data.rs::
 BlockDataAccessor.getModifiedSuccess	port	crates/horizon-client/src/game/commands/data.rs::Game::modified_text	block message
 BlockDataAccessor.getPrintSuccess	port	crates/horizon-client/src/game/commands/data.rs::Game::query_text	block query message
 DataCommands.stringifyTagList	inline	crates/horizon-client/src/game/commands/data.rs::Game::cmd_data_modify	string branch of modify
-DataCommands.validatedSubstring	port	crates/horizon-client-lib/src/data_cmd.rs::substring	
+DataCommands.validatedSubstring	port	crates/horizon-entities/src/data_cmd.rs::substring	
 DataCommands.resolveSourcePath	inline	crates/horizon-client/src/game/commands/data.rs::Game::cmd_data_modify	sourcePath resolution
 DataCommands.manipulateData	port	crates/horizon-client/src/game/commands/data.rs::Game::cmd_data_modify	modify arm
 DataCommands.removeData	port	crates/horizon-client/src/game/commands/data.rs::Game::cmd_data_in	data.remove arm
-DataCommands.getData	port	crates/horizon-client-lib/src/data_cmd.rs::get_value	count of list, compound, string or numeric
-DataCommands.getNumeric	port	crates/horizon-client-lib/src/data_cmd.rs::scaled_value	floor of numeric times scale
+DataCommands.getData	port	crates/horizon-entities/src/data_cmd.rs::get_value	count of list, compound, string or numeric
+DataCommands.getNumeric	port	crates/horizon-entities/src/data_cmd.rs::scaled_value	floor of numeric times scale
 DataCommands.mergeData	port	crates/horizon-client/src/game/commands/data.rs::Game::cmd_data_in	data.merge arm
 net/minecraft/server/commands/data/EntityDataAccessor#setData	port	crates/horizon-client/src/game/commands/data.rs::Game::apply_entity_nbt	refuses players
 net/minecraft/server/commands/data/EntityDataAccessor#getModifiedSuccess	port	crates/horizon-client/src/game/commands/data.rs::Game::modified_text	entity message

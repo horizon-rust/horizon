@@ -155,4 +155,4 @@ SlotSelector.TrackingSelector.filter	inline	crates/horizon-client/src/game/comma
 SlotSelector.TrackingSelector.trySelectSlot	port	crates/horizon-client/src/game/commands/items.rs::Game::select_slot	one selected count shared across owners; limits checked before selection
 SlotSources.bootstrap	skip:data		registry bootstrap
 TransformedSlotSource.commonFields	skip:java		
-TradeCost.toItemCost	port	crates/horizon-client-lib/src/merchant.rs::cost	count plus the extra cost, clamped to the max stack size
+TradeCost.toItemCost	port	crates/horizon-entities/src/merchant.rs::cost	count plus the extra cost, clamped to the max stack size

@@ -108,7 +108,7 @@ SubmitNodeCollection.getOutlineRenderType	inline	crates/horizon-client-render/sr
 SubmitNodeCollection.submitBreakingBlockModel	port	crates/horizon-client/src/game.rs::Game::cracks	gap: minor: drawn as cracks; the block model itself is not redrawn
 SubmitNodeCollection.submitShapeOutline	port	crates/horizon-client-render/src/gfx.rs::Renderer::draw_outline	block shape outline (selection box)
 SubmitNodeCollection.submitItem	port	crates/horizon-client/src/game/item_draw.rs::Game::dropped_item_geometry	dropped item entities
-SubmitNodeCollection.submitCustomGeometry	port	crates/horizon-client-lib/src/mobs/guardian.rs::beam_geometry	gap: minor: the guardian beam only; screen overlay quads are built in ScreenEffects::build
+SubmitNodeCollection.submitCustomGeometry	port	crates/horizon-entities/src/mobs/guardian.rs::beam_geometry	gap: minor: the guardian beam only; screen overlay quads are built in ScreenEffects::build
 SubmitNodeCollection.submitGizmoPrimitives	skip:debug		debug gizmo overlay
 SubmitNodeStorage.setUseImprovedTransparency	skip:other		storage toggle for the transparency path; Horizon fixes its path in Renderer::new
 SubmitNodeStorage.order	skip:other		per-order submit collection; Horizon draws in fixed passes

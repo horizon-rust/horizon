@@ -109,7 +109,7 @@ DistanceManager.addPlayer	inline	crates/horizon-client/src/game.rs::Game::update
 DistanceManager.removePlayer	inline	crates/horizon-client/src/game.rs::Game::update_chunk_tickets	a player gone from the level drops out of the sources
 DistanceManager.getChunkLevel	port	crates/horizon-client-lib/src/ticket_levels.rs::Levels::get	loading and simulation level as a pair
 DistanceManager.updateSimulationDistance	inline	crates/horizon-client/src/game.rs::Game::update_chunk_tickets	simulation_distance read from settings into Sources
-DistanceManager.hasPlayersNearby	inline	crates/horizon-client-lib/src/mobs/spawn_selection.rs::SpawnState::players_near	the 8 chunk gate; the 5 chunk shortcut is skipped
+DistanceManager.hasPlayersNearby	inline	crates/horizon-entities/src/mobs/spawn_selection.rs::SpawnState::players_near	the 8 chunk gate; the 5 chunk shortcut is skipped
 DistanceManager.forEachEntityTickingChunk	inline	crates/horizon-client-lib/src/ticket_levels.rs::Levels::random_ticking	the simulation half of the random tick test
 DistanceManager.FixedPlayerDistanceChunkTracker.setLevel	inline	crates/horizon-client-lib/src/ticket_levels.rs::compute	cells are filled by compute
 DistanceManager.FixedPlayerDistanceChunkTracker.havePlayer	inline	crates/horizon-client/src/game.rs::Game::update_chunk_tickets	players' chunks are the sources

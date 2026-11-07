@@ -64,7 +64,7 @@ class AreaTests(unittest.TestCase):
         cases = {
             "launcher/src/main.rs": "launcher",
             "crates/horizon-world/src/worldgen/structure/mod.rs": "worldgen",
-            "crates/horizon-client-lib/src/mobs/ai.rs": "mobs",
+            "crates/horizon-entities/src/mobs/ai.rs": "mobs",
             "crates/horizon-client/src/game/wither.rs": "mobs",
             "crates/horizon-client-render/src/gfx/cull.rs": "rendering",
             "crates/horizon-client-render/src/terrain.wgsl": "rendering",
@@ -96,7 +96,7 @@ class AreaTests(unittest.TestCase):
             self.assertIsNone(pl.area_of(path), path)
 
     def test_biggest_three_with_a_tenth_each(self):
-        files = [("launcher/src/a.rs", 50), ("crates/horizon-client-lib/src/mobs/a.rs", 30),
+        files = [("launcher/src/a.rs", 50), ("crates/horizon-entities/src/mobs/a.rs", 30),
                  ("crates/horizon-command/src/a.rs", 10), ("crates/horizon-client-render/src/audio.rs", 9),
                  ("tools/x.py", 1)]
         self.assertEqual(pl.areas(files), ["launcher", "mobs", "commands"])
