@@ -280,6 +280,13 @@ pub(super) struct LanHost {
     pub(super) idle_states: super::lan_idle::IdleStates,
 }
 
+#[cfg(test)]
+#[path = "villager_reputation_baseline_tests.rs"]
+mod reputation_baseline_tests;
+#[cfg(test)]
+#[path = "villager_reputation_fixture.rs"]
+pub(super) mod reputation_fixture;
+
 impl Game<'_> {
     /// `PlayerList.remove`: `player.awardStat(Stats.LEAVE_GAME)` before the
     /// player is saved, heard by native mods first. Once per guest, however
