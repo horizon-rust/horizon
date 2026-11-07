@@ -28,6 +28,7 @@ pub(super) struct ThrownTrident {
     pub(super) position: Vec3,
     pub(super) previous: Vec3,
     pub(super) velocity: Vec3,
+    pub(super) needs_sync: bool,
     pub(super) yaw: f32,
     pub(super) pitch: f32,
     pub(super) in_ground: bool,
@@ -118,6 +119,7 @@ impl ThrownTrident {
             position,
             previous: position,
             velocity: Vec3::ZERO,
+            needs_sync: false,
             yaw,
             pitch,
             in_ground: false,
@@ -137,6 +139,36 @@ impl ThrownTrident {
             guest: None,
             deflected_by: None,
         }
+    }
+    /// `Entity.move(PISTON)`: the position only; `release_after_piston` follows
+    /// (`AbstractArrow.move`).
+    pub(super) fn move_by_piston(&mut self, movement: Vec3) {
+        self.position = self.position.add_vector(movement);
+        self.needs_sync = true;
+    }
+    pub(super) fn piston_release_bounds(&self) -> Option<Aabb> {
+        if !self.in_ground || self.no_physics {
+            return None;
+        }
+        Some(Aabb::new(self.position, self.position).inflate(Vec3::new(0.06, 0.06, 0.06)))
+    }
+    pub(super) fn release_after_piston(&mut self, no_block_collision: bool) {
+        if self.in_ground && !self.no_physics && no_block_collision {
+            self.start_falling();
+        }
+    }
+    fn start_falling(&mut self) {
+        self.in_ground = false;
+        self.in_ground_time = 0;
+        self.velocity =
+            horizon_client::projectiles::start_falling_velocity(self.velocity, &mut self.random);
+        self.needs_sync = true;
+    }
+    /// A slime block's bounce: the velocity only; the piston's move after it
+    /// releases a stuck trident (`AbstractArrow.move`).
+    pub(super) fn piston_slime_bounce(&mut self, movement: horizon_core::geometry::Direction) {
+        self.velocity = horizon_world::piston_push::bounce_velocity(movement, self.velocity);
+        self.needs_sync = true;
     }
     /// `ThrownTrident.tick`'s Loyalty return: pulled up and towards the
     /// owner's eye.
@@ -173,6 +205,8 @@ impl ThrownTrident {
             self.in_ground = false;
             self.loyalty_pull(eye);
         }
+        // AbstractArrow.tick releases a changed block only on the server;
+        // clients release from the non-SELF move after a piston push.
         if self.in_ground && !self.no_physics {
             self.in_ground_time += 1;
             return;
@@ -463,6 +497,7 @@ impl Game<'_> {
             position: start,
             previous: start,
             velocity: projectile.velocity,
+            needs_sync: false,
             yaw: projectile.yaw,
             pitch: projectile.pitch,
             in_ground: false,
@@ -1165,8 +1200,22 @@ horizon_client::impl_joined!(ThrownTrident);
 
 #[cfg(test)]
 mod tests {
-    use super::breeze_deflect;
-    use horizon_core::geometry::Vec3;
+    use super::{ThrownTrident, breeze_deflect};
+    use horizon_client::{mobs::Who, projectiles::ProjectileWorld};
+    use horizon_core::geometry::{Aabb, Vec3};
+
+    struct Air;
+    impl ProjectileWorld for Air {
+        fn clip(&self, _: Vec3, _: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
+            None
+        }
+        fn in_water(&self, _: Aabb) -> bool {
+            false
+        }
+        fn targets(&self) -> &[(Who, Aabb)] {
+            &[]
+        }
+    }
 
     /// `ProjectileDeflection.REVERSE` at power 1: half speed, the other way,
     /// and a turn of 170 degrees plus a fifth of the random draw.
@@ -1175,6 +1224,38 @@ mod tests {
         let (velocity, yaw) = breeze_deflect(Vec3::new(4.0, -2.0, 1.0), 10.0, 0.25);
         assert_eq!(velocity, Vec3::new(-2.0, 1.0, -0.5));
         assert_eq!(yaw, 185.0);
+    }
+
+    #[test]
+    fn remote_trident_waits_for_a_non_self_move_to_leave_its_block() {
+        let mut trident = ThrownTrident::remote(1, Vec3::new(0.5, 100.0, 0.5), 0.0, 0.0);
+        trident.in_ground = true;
+        trident.velocity = Vec3::new(1.0, -2.0, 3.0);
+        trident.remote_tick(&Air, None);
+        assert!(trident.in_ground);
+        assert_eq!(trident.velocity, Vec3::new(1.0, -2.0, 3.0));
+    }
+
+    #[test]
+    fn piston_move_releases_a_stuck_trident_with_start_falling_velocity() {
+        let mut trident = ThrownTrident::remote(1, Vec3::new(0.5, 100.0, 0.5), 0.0, 0.0);
+        trident.in_ground = true;
+        trident.velocity = Vec3::new(1.0, -2.0, 3.0);
+        let mut random = trident.random.clone();
+        let expected =
+            horizon_client::projectiles::start_falling_velocity(trident.velocity, &mut random);
+
+        trident.move_by_piston(Vec3::new(0.5, 0.0, 0.0));
+        assert!(trident.piston_release_bounds().is_some());
+        trident.release_after_piston(false);
+        assert!(trident.in_ground);
+        assert_eq!(trident.velocity, Vec3::new(1.0, -2.0, 3.0));
+
+        trident.release_after_piston(true);
+        assert!(!trident.in_ground);
+        assert_eq!(trident.velocity, expected);
+        assert!(trident.needs_sync);
+        assert!(trident.piston_release_bounds().is_none());
     }
 
     /// A stack can reach its final durability point after use began. The release
