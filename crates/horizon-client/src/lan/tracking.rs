@@ -143,7 +143,7 @@ pub const TRACKING: &[(&str, u8, u32, bool)] = &[
     ("minecraft:sulfur_cube", 10, 3, true),
     ("minecraft:tadpole", 10, 3, true),
     ("minecraft:text_display", 10, 1, true),
-    ("minecraft:tnt", 10, 10, true),
+    ("minecraft:tnt", 10, 2, true),
     ("minecraft:tnt_minecart", 8, 3, true),
     ("minecraft:trader_llama", 10, 3, true),
     ("minecraft:trident", 4, 20, true),

@@ -3021,15 +3021,24 @@ impl Game<'_> {
             // updates (`tick_remote_entities`, `tick_remote_projectiles`).
             let at = Vec3::new(position[0], position[1], position[2]);
             if let Some(d) = self.dropped.iter_mut().find(|d| d.id == id as u32) {
+                d.previous.x += at.x - d.position.x;
+                d.previous.y += at.y - d.position.y;
+                d.previous.z += at.z - d.position.z;
                 d.position = at;
                 d.on_ground = on_ground;
                 return;
             }
             if let Some(f) = self.falling.iter_mut().find(|f| f.id == id as u32) {
+                f.previous.x += at.x - f.position.x;
+                f.previous.y += at.y - f.position.y;
+                f.previous.z += at.z - f.position.z;
                 f.position = at;
                 return;
             }
             if let Some(t) = self.tnts.iter_mut().find(|t| t.id == id as u32) {
+                t.previous.x += at.x - t.position.x;
+                t.previous.y += at.y - t.position.y;
+                t.previous.z += at.z - t.position.z;
                 t.position = at;
                 t.on_ground = on_ground;
                 return;
