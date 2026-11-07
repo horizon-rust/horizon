@@ -932,6 +932,73 @@ def item_command_damage():
     return ops + setup('/kill @e[tag=item_hurt_actor]', '/scoreboard objectives remove item_hurt', '/tick unfreeze')
 
 
+def minecart_numeric_fields():
+    """AbstractMinecart / MinecartTNT / MinecartFurnace / MinecartHopper.readAdditionalSaveData read
+    their fields through ValueInput's numeric getters, which take any NumericTag: getIntOr
+    (fuse, DisplayOffset), getShortOr (Fuel: the low 16 bits), getDoubleOr (PushX, PushZ) and
+    getBooleanOr (FlippedRotation, HasTicked, Enabled: byteValue() != 0). Frozen, so nothing ticks."""
+    ops = setup('/forceload add 0 0 15 15', '/tick freeze')
+    ops += [{'op': 'settle'}]
+    cases = (
+        ('tnt_minecart', '{fuse:20L}', 'fuse'),
+        ('tnt_minecart', '{fuse:20.7f}', 'fuse'),
+        ('tnt_minecart', '{fuse:-2.5d}', 'fuse'),
+        ('tnt_minecart', '{fuse:4294967316L}', 'fuse'),
+        ('tnt_minecart', '{fuse:7b}', 'fuse'),
+        ('minecart', '{DisplayOffset:5L,DisplayState:{Name:"minecraft:stone"}}', 'DisplayOffset'),
+        ('minecart', '{DisplayOffset:3.9f,DisplayState:{Name:"minecraft:stone"}}', 'DisplayOffset'),
+        ('furnace_minecart', '{Fuel:70000}', 'Fuel'),
+        ('furnace_minecart', '{Fuel:300L}', 'Fuel'),
+        ('furnace_minecart', '{Fuel:2.5f}', 'Fuel'),
+        ('furnace_minecart', '{Fuel:100s,PushX:1,PushZ:0.5f}', 'PushX 1000'),
+        ('furnace_minecart', '{Fuel:100s,PushX:1,PushZ:0.5f}', 'PushZ 1000'),
+        ('hopper_minecart', '{Enabled:256}', 'Enabled'),
+        ('hopper_minecart', '{Enabled:0.5f}', 'Enabled'),
+        ('hopper_minecart', '{Enabled:2L}', 'Enabled'),
+        ('minecart', '{FlippedRotation:256}', 'FlippedRotation'),
+        ('minecart', '{FlippedRotation:1.5d}', 'FlippedRotation'),
+        ('minecart', '{HasTicked:2L}', 'HasTicked'),
+    )
+    for i, (kind, nbt, path) in enumerate(cases):
+        tag = f'cart_num_{i}'
+        extra = nbt[1:-1]
+        ops += setup(f'/summon {kind} {2 + (i % 6) * 2}.5 200 {2 + (i // 6) * 2}.5 '
+                     f'{{Tags:["{tag}"],NoGravity:1b,{extra}}}')
+        ops += [cmd(f'/data get entity @e[tag={tag},limit=1] {path}')]
+    return ops + setup(*[f'/kill @e[tag=cart_num_{i}]' for i in range(len(cases))],
+                       '/tick unfreeze', '/forceload remove 0 0 15 15')
+
+
+def tnt_minecart_explosion_power():
+    """MinecartTNT reads explosion_power / explosion_speed_factor with getFloatOr (4 and 1), clamped
+    to 0..128, and writes each only when it is not the default. explode() blows with
+    explosionPowerBase + explosionSpeedFactor * nextDouble() * 1.5 * min(speed, 5): a cart standing
+    still blows with its base power exactly."""
+    ops = setup('/forceload add 0 0 31 31', '/tick freeze')
+    ops += [{'op': 'settle'}]
+    cases = ('{explosion_power:2.5f}', '{explosion_power:500f}', '{explosion_power:-1f}',
+             '{explosion_power:7}', '{explosion_speed_factor:3.5f}', '{explosion_power:4f}', '{}')
+    for i, nbt in enumerate(cases):
+        tag = f'cart_pow_{i}'
+        extra = ',' + nbt[1:-1] if nbt != '{}' else ''
+        ops += setup(f'/summon tnt_minecart {2 + i * 2}.5 200 2.5 {{Tags:["{tag}"],NoGravity:1b{extra}}}')
+        for field in ('explosion_power', 'explosion_speed_factor'):
+            ops += [cmd(f'/data get entity @e[tag={tag},limit=1] {field} 100')]
+    ops += setup(*[f'/kill @e[tag=cart_pow_{i}]' for i in range(len(cases))], '/tick unfreeze')
+    # The blast itself: a NoAI husk (no sunburn) two blocks from a cart that blows at its base power.
+    for i, power in enumerate(('0f', '1.5f')):
+        x = 8 + i * 12
+        ops += setup(f'/summon husk {x + 2}.5 200 16.5 {{Tags:["pow_target"],NoAI:1b,NoGravity:1b,'
+                     'PersistenceRequired:1b}',
+                     f'/summon tnt_minecart {x}.5 200 16.5 {{Tags:["pow_blast"],NoGravity:1b,fuse:1,'
+                     f'explosion_power:{power}}}')
+        ops += [{'op': 'tick', 'n': 5}]
+        ops += [cmd('/execute if entity @e[tag=pow_blast]'),
+                cmd('/data get entity @e[tag=pow_target,limit=1] Health 100')]
+        ops += setup('/kill @e[tag=pow_target]', '/kill @e[tag=pow_blast]')
+    return ops + setup('/forceload remove 0 0 31 31')
+
+
 def enderman_command_damage():
     """DamageCommand -> Enderman.hurtServer: with no living entity behind the damage,
     random.nextInt(10) != 0 teleports the enderman then and there (teleport()), also when
@@ -6021,6 +6088,8 @@ def groups():
         ('mannequin pose anchors', mannequin_pose_anchors()),
         ('item command damage', item_command_damage()),
         ('dragon command damage', dragon_command_damage()),
+        ('minecart numeric fields', minecart_numeric_fields()),
+        ('tnt minecart explosion power', tnt_minecart_explosion_power()),
         ('enderman command damage', enderman_command_damage()),
         ('SNBT trailing commas', snbt_trailing_commas()),
         ('execute', execute()),
