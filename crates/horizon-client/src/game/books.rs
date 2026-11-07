@@ -90,6 +90,22 @@ fn view_pages(data: Option<&StackData>) -> Vec<Text> {
         .collect()
 }
 impl Game<'_> {
+    #[cfg(target_os = "android")]
+    pub(super) fn book_edit_value(&mut self) -> Option<String> {
+        match self.book.as_mut() {
+            Some(BookScreen::Edit {
+                signing,
+                title_edit,
+                page_edit,
+                ..
+            }) => {
+                let edit = if *signing { title_edit } else { page_edit };
+                edit.move_cursor_to_end(false);
+                Some(edit.value.clone())
+            }
+            _ => None,
+        }
+    }
     fn book_lines(&self, page: &str) -> Vec<Text> {
         self.page_lines(&Text::literal(page))
     }
@@ -1342,6 +1358,10 @@ impl Game<'_> {
                 // The title box: an unbordered, centred EditBox of 114 with
                 // black text and no shadow; the value alone is centred, the
                 // cursor follows it.
+                horizon_client::widgets::target_as(
+                    [left + 36.0, 48.0, 114.0, 12.0],
+                    horizon_client::widgets::Kind::Field,
+                );
                 let value = &title_edit.value;
                 let x = left + 36.0;
                 let tx = x + ((114.0 - HudBatch::text_width(atlas, value)) / 2.0).floor();
@@ -1438,6 +1458,10 @@ impl Game<'_> {
                 page_narratables(*page > 0, true, false);
                 indicator(batch, *page, pages.len());
                 let text = &pages[*page];
+                horizon_client::widgets::target_as(
+                    [left + 36.0, top + 30.0, 114.0, 126.0],
+                    horizon_client::widgets::Kind::Field,
+                );
                 let lines = self.book_lines(text);
                 for (i, line) in lines.iter().take(LINES).enumerate() {
                     batch.text_styled(

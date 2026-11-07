@@ -1003,6 +1003,13 @@ impl Scoreboard {
         self.team_order.remove(name);
         self.reorder();
     }
+    /// Player.getScoreboardName uses the profile name; other entities use UUIDs.
+    pub fn entity_team(&self, profile_name: Option<&str>, uuid: Option<[i32; 4]>) -> Option<&Team> {
+        if let Some(name) = profile_name {
+            return self.players_team(name);
+        }
+        self.players_team(&crate::uuid::uuid_text(uuid?))
+    }
     pub fn players_team(&self, player: &str) -> Option<&Team> {
         self.team(self.team_of.get(player)?)
     }
@@ -1562,6 +1569,29 @@ mod tests {
         assert_eq!(
             NumberFormat::from_tag(&t),
             Some(NumberFormat::Styled(serde_json::json!({"color": "gold"})))
+        );
+    }
+}
+
+#[cfg(test)]
+mod player_collision_tests {
+    use super::*;
+    #[test]
+    fn player_profile_team_prevents_pushes_even_when_uuid_has_another_team() {
+        let mut board = Scoreboard::default();
+        board.add_team("no_collision").collision_rule = CollisionRule::Never;
+        board.add_to_team("HiddenNPC", "no_collision");
+        board.add_team("uuid_team");
+        board.add_to_team(&crate::uuid::uuid_text([0, 0, 0, 7]), "uuid_team");
+        let npc = board.entity_team(Some("HiddenNPC"), Some([0, 0, 0, 7]));
+        assert!(!pushable_by(npc, None, true));
+        let mob = board.entity_team(None, Some([0, 0, 0, 7]));
+        assert!(pushable_by(mob, None, true));
+        // A player without a named team must not fall back to a UUID team.
+        assert!(
+            board
+                .entity_team(Some("OtherPlayer"), Some([0, 0, 0, 7]))
+                .is_none()
         );
     }
 }

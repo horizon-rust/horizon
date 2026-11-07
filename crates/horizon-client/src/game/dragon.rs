@@ -1948,6 +1948,9 @@ impl Game<'_> {
         }
     }
     /// One phase server tick (`doServerTick`).
+    // Java's two comparisons are both false for NaN; !Range::contains is true.
+    // Keep the vanilla phase transition condition, including that edge case.
+    #[allow(clippy::manual_range_contains)]
     fn tick_phase(&mut self) {
         let players = self.fight_players();
         let peaceful = self.ui.difficulty == 0;

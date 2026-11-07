@@ -32,6 +32,27 @@
 /.horizon-cache/
 /crash-reports/
 /debug/
+/horizon-touch.json
+/horizon-touch.json.tmp
+# Android build outputs, signing material and local account/session state.
+**/.gradle/
+**/node_modules/
+**/local.properties
+*.apk
+*.aab
+*.keystore
+*.jks
+.env
+.env.*
+!.env.example
+/android-launch.json
+/control.json
 
 # Release-only compiled original exporter bundle.
 /exporters/
+
+/horizon-keypad.json
+/horizon-keypad.json.tmp
+
+# Local artwork workspace and original reference images.
+/art/

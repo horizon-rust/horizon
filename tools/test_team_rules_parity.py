@@ -7,7 +7,8 @@ pufferfish, slimes), Entity.isAlliedTo (targeting, sweeping), the
 EntitySelector.pushableBy predicate (collision rules), Entity.isInvisibleTo
 (team mates who see friendly invisibles) and LivingEntityRenderer.shouldShowName
 (name tag visibility, with a stand-in client for the viewer, camera and F1) on
-stand-in entities, for every combination of two teams' options, the three
+stand-in entities, including Player.getScoreboardName profile-name teams with
+conflicting UUID membership, for every combination of two teams' options, the three
 entities' teams (none, either team) and the flags involved.
 `examples/probe/team_rules_fixture` answers from `horizon_client::scoreboard`.
 

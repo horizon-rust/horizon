@@ -103,6 +103,9 @@ struct StickScrolled {
 
 #[derive(Default)]
 pub(super) struct MenuCursor {
+    /// Hardware Android arrows can focus menus before a gameplay profile is enabled.
+    #[cfg(target_os = "android")]
+    pub(super) keyboard_focus: bool,
     /// Where the pad put the pointer (GUI pixels); `None` while the mouse
     /// has it.
     pub(super) pos: Option<(f32, f32)>,
@@ -257,6 +260,10 @@ impl Game<'_> {
             || self.screen != Screen::Playing
             || self.sign_edit.is_some()
             || self.book.is_some()
+            || self.dialog_open()
+            || self.server_packs.prompt.is_some()
+            || self.link_prompt.is_some()
+            || self.touch_editing()
     }
 
     /// Which prompt is up: another one starts the controller's focus again.
@@ -345,6 +352,10 @@ impl Game<'_> {
     }
 
     pub(super) fn pad_focus_mode(&self) -> bool {
+        #[cfg(target_os = "android")]
+        if self.pad.menu.keyboard_focus || self.settings.keypad.enabled {
+            return true;
+        }
         self.pad.menu.keyboard || self.pad_navigation_mode()
     }
 
@@ -1314,8 +1325,25 @@ impl Game<'_> {
             .map_or(0.0, |t| now.duration_since(t).as_secs_f32().min(0.05));
         self.pad.menu.last_poll = Some(now);
         self.key_focus_frame();
-        let in_menu =
-            self.pad_in_menu() && (self.settings.controller.enabled || self.pad.menu.keyboard);
+        let keyboard_focus = {
+            #[cfg(target_os = "android")]
+            {
+                self.pad.menu.keyboard_focus || self.pad.menu.keyboard
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                false
+            }
+        };
+        #[cfg(target_os = "android")]
+        let navigation = !crate::touch_visible() || self.settings.keypad.enabled || keyboard_focus;
+        #[cfg(not(target_os = "android"))]
+        let navigation = true;
+        let in_menu = navigation
+            && self.pad_in_menu()
+            && (self.settings.controller.enabled
+                || keyboard_focus
+                || (cfg!(target_os = "android") && self.settings.keypad.enabled));
         if !in_menu {
             let menu = &mut self.pad.menu;
             menu.keyboard = false;
@@ -1325,6 +1353,10 @@ impl Game<'_> {
             menu.repeat = None;
             menu.held = [false; 2];
             menu.focus = None;
+            #[cfg(target_os = "android")]
+            {
+                menu.keyboard_focus = false;
+            }
             menu.pending = None;
             menu.stick_scrolled = None;
             menu.anchors = None;
@@ -1358,7 +1390,7 @@ impl Game<'_> {
             self.pad_yield_input(event_loop);
         }
         // Focus lands on the menu as it opens when the pad was in use.
-        if self.pad.in_use && self.pad.menu.pos.is_none() && self.pad.menu.open_polls == 3 {
+        if self.pad.in_use && self.pad.menu.pos.is_none() && self.pad.menu.open_polls >= 3 {
             self.pad_take_pointer(event_loop);
         }
         if !self.pad.in_use && !self.pad.menu.keyboard {
@@ -1472,8 +1504,9 @@ impl Game<'_> {
                 self.pad_step(event_loop, button);
             }
         }
-        self.pad_auto_keyboard();
-        // Vanilla's keyboard focus leaves the mouse pointer alone.
+        if !cfg!(target_os = "android") {
+            self.pad_auto_keyboard();
+        }
         self.pad_show_os_pointer(self.pad.menu.pos.is_none() || self.pad.menu.keyboard);
     }
 
@@ -1791,6 +1824,8 @@ impl Game<'_> {
     }
 
     fn pad_show_os_pointer(&mut self, show: bool) {
+        #[cfg(target_os = "android")]
+        let show = show && (!crate::touch_visible() || self.settings.keypad.enabled);
         if self.pad.menu.os_hidden != show {
             return;
         }
@@ -2191,6 +2226,8 @@ impl Game<'_> {
     /// screens of the jigsaw, structure and test blocks.
     fn pad_typing(&self) -> bool {
         (self.screen == Screen::Chat && self.title.is_none())
+            || self.screen == Screen::CommandBlock
+            || self.block_editor_typing()
             || self.sign_edit.is_some()
             || matches!(self.book, Some(super::books::BookScreen::Edit { .. }))
             || (self.screen == Screen::Creative && self.creative_screen.tab().search)
@@ -2224,6 +2261,11 @@ impl Game<'_> {
     /// Open the on-screen keyboard over the focused field: Horizon's, or
     /// Steam's on a Steam Deck (`steam://open/keyboard`, which types into
     /// the window like a real keyboard).
+    #[cfg(target_os = "android")]
+    fn pad_open_keyboard(&mut self) {
+        self.android_show_keyboard();
+    }
+    #[cfg(not(target_os = "android"))]
     fn pad_open_keyboard(&mut self) {
         // Without xdg-open (macOS, Windows), Horizon's keyboard instead.
         if gamepad::steam_keyboard(self.settings.controller.keyboard)
@@ -2262,7 +2304,7 @@ impl Game<'_> {
 
     /// What a key of the on-screen keyboard does: the same as a typed key in
     /// the field that has focus.
-    fn pad_osk_output(&mut self, out: osk::Output) {
+    pub(super) fn pad_osk_output(&mut self, out: osk::Output) {
         use osk::Output;
         let (key, text) = match &out {
             Output::Text(t) => (None, Some(t.as_str())),
@@ -2290,6 +2332,8 @@ impl Game<'_> {
             if let Err(e) = result {
                 log::warn!("Horizon: on-screen keyboard: {e}");
             }
+        } else if self.screen == Screen::BlockEditor {
+            self.block_editor_ime(key, text);
         } else if self.screen == Screen::Chat && self.title.is_none() {
             match text {
                 Some(t) => self.chat_type(t),
@@ -2398,17 +2442,32 @@ impl Game<'_> {
             ui.finish();
             return;
         }
-        if !self.pad.in_use && !self.pad.menu.keyboard {
+        #[cfg(target_os = "android")]
+        let virtual_mouse = self.pad.touch_ui.virtual_mouse;
+        #[cfg(not(target_os = "android"))]
+        let virtual_mouse = false;
+        if !virtual_mouse && !self.pad.in_use && !self.pad.menu.keyboard {
             return;
         }
-        let Some((x, y)) = self.pad.menu.pos else {
+        let pointer = if virtual_mouse {
+            Some(self.cursor)
+        } else {
+            self.pad.menu.pos
+        };
+        let Some((x, y)) = pointer else {
             return;
         };
-        if self.pad_focus_mode()
+        if !virtual_mouse
+            && self.pad_focus_mode()
             && let Some(focus) = self.pad.menu.focus
         {
             self.draw_pad_focus(batch, focus);
             self.draw_pad_action_glyphs(batch);
+            return;
+        }
+        #[cfg(target_os = "android")]
+        if virtual_mouse {
+            horizon_client::touch_ui::draw_pointer(batch, &self.gui.atlas, (x, y));
             return;
         }
         self.draw_pad_action_glyphs(batch);

@@ -7,10 +7,17 @@
 //! and leg are the right ones mirrored). Capes are 64×32 (or the older 22×17).
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+#[path = "skins/cloud.rs"]
+pub mod cloud;
+#[path = "skins/library.rs"]
+pub mod library;
+#[path = "skins/preview.rs"]
+pub mod preview;
 
 pub const SKIN_ENV: &str = "HORIZON_OFFLINE_SKIN";
 pub const MODEL_ENV: &str = "HORIZON_OFFLINE_SKIN_MODEL";
 pub const CAPE_ENV: &str = "HORIZON_OFFLINE_CAPE";
+pub const MAX_IMPORT_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -56,6 +63,33 @@ pub fn dir() -> PathBuf {
     crate::backend::data_dir().join("skins")
 }
 
+pub fn read_file(file: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(file)
+        .and_then(|file| {
+            file.take(MAX_IMPORT_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|e| format!("{}: {e}", file.display()))?;
+    check_size(&bytes)?;
+    Ok(bytes)
+}
+
+fn check_size(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() > MAX_IMPORT_BYTES {
+        return Err("The PNG must be at most 1 MiB.".into());
+    }
+    Ok(())
+}
+
+fn dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
+    check_size(bytes)?;
+    image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Png)
+        .into_dimensions()
+        .map_err(|_| "That isn't a PNG picture.".to_string())
+}
+
 fn decode(bytes: &[u8]) -> Result<image::RgbaImage, String> {
     image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
         .map(|i| i.to_rgba8())
@@ -64,9 +98,8 @@ fn decode(bytes: &[u8]) -> Result<image::RgbaImage, String> {
 
 /// A skin's picture, if it is one: 64×64 or 64×32.
 pub fn read_skin(bytes: &[u8]) -> Result<image::RgbaImage, String> {
-    let png = decode(bytes)?;
-    match png.dimensions() {
-        (64, 64) | (64, 32) => Ok(png),
+    match dimensions(bytes)? {
+        (64, 64) | (64, 32) => decode(bytes),
         (w, h) => Err(format!(
             "A skin is 64×64 (or the older 64×32) pixels; this one is {w}×{h}."
         )),
@@ -75,9 +108,8 @@ pub fn read_skin(bytes: &[u8]) -> Result<image::RgbaImage, String> {
 
 /// A cape's picture, if it is one: 64×32 or 22×17.
 pub fn read_cape(bytes: &[u8]) -> Result<image::RgbaImage, String> {
-    let png = decode(bytes)?;
-    match png.dimensions() {
-        (64, 32) | (22, 17) => Ok(png),
+    match dimensions(bytes)? {
+        (64, 32) | (22, 17) => decode(bytes),
         (w, h) => Err(format!(
             "A cape is 64×32 (or the older 22×17) pixels; this one is {w}×{h}."
         )),
@@ -146,7 +178,7 @@ pub fn cape_front(cape: &image::RgbaImage) -> Vec<[u8; 4]> {
 
 /// Keeps `file` as `name`'s skin (or cape), checked first.
 pub fn keep(dir: &Path, name: &str, file: &Path, cape: bool) -> Result<(), String> {
-    let bytes = std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()))?;
+    let bytes = read_file(file)?;
     match cape {
         false => read_skin(&bytes).map(|_| ())?,
         true => read_cape(&bytes).map(|_| ())?,

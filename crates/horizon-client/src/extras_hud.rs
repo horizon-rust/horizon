@@ -17,6 +17,11 @@ pub struct Corners {
     used: [f32; 4],
 }
 impl Corners {
+    pub fn reserve(&mut self, corner: Corner, height: f32) {
+        if let Some(i) = Corner::ALL.iter().position(|c| *c == corner) {
+            self.used[i] = self.used[i].max(height);
+        }
+    }
     /// `top_right` reserves the status effect icons' rows.
     pub fn new(width: f32, height: f32, top_right: f32) -> Self {
         Self {
@@ -107,18 +112,29 @@ pub fn draw_lines(
     corner: Corner,
     lines: &[(&str, u32)],
 ) {
-    if lines.is_empty() {
+    draw_lines_iter(batch, atlas, corners, corner, lines.iter().copied());
+}
+
+/// Draw retained mod lines without building a temporary vector each frame.
+pub fn draw_lines_iter<'a>(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    corners: &mut Corners,
+    corner: Corner,
+    lines: impl ExactSizeIterator<Item = (&'a str, u32)> + Clone,
+) {
+    if lines.len() == 0 {
         return;
     }
     let w = lines
-        .iter()
+        .clone()
         .map(|(text, _)| HudBatch::text_width(atlas, text))
         .fold(0.0, f32::max)
         + 4.0;
     let h = 10.0 * lines.len() as f32 + 2.0;
     let (x, y) = corners.place(corner, w, h);
     batch.fill(atlas, x, y, w, h, BACKGROUND);
-    for (i, (text, color)) in lines.iter().enumerate() {
+    for (i, (text, color)) in lines.enumerate() {
         let [_, r, g, b] = color.to_be_bytes();
         let y = y + 2.0 + 10.0 * i as f32;
         batch.text(atlas, text, x + 2.0, y, rgba(r, g, b, 255), true);

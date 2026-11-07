@@ -1799,10 +1799,10 @@ impl Game<'_> {
     /// and in reach, or its vehicle exists and is in reach. True with none open.
     fn container_menu_valid(&self, g: &horizon_client::lan::guest::Guest) -> bool {
         g.menu.as_ref().is_none_or(|m| {
-            !(m.slots.valid(&self.world) && !m.slots.still_valid(&self.world, g, m.pos))
-                && !m.pos.is_some_and(|k| {
+            !(m.slots.valid(&self.world) && !m.slots.still_valid(&self.world, g, m.pos)
+                || m.pos.is_some_and(|k| {
                     k.1 == super::minecarts::CART_KEY_Y && !self.chest_vehicle_still_valid(k.2, g)
-                })
+                }))
         })
     }
 

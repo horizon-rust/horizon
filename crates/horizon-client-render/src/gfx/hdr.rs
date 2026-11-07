@@ -494,7 +494,7 @@ impl Hdr {
             0,
             bytemuck::cast_slice(&self.params(world, self.output == Output::Pq)),
         );
-        Self::draw(encoder, &self.pipeline, &t.group, target, timing);
+        Self::draw_output(encoder, &self.pipeline, &t.group, target, timing, true);
     }
 
     /// The frame `present` writes, as HDR10 (BT.2020, PQ, 10 bits a channel) whatever
@@ -584,6 +584,18 @@ impl Hdr {
         target: &wgpu::Texture,
         timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
+        Self::draw_output(encoder, pipeline, group, target, timing, false);
+    }
+    fn draw_output(
+        encoder: &mut wgpu::CommandEncoder,
+        pipeline: &wgpu::RenderPipeline,
+        group: &wgpu::BindGroup,
+        target: &wgpu::Texture,
+        timing: Option<&mut super::pack_timing::PassTiming>,
+        presentation: bool,
+    ) {
+        #[cfg(not(target_os = "android"))]
+        let _ = presentation;
         let view = target.create_view(&Default::default());
         let attachments = [Some(wgpu::RenderPassColorAttachment {
             view: &view,
@@ -600,6 +612,13 @@ impl Hdr {
             color_attachments: &attachments,
             ..Default::default()
         });
+        #[cfg(target_os = "android")]
+        if presentation {
+            let [x, y, w, h] =
+                winit::platform::android::native_content_rect([target.width(), target.height()]);
+            pass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
+            pass.set_scissor_rect(x, y, w, h);
+        }
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, group, &[]);
         pass.draw(0..3, 0..1);

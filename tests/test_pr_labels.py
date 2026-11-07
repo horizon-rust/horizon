@@ -122,7 +122,10 @@ class BackfillTests(unittest.TestCase):
 
 class WorkflowTests(unittest.TestCase):
     def test_workflow_is_safe(self):
-        text = (ROOT / ".github/workflows/pr-labels.yml").read_text()
+        workflow = ROOT / ".github/workflows/pr-labels.yml"
+        if not workflow.is_file():
+            workflow = ROOT / ".github/upstream-workflows/pr-labels.yml.disabled"
+        text = workflow.read_text(encoding="utf-8")
         run_lines = [l.strip() for l in text.splitlines() if l.strip().startswith("run:")]
         self.assertEqual(run_lines, ["run: python3 tools/ci/pr_labels.py event"])
         self.assertIn("pull_request_target", text)

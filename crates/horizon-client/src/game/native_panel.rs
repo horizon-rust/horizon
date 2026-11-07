@@ -597,6 +597,14 @@ impl Game<'_> {
     }
 
     /// Whether keys go to the panel's search box.
+    #[cfg(target_os = "android")]
+    pub(super) fn mod_browser_edit_value(&self) -> String {
+        self.panel
+            .search
+            .as_ref()
+            .map(|s| s.value.clone())
+            .unwrap_or_default()
+    }
     pub(super) fn mod_browser_typing(&self) -> bool {
         matches!(self.screen, Screen::Inventory | Screen::Creative)
             && self.panel.of.is_some()

@@ -614,7 +614,7 @@ impl Game<'_> {
         // stay in the tick's list, but only the tick's own count as recorded in it.
         let between = horizon_client::spans::take_raw();
         let (started, cpu) = (Instant::now(), horizon_client::spans::thread_cpu());
-        let result = self.tick_server(paused);
+        let result = horizon_client::spans::job("server_tick", || self.tick_server(paused));
         let wall = started.elapsed().as_secs_f32() * 1000.0;
         let cpu = horizon_client::spans::thread_cpu()
             .zip(cpu)

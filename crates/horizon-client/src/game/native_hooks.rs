@@ -2296,6 +2296,7 @@ impl Game<'_> {
     }
     /// Once a frame, in a world or not, after Horizon's extras.
     pub(super) fn native_frame(&mut self, elapsed: Duration) {
+        super::android_bundled::native_frame(self, elapsed);
         mod_api::dispatch_frame(self, mod_api::mods(), elapsed);
     }
     /// Client-side evaluation of a mod's namespaced conditional item model property.
@@ -2811,6 +2812,7 @@ impl Game<'_> {
     /// (`key.keyboard.z`, `key.mouse.left`): keys on any screen (check
     /// `native_playing`), mouse buttons while playing. Repeats are left out.
     pub(super) fn native_key(&mut self, key: &str, pressed: bool) {
+        super::android_bundled::native_key(self, key, pressed);
         mod_api::dispatch_key(self, mod_api::mods(), key, pressed);
     }
     /// A real window key event after handling, including repeats and consumed shortcuts.
@@ -2843,6 +2845,7 @@ impl Game<'_> {
     }
     /// Wheel steps while playing: set `claimed` to keep them from the hotbar.
     pub(super) fn native_wheel(&mut self, steps: f32, claimed: &mut bool) {
+        super::android_bundled::native_wheel(self, steps, claimed);
         mod_api::dispatch_wheel(self, mod_api::mods(), steps, claimed);
     }
     /// Gameplay scrolling after whole steps accumulate, before hotbar/spectator handling.
@@ -2900,6 +2903,7 @@ impl Game<'_> {
     /// A command typed or clicked in chat, without its slash, before the
     /// server and Horizon's commands see it: set `ran` when the mod ran it.
     pub(super) fn native_command(&mut self, command: &str, ran: &mut bool) {
+        super::android_bundled::native_command(self, command, ran);
         mod_api::dispatch_command(self, mod_api::mods(), command, ran);
     }
     /// The commands `native_command` runs, by name and without their slash:
@@ -2939,6 +2943,7 @@ impl Game<'_> {
     /// The zoom a native mod asks for, applied while playing (the spyglass's
     /// own view wins): set `zoom` when it is none yet.
     pub(super) fn native_zoom(&self, zoom: &mut Option<NativeZoom>) {
+        super::android_bundled::native_zoom(self, zoom);
         mod_api::dispatch_zoom(self, mod_api::mods(), zoom);
     }
     /// Computed world fog RGB, after ordinary effects and before upload. Title panoramas skip it.
@@ -3183,6 +3188,7 @@ impl Game<'_> {
     }
     /// The minimap a native mod shows: set `minimap` when it is none yet.
     pub(super) fn native_minimap(&self, minimap: &mut Option<NativeMinimap>) {
+        super::android_bundled::native_minimap(self, minimap);
         mod_api::dispatch_minimap(self, mod_api::mods(), minimap);
     }
     /// Register namespaced NBT component types before content loads.
@@ -3244,21 +3250,25 @@ impl Game<'_> {
     }
     /// Options > Mods lists the native mods: push yours.
     pub(super) fn native_mods(&mut self, mods: &mut Vec<NativeMod>) {
+        super::android_bundled::native_mods(self, mods);
         mod_api::dispatch_mods(self, mod_api::mods(), mods);
     }
     /// The buttons of mod `mod_id`'s settings page, under its keys: push
     /// their labels when it is yours. Asked again each time the page opens
     /// and after each click.
     pub(super) fn native_settings(&mut self, mod_id: &str, buttons: &mut Vec<String>) {
+        super::android_bundled::native_settings(self, mod_id, buttons);
         mod_api::dispatch_settings(self, mod_api::mods(), mod_id, buttons);
     }
     /// Button `button` of mod `mod_id`'s settings page was clicked.
     pub(super) fn native_settings_click(&mut self, mod_id: &str, button: usize) {
+        super::android_bundled::native_settings_click(self, mod_id, button);
         mod_api::dispatch_settings_click(self, mod_api::mods(), mod_id, button);
     }
     /// The player did `event` on mod `mod_id`'s panel (`native_panel_items`):
     /// act on it when it is yours. API 2.
     pub(super) fn native_panel_event(&mut self, mod_id: &str, event: &NativePanelEvent) {
+        super::android_bundled::native_panel_event(self, mod_id, event);
         mod_api::dispatch_panel_event(self, mod_api::mods(), mod_id, event);
     }
     /// Block `block` (`mymod:machine`) gets a block entity

@@ -879,6 +879,22 @@ pub fn move_vector(stick: [f32; 2], deadzone: f32) -> Option<[f32; 2]> {
     (v != [0.0, 0.0]).then_some([-v[0], v[1]])
 }
 
+/// Java servers receive boolean directional input, so Android uses the same
+/// KeyboardInput vector for prediction and for the input packet.
+/// The stick deadzone is applied before this conversion.
+pub fn java_move_vector(stick: [f32; 2], deadzone: f32) -> Option<[f32; 2]> {
+    move_vector(stick, deadzone).map(|[left, forward]| {
+        // Eight 45-degree sectors: small sideways finger jitter stays forward.
+        let threshold = left.abs().max(forward.abs()) * (std::f32::consts::SQRT_2 - 1.0);
+        crate::input::keyboard_direction(
+            forward > threshold,
+            forward < -threshold,
+            left > threshold,
+            left < -threshold,
+        )
+    })
+}
+
 /// Degrees per second at full tilt and the default sensitivity.
 pub const YAW_SPEED: f32 = 200.0;
 pub const PITCH_SPEED: f32 = 140.0;
@@ -1607,6 +1623,19 @@ pub fn bow_power(ticks: u32) -> f32 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn java_stick_has_exact_keyboard_directions_at_every_magnitude() {
+        for x in [-1.0f32, -0.45, 0.0, 0.45, 1.0] {
+            for y in [-1.0f32, -0.45, 0.0, 0.45, 1.0] {
+                let expected = crate::input::keyboard_direction(y > 0.0, y < 0.0, x < 0.0, x > 0.0);
+                assert_eq!(java_move_vector([x, y], 0.1).unwrap_or([0.0; 2]), expected);
+            }
+        }
+        assert_eq!(java_move_vector([0.02, 1.0], 0.1), Some([0.0, 1.0]));
+        assert_eq!(java_move_vector([1.0, -0.02], 0.1), Some([-1.0, 0.0]));
+        assert!(java_move_vector([0.05, 0.05], 0.1).is_none());
+        assert!(java_move_vector([f32::NAN, 1.0], 0.1).is_none());
+    }
     #[test]
     fn every_bindable_action_reaches_the_game() {
         for (action, _) in ACTIONS {

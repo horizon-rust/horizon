@@ -880,7 +880,7 @@ impl Launcher {
         if self
             .auth_checked
             .is_none_or(|t| t.elapsed() >= Duration::from_secs(60))
-            || (self.accounts.accounts.iter()).any(|a| !self.auth_status.contains_key(&a.uuid))
+            || (self.accounts.accounts.iter()).any(|a| !self.auth_status.contains_key(&a.key()))
         {
             self.load_auth_statuses(false);
         }
@@ -1561,7 +1561,7 @@ impl Launcher {
         if let Some(sign_in) = &self.sign_in {
             if let Some(state) = sign_in_change(&mut self.sign_in_state, sign_in.state()) {
                 if let SignInState::Done(Ok(ref account)) = state {
-                    self.auth_busy.remove(&account.uuid);
+                    self.auth_busy.remove(&account.key());
                     self.sign_in_target = None;
                     self.accounts = Accounts::load();
                     self.load_profile_heads();
@@ -1944,14 +1944,14 @@ impl Launcher {
     fn load_auth_statuses(&mut self, renew_due: bool) {
         self.auth_checked = Some(Instant::now());
         for account in self.accounts.accounts.clone() {
-            let Some(generation) = self.begin_auth_job(&account.uuid) else {
+            let Some(generation) = self.begin_auth_job(&account.key()) else {
                 continue;
             };
             let tx = self.tx.clone();
             std::thread::spawn(move || {
                 let progress = |phase| {
                     let _ = tx.send(Msg::AccountProgress(
-                        account.uuid.clone(),
+                        account.key(),
                         generation,
                         phase,
                     ));
@@ -1959,15 +1959,15 @@ impl Launcher {
                 progress(account::session::Phase::Keychain);
                 let store = account::store();
                 let mut status =
-                    account::session::status_with_progress(store, &account.uuid, &progress);
+                    account::session::status_with_progress(store, &account.key(), &progress);
                 if renew_due && status.state == account::session::State::NeedsRefresh {
                     if let Ok(renewed) =
-                        account::session::refresh_with_progress(&account.uuid, &progress)
+                        account::session::refresh_with_progress(&account.key(), &progress)
                     {
                         status = renewed;
                     }
                 }
-                let _ = tx.send(Msg::AccountStatus(account.uuid, generation, status));
+                let _ = tx.send(Msg::AccountStatus(account.key(), generation, status));
             });
         }
     }
@@ -4416,8 +4416,8 @@ impl Launcher {
         let mut n = 0;
         let selected = self.accounts.selected.clone();
         for (i, a) in self.accounts.accounts.clone().into_iter().enumerate() {
-            let plays = selected.as_ref() == Some(&a.uuid);
-            let uuid = a.uuid.clone();
+            let plays = selected.as_ref() == Some(&a.key());
+            let uuid = a.key();
             let mut actions = div().flex().gap(px(4.));
             if plays {
                 actions = actions.child(
@@ -4446,7 +4446,7 @@ impl Launcher {
             let sign_in_progress = self
                 .sign_in_target
                 .as_ref()
-                .filter(|a| a.uuid == uuid)
+                .filter(|a| a.key() == uuid)
                 .and_then(|_| match self.sign_in_state.as_ref() {
                     Some(SignInState::Starting) => Some("Asking Microsoft…"),
                     Some(SignInState::Code(_)) => Some("Waiting for browser sign-in…"),
@@ -4635,7 +4635,7 @@ impl Launcher {
                     .into_any_element(),
             )
         } else {
-            let target = self.sign_in_target.as_ref().map(|a| a.uuid.clone());
+            let target = self.sign_in_target.as_ref().map(|a| a.key());
             let targeted = target.is_some();
             // Re-signing one account names it; adding one is Microsoft's own button.
             let sign_in = if targeted {
@@ -5899,6 +5899,7 @@ mod tests {
         use super::{sign_in_change, SignInState};
         let mut shown = None;
         let completed = SignInState::Done(Ok(horizon_launcher::account::Account {
+            provider: Default::default(),
             uuid: "11111111111111111111111111111111".into(),
             name: "TestAccount".into(),
             skin: None,

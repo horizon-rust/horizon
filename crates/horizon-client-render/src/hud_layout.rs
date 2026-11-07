@@ -277,6 +277,16 @@ pub struct HotbarInputs {
 
 /// `Hud.extractItemHotbar`.
 pub fn hotbar(w: i32, h: i32, i: &HotbarInputs) -> Vec<GuiDraw> {
+    hotbar_with_attack_side(w, h, i, None)
+}
+
+/// Optional mobile gauge side; hand and offhand item placement stay vanilla.
+pub fn hotbar_with_attack_side(
+    w: i32,
+    h: i32,
+    i: &HotbarInputs,
+    attack_left: Option<bool>,
+) -> Vec<GuiDraw> {
     let mut out = Vec::new();
     let center = w / 2;
     out.push(sprite("hud/hotbar", center - 91, h - 22, 182, 22));
@@ -353,11 +363,17 @@ pub fn hotbar(w: i32, h: i32, i: &HotbarInputs) -> Vec<GuiDraw> {
         && scale < 1.0
     {
         let y = h - 20;
-        let x = if offhand_left {
-            center + 91 + 6
-        } else {
+        let mut x = if attack_left.unwrap_or(!offhand_left) {
             center - 91 - 22
+        } else {
+            center + 91 + 6
         };
+        if let Some(left) = attack_left
+            && i.offhand
+            && left == offhand_left
+        {
+            x += if left { -26 } else { 26 };
+        }
         let progress = (scale * 19.0) as i32;
         out.push(sprite(
             "hud/hotbar_attack_indicator_background",
@@ -937,4 +953,44 @@ pub fn paint(batch: &mut crate::hud::HudBatch, atlas: &crate::hud::HudAtlas, dra
 pub fn abgr(color: u32) -> u32 {
     let [a, r, g, b] = color.to_be_bytes();
     crate::hud::rgba(r, g, b, a)
+}
+
+#[cfg(test)]
+mod mobile_attack_tests {
+    use super::*;
+    #[test]
+    fn side_moves_only_the_gauge_and_preserves_offhand() {
+        let inputs = HotbarInputs {
+            selected: 0,
+            right_handed: true,
+            offhand: true,
+            slots: [None; 9],
+            offhand_pop: 0.0,
+            attack: Some(0.5),
+        };
+        let left = hotbar_with_attack_side(480, 270, &inputs, Some(true));
+        let right = hotbar_with_attack_side(480, 270, &inputs, Some(false));
+        let gauge = |draws: &[GuiDraw]| {
+            draws
+                .iter()
+                .filter_map(|d| match d {
+                    GuiDraw::Sprite { sprite, x, .. } if sprite.contains("attack_indicator") => {
+                        Some(*x)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(gauge(&left), [101, 101]);
+        assert_eq!(gauge(&right), [337, 337]);
+        let without_gauge = |draws: Vec<GuiDraw>| {
+            draws.into_iter().filter(|d| !matches!(d, GuiDraw::Sprite { sprite, .. } if sprite.contains("attack_indicator"))).collect::<Vec<_>>()
+        };
+        assert_eq!(without_gauge(left), without_gauge(right));
+        let disabled = HotbarInputs {
+            attack: None,
+            ..inputs
+        };
+        assert!(gauge(&hotbar_with_attack_side(480, 270, &disabled, Some(true))).is_empty());
+    }
 }

@@ -17,8 +17,15 @@ pub fn main() -> Result<()> {
     for line in BufReader::new(File::open(&args[0])?).lines() {
         let f: Value = serde_json::from_str(&line?)?;
         let keys = f["keys"].as_u64().unwrap();
-        let direction =
+        let mut direction =
             input::keyboard_direction(keys & 1 != 0, keys & 2 != 0, keys & 4 != 0, keys & 8 != 0);
+        if let Some(stick) = f.get("stick") {
+            direction = horizon_client::gamepad::java_move_vector(
+                [number(&stick[0]), number(&stick[1])],
+                number(&f["deadzone"]),
+            )
+            .unwrap_or([0.0; 2]);
+        }
         let vector = if f["vector"].is_null() {
             direction
         } else {

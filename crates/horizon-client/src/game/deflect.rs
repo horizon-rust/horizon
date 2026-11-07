@@ -3,7 +3,7 @@
 //! `ProjectileDeflection.AIM_DEFLECT` instead of hurting anything. It flies on
 //! along the player's view and is the player's now (`Projectile.deflect`
 //! sets the owner), so a ghast it meets dies of it (`Ghast.isReflectedFireball`).
-use super::{Game, lan::LanHost, ray_box, view_vector};
+use super::{Game, lan::LanHost, ray_box};
 use horizon_client::{
     mobs::Who,
     projectiles::{Projectile, ProjectileKind},
@@ -195,7 +195,7 @@ impl Game<'_> {
 
     /// `Projectile.deflect(AIM_DEFLECT, player, player, true)`.
     pub(super) fn deflect(&mut self, i: usize) {
-        let dir = view_vector(self.yaw, self.pitch);
+        let dir = self.interaction_direction();
         let (guest, owner_uuid) = (self.lan_acting, Some(self.acting_player_uuid()));
         let p = &mut self.creatures.projectiles[i];
         p.velocity = Vec3::new(dir[0], dir[1], dir[2]);

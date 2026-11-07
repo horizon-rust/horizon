@@ -41,7 +41,7 @@ pub(crate) fn set_preference(dir: &Path, key: &str, value: Option<&str>) {
 
 /// The dark palette (`horizon_theme::DARK`) in the HUD's colour encoding, plus the
 /// translucent plates the overlays draw over the game.
-pub(crate) mod color {
+pub mod color {
     use horizon_theme::DARK as P;
     pub const fn hex(c: u32, a: u8) -> u32 {
         (a as u32) << 24 | (c & 0xff) << 16 | (c >> 8 & 0xff) << 8 | (c >> 16 & 0xff)
@@ -79,16 +79,18 @@ pub(crate) const RADIUS: f32 = horizon_theme::RADIUS;
 pub(crate) const RADIUS_PLATE: f32 = horizon_theme::RADIUS_PLATE;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Face {
+pub enum Face {
     Regular,
     Medium,
     /// The wordmark and page titles (the design system's 500).
     SemiBold,
     /// Counts, timestamps and the boot screen's console lines.
     Mono,
+    /// Page and instance names in the Android launcher: Bricolage Grotesque's display cut.
+    Display,
 }
 struct Fonts {
-    faces: [FontRef<'static>; 4],
+    faces: [FontRef<'static>; 5],
 }
 impl Fonts {
     fn load() -> Self {
@@ -99,6 +101,9 @@ impl Fonts {
                 f(horizon_theme::fonts::GEIST_MEDIUM),
                 f(horizon_theme::fonts::GEIST_SEMIBOLD),
                 f(horizon_theme::fonts::GEIST_MONO),
+                f(include_bytes!(
+                    "android/assets/BricolageGrotesqueDisplay-SemiBold.ttf"
+                )),
             ],
         }
     }
@@ -117,6 +122,8 @@ enum Key {
     Glyph(Face, u16, u16),
     /// A quarter disc (`false`) or a 1px quarter ring of this radius in pixels.
     Corner(u16, bool),
+    /// A picture [`Ui::image`] uploaded under this id.
+    Image(u64),
 }
 #[derive(Clone, Copy)]
 struct Cached {
@@ -192,6 +199,30 @@ impl Cache {
             .iter()
             .flat_map(|a| [255, 255, 255, (a.clamp(0.0, 1.0) * 255.0).round() as u8])
             .collect();
+        self.pending.push(crate::font::Patch {
+            x: ax,
+            y: ay,
+            width: w,
+            height: h,
+            rgba,
+        });
+        let (aw, ah) = (atlas.width as f32, atlas.height as f32);
+        Some(Rect {
+            u0: ax as f32 / aw,
+            v0: ay as f32 / ah,
+            u1: (ax + w) as f32 / aw,
+            v1: (ay + h) as f32 / ah,
+            w,
+            h,
+        })
+    }
+    /// Like [`Self::upload`], for colour pixels.
+    fn upload_rgba(&mut self, atlas: &HudAtlas, w: u32, h: u32, rgba: Vec<u8>) -> Option<Rect> {
+        let (x, y, region) = self.place(atlas, w, h)?;
+        let (ax, ay) = (
+            (region.u0 * atlas.width as f32).round() as u32 + x,
+            (region.v0 * atlas.height as f32).round() as u32 + y,
+        );
         self.pending.push(crate::font::Patch {
             x: ax,
             y: ay,
@@ -319,6 +350,72 @@ impl<'a> Ui<'a> {
             batch,
         }
     }
+    /// Native launcher density on tall phone screens; game HUD scale is untouched.
+    pub fn mobile(atlas: &'a HudAtlas, batch: &'a mut HudBatch, cursor: (f32, f32)) -> Self {
+        let mut ui = Self::new(atlas, batch, cursor);
+        let pw = ui.batch.width * ui.scale;
+        let ph = ui.batch.height * ui.scale;
+        if ph > pw {
+            ui.density = (pw / 480.0).clamp(1.0, 4.0);
+            ui.w = pw / ui.density;
+            ui.h = ph / ui.density;
+            ui.cursor = (
+                cursor.0 * ui.scale / ui.density,
+                cursor.1 * ui.scale / ui.density,
+            );
+        } else if ph < 700.0 {
+            ui.density = (pw / 1040.0).min(ph / 700.0).clamp(0.5, 4.0);
+            ui.w = pw / ui.density;
+            ui.h = ph / ui.density;
+            ui.cursor = (
+                cursor.0 * ui.scale / ui.density,
+                cursor.1 * ui.scale / ui.density,
+            );
+        }
+        ui
+    }
+
+    pub fn fit_text(&self, face: Face, size: f32, text: &str, width: f32) -> String {
+        if self.measure(face, size, text) <= width {
+            return text.to_owned();
+        }
+        let px = (size * self.density * 4.0).round() / 4.0;
+        with_cache(self.atlas, |cache| {
+            let font = cache.fonts.face(face);
+            let scaled = font.as_scaled(cache.fonts.scale(face, px));
+            crate::ui_text::fit(text, width * self.density, |previous, ch| {
+                let id = font.glyph_id(ch);
+                previous.map_or(0.0, |p| scaled.kern(font.glyph_id(p), id)) + scaled.h_advance(id)
+            })
+        })
+    }
+    /// A picture beside the glyphs: `make` gives its size and RGBA the first time `key` is
+    /// asked for, and again if the region was full and started over. None until it fits.
+    pub fn image(
+        &mut self,
+        key: u64,
+        make: impl FnOnce() -> Option<(u32, u32, Vec<u8>)>,
+    ) -> Option<Rect> {
+        let atlas = self.atlas;
+        with_cache(atlas, |c| {
+            if let Some(found) = c.entries.get(&Key::Image(key)) {
+                return found.rect;
+            }
+            let (w, h, rgba) = make()?;
+            let rect = c.upload_rgba(atlas, w, h, rgba);
+            if rect.is_some() {
+                c.entries.insert(
+                    Key::Image(key),
+                    Cached {
+                        rect,
+                        left: 0.0,
+                        top: 0.0,
+                    },
+                );
+            }
+            rect
+        })
+    }
     /// Move rasterized glyphs into the batch's atlas uploads (real frames only).
     pub fn finish(self) {
         let pending = with_cache(self.atlas, |c| std::mem::take(&mut c.pending));
@@ -377,7 +474,7 @@ impl<'a> Ui<'a> {
         }
     }
     /// A filled rectangle with rounded corners.
-    pub(crate) fn rounded(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, color: u32) {
+    pub fn rounded(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, color: u32) {
         if color >> 24 == 0 {
             return;
         }
@@ -402,7 +499,7 @@ impl<'a> Ui<'a> {
         self.corners(x0, y0, x1, y1, r, false, color);
     }
     /// A 1px rounded border.
-    pub(crate) fn border(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, color: u32) {
+    pub fn border(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, color: u32) {
         if color >> 24 == 0 {
             return;
         }
@@ -426,7 +523,7 @@ impl<'a> Ui<'a> {
 
     // ---- text ----
     /// The advance of `text` in dp.
-    pub(crate) fn measure(&self, face: Face, size: f32, text: &str) -> f32 {
+    pub fn measure(&self, face: Face, size: f32, text: &str) -> f32 {
         let px = (size * self.density * 4.0).round() / 4.0;
         with_cache(self.atlas, |c| {
             let font = c.fonts.face(face);
@@ -506,15 +603,7 @@ impl<'a> Ui<'a> {
         width
     }
     /// Text in a `1.45 × size` line box whose top is `y`.
-    pub(crate) fn text(
-        &mut self,
-        face: Face,
-        size: f32,
-        x: f32,
-        y: f32,
-        color: u32,
-        text: &str,
-    ) -> f32 {
+    pub fn text(&mut self, face: Face, size: f32, x: f32, y: f32, color: u32, text: &str) -> f32 {
         self.text_line(face, size, (size * 1.45).round(), x, y, color, text)
     }
     pub(crate) fn text_centered(

@@ -14,6 +14,7 @@
 //! the same hosts have to be left alone on both sides. This module adds what is the launcher's
 //! own — the setting in `settings.json`, kept in memory so a request doesn't read the file — and
 //! hands the address to the parts that build their agents.
+#[cfg(not(target_os = "android"))]
 use crate::backend::Settings;
 use std::sync::Mutex;
 
@@ -93,6 +94,7 @@ fn setting() -> Option<String> {
 }
 
 /// The launcher's setting as it is written down, or None when there is none.
+#[cfg(not(target_os = "android"))]
 fn written() -> Option<String> {
     Settings::load()
         .proxy
@@ -143,4 +145,12 @@ mod tests {
         let why = refuse("http://user:secret@").unwrap();
         assert!(!why.contains("secret"), "{why}");
     }
+}
+
+#[cfg(target_os = "android")]
+fn written() -> Option<String> {
+    crate::catalog::Config::load(&crate::backend::data_dir())
+        .proxy
+        .map(|p| p.trim().to_owned())
+        .filter(|p| !p.is_empty())
 }

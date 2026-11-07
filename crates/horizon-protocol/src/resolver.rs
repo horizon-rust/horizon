@@ -5,7 +5,7 @@
 use crate::{Error, Result};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 
-mod dns;
+pub(crate) mod dns;
 
 #[derive(Debug)]
 pub(crate) struct Resolved {

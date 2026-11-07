@@ -114,18 +114,25 @@ if __name__ == "__main__":
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 
 
+def workflow(name):
+    path = WORKFLOWS / name
+    if not path.is_file():
+        path = WORKFLOWS.parent / "upstream-workflows" / (name + ".disabled")
+    return path.read_text(encoding="utf-8")
+
+
 class UntrustedBuildTests(unittest.TestCase):
     """A nightly can hold pull requests nobody reviewed: nothing its build leaves may reach a release (game-build.yml)."""
 
     def setUp(self):
-        self.game = (WORKFLOWS / "game-build.yml").read_text()
+        self.game = workflow("game-build.yml")
 
     def test_no_nightly_build_is_trusted(self):
         # The train only starts `nightly build` (Nightly only since 2026-10-28); it builds nothing itself.
-        release = (WORKFLOWS / "release.yml").read_text()
+        release = workflow("release.yml")
         self.assertNotIn("game-build.yml", release)
         self.assertIn("gh workflow run nightly-build.yml", release)
-        nightly_build = (WORKFLOWS / "nightly-build.yml").read_text()
+        nightly_build = workflow("nightly-build.yml")
         self.assertIn("trusted: false", nightly_build)
         self.assertNotIn("trusted: true", nightly_build)
         self.assertIn("default: false", self.game.split("trusted:", 1)[1].split("developer_id:", 1)[0])
@@ -178,7 +185,7 @@ class PruneBuildsTests(unittest.TestCase):
         self.assertEqual(nightly.stale_builds(branches, set(), self.TODAY, 7), [])
 
     def test_the_source_is_archived_from_git_signed_attached_and_tagged(self):
-        build = (WORKFLOWS / "nightly-build.yml").read_text()
+        build = workflow("nightly-build.yml")
         pick = build.split("\n  build:", 1)[0]
         self.assertIn('git archive --format=tar.gz --prefix="horizon-${SHA:0:7}/" -o horizon-source.tar.gz "$SHA"',
                       pick)
@@ -189,9 +196,8 @@ class PruneBuildsTests(unittest.TestCase):
         self.assertIn('nightly.py keep-source "$SHA" "$DATE"', publish)
 
     def test_the_workflow_prunes_on_schedule_only(self):
-        build = (WORKFLOWS / "nightly-build.yml").read_text()
+        build = workflow("nightly-build.yml")
         step = build.split("Old nightly/build-* branches deleted", 1)[1].split("- uses:", 1)[0]
         self.assertIn("if: github.event_name == 'schedule'", step)
         self.assertIn("prune-builds --days 7", step)
         self.assertIn("GITHUB_STEP_SUMMARY", step)
-

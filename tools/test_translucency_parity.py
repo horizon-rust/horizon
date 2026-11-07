@@ -19,7 +19,7 @@ def cases():
         [[-1, 0, 0]] * 4, [[1, 0, 0]] * 4,
         [[0, 0, 0], [100, 100, 100], [2, 2, 2], [200, 200, 200]]],
         'cameras': [[0, 0, 0], [0.1, 0.1, 0.1], [1, 0, 0], [-1, 0, 0]]}
-    for count in [0, 1, 2, 64, *[rng.randrange(3, 100) for _ in range(200)]]:
+    for count in [0, 1, 2, 64, 2047, 2048, 2049, 8192, *[rng.randrange(3, 100) for _ in range(200)]]:
         origin = [rng.choice([-30000000, -64, -16, 0, 16, 30000000]) for _ in range(3)]
         # SectionPos packs Y into fewer bits; world-border coordinates apply to X/Z.
         origin[1] = rng.choice([-64, -16, 0, 16, 304])

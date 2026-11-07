@@ -166,6 +166,10 @@ mod cull;
 mod end_sky;
 pub mod entity_skin;
 mod flat;
+#[cfg(target_os = "android")]
+mod frame_scale;
+mod frame_timing;
+
 mod frame_gen;
 mod gpu_culling;
 mod hdr;
@@ -186,6 +190,8 @@ mod native_sky;
 mod occlusion;
 mod oit;
 mod oit_features;
+#[cfg(any(target_os = "android", test))]
+mod opaque_output;
 mod pack_atlas;
 mod pack_center_depth;
 pub mod pack_draw;
@@ -816,6 +822,7 @@ const MAX_OUTLINE_EDGES: u64 = 256;
 /// Staging buffer size for section meshes: a frame of uploads while
 /// exploring fits in a few.
 const SECTION_UPLOAD_CHUNK: u64 = 4 << 20;
+pub mod upload_budget;
 /// Section copies are submitted early past this many staged bytes, which
 /// bounds the staging memory frames that are not drawn can hold.
 const SECTION_COPY_LIMIT: u64 = 64 << 20;
@@ -1036,6 +1043,21 @@ struct BorderUniform {
     color: [f32; 4],
     offset: [f32; 4],
 }
+/// Shared GPU handles and presentation format for preparing a replacement.
+/// A background context owns no window surface; the event thread retains it.
+pub struct ReplacementContext {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    surface: Option<wgpu::Surface<'static>>,
+    device_lost: Arc<std::sync::atomic::AtomicBool>,
+    config: wgpu::SurfaceConfiguration,
+    present_modes: Vec<wgpu::PresentMode>,
+    hdr_output: Option<hdr::Output>,
+    reuse: Arc<reuse::Reuse>,
+}
+
 /// A frame to save as a PNG: F2's screenshot, an agent's `game_screenshot`,
 /// or the icon the Select World list shows.
 pub struct ScreenshotRequest {
@@ -1087,6 +1109,8 @@ pub struct Renderer {
     /// (see `startup_step`).
     first_frame: FirstFrame,
     gpu_timer: Option<timing::GpuTimer>,
+    gpu_stages: Option<frame_timing::FrameTiming>,
+    gpu_stages_enabled: bool,
     /// GPU frame times (ms) read back since the caller last drained them.
     pub gpu_times: Vec<f32>,
     /// The last lightmap written, RGBA rows of sky level by block level
@@ -1408,6 +1432,12 @@ pub struct Renderer {
     layout: crate::chunk::ColumnLayout,
     /// Resolution scale, FXAA and TAA (Horizon settings).
     world_post: world_post::Post,
+    #[cfg(target_os = "android")]
+    frame_scale: Option<frame_scale::FrameScale>,
+    #[cfg(target_os = "android")]
+    opaque_output: Option<opaque_output::OpaqueOutput>,
+    #[cfg(target_os = "android")]
+    startup: Option<crate::android_runtime::graphics_startup::Startup>,
     /// Frame generation (Horizon setting).
     frame_gen: frame_gen::FrameGen,
     /// The entities' texture atlas (`entity_group`'s), for frame generation's motion.
@@ -1565,6 +1595,20 @@ fn layer_split(
         ));
     }
     Ok(split)
+}
+/// Whether solid terrain draws as an opaque pass, then a cutout one: where a discard costs
+/// the GPU its hidden surface removal, on Apple's tiled GPUs and Android's.
+fn splits_solid(info: &wgpu::AdapterInfo) -> bool {
+    info.backend == wgpu::Backend::Metal
+        || (cfg!(target_os = "android") && info.backend == wgpu::Backend::Vulkan)
+}
+fn instance_buffer_usage(limits: &wgpu::Limits) -> wgpu::BufferUsages {
+    let base = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+    if limits.max_storage_buffers_per_shader_stage > 0 {
+        base | wgpu::BufferUsages::STORAGE
+    } else {
+        base
+    }
 }
 /// Sprite arrays terrain.wgsl binds (`sprites`, `sprites_1`...).
 const SPRITE_ARRAYS: u32 = 8;
@@ -1993,6 +2037,7 @@ fn check_layers(adapter: &wgpu::Adapter, layers: u32) -> Result<u32> {
         layers,
     )?)
 }
+
 /// Whether the swapchain can take a window of `width` x `height`: each side from 1 to the
 /// device's `max_texture_dimension_2d` (`max`), else `Surface::configure` panics. 0 is a
 /// minimized window. Past `max`: Windows lets a program size a window up to 65535 pixels
@@ -2287,13 +2332,24 @@ async fn open_backend(
     // (`MC_GL_KHR_shader_subgroup_*`); storage buffers in vertex shaders, clearing and
     // atomics on images: their buffers and images. Filtering 32-bit float textures: shader
     // packs' RGBA32F buffers, which GL filters and mipmaps. Count draws: GPU culling's (`gpu_culling`).
+    let compatibility = crate::android_runtime::compatibility();
     let features = timing::GpuTimer::features(&adapter)
-        | cull::Cull::features(&adapter)
+        | if compatibility {
+            wgpu::Features::empty()
+        } else {
+            cull::Cull::features(&adapter)
+        }
         | oit::features(&adapter)
         | (adapter.features()
-            & (wgpu::Features::INDIRECT_FIRST_INSTANCE
-                | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT
-                | wgpu::Features::MAPPABLE_PRIMARY_BUFFERS
+            & (if compatibility {
+                wgpu::Features::empty()
+            } else {
+                wgpu::Features::INDIRECT_FIRST_INSTANCE | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT
+            } | if cfg!(target_os = "android") {
+                wgpu::Features::empty()
+            } else {
+                wgpu::Features::MAPPABLE_PRIMARY_BUFFERS
+            }
                 | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
                 | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
                 | wgpu::Features::RG11B10UFLOAT_RENDERABLE
@@ -2544,6 +2600,61 @@ impl Renderer {
         linear_pack: bool,
         hdr_float: bool,
     ) -> Result<Self> {
+        Self::new_with_context(
+            window,
+            offscreen,
+            sprite_pixels,
+            sprite_size,
+            sprite_minimum_size,
+            layers,
+            sprite_mips,
+            animations,
+            hud_atlas,
+            glint,
+            glint_armor,
+            forcefield,
+            panorama_faces,
+            prepared,
+            previous.map(Self::replacement_context),
+            api,
+            translucent_batching,
+            wide_frame,
+            shader_pack,
+            linear_pack,
+            hdr_float,
+        )
+        .await
+    }
+    /// Build GPU resources without borrowing the renderer still drawing the menu.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new_with_context(
+        window: Arc<Window>,
+        offscreen: bool,
+        sprite_pixels: &[u8],
+        sprite_size: u32,
+        sprite_minimum_size: u32,
+        layers: u32,
+        sprite_mips: &[crate::mipmap::Settings],
+        animations: &[SpriteAnimation],
+        hud_atlas: (&[u8], u32, u32),
+        glint: (&[u8], u32, u32),
+        glint_armor: (&[u8], u32, u32),
+        forcefield: (&[u8], u32),
+        panorama_faces: Arc<panorama::Faces>,
+        prepared: Option<PreparedTextures>,
+        mut previous: Option<ReplacementContext>,
+        api: GraphicsApi,
+        translucent_batching: bool,
+        wide_frame: bool,
+        shader_pack: bool,
+        linear_pack: bool,
+        hdr_float: bool,
+    ) -> Result<Self> {
+        #[cfg(target_os = "android")]
+        let startup = (!offscreen && api != GraphicsApi::OpenGl)
+            .then(crate::android_runtime::graphics_startup::begin)
+            .flatten();
+
         let Opened {
             instance,
             surface,
@@ -2551,7 +2662,7 @@ impl Renderer {
             device,
             queue,
             device_lost,
-        } = match previous {
+        } = match previous.as_mut() {
             // Reload resources on the same device; replacing live Vulkan
             // devices can invalidate the driver's swapchain state on the same
             // window.
@@ -2562,11 +2673,7 @@ impl Renderer {
                     surface: if offscreen {
                         None
                     } else {
-                        let spare = renderer
-                            .spare_surface
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .take();
+                        let spare = renderer.surface.take();
                         Some(match spare {
                             Some(surface) => surface,
                             None => renderer.instance.create_surface(window.clone())?,
@@ -2590,6 +2697,8 @@ impl Renderer {
         if split < sprite_split() {
             log::info!("Horizon: {split} block textures per array (the GPU's limit)");
         }
+        #[cfg(target_os = "android")]
+        crate::android_runtime::configure_atlas_limit(device.limits().max_texture_dimension_2d);
         let info = adapter.get_info();
         crate::graphics::suggest_reduced_far_detail(crate::graphics::lod_capped(&info));
         let size = window.inner_size();
@@ -2603,6 +2712,10 @@ impl Renderer {
                 )
                 .ok_or("surface has no supported configuration")?;
             let caps = surface.get_capabilities(&adapter);
+            #[cfg(target_os = "android")]
+            if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::Opaque) {
+                config.alpha_mode = wgpu::CompositeAlphaMode::Opaque;
+            }
             config.format = surface_format(&caps.formats, config.format);
             config.view_formats = vec![config.format.remove_srgb_suffix()];
             // Screenshots copy the presented frame back from the swapchain, frame
@@ -2614,6 +2727,7 @@ impl Renderer {
                 config.usage |= wgpu::TextureUsages::COPY_DST;
             }
             config.present_mode = previous
+                .as_ref()
                 .map(|renderer| renderer.config.present_mode)
                 .filter(|mode| caps.present_modes.contains(mode))
                 .unwrap_or_else(|| {
@@ -2629,7 +2743,16 @@ impl Renderer {
                     config.width, config.height, config.format, config.present_mode
                 ));
             }
-            surface.configure(&device, &config);
+            let presentation = config.clone();
+            #[cfg(target_os = "android")]
+            let presentation = {
+                let mut presentation = presentation;
+                let physical = window.outer_size();
+                presentation.width = physical.width.max(1);
+                presentation.height = physical.height.max(1);
+                presentation
+            };
+            surface.configure(&device, &presentation);
             let hdr_output = hdr::output(&caps);
             crate::graphics::offer_hdr(hdr_output.is_some());
             if previous.is_none() {
@@ -2639,6 +2762,14 @@ impl Renderer {
                 );
             }
             (config, caps.present_modes.clone(), hdr_output)
+        } else if let Some(context) = &previous {
+            // Pipelines prepared in the worker must target the actual window
+            // format, not the generic offscreen format.
+            (
+                context.config.clone(),
+                context.present_modes.clone(),
+                context.hdr_output,
+            )
         } else {
             let format = wgpu::TextureFormat::Bgra8Unorm;
             let config = wgpu::SurfaceConfiguration {
@@ -2698,7 +2829,9 @@ impl Renderer {
         }
         // A renderer on the same device takes the previous one's shader
         // modules, layouts and pipelines where they come out the same.
-        let reuse = previous.map_or_else(Default::default, |r| r.reuse.clone());
+        let reuse = previous
+            .as_ref()
+            .map_or_else(Default::default, |r| r.reuse.clone());
         let generation = reuse.begin();
         let kept = reuse.on(&device);
         let pipelines_step = crate::spans::startup::step("renderer.pipelines_textures");
@@ -3212,6 +3345,12 @@ impl Renderer {
             ),
         };
         let mut mip_levels = 1;
+        let sprite_compute = animate::SpriteAnimator::compute(&adapter, &device);
+        let sprite_storage = if sprite_compute {
+            wgpu::TextureUsages::STORAGE_BINDING
+        } else {
+            wgpu::TextureUsages::empty()
+        };
         let gl = adapter.get_info().backend == wgpu::Backend::Gl;
         // Keep every colour layer's companion, split by the same device limit. Native
         // material stages read the first array; terrain packs stitch all of them.
@@ -3284,7 +3423,7 @@ impl Renderer {
                             | wgpu::TextureUsages::COPY_DST
                             // Shader packs' atlas copies them (pack_atlas.rs).
                             | wgpu::TextureUsages::COPY_SRC
-                            | wgpu::TextureUsages::STORAGE_BINDING,
+                            | sprite_storage,
                         view_formats: &[],
                     },
                     wgpu::util::TextureDataOrder::LayerMajor,
@@ -3304,7 +3443,7 @@ impl Renderer {
             sprite_mips,
             &sprite_textures,
             split,
-            animate::SpriteAnimator::compute(&adapter, &device),
+            sprite_compute,
         );
         let active_layer_words = animations.active_layer_words();
         let sprite_unused = device
@@ -3419,9 +3558,7 @@ impl Renderer {
         let instances = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Section origins"),
             size: instance_capacity * 16,
-            usage: wgpu::BufferUsages::VERTEX
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::STORAGE,
+            usage: instance_buffer_usage(&device.limits()),
             mapped_at_creation: false,
         });
         let outline = device.create_buffer(&wgpu::BufferDescriptor {
@@ -4488,9 +4625,9 @@ impl Renderer {
         let static_entity_index_quads = 1 << 14;
         let static_entity_indices = Self::quad_indices(&device, static_entity_index_quads);
         let flat_wanted = flat::wanted(&adapter, &device);
-        // Metal draws solid terrain in two passes (`split_solid`): meshes put all
-        // their opaque quads first, so each pass draws its part in a run or two.
-        crate::mesher::group_parts(adapter.get_info().backend == wgpu::Backend::Metal);
+        // Metal and Android's Vulkan draw solid terrain in two passes (`split_solid`):
+        // meshes put all their opaque quads first, so each pass draws its part in a run or two.
+        crate::mesher::group_parts(splits_solid(&adapter.get_info()));
         // Readable as storage where flat draws run: a shader pack's terrain program reads them.
         let arena = arena::Arena::new(
             &device,
@@ -4643,6 +4780,7 @@ impl Renderer {
         let cull_env = std::env::var("HORIZON_GPU_CULL");
         let adapter_info = adapter.get_info();
         let cull = cull::Cull::supported(&adapter, &device)
+            .filter(|_| !crate::android_runtime::compatibility())
             .filter(|_| occlusion_culling_requested(&adapter_info, cull_env.as_deref().ok()))
             .map(|depth_test| match cull_env.as_deref() {
                 Ok("shader") => cull::DepthTest::InShader,
@@ -4706,6 +4844,8 @@ impl Renderer {
                 FirstFrame::Drawn
             },
             gpu_timer,
+            gpu_stages: None,
+            gpu_stages_enabled: false,
             gpu_times: Vec::new(),
             lightmap_pixels: [0; 16 * 16 * 4],
             last_wait: std::time::Duration::ZERO,
@@ -4898,6 +5038,12 @@ impl Renderer {
             occlusion: occlusion::Occlusion::new(crate::chunk::MIN_Y, crate::chunk::HEIGHT / 16),
             layout: crate::chunk::ColumnLayout::VANILLA,
             world_post,
+            #[cfg(target_os = "android")]
+            frame_scale: None,
+            #[cfg(target_os = "android")]
+            opaque_output: None,
+            #[cfg(target_os = "android")]
+            startup,
             frame_gen: frame_gen::FrameGen::new(),
             entity_atlas: atlas_view.clone(),
             hdr: None,
@@ -5079,8 +5225,52 @@ impl Renderer {
             view_formats: &config.view_formats,
         })
     }
-    /// Hand the window surface over to the renderer that replaces this one on
-    /// the same device (it takes `spare_surface`).
+    /// Share GPU handles without handing the live window surface to a worker.
+    pub fn background_context(&self) -> ReplacementContext {
+        ReplacementContext {
+            instance: self.instance.clone(),
+            adapter: self.adapter.clone(),
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+            surface: None,
+            device_lost: self.device_lost.clone(),
+            config: self.config.clone(),
+            present_modes: self.present_modes.clone(),
+            hdr_output: self.hdr_output,
+            reuse: self.reuse.clone(),
+        }
+    }
+    fn replacement_context(&self) -> ReplacementContext {
+        let mut context = self.background_context();
+        context.surface = self
+            .spare_surface
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        context
+    }
+    /// Only the event thread transfers/configures the live Android surface.
+    pub fn activate_replacement(&mut self, previous: &mut Self) -> Result<()> {
+        if previous.suspended {
+            return Err("cannot attach a renderer while the window is suspended".into());
+        }
+        previous.release_surface();
+        self.surface = previous
+            .spare_surface
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .map(Arc::new);
+        self.offscreen = None;
+        self.suspended = false;
+        if self.surface.is_none() {
+            self.recreate_surface()?;
+        }
+        let size = self.window.inner_size();
+        self.resize(size.width, size.height);
+        Ok(())
+    }
+    /// Set the live surface aside for a replacement on the same device.
     pub fn release_surface(&mut self) {
         self.frame_gen.stop();
         self.queue.wait();
@@ -5089,6 +5279,19 @@ impl Renderer {
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             self.surface.take().and_then(|s| Arc::try_unwrap(s).ok());
+    }
+    /// Android destroys the native window when backgrounded. Its surface may
+    /// be reused for an in-process renderer handoff, but never after suspension.
+    #[cfg(target_os = "android")]
+    pub fn suspend_surface(&mut self) {
+        self.frame_gen.stop();
+        self.queue.wait();
+        self.suspended = true;
+        self.surface = None;
+        self.spare_surface
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
     }
     /// Reattach a window after surface loss or a failed renderer replacement.
     pub fn recreate_surface(&mut self) -> Result<()> {
@@ -5106,6 +5309,11 @@ impl Renderer {
             .take();
         self.frame_gen.stop();
         self.surface = None;
+        #[cfg(target_os = "android")]
+        let spare = {
+            drop(spare);
+            None
+        };
         let surface = match spare {
             Some(surface) => surface,
             None => self.instance.create_surface(self.window.clone())?,
@@ -5185,6 +5393,17 @@ impl Renderer {
     /// Follows the window to `width` x `height`. A size the swapchain can't take
     /// ([`drawable_size`]) keeps the last one and draws nothing until the next.
     pub fn resize(&mut self, width: u32, height: u32) {
+        #[cfg(target_os = "android")]
+        if self.surface.is_none() && self.offscreen.is_none() {
+            // A resize can precede Resumed. Keep the windowed renderer suspended
+            // until its new ANativeWindow exists; absence is not offscreen intent.
+            if width > 0 && height > 0 {
+                self.config.width = width;
+                self.config.height = height;
+            }
+            self.suspended = true;
+            return;
+        }
         let max = self.device.limits().max_texture_dimension_2d;
         self.suspended = !drawable_size(width, height, max);
         if self.suspended {
@@ -5208,7 +5427,30 @@ impl Renderer {
         if on && self.flat.is_none() {
             return Err("flat section draws are off on this device".into());
         }
+        if on && let Some(flat) = &mut self.flat {
+            // Explicit developer comparisons must exercise the flat path even
+            // on backends whose automatic vanilla threshold disables it.
+            flat.min_sections = 0;
+        }
         self.flat_on = on;
+        Ok(())
+    }
+    /// Developer A/B control: direct and indirect draws use the same section geometry.
+    pub fn set_indirect_draws(&mut self, on: bool) -> Result<()> {
+        if on
+            && !(self
+                .device
+                .features()
+                .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE)
+                && self
+                    .adapter
+                    .get_downlevel_capabilities()
+                    .flags
+                    .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION))
+        {
+            return Err("indirect section draws are unavailable on this device".into());
+        }
+        self.multi_draw = on;
         Ok(())
     }
     /// Whether one of Horizon's own packs reads the water mirror, which needs the frame's
@@ -5593,9 +5835,10 @@ impl Renderer {
             _ => (page, start + solid_slots),
         };
         let sorted_indices = if translucent > 0 {
-            let indices =
+            let indices = crate::spans::time("upload_index_alloc", || {
                 self.sorted_indices
-                    .alloc(&self.device, encoder, u64::from(translucent) * 6);
+                    .alloc(&self.device, encoder, u64::from(translucent) * 6)
+            });
             if indices.is_none() {
                 release_main(&mut self.arena);
                 if let Some(arena) = &mut self.translucent_arena {
@@ -5654,7 +5897,7 @@ impl Renderer {
         if self.section_copy_bytes >= SECTION_COPY_LIMIT
             && let Some(copies) = self.take_section_copies()
         {
-            self.queue.submit([copies]);
+            crate::spans::time("upload_submit", || self.queue.submit([copies]));
         }
         let animated_layers =
             collect_animated_layers(mesh, |layer| self.animations.is_animated(layer));
@@ -6423,6 +6666,12 @@ impl Renderer {
     /// HDR10 or scRGB while HDR output is on.
     fn surface_config(&self) -> wgpu::SurfaceConfiguration {
         let mut config = self.config.clone();
+        #[cfg(target_os = "android")]
+        if self.offscreen.is_none() {
+            let physical = self.window.outer_size();
+            config.width = physical.width.max(1);
+            config.height = physical.height.max(1);
+        }
         if let Some(hdr) = &self.hdr {
             config.format = hdr.output.format();
             config.view_formats = vec![hdr.output.format()];
@@ -6596,6 +6845,10 @@ impl Renderer {
         self.world_post.antialias = antialias && !taa;
         self.world_post.taa = taa;
         self.world_post.upscale = if taa { upscale.clamp(1.0, 4.0) } else { 1.0 };
+    }
+    pub fn world_render_size(&self) -> [u32; 2] {
+        [self.config.width, self.config.height]
+            .map(|v| ((v as f32 * self.world_post.scale).round() as u32).clamp(1, 8192))
     }
     /// Runs `post` over the world from now on (`None`: no pack), for the dimension `dimension`;
     /// `block_ids` gives each block sprite layer's `mc_Entity` (id, fluid) and `at_midBlock.w`
@@ -7068,6 +7321,28 @@ impl Renderer {
     }
     /// Times the shader pack's passes on the GPU while `on` (the F3 overlay is open), or always
     /// with `HORIZON_SHADER_PACK_TIMING`.
+    /// Additional GPU scopes for opt-in Android reports; ordinary frames add no queries.
+    pub fn set_detailed_gpu_timing(&mut self, on: bool) {
+        if self.gpu_stages_enabled == on {
+            return;
+        }
+        self.gpu_stages_enabled = on;
+        self.gpu_stages = on
+            .then(|| frame_timing::FrameTiming::new(&self.device, &self.queue))
+            .flatten();
+    }
+    pub fn gpu_stage_distributions(&self) -> Vec<(&'static str, f32, f32, f32, usize)> {
+        self.gpu_stages
+            .as_ref()
+            .map(|s| s.distributions())
+            .unwrap_or_default()
+    }
+    pub fn gpu_stage_times(&self) -> Vec<(&'static str, f32, f32, usize)> {
+        self.gpu_stages
+            .as_ref()
+            .map(frame_timing::FrameTiming::summaries)
+            .unwrap_or_default()
+    }
     pub fn set_pass_timing(&mut self, on: bool) {
         self.pass_timing = on || pack_timing::PassTiming::logging();
     }
@@ -7655,6 +7930,15 @@ impl Renderer {
             self.frame_gen.paused = false;
         }
         let size = [self.config.width, self.config.height];
+        #[cfg(target_os = "android")]
+        let scaled_presentation = surface_frame.as_ref().is_some_and(|f| {
+            let physical = [f.texture.width(), f.texture.height()];
+            physical != size
+                || winit::platform::android::native_content_rect(physical)
+                    != [0, 0, physical[0], physical[1]]
+        });
+        #[cfg(not(target_os = "android"))]
+        let scaled_presentation = false;
         let target_texture = match (&surface_frame, &mut self.hdr) {
             _ if let Some((real, _)) = &fg_frames => real.clone(),
             (_, Some(hdr)) => hdr.frame(&self.device, size),
@@ -7671,10 +7955,25 @@ impl Renderer {
                         &self.device,
                         &image,
                         self.frame_format,
-                        self.screenshot.is_some(),
+                        self.screenshot.is_some() && !scaled_presentation,
                     )
                     .unwrap_or(image)
             }
+        };
+        #[cfg(target_os = "android")]
+        let target_texture = if self.hdr.is_none() && scaled_presentation {
+            self.frame_scale
+                .get_or_insert_with(|| {
+                    frame_scale::FrameScale::new(
+                        &self.device,
+                        self.frame_format,
+                        self.config.format.remove_srgb_suffix(),
+                    )
+                })
+                .frame(&self.device, size)
+        } else {
+            self.frame_scale = None;
+            target_texture
         };
         // One command buffer for the frame, after the section copies staged
         // since the last one: Metal commits every command buffer wgpu-core
@@ -7687,6 +7986,13 @@ impl Renderer {
                     label: Some("Horizon frame"),
                 })
         });
+        #[cfg(target_os = "android")]
+        if let Some(timer) = &mut self.gpu_timer {
+            timer.begin(&mut encoder);
+        }
+        if let Some(stages) = &mut self.gpu_stages {
+            stages.begin_prepare(&mut encoder);
+        }
         // Horizon's own passes are timed like a shader pack's, from the frame's first pass.
         if self.own_timing.is_some() != self.pass_timing {
             self.own_timing = self
@@ -8218,9 +8524,7 @@ impl Renderer {
             self.instances = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("Section origins"),
                 size: self.instance_capacity * 16,
-                usage: wgpu::BufferUsages::VERTEX
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::STORAGE,
+                usage: instance_buffer_usage(&self.device.limits()),
                 mapped_at_creation: false,
             });
         }
@@ -8324,7 +8628,7 @@ impl Renderer {
         // ones (`Part`), each solid pass drawing its own: `[..opaque_draws]`,
         // then the rest; phase 2 likewise. A fading list's quads all draw in the
         // cutout pass.
-        let split_solid = self.info.backend == wgpu::Backend::Metal;
+        let split_solid = splits_solid(&self.info);
         let parts = |fading: bool| -> &'static [(u8, Quads)] {
             match (split_solid, fading) {
                 (false, _) => &[(0, Quads::All)],
@@ -9252,6 +9556,13 @@ impl Renderer {
                     // where vanilla frames draw flat).
                     && !gpu_frame
                     && !self.draws.is_empty()
+                    // Android's packs keep their terrain and material paths; classic
+                    // terrain and shadow programs need the flat inputs.
+                    && (!cfg!(target_os = "android")
+                        || (self.native.is_none()
+                            && (self.pack_post.is_none()
+                                || pack_terrain
+                                || shadow_view.is_some())))
                     && (listed >= flat.min_sections
                         || pack_terrain
                         || shadow_view.is_some()) =>
@@ -9330,8 +9641,16 @@ impl Renderer {
             format: Some(self.frame_format),
             ..Default::default()
         });
+        #[cfg(not(target_os = "android"))]
         if let Some(timer) = &mut self.gpu_timer {
             timer.begin(&mut encoder);
+        }
+        if let Some(stages) = &mut self.gpu_stages {
+            stages.begin_world(
+                &self.device,
+                &mut encoder,
+                (&view_target, self.frame_format),
+            );
         }
         // The frame's statistics (`show_stats`): a CPU frame's at once; a GPU frame's when the
         // pass's counts come back, with the CPU's part of it: the sections the walk listed but
@@ -9801,7 +10120,7 @@ impl Renderer {
         // Two solid passes only where a discard costs the GPU its hidden surface
         // removal: Apple's tiled GPUs, behind Metal. Elsewhere the second pass
         // would double the solid draw calls and vertex work for nothing.
-        let split_solid = self.info.backend == wgpu::Backend::Metal;
+        let split_solid = splits_solid(&self.info);
         let translucent_pipeline = material.map_or(&self.translucent, |(m, _)| &m.translucent);
         let pack_flat = material.and_then(|(m, _)| m.flat.as_ref());
         // A material stage's translucent pass reads a copy of the depth the solid terrain
@@ -10851,6 +11170,13 @@ impl Renderer {
                 self.draw_hand(&mut pass, hand_quads, world_quads + additive_quads);
             }
         }
+        if let Some(stages) = &mut self.gpu_stages {
+            stages.screen(
+                &self.device,
+                &mut encoder,
+                (world_view, self.frame_format),
+            );
+        }
         if let Some((color, depth)) = &scaled
             && pack_post
             && let Some((dimension, Some(mut post))) = self.pack_post.take()
@@ -11096,6 +11422,13 @@ impl Renderer {
                 (&view_target, self.frame_format),
             );
         }
+        if let Some(stages) = &mut self.gpu_stages {
+            stages.end(
+                &self.device,
+                &mut encoder,
+                (&view_target, self.frame_format),
+            );
+        }
         laps.lap("r_passes");
         // Under `HORIZON_FRAMEGEN_DEBUG=generated` a screenshot is the made frame.
         let shown_texture = match &fg_frames {
@@ -11143,6 +11476,25 @@ impl Renderer {
             }
             (None, _) => {}
         }
+        #[cfg(target_os = "android")]
+        if let (Some(scale), Some(frame)) = (&self.frame_scale, &surface_frame) {
+            scale.present(&mut encoder, &frame.texture);
+        }
+        #[cfg(target_os = "android")]
+        if self.config.alpha_mode != wgpu::CompositeAlphaMode::Opaque
+            && let Some(surface) = &surface_frame
+        {
+            // Sanitize only the final swapchain, after HDR/shader packs/scaling.
+            // Internal emissive markers and every RGB channel remain untouched.
+            let format = self.surface_config().format.remove_srgb_suffix();
+            let output = self
+                .opaque_output
+                .get_or_insert_with(|| opaque_output::OpaqueOutput::new(&self.device, format));
+            if output.format != format {
+                *output = opaque_output::OpaqueOutput::new(&self.device, format);
+            }
+            output.present(&mut encoder, &surface.texture);
+        }
         // With HDR on, a full-frame screenshot gets an HDR10 copy beside it.
         let hdr_readback = readback
             .as_ref()
@@ -11154,6 +11506,11 @@ impl Renderer {
                 Some(copy_frame(&self.device, &mut encoder, &texture, size))
             });
         let first_frame = self.first_frame == FirstFrame::Submit;
+        // Android's startup marker and the detailed timers follow this thread's submission.
+        #[cfg(target_os = "android")]
+        let submit_here = self.startup.is_some() || self.gpu_stages.is_some();
+        #[cfg(not(target_os = "android"))]
+        let submit_here = self.gpu_stages.is_some();
         // Finished, submitted and presented on the submit thread when nothing after the
         // submission needs this one: screenshots' readbacks, the error scopes (one per
         // thread), the first frame's startup log, VSync's frame callback, a reconfigure.
@@ -11166,6 +11523,7 @@ impl Renderer {
             && hdr_readback.is_none()
             && checks.is_none()
             && !first_frame
+            && !submit_here
             && !reconfigure
             && self.hdr_marker.is_none()
             && (surface_frame.is_none() || self.config.present_mode != wgpu::PresentMode::Fifo)
@@ -11215,12 +11573,22 @@ impl Renderer {
             self.first_frame = FirstFrame::Drawn;
         }
         let submission = crate::spans::time("submit", || self.queue.submit([commands]));
+        #[cfg(target_os = "android")]
+        // Reused devices start with FirstFrame::Drawn too; their new renderer
+        // still has a startup marker that must complete after its first submit.
+        if let Some(startup) = self.startup.take() {
+            self.queue
+                .on_submitted_work_done(move || startup.complete());
+        }
         if let Some(read) = after.or_else(|| self.after_submit()) {
             read();
         }
         if let Some(timer) = &mut self.gpu_timer {
             timer.submitted(&self.queue);
             timer.collect(&self.device, &mut self.gpu_times);
+        }
+        if let Some(stages) = &mut self.gpu_stages {
+            stages.submitted(&self.queue);
         }
         if let Some(Some(timer)) = Self::pass_timer(&mut self.pack_post, &mut self.native) {
             timer.submitted(&self.queue);
@@ -11570,9 +11938,9 @@ impl Renderer {
             let first = overlay.first_crosshair;
             pass.draw(0..4, first..first + overlay.crosshair);
         }
-        let menu_blur = frame
-            .menu_blur
-            .filter(|_| self.config.usage.contains(wgpu::TextureUsages::COPY_SRC));
+        let menu_blur = frame.menu_blur.filter(|radius| {
+            *radius > 0.0 && self.config.usage.contains(wgpu::TextureUsages::COPY_SRC)
+        });
         let blur_at = menu_blur.map_or(0, |_| frame.hud.blur_at);
         self.hud.draw_range(
             encoder,
@@ -12628,6 +12996,16 @@ mod tests {
         let [w, h] = [1920, 1080].map(|s| (s as f32 * f) as u32);
         assert!(u64::from(super::padded_row(w)) * u64::from(h) <= max, "{f}");
         assert!(f > 3.7, "{f}");
+    }
+    #[test]
+    fn instance_buffers_omit_storage_when_the_device_has_no_storage_bindings() {
+        use super::instance_buffer_usage;
+        let legacy = instance_buffer_usage(&wgpu::Limits::downlevel_webgl2_defaults());
+        assert!(legacy.contains(wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST));
+        assert!(!legacy.contains(wgpu::BufferUsages::STORAGE));
+        assert!(
+            instance_buffer_usage(&wgpu::Limits::default()).contains(wgpu::BufferUsages::STORAGE)
+        );
     }
     #[test]
     fn drawable_size_skips_minimized_and_oversized_windows() {

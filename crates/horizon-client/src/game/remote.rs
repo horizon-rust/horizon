@@ -782,9 +782,9 @@ pub(super) struct Remote {
 /// time the player crossed a chunk border at 32 chunks; they decode on the
 /// chunk decoder's thread now, and the frame only inserts them.
 const CHUNK_PACKETS_PER_FRAME: Duration = Duration::from_millis(1);
-/// Events that have waited this long are all handled in the next frame,
-/// whatever inserting their columns costs, up to a column still decoding:
-/// the packets after a slow machine's chunks don't wait on its frames.
+/// Desktop drains events this old in the next frame, up to a column still
+/// decoding. Android boosts its chunk budget while retaining a frame bound;
+/// the queue continues progressing in order instead of causing a long burst.
 const BACKLOG_LIMIT: Duration = Duration::from_millis(50);
 /// The open menu name of a server's horse inventory, then its chest's
 /// columns (the packet names no `MenuType`).
@@ -1037,8 +1037,13 @@ impl Game<'_> {
             std::env::temp_dir().join("horizon-remote-unused"),
             horizon_client::save::LevelShape::OVERWORLD,
         ));
+        self.potions = Default::default();
         self.inventory = vec![None; 36];
         self.armor = [None, None, None, None];
+        // This connection creates a new local player. The previous world's
+        // offhand must not survive until (or in lieu of) server slot updates.
+        self.offhand = None;
+        self.shield_cooldown = 0;
         self.craft_grid = vec![None; 9];
         self.craft_size = 2;
         self.player = None;
@@ -1540,6 +1545,7 @@ impl Game<'_> {
         self.streaming.paused = true;
         self.world = World::new(self.res.facts().air, 0);
         self.player = None;
+        self.potions = Default::default();
         // The vehicle went with the level: an id kept here would seat the
         // next login on an entity that is not there.
         self.riding = None;
@@ -2082,6 +2088,14 @@ impl Game<'_> {
         )
     }
 
+    #[cfg(target_os = "android")]
+    pub(super) fn touch_mining_progress(&self) -> f32 {
+        self.remote
+            .as_ref()
+            .and_then(|r| r.destroying.map(|d| d.2))
+            .or_else(|| self.mining.as_ref().map(|m| m.progress))
+            .unwrap_or(0.0)
+    }
     /// This player's account: a splitscreen player's own, else the game's (P1's).
     pub(super) fn auth(&self) -> Option<std::sync::Arc<horizon_client::auth::AuthSession>> {
         match self.options.split_guest {
@@ -2150,7 +2164,8 @@ impl Game<'_> {
     /// client's packet processor), in order. Chunk packets get
     /// `CHUNK_PACKETS_PER_FRAME`: once a frame has spent it, the events from
     /// the next chunk packet on wait for the next frame, unless they have
-    /// already waited `BACKLOG_LIMIT`. A chunk packet still decoding holds
+    /// already waited `BACKLOG_LIMIT` (Android still bounds the boosted work).
+    /// A chunk packet still decoding holds
     /// back what follows it.
     pub(super) fn poll_remote(&mut self) -> Result<()> {
         let Some(r) = self.remote.as_mut() else {
@@ -2173,6 +2188,15 @@ impl Game<'_> {
         let overdue = r
             .backlog_since
             .is_some_and(|since| since.elapsed() >= BACKLOG_LIMIT);
+        // A mobile frame must not drain an arbitrarily large overdue burst:
+        // a decoder that needed >50 ms otherwise turns its whole queue into
+        // one long main-thread stall. Boost progress without changing order.
+        let bounded = cfg!(target_os = "android") || !overdue;
+        let chunk_budget = if cfg!(target_os = "android") && overdue {
+            Duration::from_millis(4)
+        } else {
+            CHUNK_PACKETS_PER_FRAME
+        };
         let mut chunks = Duration::ZERO;
         // A run of ForgetLevelChunk (thousands when the server's view moves far: a
         // teleport at 32 chunks) is forgotten at once, before whatever follows it.
@@ -2187,7 +2211,7 @@ impl Game<'_> {
             }
             self.forget_remote_columns(&mut forgotten);
             let chunk = matches!(item, Received::Chunk(_));
-            if chunk && !overdue && chunks >= CHUNK_PACKETS_PER_FRAME {
+            if chunk && bounded && chunks >= chunk_budget {
                 events.push_front(item);
                 break;
             }
@@ -2560,6 +2584,11 @@ impl Game<'_> {
         // A replacement LocalPlayer has a fresh sendPosition baseline.
         r.position_sender = Default::default();
         r.predictions.clear();
+        // Login/respawn replaces LocalPlayer even when the dimension name is
+        // unchanged (for example a proxy transferring between lobbies).
+        r.ghast_dismount = None;
+        self.riding = None;
+        self.mount = Default::default();
         self.set_mode_id(spawn.game_type);
         self.dim = Dim::from_id(&spawn.dimension);
         self.audio.set_world(&spawn.dimension);
@@ -5869,6 +5898,31 @@ impl Game<'_> {
                 resolved.push((uuid, skin));
             }
         }
+        // A frontend's local override changes this viewer only, never the
+        // server's profile properties or the account's cloud appearance.
+        if let Some(appearance) = horizon_client::skins::appearance::current() {
+            if let Some((rgba, is_slim)) = &appearance.skin {
+                const LOCAL: &str = "horizon/offline_skin";
+                if !self.skin_slots.contains(LOCAL) || !self.gui.atlas.sprites.contains_key(LOCAL) {
+                    self.store_skin(LOCAL.into(), rgba.clone());
+                }
+                resolved.retain(|(uuid, _)| *uuid != local);
+                resolved.push((local, LOCAL.into()));
+                slim.remove(&local);
+                if *is_slim {
+                    slim.insert(local);
+                }
+            }
+            if appearance.hide_cape {
+                capes.remove(&local);
+            } else if let Some(rgba) = &appearance.cape {
+                const LOCAL: &str = "capes/local";
+                if !self.skin_slots.contains(LOCAL) || !self.gui.atlas.sprites.contains_key(LOCAL) {
+                    self.store_skin(LOCAL.into(), rgba.clone());
+                }
+                capes.insert(local, LOCAL.into());
+            }
+        }
         // An offline name's skin from the launcher, where neither the server
         // nor an account gives the local player one.
         if !resolved.iter().any(|(u, _)| *u == local)
@@ -5884,7 +5938,8 @@ impl Game<'_> {
             resolved.push((local, OFFLINE.into()));
         }
         // An offline name's cape from the launcher, where the profile has none.
-        if !capes.contains_key(&local)
+        if !horizon_client::skins::appearance::current().is_some_and(|a| a.hide_cape)
+            && !capes.contains_key(&local)
             && let Some(rgba) = horizon_client::skins::offline_cape()
         {
             const OFFLINE: &str = "capes/offline";
@@ -6324,6 +6379,12 @@ impl Game<'_> {
                 player.spectator = self.spectator();
                 player.velocity = delta;
                 self.player = Some(player);
+                // Loading can exceed the AFK timeout on phones. A newly
+                // spawned player must not inherit that loading-time idle cap.
+                #[cfg(target_os = "android")]
+                {
+                    self.last_input = Instant::now();
+                }
                 self.pad.player_replaced();
                 self.sway = Default::default();
                 self.eye = 1.62;
@@ -7147,9 +7208,9 @@ impl Game<'_> {
                     .filter(move |m| m.alive() && r.level_players.contains_key(&(m.id as i32)))
                     .filter(move |m| {
                         let listed = r.level_players.get(&(m.id as i32));
-                        !listed
+                        listed
                             .and_then(|uuid| r.tab_players.get(uuid))
-                            .is_some_and(|t| t.game_mode == SPECTATOR)
+                            .is_none_or(|t| t.game_mode != SPECTATOR)
                     })
                     .map(|m| {
                         let feet = [m.position.x, m.position.y, m.position.z];
@@ -8065,6 +8126,7 @@ impl Game<'_> {
     }
     /// MultiPlayerGameMode.destroyBlock: the predicted break.
     fn predict_break(&mut self, pos: [i32; 3], state: BlockStateId, sequence: i32) {
+        self.pad_rumble(horizon_client::gamepad::Rumble::BlockBroken);
         self.tutorial_destroy(state, 1.0);
         // BlockStatePredictionHandler.retainKnownServerState.
         let here = self.player_position();
@@ -9063,7 +9125,7 @@ impl Game<'_> {
         // of an item with no use time, and the server's
         // ClientboundCooldownPacket confirms it; one held in use starts it at
         // finishUsingItem (remote_complete_using).
-        if !info.consumable.as_ref().is_some_and(|c| c.ticks() > 0) {
+        if info.consumable.as_ref().is_none_or(|c| c.ticks() <= 0) {
             self.apply_use_cooldown(&held);
         }
         if self.with_hand(hand, |g| g.remote_use_book(&held)) {
@@ -9248,6 +9310,22 @@ impl Game<'_> {
     /// the main hand's item, then the off hand's turn (its block, its item).
     /// The server does each packet's part with that packet's hand only.
     fn remote_use_hands(&mut self) {
+        #[cfg(target_os = "android")]
+        if self.pad.touch_shield {
+            let hand = if self
+                .offhand
+                .as_ref()
+                .is_some_and(|s| self.blocks_attacks(s).is_some())
+            {
+                Hand::Off
+            } else {
+                Hand::Main
+            };
+            if self.remote_use_item(hand) {
+                self.heights.item_used(hand);
+            }
+            return;
+        }
         // A successful Item.use always drops the hand (LocalPlayer.itemUsed).
         if self.remote_use_item(Hand::Main) {
             self.heights.item_used(Hand::Main);
@@ -9545,7 +9623,7 @@ impl Game<'_> {
         }
     }
 
-    fn remote_start_attack(&mut self) -> bool {
+    pub(super) fn remote_start_attack(&mut self) -> bool {
         if self.clicks.miss_time > 0 {
             return false;
         }
@@ -11295,9 +11373,30 @@ struct RemoteUseWorld<'g, 'a>(&'g mut Game<'a>);
 
 impl horizon_client::interaction_input::TargetUseWorld for RemoteUseWorld<'_, '_> {
     fn use_entity(&mut self) -> bool {
+        #[cfg(target_os = "android")]
+        if self.0.pad.touch_shield {
+            return false;
+        }
         self.0.remote_use_entity(Hand::Main)
     }
     fn use_block(&mut self) -> bool {
+        #[cfg(target_os = "android")]
+        {
+            let main_hand_transformer = self
+                .0
+                .stack_in(self.0.selected)
+                .and_then(|s| self.0.items().get(&s.item))
+                .is_some_and(|i| i.block_transformer.is_some());
+            if horizon_client::block_transform::touch_shield_skips_block(
+                self.0.pad.touch_shield,
+                self.0.settings.touch.shield_button,
+                self.0.pad.touch.shield_held(),
+                main_hand_transformer,
+                self.0.pick().is_some(),
+            ) {
+                return false;
+            }
+        }
         self.0.remote_use_block(Hand::Main)
     }
     fn use_item(&mut self) {

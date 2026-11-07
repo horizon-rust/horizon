@@ -71,7 +71,18 @@ impl SpriteCache {
     /// `None` when the textures cannot be fingerprinted (no caching then).
     pub fn open(root: &Path) -> Option<Self> {
         let fingerprint = fingerprint(root)?;
+        #[cfg(not(target_os = "android"))]
         let path = root.join(FILE);
+        #[cfg(target_os = "android")]
+        let path = {
+            // Reconstructible decoded pixels belong to Android's clearable
+            // cache, rather than the player's prepared-resource directory.
+            let cache = crate::android_runtime::cache_dir()?.join("sprites");
+            fs::create_dir_all(&cache).ok()?;
+            let mut key = DefaultHasher::new();
+            root.hash(&mut key);
+            cache.join(format!("{:016x}-{FILE}", key.finish()))
+        };
         let entries = fs::read(&path)
             .ok()
             .and_then(|bytes| parse(&bytes, fingerprint))

@@ -776,9 +776,7 @@ impl Lan {
         std::thread::Builder::new()
             .name("horizon-local-conn".into())
             .spawn(move || {
-                if let Err(e) = conn::serve_local(server, shared)
-                    && std::env::var_os("HORIZON_NET_DEBUG").is_some()
-                {
+                if let Err(e) = conn::serve_local(server, shared) {
                     log::warn!("[lan] local: {e}");
                 }
             })?;

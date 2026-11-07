@@ -903,6 +903,12 @@ impl PackScreen {
         // go nowhere, and Search then submitted stale text.
         self.browser.is_some()
     }
+    #[cfg(target_os = "android")]
+    pub fn android_edit_value(&mut self, measure: &Measure) -> String {
+        self.search
+            .move_cursor_to(measure, self.search.value.chars().count(), false);
+        self.search.value.clone()
+    }
     pub fn search_focused(&self) -> bool {
         // The browser's own box counts: the game routes typing by this.
         self.browser_typing() || (self.confirm.is_none() && self.focus == Focus::Search)

@@ -267,6 +267,9 @@ const KEYS: &[(&str, KeyCode)] = &[
     ("key.keyboard.right.alt", KeyCode::AltRight),
     ("key.keyboard.right.win", KeyCode::SuperRight),
 ];
+pub fn available_keys() -> &'static [(&'static str, KeyCode)] {
+    &KEYS
+}
 pub fn key_code(name: &str) -> Option<KeyCode> {
     KEYS.iter().find(|(n, _)| *n == name).map(|(_, k)| *k)
 }
@@ -298,6 +301,7 @@ pub use horizon_client_core::key_display::display_name;
 /// A key event: what the layout writes on its key, without modifiers, names
 /// that key from now on (`key_display::learn_layout`), so an AZERTY player's
 /// Q key shows A.
+#[cfg(not(target_os = "android"))]
 pub fn learn_layout(event: &winit::event::KeyEvent) {
     use winit::keyboard::{Key, PhysicalKey};
     use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
@@ -314,6 +318,11 @@ pub fn learn_layout(event: &winit::event::KeyEvent) {
         _ => {}
     }
 }
+
+// Android's winit backend does not expose modifier-independent layout text.
+// Keep physical key labels rather than learning Shift/Ctrl-modified characters.
+#[cfg(target_os = "android")]
+pub fn learn_layout(_: &winit::event::KeyEvent) {}
 
 /// Current bindings by mapping name.
 #[derive(Clone, Debug, PartialEq, Eq)]

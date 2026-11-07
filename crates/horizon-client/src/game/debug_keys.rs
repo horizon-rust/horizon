@@ -327,7 +327,11 @@ impl Game<'_> {
         }
         let first_vertex = batch.vertices.len();
         let framebuffer = size.map(|v| v as i32);
-        let (scale, [width, height]) = debug_overlay::scale(
+        #[cfg(target_os = "android")]
+        let scale_debug = debug_overlay::touch_scale;
+        #[cfg(not(target_os = "android"))]
+        let scale_debug = debug_overlay::scale;
+        let (scale, [width, height]) = scale_debug(
             framebuffer,
             batch.scale as i32,
             self.settings.file.int("debugGuiScale"),

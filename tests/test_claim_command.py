@@ -217,7 +217,10 @@ class ReleaseTests(unittest.TestCase):
 
 class WorkflowTests(unittest.TestCase):
     def test_workflow_is_safe(self):
-        text = (ROOT / ".github/workflows/claim-command.yml").read_text()
+        workflow = ROOT / ".github/workflows/claim-command.yml"
+        if not workflow.is_file():
+            workflow = ROOT / ".github/upstream-workflows/claim-command.yml.disabled"
+        text = workflow.read_text(encoding="utf-8")
         run_lines = [l.strip() for l in text.splitlines() if l.strip().startswith("run:")]
         self.assertEqual(run_lines, ["run: python3 tools/ci/claim_command.py command",
                                      "run: python3 tools/ci/claim_command.py release"])

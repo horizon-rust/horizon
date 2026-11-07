@@ -190,7 +190,9 @@ impl Server {
             border: &horizon_client::worldborder::WorldBorder::default(),
             streaming: None,
         };
-        let events = self.hub.tick(&mut ctx);
+        // Match the game loop: drain guest actions before the ordinary hub tick.
+        let mut events = self.hub.drain_packets(&mut ctx);
+        events.extend(self.hub.tick(&mut ctx));
         for event in events {
             match event {
                 HostEvent::Joined(conn) => self.hub.place_new_player(conn, &mut ctx),

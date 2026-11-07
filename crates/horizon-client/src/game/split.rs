@@ -77,7 +77,7 @@ impl Game<'_> {
     /// that player drops out (`Split::drop_out`), the others play on.
     pub(in crate::game) fn exit_on_error(&self, event_loop: &dyn super::event_loop::EventLoopCtl) {
         if !self.options.split_guest {
-            event_loop.exit();
+            super::exit_app(event_loop);
         }
     }
 }
@@ -590,6 +590,10 @@ impl<'a> Split<'a> {
 }
 
 impl ApplicationHandler for Split<'_> {
+    #[cfg(target_os = "android")]
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        self.host.suspended(event_loop);
+    }
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.host.resumed(event_loop);
         if !self.surfaces.is_empty() {

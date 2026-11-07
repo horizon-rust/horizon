@@ -1,6 +1,8 @@
 //! The client's world data, rendering and screens: chunks, meshing, light, streaming, the renderer,
 //! the HUD, menus and settings. Gameplay (horizon-client) builds on it; nothing here reaches gameplay.
 #![forbid(unsafe_code)]
+pub mod android_gamepad;
+pub mod android_runtime;
 pub mod assets;
 pub mod atlas_sources;
 pub mod audio;
@@ -44,6 +46,7 @@ pub mod environment;
 pub mod extras;
 pub(crate) mod extras_ui;
 pub mod fast_hash;
+pub mod file_lock;
 pub mod fluid_render;
 pub mod fog;
 pub mod font;
@@ -59,6 +62,7 @@ pub mod hud_overlays;
 pub mod inventory_effects;
 pub mod java_text;
 pub mod jigsaw_block;
+pub mod keypad;
 pub mod terrain_model;
 pub use horizon_world::json_folder;
 pub mod level_loading;
@@ -125,6 +129,7 @@ pub mod test_block;
 pub mod test_instance_block;
 pub mod testgen;
 pub mod title_edition;
+pub mod touch;
 pub mod trims;
 pub mod ui;
 pub mod vault;

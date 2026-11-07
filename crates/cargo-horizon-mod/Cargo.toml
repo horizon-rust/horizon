@@ -15,7 +15,7 @@ bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
 
 [dependencies]
-horizon-mods = { path = "../horizon-mods", default-features = false, features = ["index"] }
+horizon-mods = { path = "../horizon-mods", default-features = false, features = ["pack", "runtime", "index"] }
 serde_json = "1.0.151"
 
 [dev-dependencies]

@@ -51,6 +51,11 @@ by The Pixelify Sans Project Authors, licensed under the SIL Open Font License 1
 license (`crates/horizon-theme/icons/pixel/LICENSE-pixelarticons.txt`). `star.svg` is Horizon's own, drawn on
 the same grid.
 
+## winit
+
+`third_party/winit` is [winit](https://github.com/rust-windowing/winit) 0.30.13,
+licensed under Apache-2.0 (see `third_party/winit/LICENSE`). The Android backend
+has local mouse and modifier-event fixes described in `third_party/winit/PATCHES.md`.
 ## Hugeicons
 
 `crates/horizon-theme/icons/glass/*.svg` are icons from the free set of
@@ -100,6 +105,17 @@ The four-square Microsoft symbol in `launcher/src/microsoft.rs` reproduces the s
 colours of Microsoft's official `ms-symbollockup_mssymbol_19.svg` from that page, unmodified. Microsoft
 and its logo are trademarks of the Microsoft group of companies; Horizon is not endorsed by Microsoft.
 
+
+## Statically bundled Android mods
+
+Zoom, Minimap and Recipes are adapted from [horizon-rust/horizon-mods](https://github.com/horizon-rust/horizon-mods/tree/e3ee0a7c450b28c3ed58fa59a4881ec78c5ee2e0/native),
+copyright 2026 Ludovic Marie and the Horizon contributors, MIT.
+SmartF3 is adapted from [d3grando/smartf3](https://github.com/d3grando/smartf3),
+copyright 2026 d3grando, MIT. Exact revisions and adaptation notes are recorded in
+`crates/horizon-client/src/game/android_bundled/PROVENANCE.json`; each bundled
+module retains its full MIT LICENSE. Changes provide static Android hook
+adapters, opt-in configuration, profile-state reset and compatibility guards.
+These are a fixed compiled set, not support for loading arbitrary native mods.
 ## CIT Resewn
 
 `crates/horizon-optifine/src/cit.rs` and `crates/horizon-client-render/src/cit.rs` follow the

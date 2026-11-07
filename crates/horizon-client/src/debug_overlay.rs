@@ -262,6 +262,24 @@ pub fn scale(
     }
 }
 
+/// Android exposes an explicit text-size control independently of its touch HUD.
+pub fn touch_scale(
+    framebuffer: [i32; 2],
+    gui_scale: i32,
+    option: i32,
+    unicode: bool,
+    gui_size: [i32; 2],
+) -> (f32, [i32; 2]) {
+    if option <= 0 {
+        return scale(framebuffer, gui_scale, option, unicode, gui_size);
+    }
+    let pixels = option.clamp(1, 6);
+    (
+        pixels as f32 / gui_scale.max(1) as f32,
+        [framebuffer[0] / pixels, framebuffer[1] / pixels],
+    )
+}
+
 /// `extractLines` for both columns under the overlay's pose: each line's
 /// background first, then the text, right-aligned in the right column.
 pub fn draw(font: &Font, columns: [&[String]; 2], scale: f32, width: i32) -> Vec<GuiDraw> {
@@ -810,6 +828,22 @@ mod tests {
         assert_eq!(
             scale([1920, 1080], 3, -1, false, [640, 360]),
             (1.0, [640, 360])
+        );
+    }
+
+    #[test]
+    fn explicit_touch_debug_scale_can_grow_independently_of_the_hud() {
+        assert_eq!(
+            touch_scale([2560, 1182], 2, 6, false, [1280, 591]),
+            (3.0, [426, 197])
+        );
+        assert_eq!(
+            touch_scale([2560, 1182], 2, 4, false, [1280, 591]),
+            (2.0, [640, 295])
+        );
+        assert_eq!(
+            touch_scale([2560, 1182], 2, 1, false, [1280, 591]),
+            (0.5, [2560, 1182])
         );
     }
 

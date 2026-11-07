@@ -5,9 +5,12 @@
 //! process's memory: it is never logged, printed or written anywhere.
 use std::{
     path::Path,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
+
+#[cfg(not(target_os = "android"))]
+use std::sync::OnceLock;
 
 /// MinecraftServicesEnvironment.PROD.
 pub const DEFAULT_DISCOVERY: &str = "https://discovery.minecraftservices.com/minecraft/client";
@@ -20,6 +23,7 @@ pub struct AuthSession {
     pub uuid: u128,
     pub xuid: Option<String>,
     access_token: String,
+    ely: bool,
 }
 impl std::fmt::Debug for AuthSession {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -47,6 +51,7 @@ impl AuthSession {
             uuid,
             xuid: None,
             access_token: access_token.to_owned(),
+            ely: false,
         }
     }
 
@@ -68,14 +73,15 @@ impl AuthSession {
         let access_token = field("access_token")
             .filter(|t| !t.is_empty())
             .ok_or("the session has no access token")?;
-        if field("user_type").is_some_and(|t| t != "msa") {
-            return Err("the session is not a Microsoft account session".into());
+        if field("user_type").is_some_and(|t| t != "msa" && t != "ely") {
+            return Err("the session has an unsupported account provider".into());
         }
         Ok(Self {
             name: name.to_owned(),
             uuid,
             xuid: field("xuid").map(str::to_owned),
             access_token: access_token.to_owned(),
+            ely: field("user_type") == Some("ely"),
         })
     }
     /// Read the session file the launcher wrote and delete it at once. It
@@ -123,14 +129,35 @@ impl AuthSession {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 static CURRENT: OnceLock<Arc<AuthSession>> = OnceLock::new();
+#[cfg(target_os = "android")]
+static CURRENT: std::sync::RwLock<Option<Arc<AuthSession>>> = std::sync::RwLock::new(None);
 
-/// The account this game was started with (set once at start).
+/// The account this game was started with. Android can launch another game in
+/// the same process, so it replaces the previous game's session.
 pub fn set_current(session: AuthSession) {
+    #[cfg(not(target_os = "android"))]
     let _ = CURRENT.set(Arc::new(session));
+    #[cfg(target_os = "android")]
+    {
+        *CURRENT.write().unwrap() = Some(Arc::new(session));
+    }
 }
 pub fn current() -> Option<Arc<AuthSession>> {
-    CURRENT.get().cloned()
+    #[cfg(not(target_os = "android"))]
+    {
+        CURRENT.get().cloned()
+    }
+    #[cfg(target_os = "android")]
+    {
+        CURRENT.read().unwrap().clone()
+    }
+}
+/// End the previous Android game's identity before parsing a new launch.
+#[cfg(target_os = "android")]
+pub fn clear_current() {
+    *CURRENT.write().unwrap() = None;
 }
 
 /// Why joining a server through the session service failed, like the
@@ -231,6 +258,9 @@ pub fn endpoint(doc: &serde_json::Value, service: &str, name: &str) -> Option<St
 /// to no actions, as vanilla does. Blocks: call it off the main thread.
 pub fn fetch_account_status(session: &AuthSession) -> crate::ban_notice::AccountStatus {
     use crate::ban_notice::{AccountStatus, parse_profile_actions, parse_properties};
+    if session.ely {
+        return AccountStatus::default();
+    }
     let Ok(doc) = discovery() else {
         return AccountStatus::default();
     };
@@ -301,8 +331,12 @@ pub fn join_server(session: &AuthSession, server_hash: &str) -> Result<(), JoinE
 }
 
 fn join_server_once(session: &AuthSession, server_hash: &str) -> Result<(), JoinError> {
-    let doc = discovery()?;
-    let url = endpoint(&doc, "session", "join").ok_or(JoinError::Unavailable)?;
+    let url = if session.ely {
+        "https://authserver.ely.by/session/join".into()
+    } else {
+        let doc = discovery()?;
+        endpoint(&doc, "session", "join").ok_or(JoinError::Unavailable)?
+    };
     match agent()
         .post(&url)
         .set("Content-Type", "application/json; charset=utf-8")
@@ -423,6 +457,9 @@ pub fn parse_certificates(body: &str) -> Option<ChatKeyPair> {
 /// UserApiService.getKeyPair: the certificates endpoint, POSTed with the
 /// access token.
 pub fn fetch_chat_keys(session: &AuthSession) -> Result<ChatKeyPair, JoinError> {
+    if session.ely {
+        return Err(JoinError::Unavailable);
+    }
     let doc = discovery()?;
     let url = endpoint(&doc, "player", "getCertificates").ok_or(JoinError::Unavailable)?;
     let body = match agent()
@@ -527,6 +564,9 @@ const MINECRAFT_PROFILE: &str = "https://api.minecraftservices.com/minecraft/pro
 /// Single-player and integrated servers often send no `textures` property, or
 /// one without the equipped cape; the client asks the profile endpoint once.
 pub fn own_textures(session: &AuthSession) -> Option<crate::skins::Textures> {
+    if session.ely {
+        return None;
+    }
     let response = agent()
         .get(MINECRAFT_PROFILE)
         .set("Authorization", &format!("Bearer {}", session.access_token))
@@ -763,6 +803,18 @@ mod tests {
         assert!(AuthSession::parse(r#"{"name":"A","uuid":"069a79f444e94726a5befca90e38aaf5","access_token":"t","user_type":"legacy"}"#).is_err());
         let s = AuthSession::parse(r#"{"name":"A","uuid":"069a79f444e94726a5befca90e38aaf5","access_token":"t","xuid":"25"}"#).unwrap();
         assert_eq!(s.xuid.as_deref(), Some("25"));
+    }
+    #[test]
+    fn ely_session_is_explicit_and_never_requests_microsoft_credentials() {
+        let session=AuthSession::parse(r#"{"name":"Player","uuid":"0123456789abcdef0123456789abcdef","access_token":"ely-private","user_type":"ely"}"#).unwrap();
+        assert!(session.ely);
+        assert!(!format!("{session:?}").contains("ely-private"));
+        assert!(own_textures(&session).is_none());
+        assert!(matches!(
+            fetch_chat_keys(&session),
+            Err(JoinError::Unavailable)
+        ));
+        assert_eq!(join_request(&session,"hash"),serde_json::json!({"accessToken":"ely-private","selectedProfile":"0123456789abcdef0123456789abcdef","serverId":"hash"}).to_string());
     }
 
     #[test]

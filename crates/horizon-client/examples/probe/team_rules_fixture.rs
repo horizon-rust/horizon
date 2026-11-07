@@ -24,6 +24,13 @@ pub fn main() {
             t.nametag_visibility =
                 Visibility::by_name(o["nametag"].as_str().unwrap_or("")).expect("visibility");
         }
+        if let Some(name) = c["other"].as_str() {
+            board.add_to_team("HiddenNPC", name);
+        }
+        if let Some(name) = c["own"].as_str() {
+            board.add_to_team(&horizon_client::save::uuid_text([0, 0, 0, 7]), name);
+        }
+        let profile_team = board.entity_team(Some("HiddenNPC"), Some([0, 0, 0, 7]));
         let team = |k: &str| c[k].as_str().and_then(|n| board.team(n));
         let flag = |k: &str| c[k].as_bool().unwrap_or(false);
         let (own, other, viewer) = (team("own"), team("other"), team("viewer"));
@@ -39,6 +46,8 @@ pub fn main() {
         };
         let r = json!({
             "case": c["case"],
+            "profile_team": profile_team.map(|t| t.name.as_str()),
+            "profile_pushes": sb::pushable_by(own, profile_team, flag("pushable")),
             "damage": sb::teams_allow_damage(own, other),
             "allied": sb::teams_allied(own, other),
             "pushes": !flag("spectator") && sb::pushable_by(own, other, flag("pushable")),

@@ -854,6 +854,33 @@ impl Game<'_> {
         }
     }
     /// Characters typed into the command box (`StringUtil.isAllowedChatCharacter`).
+    #[cfg(target_os = "android")]
+    pub(super) fn command_block_edit_value(&mut self) -> String {
+        self.command_block_screen
+            .as_mut()
+            .map(|s| {
+                let m = Measure(&self.gui.atlas.font);
+                s.command
+                    .input
+                    .move_cursor_to(&m, s.command.value().len(), false);
+                s.command.value().to_owned()
+            })
+            .unwrap_or_default()
+    }
+    pub(super) fn command_block_ime(&mut self, key: Option<KeyCode>, text: Option<&str>) {
+        if key == Some(KeyCode::Enter) {
+            if let Some(screen) = self.command_block_screen.take() {
+                self.set_command_block(&screen);
+            }
+            self.close_command_block();
+            return;
+        }
+        if let Some(text) = text {
+            self.command_block_type(text);
+        } else {
+            self.command_block_key_code(KeyCode::Backspace, None, None);
+        }
+    }
     pub(super) fn command_block_type(&mut self, typed: &str) {
         let allowed: String = typed
             .chars()

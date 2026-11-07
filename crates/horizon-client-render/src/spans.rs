@@ -12,6 +12,68 @@ use std::{
 };
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
+static RECORDING: AtomicBool = AtomicBool::new(false);
+type Totals = (u64, f64, f64, f32);
+type Trace = std::collections::BTreeMap<(&'static str, &'static str), Totals>;
+static TRACE: std::sync::Mutex<Trace> = std::sync::Mutex::new(Trace::new());
+
+/// Opt-in bounded, aggregate timings. Names are engine constants, never world data.
+pub fn record_timings(on: bool) {
+    RECORDING.store(on, Ordering::Relaxed);
+    TRACE.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+fn collect(role: &'static str, span: Span) {
+    let mut trace = TRACE.lock().unwrap_or_else(|e| e.into_inner());
+    // Bounds the registry even if future instrumentation adds dynamic stages.
+    if trace.len() >= 256 && !trace.contains_key(&(role, span.name)) {
+        return;
+    }
+    let total = trace.entry((role, span.name)).or_default();
+    total.0 += 1;
+    total.1 += f64::from(span.ms);
+    total.2 += f64::from(span.cpu_ms);
+    total.3 = total.3.max(span.ms);
+}
+pub fn drain_timings() -> serde_json::Value {
+    let trace = std::mem::take(&mut *TRACE.lock().unwrap_or_else(|e| e.into_inner()));
+    serde_json::Value::Array(
+        trace
+            .into_iter()
+            .map(|((role, stage), (calls, wall, cpu, max))| {
+                serde_json::json!({"role": role, "stage": stage, "calls": calls,
+            "wall_ms": wall, "thread_cpu_ms": cpu, "max_ms": max})
+            })
+            .collect(),
+    )
+}
+/// A worker task measured independently of the render/server thread's spans.
+pub fn job<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
+    if !RECORDING.load(Ordering::Relaxed) {
+        return f();
+    }
+    let (started, cpu) = (Instant::now(), thread_cpu());
+    let value = f();
+    let ms = started.elapsed().as_secs_f32() * 1000.0;
+    let cpu_ms = thread_cpu()
+        .zip(cpu)
+        .map_or(ms, |(end, start)| (end - start).as_secs_f32() * 1000.0);
+    let thread = std::thread::current();
+    let role = if thread.name() == Some("Server thread") {
+        "server"
+    } else {
+        "worker"
+    };
+    collect(
+        role,
+        Span {
+            name,
+            ms,
+            cpu_ms,
+            depth: 0,
+        },
+    );
+    value
+}
 thread_local! {
     static SPANS: RefCell<Vec<Span>> = const { RefCell::new(Vec::new()) };
     /// Spans recorded on this thread alone, wall time only ([`record_here`]).
@@ -281,6 +343,17 @@ pub fn merge(spans: &[Span]) -> Vec<Span> {
         }
     }
     sums.sort_by(|a, b| b.ms.total_cmp(&a.ms));
+    if RECORDING.load(Ordering::Relaxed) {
+        let thread = std::thread::current();
+        let role = if thread.name() == Some("Server thread") {
+            "server"
+        } else {
+            "frame"
+        };
+        for &span in &sums {
+            collect(role, span);
+        }
+    }
     sums
 }
 /// `name wall` for spans of at least 0.5 ms, with `/cpu` when the thread

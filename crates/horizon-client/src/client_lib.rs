@@ -4,6 +4,7 @@
 extern crate self as horizon_client;
 pub mod advancements;
 pub mod ambience;
+pub mod android_resources;
 pub mod animate_tick;
 pub mod arrows;
 pub mod block_contact;
@@ -124,6 +125,12 @@ pub mod save;
 pub mod scoreboard_cmd;
 pub mod screen_layout;
 pub mod screen_narrator;
+pub mod touch_ui;
+pub mod content_files;
+pub mod ime_edit;
+pub mod official_install;
+pub mod resource_install;
+pub mod ui_text;
 pub mod social_screen;
 pub mod sound_playback;
 pub use horizon_server_files as server;
@@ -184,3 +191,5 @@ pub use horizon_items::flowers;
 pub use horizon_items::item_data;
 pub use horizon_items::items;
 pub use horizon_items::random_sequences;
+
+pub use horizon_client_render::{android_gamepad, android_runtime, file_lock, keypad, touch};

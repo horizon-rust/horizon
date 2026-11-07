@@ -167,6 +167,17 @@ impl Game<'_> {
             s.reset_blink();
         }
     }
+    #[cfg(target_os = "android")]
+    pub(super) fn recipe_search_value(&mut self) -> String {
+        if let Some(edit) = self.recipe_ui.search.as_mut() {
+            edit.move_cursor_to_end(false);
+        }
+        self.recipe_ui
+            .search
+            .as_ref()
+            .map(|s| s.value.clone())
+            .unwrap_or_default()
+    }
     /// Text typed (or one backspace) into the search box.
     pub(super) fn recipe_text(&mut self, text: Option<&str>, backspace: bool) {
         let Some(search) = self.recipe_ui.search.as_mut() else {
@@ -1499,6 +1510,12 @@ impl Game<'_> {
     /// out by `horizon_client::recipe_book_screen`.
     fn draw_book_panel(&mut self, batch: &mut HudBatch, book_type: BookType) {
         let (xo, yo) = self.book_origin(batch);
+        // Include the magnifier: clicking it focuses the same EditBox. This
+        // shared widget target also drives Android IME and controller focus.
+        horizon_client::widgets::target_as(
+            [xo + 8.0, yo + 13.0, 98.0, 14.0],
+            horizon_client::widgets::Kind::Field,
+        );
         let cursor = self.cursor;
         let atlas = &self.gui.atlas;
         let search = match self.recipe_ui.search.as_mut() {

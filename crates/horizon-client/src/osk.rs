@@ -271,6 +271,26 @@ impl Keyboard {
         }
     }
 
+    /// Touch the same key rectangles used by draw, in Ui coordinates.
+    pub fn touch(&mut self, width: f32, height: f32, at_top: bool, p: [f32; 2]) -> Option<Output> {
+        let x0 = ((width - 554.0) / 2.0).round();
+        let y0 = if at_top { 16.0 } else { height - 268.0 - 16.0 };
+        for (r, row) in self.rows().iter().enumerate() {
+            for (c, (_, units)) in row.iter().enumerate() {
+                let (left, _) = Self::span(row, c);
+                let x = x0 + left * 56.0;
+                let y = y0 + r as f32 * 44.0;
+                let w = units * 50.0 + (units - 1.0) * 6.0;
+                if (x..x + w).contains(&p[0]) && (y..y + 38.0).contains(&p[1]) {
+                    self.row = r;
+                    self.col = c;
+                    return self.press();
+                }
+            }
+        }
+        None
+    }
+
     /// Draw the keyboard across the bottom of the screen, or the top when
     /// the field it types into is in the lower half. `by_letter`: the pad goes by its letters
     /// and the glyphs are Nintendo's, so a hint names the button playing its part.
@@ -367,6 +387,19 @@ impl Keyboard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn touch_uses_the_drawn_keyboard_rectangles() {
+        let mut k = Keyboard::default();
+        assert_eq!(
+            k.touch(1280.0, 720.0, false, [390.0, 490.0]),
+            Some(Output::Text("q".into()))
+        );
+        assert_eq!(
+            k.touch(1280.0, 720.0, false, [840.0, 635.0]),
+            Some(Output::Enter)
+        );
+        assert_eq!(k.touch(1280.0, 720.0, false, [20.0, 20.0]), None);
+    }
 
     #[test]
     fn rows_are_ten_units_wide() {

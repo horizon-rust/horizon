@@ -9,6 +9,22 @@ use std::{
 };
 
 const TYPE_SRV: u16 = 33;
+type SystemSrvLookup = fn(&str) -> Option<Vec<u8>>;
+static SYSTEM_SRV_LOOKUP: std::sync::OnceLock<SystemSrvLookup> = std::sync::OnceLock::new();
+
+/// Install a platform resolver returning a complete DNS SRV response. Android's
+/// resolver follows the active network, VPN and Private DNS; resolv.conf does not.
+pub fn install_system_srv_lookup(lookup: SystemSrvLookup) {
+    let _ = SYSTEM_SRV_LOOKUP.set(lookup);
+}
+
+fn system_reply(reply: &[u8]) -> Option<(String, u16)> {
+    let id = u16::from_be_bytes(reply.get(..2)?.try_into().ok()?);
+    match parse_reply(id, reply) {
+        Reply::Answer(answer) => answer,
+        _ => None,
+    }
+}
 /// JNDI's `com.sun.jndi.dns.timeout.initial`, per name server.
 pub(super) const SERVER_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -73,6 +89,11 @@ pub(super) fn query_srv(
     servers: &[SocketAddr],
     timeout: Duration,
 ) -> Option<(String, u16)> {
+    if let Some(lookup) = SYSTEM_SRV_LOOKUP.get()
+        && let Some(reply) = lookup(name)
+    {
+        return system_reply(&reply);
+    }
     let mut id = [0; 2];
     getrandom::fill(&mut id).ok()?;
     let id = u16::from_be_bytes(id);
@@ -270,6 +291,22 @@ mod tests {
             &[(25570, "a.example.org."), (25571, "b.example.org.")],
         );
         assert_eq!(answer(&msg), Some(Some(("a.example.org.".into(), 25570))));
+    }
+
+    #[test]
+    fn platform_resolver_response_uses_its_own_transaction_id() {
+        let query = encode_query(42001, NAME).unwrap();
+        let msg = reply(&query, 0, &[(26615, "backend.example.org.")]);
+        assert_eq!(
+            system_reply(&msg),
+            Some(("backend.example.org.".into(), 26615))
+        );
+        assert_eq!(system_reply(&[]), None);
+        assert_eq!(system_reply(&[1]), None);
+        assert_eq!(system_reply(&reply(&query, 3, &[])), None);
+        let mut truncated = msg;
+        truncated[2] |= 2;
+        assert_eq!(system_reply(&truncated), None);
     }
 
     #[test]

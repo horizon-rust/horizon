@@ -111,6 +111,8 @@ pub struct Arena {
     stride: u64,
     page_limit: u64,
     initial_capacity: u64,
+    /// Soft growth ceiling; oversized individual meshes still use the hardware limit.
+    growth_limit: u64,
     usage: wgpu::BufferUsages,
     /// A page being emptied (`Arena::close`): nothing is placed in it.
     closing: Option<u32>,
@@ -191,12 +193,20 @@ impl Arena {
             bytes = bytes.min(limits.max_storage_buffer_binding_size);
         }
         let page_limit = (bytes / stride) / GRAIN * GRAIN;
-        let capacity = capacity.next_multiple_of(GRAIN).min(page_limit);
+        let growth_limit = if cfg!(target_os = "android") {
+            ((8 * 1024 * 1024 / stride) / GRAIN * GRAIN)
+                .max(GRAIN)
+                .min(page_limit)
+        } else {
+            page_limit
+        };
+        let capacity = capacity.next_multiple_of(GRAIN).min(growth_limit);
         Self {
             pages: Vec::new(),
             stride,
             page_limit,
             initial_capacity: capacity,
+            growth_limit,
             usage,
             closing: None,
             spilled: false,
@@ -307,12 +317,12 @@ impl Arena {
         }
         let last = self.pages.len().saturating_sub(1);
         if let Some(page) = self.pages.last().and_then(Option::as_ref)
-            && page.capacity < self.page_limit
+            && page.capacity < self.growth_limit
             && self.closing != Some(last as u32)
         {
             let current = page.capacity;
-            let grown = self.grown(current, len);
-            if (grown - current >= len || grown == self.page_limit)
+            let grown = self.grown(current, len).min(self.growth_limit);
+            if (grown - current >= len || grown == self.growth_limit)
                 && self.grow(device, encoder, last, grown)
                 && let Some(start) = self.pages[last].as_mut().unwrap().free.take(len)
             {
@@ -324,6 +334,7 @@ impl Arena {
         } else {
             1 << 20
         }
+        .min(self.growth_limit)
         .max(len)
         .min(self.page_limit);
         // A page just large enough when memory is short.
@@ -542,7 +553,9 @@ impl Arena {
         };
         let old = self.pages[page].as_mut().expect("live arena page");
         // Copies recorded for the old buffer run before this one.
-        encoder.copy_buffer_to_buffer(&old.buffer, 0, &buffer, 0, old.capacity * self.stride);
+        crate::spans::time("arena_grow_copy", || {
+            encoder.copy_buffer_to_buffer(&old.buffer, 0, &buffer, 0, old.capacity * self.stride);
+        });
         let previous = old.capacity;
         old.buffer = buffer;
         old.host = host;
@@ -647,7 +660,9 @@ pub(super) fn try_create(
         mapped_at_creation: false,
     });
     // Native error scopes resolve at once.
-    pollster::block_on(scope.pop()).is_none().then_some(buffer)
+    crate::spans::time("arena_error_scope", || pollster::block_on(scope.pop()))
+        .is_none()
+        .then_some(buffer)
 }
 
 #[cfg(test)]
@@ -720,6 +735,26 @@ mod tests {
         let range = arena.alloc(device, &mut encoder, vertices);
         queue.submit([encoder.finish()]);
         range
+    }
+
+    #[test]
+    fn mobile_sized_pages_keep_ranges_and_allow_a_large_single_mesh() {
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let mut arena = Arena::new(&device, 4, 4 * GRAIN, false);
+        arena.growth_limit = 4 * GRAIN;
+        let (first, start) = alloc(&mut arena, &device, &queue, 4 * GRAIN).unwrap();
+        queue.write_buffer(arena.buffer(first), start * 4, &23u32.to_le_bytes());
+        let (second, _) = alloc(&mut arena, &device, &queue, GRAIN).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            arena.pages[first as usize].as_ref().unwrap().capacity,
+            4 * GRAIN
+        );
+        assert_eq!(read(&device, &queue, arena.buffer(first), start * 4), 23);
+        let (large, offset) = alloc(&mut arena, &device, &queue, 6 * GRAIN).unwrap();
+        assert!(arena.buffer(large).size() >= (offset + 6 * GRAIN) * 4);
     }
 
     #[test]

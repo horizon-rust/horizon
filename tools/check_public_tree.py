@@ -7,16 +7,24 @@ import subprocess
 import sys
 
 PRIVATE_ROOTS = {".local", "decompiled", "minecraft", "assets", "run", "logs"}
-PRIVATE_EXTENSIONS = {".jar", ".class", ".jfr", ".hprof", ".java"}
+PRIVATE_EXTENSIONS = {".jar", ".class", ".jfr", ".hprof", ".java", ".apk", ".aab", ".keystore", ".jks"}
 ORIGINAL_JDK_TOOLS = {"tools/JfrSummary.java", "tests/java/JfrFixture.java"}
-# The prepared folder's files in one file (crates/horizon-core/src/prepared_files.rs): Mojang's data.
-PRIVATE_NAMES = {"horizon-data.bin"}
+# Owner-approved, original NativeActivity result callback; not recovered game code.
+ANDROID_RESULT_BRIDGE = "packaging/android/java/dev/horizon/android/HorizonActivity.java"
+ANDROID_DOCUMENTS_BRIDGE = "packaging/android/java/dev/horizon/android/HorizonDocumentsProvider.java"
 
 
 def prohibited(path):
     parsed = PurePosixPath(path)
+    if parsed.name.lower() in {"local.properties", "control.json", "android-launch.json", "horizon-touch.json", "engine-data.zip", "horizon-resources.json"}:
+        return True
+    name = parsed.name.lower()
+    if name == ".env" or (name.startswith(".env.") and name != ".env.example"):
+        return True
+    if any(part in {".local", ".gradle", "node_modules", "__pycache__"} for part in parsed.parts):
+        return True
     # Original JDK-only tools are an exact allowlist; recovered game Java stays private.
-    if path in ORIGINAL_JDK_TOOLS:
+    if path in ORIGINAL_JDK_TOOLS or path in {ANDROID_RESULT_BRIDGE, ANDROID_DOCUMENTS_BRIDGE}:
         return False
     # Original Horizon mod sources may also be tracked.
     if parsed.suffix == ".java" and path.startswith(("mods/horizon/src/", "mods/horizon-lab/src/")):

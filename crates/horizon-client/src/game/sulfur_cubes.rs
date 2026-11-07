@@ -184,7 +184,7 @@ impl Game<'_> {
         for i in 0..self.mobs.len() {
             let m = &self.mobs[i];
             if m.species() != Species::SulfurCube
-                || !sulfur_cube::archetype(m).is_some_and(|a| a.explosion.is_some())
+                || sulfur_cube::archetype(m).is_none_or(|a| a.explosion.is_none())
                 || !m.alive()
                 || sulfur_cube::primed(m)
             {

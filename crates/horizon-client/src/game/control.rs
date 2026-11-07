@@ -441,6 +441,15 @@ impl Game<'_> {
                 }
                 Ok(Some(json!({ "ok": true, "flat": r.flat_draws() })))
             }
+            "section-indirect" => {
+                let r = self.renderer.as_mut().ok_or("no renderer")?;
+                match words.get(1).copied() {
+                    Some("on") => r.set_indirect_draws(true)?,
+                    Some("off") => r.set_indirect_draws(false)?,
+                    _ => return Err("section-indirect on|off".into()),
+                }
+                Ok(Some(json!({ "ok": true, "indirect": r.multi_draw })))
+            }
             "section-cull" => {
                 let r = self.renderer.as_mut().ok_or("no renderer")?;
                 match words.get(1).copied() {
@@ -1429,6 +1438,7 @@ impl Game<'_> {
                     wgpu::DeviceType::Other => "other",
                 },
                 "backend": format!("{:?}", r.info.backend),
+                "world_render_size": r.world_render_size(),
                 "size": [r.config.width, r.config.height],
                 "present_mode": format!("{:?}", r.config.present_mode),
                 "drawn_sections": r.drawn_sections,

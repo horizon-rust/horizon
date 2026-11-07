@@ -141,7 +141,10 @@ impl Drop for SessionLock {
     /// alone keeps the lock while any copy of the descriptor lives on, such as
     /// the one a process spawned on another thread holds until its `exec`.
     fn drop(&mut self) {
+        #[cfg(not(target_os = "android"))]
         let _ = self.0.unlock();
+        #[cfg(target_os = "android")]
+        let _ = rustix::fs::flock(&self.0, rustix::fs::FlockOperation::Unlock);
     }
 }
 impl SessionLock {
@@ -153,8 +156,14 @@ impl SessionLock {
             .create(true)
             .truncate(false)
             .open(world.join("session.lock"))?;
-        file.try_lock()
-            .map_err(|_| format!("{} is already open in another instance", world.display()))?;
+        // Rust 1.94's standard library returns Unsupported on Android without
+        // issuing a syscall (rust-lang/rust#148325). Keep the same kernel flock
+        // semantics through rustix rather than dropping the world's lock.
+        #[cfg(target_os = "android")]
+        let locked = rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive);
+        #[cfg(not(target_os = "android"))]
+        let locked = file.try_lock();
+        locked.map_err(|_| format!("{} is already open in another instance", world.display()))?;
         file.set_len(0)?;
         file.write_all(&[0x26, 0x03])?;
         file.flush()?;

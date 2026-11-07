@@ -1,6 +1,7 @@
 [workspace]
-exclude = ["launcher", "crates/horizon-telemetry-server", "crates/horizon-mod-registry", "third_party/wgpu-hal", "third_party/naga", "third_party/libmimalloc-sys"]
+exclude = ["launcher", "crates/horizon-telemetry-server", "crates/horizon-mod-registry", "third_party/wgpu-hal", "third_party/winit", "third_party/naga", "third_party/libmimalloc-sys"]
 members = [
+    "crates/horizon-android",
     "crates/horizon-core",
     "crates/horizon-dualsense",
     "crates/horizon-narrator",
@@ -30,6 +31,7 @@ members = [
     "crates/horizon-bench",
     "crates/horizon-friends",
     "crates/horizon-relay",
+    "crates/horizon-mod-sdk",
     "crates/horizon-mods",
     "crates/horizon-mod-api-gen",
     "crates/horizon-mod-api-gen/dispatch-tests",
@@ -42,6 +44,7 @@ members = [
     "crates/horizon-release-sign",
     "crates/horizon-mod-deps",
     "xtask",
+    "mods/official/recipes",
 ]
 resolver = "2"
 
@@ -69,6 +72,7 @@ large_enum_variant = "allow"
 # frame wait for the GPU to finish the one before (#4604).
 # Drop this and the folder once a wgpu release has these fixes.
 [patch.crates-io]
+winit = { path = "third_party/winit" }
 wgpu-hal = { path = "third_party/wgpu-hal" }
 # naga 30.0.1, with the fixes to its GLSL frontend that shader packs need (THIRD_PARTY_NOTICES.md).
 naga = { path = "third_party/naga" }
@@ -98,6 +102,7 @@ opt-level = 3
 opt-level = 3
 
 [profile.release]
+opt-level = 3
 lto = "thin"
 codegen-units = 1
 

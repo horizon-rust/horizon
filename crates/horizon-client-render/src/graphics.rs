@@ -1081,6 +1081,13 @@ impl Graphics {
     }
     /// Worker threads for chunk generation and meshing.
     pub fn worker_threads(&self) -> usize {
+        let requested = self.requested_worker_threads();
+        #[cfg(target_os = "android")]
+        return crate::android_runtime::limit_workers(requested);
+        #[cfg(not(target_os = "android"))]
+        requested
+    }
+    fn requested_worker_threads(&self) -> usize {
         if self.workers > 0 {
             return self.workers as usize;
         }
@@ -1095,6 +1102,12 @@ impl Graphics {
         // laptop while a world loaded: a teleport there took ~15% longer. On Apple
         // silicon only the performance cores count (horizon_threads::default_workers).
         let auto = horizon_threads::jobs::default_threads();
+        // Android keeps a second core free until phones are profiled.
+        let auto = if cfg!(target_os = "android") {
+            auto.saturating_sub(1).max(1)
+        } else {
+            auto
+        };
         if self.battery { auto.div_ceil(2) } else { auto }
     }
     /// The frame cap battery mode adds: 60 in a world, 30 in menus without a

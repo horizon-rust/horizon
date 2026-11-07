@@ -159,7 +159,13 @@ pub struct Flat {
 /// (9,300 draws) the CPU saves 1.3 ms. The bar was 4,096 draws when they
 /// were 2.2 to 2.5 per section; a section's draw count now depends on the
 /// sides it shows the eye (`mesher::Sides`), so it counts sections.
-pub const MIN_SECTIONS: usize = 1600;
+// Android's explicit Vulkan batching path also benefits at medium distances;
+// small views keep the ordinary draw path. Desktop retains its measured bar.
+pub const MIN_SECTIONS: usize = if cfg!(target_os = "android") {
+    512
+} else {
+    1600
+};
 
 /// Whether flat draws exist: vertex shaders can read storage buffers large
 /// enough for an index page. A shader pack's terrain draws flat wherever they
@@ -167,16 +173,35 @@ pub const MIN_SECTIONS: usize = 1600;
 /// frames without one draw flat only where `for_vanilla` says.
 /// `HORIZON_FLAT_DRAWS=1` draws every frame flat, `0` none.
 pub fn wanted(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
-    std::env::var("HORIZON_FLAT_DRAWS").as_deref() != Ok("0") && supported(adapter, device)
+    if !cfg!(target_os = "android") {
+        return std::env::var("HORIZON_FLAT_DRAWS").as_deref() != Ok("0")
+            && supported(adapter, device);
+    }
+    match std::env::var("HORIZON_FLAT_DRAWS").as_deref() {
+        Ok("0") => return false,
+        Ok("1") => return supported(adapter, device),
+        _ => {}
+    }
+    let info = adapter.get_info();
+    (info.backend == wgpu::Backend::Metal
+        || is_broken_intel_vulkan(&info)
+        || cfg!(target_os = "android")
+            && info.backend == wgpu::Backend::Vulkan
+            && !crate::android_runtime::compatibility())
+        && supported(adapter, device)
 }
 
 /// Whether frames without a shader pack's terrain draw flat: where the backend
 /// emulates multi-draw (Metal, past `MIN_SECTIONS`), on Intel Gen11/Gen12's Vulkan
-/// driver, or with `HORIZON_FLAT_DRAWS=1`. Elsewhere per-section draws stay.
+/// driver, Android's explicitly selected Vulkan batching mode, or with
+/// `HORIZON_FLAT_DRAWS=1`. Elsewhere per-section draws stay.
 pub fn for_vanilla(info: &wgpu::AdapterInfo) -> bool {
     std::env::var("HORIZON_FLAT_DRAWS").as_deref() == Ok("1")
         || info.backend == wgpu::Backend::Metal
         || is_broken_intel_vulkan(info)
+        || (cfg!(target_os = "android")
+            && info.backend == wgpu::Backend::Vulkan
+            && !crate::android_runtime::compatibility())
 }
 
 /// Intel Gen11 (Ice Lake) and Gen12 (Tiger Lake, Rocket Lake, Alder Lake,

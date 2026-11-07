@@ -621,7 +621,7 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
     ];
     // Only Windows and Linux have more than one graphics API, translucent batching (Metal
     // draws flat) and GPU culling (Metal draws no count the GPU wrote).
-    if cfg!(target_os = "macos") {
+    if cfg!(any(target_os = "macos", target_os = "android")) {
         for (_, groups) in &mut pages {
             for (_, rows) in groups {
                 rows.retain(|r| {
@@ -1054,7 +1054,13 @@ impl H {
             H::HdrLighting => g.hdr_lighting = !g.hdr_lighting,
             H::BatteryMode => g.battery = !g.battery,
             H::ShadowCache => g.shadow_cache = !g.shadow_cache,
-            H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
+            H::GraphicsApi => {
+                // Android picks the backend in the launcher, before the renderer exists: a
+                // stale menu action must not save a competing choice for the next launch.
+                if !cfg!(target_os = "android") {
+                    g.api = step(GraphicsApi::choices(), g.api, back);
+                }
+            }
             H::TranslucentBatching => g.translucent_batching = !g.translucent_batching,
             H::HdrSmoothGradients => g.hdr_smooth_gradients = !g.hdr_smooth_gradients,
             H::Pacing => {

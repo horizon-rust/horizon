@@ -205,6 +205,8 @@ pub struct Settings {
     pub video_modes: Vec<crate::window::VideoMode>,
     /// Controller settings (`horizon-controller.txt`, Horizon's own).
     pub controller: crate::gamepad::PadSettings,
+    pub touch: crate::touch::Settings,
+    pub keypad: crate::keypad::Settings,
     /// Horizon's optional extras (`horizon-extras.txt`), all off by default.
     pub extras: crate::extras::Extras,
     /// The Horizon mods turned on (`horizon-mods.txt`), all off by default.
@@ -294,6 +296,8 @@ impl Default for Settings {
             startup_api: Default::default(),
             video_modes: Vec::new(),
             controller: Default::default(),
+            touch: Default::default(),
+            keypad: Default::default(),
             extras: Default::default(),
             mods: Default::default(),
             shader_packs: Vec::new(),
@@ -367,6 +371,8 @@ impl Settings {
             .parent()
             .map(|dir| crate::mod_list::ModList::load(&crate::logging::shared_dir(dir)))
             .unwrap_or_default();
+        let keypad = crate::keypad::Settings::load(&path.with_file_name("horizon-keypad.json"));
+        let touch = crate::touch::Settings::load_from(&path.with_file_name("horizon-touch.json"));
         let mut settings = match fs::read(path) {
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
@@ -374,6 +380,8 @@ impl Settings {
                 Self {
                     horizon,
                     controller,
+                    touch,
+                    keypad,
                     extras,
                     mods,
                     ..Self::parse(&text)
@@ -382,6 +390,8 @@ impl Settings {
             Err(_) => Self {
                 horizon,
                 controller,
+                touch,
+                keypad,
                 extras,
                 mods,
                 ..Self::default()
@@ -497,6 +507,8 @@ impl Settings {
             startup_api: Default::default(),
             video_modes: Vec::new(),
             controller: Default::default(),
+            touch: Default::default(),
+            keypad: Default::default(),
             extras: Default::default(),
             mods: Default::default(),
             shader_packs: Vec::new(),
@@ -660,7 +672,10 @@ impl Settings {
         let mut file = self.to_file();
         file.set_text(key, value)?;
         let mut next = Self {
+            keypad: self.keypad.clone(),
             horizon: self.horizon.clone(),
+            #[cfg(target_os = "android")]
+            touch: self.touch.clone(),
             controller: self.controller.clone(),
             extras: self.extras.clone(),
             mods: self.mods.clone(),
@@ -683,6 +698,9 @@ impl Settings {
         if let Some(dir) = path.parent() {
             self.horizon.save(dir);
             self.controller.save(dir);
+            let _ = self.keypad.save(&dir.join("horizon-keypad.json"));
+            #[cfg(target_os = "android")]
+            let _ = self.touch.save_to(&dir.join("horizon-touch.json"));
             let mut extras = self.extras.clone();
             extras.emote_key = self.keys.get("key.emote").to_owned();
             extras.save(dir);
@@ -756,6 +774,7 @@ pub enum Opt {
     Volume(usize),
     SoundDevice,
     GuiScale,
+    DebugGuiScale,
     ViewBobbing,
     Gamma,
     MaxFps,
@@ -828,6 +847,34 @@ pub enum Opt {
     ForceUnicode,
     JapaneseGlyphs,
     /// Horizon's controller settings (`horizon-controller.txt`).
+    TouchMode,
+    TouchAnalog,
+    TouchCircleSize,
+    TouchAttackSide,
+    TouchHorizontalMargin,
+    TouchVerticalMargin,
+    TouchSensitivity,
+    TouchSensitivityHorizontal,
+    TouchSensitivityVertical,
+    TouchOffhand,
+    TouchShield,
+    TouchButtonScale,
+    TouchInteract,
+    TouchLeftHand,
+    TouchSprintButton,
+    TouchSprintToggle,
+    TouchInventoryControls,
+    TouchMouseSensitivity,
+    TouchCrosshairGestures,
+    TouchAttackButtonLook,
+    TouchDynamicJoystick,
+    TouchDynamicAreaX,
+    TouchDynamicAreaY,
+    AndroidGyroscope,
+    AndroidGyroSensitivity,
+    AndroidInputMode,
+    TouchSwapJumpSneak,
+    TouchAutoSprint,
     PadEnabled,
     PadVibration,
     PadPlayInBackground,

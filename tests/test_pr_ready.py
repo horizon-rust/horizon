@@ -16,7 +16,7 @@ PACKAGES = {"horizon-core": "crates/horizon-core", "horizon-client": "crates/hor
             "horizon-theme": "crates/horizon-theme", "xtask": "xtask"}
 LIBRARIES = set(PACKAGES) - {"xtask"}
 DEPENDENCIES = {"horizon-client": {"horizon-core"}}
-MODS = ""
+MODS = " --features horizon-client/mods,horizon-mods/pack"
 CLIPPY = pr_ready.CI_CLIPPY + " && " + pr_ready.CI_CLIPPY_SERVER
 # The bash on PATH: Windows' CreateProcess looks in System32 before PATH, so a bare "bash" there is WSL's
 # (#5383), which has none of the host's paths. Git Bash on PATH runs the launcher's snippets as on Linux.
@@ -140,7 +140,7 @@ class PrReadyTests(unittest.TestCase):
         by_name = {step.name: step for step in steps}
         self.assertEqual(by_name["clippy"].command, CLIPPY)
         self.assertEqual(by_name["tests: horizon-client"].command,
-                         "cargo test --locked -p horizon-client --tests")
+                         "cargo test --locked -p horizon-client --features horizon-client/mods --tests")
         self.assertEqual(by_name["doc tests"].command, "cargo test --locked -p horizon-client --doc")
         self.assertIsNone(by_name["doc tests"].status)
 
@@ -169,9 +169,9 @@ class PrReadyTests(unittest.TestCase):
 
     def test_tests_get_the_features_ci_s_workspace_run_gives_them(self):
         self.assertEqual(pr_ready.mod_features(["horizon-world"]), "")
-        self.assertEqual(pr_ready.mod_features(["horizon-client"]), "")
+        self.assertEqual(pr_ready.mod_features(["horizon-client"]), " --features horizon-client/mods")
         self.assertEqual(pr_ready.mod_features(["horizon-mods"]),
-                         " --features horizon-mods/index")
+                         " --features horizon-mods/runtime,horizon-mods/pack,horizon-mods/index")
         self.assertEqual(pr_ready.mod_features(None), MODS)
 
     def test_mod_api_data_inputs_build_and_test_the_consuming_crates(self):

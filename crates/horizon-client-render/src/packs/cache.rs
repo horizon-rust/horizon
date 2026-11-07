@@ -309,7 +309,7 @@ pub(super) fn build(vanilla: &Path, packs: &[Pack], out: &Path) -> io::Result<()
         .create(true)
         .truncate(false)
         .open(lock_path(out))?;
-    lock.lock()?;
+    crate::file_lock::exclusive(&lock)?;
     let vanilla_key = absolute(vanilla)?;
     let marker_path = marker_path(out);
     let signature = pack_signature(packs);
@@ -918,7 +918,7 @@ mod tests {
             .truncate(false)
             .open(lock_path(&out))
             .unwrap();
-        held.lock().unwrap();
+        crate::file_lock::exclusive(&held).unwrap();
         let (started, starts) = mpsc::channel();
         let (done, finishes) = mpsc::channel();
         std::thread::scope(|scope| {

@@ -125,6 +125,7 @@ pub trait Clipboard {
 /// game can still be pasted in the game.
 #[derive(Default)]
 pub struct SystemClipboard {
+    #[cfg(not(target_os = "android"))]
     system: Option<arboard::Clipboard>,
     /// The text Horizon last copied (`horizon-ctl status`).
     copied: Option<String>,
@@ -135,6 +136,7 @@ impl SystemClipboard {
     pub fn copied(&self) -> Option<&str> {
         self.copied.as_deref()
     }
+    #[cfg(not(target_os = "android"))]
     fn system(&mut self) -> Option<&mut arboard::Clipboard> {
         if self.system.is_none() {
             self.system = arboard::Clipboard::new().ok();
@@ -145,16 +147,21 @@ impl SystemClipboard {
 
 impl Clipboard for SystemClipboard {
     fn get(&mut self) -> String {
-        let Some(system) = self.system() else {
-            return self.copied.clone().unwrap_or_default();
-        };
-        match system.get_text() {
-            Ok(text) => text,
-            Err(arboard::Error::ContentNotAvailable) => String::new(),
-            Err(_) => {
-                // A lost connection (a restarted compositor): reconnect next time.
-                self.system = None;
-                String::new()
+        #[cfg(target_os = "android")]
+        return clipboard_get().unwrap_or_else(|| self.copied.clone().unwrap_or_default());
+        #[cfg(not(target_os = "android"))]
+        {
+            let Some(system) = self.system() else {
+                return self.copied.clone().unwrap_or_default();
+            };
+            match system.get_text() {
+                Ok(text) => text,
+                Err(arboard::Error::ContentNotAvailable) => String::new(),
+                Err(_) => {
+                    // A lost connection (a restarted compositor): reconnect next time.
+                    self.system = None;
+                    String::new()
+                }
             }
         }
     }
@@ -163,6 +170,9 @@ impl Clipboard for SystemClipboard {
             return;
         }
         self.copied = Some(text.to_owned());
+        #[cfg(target_os = "android")]
+        clipboard_set(text);
+        #[cfg(not(target_os = "android"))]
         if let Some(system) = self.system()
             && system.set_text(text.to_owned()).is_err()
         {
@@ -489,5 +499,24 @@ mod tests {
         };
         assert!(!sel.apply(id, &mut value, EditShortcut::Paste, &mut clip, fits));
         assert_eq!(value, "ok");
+    }
+}
+
+/// Android's native entry point installs these without making the shared lib
+/// depend on an Activity or on JNI. Clipboard access is only on explicit edits.
+pub struct ClipboardHooks {
+    pub get: fn() -> Option<String>,
+    pub set: fn(&str),
+}
+static CLIPBOARD: std::sync::OnceLock<ClipboardHooks> = std::sync::OnceLock::new();
+pub fn install_clipboard(hooks: ClipboardHooks) {
+    let _ = CLIPBOARD.set(hooks);
+}
+pub fn clipboard_get() -> Option<String> {
+    CLIPBOARD.get().and_then(|h| (h.get)())
+}
+pub fn clipboard_set(text: &str) {
+    if let Some(h) = CLIPBOARD.get() {
+        (h.set)(text);
     }
 }
