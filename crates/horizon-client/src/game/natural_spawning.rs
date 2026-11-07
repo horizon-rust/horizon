@@ -27,7 +27,7 @@ use horizon_world::{
     nbt::{Compound, Tag},
     registry::BlockStateId,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Natural spawning's candidate chunks (`ChunkMap.collectSpawningChunks`):
 /// the union of every player's 17×17 chunk square, in player then dx/dz
@@ -697,6 +697,7 @@ impl FinalizeLevel for FinalizeRuntime<'_, '_, '_> {
 
 struct NaturalFinalizer {
     group: Option<Group>,
+    parents: HashSet<u32>,
     pending: Vec<Mob>,
     rides: Vec<(u32, u32)>,
     next_id: u32,
@@ -705,6 +706,7 @@ impl NaturalFinalizer {
     fn new(next_id: u32) -> Self {
         Self {
             group: None,
+            parents: HashSet::new(),
             pending: Vec::new(),
             rides: Vec::new(),
             next_id,
@@ -750,6 +752,7 @@ impl NaturalFinalizer {
             bounds: mob.bounds(),
             school: !mob.extra.lone,
         };
+        self.parents.insert(mob.id);
         let added_at = self.pending.len();
         self.pending.extend(cx.created);
         self.pending.push(mob);
@@ -801,7 +804,13 @@ impl<'a> Game<'a> {
         }
     }
     /// Adds already finalized mobs, retaining the ids their pack and riding links use.
-    fn add_spawned(&mut self, pending: Vec<Mob>, rides: Vec<(u32, u32)>) {
+    fn add_spawned(&mut self, finalized: NaturalFinalizer) {
+        let NaturalFinalizer {
+            pending,
+            rides,
+            parents,
+            ..
+        } = finalized;
         // Join hooks may create entities too; reserve every finalized id first.
         self.next_entity = pending
             .iter()
@@ -818,9 +827,22 @@ impl<'a> Game<'a> {
         // A join flush advances its watermark through every reserved id.
         // Make the whole batch visible before it runs, including jockeys
         // stored before their lower-id parent.
-        let from = self.mobs.len();
+        let accepted: Vec<_> = pending
+            .iter()
+            .map(|m| (m.id, parents.contains(&m.id)))
+            .collect();
         self.mobs.extend(pending);
-        self.native_mobs_joined(from, true);
+        self.native_joins_flush(false, 0);
+        // A hook can cancel one of these or spawn its own entities. Tell only
+        // surviving members of this batch, once; jockey children are not
+        // natural for the native mob_spawned hook's existing contract.
+        for (id, natural) in accepted {
+            if let Some(mob) = self.mobs.iter().find(|m| m.id == id) {
+                let kind = super::native_hooks::mob_kind(mob);
+                let pos = [mob.position.x, mob.position.y, mob.position.z];
+                self.native_mob_spawned(self.dim.id(), &kind, pos, natural);
+            }
+        }
     }
     /// Every player in the level in place: the local player, and the LAN
     /// guests or server players in it.
@@ -969,7 +991,7 @@ impl<'a> Game<'a> {
         self.world.random = random;
         // ServerChunkCache.lastSpawnState, for the debug overlay.
         self.spawn_counts.insert(self.dim, last_state);
-        self.add_spawned(finalizer.pending, finalizer.rides);
+        self.add_spawned(finalizer);
         self.spawn_scratch = scratch;
         laps.lap("sn_finalize");
     }
@@ -1197,7 +1219,7 @@ mod tests {
         let ids: Vec<_> = finalizer.pending.iter().map(|m| m.id).collect();
         game.world.random = LegacyRandom::new(2468);
         let expected_level_draw = game.world.random.clone().next_long();
-        insert_finalized(&mut game, finalizer.pending, finalizer.rides);
+        insert_finalized(&mut game, finalizer);
         assert_eq!(
             game.world.random.next_long(),
             expected_level_draw,
@@ -1224,18 +1246,19 @@ mod tests {
         assert_eq!(inserted, finalized);
     }
 
-    fn insert_finalized(game: &mut Game<'_>, pending: Vec<Mob>, rides: Vec<(u32, u32)>) {
-        game.add_spawned(pending, rides);
+    fn insert_finalized(game: &mut Game<'_>, finalized: NaturalFinalizer) {
+        game.add_spawned(finalized);
     }
 
     #[test]
     #[ignore = "needs prepared resources and process-wide mods; run this test alone"]
     fn natural_spawn_batches_announce_every_join_and_allow_cancellation() {
-        use crate::mod_api::{self, EntityJoinLevelEvent, Flow, Hooks, Host};
+        use crate::mod_api::{self, EntityJoinLevelEvent, Flow, Hooks, Host, MobSpawnedEvent};
         use std::sync::{Arc, Mutex};
         #[derive(Default)]
         struct Joins {
             seen: Mutex<Vec<u32>>,
+            spawned: Mutex<Vec<(String, bool)>>,
             cancel: Mutex<Vec<u32>>,
         }
         impl Hooks for Arc<Joins> {
@@ -1251,6 +1274,12 @@ mod tests {
                 } else {
                     Flow::Continue
                 }
+            }
+            fn mob_spawned(&self, _: &mut dyn Host, event: &mut MobSpawnedEvent<'_>) {
+                self.spawned
+                    .lock()
+                    .unwrap()
+                    .push((event.kind.to_owned(), event.natural));
             }
         }
         fn batch(game: &Game<'_>) -> NaturalFinalizer {
@@ -1293,13 +1322,23 @@ mod tests {
         let first = batch(&game);
         let mut expected: Vec<_> = first.pending.iter().map(|m| m.id).collect();
         expected.sort_unstable();
-        game.add_spawned(first.pending, first.rides);
+        game.add_spawned(first);
         assert_eq!(
             *joins.seen.lock().unwrap(),
             expected,
             "each parent and rider receives one join hook"
         );
         assert_eq!(game.mobs.len(), 3);
+        let mut expected_spawned = vec![
+            ("minecraft:skeleton".to_owned(), false),
+            ("minecraft:spider".to_owned(), true),
+            ("minecraft:cow".to_owned(), true),
+        ];
+        assert_eq!(
+            *joins.spawned.lock().unwrap(),
+            expected_spawned,
+            "only the original parent has the natural flag"
+        );
         // Re-flushing a completed batch does not announce it twice.
         game.native_joins_flush(false, 0);
         assert_eq!(*joins.seen.lock().unwrap(), expected);
@@ -1309,7 +1348,7 @@ mod tests {
         let cow = second.pending[2].id;
         joins.cancel.lock().unwrap().extend([child, parent]);
         expected.extend([parent, child, cow]);
-        game.add_spawned(second.pending, second.rides);
+        game.add_spawned(second);
         assert_eq!(*joins.seen.lock().unwrap(), expected);
         assert!(
             !game.mobs.iter().any(|m| m.id == child || m.id == parent),
@@ -1320,6 +1359,12 @@ mod tests {
             "the later accepted parent stays"
         );
         assert_eq!(game.persist.joins_canceled, 2);
+        expected_spawned.push(("minecraft:cow".to_owned(), true));
+        assert_eq!(
+            *joins.spawned.lock().unwrap(),
+            expected_spawned,
+            "canceled parent and child receive no spawned event"
+        );
     }
 
     fn player(x: f64, y: f64, z: f64, spectator: bool) -> LevelPlayer {
