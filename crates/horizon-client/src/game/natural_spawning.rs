@@ -1119,7 +1119,7 @@ mod tests {
                 position: [0.5, 64.0, 0.5],
                 yaw: 0.0,
                 group_index: 0,
-                reason: Reason::Natural,
+                reason: horizon_client::mobs::spawn_rules::Reason::Natural,
             };
             for i in 0..4 {
                 request.group_index = i;
