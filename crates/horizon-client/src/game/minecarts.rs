@@ -1302,11 +1302,16 @@ impl Game<'_> {
         let Some(i) = self.simulation.carts.iter().position(|x| x.id == c.id) else {
             return;
         };
+        // The loot roll stays with the ticked copy, as in `tick_carts_now`: a
+        // push never reads it, and a mineshaft's chest cart carries its whole
+        // roll as NBT, copied twice a tick per cart otherwise.
+        let loot = c.loot.take();
         self.simulation.carts[i] = c.clone();
         self.push_from_cart(i);
         if let Some(i) = self.simulation.carts.iter().position(|x| x.id == c.id) {
             *c = self.simulation.carts[i].clone();
         }
+        c.loot = loot;
     }
     /// `AbstractMinecart.tick` for one cart; returns false once it is gone.
     fn tick_cart(&mut self, c: &mut Minecart, intent: [f64; 2]) -> bool {
