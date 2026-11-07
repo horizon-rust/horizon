@@ -151,8 +151,7 @@ zombie,cow,villager` runs one.
   or keep decision panics and names the first difference. One draw is repeated
   on purpose: a long jump's angle shuffle is unseeded, as in vanilla, so this mode
   seeds it from the mob and its target (`mobs/frog.rs`). Without that,
-  `dedicated_server` failed here on every run, and the 2026-11-04 parallel commit
-  results below predate the fix. Other modes keep the unseeded shuffle.
+  `dedicated_server` failed here on every run. Other modes keep the unseeded shuffle.
   The check catches what the
   read tracking can't see: a new thread-local, a global counter, or a `MobWorld`
   override only one of the two paths sets. CI runs the server harnesses this way
@@ -250,161 +249,14 @@ but the CI harnesses reach that in very few rounds (see the limits above), so
 this test is the clean path's main coverage. The benchmark's clean rounds were
 not compared with a walk.
 
-## Validation and benchmark
+## Coordinator, portal and sculk work
 
-The focused tests cover topology/bridge merge and split, stable ordering,
-negative/extreme chunk coordinates, migration/removal/unload/dormancy, exact
-sparse-grid equivalence, chunk-by-chunk topology against a whole rebuild,
-negative-space reads, distant ID/full-scan reads,
-foreign bounds growth, sparse populated-cell queries, shared RNG/Gaussian
-consumption, complete mutable-mob transactions and exact indexed player
-selection. At implementation revision `4c5925eb2`, the full mob-AI vanilla oracle passes all 272 scenarios and all
-127,179 mob ticks. Forced-parallel dedicated-server, server-entity,
-player-damage and natural-spawning harnesses pass. Live server-thread/LAN
-checks pass for mobs, portals, projectiles/vehicles and blasts; the mob check
-was repeated against the final runtime.
-
-The repository check at that implementation revision passes formatting, clippy (including the server
-feature configuration), 5,853 workspace Rust tests, 627 Python tests and 24
-content-root tests. Launcher formatting/clippy and 463 launcher tests pass;
-its translation-completeness test fails on missing Hebrew strings. The exact
-unchanged test also fails against base `9697aaf14`, independently reproducing
-that existing failure.
-
-Before integration with newer upstream changes, 225 distinct affected parity
-entries passed without a recorded behavior mismatch. The remaining broad sweep
-was stopped when the user requested delivery after the extended run; it is not
-reported as a completed sweep. Save-fixture setup and an item-order oracle run
-required retries; the fixture startup and both item-order cases then succeeded.
-
-Current main `e41334ac0` is integrated at `98aaa6e9e`. The merged server passes
-`cargo check -p horizon-client --lib`, formatting, seven region topology and
-concurrency tests, and 15 focused mob transaction, player-index and dependency
-tests. These include a new controlling-rider input regression and the complete
-serial/parallel mutable-state, ordered-event and RNG comparison. The full
-workspace/parity sweep and performance measurements were not repeated after
-that integration; the measured engine revisions are explicit below.
-
-`tools/bench_region_ticks.py` starts 100 real `horizon-bots` clients, teleports
-them to a 512-block grid in a fixed-seed flat world, and summons 70 persistent
-AI-enabled zombies per player in interleaved global order (7,000 total). Natural
-spawning and random block ticks are off; players have resistance, and mobs are
-invulnerable to keep the population stable. Each mode uses a fresh world and
-scratch user directories. The script rejects changed player/mob counts and
-collects whole-tick median/p95/p99 from the server performance report, individual
-mob-phase timings, process-tree CPU and RSS, and prediction/replay counts. Setup runs while frozen, and both engines warm
-up for the same fixed number of simulation ticks before timing starts.
-
-```sh
-cargo build --profile fast -p horizon-client -p horizon-client-lib -p horizon-bots \
-  --bin horizon-client --bin horizon-ctl --bin horizon-bots
-python3 tools/bench_region_ticks.py --bin target/fast
-```
-
-The retained serial and parallel modes use identical commands, seed, view and
-simulation distance, fixed-tick warmup and measurement windows in the same binary.
-`--before-bin` instead uses a separately built pre-change engine for the baseline;
-the final comparison uses the PR's original base revision rather than attributing
-improvements common to both new execution modes to parallel scheduling.
-This is a quick workload comparison, not a claim about every mob mix: shared
-RNG, native mods, active raids and unbounded observations can require replay.
-
-### Measured comparison (2026-11-03)
-
-Same 100 connected standing players, 512-block spacing, 7,000 invulnerable
-AI-enabled zombies, seed 12345, flat terrain, view/simulation distance 2,
-200 simulation warmup ticks and a 20-second measurement. Both engines use the
-`fast` optimized profile and Rust 1.99.0 on a Ryzen 5 5600X (6 cores/12 threads).
-The new pool has eight workers. Validation scheduling/compilation was paused
-for measurement after active harnesses finished; other desktop applications
-remained running. This is one quick sweep on a shared machine.
-
-The original engine was built from base `9697aaf14`; the new engine was built
-from `4c5925eb2`. The direct serial control uses the new engine with region
-execution disabled. The complete inputs, percentile summaries and selected
-phase timings are in [the measurement JSON](performance/server-regions-100-players.json).
-
-| Execution | Tick median ms | Tick p95 ms | Tick p99 ms | Mob median ms | Mob p95 ms | Mob p99 ms | CPU % | Mean RSS MiB |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Original engine | 133.74 | 189.87 | 418.22 | 99.2 | 142.2 | 365.8 | 98.50 | 442.38 |
-| New engine, direct serial control | 182.63 | 550.65 | 679.61 | 136.1 | 404.9 | 609.9 | 81.99 | 454.81 |
-| New engine, parallel regions | 91.56 | 101.05 | 110.53 | 60.2 | 66.3 | 72.9 | 236.50 | 521.65 |
-
-CPU 100% means one logical core. Peak RSS was 443.96/456.22/547.60 MiB,
-respectively. The reports contain 139/79/219 ticks; timed mob spans cover
-138/78/218 ticks, with the initial frozen/report boundary omitted. Every
-measurement kept all 100 players and 7,000 mobs. Parallel execution committed
-all 7,000 predictions across 100 regions per tick, with no replay in this
-workload. The direct serial control had substantial tail variation; this
-single sweep does not establish a small-workload or serial-mode speedup.
-
-Against the original engine, parallel execution reduced median mob time by
-39%, whole-tick median by 32%, p95 by 47% and p99 by 74%, using more CPU and
-about 79 MiB more mean RSS. This dense collision workload still runs below
-20 TPS (6.93 before, 10.90 after). The results establish a live improvement,
-not a guarantee that every 100-player mob mix fits a 50 ms tick budget.
-
-```sh
-python3 tools/bench_region_ticks.py --bin .local/parity-target/fast \
-  --before-bin /path/to/base-build/target/fast --modes legacy,control,parallel \
-  --warmup 10 --settle 20 --seconds 20
-```
-
-### After the coordinator work (2026-11-04)
-
-Two runs of the same workload at `ce803b1ea`, parallel mode only, with the
-`fast` profile plus frame pointers and line tables, on the same shared machine
-(other applications running, the bots on the same CPU). Their full reports are
-under `coordinator_work` in [the measurement JSON](performance/server-regions-100-players.json).
-
-| Run | Tick average ms | Median | p95 | p99 | Max | Ticks over 50 ms | Mob median ms | CPU % | Mean RSS MiB |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 47.44 | 47.09 | 51.06 | 53.72 | 54.82 | 26 of 401 | 28.4 | 394.65 | 544.63 |
-| 2 | 49.06 | 48.05 | 56.25 | 66.28 | 75.04 | 88 of 401 | 28.9 | 399.49 | 558.37 |
-
-Both runs hold 20 TPS with all 7,000 predictions committed and no replay, and
-the average tick fits the 50 ms budget. Single ticks still go over it, so this
-workload has no margin on this machine, and runs differ by a millisecond or
-two. The remaining time is mostly the workers' 16 ms round, the 7 ms commit walk
-and 8 ms of `tick_lan`.
-
-The time came from the coordinator's walks over every mob, each a cache miss
-per mob: game events and melee hits find their listeners and mob directly,
+The coordinator's own time went to walks over every mob, each a cache miss
+per mob. Now game events and melee hits find their listeners and mob directly,
 states and entity sends are built on the workers, a mob's rarely used fields
 sit behind a box so a clone copies less, and the scans a tick repeats run on the
 workers (`Game::mob_slots`) or not at all. The replaced mobs are freed by one
 worker at the end of the tick, so those scans do not queue behind the frees.
-
-### After the portal and sculk work (2026-11-04)
-
-One run of the same workload at `4d8283a8c`, with the same settings and build
-flags as above, on the same shared machine. The user's own Horizon client was
-running at about 8% of a core. Its full report is under
-`portal_and_sculk_workers` in [the measurement JSON](performance/server-regions-100-players.json).
-
-| Run | Tick average ms | Median | p95 | p99 | Max | Ticks over 50 ms | TPS | Mob median ms | CPU % | Mean RSS MiB |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 50.76 | 49.53 | 57.68 | 75.24 | 91.18 | 178 of 394 | 19.67 | 30.1 | 404.37 | 548.74 |
-
-This run is no faster overall than the two before it (47.44 and 49.06 ms
-average), and it falls below 20 TPS. It does not show a regression either: those
-runs were at `ce803b1ea`, before two merges of main, and there is no run of the
-merged main without these changes, so one run cannot separate this work from
-main or from the machine's load. Spans these changes do not touch also rose
-(`mob_predict` 15.82/16.25 to 16.80 ms, `tick_lan` 7.93/8.14 to 8.83 ms).
-
-The spans these changes target did drop on the coordinator. All 7,000
-predictions still committed, with no replay.
-
-| Span | Before, wall ms | After, wall ms | Before, coordinator CPU ms | After, coordinator CPU ms |
-| --- | ---: | ---: | ---: | ---: |
-| `entity_portals` | 1.68, 1.82 | 1.04 | 1.65, 1.78 | 0.66 |
-| `tick_sculk_entities` | 1.80, 1.83 | 1.70 | 1.50, 1.54 | 0.80 |
-
-The sculk span's wall time barely moved, because the coordinator now waits for
-the workers and then stores each mob's `Steps`. The passenger index has no span
-of its own, and `mob_guest_events` did not move (1.97/2.02 to 2.05 ms), so this
-run shows no gain from it.
 
 What changed, with gameplay meant to stay the same. Without workers
 (`executor()` returns `None`), both worker passes keep the serial code:
@@ -429,75 +281,6 @@ The pool-against-serial tests need prepared resources, so they are `#[ignore]`d:
 `pool_and_serial_find_the_same_portals_in_the_same_order` and
 `entity_hurt_player_reads_riders_only_when_a_criterion_can`. Set
 `HORIZON_TEST_RESOURCES` and run them with `--include-ignored`.
-
-The harnesses `tools/parity.py --changed-files` selects for these files were
-stopped before the run finished, at the user's request, and three of them failed
-without being looked into. `lan_e2e` was not run. The PR records the details.
-
-### Parallel commit (2026-11-04)
-
-One run of the same workload, with the same settings and build flags as above,
-on the same shared machine, from the commit that adds this section (on
-`2362e29c5`, which merges main at `23bbd8117`). The user's own Horizon client was
-running at about 17-24% of a core. Its full report is under `parallel_commit` in
-[the measurement JSON](performance/server-regions-100-players.json).
-
-| Run | Tick average ms | Median | p95 | p99 | Max | Ticks over 50 ms | TPS | Mob median ms | CPU % | Mean RSS MiB |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 46.69 | 45.58 | 53.56 | 59.67 | 91.01 | 66 of 400 | 19.97 | 25.7 | 448.39 | 537.28 |
-
-Every round was clean: 409 clean, 0 fell back, counting the warmup. All 7,000
-predictions committed, with no replay.
-
-`mob_classify` is the classification and the clean commit together; `mob_walk`
-is empty when the walk is skipped. The "before" figures are the three earlier
-runs above.
-
-| Span | Before, wall ms | After, wall ms | Before, coordinator CPU ms | After, coordinator CPU ms |
-| --- | ---: | ---: | ---: | ---: |
-| `mob_walk` + `mob_classify` | 7.03, 7.26, 7.68 | 3.24 | 6.92, 7.17, 7.51 | 1.29 |
-
-So the walk's span saved 3.8 to 4.4 ms of wall time, at or just under the low end
-of the 4-5 ms estimated before the work. The clean commit did not take the span
-to zero, because the workers still do the work and the coordinator still merges.
-
-The whole tick is less clear. The average fell by 0.75, 2.37 and 4.07 ms against
-the three earlier runs (47.44, 49.06 and 50.76 ms). There is no run of this
-binary with `HORIZON_PARALLEL_COMMIT=0`, so these comparisons cross merges of main
-and the machine's load:
-
-- `mob_projectiles` fell from 0.70-0.85 ms to nothing because of main's early
-  return in `tick_projectiles`. That is part of the tick's drop and not this work.
-- Spans this work does not touch did not fall: `mob_predict` 15.82/16.25/16.80 to
-  17.39 ms, `tick_lan` 7.93/8.14/8.83 to 8.80 ms.
-- The process used more CPU in total (394.65/399.49/404.37 to 448.39%). One run
-  can't say how much of that is the commit.
-
-**Checks.** `cargo fmt --check`; clippy `-D warnings` on `horizon-client` and
-`horizon-client-lib`, all targets; `cargo test -p horizon-client --lib`;
-`cargo test -p horizon-client-lib --lib` for `mobs::` and `lan::`;
-`clean_commit_matches_the_serial_walk` with prepared resources. Ten deliberate
-breaks of the clean path were each caught by that test. With
-`HORIZON_SIMULATION_MODE=parallel`, `mob_ai`, `natural_spawn`, `dedicated_server`,
-`server_entities` and `server_player_damage` passed. `dedicated_server` failed
-its first attempt, then passed on the runner's retry without reused oracle
-results and on two more runs; the first attempt's log was overwritten, so why it
-failed is not known. `mob_ai`'s probe has its own mob loop, so it does not reach
-the clean path.
-
-**`tools/ci/region-verify.sh` fails on `dedicated_server`, with or without
-parallel commit.** The panic is "the commit and its replay differ" in a long
-jump's `chosen`. `optimal_jump_vector` follows vanilla's `Collections.shuffle`
-with no seeded random, so a commit and its replay can pick different angles for
-the same frog or goat. It failed 3 of 3 runs with `HORIZON_PARALLEL_COMMIT=0`. With
-the shuffle temporarily pinned, a local change that was not committed, all four
-verify harnesses passed, so this draw is the only cause there. `0e72b76331` later
-fixed it: verify mode repeats the shuffle. The script's other tests pass when run on their own. It has not been run
-on the commit before this merge, so when it began to fail is not known.
-
-**Not run.** No control run of this binary, no second run, and no workload with
-mixed species, moving players or mobs outside the entity-ticking area. `lan_e2e`
-was not run.
 
 ## Output preparation audit (PR #8666 follow-up)
 
@@ -536,12 +319,9 @@ add neither children to parents nor asynchronous worker CPU to wall time.
 `tracking_encode` includes its scoped wait and per-viewer buffer distribution;
 socket compression is already off-thread and is not attributed to this span.
 
-The viewer-parallel experiment was removed: a repeated 200-player comparison
-changed 92.28 to 92.05 ms, while 100 players regressed from 41.86 to 42.16 ms.
-The initial baseline itself ranged from 92.28 to 95.90 ms at 200 players. These
-results do not establish a whole-tick benefit. At `c0b066072`, only profiling and benchmark
-reproducibility changes remained. The subsequent chunk-range overlap below is
-a separate implementation; the rejected visibility path remains removed.
+The viewer-parallel experiment was removed: repeated 100- and 200-player
+comparisons showed no whole-tick benefit. The chunk-range overlap below is a
+separate implementation; the rejected visibility path remains removed.
 
 `HORIZON_REGION_PROFILE=1` additionally logs three **sums of worker elapsed
 milliseconds**, once per prediction barrier: input cloning/pending writes
@@ -559,82 +339,6 @@ reports actual compression calls (shared-frame cache hits excluded) and summed
 worker elapsed milliseconds while spans were enabled. Counter snapshots at the
 window boundaries are approximate; compression includes building frame contents,
 not socket delivery latency. The ordinary disabled path adds no clock reads.
-
-### Rejected visibility experiment: fresh measurements
-
-Baseline: exact PR head `71aff0ed91f158bbcc5574f2fc854f35d73d25a5`.
-Both binaries used the optimised `fast` profile, the same prepared 26.3 resources,
-forced parallel simulation and eight region workers on a Ryzen 5 5600X (six
-physical cores). Each run used a fresh seed-12345 flat world, view/simulation
-radius 2, stationary players 512 blocks apart, 70 persistent invulnerable AI
-zombies each, 200 fixed warmup ticks and a 20-second measurement. Runs were
-sequential, without active compilation or oracle execution. Desktop applications
-and an existing game process shared the machine; this was not an isolated host.
-The benchmark now records load averages as well as process CPU/RSS.
-
-Initial baseline averages at 50/100/200 players were 22.92/43.07/95.90 ms;
-initial candidate averages were 20.67/41.27/91.50 ms. Repeating each untouched
-baseline immediately before its candidate removed that apparent improvement:
-
-| Players | Baseline avg/p50/p95/p99 ms | Rejected candidate avg/p50/p95/p99 ms | TPS before → candidate | CPU % before → candidate | Mean RSS MiB before → candidate |
-| ---: | --- | --- | --- | --- | --- |
-| 50 | 20.58/20.15/22.66/24.27 | 20.65/20.41/22.99/25.28 | 20.03 → 20.03 | 330.34 → 330.34 | 412.29 → 413.51 |
-| 100 | 41.86/41.41/45.72/48.15 | 42.16/41.82/45.55/48.31 | 20.01 → 20.01 | 438.46 → 438.44 | 520.24 → 527.09 |
-| 200 | 92.28/91.36/98.56/105.75 | 92.05/91.28/98.28/101.87 | 10.83 → 10.86 | 462.65 → 467.54 | 774.4 → 813.8 |
-
-Every spread-out run committed all predictions: zero replays, RNG/read conflicts
-and fallback rounds. The connected four-player/280-zombie case (32-block spacing)
-changed 4.92 to 4.98 ms; twelve players with 840 zombies/skeletons/spiders changed
-5.23 to 5.28 ms. Both also kept expected counts and zero replays. These are two
-runs per binary at each large size and one per binary in the extra cases, not a
-statistical demonstration of equivalence. The negative/near-zero repeated
-results do not justify retaining the extra parallel visibility path.
-
-The first 200-player candidate report separated player gameplay (4.55 ms), entity
-snapshots (2.98 ms), tracking preparation (1.35 ms), visibility (0.21 ms), entity
-encoding/distribution plus its wait (2.46 ms), chunk output (0.06 ms) and output
-queuing (0.03 ms). Mob prediction still waited 31.51 ms. Streaming preparation
-was 7.19 ms; application and unloading retained their existing world ordering.
-These are elapsed spans with overlapping parents, not additive costs.
-
-The new compression/queue counters and per-worker prediction profiler were added
-after the rejected experiment. Those metrics are unavailable for the before/after
-sweep. There is no measured socket delivery latency or window-peak backlog; no
-latency improvement is claimed. That experiment retained no additional mob start/join API, speculative
-replication, queue, thread pool or world/chunk clone at `c0b066072`.
-
-### Final diagnostics validation
-
-`pr_ready.py --quick --base 71aff0ed91f158bbcc5574f2fc854f35d73d25a5` passed
-formatting, clippy, public-tree checks, 644 Python tests and 4,096 Rust tests.
-The quick run explicitly deferred parity. An earlier broad sweep was interrupted
-after nine completed passes; it was not a complete pass. The final quick report
-lists 153 affected harness cases for the broader CI scope.
-
-`tools/ci/region-verify.sh` passed all four real-jar verify-mode harnesses
-(`dedicated_server`, `server_entities`, `server_player_damage`, `natural_spawn`),
-15 transaction tests and six resource-backed gameplay tests, including clean
-commit versus serial and guest damage attribution. Separately, the 15 transaction
-tests also passed with `HORIZON_REGION_PROFILE=1`.
-
-Live server-thread LAN mobs/chest checks passed. The damage harness exits zero
-but reports same-hit armor ordering as 999.04 health versus vanilla's 996.0.
-The untouched baseline reproduced that mismatch on a fresh retry; the baseline's
-first attempt failed earlier on its fall-damage assertion. These observations
-are not a clean armor-parity pass and are not fixed by this diagnostics change.
-
-A final profiling-enabled 200-player smoke run retained all 14,000 mobs and
-committed every prediction without replay/fallback. Per-round worker elapsed
-sums were approximately 60 ms preparing inputs, 153 ms simulating and 29 ms
-building observations/results; these overlapped within a 31.55 ms prediction
-barrier and must not be added to elapsed tick time. Entity snapshots took
-2.96 ms, encoding/distribution 2.50 ms and serial visibility 0.67 ms. The report
-recorded 200 actual compression calls and 20.06 ms summed compression-worker
-time across the window. End samples had zero unframed network bytes and no
-queued/generating/decorating/finishing/lighting/meshing work (7,868 proto chunks
-remained cached). Pending bytes exclude framed lookahead and kernel socket
-queues; zero here does not establish delivery latency or peak backpressure.
-This profiler smoke run is not a claim of performance improvement.
 
 ## Overlapping chunk-range preparation with mob prediction
 
@@ -687,95 +391,158 @@ API audit: inspected only Rayon-core's `in_place_scope` declaration at
 [`7af20d7`](https://github.com/rayon-rs/rayon/blob/7af20d7692d5decbcb4adcaa079cd607e3e50814/rayon-core/src/thread_pool/mod.rs),
 under its MIT licence. No implementation was copied or adapted.
 
-### Fresh overlap measurements
+## Validation
 
-Baseline is exact PR head `c0b06607260065356dafa22be5f3c60beb91237c`, saved
-before editing. Same `fast` profile, prepared resources, parallel mode and eight
-workers on the six-core Ryzen 5 5600X. Both binaries use fresh seed-12345 flat
-worlds, players 512 blocks apart, 70 persistent invulnerable AI zombies each,
-view/simulation distance 2, exactly 200 warmup ticks and 20-second windows. All
-performance runs are sequential, without compilers or oracles running. Desktop
-applications and an existing game share the host; system load averages are
-recorded. This compares the follow-up to the current PR, not to main or to the
-historical `71aff0ed9` benchmark.
+The focused tests cover topology/bridge merge and split, stable ordering,
+negative/extreme chunk coordinates, migration/removal/unload/dormancy, exact
+sparse-grid equivalence, chunk-by-chunk topology against a whole rebuild,
+negative-space reads, distant ID/full-scan reads, foreign bounds growth, sparse
+populated-cell queries, shared RNG/Gaussian consumption, complete mutable-mob
+transactions and exact indexed player selection.
 
-The headline values below are means of per-run tick averages, with two baseline
-runs at each size, two implementation runs at 50/100, and five at 200:
+Checks on `32ec9e94cc`, which merges main at `5a83184c7e` (2026-11-07):
 
-| Players | Baseline ms/tick | Implementation ms/tick | Saved | TPS before → after | Process CPU % before → after | Mean RSS MiB before → after |
-| ---: | ---: | ---: | ---: | --- | --- | --- |
-| 50 | 20.73 | 20.30 | 0.43 ms (2.05%) | 20.03 → 20.03 | 327.88 → 359.85 | 420.73 → 419.76 |
-| 100 | 42.10 | 41.30 | 0.80 ms (1.91%) | 20.00 → 20.01 | 436.02 → 445.88 | 554.94 → 545.93 |
-| 200 | 92.48 | 89.01 | 3.47 ms (3.75%) | 10.80 → 11.23 | 458.58 → 476.40 | 831.54 → 828.95 |
+- `tools/pr_ready.py --quick` passed: formatting, clippy with warnings denied
+  (including the server build), 7,471 workspace Rust tests, 718 Python tests,
+  27 content-root tests and the launcher's checks with 738 tests. Its scope
+  check warns that the branch is 27,170 lines of code against a 500-line guide.
+- The full `tools/pr_ready.py` was stopped during its harness step, at the
+  owner's request; every step before it had passed.
+- `tools/ci/region-verify.sh` passed: `dedicated_server`, `server_entities`,
+  `server_player_damage` and `natural_spawn` in verify mode, then 20
+  `mobs::region_tick` tests, `in_range_follows_geometry` and the four
+  resource-backed gameplay tests.
 
-At 200 players, the three same-binary `HORIZON_REGION_OVERLAP=0` runs were
-89.54/89.57/89.65 ms, averaging 89.59 ms versus 89.01 ms with overlap. Bracketing
-each serial-preparation run with the adjacent overlap runs gives differences
-of 0.50/0.72/0.54 ms. Thus the whole change saves about 3.47 ms in this workload,
-with about 0.58 ms observed in the overlap ablation; the remainder must not be
-credited to overlap alone. The coordinator prepared approximately 8,000 predicate
-answers in 0.72 ms during a 31.70 ms prediction interval, then waited 30.94 ms
-for the join (first run). Streaming preparation decreased from about 7.2 ms to
-3.0 ms. These nested/overlapping spans must not be added to parent durations.
+The harness sweep is incomplete. On the merge commit before the fix below
+(`26cbe95788`), the full `pr_ready` ran 396 of the 513 harnesses before the
+run was killed: 384 passed and 12 failed. Three of the twelve came from this
+branch: `raid_village`, `boat_leasher` and `mob_quad_leash` failed because
+`Game` still had a second, empty `persist` beside `LevelSimulation::persist`,
+which code merged from main read and wrote (armor stands and paintings saved
+their raw NBT where saves never look; TNT owners, raids, advancements and
+guest actions found no UUID). `32ec9e94cc` removes it, and the three pass.
+Two more pass on `32ec9e94cc` when run alone: `command_exec` (three fire
+`fill` mismatches in the sweep) and `bed_explosion` (two knockback values
+0.01 apart in the sweep, a timeout waiting for entity data on a rerun beside
+other runs). `frame_map_writes` runs `command_exec`'s driver in the same
+`.local/command-exec-parity` folder, so the two can't run side by side. The
+other seven fail on main at `5a83184c7e` too; they are listed under failures
+below. The 384 passes predate the fix, which changes 18 gameplay files, and
+117 harnesses were not run.
 
-CPU is a tradeoff, not a claimed saving. At 50 players both engines keep 20 TPS,
-but process CPU rises about 32 percentage points. Performing the preparation
-serially at 50 players measured 20.63 ms and 359.96% CPU, so disabling overlap
-alone did not remove that increase. No new threads or pools are created. RSS
-varies between runs; the table does not establish a memory improvement.
+## Benchmark
 
-All performance runs retained expected player/mob counts and committed every
-prediction: zero RNG/read conflicts, replays or fallback rounds. Queue samples
-ended with zero unframed network bytes and no queued/generating/lighting/meshing
-work. They are end samples, not window maxima or delivery-latency measurements.
-The range-preparation log samples were accepted in the steady stationary cases.
-Publication remains in the original tick; no extra tick of delivery latency is
-introduced. Wire latency itself was not measured.
+`tools/bench_region_ticks.py` starts real `horizon-bots` clients, teleports
+them onto a square grid `--spacing` blocks apart in a fixed-seed flat world, and
+summons 70 persistent, invulnerable, AI-enabled zombies around each player in
+interleaved global order. Natural spawning and random block ticks are off and
+the players have resistance, so the population stays the same. Setup runs while
+the server is frozen; both engines then step the same 200 warmup ticks before
+a 20-second measurement. Each run gets a fresh world and scratch user folders.
+The script rejects a run whose player count changes, or, for standing players,
+whose mob count changes. It records whole-tick average/median/p95/p99 from the
+server's own report, the mob phase, process-tree CPU and RSS, load averages and
+the region counters. `--behaviour walk` has each bot wander within 48 blocks of
+its teleport, on the ground, at 5.6 blocks a second.
 
-Four connected players/280 zombies changed 5.09 to 4.93 ms; 32 players with
-2,240 mixed zombies/skeletons/spiders changed 13.55 to 13.25 ms. Those are single
-pairs, not statistical equivalence claims. The mixed workload exercises the
-preparation path (more than 1,024 proto coordinates). A live verify-mode run
-with 20 warmup ticks then 20 seconds passed, with 15 complete measured rounds
-of serial/committed-state comparison and no mismatches. Its deliberately slow
-verification cost is not a performance comparison. The preceding attempt with
-200 warmup ticks hit the driver's warmup timeout at about 1.3 seconds per tick;
-that attempt did not complete and is not counted as passed.
+Chunks stay loaded two chunks past the view distance N around each player
+(`lan_update_streaming` keeps `view_distance + 1`, finished one further), a
+square 2N+5 chunks across. Players are separate regions only when `--spacing`
+is above (2N+6)×16 blocks.
 
-Per-run summaries below preserve the tail values. `avg/p50/p95/p99` are the
-individual report values; RSS is mean/peak, not an aggregate percentile:
+```sh
+cargo build --profile fast -p horizon-client -p horizon-client-lib -p horizon-bots \
+  --bin horizon-client --bin horizon-ctl --bin horizon-bots
+# main's merge base, built the same way into its own target directory
+python3 tools/bench_region_ticks.py --bin target/fast --before-bin <main>/target/fast \
+  --modes legacy,parallel --workers 8 --mobs-per-player 70 --warmup 10 --seconds 20 \
+  --view-distance 16 --simulation-distance 10 --spacing 640 --settle 180 \
+  --behaviour stand --players 100
+```
 
-| Case | Avg/p50/p95/p99 ms | TPS | Process CPU % | RSS mean/peak MiB |
-| --- | --- | ---: | ---: | --- |
-| 50 baseline 1 | 20.90/20.66/23.21/25.97 | 20.03 | 325.40 | 417.02/424.67 |
-| 50 baseline 2 | 20.55/20.37/22.02/23.04 | 20.03 | 330.37 | 424.44/431.79 |
-| 50 overlap 1 | 20.42/20.04/22.30/26.06 | 20.03 | 359.81 | 411.13/419.99 |
-| 50 overlap 2 | 20.18/19.85/21.86/23.53 | 20.03 | 359.88 | 428.40/435.62 |
-| 100 baseline 1 | 42.36/41.83/46.32/50.67 | 20.01 | 438.38 | 550.63/559.20 |
-| 100 baseline 2 | 41.84/41.45/45.92/49.14 | 19.98 | 433.66 | 559.25/571.52 |
-| 100 overlap 1 | 41.36/40.88/44.76/47.83 | 20.01 | 443.48 | 551.35/560.56 |
-| 100 overlap 2 | 41.23/40.96/44.49/47.35 | 20.01 | 448.28 | 540.51/550.86 |
-| 200 baseline 1 | 92.25/91.57/99.64/103.06 | 10.83 | 458.76 | 826.99/860.47 |
-| 200 baseline 2 | 92.71/91.98/99.88/102.00 | 10.78 | 458.40 | 836.09/851.38 |
-| 200 overlap 1 | 89.13/88.29/95.46/100.17 | 11.21 | 477.36 | 824.92/850.11 |
-| 200 overlap 2 | 88.95/88.22/95.99/102.00 | 11.24 | 477.01 | 831.89/850.82 |
-| 200 overlap 3 | 88.76/87.92/95.85/100.45 | 11.26 | 472.33 | 829.18/849.14 |
-| 200 overlap 4 | 88.95/88.14/95.36/100.21 | 11.24 | 477.52 | 827.38/854.04 |
-| 200 overlap 5 | 89.27/88.40/96.08/100.92 | 11.20 | 477.76 | 831.38/854.22 |
-| 200 serial preparation 1 | 89.54/88.42/97.13/109.74 | 11.16 | 472.81 | 833.25/858.02 |
-| 200 serial preparation 2 | 89.57/88.54/96.30/108.72 | 11.16 | 472.79 | 839.90/871.55 |
-| 200 serial preparation 3 | 89.65/88.93/96.83/101.57 | 11.15 | 472.73 | 825.96/850.23 |
+### Measurements (2026-11-07)
 
-Final validation of the retained implementation: `pr_ready.py --quick --base
-c0b06607260065356dafa22be5f3c60beb91237c` passed formatting, clippy, public-tree,
-644 Python tests, 4,100 Rust tests and doc-test checks. The 153 affected broader
-parity cases are explicitly deferred by `--quick`, not reported as passed.
-`tools/ci/region-verify.sh` passed all four focused real-jar verify-mode harnesses,
-18 transaction/lifecycle tests and six resource-backed gameplay tests. Live LAN
-mobs/chest passed; the damage check still reports the baseline armor-order
-mismatch described above. Packet publication and gameplay mutation phases remain unchanged.
+Before is main at the merge base `5a83184c7e`; after is this branch's code at
+`32ec9e94cc` with `HORIZON_SIMULATION_MODE=parallel` and eight workers. Both
+use the `fast` profile and Rust 1.99.0 on a Ryzen 5 5600X (6 cores, 12
+threads), with the bots on the same machine. Each case ran once per binary,
+main first, on a desktop shared with other idle sessions (load averages 0.6 to
+3.8 at the start of each run). The full results are in
+[`performance/server-regions.json`](performance/server-regions.json).
 
-The required port-ledger check against `origin/main` exited zero, but reported
-existing stale comment citations and advancement mapping differences in the
-broader PR. It is not a clean ledger audit; the cited comments already exist at
-`c0b066072`, and this follow-up changes no advancement implementation.
+**View distance 16, simulation distance 10, 640 blocks apart, 180 s to load.**
+Every run kept all its players and mobs, finished loading before measuring,
+and committed every prediction, with no replay and no fallback round.
+
+| Players | Main avg/p50/p95/p99 ms | Branch avg/p50/p95/p99 ms | Avg change | TPS | Mob median ms | CPU % | Mean RSS MiB | Regions |
+| --- | --- | --- | ---: | --- | --- | --- | --- | ---: |
+| 50 standing | 43.52/42.96/46.89/51.46 | 28.73/28.26/31.12/37.45 | −34.0% | 20.00 → 20.02 | 25.5 → 11.7 | 104 → 272 | 771 → 832 | 50 |
+| 100 standing | 100.42/99.22/108.85/116.92 | 66.76/65.53/74.93/85.22 | −33.5% | 9.95 → 14.96 | 54.5 → 25.2 | 104 → 346 | 1,273 → 1,363 | 100 |
+| 200 standing | 237.16/232.74/266.08/280.49 | 146.44/142.93/174.40/183.33 | −38.3% | 4.21 → 6.82 | 121.2 → 52.1 | 109 → 331 | 2,263 → 2,402 | 200 |
+| 100 walking | 121.72/119.02/137.01/149.27 | 158.12/153.58/183.51/191.18 | **+29.9%** | 8.21 → 6.32 | 68.0 → 102.6 | 119 → 153 | 1,378 → 1,490 | 3.3 |
+
+The walkers move up to 48 blocks (three chunks) from their spot, which closes
+the three-chunk gap between their loaded squares, so the 100 players formed
+3.3 regions on average. Nearly all the mobs then belong to one region, which one
+worker ticks in order, and the transaction's prediction and commit cost comes
+on top. The branch is slower than main there.
+
+**The same at 576 blocks: one connected region.** 576 blocks is 36 chunks, one
+less than a loaded square, so neighbouring squares touch and every player's
+mobs belong to one region.
+
+| Players | Main avg ms | Branch avg ms | Change | TPS | Regions |
+| --- | ---: | ---: | ---: | --- | ---: |
+| 50 standing | 44.11 | 58.86 | **+33.4%** | 20.00 → 16.97 | 1 |
+| 100 standing | 94.58 | 126.58 | **+33.8%** | 10.56 → 7.89 | 1 |
+| 100 walking | 114.40 | 151.21 | **+32.2%** | 8.74 → 6.61 | 1 |
+
+The 200-player run of that sweep (211.41 → 124.26 ms, 200 regions) is left
+out: its 60 s settle was too short, chunks were still generating at the end, and
+its squares had not grown into each other yet.
+
+**View distance 2, simulation distance 2, 512 blocks apart**, the workload of
+earlier versions of this page. Every run kept all its players and mobs.
+
+| Players | Main avg/p50/p95/p99 ms | Branch avg/p50/p95/p99 ms | Avg change | TPS | CPU % | Mean RSS MiB | Regions |
+| --- | --- | --- | ---: | --- | --- | --- | ---: |
+| 50 standing | 35.09/34.88/36.84/38.76 | 20.89/20.69/22.62/23.62 | −40.5% | 20.01 → 20.02 | 139 → 326 | 367 → 435 | 50 |
+| 100 standing | 79.29/78.90/83.28/85.71 | 46.58/46.34/49.15/50.99 | −41.3% | 12.60 → 20.00 | 104 → 425 | 491 → 576 | 100 |
+| 200 standing | 181.02/180.36/190.05/193.54 | 96.11/95.89/100.97/102.40 | −46.9% | 5.52 → 10.40 | 109 → 440 | 711 → 868 | 200 |
+| 100 walking | 93.18/93.39/100.15/102.37 | 55.09/53.33/59.62/130.93 | −40.9% | 10.72 → 18.13 | 114 → 371 | 534 → 624 | 98.5 |
+
+The standing runs committed every prediction in clean rounds. In the walking
+run every round (366 of 366) fell back as `Unpredicted`: at simulation distance
+2 the walkers leave some of their mobs outside the entity-ticking area, which
+predicted 6,414 of the 7,000 mobs a tick on average. The walk still saved 41%
+on average, but its p99 rose to 130.93 ms and the slowest tick took 145.86 ms.
+
+## Failures and limits
+
+Harnesses that fail on this branch and on main at `5a83184c7e` alike:
+
+- `biome_source`: mismatch at output line 20117 (vanilla `biome 3`, Rust `biome 2`).
+- `frame_map_writes`: "script record count differs: expected 192, got 16346".
+- `lunge_motion`: "the server ran 2 ticks for move N of the jump", a known flaky harness; it failed its retry on both.
+- `management_protocol`: this machine has no `.local/datagen`.
+- `loaded_pig_tags`, `loot_mine_pot_components`, `mob_discard`: the harness stops on its own arguments (`--reference-only` or `--resources` expected) before running.
+
+Limits of this change and of these measurements:
+
+- **Few large regions are slower than main.** With one region the branch is
+  about 33% slower in forced parallel mode, and walking players at view
+  distance 16 merged into 3.3 regions and were 30% slower. Automatic mode keeps
+  the serial path for a single region, but uses region transactions from two
+  regions and 128 mobs, so the walking case's cost would reach a default server.
+  Automatic mode was not benchmarked.
+- Every case ran once per binary, main always first, on a shared desktop with
+  the bots on the same CPU. Run-to-run variation was not measured.
+- The workload is the best case for regions: invulnerable zombies, no level RNG
+  users, villagers, breeding, raiders or native mods. No mixed population ran.
+- The branch uses 2.5 to 4 times the CPU and 60 to 160 MiB more memory.
+- At 200 players neither engine holds 20 TPS (view distance 16: 4.21 → 6.82;
+  view distance 2: 5.52 → 10.40).
+- The full harness sweep did not finish (see Validation), the port-ledger check
+  and the live LAN checks were not rerun on this head, and the earlier report of
+  `lan_e2e`'s damage check (999.04 health against vanilla's 996.0, also on the
+  base it was compared with then) was not checked again.
