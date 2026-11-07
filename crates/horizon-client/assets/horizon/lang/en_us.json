@@ -892,5 +892,6 @@
   "Editing: %s": "Editing: %s",
   "Press the button for this. %s cancels.": "Press the button for this. %s cancels.",
   "This button also does: %s": "This button also does: %s",
-  "horizon.pad.notice.connected.press": "Press to use it"
+  "horizon.pad.notice.connected.press": "Press to use it",
+  "horizon.recipes.cooking.seconds": "{seconds}s"
 }

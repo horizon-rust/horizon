@@ -82,6 +82,8 @@ pub(super) struct Shown {
     slots: Vec<Vec<(BrowserStack, ItemStack)>>,
     note: String,
     action: Option<bool>,
+    official: bool,
+    campfire: bool,
 }
 
 /// The recipes a panel shows, and its page.
@@ -100,8 +102,14 @@ impl Pages {
         items: &horizon_client::items::Items,
         shown: &RecipePage,
         old: Option<Pages>,
+        official: bool,
     ) -> Self {
         let (title, list, tab) = (&shown.title, &shown.recipes, shown.tab as usize);
+        let station = shown
+            .tabs
+            .get(shown.tab as usize)
+            .map(|stack| stack.item.as_str());
+        let campfire = station == Some("minecraft:campfire");
         let kept = old.filter(|o| o.title == *title && o.tab == tab);
         let cycle = |stacks: &[BrowserStack]| -> Vec<(BrowserStack, ItemStack)> {
             stacks
@@ -121,6 +129,8 @@ impl Pages {
                     slots,
                     note: r.note.clone(),
                     action: r.action,
+                    official,
+                    campfire,
                 }
             })
             .collect();
@@ -158,8 +168,17 @@ impl Shown {
             BrowserLayout::Brewing => ((2.0 * SLOT, SLOT), row(2)),
         }
     }
+    fn cooking_card(&self, room: f32) -> bool {
+        self.official
+            && self.layout == BrowserLayout::Cooking
+            && room >= if self.campfire { 90.0 } else { 124.0 }
+    }
+
     /// The height of its slots, arrow and button, `room` wide.
     fn block(&self, room: f32) -> f32 {
+        if self.cooking_card(room) {
+            return if self.campfire { 44.0 } else { 58.0 };
+        }
         let h = self.inputs().0.1;
         let (_, _, action) = self.places(room);
         match self.action {
@@ -168,7 +187,11 @@ impl Shown {
         }
     }
     fn height(&self, room: f32) -> f32 {
-        let note = if self.note.is_empty() { 0.0 } else { 11.0 };
+        let note = if self.note.is_empty() || self.cooking_card(room) {
+            0.0
+        } else {
+            11.0
+        };
         self.block(room) + note + GAP
     }
     /// Every slot's place from the recipe's corner (the result last), the
@@ -178,8 +201,18 @@ impl Shown {
         let ((w, h), mut at) = self.inputs();
         // The mod's slots beyond the layout's are not shown.
         at.truncate(self.slots.len() - 1);
-        let arrow = (w + 4.0, ((h - 16.0) / 2.0).floor());
-        let result = (w + 32.0, ((h - SLOT) / 2.0).floor());
+        let (arrow, result) = if self.cooking_card(room) {
+            if self.campfire {
+                ((26.0, 7.0), (60.0, 8.0))
+            } else {
+                ((46.0, 17.0), (94.0, 18.0))
+            }
+        } else {
+            (
+                (w + 4.0, ((h - 16.0) / 2.0).floor()),
+                (w + 32.0, ((h - SLOT) / 2.0).floor()),
+            )
+        };
         let action = if result.0 + SLOT + 16.0 <= room {
             (result.0 + SLOT + 4.0, ((h - 12.0) / 2.0).floor())
         } else {
@@ -210,6 +243,16 @@ fn recipes_top(pages: &Pages, layout: &Layout) -> f32 {
     let tabs = tab_places(pages, layout);
     tabs.last()
         .map_or(layout.grid.1 + TITLE, |&(_, y)| y + TAB + 3.0)
+}
+
+fn recipe_skin(
+    batch: &mut HudBatch,
+    atlas: &horizon_client::hud::HudAtlas,
+    sprite: &str,
+    rect: [f32; 4],
+) {
+    let [x, y, w, h] = rect;
+    horizon_client::ui::nine_slice(batch, atlas, sprite, x, y, w, h, u32::MAX);
 }
 
 impl Game<'_> {
@@ -376,31 +419,47 @@ impl Game<'_> {
             batch.text(atlas, &text, x, layout.arrows_y + 5.0, u32::MAX, true);
         }
         for (i, (x, y)) in self.recipes_shown(layout) {
-            let Some(r) = self.panel.recipes.as_ref().map(|p| &p.recipes[i]) else {
+            let Some(pages) = &self.panel.recipes else {
                 break;
             };
+            let r = &pages.recipes[i];
             let (at, arrow, action) = r.places(layout.width());
             let h = r.block(layout.width());
             let (cooking, note, button) =
                 (r.layout == BrowserLayout::Cooking, r.note.clone(), r.action);
             let atlas = &self.gui.atlas;
-            for &(sx, sy) in at.iter().filter(|p| p.0.is_finite()) {
-                batch.sprite(atlas, "gui/sprites/container/slot", x + sx, y + sy);
+            let card = r.cooking_card(layout.width());
+            if card {
+                self.draw_cooking_card(batch, x, y, r);
             }
-            if cooking {
+            for (slot, &(sx, sy)) in at.iter().enumerate().filter(|(_, p)| p.0.is_finite()) {
+                let (sprite, inset) = if card && slot + 1 == at.len() {
+                    ("horizon/jei/output_slot", -4.0)
+                } else if card {
+                    ("horizon/jei/slot", 0.0)
+                } else {
+                    ("gui/sprites/container/slot", 0.0)
+                };
+                batch.sprite(atlas, sprite, x + sx + inset, y + sy + inset);
+            }
+            if cooking && !(card && r.campfire) {
+                let (sprite, inset) = if card {
+                    ("horizon/jei/icons/flame", 1.0)
+                } else {
+                    ("gui/sprites/container/furnace/lit_progress", 2.0)
+                };
+                batch.sprite(atlas, sprite, x + inset, y + SLOT + 2.0);
+            }
+            if card {
+                self.draw_cooking_arrow(batch, x + arrow.0, y + arrow.1, &note, pages.since);
+            } else {
                 batch.sprite(
                     atlas,
-                    "gui/sprites/container/furnace/lit_progress",
-                    x + 2.0,
-                    y + SLOT + 2.0,
+                    "gui/sprites/container/furnace/burn_progress",
+                    x + arrow.0,
+                    y + arrow.1,
                 );
             }
-            batch.sprite(
-                atlas,
-                "gui/sprites/container/furnace/burn_progress",
-                x + arrow.0,
-                y + arrow.1,
-            );
             if let Some(enabled) = button {
                 let rect = [x + action.0, y + action.1, 12.0, 12.0];
                 let sprite = match (enabled, inside(cursor, rect)) {
@@ -426,7 +485,7 @@ impl Game<'_> {
                 batch.text(atlas, "+", rect[0] + 3.0, rect[1] + 2.0, color, true);
                 horizon_client::widgets::record(&format!("+ {i}"), rect, enabled);
             }
-            if !note.is_empty() {
+            if !card && !note.is_empty() {
                 batch.text(atlas, &note, x, y + h + 2.0, rgba(224, 224, 224, 255), true);
             }
             for (k, &(sx, sy)) in at.iter().enumerate().filter(|(_, p)| p.0.is_finite()) {
@@ -453,6 +512,63 @@ impl Game<'_> {
                 );
             }
         }
+    }
+
+    fn draw_cooking_card(&self, batch: &mut HudBatch, x: f32, y: f32, r: &Shown) {
+        let atlas = &self.gui.atlas;
+        let (width, height) = if r.campfire {
+            (90.0, 47.0)
+        } else {
+            (124.0, 62.0)
+        };
+        let left = x - 4.0;
+        let top = y - 4.0;
+        let right = left + width;
+        let bottom = top + height;
+        recipe_skin(
+            batch,
+            atlas,
+            "horizon/jei/single_recipe_background_v2",
+            [left, top, width, height],
+        );
+        let color = rgba(128, 128, 128, 255);
+        let time = if let Some((time, xp)) = r.note.split_once(", ")
+            && let Some(seconds) = time.strip_suffix(" s")
+            && let Some(value) = xp.strip_suffix(" XP")
+        {
+            if !r.campfire && value != "0" {
+                let xp_x = right - 4.0 - HudBatch::text_width(atlas, xp);
+                batch.text(atlas, xp, xp_x, y, color, false);
+            }
+            self.translate("horizon.recipes.cooking.seconds", "{seconds}s")
+                .replace("{seconds}", seconds)
+        } else {
+            r.note.clone()
+        };
+        let time_x = (left + (width - HudBatch::text_width(atlas, &time)) / 2.0).floor();
+        batch.text(atlas, &time, time_x, bottom - 12.0, color, false);
+    }
+
+    fn draw_cooking_arrow(&self, batch: &mut HudBatch, x: f32, y: f32, note: &str, since: Instant) {
+        // The JEI arrow reveals one of 22 pixel columns at a time and loops
+        // over the cooking duration. Its filled sprite has a dark lower edge.
+        let filled = note
+            .split_once(" s, ")
+            .and_then(|(seconds, _)| seconds.parse::<f64>().ok())
+            .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+            .map_or(0.0, |seconds| {
+                let phase = since.elapsed().as_secs_f64() % seconds / seconds;
+                (phase * 23.0).floor().min(22.0) as f32
+            });
+        let atlas = &self.gui.atlas;
+        batch.sprite(atlas, "horizon/jei/recipe_arrow", x, y);
+        batch.sprite_part(
+            atlas,
+            "horizon/jei/recipe_arrow_filled",
+            x,
+            y,
+            filled / 22.0,
+        );
     }
 
     /// The tabs, on slots; the selected one framed.

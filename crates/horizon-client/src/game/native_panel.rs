@@ -192,9 +192,14 @@ impl Game<'_> {
             self.panel.stacks = stacks;
             // The same title again (the mod updating its buttons) keeps the page.
             let old = self.panel.recipes.take();
-            self.panel.recipes = shown
-                .as_ref()
-                .map(|shown| super::native_panel_recipes::Pages::new(items, shown, old));
+            self.panel.recipes = shown.as_ref().map(|shown| {
+                super::native_panel_recipes::Pages::new(
+                    items,
+                    shown,
+                    old,
+                    of.0.native_id() == "recipes",
+                )
+            });
             self.panel.of = Some(of.clone());
         }
         Some(of.0)
