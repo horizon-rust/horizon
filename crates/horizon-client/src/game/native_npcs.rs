@@ -41,6 +41,7 @@ impl Game<'_> {
                 // The UUIDs the level remembers, checked against its entities: a
                 // remembered id may belong to an entity that is gone.
                 let id = g
+                    .simulation
                     .persist
                     .uuids
                     .iter()

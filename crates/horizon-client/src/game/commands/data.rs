@@ -1306,22 +1306,22 @@ mod orb_uuid_tests {
         game.load_orb(tag, Some(uuid));
         assert_eq!(game.simulation.orbs.len(), 1);
         let id = game.simulation.orbs[0].id;
-        assert_eq!(game.persist.uuids.get(&id), Some(&uuid));
+        assert_eq!(game.simulation.persist.uuids.get(&id), Some(&uuid));
         let time = game.simulation.world.game_time;
         for raw in [
             None,
             Some(Tag::compound([("UUID", Tag::IntArray(vec![9, 9, 9, 9]))])),
         ] {
             if let Some(raw) = &raw {
-                game.persist.raw.insert(id, raw.clone());
+                game.simulation.persist.raw.insert(id, raw.clone());
             } else {
-                game.persist.raw.remove(&id);
+                game.simulation.persist.raw.remove(&id);
             }
             for _ in 0..3 {
                 let saved = game.entity_nbt_in_level(Target::Orb(id)).unwrap();
                 assert_eq!(saved.get("UUID"), Some(&Tag::IntArray(uuid.to_vec())));
-                assert_eq!(game.persist.uuids.get(&id), Some(&uuid));
-                assert_eq!(game.persist.raw.get(&id), raw.as_ref());
+                assert_eq!(game.simulation.persist.uuids.get(&id), Some(&uuid));
+                assert_eq!(game.simulation.persist.raw.get(&id), raw.as_ref());
                 assert_eq!(game.simulation.world.game_time, time);
             }
         }
@@ -1418,7 +1418,10 @@ mod wolf_live_anger_tests {
                     "{kind} end={end}"
                 );
                 assert_eq!(game.simulation.world.game_time, 12_345);
-                assert_eq!(game.persist.uuids.get(&id), Some(&[316, 1, 0, number]));
+                assert_eq!(
+                    game.simulation.persist.uuids.get(&id),
+                    Some(&[316, 1, 0, number])
+                );
                 assert_eq!(game.simulation.mobs[i].health, health);
                 assert!(game.simulation.mobs[i].no_ai);
                 assert_eq!(
@@ -1641,9 +1644,9 @@ mod arrow_owner_tests {
             // Prove actual loader adoption before reading any saved NBT.
             assert_eq!(p.owner_uuid, owner);
             let id = p.id;
-            assert_eq!(game.persist.uuids.get(&id), Some(&uuid));
+            assert_eq!(game.simulation.persist.uuids.get(&id), Some(&uuid));
             let expected = owner.map(|u| Tag::IntArray(u.to_vec()));
-            let loaded_raw = game.persist.raw.get(&id).cloned();
+            let loaded_raw = game.simulation.persist.raw.get(&id).cloned();
             let mut stale = loaded_raw.clone().unwrap();
             if let Tag::Compound(fields) = &mut stale {
                 fields.insert("Owner".into(), Tag::IntArray(vec![99; 4]));
@@ -1656,9 +1659,9 @@ mod arrow_owner_tests {
             }
             for raw in raw_cases {
                 if let Some(raw) = &raw {
-                    game.persist.raw.insert(id, raw.clone());
+                    game.simulation.persist.raw.insert(id, raw.clone());
                 } else {
-                    game.persist.raw.remove(&id);
+                    game.simulation.persist.raw.remove(&id);
                 }
                 let saved = game.entity_nbt(Target::Projectile(id)).unwrap();
                 assert_eq!(saved.get("Owner"), expected.as_ref());
@@ -1671,7 +1674,7 @@ mod arrow_owner_tests {
                     game.simulation.projectiles.last().unwrap().owner_uuid,
                     owner
                 );
-                assert_eq!(game.persist.raw.get(&id), raw.as_ref());
+                assert_eq!(game.simulation.persist.raw.get(&id), raw.as_ref());
                 assert_eq!(game.simulation.world.game_time, time);
             }
         }

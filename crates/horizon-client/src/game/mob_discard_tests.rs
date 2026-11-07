@@ -145,7 +145,7 @@ fn discarded_mob_leaves_selectors_and_saves_while_frozen() {
     game.simulation
         .mobs
         .push(Mob::new(44, kind, Vec3::new(0.5, 64.0, 2.5), 0.0));
-    game.persist.uuids.insert(44, removed_uuid);
+    game.simulation.persist.uuids.insert(44, removed_uuid);
     assert_eq!(
         game.target_with_uuid(removed_uuid),
         Some(commands::Target::Mob(44))

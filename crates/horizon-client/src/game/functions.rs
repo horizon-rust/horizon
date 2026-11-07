@@ -1313,7 +1313,7 @@ mod entity_score_tests {
                 ("NoGravity", Tag::Byte(1)),
             ]);
             let id = game.load_mob(tag, None).unwrap();
-            assert_eq!(game.persist.uuids.get(&id), Some(&uuid));
+            assert_eq!(game.simulation.persist.uuids.get(&id), Some(&uuid));
             let holder = game.holder_name(Target::Mob(id)).unwrap();
             assert_eq!(holder, horizon_client::save::uuid_text(uuid));
             if let Some(score) = score {

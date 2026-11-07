@@ -316,7 +316,7 @@ impl Game<'_> {
                             return Err("anger state: UUID is not a loaded mob".into());
                         };
                         let actual = g
-                            .persist
+                            .simulation.persist
                             .uuids
                             .get(&id)
                             .copied()
@@ -650,7 +650,7 @@ impl Game<'_> {
                         let Some(super::commands::Target::Frame(id)) = g.target_by_uuid(uuid) else {
                             return Err("frame map: UUID is not a live frame".into());
                         };
-                        let actual = *g.persist.uuids.get(&id).ok_or("frame map: no UUID")?;
+                        let actual = *g.simulation.persist.uuids.get(&id).ok_or("frame map: no UUID")?;
                         let frame = g.simulation.item_frames.iter().find(|f| f.id == id)
                             .ok_or("frame map: missing frame")?.clone();
                         if horizon_client::lan::playerdata::ints_uuid(actual) != uuid {

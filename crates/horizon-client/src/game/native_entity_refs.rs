@@ -139,6 +139,7 @@ impl Game<'_> {
                 return Some(uuid);
             }
             return self
+                .simulation
                 .persist
                 .uuids
                 .get(&entity.id())

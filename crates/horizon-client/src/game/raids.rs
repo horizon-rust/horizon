@@ -1575,6 +1575,7 @@ impl Game<'_> {
         }
         let observe = |m: &Mob| -> horizon_client::Result<serde_json::Value> {
             let uuid = self
+                .simulation
                 .persist
                 .uuids
                 .get(&m.id)
@@ -1583,9 +1584,9 @@ impl Game<'_> {
             let tag = horizon_client::entity_nbt::mob_to_nbt(
                 m,
                 uuid,
-                self.persist.raw.get(&m.id),
+                self.simulation.persist.raw.get(&m.id),
                 Some(self.pack.assets.registry),
-                |other| self.persist.uuid_of(other),
+                |other| self.simulation.persist.uuid_of(other),
             );
             Ok(json!({"uuid":uuid,"type":m.kind.id,"health":m.health,
                 "pos":[m.position.x,m.position.y,m.position.z],"noai":m.no_ai,

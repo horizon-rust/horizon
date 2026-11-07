@@ -738,11 +738,17 @@ impl Game<'_> {
         // `NbtPredicate.getEntityTagToCompare`: the mob as saved, with the
         // mobs riding it under `Passengers`, when a criterion may ask.
         let nbt = self.adv.tree.tests_nbt().then(|| {
-            let uuid = self.persist.uuids.get(&m.id).copied().unwrap_or_default();
-            let raw = self.persist.raw.get(&m.id);
+            let uuid = self
+                .simulation
+                .persist
+                .uuids
+                .get(&m.id)
+                .copied()
+                .unwrap_or_default();
+            let raw = self.simulation.persist.raw.get(&m.id);
             let registry = Some(self.pack.assets.registry);
             let mut tag = horizon_client::entity_nbt::mob_to_nbt(m, uuid, raw, registry, |other| {
-                self.persist.uuid_of(other)
+                self.simulation.persist.uuid_of(other)
             });
             let riders = passengers.iter().filter_map(|r| r.nbt.clone()).collect();
             super::persist::add_passengers(&mut tag, riders);

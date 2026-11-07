@@ -1620,7 +1620,7 @@ mod mob_equipment_command_tests {
             .simulation
             .mobs
             .iter()
-            .find(|m| game.persist.uuid_of(m.id) == Some([25, 0, 0, n]))
+            .find(|m| game.simulation.persist.uuid_of(m.id) == Some([25, 0, 0, n]))
             .unwrap();
         assert!(mob.no_ai);
         (uuid, mob.id)

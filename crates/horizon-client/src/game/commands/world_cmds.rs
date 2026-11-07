@@ -341,6 +341,7 @@ impl Game<'_> {
             _ => return false,
         };
         let invulnerable = self
+            .simulation
             .persist
             .raw
             .get(&id)
@@ -2330,7 +2331,7 @@ mod vehicle_damage_command_tests {
                     .iter()
                     .map(|b| b.id)
                     .chain(game.simulation.carts.iter().map(|c| c.id))
-                    .find(|id| game.persist.uuid_of(*id) == Some([500, 0, 0, n]))
+                    .find(|id| game.simulation.persist.uuid_of(*id) == Some([500, 0, 0, n]))
                     .unwrap();
                 assert!(
                     game.run_command(&format!("damage {uuid} 1 minecraft:generic")),
@@ -2375,7 +2376,7 @@ mod vehicle_damage_command_tests {
                     .iter()
                     .map(|b| b.id)
                     .chain(game.simulation.carts.iter().map(|c| c.id))
-                    .find(|id| game.persist.uuid_of(*id) == Some([500, 0, 0, n]))
+                    .find(|id| game.simulation.persist.uuid_of(*id) == Some([500, 0, 0, n]))
                     .unwrap();
                 assert!(game.run_command(&format!("damage {uuid} 4 minecraft:generic")));
                 let damage = if kind == "oak_boat" {
@@ -2405,7 +2406,7 @@ mod vehicle_damage_command_tests {
                     .iter()
                     .map(|b| b.id)
                     .chain(game.simulation.carts.iter().map(|c| c.id))
-                    .find(|id| game.persist.uuid_of(*id) == Some([500, 0, 0, n]))
+                    .find(|id| game.simulation.persist.uuid_of(*id) == Some([500, 0, 0, n]))
                     .unwrap();
                 assert!(!game.run_command(&format!("damage {uuid} 4 minecraft:generic")));
                 let damage = if kind == "oak_boat" {

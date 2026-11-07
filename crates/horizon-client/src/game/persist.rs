@@ -1253,7 +1253,7 @@ impl Game<'_> {
             uuid,
             self.simulation.persist.raw.get(&id),
             Some(self.pack.assets.registry),
-            |other| self.persist.uuid_of(other),
+            |other| self.simulation.persist.uuid_of(other),
         );
         if horizon_client::mobs::camel::is_camel(self.simulation.mobs[i].species())
             && let Tag::Compound(c) = &mut tag
@@ -1388,7 +1388,12 @@ impl Game<'_> {
         } else {
             None
         };
-        entity_nbt::who_by_uuid(&self.persist.uuids, &self.simulation.mobs, player, uuid)
+        entity_nbt::who_by_uuid(
+            &self.simulation.persist.uuids,
+            &self.simulation.mobs,
+            player,
+            uuid,
+        )
     }
     /// The mob that was loaded or saved with a UUID.
     pub(super) fn mob_by_uuid(&self, uuid: [i32; 4]) -> Option<u32> {
@@ -1741,6 +1746,7 @@ impl Game<'_> {
             return;
         }
         let candidates: Vec<(u32, [i32; 4])> = self
+            .simulation
             .persist
             .uuids
             .iter()
@@ -2511,14 +2517,14 @@ mod tests {
         game.simulation.mobs.push(zombie);
         game.simulation.mobs[0].extra.anger = 400;
         game.simulation.mobs[0].extra.angry_at = Some(horizon_client::mobs::Who::Mob(2));
-        assert_eq!(game.persist.uuid_of(2), None);
+        assert_eq!(game.simulation.persist.uuid_of(2), None);
         let tag = game.mob_tree_nbt(0);
         let Some(Tag::IntArray(named)) = tag.get("angry_at") else {
             panic!("no angry_at in {tag:?}");
         };
         assert_eq!(
             Some(named.as_slice()),
-            game.persist.uuid_of(2).as_ref().map(|u| &u[..])
+            game.simulation.persist.uuid_of(2).as_ref().map(|u| &u[..])
         );
     }
 }
@@ -2585,7 +2591,7 @@ mod interaction_saved_defaults_tests {
             .simulation
             .others
             .iter()
-            .find(|o| game.persist.uuids.get(&o.id) == Some(&[109, 0, 0, 4]))
+            .find(|o| game.simulation.persist.uuids.get(&o.id) == Some(&[109, 0, 0, 4]))
             .unwrap()
             .id;
         let marker_before = game.entity_nbt(Target::Other(marker_id)).unwrap();
@@ -2603,7 +2609,7 @@ mod interaction_saved_defaults_tests {
                 .simulation
                 .others
                 .iter()
-                .find(|o| game.persist.uuids.get(&o.id) == Some(&[109, 0, 0, n]))
+                .find(|o| game.simulation.persist.uuids.get(&o.id) == Some(&[109, 0, 0, n]))
                 .unwrap();
             assert_eq!(o.kind, "minecraft:interaction");
             ids.push(o.id);
@@ -2619,7 +2625,7 @@ mod interaction_saved_defaults_tests {
             .simulation
             .mobs
             .iter()
-            .find(|m| game.persist.uuids.get(&m.id) == Some(&[109, 0, 0, 5]))
+            .find(|m| game.simulation.persist.uuids.get(&m.id) == Some(&[109, 0, 0, 5]))
             .unwrap()
             .id;
         let pig = game.entity_nbt(Target::Mob(pig_id)).unwrap();
@@ -2673,7 +2679,7 @@ mod interaction_saved_defaults_tests {
             }
         }
         // The actual registered identity/position still supplies a fresh save without raw input.
-        game.persist.raw.remove(&ids[0]);
+        game.simulation.persist.raw.remove(&ids[0]);
         let fresh = game.entity_nbt(Target::Other(ids[0])).unwrap();
         assert_eq!(fresh.get("UUID"), Some(&Tag::IntArray(vec![109, 0, 0, 1])));
         assert_eq!(fresh.get("width"), Some(&Tag::Float(1.0f32.to_bits())));

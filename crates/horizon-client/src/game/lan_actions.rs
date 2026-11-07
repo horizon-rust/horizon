@@ -1598,7 +1598,7 @@ impl Game<'_> {
     /// fires for the player who opened it.
     fn boat_loot_pending(&self, id: u32) -> bool {
         matches!(
-            self.persist.raw.get(&id),
+            self.simulation.persist.raw.get(&id),
             Some(horizon_world::nbt::Tag::Compound(map)) if map.contains_key(&"LootTable".into())
         )
     }
@@ -1607,7 +1607,7 @@ impl Game<'_> {
         use horizon_world::nbt::Tag;
         let id = self.simulation.boats[i].id;
         let (table, seed) = {
-            let Some(Tag::Compound(map)) = self.persist.raw.get_mut(&id) else {
+            let Some(Tag::Compound(map)) = self.simulation.persist.raw.get_mut(&id) else {
                 return;
             };
             let Some(table) = crate::save::text(map.get(&"LootTable".into()))

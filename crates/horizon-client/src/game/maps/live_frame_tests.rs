@@ -105,7 +105,7 @@ fn frame_adoption(glow_first: bool) {
                 .clone();
             let mut tag = horizon_client::entity_nbt::item_frame_to_nbt(
                 &frame,
-                *game.persist.uuids.get(&id).unwrap(),
+                *game.simulation.persist.uuids.get(&id).unwrap(),
                 None,
             );
             let Tag::Compound(fields) = &mut tag else {

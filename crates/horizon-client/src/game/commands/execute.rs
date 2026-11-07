@@ -1330,9 +1330,11 @@ mod terminal_fork_tests {
                 game.simulation
                     .mobs
                     .iter()
-                    .any(|m| game.persist.uuids.get(&m.id) == Some(&[147, 0, 0, n])
-                        && m.kind.id == "minecraft:pig"
-                        && m.health == 10.0)
+                    .any(
+                        |m| game.simulation.persist.uuids.get(&m.id) == Some(&[147, 0, 0, n])
+                            && m.kind.id == "minecraft:pig"
+                            && m.health == 10.0
+                    )
             );
         }
         let time = game.simulation.world.game_time;

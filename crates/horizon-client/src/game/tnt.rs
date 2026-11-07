@@ -337,7 +337,7 @@ impl Game<'_> {
             t.rotation,
             uuid,
             owner,
-            self.persist.raw.get(&id),
+            self.simulation.persist.raw.get(&id),
         )
     }
     /// `EntityReference.of(owner)`: the UUID of the player or mob that lit it.
@@ -355,13 +355,13 @@ impl Game<'_> {
             Who::Mob(id) if self.simulation.mobs.iter().any(|m| m.id == id) => {
                 Some(self.uuid_for(id))
             }
-            Who::Mob(id) => self.persist.uuids.get(&id).copied(),
+            Who::Mob(id) => self.simulation.persist.uuids.get(&id).copied(),
         }
     }
     /// `PrimedTnt.getOwner` for TNT loaded with an `owner`: looked up when
     /// asked, so a player who joined or a mob loaded since is found.
     fn loaded_tnt_owner(&self, id: u32) -> Option<(Who, Option<u32>)> {
-        let uuid = horizon_client::entity_nbt::tnt_owner(self.persist.raw.get(&id)?)?;
+        let uuid = horizon_client::entity_nbt::tnt_owner(self.simulation.persist.raw.get(&id)?)?;
         let guest = self.lan.as_ref().and_then(|host| {
             let mut guests = host.hub.guests.iter();
             guests.find(|g| uuid_ints(g.uuid) == uuid).map(|g| g.conn)
@@ -1163,7 +1163,7 @@ mod tests {
             .simulation
             .mobs
             .iter()
-            .find(|m| game.persist.uuid_of(m.id) == Some([89, 0, 0, 3]))
+            .find(|m| game.simulation.persist.uuid_of(m.id) == Some([89, 0, 0, 3]))
             .unwrap()
             .id;
         assert_eq!(
@@ -1178,7 +1178,7 @@ mod tests {
         );
         assert_eq!(game.simulation.tnts.len(), 1);
         let id = game.simulation.tnts[0].id;
-        assert_eq!(game.persist.uuid_of(id), Some([89, 0, 0, 1]));
+        assert_eq!(game.simulation.persist.uuid_of(id), Some([89, 0, 0, 1]));
         assert_eq!(game.simulation.tnts[0].fuse, 40);
         assert_eq!(game.simulation.tnts[0].velocity, Vec3::ZERO);
         assert!(game.simulation.tnts[0].no_gravity);
@@ -1216,7 +1216,7 @@ mod tests {
         assert_eq!(live.power, before.power);
         assert_eq!(live.no_gravity, before.no_gravity);
         assert_eq!(game.simulation.world.game_time, clock);
-        assert_eq!(game.persist.uuid_of(id), Some([89, 0, 0, 1]));
+        assert_eq!(game.simulation.persist.uuid_of(id), Some([89, 0, 0, 1]));
         let saved = game.entity_nbt(reference).unwrap();
         assert_eq!(saved.get("fuse"), Some(&Tag::Short(60)));
         assert_eq!(
