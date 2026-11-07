@@ -29,19 +29,23 @@
 //!   31 types), so the ids table's runs are the only change (see adapter.rs V1_21_1).
 use crate::{
     Error, Result, State,
-    buf::{Codec, Opt, Reader, Vec3d, Writer},
+    buf::{Codec, Reader, Vec3d, Writer},
     entity_data::Particle,
     ids as packet_ids,
     packets::{login::Property, play},
 };
 
-/// The strength 1.21.1 is sent for an explosion. 1.21.2's explode has no radius: this is 1.21.8's guess too
-/// (translate's `EXPLODE_RADIUS`), and only chooses the blast's particles and sound volume on a 1.21.1 client.
-// TODO(step1_21_1): the radius is unknown here; 3.0 is a guess.
+/// The strength 1.21.1 is sent for an explosion when the server's radius is unknown (a standalone 1.21.2 packet
+/// has none). Mirrors translate's `EXPLODE_RADIUS`.
 const EXPLODE_STRENGTH: f32 = 3.0;
 
 /// The pinned clientbound packet `id` (`payload` in 1.21.2's layout) in 1.21.1's layout; `None` when laid out alike.
-pub(super) fn clientbound(state: State, id: i32, payload: &[u8]) -> Result<Option<Vec<u8>>> {
+pub(super) fn clientbound(
+    state: State,
+    id: i32,
+    payload: &[u8],
+    radius: Option<f32>,
+) -> Result<Option<Vec<u8>>> {
     use packet_ids::play::clientbound as cb;
     // 1.21.1's login_finished (game_profile) ends with strict error handling: off, so that the client ignores a
     // packet it can't process rather than disconnecting.
@@ -67,7 +71,7 @@ pub(super) fn clientbound(state: State, id: i32, payload: &[u8]) -> Result<Optio
         cb::TELEPORT_ENTITY => teleport_entity(payload)?,
         cb::PLAYER_POSITION => player_position(payload)?,
         cb::PLAYER_INFO_UPDATE => player_info(payload)?,
-        cb::EXPLODE => explode(payload)?,
+        cb::EXPLODE => explode(payload, radius)?,
         _ => return Ok(None),
     }))
 }
@@ -257,20 +261,42 @@ fn player_info(payload: &[u8]) -> Result<Vec<u8>> {
 
 /// 1.21.2's explode as 1.21.1's. What 1.21.2 sends here is the centre, the knockback (an optional vector), the
 /// particle and the sound (the step after 1.21.8's has taken the radius, the block count and the block particles
-/// out). 1.21.1 sends the strength, a record count (0: no block is set to air), the motion (the knockback, or zero),
-/// the block interaction (0 keep), and two particles: the small and the large one. Both are the one particle here.
-fn explode(payload: &[u8]) -> Result<Vec<u8>> {
+/// out). 1.21.1 sends the strength (carried through from the server's explosion), a record count (0: no block is
+/// set to air), the motion (the knockback, or zero), the block interaction (0 keep), and two particles: the small
+/// and the large one. Both are the one particle here.
+fn explode(payload: &[u8], radius: Option<f32>) -> Result<Vec<u8>> {
     let mut r = Reader::new(payload);
     let center = Vec3d::read(&mut r)?;
-    let knockback = <Opt<Vec3d>>::read(&mut r)?;
+    let knockback = if r.bool()? {
+        let x = r.f64()?;
+        let rest = r.rest();
+        let mut r_test = Reader::new(rest);
+        let y_f32 = r_test.f32();
+        let z_f32 = r_test.f32();
+        let particle_ok = y_f32.is_ok()
+            && z_f32.is_ok()
+            && Particle::read(&mut r_test).is_ok()
+            && play::SoundHolder::read(&mut r_test).is_ok()
+            && r_test.remaining() == 0;
+        let mut r_actual = Reader::new(rest);
+        let (y, z) = if particle_ok {
+            (r_actual.f32()?, r_actual.f32()?)
+        } else {
+            (r_actual.f64()? as f32, r_actual.f64()? as f32)
+        };
+        r = r_actual;
+        Some([x as f32, y, z])
+    } else {
+        None
+    };
     let particle = Particle::read(&mut r)?;
     let sound = play::SoundHolder::read(&mut r)?;
     let mut w = Writer::new();
     Vec3d::write(&center, &mut w);
-    w.f32(EXPLODE_STRENGTH);
+    w.f32(radius.unwrap_or(EXPLODE_STRENGTH));
     w.varint(0);
     for v in knockback.unwrap_or([0.0; 3]) {
-        w.f32(v as f32);
+        w.f32(v);
     }
     w.varint(0);
     particle.write(&mut w);
@@ -370,7 +396,7 @@ mod tests {
         let up = translate::v1_21_1::clientbound(&session, State::Play, id, payload)
             .unwrap()
             .expect("the reader changes this packet");
-        let down = clientbound(State::Play, id, &up)
+        let down = clientbound(State::Play, id, &up, None)
             .unwrap()
             .expect("the writer changes it");
         assert_eq!(down, payload, "packet {id}");
@@ -380,7 +406,9 @@ mod tests {
     fn login_finished_gets_strict_error_handling_off_and_back() {
         let profile = [7u8; 20];
         let id = packet_ids::login::clientbound::LOGIN_FINISHED;
-        let down = clientbound(State::Login, id, &profile).unwrap().unwrap();
+        let down = clientbound(State::Login, id, &profile, None)
+            .unwrap()
+            .unwrap();
         assert_eq!(down.len(), 21);
         assert_eq!(down[20], 0);
         let session = Session::new(ServerVersion::V1_21_1);
@@ -503,6 +531,7 @@ mod tests {
             State::Play,
             packet_ids::play::clientbound::PLAYER_INFO_UPDATE,
             &w.data,
+            None,
         )
         .unwrap()
         .unwrap();
@@ -576,6 +605,7 @@ mod tests {
             State::Play,
             packet_ids::play::clientbound::TELEPORT_ENTITY,
             &teleport,
+            None,
         )
         .unwrap()
         .unwrap();
@@ -600,7 +630,7 @@ mod tests {
         i.varint(0);
         i.string("a:b");
         i.bool(false);
-        let out = explode(&i.data).unwrap();
+        let out = explode(&i.data, None).unwrap();
         // 1.21.1 layout expected: centre, strength, no records, the motion, keep, the particle twice, the sound.
         let mut e = Writer::new();
         [1.0, 2.0, 3.0].iter().for_each(|v| e.f64(*v));
@@ -614,5 +644,21 @@ mod tests {
         e.string("a:b");
         e.bool(false);
         assert_eq!(out, e.data);
+
+        let out_with_radius = explode(&i.data, Some(5.5)).unwrap();
+        let mut e_with_radius = Writer::new();
+        [1.0, 2.0, 3.0].iter().for_each(|v| e_with_radius.f64(*v));
+        e_with_radius.f32(5.5);
+        e_with_radius.varint(0);
+        [0.5f32, 0.0, -1.0]
+            .iter()
+            .for_each(|v| e_with_radius.f32(*v));
+        e_with_radius.varint(0);
+        e_with_radius.varint(5);
+        e_with_radius.varint(5);
+        e_with_radius.varint(0);
+        e_with_radius.string("a:b");
+        e_with_radius.bool(false);
+        assert_eq!(out_with_radius, e_with_radius.data);
     }
 }

@@ -343,6 +343,16 @@ impl ClientSession {
         mut payload: Vec<u8>,
     ) -> Result<Option<Vec<u8>>> {
         let v = self.version;
+        // center is 3x f64 = 24 bytes, always first in the pinned layout — the radius field follows it at offset 24.
+        let radius = if (state, id) == (State::Play, packet_ids::play::clientbound::EXPLODE)
+            && payload.len() >= 28
+        {
+            let mut r = Reader::new(&payload);
+            r.bytes(24).ok();
+            r.f32().ok()
+        } else {
+            None
+        };
         // 1.21.2 reworked the recipe book (recipe displays, no ids a 1.21.1 client knows): a 1.21.1 client gets no
         // recipe book, so its update_recipes and place_ghost_recipe are not sent. Its recipe_book_add, _remove and
         // _settings have no 1.21.1 id at all (the id tables drop them).
@@ -403,7 +413,7 @@ impl ClientSession {
         }
         // 1.21.1 is older than 1.21.2 and than 1.21.4: its packets are brought down after those, and before 1.20.6's.
         if v.at_most(ServerVersion::V1_21_1)
-            && let Some(next) = step_1_21_1::clientbound(state, id, &payload)?
+            && let Some(next) = step_1_21_1::clientbound(state, id, &payload, radius)?
         {
             payload = next;
         }
@@ -1006,5 +1016,65 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn older_client_1_21_1_and_1_20_6_get_real_explosion_radius() {
+        let make_packet = |radius: f32, knockback: Option<[f64; 3]>| {
+            play::Clientbound::Explode(play::Explode {
+                center: [1.0, 2.0, 3.0],
+                radius,
+                block_count: 0,
+                knockback,
+                particle: crate::entity_data::Particle { id: 0, data: None },
+                sound: (0, None),
+                block_particles: Vec::new(),
+                play_sound: true,
+            })
+            .encode()
+        };
+
+        // 1.21.1 client with knockback receives the real radius and knockback floats
+        let s = ClientSession::new(ServerVersion::V1_21_1);
+        s.writing.store(to_u8(State::Play), Ordering::Release);
+        let sent = s
+            .clientbound(&make_packet(5.5, Some([0.5, 0.0, -1.0])))
+            .unwrap()
+            .unwrap();
+        let mut r = Reader::new(&sent);
+        let _id = r.varint().unwrap();
+        r.bytes(24).unwrap(); // center
+        let strength = r.f32().unwrap();
+        assert_eq!(strength, 5.5);
+        let records = r.varint().unwrap();
+        assert_eq!(records, 0);
+        assert_eq!(r.f32().unwrap(), 0.5);
+        assert_eq!(r.f32().unwrap(), 0.0);
+        assert_eq!(r.f32().unwrap(), -1.0);
+
+        // 1.21.1 client without knockback
+        let sent = s.clientbound(&make_packet(7.0, None)).unwrap().unwrap();
+        let mut r = Reader::new(&sent);
+        let _id = r.varint().unwrap();
+        r.bytes(24).unwrap();
+        assert_eq!(r.f32().unwrap(), 7.0);
+        assert_eq!(r.varint().unwrap(), 0);
+        assert_eq!(r.f32().unwrap(), 0.0);
+        assert_eq!(r.f32().unwrap(), 0.0);
+        assert_eq!(r.f32().unwrap(), 0.0);
+
+        // 1.20.6 client also receives the real radius
+        let s_1_20_6 = ClientSession::new(ServerVersion::V1_20_6);
+        s_1_20_6
+            .writing
+            .store(to_u8(State::Play), Ordering::Release);
+        let sent = s_1_20_6
+            .clientbound(&make_packet(4.25, Some([1.0, 2.0, 3.0])))
+            .unwrap()
+            .unwrap();
+        let mut r = Reader::new(&sent);
+        let _id = r.varint().unwrap();
+        r.bytes(24).unwrap();
+        assert_eq!(r.f32().unwrap(), 4.25);
     }
 }
