@@ -116,9 +116,11 @@ def run(mode, args, out):
         bot_errors = (out / f'{mode}-bots.stderr').open('w')
         bots = subprocess.Popen([
             str(args.bin / 'horizon-bots'), '--server', f'127.0.0.1:{port}',
-            '--bots', str(args.players), '--behaviour', 'stand', '--name', 'RegionBot',
+            '--bots', str(args.players), '--behaviour', args.behaviour, '--name', 'RegionBot',
             '--join-every', '.1', '--seconds', '1200', '--view-distance', '2',
             '--ground', '--seed', '12345', '--report', '-',
+            # Walkers stay on the flat ground, within 48 blocks of their own teleport.
+            *(['--height', '0', '--walk-from-teleport'] if args.behaviour == 'walk' else []),
         ], stdout=subprocess.PIPE, stderr=bot_errors, text=True, env=lab.game_env())
         def read_bots():
             for line in bots.stdout:
@@ -180,7 +182,9 @@ def run(mode, args, out):
                    30, 'performance report was not written')
         report = json.loads(next((directory / 'reports').glob('perf-*.json')).read_text())
         mob_count = sum(level['mobs'] for level in report['levels'])
-        if report['players'] != args.players or mob_count != args.players * args.mobs_per_player:
+        expected_mobs = args.players * args.mobs_per_player
+        # Walkers can leave their mobs' chunks, which unloads those mobs: `mobs` records how many stayed.
+        if report['players'] != args.players or (args.behaviour == 'stand' and mob_count != expected_mobs):
             raise RuntimeError(f'workload changed: {report["players"]} players, {mob_count} mobs')
         lines = server.since(start_line)
         timed_lines = [line for line in lines if 'Horizon: slow tick ' in line][:report['ticks']['count']]
@@ -199,7 +203,8 @@ def run(mode, args, out):
             if (match := re.search(r'streaming range preparation: accepted=(true|false) coordinates=(\d+)', line))
         ]
         result = {
-            'mode': mode, 'players': args.players, 'mobs': mob_count, 'warmup_ticks': warmup_ticks,
+            'mode': mode, 'behaviour': args.behaviour, 'players': args.players, 'mobs': mob_count,
+            'mobs_expected': expected_mobs, 'warmup_ticks': warmup_ticks,
             'ticks': report['ticks'], 'mob_ms': summary(mob_ms),
             'load_average_start': load_start, 'load_average_end': os.getloadavg(),
             'cpu_percent': round(statistics.fmean(cpu), 2),
@@ -246,6 +251,8 @@ def main():
     parser.add_argument('--before-bin', type=Path)
     parser.add_argument('--players', type=int, default=100)
     parser.add_argument('--mobs-per-player', type=int, default=70)
+    parser.add_argument('--behaviour', default='stand', choices=('stand', 'walk'),
+                        help='walk: players wander within 48 blocks of their spot at 5.6 blocks a second')
     parser.add_argument('--species', default='zombie', help='comma-separated: a mixed population takes turns')
     parser.add_argument('--spacing', type=int, default=512)
     parser.add_argument('--workers', type=int, default=8)

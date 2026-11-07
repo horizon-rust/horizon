@@ -96,6 +96,7 @@ horizon-bots: load-test bots for a Minecraft Java Edition 26.3 server (offline m
   --name PREFIX          bot names: PREFIX0, PREFIX1...; default Bot
   --brand B              the client brand sent in configuration (minecraft:brand); default none
   --height H             blocks above spawn the bots fly at (walk, explore, idle); default 24
+  --walk-from-teleport   walk: wander around where the server last put the bot (/tp), not where it joined
   --ground               claim the ground in every move (with --height 0 on a flat world: walking
                          on it; higher, or over water: a no-fall or jesus cheat, to test an anticheat)
   --give SLOT:ID:COUNT,...  creative-slot packets sent once joined (inventory menu slot, item
@@ -175,6 +176,7 @@ struct Options {
     no_loaded: bool,
     height: f64,
     ground: bool,
+    walk_from_teleport: bool,
     /// --raw: (tick after joining, packet id, body).
     raw: Vec<(u64, i32, Vec<u8>)>,
     /// ServerboundSetCreativeModeSlotPackets to send once joined: (slot, item id, count).
@@ -213,6 +215,7 @@ fn options() -> Result<Options, String> {
         no_loaded: false,
         height: 24.0,
         ground: false,
+        walk_from_teleport: false,
         raw: Vec::new(),
         give: Vec::new(),
         click: None,
@@ -242,6 +245,10 @@ fn options() -> Result<Options, String> {
         }
         if arg == "--no-loaded" {
             o.no_loaded = true;
+            continue;
+        }
+        if arg == "--walk-from-teleport" {
+            o.walk_from_teleport = true;
             continue;
         }
         if arg == "--ground" {
@@ -1195,6 +1202,7 @@ fn run_bot(
     let mut rounds = 0;
     let mut random = Random(o.seed ^ (index as u64).wrapping_mul(0x2545_F491_4F6C_DD1D));
     let mut pos = spawn;
+    let mut walk_centre = spawn;
     // Fight bots stay at their spawn height; the others climb to fly above the terrain.
     let cruise = if behaviour == Behaviour::Fight {
         spawn[1]
@@ -1214,6 +1222,10 @@ fn run_bot(
         // A teleport from the server wins over where the bot thought it was.
         if let Some(at) = lock(&bot.teleport).take() {
             pos = at;
+            if o.walk_from_teleport {
+                walk_centre = at;
+                target = at;
+            }
         }
         let here = ((pos[0].floor() as i32) >> 4, (pos[2].floor() as i32) >> 4);
         // The abusive client doesn't wait for its chunk, as a real client must.
@@ -1256,7 +1268,9 @@ fn run_bot(
         } else {
             match behaviour {
                 Behaviour::Idle | Behaviour::Stand => {}
-                Behaviour::Walk => walk_step(&mut pos, &mut target, spawn, cruise, &mut random),
+                Behaviour::Walk => {
+                    walk_step(&mut pos, &mut target, walk_centre, cruise, &mut random)
+                }
                 Behaviour::Fight => {
                     let near = lock(&bot.entities).nearest(pos, o.pvp, &bots);
                     if let Some(near) = near {
