@@ -46,20 +46,16 @@ impl Launcher {
             .id("home-tabs-strip")
             .relative()
             .flex()
+            .flex_none()
             .items_center()
             .gap(px(gap))
             .px(px(8.))
             .pt(px(8.))
             .pb(px(4.))
-            // At its own size the strip leaves room for `glass::tabbed`'s notch; on a narrow
-            // window it takes the panel's width and scrolls sideways instead.
-            .when(!compact, |d| d.flex_none())
-            .when(compact, |d| {
-                d.w_full()
-                    .min_w_0()
-                    .overflow_x_scroll()
-                    .on_scroll(|_, _, cx| cx.stop_propagation())
-            })
+            // Keep the strip at its content width. The enclosing viewport scrolls it when the
+            // tabs truly do not fit; making this padded element `w_full` creates padding-only
+            // overflow and lets a wheel hide the leading edge of Overview on otherwise fitting
+            // narrow layouts (#11660).
             .child(crate::glass::measure(self.home_strip.clone()))
             .children(tabs.into_iter().map(|(tab, count)| {
                 let (name, icon) = match tab {
@@ -113,11 +109,16 @@ impl Launcher {
             .child(crate::glass::tabbed(self.home_strip.clone()))
             .child(
                 div()
+                    .id("home-tabs-viewport")
                     .relative()
                     .flex()
                     .w_full()
                     .min_w_0()
-                    .overflow_hidden()
+                    .when(!compact, |d| d.overflow_hidden())
+                    .when(compact, |d| {
+                        d.overflow_x_scroll()
+                            .on_scroll(|_, _, cx| cx.stop_propagation())
+                    })
                     .child(strip),
             )
             .child(
